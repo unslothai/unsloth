@@ -3041,6 +3041,7 @@ export function ChatPage({
   const platformChatOnlyReason = usePlatformStore(
     (state) => state.chatOnlyReason,
   );
+  const platformMlxInference = usePlatformStore((state) => state.mlxInference);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
@@ -5134,6 +5135,7 @@ export function ChatPage({
                   Boolean(loadedIsGguf),
                   platformDeviceType,
                   platformChatOnlyReason,
+                  platformMlxInference,
                 )}
                 contextEnforced={loadedContextEnforced}
                 contextUnboundedWhenBatched={loadedContextUnboundedWhenBatched}

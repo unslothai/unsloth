@@ -109,6 +109,7 @@ import {
   IMAGE_CATALOG,
   catalogToModelOptions,
   curatedArtifactTakesDenseQuant,
+  downloadRepoIdFor,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import {
@@ -238,7 +239,11 @@ import {
   int8AttentionSelection,
   type Int8AttentionChoice,
 } from "@/lib/int8-attention";
-import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
+import {
+  diffusionPipelineLoadTarget,
+  diffusionStagingEntries,
+  stagedDownloadRepoId,
+} from "@/lib/diffusion-pipeline-load-target";
 import {
   routedImageFilename,
   routedGgufLabel,
@@ -413,6 +418,7 @@ import {
   shouldRunQueuedOversizedRetry,
 } from "./lib/memory-refusal";
 import { LORA_RELOAD_ACTION, LORA_RELOAD_TITLE, LoraReloadRefusalError, loraReloadReason } from "./lib/lora-reload";
+import { loraPresetRecipe, pickRecipe, type StepRecipe } from "./lib/lora-preset";
 import { generateGate, pickReleasedWhileNewest } from "./lib/generate-gate";
 import { HELD_BY_OTHER_ACCOUNT_NOTICE, heldByOtherAccount, ownDiffusionStatus } from "./lib/resident-owner";
 import {
@@ -1977,6 +1983,15 @@ export function ImagesPage({
   );
   // Trimmed like the request payload, whose duplicate-id check this mirrors.
   const takenLoraIds = useMemo(() => new Set(loras.map((l) => l.id.trim())), [loras]);
+  // Read at pick time without re-creating the pick callbacks on every LoRA edit.
+  const lorasRef = useRef(loras);
+  const sortedLorasRef = useRef(sortedLoras);
+  useEffect(() => {
+    lorasRef.current = loras;
+    sortedLorasRef.current = sortedLoras;
+  }, [loras, sortedLoras]);
+  // A pick that kept a selected distilled LoRA's recipe, with the model recipe to restore if the load drops that LoRA.
+  const heldLoraRecipe = useRef<{ preset: StepRecipe; model: StepRecipe } | null>(null);
   const [focusLoraRow, setFocusLoraRow] = useState<number | null>(null);
   // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
@@ -2341,16 +2356,20 @@ export function ImagesPage({
       const recommended = defaultsFor(recipeKey);
       pickDefaults.current = recommended;
       setPendingModelDefaults(recommended);
-      setSteps(recommended.steps);
-      setGuidance(recommended.guidance);
+      // A still-selected step-distilled LoRA (Lightning) keeps its own steps / CFG, as the video page does.
+      const preset = loraPresetRecipe(lorasRef.current, sortedLorasRef.current);
+      heldLoraRecipe.current = preset ? { preset, model: recommended } : null;
+      const applied = pickRecipe(recommended, lorasRef.current, sortedLorasRef.current);
+      setSteps(applied.steps);
+      setGuidance(applied.guidance);
       const nativeSize = defaultSizeFor(recipeKey);
       if (nativeSize) {
         setWidth(nativeSize.width);
         setHeight(nativeSize.height);
       }
       if (revert) {
-        revert.appliedSteps = recommended.steps;
-        revert.appliedGuidance = recommended.guidance;
+        revert.appliedSteps = applied.steps;
+        revert.appliedGuidance = applied.guidance;
       }
     },
     [claimImageRecipe, familyOverride, imageFormClaimId, modelSelectionAction],
@@ -2422,8 +2441,15 @@ export function ImagesPage({
     }
     const fam = status?.family ?? null;
     const prev = prevLoraFamilyRef.current;
+    const held = heldLoraRecipe.current;
+    heldLoraRecipe.current = null;
     if (prev != null && prev !== fam) {
       setLoras([]);
+      // The LoRA whose recipe the pick kept is gone: an untouched form takes the model's recipe.
+      if (held) {
+        setSteps((cur) => (cur === held.preset.steps ? held.model.steps : cur));
+        setGuidance((cur) => (cur === held.preset.guidance ? held.model.guidance : cur));
+      }
     }
     prevLoraFamilyRef.current = fam;
     const deploy = pendingDeploy.current;
@@ -4519,7 +4545,10 @@ export function ImagesPage({
         advanced = { ...advanced, engine: engineFor(repoId, opts, advanced) ?? "auto" };
       }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
-      const pickToastId = downloadOnly ? undefined : pickToast.show(opts.displayRepoId ?? repoId);
+      // Label with the repo actually fetched (a vendor id's unsloth mirror), not the picked id.
+      const pickToastId = downloadOnly
+        ? undefined
+        : pickToast.show(downloadRepoIdFor(opts.displayRepoId ?? repoId, IMAGE_CATALOG));
       // Read before the await: a pick made meanwhile replaces quantRevert. Download-only owns no slot.
       const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;
       // Acted on outside the try: a throwing refusal would otherwise fall through to the load.
@@ -4574,11 +4603,13 @@ export function ImagesPage({
           } else {
             pendingLoadEntries.current = entries;
             const pending = pendingStagedLoad.current;
+            // The plan names the repo actually downloaded, which the catalog may not know (a gated row's mirror).
+            const downloadName = stagedDownloadRepoId(entries, opts.displayRepoId ?? repoId);
             if (downloadOnlyPlans.current.length === 0 && pending) {
               stagedPlan.current = { token: pending.token };
-              pickToast.setPhase(pickToastId, "downloading", stage(entries));
+              pickToast.setPhase(pickToastId, "downloading", stage(entries), downloadName);
             } else {
-              pickToast.setPhase(pickToastId, "queued");
+              pickToast.setPhase(pickToastId, "queued", undefined, downloadName);
             }
           }
           return true;
@@ -7351,6 +7382,12 @@ export function ImagesPage({
                         onAdd={(spec, focusRow) => {
                           setFocusLoraRow(focusRow ? loras.length : null);
                           setLoras((prev) => [...prev, spec]);
+                          // A step-distilled adapter runs its own recipe (e.g. 8 steps at CFG 1).
+                          const preset = loraPresetRecipe([spec], sortedLoras);
+                          if (preset) {
+                            setSteps(preset.steps);
+                            setGuidance(preset.guidance);
+                          }
                         }}
                       />
                     )}

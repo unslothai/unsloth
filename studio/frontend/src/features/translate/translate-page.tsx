@@ -83,6 +83,11 @@ import { useNativeFileDrop } from "@/features/native-intents";
 import { extractDocumentText } from "@/features/rag/api/rag-api";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { ReadAloudIcon } from "@/lib/action-bar-icons";
+import {
+  AUDIO_ACCEPT_EXTENSIONS,
+  AUDIO_ATTACHMENT_ACCEPT,
+  isAudioAttachmentFile,
+} from "@/lib/audio-utils";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -98,6 +103,7 @@ import {
   ArrowLeft02Icon,
   ArrowLeftRightIcon,
   Cancel01Icon,
+  Download01Icon,
   Message01Icon,
   RemoveCircleIcon,
   Search01Icon,
@@ -122,13 +128,16 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import { chatAboutTranslations } from "./chat-handoff";
 import { TranslateHistoryList } from "./history-list";
+import { transcribeAudioFile } from "./translate-audio";
+import { parseSubtitles, subtitleFileName } from "./translate-subtitles";
 import { detectTranslateLanguage } from "./detect-language";
 import { ICON_ACTION, IconAction } from "./icon-action";
 import {
-  TRANSLATE_LANGUAGES,
   findTranslateLanguage,
   translateLanguageLabel,
+  translateLanguagesFor,
   translateSpeechTag,
+  translatesLanguage,
 } from "./languages";
 import {
   CHAT_TRANSLATE_MODEL,
@@ -158,6 +167,7 @@ import {
   customPromptOf,
   languageTabs,
   translatePromptOptions,
+  translatesWithDedicated,
   translationIsStale,
   useTranslateStore,
 } from "./translate-store";
@@ -182,7 +192,9 @@ const SERVER_FILE_EXTENSIONS = [
 ].join(",");
 const OPEN_FILE_EXTENSIONS = `${TEXT_FILE_EXTENSIONS},${SERVER_FILE_EXTENSIONS}`;
 
-function readsInBrowser(file: File): boolean {
+const TEXT_READ_BYTES = TRANSLATE_SOURCE_MAX_CHARS * 4 + 4;
+
+function isTextFile(file: File): boolean {
   const name = file.name.toLowerCase();
   if (SERVER_FILE_EXTENSIONS.split(",").some((ext) => name.endsWith(ext))) {
     return false;
@@ -193,9 +205,69 @@ function readsInBrowser(file: File): boolean {
   );
 }
 
+const HTML_NAME = /\.html?$/i;
+const META_CHARSET = /<meta[^>]*charset\s*=\s*["']?\s*([\w.:-]+)/i;
+
+// The server ignores <meta charset> once the upload is renamed to .txt.
+function declaredHtmlCharset(file: File, bytes: ArrayBuffer): string | null {
+  if (!HTML_NAME.test(file.name) && file.type !== "text/html") {
+    return null;
+  }
+  const head = new TextDecoder("latin1").decode(bytes.slice(0, 1024));
+  const label = META_CHARSET.exec(head)?.[1];
+  if (!label) {
+    return null;
+  }
+  try {
+    const { encoding } = new TextDecoder(label);
+    return encoding === "utf-8" || encoding.startsWith("utf-16") ? null : label;
+  } catch {
+    return null;
+  }
+}
+
+async function readTextPrefix(file: File): Promise<string | null> {
+  const bytes = await file.slice(0, TEXT_READ_BYTES).arrayBuffer();
+  const stream = file.size > TEXT_READ_BYTES;
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes, { stream });
+  } catch {
+    const charset = declaredHtmlCharset(file, bytes);
+    if (!charset) {
+      return null;
+    }
+    text = new TextDecoder(charset).decode(bytes, { stream });
+  }
+  return text.includes("\u0000") ? null : text;
+}
+
+function serverUpload(file: File): File {
+  return isTextFile(file)
+    ? // .txt: decoded as is (HTML keeps its markup), and any text name is accepted.
+      new File([file.slice(0, TEXT_READ_BYTES)], `${file.name}.txt`, {
+        type: "text/plain",
+      })
+    : file;
+}
+
+// The STT server decodes the audio track of these containers.
+const VIDEO_FILE_EXTENSIONS = ".mp4,.m4v,.webm,.mkv,.mov";
+
+function isTranscribedFile(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return (
+    isAudioAttachmentFile(file) ||
+    VIDEO_FILE_EXTENSIONS.split(",").some((ext) => name.endsWith(ext))
+  );
+}
+
 const IS_MAC =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad/.test(navigator.platform);
+
+const DROP_ACCEPT = `${OPEN_FILE_EXTENSIONS},${AUDIO_ACCEPT_EXTENSIONS},${VIDEO_FILE_EXTENSIONS}`;
+const PICKER_ACCEPT = `text/*,${OPEN_FILE_EXTENSIONS},${AUDIO_ATTACHMENT_ACCEPT},${VIDEO_FILE_EXTENSIONS}`;
 
 const ACTION_BUTTON = "relative z-10 transition-opacity disabled:opacity-40";
 const GO_BUTTON =
@@ -296,13 +368,18 @@ function LanguagePicker({
   const [query, setQuery] = useState("");
   const listFade = useScrollFades();
   const [active, setActive] = useState(value);
+  const dedicated = useTranslateStore((state) =>
+    translatesWithDedicated(state.prefs),
+  );
   const languages = useMemo(
     () =>
-      TRANSLATE_LANGUAGES.map((language) => ({
-        ...language,
-        label: translateLanguageLabel(language, locale),
-      })).sort((a, b) => a.label.localeCompare(b.label, locale)),
-    [locale],
+      translateLanguagesFor(dedicated)
+        .map((language) => ({
+          ...language,
+          label: translateLanguageLabel(language, locale),
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label, locale)),
+    [locale, dedicated],
   );
   const needle = query.trim().toLowerCase();
   const shown = needle
@@ -466,6 +543,9 @@ function LanguageTabs({
       ? findTranslateLanguage(detected)
       : undefined;
   const reduced = useReducedMotion();
+  const dedicated = useTranslateStore((state) =>
+    translatesWithDedicated(state.prefs),
+  );
   const tab = (code: string, name: string) => {
     const active = code === value;
     return (
@@ -519,7 +599,7 @@ function LanguageTabs({
             )}
           {tabs.map((code) => {
             const language = findTranslateLanguage(code);
-            return language
+            return language && translatesLanguage(code, dedicated)
               ? tab(code, translateLanguageLabel(language, locale))
               : null;
           })}
@@ -1209,6 +1289,8 @@ export function TranslatePage() {
   const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState<Downloaded>({});
+  // Names a downloaded subtitle file after the one it came from.
+  const [sourceFile, setSourceFile] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const outputRef = useRef<HTMLDivElement>(null);
   const sourceScrollRef = useRef<HTMLDivElement>(null);
@@ -1218,14 +1300,38 @@ export function TranslatePage() {
   const busy = phase !== null;
   const paneHeight = prefs.showPrompt ? PANE_HEIGHT_WITH_PROMPT : PANE_HEIGHT;
   const canTranslate = source.trim() !== "";
-  const detected = useMemo(
-    () => (prefs.from === AUTO_SOURCE ? detectTranslateLanguage(source) : null),
-    [prefs.from, source],
-  );
+  const dedicatedLanguages = translatesWithDedicated(prefs);
+  const detected = useMemo(() => {
+    const found =
+      prefs.from === AUTO_SOURCE ? detectTranslateLanguage(source) : null;
+    return found && translatesLanguage(found, dedicatedLanguages)
+      ? found
+      : null;
+  }, [prefs.from, source, dedicatedLanguages]);
   const canSwap =
     prefs.from !== AUTO_SOURCE ||
     (detected !== null && detected !== prefs.target);
   const stale = translationIsStale({ result, source, prefs });
+  const subtitleFormat = useMemo(
+    () =>
+      result && !stale && !busy
+        ? (parseSubtitles(output)?.format ?? null)
+        : null,
+    [result, stale, busy, output],
+  );
+  const downloadSubtitles = () => {
+    if (!result || !subtitleFormat) return;
+    const url = URL.createObjectURL(
+      new Blob([output], {
+        type: subtitleFormat === "vtt" ? "text/vtt" : "application/x-subrip",
+      }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = subtitleFileName(sourceFile, result.target, subtitleFormat);
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
   const modelKey = translateModelKey(prefs.modelId, prefs.customModel);
   const dedicated = dedicatedTranslateModel(prefs.modelId);
   const modelLabel =
@@ -1306,7 +1412,7 @@ export function TranslatePage() {
     return () => window.clearTimeout(timer);
   }, [copied]);
 
-  const loadText = (text: string) => {
+  const loadText = (text: string, fileName: string | null = null) => {
     if (text.includes("\u0000")) {
       toast.error(t("translate.fileNotText"));
       return;
@@ -1319,22 +1425,48 @@ export function TranslatePage() {
       );
     }
     setSource(text);
+    setSourceFile(fileName);
   };
 
   const [readingFile, setReadingFile] = useState<string | null>(null);
+  const audioAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => audioAbort.current?.abort(), []);
+  const openAudio = async (file: File) => {
+    const controller = new AbortController();
+    audioAbort.current = controller;
+    setReadingFile(file.name);
+    const before = useTranslateStore.getState().source;
+    try {
+      const text = await transcribeAudioFile(file, controller.signal, t);
+      if (text && useTranslateStore.getState().source === before) {
+        loadText(text);
+      }
+    } finally {
+      if (audioAbort.current === controller) audioAbort.current = null;
+      setReadingFile(null);
+    }
+  };
   const openFile = async (file: File | undefined) => {
     if (!file) return;
-    if (readsInBrowser(file)) {
-      try {
-        loadText(
-          await file.slice(0, TRANSLATE_SOURCE_MAX_CHARS * 4 + 4).text(),
-        );
-      } catch {
-        toast.error(t("translate.fileNotText"));
-      }
+    if (isTranscribedFile(file)) {
+      await openAudio(file);
       return;
     }
-    if (file.size > MAX_SERVER_DOCUMENT_BYTES) {
+    if (isTextFile(file)) {
+      let text: string | null;
+      try {
+        text = await readTextPrefix(file);
+      } catch {
+        toast.error(t("translate.fileNotText"));
+        return;
+      }
+      if (text !== null) {
+        loadText(text, file.name);
+        return;
+      }
+    }
+    const upload = serverUpload(file);
+    if (upload.size > MAX_SERVER_DOCUMENT_BYTES) {
       toast.error(t("translate.fileNotText"));
       return;
     }
@@ -1343,7 +1475,7 @@ export function TranslatePage() {
     const before = useTranslateStore.getState().source;
     try {
       const { text, warning } = await extractDocumentText(
-        file,
+        upload,
         undefined,
         TRANSLATE_SOURCE_MAX_CHARS,
       );
@@ -1384,7 +1516,7 @@ export function TranslatePage() {
     dragHandlers,
   } = useNativeFileDrop({
     onFiles: (files) => void openFile(files[0]),
-    accept: OPEN_FILE_EXTENSIONS,
+    accept: DROP_ACCEPT,
     multiple: false,
     disabled: readingFile !== null,
     disabledReason: readingFile
@@ -1700,7 +1832,7 @@ export function TranslatePage() {
             <input
               ref={fileInput}
               type="file"
-              accept={`text/*,${OPEN_FILE_EXTENSIONS}`}
+              accept={PICKER_ACCEPT}
               className="hidden"
               onChange={(event) => {
                 void openFile(event.target.files?.[0]);
@@ -1810,6 +1942,15 @@ export function TranslatePage() {
                       icon={Message01Icon}
                       label={t("translate.chat")}
                       onClick={chatAboutResult}
+                    />
+                  )}
+                  {subtitleFormat && (
+                    <IconAction
+                      className={FOOTER_ICON}
+                      iconClassName="size-5"
+                      icon={Download01Icon}
+                      label={t("translate.downloadSubtitles")}
+                      onClick={downloadSubtitles}
                     />
                   )}
                   {!busy && (

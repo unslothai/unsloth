@@ -2825,6 +2825,7 @@ export function ModelConfigPage({
   // Wording only ("Unified" vs "Shared"); not the capacity signal, see hasUnifiedMemory.
   const isAppleUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const platformMlxInference = usePlatformStore((s) => s.mlxInference);
   const mlxKvQuantReason = useChatRuntimeStore((s) => s.mlxKvQuantReason);
   const chatTemplateOverrideReason = useChatRuntimeStore(
     (s) => s.chatTemplateOverrideReason,
@@ -3004,6 +3005,7 @@ export function ModelConfigPage({
     target.isGguf,
     platformDeviceType,
     platformChatOnlyReason,
+    platformMlxInference,
   );
   const prefillOptionPath =
     servedByMlx &&
@@ -3850,7 +3852,9 @@ export function ModelConfigPage({
       normalizePerModelConfig(storedSpeculativeAuto(runtimeConfig, targetIsMlx)),
       storedRecord.config,
     );
-  const modelName = modelDisplayName(configId);
+  // Name NPU sets after the picker's name; before the NPU list arrives, the bare id it falls back to.
+  const modelName =
+    npuName ?? (targetIsNpu ? configId.replace(/^lemonade:/, "") : modelDisplayName(configId));
   const savedSets = useSavedRunSettings(configId);
   const persistedSet = useSelectedRunSettings(configId, target.ggufVariant);
   // undefined: follow what is stored. Shared, or the other editor saves this set's values elsewhere.
@@ -3861,11 +3865,13 @@ export function ModelConfigPage({
   );
   const [naming, setNaming] = useState<RunSettingsNaming | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  // Until the NPU list arrives an NPU model has no name but its id, and an adopted set keeps its first name.
+  const npuNamePending = targetIsNpu && !npuCatalogListed;
   useEffect(() => {
-    if (storedRecord.remembered && persistedSet === undefined) {
+    if (storedRecord.remembered && persistedSet === undefined && !npuNamePending) {
       adoptRememberedRunSettings(configId, target.ggufVariant, storedRecord.config, modelName);
     }
-  }, [storedRecord, persistedSet, configId, target.ggufVariant, modelName]);
+  }, [storedRecord, persistedSet, configId, target.ggufVariant, modelName, npuNamePending]);
   const forSetStore = (next: PerModelConfig) =>
     normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));
   const persistedEntry =

@@ -1887,8 +1887,14 @@ const PromptQueueContext = createContext<PromptQueueCallbacks>({
 // Gap between last message and floating composer, added to the bottom spacer height.
 const COMPOSER_SCROLL_GAP_PX = 24;
 const FOOTER_GAP_BELOW_SPACER_PX = 10;
-const THREAD_COMPOSER_CLIP_VAR = "--thread-composer-clip";
-const THREAD_COMPOSER_FADE_VAR = "--thread-composer-fade";
+const THREAD_COMPOSER_VARS = [
+  "--thread-composer-clip",
+  "--thread-composer-bottom",
+  "--thread-composer-left",
+  "--thread-composer-right",
+  "--thread-composer-radius",
+  "--thread-composer-fade",
+] as const;
 // After a run start, composer shrinks apply immediately: the run-start pin owns the bottom.
 const RUN_SHRINK_WINDOW_MS = 1000;
 
@@ -2713,25 +2719,23 @@ const ThreadComposerDock: FC<{
         ? null
         : dock.querySelector<HTMLElement>(".unsloth-composer-surface");
       if (!surface) {
-        root.style.removeProperty(THREAD_COMPOSER_CLIP_VAR);
-        root.style.removeProperty(THREAD_COMPOSER_FADE_VAR);
+        for (const name of THREAD_COMPOSER_VARS) root.style.removeProperty(name);
         return;
       }
-      const clip = Math.max(
-        0,
-        Math.round(
-          viewport.getBoundingClientRect().bottom -
-            surface.getBoundingClientRect().top,
-        ),
-      );
-      root.style.setProperty(THREAD_COMPOSER_CLIP_VAR, `${clip}px`);
-      root.style.setProperty(
-        THREAD_COMPOSER_FADE_VAR,
-        "calc(10px * var(--ui-space-scale, 1))",
-      );
+      const box = viewport.getBoundingClientRect();
+      const at = surface.getBoundingClientRect();
+      const px = (value: number) => `${Math.max(0, Math.round(value))}px`;
+      const values = [
+        px(box.bottom - at.top),
+        px(box.bottom - at.bottom),
+        px(at.left - box.left),
+        px(box.right - at.right),
+        getComputedStyle(surface).borderTopLeftRadius,
+        "calc(2px * var(--ui-space-scale, 1))",
+      ];
+      THREAD_COMPOSER_VARS.forEach((name, i) => root.style.setProperty(name, values[i]));
     };
     const apply = () => {
-      syncComposerClip();
       // May fire before the gutter's observer, which would leave the composer a scrollbar off-centre.
       syncThreadGutter(viewport);
       // The footer is the real column box: WebKit's both-edges gutter reserves 2x the scrollbar on the right, clientWidth 1x.
@@ -2755,6 +2759,8 @@ const ThreadComposerDock: FC<{
         : composerColumnInset(readViewportBox(viewport), dockRect);
       inner.style.setProperty("--composer-dock-inset-left", `${inset.left}px`);
       inner.style.setProperty("--composer-dock-inset-right", `${inset.right}px`);
+      // Last, so the mask measures the composer at its new insets.
+      syncComposerClip();
     };
     apply();
     resizeObserver.observe(viewport);
@@ -2763,8 +2769,7 @@ const ThreadComposerDock: FC<{
     return () => {
       resizeObserver.disconnect();
       viewport.removeEventListener(THREAD_GUTTER_CHANGE_EVENT, apply);
-      root.style.removeProperty(THREAD_COMPOSER_CLIP_VAR);
-      root.style.removeProperty(THREAD_COMPOSER_FADE_VAR);
+      for (const name of THREAD_COMPOSER_VARS) root.style.removeProperty(name);
     };
   }, [threadIsEmpty]);
 

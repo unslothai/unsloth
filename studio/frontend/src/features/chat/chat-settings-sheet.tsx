@@ -549,10 +549,12 @@ export function ChatSettingsPanel({
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
   const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const platformMlxInference = usePlatformStore((s) => s.mlxInference);
   const loadSettingNames = presetLoadSettingNames(
     isGguf,
     platformDeviceType,
     platformChatOnlyReason,
+    platformMlxInference,
   );
   // The backend's own classification: the native token survives a switch to a remote GGUF, and
   // org/name.gguf is a repo id, not a file.
@@ -1879,12 +1881,13 @@ export function ChatSettingsPanel({
   if (isCompact) {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="right" className="w-[min(calc(18rem*var(--ui-space-scale,1)),100vw)] p-0 font-heading">
+        <SheetContent side="right" data-chat-settings-sheet="" className="w-[min(calc(18rem*var(--ui-space-scale,1)),100vw)] p-0 font-heading">
           <SheetHeader className="sr-only">
             <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
           </SheetHeader>
-          <div data-tour="chat-settings" className="flex h-full flex-col">
+          {/* The docked panel's slot, so the sheet gets its glass. */}
+          <div data-tour="chat-settings" data-slot="chat-settings-panel" className="relative flex h-full flex-col">
             {settingsContent}
           </div>
         </SheetContent>

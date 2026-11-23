@@ -57,6 +57,7 @@ def test_untiled_when_it_fits(monkeypatch):
         "tiled": 0,
         "wide": 0,
         "oom_fallback": 0,
+        "paired": 0,
     }
 
 

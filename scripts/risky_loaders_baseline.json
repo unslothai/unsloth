@@ -531,6 +531,14 @@
       "reason": "Loads unsloth/dataprep/raw_text.py and ebooks.py on the CPU backend from a fixed path derived from this package's __file__, with only those two constant names passed and the helper deleted after import, to skip dataprep/__init__ (which needs a GPU device type); never a dataset-provided or downloaded code path."
     },
     {
+      "file": "unsloth/_cpu_init.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "78b864cf6acb1555",
+      "count": 1,
+      "reason": "Unsloth's own unsloth/utils/run_report.py, loaded by its fixed path next to _cpu_init.py (importing unsloth.utils would pull in the GPU model stack on the CPU route), not external input."
+    },
+    {
       "file": "unsloth/_gpu_init.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
@@ -567,8 +575,8 @@
       "rule": "dynamic-import",
       "sink": "import_module",
       "digest": "59e72c01edb14c86",
-      "count": 4,
-      "reason": "Module names come from fixed in-file tables (_PEFT_TORCHAO_TENSOR_SUBCLASSES, _TORCHAO_IMPORT_TIME_MODULES and the transformers symbol homes); remote code can only name an attribute, which resolves inside an already installed transformers module."
+      "count": 5,
+      "reason": "Module names come from fixed in-file tables (_PEFT_TORCHAO_TENSOR_SUBCLASSES, _TORCHAO_IMPORT_TIME_MODULES, the transformers symbol homes and the two literal tokenizer owners of _patch_mistral_regex); remote code can only name an attribute, which resolves inside an already installed transformers module."
     },
     {
       "file": "unsloth/import_fixes.py",
@@ -743,8 +751,8 @@
       "rule": "dynamic-import",
       "sink": "import_module",
       "digest": "8a43c55c018acccf",
-      "count": 1,
-      "reason": "TRL's async GRPO trainer module, from a fixed tuple of two literal names (trl.trainer.async_grpo_trainer, trl.experimental.async_grpo.async_grpo_trainer), not external input."
+      "count": 2,
+      "reason": "Two TRL module loads, neither from external input: the async GRPO trainer from a fixed tuple of two literal names (trl.trainer.async_grpo_trainer, trl.experimental.async_grpo.async_grpo_trainer), and the tree gated DeltaNet kernels from the literal trl.kernels.tree_gated_delta_rule or, on TRL 1.17, the sibling of TRL's own packing function module (original.__module__)."
     },
     {
       "file": "unsloth/models/rl.py",

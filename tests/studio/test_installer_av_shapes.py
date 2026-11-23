@@ -1246,3 +1246,107 @@ def test_the_bareword_comment_rule_can_fire() -> None:
     assert re.match(r"^\s*[A-Za-z0-9_]+#", "    unction# something")
     assert not re.match(r"^\s*[A-Za-z0-9_]+#", "# An in-box tool")
     assert not re.match(r"^\s*[A-Za-z0-9_]+#", '    $x = "a#b"')
+
+
+def _run_watch_with_failing_watcher(
+    tmp_path,
+    *,
+    fail_first: int,
+    attempts: int,
+    compiled: bool = False,
+    leftover: bool = False,
+) -> str:
+    """Runs the real Invoke-WithCompilerWatch, with its watcher reporting an error on the first
+    ``fail_first`` measurements, as a buffer overflow does on a hosted runner."""
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    evidence = tmp_path / "evidence"
+    script = tmp_path / "probe.ps1"
+    fake_compiler = (
+        "function Get-StudioCompilerEvents { param($Since, $Until) "
+        "if ($script:Compiled) { 'csc.exe /noconfig' } }"
+    )
+    script.write_text(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                f'$env:TEMP = "{temp_root.as_posix()}"',
+                f'$env:TMP = "{temp_root.as_posix()}"',
+                _FAKE_WINEVENT,
+                f'. "{_WATCHER}"',
+                "$script:StopCalls = 0",
+                "$script:Compiled = $false",
+                "$script:RealStop = ${function:Stop-StudioTempWatch}",
+                "function Stop-StudioTempWatch { param([object[]]$Handle) "
+                "$r = & $script:RealStop -Handle $Handle; $script:StopCalls++; "
+                f"if ($script:StopCalls -le {fail_first}) "
+                "{ $r.FailedRoots = [string[]]@($env:TEMP) }; return $r }",
+                fake_compiler,
+                "$action = { "
+                + ("$script:Compiled = $true; " if compiled else "")
+                + (
+                    '$d = Join-Path $env:TEMP "vpmyd5eq"; '
+                    "New-Item -ItemType Directory -Force -Path $d | Out-Null; "
+                    'Set-Content -LiteralPath (Join-Path $d "vpmyd5eq.cmdline") -Value "/noconfig"; '
+                    'Set-Content -LiteralPath (Join-Path $d "vpmyd5eq.dll") -Value "MZ"; '
+                    if leftover
+                    else ""
+                )
+                + "Start-Sleep -Milliseconds 50 }",
+                "try {",
+                "    $seen = Invoke-WithCompilerWatch -Name 'probe' -Action $action "
+                f'-EvidenceRoot "{evidence.as_posix()}" -Attempts {attempts}',
+                '    Write-Output ("RESULT:measured compilers=$($seen.Compilers.Count) "'
+                '+ "libraries=$($seen.TempLibraries.Count)")',
+                '} catch { Write-Output "RESULT:void $($_.Exception.Message)" }',
+                'Write-Output "MEASUREMENTS:$script:StopCalls"',
+            ]
+        ),
+        encoding = "utf-8",
+    )
+    result = _run_pwsh(script, timeout = 300)
+    assert result.returncode == 0, result.stderr + result.stdout
+    return result.stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_a_watcher_error_voids_a_single_measurement(tmp_path) -> None:
+    stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 1)
+    assert "RESULT:void" in stdout and "raised an error" in stdout, stdout
+    assert "MEASUREMENTS:1" in stdout, stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_a_watcher_error_is_measured_again_and_only_a_healthy_run_counts(tmp_path) -> None:
+    """A burst of temp writes during the desktop-mode install overflowed the watcher on about a
+    quarter of runs. The void run is not scored; a second complete measurement is."""
+    stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 2)
+    assert "RESULT:measured compilers=0 libraries=0" in stdout, stdout
+    assert "MEASUREMENTS:2" in stdout, stdout
+    assert (tmp_path / "evidence" / "probe-attempt2-watch-failures.txt").exists()
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_a_watcher_that_fails_every_attempt_is_still_void(tmp_path) -> None:
+    stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 2, attempts = 2)
+    assert "RESULT:void" in stdout, stdout
+    assert "MEASUREMENTS:2" in stdout, stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_a_compiler_seen_while_the_watcher_failed_is_a_hit_not_a_retry(tmp_path) -> None:
+    """4688 is authoritative about what ran, so a compile it saw is reported rather than
+    measured away."""
+    stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 2, compiled = True)
+    assert "RESULT:measured compilers=1 " in stdout, stdout
+    assert "MEASUREMENTS:1" in stdout, stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_an_artefact_seen_while_the_watcher_failed_is_a_hit_not_a_retry(tmp_path) -> None:
+    """The artefact half is the detector that survives auditing being overridden, so its hit is
+    reported too; a retry would bury it, since the leftovers join the next attempt's baseline."""
+    stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 2, leftover = True)
+    assert "RESULT:measured compilers=0 libraries=" in stdout, stdout
+    assert "libraries=0" not in stdout, stdout
+    assert "MEASUREMENTS:1" in stdout, stdout

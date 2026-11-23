@@ -1111,7 +1111,11 @@ export async function saveStoredChatMessage(
 export async function syncStoredChatMessages(
   threadId: string,
   messages: MessageRecord[],
-  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
+  options: {
+    pruneMissing?: boolean;
+    deletedMessageIds?: string[];
+    echo?: boolean;
+  } = {},
 ): Promise<MessageRecord[]> {
   if (isThreadIncognito(threadId)) return messages;
   if (isChatThreadDeleted(threadId)) return [];

@@ -12,6 +12,7 @@ import re
 import secrets
 import socket
 import subprocess
+import sys
 import threading
 import time
 import weakref
@@ -117,6 +118,7 @@ class LemonadeServer:
         self.port: Optional[int] = None
         self.api_key: Optional[str] = None
         self._process: Optional[subprocess.Popen] = None
+        self.last_returncode: Optional[int] = None
         self._tail: deque[str] = deque(maxlen = 200)
         # Never reset, so a mark taken before a restart still counts the new lines.
         self._lines_seen = 0
@@ -293,7 +295,7 @@ class LemonadeServer:
                 return
             self._stop_requested.clear()
             if is_process_shutting_down():
-                raise LemonadeUnavailable("Unsloth is shutting down; not starting Lemonade.")
+                raise LemonadeUnavailable("Unsloth is shutting down; not starting the NPU runtime.")
             self.cache_dir.mkdir(parents = True, exist_ok = True)
             self.flm_model_dir.mkdir(parents = True, exist_ok = True)
             self._write_config()
@@ -311,10 +313,18 @@ class LemonadeServer:
                     )
                     if is_process_shutting_down():
                         raise LemonadeUnavailable(
-                            "Unsloth is shutting down; not starting Lemonade."
+                            "Unsloth is shutting down; not starting the NPU runtime."
                         )
                     continue
-                raise LemonadeUnavailable(f"Lemonade did not start. Last output:\n{tail}")
+                if self.last_returncode is None and not self._stop_requested.is_set():
+                    message = (
+                        f"The NPU runtime did not answer its health check within {timeout:g} s."
+                    )
+                else:
+                    message = "The NPU runtime did not start."
+                error = LemonadeUnavailable(f"{message} Last output:\n{tail}")
+                error.returncode = self.last_returncode
+                raise error
 
     def _start_once(self, timeout: float) -> bool:
         """Spawn lemond on a fresh port and wait for it; False (with the child gone) if it never got ready."""
@@ -328,8 +338,14 @@ class LemonadeServer:
         env["FLM_DISABLE_UPDATE_CHECK"] = "1"
         if self.flm_config_path is not None:
             env["FLM_CONFIG_PATH"] = str(self.flm_config_path)
+        # flm_host.py stands in for lemond where it would be refused; it runs on Studio's Python.
+        launcher = (
+            [sys.executable, str(self.binary)]
+            if self.binary.suffix == ".py"
+            else [str(self.binary)]
+        )
         cmd = [
-            str(self.binary),
+            *launcher,
             str(self.cache_dir),
             str(self.config_dir),
             "--port",
@@ -370,7 +386,7 @@ class LemonadeServer:
             # Shutdown may have swept children before this process was adopted.
             if is_process_shutting_down():
                 self._kill_locked()
-                raise LemonadeUnavailable("Unsloth is shutting down; not starting Lemonade.")
+                raise LemonadeUnavailable("Unsloth is shutting down; not starting the NPU runtime.")
         except BaseException:
             self._close_log_file(log_file)
             raise
@@ -379,6 +395,8 @@ class LemonadeServer:
         )
         self._drain_thread.start()
         if not self._wait_ready(timeout):
+            # Before the kill, which would replace a real exit status with its own signal.
+            self.last_returncode = proc.poll()
             # After the kill, which joins the drain thread, so the tail has the last lines.
             self._kill_locked()
             return False
@@ -486,7 +504,7 @@ class LemonadeServer:
         timeout: float = 60.0,
     ) -> httpx.Response:
         if not self.is_alive():
-            raise LemonadeUnavailable("Lemonade is not running.")
+            raise LemonadeUnavailable("The NPU runtime is not running.")
         try:
             # The load owns its window; of the reads only a catalog listing makes lemond print.
             other = path != "/v1/load" and (
@@ -506,7 +524,7 @@ class LemonadeServer:
                 detail = " (process exited)"
                 if path != "/v1/load":
                     detail += f". Last output:\n{self.log_tail()}"
-            raise LemonadeUnavailable(f"Lemonade request {path} failed: {exc}{detail}") from exc
+            raise LemonadeUnavailable(f"NPU runtime request {path} failed: {exc}{detail}") from exc
 
     @contextmanager
     def stream(
@@ -519,7 +537,7 @@ class LemonadeServer:
     ):
         """``httpx.Client.stream`` against lemond, for server-sent progress."""
         if not self.is_alive():
-            raise LemonadeUnavailable("Lemonade is not running.")
+            raise LemonadeUnavailable("The NPU runtime is not running.")
         with (
             self._other_operation(),
             self._client.stream(

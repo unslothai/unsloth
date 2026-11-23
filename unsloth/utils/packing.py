@@ -285,23 +285,28 @@ def _mask_padding_free_boundary_labels(batch) -> None:
     batch["labels"] = mask_packed_boundary_labels(labels, batch["packed_seq_lengths"])
 
 
-def _carry_host_lengths(before, after) -> None:
+def _host_lengths(batch):
+    """Host tuple of a CPU `packed_seq_lengths`, read before the move (BatchEncoding.to() moves in place)."""
+    if not isinstance(batch, Mapping):
+        return None
+    src = batch.get("packed_seq_lengths")
+    if not isinstance(src, torch.Tensor) or src.device.type != "cpu":
+        return None
+    try:
+        return tuple(int(x) for x in src.reshape(-1).tolist())
+    except Exception:
+        return None
+
+
+def _carry_host_lengths(host, after) -> None:
     """Attach host `packed_seq_lengths` to the moved device tensor, avoiding a blocking `.tolist()`."""
-    if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+    if host is None or not isinstance(after, Mapping):
         return
-    src = before.get("packed_seq_lengths")
     dst = after.get("packed_seq_lengths")
-    if (
-        not isinstance(src, torch.Tensor)
-        or not isinstance(dst, torch.Tensor)
-        or dst is src
-        or src.device.type != "cpu"
-        or dst.device.type == "cpu"
-        or src.numel() != dst.numel()
-    ):
+    if not isinstance(dst, torch.Tensor) or dst.device.type == "cpu" or dst.numel() != len(host):
         return
     try:
-        dst._unsloth_lengths_tuple = tuple(int(x) for x in src.reshape(-1).tolist())
+        dst._unsloth_lengths_tuple = host
     except Exception:
         pass
 
@@ -317,8 +322,9 @@ def _install_host_lengths_carry() -> None:
 
     @wraps(original)
     def send_to_device(tensor, *args, **kwargs):
+        host = _host_lengths(tensor)
         moved = original(tensor, *args, **kwargs)
-        _carry_host_lengths(tensor, moved)
+        _carry_host_lengths(host, moved)
         return moved
 
     send_to_device._unsloth_host_lengths_carry = True
@@ -1525,6 +1531,12 @@ def _hybrid_exactness_probe(module) -> Optional[str]:
         return f"exactness probe failed to run ({type(exc).__name__}: {str(exc)[:200]})"
     finally:
         _restore_mixers(saved)
+        # Through each module's train(), not its flag, on every exit (accepted, rejected or raised): a module may
+        # sync state there (Int4PackedLinear sets its quant_state.training, which gates the fast inference kernel).
+        # modules() is parent-first, so each recursive call is undone by the children's own; the flags are then
+        # set directly for a child shared by two parents, which a later parent's recursive train() can flip again.
+        for m, training in modes:
+            m.train(training)
         for m, training in modes:
             m.training = training
     if not dispatched:
@@ -1775,6 +1787,15 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                 "_unsloth_varlen_handshake_done",
                 False,
             )
+            # A call without grad has no backward to replay, so it hands the stash back afterwards: a pending
+            # gradient-checkpoint recompute of the packed forward (GRPO's per-row verify runs in between) still
+            # needs those boundaries, as with generate below. Every mixer holds the same stash, so the first one
+            # tells when there is nothing to hand back (an unpacked call on an empty stash: each decode step).
+            saved = None
+            if not torch.is_grad_enabled() and (
+                varlen is not None or hybrid_modules[0].__dict__.get("_unsloth_varlen") is not None
+            ):
+                saved = [m.__dict__.get("_unsloth_varlen") for m in hybrid_modules]
             for module in hybrid_modules:
                 module._unsloth_varlen = varlen
                 if first_pack:
@@ -1792,6 +1813,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                 out = forward_orig(*args, **kwargs)
             finally:
                 _PACKED[0] = outer
+                for module, stash in zip(hybrid_modules, saved or ()):
+                    module.__dict__["_unsloth_varlen"] = stash
             # Handshake: on the first packed forward every module must have hit its boundary kernels.
             if first_pack:
                 model._unsloth_varlen_handshake_done = True
