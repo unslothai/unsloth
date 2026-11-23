@@ -44,7 +44,7 @@ def apple_silicon(monkeypatch):
     monkeypatch.setattr(mlx_repair, "_repair_started_at", None, raising = False)
     # The real check imports mlx_vlm, which is not installed here.
     monkeypatch.setattr(mlx_repair, "mlx_stack_available", lambda: False)
-    # Self-heal declines on --no-torch installs; pin the mode instead of inheriting the venv's.
+    # Pin the install mode instead of inheriting the venv's.
     monkeypatch.setattr(mlx_repair, "_installed_without_torch", lambda: False)
     # The pre-start hold is stamped on first use; reset so earlier tests cannot leak in.
     import main as main_mod
@@ -109,11 +109,10 @@ def test_the_opt_out_settles_the_verdict_immediately(apple_silicon, monkeypatch)
     assert mlx_repair.mlx_repair_in_flight() is False
 
 
-def test_a_no_torch_install_settles_the_verdict_immediately(apple_silicon, monkeypatch):
-    """A --no-torch install declines the self-heal the way the kill switch does, so no repair
-    is coming and the not-yet-started half must not hold the verdict for the grace."""
+def test_a_no_torch_install_holds_the_verdict_for_its_repair(apple_silicon, monkeypatch):
+    """Chat only serves MLX models, so a --no-torch Mac is repaired like any other."""
     monkeypatch.setattr(mlx_repair, "_installed_without_torch", lambda: True)
-    assert mlx_repair.mlx_repair_in_flight() is False
+    assert mlx_repair.mlx_repair_in_flight() is True
 
 
 def test_a_non_apple_host_is_never_in_flight(apple_silicon, monkeypatch):
@@ -343,21 +342,6 @@ def test_health_settles_the_verdict_once_the_window_is_spent(apple_silicon, cloc
     assert body["hardware_detecting"] is True
 
     clock.advance(main_mod._MLX_PRESTART_GRACE_AFTER_WARM_S + 1)
-    body = _health(monkeypatch, chat_only = True, reason = "mlx_unavailable")
-
-    assert "hardware_detecting" not in body
-    assert body["device_type"]
-    assert body["chat_only"] is True
-    assert body["chat_only_reason"] == "mlx_unavailable"
-
-
-def test_health_settles_the_verdict_at_once_on_a_no_torch_install(apple_silicon, monkeypatch):
-    """End to end: the opt-out recorded at install time settles health on the first reply,
-    exactly as the kill switch does, rather than after the 30s handoff grace."""
-    import main as main_mod
-
-    monkeypatch.setattr(mlx_repair, "_installed_without_torch", lambda: True)
-    monkeypatch.setattr(main_mod, "_torch_warm_in_progress", lambda: False)
     body = _health(monkeypatch, chat_only = True, reason = "mlx_unavailable")
 
     assert "hardware_detecting" not in body

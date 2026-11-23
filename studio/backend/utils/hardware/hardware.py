@@ -1860,10 +1860,10 @@ def _detect_hardware_locked() -> DeviceType:
         and _installed_without_torch()
         and (
             _NO_TORCH_SETTLED_EPOCH == current_detection_epoch()
-            or not _mlx_distribution_installed()
+            or (not _mlx_distribution_installed() and _no_torch_mac_without_mlx_wheels())
         )
     ):
-        # GGUF-only by request, not a broken stack, and `unsloth studio update` cannot change it. With mlx on disk the verdict stays mlx_unavailable until the post-warm probe measures it, so a stack that only lost the import race is still overturned and the sidebar keeps polling until settle_the_no_torch_verdict() lands.
+        # Train/Export are off by request. A Mac that can install MLX stays mlx_unavailable until the self-heal has run, since Chat only serves MLX models too; the sidebar keeps polling until settle_the_no_torch_verdict() lands.
         CHAT_ONLY_REASON = "no_torch"
         _MLX_BLOCKERS_MEASURED = None
         logger.info(

@@ -143,6 +143,7 @@ _WORKER_BUDGET_S = _REPAIR_TIMEOUT_S + 300
 # Indirected so the tests can drive the budget without sleeping through it.
 _repair_clock = time.monotonic
 _environment_mutated = False
+_chat_only_repair_failed = False
 
 
 def is_apple_silicon() -> bool:
@@ -245,9 +246,6 @@ def mlx_repair_in_flight() -> bool:
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return False
     if not is_apple_silicon():
-        return False
-    # A --no-torch install declines the self-heal, so the verdict settles now.
-    if _installed_without_torch():
         return False
     with _attempted_lock:
         attempted, thread, started_at = _attempted, _repair_thread, _repair_started_at
@@ -420,12 +418,16 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
 
 def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
     repaired = attempt_mlx_repair()
-    # Re-detect after a failed validation too, as long as the install ran.
-    if not repaired and not _environment_mutated:
-        return
     try:
         from utils.hardware import hardware as hw
-
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("MLX self-heal could not import hardware detection: %s", exc)
+        return
+    # Re-detect after a failed validation too, as long as the install ran.
+    if not repaired and not _environment_mutated:
+        _settle_a_chat_only_install(hw)
+        return
+    try:
         # A pip install, so shutdown can land anywhere inside it. Scoping to the epoch read before start() discards the re-detect rather than republish for a dead lifespan.
         with hw.owning_detection_epoch(epoch):
             hw.detect_hardware()
@@ -434,7 +436,7 @@ def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
             hw.detect_hardware()
         if repaired:
             logger.info(
-                "MLX self-heal succeeded; Train/Export enabled (reload the page). chat_only=%s",
+                "MLX self-heal succeeded (reload the page). chat_only=%s",
                 hw.CHAT_ONLY,
             )
         else:
@@ -443,12 +445,29 @@ def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
                 "the reason matches what is now on disk: %s",
                 hw.CHAT_ONLY_DETAIL,
             )
+            _settle_a_chat_only_install(hw)
     except Exception as exc:  # pragma: no cover - defensive
+        # Before logging, which can raise on the same closed pipe that failed re-detection.
+        if not repaired:
+            _settle_a_chat_only_install(hw)
         logger.warning("MLX installed but hardware re-detection failed: %s", exc)
 
 
+def _settle_a_chat_only_install(hw) -> None:
+    """A Chat only install whose repair failed keeps no_torch as its reason, so the UI offers the full install instead of polling for a repair that is over. Recorded before settling, so whichever of this worker and a later lifespan's start_mlx_autorepair_if_needed runs last settles that lifespan."""
+    global _chat_only_repair_failed
+    if not _installed_without_torch():
+        return
+    _chat_only_repair_failed = True
+    if hw.settle_the_no_torch_verdict(hw.current_detection_epoch()):
+        logger.info(
+            "MLX self-heal could not restore MLX on a Chat only install; MLX models will not "
+            "load until it succeeds (it retries after a restart, once hardware is detected)."
+        )
+
+
 def _installed_without_torch() -> bool:
-    """True when this venv was installed --no-torch (GGUF-only). Unknown reads as False: an install predating the manifest keeps today's repair behaviour rather than silently losing it."""
+    """True when this venv was installed --no-torch (Chat only). Unknown reads as False: an install predating the manifest keeps today's repair behaviour rather than silently losing it."""
     try:
         from studio.install_manifest import recorded_no_torch
         return recorded_no_torch() is True
@@ -457,16 +476,16 @@ def _installed_without_torch() -> bool:
 
 
 def start_mlx_autorepair_if_needed() -> bool:
-    """If this is an Apple Silicon host whose MLX stack is missing or too old, reinstall it on a daemon thread (off the startup critical path) and re-detect on success. True iff a repair thread was started; False off Apple Silicon, when already attempted this process, when the venv was installed --no-torch, or when disabled via UNSLOTH_DISABLE_MLX_AUTOREPAIR=1. An adequate stack starts no repair but still overturns a verdict that contradicts it."""
+    """If this is an Apple Silicon host whose MLX stack is missing or too old, reinstall it on a daemon thread (off the startup critical path) and re-detect on success. True iff a repair thread was started; False off Apple Silicon, when already attempted this process, on a --no-torch install whose verdict does not blame the MLX stack, or when disabled via UNSLOTH_DISABLE_MLX_AUTOREPAIR=1. An adequate stack starts no repair but still overturns a verdict that contradicts it."""
     global _attempted, _repair_thread, _repair_started_at
     if not is_apple_silicon():
         return False
     from utils.hardware import hardware as _hw
 
-    # Opting out declines a reinstall, not a correct verdict, so the overturn still runs, but only when one waits on it: under the warm's kill switch it would be a first MLX import for no one. A --no-torch install declined the training stack on purpose, so it counts as the same opt-out.
+    # Opting out declines a reinstall, not a correct verdict, so the overturn still runs, but only when one waits on it: under the warm's kill switch it would be a first MLX import for no one. A Chat only (--no-torch) install serves chat with MLX, so it is repaired, but only when the verdict blames the stack: one that cannot have MLX settled as no_torch.
     no_torch = _installed_without_torch()
-    opted_out = os.environ.get(DISABLE_ENV_VAR) == "1" or no_torch
-    if opted_out and not _hw.verdict_blames_the_mlx_stack():
+    opted_out = os.environ.get(DISABLE_ENV_VAR) == "1"
+    if (opted_out or no_torch) and not _hw.verdict_blames_the_mlx_stack():
         return False
     # Read before the measurement, so a shutdown during it discards whatever is published on the strength of it. The repair worker shares this epoch rather than a later one.
     epoch = _hw.current_detection_epoch()
@@ -487,6 +506,10 @@ def start_mlx_autorepair_if_needed() -> bool:
             )
         return False
 
+    if _chat_only_repair_failed:
+        # Once per process: a lifespan that detects after the worker's own settle is settled here.
+        _hw.settle_the_no_torch_verdict(epoch)
+        return False
     with _attempted_lock:
         if _attempted:
             return False
@@ -503,7 +526,7 @@ def start_mlx_autorepair_if_needed() -> bool:
     # Logged outside the lock: a blocked stdout must not hold up mlx_repair_in_flight()
     logger.warning(
         "Apple Silicon without a usable MLX stack; attempting a one-time background "
-        "reinstall of mlx/mlx-lm/mlx-vlm to re-enable Train/Export. "
+        "reinstall of mlx/mlx-lm/mlx-vlm. "
         "Set %s=1 to disable.",
         DISABLE_ENV_VAR,
     )
