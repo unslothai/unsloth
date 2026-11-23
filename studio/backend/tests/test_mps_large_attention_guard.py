@@ -198,3 +198,90 @@ def test_mps_image_loads_install_the_guard(monkeypatch):
         except Exception:  # noqa: BLE001 -- only the install call matters here
             pass
         assert len(seen) == want, device
+
+
+def test_broadcast_batch_dims_count_every_score(as_mps):
+    # K / V batch dims broadcast over Q's: SDPA builds 2 * 2 score matrices, not Q's 1 * 2.
+    q, k, v = (t[:, :2].clone() for t in _qkv())
+    q1 = q[:1].clone()
+    assert G.chunk_rows(q1, k[:1]) is None and G.chunk_rows(q1, k) is not None
+    out = as_mps(q1, k, v)
+    assert G.stats["chunked_calls"] == 1
+    assert torch.allclose(out, F.scaled_dot_product_attention(q1, k, v), atol = 1e-12)
+    # GQA: K has fewer heads than Q, and the scores still follow Q's 6 heads.
+    q6, k3 = torch.empty(1, 6, 100, 4), torch.empty(1, 3, 64, 4)
+    assert G.chunk_rows(q6, k3) == G.MPS_SCORE_ELEMENTS // (6 * 64)
+
+
+def _compiled(fn, **kwargs):
+    from torch._dynamo.testing import CompileCounter
+
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    return torch.compile(fn, backend = counter, **kwargs), counter
+
+
+@pytest.mark.parametrize("sq", [20, 40, 100, 200])  # under the cap, at it, and past it
+def test_fullgraph_traces_below_and_above_the_cap(as_mps, sq):
+    q, k, v = _qkv(sq = sq)
+    fn, counter = _compiled(lambda q, k, v: as_mps(q, k, v), fullgraph = True)
+    out = fn(q, k, v)
+    assert counter.frame_count == 1
+    assert torch.allclose(out, F.scaled_dot_product_attention(q, k, v), atol = 1e-12)
+
+
+def test_dynamic_fullgraph_keeps_one_graph_under_the_cap(as_mps):
+    fn, counter = _compiled(lambda q, k, v: as_mps(q, k, v), fullgraph = True, dynamic = True)
+    for sq in (8, 20, 30, 40):
+        q, k, v = _qkv(sq = sq)
+        assert torch.allclose(fn(q, k, v), F.scaled_dot_product_attention(q, k, v), atol = 1e-12)
+    assert counter.frame_count == 1
+
+
+def test_repeated_split_calls_never_recompile(as_mps):
+    q, k, v = _qkv()
+    mask = torch.randn(
+        2, 1, 100, 64, generator = torch.Generator().manual_seed(1), dtype = torch.float64
+    )
+    fn, counter = _compiled(lambda q, k, v, m: as_mps(q, k, v, attn_mask = m))
+    ref = F.scaled_dot_product_attention(q, k, v, attn_mask = mask)
+    with torch._dynamo.config.patch(error_on_recompile = True):
+        for _ in range(12):
+            assert torch.allclose(fn(q, k, v, mask), ref, atol = 1e-12)
+    assert counter.frame_count == 1
+    assert G.stats["chunked_calls"] == 0  # counted in eager only: a traced bump guards on the value
+    as_mps(q, k, v, attn_mask = mask)
+    assert G.stats["chunked_calls"] == 1
+
+
+_COLD_PREFILL_TRACE = """
+import torch
+from torch._subclasses.fake_tensor import FakeTensorMode
+from core import _mps_sdpa_guard as G
+with FakeTensorMode():
+    q = torch.empty(2, 3, 32, 256, device = "mps")
+    fn = torch.compile(lambda q: q if G._prefill_serves(q, q, q, None) else q + 1, backend = "eager", fullgraph = True)
+    fn(q)
+print("TRACED")
+"""
+
+
+def test_cold_prefill_check_traces_under_fullgraph():
+    """The real prefill predicate (torch version parse included) traces under fullgraph=True in a fresh process,
+    before anything warmed the regex cache."""
+    import os
+    import subprocess
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    env = dict(os.environ, PYTHONPATH = str(backend) + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    env.pop("PYTORCH_MPS_DISABLE_PREFILL_ATTENTION", None)
+    proc = subprocess.run(
+        [sys.executable, "-c", _COLD_PREFILL_TRACE],
+        cwd = str(backend),
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    assert proc.returncode == 0 and "TRACED" in proc.stdout, proc.stderr[-3000:]

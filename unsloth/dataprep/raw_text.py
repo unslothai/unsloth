@@ -355,16 +355,9 @@ class TextPreprocessor:
     _MULTIPLE_SPACES_PATTERN = re.compile(r"[ ]{2,}")
     _NEWLINE_SPACES_PATTERN = re.compile(r" *\n *")
     _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n\n\n+")
-    # One pass, so a "# comment" inside a fenced block stays code instead of becoming a heading.
-    # Language = info string's first word (c++); the lookbehind keeps a failed fence line linear.
-    # Fences fill their own line, so an inline ```span``` is none. The lookahead finds the closer
-    # or, first, the next opener with an info string; then only the opener line matches (no
-    # closer group), which keeps the scan linear and its memory constant.
+    # A fence fills its line (an inline ```span``` is none); info string = backtick-free, word 1 = language.
     _STRUCTURE_PATTERN = re.compile(
-        r"^([^\S\n]*)```+[^\S\n]*([^\s`]*)(?:(?<=[^\s`])[^\S\n][^\n`]*)?\n"
-        r"(?=(?s:.*?)^(?:([^\S\n]*```+[^\S\n]*$)|[^\S\n]*```+[^\S\n]*[^\s`][^\n`]*$))"
-        r"(?(3)(?:\3$|((?s:.*?))\n\3$))"
-        r"|^(#{1,3}) (.+)$",
+        r"^([^\S\n]*)(```+)[^\S\n]*([^\s`]*)([^\n]*)$|^(#{1,3}) (.+)$",
         re.MULTILINE,
     )
     _HEADING_TAGS = {1: "chapter", 2: "section", 3: "subsection"}
@@ -391,15 +384,36 @@ class TextPreprocessor:
     def add_structure_tokens(self, text):
         """Add special tokens for structure (chapters, sections)"""
 
-        def tag(match):
-            if match[5] is not None:
-                name = self._HEADING_TAGS[len(match[5])]
-                return f"<|{name}|>{match[6]}<|/{name}|>"
-            if match[3] is None:
-                return match[0]
-            return f"{match[1]}<|code|{match[2]}|>{match[4] or ''}<|/code|>"
-
-        return self._STRUCTURE_PATTERN.sub(tag, text)
+        found = [(m.start(), m.end(), *m.groups()) for m in self._STRUCTURE_PATTERN.finditer(text)]
+        # Each opener stops at the next fence with >= as many backticks (CommonMark); a bare one closes
+        # it, one with an info string leaves it as text. The stack finds that line in linear time.
+        stop = [None] * len(found)
+        stack = []
+        for k in range(len(found) - 1, -1, -1):
+            _, end, _, ticks, word, rest, _, _ = found[k]
+            if ticks is None or ("`" in rest if word else rest):
+                continue
+            n = len(ticks)
+            while stack and stack[-1][0] < n:
+                stack.pop()
+            if stack and end < len(text):
+                stop[k] = stack[-1][1]
+            stack.append((n, k))
+        out, last, k = [], 0, 0
+        while k < len(found):
+            start, end, indent, _, word, _, hashes, title = found[k]
+            j = stop[k]
+            if hashes is not None:
+                name = self._HEADING_TAGS[len(hashes)]
+                out += (text[last:start], f"<|{name}|>{title}<|/{name}|>")
+                last = end
+            elif j is not None and not found[j][4]:
+                body = text[end + 1 : found[j][0] - 1]
+                out += (text[last:start], f"{indent}<|code|{word}|>{body}<|/code|>")
+                last, k = found[j][1], j
+            k += 1
+        out.append(text[last:])
+        return "".join(out)
 
     def validate_dataset(
         self,

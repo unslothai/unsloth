@@ -465,8 +465,7 @@ def _take_chunk(holder):
 
 
 def _release_cached(device):
-    """Return freed cached blocks to the driver, so the next whole-table allocation is not served next to them
-    (reserved memory would hold both)."""
+    """Free cached blocks so a whole-table allocation is not reserved next to them."""
     if device.type == "cuda":
         torch.cuda.empty_cache()
 

@@ -96,6 +96,10 @@ def _load(monkeypatch, limiter, snapshot_download):
         monkeypatch.delenv(k, raising = False)
     # These cases pin the blocking path; the default background path is covered at the end of this file.
     monkeypatch.setenv("UNSLOTH_STATISTICS_BLOCKING", "1")
+    # The blocking path's child needs fork; pin it present so the cases also run on Windows.
+    import multiprocessing
+
+    monkeypatch.setattr(multiprocessing, "get_all_start_methods", lambda: ["fork", "spawn"])
     return ns
 
 
@@ -252,3 +256,26 @@ def test_background_start_failure_falls_back(monkeypatch):
 
     monkeypatch.setattr(mp_process.BaseProcess, "start", refuse)
     assert ns["_download_statistics_background"](["repeat"]) is None
+
+
+def test_no_fork_skips_the_probe_and_the_requests(monkeypatch, rec):
+    import multiprocessing
+
+    ns = _load(monkeypatch, rec.limiter, rec.snapshot_download)
+    probes = []
+    ns["has_internet"] = lambda: probes.append(1) or True
+    monkeypatch.setattr(multiprocessing, "get_all_start_methods", lambda: ["spawn"])
+    assert ns["get_statistics"](False) is None
+    assert probes == [] and rec.calls == [] and rec.limits == []
+
+
+def test_real_platform_routing(monkeypatch, rec):
+    import multiprocessing
+
+    real = multiprocessing.get_all_start_methods
+    ns = _load(monkeypatch, rec.limiter, rec.snapshot_download)
+    monkeypatch.setattr(multiprocessing, "get_all_start_methods", real)
+    probes = []
+    ns["has_internet"] = lambda: probes.append(1) or False
+    ns["get_statistics"](False)
+    assert probes == ([1] if "fork" in real() else [])

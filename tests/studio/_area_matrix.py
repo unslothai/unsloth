@@ -758,6 +758,7 @@ class Api:
                 "is_gguf": False,
             },
             "/api/chat/settings": {"settings": {}},
+            "/api/rag/knowledge-bases": {"knowledgeBases": [], "ragAvailable": True},
         }
 
     def handle(self, route) -> None:

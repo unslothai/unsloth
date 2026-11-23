@@ -1666,6 +1666,11 @@ class GraphedForward:
                 # The offload hooks onload the top-level weights: the step must enter through the hooked forward.
                 call = self._placed_step
 
+        if kwargs.get("kv_cache_mode") == "extract":
+            # A prefix-KV prefill (FLUX.2 klein KV step 0) builds its cache in Python and returns it beside the noise:
+            # no static buffer holds that, and a capture failing on it would poison the graphs of every plain call.
+            self.stats["refused_object"] += 1
+            return self._eager(eager_args, eager_kwargs)
         try:
             key = graph_key((args, kwargs))
             if self.protect_keyed is None:

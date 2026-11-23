@@ -88,6 +88,8 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("base_precision", "base precision"),
     # Record actual base precision: fp8/mxfp8 can fall back to bf16, so the request would look clean.
     ("base_precision_effective", "resolved base precision"),
+    # int8 is torchao weight-only or the W8A8 base (UNSLOTH_DIFFUSION_INT8_TRAIN): different base math, one name.
+    ("base_int8_kernel", "int8 base kernel"),
     # LoRAEMA uses the INCOMING decay with restored shadows, so a change makes a hybrid EMA.
     ("ema_decay", "EMA decay"),
 )
@@ -119,6 +121,7 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "max_grad_norm",
         # Known only to the DiT trainer; unknown means cannot-tell, leaving route preflight and SDXL alone.
         "base_precision_effective",
+        "base_int8_kernel",
         "base_dit",
         "base_dit_revision",
     }
@@ -188,6 +191,8 @@ class CheckpointIdentity:
     ema_decay: Optional[str] = None
     # Set by the DiT trainer once it knows whether fp8/mxfp8 took; None elsewhere reads as cannot-tell.
     base_precision_effective: Optional[str] = None
+    # "w8a8" or "weight-only" for an int8 base, set by the DiT trainer; None elsewhere and in older bundles.
+    base_int8_kernel: Optional[str] = None
     # Gated bases fetch from an ungated mirror with different SHAs, so record which repo.
     base_revision_repo: Optional[str] = None
     base_dit: Optional[str] = None
@@ -228,6 +233,7 @@ class CheckpointIdentity:
             "max_grad_norm": self.max_grad_norm,
             "ema_decay": self.ema_decay,
             "base_precision_effective": self.base_precision_effective,
+            "base_int8_kernel": self.base_int8_kernel,
             "precision": self.precision,
             "base_precision": self.base_precision,
             # Resolution is a hard identity: trainers crop to it, so loadable tensors alone are not a resume.
@@ -271,6 +277,7 @@ class CheckpointIdentity:
                 max_grad_norm = _optional_str(data.get("max_grad_norm")),
                 ema_decay = _optional_str(data.get("ema_decay")),
                 base_precision_effective = _optional_str(data.get("base_precision_effective")),
+                base_int8_kernel = _optional_str(data.get("base_int8_kernel")),
                 precision = str(data.get("precision") or ""),
                 base_precision = str(data.get("base_precision") or ""),
                 resolution = int(data.get("resolution") or 0),
@@ -460,6 +467,11 @@ def with_resolved_base_precision(
     if not value:
         return identity  # nothing resolved; leave it unknown rather than asserting a value
     return replace(identity, base_precision_effective = value)
+
+
+def with_int8_kernel(identity: "CheckpointIdentity", w8a8: bool) -> "CheckpointIdentity":
+    """Records which int8 base trained: a resume must not switch W8A8 and torchao weight-only under one name."""
+    return replace(identity, base_int8_kernel = "w8a8" if w8a8 else "weight-only")
 
 
 _DEFAULT_DIT_SUBFOLDER = {"ltx-2.5": "transformer_full"}

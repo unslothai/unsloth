@@ -192,7 +192,7 @@ export function TitleTooltipLayer() {
         zIndex: Z_LAYER.TOOLTIP,
       }}
     >
-      {shown.text}
+      <span>{shown.text}</span>
     </div>,
     document.body,
   );

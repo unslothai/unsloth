@@ -95,11 +95,10 @@ def _columns(
 def _trim(
     module: Any, states: Any, mask: Any, position_ids: Any, image_len: int
 ) -> Optional[tuple]:
-    """(states, mask or None, position_ids) on the kept rows, or None to run the call as given.
-
-    Calls sharing one ``position_ids`` tensor (the CFG branches of a render) keep the same row count, the longest any of
-    them needs, and all keep their mask once any of them needs one, so the CFG router can still stack them: a branch
-    seen later that widens either re-trims the others once."""
+    """Returns (states, mask or None, position_ids) on the kept rows, or None to run the call as
+    given; calls sharing one position_ids tensor (CFG branches) keep the longest row count any
+    needs and the mask once one does, so the CFG router can stack them; a later wider branch
+    re-trims the others once."""
     memo = module.__dict__.setdefault(_MEMO_ATTR, [])
     srcs = (states, mask, position_ids)
     pos_key = (position_ids,)

@@ -36,6 +36,71 @@ def test_forward_and_input_grad_track_the_dense_layer(rows):
     assert all(not p.requires_grad for p in m.parameters())
 
 
+def _rel(a, ref):
+    return ((a.double() - ref).norm() / ref.norm()).item()
+
+
+def _vs_fp64(
+    layer_cls,
+    rows,
+    k = 512,
+    n = 256,
+    scale_mutation = None,
+):
+    """Relative L2 error of forward and grad_x against a float64 dense oracle (cosine alone cannot see a scale error)."""
+    torch.manual_seed(0)
+    lin = nn.Linear(k, n, bias = False).to(torch.bfloat16).requires_grad_(False)
+    lin.weight.data.mul_(0.02 / lin.weight.float().std())
+    m = layer_cls(lin)
+    if scale_mutation is not None:
+        m.weight_scale.mul_(scale_mutation)
+    x = torch.randn(rows, k, dtype = torch.bfloat16, requires_grad = True)
+    g = torch.randn(rows, n, dtype = torch.bfloat16)
+    y = m(x)
+    y.backward(g)
+    x64 = x.detach().double().requires_grad_(True)
+    y64 = x64 @ lin.weight.double().t()
+    y64.backward(g.double())
+    return _rel(y.detach(), y64.detach()), _rel(x.grad, x64.grad)
+
+
+# Measured (K=512, N=256, bf16): int8 ~0.86e-2 fwd / 0.81e-2 grad_x, fp8 e4m3 3.7e-2.
+_INT8_REL_BOUND = 2e-2
+_FP8_REL_BOUND = 6e-2
+
+
+@pytest.mark.parametrize("rows", [64, 512, 8])
+def test_int8_relative_error_against_fp64(rows):
+    fwd, gx = _vs_fp64(fi8.FrozenInt8Linear, rows)
+    assert fwd < _INT8_REL_BOUND and gx < _INT8_REL_BOUND, (fwd, gx)
+
+
+def test_relative_bound_sees_a_scale_error_cosine_misses():
+    # A 5% weight-scale error leaves cosine at ~1 but moves the relative error past the bound.
+    fwd, gx = _vs_fp64(fi8.FrozenInt8Linear, 64, scale_mutation = 1.05)
+    assert fwd > _INT8_REL_BOUND and gx > _INT8_REL_BOUND
+
+
+def _cpu_fp8_mm_ok() -> bool:
+    try:
+        a = torch.zeros(16, 16).to(torch.float8_e4m3fn)
+        one = torch.ones((), dtype = torch.float32)
+        torch._scaled_mm(a, a.t(), scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@pytest.mark.skipif(not _cpu_fp8_mm_ok(), reason = "no CPU fp8 GEMM here")
+@pytest.mark.parametrize("rows", [64, 512])
+def test_fp8_relative_error_against_fp64(rows):
+    from core.training import diffusion_frozen_fp8 as ff8
+
+    ff8.BACKWARD_WEIGHTS.active = False
+    fwd, gx = _vs_fp64(ff8.FrozenFp8Linear, rows)
+    assert fwd < _FP8_REL_BOUND and gx < _FP8_REL_BOUND, (fwd, gx)
+
+
 def test_weight_is_quantized_once_not_per_call(monkeypatch):
     lin = nn.Linear(32, 32, bias = False).to(torch.bfloat16)
     m = fi8.FrozenInt8Linear(lin)
@@ -185,3 +250,98 @@ def test_conversion_keeps_the_fp32_island_on_an_untargeted_layer():
     assert y.dtype == torch.float32 and yq.dtype == torch.bfloat16
     y.sum().backward()
     assert x64.grad is not None and torch.isfinite(x64.grad).all()
+
+
+@pytest.mark.parametrize("fp16, refused", [(True, False), (False, True)])
+def test_preflight_needs_torchao_for_int8_only_where_the_trainer_does(monkeypatch, fp16, refused):
+    """The fp16 path's W8A8 base runs torch._int_mm and raises instead of falling back to torchao, so a missing
+    torchao must not refuse it; the bf16 path keeps torchao weight-only int8 as its fallback and still needs it."""
+    import core.training.diffusion_train_common as tc
+
+    monkeypatch.setattr(tc, "bf16_unsupported_reason", lambda fam: None)
+    monkeypatch.setattr(tc, "dit_accelerator_missing_reason", lambda fam: None)
+    monkeypatch.setattr(tc, "dit_fp16_fallback", lambda fam: fp16)
+    monkeypatch.setattr(tc, "has_functional_torchao", lambda: False)
+    monkeypatch.setattr(tc, "torch_is_rocm", lambda: False)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "w8a8")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (7, 5))
+    reason = tc.training_precision_preflight_error("flux.2-klein", "int8")
+    assert ("torchao" in (reason or "")) is refused
+    if not refused:
+        assert reason is None
+
+
+def test_a_partial_w8a8_conversion_does_not_fall_back_to_a_mixed_base(monkeypatch):
+    """A device move that fails after some layers converted must not hand the half-W8A8 base to the torchao
+    weight-only fallback (the trainer would compile, cache and record it as weight-only int8)."""
+
+    class _B(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.to_q = nn.Linear(32, 32, bias = False)
+            self.to_k = nn.Linear(32, 32, bias = False)
+            self.to(torch.bfloat16).requires_grad_(False)
+
+    model = nn.Module()
+    model.blocks = nn.ModuleList([_B()])
+    moves = []
+    real_to = nn.Module.to
+
+    def to(self, *a, **k):
+        if type(self) is nn.Linear:
+            moves.append(1)
+            if len(moves) == 2:
+                raise torch.OutOfMemoryError("injected OOM on the second move")
+        return real_to(self, *a, **k)
+
+    monkeypatch.setattr(nn.Module, "to", to)
+    events = []
+    with pytest.raises(ValueError, match = "partway|part of the base"):
+        dit._apply_int8_w8a8(model, events.append, None, device = "meta")
+    kinds = {type(m) for m in model.blocks[0].children()}
+    assert kinds == {
+        fi8.FrozenInt8Linear,
+        nn.Linear,
+    }  # the mixed state the fallback would have trained
+
+
+def test_a_w8a8_failure_before_any_layer_still_falls_back(monkeypatch):
+    model = nn.Module()
+    model.lin = nn.Linear(32, 32, bias = False).to(torch.bfloat16).requires_grad_(False)
+
+    def boom(*a, **k):
+        raise RuntimeError("no int8 GEMM")
+
+    monkeypatch.setattr(fi8, "convert_frozen_int8", boom)
+    events = []
+    assert dit._apply_int8_w8a8(model, events.append, None, device = "meta") is False
+    assert "weight-only" in events[-1]["message"]
+
+
+def test_a_resume_cannot_switch_between_w8a8_and_weight_only_int8():
+    """Both int8 bases record base_precision_effective='int8'; flipping UNSLOTH_DIFFUSION_INT8_TRAIN across a resume
+    would continue the adapter and optimizer on different base math. Older bundles (no record) stay resumable."""
+    import dataclasses
+
+    from core.training import diffusion_checkpoint as ck
+
+    base = ck.CheckpointIdentity(
+        family = "flux.2-klein",
+        base_model = "m",
+        lora_target_modules = ("to_q",),
+        lora_rank = 4,
+        lora_alpha = 4,
+        precision = "bf16",
+        base_precision = "int8",
+        resolution = 512,
+        base_precision_effective = "int8",
+    )
+    record = getattr(ck, "with_int8_kernel", None)
+    assert record is not None
+    w8a8 = ck.CheckpointIdentity.from_dict(record(base, True).as_dict())
+    weight_only = record(base, False)
+    assert "int8 base kernel" in (w8a8.mismatch_reason(weight_only) or "")
+    assert weight_only.mismatch_reason(record(base, False)) is None
+    legacy = dataclasses.replace(base, base_int8_kernel = None)
+    assert legacy.mismatch_reason(w8a8) is None and legacy.mismatch_reason(weight_only) is None
