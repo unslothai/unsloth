@@ -304,10 +304,14 @@ def run(args):
             dataset = _load_raw_text_file(
                 RawTextDataLoader, tokenizer, is_mlx, args, args.raw_text_file
             )
-        elif RawTextDataLoader.supports_file(args.dataset) and (
-            os.path.isfile(args.dataset)
-            or os.path.isabs(args.dataset)
-            or args.dataset.startswith(("./", "../"))
+        elif (
+            RawTextDataLoader.supports_file(args.dataset)
+            and not os.path.isdir(args.dataset)
+            and (
+                os.path.isfile(args.dataset)
+                or os.path.isabs(args.dataset)
+                or args.dataset.startswith(("./", "../"))
+            )
         ):
             dataset = _load_raw_text_file(RawTextDataLoader, tokenizer, is_mlx, args, args.dataset)
         else:

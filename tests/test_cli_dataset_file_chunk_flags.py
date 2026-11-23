@@ -202,6 +202,17 @@ def test_explicit_missing_local_path_reports_file_not_found(tmp_path, monkeypatc
         _run_cli(monkeypatch, dataset = path)
 
 
+@pytest.mark.parametrize("suffix", ["", "/"])
+def test_local_dataset_directory_uses_hub_loader(tmp_path, monkeypatch, suffix):
+    # load_dataset reads a local dataset folder; the raw loader would raise IsADirectoryError.
+    folder = tmp_path / "corpus.json"
+    folder.mkdir()
+    path = str(folder) + suffix
+    dataset, hub_loads = _run_cli(monkeypatch, dataset = path)
+    assert hub_loads == [(path, {"split": "train"})]
+    assert dataset.mapped
+
+
 def test_raw_text_file_flag_still_honours_chunk_size(tmp_path, monkeypatch):
     path = tmp_path / "corpus.txt"
     path.write_text(" ".join(f"w{i}" for i in range(100)), encoding = "utf-8")
