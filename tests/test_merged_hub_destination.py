@@ -182,6 +182,7 @@ def saving(monkeypatch, tmp_path):
         _mtp_head_tensor_names = lambda model: [],
         raise_if_merging_mistral_format_view = lambda model, save_method: None,
         raise_if_merging_inkling2 = lambda model, save_method: None,
+        is_inkling2_config = lambda config: False,
         lora_relative_to_original_base = lambda model: contextlib.nullcontext(),
         _unmerge_flags_on_error = lambda streamed: contextlib.nullcontext(),
         nullcontext = contextlib.nullcontext,
