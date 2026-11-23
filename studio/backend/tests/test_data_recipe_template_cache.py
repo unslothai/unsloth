@@ -129,6 +129,25 @@ def test_finalize_change_recompiles(cache_patch) -> None:
     assert env.safe_render("[{{ a }}]", {"a": None}, skip_template_validation = True) == "[]"
 
 
+def test_filter_change_recompiles(cache_patch) -> None:
+    # The compiler folds constant filter calls and bakes each filter's pass_arg into the code, so a swapped
+    # filter must not reuse a template compiled against the old one.
+    service._apply_data_designer_template_cache_patch()
+    env = UserTemplateSandboxEnvironment(allowed_references = ["a"])
+    folded = "{{ 'ABC' | lower }}"
+    by_value = "{{ a | lower }}"
+    assert env.safe_render(folded, {"a": "X"}, skip_template_validation = True) == "abc"
+    assert env.safe_render(by_value, {"a": "X"}, skip_template_validation = True) == "x"
+
+    env.filters["lower"] = jinja2.pass_environment(lambda _env, value: f"swapped {value}")
+
+    assert env.safe_render(folded, {"a": "X"}, skip_template_validation = True) == "swapped ABC"
+    assert env.safe_render(by_value, {"a": "X"}, skip_template_validation = True) == "swapped X"
+    assert env.safe_render(
+        by_value, {"a": "X"}, skip_template_validation = True
+    ) == _reference_render(env, by_value, {"a": "X"})
+
+
 def test_failed_compile_is_not_cached_and_errors_match(cache_patch) -> None:
     template = "{{ a | nosuchfilter }}"
     plain = UserTemplateSandboxEnvironment(allowed_references = ["a"])
