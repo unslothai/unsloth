@@ -281,10 +281,15 @@ def test_alias_is_a_native_pick_with_the_overlay(monkeypatch):
 
 
 def _variants(config: dict) -> list:
-    """The kernels a table entry compiles: the one of short calls, and the one from ``long_keys`` keys on."""
-    short = I.select_config(config, 0)
-    long = I.select_config(config, 10**9)
-    return [short] if long == short else [short, long]
+    """The kernels a table entry compiles: the one of short calls, the one from ``long_keys`` keys on, and the
+    sink-path kernel when the entry gives that one other orderings (``sinks``)."""
+    out = []
+    for keys in (0, 10**9):
+        for sinks in (False, True):
+            chosen = I.kernel_variant(I.select_config(config, keys), sinks)
+            if chosen not in out:
+                out.append(chosen)
+    return out
 
 
 def test_every_config_fits_its_card():
@@ -337,6 +342,66 @@ def test_long_overrides_apply_from_long_keys_on():
     assert I._config_key(entry) != I._config_key(short) and hash(I._config_key(entry)) is not None
     plain = I.kernel_config((8, 9), 128)
     assert I.select_config(plain, 0) == I.select_config(plain, 10**9) == plain
+
+
+def test_sink_orderings_reach_only_the_sink_kernel(monkeypatch):
+    """sm89 at head dim 128 gives its sink-path kernel other product / copy orderings (L4: 1.3-1.9% per call
+    sustained at 4096-4608 tokens, the plain kernel is not faster with them). They name another compiled kernel, move
+    no output bit, and ``UNSLOTH_DIFFUSION_INT8_ATTENTION_SINK_ORDER=0`` keeps the shipped one; no other entry has
+    them."""
+    monkeypatch.delenv(I.SINK_ORDER_ENV, raising = False)
+    with_sinks = {
+        (capability, head_dim)
+        for capability, table in I.KERNEL_CONFIGS.items()
+        for head_dim, entry in table.items()
+        if "sinks" in entry
+    }
+    assert with_sinks == {((8, 9), 128)}
+    entry = I.kernel_config((8, 9), 128)
+    plain, sink = I.kernel_variant(entry, False), I.kernel_variant(entry, True)
+    assert "sinks" not in plain and "sinks" not in sink
+    assert plain == {
+        "bn": 128,
+        "wpc": 12,
+        "nq": 1,
+        "stages": 2,
+        "max_registers": 168,
+        "native_p": 1,
+    }
+    assert sink == dict(plain, flush_tail = 1, qkw = 1, pvw = 8, spread = 5)
+    assert set(sink) - set(plain) <= set(I.SINK_ORDER_KEYS)
+    assert I.kernel_defines(128, sink)["QKW"] == 1 and "QKW" not in I.kernel_defines(128, plain)
+    assert hash(I._config_key(entry)) is not None and I._config_key(entry) != I._config_key(plain)
+    monkeypatch.setenv(I.SINK_ORDER_ENV, "0")
+    assert I.kernel_variant(entry, True) == plain
+    # an override never sets anything but the orderings
+    odd = dict(plain, sinks = {"wpc": 4, "qkw": 1})
+    monkeypatch.delenv(I.SINK_ORDER_ENV)
+    assert I.kernel_variant(odd, True) == dict(plain, qkw = 1)
+
+
+@needs_kernel
+def test_sink_orderings_do_not_change_the_output():
+    """The sink-path kernel with and without the table's orderings: the same bits (sinks and fold on)."""
+    entry = _cuda_config(128)
+    base = I.kernel_variant(entry, False)
+    other = (
+        dict(base, flush_tail = 1, qkw = 1, pvw = 8, spread = 5)
+        if base.get("stages") == 2
+        else dict(base, qkw = 1)
+    )
+    for keys in (300, 1039):
+        q, k, v = _case((1, keys, 3, 128), _card_dtype(), seed = keys)
+        outs = []
+        for cfg in (
+            dict(base, sinks = {}),
+            dict(base, sinks = {x: other[x] for x in I.SINK_ORDER_KEYS if x in other}),
+        ):
+            I.forget_plans()
+            p = I.quantise(q, k, v, cfg, mode = I.MODE_RACE)
+            assert p["sinks"]
+            outs.append(I.attend(p))
+        assert torch.equal(outs[0], outs[1])
 
 
 def test_sm75_has_its_own_config():
@@ -582,6 +647,140 @@ def test_no_probability_is_packed_unclamped():
         and "pack4(ex2(" not in source
         and " ex2(fmaf(" not in source
     )
+    assert source.count("prob_rn(fmaf(") == 8 and source.count("cvt.pack.sat.u8.s32.b32") == 2
+    assert "cvt.rni.sat.u8.f32" in source
+    assert "if (fa == inf) oa = inf;" in source and "if (fb == inf) ob = inf;" in source
+
+
+def test_native_p_reaches_the_kernel_as_a_define():
+    """native_p is a per-card key that becomes the NATIVE_P define; a config without it compiles the MAGIC_F path."""
+    base = {"bn": 128, "wpc": 8, "nq": 1, "stages": 2}
+    assert "NATIVE_P" not in I.kernel_defines(128, base)
+    assert I.kernel_defines(128, dict(base, native_p = 1))["NATIVE_P"] == 1
+    assert I._config_key(dict(base, native_p = 1)) != I._config_key(base)
+    for capability, table in I.KERNEL_CONFIGS.items():
+        for head_dim, entry in table.items():
+            for config in _variants(entry):
+                assert config.get("native_p", 0) in (0, 1), (capability, head_dim)
+                if capability < (8, 9):
+                    assert "native_p" not in config, (capability, head_dim)
+
+
+@pytest.mark.parametrize("off", ("0", "off", "false", "no", " NO "))
+def test_native_p_kill_switch_compiles_the_magic_path(monkeypatch, off):
+    monkeypatch.delenv(I.NATIVE_P_ENV, raising = False)
+    cfg = I.kernel_config((8, 9), 128)
+    assert cfg.get("native_p") == 1 and I.native_p_enabled()
+    on = I.kernel_variant(cfg, False)
+    assert I.kernel_defines(128, on)["NATIVE_P"] == 1
+    monkeypatch.setenv(I.NATIVE_P_ENV, off)
+    assert not I.native_p_enabled()
+    for sinks in (False, True):
+        variant = I.kernel_variant(cfg, sinks)
+        assert "native_p" not in variant and "NATIVE_P" not in I.kernel_defines(128, variant)
+    assert I._config_key(I.kernel_variant(cfg, False)) != I._config_key(on)
+    assert cfg.get("native_p") == 1
+    for keep in ("1", "", "on"):
+        monkeypatch.setenv(I.NATIVE_P_ENV, keep)
+        assert I.kernel_variant(cfg, False) == on
+
+
+def test_native_p_switch_is_part_of_the_race_namespace(monkeypatch):
+    """A race decided with native_p on is not reused with it off (the persisted namespace carries the switch)."""
+    monkeypatch.delenv(I.NATIVE_P_ENV, raising = False)
+    assert I._library_versions()["native_p"] is True
+    monkeypatch.setenv(I.NATIVE_P_ENV, "0")
+    assert I._library_versions()["native_p"] is False
+
+
+@pytest.mark.skipif(not _nvrtc_ok(), reason = "NVRTC ships with the CUDA builds of torch")
+def test_native_p_keeps_the_products_and_converts_each_probability_once():
+    arch = max(a for a in _nvrtc_archs() if a in (80, 86, 89, 120))
+    base = {"bn": 128, "wpc": 8, "nq": 1, "stages": 2}
+
+    def ptx(**keys):
+        return K.compile_ptx(
+            K.KERNEL_SOURCE, f"sm_{arch}", I.kernel_defines(128, dict(base, **keys))
+        ).decode(errors = "replace")
+
+    plain = ptx()
+    assert "cvt.rni" not in plain and "cvt.pack" not in plain
+    for keys in (
+        {"native_p": 1},
+        {"native_p": 1, "qkw": 1, "pvw": 8, "spread": 5},
+        {"native_p": 2},
+    ):
+        got = ptx(**keys)
+        for op in ("mma.sync.aligned.m16n8k32", "cp.async.cg", "ex2.approx"):
+            assert got.count(op) == plain.count(op), (keys, op)
+        probabilities = 4 * (base["bn"] // 8)
+        if keys["native_p"] == 1:
+            assert got.count("cvt.rni.s32.f32") == probabilities
+            assert got.count("cvt.pack.sat.u8.s32.b32") == probabilities // 2
+        else:
+            assert got.count("cvt.rni.sat.u8.f32") == probabilities
+        assert "cvt.rn.f32.s32" not in got
+
+
+_P_SWEEP = r"""
+extern "C" __global__ void p_sweep(unsigned long long* bad) {
+  const u32 i = blockIdx.x * blockDim.x + threadIdx.x;
+  const float x = __uint_as_float(i);
+  if (x != x) return;  // NaN: the clamp gives 255, the conversion 0 (no NaN reaches it from finite inputs)
+  const float nb[3] = {-1.f, 1.5849625f, 9.f};  // 2^x = 0.5 (a tie, to 0), about 3, 512 (to 255)
+#pragma unroll
+  for (int slot = 0; slot < 4; ++slot) {
+    float v[4];
+    int k = 0;
+#pragma unroll
+    for (int s = 0; s < 4; ++s) v[s] = s == slot ? x : nb[k++];
+    const u32 a = pack4(prob(v[0]) + MAGIC_F, prob(v[1]) + MAGIC_F, prob(v[2]) + MAGIC_F, prob(v[3]) + MAGIC_F);
+    const u32 b = pack4_sat(prob_rn(v[0]), prob_rn(v[1]), prob_rn(v[2]), prob_rn(v[3]));
+    if (a != b) atomicAdd(bad, 1ull);
+  }
+}
+"""
+
+
+@needs_kernel
+@pytest.mark.parametrize("native_p", (1, 2))
+def test_native_p_packs_the_same_bytes_for_every_float(native_p):
+    """All 2^32 fp32 inputs but NaN pack the MAGIC_F bytes; a truncating sweep must disagree (the check can fail)."""
+    capability = torch.cuda.get_device_capability()
+    stream = torch.cuda.current_stream().cuda_stream
+    bad = {}
+    for name, source in (
+        ("rn", K.KERNEL_SOURCE),
+        ("rz", K.KERNEL_SOURCE.replace("cvt.rni.", "cvt.rzi.")),
+    ):
+        fn = K.load_module(
+            torch.cuda.current_device(),
+            capability,
+            source + _P_SWEEP,
+            ("p_sweep",),
+            {"NATIVE_P": native_p, "HD": 128, "BN": 128, "P_SWEEP": name},
+        )["p_sweep"]
+        count = torch.zeros(1, dtype = torch.int64, device = "cuda")
+        fn.launch((1 << 24, 1), 256, (count.data_ptr(),), 0, stream)
+        torch.cuda.synchronize()
+        bad[name] = int(count.item())
+    assert bad["rn"] == 0 and bad["rz"] > 0, bad
+
+
+@needs_kernel
+def test_native_p_does_not_change_the_output():
+    """The card's kernel with native_p 0 and 1, sink path (fold on) and plain: the same bits."""
+    entry = _cuda_config(128)
+    for mode in (I.MODE_RACE, I.MODE_MAIN):
+        for keys in (300, 1039):
+            q, k, v = _case((1, keys, 3, 128), _card_dtype(), seed = keys)
+            outs = []
+            for native_p in (0, 1):
+                I.forget_plans()
+                p = I.quantise(q, k, v, dict(entry, native_p = native_p), mode = mode)
+                assert bool(p.get("sinks")) == (mode == I.MODE_RACE)
+                outs.append(I.attend(p))
+            assert torch.equal(outs[0], outs[1]), (mode, keys)
 
 
 ORDERINGS = ("qkw", "pvw", "spread")
@@ -2448,11 +2647,10 @@ def test_a_call_on_another_card_uses_that_cards_stream(monkeypatch):
         return launch(self, grid, block, values, shared, stream)
 
     monkeypatch.setattr(K.Function, "launch", spy)
-    names = {
-        K.KERNEL_NAME,
-        *K.QUANT_KERNELS,
-        "unsloth_i8resid",
-    }  # a plan's first calls take the sink path
+    # a plan's first calls take the sink path, whose kernel adds the clipped keys back itself (RFOLD)
+    names = {K.KERNEL_NAME, *K.QUANT_KERNELS} | (
+        set() if I.resid_fold_enabled() else {"unsloth_i8resid"}
+    )
     assert torch.cuda.current_device() == 0
     out = I.int8_attention(q, k, v)
     usual = torch.cuda.current_stream(OTHER).cuda_stream

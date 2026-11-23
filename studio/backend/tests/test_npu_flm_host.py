@@ -239,6 +239,20 @@ def test_delete_stops_a_serving_model_then_removes(host):
     assert client.post("/v1/delete", json = {"model_name": "qwen3-0.6b-FLM"}).status_code == 500
 
 
+def test_a_silent_refused_dll_exit_names_its_status(tmp_path, monkeypatch):
+    npu = tmp_path / "bin" / "flm" / "npu"
+    npu.mkdir(parents = True)
+    (npu / ("flm.exe" if sys.platform == "win32" else "flm")).write_text("")
+    flm = fh.Flm(tmp_path)
+
+    class Done:
+        returncode, stdout, stderr = 0xC0E90002, "", ""
+
+    monkeypatch.setattr(fh.subprocess, "run", lambda *a, **k: Done())
+    code, output = flm.run("version", "--json")
+    assert code and "0xC0E90002" in output
+
+
 def test_flm_errors_printed_with_exit_zero_count_as_failures(tmp_path, monkeypatch):
     npu = tmp_path / "bin" / "flm" / "npu"
     npu.mkdir(parents = True)
@@ -252,6 +266,43 @@ def test_flm_errors_printed_with_exit_zero_count_as_failures(tmp_path, monkeypat
     assert flm.run("remove", "x")[0] == 1
     Done.stdout = json.dumps(CATALOG)
     assert [r["id"] for r in flm.catalog()][0] == "qwen3-0.6b-FLM"
+
+
+@pytest.mark.parametrize(
+    "stdout, stderr",
+    [
+        # flm prints the list with dump(4); a line after it used to read as "Extra data".
+        (json.dumps(CATALOG, indent = 4) + "\n", "[XRT] WARNING: device {0} busy\n"),
+        (json.dumps(CATALOG, indent = 4) + "\n[FLM]  done {ok}\n", ""),
+        ("[FLM]  NPU {dev04}\n" + json.dumps(CATALOG, indent = 4) + "\n", ""),
+    ],
+)
+def test_the_model_list_ignores_text_flm_prints_around_it(tmp_path, monkeypatch, stdout, stderr):
+    npu = tmp_path / "bin" / "flm" / "npu"
+    npu.mkdir(parents = True)
+    (npu / ("flm.exe" if sys.platform == "win32" else "flm")).write_text("")
+    flm = fh.Flm(tmp_path)
+
+    class Done:
+        returncode = 0
+
+    Done.stdout, Done.stderr = stdout, stderr
+    monkeypatch.setattr(fh.subprocess, "run", lambda *a, **k: Done())
+    assert [r["id"] for r in flm.catalog()] == [fh.catalog_row(e)["id"] for e in CATALOG["models"]]
+
+
+def test_a_model_list_without_json_names_flms_output(tmp_path, monkeypatch):
+    npu = tmp_path / "bin" / "flm" / "npu"
+    npu.mkdir(parents = True)
+    (npu / ("flm.exe" if sys.platform == "win32" else "flm")).write_text("")
+    flm = fh.Flm(tmp_path)
+
+    class Done:
+        returncode, stdout, stderr = 0, '{"models": [', "terminate called after throwing\n"
+
+    monkeypatch.setattr(fh.subprocess, "run", lambda *a, **k: Done())
+    with pytest.raises(RuntimeError, match = "flm list failed: .*terminate called"):
+        flm.catalog()
 
 
 # Direct install and launcher.
@@ -283,7 +334,7 @@ def installer(tmp_path, monkeypatch):
     import install_lemonade_prebuilt as inst
 
     blob = _zip()
-    pins = json.loads((studio / "lemonade_prebuilt_pins.json").read_text())
+    pins = json.loads((studio / "lemonade_prebuilt_pins.json").read_text(encoding = "utf-8"))
     key = "windows-x64" if sys.platform == "win32" else "linux-x64"
     pins["fastflowlm"]["assets"][key]["sha256"] = hashlib.sha256(blob).hexdigest()
     pins_path = tmp_path / "pins.json"
@@ -315,6 +366,39 @@ def test_the_direct_install_puts_flm_where_lemond_would_and_is_reused(installer,
         and len(installer.downloads) == 1
     )
     assert not (root / "2026.44.1").exists()  # no Lemonade was installed
+
+
+def test_the_direct_install_removes_old_lemond_and_keeps_models(installer, tmp_path):
+    root = tmp_path / "lemonade"
+    old = root / "2026.44.1"
+    old.mkdir(parents = True)
+    (old / installer.MARKER_NAME).write_text("{}")
+    (old / installer.lemond_name()).write_bytes(b"MZ")
+    model = root / "flm" / "models" / "Qwen3-0.6B-NPU2" / "model.q4nx"
+    model.parent.mkdir(parents = True)
+    model.write_bytes(b"weights")
+    (root / "config").mkdir()
+    (root / ".lemond-remove-2026.40.0-1").mkdir()  # an earlier interrupted removal
+    installer.install(root, pins_path = installer.test_pins)
+    assert not old.exists() and not (root / ".lemond-remove-2026.40.0-1").exists()
+    assert model.read_bytes() == b"weights" and (root / "config").is_dir()
+    assert (installer.flm_dir(root) / installer.FLM_MARKER_NAME).is_file()
+    installer.install(root, pins_path = installer.test_pins)  # again: nothing left to remove
+    assert sorted(p.name for p in root.iterdir()) == ["cache", "config", "flm"]
+
+
+def test_a_lemond_that_cannot_be_moved_is_left_whole(installer, tmp_path, monkeypatch):
+    root = tmp_path / "lemonade"
+    old = root / "2026.44.1"
+    old.mkdir(parents = True)
+    (old / installer.MARKER_NAME).write_text("{}")
+
+    def locked(src, dst):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(installer.os, "replace", locked)
+    assert installer.remove_lemond_installs(root) == []
+    assert (old / installer.MARKER_NAME).is_file()
 
 
 def test_a_fastflowlm_pin_change_reads_as_not_installed(installer, tmp_path):

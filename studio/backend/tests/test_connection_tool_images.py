@@ -148,6 +148,9 @@ def test_view_image_is_offered_only_to_a_connection_model_that_reads_images(
     _, text_only = _proxy(
         provider_type, question, handler = _server(**_TEXT_ONLY[provider_type]), **tools
     )
+    # The second server can be handed the port the first just freed, so the same URL and model
+    # would read the first server's remembered answer: forget it, as a new server would be.
+    ep_mod._served_vision.clear()
     _, vision = _proxy(provider_type, question, handler = _server(**_VISION[provider_type]), **tools)
     assert _tool_names(text_only) == {"python"}
     assert _tool_names(vision) == {"python", "view_image"}

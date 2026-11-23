@@ -511,10 +511,30 @@ def _replay_module():
     return gradient_checkpoint_replay_module()
 
 
-def _no_forward_hooks(*modules):
-    if torch.nn.modules.module._global_forward_hooks:
+def _mlp_output_unobserved(layer, mlp):
+    """True when nothing outside `layer` can read or re-enter mlp(x), checked on every call: the MLP's own
+    `forward` is a fused LoRA MLP bound directly to it (no accelerate hook or tiled MLP around it), the MLP
+    has no forward pre / post hook, the layer has no forward hook or accelerate wrapper (whose post_forward
+    sees the layer output), and no global forward hook is registered."""
+    module = torch.nn.modules.module
+    if module._global_forward_hooks or module._global_forward_pre_hooks:
         return False
-    return not any(getattr(m, "_forward_hooks", None) for m in modules)
+    slots = getattr(mlp, "__dict__", None)
+    layer_slots = getattr(layer, "__dict__", None)
+    if slots is None or layer_slots is None:
+        return False
+    if "_hf_hook" in slots or "_old_forward" in slots or hasattr(mlp, "_unsloth_forward"):
+        return False
+    forward = slots.get("forward")
+    if getattr(forward, "__self__", None) is not mlp:
+        return False
+    if getattr(forward, "__func__", None) not in _SKIP_DOWN_MLP_FUNCTIONS:
+        return False
+    if slots.get("_forward_hooks") or slots.get("_forward_pre_hooks"):
+        return False
+    if "_hf_hook" in layer_slots or "_old_forward" in layer_slots:
+        return False
+    return not layer_slots.get("_forward_hooks")
 
 
 def arm_mlp_output_unread(layer, mlp):
@@ -524,7 +544,7 @@ def arm_mlp_output_unread(layer, mlp):
     fold _is_compiling() to True and keep no trace of it."""
     if _is_compiling() or not _SKIP_DOWN_ENABLED:
         return False
-    if _replay_module() is not layer or not _no_forward_hooks(layer, mlp):
+    if _replay_module() is not layer or not _mlp_output_unobserved(layer, mlp):
         return False
     _SKIP_DOWN_TLS.armed = (layer, mlp)
     return True
@@ -535,36 +555,20 @@ def disarm_mlp_output_unread():
 
 
 # Block compile (torch >= 2.11) traces the decoder layer, where the thread-local token above cannot be read.
-# The block's eager wrapper instead sets this plain global around a replay of a layer that qualifies
-# (block_skip_down_eligible); the traced LoRA_MLP reads it, so dynamo guards on it: the replay (grad mode)
-# graph is compiled with the skip and the forward (no grad) graph without, the same two graphs as before.
-_BLOCK_SKIP_DOWN = False
-
-
-def set_block_skip_down(value):
-    global _BLOCK_SKIP_DOWN
-    previous = _BLOCK_SKIP_DOWN
-    _BLOCK_SKIP_DOWN = bool(value)
-    return previous
-
-
+# The block's eager wrapper instead passes `_unsloth_skip_down=True` into the one replay call of a layer that
+# qualifies (block_skip_down_eligible); the tagged layer forward hands it to its MLP and the fused MLP to
+# LoRA_MLP as a plain argument. Dynamo specialises on the constant, so the replay (grad mode) graph is
+# compiled with the skip and the forward (no grad) graph without, and no other call, thread or layer sees it.
 def block_skip_down_eligible(layer, layer_forward):
-    """True when a compiled replay of `layer` may skip its down projection: the layer runs a forward whose
-    MLP output only feeds `residual + mlp(x)`, its MLP's own `forward` is the fused SwiGLU LoRA (no
-    accelerate hook or tiled MLP around it), and no forward hook could read an output. The caller still
-    checks that the checkpoint replays exactly this layer (_replay_module)."""
+    """True when a compiled replay of `layer` may skip its down projection: the layer runs a tagged forward
+    whose MLP output only feeds `residual + mlp(x)` and nothing outside the layer can observe mlp(x)
+    (_mlp_output_unobserved). The caller still checks that the checkpoint replays exactly this layer
+    (_replay_module). LoRA dropout / bias take LoRA_MLP's other branch, which always runs the projection."""
     if not (_SKIP_DOWN_ENABLED and TRACE_LORA_FUNCTIONS):
         return False
     if not getattr(layer_forward, "_unsloth_mlp_output_unread", False):
         return False
-    mlp = getattr(layer, "mlp", None)
-    slots = getattr(mlp, "__dict__", {})
-    if "_hf_hook" in slots or "_unsloth_forward" in slots:
-        return False
-    if getattr(slots.get("forward"), "__func__", None) is not apply_lora_mlp_swiglu:
-        return False
-    # LoRA dropout / bias take LoRA_MLP's other branch, which always runs the down projection.
-    return _no_forward_hooks(layer, mlp)
+    return _mlp_output_unobserved(layer, getattr(layer, "mlp", None))
 
 
 def _take_skip_down(mlp):
@@ -644,6 +648,7 @@ class LoRA_MLP(torch.autograd.Function):
         gateBias = None,
         upBias = None,
         downBias = None,
+        replay_skip_down = False,
     ):
         dtype = X.dtype
 
@@ -672,8 +677,9 @@ class LoRA_MLP(torch.autograd.Function):
                 X, upW, upW_quant, upA, upB, upS, XA = upXA, fused = fused, fused_checked = checked
             )
             del gateXA, upXA
-            if _is_compiling():
-                skip_down = _BLOCK_SKIP_DOWN  # guarded: set around a compiled block replay
+            if replay_skip_down or _is_compiling():
+                # Passed by the one compiled block replay that qualified (block_skip_down_eligible).
+                skip_down = replay_skip_down
             else:
                 skip_down = getattr(_SKIP_DOWN_TLS, "active", False)
                 if skip_down:
@@ -681,9 +687,12 @@ class LoRA_MLP(torch.autograd.Function):
                     MLP_DOWN_SKIP_STATS["skipped"] += 1
             if skip_down:
                 # Checkpoint replay of a layer whose output nothing reads: backward needs only X, e, g.
-                i = X.new_empty(X.shape)
-                if _SKIPPED_FILL is not None:
-                    i.fill_(_SKIPPED_FILL)
+                # Out of place: an ATen fill_ on a returned fresh tensor compiles a wrong gradient (#14712).
+                i = (
+                    X.new_empty(X.shape)
+                    if _SKIPPED_FILL is None
+                    else X.new_full(X.shape, _SKIPPED_FILL)
+                )
             else:
                 h = _forward_function(e, g)
                 i = matmul_lora(
@@ -867,6 +876,7 @@ class LoRA_MLP(torch.autograd.Function):
                 d_gateBias,
                 d_upBias,
                 d_downBias,
+                None,
             )
 
         up_dB = df @ upB.t()
@@ -933,6 +943,7 @@ class LoRA_MLP(torch.autograd.Function):
             d_gateBias,
             d_upBias,
             d_downBias,
+            None,
         )
 
 
@@ -943,6 +954,8 @@ def apply_lora_mlp_swiglu(
     self,
     X,
     inplace = True,
+    *,
+    _unsloth_skip_down = False,
 ):
     projs = (self.gate_proj, self.up_proj, self.down_proj)
     extras = None
@@ -986,6 +999,7 @@ def apply_lora_mlp_swiglu(
             inplace,
             dropout_p,
             *biases,
+            _unsloth_skip_down,
         )
     finally:
         if skip:
@@ -1000,6 +1014,8 @@ def apply_lora_mlp_geglu_exact(
     self,
     X,
     inplace = True,
+    *,
+    _unsloth_skip_down = False,
 ):
     projs = (self.gate_proj, self.up_proj, self.down_proj)
     extras = None
@@ -1016,37 +1032,50 @@ def apply_lora_mlp_geglu_exact(
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = _apply(
-        LoRA_MLP,
-        X,
-        gateW,
-        gateW_quant,
-        gateA,
-        gateB,
-        gateS,
-        upW,
-        upW_quant,
-        upA,
-        upB,
-        upS,
-        downW,
-        downW_quant,
-        downA,
-        downB,
-        downS,
-        geglu_exact_forward_kernel,
-        geglu_exact_backward_kernel,
-        inplace,
-        dropout_p,
-        *biases,
-    )
+    skip = _take_skip_down(self) and dropout_p is None and all(b is None for b in biases)
+    if skip:
+        _SKIP_DOWN_TLS.active = True
+    try:
+        out = _apply(
+            LoRA_MLP,
+            X,
+            gateW,
+            gateW_quant,
+            gateA,
+            gateB,
+            gateS,
+            upW,
+            upW_quant,
+            upA,
+            upB,
+            upS,
+            downW,
+            downW_quant,
+            downA,
+            downB,
+            downS,
+            geglu_exact_forward_kernel,
+            geglu_exact_backward_kernel,
+            inplace,
+            dropout_p,
+            *biases,
+            _unsloth_skip_down,
+        )
+    finally:
+        if skip:
+            _SKIP_DOWN_TLS.active = False
     return out
 
 
 from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
 
 
-def apply_lora_mlp_geglu_approx(self, X):
+def apply_lora_mlp_geglu_approx(
+    self,
+    X,
+    *,
+    _unsloth_skip_down = False,
+):
     projs = (self.gate_proj, self.up_proj, self.down_proj)
     extras = None
     if not any(
@@ -1062,31 +1091,47 @@ def apply_lora_mlp_geglu_approx(self, X):
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = _apply(
-        LoRA_MLP,
-        X,
-        gateW,
-        gateW_quant,
-        gateA,
-        gateB,
-        gateS,
-        upW,
-        upW_quant,
-        upA,
-        upB,
-        upS,
-        downW,
-        downW_quant,
-        downA,
-        downB,
-        downS,
-        geglu_approx_forward_kernel,
-        geglu_approx_backward_kernel,
-        True,
-        dropout_p,
-        *biases,
-    )
+    skip = _take_skip_down(self) and dropout_p is None and all(b is None for b in biases)
+    if skip:
+        _SKIP_DOWN_TLS.active = True
+    try:
+        out = _apply(
+            LoRA_MLP,
+            X,
+            gateW,
+            gateW_quant,
+            gateA,
+            gateB,
+            gateS,
+            upW,
+            upW_quant,
+            upA,
+            upB,
+            upS,
+            downW,
+            downW_quant,
+            downA,
+            downB,
+            downS,
+            geglu_approx_forward_kernel,
+            geglu_approx_backward_kernel,
+            True,
+            dropout_p,
+            *biases,
+            _unsloth_skip_down,
+        )
+    finally:
+        if skip:
+            _SKIP_DOWN_TLS.active = False
     return out
+
+
+# The fused MLP forwards that take the replay token (block_skip_down_eligible).
+_SKIP_DOWN_MLP_FUNCTIONS = (
+    apply_lora_mlp_swiglu,
+    apply_lora_mlp_geglu_exact,
+    apply_lora_mlp_geglu_approx,
+)
 
 
 class LoRA_QKV(torch.autograd.Function):

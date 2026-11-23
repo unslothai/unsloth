@@ -424,7 +424,9 @@ async def load_video_model_gated(
             from core.inference import video_lora
 
             # Before the GPU is touched: a LoRA this load cannot bake, or one for another family, is a 400.
-            lora_refusal = video_lora.load_refusal(fam, kind, request.transformer_quant)
+            lora_refusal = video_lora.load_refusal(
+                fam, kind, request.transformer_quant, request.loras
+            )
             if lora_refusal and video_lora.has_active(request.loras):
                 raise ValueError(lora_refusal)
             await asyncio.to_thread(
@@ -575,6 +577,12 @@ async def load_video_model_gated(
             fit_kwargs = await asyncio.to_thread(
                 media_fit_kwargs, VIDEO, request, gpu_ordinal, multi_model_mode
             )
+            from core.inference.ensure_model import chat_kept_refusal, media_load_spares_chat
+            from core.inference.gpu_arbiter import GpuOwnerBusyError
+
+            spare_chat = await asyncio.to_thread(
+                media_load_spares_chat, VIDEO, "video", request.model_path, multi_model_mode
+            )
 
             def _acquire_and_begin():
                 raise_if_load_cancelled(_VIDEO_LOAD_CANCELLED)
@@ -596,8 +604,18 @@ async def load_video_model_gated(
                             VIDEO,
                             guarded_media_begin(VIDEO, multi_model_mode, media_names, _begin_load),
                             admit = _admit,
+                            **({"spare_chat": True} if spare_chat else {}),
                             **fit_kwargs,
                         )
+                except GpuOwnerBusyError as exc:
+                    if not spare_chat:
+                        raise
+                    raise chat_kept_refusal(
+                        "video",
+                        request.model_path,
+                        multi_model_mode,
+                        priced = fit_kwargs.get("need_mib") is not None,
+                    ) from exc
                 finally:
                     if admitted:
                         preflight.lock.release()
@@ -854,6 +872,7 @@ async def generate_video(
         continuation_video = request.continuation_video,
         continuation_keep = request.continuation_keep,
         live_preview = request.live_preview,
+        draft_decode = request.draft_decode,
     )
     # Authorize the reservation-pinned token: a gap load must not render weights of another account.
     for attempt in range(2):

@@ -9177,13 +9177,13 @@ if ((Test-Path -LiteralPath $VenvT5Legacy) -and ($script:OfflineFastPath -or (Te
 }
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_530Dir -Version "5.3.0")) { $_NeedT5_530 = $true }
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_550Dir -Version "5.5.4")) { $_NeedT5_550 = $true }
-if (-not (Test-SidecarCurrent -TargetDir $VenvT5_510Dir -Version "5.13.1")) { $_NeedT5_510 = $true }
+if (-not (Test-SidecarCurrent -TargetDir $VenvT5_510Dir -Version "5.15.1")) { $_NeedT5_510 = $true }
 # Offline keep: defer sidecar rebuilds; the runtime self-heal covers a missing tier. Mirrors setup.sh.
 $_DeferT5_530 = $false
 $_DeferT5_550 = $false
 $_DeferT5_510 = $false
 if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {
-    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.4"), @("510", "5.13.1"))) {
+    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.4"), @("510", "5.15.1"))) {
         $flag = "_NeedT5_$($tier[0])"
         if ((Get-Variable -Name $flag -ValueOnly)) {
             substep "transformers $($tier[1]) sidecar is stale or missing but UV_OFFLINE is set -- left for the next online update" "Yellow"
@@ -9193,7 +9193,7 @@ if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {
     }
 }
 if ($script:OfflineFastPath) {
-    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.4"), @("510", "5.13.1"))) {
+    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.4"), @("510", "5.15.1"))) {
         $flag = "_NeedT5_$($tier[0])"
         if ((Get-Variable -Name $flag -ValueOnly)) {
             substep "transformers $($tier[1]) sidecar is stale but UV_OFFLINE is set -- left for the next online update" "Yellow"
@@ -9227,11 +9227,11 @@ if ($_NeedT5_550) {
     Repair-SidecarTiktoken -TargetDir $VenvT5_550Dir -DirName ".venv_t5_550"
 }
 if ($_NeedT5_510) {
-    Install-T5Sidecar -TargetDir $VenvT5_510Dir -Version "5.13.1" -Label "5.13" -DirName ".venv_t5_510" -Reason "for Gemma 4 Unified support"
+    Install-T5Sidecar -TargetDir $VenvT5_510Dir -Version "5.15.1" -Label "5.15" -DirName ".venv_t5_510" -Reason "for Gemma 4 Unified support"
 } elseif ($_DeferT5_510) {
-    step "transformers" "5.13.1 sidecar stale -- left for the next online update"
+    step "transformers" "5.15.1 sidecar stale -- left for the next online update"
 } else {
-    step "transformers" "5.13.1 sidecar current"
+    step "transformers" "5.15.1 sidecar current"
     Repair-SidecarTiktoken -TargetDir $VenvT5_510Dir -DirName ".venv_t5_510"
 }
 $ErrorActionPreference = $script:PrevEAP_T5

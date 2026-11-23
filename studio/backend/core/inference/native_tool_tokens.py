@@ -50,6 +50,8 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
         "<|tool_call_begin|>",
         "<|tool_call_argument_begin|>",
         "<|tool_call_end|>",
+        # LFM2 / LFM2.5 opener; its closer is the Kimi <|tool_call_end|> above.
+        "<|tool_call_start|>",
         # Inkling's role opener omitted on purpose: alone it would prefix replies with raw markup
         "<|content_invoke_tool_json|>",
         "<|end_message|>",
@@ -81,7 +83,11 @@ _NATIVE_CONTROL_OPENERS = {
     ),
     "<｜tool▁call▁end｜>": ("<｜tool▁call▁begin｜>",),
     "<|tool_calls_section_end|>": ("<|tool_calls_section_begin|>",),
-    "<|tool_call_end|>": ("<|tool_call_begin|>", "<|tool_call_argument_begin|>"),
+    "<|tool_call_end|>": (
+        "<|tool_call_begin|>",
+        "<|tool_call_argument_begin|>",
+        "<|tool_call_start|>",
+    ),
     # Call marker only: _TC_JSON_START_RE matches <|content_invoke_tool_json|>{, not the role opener.
     "<|end_message|>": ("<|content_invoke_tool_json|>",),
     "</think>": ("<think>",),

@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 import queue
+import re
 import shlex
 import subprocess
 import sys
@@ -68,6 +69,21 @@ def catalog_row(entry: dict[str, Any], models_dir: Optional[Path] = None) -> dic
         if installed and folder and models_dir
         else None,
     }
+
+
+def json_object(output: str, key: str) -> Optional[dict[str, Any]]:
+    """The JSON object holding ``key``; ``Flm.run`` joins stdout and stderr, so skip text around it."""
+    decoder = json.JSONDecoder()
+    first = output.find("{")
+    starts = sorted({first, *(m.start() for m in re.finditer(r"^\{", output, re.M))} - {-1})
+    for start in starts:
+        try:
+            value, _end = decoder.raw_decode(output, start)
+        except ValueError:
+            continue
+        if isinstance(value, dict) and key in value:
+            return value
+    return None
 
 
 def log(message: str, tag: str = "FlmHost") -> None:
@@ -154,15 +170,18 @@ class Flm:
             # Windows refusing flm.exe (Smart App Control) is a failed run with its reason.
             return 1, f"[ERROR] {exc}"
         output = (done.stdout or "") + (done.stderr or "")
+        if done.returncode and not output.strip():
+            # A refused DLL (Smart App Control) exits 0xC0E90002 before printing anything.
+            output = f"[ERROR] exit code {done.returncode} (0x{done.returncode & 0xFFFFFFFF:08X})"
         # flm exits 0 after printing [ERROR], so the text decides.
         return (done.returncode or (1 if "[ERROR]" in output else 0)), output
 
     def catalog(self) -> list[dict[str, Any]]:
         code, output = self.run("list", "--json", timeout = 120.0)
-        start = output.find("{")
-        if code or start < 0:
+        report = None if code else json_object(output, "models")
+        if report is None:
             raise RuntimeError(f"flm list failed: {output.strip()[-300:]}")
-        models = json.loads(output[start:]).get("models") or []
+        models = report.get("models") or []
         return [catalog_row(entry, self.models_dir) for entry in models if isinstance(entry, dict)]
 
 

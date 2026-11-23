@@ -369,3 +369,36 @@ def test_power_of_two_packing_kill_switch_keeps_the_exact_slabs(monkeypatch):
     assert charged == sum(
         lf._layout([-(-r * c * 2 // 64) * 64 for r, c in _FLUX_LIKE], pow2 = False)[1]
     )
+
+
+def test_group_policy_with_a_resident_denoiser_folds(engine, monkeypatch):
+    from core.inference import diffusion_lora_fuse as lora_fuse
+
+    monkeypatch.setattr(lora_fuse, "_on_card", lambda module: True)
+    engine.state.offload_policy = dmod.OFFLOAD_GROUP
+    engine.state.memory_mode = "auto"
+    x = _inputs()
+    with torch.no_grad():
+        unfused = engine.unet(*x).sample
+    before = _base_weights(engine.unet)
+    engine.apply(1.0)
+    assert _merged_layers(engine.unet) > 0
+    with torch.no_grad():
+        folded = engine.unet(*x).sample
+    torch.testing.assert_close(folded, unfused, rtol = 1e-4, atol = 1e-5)
+    engine.apply(0.5)
+    assert _merged_layers(engine.unet) == 0
+    assert all(torch.equal(before[k], v) for k, v in _base_weights(engine.unet).items())
+
+
+def test_group_policy_with_a_streamed_denoiser_is_not_folded(engine, monkeypatch):
+    from core.inference import diffusion_lora_fuse as lora_fuse
+
+    from .test_diffusion_lora_fold_gate import _hooked
+
+    monkeypatch.setattr(lora_fuse, "_on_card", lambda module: True)
+    engine.state.offload_policy = dmod.OFFLOAD_GROUP
+    engine.state.memory_mode = "auto"
+    _hooked(engine.unet, "block_group")
+    engine.apply(1.0)
+    assert _merged_layers(engine.unet) == 0

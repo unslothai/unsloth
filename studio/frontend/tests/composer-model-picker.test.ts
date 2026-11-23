@@ -713,14 +713,10 @@ test("the open picker has one fixed height on every tab, whatever each tab lists
   );
   assert.match(
     picker,
-    /configTarget\s+\? "h-\(--composer-picker-min-h\) max-h-\[var\(--picker-floor,calc\(100dvh-16px\)\)\]"/,
+    /configTarget \|\| isExpanded\s+\? "h-\(--composer-picker-min-h\) max-h-\[var\(--picker-floor,calc\(100dvh-16px\)\)\]"/,
   );
   const pickerCss = readSrc("index.css");
   assert.doesNotMatch(pickerCss, /^\s*--picker-floor:/m);
-  assert.match(
-    picker,
-    /isExpanded\s+\? "h-\(--composer-picker-min-h\)"/,
-  );
   assert.match(
     picker,
     /openSide !== "bottom" &&\s+"\[--picker-floor:var\(--radix-popover-content-available-height\)\]"/,
@@ -728,7 +724,7 @@ test("the open picker has one fixed height on every tab, whatever each tab lists
   const css = readSrc("index.css");
   assert.match(
     css,
-    /--composer-picker-min-h: min\(calc\(var\(--picker-min-base, 420px\) \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-floor, calc\(100dvh - 16px\)\)\);/,
+    /--composer-picker-min-h: min\(calc\(var\(--picker-min-base, 440px\) \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-floor, calc\(100dvh - 16px\)\)\);/,
   );
   assert.doesNotMatch(css, /--composer-picker-max-h/);
   assert.match(picker, /composer-model-list flex min-h-0 flex-1 flex-col/);
@@ -739,20 +735,20 @@ test("the open picker has one fixed height on every tab, whatever each tab lists
   );
 });
 
-test("the picker height follows the screen: 400px short landscape, 420px most windows, up to 540px on very large monitors", () => {
-  assert.equal(pickerMinHeight(1366, 768, 1), 400);
-  assert.equal(pickerMinHeight(1280, 640, 1), 400);
-  assert.equal(pickerMinHeight(1440, 900, 1), 400);
-  assert.equal(pickerMinHeight(1920, 1080, 1), 420);
-  assert.equal(pickerMinHeight(1728, 1000, 1), 420);
-  assert.equal(pickerMinHeight(390, 844, 1), 420);
-  assert.equal(pickerMinHeight(2560, 1230, 1), 480);
+test("the picker height follows the screen: 420px short landscape, 440px most windows, up to 540px on very large monitors", () => {
+  assert.equal(pickerMinHeight(1366, 768, 1), 420);
+  assert.equal(pickerMinHeight(1280, 640, 1), 420);
+  assert.equal(pickerMinHeight(1440, 900, 1), 420);
+  assert.equal(pickerMinHeight(1920, 1080, 1), 440);
+  assert.equal(pickerMinHeight(1728, 1000, 1), 440);
+  assert.equal(pickerMinHeight(390, 844, 1), 440);
+  assert.equal(pickerMinHeight(2560, 1230, 1), 490);
   assert.equal(pickerMinHeight(2560, 1380, 1), 540);
   assert.equal(pickerMinHeight(2560, 1600, 1), 540);
   // 1366x768 at 67% zoom.
-  assert.equal(pickerMinHeight(2039, 1146, 1.49), 400);
+  assert.equal(pickerMinHeight(2039, 1146, 1.49), 420);
   // A 1080p window zoomed out to 50% is still a 1080p screen.
-  assert.equal(pickerMinHeight(3840, 2160, 2), 420);
+  assert.equal(pickerMinHeight(3840, 2160, 2), 440);
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
