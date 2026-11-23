@@ -497,6 +497,62 @@ def _clamp_finish_reason(value) -> str:
     )
 
 
+def _recover_cut_thought(payload) -> Optional[tuple[str, bool, bool]]:
+    """When this thread's previous reply ended in a thought the window cut, do not resume it (it
+    cannot fit): keep it, cut back a few tokens, as a finished thought (the template writes the
+    model's own closing marker), force the reset /compact does, archive it for search_conversation,
+    write a transcript, and add the note. Returns (note, searchable, note_is_a_user_turn), or None."""
+    if getattr(payload, "context_overflow", None) in ("error", "truncate_middle"):
+        return None
+    from core.inference import cut_thought
+    from models.inference import ChatMessage
+
+    thread_id = getattr(payload, "thread_id", None)
+    cut = cut_thought.take(thread_id)
+    if cut is None:
+        return None
+    messages = list(getattr(payload, "messages", None) or [])
+    closed = ChatMessage(role = "assistant", content = "", reasoning_content = cut.thought)
+    resuming = bool(
+        getattr(payload, "continue_final_message", None)
+        and _continue_final_message(payload, thought = True)
+        and not _continue_final_message(payload)
+    )
+    if resuming:
+        # The automatic continuation resends the cut thought to be resumed: finish it instead.
+        messages[-1] = closed
+    else:
+        # A typed next message: the cut reply before it gets its thought back, finished.
+        for index in range(len(messages) - 2, -1, -1):
+            message = messages[index]
+            if getattr(message, "role", None) != "assistant":
+                continue
+            if not getattr(message, "content", None) and not getattr(message, "tool_calls", None):
+                messages[index] = closed
+            break
+    payload.continue_final_message = False
+    payload.compact_context = True
+    payload.context_overflow = "truncate_oldest"
+    from state.tool_policy import conversation_recall_allowed
+
+    searchable = bool(
+        cut_thought.archive(thread_id, cut.thought)
+        and conversation_recall_allowed()
+        and _checkpoint_needs_search(payload)
+    )
+    from core.inference import compaction_transcript
+
+    transcript = compaction_transcript.write(
+        thread_id, [message.model_dump(exclude_none = True) for message in messages]
+    )
+    note = cut_thought.note(searchable, transcript)
+    if resuming:
+        # The first user turn after the reset: the turns before it are compacted away.
+        messages.append(ChatMessage(role = "user", content = note))
+    payload.messages = messages
+    return note, searchable, resuming
+
+
 def _continue_final_message(payload, *, thought: bool = False) -> bool:
     """Resume the trailing assistant turn, or start a new turn if none is resumable; thought also resumes a reasoning-only turn (llama-server, MLX)."""
     if not getattr(payload, "continue_final_message", None):
@@ -34343,6 +34399,11 @@ async def produce_openai_chat_completions(
             raise _reject(exc.status_code, exc.detail)
         _pre_parsed = None
 
+    _cut_recovery = await asyncio.to_thread(_recover_cut_thought, payload) if using_gguf else None
+    if _cut_recovery is not None:
+        # The recovery rewrote the messages an auto-switch may already have parsed.
+        _pre_parsed = None
+
     # ── Parse messages (handles multimodal content parts) ─────
     # Reuse the pre-hook parse when an auto-switch already did it; otherwise parse the messages here.
     if _pre_parsed is not None:
@@ -34354,6 +34415,9 @@ async def produce_openai_chat_completions(
     if using_gguf and not _has_system_turn(payload.messages):
         # Ollama applies a Modelfile SYSTEM only when the request has no system turn of its own.
         system_prompt = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
+    if _cut_recovery is not None and not _cut_recovery[2]:
+        # This request only: the next one rebuilds its system prompt without it.
+        system_prompt = f"{(system_prompt or '').rstrip()}\n\n{_cut_recovery[0]}".strip()
     # applied once so both backends inherit it, with or without tools, and never state it twice.
     _user_system_prompt = system_prompt
     # What renders through the processor template; the MCP scan runs off-loop (12 MB envelope).
@@ -34520,7 +34584,11 @@ async def produce_openai_chat_completions(
             not use_tools
             and not _tool_loop_unusable
             and llama_backend.supports_tools
-            and _checkpoint_recall_may_enable_tools(payload)
+            and (
+                _checkpoint_recall_may_enable_tools(payload)
+                # The cut thought is archived, so the note's search_conversation is there to call.
+                or (_cut_recovery is not None and _cut_recovery[1])
+            )
         ):
             use_tools = True
 
@@ -35638,6 +35706,8 @@ async def produce_openai_chat_completions(
                 # Tell the epoch gate tools are withheld; it cannot see that from process policy.
                 tools_withheld = _tool_loop_unusable,
                 chat_template_kwargs = _extra_chat_template_kwargs(payload),
+                # Once per thread: a recovery whose own thought is cut ends as before.
+                record_cut_thought = _cut_recovery is None,
             )
 
         _gguf_sentinel = object()
