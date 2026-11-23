@@ -392,3 +392,11 @@ def test_slices_halve_so_poll_slack_never_reaches_the_deadline(monkeypatch):
         # The recorder reads the clock a moment after the code under test did.
         assert wait_s <= max(lead / 2, tools._EXIT_WAIT_TAIL_S) + 1e-3
         assert wait_s <= lead + 1e-3
+
+
+def test_output_and_exit_code_on_every_platform():
+    proc, pgid = _spawn("import sys; print('hi'); sys.exit(3)")
+    output, timed_out, _ = _drain_process_output(proc, 30, None, pgid = pgid)
+    assert (output.strip(), timed_out, proc.returncode) == ("hi", False, 3)
+    if sys.platform == "win32":
+        assert _open_exit_waiter(proc) is None
