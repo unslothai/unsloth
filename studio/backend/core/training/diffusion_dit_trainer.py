@@ -102,6 +102,7 @@ from core.training.diffusion_checkpoint import (
     snapshot_checkpoints,
     identity_for_config,
     with_cache_mode,
+    with_int8_kernel,
     with_resolved_base_precision,
     with_world_size,
     with_resolved_dit,
@@ -4407,6 +4408,8 @@ def _train_dit(
     identity = with_cache_mode(identity, latent_cache is not None)
     # base_precision is resolved now (auto, or fp8/mxfp8 fallback to bf16); without this the bundle records a base it never trained on.
     identity = with_resolved_base_precision(identity, base_precision)
+    if base_precision == "int8":
+        identity = with_int8_kernel(identity, w8a8_on)
     if getattr(spec, "dit_source", None) is not None:
         identity = with_resolved_dit(identity, *spec.dit_source(fetch_cfg))
 

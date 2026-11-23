@@ -252,3 +252,31 @@ def test_a_w8a8_failure_before_any_layer_still_falls_back(monkeypatch):
     events = []
     assert dit._apply_int8_w8a8(model, events.append, None, device = "meta") is False
     assert "weight-only" in events[-1]["message"]
+
+
+def test_a_resume_cannot_switch_between_w8a8_and_weight_only_int8():
+    """Both int8 bases record base_precision_effective='int8'; flipping UNSLOTH_DIFFUSION_INT8_TRAIN across a resume
+    would continue the adapter and optimizer on different base math. Older bundles (no record) stay resumable."""
+    import dataclasses
+
+    from core.training import diffusion_checkpoint as ck
+
+    base = ck.CheckpointIdentity(
+        family = "flux.2-klein",
+        base_model = "m",
+        lora_target_modules = ("to_q",),
+        lora_rank = 4,
+        lora_alpha = 4,
+        precision = "bf16",
+        base_precision = "int8",
+        resolution = 512,
+        base_precision_effective = "int8",
+    )
+    record = getattr(ck, "with_int8_kernel", None)
+    assert record is not None
+    w8a8 = ck.CheckpointIdentity.from_dict(record(base, True).as_dict())
+    weight_only = record(base, False)
+    assert "int8 base kernel" in (w8a8.mismatch_reason(weight_only) or "")
+    assert weight_only.mismatch_reason(record(base, False)) is None
+    legacy = dataclasses.replace(base, base_int8_kernel = None)
+    assert legacy.mismatch_reason(w8a8) is None and legacy.mismatch_reason(weight_only) is None
