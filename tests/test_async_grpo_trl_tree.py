@@ -64,6 +64,10 @@ NAMES = (
     "_check_async_grpo_adapter_servable",
     "_async_grpo_masked_compute_loss",
     "_import_trl_async_grpo_module",
+    # patch_trl_async_grpo calls these on a TRL with patch_tree_gdn (#18817).
+    "_tree_gdn_callers",
+    "_patch_tree_gdn_namespace",
+    "_unsloth_patch_tree_gdn",
     "patch_trl_async_grpo",
 )
 
@@ -158,7 +162,8 @@ def _load():
     }
     for node in ast.parse(src).body:
         is_constant = isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id.startswith("_ASYNC_GRPO_") for t in node.targets
+            isinstance(t, ast.Name) and t.id.startswith(("_ASYNC_GRPO_", "_TREE_GDN_"))
+            for t in node.targets
         )
         if is_constant or (isinstance(node, ast.FunctionDef) and node.name in NAMES):
             exec(compile(ast.Module([node], []), RL_SOURCE_PATH, "exec"), ns)
