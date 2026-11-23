@@ -18024,6 +18024,9 @@ def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
         def supported(name, method):
             if support_reason(name) is not None:
                 return False
+            if gpu_platform() == "metal":
+                # vllm-metal 0.33.0 repacks AWQ through mlx-lm; it has no GPTQ, compressed-tensors or auto-round loader.
+                return method == "awq"
             if gpu_platform() == "rocm":
                 if method == "auto-round":
                     # Unmeasured on ROCm vLLM; an explicit vLLM load still gets to try (#7997).

@@ -139,3 +139,19 @@ def test_metal_loads_on_the_apple_gpu_when_studio_sees_none(mac, monkeypatch):
     monkeypatch.setattr(install, "gpu_platform", lambda: "cuda")
     with pytest.raises(ValueError, match = "no GPU"):
         managed_engine.validate_load("vllm", request)
+
+
+@pytest.mark.parametrize("method", ["gptq", "compressed-tensors", "auto-round"])
+def test_metal_refuses_quantizations_vllm_metal_cannot_load(tmp_path, monkeypatch, method):
+    monkeypatch.setattr(install, "gpu_platform", lambda: "metal")
+    monkeypatch.setattr(managed_engine, "profile", install.profile)
+    config = SimpleNamespace(is_local = True, path = str(tmp_path))
+    (tmp_path / "config.json").write_text(
+        json.dumps({"quantization_config": {"quant_method": method}})
+    )
+    with pytest.raises(ValueError, match = "Apple Silicon cannot load"):
+        managed_engine.validate_model(config)
+    (tmp_path / "config.json").write_text(
+        json.dumps({"quantization_config": {"quant_method": "awq"}})
+    )
+    managed_engine.validate_model(config)

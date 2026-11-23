@@ -125,3 +125,12 @@ test("the vLLM label for AWQ / GPTQ tags does not depend on tag order or GGUF na
     undefined,
   );
 });
+
+test("vLLM on Apple Silicon is offered only for AWQ", () => {
+  const metal = { modelId: "o/m", deviceType: "mac", vllmAvailable: true, vllmPlatform: "metal" };
+  assert.equal(classifyUnslothSupport({ ...metal, quantMethod: "awq" }).supportedIn, "vllm");
+  for (const quantMethod of ["gptq", "compressed-tensors", "auto-round"]) {
+    assert.equal(classifyUnslothSupport({ ...metal, quantMethod }).supportedIn, undefined, quantMethod);
+  }
+  assert.equal(classifyUnslothSupport({ ...metal, modelId: "o/m-GPTQ-Int4", tags: ["gptq"] }).supportedIn, undefined);
+});

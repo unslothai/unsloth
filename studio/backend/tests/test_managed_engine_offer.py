@@ -302,3 +302,24 @@ def test_amd_offers_only_the_checkpoints_vllms_rocm_build_loads(tmp_path):
             assert engines(w8a8) == engines(w4a16) == engines(awq) == ["vllm"]
             for metadata in (fp8, nvfp4, NVFP4, gptq, AUTOROUND):
                 assert engines(metadata) is None, metadata
+
+
+def test_apple_silicon_offers_vllm_only_for_awq(tmp_path):
+    # vllm-metal 0.33.0 loads AWQ through mlx-lm; GPTQ, compressed-tensors and auto-round fail at engine start.
+    def engines(metadata):
+        offer = route._managed_engine_offer_for(_config(tmp_path, metadata), None)
+        return offer and offer["engines"]
+
+    mac = {"vllm": None, "sglang": "SGLang requires an NVIDIA GPU."}
+    with (
+        patch("core.inference.engine_install.gpu_platform", return_value = "metal"),
+        patch("core.inference.engine_install.support_reason", side_effect = mac.get),
+        patch.object(
+            route,
+            "_MANAGED_ENGINE_QUANTIZATIONS",
+            {"compressed-tensors": (), "awq": (), "gptq": (), "auto-round": ()},
+        ),
+    ):
+        assert engines({"quantization_config": {"quant_method": "awq"}}) == ["vllm"]
+        for method in ("gptq", "compressed-tensors", "auto-round"):
+            assert engines({"quantization_config": {"quant_method": method}}) is None, method

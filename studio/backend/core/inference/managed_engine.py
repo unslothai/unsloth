@@ -258,6 +258,15 @@ def validate_model(
             f"{ENGINE_NAMES[engine]} on this GPU cannot load BitsAndBytes checkpoints. Choose an unquantized "
             "or AWQ checkpoint."
         )
+    if profile(engine)["platform"] == "metal" and quant.get("quant_method") in (
+        "gptq",
+        "compressed-tensors",
+        "auto-round",
+    ):
+        raise ValueError(
+            f"{ENGINE_NAMES[engine]} on Apple Silicon cannot load this checkpoint's quantization. Choose an "
+            "unquantized, MLX-quantized or AWQ checkpoint."
+        )
     if profile(engine)["platform"] == "rocm" and not rocm_loads_quantization(quant):
         raise ValueError(
             f"{ENGINE_NAMES[engine]} on AMD GPUs cannot load this checkpoint's quantization. Choose an "
