@@ -378,7 +378,7 @@ def env(monkeypatch):
                 get_input_embeddings = lambda: SimpleNamespace(weight = SimpleNamespace(shape = (10, 4))),
                 resize_token_embeddings = lambda n: calls.__setitem__("resized", n),
             )
-            return model, SimpleNamespace(name = "tok")
+            return model, SimpleNamespace(name = "tok", chat_template = calls.get("chat_template"))
 
         @classmethod
         def for_inference(cls, model):
@@ -396,6 +396,7 @@ def env(monkeypatch):
             calls["hflm"] = dict(
                 kw, pretrained = pretrained, batch_size = batch_size, max_length = max_length
             )
+            self.tokenizer = tokenizer
 
     class _FakeTaskManager:
         def __init__(self, include_path = None):
@@ -475,6 +476,30 @@ def test_eval_dataset_before_yaml_with_same_task_name(env, tmp_path):
     assert result.exit_code == 0, result.output
     assert env["tasks"] == ["qa_2", "qa"]
     assert env["task_managers"] == 1
+
+
+@pytest.mark.parametrize(
+    "template, tasks, flags, expected",
+    [
+        ("{{ messages }}", "qa.jsonl", [], True),
+        ("{{ messages }}", "qa.jsonl,qa.csv", [], True),
+        (None, "qa.jsonl", [], False),
+        ("{{ messages }}", "gsm8k", [], False),
+        ("{{ messages }}", "gsm8k,qa.jsonl", [], False),
+        ("{{ messages }}", "qa.jsonl", ["--no-chat-template"], False),
+        ("{{ messages }}", "gsm8k", ["--chat-template"], True),
+    ],
+)
+def test_dataset_tasks_are_prompted_through_the_chat_template(
+    env, tmp_path, template, tasks, flags, expected
+):
+    env["chat_template"] = template
+    (tmp_path / "qa.jsonl").write_text('{"question": "q", "answer": "a"}\n')
+    (tmp_path / "qa.csv").write_text("question,answer\nq,a\n")
+    tasks = ",".join(t if "." not in t else str(tmp_path / t) for t in tasks.split(","))
+    result = _run("fake/model", "--tasks", tasks, *flags, "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert env["kwargs"].get("apply_chat_template", False) is expected
 
 
 def test_default_output_keeps_every_run(env, tmp_path, monkeypatch):

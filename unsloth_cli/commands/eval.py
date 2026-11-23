@@ -517,6 +517,17 @@ def _run_dir_name(model: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:200].strip("._-") or "model"
 
 
+def _has_chat_template(eval_kwargs: dict) -> bool:
+    model = eval_kwargs["model"]
+    if isinstance(model, str):
+        from transformers import AutoTokenizer
+        args = eval_kwargs["model_args"]
+        tokenizer = AutoTokenizer.from_pretrained(args.get("tokenizer") or args["pretrained"])
+    else:
+        tokenizer = getattr(model, "tokenizer", None)
+    return bool(getattr(tokenizer, "chat_template", None))
+
+
 def _fail(message: str, code: int = 2):
     typer.echo(f"Error: {message}", err = True)
     raise typer.Exit(code = code)
@@ -593,6 +604,12 @@ def evaluate(
         "--confirm-run-unsafe-code",
         help = "Allow tasks that lm-eval marks unsafe (e.g. humaneval): they execute "
         "model-generated code on this machine. Off by default.",
+    ),
+    chat_template: Optional[bool] = typer.Option(
+        None,
+        "--chat-template/--no-chat-template",
+        help = "Prompt through the model's chat template. Default: on when every task is a "
+        ".jsonl/.json/.csv dataset and the tokenizer has a chat template.",
     ),
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "HuggingFace token if needed."
@@ -794,6 +811,17 @@ def evaluate(
                 eval_kwargs["model"] = HFLM(
                     pretrained = lmodel, tokenizer = tokenizer, batch_size = bs, max_length = max_seq_length
                 )
+
+        if chat_template is None:
+            entries = [e.strip() for e in tasks.split(",") if e.strip()]
+            chat_template = all(
+                Path(e).suffix.lower() in _DATASET_SUFFIXES for e in entries
+            ) and _has_chat_template(eval_kwargs)
+            if chat_template:
+                typer.echo(
+                    "Note: prompting with the model's chat template (pass --no-chat-template to turn off)."
+                )
+        eval_kwargs["apply_chat_template"] = chat_template
 
         engine_log = tmp_dir / "vllm.log" if backend == "vllm" else None
         try:
