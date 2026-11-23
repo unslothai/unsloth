@@ -73,6 +73,7 @@ _VOID = {
     "wbr",
 }
 # Ruby annotations (<rt>, <rtc>) and their fallback parentheses (<rp>) are not prose.
+_MAX_PAGE_LABEL = 32
 _IGNORE = {"head", "script", "style", "nav", "svg", "rt", "rp", "rtc"}
 
 
@@ -88,6 +89,9 @@ class _BookTextParser(HTMLParser):
         self.page_marks = []
 
     def handle_starttag(self, tag, attrs):
+        # A block start ends any page marker left open by an omitted end tag (text/html items).
+        while tag in _BLOCKS and self.page_marks:
+            self._drop_page_number(self.page_marks.pop()[1])
         if tag == "body":
             self.handle_endtag("head")
         elif tag in {"rb", "rp", "rt", "rtc"} and any(t == "ruby" for t, _ in self.stack):
@@ -146,6 +150,8 @@ class _BookTextParser(HTMLParser):
             lambda m: self.preformatted[int(m[1])],
             "".join(self.parts[start:]),
         )
+        if len("".join(text.split())) > _MAX_PAGE_LABEL:
+            return  # Not a page label (unclosed marker): keep the text rather than lose prose.
         del self.parts[start:]
         if text.strip():
             text = text[: len(text) - len(text.lstrip())] + text[len(text.rstrip()) :]

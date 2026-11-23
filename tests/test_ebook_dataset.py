@@ -182,6 +182,20 @@ def test_page_break_markers_keep_word_separators(ebooks, html, expected):
     assert ebooks._html_text(html) == expected
 
 
+@pytest.mark.parametrize(
+    "html, expected",
+    [
+        (b'<body><p role="doc-pagebreak">12<p>Actual chapter text</body>', "Actual chapter text"),
+        (
+            b'<body><p>The <span epub:type="pagebreak">12 quick brown fox jumps over the lazy dog</p></body>',
+            "The 12 quick brown fox jumps over the lazy dog",
+        ),
+    ],
+)
+def test_unclosed_page_break_markers_never_drop_prose(ebooks, html, expected):
+    assert ebooks._html_text(html) == expected
+
+
 def test_block_page_break_markers_still_separate_text(ebooks):
     html = b'<body>end<hr epub:type="pagebreak" title="5"/>start<div role="doc-pagebreak">6</div>more</body>'
     assert ebooks._html_text(html) == "end\n\nstart\n\nmore"
