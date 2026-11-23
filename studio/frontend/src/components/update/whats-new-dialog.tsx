@@ -346,7 +346,7 @@ function ReleaseBody({ entry }: { entry: Release }) {
               }}
               alt={feature.alt}
               className={cn(
-                "block aspect-[11/5] w-full rounded-2xl object-cover",
+                "block aspect-[2/1] w-full rounded-xl object-cover",
               )}
             />
             <figcaption className="mt-3.5">
@@ -450,7 +450,7 @@ function CatchUp({
                   event.currentTarget.style.display = "none";
                 }}
                 className={cn(
-                  "hidden aspect-[11/5] w-44 shrink-0 self-start rounded-xl object-cover sm:block",
+                  "hidden aspect-[2/1] w-44 shrink-0 self-start rounded-lg object-cover sm:block",
                 )}
               />
             )}
