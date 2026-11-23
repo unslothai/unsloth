@@ -1048,8 +1048,8 @@ def _trace_verbosity_args(caps: dict, extra_args: Optional[Iterable[str]], envir
     return ["--verbosity", str(_LLAMA_TRACE_VERBOSITY)]
 
 
-_GPU_MODEL_BUFFER_RE = re.compile(
-    r"\b(?:CUDA|ROCm|ROCM|HIP|SYCL)(\d+)\s+model buffer size\s*=\s*"
+_GPU_BUFFER_RE = re.compile(
+    r"\b(?:CUDA|ROCm|ROCM|HIP|SYCL)(\d+)\s+([A-Za-z0-9_ ]+?)\s+buffer size\s*=\s*"
     r"([0-9]+(?:\.[0-9]+)?)\s+MiB\b",
     re.IGNORECASE,
 )
@@ -9253,13 +9253,13 @@ class LlamaCppBackend:
         )
 
     def resident_memory_mib(self) -> Optional[int]:
-        """Best-effort MiB the loaded model holds: its GPU model buffers when known, else the
-        child's RSS (CPU, and Apple unified memory where RSS covers the Metal buffers). Never raises."""
+        """Best-effort MiB the loaded model holds: everything it allocated on the GPUs when known, else
+        the child's RSS (CPU, and Apple unified memory where RSS covers the Metal buffers). Never raises."""
         process = self._process
         if process is None or process.poll() is not None:
             return None
         try:
-            gpu = self.reclaimable_gpu_memory_gb()
+            gpu = self.gpu_footprint_gb()
             if gpu:
                 return int(round(sum(gpu.values()) * 1024))
             import psutil
@@ -9271,6 +9271,14 @@ class LlamaCppBackend:
     def reclaimable_gpu_memory_gb(self) -> Optional[dict[int, float]]:
         """A conservative lower bound from the startup log's model buffers; a live memory sample
         could race."""
+        return self._gpu_buffers_gb(0)
+
+    def gpu_footprint_gb(self) -> Optional[dict[int, float]]:
+        """Per-GPU weights plus KV cache, compute and every other device buffer from the startup log."""
+        return self._gpu_buffers_gb(1)
+
+    def _gpu_buffers_gb(self, which: int) -> Optional[dict[int, float]]:
+        """``which`` 0: model buffers only, 1: every device buffer."""
         process = self._process
         if process is None or process.poll() is not None:
             return None
@@ -9282,24 +9290,56 @@ class LlamaCppBackend:
         ids = tuple(physical_ids)
         cached = getattr(self, "_reclaimable_gpu_cache", None)
         if cached is not None and cached[0] is process and cached[1] == ids:
-            return dict(cached[2]) if cached[2] else None
+            picked = cached[2][which]
+            return dict(picked) if picked else None
         healthy = bool(getattr(self, "_healthy", False))
-        reported: Optional[dict[int, float]] = {}
-        for line in list(self._stdout_lines):
-            match = _GPU_MODEL_BUFFER_RE.search(line)
-            if match is None:
-                continue
-            ordinal = int(match.group(1))
-            if ordinal >= len(physical_ids):
-                reported = None
-                break
-            physical = int(physical_ids[ordinal])
-            reported[physical] = reported.get(physical, 0.0) + float(match.group(2)) / 1024.0
+        scanned = self._scan_gpu_buffers(physical_ids)
         if self._process is not process or process.poll() is not None:
             return None
         if healthy:
-            self._reclaimable_gpu_cache = (process, ids, dict(reported) if reported else None)
-        return reported or None
+            self._reclaimable_gpu_cache = (process, ids, scanned)
+        picked = scanned[which]
+        return dict(picked) if picked else None
+
+    def _scan_gpu_buffers(
+        self, physical_ids: list
+    ) -> "tuple[Optional[dict[int, float]], Optional[dict[int, float]]]":
+        model: dict[int, float] = {}
+        total: dict[int, float] = {}
+        # Peak compute per (allocator, GPU) per llama_context (target, drafter). Sizes in a context's first
+        # reserve block are its own; later blocks can reprint an earlier context's exact size unnamed.
+        contexts: list[dict[tuple[str, int], float]] = [{}]
+        reserves = 0
+        for line in list(self._stdout_lines):
+            match = _GPU_BUFFER_RE.search(line)
+            if match is None:
+                if "constructing llama_context" in line:
+                    contexts.append({})
+                    reserves = 0
+                elif "reserving ..." in line:
+                    reserves += 1
+                continue
+            ordinal = int(match.group(1))
+            if ordinal >= len(physical_ids):
+                return None, None
+            physical = int(physical_ids[ordinal])
+            kind = match.group(2).strip().lower()
+            gb = float(match.group(3)) / 1024.0
+            if kind == "compute":
+                key = ("".join(line[: match.start()].split()[-1:]), physical)
+                own = contexts[-1]
+                if reserves <= 1 and key not in own:
+                    own[key] = gb
+                elif not any(ctx.get(key) == gb for ctx in contexts[:-1]):
+                    own[key] = max(own.get(key, 0.0), gb)
+                continue
+            if kind == "model":
+                model[physical] = model.get(physical, 0.0) + gb
+            total[physical] = total.get(physical, 0.0) + gb
+        for ctx in contexts:
+            for (_, physical), gb in ctx.items():
+                total[physical] = total.get(physical, 0.0) + gb
+        return model or None, total or None
 
     @property
     def base_url(self) -> str:
