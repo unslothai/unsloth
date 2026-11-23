@@ -648,6 +648,7 @@ export const en = {
       anyApp: "Computer use",
       anyAppDescription: "Let models see the screen and control the <b>mouse and keyboard</b>. Chats ask before starting, before a new app, and before anything risky. Screenshots go to the model you chat with.",
       browser: "Browser",
+      desktopOnlyDescription: "Computer use runs in the Unsloth Desktop app. Open these settings there to turn it on.",
       browserDescription: "Let models open pages in Unsloth's browser panel, read them, and click and type for you.",
       screen: "See the screen",
       screenDescription: "macOS asks for this under Screen & System Audio Recording.",

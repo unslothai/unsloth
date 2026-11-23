@@ -651,6 +651,7 @@ export const zhCN = {
       anyApp: "电脑操作",
       anyAppDescription: "允许模型查看屏幕并控制<b>鼠标和键盘</b>。对话在开始前、使用新应用前以及执行有风险的操作前都会询问。截图会发送给与你对话的模型。",
       browser: "浏览器",
+      desktopOnlyDescription: "电脑操作在 Unsloth 桌面应用中运行。请在应用中打开此设置来开启。",
       browserDescription: "允许模型在 Unsloth 的浏览器面板中打开并阅读网页，并替你点击和输入。",
       screen: "查看屏幕",
       screenDescription: "macOS 会在“录屏与系统录音”中请求此权限。",

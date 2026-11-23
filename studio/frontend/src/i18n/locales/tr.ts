@@ -713,6 +713,7 @@ export const tr = {
       anyApp: "Bilgisayar kullanımı",
       anyAppDescription: "Modellerin ekranı görmesine ve <b>fareyi ve klavyeyi</b> kontrol etmesine izin verin. Sohbetler başlamadan, yeni bir uygulama kullanmadan ve riskli bir işlemden önce izin ister. Ekran görüntüleri sohbet ettiğiniz modele gönderilir.",
       browser: "Tarayıcı",
+      desktopOnlyDescription: "Bilgisayar kullanımı Unsloth masaüstü uygulamasında çalışır. Açmak için bu ayarları orada açın.",
       browserDescription: "Modellerin Unsloth'un tarayıcı panelinde sayfaları açmasına, okumasına ve sizin yerinize tıklayıp yazmasına izin verin.",
       screen: "Ekranı görme",
       screenDescription: "macOS bunu \"Screen & System Audio Recording\" altında ister.",

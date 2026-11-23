@@ -714,6 +714,7 @@ export const vi = {
       anyApp: "Sử dụng máy tính",
       anyAppDescription: "Cho phép mô hình nhìn thấy màn hình và điều khiển <b>chuột và bàn phím</b>. Các cuộc trò chuyện sẽ xin phép trước khi bắt đầu, trước khi dùng một ứng dụng mới và trước mọi thao tác rủi ro. Ảnh chụp màn hình được gửi đến mô hình bạn đang trò chuyện.",
       browser: "Trình duyệt",
+      desktopOnlyDescription: "Sử dụng máy tính chạy trong ứng dụng Unsloth trên máy tính. Mở phần cài đặt này ở đó để bật.",
       browserDescription: "Cho phép mô hình mở trang trong bảng trình duyệt của Unsloth, đọc trang, rồi nhấp và nhập thay bạn.",
       screen: "Xem màn hình",
       screenDescription: "macOS yêu cầu quyền này trong \"Screen & System Audio Recording\".",

@@ -677,6 +677,7 @@ export const sv = {
       anyApp: "Datoranvändning",
       anyAppDescription: "Låt modeller se skärmen och styra <b>musen och tangentbordet</b>. Chattar frågar innan de börjar, inför en ny app och innan något riskabelt görs. Skärmbilder skickas till modellen du chattar med.",
       browser: "Webbläsare",
+      desktopOnlyDescription: "Datoranvändning fungerar i Unsloths skrivbordsapp. Öppna de här inställningarna där för att slå på den.",
       browserDescription: "Låt modeller öppna sidor i Unsloths webbläsarpanel, läsa dem och klicka och skriva åt dig.",
       screen: "Se skärmen",
       screenDescription: "macOS frågar om detta under ”Skärm- och systemljudinspelning”.",

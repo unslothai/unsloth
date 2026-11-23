@@ -651,6 +651,7 @@ export const de = {
       anyApp: "Computernutzung",
       anyAppDescription: "Modelle sehen den Bildschirm und steuern <b>Maus und Tastatur</b>. Chats fragen, bevor sie beginnen, vor dem Verwenden einer neuen App und vor einer riskanten Aktion. Screenshots gehen an das Modell, mit dem du chattest.",
       browser: "Browser",
+      desktopOnlyDescription: "Computernutzung läuft in der Unsloth-Desktop-App. Öffne diese Einstellungen dort, um sie einzuschalten.",
       browserDescription: "Modelle öffnen Seiten im Browser-Panel von Unsloth, lesen sie und klicken und tippen für dich.",
       screen: "Bildschirm sehen",
       screenDescription: "macOS fragt danach unter „Bildschirm- & Systemaudioaufnahme“.",

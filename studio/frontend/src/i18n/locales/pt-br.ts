@@ -651,6 +651,7 @@ export const ptBR = {
       anyApp: "Uso do computador",
       anyAppDescription: "Permite que os modelos vejam a tela e controlem o <b>mouse e o teclado</b>. Os chats pedem permissão antes de começar, antes de usar um novo app e antes de qualquer ação arriscada. As capturas de tela vão para o modelo com que você conversa.",
       browser: "Navegador",
+      desktopOnlyDescription: "O uso do computador funciona no app para desktop do Unsloth. Abra estas configurações lá para ativá-lo.",
       browserDescription: "Permite que os modelos abram páginas no painel do navegador do Unsloth, leiam e cliquem e digitem por você.",
       screen: "Ver a tela",
       screenDescription: "O macOS pede isso em \"Gravação de Tela e Áudio do Sistema\".",
