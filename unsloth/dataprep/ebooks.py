@@ -90,8 +90,9 @@ class _BookTextParser(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         # A block start ends any page marker left open by an omitted end tag (text/html items).
-        while tag in _BLOCKS and self.page_marks:
-            self._drop_page_number(self.page_marks.pop()[1])
+        if tag in _BLOCKS and self.page_marks:
+            self._drop_page_number(self.page_marks[0][1])
+            self.page_marks.clear()
         if tag == "body":
             self.handle_endtag("head")
         elif tag in {"rb", "rp", "rt", "rtc"} and any(t == "ruby" for t, _ in self.stack):
@@ -138,8 +139,11 @@ class _BookTextParser(HTMLParser):
             if self.stack[i][0] == tag:
                 del self.stack[i:]
                 break
+        # Only the outermost marker is collapsed; nested ones are inside its text.
         while self.page_marks and self.page_marks[-1][0] >= len(self.stack):
-            self._drop_page_number(self.page_marks.pop()[1])
+            start = self.page_marks.pop()[1]
+            if not self.page_marks:
+                self._drop_page_number(start)
         if not hidden and tag in _BLOCKS:
             self.parts.append("\n\n")
 
