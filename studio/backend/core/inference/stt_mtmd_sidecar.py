@@ -1351,13 +1351,16 @@ class MtmdSttSidecar:
         model: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> Optional[tuple[Optional[int], object]]:
-        """None for a warm server or undownloaded model, so the 409 runs before any decode, and on decode
+        """None for a warm Auto server or undownloaded model, so the 409 runs before any decode, and on decode
         failure, so the old path raises the same 400."""
         try:
             model_id = resolve_mtmd_model_id(model)
-            if (self._process_alive() and self._model_id == model_id) or not is_model_downloaded(
-                model_id
-            ):
+            keeps_window = (
+                self._process_alive()
+                and self._model_id == model_id
+                and self._context_preference == 0
+            )
+            if keeps_window or not is_model_downloaded(model_id):
                 return None
             decoded = _decode_audio_bounded(audio, cancel_event)
         except Exception:  # noqa: BLE001 - transcribe raises the same error after the load, as before

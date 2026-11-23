@@ -242,6 +242,13 @@ def test_warm_auto_server_keeps_its_window_and_resizes_as_before(studio):
     assert len(studio.decodes) == 3
 
 
+def test_switch_from_fixed_to_auto_starts_at_the_clip_size(studio):
+    studio.transcribe(28, context_length = 32768)
+    studio.transcribe(180)
+    # Before: 32768, 4096 for the Auto load, then a resize to the counted size.
+    assert [_context(process) for process in studio.processes] == [32768, _counted_context(180)]
+
+
 @pytest.mark.parametrize("context_length", [4096, 8192, 32768])
 def test_explicit_context_is_never_resized_by_the_clip(studio, context_length):
     studio.transcribe(180, context_length = context_length)
