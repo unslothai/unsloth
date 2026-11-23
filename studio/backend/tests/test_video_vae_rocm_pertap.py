@@ -324,17 +324,13 @@ def test_video_backend_installs_after_frame_pad_fix():
     assert '"vae_rocm_pertap_conv"' in src
 
 
-def test_fp16_keeps_stock_conv_no_overflow(engage_on_cpu):
-    """fp16 taps of +256*256 and -256*256 overflow before the fp32 sum (NaN); stock Conv3d returns the finite 0."""
-    conv = _patch(torch.nn.Conv3d(1, 1, (2, 1, 1), bias = False).half())
+def test_fp16_outside_autocast_still_takes_pertap(engage_on_cpu):
+    """fp16 keeps the per-tap path: on gfx1151 the real LTX-2.3 fp16 decode is finite and 2.4x faster there."""
+    geom = GEOMETRIES["ltx_k3_tpad0"]
+    conv = _patch(_conv(geom, torch.float16))
     with torch.no_grad():
-        conv.weight.copy_(torch.tensor([256.0, -256.0]).view(1, 1, 2, 1, 1))
-        x = torch.full((1, 1, 2, 1, 1), 256.0, dtype = torch.float16)
-        ref = F.conv3d(x, conv.weight)
-        y = conv(x)
-    assert torch.isfinite(ref).all()
-    assert torch.equal(y, ref)
-    assert getattr(conv, "_unsloth_rocm_pertap_calls", 0) == 0
+        conv(_input(geom, torch.float16))
+    assert conv._unsloth_rocm_pertap_calls == 1
 
 
 def test_autocast_keeps_stock_output_dtype(engage_on_cpu):

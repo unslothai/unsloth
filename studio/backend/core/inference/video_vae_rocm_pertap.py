@@ -7,8 +7,8 @@ On Windows gfx1151 (torch 2.11 + ROCm 7.14) a Conv3d whose input or output tenso
 per element than the same conv below that size; measured on the LTX-2.3 decoder across 6 conv shape classes and
 5 clip sizes. Splitting such a call into Conv2d calls, one per temporal tap with time folded into the batch, summed in
 fp32 with the bias added once, decodes 1920x1088x121 about 1.8x faster and closer to a CPU fp32 decode. Below 2 GiB
-the stock Conv3d is faster, and Linux ROCm has no cliff, so only Windows ROCm installs it and only bf16 / fp32 calls
-over 2 GiB outside autocast take it. UNSLOTH_VIDEO_VAE_ROCM_PERTAP=0 turns it off (read per call).
+the stock Conv3d is faster, and Linux ROCm has no cliff, so only Windows ROCm installs it and only calls over 2 GiB
+outside autocast take it. UNSLOTH_VIDEO_VAE_ROCM_PERTAP=0 turns it off (read per call).
 """
 
 from __future__ import annotations
@@ -95,9 +95,9 @@ def pertap_conv3d(
     return out
 
 
-# Input dtypes the per-tap path takes: fp16 taps round (and can overflow to inf) before the fp32 sum, where stock
-# Conv3d accumulates once, so a finite fp16 result could turn NaN.
-ENGAGE_DTYPES = ("bfloat16", "float32")
+# fp16 stays: a synthetic cancelling pair can overflow a tap, but the real LTX-2.3 fp16 decode on gfx1151 is finite
+# and 2.4x faster per tap (35.7 vs 87.0 s, 7.1 GiB lower peak).
+ENGAGE_DTYPES = ("bfloat16", "float16", "float32")
 
 
 def _autocast_on(torch: Any, device_type: str) -> bool:

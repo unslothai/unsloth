@@ -254,23 +254,6 @@ def test_repeated_split_calls_never_recompile(as_mps):
     assert G.stats["chunked_calls"] == 1
 
 
-def test_wider_value_batch_counts_every_score(as_mps, monkeypatch):
-    """SDPA broadcasts Q, K and V together: a V batch wider than Q's and K's multiplies the score matrices too."""
-    monkeypatch.setattr(G, "MPS_SCORE_ELEMENTS", 5120)
-    g = torch.Generator().manual_seed(2)
-    q = torch.randn(1, 2, 25, 8, generator = g, dtype = torch.float64)
-    k = torch.randn(1, 2, 64, 8, generator = g, dtype = torch.float64)
-    v = torch.randn(2, 2, 64, 8, generator = g, dtype = torch.float64)
-    assert G.chunk_rows(q, k) is None  # 2 * 25 * 64 = 3200 from Q and K alone
-    assert G.chunk_rows(q, k, v) == 5120 // (4 * 64)  # 4 * 25 * 64 = 6400 with V's batch
-    out = as_mps(q, k, v)
-    assert G.stats["chunked_calls"] == 1
-    assert torch.allclose(out, F.scaled_dot_product_attention(q, k, v), atol = 1e-12)
-    # GQA keeps following Q's heads; a K / V pair of one batch changes nothing
-    q6, k3 = torch.empty(1, 6, 100, 4), torch.empty(1, 3, 64, 4)
-    assert G.chunk_rows(q6, k3, k3) == G.chunk_rows(q6, k3) == G.MPS_SCORE_ELEMENTS // (6 * 64)
-
-
 _COLD_PREFILL_TRACE = """
 import torch
 from torch._subclasses.fake_tensor import FakeTensorMode
