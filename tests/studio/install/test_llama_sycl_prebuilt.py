@@ -108,6 +108,7 @@ def test_intel_host_with_venv_libsycl_tries_sycl_before_vulkan(monkeypatch, tmp_
         {"has_physical_nvidia": True},
         {"machine": "aarch64"},
         {"has_intel_gpu": False},
+        {"vulkan_routed": True},
     ],
 )
 def test_sycl_is_not_tried_off_the_intel_x86_path(monkeypatch, tmp_path, overrides):
@@ -124,9 +125,9 @@ def test_runtime_line_follows_the_newest_venv_libsycl(monkeypatch, tmp_path):
     _venv_with_libsycl(monkeypatch, tmp_path, "libsycl.so.8", "libsycl.so.9")
     both = ((SYCL8, "sycl8"), (SYCL9, "sycl9"))
     assert _attempts(_host(), _bundle(both))[0] == SYCL9
-    # No matching line: an unlabelled SYCL bundle still fits, a mislabelled one never does.
+    # Only the exact line: neither another line nor an unlabelled bundle is picked.
     assert _attempts(_host(), _bundle(((SYCL8, "sycl8"),)))[0] == VULKAN
-    assert _attempts(_host(), _bundle(((SYCL8, "sycl8"), (SYCL_ANY, None))))[0] == SYCL_ANY
+    assert _attempts(_host(), _bundle(((SYCL8, "sycl8"), (SYCL_ANY, None))))[0] == VULKAN
 
 
 def test_a_sycl_build_gets_the_active_venv_oneapi_dirs(monkeypatch, tmp_path):

@@ -3812,13 +3812,9 @@ def published_asset_choice_for_kind(
             artifact
             for artifact in release.artifacts
             if artifact.install_kind == install_kind
-            and (runtime_line is None or artifact.runtime_line in (runtime_line, None))
+            and (runtime_line is None or artifact.runtime_line == runtime_line)
         ),
-        key = lambda artifact: (
-            runtime_line is not None and artifact.runtime_line != runtime_line,
-            artifact.rank,
-            artifact.asset_name,
-        ),
+        key = lambda artifact: (artifact.rank, artifact.asset_name),
     )
     for artifact in candidates:
         if host is not None and install_kind in VULKAN_INSTALL_KINDS:
@@ -6308,6 +6304,8 @@ def _sycl_candidate_host(host: HostInfo) -> bool:
         host.is_linux
         and host.is_x86_64
         and host.has_intel_gpu
+        # _vulkan_only_host sets has_intel_gpu on AMD hosts it routes to Vulkan.
+        and not host.vulkan_routed
         and not (host.has_usable_nvidia or host.has_physical_nvidia or host.has_rocm)
         and not host.has_amd_gpu_without_rocm
     )
@@ -6967,17 +6965,17 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
                 )
                 attempts.append(vulkan_choice)
     else:
-        if _sycl_candidate_host(host):
-            oneapi_dirs = oneapi_runtime_lib_dirs()
-            sycl_choice = (
-                published_asset_choice_for_kind(
-                    bundle, "linux-sycl", runtime_line = oneapi_runtime_line(oneapi_dirs)
-                )
-                if oneapi_dirs
-                else None
-            )
-            if sycl_choice is not None:
-                attempts.append(sycl_choice)
+        # Exact libsycl line only: an unlabelled bundle could not notice the venv's ABI moving.
+        sycl_line = (
+            oneapi_runtime_line(oneapi_runtime_lib_dirs()) if _sycl_candidate_host(host) else None
+        )
+        sycl_choice = (
+            published_asset_choice_for_kind(bundle, "linux-sycl", runtime_line = sycl_line)
+            if sycl_line
+            else None
+        )
+        if sycl_choice is not None:
+            attempts.append(sycl_choice)
         if (host.has_intel_gpu or host.has_amd_gpu_without_rocm) and not host.has_physical_nvidia:
             vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
             if vulkan_choice is not None:
