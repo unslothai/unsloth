@@ -272,6 +272,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.importChats",
     "settings.chat.clearAllChats",
   ],
+  knowledge: [],
   "api-keys": [
     "settings.apiKeys.title",
     "settings.apiKeys.description",

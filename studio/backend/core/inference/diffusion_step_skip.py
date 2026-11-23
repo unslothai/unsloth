@@ -53,9 +53,8 @@ def _is_tensor(obj: Any) -> bool:
 
 
 def parse_mask(mask: Any) -> tuple:
-    """A per-step compute mask ("1" compute, "0" skip; or bools) as a tuple of bools, () when malformed.
-
-    A usable mask computes its first ``MIN_HEAD_STEPS`` steps (taylor1 needs two computed points) and its last step."""
+    """Per-step mask ('1' compute, '0' skip, or bools) as a tuple of bools, () if malformed; a
+    usable one computes its first MIN_HEAD_STEPS and last step (taylor1 needs two)."""
     if isinstance(mask, str):
         text = mask.strip()
         if not text or set(text) - {"0", "1"}:

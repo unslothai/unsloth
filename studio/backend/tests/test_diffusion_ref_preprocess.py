@@ -316,3 +316,54 @@ def test_huge_reference_is_refused_before_the_upload():
     img = rp.DeferredResize(_Src(), 1024, 1024)
     with pytest.raises(ValueError, match = "32-bit"):
         rp._gpu_preprocess(proc, img, 1024, 1024, "cpu")
+
+
+def test_batched_normalize_uses_64_bit_offsets():
+    """The guard bounds one image; the normalize kernel runs flat over the whole NHWC batch, so a [24, 8192, 8192, 3]
+    batch (4.8e9 elements) must not wrap: the program offset is widened to i64 before the multiply."""
+    import re
+
+    triton = pytest.importorskip("triton")
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource
+
+    from core.inference import diffusion_lanczos_triton as K
+
+    assert K.fits_int32(8192, 8192, 8192, 8192) and 24 * 8192 * 8192 * 3 > 2**32
+    signature = {
+        "src": "*u8",
+        "dst": "*fp32",
+        "normalization": "*fp32",
+        "count": "i64",
+        "block": "constexpr",
+    }
+    source = ASTSource(K._normalize_rgb, signature, constexprs = {"block": 256})
+    ir = triton.compile(source, target = GPUTarget("cuda", 80, 32)).asm["ttir"]
+    assert re.search(r"arith\.muli %\S+, %c256_i64 : i64", ir), ir
+    assert "!tt.ptr<i8>>, tensor<256xi64>" in ir and "!tt.ptr<i8>>, tensor<256xi32>" not in ir, ir
+
+
+def test_probe_oom_is_not_cached(monkeypatch):
+    """An OOM during the load-time probe takes the CPU path for now and probes again on the next request; a real
+    probe failure is still cached."""
+    monkeypatch.setattr(rp, "_cuda_ok", lambda: True)
+    monkeypatch.setattr(rp, "_PROBED", {})
+    results = [torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB"), True]
+
+    def probe(proc, a, p, device):
+        r = results.pop(0)
+        if isinstance(r, BaseException):
+            raise r
+        return r
+
+    monkeypatch.setattr(rp, "_probe", probe)
+    pipe = _Pipe(device = torch.device("cuda:0"))
+    assert rp.install(pipe) is True
+    assert rp.warm(pipe) is False and rp._PROBED == {}
+    assert rp.warm(pipe) is True and rp._PROBED == {"cuda:0": True} and results == []
+
+    monkeypatch.setattr(rp, "_PROBED", {})
+    monkeypatch.setattr(
+        rp, "_probe", lambda *a: (_ for _ in ()).throw(RuntimeError("Triton compile failed"))
+    )
+    assert rp.warm(pipe) is False and rp._PROBED == {"cuda:0": False}

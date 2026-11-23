@@ -126,7 +126,8 @@ def test_real_gloo_two_ranks(tmp_path, picks, verdict):
     ]
     outs = [p.communicate(timeout = 180)[0] for p in procs]
     assert [p.returncode for p in procs] == [0, 0]
-    assert all(o.strip().startswith(verdict) for o in outs), outs
+    # Gloo may print its own connection banner on stdout first; the verdict is the child's last line.
+    assert all(o.strip().splitlines()[-1].startswith(verdict) for o in outs), outs
 
 
 def test_same_label_with_different_converted_layers_is_refused(monkeypatch):
@@ -214,6 +215,7 @@ def test_real_gloo_rank_local_layer_failure(tmp_path, fail, verdict):
     ]
     outs = [p.communicate(timeout = 180)[0] for p in procs]
     assert [p.returncode for p in procs] == [0, 0], outs
-    assert all(o.strip().startswith(verdict) for o in outs), outs
+    last = [o.strip().splitlines()[-1] for o in outs]
+    assert all(line.startswith(verdict) for line in last), outs
     if fail == "1":
-        assert outs[0].split()[1:3] == ["2", "0"] and outs[1].split()[1:3] == ["1", "1"], outs
+        assert last[0].split()[1:3] == ["2", "0"] and last[1].split()[1:3] == ["1", "1"], outs

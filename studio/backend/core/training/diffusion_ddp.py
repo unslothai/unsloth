@@ -1,18 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Data-parallel DiT LoRA training across the visible GPUs of one host: one process per GPU.
-
-The trainer child is rank 0; it starts ranks 1..N-1 as plain subprocesses (the child is a daemonic multiprocessing
-process, which may not have multiprocessing children). Every rank builds the same GLOBAL micro-batch from the same
-seeded streams (sampler order, crop / variant picks, noise, timesteps, caption dropout) and trains on its own slice,
-so a run on N GPUs at batch b is the run on one GPU at batch N*b, with the batch split across cards. After the
-micro-steps, one all-reduce averages the LoRA gradients (and the step loss) before clipping, so compile, the
-checkpointing budget, OOM reruns and fp16 loss scaling run per rank unchanged and the replicas stay identical.
-
-Rank 0 alone emits events, writes checkpoints, previews and the adapter. Ranks 1..N-1 wait until rank 0 has
-encoded the conditioning (so they read it warm from the on-disk cache) and loaded its transformer (so they load from
-page cache, one at a time), then join the first collective."""
+"""Rank 0 spawns 1..N-1 as subprocesses (daemonic processes cannot have children); ranks share the
+seeded global micro-batch (N GPUs at batch b = one at N*b) and all-reduce LoRA grads before
+clipping; only rank 0 writes outputs; ranks 1..N-1 wait for its cache, weights, then join the
+collective."""
 
 from __future__ import annotations
 
@@ -463,8 +455,7 @@ def launch(
     try:
         dist.init_process_group("nccl", store = store, rank = 0, world_size = world, timeout = _timeout())
     except BaseException:
-        # The caller never gets ctx, so stop the started ranks and the watcher (which would os._exit this process
-        # once they die) here.
+        # Caller never gets ctx: stop ranks and the watcher here, else the watcher os._exit()s.
         ctx.close(failed = True)
         raise
     _CURRENT = ctx

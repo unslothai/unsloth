@@ -47,8 +47,7 @@ def test_strided_race_name_follows_the_call_the_card_times():
     ],
 )
 def test_dispatch_race_keys_each_card_by_its_timed_call(monkeypatch, cards, dtype, expected):
-    """The dispatch install races the pin on the load card and a second card: each verdict name says whether that
-    card's timed incumbent is the strided call."""
+    """Each card races the pin; its verdict name says whether its timed incumbent is strided."""
     from core.inference import diffusion_int8_attention as I8
     from core.inference import rocm_bf16
 

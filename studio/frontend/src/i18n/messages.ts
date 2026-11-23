@@ -2,42 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getLocale } from "./locale-store";
+import { LOCALES } from "./locale-tags";
 import { en } from "./locales/en";
 import type { InterpolationValues, MessageKey, MessageTree } from "./types";
 
-export const LOCALES = {
-  en: { label: "English", nativeLabel: "English" },
-  "zh-CN": { label: "Chinese (Simplified)", nativeLabel: "简体中文" },
-  "zh-TW": {
-    label: "Chinese (Traditional, Taiwan)",
-    nativeLabel: "繁體中文（台灣）",
-  },
-  ja: { label: "Japanese", nativeLabel: "日本語" },
-  ko: { label: "Korean", nativeLabel: "한국어" },
-  es: { label: "Spanish (Spain)", nativeLabel: "Español (España)" },
-  "es-419": {
-    label: "Spanish (Latin America)",
-    nativeLabel: "Español (Latinoamérica)",
-  },
-  "pt-BR": { label: "Portuguese (Brazil)", nativeLabel: "Português (Brasil)" },
-  fr: { label: "French", nativeLabel: "Français" },
-  de: { label: "German", nativeLabel: "Deutsch" },
-  it: { label: "Italian", nativeLabel: "Italiano" },
-  ru: { label: "Russian", nativeLabel: "Русский" },
-  sv: { label: "Swedish", nativeLabel: "Svenska" },
-  hi: { label: "Hindi", nativeLabel: "हिन्दी" },
-  ar: { label: "Arabic", nativeLabel: "العربية" },
-  he: { label: "Hebrew", nativeLabel: "עברית" },
-  id: { label: "Indonesian", nativeLabel: "Bahasa Indonesia" },
-  vi: { label: "Vietnamese", nativeLabel: "Tiếng Việt" },
-  tr: { label: "Turkish", nativeLabel: "Türkçe" },
-  pl: { label: "Polish", nativeLabel: "Polski" },
-  uk: { label: "Ukrainian", nativeLabel: "Українська" },
-  th: { label: "Thai", nativeLabel: "ไทย" },
-  fa: { label: "Persian", nativeLabel: "فارسی" },
-  cs: { label: "Czech", nativeLabel: "Čeština" },
-  nl: { label: "Dutch", nativeLabel: "Nederlands" },
-} as const;
+export { LOCALES };
 
 export type Locale = keyof typeof LOCALES;
 export type TranslationKey = MessageKey<typeof en>;

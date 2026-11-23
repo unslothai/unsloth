@@ -1875,7 +1875,8 @@ def _nf4_in_blocks():
     Linear4bit.forward = forward
 
 
-_CACHE_KWARGS = ("past_key_values", "past_key_value", "cache_params", "layer_past")
+# transformers >= 5.24 layers take `cache` (it was `past_key_values`).
+_CACHE_KWARGS = ("past_key_values", "past_key_value", "cache_params", "layer_past", "cache")
 
 
 def _has_cache(args, kwargs):
@@ -1933,23 +1934,43 @@ def _is_hf_checkpoint_wrapper(fn):
     )
 
 
-# The cache arguments transformers' wrapper clears before it checkpoints (unless _can_checkpoint_with_cache).
-_CHECKPOINT_CACHE_KWARGS = ("past_key_values", "layer_past")
+# The cache arguments transformers' wrapper clears before it checkpoints (unless _can_checkpoint_with_cache):
+# `past_key_values` on 5.23, `cache` on 5.24.
+_CHECKPOINT_CACHE_KWARGS = ("past_key_values", "cache", "layer_past")
 
 
-def _checkpointing(forward):
+def _checkpoint_contract(wrapper):
+    """What the installed transformers wrapper does, read off its code: whether it checkpoints only under grad
+    (5.24 added `torch.is_grad_enabled()`; 5.23 checkpoints a training-mode layer under no_grad too, cache
+    cleared) and which cache keywords it clears. Unknown code keeps the 5.24 rule and clears every name."""
+    code = getattr(wrapper, "__code__", None)
+    if code is None:
+        return True, _CHECKPOINT_CACHE_KWARGS
+    names = tuple(n for n in _CHECKPOINT_CACHE_KWARGS if n in code.co_consts)
+    return "is_grad_enabled" in code.co_names, names or _CHECKPOINT_CACHE_KWARGS
+
+
+def _checkpointing(forward, contract = None):
     """The block's forward hides transformers' checkpoint wrapper, so layers ran without checkpointing."""
+    needs_grad, cache_kwargs = contract or (True, _CHECKPOINT_CACHE_KWARGS)
 
     @functools.wraps(forward)
     def forward_with_checkpointing(self, *args, **kwargs):
         outermost = type(self).forward is forward_with_checkpointing or (
             getattr(self.__dict__.get("forward"), "__func__", None) is forward_with_checkpointing
         )
-        if self.gradient_checkpointing and self.training and outermost:
+        # transformers >= 5.24: without grad there is no backward to replay the layer, so it runs as is, cache
+        # included (generating from a model left in training mode). 5.23 checkpoints it with the cache cleared.
+        if (
+            self.gradient_checkpointing
+            and self.training
+            and (not needs_grad or torch.is_grad_enabled())
+            and outermost
+        ):
             if kwargs.get("use_cache"):
                 kwargs["use_cache"] = False
             if not getattr(self, "_can_checkpoint_with_cache", False):
-                for name in _CHECKPOINT_CACHE_KWARGS:
+                for name in cache_kwargs:
                     if kwargs.get(name) is not None:
                         kwargs[name] = None
             return self._gradient_checkpointing_func(
@@ -1988,8 +2009,10 @@ def _wrap(
 ):
     original = getattr(cls.forward, "_unsloth_block_original", cls.forward)
     checkpoint_outside = getattr(cls.forward, "_unsloth_block_checkpoint_outside", False)
+    contract = getattr(cls.forward, "_unsloth_block_checkpoint_contract", None)
     if _is_hf_checkpoint_wrapper(original):
         # Compile the layer's own forward; checkpointing goes back outside the block (below).
+        contract = _checkpoint_contract(original)
         original, checkpoint_outside = original.__wrapped__, True
     # Host-read packed lengths / PrefixGrouper segments stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
@@ -2229,9 +2252,8 @@ def _wrap(
             _mark_packed_dynamic(kwargs)
             _precheck_band(self, hidden_states.shape[1], args, kwargs, hidden_states)
             _settle_mask_flags(self, kwargs)
-        # Grad-mode graphs: bit 2 runs every op, bit 4 skips the MLP down projection (a gradient checkpoint
-        # replay of exactly this layer, whose output value its backward never reads). A no-grad call (the
-        # checkpointed forward) of an eligible layer trials the graph its replay will use.
+        # Bit 2 runs every op; bit 4 skips the MLP down projection, since a checkpoint replay never
+        # reads this layer's output in backward; a no-grad call trials the graph replay uses.
         skip_down = _skip_down_eligible(self, original)
         if torch.is_grad_enabled():
             skip_down = skip_down and (trial or _replays(self))
@@ -2318,9 +2340,10 @@ def _wrap(
     forward._unsloth_block_original = original
     forward._unsloth_block_state = state
     forward._unsloth_block_checkpoint_outside = checkpoint_outside
+    forward._unsloth_block_checkpoint_contract = contract
     setattr(forward, _MARK, True)
     # A new name: `forward` is also the closure the grad-mode trial above calls (the shim would recurse).
-    installed = _checkpointing(forward) if checkpoint_outside else forward
+    installed = _checkpointing(forward, contract) if checkpoint_outside else forward
     if install:
         cls.forward = installed
     return installed
@@ -2646,9 +2669,14 @@ def patch_block_compile(model):
     wrapped = []
     for cls in classes:
         if getattr(cls.forward, _MARK, False):
+            # Wrapped by an earlier model: this model's hooks may still hold the forward from before.
+            before = getattr(cls.forward, "_unsloth_block_before", None)
+            if before is not None:
+                _rebind_hooked_instances(model, cls, before)
             continue
         before = cls.forward
-        _wrap(cls, _COMPILE_OPTIONS, len(kinds.get(cls, ())) or 1)
+        installed = _wrap(cls, _COMPILE_OPTIONS, len(kinds.get(cls, ())) or 1)
+        installed._unsloth_block_before = before
         wrapped.append(cls.__name__)
         _rebind_hooked_instances(model, cls, before)
     for layer in compiled_layers:

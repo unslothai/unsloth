@@ -250,9 +250,8 @@ def plan_swap(
     need_bytes: int = 0,
     depth: int = 2,
 ) -> list:
-    """Blocks to swap per list. block_bytes = [[bytes per block] per list]; request = N (spread over the lists by
-    length) or "auto" (the smallest equal fraction of every list whose freed bytes, net of the depth + 1 slot pool,
-    cover need_bytes). Returns [[indices] per list]."""
+    """Returns [[indices] per list]; N is spread by list length, auto takes the smallest equal
+    fraction of every list whose freed bytes, net of the depth + 1 slot pool, cover need_bytes."""
     lens = [len(b) for b in block_bytes]
     total = sum(lens)
     if not total:

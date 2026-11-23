@@ -348,11 +348,10 @@ def cuda_started():
 
 
 def apply_late_allocator_env(before, environ = None):
-    """`bind_local_cuda_device` starts CUDA on torchrun ranks > 0 at import, which fixes the caching allocator's
-    settings before unsloth_zoo exports its default (expandable_segments): those ranks ran without it while rank 0
-    had it (Qwen3.8-27B 4-bit FSDP2 on 2x T4: 2.2 GiB more reserved on rank 1 at sharding). After the zoo import,
-    apply what it changed (`before`: the ALLOCATOR_ENV values before it) at runtime. Returns the settings applied,
-    or None (nothing changed, or CUDA not started yet: torch then reads the environment itself)."""
+    """Ranks > 0 start CUDA via bind_local_cuda_device before unsloth_zoo sets expandable_segments,
+    so they lacked it (2.2 GiB more reserved on rank 1 at sharding); re-apply changed
+    ALLOCATOR_ENV from before after the zoo import; None if nothing changed or CUDA not started
+    (torch reads env)."""
     environ = os.environ if environ is None else environ
     if all(environ.get(k) == before.get(k) for k in ALLOCATOR_ENV):
         return None

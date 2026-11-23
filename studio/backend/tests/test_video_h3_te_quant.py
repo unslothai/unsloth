@@ -531,14 +531,17 @@ def test_the_real_index_records_where_the_conditioner_comes_from():
 
 
 def test_the_index_compare_has_no_tail_name_tolerance():
-    """The plan-side gate uses te_base_equivalent, which accepts a matching final path segment.
-    That tolerance is the hole this gate closes, so it must not be reused here: someone/MiniMax-H3
-    is a different repo with different weights."""
+    """te_base_equivalent still accepts a local path by its final segment; this gate must not:
+    /models/MiniMax-H3 (and someone/MiniMax-H3) may hold different weights."""
     from core.inference.diffusion_te_prequant import te_base_equivalent
     from core.inference.video import _h3_te_canonical
 
+    assert te_base_equivalent(
+        H3_BASE, "/models/MiniMax-H3"
+    ), "precondition: local paths are tolerated"
+    for other in ("someone/MiniMax-H3", "someone/minimax-h3"):
+        assert not te_base_equivalent(H3_BASE, other)
     for other in ("someone/MiniMax-H3", "/models/MiniMax-H3", "someone/minimax-h3"):
-        assert te_base_equivalent(H3_BASE, other), "precondition: the tolerant helper accepts it"
         assert _h3_te_canonical(other) != _h3_te_canonical(H3_BASE)
     for same in (H3_BASE, H3_BASE.lower(), f"  {H3_BASE} "):
         assert _h3_te_canonical(same) == _h3_te_canonical(H3_BASE)

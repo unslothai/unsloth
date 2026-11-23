@@ -163,13 +163,14 @@ def _vertical_lanczos(
 
 @triton.jit
 def _normalize_rgb(src, dst, normalization, count, block: tl.constexpr):
-    index = tl.program_id(0) * block + tl.arange(0, block)
+    # flat over the whole batch, which can pass 2**31 elements: 64-bit offsets
+    index = tl.program_id(0).to(tl.int64) * block + tl.arange(0, block)
     pixel = tl.load(src + index, index < count, 0).to(tl.int32)
     value = tl.load(normalization + index % 3 * 256 + pixel)
     tl.store(dst + index, value, index < count)
 
 
-# The kernels index one image with 32-bit flat offsets (only the batch offset is 64-bit).
+# The resize kernels index one image with 32-bit flat offsets (only the batch offset is 64-bit).
 MAX_FLAT = 2**31
 
 

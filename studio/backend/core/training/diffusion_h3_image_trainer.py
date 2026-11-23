@@ -614,11 +614,9 @@ def _cache_put(pcache, key, tensors) -> None:
 def _prepare_h3_image_conditioning(
     cfg, root, paths, texts, device, on_event, _check_stop, *, need_vae
 ):
-    """(embeds_by_text, per-picture (mean, std), vae or None), or None on a stop request.
-
-    Captions and sample prompts are served from the persistent cache when present; the conditioner loads only for
-    the misses, so a warm run never loads it. The VAE loads for latent misses and for the preview decode. Loads and
-    encodes run RNG-isolated, so a warm run and a cold run hand the same training streams on."""
+    """Returns (embeds_by_text, per-picture (mean, std), vae or None), or None on stop; a warm
+    persistent cache skips the conditioner (the VAE loads for latent misses and previews); loads
+    and encodes are RNG-isolated so warm and cold runs get the same streams."""
     from core.inference import diffusion_minimax_h3_image as h3i
     from core.training.diffusion_samples import isolated_sampling
 

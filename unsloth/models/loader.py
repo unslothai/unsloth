@@ -1781,7 +1781,8 @@ class FastLanguageModel(FastLlamaModel):
             raise RuntimeError(combined_error) from _cause
 
         if peft_config is not None:
-            _refuse_network_share_adapter_base(model_name, peft_config)
+            # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
+            _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
         _model_type_config = peft_config if peft_config is not None else model_config
         if peft_config is not None and isinstance(token, str) and token:
             _model_type_config = _memo_config_probe(
@@ -2786,7 +2787,8 @@ class FastModel(FastBaseModel):
             raise RuntimeError(combined_error) from _cause
 
         if peft_config is not None:
-            _refuse_network_share_adapter_base(model_name, peft_config)
+            # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
+            _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
         _model_type_config = peft_config if peft_config is not None else model_config
         if peft_config is not None and isinstance(token, str) and token:
             _model_type_config = _memo_config_probe(
