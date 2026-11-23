@@ -29,6 +29,7 @@ WRAPPER_NAMES = (
     "_install_grpo_hidden_states_forward_wrapper",
     "_grpo_pre_head_hidden_divisor",
     "_grpo_hidden_states_reproduce_logits",
+    "_grpo_head_input_match_is_decisive",
 )
 
 OPTIONAL_NAMES = ("_note_grpo_hidden_states_success",)

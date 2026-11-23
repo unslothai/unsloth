@@ -2132,7 +2132,7 @@ def _replace_outputs_logits(outputs, hidden_states):
 # Sticky per model: its head input is not hidden_states[-1] in a way we can reproduce, so every call returns real logits.
 _UNSLOTH_GRPO_HIDDEN_STATES_UNSAFE_ATTR = "_unsloth_grpo_hidden_states_unsafe"
 _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR = "_unsloth_grpo_hidden_states_verified"
-# Set once the fallback saw the forward return the head input itself (see wrapped_forward).
+# Train/eval modes in which the fallback saw the forward return the head input itself (see wrapped_forward).
 _UNSLOTH_GRPO_HIDDEN_STATES_RETURNS_HEAD_INPUT_ATTR = (
     "_unsloth_grpo_hidden_states_returns_head_input"
 )
@@ -2175,6 +2175,23 @@ def _grpo_hidden_states_reproduce_logits(model, hidden_states, logits):
         want = logits[..., -1:, :].float().to(got.device)
         tolerance = 5e-2 * float(want.abs().max()) + 1e-3
         return bool(float((got - want).abs().max()) <= tolerance)
+
+
+def _grpo_head_input_match_is_decisive(model, hidden_states):
+    """The forward's .logits equalled its last hidden state: does that prove it returned the head input?
+
+    Only when real logits could not have looked the same. A head of another width can never give a hidden-width
+    output; a square head can, when the head maps this input to itself (an all-zero row, an identity block), and
+    then the match says nothing about later inputs.
+    """
+    get_output_embeddings = getattr(model, "get_output_embeddings", None)
+    head = get_output_embeddings() if callable(get_output_embeddings) else None
+    weight = getattr(head, "weight", None)
+    if not isinstance(weight, torch.Tensor) or weight.is_meta or weight.ndim != 2:
+        return False
+    if weight.shape[0] != hidden_states.shape[-1]:
+        return True
+    return _grpo_hidden_states_reproduce_logits(model, hidden_states, hidden_states) is False
 
 
 def _install_grpo_hidden_states_forward_wrapper(model):
@@ -2269,10 +2286,14 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         # would compare hidden states with hidden states, call the input unsafe and degrade every later call.
         # The comparison reads its result back to the host (a sync on CUDA, a data-dependent branch under
         # Dynamo), so it only runs until this model has a verdict: either answer is then kept per model.
+        # A match is kept only when it is decisive, and only for the train/eval mode it was seen in: a
+        # coincidental match (or a forward whose return depends on the mode) must not switch off the head check.
         verified = getattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR, None)
-        returned_head_input = getattr(
-            target_model, _UNSLOTH_GRPO_HIDDEN_STATES_RETURNS_HEAD_INPUT_ATTR, False
+        mode = bool(getattr(target_model, "training", False))
+        head_input_modes = getattr(
+            target_model, _UNSLOTH_GRPO_HIDDEN_STATES_RETURNS_HEAD_INPUT_ATTR, ()
         )
+        returned_head_input = mode in head_input_modes
         if verified is None and not returned_head_input:
             native = getattr(outputs, "logits", None)
             returned_head_input = (
@@ -2284,8 +2305,14 @@ def _install_grpo_hidden_states_forward_wrapper(model):
                     native[..., -1:, :], hidden_states[..., -1:, :].to(device = native.device)
                 )
             )
-            if returned_head_input:
-                setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_RETURNS_HEAD_INPUT_ATTR, True)
+            if returned_head_input and _grpo_head_input_match_is_decisive(
+                target_model, hidden_states[..., -1:, :]
+            ):
+                setattr(
+                    target_model,
+                    _UNSLOTH_GRPO_HIDDEN_STATES_RETURNS_HEAD_INPUT_ATTR,
+                    frozenset(head_input_modes) | {mode},
+                )
         # Once per model: a head input we do not reproduce (another pre-head transform) would silently train a different objective.
         if not returned_head_input and verified is None:
             verdict = _grpo_hidden_states_reproduce_logits(
