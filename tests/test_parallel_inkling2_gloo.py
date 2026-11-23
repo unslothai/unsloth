@@ -3,7 +3,8 @@
 """Inkling 2 LoRA (attention Linears + routed experts through PEFT target_parameters) on a 2-rank gloo CPU world
 vs one process, fp32: DDP and native FSDP2 (fsdp2_native.shard_model, every decoder layer a unit; Inkling-2-Mini's
 looped layers run three times per forward under the FSDP2 hooks) match the reference losses and step-0 LoRA
-gradients; tensor / pipeline parallel refuse the model with a ValueError instead of training it."""
+gradients; pipeline parallel refuses the model with a ValueError instead of training it (tensor parallel:
+tests/test_tp_inkling2_gloo.py)."""
 
 import multiprocessing
 import os
@@ -331,7 +332,7 @@ def test_data_parallel_message_checkpoint_matches_one_process(mode, reentrant):
 
 
 @pytest.mark.parametrize("loop", [True, False], ids = ["mini_loop", "small"])
-@pytest.mark.parametrize("mode", ["tp", "pp"])
+@pytest.mark.parametrize("mode", ["pp"])
 def test_tensor_and_pipeline_parallel_refuse(mode, loop):
     results = _spawn(mode = mode, loop = loop)
     assert all(r is not None and "error" not in r for r in results), results

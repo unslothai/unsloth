@@ -236,9 +236,18 @@ class _Region:
     latent: bool = (
         False  # latent-query MQA (DeepSeek-V4.1): one replicated key / value head, grouped output
     )
-    # (child module, parameter name, parts) sharded on dim 0 outside any projection (Gated DeltaNet conv1d
-    # channels): DTensors, read as this rank's local slice while the region runs.
+    # (child module, parameter name, parts[, dim]) sharded on dim (default 0) outside any projection (Gated
+    # DeltaNet conv1d channels, Inkling 2 per-head clip scales): DTensors, read as this rank's local slice while
+    # the region runs.
     child_params: list = dataclasses.field(default_factory = list)
+    # (child module, parameter name) read whole by every local head (Inkling 2's relative position bias
+    # profiles): replicated, gradients summed over tp.
+    replicated_params: list = dataclasses.field(default_factory = list)
+    # (child module, {attribute: local value}): sizes a child's forward reshapes with (tp_replica restores them).
+    local_attrs: list = dataclasses.field(default_factory = list)
+    # Tensor keyword inputs besides the first (Inkling 2's key_hidden_states / value_hidden_states): every one
+    # feeds this rank's heads only, so each gets the copy-to-tp (gradient all-reduce) the first input gets.
+    extra_inputs: tuple = ()
 
 
 @dataclasses.dataclass
@@ -608,6 +617,9 @@ def derive_tp_plan(
             seen[id(child)] = path
             if kind == "linear_attention":
                 regions.append(_linear_attention_region(path, child, compiled, user, tp_size))
+                continue
+            if kind == "attention" and _is_inkling2_attention(child):
+                regions.append(_inkling2_attention_region(path, child, compiled, user, tp_size))
                 continue
             regions.append(_region(path, child, kind, compiled, text, tp_size))
         # A pipeline parallel pass-through (a layer another stage owns) is not a replicated layer.
@@ -1033,7 +1045,7 @@ def _set_local_linear_heads(module, region, tp):
     # Without causal_conv1d, transformers 4.57 - 5.16 call self.conv1d(mixed_qkv): the depthwise conv's channel
     # / group counts must be the local ones too (tp_replica puts them back with the whole weight).
     channels = local["conv_dim"]
-    for owner, _, _ in region.child_params:
+    for owner, *_ in region.child_params:
         if isinstance(owner, nn.Conv1d) and "_unsloth_tp_saved_attrs" not in owner.__dict__:
             names = ("in_channels", "out_channels", "groups")
             owner.__dict__["_unsloth_tp_saved_attrs"] = {
@@ -1041,6 +1053,191 @@ def _set_local_linear_heads(module, region, tp):
             }
             for n in names:
                 owner.__dict__[n] = channels
+
+
+# Inkling 2 (Inkling-2-Small / Inkling-2-Mini) attention: every projection is a wrapper around its Linear.
+_INKLING2_ATTENTION_CHILDREN = (
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "sink_proj",
+    "relative_position_bias",
+)
+
+
+def _is_inkling2_attention(module):
+    cls = type(module).__name__
+    if not (cls.startswith("Inkling2") and cls.endswith("Attention")):
+        return False
+    children = module._modules
+    return all(
+        isinstance(children.get(n), nn.Module) for n in _INKLING2_ATTENTION_CHILDREN
+    ) and all(
+        isinstance(children[n]._modules.get("linear"), nn.Module)
+        for n in ("q_proj", "k_proj", "v_proj", "o_proj")
+    )
+
+
+def _inkling2_attention_region(path, module, compiled, user, tp):
+    """An Inkling 2 attention sharded by heads (query and key / value heads alike, so the GQA grouping stays):
+
+    - column parallel by heads: q_proj.linear, k_proj.linear, v_proj.linear, the output gate o_proj.gate_proj,
+      sink_proj (one sink logit per head), relative_position_bias.linear (d_rel states per head), and the
+      dynamic short convolutions' weight_proj (kernel taps per key / value head);
+    - per-head parameters sharded with their heads: the query / relative state clip scales [heads, dim], the key /
+      value short convolution channels (conv1d.weight, or the dynamic convolution's static_weight [taps, channels]);
+    - row parallel: o_proj.linear, one all-reduce after it;
+    - replicated (gradient summed over tp): relative_position_bias.proj, the bias-vs-distance profiles every head
+      mixes. The key / value norms (L2 clip, unweighted RMS norm) are per head and hold no parameters.
+    Each rank runs the eager or flex attention on its local heads; position bias and sinks follow the heads."""
+    if user and compiled:
+        hit = [key for key, regex, _ in compiled if regex.search(path) or key.startswith(path)]
+        for name, _ in module.named_modules():
+            hit += [key for key, regex, _ in compiled if name and regex.search(f"{path}.{name}")]
+        if hit:
+            raise ValueError(
+                f"Unsloth: tensor parallelism shards the Inkling 2 attention '{path}' by heads with a fixed rule; "
+                f"drop {sorted(set(hit))[:3]} from the plan."
+            )
+    heads, kv_heads, head_dim = module.num_heads, module.num_key_value_heads, module.head_dim
+    if (
+        not all(isinstance(x, int) and x > 0 for x in (heads, kv_heads, head_dim))
+        or heads % kv_heads
+    ):
+        raise ValueError(f"Unsloth: Inkling 2 attention '{path}' has no usable head sizes.")
+    _check_divisible("num_attention_heads", heads, tp, path)
+    if kv_heads % tp:
+        raise ValueError(
+            f"Unsloth: tensor parallel size {tp} does not divide num_key_value_heads = {kv_heads} ({path}): "
+            "Inkling 2 shards its key / value short convolutions with the key / value heads, so they cannot be "
+            "replicated. Choose a tp size that divides it."
+        )
+    q, k, v, o = module.q_proj, module.k_proj, module.v_proj, module.o_proj
+    bias = module.relative_position_bias
+    hidden = _logical_shape(*_weight(q.linear))[1]
+    projs, child_params, local_attrs, covered = [], [], [], {}
+
+    def take(name, child):
+        covered[name] = child
+
+    def linear(name, child, style, out_features):
+        weight, base = _weight(child)
+        if (
+            weight is None
+            or getattr(weight, "ndim", 0) != 2
+            or not isinstance(base, nn.Linear)
+            and not (_is_params4bit(weight))
+        ):
+            raise ValueError(
+                f"Unsloth: tensor parallelism expects a Linear at '{path}.{name}' (got {type(child).__name__})."
+            )
+        out_f, in_f = _logical_shape(weight, base)
+        expected = (out_features, hidden) if style == COLWISE else (hidden, out_features)
+        if (out_f, in_f) != expected:
+            raise ValueError(
+                f"Unsloth: Inkling 2 '{path}.{name}' is {out_f} x {in_f}, not {expected[0]} x {expected[1]}; its "
+                "head layout is unknown to tensor parallelism."
+            )
+        _check_divisible(
+            f"{name} {'out' if style == COLWISE else 'in'}_features", out_features, tp, path
+        )
+        projs.append(_Proj(name, child, style, (out_f,)))
+        take(name, child)
+
+    def per_head(
+        name,
+        owner,
+        param_name,
+        size,
+        dim = 0,
+    ):
+        param = owner._parameters.get(param_name)
+        if param is None or param.ndim <= dim or param.shape[dim] != size:
+            raise ValueError(
+                f"Unsloth: Inkling 2 '{path}.{name}.{param_name}' is "
+                f"{None if param is None else tuple(param.shape)}, not {size} along dim {dim}."
+            )
+        child_params.append((owner, param_name, (size,), dim))
+
+    linear("q_proj.linear", q.linear, COLWISE, heads * head_dim)
+    per_head("q_proj.norm", q.norm, "scale", heads)
+    take("q_proj.norm", q.norm)
+    for name, kvp in (("k_proj", k), ("v_proj", v)):
+        channels = kv_heads * head_dim
+        linear(f"{name}.linear", kvp.linear, COLWISE, channels)
+        sconv = kvp._modules.get("sconv")
+        if type(sconv).__name__.endswith("DynamicShortConvolution"):
+            taps = sconv.conv_kernel_size
+            if sconv.num_heads != kv_heads:
+                raise ValueError(
+                    f"Unsloth: Inkling 2 '{path}.{name}.sconv' has {sconv.num_heads} heads, not {kv_heads}."
+                )
+            per_head(f"{name}.sconv", sconv, "static_weight", channels, dim = 1)
+            weight_proj = sconv._modules.get("weight_proj")
+            if weight_proj is None:
+                raise ValueError(f"Unsloth: Inkling 2 '{path}.{name}.sconv' has no weight_proj.")
+            # [batch, seq, heads * taps] viewed [.., heads, 1, taps]: head-major rows.
+            linear(f"{name}.sconv.weight_proj", weight_proj, COLWISE, kv_heads * taps)
+            local_attrs.append((sconv, {"num_heads": kv_heads // tp}))
+            take(f"{name}.sconv", sconv)
+        elif type(sconv).__name__.endswith("ShortConvolution"):
+            conv = sconv._modules.get("conv1d")
+            if type(conv) is not nn.Conv1d or tuple(conv.weight.shape[:2]) != (channels, 1):
+                raise ValueError(
+                    f"Unsloth: tensor parallelism expects a depthwise nn.Conv1d over {channels} channels at "
+                    f"'{path}.{name}.sconv.conv1d' (got {type(conv).__name__}; LoRA on it is not supported)."
+                )
+            per_head(f"{name}.sconv.conv1d", conv, "weight", channels)
+            if conv._parameters.get("bias") is not None:
+                per_head(f"{name}.sconv.conv1d", conv, "bias", channels)
+            local = channels // tp
+            local_attrs.append(
+                (conv, {"in_channels": local, "out_channels": local, "groups": local})
+            )
+            take(f"{name}.sconv", sconv)
+        else:
+            raise ValueError(
+                f"Unsloth: tensor parallelism has no rule for '{path}.{name}.sconv' ({type(sconv).__name__})."
+            )
+        take(f"{name}.norm", kvp._modules.get("norm"))
+    linear("o_proj.gate_proj", o.gate_proj, COLWISE, heads * head_dim)
+    linear("o_proj.linear", o.linear, ROWWISE, heads * head_dim)
+    linear("sink_proj", module.sink_proj, COLWISE, heads)
+    if bias.num_heads != heads:
+        raise ValueError(
+            f"Unsloth: Inkling 2 '{path}.relative_position_bias' has {bias.num_heads} heads, not {heads}."
+        )
+    d_rel = bias.proj.shape[0]
+    linear("relative_position_bias.linear", bias.linear, COLWISE, heads * d_rel)
+    per_head("relative_position_bias.norm", bias.norm, "scale", heads)
+    take("relative_position_bias.norm", bias.norm)
+    local_attrs.append((bias, {"num_heads": heads // tp}))
+    # Every parameter must be one of the above: anything else (LoRA on a convolution or a sink, a new
+    # transformers parameter) would silently run whole on one rank's heads.
+    roots = tuple(sorted(covered, key = len, reverse = True))
+    for name, _ in module.named_parameters():
+        if name == "relative_position_bias.proj":
+            continue
+        if not any(name.startswith(root + ".") for root in roots):
+            raise ValueError(
+                f"Unsloth: tensor parallelism has no rule for the Inkling 2 parameter '{path}.{name}'."
+            )
+    _check_attention_source(module, path)
+    return _Region(
+        path,
+        module,
+        "attention",
+        projs,
+        [],
+        heads = heads,
+        kv_heads = kv_heads,
+        head_dim = head_dim,
+        child_params = child_params,
+        replicated_params = [(bias, "proj")],
+        local_attrs = local_attrs,
+        extra_inputs = ("key_hidden_states", "value_hidden_states"),
+    )
 
 
 def _logical_shape(weight, base):
@@ -2189,17 +2386,37 @@ def _region_pre_hook(module, args, kwargs):
         return None  # tp_replica: whole weights in place, the region runs as on one GPU
     _head_param_views(module, install = True)
     group = module._unsloth_tp_group
+    extra = module.__dict__.get("_unsloth_tp_extra_inputs", ())
     for name in (module.__dict__.get("_unsloth_tp_input", "hidden_states"), "hidden_states"):
         if isinstance(kwargs.get(name), torch.Tensor):
             kwargs = dict(kwargs)
             kwargs[name] = copy_to_tp(kwargs[name], group)
-            return args, kwargs
+            return args, _copy_extra_inputs(kwargs, extra, group)
     if args and isinstance(args[0], torch.Tensor):
-        return (copy_to_tp(args[0], group),) + tuple(args[1:]), kwargs
+        args = (copy_to_tp(args[0], group),) + tuple(args[1:])
+        if extra and len(args) > 1:
+            raise RuntimeError(
+                f"Unsloth: tensor parallel region {type(module).__name__} takes {extra} by keyword only."
+            )
+        return args, _copy_extra_inputs(kwargs, extra, group)
     raise RuntimeError(
         f"Unsloth: tensor parallel region {type(module).__name__} got no tensor input "
         f"({module.__dict__.get('_unsloth_tp_input', 'hidden_states')})."
     )
+
+
+def _copy_extra_inputs(kwargs, names, group):
+    """copy_to_tp on each further tensor input; one copy per distinct tensor (q / k / v often share one)."""
+    if not names:
+        return kwargs
+    kwargs, copies = dict(kwargs), {}
+    for name in names:
+        x = kwargs.get(name)
+        if isinstance(x, torch.Tensor):
+            if id(x) not in copies:
+                copies[id(x)] = (x, copy_to_tp(x, group))
+            kwargs[name] = copies[id(x)][1]
+    return kwargs
 
 
 def _region_finish(module, y):
@@ -3161,22 +3378,33 @@ def apply_tensor_parallel(
                 region.module, name, param, tp_mesh, "shard", (param.numel(),), 0, rank, tp
             )
         region.module.__dict__["_unsloth_tp_head_params"] = tuple(region.head_params)
-        for owner, name, parts in region.child_params:
-            _set_dtensor(owner, name, owner._parameters[name], tp_mesh, "shard", parts, 0, rank, tp)
+        for owner, name, parts, *dim in region.child_params:
+            dim = dim[0] if dim else 0
+            _set_dtensor(
+                owner, name, owner._parameters[name], tp_mesh, "shard", parts, dim, rank, tp
+            )
         if region.child_params:
             region.module.__dict__["_unsloth_tp_child_params"] = tuple(
-                (owner, name) for owner, name, _ in region.child_params
+                (owner, name) for owner, name, *_ in region.child_params
             )
-        for _, norm in [*region.norms, *region.replicated]:
-            for p in norm.parameters():
-                if p.requires_grad and id(p) not in hooked_norms:
-                    hooked_norms.add(id(p))
-                    # Each rank normalizes its own heads with the shared weight: the grad is a partial sum.
-                    p.register_hook(lambda g, group = group: _all_reduce(g, group))
+        shared = [p for _, norm in [*region.norms, *region.replicated] for p in norm.parameters()]
+        shared += [owner._parameters[name] for owner, name in region.replicated_params]
+        for p in shared:
+            if p.requires_grad and id(p) not in hooked_norms:
+                hooked_norms.add(id(p))
+                # Each rank normalizes its own heads with the shared weight: the grad is a partial sum.
+                p.register_hook(lambda g, group = group: _all_reduce(g, group))
+        for owner, local in region.local_attrs:
+            saved = owner.__dict__.setdefault("_unsloth_tp_saved_attrs", {})
+            for key, value in local.items():
+                saved.setdefault(key, owner.__dict__.get(key, _MISSING))
+                owner.__dict__[key] = value
         module = region.module
         module._unsloth_tp_group = group
         module._unsloth_tp_row_projs = [p.module for p in region.projs if p.style == ROWWISE]
         module._unsloth_tp_input = _input_name(module)
+        if region.extra_inputs:
+            module._unsloth_tp_extra_inputs = tuple(region.extra_inputs)
         if region.kind == "attention":
             _set_local_heads(module, region, tp)
         elif region.kind == "linear_attention":
