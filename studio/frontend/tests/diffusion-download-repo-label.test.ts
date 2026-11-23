@@ -27,7 +27,6 @@ test("a catalog vendor id is labelled with the unsloth repo the backend fetches 
     ["OpenMOSS-Team/MOSS-Image-SFT", IMAGE_CATALOG, "unsloth/MOSS-Image-SFT-FP8"],
     ["OpenMOSS-Team/MOSS-Image-Base", IMAGE_CATALOG, "unsloth/MOSS-Image-Base-FP8"],
     ["Qwen/Qwen-Image-2.1-Turbo", IMAGE_CATALOG, "unsloth/Qwen-Image-2.1-Turbo-FP8"],
-    // An unsloth copy's upstream id labels as the copy; the copy's own id is unchanged.
     ["Qwen/Qwen-Image-2.1", IMAGE_CATALOG, "unsloth/Qwen-Image-2.1"],
     ["unsloth/Qwen-Image-2.1", IMAGE_CATALOG, "unsloth/Qwen-Image-2.1"],
     ["unsloth/flux-3-image-klein-GGUF", IMAGE_CATALOG, "unsloth/flux-3-image-klein-GGUF"],
@@ -36,7 +35,6 @@ test("a catalog vendor id is labelled with the unsloth repo the backend fetches 
     ["Lightricks/LTX-2", VIDEO_CATALOG, "unsloth/LTX-2-FP8"],
     ["Wan-AI/Wan2.2-TI2V-5B-Diffusers", VIDEO_CATALOG, "unsloth/Wan2.2-TI2V-5B-FP8"],
     ["Wan-AI/Wan2.2-T2V-A14B-Diffusers", VIDEO_CATALOG, "unsloth/Wan2.2-T2V-A14B-FP8"],
-    // No unsloth repo carries these files, so the label stays the repo actually fetched.
     ["hunyuanvideo-community/HunyuanImage-2.1-Diffusers", IMAGE_CATALOG, "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"],
     ["Wan-AI/Wan2.1-T2V-1.3B-Diffusers", VIDEO_CATALOG, "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"],
     ["someone/not-in-the-catalog", IMAGE_CATALOG, "someone/not-in-the-catalog"],
@@ -47,8 +45,7 @@ test("a catalog vendor id is labelled with the unsloth repo the backend fetches 
 });
 
 test("every non-unsloth catalog row either names its unsloth mirror or is a known exception", () => {
-  // Rows still fetched from the vendor (no unsloth repo holds the files), or gated rows whose open mirror the plan
-  // names (fetchedFrom would make the network check judge the open mirror against `gated: true`).
+  // Vendor-fetched rows, or gated rows (fetchedFrom would make the network check judge the open mirror).
   const noMirror = new Set([
     "MiniMaxAI/MiniMax-H3-Image",
     "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
@@ -86,9 +83,7 @@ test("every non-unsloth catalog row either names its unsloth mirror or is a know
 
 test("a staged pick is labelled with the repo its plan downloads", () => {
   const entry = (repoId: string, bytes: number, checkpoint?: boolean) => ({ repoId, bytes, checkpoint });
-  // FLUX.3 Fast FP8: the plan stages only the mirror, never the picked BFL id.
   assert.equal(stagedDownloadRepoId([entry(FLUX3_FP8, 18e9, true)], FLUX3), FLUX3_FP8);
-  // A GGUF pick downloads its own repo plus companions: the picked repo leads.
   assert.equal(
     stagedDownloadRepoId(
       [entry(FLUX3_FP8, 9e9, false), entry("unsloth/flux-3-image-klein-GGUF", 3e9, true)],
@@ -96,7 +91,6 @@ test("a staged pick is labelled with the repo its plan downloads", () => {
     ),
     "unsloth/flux-3-image-klein-GGUF",
   );
-  // Only companions left to fetch, no checkpoint flag: the largest download.
   assert.equal(
     stagedDownloadRepoId(
       [entry("unsloth/Qwen3-4B-GGUF", 2e9), entry("unsloth/FLUX.2-dev", 3e8)],

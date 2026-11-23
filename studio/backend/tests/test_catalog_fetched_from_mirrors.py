@@ -55,8 +55,7 @@ def test_fetched_from_is_the_mirror_the_backend_downloads():
 
 
 def test_every_mirrored_vendor_row_names_its_mirror():
-    # A row still marked gated keeps fetchedFrom unset (the network check would judge the open mirror against its
-    # gate); its toast is renamed from the plan's entries instead.
+    # Gated rows keep fetchedFrom unset (network check would judge the open mirror); toast uses the plan instead.
     missing = [
         repo
         for repo, opts in _media_rows()

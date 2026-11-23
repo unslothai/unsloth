@@ -4545,7 +4545,7 @@ export function ImagesPage({
         advanced = { ...advanced, engine: engineFor(repoId, opts, advanced) ?? "auto" };
       }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
-      // Named for the repo the files come from (a vendor id downloads from its unsloth mirror), not the picked id.
+      // Label with the repo actually fetched (a vendor id's unsloth mirror), not the picked id.
       const pickToastId = downloadOnly
         ? undefined
         : pickToast.show(downloadRepoIdFor(opts.displayRepoId ?? repoId, IMAGE_CATALOG));

@@ -3265,7 +3265,7 @@ function VideoGenerator({
       if (!owns()) return true;
       const advanced = currentLoadAdvanced(opts.kind, familyOverrideRequired);
       if (source !== "hub") return handleLoadRef.current(repoId, opts, advanced);
-      // Named for the repo the files come from (a vendor id downloads from its unsloth mirror), not the picked id.
+      // Label with the repo actually fetched (a vendor id's unsloth mirror), not the picked id.
       const pickToastId = pickToast.show(downloadRepoIdFor(opts.displayRepoId ?? repoId, VIDEO_CATALOG));
       // Read before the await: a newer pick replaces quantRevert.
       const ownRevert = quantRevert.current;
