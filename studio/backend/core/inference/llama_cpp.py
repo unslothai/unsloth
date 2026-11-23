@@ -2384,6 +2384,12 @@ def _merge_attempt_metadata(first: dict, last: dict) -> dict:
         for key in ("predicted_n", "predicted_ms"):
             if first_timings.get(key):
                 timings[key] = (timings.get(key) or 0) + first_timings[key]
+        # The timing badge reads the rates, so they follow the merged totals.
+        if timings.get("predicted_ms") and timings.get("predicted_n"):
+            timings["predicted_per_second"] = timings["predicted_n"] / (
+                timings["predicted_ms"] / 1000.0
+            )
+            timings["predicted_per_token_ms"] = timings["predicted_ms"] / timings["predicted_n"]
     return {**last, "usage": usage, "timings": timings}
 
 

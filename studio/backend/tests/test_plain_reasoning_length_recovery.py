@@ -447,3 +447,21 @@ def test_raw_completion_text_ends_the_first_token_wait():
     assert not LlamaCppBackend._sse_event_has_generated_output(
         'data: {"content": "", "stop": true, "stop_type": "eos"}'
     )
+
+
+def test_the_speed_shown_is_for_both_attempts():
+    from core.inference.llama_cpp import _merge_attempt_metadata
+
+    first = {
+        "timings": {"predicted_n": 3_000, "predicted_ms": 60_000.0, "predicted_per_second": 50.0}
+    }
+    last = {
+        "type": "metadata",
+        "timings": {"predicted_n": 10, "predicted_ms": 2_000.0, "predicted_per_second": 5.0},
+        "finish_reason": "stop",
+    }
+
+    timings = _merge_attempt_metadata(first, last)["timings"]
+
+    assert round(timings["predicted_per_second"], 1) == round(3_010 / 62.0, 1)
+    assert round(timings["predicted_per_token_ms"], 2) == round(62_000.0 / 3_010, 2)
