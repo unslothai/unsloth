@@ -34,8 +34,17 @@ function drawsGlass(el: HTMLElement): boolean {
 const painted = (s: CSSStyleDeclaration) =>
   (s.backgroundColor !== "rgba(0, 0, 0, 0)" && s.backgroundColor !== "transparent") || s.backgroundImage !== "none";
 
-// Legacy WebKitGTK masks the frame's ::before to the caption and gives the sidebar its own glass: one lens, not two.
+// One lens per sidebar column: legacy WebKitGTK masks the frame's ::before to the caption and gives the sidebar its
+// own glass, elsewhere the frame holds it. Keyed on the compositor, not the motion flag both carry while moving.
 const FRAME_SIDEBAR = '[data-windows-glass-frame] > [data-slot="sidebar-inner"]';
+function oneSidebarLens(found: HTMLElement[]): HTMLElement[] {
+  const inner = found.filter((h) => h.matches(FRAME_SIDEBAR) && found.includes(h.parentElement as HTMLElement));
+  if (!inner.length) return found;
+  const drop = new Set<Element | null>(
+    document.documentElement.classList.contains("webkit-legacy-compositor") ? inner.map((h) => h.parentElement) : inner,
+  );
+  return found.filter((h) => !drop.has(h));
+}
 
 const PREVIEW_HOSTS = ".wallpaper-preview-composer";
 
@@ -70,11 +79,9 @@ export function GlassLenses({
     const scan = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        let found = [
+        const found = oneSidebarLens([
           ...(preview ? workspace : document).querySelectorAll<HTMLElement>(preview ? PREVIEW_HOSTS : LENS_HOSTS),
-        ].filter((h) => drawsGlass(h) && (!clear || h.matches(LENS_CLEAR_HOSTS)));
-        const framed = new Set(found.filter((h) => h.matches(FRAME_SIDEBAR)).map((h) => h.parentElement));
-        if (framed.size) found = found.filter((h) => !framed.has(h));
+        ].filter((h) => drawsGlass(h) && (!clear || h.matches(LENS_CLEAR_HOSTS))));
         setHosts((prev) =>
           prev.length === found.length && prev.every((h, i) => h === found[i])
             ? prev

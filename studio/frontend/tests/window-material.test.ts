@@ -533,6 +533,7 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 		'[data-slot="sheet-content"]',
 		'[data-slot="dialog-content"]',
 		"[data-chat-model-controls] > .unsloth-model-selector-trigger",
+		'[data-wallpaper-route="page"] .unsloth-model-selector-trigger',
 		'[data-slot$="menu-content"]',
 		'[data-slot="popover-content"]',
 		".tooltip-compact",
@@ -685,7 +686,7 @@ test("a lens stays on the visible box of a host that scrolls itself", () => {
 test("legacy WebKitGTK's sidebar glass takes the lens instead of the masked frame, never both", () => {
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
 	assert.match(lens, /const FRAME_SIDEBAR = '\[data-windows-glass-frame\] > \[data-slot="sidebar-inner"\]';/);
-	assert.match(lens, /if \(framed\.size\) found = found\.filter\(\(h\) => !framed\.has\(h\)\);/);
+	assert.match(lens, /document\.documentElement\.classList\.contains\("webkit-legacy-compositor"\) \? inner\.map\(\(h\) => h\.parentElement\) : inner/);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /webkit-legacy-compositor\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-windows-glass-frame\] > \[data-slot="sidebar-inner"\] \{[^}]*backdrop-filter: blur/);
 });

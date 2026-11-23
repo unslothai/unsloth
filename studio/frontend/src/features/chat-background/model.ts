@@ -63,6 +63,7 @@ export const LENS_HOSTS = [
 	'[data-slot="sheet-content"]',
 	'[data-slot="dialog-content"]',
 	"[data-chat-model-controls] > .unsloth-model-selector-trigger",
+	'[data-wallpaper-route="page"] .unsloth-model-selector-trigger',
 	"[data-chat-model-controls] > [data-chat-model-notice]",
 	"[data-chat-header-actions] > button",
 	'[data-slot$="menu-content"]',
