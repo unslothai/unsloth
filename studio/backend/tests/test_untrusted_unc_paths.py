@@ -98,7 +98,6 @@ def test_path_only_media_cell_on_a_share_is_not_opened(path):
     with pytest.raises(dataset_media.MediaPathRefused):
         decode(None, {"path": path, "bytes": None})
     assert opened == []
-    # Embedded bytes are never opened by path, and local paths still decode.
     decode(None, {"path": path, "bytes": b"RIFF"})
     decode(None, {"path": "clips/a.wav", "bytes": None})
     assert len(opened) == 2
