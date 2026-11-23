@@ -269,6 +269,16 @@ RULES = (
         "(dp without fsdp) for another Muon",
     ),
     Rule(
+        "fsdp2 x optimizer",
+        "Adafactor under native FSDP2",
+        lambda q: q.fsdp2 and "adafactor" in q.optim,
+        "Adafactor factors each weight's second moment into whole-row and whole-column means, and "
+        "every rank holds only a shard of the weight: transformers' and torch's Adafactor both fail "
+        "at the first step on DTensor shards",
+        "adamw_torch / adamw_torch_fused / adamw_8bit / paged_adamw_8bit, or DDP (dp without fsdp) "
+        "for Adafactor",
+    ),
+    Rule(
         "fsdp2 x memory",
         "block swap (offload_layers) under native FSDP2",
         lambda q: q.fsdp2 and q.block_swap,

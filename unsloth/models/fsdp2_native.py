@@ -5269,7 +5269,8 @@ def _refuse_q_galore(training_args):
 def _refuse_projection_optim(training_args):
     """GaLore and APOLLO (optim = 'galore_*' / 'apollo_*', layerwise or not) project whole 2-D weights,
     like Q-GaLore, and the layerwise variants register per-parameter post-gradient hooks that
-    transformers documents as single-GPU only. Native FSDP2 hands them DTensor shards."""
+    transformers documents as single-GPU only. Adafactor (optim = 'adafactor') factors over whole rows
+    and columns. Native FSDP2 hands them DTensor shards."""
     optim = getattr(training_args, "optim", None) if training_args is not None else None
     if optim is None:
         return
@@ -5280,6 +5281,14 @@ def _refuse_projection_optim(training_args):
             "APOLLO project whole 2-D weights (the layerwise variants are single-GPU only), and native "
             "FSDP2 hands the optimizer DTensor shards. Use optim = 'adamw_torch', or launch without "
             "UNSLOTH_FSDP2."
+        )
+    if "adafactor" in name:
+        # Factored second moments need whole rows / columns; step one fails on DTensor shards.
+        raise ValueError(
+            f"Unsloth: native FSDP2 (UNSLOTH_FSDP2=1) cannot train with optim = '{name}': Adafactor "
+            "factors each weight's second moment over whole rows and columns, and native FSDP2 hands "
+            "the optimizer DTensor shards (its first step would fail). Use optim = 'adamw_torch' / "
+            "'adamw_torch_fused' / 'adamw_8bit' / 'paged_adamw_8bit', or launch without UNSLOTH_FSDP2."
         )
 
 
