@@ -3603,20 +3603,15 @@ class ImmutableStaticFiles(StaticFiles):
         return response
 
 
-# Build-root files (boot scripts, fonts, icons, manifest) keep their name across builds. Without a policy the
-# browser guesses a freshness window and can run a stale boot script against a newer build.
-_ROOT_SCRIPT_CACHE_CONTROL = "no-cache"  # unversioned code: revalidate on every use
-_ROOT_RESOURCE_CACHE_CONTROL = (
-    "public, max-age=86400"  # fonts, icons, manifest: a day stale is harmless
-)
+# Build-root files keep their name across builds: without a policy the browser runs a stale boot script.
+_ROOT_SCRIPT_CACHE_CONTROL = "no-cache"
+_ROOT_RESOURCE_CACHE_CONTROL = "public, max-age=86400"
 _ROOT_CODE_SUFFIXES = frozenset((".js", ".mjs", ".css", ".html"))
-# Root-relative classic script URLs in index.html (never protocol-relative, never already carrying a query).
 _INDEX_ROOT_SCRIPT_SRC = _re.compile(rb'(<script\b[^>]*?\ssrc=")(/(?!/)[^"?#]+)(")', _re.IGNORECASE)
 
 
 def _root_file_version(stat_result: os.stat_result) -> str:
-    """Short digest of the file's identity: an in-place update (`unsloth studio update`) changes it.
-    inode and ctime are in too, so a same-size copy that restores mtime (cp -p, rsync -a) still changes it."""
+    # inode + ctime: a same-size copy that restores mtime (cp -p, rsync -a) must still change it.
     return _root_file_version_of(
         stat_result.st_size, stat_result.st_mtime_ns, stat_result.st_ino, stat_result.st_ctime_ns
     )
@@ -3638,8 +3633,7 @@ def _root_file_cache_control(file_path: Path, stat_result: os.stat_result, versi
 
 
 def _root_file_not_modified(response_headers, request_headers) -> bool:
-    # RFC 9110 13.1.3: If-None-Match, when sent, decides alone. Starlette < 1.0 also fell back to
-    # If-Modified-Since, so a same-size, mtime-preserving swap kept answering 304.
+    # RFC 9110 13.1.3: If-None-Match decides alone; starlette < 1.0 fell back to If-Modified-Since.
     if_none_match = request_headers.get("if-none-match")
     if if_none_match:
         if if_none_match.strip() == "*":
@@ -3652,8 +3646,7 @@ def _root_file_not_modified(response_headers, request_headers) -> bool:
 
 
 def _root_script_locator(build_path: Path):
-    """Map an index.html script URL to its file inside the build root (not /assets), else None. Memoized:
-    the URLs come from our own index.html, and resolving a path costs far more than the stat after it."""
+    """Map an index.html script URL to its file in the build root (not /assets), else None."""
     root = build_path.resolve()
 
     @functools.lru_cache(maxsize = 64)
@@ -3670,8 +3663,7 @@ def _root_script_locator(build_path: Path):
 
 
 def _version_root_scripts(html_bytes: bytes, locate) -> bytes:
-    """Append ``?v=<version>`` to index.html's root-level boot scripts so the browser can cache them for good
-    and still fetch a new build's copy on the next page load (index.html itself is never cached)."""
+    """Append ``?v=<version>`` to index.html's root-level boot scripts (index.html itself is never cached)."""
 
     def _versioned(match):
         url = match.group(2)
@@ -3853,8 +3845,7 @@ def setup_frontend(
         if file_path.is_file():
             stat_result = file_path.stat()
             response = FileResponse(file_path, stat_result = stat_result)
-            # Starlette's ETag is size + mtime only; use the identity digest so a same-size, mtime-preserving
-            # replacement (cp -p, rsync -a) stops matching the old validator instead of answering 304 forever.
+            # Starlette's ETag is size + mtime only, so a cp -p swap would answer 304 forever.
             response.headers["etag"] = f'"{_root_file_version(stat_result)}"'
             if _root_file_not_modified(response.headers, request.headers):
                 response = NotModifiedResponse(response.headers)
