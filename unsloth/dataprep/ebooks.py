@@ -105,8 +105,10 @@ class _BookTextParser(HTMLParser):
             or tag in _IGNORE
             or "hidden" in attrs
             or attrs.get("aria-hidden", "").lower() == "true"
-            # A print page number inside a paragraph is not prose.
-            or "pagebreak" in (attrs.get("epub:type") or "").split()
+        )
+        # A print page number is not prose, but a block-level marker still separates the text around it.
+        page_number = (
+            "pagebreak" in (attrs.get("epub:type") or "").split()
             or "doc-pagebreak" in (attrs.get("role") or "").split()
         )
         if not hidden:
@@ -117,7 +119,7 @@ class _BookTextParser(HTMLParser):
             elif tag in {"td", "th"}:
                 self.parts.append(" ")
         if tag not in _VOID:
-            self.stack.append((tag, hidden))
+            self.stack.append((tag, hidden or page_number))
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
