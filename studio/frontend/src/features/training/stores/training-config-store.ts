@@ -87,7 +87,7 @@ let _datasetCheckController: AbortController | null = null;
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
 
-// In memory only, so a page reload asks again: what the last applied defaults answer was asked with.
+// Request behind the last applied defaults; in memory only, so a page reload asks again.
 type ModelDefaultsRequestKey = {
   modelName: string;
   knownCached: boolean;
@@ -294,14 +294,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           requestedSelectionOwnsLoraSnapshot && _modelDefaultsEditBaseline
             ? { ..._modelDefaultsEditBaseline.loraParamEditGenerations }
             : { ..._loraParamEditGenerations };
-        const requestedKnownCached =
-          requestState.selectedModel === modelName &&
-          requestState.modelKnownCached;
-        const requestedLocalPath =
-          requestState.selectedModel === modelName
-            ? requestState.modelLocalPath
-            : null;
-        const requestedAsDecision = requestState.trainAsDecision;
+        const {
+          knownCached: requestedKnownCached,
+          localPath: requestedLocalPath,
+          asDecision: requestedAsDecision,
+        } = requestKey;
         const canApplyTrainingDefaults = () =>
           applyTrainingDefaults &&
           _modelDefaultsEditGeneration === requestedModelDefaultsEditGeneration;
@@ -1300,7 +1297,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const state = get();
           if (!state.selectedModel) return;
           if (state.isLoadingModelDefaults) return;
-          // Already answered for this exact request in this page session: revisiting Train keeps it.
           if (
             state.modelDefaultsAppliedFor === state.selectedModel &&
             state.modelDefaultsError === null &&
