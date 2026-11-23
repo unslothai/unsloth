@@ -233,3 +233,35 @@ test("only text that parses as subtitles takes the cue path; other text is chunk
     /result && !stale && !busy\s*\?\s*\(parseSubtitles\(output\)\?\.format \?\? null\)/,
   );
 });
+
+test("a numbered reply with a repeated or skipped marker is rejected", () => {
+  assert.equal(splitNumberedBatch("1. a\n2. b\n2. c", 2), null);
+  assert.equal(splitNumberedBatch("1. a\n3. b", 2), null);
+  assert.deepEqual(splitNumberedBatch("1. a\nmore\n2. b", 2), ["a\nmore", "b"]);
+});
+
+test("cues whose own lines look numbered go one by one", async () => {
+  const doc = parseSubtitles(
+    "1\n00:00:01,000 --> 00:00:02,000\nShopping list:\n2. apples\n\n2\n00:00:03,000 --> 00:00:04,000\nBananas\n",
+  );
+  assert.ok(doc);
+  const sent: string[] = [];
+  const out = await translateSubtitles(
+    doc,
+    async (source) => {
+      sent.push(source);
+      return source.toUpperCase();
+    },
+    {
+      signal: new AbortController().signal,
+      onPhase: () => {},
+      onOutput: () => {},
+    },
+  );
+  assert.deepEqual(sent, ["Shopping list:\n2. apples", "Bananas"]);
+  assert.match(
+    out,
+    /00:00:01,000 --> 00:00:02,000\nSHOPPING LIST:\n2\. APPLES/,
+  );
+  assert.match(out, /00:00:03,000 --> 00:00:04,000\nBANANAS/);
+});

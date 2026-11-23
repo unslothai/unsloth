@@ -139,7 +139,8 @@ export function splitNumberedBatch(
   for (const line of reply.split(/\r?\n/)) {
     if (!line.trim()) continue;
     const marker = MARKER.exec(line);
-    if (marker && Number(marker[1]) === items.length + 1) {
+    if (marker) {
+      if (Number(marker[1]) !== items.length + 1) return null;
       items.push([line.slice(marker[0].length)]);
     } else if (items.length === 0) {
       return null;
@@ -176,8 +177,15 @@ export async function translateSubtitles(
   for (const [part, batch] of batches.entries()) {
     signal.throwIfAborted();
     onPhase({ kind: "translating", part: part + 1, parts: batches.length });
-    if (batch.length === 1) {
-      await single(batch[0]);
+    // A cue line that already reads like a marker would shift the numbering.
+    const numbered = batch.some((i) =>
+      doc.cues[i].text.split(/\r?\n/).some((line) => MARKER.test(line)),
+    );
+    if (batch.length === 1 || numbered) {
+      for (const cue of batch) {
+        signal.throwIfAborted();
+        await single(cue);
+      }
     } else {
       const reply = splitNumberedBatch(
         await complete(numberedBatch(batch.map((i) => doc.cues[i].text))),
