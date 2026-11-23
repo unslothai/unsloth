@@ -25,6 +25,8 @@ on:
       - '.github/workflows/docker-publish.yml'
       - '.pre-commit-config.yaml'
       - '.github/workflows/studio-backend-ci.yml'
+      # Its shard-layout guards (tests/test_ci_repo_cpu_shards.py) run here.
+      - '.github/workflows/distributed-cpu-ci.yml'
       # Tests this workflow collects read these files directly.
       - '.github/scripts/**'
       - '.github/ci/**'
@@ -63,6 +65,8 @@ on:
       - '.github/workflows/docker-publish.yml'
       - '.pre-commit-config.yaml'
       - '.github/workflows/studio-backend-ci.yml'
+      # Its shard-layout guards (tests/test_ci_repo_cpu_shards.py) run here.
+      - '.github/workflows/distributed-cpu-ci.yml'
       # Tests this workflow collects read these files directly.
       - '.github/scripts/**'
       - '.github/ci/**'
