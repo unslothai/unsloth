@@ -1910,7 +1910,6 @@ def cancel_install(engine: str) -> dict:
 
 
 def remove(engine: str) -> dict:
-    _forget_priced_plans()
     with engine_lease(engine, exclusive = True):
         root = engine_root() / engine
         if root.is_symlink():
