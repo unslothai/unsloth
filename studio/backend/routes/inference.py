@@ -21391,7 +21391,9 @@ async def _load_model_impl(
             msg = _maybe_unsupported_message(redacted_msg)
             raise HTTPException(
                 status_code = 500,
-                detail = _load_error_detail(e, f"Failed to load native model {model_log_label}: {msg}"),
+                detail = _load_error_detail(
+                    e, f"Failed to load native model {model_log_label}: {msg}"
+                ),
             )
         logger.error(f"Error loading model: {e}", exc_info = True)
         msg = _maybe_unsupported_message(redacted_msg)
