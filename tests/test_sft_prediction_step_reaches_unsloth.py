@@ -174,3 +174,33 @@ def test_trl_115_prediction_step_keeps_the_logits_only_payload():
     assert isinstance(logits, torch.Tensor) and logits.shape == (1, 2, 3)
     assert not logits.requires_grad
     assert "compute_loss" not in vars(trainer)
+
+
+class _LabelNamesTrainer(_PatchedTrainer):
+    label_names = []
+
+    def prediction_step(
+        self,
+        model,
+        inputs,
+        prediction_loss_only,
+        ignore_keys = None,
+    ):
+        return list(self.label_names), None, None
+
+
+@pytest.mark.parametrize("prediction_loss_only", [True, False])
+def test_trl_115_prediction_step_uses_collated_labels_with_empty_label_names(prediction_loss_only):
+    source = _patched(TRL_115_PREDICTION_STEP)
+    namespace = {"torch": torch, "_LabelNamesTrainer": _LabelNamesTrainer}
+    exec(
+        "class Generated(_LabelNamesTrainer):\n" + textwrap.indent(textwrap.dedent(source), "    "),
+        namespace,
+    )
+    trainer = namespace["Generated"]()
+    trainer.label_names = []
+    seen, _, _ = trainer.prediction_step(None, {"labels": torch.zeros(1)}, prediction_loss_only)
+    assert seen == ["labels"]
+    assert trainer.label_names == []
+    seen, _, _ = trainer.prediction_step(None, {"input_ids": torch.zeros(1)}, prediction_loss_only)
+    assert seen == []

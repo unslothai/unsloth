@@ -639,3 +639,38 @@ def test_sft_predict_returns_only_the_logits_of_an_moe_output(tmp_path):
     predictions = trainer.predict(trainer.eval_dataset).predictions
     assert not isinstance(predictions, tuple), [getattr(p, "shape", p) for p in predictions]
     assert predictions.shape[0] == 4 and predictions.shape[-1] == model.config.vocab_size
+
+
+def test_sft_eval_with_empty_label_names(tmp_path):
+    """TRL >= 1.15 evaluated a collated SFT batch whatever label_names said; label_names = [] must still work."""
+    import trl
+    from datasets import Dataset
+    from packaging.version import Version
+    from trl import SFTConfig, SFTTrainer
+
+    if Version(trl.__version__).release < (1, 15):
+        pytest.skip(
+            "before TRL 1.15 SFTTrainer used Trainer.prediction_step, which needs label_names"
+        )
+    model, tok = _load_plain()
+    ds = Dataset.from_list([{"text": "The quick brown fox jumps over the lazy dog."}] * 4)
+    cfg = SFTConfig(
+        output_dir = str(tmp_path / "ci_sft_empty_label_names"),
+        per_device_eval_batch_size = 2,
+        report_to = "none",
+        use_cpu = True,
+        max_length = None,
+        padding_free = False,
+        dataset_text_field = "text",
+        label_names = [],
+        fp16 = False,
+        bf16 = False,
+    )
+    trainer = SFTTrainer(
+        model = model, processing_class = tok, args = cfg, train_dataset = ds, eval_dataset = ds
+    )
+    assert trainer.label_names == [] and not trainer.can_return_loss
+    assert "eval_loss" in trainer.evaluate()
+    out = trainer.predict(trainer.eval_dataset)
+    assert out.predictions.shape[-1] == model.config.vocab_size
+    assert out.label_ids is not None and out.label_ids.shape[0] == 4

@@ -1614,10 +1614,14 @@ def sft_trainer_prediction_step(function_name, function):
         prediction_loss_only,
         ignore_keys = None,
     ):
-        if prediction_loss_only:
-            return super().prediction_step(
-                model, inputs, prediction_loss_only, ignore_keys = ignore_keys
-            )
+        # TRL's step used the collated labels whatever label_names says; with label_names = [] Unsloth's
+        # step would take its unlabelled branch and read inputs["prompt"].
+        label_names = getattr(self, "label_names", None)
+        relabel = (
+            label_names is not None and len(label_names) == 0 and inputs.get("labels") is not None
+        )
+        if relabel:
+            self.label_names = ["labels"]
         # TRL's step returned outputs.logits only; Unsloth's keeps every non-loss field (aux_loss, router_logits).
         captured = []
         had_own = "compute_loss" in self.__dict__
@@ -1633,16 +1637,20 @@ def sft_trainer_prediction_step(function_name, function):
                     captured.append(getattr(outputs, "logits", None))
             return result
 
-        self.compute_loss = capture_compute_loss
+        if not prediction_loss_only:
+            self.compute_loss = capture_compute_loss
         try:
             loss, logits, labels = super().prediction_step(
                 model, inputs, prediction_loss_only, ignore_keys = ignore_keys
             )
         finally:
-            if had_own:
-                self.compute_loss = compute_loss
-            else:
-                del self.compute_loss
+            if relabel:
+                self.label_names = label_names
+            if not prediction_loss_only:
+                if had_own:
+                    self.compute_loss = compute_loss
+                else:
+                    del self.compute_loss
         if captured and captured[-1] is not None:
             logits = captured[-1].detach()
         return loss, logits, labels
