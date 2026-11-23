@@ -2591,12 +2591,16 @@ export const vi = {
         label: "Loại cài đặt",
         description:
           "Chỉ trò chuyện (GGUF). Bản cài đặt đầy đủ bổ sung huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung.",
+        descriptionMlx:
+          "Chỉ trò chuyện (GGUF/MLX). Bản cài đặt đầy đủ bổ sung huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung.",
         descriptionCpu:
           "Chỉ trò chuyện (GGUF). Không tìm thấy GPU được hỗ trợ, nên bản cài đặt đầy đủ bổ sung huấn luyện trên CPU.",
         action: "Nâng cấp lên bản cài đặt đầy đủ",
         confirmTitle: "Nâng cấp lên bản cài đặt đầy đủ?",
         confirmDescription:
           "Bản cài đặt Chỉ trò chuyện này chạy các mô hình GGUF. Bản cài đặt đầy đủ bổ sung PyTorch cho GPU của máy này, cho phép huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung. Quá trình này tải xuống vài gigabyte (cần ít nhất 5 GB dung lượng ổ đĩa) và khởi động lại máy chủ. Cuộc trò chuyện, mô hình và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
+        confirmDescriptionMlx:
+          "Bản cài đặt Chỉ trò chuyện này chạy các mô hình GGUF/MLX. Bản cài đặt đầy đủ bổ sung PyTorch cho GPU của máy này, cho phép huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung. Quá trình này tải xuống vài gigabyte (cần ít nhất 5 GB dung lượng ổ đĩa) và khởi động lại máy chủ. Cuộc trò chuyện, mô hình và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
         confirmDescriptionCpu:
           "Bản cài đặt Chỉ trò chuyện này chạy các mô hình GGUF. Không tìm thấy GPU được hỗ trợ trên máy này, nên bản cài đặt đầy đủ bổ sung PyTorch cho CPU, cho phép huấn luyện trên CPU. Huấn luyện trên CPU chậm hơn nhiều so với trên GPU. Quá trình này cần ít nhất 5 GB dung lượng ổ đĩa và khởi động lại máy chủ. Cuộc trò chuyện, mô hình và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
         confirmAction: "Nâng cấp",

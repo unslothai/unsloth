@@ -2619,12 +2619,16 @@ export const pl = {
         label: "Typ instalacji",
         description:
           "Tylko czat (GGUF). Pełna instalacja dodaje trenowanie, eksport, wideo, modele safetensors i dodatkowe funkcje generowania obrazów.",
+        descriptionMlx:
+          "Tylko czat (GGUF/MLX). Pełna instalacja dodaje trenowanie, eksport, wideo, modele safetensors i dodatkowe funkcje generowania obrazów.",
         descriptionCpu:
           "Tylko czat (GGUF). Nie znaleziono obsługiwanego GPU, więc pełna instalacja dodaje trenowanie na CPU.",
         action: "Uaktualnij do pełnej instalacji",
         confirmTitle: "Uaktualnić do pełnej instalacji?",
         confirmDescription:
           "Ta instalacja Tylko czat uruchamia modele GGUF. Pełna instalacja dodaje PyTorch dla GPU tego komputera, co umożliwia trenowanie, eksport, wideo, modele safetensors i dodatkowe funkcje generowania obrazów. Pobiera kilka gigabajtów (co najmniej 5 GB miejsca na dysku) i uruchamia ponownie serwer. Czaty, modele i ustawienia zostaną zachowane. Może to potrwać kilka minut.",
+        confirmDescriptionMlx:
+          "Ta instalacja Tylko czat uruchamia modele GGUF/MLX. Pełna instalacja dodaje PyTorch dla GPU tego komputera, co umożliwia trenowanie, eksport, wideo, modele safetensors i dodatkowe funkcje generowania obrazów. Pobiera kilka gigabajtów (co najmniej 5 GB miejsca na dysku) i uruchamia ponownie serwer. Czaty, modele i ustawienia zostaną zachowane. Może to potrwać kilka minut.",
         confirmDescriptionCpu:
           "Ta instalacja Tylko czat uruchamia modele GGUF. Na tym komputerze nie znaleziono obsługiwanego GPU, więc pełna instalacja dodaje PyTorch dla CPU, co umożliwia trenowanie na CPU. Trenowanie na CPU jest znacznie wolniejsze niż na GPU. Wymaga co najmniej 5 GB miejsca na dysku i uruchamia ponownie serwer. Czaty, modele i ustawienia zostaną zachowane. Może to potrwać kilka minut.",
         confirmAction: "Uaktualnij",

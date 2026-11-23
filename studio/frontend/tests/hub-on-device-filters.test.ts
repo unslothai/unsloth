@@ -183,7 +183,10 @@ test("the inspector classifies a local MLX folder as its inventory row does", as
     inspector,
     /model\.isLocal &&\s*namedOrTaggedMlx\(\{\s*names: \[model\.path \?\? "", model\.title, model\.displayId\],\s*omlx: model\.localSource === "omlx",/,
   );
-  assert.match(inspector, /const mlxRunsHere =\s*runsAsMlx && deviceType === "mac" && mlxInference === true;/);
+  assert.match(
+    inspector,
+    /const mlxRunsHere =\s*runsAsMlx &&\s*isServedByMlx\(false, deviceType, chatOnlyReason, mlxInference\);/,
+  );
 });
 
 test("the picker and chat auto-load read a local oMLX folder as MLX, as the Hub does", async () => {
@@ -201,10 +204,18 @@ test("the picker and chat auto-load read a local oMLX folder as MLX, as the Hub 
   assert.match(pickers, /function localModelIsMlx\(m: LocalModelInfo\): boolean \{\s*return localRowIsMlx\(m\);/);
   assert.match(pickers, /localModelIsGguf\(m\),\s*filter,\s*(?:\/\/[^\n]*\n\s*)?localModelIsMlx\(m\),\s*\);/);
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  assert.match(adapter, /platform\.mlxInference !== false &&\s*localRowIsMlx\(row\)/);
+  assert.match(adapter, /if \(isGgufLocalRow\(row\)\) \{\s*return true;\s*\}(?:\s*\/\/[^\n]*)*\s*return platformServesMlx\(platform\);/);
 });
 
 test("each Hub visit rescans Studio's trained and exported models", () => {
   const inventory = readSrc("features/hub/inventory/use-hub-inventory.ts");
   assert.match(inventory, /if \(unslothModelsEnabled\) \{\s*refreshUnslothModelInventory\(\)/);
+});
+
+test("a measured Chat only Mac searches GGUF, plus checkpoints only where it serves MLX", () => {
+  const pickers = readSrc("features/model-picker/components/model-selector/pickers.tsx");
+  assert.match(
+    pickers,
+    /!chatOnly \|\|(?:\s*\/\/[^\n]*)*\s*isRecommendableFormat\(\s*id,\s*isKnownGgufRepo\(id\),\s*isMac && \(Boolean\(task\) \|\| !chatOnlyMeasured \|\| servesMlx\),\s*\) \|\|\s*runsCheckpointQuant\(\{ id \}\),/,
+  );
 });

@@ -2604,12 +2604,16 @@ export const cs = {
         label: "Typ instalace",
         description:
           "Pouze chat (GGUF). Úplná instalace přidává trénování, export, video, modely safetensors a další funkce generování obrázků.",
+        descriptionMlx:
+          "Pouze chat (GGUF/MLX). Úplná instalace přidává trénování, export, video, modely safetensors a další funkce generování obrázků.",
         descriptionCpu:
           "Pouze chat (GGUF). Nebyla nalezena podporovaná GPU, takže úplná instalace přidává trénování na CPU.",
         action: "Upgradovat na úplnou instalaci",
         confirmTitle: "Upgradovat na úplnou instalaci?",
         confirmDescription:
           "Tato instalace Pouze chat spouští modely GGUF. Úplná instalace přidává PyTorch pro GPU tohoto počítače, což umožňuje trénování, export, video, modely safetensors a další funkce generování obrázků. Stáhne několik gigabajtů (potřeba je alespoň 5 GB místa na disku) a restartuje server. Chaty, modely a nastavení zůstanou zachovány. Může to trvat několik minut.",
+        confirmDescriptionMlx:
+          "Tato instalace Pouze chat spouští modely GGUF/MLX. Úplná instalace přidává PyTorch pro GPU tohoto počítače, což umožňuje trénování, export, video, modely safetensors a další funkce generování obrázků. Stáhne několik gigabajtů (potřeba je alespoň 5 GB místa na disku) a restartuje server. Chaty, modely a nastavení zůstanou zachovány. Může to trvat několik minut.",
         confirmDescriptionCpu:
           "Tato instalace Pouze chat spouští modely GGUF. V tomto počítači nebyla nalezena podporovaná GPU, takže úplná instalace přidává PyTorch pro CPU, což umožňuje trénování na CPU. Trénování na CPU je mnohem pomalejší než na GPU. Je potřeba alespoň 5 GB místa na disku a server se restartuje. Chaty, modely a nastavení zůstanou zachovány. Může to trvat několik minut.",
         confirmAction: "Upgradovat",

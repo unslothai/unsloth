@@ -2581,12 +2581,16 @@ export const tr = {
         label: "Kurulum türü",
         description:
           "Yalnızca sohbet (GGUF). Tam kurulum; eğitim, dışa aktarma, video, safetensors modelleri ve ek görüntü üretme özellikleri ekler.",
+        descriptionMlx:
+          "Yalnızca sohbet (GGUF/MLX). Tam kurulum; eğitim, dışa aktarma, video, safetensors modelleri ve ek görüntü üretme özellikleri ekler.",
         descriptionCpu:
           "Yalnızca sohbet (GGUF). Desteklenen bir GPU bulunamadı, bu nedenle tam kurulum CPU üzerinde eğitim ekler.",
         action: "Tam kuruluma yükselt",
         confirmTitle: "Tam kuruluma yükseltilsin mi?",
         confirmDescription:
           "Bu Yalnızca sohbet kurulumu GGUF modellerini çalıştırır. Tam kurulum, bu makinenin GPU'su için PyTorch ekler; bu da eğitimi, dışa aktarmayı, videoyu, safetensors modellerini ve ek görüntü üretme özelliklerini etkinleştirir. Birkaç gigabayt indirir (en az 5 GB disk alanı) ve sunucuyu yeniden başlatır. Sohbetler, modeller ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
+        confirmDescriptionMlx:
+          "Bu Yalnızca sohbet kurulumu GGUF/MLX modellerini çalıştırır. Tam kurulum, bu makinenin GPU'su için PyTorch ekler; bu da eğitimi, dışa aktarmayı, videoyu, safetensors modellerini ve ek görüntü üretme özelliklerini etkinleştirir. Birkaç gigabayt indirir (en az 5 GB disk alanı) ve sunucuyu yeniden başlatır. Sohbetler, modeller ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
         confirmDescriptionCpu:
           "Bu Yalnızca sohbet kurulumu GGUF modellerini çalıştırır. Bu makinede desteklenen bir GPU bulunamadı, bu nedenle tam kurulum CPU için PyTorch ekler; bu da CPU üzerinde eğitimi etkinleştirir. CPU üzerinde eğitim, GPU'ya göre çok daha yavaştır. En az 5 GB disk alanı gerektirir ve sunucuyu yeniden başlatır. Sohbetler, modeller ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
         confirmAction: "Yükselt",
