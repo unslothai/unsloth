@@ -347,3 +347,92 @@ def test_auto_policy_keeps_rocm_eager(fx, monkeypatch, mode, expected):
     else:
         monkeypatch.setenv(fx.ENV, mode)
     assert fx._wants_flex(1024, 1024, 0, 0, "cuda") is expected
+
+
+@pytest.mark.parametrize("loop", [True, False])
+def test_output_attentions_keeps_eager_maps(fx, loop):
+    # flex never forms the attention probabilities: a forward that collects them keeps eager attention, so every
+    # language layer still returns its map (transformers drops a layer's None from `attentions`).
+    model = _tiny(loop)
+    model.eval()
+    assert fx.enable_inkling2_flex(model, verbose = False)
+    inputs, _ = _inputs("padded", 9)
+    text_config = model.config.text_config
+    out = {}
+    for impl in ("eager", fx.ATTN_KEY):
+        text_config._attn_implementation = impl
+        fx.reset_stats()
+        with torch.no_grad():
+            out[impl] = (model(**inputs, use_cache = False, output_attentions = True), fx.stats())
+    eager, (flex, stats) = out["eager"][0], out[fx.ATTN_KEY]
+    assert len(eager.attentions) == text_config.num_hidden_layers + (2 - 1) * 6 * loop
+    assert len(flex.attentions) == len(eager.attentions), stats
+    assert stats["flex"] == 0 and stats["block_masks"] == 0, stats
+    for a, b in zip(eager.attentions, flex.attentions):
+        assert torch.equal(a, b)
+    assert torch.equal(eager.logits, flex.logits)
+    # Without the request the same model takes flex.
+    fx.reset_stats()
+    with torch.no_grad():
+        model(**inputs, use_cache = False)
+    assert fx.stats()["flex"] > 0
+
+
+def test_whole_model_compile_traces_eager_attention(fx):
+    # torch.compile(model, fullgraph = True) over the whole model: stock eager Inkling 2 traces in one graph, so the
+    # flex wrappers (ContextVar state, the eager-only mask builder) step aside inside that trace.
+    model = _tiny(False)
+    model.eval()
+    if not hasattr(model, "set_experts_implementation"):
+        pytest.skip("no set_experts_implementation")
+    # The tiny model's eager expert loop (.nonzero) cannot be captured in one graph; the grouped one (no float64) can.
+    model.set_experts_implementation("grouped_mm")
+    model.float()
+    assert fx.enable_inkling2_flex(model, verbose = False)
+    ids = torch.randint(3, 250, (1, 9), generator = torch.Generator().manual_seed(2))
+    with torch.no_grad():
+        model.config.text_config._attn_implementation = "eager"
+        want = model(input_ids = ids, use_cache = False).logits
+        model.config.text_config._attn_implementation = fx.ATTN_KEY
+        torch._dynamo.reset()
+        compiled = torch.compile(
+            lambda x: model(input_ids = x, use_cache = False).logits, fullgraph = True
+        )
+        got = compiled(ids)
+    torch._dynamo.reset()
+    assert fx._TRACING_TEXT_FORWARD == [False]
+    # Inductor fusion rounding in float32; a wrong mask or bias term is off by O(1).
+    torch.testing.assert_close(got, want, rtol = 1e-4, atol = 1e-4)
+
+
+def test_auto_policy_mixed_cards_keep_eager(fx, monkeypatch):
+    # The mask takes flex from the embedding device: embeddings on an L4 and layers on a T4 would run flex on the T4.
+    monkeypatch.setattr(fx, "_ALLOW_CPU", False)
+    monkeypatch.delenv(fx.MIN_LEN_ENV, raising = False)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    capability = {0: (8, 9), 1: (7, 5)}
+    monkeypatch.setattr(fx, "_capability", lambda device: capability[device.index])
+    model = _tiny(False)
+    devices = {torch.device("cuda", 0), torch.device("cuda", 1)}
+    monkeypatch.setattr(fx, "_cuda_devices", lambda m: devices)
+    assert not fx.enable_inkling2_flex(model, verbose = False)
+    assert model.config.text_config._attn_implementation != fx.ATTN_KEY
+    monkeypatch.setenv(fx.ENV, "1")  # forcing still takes it
+    assert fx.enable_inkling2_flex(model, verbose = False)
+    fx.disable_inkling2_flex(model)
+    monkeypatch.delenv(fx.ENV)
+    capability[1] = (8, 0)
+    assert fx.enable_inkling2_flex(model, verbose = False)
+    fx.disable_inkling2_flex(model)
+
+
+def test_rocm_compiles_flex_with_static_shapes(fx, monkeypatch):
+    # A forced ROCm run: dynamic-shape compiled flex gave NaN LoRA gradients on gfx1151 after a recompile
+    # (unsloth-zoo#2663), dynamic = False was clean.
+    calls = []
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: calls.append(kw) or fn)
+    for hip, expected in (("6.4.0", False), (None, None)):
+        monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+        monkeypatch.setattr(fx, "_COMPILED_FLEX", None)
+        fx._flex_function(torch.device("cuda", 0))
+        assert calls[-1]["dynamic"] is expected

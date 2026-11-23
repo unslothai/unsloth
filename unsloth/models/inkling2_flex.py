@@ -204,7 +204,10 @@ def _flex_function(device):
     if device.type != "cuda":
         return flex_attention
     if _COMPILED_FLEX is None:
-        _COMPILED_FLEX = torch.compile(flex_attention, dynamic = None)
+        # ROCm: a dynamic-shape flex recompiled at a second length gave inf / NaN LoRA gradients on gfx1151 and
+        # dynamic = False was clean (unsloth-zoo#2663), so a forced ROCm run compiles one kernel per length.
+        dynamic = False if getattr(torch.version, "hip", None) else None
+        _COMPILED_FLEX = torch.compile(flex_attention, dynamic = dynamic)
     return _COMPILED_FLEX
 
 
@@ -383,10 +386,23 @@ def _build_block_mask(mask_function, batch_size, q_length, kv_length, attention_
     )
 
 
-# Unsloth compiles transformers' mask builders (dynamic, not fullgraph); building the BlockMask inside that trace graph
-# breaks on the padding check and hands create_block_mask to dynamo, so this builder always runs eagerly.
-@torch.compiler.disable
-def _mask_interface(
+def _attentions_requested():
+    """True when the running transformers forward collects attention maps (``output_attentions`` from the call or the
+    config): flex never forms the probabilities, so that forward keeps eager attention."""
+    try:
+        from transformers.utils.output_capturing import _active_collector
+    except Exception:
+        return False
+    collected = _active_collector.get()
+    return isinstance(collected, dict) and "attentions" in collected
+
+
+# Set while torch.compile traces a whole Inkling 2 text forward (a user's torch.compile(model), fullgraph or not):
+# that trace keeps eager attention and its masks stay inside the graph, as without this module.
+_TRACING_TEXT_FORWARD = [False]
+
+
+def _eager_mask(
     batch_size,
     q_length,
     kv_length,
@@ -397,15 +413,52 @@ def _mask_interface(
     device = "cpu",
     **kwargs,
 ):
-    """Mask builder registered under ATTN_KEY: a BlockMask for prefill / training forwards, else eager's mask."""
     from transformers.masking_utils import causal_mask_function, eager_mask
+    return eager_mask(
+        batch_size = batch_size,
+        q_length = q_length,
+        kv_length = kv_length,
+        q_offset = q_offset,
+        kv_offset = kv_offset,
+        mask_function = causal_mask_function if mask_function is None else mask_function,
+        attention_mask = attention_mask,
+        device = device,
+        **kwargs,
+    )
+
+
+def _mask_interface(*args, **kwargs):
+    """Mask builder registered under ATTN_KEY: a BlockMask for prefill / training forwards, else eager's mask."""
+    if torch.compiler.is_compiling() and _TRACING_TEXT_FORWARD[0]:
+        return _eager_mask(*args, **kwargs)
+    return _block_or_eager_mask(*args, **kwargs)
+
+
+# Unsloth compiles transformers' mask builders (dynamic, not fullgraph); building the BlockMask inside that trace graph
+# breaks on the padding check and hands create_block_mask to dynamo, so this builder always runs eagerly.
+@torch.compiler.disable
+def _block_or_eager_mask(
+    batch_size,
+    q_length,
+    kv_length,
+    q_offset = 0,
+    kv_offset = 0,
+    mask_function = None,
+    attention_mask = None,
+    device = "cpu",
+    **kwargs,
+):
+    from transformers.masking_utils import causal_mask_function
 
     if mask_function is None:
         mask_function = causal_mask_function
     _STATS["mask_calls"] = _STATS.get("mask_calls", 0) + 1
     state = _FORWARD_STATE.get()
     kind = "sliding" if kwargs.get("local_size") is not None else "full"
-    if _wants_flex(q_length, kv_length, q_offset, kv_offset, device):
+    if (
+        _wants_flex(q_length, kv_length, q_offset, kv_offset, device)
+        and not _attentions_requested()
+    ):
         try:
             block_mask = _build_block_mask(
                 mask_function, batch_size, q_length, kv_length, attention_mask, device
@@ -420,7 +473,7 @@ def _mask_interface(
     _count("dense_masks")
     if state is not None:
         state[kind] = False
-    return eager_mask(
+    return _eager_mask(
         batch_size = batch_size,
         q_length = q_length,
         kv_length = kv_length,
@@ -559,6 +612,8 @@ def _wrap_attention_forward(original):
 
     @functools.wraps(original)
     def forward(self, *args, **kwargs):
+        if torch.compiler.is_compiling() and _TRACING_TEXT_FORWARD[0]:
+            return original(self, *args, **kwargs)
         if "past_key_values" in kwargs and "cache" not in kwargs:
             kwargs["cache"] = kwargs.pop("past_key_values")
         try:
@@ -600,6 +655,14 @@ def _wrap_text_forward(original):
     def forward(self, *args, **kwargs):
         if getattr(self.config, "_attn_implementation", None) != ATTN_KEY:
             return original(self, *args, **kwargs)
+        if torch.compiler.is_compiling():
+            # Dynamo traces no ContextVar; the masks built in this trace are eager ones (see _mask_interface).
+            previous = _TRACING_TEXT_FORWARD[0]
+            _TRACING_TEXT_FORWARD[0] = True
+            try:
+                return original(self, *args, **kwargs)
+            finally:
+                _TRACING_TEXT_FORWARD[0] = previous
         token = _FORWARD_STATE.set({})
         try:
             return original(self, *args, **kwargs)
@@ -613,6 +676,8 @@ def _wrap_text_forward(original):
 def _wrap_relative_distance(original):
     @functools.wraps(original)
     def get_relative_distance(inputs_embeds, cache, is_sliding):
+        if torch.compiler.is_compiling():
+            return original(inputs_embeds, cache, is_sliding)
         state = _FORWARD_STATE.get()
         if state is not None and state.get("sliding" if is_sliding else "full"):
             # Flex layers compute q - kv themselves; skip the L x L int64 matrix (512 MB at 8192 tokens). Empty, so
@@ -816,7 +881,9 @@ def enable_inkling2_flex(model, verbose = True):
         devices = _cuda_devices(model)
         if not devices:
             return False
-        if _mode() == "auto" and all(_auto_min_length(d) is None for d in devices):
+        # The mask picks flex from the embedding device, so a model split over an L4 and a T4 would run flex on the
+        # T4 too: auto takes flex only when every card does.
+        if _mode() == "auto" and any(_auto_min_length(d) is None for d in devices):
             return False
     if _patch_classes(model) is not None:
         if verbose:
