@@ -761,6 +761,12 @@ def _apply_fp8_training(
             if not _bf16_fallback_fits(transformer, device):
                 # The host-first load fits where the bf16 base never did; the caller reloads nf4 instead.
                 raise Fp8FallbackDoesNotFit(str(exc)) from exc
+        if any(getattr(m, "_studio_lowp", None) == "fp8" for m in transformer.modules()):
+            # Failed partway (an OOM between or inside layers): the caller would record this mixed base as bf16.
+            raise ValueError(
+                f"fp8 failed after converting part of the base ({exc}); use base_precision='nf4' or 'auto'."
+            ) from exc
+        if device is not None:
             transformer.to(device)
         _emit(on_event, "warning", message = f"fp8 training unavailable, using bf16 compute: {exc}")
         return False

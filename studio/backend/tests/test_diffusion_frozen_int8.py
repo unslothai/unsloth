@@ -345,3 +345,70 @@ def test_a_resume_cannot_switch_between_w8a8_and_weight_only_int8():
     assert weight_only.mismatch_reason(record(base, False)) is None
     legacy = dataclasses.replace(base, base_int8_kernel = None)
     assert legacy.mismatch_reason(w8a8) is None and legacy.mismatch_reason(weight_only) is None
+
+
+def _two_linears():
+    class _B(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.to_q = nn.Linear(32, 32, bias = False)
+            self.to_k = nn.Linear(32, 32, bias = False)
+            self.to(torch.bfloat16).requires_grad_(False)
+
+    model = nn.Module()
+    model.blocks = nn.ModuleList([_B()])
+    return model
+
+
+def _fail_second_quantize(monkeypatch, module, attr, exc):
+    real = getattr(module, attr)
+    calls = []
+
+    def quantize(w):
+        calls.append(1)
+        if len(calls) == 2:
+            raise exc
+        return real(w)
+
+    monkeypatch.setattr(module, attr, quantize)
+    return calls
+
+
+def test_an_oom_inside_w8a8_quantization_is_not_a_kept_layer(monkeypatch):
+    """An OOM inside FrozenInt8Linear (not the device move) used to be counted as a kept layer, so a partly W8A8
+    base trained and recorded the same base_int8_kernel='w8a8' identity as a full one."""
+    model = _two_linears()
+    _fail_second_quantize(
+        monkeypatch, fi8, "quantize_weight", torch.cuda.OutOfMemoryError("CUDA out of memory")
+    )
+    with pytest.raises(ValueError, match = "part of the base"):
+        dit._apply_int8_w8a8(model, [].append, None)
+    assert {type(m) for m in model.blocks[0].children()} == {fi8.FrozenInt8Linear, nn.Linear}
+
+
+def test_a_non_oom_w8a8_layer_failure_is_still_kept(monkeypatch):
+    model = _two_linears()
+    _fail_second_quantize(monkeypatch, fi8, "quantize_weight", RuntimeError("unsupported layer"))
+    events = []
+    assert dit._apply_int8_w8a8(model, events.append, None) is True
+    assert "(1 kept)" in events[-1]["message"]
+
+
+def test_an_oom_inside_fp8_quantization_is_not_recorded_as_fp8_or_bf16(monkeypatch):
+    """fp8: an OOM inside FrozenFp8Linear was a silent per-layer skip (a partly fp8 base recorded as fp8), and one
+    escaping between layers left the converted layers in a base the caller records as bf16. Both now refuse."""
+    from core.training import diffusion_frozen_fp8 as f8
+
+    model = _two_linears()
+    _fail_second_quantize(
+        monkeypatch, f8, "_quantize_weight", torch.cuda.OutOfMemoryError("CUDA out of memory")
+    )
+    with pytest.raises(ValueError, match = "part of the base"):
+        dit._apply_fp8_training(model, [].append, None)
+    assert {type(m) for m in model.blocks[0].children()} == {f8.FrozenFp8Linear, nn.Linear}
+
+    model = _two_linears()
+    _fail_second_quantize(monkeypatch, f8, "_quantize_weight", RuntimeError("unsupported layer"))
+    events = []
+    assert dit._apply_fp8_training(model, events.append, None) is True
+    assert any("1 layer(s) could not be converted" in e["message"] for e in events)

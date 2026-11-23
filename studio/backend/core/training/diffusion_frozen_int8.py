@@ -217,6 +217,9 @@ def convert_frozen_int8(
             old.to(device)
         try:
             new = FrozenInt8Linear(old)
+        except torch.cuda.OutOfMemoryError:
+            # Not a per-layer skip: the caller must see a base that ran out of memory partway.
+            raise
         except (RuntimeError, ValueError):
             failed += 1
             continue
