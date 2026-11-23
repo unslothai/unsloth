@@ -103,6 +103,25 @@ test("breadcrumbs cover POSIX and drive paths", () => {
   assert.deepEqual(splitBreadcrumb(""), []);
 });
 
+test("a UNC share keeps its double-slash root in the breadcrumbs", () => {
+  for (const path of ["\\\\server\\share\\dir", "//server/share/dir"]) {
+    assert.deepEqual(
+      splitBreadcrumb(path).map((crumb) => crumb.value),
+      ["//server", "//server/share", "//server/share/dir"],
+      path,
+    );
+  }
+  assert.deepEqual(
+    splitBreadcrumb("\\\\server").map((crumb) => crumb.value),
+    ["//server"],
+  );
+  // Three or more leading slashes still collapse to the POSIX root.
+  assert.deepEqual(
+    splitBreadcrumb("///server").map((crumb) => crumb.value),
+    ["/server"],
+  );
+});
+
 test("the browser keeps the last good folder on screen when a path fails", async () => {
   const source = readSrc(
     "features/model-picker/components/model-selector/folder-browser.tsx",

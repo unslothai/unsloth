@@ -18,7 +18,9 @@ export function splitBreadcrumb(path: string): Crumb[] {
 
   if (segments[0] === "") {
     if (!segments.some(Boolean)) return [{ label: "/", value: "/" }];
-    let cur = "";
+    // `//host` is a UNC share (or a POSIX implementation-defined network
+    // root): keep both slashes or the crumbs point at a local path.
+    let cur = segments[1] === "" && Boolean(segments[2]) ? "/" : "";
     for (const seg of segments.slice(1)) {
       if (!seg) continue;
       cur = `${cur}/${seg}`;
