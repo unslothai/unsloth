@@ -1216,7 +1216,6 @@ def test_the_scan_route_derives_its_caller_rather_than_trusting_an_absent_body_t
     assert (
         "allow_ambient_token" in signature.parameters
     ), "the scan route cannot tell an api key from a ui session"
-    # The scan body runs off the event loop in _scan_model_remote_code_sync.
     source = inspect.getsource(models_routes._scan_model_remote_code_sync)
     assert (
         "hf_token_arg(hf_token" in source

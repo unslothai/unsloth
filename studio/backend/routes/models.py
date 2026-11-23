@@ -2730,8 +2730,7 @@ async def scan_model_remote_code(
             if isinstance(ref, str) and ref:
                 await asyncio.to_thread(account_access.require_model_access, ref)
         allow_ambient_token = False
-    # Hub listing, downloads and the scan block; off the event loop, in their own small pool, so a
-    # repo with thousands of files neither freezes every client nor holds the shared default executor.
+    # Blocking Hub listing / downloads / scan: own pool, off the event loop and the shared default executor.
     return await asyncio.get_running_loop().run_in_executor(
         _remote_code_scan_pool,
         contextvars.copy_context().run,

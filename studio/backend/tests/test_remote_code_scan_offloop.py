@@ -50,7 +50,6 @@ def test_a_slow_scan_does_not_freeze_the_event_loop(monkeypatch, tmp_path):
 
     ticks, status = asyncio.run(scenario())
     assert status == 418
-    # Other requests keep being served while the scan runs (about 100 ticks in that second).
     assert ticks >= 20, ticks
 
 
