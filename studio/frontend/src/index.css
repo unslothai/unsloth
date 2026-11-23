@@ -3888,6 +3888,9 @@ html[data-chat-font] .aui-root {
 
 		/* The icon chip opens the picker, which has Eject. */
 		@media (width < 48rem) {
+			.composer-model-chip .composer-chip-mark {
+				scale: 1.2;
+			}
 			.composer-model-chip [data-eject-hit] {
 				pointer-events: none;
 			}
