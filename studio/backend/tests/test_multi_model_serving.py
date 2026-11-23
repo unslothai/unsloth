@@ -30,6 +30,7 @@ from models.inference import (
     LoadRequest,
     LoadResponse,
     UnloadRequest,
+    ValidateModelRequest,
 )
 from routes import training_vram
 from state import active_generations
@@ -924,13 +925,58 @@ def test_training_frees_the_kept_models_before_the_active_one(backends, monkeypa
     assert model_slots.slots == [] and primary.is_active
 
 
-def test_another_quant_of_a_loaded_model_replaces_it_in_place(backends):
+def test_another_quant_of_a_loaded_model_loads_beside_it_when_models_are_kept(backends, monkeypatch):
     _, extra = backends
     primary_quant = LoadRequest(model_path = "org/A-GGUF", gguf_variant = "Q8_0", alongside = True)
-    assert _selected(primary_quant) is None
+    assert _selected(primary_quant) not in (None, extra)
     slot_quant = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q4_K_M", alongside = True)
-    assert _selected(slot_quant) is extra
+    assert _selected(slot_quant) not in (None, extra)
+    assert _selected(primary_quant.model_copy(update = {"alongside": False})) is None
     assert _selected(slot_quant.model_copy(update = {"alongside": False})) is extra
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_enabled", lambda: False)
+    assert _selected(primary_quant) is None
+    assert _selected(slot_quant) is extra
+
+
+def test_two_loaded_quants_of_one_repo_are_each_named_and_reached(backends, monkeypatch):
+    primary, _ = backends
+    twin = model_slots.ExtraSlot(FakeLlama("org/A-GGUF", "Q8_0"), FakeOrchestrator(), "owner")
+    model_slots.slots.append(twin)
+    monkeypatch.setattr(model_slots, "primary_last_used", 0.0)
+    assert _routed("org/A-GGUF:Q8_0") == (twin, twin.llama)
+    assert _routed("org/A-GGUF") == (twin, twin.llama)
+    assert _routed("org/A-GGUF:Q4_K_M") == (None, primary)
+    assert _routed("org/A-GGUF") == (None, primary)
+
+    async def slot_status(subject):
+        llama = inf.get_llama_cpp_backend()
+        return InferenceStatusResponse(
+            active_model = llama.model_identifier,
+            model_identifier = llama.model_identifier,
+            gguf_variant = llama.hf_variant,
+        )
+
+    monkeypatch.setattr(inf, "_slot_status", slot_status)
+    status = asyncio.run(inf.get_status("s", model = "org/A-GGUF:Q8_0"))
+    assert status.model_identifier == "org/A-GGUF:Q8_0"
+    assert status.serving == ["org/A-GGUF", "org/A-GGUF", "org/B-GGUF"]
+    assert status.serving_checkpoints == ["org/A-GGUF:Q8_0", "org/A-GGUF:Q4_K_M", "org/B-GGUF"]
+    assert status.serving_quants == ["Q8_0", "Q4_K_M", "Q8_0"]
+    listed = [entry["id"] for entry in inf._openai_model_objects()]
+    assert listed == ["org/A-GGUF", "org/B-GGUF", "org/A-GGUF:Q8_0"]
+    model_slots.slots.remove(twin)
+    alone = asyncio.run(inf.get_status("s"))
+    assert alone.model_identifier == "org/A-GGUF"
+    assert alone.serving_checkpoints == ["org/A-GGUF", "org/B-GGUF"]
+
+
+def test_a_load_or_validate_naming_its_own_quant_names_the_repo():
+    named = {"model_path": "org/A-GGUF:Q8_0", "gguf_variant": "Q8_0"}
+    assert LoadRequest(**named).model_path == "org/A-GGUF"
+    assert ValidateModelRequest(**named).model_path == "org/A-GGUF"
+    assert LoadRequest(model_path = "ollama/llama3:8b").model_path == "ollama/llama3:8b"
+    other = LoadRequest(model_path = "org/A-GGUF:Q8_0", gguf_variant = "Q4_K_M")
+    assert other.model_path == "org/A-GGUF:Q8_0"
 
 
 def test_an_alongside_load_counts_as_activity(backends, monkeypatch):

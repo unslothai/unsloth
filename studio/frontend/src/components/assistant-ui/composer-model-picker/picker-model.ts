@@ -118,6 +118,12 @@ export interface PickerRow {
   updatedAt?: number;
 }
 
+export interface LoadedCopy {
+  quant: string;
+  /** What status serves it as: repo:QUANT. */
+  id: string;
+}
+
 export type DeviceSort = "recent" | "size" | "name";
 export const DEVICE_SORT_LABEL: Record<DeviceSort, string> = {
   recent: "Recent",
@@ -309,6 +315,8 @@ export function expandQuantFavorites<
   T extends PickerRow & {
     favoriteQuant?: string;
     loadedQuant?: string | null;
+    loadedId?: string;
+    loadedCopies?: LoadedCopy[];
     inventoryKey?: string;
   },
 >(rows: readonly T[], pinned: readonly string[]): T[] {
@@ -330,16 +338,28 @@ export function expandQuantFavorites<
     if (quants.length === 0) {
       return [row];
     }
-    const perQuant = quants.map((quant) => ({
-      ...row,
-      key: `${row.key}::${quant}`,
-      // Disk state is keyed by the repo's row.
-      inventoryKey: row.key,
-      favoriteQuant: quant,
-      loaded:
-        row.loaded === true &&
-        (!row.loadedQuant || norm(row.loadedQuant) === norm(quant)),
-    }));
+    const perQuant = quants.map((quant) => {
+      const copy = row.loadedCopies?.find((c) => norm(c.quant) === norm(quant));
+      return {
+        ...row,
+        key: `${row.key}::${quant}`,
+        // Disk state is keyed by the repo's row.
+        inventoryKey: row.key,
+        favoriteQuant: quant,
+        ...(row.loadedCopies
+          ? {
+              loaded: copy !== undefined,
+              loadedQuant: copy?.quant ?? null,
+              loadedId: copy?.id,
+              loadedCopies: copy ? [copy] : [],
+            }
+          : {
+              loaded:
+                row.loaded === true &&
+                (!row.loadedQuant || norm(row.loadedQuant) === norm(quant)),
+            }),
+      };
+    });
     return whole ? [row, ...perQuant] : perQuant;
   });
 }
@@ -615,8 +635,15 @@ export async function readBounded<T, R>(
 
 /** The chosen model goes to the host's guarded unload (no id), as the header picker's Eject did. */
 export function ejectTargetId(
-  row: { id: string; loadedId?: string },
+  row: { id: string; loadedId?: string; loadedCopies?: LoadedCopy[] },
   chosenId: string | undefined,
+  checkpoint?: string | null,
 ): string | undefined {
-  return row.id === chosenId ? undefined : (row.loadedId ?? row.id);
+  if (row.id !== chosenId) {
+    return row.loadedId ?? row.id;
+  }
+  // Another loaded quant of the chosen repo is ejected by its own id.
+  return row.loadedCopies?.every((c) => norm(c.id) !== norm(checkpoint))
+    ? row.loadedId
+    : undefined;
 }

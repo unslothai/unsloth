@@ -47,6 +47,14 @@ from utils.reasoning_budget import validate_reasoning_budget_message
 _VIDEO_REFERENCE_AUDIO_MAX_CHARS = ((24 * 1024 * 1024 + 2) // 3) * 4 + 64 * 1024
 
 
+def strip_named_quant(request):
+    # Status names each of two loaded quants of a repo repo:QUANT; the repo is what loads.
+    variant = request.gguf_variant
+    if variant and request.model_path.lower().endswith(f":{variant.lower()}"):
+        request.model_path = request.model_path[: -len(variant) - 1]
+    return request
+
+
 def resolve_inventory_handle(value: str) -> str:
     """Turn a `ref:...` inventory identity back into the path it stands for. A reference this
     process did not issue is left as it arrived. Decides nothing about authorization."""
@@ -169,6 +177,7 @@ class LoadRequest(BaseModel):
     )
 
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
+    _strip_named_quant = model_validator(mode = "after")(strip_named_quant)
 
     @field_validator("engram_precision", mode = "before")
     @classmethod
@@ -762,6 +771,7 @@ class ValidateModelRequest(BaseModel):
     model_path: str = Field(..., description = "Model identifier or local path")
     # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
+    _strip_named_quant = model_validator(mode = "after")(strip_named_quant)
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -2513,6 +2523,10 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
         default_factory = list,
         description = "The checkpoint id each serving entry is loaded from, in the same order: "
         "the path of a local model, else the same id. Load, select and unload by this one.",
+    )
+    serving_quants: List[Optional[str]] = Field(
+        default_factory = list,
+        description = "The GGUF quant each serving entry runs, in the same order; null when it has none.",
     )
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"

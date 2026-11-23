@@ -19088,6 +19088,7 @@ async def load_model_gated(
             replaced_token = _replaced_primary_sink.set(replaced_slots)
             # Chosen under the gate, so two loads cannot both claim an empty primary.
             extra = await _select_load_slot(request)
+            model_slots.mark_used(extra)
             new_slot = extra is not None and extra not in model_slots.slots
             if new_slot:
                 model_slots.slots.append(extra)
@@ -19591,19 +19592,20 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     if is_npu_model_path(request.model_path) or request.engine != "auto":
         routed_slot.set(None)
         return None
+    from utils.multi_model_settings import get_multi_model_enabled
+
+    keeps = await asyncio.to_thread(get_multi_model_enabled)
     requested = _model_key(request)
     slot = await _route_to_extra_slot(requested)
-    if slot is None and request.gguf_variant:
-        # Another quant replaces its repo in place: requests name the repo, so a copy beside it is unreachable.
+    if slot is None and request.gguf_variant and not (keeps and request.alongside):
+        # Another quant replaces its repo in place unless models are kept loaded and it loads beside it.
         slot = await _route_to_extra_slot(request.model_path)
         if slot is not None or await asyncio.to_thread(_loaded_satisfies, request.model_path):
             return slot
     if slot is not None:
         return slot
-    from utils.multi_model_settings import get_multi_model_enabled
-
     # Off unless enabled in Settings; a kept model left busy when disabled is evicted once idle.
-    if not await asyncio.to_thread(get_multi_model_enabled):
+    if not keeps:
         if model_slots.slots:
             from core.inference.gpu_arbiter import note_evictions
 
@@ -23628,19 +23630,27 @@ async def get_status(current_subject: str, model: Optional[str] = None):
         response.multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
         active = response.active_model
         response.serving = [active] if active else []
-        response.serving_checkpoints = [response.model_identifier or active] if active else []
+        served = [(response.model_identifier or active, response.gguf_variant)] if active else []
         for other in (None, *model_slots.visible()):
             if other is not slot:
-                entries, checkpoints = await asyncio.to_thread(
+                entries, checkpoints, quant = await asyncio.to_thread(
                     model_slots.in_slot, other, _slot_entries_and_checkpoints
                 )
                 response.loaded += [e["id"] for e in entries if e["id"] not in response.loaded]
                 for e in entries:
                     # By checkpoint: two local files can share a label.
-                    checkpoint = checkpoints.get(e["id"]) or e["id"]
-                    if checkpoint not in response.serving_checkpoints:
+                    key = (checkpoints.get(e["id"]) or e["id"], quant.get(e["id"]))
+                    if key not in served:
                         response.serving.append(e["id"])
-                        response.serving_checkpoints.append(checkpoint)
+                        served.append(key)
+        # Two quants of one repo share a checkpoint, so each is named repo:QUANT while both are loaded.
+        names = [c for c, _ in served]
+        response.serving_checkpoints = [
+            f"{c}:{q}" if q and names.count(c) > 1 else c for c, q in served
+        ]
+        response.serving_quants = [q for _, q in served]
+        if response.model_identifier and response.serving_checkpoints:
+            response.model_identifier = response.serving_checkpoints[0]
     return response
 
 
@@ -23703,19 +23713,22 @@ def _npu_resident_mib() -> "tuple[Optional[int], Optional[bool]]":
         return None, None
 
 
-def _slot_entries_and_checkpoints() -> "tuple[list[dict], dict[str, str]]":
-    """This slot's /v1/models entries, and the checkpoint each local one is loaded from."""
+def _slot_entries_and_checkpoints() -> "tuple[list[dict], dict[str, str], dict[str, str]]":
+    """This slot's /v1/models entries, the checkpoint each local one is loaded from, and its quant."""
     checkpoints: dict[str, str] = {}
+    quant: dict[str, str] = {}
     llama = get_llama_cpp_backend()
     if getattr(llama, "is_loaded", False):
         public = _llama_public_model_id(llama)
         if public:
             checkpoints[public] = _llama_status_model_ids(llama)[1] or public
+            if getattr(llama, "hf_variant", None):
+                quant[public] = llama.hf_variant
     backend = _peek_inference_backend()
     name = getattr(backend, "active_model_name", None)
     if name:
         checkpoints[_orchestrator_public_model_id(backend) or name] = name
-    return _slot_model_objects(), checkpoints
+    return _slot_model_objects(), checkpoints, quant
 
 
 async def _slot_status(current_subject: str):
@@ -38806,11 +38819,20 @@ _OWNED_BY = "unsloth-studio"
 
 
 def _openai_model_objects() -> list[dict]:
-    return [
-        entry
-        for slot in (None, *model_slots.visible())
-        for entry in model_slots.in_slot(slot, _slot_model_objects)
-    ]
+    def objects_and_quant():
+        llama = get_llama_cpp_backend()
+        loaded = getattr(llama, "is_loaded", False)
+        return _slot_model_objects(), getattr(llama, "hf_variant", None) if loaded else None
+
+    models: list[dict] = []
+    for slot in (None, *model_slots.visible()):
+        entries, quant = model_slots.in_slot(slot, objects_and_quant)
+        for entry in entries:
+            # A second loaded quant of a listed repo is its pinned row.
+            if quant and any(m["id"] == entry["id"] and m.get("quant") != quant for m in models):
+                entry = {**entry, "id": f"{entry['id']}:{quant}", "quant": quant}
+            models.append(entry)
+    return models
 
 
 def _slot_model_objects() -> list[dict]:

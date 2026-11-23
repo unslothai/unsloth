@@ -611,13 +611,15 @@ function publishLoadedModels(
   statusId?: string | null,
   statusQuant?: string | null,
   checkpoints?: string[],
+  quants?: (string | null)[],
 ): void {
   const current = useChatRuntimeStore.getState().loadedModels;
   const known = new Map(current.map((m) => [m.checkpoint ?? m.id, m]));
   const next = ids.map((id, i) => {
     const checkpoint = checkpoints?.[i] || id;
     const prev = known.get(checkpoint);
-    const quant = id === statusId ? (statusQuant ?? null) : prev?.quant;
+    const quant =
+      quants?.[i] ?? (id === statusId ? (statusQuant ?? null) : prev?.quant);
     return prev && prev.quant === quant && prev.checkpoint === checkpoint
       ? prev
       : { id, quant, checkpoint };
@@ -719,6 +721,7 @@ export async function syncInferenceStatusToStore(options?: {
       statusRes.active_model,
       statusRes.gguf_variant,
       statusRes.serving_checkpoints,
+      statusRes.serving_quants,
     );
 
     const statusLoading = (statusRes.loading?.length ?? 0) > 0;
