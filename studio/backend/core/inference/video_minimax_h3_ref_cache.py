@@ -96,9 +96,16 @@ def _plain(value: Any) -> Any:
 _SKIP = object()
 
 
-# Bookkeeping the decode side writes on the shared VAE object every render (counters, last tile, canvas / OOM
-# state): never read by the encode, so keying on them would make every render miss. Anything else is keyed.
-_UNKEYED_VAE_ATTR_PARTS = ("decode", "canvas", "_calls", "_stats", "oom_active", "logger", "strips")
+# The decode side's state on the shared VAE object: a decode wrapper re-bound every render (``decode`` /
+# ``_decode``), and private counters, last tile, canvas / OOM state. The encode never reads any of it, so keying on
+# it would make every render miss. Everything else, encode wrappers included, is keyed.
+_UNKEYED_VAE_ATTR_PARTS = ("canvas", "_calls", "_stats", "oom_active", "logger", "strips")
+
+
+def _unkeyed(name: str) -> bool:
+    return "decode" in name or (
+        name.startswith("_") and any(p in name for p in _UNKEYED_VAE_ATTR_PARTS)
+    )
 
 
 def _attrs(obj: Any, *, skip_bookkeeping: bool = False) -> tuple:
@@ -106,11 +113,7 @@ def _attrs(obj: Any, *, skip_bookkeeping: bool = False) -> tuple:
     for name, value in sorted(getattr(obj, "__dict__", {}).items()):
         if name in ("_parameters", "_buffers", "_modules"):
             continue
-        if (
-            skip_bookkeeping
-            and name.startswith("_")
-            and any(p in name for p in _UNKEYED_VAE_ATTR_PARTS)
-        ):
+        if skip_bookkeeping and _unkeyed(name):
             continue
         plain = _plain(value)
         if plain is not _SKIP:

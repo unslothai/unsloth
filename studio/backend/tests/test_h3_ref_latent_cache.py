@@ -251,6 +251,8 @@ def test_large_pixels_tree_digest_is_exact():
 
 
 def test_decode_bookkeeping_between_renders_still_hits(encode):
+    import types
+
     # Studio's decode side writes counters / last-tile / canvas state on the shared VAE every render
     vae = _vae()
     counted = _Counted(vae)
@@ -261,6 +263,9 @@ def test_decode_bookkeeping_between_renders_still_hits(encode):
         vae._unsloth_last_decode_tile = (256, 256, 65536)
         vae._unsloth_canvas_graphs = False
         vae._unsloth_vae_oom_active = False
+        stock_decode = type(vae).decode
+        # Studio re-binds a decode wrapper on the VAE every render
+        vae.decode = types.MethodType(lambda self, *a, **k: stock_decode(self, *a, **k), vae)
         second = encode(vae, _pixels(22))
     assert counted.n == n and torch.equal(first, second)
 
@@ -286,3 +291,14 @@ def test_encoder_fallback_flag_misses_with_reason(encode):
         )
     assert lines[0].startswith("video.h3_ref_latent_cache: miss")
     assert "miss" in lines[1] and "encoder_attrs['_unsloth_fast_failed']" in lines[1], lines
+
+
+@pytest.mark.parametrize("name", ["encode", "_encode", "_encode_clip"])
+def test_instance_encode_wrapper_changes_the_key(name):
+    import types
+
+    vae, pixels = _vae(), _pixels(22)
+    before = ref_cache.condition_key(vae, pixels, _MEAN, _STD, 42, ())
+    stock = getattr(type(vae), name)
+    setattr(vae, name, types.MethodType(lambda self, *a, **k: stock(self, *a, **k), vae))
+    assert before != ref_cache.condition_key(vae, pixels, _MEAN, _STD, 42, ())
