@@ -14,7 +14,8 @@
       "alt": "LTX-2.5 and Wan2.2 video models",
       "title": "LTX-2.5 and Wan2.2",
       "summary": "Generate video from text or from an image.",
-      "link": "https://unsloth.ai/docs/models/ltx-2.5"
+      "link": "https://unsloth.ai/docs/models/ltx-2.5",
+      "open": "/video"
     }
   ],
   "changes": [

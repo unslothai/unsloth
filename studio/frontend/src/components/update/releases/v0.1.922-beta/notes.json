@@ -7,7 +7,8 @@
       "image": "/whats-new/v0.1.922-beta/theme-files.webp",
       "alt": "Theme files",
       "title": "Theme files",
-      "summary": "Export your Appearance settings to a file and import someone else's."
+      "summary": "Export your Appearance settings to a file and import someone else's.",
+      "open": "settings:appearance"
     },
     {
       "image": "/whats-new/v0.1.922-beta/async-grpo.webp",

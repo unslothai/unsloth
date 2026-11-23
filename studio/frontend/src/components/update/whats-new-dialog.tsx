@@ -8,12 +8,17 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  type SettingsTab,
+  useSettingsDialogStore,
+} from "@/features/settings/stores/settings-dialog-store";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useLocale, useT } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useRouter } from "@tanstack/react-router";
 import { type ReactNode, useState } from "react";
 import {
   type Release,
@@ -317,6 +322,74 @@ function docsLink(item: object): string | undefined {
     : undefined;
 }
 
+/** Where "Try it" goes: a route, or a Settings tab as `settings:<tab>`. */
+function openTarget(item: object): string | undefined {
+  return "open" in item && typeof item.open === "string"
+    ? item.open
+    : undefined;
+}
+
+const SETTINGS_PREFIX = "settings:";
+
+function CardActions({ feature }: { feature: object }) {
+  const t = useT();
+  const router = useRouter();
+  const close = useWhatsNew((state) => state.close);
+  const guide = docsLink(feature);
+  const target = openTarget(feature);
+  if (!(guide || target)) {
+    return null;
+  }
+  const tryIt = () => {
+    if (!target) {
+      return;
+    }
+    close();
+    if (target.startsWith(SETTINGS_PREFIX)) {
+      useSettingsDialogStore
+        .getState()
+        .openDialog(target.slice(SETTINGS_PREFIX.length) as SettingsTab);
+    } else {
+      router.history.push(target);
+    }
+  };
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {target && (
+        <Button
+          size="sm"
+          variant="secondary"
+          className="h-8 rounded-md px-3 text-ui-13"
+          onClick={tryIt}
+        >
+          {target.startsWith(SETTINGS_PREFIX)
+            ? t("updateNotes.openSettings")
+            : t("updateNotes.tryIt")}
+        </Button>
+      )}
+      {guide && (
+        <Button
+          size="sm"
+          variant="ghost"
+          className={cn(
+            "h-8 gap-1 rounded-md px-3 text-ui-13 text-muted-foreground hover:text-foreground",
+            !target && "-ml-3",
+          )}
+          onClick={() => openExternalLink(guide)}
+        >
+          {t("updateNotes.readGuide")}
+          <HugeiconsIcon
+            icon={ArrowUpRight01Icon}
+            className="size-3.5"
+            strokeWidth={2}
+            aria-hidden="true"
+          />
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function GuideLink({ href }: { href: string | undefined }) {
   const t = useT();
   if (!href) {
@@ -374,13 +447,7 @@ function ReleaseBody({ entry }: { entry: Release }) {
               <p className="mt-1 text-ui-13 leading-relaxed text-muted-foreground">
                 {feature.summary}
               </p>
-              {docsLink(feature) && (
-                <p className="mt-2 text-ui-13">
-                  <ExternalLink href={docsLink(feature) ?? ""}>
-                    {t("updateNotes.readGuide")}
-                  </ExternalLink>
-                </p>
-              )}
+              <CardActions feature={feature} />
             </figcaption>
           </figure>
         ))}

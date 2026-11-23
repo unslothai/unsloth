@@ -7,13 +7,15 @@
       "image": "https://github.com/user-attachments/assets/a4c01069-da2f-4cf3-afee-d19499cfefc3",
       "alt": "Two Studio chats with custom backgrounds",
       "title": "Your own chat background",
-      "summary": "Use your own image and move the composer to the bottom of a new chat."
+      "summary": "Use your own image and move the composer to the bottom of a new chat.",
+      "open": "settings:appearance"
     },
     {
       "image": "/whats-new/v0.1.913-beta/languages.webp",
       "alt": "14 new languages",
       "title": "14 new languages",
-      "summary": "Use Studio in 14 more languages, picked in Settings."
+      "summary": "Use Studio in 14 more languages, picked in Settings.",
+      "open": "settings:general"
     }
   ],
   "changes": [

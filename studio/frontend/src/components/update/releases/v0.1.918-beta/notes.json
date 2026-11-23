@@ -7,14 +7,16 @@
       "image": "/whats-new/v0.1.918-beta/model-picker.webp",
       "alt": "The model picker open above the chat box",
       "title": "New model picker",
-      "summary": "Switch models from the chat box, with Favorites, On Device, Discover, and Connected tabs."
+      "summary": "Switch models from the chat box, with Favorites, On Device, Discover, and Connected tabs.",
+      "open": "/chat"
     },
     {
       "image": "/whats-new/v0.1.918-beta/computer-use.webp",
       "alt": "Computer use settings",
       "title": "Computer use (beta)",
       "summary": "Vision models can see your screen and use apps. Off by default, with approvals.",
-      "link": "https://unsloth.ai/docs/basics/computer-use"
+      "link": "https://unsloth.ai/docs/basics/computer-use",
+      "open": "settings:computer-use"
     }
   ],
   "changes": [

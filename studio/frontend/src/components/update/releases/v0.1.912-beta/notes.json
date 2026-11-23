@@ -13,7 +13,8 @@
       "image": "/whats-new/v0.1.912-beta/multi-lora.webp",
       "alt": "Multi-LoRA batching",
       "title": "Multi-LoRA batching",
-      "summary": "Train up to four compatible queued jobs together."
+      "summary": "Train up to four compatible queued jobs together.",
+      "open": "/studio"
     }
   ],
   "changes": [

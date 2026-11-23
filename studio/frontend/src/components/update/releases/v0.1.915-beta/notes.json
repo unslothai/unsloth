@@ -15,7 +15,8 @@
       "alt": "Browser use settings",
       "title": "Browser files",
       "summary": "Models can click, read, and edit HTML, files, and pages.",
-      "link": "https://unsloth.ai/docs/basics/browser-use"
+      "link": "https://unsloth.ai/docs/basics/browser-use",
+      "open": "settings:browser"
     }
   ],
   "changes": [

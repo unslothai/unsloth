@@ -8,14 +8,16 @@
       "alt": "Flint coding agent model",
       "title": "Flint",
       "summary": "Recursive's 40B coding-agent MoE runs in 24 GB at 3-bit.",
-      "link": "https://unsloth.ai/docs/models/flint"
+      "link": "https://unsloth.ai/docs/models/flint",
+      "open": "/hub?model=unsloth/flint-GGUF"
     },
     {
       "image": "/whats-new/v0.1.910-beta/moss-image.webp",
       "alt": "MOSS-Image model",
       "title": "MOSS-Image",
       "summary": "A 5.1B image model for top-tier generation, as GGUF and FP8.",
-      "link": "https://unsloth.ai/docs/models/moss-image"
+      "link": "https://unsloth.ai/docs/models/moss-image",
+      "open": "/images"
     }
   ],
   "changes": [

@@ -5816,6 +5816,8 @@ export const en = {
     copied: "Copied",
     openRelease: "Open release",
     readGuide: "Read the guide",
+    tryIt: "Try it",
+    openSettings: "Open settings",
     guide: "Guide",
     sinceTitle: "What’s new since {version}",
     sinceNav: "Since {version}",

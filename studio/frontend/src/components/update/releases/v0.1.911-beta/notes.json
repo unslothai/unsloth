@@ -7,7 +7,8 @@
       "image": "/whats-new/v0.1.911-beta/scheduled.webp",
       "alt": "The Scheduled page with daily, weekly, and hourly tasks",
       "title": "Scheduled tasks",
-      "summary": "Run a prompt on a schedule with a local model or an API connection."
+      "summary": "Run a prompt on a schedule with a local model or an API connection.",
+      "open": "/tasks"
     },
     {
       "image": "/whats-new/v0.1.911-beta/minimax.webp",

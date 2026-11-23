@@ -8,7 +8,8 @@
       "alt": "Sandbox level set to High in Security settings",
       "title": "Sandboxed tools",
       "summary": "Python and terminal tools run in the OS sandbox: Bubblewrap on Linux, Seatbelt on macOS, and MXC on Windows.",
-      "link": "https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth"
+      "link": "https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth",
+      "open": "settings:sandbox"
     },
     {
       "image": "/whats-new/v0.1.905-beta/decision.webp",

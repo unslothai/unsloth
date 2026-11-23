@@ -8,7 +8,8 @@
       "alt": "Inkling 2 Mini",
       "title": "Inkling 2 Mini",
       "summary": "A 26B model with 5.4B active and a 1M context, the strongest for its size.",
-      "link": "https://unsloth.ai/docs/models/inkling-2-mini"
+      "link": "https://unsloth.ai/docs/models/inkling-2-mini",
+      "open": "/hub?model=unsloth/Inkling-2-Mini-GGUF"
     },
     {
       "image": "/whats-new/v0.1.921-beta/leaner.webp",

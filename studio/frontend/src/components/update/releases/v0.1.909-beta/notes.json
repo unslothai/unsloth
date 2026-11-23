@@ -15,7 +15,8 @@
       "alt": "FLUX.3 Image Klein",
       "title": "FLUX.3 Image Klein",
       "summary": "Runs on 24 GB and edits with up to 10 reference images.",
-      "link": "https://unsloth.ai/docs/models/flux-3"
+      "link": "https://unsloth.ai/docs/models/flux-3",
+      "open": "/images"
     }
   ],
   "changes": [
