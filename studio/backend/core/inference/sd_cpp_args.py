@@ -193,7 +193,8 @@ def quant_cublas_env(
     return {QUANT_CUBLAS_ENV: str(rows.pop())}
 
 
-# Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only.
+# Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only
+# (Metal VAE direct conv is opt-in, Apple Silicon only: ``metal_vae_conv_direct_decision``).
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -221,7 +222,7 @@ def native_speed_flags(
                 return [
                     "--diffusion-fa",
                     "--conv-direct",
-                    rejected_conv_direct_mode(args, accelerator),
+                    rejected_conv_direct_mode(args, accelerator, binary),
                 ]
             return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
@@ -268,15 +269,20 @@ def _vae_backend(backend_args: Sequence[str], accelerator: Optional[str]) -> Opt
 
 
 def rejected_conv_direct_mode(
-    backend_args: Sequence[str] = (), accelerator: Optional[str] = None
+    backend_args: Sequence[str] = (),
+    accelerator: Optional[str] = None,
+    binary: Optional[str] = None,
 ) -> str:
-    """``off,vae=auto`` for a Vulkan denoiser with a Vulkan/CPU VAE, else ``off`` (also kill switch / Metal).
+    """``off,vae=auto`` for a Vulkan denoiser with a Vulkan/CPU VAE, ``off,vae=on`` for an opted-in Metal VAE on Apple
+    Silicon with the implicit GEMM Metal CONV_2D (``_metal_vae_conv_direct``), else ``off`` (also the kill switch).
     Module syntax shipped with ``--conv-direct`` itself (sd.cpp #2134)."""
     import os
 
     forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
-    if forced in ("0", "off", "false", "no") or _runs_on_apple_metal(backend_args):
+    if forced in ("0", "off", "false", "no"):
         return "off"
+    if _runs_on_apple_metal(backend_args):
+        return "off,vae=on" if _metal_vae_conv_direct(backend_args, binary) else "off"
     args = list(backend_args)
     diffusion = _diffusion_backend(
         [args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"]
@@ -286,6 +292,69 @@ def rejected_conv_direct_mode(
     if diffusion == "vulkan" and vae in _VAE_CONV_DIRECT_AUTO_BACKENDS:
         return "off,vae=auto"
     return "off"
+
+
+# Metal VAE direct conv: unslothai/stable-diffusion.cpp#103 (ggml patches 0072 / 0073) gives ggml-metal an implicit GEMM
+# CONV_2D. On a virtualized macos-15 M1 runner (Metal timings there are not hardware numbers), SD-Turbo VAE decode went
+# 512 px 12.3 -> 5.4 s and 1664 -> 640 MB of VAE compute buffer; 1024 px decoded untiled in 2.56 GB. No physical Apple
+# Silicon measurement exists yet, so this is OFF by default: ``UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT=1`` opts in, and
+# then only on an Apple Silicon Mac with a build known to carry the kernel. Intel Macs never get it (their Metal CONV_2D
+# was ~5x slower than im2col and tripped the GPU watchdog). ``=force`` skips the build check (source builds), still
+# Apple Silicon only. The denoiser always keeps im2col.
+METAL_VAE_CONV_DIRECT_ENV = "UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT"
+# Unsloth prebuilts carrying the implicit GEMM Metal CONV_2D. Every later sd.cpp master build (> 982) does too.
+METAL_IMPLICIT_GEMM_CONV_TAGS = frozenset({"master-982-0518b34-u9455ee1"})
+METAL_IMPLICIT_GEMM_CONV_MIN_BUILD = 983
+
+
+def metal_implicit_gemm_conv(binary: Optional[str]) -> bool:
+    """True when ``binary`` is an Unsloth prebuilt (``-u<id>`` tag recorded by the installer) carrying the implicit GEMM
+    Metal CONV_2D: an allowlisted tag, or an sd.cpp master build past 982. Fails closed on an unrecorded binary
+    (``SD_CLI_PATH``, PATH, a source build), an upstream tag, or an older Unsloth prebuilt."""
+    import re
+
+    tag = _installed_sd_cpp_tag(str(binary)) if binary else None
+    if not tag or not re.search(r"-u[0-9a-f]+$", tag):
+        return False
+    if tag in METAL_IMPLICIT_GEMM_CONV_TAGS:
+        return True
+    build = sd_cpp_build_number(tag)
+    return build is not None and build >= METAL_IMPLICIT_GEMM_CONV_MIN_BUILD
+
+
+def metal_vae_conv_direct_decision(
+    backend_args: Sequence[str] = (), binary: Optional[str] = None
+) -> tuple[bool, str]:
+    """``(on, reason)`` for direct conv on a Metal VAE. Off unless opted in, on Apple Silicon, with the VAE on Metal and
+    a build carrying the implicit GEMM kernel (or ``force``)."""
+    import os
+
+    forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
+    if forced in ("0", "off", "false", "no"):
+        return False, "off: UNSLOTH_SD_CPP_CONV_DIRECT=0"
+    opt = (os.environ.get(METAL_VAE_CONV_DIRECT_ENV) or "").strip().lower()
+    if opt not in ("1", "on", "true", "yes", "force"):
+        return False, f"off by default (set {METAL_VAE_CONV_DIRECT_ENV}=1 to opt in)"
+    if not apple_silicon_machine():
+        return False, "off: not an Apple Silicon Mac"
+    if (_vae_backend(backend_args, None) or "").strip().lower() == "cpu":
+        return False, "off: VAE runs on the CPU"
+    if opt != "force" and not metal_implicit_gemm_conv(binary):
+        return False, "off: this sd.cpp build lacks the implicit GEMM Metal CONV_2D"
+    return True, "on: opted in, Apple Silicon, VAE on Metal"
+
+
+_METAL_VAE_CONV_LOGGED: set = set()
+
+
+def _metal_vae_conv_direct(backend_args: Sequence[str], binary: Optional[str]) -> bool:
+    """True when the VAE runs on Metal and should take direct conv (``metal_vae_conv_direct_decision``); logs once."""
+    on, reason = metal_vae_conv_direct_decision(backend_args, binary)
+    if reason not in _METAL_VAE_CONV_LOGGED:
+        _METAL_VAE_CONV_LOGGED.add(reason)
+        import logging
+        logging.getLogger(__name__).info("sd.cpp Metal VAE direct conv: %s", reason)
+    return on
 
 
 def sd_cpp_supports_conv_direct_mode(binary: str) -> bool:
@@ -399,7 +468,7 @@ def _diffusion_backend(specs: Sequence[str]) -> Optional[str]:
 
 def _runs_on_apple_metal(backend_args: Sequence[str] = ()) -> bool:
     """True when sd.cpp runs diffusion on Apple Metal (an explicit --backend decides, else Apple
-    Silicon not paravirtual); direct conv stays off since CONV_2D trips the GPU watchdog."""
+    Silicon not paravirtual); the denoiser keeps im2col, since the scalar CONV_2D tripped the GPU watchdog."""
     import sys
 
     if sys.platform != "darwin":
