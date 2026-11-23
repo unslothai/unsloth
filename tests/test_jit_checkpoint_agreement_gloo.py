@@ -121,6 +121,15 @@ def test_second_train_call_can_checkpoint_again():
     assert _drive(callback, flip_at = 1) == [1]
 
 
+def test_sigterm_before_train_begin_still_checkpoints():
+    # transformers alone saves at the first check when the timer fired before train() reached on_train_begin.
+    trainer, callback = _trainer()
+    assert _module().install_jit_checkpoint_agreement(trainer)
+    callback.jit_manager._enable_checkpoint()
+    callback.on_train_begin(None, None, None)
+    assert _drive(callback, flip_at = None) == [0]
+
+
 def test_off_without_the_flag_or_by_env(monkeypatch):
     m = _module()
     trainer, _ = _trainer()
