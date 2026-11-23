@@ -90,6 +90,16 @@ class _CutOffSummary(_SummarisingHandler):
     summary_finish_reason = "length"
 
 
+class _CutOffOnce(_SummarisingHandler):
+    """Cuts the first summary call off at its token limit and finishes the next one."""
+
+    def do_POST(self) -> None:  # noqa: N802
+        cut = getattr(self.server, "summary_cut_offs", 0)
+        self.summary_finish_reason = "length" if cut == 0 else "stop"
+        self.server.summary_cut_offs = cut + 1  # type: ignore[attr-defined]
+        super().do_POST()
+
+
 class _StalledSummary(_SummarisingHandler):
     summary_delay_s = 1.0
 
@@ -297,6 +307,7 @@ def test_a_cut_off_summary_is_not_asked_for_again_until_compact():
 def test_a_timed_out_summary_is_not_asked_for_again_until_compact(monkeypatch):
     monkeypatch.setattr(cloud_compaction, "SUMMARY_IDLE_TIMEOUT_S", 0.2)
     monkeypatch.setattr(cloud_compaction, "SUMMARY_FIRST_LINE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_MIN_PREFILL_TOKENS_PER_S", 1e9)
     thread = _saved_thread("thread-timed-out-summary")
     chat = _long_chat()
     options = dict(thread_id = thread, **_SMALL_TRIGGER)
@@ -318,6 +329,16 @@ def test_a_timed_out_summary_is_not_asked_for_again_until_compact(monkeypatch):
     _, summaries, _ = _bodies(_SummarisingHandler, messages = later, compact_context = True, **options)
     assert summaries
     assert studio_db.list_chat_thread_summaries(thread)
+
+
+def test_a_summary_cut_off_once_is_retried_with_twice_the_room():
+    thread = _saved_thread("thread-cut-off-retry")
+    chunks, [first, retry], [sent] = _bodies(_CutOffOnce, thread_id = thread, **_SMALL_TRIGGER)
+    assert retry["max_tokens"] == 2 * first["max_tokens"]
+    assert retry["messages"] == first["messages"]
+    assert _SUMMARY in _system_text(sent)
+    [truncation] = _truncations(chunks)
+    assert truncation["summarized"] is True and not truncation.get("summary_failed")
 
 
 def test_a_summary_still_streaming_past_the_idle_timeout_is_kept(monkeypatch):
@@ -481,9 +502,12 @@ _COMPACT_CUSTOM = dict(
 def test_a_failed_compact_tells_the_client_why(handler, reason, monkeypatch):
     monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
     monkeypatch.setattr(cloud_compaction, "SUMMARY_FIRST_LINE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_MIN_PREFILL_TOKENS_PER_S", 1e9)
     thread = _saved_thread(f"thread-compact-fails-{reason}")
     chat = _long_chat()
-    chunks, [_], [sent] = _bodies(handler, messages = chat, thread_id = thread, **_COMPACT_CUSTOM)
+    chunks, summaries, [sent] = _bodies(handler, messages = chat, thread_id = thread, **_COMPACT_CUSTOM)
+    # A cut-off summary is asked for once more with twice the room.
+    assert len(summaries) == (2 if reason == "cut_off" else 1)
     assert [f["reason"] for f in _progress_frames(chunks, "compaction_failed")] == [reason]
     assert _truncations(chunks) == []
     assert len(sent["messages"]) == len(chat)
@@ -551,6 +575,27 @@ def test_a_server_still_reading_the_prompt_is_waited_for(monkeypatch):
     assert asyncio.run(cloud_compaction.collect_summary(stream(0.4, 0.0))) == "the summary"
     with pytest.raises(cloud_compaction.SummaryTimedOut):
         asyncio.run(cloud_compaction.collect_summary(stream(0.0, 0.4)))
+
+
+def test_the_wait_for_a_first_line_grows_with_the_prompt():
+    assert cloud_compaction.summary_first_line_timeout(None) == 300.0
+    assert cloud_compaction.summary_first_line_timeout(5_000) == 300.0
+    assert cloud_compaction.summary_first_line_timeout(200_000) == 4_000.0
+
+
+def test_a_long_summary_prompt_widens_the_provider_read_timeout(monkeypatch):
+    seen = []
+    real = ep_mod.ExternalProviderClient.stream_chat_completion
+
+    def spy(self, *args, **kwargs):
+        seen.append(kwargs.get("read_timeout"))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(ep_mod.ExternalProviderClient, "stream_chat_completion", spy)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_MIN_PREFILL_TOKENS_PER_S", 1.0)
+    _bodies(_SummarisingHandler, thread_id = _saved_thread("thread-read-timeout"), **_SMALL_TRIGGER)
+    widened = [t for t in seen if t is not None]
+    assert widened and min(widened) > 300.0 + cloud_compaction.SUMMARY_IDLE_TIMEOUT_S
 
 
 def test_a_long_prompt_read_under_keep_alives_does_not_count_against_the_total(monkeypatch):

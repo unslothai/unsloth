@@ -30,6 +30,8 @@ SUMMARY_MIN_TOKENS = 1_024
 # The total cap starts with the reply: llama.cpp sends keep-alives while it reads a long prompt.
 SUMMARY_IDLE_TIMEOUT_S = 120.0
 SUMMARY_FIRST_LINE_TIMEOUT_S = 300.0
+# Ollama and vLLM send nothing while reading the prompt: the first-line wait grows with it.
+SUMMARY_MIN_PREFILL_TOKENS_PER_S = 50.0
 SUMMARY_TIMEOUT_S = 600.0
 SUMMARY_MAX_CALLS = 8
 # One tool result or pasted file must not crowd the rest of the transcript out of the summary call.
@@ -392,13 +394,27 @@ def summary_chunks(
             spent = 0
         chunks[-1].append(message)
         spent += cost
+    if len(chunks) > SUMMARY_MAX_CALLS:
+        logger.warning(
+            "cloud_compaction.summary_chunks_dropped",
+            dropped_messages = sum(len(chunk) for chunk in chunks[:-SUMMARY_MAX_CALLS]),
+            chunks = len(chunks),
+        )
     return chunks[-SUMMARY_MAX_CALLS:]
 
 
-async def collect_summary(stream: AsyncIterator[str]) -> str:
+def summary_first_line_timeout(prompt_tokens: Optional[int]) -> float:
+    return max(SUMMARY_FIRST_LINE_TIMEOUT_S, (prompt_tokens or 0) / SUMMARY_MIN_PREFILL_TOKENS_PER_S)
+
+
+async def collect_summary(
+    stream: AsyncIterator[str], first_line_timeout: Optional[float] = None
+) -> str:
     """The text of a streamed chat completion. Raises SummaryFailed on an error line, an empty
-    reply, SUMMARY_FIRST_LINE_TIMEOUT_S before the first line or SUMMARY_IDLE_TIMEOUT_S between
-    later ones, or SUMMARY_TIMEOUT_S once the reply has started."""
+    reply, first_line_timeout (default SUMMARY_FIRST_LINE_TIMEOUT_S) before the first line or
+    SUMMARY_IDLE_TIMEOUT_S between later ones, or SUMMARY_TIMEOUT_S once the reply has started."""
+    if first_line_timeout is None:
+        first_line_timeout = SUMMARY_FIRST_LINE_TIMEOUT_S
     parts: list[str] = []
     finish_reason = None
 
@@ -435,11 +451,11 @@ async def collect_summary(stream: AsyncIterator[str]) -> str:
                     scope.reschedule(limit if deadline is None else min(limit, deadline))
 
                 async with asyncio.timeout_at(  # novermin
-                    loop.time() + SUMMARY_FIRST_LINE_TIMEOUT_S
+                    loop.time() + first_line_timeout
                 ) as scope:
                     await _read(_on_line)
             else:  # Python < 3.11
-                await asyncio.wait_for(_read(), timeout = SUMMARY_FIRST_LINE_TIMEOUT_S)
+                await asyncio.wait_for(_read(), timeout = first_line_timeout)
         finally:
             aclose = getattr(stream, "aclose", None)
             if aclose is not None:

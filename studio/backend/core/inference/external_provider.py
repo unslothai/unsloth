@@ -1762,8 +1762,10 @@ class ExternalProviderClient:
         thread_id: Optional[str] = None,
         compaction_fallback: Optional[CompactionFallback] = None,
         compaction_uncapped: bool = False,
+        read_timeout: Optional[float] = None,
     ) -> AsyncGenerator[str, None]:
-        """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in."""
+        """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in.
+        read_timeout widens the read timeout for a server that is silent while it reads a long prompt."""
         self.set_header_context(thread_id, model)
         tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
@@ -2072,7 +2074,16 @@ class ExternalProviderClient:
                 url,
                 body,
                 headers = self._chat_headers(thread_id),
-                timeout = self._stream_timeout,
+                timeout = (
+                    self._stream_timeout
+                    if read_timeout is None
+                    else httpx.Timeout(
+                        connect = self._stream_timeout.connect,
+                        read = max(self._stream_timeout.read or 0.0, read_timeout),
+                        write = self._stream_timeout.write,
+                        pool = self._stream_timeout.pool,
+                    )
+                ),
             ) as response:
                 if response.status_code != 200:
                     error_body = await response.aread()
