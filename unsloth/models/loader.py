@@ -537,6 +537,24 @@ def _refuse_network_share_adapter_base(model_name, peft_config):
         )
 
 
+def _refuse_network_share_raw_adapter_base(model_name, **hub_kwargs):
+    """transformers reads a Hub repo's adapter_config.json itself and loads the base it names, also when
+    PEFT cannot parse the file or the load never goes through PEFT (sentence-transformers)."""
+    if os.path.isdir(model_name):
+        return
+    try:
+        import json
+        from transformers.utils import find_adapter_config_file
+        with open(find_adapter_config_file(model_name, **hub_kwargs), encoding = "utf-8") as file:
+            base = json.load(file).get("base_model_name_or_path")
+    except Exception:
+        # No adapter_config.json, or not JSON: transformers loads no other base either.
+        return
+    from types import SimpleNamespace
+
+    _refuse_network_share_adapter_base(model_name, SimpleNamespace(base_model_name_or_path = base))
+
+
 def _adapter_file_shapes(path):
     if path.endswith(".safetensors"):
         from safetensors import safe_open
@@ -1790,6 +1808,14 @@ class FastLanguageModel(FastLlamaModel):
         if peft_config is not None:
             # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
             _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
+        else:
+            _refuse_network_share_raw_adapter_base(
+                model_name,
+                token = token,
+                revision = base_revision,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
         _model_type_config = peft_config if peft_config is not None else model_config
         if peft_config is not None and isinstance(token, str) and token:
             _model_type_config = _memo_config_probe(
@@ -2796,6 +2822,14 @@ class FastModel(FastBaseModel):
         if peft_config is not None:
             # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
             _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
+        else:
+            _refuse_network_share_raw_adapter_base(
+                model_name,
+                token = token,
+                revision = base_revision,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
         _model_type_config = peft_config if peft_config is not None else model_config
         if peft_config is not None and isinstance(token, str) and token:
             _model_type_config = _memo_config_probe(
