@@ -477,6 +477,7 @@ def compile_swapped_blocks(
     transformer,
     fullgraph: bool,
     dynamic: bool = True,
+    options: Optional[dict] = None,
 ) -> int:
     """Regional compile that leaves the swap hooks outside the graph: each repeated block's forward is compiled,
     not its _call_impl (whose pre / post hooks would be a graph break, an error under fullgraph)."""
@@ -485,7 +486,9 @@ def compile_swapped_blocks(
     n = 0
     for _, mod in swap_block_lists(transformer):
         for block in mod:
-            block.forward = torch.compile(block.forward, fullgraph = fullgraph, dynamic = dynamic)
+            block.forward = torch.compile(
+                block.forward, fullgraph = fullgraph, dynamic = dynamic, options = options
+            )
             n += 1
     return n
 
