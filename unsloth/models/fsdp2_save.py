@@ -1142,6 +1142,24 @@ def _as_bytes(tensor):
     return tensor.detach().contiguous().reshape(-1).view(torch.uint8)
 
 
+_BYTE_CHECK_CHUNK = 64 << 20
+
+
+def _equal_bytes(a, b):
+    """torch.equal of two flat uint8 views without a second full copy on either device: on one
+    device they are compared in place, otherwise in bounded slices on the loaded tensor's device (a
+    checkpoint held on the host is never copied onto the accelerator next to the gathered weight)."""
+    if a.numel() != b.numel():
+        return False
+    if a.device == b.device:
+        return torch.equal(a, b)
+    for start in range(0, a.numel(), _BYTE_CHECK_CHUNK):
+        end = start + _BYTE_CHECK_CHUNK
+        if not torch.equal(a[start:end].to(b.device), b[start:end]):
+            return False
+    return True
+
+
 def _same_packed_bytes(live, loaded, dist, broadcast):
     """Whether the packed 4-bit bytes being loaded equal the live (possibly sharded) weight's. Every
     rank gathers the live weight (a collective); only a rank holding the loaded data (rank 0 with
@@ -1155,15 +1173,20 @@ def _same_packed_bytes(live, loaded, dist, broadcast):
         mesh = live.device_mesh
         live = _gather_full(live, DTensor)
     same = False
+    error = None
     if not broadcast or dist.get_rank() == 0:
-        if DTensor is not None and isinstance(loaded, DTensor):
-            loaded = loaded.full_tensor()
-        if isinstance(loaded, torch.Tensor) and "meta" not in (
-            live.device.type,
-            loaded.device.type,
-        ):
-            a, b = _as_bytes(live), _as_bytes(loaded)
-            same = a.numel() == b.numel() and torch.equal(a, b.to(a.device))
+        # An error here (an OOM, a bad tensor) still reaches the verdict collective below as a
+        # mismatch, so the peers waiting in it fail with this rank instead of hanging.
+        try:
+            if DTensor is not None and isinstance(loaded, DTensor):
+                loaded = loaded.full_tensor()
+            if isinstance(loaded, torch.Tensor) and "meta" not in (
+                live.device.type,
+                loaded.device.type,
+            ):
+                same = _equal_bytes(_as_bytes(live), _as_bytes(loaded))
+        except Exception as caught:
+            error, same = caught, False
     if broadcast:
         verdict = [same]
         dist.broadcast_object_list(verdict, src = 0)
@@ -1172,6 +1195,8 @@ def _same_packed_bytes(live, loaded, dist, broadcast):
         differs = torch.tensor([0 if same else 1], dtype = torch.int32, device = live.device)
         mesh_all_reduce(differs, mesh, dist)
         same = int(differs.item()) == 0
+    if error is not None:
+        raise error
     return bool(same)
 
 

@@ -150,6 +150,20 @@ def _case(rank, case, m):
         loose = StateDictOptions(full_state_dict = True)
         out["legacy"], _ = _counting_cpu(restore(mine, loose))
         out["legacy"] = "ValueError" if "`0.weight`" in out["legacy"] else out["legacy"]
+    elif case == "compare_raises":
+        # Rank 0's byte check fails (an OOM copying the loaded bytes, say): the peer is already
+        # waiting in the verdict broadcast and must fail with it, not time out there.
+        original = torch.equal
+
+        def failing(*args, **kwargs):
+            raise RuntimeError("simulated out of memory in the byte check")
+
+        if rank == 0:
+            torch.equal = failing
+        try:
+            out["legacy"], _ = _counting_cpu(restore(legacy))
+        finally:
+            torch.equal = original
     return out
 
 
@@ -246,3 +260,52 @@ def test_legacy_byte_check_verdict_is_agreed_across_ranks():
     results = _run("divergent")
     assert results[0].get("legacy") == "ValueError", results
     assert results[1].get("legacy") == "ValueError", results
+
+
+def test_legacy_byte_check_error_on_rank0_reaches_the_verdict():
+    """An error in rank 0's byte check skipped the verdict broadcast its peer was waiting in, so the
+    peer hung until the collective timeout."""
+    results = _run("compare_raises")
+    assert "simulated out of memory" in str(results[0].get("legacy")), results
+    assert "`0.weight`" in str(results[1].get("legacy")), results
+
+
+class _OnAccelerator(torch.Tensor):
+    """A host tensor reporting an accelerator device: the gathered live weight on a GPU rank."""
+
+    @property
+    def device(self):
+        return torch.device("cuda", 0)
+
+
+def test_host_checkpoint_bytes_are_not_copied_to_the_live_device():
+    """A legacy checkpoint loaded to the host was copied whole onto the gathered weight's GPU
+    (`b.to(a.device)`), a second full packed buffer next to the live one on rank 0."""
+    m = _load("fsdp2_save")
+    torch.manual_seed(0)
+    data = torch.randint(0, 255, (96, 64), dtype = torch.uint8)
+    live = data.clone().as_subclass(_OnAccelerator)
+    assert live.device.type == "cuda"
+    original = torch.Tensor.to
+    targets = []
+
+    def recording(self, *args, **kwargs):
+        if sys._getframe(1).f_code.co_filename.endswith("fsdp2_save.py"):
+            device = kwargs.get("device", args[0] if args else None)
+            device = torch.device(device) if isinstance(device, (str, torch.device)) else None
+            if device is not None and device.type != "cpu":
+                targets.append((tuple(self.shape), str(device)))
+                raise RuntimeError("moved onto the accelerator")
+        return original(self, *args, **kwargs)
+
+    torch.Tensor.to = recording
+    try:
+        same = m._same_packed_bytes(live, data.clone(), None, False)
+        other = data.clone()
+        other[-1, -1] ^= 1
+        differs = m._same_packed_bytes(live, other, None, False)
+    finally:
+        torch.Tensor.to = original
+    assert targets == [], targets
+    assert same is True
+    assert differs is False
