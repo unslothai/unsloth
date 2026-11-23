@@ -3047,8 +3047,7 @@ class FastModel(FastBaseModel):
             raise_if_inkling2_parallel_unsupported(model_config, model_types)
             # Inkling 2 (Mini and Small): compiled, every new sequence length recompiles the layers (A100, Mini QLoRA at
             # 1024 tokens: 85-840 s per step, eager 4.4 s), and the compiled block attention residual has wrong grads.
-            if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "0":
-                os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+            _set_partial_compile_disable()
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
