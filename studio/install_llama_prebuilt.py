@@ -6303,6 +6303,16 @@ def scrubbed_environ() -> dict[str, str]:
     return env
 
 
+def _sycl_candidate_host(host: HostInfo) -> bool:
+    return (
+        host.is_linux
+        and host.is_x86_64
+        and host.has_intel_gpu
+        and not (host.has_usable_nvidia or host.has_physical_nvidia or host.has_rocm)
+        and not host.has_amd_gpu_without_rocm
+    )
+
+
 def oneapi_runtime_line(lib_dirs: Iterable[str]) -> str | None:
     majors = {
         int(match.group(1))
@@ -6957,12 +6967,7 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
                 )
                 attempts.append(vulkan_choice)
     else:
-        if (
-            host.has_intel_gpu
-            and not host.has_amd_gpu_without_rocm
-            and not host.has_physical_nvidia
-            and host.is_x86_64
-        ):
+        if _sycl_candidate_host(host):
             oneapi_dirs = oneapi_runtime_lib_dirs()
             sycl_choice = (
                 published_asset_choice_for_kind(
@@ -7280,6 +7285,12 @@ def host_profile(host: HostInfo) -> dict[str, Any]:
         "has_amd_gpu_without_rocm": bool(host.has_amd_gpu_without_rocm),
         "macos_version": list(host.macos_version) if host.macos_version else None,
         "cuda_runtime_lines": _detected_cuda_runtime_lines(host),
+        # Only on SYCL candidates with a venv oneAPI runtime, so other hosts keep their profile.
+        **(
+            {"oneapi_runtime": oneapi_runtime_line(_dirs) or "libsycl"}
+            if _sycl_candidate_host(host) and (_dirs := oneapi_runtime_lib_dirs())
+            else {}
+        ),
     }
 
 
@@ -8470,22 +8481,6 @@ def _memoized_api_newest_release_tag(repo: str) -> "str | None":
     return _newest_release_tag_from_releases(repo, releases) if releases else None
 
 
-def _oneapi_runtime_moved(marker: "dict[str, Any]") -> bool:
-    """A torch-xpu upgrade can swap the venv's libsycl major under a kept SYCL bundle, whose
-    libggml-sycl then fails to dlopen and llama.cpp silently runs on CPU."""
-    if marker.get("install_kind") != "linux-sycl":
-        return False
-    dirs = oneapi_runtime_lib_dirs()
-    recorded = marker.get("runtime_line")
-    current = oneapi_runtime_line(dirs) if dirs else None
-    if dirs and (not recorded or recorded == current):
-        return False
-    log(
-        f"kept install rejected: the SYCL bundle needs {recorded or 'libsycl'}, the venv has {current or 'none'}"
-    )
-    return True
-
-
 def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:
     """Whether torch now prefers another CUDA runtime line than the one installed.
 
@@ -8836,7 +8831,7 @@ def existing_install_current_without_plan(
     if not _kept_install_covers_host(marker, host):
         log("kept install rejected: the bundle no longer covers this card or driver")
         return False
-    if _runtime_preference_moved(marker, host) or _oneapi_runtime_moved(marker):
+    if _runtime_preference_moved(marker, host):
         return False
     # (3) the release this run would ask for is the release that is installed.
     expected_release = _expected_release_tag_without_plan(

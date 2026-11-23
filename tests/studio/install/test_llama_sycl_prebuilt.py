@@ -226,19 +226,14 @@ def test_sycl_install_without_a_oneapi_runtime_falls_back(monkeypatch, tmp_path)
         _install_sycl_bundle(monkeypatch, tmp_path)
 
 
-@pytest.mark.parametrize(
-    "libs, recorded, moved",
-    [
-        (["libsycl.so.8"], "sycl8", False),
-        (["libsycl.so.9"], "sycl8", True),
-        ([], "sycl8", True),
-        (["libsycl.so.9"], None, False),
-    ],
-)
-def test_a_kept_sycl_install_is_rejected_once_the_venv_libsycl_moves(
-    monkeypatch, tmp_path, libs, recorded, moved
-):
-    _venv_with_libsycl(monkeypatch, tmp_path, *libs)
-    marker = {"install_kind": "linux-sycl", "runtime_line": recorded}
-    assert ILP._oneapi_runtime_moved(marker) is moved
-    assert ILP._oneapi_runtime_moved({**marker, "install_kind": "linux-vulkan"}) is False
+def test_the_host_profile_moves_when_the_venv_oneapi_runtime_does(monkeypatch, tmp_path):
+    lib = _venv_with_libsycl(monkeypatch, tmp_path)
+    without = ILP.host_profile(_host())
+    assert "oneapi_runtime" not in without
+    (lib / "libsycl.so.8").write_bytes(b"")
+    assert ILP.host_profile(_host())["oneapi_runtime"] == "sycl8"
+    (lib / "libsycl.so.8").rename(lib / "libsycl.so.9")
+    assert ILP.host_profile(_host())["oneapi_runtime"] == "sycl9"
+    # Hosts that never take SYCL keep the profile they had.
+    for other in ({"has_physical_nvidia": True}, {"machine": "aarch64"}, {"has_intel_gpu": False}):
+        assert "oneapi_runtime" not in ILP.host_profile(_host(**other))
