@@ -124,3 +124,16 @@ def test_text_chunks_keep_overlap_when_a_cut_moves(raw_text, byte_tokenizer):
     loader = raw_text.RawTextDataLoader(byte_tokenizer, chunk_size = 12, stride = 10)
     chunks = loader.chunk_text("日本語日本語", return_tokenized = False)
     assert chunks == ["日本語日", "本語日本", "語日本語", "日本語[EOS]"]
+
+
+def test_text_chunks_with_a_strict_decoder(raw_text, byte_tokenizer):
+    class Strict(type(byte_tokenizer)):
+        def decode(self, *args, **kwargs):
+            text = super().decode(*args, **kwargs)
+            if "�" in text:
+                raise UnicodeDecodeError("utf-8", b"", 0, 1, "invalid start byte")
+            return text
+
+    byte_tokenizer.__class__ = Strict
+    loader = raw_text.RawTextDataLoader(byte_tokenizer, chunk_size = 6, stride = 0)
+    assert loader.chunk_text("日本語", return_tokenized = False) == ["日本", "語[EOS]"]

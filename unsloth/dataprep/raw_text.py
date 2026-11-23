@@ -184,11 +184,14 @@ class RawTextDataLoader:
                 if not 0 < at < len(tokens):
                     return at
                 lo = max(0, at - 4)
-                left, right = decode(tokens[lo:at]), decode(tokens[at : at + 4])
-                # Literal U+FFFD in the corpus decodes the same split or joined.
-                if not (left.endswith("\ufffd") and right.startswith("\ufffd")) or (
-                    left + right == decode(tokens[lo : at + 4])
-                ):
+                try:
+                    left, right = decode(tokens[lo:at]), decode(tokens[at : at + 4])
+                    # Literal U+FFFD in the corpus decodes the same split or joined.
+                    if not (left.endswith("\ufffd") and right.startswith("\ufffd")) or (
+                        left + right == decode(tokens[lo : at + 4])
+                    ):
+                        return at
+                except UnicodeDecodeError:  # errors="strict" tokenizers: keep the plain cut.
                     return at
             return idx
 
