@@ -103,7 +103,6 @@ def test_indexed_scope_filter_matches_unindexed_filter_exactly(rag_conn):
     assert not rag_db.fts_scope_index_exists(rag_conn)
     unindexed = _run(rag_conn, cases)
     assert sum(map(len, indexed)) > 1000
-    # Same ids, same order (ties included) and bit-identical bm25 scores.
     assert indexed == unindexed
 
 

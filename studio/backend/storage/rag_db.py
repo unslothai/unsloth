@@ -306,8 +306,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-# A plain b-tree on the FTS5 content table's scope column (c2), which FTS5 never reads, so scores are
-# unchanged. Lexical search uses it to filter by scope without loading the content row of every match.
+# B-tree on the FTS5 content table's scope column (c2); FTS5 never reads it, so bm25 is unchanged.
 FTS_SCOPE_INDEX = "idx_chunks_fts_content_scope"
 
 
@@ -319,7 +318,6 @@ def _ensure_fts_scope_index(conn: sqlite3.Connection) -> None:
     try:
         conn.execute(f"CREATE INDEX IF NOT EXISTS {FTS_SCOPE_INDEX} ON chunks_fts_content(c2)")
     except sqlite3.OperationalError as exc:
-        # A locked or read-only database (or a build that refuses shadow-table DDL) keeps the unindexed filter.
         logger.info("RAG lexical scope index unavailable (%s)", exc)
 
 

@@ -789,8 +789,7 @@ def linked_folder_rows_exist(conn: sqlite3.Connection) -> bool:
 
 
 def _lexical_scope_filter(conn: sqlite3.Connection, scopes: list[str], placeholders: str):
-    """(SQL, params) equivalent to scope IN (...) on this snapshot; (None, None) when no scope has a row.
-    The rowid range lets FTS5 skip doclist entries outside every scope."""
+    """scope IN (...) on this snapshot as (SQL, params); (None, None) when no scope has a row."""
     if not rag_db.fts_scope_index_exists(conn):
         return f"chunks_fts.scope IN ({placeholders})", scopes
     lo = hi = None
