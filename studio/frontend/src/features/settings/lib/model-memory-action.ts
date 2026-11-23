@@ -17,3 +17,21 @@ export function modelMemorySettingsAction():
         .openDialog("resources", { scrollTarget: "resources-model-memory" }),
   };
 }
+
+// The backend's FP8 / NVFP4 refusal on a host that can run vLLM (routes/inference.py _GPU_QUANT_ENGINE_MESSAGE).
+const ENGINE_SETTINGS_MARKER = "Settings > System > More engines";
+
+export function engineSettingsAction(
+  message: string,
+): { label: string; onClick: () => void } | undefined {
+  if (!(message.includes(ENGINE_SETTINGS_MARKER) && isAccountOwner())) {
+    return undefined;
+  }
+  return {
+    label: "Open settings",
+    onClick: () =>
+      useSettingsDialogStore
+        .getState()
+        .openDialog("resources", { scrollTarget: "resources-engines" }),
+  };
+}
