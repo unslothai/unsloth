@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""accelerate's init_empty_weights made per-thread (utils.meta_init). Stock accelerate patches
-torch.nn.Module.register_parameter process-wide, so overlapping blocks in two threads left it patched for good and
-leaked meta parameters into modules other threads built meanwhile."""
+"""utils.meta_init: accelerate's init_empty_weights made per-thread."""
 
 from __future__ import annotations
 

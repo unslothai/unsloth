@@ -3,20 +3,11 @@
 
 """Make accelerate's ``init_on_device`` / ``init_empty_weights`` per-thread.
 
-accelerate swaps ``torch.nn.Module.register_parameter`` process-wide for the length of the ``with`` block and restores
-whatever it saved on exit. Studio builds meta skeletons from several threads at once (a load, and the
-``download-plan`` fit checks the Images page fires while it runs), so (a) a module another thread builds meanwhile
-gets meta parameters ("N tensor(s) ... were not in the file", "Cannot copy out of meta tensor"), and (b) two
-overlapping blocks that exit in the wrong order leave the meta patch installed for good: every later load in the
-process fails until a restart.
+accelerate swaps ``nn.Module.register_parameter`` process-wide for the block and restores what it saved on exit, so
+concurrent skeleton builds (a load plus Images ``download-plan`` fit checks) leak meta parameters into other threads
+and, when blocks exit out of order, leave the patch installed for the life of the process.
 
-``install()`` puts one permanent dispatcher on ``register_parameter`` that moves a parameter to the meta (or other)
-device only while the *calling thread* is inside ``init_on_device``, and replaces accelerate's ``init_on_device`` with
-a version that keeps that state thread-local. Idempotent; a missing accelerate is a no-op.
-
-Behaviour change: a thread started *inside* an ``init_on_device`` block no longer inherits it (stock accelerate gives
-it meta parameters because the patch is process-wide); it builds real tensors unless it enters a block itself. No
-``init_empty_weights`` block in Studio starts a thread today."""
+Behaviour change: a thread started inside a block no longer inherits it (no Studio block starts a thread)."""
 
 from __future__ import annotations
 
@@ -72,13 +63,11 @@ def install() -> bool:
         def init_on_device(device: Any, include_buffers: Optional[bool] = None):
             if include_buffers is None:
                 include_buffers = parse_flag_from_env("ACCELERATE_INIT_INCLUDE_BUFFERS", False)
-            # Buffers mode pushes None: the torch.device context places parameters there, and an outer block's
-            # device must not re-wrap them (that would also break tied weights).
+            # None in buffers mode: the torch.device context places parameters; re-wrapping them breaks tied weights.
             stack = _device_stack()
             stack.append(None if include_buffers else device)
             try:
                 if include_buffers:
-                    # Buffers: accelerate's own torch.device context, which is already thread-local.
                     with device:
                         yield
                 else:
@@ -97,7 +86,7 @@ def install() -> bool:
 
 
 class _PatchOnImport(importlib.abc.MetaPathFinder):
-    """Runs ``install()`` right after ``accelerate.big_modeling`` executes, so startup never imports torch for this."""
+    """Runs ``install()`` right after ``accelerate.big_modeling`` executes, so startup does not import torch."""
 
     def find_spec(
         self,
