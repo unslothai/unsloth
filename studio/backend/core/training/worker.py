@@ -2809,6 +2809,21 @@ def _normalize_mlx_studio_optimizer(value):
         return opt
 
 
+def _mlx_drop_vision_kwargs(use_lora: bool, text_dataset: bool) -> dict:
+    """Skip reading a VLM's vision tower for text-only LoRA, on a zoo that trains and saves adapters without it."""
+    if not (use_lora and text_dataset):
+        return {}
+    try:
+        from unsloth_zoo.mlx import loader
+    except ImportError:
+        return {}
+
+    # Older zoos accept drop_vision_weights but refuse LoRA on the result, so check the marker, not the kwarg.
+    if getattr(loader, "DROP_VISION_WEIGHTS_TRAINS_LORA", False) is not True:
+        return {}
+    return {"drop_vision_weights": True}
+
+
 def _mlx_dora_peft_kwargs(config, get_peft_model):
     """LoRA kwargs a DoRA request adds for MLX, or raise why it cannot run."""
     import inspect
@@ -3470,6 +3485,9 @@ def _run_mlx_training(
         return
 
     _send("status", status_message = f"Loading {model_name}...")
+    drop_vision_kwargs = _mlx_drop_vision_kwargs(
+        use_lora, not (is_dataset_image or is_dataset_audio)
+    )
     try:
         model, tokenizer = FastMLXModel.from_pretrained(
             model_load_name,
@@ -3480,6 +3498,7 @@ def _run_mlx_training(
             trust_remote_code = bool(config.get("trust_remote_code", False)),
             random_state = model_random_state,
             revision = model_revision,
+            **drop_vision_kwargs,
         )
     except Exception as error:
         if not model_local_only:
@@ -3515,6 +3534,7 @@ def _run_mlx_training(
             trust_remote_code = bool(config.get("trust_remote_code", False)),
             random_state = model_random_state,
             revision = model_revision,
+            **drop_vision_kwargs,
         )
 
     from utils.models.model_identity import restore_hf_cache_repo_identity
