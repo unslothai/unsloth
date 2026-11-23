@@ -232,7 +232,6 @@ def test_codex_forks_share_one_rollout_scan(tmp_path, monkeypatch, studio):
 
     assert run_import(codex.SOURCE).new_chats == 5
 
-    # list_projects once, then one shared scan for every fork's base.
     assert len(scans) == 2
     fork = studio_db.list_chat_messages(thread_id_for(codex.SOURCE, "f0"))
     assert sorted(m["content"][0]["text"] for m in fork) == ["Fork 0", "Hello", "Hi", "Ok"]
