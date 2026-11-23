@@ -63,9 +63,10 @@ def rocm_windows_discrete(device = "cuda") -> bool:
 
         if not is_rocm_torch(torch):
             return False
-        from core.inference.host_pinning import device_is_integrated
+        from core.inference.host_pinning import device_integrated_status
 
-        return not device_is_integrated(device)
+        # Positive discrete evidence only: an unreadable property must not turn an APU's budgets off.
+        return device_integrated_status(device) is False
     except Exception:  # noqa: BLE001
         return False
 
