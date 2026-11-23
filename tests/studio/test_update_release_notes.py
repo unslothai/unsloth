@@ -38,7 +38,9 @@ TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
 
 
 @pytest.mark.parametrize(
-    "notes_path", sorted((FRONTEND / "components/update/releases").glob("v*/notes.json")), ids=lambda p: p.parent.name
+    "notes_path",
+    sorted((FRONTEND / "components/update/releases").glob("v*/notes.json")),
+    ids = lambda p: p.parent.name,
 )
 def test_curated_release_sections_and_webp_files(notes_path):
     notes = json.loads(notes_path.read_text(encoding = "utf-8"))
@@ -1621,7 +1623,9 @@ def _assert_floors_itself(source: str, card: str) -> None:
         r"(?<![\w-])min-h-\[", surface + root
     ), f"the {card} card names a height again, which goes stale at the next type size"
     assert _only_under(root, "shrink-0"), f"the rail can squeeze the {card} card"
-    assert _NOTES_GATE not in root, f"the {card} card reserves room for a notes panel it no longer shows"
+    assert (
+        _NOTES_GATE not in root
+    ), f"the {card} card reserves room for a notes panel it no longer shows"
     assert not _applies(
         root, "min-h-0"
     ), f"min-h-0 lets the rail squeeze the {card} card past its floor"
