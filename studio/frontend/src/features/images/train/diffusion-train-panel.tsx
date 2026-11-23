@@ -123,6 +123,7 @@ import {
   diffusionBlockSwapSummary,
 } from "./diffusion-block-swap";
 import { useSystemInfo } from "@/hooks/use-system";
+import { diffusionTrainGuideUrl } from "./diffusion-train-guides";
 import { diffusionTrainingProgress } from "./diffusion-train-progress";
 import { runningTrainingSelection } from "./diffusion-train-restore";
 import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
@@ -1990,7 +1991,16 @@ export function DiffusionTrainPanel({
                 Train a LoRA
               </h2>
               <p className="text-xs leading-snug text-muted-foreground">
-                Teach a model a new style or subject.
+                Teach a model a new style or subject.{" "}
+                <a
+                  href={diffusionTrainGuideUrl(familyName, info?.families)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="Open the LoRA training guide in a new tab"
+                  className="text-primary underline"
+                >
+                  Guide
+                </a>
               </p>
             </div>
             {savedPresets ? (

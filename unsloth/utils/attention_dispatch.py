@@ -1736,7 +1736,11 @@ def run_attention(
         _SAVE_ATTENTION
         and context.training
         and manager is None
-        and (_SAVE_ATTENTION_MIN_SEQ is None or _auto_saves_attention(config, context))
+        and (
+            _explicit_saves_attention()
+            if _SAVE_ATTENTION_MIN_SEQ is None
+            else _auto_saves_attention(config, context)
+        )
     ):
         # GC replay reuses the first pass's attention output + logsumexp; graph breaks under compile.
         traced = torch.compiler.is_compiling()
@@ -1792,20 +1796,94 @@ def _saved_attention_frames_possible() -> bool:
     # a graph break per layer for nothing, Unsupported under a user's fullgraph=True.
     if not _unsloth_checkpoint_installed():
         return False
-    if not torch.compiler.is_compiling():
+    return not torch.compiler.is_compiling() or _in_unsloth_compiled_region()
+
+
+def _may_cross_into_saved_attention() -> bool:
+    # Eager code, Unsloth's own blocks and a compile that may graph break all cross compiler.disable,
+    # so both checkpoint passes route alike even when only one is traced (zoo matches replay calls by
+    # position). Only a compile where a graph break is fatal stays in the graph.
+    if not torch.compiler.is_compiling() or _in_unsloth_compiled_region():
         return True
+    return not _graph_break_is_fatal()
+
+
+def _in_unsloth_compiled_region() -> bool:
+    # Unsloth's own per-layer compile (fullgraph=False, a graph break is legal); not set when the block
+    # is inlined into a user's torch.compile, which may be fullgraph=True.
     flag = getattr(sys.modules.get("unsloth.models._block_compile"), "_IN_COMPILED_REGION", None)
     return bool(flag) and bool(flag[0])
 
 
+def _graph_break_is_fatal_now() -> bool:
+    # The tracing root's fullgraph=True / error_on_graph_break. Unknown (no tracer API): assume fatal.
+    try:
+        from torch._dynamo.symbolic_convert import InstructionTranslator
+        tx = InstructionTranslator.current_tx()
+    except Exception:
+        return True
+    if tx is None:
+        return True
+    return bool(getattr(tx, "one_graph", True)) or bool(getattr(tx, "error_on_graph_break", False))
+
+
+# Read once per traced graph: fullgraph is fixed per torch.compile call.
+_graph_break_is_fatal = _constant_probe(_graph_break_is_fatal_now)
+
+
+def _explicit_saves_attention() -> bool:
+    # UNSLOTH_GC_SAVE_ATTENTION=1 / offload. zoo makes a frame only for a checkpoint on a device whose
+    # SDPA keeps an attention kernel, so a call outside a frame stays in the caller's graph instead of
+    # crossing compiler.disable (Unsupported under fullgraph=True). Dynamo guards on the frame read.
+    # Inside a frame, a fullgraph=True compile stays in the graph (nothing kept for that call).
+    # The in-graph route must fill / take its call's entry so both passes line up whichever route each takes.
+    skip_slot = getattr(
+        sys.modules.get("unsloth_zoo.saved_attention"), "saved_attention_skip_slot", None
+    )
+    if skip_slot is None:
+        # An older zoo: ROCm keeps nothing, so no pass can consume another call's entry; other builds
+        # route every call as before.
+        return not _ROCM_SDPA_GUARD
+    if not _saved_attention_active():
+        return False
+    if _may_cross_into_saved_attention():
+        return True
+    skip_slot()
+    return False
+
+
+def _select_rocm_saved_sdpa(q):
+    """zoo's ROCm saved-attention selector: the SDPA backend a training call on q's device runs here,
+    under the same rocm_sdpa_check filter as scaled_dot_product_attention; a refused kernel is ERROR."""
+    from torch.nn.attention import SDPBackend
+    from .rocm_sdpa_check import rocm_sdpa_verdict
+
+    index = q.device.index
+    verdict = rocm_sdpa_verdict(index)
+    backends = _CUDNN_FREE_BACKENDS[_rocm_sdpa_index_now(index)]
+    with _sdpa_kernel(backends) if backends is not None else contextlib.nullcontext():
+        choice = int(torch._fused_sdp_choice(q, q, q, is_causal = True))
+    if (choice == int(SDPBackend.FLASH_ATTENTION) and not verdict["flash"]) or (
+        choice == int(SDPBackend.EFFICIENT_ATTENTION) and not verdict["efficient"]
+    ):
+        return int(SDPBackend.ERROR)
+    return choice
+
+
 def _load_saved_attention():
     """(call, min_seq): min_seq None = every training call (UNSLOTH_GC_SAVE_ATTENTION=1 / offload);
-    an int = automatic mode from that query length. An unsloth_zoo without automatic mode stays off."""
+    an int = automatic mode from that query length. An unsloth_zoo without automatic mode stays off.
+    Configuration only: no device is touched here (ranks are placed later; zoo decides per checkpoint)."""
     try:
-        from unsloth_zoo.saved_attention import save_attention_enabled, saved_attention_call
+        from unsloth_zoo import saved_attention as sa
+        saved_attention_call = sa.saved_attention_call
     except Exception:
         return None, None
-    if save_attention_enabled():
+    # Older zoo: save_attention_enabled() is the configuration (and keeps ROCm off).
+    if getattr(sa, "save_attention_requested", sa.save_attention_enabled)():
+        register = getattr(sa, "register_rocm_saved_attention_selector", None)
+        if _ROCM_SDPA_GUARD and register is not None:
+            register(_select_rocm_saved_sdpa)
         return saved_attention_call, None
     try:
         from unsloth_zoo.saved_attention import save_attention_auto_min_seq
@@ -1819,6 +1897,9 @@ def _load_saved_attention():
 
 _saved_attention_call, _SAVE_ATTENTION_MIN_SEQ = _load_saved_attention()
 _SAVE_ATTENTION = _saved_attention_call is not None
+_saved_attention_active = getattr(
+    sys.modules.get("unsloth_zoo.saved_attention"), "saved_attention_active", lambda: False
+)
 
 
 def _run_attention(

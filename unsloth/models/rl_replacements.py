@@ -1536,13 +1536,15 @@ def sft_trainer_compute_loss(function_name, function):
                     loss = loss * (self.accelerator.num_processes // max(int(tp_size or 1), 1))
                 aux_loss = getattr(outputs, "aux_loss", None)
                 if getattr(self, "aux_loss_enabled", False) and aux_loss is not None:
+                    # Eval accumulates nothing, and Trainer sets the attribute only inside the training loop (#2464).
                     steps = (
                         self.current_gradient_accumulation_steps
-                        if num_items_in_batch is not None
+                        if num_items_in_batch is not None and getattr(model, "training", True)
                         else 1
                     )
                     loss = loss + self.router_aux_loss_coef * aux_loss / steps
-                if return_outputs:
+                # Unsloth's prediction_step sets UNSLOTH_RETURN_LOGITS=1 only when it keeps the logits (#1801).
+                if return_outputs and os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1":
                     # prediction_step / compute_metrics read logits, which the fused head never builds (as TRL does).
                     with torch.no_grad():
                         outputs = model(**{k: v for k, v in inputs.items() if k != "labels"})
@@ -1597,6 +1599,66 @@ def sft_trainer_compute_loss(function_name, function):
 
 
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
+
+
+# TRL >= 1.15 SFTTrainer.prediction_step no longer calls super(), so it shadowed Unsloth's Trainer.prediction_step:
+# compute_metrics / predict() got the fused CE's EmptyLogits and the eval loss was never detached (trl#8246).
+def sft_trainer_prediction_step(function_name, function):
+    if function_name != "prediction_step" or "super().prediction_step" in function:
+        return function
+
+    def prediction_step(
+        self,
+        model,
+        inputs,
+        prediction_loss_only,
+        ignore_keys = None,
+    ):
+        # TRL's step used the collated labels whatever label_names says; with label_names = [] Unsloth's
+        # step would take its unlabelled branch and read inputs["prompt"].
+        label_names = getattr(self, "label_names", None)
+        relabel = (
+            label_names is not None and len(label_names) == 0 and inputs.get("labels") is not None
+        )
+        if relabel:
+            self.label_names = ["labels"]
+        # TRL's step returned outputs.logits only; Unsloth's keeps every non-loss field (aux_loss, router_logits).
+        captured = []
+        had_own = "compute_loss" in self.__dict__
+        compute_loss = self.compute_loss
+
+        def capture_compute_loss(*args, **kwargs):
+            result = compute_loss(*args, **kwargs)
+            if kwargs.get("return_outputs") and isinstance(result, tuple) and len(result) == 2:
+                outputs = result[1]
+                if isinstance(outputs, dict):
+                    captured.append(outputs.get("logits"))
+                else:
+                    captured.append(getattr(outputs, "logits", None))
+            return result
+
+        if not prediction_loss_only:
+            self.compute_loss = capture_compute_loss
+        try:
+            loss, logits, labels = super().prediction_step(
+                model, inputs, prediction_loss_only, ignore_keys = ignore_keys
+            )
+        finally:
+            if relabel:
+                self.label_names = label_names
+            if not prediction_loss_only:
+                if had_own:
+                    self.compute_loss = compute_loss
+                else:
+                    del self.compute_loss
+        if captured and captured[-1] is not None:
+            logits = captured[-1].detach()
+        return loss, logits, labels
+
+    return inspect.getsource(prediction_step)
+
+
+RL_FUNCTIONS["sft_trainer"].append(sft_trainer_prediction_step)
 
 
 # Route ORPO/CPO row tokenization through the underlying text tokenizer when the processing class is a multimodal processor; CPO reuses this code (#4952).
@@ -1926,9 +1988,8 @@ def _unsloth_grpo_packing_leaks(self, unwrapped):
             print(f"Unsloth: GRPO sequence packing leak probe could not run: {e!r}", flush = True)
         return None
     finally:
-        # Through each module's train(), not its flag: a module may sync state there (Int4PackedLinear sets its
-        # quant_state.training). modules() is parent-first, so each recursive call is then undone by the
-        # children's own, leaving every module in its saved mode.
+        # Restore via each module's train(), not its flag, since modules may sync state there
+        # (Int4PackedLinear); parent-first recursion is undone by children's own restores.
         for module, training in was_training or ():
             module.train(training)
         # modules() yields a child shared by two parents once, so a later parent's recursive train() can flip it
@@ -1950,26 +2011,49 @@ def _unsloth_grpo_enable_packed_varlen(self, unwrapped):
 
 
 def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
-    """Packed GRPO forwards off, once per model (policy and a separate ref_model), for models whose compressors /
-    recurrences mix packed rows (packing_boundary_blocker), or whose attention lets packed documents see each other
-    (_unsloth_grpo_packing_leaks). Their leak (~0.1 nats) passes the 0.7 packed self-verify. Zoo's grad
-    PrefixGrouper verifies only against the grad packed forward, so turning that off covers it."""
+    """Check packed document isolation once per model, including a separate reference policy."""
     try:
         unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
         if getattr(unwrapped, "_unsloth_packing_boundary_checked", False):
             return
-        unwrapped._unsloth_packing_boundary_checked = True
-        from unsloth.utils.packing import packing_boundary_blocker
+        from unsloth.utils.packing import (
+            _hybrid_varlen_dispatched,
+            _iter_stateful_mixers,
+            packing_boundary_blocker,
+            patch_hybrid_linear_attention_varlen,
+        )
 
         config = getattr(unwrapped, "config", None)
         blocker = packing_boundary_blocker(unwrapped, (getattr(config, "model_type", None),))
+        mixers = _iter_stateful_mixers(unwrapped) if blocker is None else ()
+        wrapped = getattr(unwrapped, "_unsloth_varlen_forward_wrapped", False)
+        packing_on = os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+        if mixers and not wrapped and packing_on:
+            # The same boundary shim SFT packing installs (kernel checks, exactness probe, fail closed): a stateful
+            # mixer carries conv / recurrent state across a packed reset without it.
+            try:
+                wrapped = bool(patch_hybrid_linear_attention_varlen(unwrapped))
+            except Exception:
+                wrapped = False
+        if mixers and not (
+            wrapped and all(getattr(m, "_unsloth_varlen_wrapped", False) for m, _ in mixers)
+        ):
+            blocker = "missing_mixer_boundaries"
+        unwrapped._unsloth_packing_boundary_checked = True
     except Exception:
         return
-    if blocker is None and _unsloth_grpo_packing_leaks(self, unwrapped) is True:
-        blocker = "packing_leak_probe"
     if blocker is None:
-        _unsloth_grpo_enable_packed_varlen(self, unwrapped)
-        return
+        leaks = _unsloth_grpo_packing_leaks(self, unwrapped)
+        if (not mixers and leaks is not True) or (
+            leaks is False and all(_hybrid_varlen_dispatched(m) for m, _ in mixers)
+        ):
+            _unsloth_grpo_enable_packed_varlen(self, unwrapped)
+            return
     unwrapped._unsloth_seq_packing_nograd_ok = False
     unwrapped._unsloth_seq_packing_grad_ok = False
     unwrapped._unsloth_prefix_grouper_nograd_disabled = True
@@ -3938,6 +4022,11 @@ def _unsloth_vllm_peft_merge_out_of_place(base, layers):
                 layer.merge()
         return {id(param): param.data for param in params}
     finally:
+        # Through train(), not only the flag: Int4PackedLinear syncs its quant_state there and
+        # PreTrainedModel re-kernelizes under use_kernels. modules() is parent-first, so the children's
+        # own calls undo each recursion; the flags then cover a child shared by two parents.
+        for module, training in modes:
+            module.train(training)
         for module, training in modes:
             module.training = training
         for param, data in zip(params, originals):
@@ -4116,6 +4205,9 @@ def _unsloth_vllm_sync_peft_merged(trainer):
         "server" if getattr(trainer, "vllm_client", None) is not None else "colocate"
     )
     is_main = getattr(trainer.accelerator, "is_main_process", True)
+    # TRL creates vllm_client on the main process only; the other ranks have nothing to send.
+    if mode == "server" and not is_main:
+        return None
     llm_model = None
     if mode == "colocate":
         llm_model = trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model
@@ -4139,11 +4231,10 @@ def _unsloth_vllm_sync_peft_merged(trainer):
         if not frozen_sync.keep(name, tensor, param):
             continue
         if mode == "server":
-            if is_main:
-                trainer.vllm_client.update_named_param(name, tensor)
+            trainer.vllm_client.update_named_param(name, tensor)
         elif mode == "colocate":
             llm_model.load_weights([(name, tensor)])
-    if mode == "server" and is_main:
+    if mode == "server":
         trainer.vllm_client.reset_prefix_cache()
     elif mode == "colocate":
         trainer.llm.reset_prefix_cache()
@@ -4613,7 +4704,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     dtype_bytes,
                     self.args.unsloth_logit_chunk_multiplier,
                 )
-                B = total_rows // B
+                # Rows per forward -> split count; floor division would put more rows in one forward than fit.
+                B = max(1, -(-total_rows // B))
                 if _grpo_collective_forwards:
                     # Sized from this rank's sequence length: agree, or the forward counts differ.
                     from unsloth_zoo.rl_replacements import grpo_agree_mini_batch
@@ -4762,6 +4854,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     )
                     if _pg_unsafe is None:
                         _pg_unsafe = set()
+                    if (
+                        _pg_layout is not None
+                        and _pg_layout.flat_ids.shape[1] > batch_size * seq_len
+                    ):
+                        # Over one padded mini-batch's tokens: the chunked loop keeps the mini-batch cap.
+                        _pg_layout = None
                     if _pg_layout is not None and _pg_layout.signature not in _pg_unsafe:
                         _pg_sig = _pg_layout.signature
                         _pg_verified = getattr(
@@ -5174,6 +5272,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 zipped_inputs = []
             else:
                 _pk_hidden = _pk_sel = _pk_result = _pk_ref = None
+                # A declined PrefixGrouper layout (and the deferred forward bound to it) too.
+                _pg_layout = _pg_forward_fn = None
                 # Index buffers of a declined packed batch would otherwise live through the padded loop.
                 _pk_keep = _pk_len = _pk_flat = _pk_pos = _pk_cmask = None
                 _pk_nz_idx = _pk_within = _pk_cstart = _pk_ctgt = _pk_tgt = _pk_ids = _pk_cm = None
@@ -5369,7 +5469,7 @@ def _unsloth_grpo_returns_hidden_states(model, tensor, lm_head):
 
     ``_get_per_token_logps_and_entropies`` sets ``UNSLOTH_RETURN_HIDDEN_STATES=1``, but only a forward that honours the name hands hidden states back as ``.logits``; any other forward returns a real ``[.., vocab]`` tensor that must not reach the ``lm_head`` matmul.
 
-    The primary test is an explicit signal that the forward honours the flag, both set outside this file: ``__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__`` on the generated class, written by ``unsloth_zoo.compiler.create_standalone_class`` exactly when ``apply_fused_lm_head`` gave that forward its own branch; and ``_unsloth_grpo_hidden_states_forward_wrapped``, set by ``_install_grpo_hidden_states_forward_wrapper`` in ``unsloth/models/rl.py`` for models the compiler did not rewrite. That wrapper degrades to real logits when the model cannot produce hidden states and records whether it did so in ``_unsloth_grpo_hidden_states_degraded`` before returning, so reading the pair after a forward describes the call that just finished; degradation is per call, not per model.
+    The primary test is an explicit signal that the forward honours the flag, both set outside this file: ``__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__`` on the generated class, written by ``unsloth_zoo.compiler.create_standalone_class`` exactly when ``apply_fused_lm_head`` gave that forward its own branch, or on the forward function itself for the fast ``CausalLM_fast_forward`` / ``MistralForCausalLM_fast_forward``; and ``_unsloth_grpo_hidden_states_forward_wrapped``, set by ``_install_grpo_hidden_states_forward_wrapper`` in ``unsloth/models/rl.py`` for models the compiler did not rewrite. That wrapper degrades to real logits when the model cannot produce hidden states and records whether it did so in ``_unsloth_grpo_hidden_states_degraded`` before returning, so reading the pair after a forward describes the call that just finished; degradation is per call, not per model.
 
     The width comparison stays as the fallback, for an ``unsloth_zoo`` old enough that it never writes the marker. It is decisive whenever ``vocab_size != hidden_size``, and the signal may only overrule it when it is not, which is the one case the shape cannot answer.
     """
@@ -5382,8 +5482,9 @@ def _unsloth_grpo_returns_hidden_states(model, tensor, lm_head):
 
 def _unsloth_grpo_head_hooked(model):
     """True when GRPO must score real logits from the head's own call: hidden-states scorers read ``lm_head.weight``
-    and bypass its hooks / patched ``forward``. Unsloth, ZeRO-3, FSDP2 and accelerate ``_hf_hook`` hooks are already
-    handled. A square head keeps hidden states: the width dispatch could not tell them from logits."""
+    and bypass its hooks / patched ``forward``, and on a PEFT LoRA head ``.weight`` is the base weight alone. Unsloth,
+    ZeRO-3, FSDP2 and accelerate ``_hf_hook`` hooks are already handled. A square head keeps hidden states: the width
+    dispatch could not tell them from logits."""
     try:
         head = model.get_output_embeddings()
     except Exception:
@@ -5408,6 +5509,23 @@ def _unsloth_grpo_head_hooked(model):
         return True
     if "forward" in vars(head) and not hasattr(head, "_hf_hook"):
         return True
+    # An active unmerged adapter on the head (fused_label_smoothing._head_not_fusable): generate() samples with it.
+    # Under fast inference the head LoRA stays untrained, as get_peft_model warns: vLLM samples without it.
+    try:
+        from peft.tuners.tuners_utils import BaseTunerLayer as _TunerLayer
+    except Exception:
+        _TunerLayer = None
+    if _TunerLayer is not None and getattr(model, "vllm_engine", None) is None:
+        for _module in head.modules():
+            if not isinstance(_module, _TunerLayer) or getattr(_module, "disable_adapters", False):
+                continue
+            _merged = set(getattr(_module, "merged_adapters", None) or ())
+            _held = set()
+            for _layer_name in getattr(_module, "adapter_layer_names", None) or ():
+                _held.update(getattr(_module, _layer_name, None) or ())
+            for _adapter in getattr(_module, "active_adapters", None) or ():
+                if _adapter in _held and _adapter not in _merged:
+                    return True
     for _name in ("_forward_hooks", "_forward_pre_hooks", "_backward_hooks", "_backward_pre_hooks"):
         for _hook in (getattr(head, _name, None) or {}).values():
             _fn = getattr(_hook, "func", _hook)  # functools.partial
@@ -5427,6 +5545,118 @@ def _unsloth_pref_returns_hidden_states(model, tensor, lm_head):
     if lm_head.shape[0] != lm_head.shape[1]:
         return True
     return _unsloth_grpo_hidden_states_signal(model) is True
+
+
+def _unsloth_forward_returns_hidden_states(model):
+    """Whether ``model``'s forward is one of Unsloth's fast CausalLM forwards, which honour ``UNSLOTH_RETURN_HIDDEN_STATES`` themselves, so GRPO's fallback wrapper must not wrap it. Read by both the installer (``unsloth/models/rl.py``) and ``_unsloth_grpo_hidden_states_signal``.
+
+    The fast forward registers itself: its ``__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__`` is the function object, so a replacement that copied the attribute with ``functools.wraps`` does not count. The forward is followed only through wrappers known to call it unchanged, by their code object rather than copied metadata: pre_patch's gate (only on an instance marked ``_unsloth_fast_path``, else it runs the stock forward), TRL's ``add_fused_lm_head`` (which GRPO installs on every model, and which calls the forward it replaced unless ``fused_lm_head = True``), Accelerate's device hook (its live ``_old_forward``), Accelerate's mixed-precision ``convert_outputs_to_fp32`` over torch's autocast decorator, and an Unsloth wrapper naming its delegate in ``_unsloth_forward_delegate``. The checked module is the one the fallback wrapper would replace, behind the parallel wrappers that run their ``.module``."""
+    import functools
+    import sys
+
+    import torch
+
+    def _made_by(function, factory):
+        code = getattr(function, "__code__", None)
+        outer = getattr(getattr(factory, "__func__", factory), "__code__", None)
+        return code is not None and outer is not None and any(code is c for c in outer.co_consts)
+
+    def _closure(function, name):
+        try:
+            return function.__closure__[function.__code__.co_freevars.index(name)].cell_contents
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return None
+
+    parallel = [torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel]
+    for module_name, class_name in (
+        ("torch.distributed.fsdp.fully_sharded_data_parallel", "FullyShardedDataParallel"),
+        ("deepspeed.runtime.engine", "DeepSpeedEngine"),
+    ):
+        cls = getattr(sys.modules.get(module_name), class_name, None)
+        if isinstance(cls, type):
+            parallel.append(cls)
+    target = model
+    for _ in range(8):
+        if not isinstance(target, tuple(parallel)) or "forward" in vars(target):
+            break
+        target = getattr(target, "module", None)
+    if target is None:
+        return False
+    # The head owner, as _grpo_hidden_states_wrap_target picks it: a PEFT base model, else a .base_model / .model
+    # child that still owns the head (a bare *ForCausalLM's .model is its decoder body).
+    get_base_model = getattr(target, "get_base_model", None)
+    base_model = None
+    if callable(get_base_model):
+        try:
+            base_model = get_base_model()
+        except Exception:
+            base_model = None
+    if base_model is not None and base_model is not target:
+        target = base_model
+    else:
+        for attr in ("base_model", "model"):
+            child = getattr(target, attr, None)
+            if child is None or child is target or not hasattr(child, "forward"):
+                continue
+            try:
+                owns_head = child.get_output_embeddings() is not None
+            except Exception:
+                owns_head = False
+            if owns_head:
+                target = child
+                break
+
+    marker = "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
+    gate = getattr(sys.modules.get("unsloth.models.llama"), "_gated_method", None)
+    hooks = sys.modules.get("accelerate.hooks")
+    operations = sys.modules.get("accelerate.utils.operations")
+    autocast = sys.modules.get("torch.amp.autocast_mode")
+    owner = target
+    forward = getattr(target, "forward", None)
+    for _ in range(8):
+        if hasattr(forward, "__func__") and getattr(forward, "__self__", None) is not None:
+            owner = forward.__self__
+            forward = forward.__func__
+        if forward is None or getattr(
+            forward, "_unsloth_grpo_hidden_states_forward_wrapped", False
+        ):
+            return False
+        if getattr(forward, marker, None) is forward:
+            return True
+        # An Unsloth wrapper that calls one forward unchanged names it, keyed on itself so a copy does not count.
+        delegate = getattr(forward, "_unsloth_forward_delegate", None)
+        code = getattr(forward, "__code__", None)
+        if isinstance(delegate, tuple) and len(delegate) == 2 and delegate[0] is forward:
+            forward = delegate[1]
+        elif (
+            code is not None
+            and code.co_name == "_fused_forward"
+            and "original_forward" in code.co_freevars
+            and code.co_filename.replace("\\", "/").endswith("trl/trainer/utils.py")
+        ):
+            # TRL >= 1.15 add_fused_lm_head: without fused_lm_head = True it calls the forward it replaced.
+            forward = _closure(forward, "original_forward")
+        elif gate is not None and _made_by(forward, gate):
+            if not getattr(owner, "_unsloth_fast_path", False):
+                return False
+            forward = _closure(forward, "fast")
+        elif (
+            isinstance(forward, functools.partial)
+            and forward.args
+            and _made_by(forward.func, getattr(hooks, "add_hook_to_module", None))
+        ):
+            owner = forward.args[0]
+            forward = getattr(owner, "_old_forward", None)
+        elif _made_by(forward, getattr(operations, "convert_outputs_to_fp32", None)):
+            converter = _closure(forward, "model_forward")
+            if type(converter) is not getattr(operations, "ConvertOutputsToFp32", None):
+                return False
+            forward = converter.model_forward
+        elif _made_by(forward, getattr(autocast, "autocast_decorator", None)):
+            forward = _closure(forward, "func")
+        else:
+            return False
+    return False
 
 
 def _unsloth_grpo_hidden_states_signal(model):
@@ -5470,6 +5700,10 @@ def _unsloth_grpo_hidden_states_signal(model):
             getattr(candidate, "_unsloth_grpo_hidden_states_warning_issued", False)
             for candidate in candidates
         )
+    # After the wrapper's per-call status, and only for the module the wrapper would have replaced: a marked
+    # descendant elsewhere in the chain says nothing about the forward that just ran.
+    if _unsloth_forward_returns_hidden_states(model):
+        return True
     return None
 
 
@@ -6069,6 +6303,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_s
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_resolve_logit_scales))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_returns_hidden_states))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_head_hooked))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_forward_returns_hidden_states))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_states_signal))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
@@ -7854,6 +8089,7 @@ for _gkd_item in (
     _unsloth_get_final_logit_softcapping,
     _unsloth_resolve_logit_scales,
     _unsloth_grpo_returns_hidden_states,
+    _unsloth_forward_returns_hidden_states,
     _unsloth_grpo_hidden_states_signal,
     _unsloth_gkd_canonical,
     _unsloth_gkd_jsd_supported,
@@ -8213,6 +8449,7 @@ for _pref_trainer in ("orpo_trainer", "cpo_trainer"):
         _unsloth_get_final_logit_softcapping,
         _unsloth_resolve_logit_scales,
         _unsloth_grpo_returns_hidden_states,
+        _unsloth_forward_returns_hidden_states,
         _unsloth_grpo_hidden_states_signal,
         _unsloth_pref_returns_hidden_states,
         _unsloth_gkd_dense_head,
@@ -8719,6 +8956,7 @@ for _dpo_item in (
     _unsloth_get_final_logit_softcapping,
     _unsloth_resolve_logit_scales,
     _unsloth_grpo_returns_hidden_states,
+    _unsloth_forward_returns_hidden_states,
     _unsloth_grpo_hidden_states_signal,
     _unsloth_pref_returns_hidden_states,
     _unsloth_gkd_dense_head,
@@ -8944,6 +9182,7 @@ for _kto_item in (
     _unsloth_get_final_logit_softcapping,
     _unsloth_resolve_logit_scales,
     _unsloth_grpo_returns_hidden_states,
+    _unsloth_forward_returns_hidden_states,
     _unsloth_grpo_hidden_states_signal,
     _unsloth_pref_returns_hidden_states,
     _unsloth_gkd_dense_head,
@@ -9873,6 +10112,7 @@ for _odpo_trainer in ("bco_trainer", "online_dpo_trainer", "xpo_trainer", "nash_
         _unsloth_get_final_logit_softcapping,
         _unsloth_resolve_logit_scales,
         _unsloth_grpo_returns_hidden_states,
+        _unsloth_forward_returns_hidden_states,
         _unsloth_grpo_hidden_states_signal,
         _unsloth_pref_returns_hidden_states,
         _unsloth_gkd_dense_head,

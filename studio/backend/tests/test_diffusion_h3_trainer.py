@@ -1336,7 +1336,8 @@ def test_the_h3_conditioner_load_carries_the_hub_token(monkeypatch):
 
     assert seen[0] == {"index_token": "hf_secret", "cache_dir": "/live/hub"}
     component_loads = seen[1:]
-    assert len(component_loads) == 2
+    # Tokenizer + processor, then the conditioner alone, then the VAEs.
+    assert len(component_loads) == 3
     assert all(call.get("token") == "hf_secret" for call in component_loads), component_loads
     # Pin cache_dir to the LIVE root: the import-time constant ignores a mid-session folder change.
     assert all(call.get("cache_dir") == "/live/hub" for call in component_loads), component_loads

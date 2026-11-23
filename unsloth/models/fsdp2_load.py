@@ -4,7 +4,12 @@
 """Inside fsdp2_sharded_loading() or UNSLOTH_FSDP2_SHARDED_LOAD=1, each rank reads only its dim-0
 chunk of nn.Linear / nn.Embedding weights (output head included); others whole. 16-bit and pre-quantized bitsandbytes 4-bit
 checkpoints: a 4-bit weight's chunk is its byte range of the packed storage (the QuantState stays whole),
-which FSDP2 shards the same way whatever float dtype later holds the packed bytes."""
+which FSDP2 shards the same way whatever float dtype later holds the packed bytes.
+
+Quantizing on load (bitsandbytes 4-bit of a 16-bit or transformers-converted checkpoint, transformers 5): transformers
+loads and quantizes every tensor as in a full load, and each rank keeps only its chunk of it right after it is set on
+the model (packed 4-bit bytes, MoE expert stacks included; 16-bit nn.Linear / nn.Embedding rows), so a rank never
+holds more than its chunks plus the tensor being converted. The chunks are the full load's bytes and QuantState."""
 
 from __future__ import annotations
 
@@ -30,9 +35,13 @@ _STATS = "_unsloth_fsdp2_load_stats"
 _ACTIVE = [0]
 
 _QUANTIZED_HINT = (
-    "QLoRA quantizing on load (load_in_4bit / 8-bit of a 16-bit checkpoint) under native FSDP2 loads the full "
-    "model on every rank: drop fsdp2_sharded_loading / UNSLOTH_FSDP2_SHARDED_LOAD for it, or load a "
-    "pre-quantized bnb-4bit checkpoint."
+    "QLoRA quantizing on load sharded needs a 4-bit BitsAndBytesConfig as quantization_config on transformers 5; "
+    "8-bit, bare load_in_4bit / load_in_8bit kwargs and transformers 4.x load the full model on every rank: drop "
+    "fsdp2_sharded_loading / UNSLOTH_FSDP2_SHARDED_LOAD for them, or load a pre-quantized bnb-4bit checkpoint."
+)
+_PREQUANTIZED_HINT = (
+    "Load it without fsdp2_sharded_loading / UNSLOTH_FSDP2_SHARDED_LOAD (the full model on every rank), or "
+    "load a 16-bit or pre-quantized bnb-4bit checkpoint."
 )
 # A 4-bit chunk is a byte range: equal for every float storage FSDP2 may view the packed bytes in (up to
 # 4-byte float32) when the packed size divides by this many bytes per rank.
@@ -195,9 +204,10 @@ def _fsdp2_loading(mesh, auto = False):
         "materialize": _materialize,
         "label": "native FSDP2",
         "quantized_hint": _QUANTIZED_HINT,
-        "prequantized_hint": _QUANTIZED_HINT,
+        "prequantized_hint": _PREQUANTIZED_HINT,
         "mesh_hint": "Unsloth: native FSDP2 sharded loading takes a 1-D mesh (HSDP / 2-D meshes load in full).",
         "auto": auto,
+        "quantize_on_load": _load_quantizing,
     }
     _ACTIVE[0] += 1
     try:
@@ -205,6 +215,241 @@ def _fsdp2_loading(mesh, auto = False):
             yield live
     finally:
         _ACTIVE[0] -= 1
+
+
+def bnb4_on_load(kwargs):
+    """True when this from_pretrained call quantizes to bitsandbytes 4-bit on load through a 4-bit
+    BitsAndBytesConfig (what Unsloth's loaders pass) on a transformers that sets each loaded tensor through
+    core_model_loading.set_param_for_module (5.x); bare load_in_4bit kwargs, 8-bit and transformers 4.x keep
+    the previous behaviour (whole load, or the refusal under explicit sharded loading)."""
+    if kwargs.get("load_in_8bit") or kwargs.get("load_in_4bit"):
+        return False
+    asked = kwargs.get("quantization_config")
+    if asked is None:
+        return False
+    try:
+        from transformers import core_model_loading as loading
+    except Exception:
+        return False
+    if not callable(getattr(loading, "set_param_for_module", None)):
+        return False
+    from .bnb_sharded_load import _as_dict
+
+    try:
+        qc = _as_dict(asked) or {}
+    except Exception:
+        return False
+    method = qc.get("quant_method", "")
+    method = str(getattr(method, "value", method)).lower()
+    return (
+        method == "bitsandbytes"
+        and bool(qc.get("load_in_4bit") or qc.get("_load_in_4bit"))
+        and not (qc.get("load_in_8bit") or qc.get("_load_in_8bit"))
+    )
+
+
+def quantized_load_bytes(index, kwargs):
+    """Bytes one rank would hold after a whole bitsandbytes 4-bit load of the checkpoint `index` ({tensor:
+    file}): 2-D linear weights at about 0.53 bytes per parameter (packed codes + absmax) unless the
+    quantization_config skips their module, stacked 3-D MoE experts too, packed / fp8 tensors as stored,
+    the rest in the 16-bit load dtype."""
+    from safetensors import safe_open
+
+    from ..parallel_auto import _DTYPE_BYTES, _is_quantizable
+    from .bnb_sharded_load import _as_dict
+
+    try:
+        qc = _as_dict(kwargs.get("quantization_config")) or {}
+    except Exception:
+        qc = {}
+    skip = [m for m in (qc.get("llm_int8_skip_modules") or ()) if isinstance(m, str)]
+    dtype = kwargs.get("dtype", kwargs.get("torch_dtype"))
+    dense = 4 if dtype in (torch.float32, "float32") else 2
+    by_file = collections.defaultdict(list)
+    for key, path in index.items():
+        by_file[path].append(key)
+    total = 0
+    for path, keys in by_file.items():
+        with safe_open(path, framework = "pt", device = "cpu") as f:
+            for key in keys:
+                piece = f.get_slice(key)
+                dt, shape = str(piece.get_dtype()).upper(), tuple(piece.get_shape())
+                numel = math.prod(shape) if shape else 1
+                if not dt.startswith(("F", "BF")) or dt.startswith("F8"):
+                    total += numel * _DTYPE_BYTES.get(dt, 1)
+                    continue
+                module = key[: -len(".weight")] if key.endswith(".weight") else key
+                stacked = len(shape) == 3 and "expert" in key.lower()
+                if (_is_quantizable(key, shape) or stacked) and not any(m in module for m in skip):
+                    total += int(numel * 0.53)
+                else:
+                    total += numel * dense
+    return total
+
+
+def _keep_chunk(module, p, world, rank, ranks):
+    """This rank's dim-0 chunk of a just-loaded parameter, tagged like a sharded-loaded one, or None (kept
+    whole): a quantized Params4bit (packed [n, 1] bytes, the QuantState whole) or a 16-bit nn.Linear /
+    nn.Embedding weight."""
+    if not isinstance(p, torch.Tensor) or p.is_meta or _preload(p) is not None:
+        return None
+    is4 = any(c.__name__ == "Params4bit" for c in type(p).__mro__)
+    if is4:
+        if not getattr(p, "bnb_quantized", False) or p.ndim != 2 or p.shape[1] != 1:
+            return None
+        if getattr(p, "quant_state", None) is None:
+            return None
+        rows, itemsize = p.shape[0], p.element_size()
+        if (rows * itemsize) % (_PACKED_UNIT * world):
+            return None  # kept whole: fully_shard cuts it as from a full load
+        start, stop = rank * rows // world, (rank + 1) * rows // world
+        with torch.no_grad():
+            local = p.data[start:stop].clone()
+        new = torch.Tensor._make_subclass(type(p), local, p.requires_grad)
+        shape, packed = (rows * itemsize, 1), True
+        start, stop = start * itemsize, stop * itemsize
+    elif (
+        isinstance(module, (nn.Linear, nn.Embedding))
+        and p is module._parameters.get("weight")
+        and p.ndim >= 2
+        and p.is_floating_point()
+    ):
+        rows = p.shape[0]
+        start, stop = _chunk_rows(rows, world, rank)
+        with torch.no_grad():
+            local = p.data[start:stop].clone()
+        new = nn.Parameter(local, requires_grad = p.requires_grad)
+        shape, packed = tuple(p.shape), False
+    else:
+        return None
+    for attr, value in p.__dict__.items():
+        new.__dict__[attr] = value
+    setattr(
+        new,
+        _PRELOAD,
+        {
+            "shape": shape,
+            "ranks": ranks,
+            "world": world,
+            "rank": rank,
+            "rows": (start, stop),
+            "packed": packed,
+        },
+    )
+    return new
+
+
+_ASYNC_LOAD_ENV = "HF_DEACTIVATE_ASYNC_LOAD"
+
+
+def _shard_allocator_warmup(world):
+    """transformers 5 reserves the whole (quantized) model on each GPU before loading (caching_allocator_warmup,
+    capped by total, not free, memory), which can OOM a rank that only keeps 1/world of it. For the chunked load
+    size it to this rank's share (get_total_byte_count / world), or skip it when that helper is missing. Returns
+    the restore callable."""
+    try:
+        from transformers import modeling_utils as mu
+    except Exception:
+        return lambda: None
+    warmup = mu.__dict__.get("caching_allocator_warmup")
+    if not callable(warmup):
+        return lambda: None
+    counter = mu.__dict__.get("get_total_byte_count")
+    if callable(counter):
+
+        def per_rank(*args, **kwargs):
+            counts = counter(*args, **kwargs)
+            for device in list(counts):
+                counts[device] = -(-int(counts[device]) // world)
+            return counts
+
+        mu.get_total_byte_count = per_rank
+
+        def restore():
+            mu.get_total_byte_count = counter
+
+        return restore
+
+    mu.caching_allocator_warmup = lambda *args, **kwargs: None
+
+    def restore():
+        mu.caching_allocator_warmup = warmup
+
+    return restore
+
+
+def _load_quantizing(original, cls, name, args, kwargs, mesh, state):
+    """A bitsandbytes 4-bit quantize-on-load under native FSDP2 sharded loading: transformers' own load, each
+    parameter replaced by this rank's chunk as soon as transformers sets it (see the module docstring).
+    transformers without core_model_loading.set_param_for_module (4.x) loads in full, as before."""
+    try:
+        from transformers import core_model_loading as loading
+    except Exception:
+        loading = None
+    set_param = getattr(loading, "set_param_for_module", None)
+    if not callable(set_param):
+        return original(cls, name, *args, **kwargs)
+    world, rank = mesh.size(), mesh.get_local_rank()
+    ranks = mesh.mesh.tolist()
+    owners = {}
+    counts = {"kept_bytes": 0, "loaded_bytes": 0, "whole_bytes": 0}
+
+    def set_and_chunk(model, target_name, param_value, *rest, **more):
+        set_param(model, target_name, param_value, *rest, **more)
+        module_path, _, pname = target_name.rpartition(".")
+        try:
+            module = model.get_submodule(module_path) if module_path else model
+        except AttributeError:
+            return
+        p = module._parameters.get(pname)
+        if not isinstance(p, torch.Tensor) or p.is_meta:
+            return
+        nbytes = p.numel() * p.element_size()
+        counts["loaded_bytes"] += nbytes
+        new = _keep_chunk(module, p, world, rank, ranks)
+        if new is None:
+            counts["whole_bytes"] += nbytes
+            return
+        module._parameters[pname] = new
+        owners[id(new)] = new
+        counts["kept_bytes"] += new.numel() * new.element_size()
+
+    loading.set_param_for_module = set_and_chunk
+    state["active"] = True
+    restore_warmup = _shard_allocator_warmup(world)
+    # transformers 5.0-5.3 materializes tensors on worker threads ahead of the setter loop even when quantizing
+    # on the fly, so the Futures hold whole full-precision tensors on the card; load synchronously instead.
+    forced_sync = _ASYNC_LOAD_ENV not in os.environ
+    if forced_sync:
+        os.environ[_ASYNC_LOAD_ENV] = "1"
+    try:
+        loaded = original(cls, name, *args, **kwargs)
+    finally:
+        if forced_sync:
+            os.environ.pop(_ASYNC_LOAD_ENV, None)
+        loading.set_param_for_module = set_param
+        restore_warmup()
+        state["active"] = False
+    model = loaded[0] if isinstance(loaded, tuple) else loaded
+    live = {
+        id(p) for p in model.parameters() if _preload(p) is not None
+    }  # tied / re-set parameters drop out
+    guards = [model.register_forward_pre_hook(_refuse_unsharded_forward)]
+    for module in model.modules():
+        if isinstance(module, nn.Linear) and id(module._parameters.get("weight")) in live:
+            guards.append(module.register_forward_pre_hook(_refuse_unsharded_forward))
+    model.__dict__[_GUARD] = guards
+    model.__dict__[_STATS] = {
+        "world": world,
+        "rank": rank,
+        "quantized_on_load": True,
+        "sharded_tensors": len(live),
+        **counts,
+    }
+    if live and world > 1:
+        _guard_dora_init()
+    state["models"].append(model)
+    return loaded
 
 
 def _default_load_mesh():
@@ -283,7 +528,8 @@ def _auto_sharded_load():
 def sharded_load_env(loader):
     """Decorator for Unsloth's top-level from_pretrained: under UNSLOTH_FSDP2_SHARDED_LOAD=1 (+ native FSDP2)
     the outermost call runs inside fsdp2_sharded_loading; under native FSDP2 alone, a checkpoint larger than
-    the GPU does. Quantizing on load (load_in_4bit of a 16-bit checkpoint, 8-bit) is refused there."""
+    the GPU does (for a bitsandbytes 4-bit quantize-on-load: whose 4-bit load does not fit). 8-bit quantizing on
+    load is refused there."""
 
     @functools.wraps(loader)
     def wrapper(*args, **kwargs):
@@ -465,8 +711,7 @@ def _take_chunk(holder):
 
 
 def _release_cached(device):
-    """Return freed cached blocks to the driver, so the next whole-table allocation is not served next to them
-    (reserved memory would hold both)."""
+    """Free cached blocks so a whole-table allocation is not reserved next to them."""
     if device.type == "cuda":
         torch.cuda.empty_cache()
 

@@ -255,7 +255,7 @@ def test_owner_token_shows_every_settings_tab():
         and claims["role"] == "owner"
         and claims["exp"] > 4_000_000_000
     )
-    assert len(am.settings_tabs()) == 19
+    assert len(am.settings_tabs()) == 20
 
 
 class _FakePage:
@@ -273,10 +273,10 @@ class _FakePage:
 @pytest.mark.parametrize(
     "got, ok, words",
     [
-        ({"count": 19, "missing": [], "failed": []}, True, ""),
-        ({"count": 13, "missing": [], "failed": []}, False, "only 13 of 19"),
-        ({"count": 19, "missing": ["agents"], "failed": []}, False, "never committed"),
-        ({"count": 19, "missing": [], "failed": ["data"]}, False, "error boundary"),
+        ({"count": 20, "missing": [], "failed": []}, True, ""),
+        ({"count": 13, "missing": [], "failed": []}, False, "only 13 of 20"),
+        ({"count": 20, "missing": ["agents"], "failed": []}, False, "never committed"),
+        ({"count": 20, "missing": [], "failed": ["data"]}, False, "error boundary"),
     ],
 )
 def test_settings_tabs_area_fails_when_a_panel_is_not_measured(got, ok, words):

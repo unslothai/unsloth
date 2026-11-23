@@ -277,6 +277,12 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        from .import_fixes import fix_gemma4_string_tool_arguments as _fix_gemma4_tool_args
+        _fix_gemma4_tool_args()
+        del _fix_gemma4_tool_args
+    except Exception:
+        pass
+    try:
         # MLX can load hub checkpoints through transformers too; a no-op where its quantizers are absent.
         from .import_fixes import (
             fix_transformers_quantizer_unquantized_converters as _fix_unquantized_converters,
@@ -2291,6 +2297,12 @@ else:
         from .import_fixes import fix_transformers_deepseek_v41_native as _fix_dsv41
         _fix_dsv41()
         del _fix_dsv41
+    except Exception:
+        pass
+    try:
+        from .import_fixes import fix_gemma4_string_tool_arguments as _fix_gemma4_tool_args
+        _fix_gemma4_tool_args()
+        del _fix_gemma4_tool_args
     except Exception:
         pass
 

@@ -35,6 +35,17 @@ def _not_rocm(monkeypatch):
         monkeypatch.setattr(_mod, "torch_is_rocm", lambda: False)
 
 
+_GB = 1 << 30
+
+
+@pytest.fixture(autouse = True)
+def _ample_host_ram(monkeypatch):
+    """Pin host RAM high: near the 8-bit band the streamed fp8 base also needs the bf16 base in host RAM, so the
+    runner's real RAM (16 GB on a CI runner) would otherwise decide cases that simulate GPU tiers."""
+    import core.inference.diffusion_prequant_cache as prequant_cache
+    monkeypatch.setattr(prequant_cache, "_host_memory_bytes", lambda: (256 * _GB, 256 * _GB))
+
+
 def test_base_precision_validation():
     assert _cfg().normalized().base_precision == "nf4"
 
@@ -288,8 +299,13 @@ def test_repo_is_prequantized_alias_is_same_object():
     assert dit._repo_is_prequantized is repo_is_prequantized
 
 
-def test_pick_auto_precision_policy_table():
-    p = dit._pick_auto_precision
+def test_pick_auto_precision_policy_table(monkeypatch):
+    # A family measured below 1.5x but not in the fp8-over-bf16 set, so every band shows its plain pick.
+    monkeypatch.setattr(dit, "_AUTO_FP8_MEASURED", dit._AUTO_FP8_MEASURED | {"measured"})
+
+    def p(*args):
+        args = args + (True,) * (7 - len(args))
+        return dit._pick_auto_precision(*args, "measured")
 
     assert p(True, "cuda", 140, 23.8, (10, 0), True) == "nf4"
     assert p(False, "cpu", 140, 23.8, (10, 0), True) == "nf4"
@@ -356,7 +372,14 @@ def test_resolve_auto_int8_band_gates_on_torchao(monkeypatch):
     monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
     monkeypatch.setattr(dit, "_auto_fp8_probe_ok", lambda device: True)
 
-    # The frozen fp8 base (sm100 here) needs no torchao; the kill switch restores the torchao int8 gate.
+    # flux.1's fp8 base is unmeasured, so Auto keeps the torchao int8 gate for it.
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "int8"
+    # The frozen fp8 base of a measured family (sm100 here) needs no torchao; the kill switch restores the int8 gate.
+    spec = dit._SPECS["flux.2-klein"]
+    monkeypatch.setattr(dit, "_dense_bf16_gb", lambda spec, base_model: 23.8)
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "fp8"
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
@@ -468,6 +491,18 @@ def test_auto_sizes_flux2_klein_9b_off_its_own_weights(monkeypatch, base_model):
     monkeypatch.setenv("UNSLOTH_DIT_AUTO_FP8", "0")
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
     assert dit._dense_bf16_gb(spec, base_model) > 2 * spec.dense_bf16_gb
+
+
+def test_klein_9b_near_the_8bit_band_falls_back_to_nf4_on_a_small_host(monkeypatch):
+    # The fp8 base would load the 18.2 GB dense bf16 base on the host; a 16 GB runner cannot hold it.
+    import core.inference.diffusion_prequant_cache as prequant_cache
+
+    spec = dit._SPECS["flux.2-klein"]
+    _fake_cuda_with_free_gb(monkeypatch, 20.0)
+    cfg = _cfg(base_model = "unsloth/FLUX.2-klein-9B", base_precision = "auto", mixed_precision = "bf16")
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "fp8"
+    monkeypatch.setattr(prequant_cache, "_host_memory_bytes", lambda: (16 * _GB, 12 * _GB))
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
 
 
 def test_auto_still_picks_bf16_for_the_klein_4b_default(monkeypatch):

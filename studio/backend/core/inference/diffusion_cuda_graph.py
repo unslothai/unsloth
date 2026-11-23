@@ -15,7 +15,7 @@ import threading
 import traceback
 import weakref
 import types
-from functools import update_wrapper
+from functools import WRAPPER_ASSIGNMENTS, update_wrapper
 from typing import Any, Optional
 
 from .diffusion_bg_compile import capture_suppressed as _bg_capture_suppressed
@@ -1060,6 +1060,61 @@ def live_pool_free_bytes() -> int:
         return live_pool_bytes()
 
 
+def releasable_pool_bytes(handles: Any, device: Optional[int] = None) -> int:
+    """Unused graph-pool bytes on ``device`` (the current card when None) that ``reset_all(handles)`` hands back: the
+    whole-step pools only these handles record into (another live wrapper, such as a co-resident video pipeline's,
+    keeps a shared pool alive) and the block-graph pools these handles own. 0 when unreadable."""
+    handles = tuple(handles or ())
+    # reset() also frees a whole-step graph's per-block fallback, so its block pools count too
+    nested = []
+    pending = list(handles)
+    while pending:
+        h = pending.pop()
+        if h is None or any(h is seen for seen in nested):
+            continue
+        nested.append(h)
+        pending.append(getattr(h, "fallback_handle", None))
+    handles = tuple(nested)
+    own = {id(h) for h in handles}
+    try:
+        if device is None:
+            device = int(_torch().cuda.current_device())
+    except Exception:  # noqa: BLE001 - unknown: release nothing
+        return 0
+    mine: set = set()
+    others: set = set()
+    for w in tuple(_LIVE_WRAPPERS):
+        if id(w) not in own and getattr(w, "_unsloth_capture_device", device) not in (None, device):
+            continue  # graph pools are per device: a recording on another card keeps nothing here alive
+        tokens = {
+            tuple(entry.pool_token)
+            for entry in tuple(w.cache.values())
+            if getattr(entry, "pool_token", None) is not None
+        }
+        (mine if id(w) in own else others).update(tokens)
+    pools = mine - others
+    shared = {
+        id(state)
+        for h in handles
+        if callable(getattr(h, "_all_shared", None))
+        for state in h._all_shared()
+    }
+    try:
+        free = 0
+        if pools:
+            for seg in _allocator_segments():
+                if seg.get("device", device) != device:
+                    continue
+                if tuple(seg.get("segment_pool_id") or ()) in pools:
+                    free += int(seg.get("total_size", 0)) - int(seg.get("allocated_size", 0))
+        if shared:
+            from .diffusion_block_graph import pool_bytes
+            free += int(pool_bytes(device, only = shared))
+        return max(0, free)
+    except Exception:  # noqa: BLE001 - unknown: release nothing
+        return 0
+
+
 def _warn(logger: Any, what: str, exc: Any) -> None:
     if logger is not None:
         logger.warning("diffusion.cuda_graph: %s failed: %s", what, exc)
@@ -1277,11 +1332,45 @@ class GraphedForward:
             self.module.__dict__.pop("forward", None)
             return self
         # Offload hooks installed after this wrapper wrap it: unwrap it inside their chain, keeping the hooks.
+        stock = type(self.module).forward.__get__(self.module)
         registry = getattr(self.module, "_diffusers_hook", None)
         for ref in list(getattr(registry, "_fn_refs", None) or ()):
-            if getattr(ref, "forward", None) is self:
-                ref.forward = type(self.module).forward.__get__(self.module)
+            for attr in ("forward", "original_forward"):
+                if getattr(ref, attr, None) is self:
+                    setattr(ref, attr, stock)
+        self._unlink_wrapper_metadata(stock)
         return self
+
+    # What ``update_wrapper`` copies from the class forward through this wrapper: kept on a hook wrapper.
+    _WRAPPER_METADATA = frozenset(
+        {*WRAPPER_ASSIGNMENTS, "__wrapped__", "__signature__", "__dict__"}
+    )
+
+    def _unlink_wrapper_metadata(self, stock: Any) -> None:
+        """diffusers wraps a hooked forward FROM the one it replaced (``update_wrapper``): the slot's ``__wrapped__``
+        chain still names this retired wrapper, and each link carries a copy of its ``__dict__`` (cache, stats, the
+        module). The CFG replica builder peels the root forward by ``__wrapped__`` and refuses an unknown override, so
+        point the chain at the class forward and drop the copied state."""
+        chain: list = []
+        link = self.module.__dict__.get("forward")
+        while link is not None and link is not self and len(chain) < 16:
+            chain.append(link)
+            link = getattr(link, "__wrapped__", None)
+        if link is not self:
+            return
+        mine = self.__dict__
+        for link in chain:
+            state = getattr(link, "__dict__", None)
+            if not isinstance(state, dict):
+                continue
+            for key in [
+                k
+                for k, v in state.items()
+                if k in mine and k not in self._WRAPPER_METADATA and v is mine[k]
+            ]:
+                del state[key]
+            if state.get("__wrapped__") is self:
+                state["__wrapped__"] = stock
 
     def enable(self) -> "GraphedForward":
         self.install()

@@ -3019,6 +3019,33 @@ def test_the_igpu_fit_headroom_survives_the_per_device_margin(tmp_path, monkeypa
     ), cmd
 
 
+@pytest.mark.parametrize(
+    "is_vulkan_backend, gpu_id, expected",
+    [(False, 0, "2868"), (False, 1, "16384"), (True, 0, "16384")],
+    ids = ["integrated-cuda", "other-device", "vulkan-index-collision"],
+)
+def test_paged_fit_target_on_windows_integrated_cuda(
+    monkeypatch, is_vulkan_backend, gpu_id, expected
+):
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {LlamaCppBackend._integrated_cuda_mask_key(): {0}}
+    )
+
+    # llama.cpp reads 18 GiB free. The Studio row has already subtracted its 1 GiB reserve.
+    headroom = LlamaCppBackend._paged_fit_headroom_mib(
+        [(gpu_id, 17 * 1024, 18 * 1024)], set(), is_vulkan_backend = is_vulkan_backend
+    )
+    flags = LlamaCppBackend._paged_fit_headroom_flags(
+        ["--fit", "on"], {}, [], headroom_mib = headroom
+    )
+
+    assert flags == ["--fit-target", expected]
+
+
 def _vulkan_carve_out_igpu_backend(
     tmp_path,
     monkeypatch,

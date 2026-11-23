@@ -3226,16 +3226,28 @@ def _validate_checkpoint(
     return True
 
 
+_HUB_REPO_ID = _re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+")
+
+
 def _same_base_model(a: str, b: str) -> bool:
-    """Both sides normalise via canonical_base, so a mirror id cannot force the multi-GB dense download."""
-    from .diffusion_families import canonical_base
+    """Both sides normalise via canonical_base, so a mirror id cannot force the multi-GB dense download.
+    Two Hub ids must be the same repo: ``someone/Qwen-Image-2.1`` is a fine-tune, not the official base.
+    A local path keeps the name compare (a downloaded copy of the base)."""
+    from .diffusion_families import _is_local_path, canonical_base, retired_full_copy_base
 
-    a, b = canonical_base(a), canonical_base(b)
+    def _canon(x: str) -> str:
+        x = canonical_base(x)
+        return (retired_full_copy_base(x) or x).replace("\\", "/").rstrip("/")
 
-    def _tail(x: str) -> str:
-        return x.replace("\\", "/").rstrip("/").split("/")[-1].lower()
+    def _hub(x: str) -> bool:
+        return bool(_HUB_REPO_ID.fullmatch(x)) and not _is_local_path(x)
 
-    return a == b or _tail(a) == _tail(b)
+    a, b = _canon(a), _canon(b)
+    if a.lower() == b.lower():
+        return True
+    if _hub(a) and _hub(b):
+        return False
+    return a.split("/")[-1].lower() == b.split("/")[-1].lower()
 
 
 def _unhook_from_manager(

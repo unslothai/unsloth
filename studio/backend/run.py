@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import NoReturn, Optional, Sequence, Tuple
+from typing import Callable, NoReturn, Optional, Sequence, Tuple
 
 
 def _normalize_standard_streams():
@@ -506,6 +506,48 @@ def _display_host_for_bind(host: str) -> str:
         if addresses:
             return addresses[0]
     return ipv4_display_host or "::"
+
+
+def _start_display_host_resolution(host: str) -> Callable[[], str]:
+    """Runs _display_host_for_bind off the main thread so its network lookups overlap the app import.
+
+    Returns a getter that joins and yields the same value, or raises the same exception, as a direct
+    call. A non-wildcard bind needs no lookup: no thread, the host itself."""
+    if not wildcard_ip_versions(host):
+        return lambda: host
+
+    # Imported here, not in the thread, so it never waits on the import lock held by `from main import app`.
+    import socket  # noqa: F401
+    import ssl  # noqa: F401
+    import urllib.request  # noqa: F401
+    from threading import Thread
+
+    # main.py installs these before its first connection; the worker connects before main.py runs,
+    # so install them here (both idempotent) to keep the OS trust store and the RFC 8305 connector.
+    from utils.native_tls import activate_native_tls
+    from utils.happy_eyeballs import activate_happy_eyeballs
+
+    activate_native_tls()
+    activate_happy_eyeballs()
+
+    outcome: dict = {}
+
+    def _resolve() -> None:
+        try:
+            outcome["host"] = _display_host_for_bind(host)
+        except BaseException as exc:  # noqa: BLE001
+            outcome["error"] = exc
+
+    worker = Thread(target = _resolve, name = "studio-display-host", daemon = True)
+    worker.start()
+
+    def _result() -> str:
+        worker.join()
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["host"]
+
+    return _result
 
 
 def _network_share_host_for_bind(host: str) -> str:
@@ -2442,6 +2484,10 @@ def run_server(
 
     import_started = time.perf_counter()
 
+    # For the banner and the reachability probe; started now so its network round trips overlap the
+    # import below. The startup log line resolves its own, LAN-only, answer.
+    display_host_result = _start_display_host_resolution(host)
+
     # Before the import, to shrink the window where two launches think they are alone. The cache env
     # must be seeded first: UNSLOTH_COMPILE_LOCATION is part of the coordination key.
     try:
@@ -2565,8 +2611,7 @@ def run_server(
                 "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
             )
 
-    # For the banner and the reachability probe; the startup log line resolves its own, LAN-only, answer.
-    display_host = _display_host_for_bind(host)
+    display_host = display_host_result()
     _install_uvicorn_startup_log_rewrite(host)
     # LoggingMiddleware already logs these with tracebacks; avoid duplicates in tauri.log.
     install_uvicorn_duplicate_exception_filter()

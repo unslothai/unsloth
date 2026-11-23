@@ -151,8 +151,7 @@ def test_a_broadcast_margin_holds_every_card(tmp_path):
 
 @pytest.mark.parametrize("probe", ["_integrated_cuda_gpu_ids", "_rocm_unified_memory_gpu_ids"])
 def test_a_lone_integrated_gpu_keeps_the_default_margin(tmp_path, monkeypatch, probe):
-    # A single Jetson or AMD APU never reaches the multi-GPU planner's classification, and its
-    # VRAM is host RAM: the trim stays off.
+    # A lone Jetson or AMD APU skips multi-GPU classification; VRAM is host RAM, so no trim.
     monkeypatch.setattr(B, probe, staticmethod(lambda: {0}))
     _b, cmd = _launch(tmp_path, [(0, 15000, 16384)], 24 * GIB)
     assert cmd[cmd.index("--fit") + 1] == "on"
@@ -166,8 +165,7 @@ def test_a_picked_integrated_gpu_keeps_the_default_margin(tmp_path, monkeypatch)
 
 
 def test_a_small_card_beside_a_large_one_gets_its_own_margin(tmp_path, monkeypatch):
-    # The broadcast value is the large card's default, so only a per-device list carries the
-    # small card's trim.
+    # A per-device list is needed to trim the small card; a broadcast gives the large default.
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     monkeypatch.setattr(B, "_GPU_IDS_ARE_PCI_INDICES", True)
     monkeypatch.setattr(B, "_SMI_MIG_INDICES", None, raising = False)

@@ -94,7 +94,9 @@ _CATALOG_WINDOW_PROVIDERS = frozenset({"anthropic", "openrouter", "gemini"})
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _GEMINI_MAX_MODEL_PAGES = 20
-_GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?:-|$)")
+_GEMINI_RESTRICTED_GENERATION = re.compile(
+    r"^gemini-(?:3\.[78]-flash|(?:[4-9]|\d{2,})(?:\.\d+)?)(?:-|$)"
+)
 _GEMINI_DUMMY_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
 _served_windows: dict[tuple[str, str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
@@ -1632,6 +1634,14 @@ class ExternalProviderClient:
         # same guaranteed 400 on every provider turn.
         self._responses_compaction_rejected = False
 
+    def _stream_timeout_for(self, read_timeout: Optional[float]) -> httpx.Timeout:
+        if read_timeout is None:
+            return self._stream_timeout
+        t = self._stream_timeout
+        return httpx.Timeout(
+            connect = t.connect, read = max(t.read or 0.0, read_timeout), write = t.write, pool = t.pool
+        )
+
     def set_header_context(self, thread_id: Optional[str], model: Optional[str]) -> None:
         """Values for ``{{VAR}}`` in extra headers; set before any request of a chat turn."""
         session = (thread_id or "").strip()
@@ -1760,8 +1770,10 @@ class ExternalProviderClient:
         thread_id: Optional[str] = None,
         compaction_fallback: Optional[CompactionFallback] = None,
         compaction_uncapped: bool = False,
+        read_timeout: Optional[float] = None,
     ) -> AsyncGenerator[str, None]:
-        """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in."""
+        """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in.
+        read_timeout widens the read timeout for a server that is silent while it reads a long prompt."""
         self.set_header_context(thread_id, model)
         tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
@@ -1853,6 +1865,7 @@ class ExternalProviderClient:
                 compaction_fallback = compaction_fallback,
                 thread_id = thread_id,
                 compaction_uncapped = compaction_uncapped,
+                read_timeout = read_timeout,
             ):
                 yield line
             return
@@ -1900,10 +1913,12 @@ class ExternalProviderClient:
             if self.provider_type == "vllm"
             else messages,
             "stream": stream,
-            "temperature": temperature,
             "presence_penalty": presence_penalty,
             **_continue_body,
         }
+        # Omitted, not null: some OpenAI-compatible servers reject a null temperature.
+        if temperature is not None:
+            body["temperature"] = temperature
         if top_p is not None:
             body["top_p"] = top_p
         # Only alongside stream=True: the field is rejected on a non-streaming request.
@@ -2070,7 +2085,7 @@ class ExternalProviderClient:
                 url,
                 body,
                 headers = self._chat_headers(thread_id),
-                timeout = self._stream_timeout,
+                timeout = self._stream_timeout_for(read_timeout),
             ) as response:
                 if response.status_code != 200:
                     error_body = await response.aread()
@@ -5659,6 +5674,7 @@ class ExternalProviderClient:
         compaction_fallback: Optional[CompactionFallback] = None,
         thread_id: Optional[str] = None,
         compaction_uncapped: bool = False,
+        read_timeout: Optional[float] = None,
     ) -> AsyncGenerator[str, None]:
         """Responses takes input and instructions, not messages; presence_penalty and top_k are dropped."""
         import json as _json
@@ -6197,7 +6213,7 @@ class ExternalProviderClient:
                     url,
                     json = attempt_body,
                     headers = self._chat_headers(thread_id),
-                    timeout = self._stream_timeout,
+                    timeout = self._stream_timeout_for(read_timeout),
                 ) as response:
                     if response.status_code != 200:
                         error_body = await response.aread()

@@ -372,8 +372,7 @@ def test_an_fp8_conversion_that_cannot_fall_back_reloads_the_base_as_nf4(
             import gc
             gc.collect()
             old_alive_at_reload.append(old[0]() is not None)
-        # CPU has no bnb: the reload's nf4 stands in as the plain base. Only the reload is kept, so the test itself
-        # holds no reference to the failed fp8 base.
+        # CPU has no bnb: the reload's nf4 stands in; no ref to the failed fp8 base is kept.
         model = orig(cfg, device, dtype, "bf16")
         if base_precision == "nf4":
             built.append(model)

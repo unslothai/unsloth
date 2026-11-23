@@ -1693,6 +1693,39 @@ def _local(t: torch.Tensor) -> torch.Tensor:
     return t.to_local() if hasattr(t, "to_local") else t
 
 
+# Square sums go through slices of this many elements, so an expert factor's gradient is never cast whole.
+_SQUARE_SUM_CHUNK = 1 << 24
+
+
+def _square_sum(t: torch.Tensor) -> torch.Tensor:
+    # Standalone twin of tp_native._square_sum (this module loads without the unsloth package).
+    t = t.detach()
+    chunk = _SQUARE_SUM_CHUNK
+    if t.layout != torch.strided:
+        return t.float().pow(2).sum()  # sparse: as before
+    if t.numel() <= chunk:
+        cast = t.float()
+        return (cast.pow(2) if cast is t else cast.pow_(2)).sum()  # bitwise as before
+    if t.is_contiguous():
+        parts = t.view(-1).split(chunk)
+    else:
+        dim = max(range(t.ndim), key = t.size)
+        width = max(1, chunk // (t.numel() // t.size(dim)))
+        parts = (
+            t.narrow(dim, s, min(width, t.size(dim) - s)) for s in range(0, t.size(dim), width)
+        )
+    total = None
+    for part in parts:
+        if part.numel() > chunk:
+            sq = _square_sum(part)
+        else:
+            cast = part.float()
+            sq = (cast.square() if cast is part else cast.square_()).sum()
+            del cast
+        total = sq if total is None else total + sq
+    return total
+
+
 def _grad_sq(model: nn.Module, process_group = None) -> torch.Tensor:
     layers = _layers(model)
     if not layers:
@@ -1703,7 +1736,7 @@ def _grad_sq(model: nn.Module, process_group = None) -> torch.Tensor:
     for u, gs in enumerate(_adapter_grads(model)):
         for g in gs:
             sharded = sharded or hasattr(g, "to_local")
-            out[u] += _local(g).float().pow(2).sum().to(device)
+            out[u] += _square_sum(_local(g)).to(device)
     if sharded and _distributed():
         torch.distributed.all_reduce(out, group = process_group)
     return out

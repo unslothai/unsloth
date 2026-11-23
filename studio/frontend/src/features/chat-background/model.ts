@@ -52,10 +52,52 @@ export const LENS_SCALE: Record<LensMode, number> = {
 export function sanitizeLens(value: unknown): LensMode {
 	return LENS_MODES.includes(value as LensMode) ? (value as LensMode) : "off";
 }
+/** Every glass surface the lens can draw into; lens.tsx skips those without a backdrop filter at the moment.
+ * Not page cards: a grid would clone the wallpaper twice per card. */
+export const LENS_HOSTS = [
+	".unsloth-composer-surface",
+	".unsloth-files-panel",
+	'[data-slot="sidebar-inner"]',
+	"[data-windows-glass-frame]",
+	'[data-slot="chat-settings-panel"]',
+	'[data-slot="sheet-content"]',
+	'[data-slot="dialog-content"]',
+	"[data-chat-model-controls] > .unsloth-model-selector-trigger",
+	'[data-wallpaper-route="page"] .unsloth-model-selector-trigger',
+	"[data-chat-model-controls] > [data-chat-model-notice]",
+	"[data-chat-header-actions] > button",
+	'[data-slot$="menu-content"]',
+	'[data-slot$="menu-sub-content"]',
+	'[data-slot="select-content"]',
+	'[data-slot="combobox-content"]',
+	'[data-slot="popover-content"]',
+	'[data-slot="hover-card-content"]',
+	".menu-soft-surface",
+	".menu-soft-surface-up",
+	".dropdown-surface",
+	".find-bar-surface",
+	".glass-float-surface",
+	'[data-sonner-toast][data-styled="true"]',
+	".toast-surface",
+	'[data-auth-wallpaper] > [data-slot="card"]',
+	".tooltip-compact",
+	".tooltip-rich",
+	"[data-glass-float]",
+	".aui-thread-scroll-to-bottom",
+].join(", ");
 // Off draws nothing: without GPU rendering, WebKitGTK repaints each wallpaper copy and its filter on every frame.
 export function lensDrawn(material: WindowMaterial, lens: LensMode): boolean {
 	return material !== "solid" && lens !== "off";
 }
+/** Slider (0-100) to --glass-strength (blur scale) and --glass-opacity (fill scale). 0% is clear: no blur, no read floor. */
+export function glassStrengthVars(strength: number): { blur: number; opacity: number } {
+	return {
+		blur: strength === 0 ? 0 : strength <= 50 ? 0.2 + (0.8 * strength) / 50 : 1 + (strength - 50) / 50,
+		opacity: strength <= 50 ? 0.35 + (0.65 * strength) / 50 : 1 + (strength - 50) / 50,
+	};
+}
+/** At 0% only the composer keeps its lens, as on main; every other surface is clear. */
+export const LENS_CLEAR_HOSTS = ".unsloth-composer-surface, .wallpaper-preview-composer";
 export function sanitizeStrength(value: unknown, fallback = 50): number {
 	return typeof value === "number" && Number.isFinite(value)
 		? Math.max(0, Math.min(100, Math.round(value)))

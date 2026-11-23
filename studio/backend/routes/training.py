@@ -23,6 +23,7 @@ import re
 import sys
 import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from fastapi import (
@@ -1329,6 +1330,15 @@ def _reject_untrainable_model_request(
 def _validate_training_platform(request: TrainingStartRequest) -> None:
     from utils.hardware import hardware
 
+    if hardware.chat_only_mac_install():
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "This install was set up without the training stack (Chat only), so training is "
+                "disabled. Reinstall Unsloth Studio without --no-torch, or use Upgrade to full "
+                "install in Settings, to enable training."
+            ),
+        )
     if hardware.DEVICE == hardware.DeviceType.CPU and hardware.trains_on_cpu(
         hardware.current_chat_only_verdict()[0]
     ):
@@ -1352,15 +1362,6 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
         )
     if hardware.DEVICE != hardware.DeviceType.MLX:
         return
-    if hardware.mlx_serves_chat_only():
-        raise HTTPException(
-            status_code = 400,
-            detail = (
-                "This install was set up without the training stack (Chat only), so training is "
-                "disabled. Reinstall Unsloth Studio without --no-torch, or use Upgrade to full "
-                "install in Settings, to enable training."
-            ),
-        )
     if request.is_embedding:
         raise HTTPException(
             status_code = 400,
@@ -1699,6 +1700,10 @@ async def get_offload_state(current_subject: str = Depends(get_current_subject))
     return {"active": True, **offload}
 
 
+# Own pool: queued 300 s probes must not hold the default executor other routes reach via asyncio.to_thread.
+_drafter_pool = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "drafter-probe")
+
+
 @router.get("/drafter-capability")
 async def get_drafter_capability(
     model_name: str,
@@ -1737,7 +1742,10 @@ async def get_drafter_capability(
     # The caller's own token comes in the header; without one, ambient credentials for the owner
     # only, anonymous for API keys and managed accounts (the owner's token must not answer for them).
     token = hf_token_arg(hf_token, allow_ambient_token = not (via_api_key is True or managed))
-    return {**await asyncio.to_thread(drafter_capability, name, token), "model_name": shown}
+    answer = await asyncio.get_running_loop().run_in_executor(
+        _drafter_pool, drafter_capability, name, token
+    )
+    return {**answer, "model_name": shown}
 
 
 @router.get("/hardware/visible")

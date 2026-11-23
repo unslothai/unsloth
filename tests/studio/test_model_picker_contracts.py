@@ -2460,8 +2460,7 @@ def test_batch_sizes_reach_an_api_load_through_the_server_mirror():
     assert "n_ubatch = payload.n_ubatch," in route
     store = _read_backend("utils/openai_auto_switch_settings.py")
     assert '("n_batch", "n_ubatch")' in store
-    # Read through the builder rather than its source: the fields may be copied for GGUF alone or
-    # for GGUF and MLX alike (#18426).
+    # Read through the builder: fields may be copied for GGUF alone or for GGUF and MLX (ref 18426).
     assert _override_load_kwargs({"n_batch": 1024, "n_ubatch": 256}, is_gguf = True) == {
         "n_batch": 1024,
         "n_ubatch": 256,
@@ -3643,12 +3642,22 @@ def test_the_default_is_preflighted_before_the_managed_download():
 
 
 def test_cached_non_gguf_rows_get_the_chat_only_platform_gate():
-    """The picker hides them there (visibleCachedModelRows), except MLX repos on an MLX-serving Mac."""
+    """The picker hides them there (visibleCachedModelRows), unless the Mac serves MLX.
+
+    The served-by-MLX verdict is the shared isServedByMlx rule fed the server's mlx_inference,
+    so auto-load and the pickers cannot disagree; the scenarios in
+    test_chat_autoload_failure_gate.py run that rule as shipped.
+    """
     src = _read("features/chat/api/chat-adapter.ts")
     gate = src.split("function cachedModelRunsOnThisPlatform", 1)[1].split("\n}", 1)[0]
     assert "if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;" in gate
-    assert "platform.mlxInference === true" in gate
-    assert "isChattableCachedRepo(repo) && cachedModelRunsOnThisPlatform(repo)" in src
+    assert "return platformServesMlx(platform);" in gate
+    serves = src.split("function platformServesMlx(", 1)[1].split("\n}", 1)[0]
+    assert "isServedByMlx(" in serves
+    assert "platform.mlxInference" in serves
+    assert re.search(
+        r"isChattableCachedRepo\(repo\) && cachedModelRunsOnThisPlatform\([^)]*\)", src
+    )
     assert "allGgufRepos.filter(isChattableCachedRepo)," in src
 
 

@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""AdaLN modulation precompute for FLUX.1 / Qwen-Image: the modulation Linears read only the timestep embedding,
-so they move to host and every request's rows are computed in one pass (each step at its own batch shape:
-bit-identical). Shared-modulation families (FLUX.2/3, Z-Image, Qwen-Image-2.1) save 1-4% and are skipped.
-
-UNSLOTH_DIFFUSION_ADALN_PRECOMPUTE: 0 / 1 / auto (default, on when offloaded / streamed / split).
-UNSLOTH_DIFFUSION_ADALN_VERIFY=1 checks each served row against the real module (eager only)."""
+"""AdaLN modulation precompute for FLUX.1 / Qwen-Image (Linears read only the timestep embedding,
+bit-identical); shared-modulation families save 1-4% and are skipped;
+UNSLOTH_DIFFUSION_ADALN_PRECOMPUTE: 0 / 1 / auto (on when offloaded / streamed / split);
+UNSLOTH_DIFFUSION_ADALN_VERIFY=1 checks rows against the real module (eager only)."""
 
 from __future__ import annotations
 

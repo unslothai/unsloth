@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { prepareBackgroundImage } from "./image";
-import type { BackgroundAdjustments } from "./model";
+import { canvasBlob, prepareBackgroundImage } from "./image";
+import { type BackgroundAdjustments, DEFAULT_ADJUSTMENTS } from "./model";
 import {
 	beginBackgroundUpload,
 	failBackgroundUpload,
@@ -23,5 +23,19 @@ export async function uploadBackgroundImage(
 			reason === "file" || reason === "dimensions" ? reason : "decode",
 		);
 		return false;
+	}
+}
+
+export async function setBackgroundCanvas(
+	canvas: HTMLCanvasElement,
+): Promise<void> {
+	const ticket = beginBackgroundUpload();
+	try {
+		await finishBackgroundUpload(ticket, {
+			...DEFAULT_ADJUSTMENTS,
+			blob: await canvasBlob(canvas),
+		});
+	} catch {
+		failBackgroundUpload(ticket, "storage");
 	}
 }

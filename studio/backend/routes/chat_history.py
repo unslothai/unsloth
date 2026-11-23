@@ -16,6 +16,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    TypeAdapter,
     ValidationError,
     field_serializer,
     field_validator,
@@ -324,6 +325,8 @@ class ChatProject(BaseModel):
     id: str
     name: str
     instructions: str = ""
+    # None inherits account defaults. An empty selection disables MCP servers in this project.
+    mcpServerIds: Optional[list[str]] = None
     rootPath: Optional[str] = None
     sandboxPath: Optional[str] = None
     # Read only: a saved record cannot set the folder.
@@ -410,6 +413,7 @@ class ChatProjectDeleted(ChatProject):
 class ChatProjectPatch(BaseModel):
     name: Optional[str] = None
     instructions: Optional[str] = None
+    mcpServerIds: Optional[list[str]] = None
     archived: Optional[bool] = None
     createdAt: Optional[SqliteInt] = None
     updatedAt: Optional[SqliteInt] = None
@@ -1911,13 +1915,33 @@ async def delete_project(
     return ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)
 
 
+_MESSAGE_JSON = TypeAdapter(ChatMessage)
+_KEY_JSON = TypeAdapter(str)
+
+
+def _append_messages_json(parts: list[bytes], messages: list[ChatMessage]) -> None:
+    parts.append(b"[")
+    for i, message in enumerate(messages):
+        if i:
+            parts.append(b",")
+        parts.append(_MESSAGE_JSON.dump_json(message, by_alias = True))
+    parts.append(b"]")
+
+
+def _json_response(parts: list[bytes]) -> Response:
+    # FastAPI serializes a sync route's model on the event loop in one GIL-holding call; image
+    # chats stalled every stream, so we dump per message in the threadpool instead.
+    return Response(content = b"".join(parts), media_type = "application/json")
+
+
 @router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
 def get_thread_messages(thread_id: str, current_subject: str = Depends(get_current_subject)):
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    return ChatMessageListResponse(
-        messages = [ChatMessage(**m) for m in list_chat_messages(thread_id)]
-    )
+    parts = [b'{"messages":']
+    _append_messages_json(parts, [ChatMessage(**m) for m in list_chat_messages(thread_id)])
+    parts.append(b"}")
+    return _json_response(parts)
 
 
 # Part types extractText (frontend use-chat-search-index.ts) reads; a frontend test guards drift.
@@ -2085,7 +2109,15 @@ def batch_thread_messages(
         tid = m["threadId"]
         if tid in by_thread:
             by_thread[tid].append(ChatMessage(**(_search_view_message(m) if search_view else m)))
-    return ChatMessagesBatchResponse(messagesByThreadId = by_thread)
+    parts = [b'{"messagesByThreadId":{']
+    for i, (tid, messages) in enumerate(by_thread.items()):
+        if i:
+            parts.append(b",")
+        parts.append(_KEY_JSON.dump_json(tid))
+        parts.append(b":")
+        _append_messages_json(parts, messages)
+    parts.append(b"}}")
+    return _json_response(parts)
 
 
 @router.post("/messages:counts", response_model = ChatMessageCountsResponse)
@@ -2152,6 +2184,7 @@ def save_thread_message(
 def replace_thread_messages(
     thread_id: str,
     payload: ChatMessageSyncRequest,
+    echo_messages: Annotated[bool, Query(alias = "echoMessages")] = True,
     current_subject: str = Depends(get_current_subject),
     response: Response = None,
 ):
@@ -2173,6 +2206,7 @@ def replace_thread_messages(
                 messages,
                 prune_missing = payload.pruneMissing,
                 deleted_message_ids = payload.deletedMessageIds,
+                return_rows = echo_messages,
             )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
@@ -2189,7 +2223,7 @@ def replace_thread_messages(
         ) from exc
     chat_originals.sweep()
     _set_revision_header(response, probe)
-    return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced])
+    return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced or ()])
 
 
 @router.get("/count", response_model = ChatCountResponse)

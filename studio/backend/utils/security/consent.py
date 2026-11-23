@@ -246,6 +246,20 @@ def _fingerprint_target_key(target: str) -> str:
     return target.lower()
 
 
+def _managed_refusal(primary: str) -> RemoteCodeDecision:
+    return RemoteCodeDecision(
+        primary,
+        True,
+        True,
+        None,
+        None,
+        "",
+        MANAGED_REMOTE_CODE_REFUSAL,
+        approvable = False,
+        block_cause = MANAGED_REFUSED,
+    )
+
+
 def evaluate_remote_code_consent_for_targets(
     targets,
     hf_token: Optional[str] = None,
@@ -286,6 +300,9 @@ def evaluate_remote_code_consent_for_targets(
         declares_code = _config_has_auto_map(target, hf_token, **scan_kwargs)
         if declares_code is False:
             continue
+        if declares_code is True and managed_remote_code_refused():
+            # Refused whatever the code says, so do not download and scan every .py first.
+            return _managed_refusal(primary)
         try:
             files = repo_remote_code_files(target, hf_token = hf_token, **scan_kwargs)
         except RemoteCodeUnscannable:
@@ -336,17 +353,7 @@ def evaluate_remote_code_consent_for_targets(
         )
 
     if managed_remote_code_refused():
-        return RemoteCodeDecision(
-            primary,
-            True,
-            True,
-            None,
-            None,
-            "",
-            MANAGED_REMOTE_CODE_REFUSAL,
-            approvable = False,
-            block_cause = MANAGED_REFUSED,
-        )
+        return _managed_refusal(primary)
 
     result = scan_remote_code_files(combined)
     fingerprint = remote_code_fingerprint(combined)

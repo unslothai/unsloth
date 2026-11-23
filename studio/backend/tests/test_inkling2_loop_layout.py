@@ -126,9 +126,8 @@ def test_a_loop_layout_without_valid_loop_keys_is_left_alone(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# The -ngl / -ts / --n-cpu-moe unit. llama.cpp counts it in physical layers
-# (llama_model_n_layer_weights): 24 for Inkling-2-Mini on either layout, while
-# KV and recurrent state stay per cache slot (48).
+# The -ngl / -ts / --n-cpu-moe unit: llama.cpp counts physical layers (24 for Inkling-2-Mini on
+# either layout), while KV and recurrent state stay per cache slot (48).
 
 
 def _row_bytes(p):
