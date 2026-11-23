@@ -164,9 +164,8 @@ def _race_name(
     card: Optional[int] = None,
     dtype: Any = None,
 ) -> str:
-    """Verdict-cache name; a strided cuDNN pin runs a different call, so it is cached apart. With ``card`` / ``dtype``
-    the strided name is kept only where the pin takes the strided call (a probed card, its probed dtype): elsewhere
-    the race times diffusers' call and shares that verdict."""
+    """Verdict-cache name; a strided cuDNN pin is cached apart, but only on a probed card and dtype
+    where it takes the strided call; elsewhere it shares diffusers' verdict."""
     name = f"dispatch:{_backend_name(incumbent)}"
     if not isinstance(incumbent, _Q21.StridedCudnn):
         return name

@@ -19,6 +19,30 @@ from typing import Callable, Optional, Union
 import torch
 import torch.nn as nn
 
+
+def _resume_torch_load(path, **kwargs):
+    """Refused on torch < 2.6 like Trainer's check_torch_load_is_safe (CVE-2025-32434)."""
+    from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    refuse_pickle_checkpoint_on_old_torch(path)
+    return torch.load(path, weights_only = True, **kwargs)
+
+
+def _load_full_optimizer_state(path):
+    """The full optimizer.pt on the CPU, memory-mapped: every rank reads the whole file and keeps only its
+    shards, so an eager load costs each rank an anonymous copy of the full state (ranks x file size of host
+    RAM). Mapped pages are file-backed and shared by the ranks through the page cache. A file object, or a
+    file torch cannot map (legacy non-zip serialization), loads eagerly as before."""
+    if not isinstance(path, (str, os.PathLike)):
+        return _resume_torch_load(path, map_location = "cpu")
+    try:
+        return _resume_torch_load(path, map_location = "cpu", mmap = True)
+    except RuntimeError as e:
+        if "mmap can only be used" not in str(e):
+            raise
+    return _resume_torch_load(path, map_location = "cpu")
+
+
 __all__ = [
     "FSDP2Config",
     "STORAGE_DTYPE",
@@ -3098,7 +3122,7 @@ def native_load_optimizer(model, optimizer, path_or_state):
     if isinstance(state, (str, os.PathLike)) and _is_dcp_dir(state):
         return native_load_optimizer_sharded(model, optimizer, state)
     if not isinstance(state, dict):
-        state = torch.load(state, map_location = "cpu", weights_only = True)
+        state = _load_full_optimizer_state(state)
     from .fsdp2_bnb_optim import rename_optimizer_state_for
 
     # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.
@@ -3550,7 +3574,7 @@ def _read_checkpoint_weights(checkpoint):
         if path.endswith(".safetensors"):
             from safetensors.torch import load_file
             return load_file(path, device = "cpu")
-        return torch.load(path, map_location = "cpu", weights_only = True)
+        return _resume_torch_load(path, map_location = "cpu")
 
     for name in _WEIGHT_FILES:
         path = os.path.join(checkpoint, name)
@@ -4105,7 +4129,7 @@ def _install_trainer_hooks():
             os.path.join(checkpoint, _OPTIMIZER_DCP_DIR if sharded else _OPTIMIZER_NAME),
         )
         self.lr_scheduler.load_state_dict(
-            torch.load(os.path.join(checkpoint, _SCHEDULER_NAME), weights_only = True)
+            _resume_torch_load(os.path.join(checkpoint, _SCHEDULER_NAME))
         )
 
     original_load_from_checkpoint = Trainer._load_from_checkpoint

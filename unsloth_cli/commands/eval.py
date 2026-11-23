@@ -81,6 +81,35 @@ def resolve_base_model(model: str) -> Optional[str]:
     return data.get("base_model_name_or_path") if isinstance(data, dict) else None
 
 
+_WINDOWS = os.name == "nt"
+_LOCAL_SHARE_HOSTS = ("", ".", "?", "localhost", "127.0.0.1", "wsl$", "wsl.localhost")
+
+
+def _is_network_share(path: str) -> bool:
+    """Same rule as unsloth_zoo.vision_utils._is_network_share, kept import-free: the hf and vllm
+    backends never import unsloth. On Windows a UNC path opens an SMB connection (NTLM leak)."""
+    if not _WINDOWS or not isinstance(path, str):
+        return False
+    p = path.replace("\\", "/")
+    if p[:5].lower() == "file:":
+        p = p[5:]
+    if p[:8].upper() == "//?/UNC/":
+        p = "//" + p[8:]
+    elif p.startswith(("//?/", "//./")):
+        return re.match(r"([A-Za-z]:|Volume\{[0-9A-Fa-f-]+\})(/|$)", p[4:]) is None
+    return p.startswith("//") and p[2:].split("/", 1)[0].lower() not in _LOCAL_SHARE_HOSTS
+
+
+def _refuse_network_share_adapter_base(model: str, base: Optional[str]) -> None:
+    """A Hub adapter's base_model_name_or_path is chosen by the repo; never let it reach a share.
+    Local adapter folders and an explicit --base-model are the user's own and are left alone."""
+    if base and not Path(model).is_dir() and _is_network_share(base):
+        _fail(
+            f"The adapter {model} names a base model on a network share ({base!r}). Refusing to "
+            "load it: download the base model and pass it with --base-model."
+        )
+
+
 def _is_studio_output(path: Path) -> bool:
     # same scope as Studio Chat: downloads and merged exports keep the 4-bit default
     try:
@@ -624,6 +653,8 @@ def evaluate(
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
     effective_base = base_model or resolve_base_model(model)
+    if not base_model:
+        _refuse_network_share_adapter_base(model, effective_base)
     if backend == "vllm":
         if load_in_4bit:
             typer.echo("Note: --backend vllm loads 16-bit weights; --load-in-4bit has no effect.")

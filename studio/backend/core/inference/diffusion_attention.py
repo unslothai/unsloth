@@ -3,8 +3,8 @@
 
 """Attention backend: auto picks cuDNN on NVIDIA with a speed profile (Blackwell stays native if
 torch picks cuDNN, unless UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN=0); native, cudnn,
-flash/flash3/flash4, sage, xformers, aiter; unavailable falls back to native; torch/diffusers
-lazy."""
+flash/flash3/flash4, sage, xformers, aiter; unavailable falls back to native (aiter on ROCm without diffusers' local
+backend: the auto pick); torch/diffusers lazy."""
 
 from __future__ import annotations
 
@@ -34,8 +34,25 @@ _ALIASES: dict[str, str] = {
     "aiter": "aiter",
     # Studio's INT8 attention kernel: the automatic native pick, with the strided processors routed to the kernel
     "unsloth_int8": "unsloth_int8",
+    # torch SDPA pinned to its flash kernel (no flash_attn package needed)
+    "flash_sdpa": "_native_flash",
 }
 ATTN_ALIASES = (ATTN_AUTO,) + tuple(dict.fromkeys(_ALIASES))
+_DISPATCHER_NAMES: dict[str, str] = {
+    "_native_flash": "flash_sdpa",
+    "_native_cudnn": "cudnn",
+    "_flash_3_hub": "flash3",
+    "flash_4_hub": "flash4",
+    "sage_hub": "sage",
+}
+
+
+def canonical_attention_request(value: Any) -> Any:
+    """A request lowered and stripped, with a diffusers dispatcher name folded onto Studio's alias; others unchanged."""
+    if not isinstance(value, str):
+        return value
+    folded = value.strip().lower()
+    return _DISPATCHER_NAMES.get(folded, folded)
 
 
 def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
@@ -43,7 +60,7 @@ def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
     unsupported alias so a bad request is rejected cheaply."""
     if value is None:
         return ATTN_AUTO
-    normalized = str(value).strip().lower()
+    normalized = canonical_attention_request(str(value))
     if not normalized:
         return ATTN_AUTO
     if normalized not in ATTN_ALIASES:
@@ -648,6 +665,58 @@ def _heads_major(t: Any) -> Any:
     return t.permute(0, 2, 1, 3).contiguous().permute(0, 2, 1, 3)
 
 
+def _set_arg(args: list, kwargs: dict, index: int, name: str, value: Any) -> None:
+    if len(args) > index:
+        args[index] = value
+    else:
+        kwargs[name] = value
+
+
+def _contiguous_native(native_fn: Any) -> Any:
+    """The native backend with the gfx1151 layout fixes: q/k/v during training (token floor), else k/v over L2."""
+
+    def _contiguous_kv(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("_parallel_config") is None:
+            args = list(args)
+            query = args[0] if args else kwargs.get("query")
+            key = args[1] if len(args) > 1 else kwargs.get("key")
+            value = args[2] if len(args) > 2 else kwargs.get("value")
+            if _rocm_contiguous_qkv_wanted(query, key, value):
+                _set_arg(args, kwargs, 0, "query", _heads_major(query))
+                _set_arg(args, kwargs, 1, "key", _heads_major(key))
+                _set_arg(args, kwargs, 2, "value", _heads_major(value))
+            elif _rocm_contiguous_kv_wanted(key, value):
+                _set_arg(args, kwargs, 1, "key", _heads_major(key))
+                _set_arg(args, kwargs, 2, "value", _heads_major(value))
+        return native_fn(*args, **kwargs)
+
+    setattr(_contiguous_kv, ROCM_CONTIGUOUS_KV_ATTR, True)
+    _contiguous_kv.__wrapped__ = native_fn  # type: ignore[attr-defined]
+    return _contiguous_kv
+
+
+def _install_contiguous_native() -> bool:
+    """Wraps diffusers' native backend once per process; True when the wrapper is (now) in place."""
+    try:
+        from diffusers.models.attention_dispatch import (
+            AttentionBackendName,
+            _AttentionBackendRegistry,
+        )
+        backends = _AttentionBackendRegistry._backends
+        native_fn = backends[AttentionBackendName.NATIVE]
+    except Exception:  # noqa: BLE001
+        return False
+    if not callable(native_fn):
+        return False
+    if getattr(native_fn, ROCM_CONTIGUOUS_KV_ATTR, False):
+        return True
+    try:
+        backends[AttentionBackendName.NATIVE] = _contiguous_native(native_fn)
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 def install_rocm_contiguous_kv(target: Any) -> bool:
     """gfx1151 only: k/v over L2 reach SDPA contiguous (q is not copied). False elsewhere: other GPUs untouched."""
     if os.environ.get(ROCM_CONTIGUOUS_KV_ENV, "").strip().lower() in ("0", "false", "no", "off"):
@@ -656,10 +725,6 @@ def install_rocm_contiguous_kv(target: Any) -> bool:
         return False
     try:
         import torch
-        from diffusers.models.attention_dispatch import (
-            AttentionBackendName,
-            _AttentionBackendRegistry,
-        )
 
         device = torch.device(
             _indexed_cuda_device(
@@ -672,39 +737,82 @@ def install_rocm_contiguous_kv(target: Any) -> bool:
         )
         index = device.index if device.index is not None else torch.cuda.current_device()
         l2 = int(getattr(torch.cuda.get_device_properties(index), "L2_cache_size", 0) or 0)
-        backends = _AttentionBackendRegistry._backends
-        native_fn = backends[AttentionBackendName.NATIVE]
     except Exception:  # noqa: BLE001
         return False
-    if l2 <= 0 or not callable(native_fn):
+    if l2 <= 0:
         return False
     _ROCM_CONTIGUOUS_KV_L2[index] = l2
-    if getattr(native_fn, ROCM_CONTIGUOUS_KV_ATTR, False):
-        return True
+    return _install_contiguous_native()
 
-    def _contiguous_kv(*args: Any, **kwargs: Any) -> Any:
-        args = list(args)
-        key = args[1] if len(args) > 1 else kwargs.get("key")
-        value = args[2] if len(args) > 2 else kwargs.get("value")
-        if kwargs.get("_parallel_config") is None and _rocm_contiguous_kv_wanted(key, value):
-            key, value = _heads_major(key), _heads_major(value)
-            if len(args) > 1:
-                args[1] = key
-            else:
-                kwargs["key"] = key
-            if len(args) > 2:
-                args[2] = value
-            else:
-                kwargs["value"] = value
-        return native_fn(*args, **kwargs)
 
-    setattr(_contiguous_kv, ROCM_CONTIGUOUS_KV_ATTR, True)
-    _contiguous_kv.__wrapped__ = native_fn  # type: ignore[attr-defined]
+# gfx1151 training copies q too: fwd+bwd 1.10x-1.36x at 2,560-8,192 tokens, 7% slower at 1,024, hence the floor.
+# 0 disables; a positive integer moves the floor.
+ROCM_CONTIGUOUS_QKV_TRAIN_ENV = "UNSLOTH_DIFFUSION_ROCM_TRAIN_CONTIGUOUS_QKV"
+ROCM_CONTIGUOUS_QKV_TRAIN_MIN_TOKENS = 2560
+_ROCM_CONTIGUOUS_QKV_TRAIN: dict[
+    int, int
+] = {}  # device index -> token floor, gfx1151 cards of a training run only
+
+
+def _rocm_contiguous_qkv_wanted(query: Any, key: Any, value: Any) -> bool:
+    """Training on gfx1151: grad on (the measured fwd+bwd; sample renders keep their path), q and k both at least the
+    token floor (self / joint attention, not short cross-attention)."""
+    if not _ROCM_CONTIGUOUS_QKV_TRAIN:
+        return False
     try:
-        backends[AttentionBackendName.NATIVE] = _contiguous_kv
+        import torch
+
+        if not torch.is_grad_enabled():
+            return False
+        floor = _ROCM_CONTIGUOUS_QKV_TRAIN.get(query.device.index)
+        if floor is None or query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
+            return False
+        return query.shape[1] >= floor and key.shape[1] >= floor
     except Exception:  # noqa: BLE001
         return False
-    return True
+
+
+def _rocm_contiguous_qkv_floor() -> Optional[int]:
+    raw = os.environ.get(ROCM_CONTIGUOUS_QKV_TRAIN_ENV, "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return None
+    if raw.isdigit():
+        return int(raw)
+    return ROCM_CONTIGUOUS_QKV_TRAIN_MIN_TOKENS
+
+
+def install_rocm_contiguous_qkv_training() -> tuple[int, ...]:
+    """Training: q/k/v at or over the token floor reach SDPA contiguous on gfx1151 cards. Returns the card indices it
+    covers; () elsewhere (other GPUs, CPU, MPS, kill switch), leaving the native backend untouched."""
+    floor = _rocm_contiguous_qkv_floor()
+    if floor is None:
+        return ()
+    try:
+        import torch
+
+        from core.inference.rocm_bf16 import is_rocm_torch
+        from utils.hardware.hardware import _props_gfx_arch
+
+        if not is_rocm_torch(torch) or not torch.cuda.is_available():
+            return ()
+        cards = tuple(
+            i
+            for i in range(torch.cuda.device_count())
+            if _props_gfx_arch(torch.cuda.get_device_properties(i)) in ROCM_CONTIGUOUS_KV_ARCHES
+        )
+    except Exception:  # noqa: BLE001
+        return ()
+    if not cards or not _install_contiguous_native():
+        return ()
+    for i in cards:
+        _ROCM_CONTIGUOUS_QKV_TRAIN[i] = floor
+    return cards
+
+
+def uninstall_rocm_contiguous_qkv_training(cards: Any) -> None:
+    """Undo ``install_rocm_contiguous_qkv_training`` for in-process callers; the k/v inference gate is untouched."""
+    for i in cards or ():
+        _ROCM_CONTIGUOUS_QKV_TRAIN.pop(i, None)
 
 
 def select_attention_backend(
@@ -725,6 +833,8 @@ def select_attention_backend(
     if alias == "unsloth_int8":
         alias = ATTN_AUTO
         speed_active = True
+    if alias == "aiter" and _is_cuda_rocm(target) and not _diffusers_aiter_usable():
+        alias = ATTN_AUTO
     if alias != ATTN_AUTO:
         backend = _ALIASES[alias]
         if backend == "native":
@@ -751,6 +861,22 @@ def select_attention_backend(
     if (speed_active or speed_unset) and _rocm_auto_flash(target, family):
         return ROCM_FLASH_CANDIDATE
     return None
+
+
+def _diffusers_aiter_usable() -> bool:
+    """Local diffusers ``aiter`` backend present and importable (0.41+ has only the unfetched hub kernel)."""
+    try:
+        from diffusers.models import attention_dispatch as dispatch
+        names = {getattr(m, "value", None) for m in getattr(dispatch, "AttentionBackendName", ())}
+        return "aiter" in names and bool(getattr(dispatch, "_CAN_USE_AITER_ATTN", False))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_AITER_MISSING_REASON = (
+    "this diffusers build has no usable local AITER backend (0.41+ ships only the hub-downloaded aiter_fa2_hub, "
+    "which Studio does not fetch), so Studio's automatic pick runs"
+)
 
 
 def auto_attention_reason(engaged: Optional[str]) -> str:
@@ -945,7 +1071,7 @@ def explicit_attention_decline(target: Any, requested: Any) -> Optional[tuple[st
     label = _backend_label(backend)
     if backend == "aiter":
         if getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target):
-            return None
+            return None if _diffusers_aiter_usable() else (_AITER_MISSING_REASON, _STATUS_FELL_BACK)
         return (
             f"AITER is the ROCm attention kernel and this load runs on {_platform_name(target)}",
             (_STATUS_UNSUPPORTED),
@@ -2256,7 +2382,7 @@ _ROCM_FLASH_MISSING_LOGGED: list[bool] = []
 _ROCM_FLASH_HINT = (
     "the PyPI flash-attn wheel is the NVIDIA CUDA build; on ROCm install the DAO-AILab flash-attention ROCm build "
     "(github.com/Dao-AILab/flash-attention, CK backend, or FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE for Triton) "
-    "or use attention_backend=aiter"
+    "or leave attention_backend on auto"
 )
 
 
@@ -3027,8 +3153,12 @@ def _fa4_kernel_runs(
     return not error
 
 
+# Compiled at import: a cold re.match inside a traced region (the MPS prefill check) fails fullgraph tracing.
+_VERSION_RE = re.compile(r"\s*(\d+(?:\.\d+)*)")
+
+
 def _version_tuple(text: str) -> tuple[int, ...]:
-    m = re.match(r"\s*(\d+(?:\.\d+)*)", str(text))
+    m = _VERSION_RE.match(str(text))
     return tuple(int(x) for x in m.group(1).split(".")) if m else ()
 
 
@@ -3996,6 +4126,37 @@ def _auto_request(requested: Any) -> bool:
         return False
 
 
+_FLASH_FAMILY = frozenset({"flash", "_flash_3_hub", "flash_4_hub"})
+
+
+def explicit_pick_fallback(
+    target: Any,
+    requested: Any,
+    *,
+    speed_active: bool,
+    family: Any = None,
+) -> Optional[str]:
+    """Closest kernel for an explicit pick that cannot run, keeping strided processors / fused QK-RoPE.
+
+    Flash family -> SDPA's flash kernel (same algorithm, no flash_attn package); others -> the automatic cuDNN pick.
+    None unless NVIDIA with speed on (speed off must stay bit-identical)."""
+    try:
+        alias = normalize_attention_backend(requested)
+    except ValueError:
+        return None
+    if alias in (ATTN_AUTO, INT8_ATTENTION_BACKEND) or _ALIASES[alias] == ATTN_NATIVE:
+        return None
+    if not speed_active or not _is_cuda_nvidia(target):
+        return None
+    if _ALIASES[alias] in _FLASH_FAMILY:
+        return "_native_flash"
+    try:
+        pick = select_attention_backend(target, None, speed_active = speed_active, family = family)
+    except Exception:  # noqa: BLE001
+        return None
+    return pick if isinstance(pick, _AutoCudnn) else None
+
+
 def apply_attention_backend(
     pipe: Any,
     backend: Optional[str],
@@ -4006,6 +4167,7 @@ def apply_attention_backend(
     speed_active: bool = True,
     speed_unset_only: bool = False,
     int8_policy: Any = None,
+    fallback: Any = None,
 ) -> Optional[str]:
     """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak).
 
@@ -4019,8 +4181,22 @@ def apply_attention_backend(
     ``int8_policy`` is the load's ``diffusion_int8_attention.Int8Policy`` (or its ``int8_attention`` request): ``on``
     forces the kernel like the name, ``off`` keeps it off every route, ``auto`` / None leave the env switch in charge.
     An explicit attention pick (native, sage, cuDNN, flash) is never raced over automatically: only a forced kernel
-    (``on``, the name, the env switch ``1``) layers INT8 on top of it."""
+    (``on``, the name, the env switch ``1``) layers INT8 on top of it.
+
+    ``fallback`` (``explicit_pick_fallback``): what runs when ``backend`` ends on native SDPA, i.e. an explicit kernel
+    that could not engage; the decline record keeps the kernel that was asked for and names what runs instead."""
     engaged = _apply_attention_backend(pipe, backend, logger = logger, target = target)
+    if fallback is not None and _status_name(engaged) == ATTN_NATIVE:
+        first = attention_decline(pipe)
+        engaged = _apply_attention_backend(pipe, fallback, logger = logger, target = target)
+        if isinstance(first, dict):
+            _stamp_decline(pipe, {**first, "engaged": _status_name(engaged)})
+        if logger is not None:
+            logger.info(
+                "diffusion.attention: %s could not run here; falling back to %s",
+                "the requested backend" if backend is None else _backend_label(backend),
+                _backend_label(engaged),
+            )
     try:
         from .diffusion_int8_attention import mode as int8_mode
         from .diffusion_int8_attention import requested as int8_requested

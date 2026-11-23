@@ -303,7 +303,9 @@ def test_traced_layer_has_no_graph_break():
 
 
 def test_only_the_post_norm_free_layer_arms():
-    # Gemma 2 / 3 (post-FFN norm), Cohere, Granite and the MoE layers keep their own forwards and never arm.
+    # Llama and Gemma feed the MLP output only into the layer output and arm. Gemma 2 / 3 (post-FFN norm
+    # reads it), Cohere / Granite (loaded through FastModel), Falcon-H1 (no fused LoRA MLP) and the MoE
+    # layers never arm.
     import inspect
     import unsloth.models as models
 
@@ -330,7 +332,7 @@ def test_only_the_post_norm_free_layer_arms():
             ):
                 if "arm_mlp_output_unread(" in inspect.getsource(fn):
                     arming.append(fn_name)
-    assert arming == ["LlamaDecoderLayer_fast_forward"]
+    assert sorted(arming) == ["GemmaDecoderLayer_fast_forward", "LlamaDecoderLayer_fast_forward"]
     source = inspect.getsource(LlamaDecoderLayer_fast_forward)
     tail = source[source.index("armed = arm_mlp_output_unread") :]
     assert "hidden_states = residual + hidden_states\n\n    outputs = (hidden_states,)" in tail

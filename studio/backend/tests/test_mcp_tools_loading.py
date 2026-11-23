@@ -209,12 +209,14 @@ def _media_studio(
     load_answer = None,
     plan = None,
     chat_statuses = None,
+    catalog = None,
 ):
     """``progress`` and ``statuses`` are consumed in order; the last one repeats."""
     prefix = "/api/inference/images" if kind == "image" else "/api/inference/video"
     return fake_studio(
         {
             **({STATUS_ROUTE: sequence(*chat_statuses)} if chat_statuses else {}),
+            **({("GET", "/api/inference/media/catalog"): catalog} if catalog is not None else {}),
             ("GET", "/api/hub/gguf-variants"): {
                 "repo_id": FLUX_GGUF,
                 "default_variant": "Q4_K_S",
@@ -231,20 +233,23 @@ def _media_studio(
 
 # No variant named: the default is used, and the hf_token argument reaches the (gated) lookup.
 @pytest.mark.parametrize(
-    "extra,filename",
+    "extra,filename,suffix",
     [
-        ({"variant": "Q8_0"}, "flux1-schnell-Q8_0.gguf"),
-        ({"hf_token": "hf_arg"}, "flux1-schnell-Q4_K_S.gguf"),
+        ({"variant": "Q8_0"}, "flux1-schnell-Q8_0.gguf", ""),
+        ({"hf_token": "hf_arg"}, "flux1-schnell-Q4_K_S.gguf", ""),
+        ({}, "flux1-schnell-Q8_0.gguf", ":Q8_0"),
     ],
 )
-def test_a_gguf_image_repo_sends_its_gguf_filename(monkeypatch, fast_polls, extra, filename):
+def test_a_gguf_image_repo_sends_its_gguf_filename(
+    monkeypatch, fast_polls, extra, filename, suffix
+):
     studio = _media_studio(
         "image",
         progress = [{"phase": "downloading", "bytes_downloaded": 1, "bytes_total": 2}, READY],
         statuses = [{"loaded": True, "repo_id": FLUX_GGUF, "gguf_filename": filename}],
     )
     result, _studio = run_tool(
-        monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image", **extra}
+        monkeypatch, studio, "load_model", {"model": FLUX_GGUF + suffix, "kind": "image", **extra}
     )
     loaded = {"kind": "image", "model": FLUX_GGUF, "loaded": True, **SETTLED, "display_name": None}
     loaded.update(placement = None, alongside_applied = None)
@@ -1535,3 +1540,112 @@ def test_an_unload_retries_this_callers_resident_after_its_replacement_fails(mon
     sent = bodies(studio, "/api/inference/video/unload")
     assert sent.count({"expected_load_id": "A"}) == 2 and {"expected_load_id": "B"} in sent
     assert unloaded.unloaded is True
+
+
+# Kind inference: a catalog row or the /v1/models task picks the route; otherwise llm.
+FLUX2 = "unsloth/FLUX.2-klein-4B"
+TTS_ID = "unsloth/Kokoro-82M"
+MEDIA_CATALOG = ("GET", "/api/inference/media/catalog")
+CATALOGS = {
+    MEDIA_CATALOG: {"models": [{"id": FLUX2, "kind": "image"}]},
+    ("GET", "/api/inference/audio/catalog"): {"models": [{"id": TTS_ID, "task": "tts"}]},
+    ("GET", "/v1/models"): {"data": []},
+}
+
+
+def test_a_catalog_image_id_loads_as_an_image_without_a_kind(monkeypatch, fast_polls):
+    studio = _media_studio(
+        "image",
+        catalog = CATALOGS[MEDIA_CATALOG],
+        progress = [READY],
+        statuses = [{"loaded": True, "repo_id": FLUX2}],
+    )
+    result, studio = run_tool(monkeypatch, studio, "load_model", {"model": FLUX2})
+    assert result["structuredContent"]["kind"] == "image", result
+    assert len(media_load_bodies(studio, "/api/inference/images/load")) == 1
+    assert bodies(studio, "/api/inference/load") == []
+
+
+def test_an_explicit_llm_load_of_a_catalog_image_model_is_refused_before_any_load(monkeypatch):
+    args = {"model": FLUX2, "kind": "llm"}
+    result, studio = run_tool(monkeypatch, {**PAYLOADS, **CATALOGS}, "load_model", args)
+    text = result["content"][0]["text"]
+    assert result["isError"] is True and f"call load_model(model='{FLUX2}', kind='image')" in text
+    assert bodies(studio, "/api/inference/load") == []
+
+
+def test_a_zero_wait_llm_load_of_a_catalog_image_model_still_never_reaches_the_llm_route(
+    monkeypatch, fast_polls
+):
+    studio = fake_studio({**PAYLOADS, **CATALOGS})
+    with session(monkeypatch, studio) as call:
+        early = call("load_model", {"model": FLUX2, "kind": "llm", "wait_s": 0})
+        job_id = (early.get("structuredContent") or {}).get("job_id")
+        if job_id:
+            job = call("get_job", {"kind": "load", "id": job_id, "wait_s": 30})
+            assert job["structuredContent"]["status"] == "failed", job
+    assert bodies(studio, "/api/inference/load") == []
+
+
+# An explicit llm load of a tts row goes through; a bare name keeps its variant.
+@pytest.mark.parametrize(
+    "model, kind, sent",
+    [(TTS_ID, "llm", TTS_ID), ("Kokoro-82M:Q4_K_M", "tts", f"{TTS_ID}:Q4_K_M")],
+)
+def test_a_catalog_tts_row_loads_through_the_llm_route(monkeypatch, fast_polls, model, kind, sent):
+    args = {"model": model, "kind": kind}
+    result, studio = run_tool(monkeypatch, {**PAYLOADS, **CATALOGS}, "load_model", args)
+    assert result["isError"] is False, json.dumps(result)
+    assert [body["model_path"] for body in bodies(studio, "/api/inference/load")] == [sent]
+
+
+def test_an_autoconfig_failure_gets_the_kind_hint(monkeypatch):
+    failed = JSONResponse({"detail": f"Unrecognized model in {LLM}."}, status_code = 500)
+    routes = {**PAYLOADS, **CATALOGS, LOAD: failed}
+    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
+    text = result["content"][0]["text"]
+    assert (
+        result["isError"] is True
+        and "pass kind" in text
+        and "list_models(source='catalog')" in text
+    )
+
+
+def test_a_slow_catalog_does_not_hold_an_explicit_llm_load_past_wait_s(monkeypatch, fast_polls):
+    slow_catalogs = {route: slow(answer, 2.0) for route, answer in CATALOGS.items()}
+    studio = fake_studio(
+        {**PAYLOADS, LOAD: slow(LOADED, 1.0), STATUS_ROUTE: EMPTY_STATUS, **slow_catalogs}
+    )
+    with session(monkeypatch, studio) as call:
+        started = time.monotonic()
+        early = call("load_model", {"model": LLM, "kind": "llm", "wait_s": 0})
+        assert time.monotonic() - started < 1.5
+    assert early["structuredContent"]["status"] == "loading", early
+
+
+@pytest.mark.parametrize(
+    "asked, full",
+    [
+        ("Moonshine-Streaming-GGUF:small/Q8_0", "org/Moonshine-Streaming-GGUF:small/Q8_0"),
+        ("other/Moonshine-Streaming-GGUF", "other/Moonshine-Streaming-GGUF"),
+    ],
+)
+def test_a_bare_catalog_name_keeps_a_variant_that_holds_a_slash(asked, full):
+    from studio_mcp.tools import models as tools
+    class Catalog:
+        async def catalog_id(self):
+            return "org/Moonshine-Streaming-GGUF:small/Q8_0"
+
+    assert asyncio.run(tools._full_id(asked, Catalog())) == full
+
+
+def test_a_slow_kind_lookup_answers_within_wait_s_and_asks_for_the_kind(monkeypatch, fast_polls):
+    slow_reads = {route: slow(answer, 6.0) for route, answer in CATALOGS.items()}
+    slow_reads[("GET", "/v1/models")] = slow({"data": []}, 6.0)
+    studio = fake_studio({**PAYLOADS, STATUS_ROUTE: EMPTY_STATUS, **slow_reads})
+    with session(monkeypatch, studio) as call:
+        started = time.monotonic()
+        result = call("load_model", {"model": "org/model", "wait_s": 0})
+        assert time.monotonic() - started < 5
+    assert result["isError"] is True and "pass kind" in result["content"][0]["text"], result
+    assert bodies(studio, "/api/inference/load") == []

@@ -49,6 +49,7 @@ mod process_identity;
 mod shell_path;
 mod staged_update;
 mod studio_home;
+mod tcp_listeners;
 mod update;
 mod webview_permissions;
 mod windows_job;

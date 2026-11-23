@@ -94,7 +94,9 @@ _CATALOG_WINDOW_PROVIDERS = frozenset({"anthropic", "openrouter", "gemini"})
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _GEMINI_MAX_MODEL_PAGES = 20
-_GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?:-|$)")
+_GEMINI_RESTRICTED_GENERATION = re.compile(
+    r"^gemini-(?:3\.[78]-flash|(?:[4-9]|\d{2,})(?:\.\d+)?)(?:-|$)"
+)
 _GEMINI_DUMMY_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
 _served_windows: dict[tuple[str, str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
@@ -1900,10 +1902,12 @@ class ExternalProviderClient:
             if self.provider_type == "vllm"
             else messages,
             "stream": stream,
-            "temperature": temperature,
             "presence_penalty": presence_penalty,
             **_continue_body,
         }
+        # Omitted, not null: some OpenAI-compatible servers reject a null temperature.
+        if temperature is not None:
+            body["temperature"] = temperature
         if top_p is not None:
             body["top_p"] = top_p
         # Only alongside stream=True: the field is rejected on a non-streaming request.

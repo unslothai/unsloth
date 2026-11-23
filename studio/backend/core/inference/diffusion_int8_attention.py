@@ -82,6 +82,7 @@ LOG2E = 1.4426950408889634
 # sinks: overrides of those orderings for the sink-path kernel only (same bits; ``SINK_ORDER_ENV=0`` drops them).
 # qkw / pvw / spread pick the order the products and the tile copies are issued in (see the kernel source): they
 # move no output bit, so they are per card too.
+# native_p 1: probabilities packed with conversion instructions (sm89+, same bits; ``NATIVE_P_ENV=0`` drops it).
 # long_keys / long: overrides from that many keys on (select_config). A card runs one block per SM, so a call of a
 # few thousand tokens is a handful of blocks per SM and the last round leaves SMs idle: smaller blocks waste less of
 # it, and bigger ones copy each tile for more rows on long calls.
@@ -114,6 +115,8 @@ KERNEL_CONFIGS: dict = {
             "nq": 1,
             "stages": 2,
             "max_registers": 168,
+            # L4: 3.0-4.1% (sink) / 2.8-3.4% (plain) faster
+            "native_p": 1,
             # L4, B 1 H 24 at 4096 / 4176 / 4608 tokens, sink path with the fold: 1.3-1.9% per call sustained,
             # 1.6-5.2% in short bursts; the plain kernel is not faster with it (0.8% slower sustained at 4096)
             "sinks": {"flush_tail": 1, "qkw": 1, "pvw": 8, "spread": 5},
@@ -139,6 +142,8 @@ KERNEL_CONFIGS: dict = {
             "qkw": 1,
             "pvw": 8,
             "spread": 5,
+            # RTX PRO 6000: 1.6-3.0% (sink) / 0.7-2.5% (plain) faster
+            "native_p": 1,
         },
         64: {"bn": 128, "wpc": 4, "nq": 2, "stages": 2, "qreg": 1},
     },
@@ -232,6 +237,7 @@ def _library_versions() -> dict:
         "diffusers": _version("diffusers"),
         "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
         "nvrtc": nvrtc,
+        "native_p": native_p_enabled(),
     }
 
 
@@ -264,14 +270,27 @@ def sink_order_enabled() -> bool:
     return (os.environ.get(SINK_ORDER_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
+NATIVE_P_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_NATIVE_P"
+
+
+def native_p_enabled() -> bool:
+    return (os.environ.get(NATIVE_P_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
 def kernel_variant(config: dict, sinks: bool) -> dict:
     """The plain config one compiled kernel is named by: ``select_config(config, 0)`` without the ``sinks`` entry,
     with its orderings applied for the sink-path kernel."""
     chosen = select_config(config, 0)
     override = chosen.pop("sinks", None)
+    if not native_p_enabled():
+        chosen.pop("native_p", None)
     if sinks and override and sink_order_enabled():
         chosen.update({key: value for key, value in override.items() if key in SINK_ORDER_KEYS})
     return chosen
+
+
+# Read when a plan picks its kernels; keyed raw by _plan_key (a spelling change only rebuilds the plan).
+_KERNEL_SWITCHES = (RESID_FOLD_ENV, SINK_ORDER_ENV, NATIVE_P_ENV)
 
 
 def resid_fold_enabled() -> bool:
@@ -483,7 +502,7 @@ def kernel_defines(head_dim: int, config: dict) -> dict:
         "STAGES": int(config["stages"]),
         "QREG": int(config.get("qreg", 0)),
     }
-    for name in ("flush", "flush_tail", "sm75", "qkw", "pvw", "spread"):
+    for name in ("flush", "flush_tail", "sm75", "qkw", "pvw", "spread", "native_p"):
         if name in config:
             defines[name.upper()] = int(config[name])
     return defines
@@ -628,11 +647,10 @@ def _raw_stream(index: int) -> int:
 _PLAN_LIMIT = 512
 RESID_THREADS = 256  # NTR of the quantiser source
 RESID_BLOCKS = 128
-# A plan's calls before SINK_DECIDE_AT record whether a head clipped V (attention sink); it decides at SINK_DECIDE_AT
-# (the bucket's verdict of this load, else a race). Undecided, a plan runs the sink path, which a graph records. A
-# verdict other than the sink path is taken only where no call whose output was used (not a thrown-away graph
-# warm-up) clipped on the sink path: else the plan keeps it for the load, so the first render repeats. The verdict
-# stays the bucket's for the load; the next load races again.
+# Calls before SINK_DECIDE_AT record whether a head clipped V; the plan decides there (bucket
+# verdict or race) and runs the sink path (graphs record it); a non-sink verdict needs no used
+# (non-warm-up) clipping call, else the sink path is kept; the verdict lasts this load, then races
+# again.
 SINK_LEARN_CALLS = 32
 SINK_DECIDE_AT = 48
 # A race verdict is shared per shape, DECIDE_BUCKET token bucket and sinks flag (never across sinks / no sinks).
@@ -799,7 +817,13 @@ def _plan_key(
         scale,
         (K_MEAN_STEP, K_MEAN_KEYS, V_RANGE_STEP, V_RANGE_CHUNKS, GRID_LIMIT),
         int(mode),
+        # kernel switches: a plan built before one flips must not keep serving the old kernel
+        _kernel_switches(),
     )
+
+
+def _kernel_switches() -> tuple:
+    return tuple(os.environ.get(name) for name in _KERNEL_SWITCHES)
 
 
 def _plan(
@@ -830,6 +854,8 @@ def _plan(
         q.shape[1] // DECIDE_BUCKET,
         k.shape[1] // DECIDE_BUCKET,
         int(mode),
+        # the race verdict is the kernel's: a flipped switch must not inherit the old kernel's verdict
+        _kernel_switches(),
     )
     B, Sq, H, D = q.shape
     Sk = k.shape[1]

@@ -106,6 +106,11 @@ def fsdp2_st_usage_snippet(model):
         print(f"Unsloth: FSDP2 save: model card usage snippet not computed ({exc}).")
     finally:
         model.__dict__.pop("to", None)
+        # Through train(), not only the flag: Int4PackedLinear syncs its quant_state there and
+        # PreTrainedModel re-kernelizes under use_kernels. modules() is parent-first, so the children's
+        # own calls undo each recursion; the flags then cover a child shared by two parents.
+        for module, training in modes:
+            module.train(training)
         for module, training in modes:
             module.training = training
     card.__dict__["run_usage_snippet"] = lambda *args, **kwargs: None

@@ -1,34 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Two-card sequence parallel (Ulysses) for one denoiser call without guidance branches, in one process.
-
-A distilled or guidance-1 video render runs one denoiser call per step, so a CFG replica has no second branch to
-run and a batch of one has nothing to split. Here the CFG replica's copy of the denoiser takes half of the call's
-tokens instead: the source card runs the first half, the replica's card the second, at the same time. Every layer
-works on its own tokens except self-attention, which needs every token: there the two cards swap half of their
-heads (Ulysses, arXiv 2309.14509), so each card attends over all tokens for half of the heads, then swap the
-outputs back. The swaps are plain device-to-device copies ordered by CUDA events between the router's two host
-threads (its worker thread drives the replica): no torch.distributed, NCCL or second process.
-
-Where the tokens are cut and joined follows the denoiser class's own ``_cp_plan`` in diffusers (the context parallel
-plan its maintainers keep per model), checked against the plan this module was written for (``SP_PLANS``): a class or
-a diffusers version whose plan differs keeps the whole call on one card. The cut itself (``SP_EXEC_PLANS``) moves two
-small per-token pieces to the full sequence on both cards: Wan 2.2 TI2V's per-token timestep embedding and the
-output projection, whose GEMMs would otherwise run on half the rows.
-
-Attention per head is the same computation on any number of heads, and every other layer sees each token alone, so
-the result is the one-card result as long as the card's GEMMs give a row the same bits whatever the row count. That
-holds on some cards and not on others (the A/B harness compares against one card bit for bit).
-
-The swaps are matched by attention module and call kind, not by call order: a card that runs one attention twice
-on the same inputs (a fused block checking itself against the stock block on its first call, or a fallback that
-recomputes a block) reads the other card's half again instead of falling out of step. Any error on either card
-aborts both and the router runs that step whole on the source.
-
-``UNSLOTH_DIFFUSION_SEQUENCE_PARALLEL``: ``0`` never; unset splits calls of at least ``MIN_TOKENS`` tokens;
-``force`` from any length.
-"""
+"""Two-card Ulysses sequence parallel (guidance-free); bit-exact only if GEMMs keep a row's bits at
+any row count; swaps match by module and call kind, not call order; plan mismatch or error keeps
+one card; UNSLOTH_DIFFUSION_SEQUENCE_PARALLEL: 0 never, unset from MIN_TOKENS, force any length."""
 
 from __future__ import annotations
 
@@ -56,11 +31,10 @@ SP_PLANS: dict[str, tuple] = {
         ("proj_out", "gather", None, 1, 3),
     ),
 }
-# Where this module cuts and joins once the class's plan checked out: diffusers' plan, except that the work every
-# token does alone in a GEMM whose row count would change (the per-token timestep embedding of Wan 2.2 TI2V, the
-# output projection) runs on all tokens on both cards, so its rows keep their one-card bits on cards whose GEMM picks
-# its kernel by row count. Kinds: input / output (cut a forward argument / output), gather (join an output),
-# gather_input (join an argument before the module runs).
+# Cuts follow the checked diffusers plan; per-token GEMMs whose row count changes (Wan 2.2 TI2V
+# timestep embedding, output proj) run on all tokens on both cards for one-card bits; kinds: input /
+# output cut args / outputs, gather joins an output, gather_input joins an argument before its
+# module.
 SP_EXEC_PLANS: dict[str, tuple] = {
     "WanTransformer3DModel": (
         ("condition_embedder", "output", 0, 1, 3),

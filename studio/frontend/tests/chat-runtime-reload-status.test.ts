@@ -468,3 +468,27 @@ test("recovery persists the replay prefix statistics it has applied", () => {
   assert.equal(metadata.generationFirstChunkAt, 220);
   assert.equal(metadata.generationChunkCount, 6);
 });
+
+test("a recovered connection reply names its connection, a local one stays local", () => {
+  const detailsFor = (requestPayload: Record<string, unknown>) =>
+    recoveredGenerationFinalMetadata({
+      current: {},
+      run: { id: "run-1", requestPayload, createdAt: 100, startedAt: 120, completedAt: 1120 },
+      totalChunks: 1,
+      markers: MARKERS,
+    }).responseDetails as Record<string, unknown>;
+  // The run a phone left behind: the connection's composite id plus its stored routing.
+  const external = detailsFor({
+    model: "external::conn-1::gpt-test",
+    provider_id: "conn-1",
+    provider_type: "openai",
+    external_model: "gpt-test",
+  });
+  assert.equal(external.providerId, "conn-1");
+  assert.equal(external.providerType, "openai");
+  assert.equal(external.responseModelId, "gpt-test");
+  assert.notEqual(external.providerName, "Local model");
+  const local = detailsFor({ model: "unsloth/Qwen3-0.6B-GGUF" });
+  assert.equal(local.providerName, "Local model");
+  assert.equal(local.providerType, "local");
+});

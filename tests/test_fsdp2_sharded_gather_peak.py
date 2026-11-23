@@ -42,8 +42,7 @@ def _pending(
     cols,
     shared = False,
 ):
-    """A model whose head weight is a sharded-load chunk (world 1: the whole table) behind its meta
-    placeholder, as begin_shard leaves it."""
+    """Head weight as a begin_shard chunk behind a meta placeholder (world 1 holds the whole table)."""
     import importlib
 
     _load_native()

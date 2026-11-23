@@ -1134,7 +1134,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             workdir = workdir,
             env = dict(plan.env),
             # --new-session covers the inner side only; tools.py's killpg still needs the outer setsid.
-            preexec_fn = sandbox_landlock.with_abstract_scope(plan.preexec_fn),
+            preexec_fn = sandbox_landlock.scoped_preexec(plan.preexec_fn),
             backend = BACKEND_NAME,
             pass_fds = (seccomp.fileno(),),
             owned_files = [seccomp],

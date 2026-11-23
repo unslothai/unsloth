@@ -2726,6 +2726,8 @@ class PipelineParallel:
         divided by the ranks holding a copy of it, summed over every rank)."""
         import torch.distributed as dist
 
+        from .tp_native import _square_sum
+
         self._check_unscaled()
         params = self.parameters() if parameters is None else list(parameters)
         params = [p for p in params if p.grad is not None]
@@ -2737,7 +2739,7 @@ class PipelineParallel:
             if full is not p.grad:
                 p.grad = full
             grads.append(local)
-            part = local.detach().double().square().sum().to(device)
+            part = _square_sum(local.detach(), torch.float64).to(device)
             sq = sq + (part / copies if copies != 1 else part)
         if self.composed:
             dist.all_reduce(sq)  # the meshes cover the world (checked by step)

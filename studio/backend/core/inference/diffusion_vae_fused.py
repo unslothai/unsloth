@@ -2030,6 +2030,102 @@ def _wan_batched_tiled_decode(
     return DecoderOutput(sample = dec)
 
 
+def wan_pair_decode_ok(vae: Any) -> bool:
+    """Whether ``vae`` decodes with diffusers' own ``AutoencoderKLWan._decode`` loop (one latent frame per decoder
+    call), which :func:`wan_paired_decode` reproduces two latent frames at a time."""
+    try:
+        from diffusers.models.autoencoders.autoencoder_kl_wan import AutoencoderKLWan
+    except Exception:  # noqa: BLE001
+        return False
+    return (
+        isinstance(vae, AutoencoderKLWan)
+        and getattr(type(vae), "_decode", None) is AutoencoderKLWan._decode
+        and callable(getattr(vae, "clear_cache", None))
+        and getattr(vae, "decoder", None) is not None
+        and _accepts_first_chunk(vae.decoder)
+    )
+
+
+def wan_paired_decode(
+    vae: Any,
+    z: Any,
+    return_dict: bool = True,
+    frames_per_call: int = 2,
+) -> Any:
+    """Stock ``AutoencoderKLWan._decode`` (untiled) with ``frames_per_call`` latent frames per decoder call after the
+    first. The first call stays one frame (the temporal upsamplers mark their first call and skip its time conv); each
+    causal conv's cache is the last two frames of its padded input, which is the same tensor whether those frames
+    arrived in one call or two, so every output frame matches the one-frame loop (same math; only the conv shapes
+    differ). Output frames are copied into one buffer as they arrive; unpatchify and clamp as stock."""
+    torch = _torch()
+    from diffusers.models.autoencoders.vae import DecoderOutput
+
+    num_frame = int(z.shape[2])
+    step = max(1, int(frames_per_call))
+    vae.clear_cache()
+    x = vae.post_quant_conv(z)
+    buf = None
+    parts: list = []
+    filled = 0
+    rate = 0
+    start = 0
+    while start < num_frame:
+        end = 1 if start == 0 else min(num_frame, start + step)
+        vae._conv_idx = [0]
+        kw = {"first_chunk": True} if start == 0 else {}
+        out = vae.decoder(
+            x[:, :, start:end], feat_cache = vae._feat_map, feat_idx = vae._conv_idx, **kw
+        )
+        n = end - start
+        if buf is None and parts and start == 1 and out.shape[2] % n == 0:
+            first = parts[0]
+            rate = out.shape[2] // n
+            shape = list(first.shape)
+            shape[2] = first.shape[2] + rate * (num_frame - 1)
+            if (
+                out.dim() == first.dim() == 5
+                and out.dtype == first.dtype
+                and list(out.shape[:2]) == shape[:2]
+                and list(out.shape[3:]) == shape[3:]
+            ):
+                buf = torch.empty(
+                    shape, dtype = first.dtype, device = first.device, memory_format = _cat_format(first)
+                )
+                buf[:, :, : first.shape[2]].copy_(first)
+                filled = first.shape[2]
+                parts = []
+        if (
+            buf is not None
+            and not parts
+            and out.shape[2] == rate * n
+            and filled + out.shape[2] <= buf.shape[2]
+        ):
+            buf[:, :, filled : filled + out.shape[2]].copy_(out)
+            filled += out.shape[2]
+        else:
+            if buf is not None and not parts:
+                parts = [
+                    buf[:, :, :filled]
+                ]  # an unexpected chunk: concatenate as stock from here on
+            parts.append(out)
+        del out
+        start = end
+    if parts:
+        dec = torch.cat(parts, dim = 2)
+    else:
+        dec = buf if filled == buf.shape[2] else buf[:, :, :filled]
+    del parts, buf, x
+    patch = getattr(vae.config, "patch_size", None)
+    if patch is not None:
+        from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
+        dec = unpatchify(dec, patch_size = patch)
+    dec.clamp_(min = -1.0, max = 1.0)
+    vae.clear_cache()
+    if not return_dict:
+        return (dec,)
+    return DecoderOutput(sample = dec)
+
+
 @lru_cache(maxsize = None)
 def _stock_tiled_decode_clamps(cls: type) -> Optional[bool]:
     """Whether ``cls.tiled_decode`` clamps to [-1, 1], read from the diffusers source; None (keep stock) if unreadable."""

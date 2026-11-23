@@ -3230,8 +3230,7 @@ async def scan_diffusion_loras(
     from core.inference import diffusion_lora
 
     entries = await asyncio.to_thread(diffusion_lora.list_loras, family = family)
-    # A two-expert video model loads only high / low-noise pairs, every other model only single adapters, so each
-    # picker lists only what its load accepts.
+    # Two-expert video models take only high/low-noise pairs, others only single adapters.
     two_expert = diffusion_lora.two_expert_family(family)
     entries = [e for e in entries if bool(e.weight_name_2) == two_expert]
     if account_access.managed_account():

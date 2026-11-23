@@ -293,6 +293,17 @@ RULES = (
         "drop tp (DDP, or UNSLOTH_FSDP2=1, over the dp axis)",
     ),
     Rule(
+        "tp / pp x model",
+        "tensor / pipeline parallel on Inkling 2 (inkling2, inkling2_loop)",
+        lambda q: (q.tp > 1 or q.pp > 1) and q.family in ("inkling2", "inkling2_loop"),
+        "tensor parallel has no sharding rule for its wrapper attention projections (L2 clips, key / value "
+        "short convolutions, output gate) and per-head sink / relative position bias projections; a pipeline "
+        "stage boundary would cut its block attention residual stack and Inkling-2-Mini's looped layers "
+        "(models/inkling2.py refuses both at from_pretrained, before any weight loads)",
+        'drop tp / pp: UNSLOTH_PARALLEL="dp=N" (DDP) or "fsdp=1" (native FSDP2), or device_map = "balanced" '
+        "in one process",
+    ),
+    Rule(
         "pp / tp x vLLM",
         "pipeline / tensor parallel with vLLM (fast_inference)",
         lambda q: (q.pp > 1 or q.tp > 1) and q.vllm,

@@ -1621,8 +1621,10 @@ class TestComputeBufferInkling2:
 
     @pytest.mark.parametrize("ctx,ub,slots,measured", _BANDED)
     def test_banded_estimate_tracks_measured_buffer(self, ctx, ub, slots, measured):
+        # These are the load-time reserves; the buffer can regrow past them once the prompt runs.
         est = self._total_mib(self._inkling2_mini(), ctx, ub, "f16", True, slots)
-        assert measured <= est <= measured * 1.2
+        runtime = LlamaCppBackend._INKLING2_RUNTIME_BYTES_PER_UB * ub / MIB
+        assert measured <= est <= measured * 1.2 + runtime
 
     @pytest.mark.parametrize("ctx,ct,fa,measured", _DENSE)
     def test_dense_estimate_stays_above_the_chunked_buffer(self, ctx, ct, fa, measured):
@@ -1650,8 +1652,7 @@ class TestComputeBufferInkling2:
         assert b._compute_buffer_ctx_bytes(65536, ub, ct, flash_attn = fa) >= dense * 65536
 
     def test_generic_path_underestimated_the_failed_load(self):
-        # Before inkling2 had its own branch it took the generic rate: 928 MiB for a load that
-        # needed 77531 MiB on the build without #385/#386.
+        # Generic rate gave 928 MiB; failed load needed 77531 MiB on builds lacking #385/#386.
         b = self._inkling2_mini(arch = "llama")
         assert self._total_mib(b, 800000, 512, "f16", True) < 1000
 

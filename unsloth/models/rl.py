@@ -23,6 +23,7 @@ import functools
 import importlib
 import importlib.util
 import collections
+import contextvars
 import inspect
 import os
 import re
@@ -48,6 +49,7 @@ from ..device_type import DEVICE_COUNT, DEVICE_TYPE, clean_gpu_cache
 from . import _decode_graphs
 from .rl_replacements import (
     _class_source,
+    _unsloth_forward_returns_hidden_states,
     _unsloth_get_model_config,
     _unsloth_text_configs,
     RL_EXTRA_ARGS,
@@ -1689,6 +1691,25 @@ def _widen_sft_config_instance_check(patched_config):
     return True
 
 
+def _sft_prediction_step_skips_unsloth(trainer_cls):
+    """First class below transformers.Trainer whose prediction_step never calls super(), else None."""
+    from transformers import Trainer
+
+    for klass in trainer_cls.__mro__:
+        if klass is Trainer:
+            return None
+        function = vars(klass).get("prediction_step")
+        if function is None:
+            continue
+        try:
+            source = inspect.getsource(function)
+        except (OSError, TypeError):
+            return klass.__qualname__
+        if "super().prediction_step" not in source:
+            return klass.__qualname__
+    return None
+
+
 def _wrap_sft_evaluate_cap(trainer_cls):
     """Cap a pre-tokenized split handed to ``evaluate()``/``predict()`` later on. The padding-free branch caps the init-time splits and then clears ``args.max_length`` as TRL's guard demands, so a split supplied afterwards is prepared with ``max_length = None`` and Zoo's prep leaves rows already carrying ``input_ids`` alone: overlength rows reach the collator uncapped. The cap survives on ``args.max_seq_length``, so apply it here. Both entry points, since ``predict(test_dataset = ...)`` reaches the same collator. Up to TRL 1.6 nothing prepares a late split; from 1.7.0 ``SFTTrainer.evaluate`` does, packing included, so ``eval_packing`` must be honoured here exactly as at construction (``_trl_prepares_late_evals``). This has to agree with the construction-time cap on every detail: truncation_mode, refusing a packed split, dropping rows with no supervised token, and handling a stream."""
 
@@ -1991,7 +2012,8 @@ def _model_supports_unsloth_return_hidden_states(model):
             return True
         if getattr(type(candidate), _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False):
             return True
-    return False
+    # A fast CausalLM forward that registered itself, on the module the wrapper would replace; the scorer reads the same.
+    return _unsloth_forward_returns_hidden_states(model)
 
 
 def _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs):
@@ -2257,8 +2279,24 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         hidden_states = hidden_states[-1]
         if divisor is not None:
             hidden_states = hidden_states / divisor
+        # A forward that honours UNSLOTH_RETURN_HIDDEN_STATES itself, behind a wrapper the capability check does not
+        # know, already returns the head input as .logits: nothing to verify, and with a square head the check below
+        # would compare hidden states with hidden states, call the input unsafe and degrade every later call.
+        native = getattr(outputs, "logits", None)
+        returned_head_input = (
+            isinstance(native, torch.Tensor)
+            and native.ndim == hidden_states.ndim
+            and native.shape[-1] == hidden_states.shape[-1]
+            and native.shape[-2] >= 1
+            and torch.equal(
+                native[..., -1:, :], hidden_states[..., -1:, :].to(device = native.device)
+            )
+        )
         # Once per model: a head input we do not reproduce (another pre-head transform) would silently train a different objective.
-        if getattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR, None) is None:
+        if (
+            not returned_head_input
+            and getattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR, None) is None
+        ):
             verdict = _grpo_hidden_states_reproduce_logits(
                 target_model, hidden_states, getattr(outputs, "logits", None)
             )
@@ -2503,6 +2541,21 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             f"{type(e).__name__}: {e}"
         )
         return
+
+
+# Zoo's sft_prepare_dataset replaces the body of TRL's _prepare_dataset, and with it TRL's main_process_first window:
+# the injected wrapper puts a rank 0 first window back around every split (file-backed ones only), so under DDP the
+# other ranks load the Arrow cache rank 0 wrote instead of tokenizing again. A Zoo without it leaves the call as is.
+_SFT_PREPARE_DATASET_PATTERN = r"([ \t]*)train_dataset = self\._prepare_dataset\("
+_SFT_PREPARE_DATASET_REPLACEMENT = (
+    r"\1self._unsloth_model_ref = model\n"
+    r"\1try:\n"
+    r"\1    from unsloth_zoo.dataset_utils import rank_zero_first_prepare as _unsloth_rank_zero_first_prepare\n"
+    r"\1    self._prepare_dataset = _unsloth_rank_zero_first_prepare(self._prepare_dataset)\n"
+    r"\1except ImportError:\n"
+    r"\1    pass\n"
+    r"\1train_dataset = self._prepare_dataset("
+)
 
 
 def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
@@ -4069,11 +4122,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         RLTrainer_source = _backport_vision_dataset_gate(RLTrainer_source)
 
         # Inject the model reference before _prepare_dataset for dynamic token_type_ids detection in sft_prepare_dataset.
-        _prep_pattern = r"([ \t]*)train_dataset = self\._prepare_dataset\("
-        _prep_replacement = (
-            r"\1self._unsloth_model_ref = model\n\1train_dataset = self._prepare_dataset("
+        RLTrainer_source = re.sub(
+            _SFT_PREPARE_DATASET_PATTERN,
+            _SFT_PREPARE_DATASET_REPLACEMENT,
+            RLTrainer_source,
+            count = 1,
         )
-        RLTrainer_source = re.sub(_prep_pattern, _prep_replacement, RLTrainer_source, count = 1)
 
     # Silence TRL's noisy batch_size=1 + padding-free warning, handling both the original "anihilate" typo and the corrected spelling.
     for _typo in ("anihilate", "annihilate"):
@@ -4211,6 +4265,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             _wrap_sft_evaluate_cap(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap evaluate for {RLTrainer_name}: {e}")
+        # The sft_trainer_prediction_step edit only sees SFTTrainer's own source, so check what actually runs.
+        _skipper = _sft_prediction_step_skips_unsloth(patched_trainer)
+        if _skipper is not None:
+            logger.warning_once(
+                f"Unsloth: {_skipper}.prediction_step does not call super(), so evaluate() and predict() "
+                f"skip Unsloth's prediction_step: compute_metrics and predict() can get empty logits. "
+                f"Please report this TRL version ({trl.__version__}) to Unsloth."
+            )
 
     try:
         _wrap_full_eval_keeps_trainable_dtype(getattr(created_module, f"Unsloth{RLTrainer_name}"))
@@ -4866,6 +4928,8 @@ def patch_trl_fused_lm_head_devices():
                     outputs[key] = value.to(device)
             return outputs
 
+        # Without fused_lm_head it hands fused_forward's output back untouched (_unsloth_forward_returns_hidden_states).
+        forward._unsloth_forward_delegate = (forward, fused_forward)
         model.forward = forward
         return result
 
@@ -5209,6 +5273,11 @@ def _packing_honored(
         alone = hidden(ids[:, first:], arange(second), [second])[0]
         crossed = hidden(ids, arange(first + second), [first + second])[0, first:]
     finally:
+        # Through train(), not only the flag: Int4PackedLinear syncs its quant_state there and
+        # PreTrainedModel re-kernelizes under use_kernels. modules() is parent-first, so the children's
+        # own calls undo each recursion; the flags then cover a child shared by two parents.
+        for module, mode in training:
+            module.train(mode)
         for module, mode in training:
             module.training = mode
         for module, attr, value in rates:
@@ -5680,6 +5749,55 @@ def _dataset_has_images(dataset):
 _ASYNC_GRPO_SERVER_URLS = set()
 
 
+# The in-process server of the trainer whose `_sync_weight_lora` is running, for the adapter hand-off in its save.
+# Scoped to that call, so a save by another trainer (on its own or an external server) or by any other caller of
+# TRL's `save_lora_adapter`, even of the same model, writes the files as before.
+_ASYNC_GRPO_SYNC_SERVER = contextvars.ContextVar("_ASYNC_GRPO_SYNC_SERVER", default = None)
+
+
+def _async_grpo_tensor_save(save_lora_adapter):
+    # TRL writes the adapter to safetensors for vLLM to read back; the in-process engine takes a host snapshot of
+    # the tensors instead. Other servers and multi-process runs save the files as before.
+    @functools.wraps(save_lora_adapter)
+    def wrapper(model, accelerator, adapter_name, dest_dir, *args, **kwargs):
+        server = _ASYNC_GRPO_SYNC_SERVER.get()
+        if server is not None:
+            if (
+                not args
+                and not kwargs
+                and getattr(accelerator, "num_processes", 1) == 1
+                and server.stage_adapter(model, adapter_name, dest_dir)
+            ):
+                return None
+            # These files are newer than any snapshot still pending on the server.
+            server.discard_staged(model)
+        return save_lora_adapter(model, accelerator, adapter_name, dest_dir, *args, **kwargs)
+
+    wrapper._unsloth_tensor_sync = True
+    return wrapper
+
+
+def _async_grpo_tensor_sync_scope(sync_weight_lora):
+    # Hands the save inside this trainer's own sync to its own in-process server, and only while its client
+    # talks to that server.
+    @functools.wraps(sync_weight_lora)
+    def wrapper(self, *args, **kwargs):
+        server = getattr(self, "_unsloth_vllm_server", None)
+        url = getattr(getattr(self, "vllm_client", None), "server_url", None)
+        if server is not None and (
+            not isinstance(url, str) or url.rstrip("/") != str(server.url).rstrip("/")
+        ):
+            server = None
+        token = _ASYNC_GRPO_SYNC_SERVER.set(server)
+        try:
+            return sync_weight_lora(self, *args, **kwargs)
+        finally:
+            _ASYNC_GRPO_SYNC_SERVER.reset(token)
+
+    wrapper._unsloth_tensor_sync = True
+    return wrapper
+
+
 def _start_async_grpo_vllm_server(model):
     from ._async_grpo_vllm import UnslothAsyncVLLMServer
     return UnslothAsyncVLLMServer(model)
@@ -5950,7 +6068,16 @@ def patch_trl_async_grpo():
             _unsloth_async_grpo_lm_head(getattr(async_module, name), flag, tree_attention),
         )
 
+    save_lora_adapter = getattr(async_module, "save_lora_adapter", None)
+    if callable(save_lora_adapter) and not getattr(
+        save_lora_adapter, "_unsloth_tensor_sync", False
+    ):
+        async_module.save_lora_adapter = _async_grpo_tensor_save(save_lora_adapter)
+
     trainer_class = async_module.AsyncGRPOTrainer
+    original_sync = getattr(trainer_class, "_sync_weight_lora", None)
+    if callable(original_sync) and not getattr(original_sync, "_unsloth_tensor_sync", False):
+        trainer_class._sync_weight_lora = _async_grpo_tensor_sync_scope(original_sync)
     original_init = trainer_class.__init__
     original_train = getattr(trainer_class, "train", None)
 

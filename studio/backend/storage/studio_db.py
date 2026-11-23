@@ -435,6 +435,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             id TEXT NOT NULL PRIMARY KEY,
             name TEXT NOT NULL,
             instructions TEXT,
+            mcp_server_ids TEXT,
             root_path TEXT,
             archived INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
@@ -447,6 +448,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "root_path" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN root_path TEXT")
+    if "mcp_server_ids" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN mcp_server_ids TEXT")
     # The user's folder, never deleted; only root_path (Studio's own) is removed on project delete.
     if "working_folder" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder TEXT")
@@ -2243,6 +2246,7 @@ def _chat_project_from_row(row: sqlite3.Row) -> dict:
         "id": data["id"],
         "name": data["name"],
         "instructions": data.get("instructions") or "",
+        "mcpServerIds": _json_loads(data.get("mcp_server_ids"), None),
         "rootPath": root_path or None,
         "sandboxPath": os.path.join(root_path, "sandbox") if root_path else None,
         "workingFolder": data.get("working_folder") or None,
@@ -2283,6 +2287,71 @@ def _raise_if_chat_thread_deleted(conn: sqlite3.Connection, thread_id: str) -> N
     ).fetchone()
     if row is not None:
         raise ChatThreadDeletedError(thread_id)
+
+
+def _chat_thread_upsert_values(thread: dict) -> dict:
+    """The INSERT values of upsert_chat_thread, keyed by column, in its column order."""
+    return {
+        "id": thread["id"],
+        "title": thread.get("title") or "New Chat",
+        "model_type": thread["modelType"],
+        "model_id": thread.get("modelId") or "",
+        "model_gguf_variant": thread.get("modelGgufVariant"),
+        "pair_id": thread.get("pairId"),
+        "project_id": thread.get("projectId"),
+        "archived": 1 if thread.get("archived") else 0,
+        "created_at": int(thread["createdAt"]),
+        "updated_at": int(thread["updatedAt"]) if thread.get("updatedAt") is not None else None,
+        "openai_code_exec_container_id": thread.get("openaiCodeExecContainerId"),
+        "anthropic_code_exec_container_id": thread.get("anthropicCodeExecContainerId"),
+        "forked_from_thread_id": thread.get("forkedFromThreadId"),
+        "forked_from_message_id": thread.get("forkedFromMessageId"),
+        "fork_boundary_message_id": thread.get("forkBoundaryMessageId"),
+        "fork_title_base": thread.get("forkTitleBase"),
+        "settings_json": json.dumps(thread["settings"])
+        if thread.get("settings") is not None
+        else None,
+        "scheduled_task_id": thread.get("scheduledTaskId"),
+    }
+
+
+def _same_value(a, b) -> bool:
+    # Type-strict: 1 == 1.0 == True in Python, but SQLite stores and compares them apart.
+    return type(a) is type(b) and a == b
+
+
+def _coalesce(*values):
+    return next((value for value in values if value is not None), None)
+
+
+def chat_thread_upsert_is_noop(thread: dict, stored: dict) -> bool:
+    """True if upsert_chat_thread(thread) would leave ``stored`` (the raw row) exactly as it is.
+
+    Mirrors the ON CONFLICT clause; any doubt answers False, so the caller just writes.
+    """
+    new = _chat_thread_upsert_values(thread)
+    if not _same_value(new["id"], stored.get("id")):
+        return False
+    for column in ("title", "model_id"):
+        # The CASE branches below compare these with SQL '='; only plain text matches Python's.
+        if not isinstance(new[column], str) or not isinstance(stored.get(column), str):
+            return False
+    same_model = new["model_id"] == stored["model_id"]
+    after = {
+        **{column: new[column] for column in new if column != "fork_boundary_message_id"},
+        "model_gguf_variant": _coalesce(new["model_gguf_variant"], stored.get("model_gguf_variant"))
+        if same_model
+        else new["model_gguf_variant"],
+        "updated_at": _coalesce(new["updated_at"], stored.get("updated_at")),
+        "fork_title_base": stored.get("fork_title_base")
+        if new["title"] == stored["title"]
+        else None,
+        "settings_json": _coalesce(new["settings_json"], stored.get("settings_json")),
+        "scheduled_task_id": _coalesce(stored.get("scheduled_task_id"), new["scheduled_task_id"]),
+    }
+    return all(
+        column in stored and _same_value(value, stored[column]) for column, value in after.items()
+    )
 
 
 def upsert_chat_thread(
@@ -2340,26 +2409,7 @@ def upsert_chat_thread(
                 -- Set by the scheduler when it makes the chat; no later writer changes it.
                 scheduled_task_id = COALESCE(chat_threads.scheduled_task_id, excluded.scheduled_task_id)
             """,
-            (
-                thread["id"],
-                thread.get("title") or "New Chat",
-                thread["modelType"],
-                thread.get("modelId") or "",
-                thread.get("modelGgufVariant"),
-                thread.get("pairId"),
-                thread.get("projectId"),
-                1 if thread.get("archived") else 0,
-                int(thread["createdAt"]),
-                int(thread["updatedAt"]) if thread.get("updatedAt") is not None else None,
-                thread.get("openaiCodeExecContainerId"),
-                thread.get("anthropicCodeExecContainerId"),
-                thread.get("forkedFromThreadId"),
-                thread.get("forkedFromMessageId"),
-                thread.get("forkBoundaryMessageId"),
-                thread.get("forkTitleBase"),
-                json.dumps(thread["settings"]) if thread.get("settings") is not None else None,
-                thread.get("scheduledTaskId"),
-            ),
+            tuple(_chat_thread_upsert_values(thread).values()),
         )
         _probe_chat_revisions(conn, thread["id"], end = True)
         conn.commit()
@@ -2584,6 +2634,16 @@ def get_chat_thread(id: str) -> Optional[dict]:
     try:
         row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
         return _chat_thread_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_chat_thread_with_row(id: str) -> tuple[Optional[dict], Optional[dict]]:
+    """get_chat_thread plus the raw stored columns, from one read; (None, None) if absent."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
+        return (_chat_thread_from_row(row), dict(row)) if row is not None else (None, None)
     finally:
         conn.close()
 
@@ -3397,8 +3457,8 @@ def upsert_chat_project(
         conn.execute(
             """
             INSERT INTO chat_projects
-                (id, name, instructions, root_path, archived, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (id, name, instructions, mcp_server_ids, root_path, archived, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 instructions = excluded.instructions,
@@ -3411,6 +3471,7 @@ def upsert_chat_project(
                 project["id"],
                 project["name"],
                 project.get("instructions") or "",
+                json.dumps(project.get("mcpServerIds")),
                 root_path,
                 1 if project.get("archived") else 0,
                 int(project["createdAt"]),
@@ -3435,6 +3496,7 @@ def update_chat_project(id: str, patch: dict) -> Optional[dict]:
     allowed = {
         "name": ("name", patch.get("name")),
         "instructions": ("instructions", patch.get("instructions")),
+        "mcpServerIds": ("mcp_server_ids", json.dumps(patch.get("mcpServerIds"))),
         "archived": ("archived", 1 if patch.get("archived") else 0),
         "createdAt": ("created_at", patch.get("createdAt")),
         "updatedAt": ("updated_at", patch.get("updatedAt")),
@@ -4629,7 +4691,9 @@ def sync_chat_messages(
     allow_research_update: bool = False,
     deleted_message_ids: Iterable[str] = (),
     external_import_mark: Optional[ExternalImportMark] = None,
-) -> list[dict]:
+    return_rows: bool = True,
+) -> Optional[list[dict]]:
+    """The thread's rows after the write, or None with return_rows=False (skips re-reading them)."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -4792,7 +4856,7 @@ def sync_chat_messages(
             _record_external_import_mark(conn, external_import_mark)
         _probe_chat_revisions(conn, thread_id, end = True)
         conn.commit()
-        return list_chat_messages(thread_id)
+        return list_chat_messages(thread_id) if return_rows else None
     except (ChatMessageConflictError, ChatMessageProtectedError):
         conn.rollback()
         raise

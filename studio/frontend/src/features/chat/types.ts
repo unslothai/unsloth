@@ -20,6 +20,7 @@ export interface ProjectRecord {
   id: string;
   name: string;
   instructions?: string;
+  mcpServerIds?: string[] | null;
   rootPath?: string | null;
   sandboxPath?: string | null;
   workingFolder?: string | null;

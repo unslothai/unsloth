@@ -18,6 +18,7 @@ from unsloth_cli._inference import (
     raise_on_streamed_error,
     server_load_opts,
     stream_to_stdout,
+    use_plain_tracebacks,
     user_turn,
 )
 
@@ -127,6 +128,8 @@ def inference(
     """Run a single inference using the specified model."""
     if not verbose:
         configure_quiet_logging()
+    else:
+        use_plain_tracebacks()
 
     # Read the images before the slow load, so a bad path fails at once.
     try:

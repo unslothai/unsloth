@@ -101,6 +101,7 @@ def run_rank(rank, port, queue, cases):
                     installed = installed,
                     is_ddp = isinstance(ddp, torch.nn.parallel.DistributedDataParallel),
                     view = bool(ddp.gradient_as_bucket_view),
+                    lazy = bool(getattr(ddp, "lazy_bucket_allocation", False)),
                     hooks = len(getattr(ddp, "_comm_hooks", []) or [])
                     or int(getattr(ddp, "_unsloth_test_hook", 0)),
                     n_grad_storages = len(storages),

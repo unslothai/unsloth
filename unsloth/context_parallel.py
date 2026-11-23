@@ -2349,9 +2349,11 @@ class _OnDevice:
 
 def _broadcast_from_group_root(obj, manager, device):
     """CP rank 0 sends its object (tensors through CPU) so every peer scores the same samples."""
-    payload = [_map_leaves(obj, _OnDevice)]
     group = manager.group
-    dist.broadcast_object_list(payload, src = dist.get_global_rank(group, 0), group = group)
+    src = dist.get_global_rank(group, 0)
+    # Peers overwrite their payload with the root's, so only the root copies its tensors to the host.
+    payload = [_map_leaves(obj, _OnDevice) if dist.get_rank() == src else None]
+    dist.broadcast_object_list(payload, src = src, group = group)
     return _map_leaves(
         payload[0],
         lambda x: x.restore(device),

@@ -1805,7 +1805,12 @@ export function SharedComposer({
           savedContextPin(ownConfig) ??
           unpinnedLoadContext(
             targetIsGguf,
-            isServedByMlx(targetIsGguf, platform.deviceType, platform.chatOnlyReason),
+            isServedByMlx(
+              targetIsGguf,
+              platform.deviceType,
+              platform.chatOnlyReason,
+              platform.mlxInference,
+            ),
             DEFAULT_MAX_SEQ_LENGTH,
           );
         const effectiveChatTemplateOverride = cleanCompareChatTemplate(
@@ -1815,6 +1820,7 @@ export function SharedComposer({
           targetIsGguf,
           platform.deviceType,
           platform.chatOnlyReason,
+          platform.mlxInference,
         );
         const effectiveSpeculativeType = resolveSpeculativeType(
           ownConfig.speculativeType,
@@ -2118,6 +2124,7 @@ export function SharedComposer({
                 targetIsGguf,
                 platform.deviceType,
                 platform.chatOnlyReason,
+                platform.mlxInference,
               ),
               requestedContextLength: compareMaxSeqLength,
             });

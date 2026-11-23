@@ -557,8 +557,7 @@ def test_a_sink_family_route_learns_and_takes_the_sink_path(monkeypatch):
 
 
 def _decide_at(plan, race, live):
-    """The SINK_DECIDE_AT-th call of a plan one of whose read calls clipped, used by a render (live) or a thrown-away
-    graph warm-up."""
+    """The SINK_DECIDE_AT-th call of a plan with a clipped read, used by a render or warm-up."""
     plan["calls"] = I.SINK_DECIDE_AT
     plan["checks"] = [(_Seen(), torch.ones(2, dtype = torch.int32), live)]
     return I._choose_path(plan, race = race)[0]
@@ -566,9 +565,8 @@ def _decide_at(plan, race, live):
 
 @pytest.mark.parametrize("verdict", [False, "native"])
 def test_used_sink_path_outputs_keep_the_path_for_the_load(monkeypatch, verdict):
-    """Graphs off, or real-step graph warm-ups: a render used this plan's clipped sink-path calls, so a race verdict
-    other than the sink path is not taken this load (the first render would differ from the next). The bucket keeps
-    the verdict for this load only: the next load races again."""
+    """Graphs off or real-step warm-ups: a render used the clipped sink-path calls, so a non-sink
+    race verdict is not taken this load (renders must match); the next load races again."""
     import contextlib
 
     I.forget_plans()
@@ -613,9 +611,8 @@ def test_a_bucket_verdict_of_this_load_keeps_a_used_clipped_sink_path(monkeypatc
 
 @pytest.mark.parametrize("own_race", [True, False])
 def test_a_sink_path_rejected_on_accuracy_is_never_kept_for_repeatability(monkeypatch, own_race):
-    """The race rejected the sink path because its error was non-finite: even with used clipped sink-path outputs,
-    the load takes the race's verdict (numerical safety over a repeated seed), for this plan and later plans of the
-    bucket."""
+    """A sink path rejected for non-finite error is not kept for repeatability: even with used
+    clipped outputs, the load takes the race verdict (accuracy wins) for this and later plans."""
     import contextlib
 
     I.forget_plans()

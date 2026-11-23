@@ -341,3 +341,39 @@ def test_trainer_spec_targets_and_refusal(monkeypatch):
     monkeypatch.setattr(dit, "_probe_lowp", lambda *a, **k: None)
     spec = dit._lowp_swap_spec(_model(), "fp8", None, "cuda")
     assert spec["mode"] == "fp8" and spec["targets"] == _targets(_model())
+
+
+def test_auto_plan_resized_when_a_conversion_fails(monkeypatch):
+    # A layer whose conversion fails stays bf16; the plan must count its real 2-byte weights, not 1-byte codes.
+    made = []
+    _install_fake_zoo(monkeypatch, made)
+    monkeypatch.setattr(bs, "_place_rest", lambda *a, **k: None)
+    monkeypatch.setattr(bs, "activation_reserve_bytes", lambda *a, **k: 0)
+
+    def plan_for(fail):
+        m = _model(12)
+        ids = frozenset(id(m.get_submodule(n)) for n in _targets(m))
+        free = bs._model_bytes(m, ids) - 3 * bs._frozen_bytes(m.blocks[0], ids)
+
+        def convert(model, names, dev):
+            names = set(names)
+            bad = {n for n in names if fail(n)}
+            done, failed = f8.convert_frozen_fp8(model, names - bad)
+            return done, failed + len(bad)
+
+        lowp = {"mode": "fp8", "targets": _targets(m), "convert": convert}
+        info = bs.install_dit_block_swap(
+            m, "cuda:0", "auto", tokens = 1, free_bytes = free, total_bytes = 8 * GIB, lowp = lowp
+        )
+        return m, info
+
+    _, ok = plan_for(lambda n: False)
+    m, bad = plan_for(lambda n: not n.startswith(("blocks.11.", "blocks.7.", "blocks.3.")))
+    assert ok["lowp_failed"] == 0 and bad["lowp_failed"] > 0
+    assert bad["swapped_blocks"] > ok["swapped_blocks"]
+    # The resized plan keeps the first plan's blocks, and every swapped block's converted codes went to host RAM.
+    assert set(ok["swapped"]["blocks"]) <= set(bad["swapped"]["blocks"])
+    for i in bad["swapped"]["blocks"]:
+        for lin in (m.blocks[i].a, m.blocks[i].b):
+            if getattr(lin, "_studio_lowp", None) == "fp8":
+                assert isinstance(lin.weight, nn.Parameter) and getattr(lin, bs.SWAPPED_WEIGHT_ATTR)
