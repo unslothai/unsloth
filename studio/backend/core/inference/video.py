@@ -64,6 +64,8 @@ from .diffusion_attention import (
     _dit_head_dims,
     begin_attention_run,
     report_attention_run,
+    explicit_pick_fallback,
+    normalize_attention_backend,
     select_attention_backend,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift, apply_scheduler_overrides
@@ -6522,6 +6524,8 @@ class VideoBackend:
         # raise OfflineModeIsEnabled, so the load reads the cache only, as a local_files_only one does.
         local_files_only = bool(local_files_only) or hub_reachability.offline_mode()
         int8_policy = resolve_policy(normalize_int8_attention(int8_attention))
+        # Refuse before the load evicts anything; inside it an unknown name silently runs unoptimised.
+        normalize_attention_backend(attention_backend)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         from .diffusion_nvfp4_route import ROUTE_UNCHANGED, plan_nvfp4_route
 
@@ -9922,7 +9926,7 @@ class VideoBackend:
                                 best,
                                 blob_bytes_present(path) - (baseline or {}).get(str(path), 0),
                             )
-                    except OSError:
+                    except (OSError, UnicodeDecodeError):
                         continue
                 total += min(best, size) if size else best
         return int(total)
@@ -12103,6 +12107,9 @@ class VideoBackend:
                 requested = attention_backend,
                 speed_active = effective_speed != SPEED_OFF,
                 int8_policy = int8_policy,
+                fallback = explicit_pick_fallback(
+                    target, attention_backend, speed_active = effective_speed != SPEED_OFF
+                ),
             )
             # The optimizer's speed layer (diffusion_autoopt), shared with the image backend. Its family hooks are
             # what used to be inline here: LTX static compile (token counts depend only on (w, h, frames): one
@@ -13677,13 +13684,25 @@ class VideoBackend:
             )
             h3_torch_device = str(getattr(umem_target, "torch_device", None) or device)
             # Install after the strided processors exist, else the dispatch route takes it and loses fused q/k norm + RoPE
+            h3_probe_target = types.SimpleNamespace(device = device, dtype = dtype)
+            h3_fallback = explicit_pick_fallback(
+                umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
+            )
+            if h3_fallback is not None:
+                try:
+                    h3_fallback = h3_attention_backend(
+                        h3_fallback, requested = None, target = h3_probe_target
+                    )
+                except Exception:  # noqa: BLE001 -- keep the generic pick
+                    pass
             attention_engaged = apply_attention_backend(
                 speed_view,
                 h3_attn_backend,
                 logger = logger,
                 # The probe behind this must see the dtype the pipeline actually RUNS in.
-                target = types.SimpleNamespace(device = device, dtype = dtype),
+                target = h3_probe_target,
                 int8_policy = int8_attention.Int8Policy(request = "off", env = h3_policy.env),
+                fallback = h3_fallback,
             )
             h3_denoiser = getattr(pipe, denoiser_component, None)
             strided_installed = False
@@ -13901,7 +13920,11 @@ class VideoBackend:
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
         try:
+            from .video_minimax_h3_ref_cache import clear as clear_h3_ref_latents
             from .video_minimax_h3_ref_encode import install_h3_chunked_reference_encode
+
+            # a new VAE load: no condition latent of an earlier one survives it
+            clear_h3_ref_latents("load", logger)
             install_h3_chunked_reference_encode(logger)
         except Exception as exc:  # noqa: BLE001 -- the render's recipe install retries it
             logger.warning("video.h3_ref_encode: keeping the stock reference encode: %s", exc)
@@ -16650,6 +16673,10 @@ class VideoBackend:
         release_load_budget_fraction("video")
         state, self._state = self._state, None
         self._float_seeds = None
+        # No MiniMax-H3 condition latent outlives the VAE that encoded it.
+        from .video_minimax_h3_ref_cache import clear as clear_h3_ref_latents
+
+        clear_h3_ref_latents("unload", logger)
         if state is not None:
             server_slot = getattr(getattr(state, "pipe", None), "server_slot", None)
             if server_slot is not None:

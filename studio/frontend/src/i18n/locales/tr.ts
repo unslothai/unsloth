@@ -2581,12 +2581,16 @@ export const tr = {
         label: "Kurulum türü",
         description:
           "Yalnızca sohbet (GGUF). Tam kurulum; eğitim, dışa aktarma, video, safetensors modelleri ve ek görüntü üretme özellikleri ekler.",
+        descriptionMlx:
+          "Yalnızca sohbet (GGUF/MLX). Tam kurulum; eğitim, dışa aktarma, video, safetensors modelleri ve ek görüntü üretme özellikleri ekler.",
         descriptionCpu:
           "Yalnızca sohbet (GGUF). Desteklenen bir GPU bulunamadı, bu nedenle tam kurulum CPU üzerinde eğitim ekler.",
         action: "Tam kuruluma yükselt",
         confirmTitle: "Tam kuruluma yükseltilsin mi?",
         confirmDescription:
           "Bu Yalnızca sohbet kurulumu GGUF modellerini çalıştırır. Tam kurulum, bu makinenin GPU'su için PyTorch ekler; bu da eğitimi, dışa aktarmayı, videoyu, safetensors modellerini ve ek görüntü üretme özelliklerini etkinleştirir. Birkaç gigabayt indirir (en az 5 GB disk alanı) ve sunucuyu yeniden başlatır. Sohbetler, modeller ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
+        confirmDescriptionMlx:
+          "Bu Yalnızca sohbet kurulumu GGUF/MLX modellerini çalıştırır. Tam kurulum, bu makinenin GPU'su için PyTorch ekler; bu da eğitimi, dışa aktarmayı, videoyu, safetensors modellerini ve ek görüntü üretme özelliklerini etkinleştirir. Birkaç gigabayt indirir (en az 5 GB disk alanı) ve sunucuyu yeniden başlatır. Sohbetler, modeller ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
         confirmDescriptionCpu:
           "Bu Yalnızca sohbet kurulumu GGUF modellerini çalıştırır. Bu makinede desteklenen bir GPU bulunamadı, bu nedenle tam kurulum CPU için PyTorch ekler; bu da CPU üzerinde eğitimi etkinleştirir. CPU üzerinde eğitim, GPU'ya göre çok daha yavaştır. En az 5 GB disk alanı gerektirir ve sunucuyu yeniden başlatır. Sohbetler, modeller ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
         confirmAction: "Yükselt",
@@ -3435,7 +3439,7 @@ export const tr = {
       rememberParamsPerModelHint:
         "Kapalıyken her model için aynı ayarlar kullanılır.",
       autoCompactHint:
-        "Yerel GGUF ve MLX sohbetleri: çıkarılan turlar dizine eklenir, böylece model bunları arayıp geri getirebilir; sıfırlamada ise sığan kalıcı talimatlar, ortadakiler yerine en eski ve en yeniler korunarak kelimesi kelimesine yeniden alıntılanır. Arşivleme için kaydedilmiş bir sohbet ve vektör dizini gerekir; bunlar yoksa eski turlar atılır. Kullanılabilir VRAM'i değil, ayarladığınız bağlam uzunluğunu kullanır. API modelleri: sağlayıcı mümkün olduğunda eski turları özetler; aksi halde sohbet modelin yayımlanan bağlam penceresine yaklaştıkça en eski turlar atılır.",
+        "Yerel GGUF ve MLX sohbetleri: çıkarılan turlar dizine eklenir, böylece model bunları arayıp geri getirebilir; sıfırlamada ise sığan kalıcı talimatlar, ortadakiler yerine en eski ve en yeniler korunarak kelimesi kelimesine yeniden alıntılanır. Arşivleme için kaydedilmiş bir sohbet ve vektör dizini gerekir; bunlar yoksa eski turlar atılır. Kullanılabilir VRAM'i değil, ayarladığınız bağlam uzunluğunu kullanır. API modelleri: sağlayıcı mümkün olduğunda eski turları özetler; aksi halde sohbet modelin yayımlanan bağlam penceresine yaklaştıkça en eski turlar bağlamdan çıkarılır ve aynı şekilde dizinlenir.",
       pastedTextShortDescription:
         "{count} veya daha fazla karakter içeren yapıştırmalar .txt eki olur.",
       pastedTextOffDescription:
@@ -6444,5 +6448,77 @@ export const tr = {
       inVram: "{amount} VRAM'de",
       inRam: "{amount} RAM'de",
     },
+  },
+  onboarding: {
+    dialogTitle: "Unsloth’u kurun",
+    close: "Kapat",
+    back: "Geri",
+    continue: "Devam",
+    skipSetup: "Kurulumu atla",
+    getStarted: "Başlayın",
+    progress: "Adım {current} / {total}",
+    welcome: {
+      title: "Unsloth’a hoş geldiniz",
+      titleName: "Hoş geldiniz, {name}",
+      body: "Açık modelleri doğrudan bilgisayarınızda çalıştırın ve eğitin.",
+    },
+    profile: {
+      label: "Adınız",
+      placeholder: "Size nasıl hitap edelim?",
+      initials: "Baş harfler",
+      sloth: "Tembel hayvan",
+      upload: "Yükle",
+      uploading: "Yükleniyor…",
+      yours: "Fotoğrafınız",
+      uploadError: "Bu görsel kullanılamadı. JPEG, PNG, WebP veya GIF deneyin.",
+    },
+    look: {
+      title: "Size göre ayarlayın",
+      body: "Bunların hepsini daha sonra Ayarlar’dan değiştirebilirsiniz.",
+      theme: "Tema",
+    },
+    scene: {
+      wallpaper: "Duvar kâğıdı",
+      none: "Yok",
+      upload: "Yükle",
+      error: "Bu görsel kullanılamadı. JPEG, PNG veya WebP deneyin.",
+      solid: "Düz",
+      glassOn: "Cam",
+    },
+    device: {
+      checking: "Bu bilgisayar inceleniyor…",
+      error: "Bu bilgisayar kontrol edilemedi. Yine de sohbete başlayabilirsiniz.",
+      cpuOnly: "GPU bulunamadı, CPU üzerinde çalışıyor",
+      appleSilicon: "Apple Silicon, Metal ile hızlandırılmış",
+      moreGpus: "+{count} tane daha",
+      vram: "{size} GB VRAM",
+      unified: "{size} GB birleşik bellek",
+      ram: "{size} GB RAM",
+      chat: "Sohbet",
+      train: "Eğitim",
+      image: "Görsel üretimi",
+      video: "Video üretimi",
+    },
+    done: {
+      title: "Her şey hazır",
+      titleName: "Her şey hazır, {name}",
+      startChat: "Şimdi indirmek için bir model seçin ve sohbete başlayın.",
+      tour: "Bana etrafı göster",
+      tourBody: "Sohbet için kısa bir rehberli tur.",
+      open: "Sohbete başla",
+    },
+    connect: {
+      title: "Kendi hesaplarınızı kullanın",
+      body: "İsteğe bağlı. Sohbette yerel modellerinizin yanında kullanın.",
+      chatgpt: "ChatGPT",
+      chatgptBody: "ChatGPT planınızla oturum açın.",
+      claude: "Claude",
+      claudeBody: "Bir Anthropic API anahtarı ekleyin.",
+      connect: "Bağlan",
+      connected: "Bağlandı",
+    },
+    settingsLabel: "Hoş geldiniz rehberi",
+    settingsDescription: "İlk kurulumu yeniden gözden geçirin.",
+    settingsOpen: "Aç",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

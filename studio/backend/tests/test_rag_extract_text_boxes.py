@@ -3,6 +3,8 @@
 
 """/api/rag/extract-text ``boxes``: Tesseract's text blocks of an image, opt-in."""
 
+from __future__ import annotations
+
 import io
 import os
 from types import SimpleNamespace

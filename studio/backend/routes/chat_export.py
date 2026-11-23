@@ -8,10 +8,12 @@ import json
 import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -29,6 +31,11 @@ RENDER_TIMEOUT_S = 300
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 # A thread semaphore, taken in the worker thread: an asyncio one binds to a single event loop.
 _render_slots = threading.BoundedSemaphore(2)
+# Own pool: queued exports wait here instead of holding the shared default executor other routes use.
+_render_pool = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "chat-pdf")
+# Each queued export holds its HTML (up to MAX_EXPORT_HTML_CHARS); a person has one or two pending.
+MAX_PENDING_EXPORTS = 16
+_pending_exports = 0
 
 
 class ChatPdfTooLong(Exception):
@@ -68,9 +75,17 @@ def render_chat_pdf_in_child(
 async def export_chat_pdf(
     request: ChatPdfRequest, current_subject: str = Depends(get_current_subject)
 ) -> Response:
+    global _pending_exports
+    if _pending_exports >= MAX_PENDING_EXPORTS:
+        raise HTTPException(
+            status_code = 429, detail = "PDF export is busy. Please try again in a moment."
+        )
+    # Counted on the event loop thread only, so no lock is needed.
+    _pending_exports += 1
     try:
-        content = await asyncio.to_thread(
-            render_chat_pdf_in_child, request.title, request.html, request.model
+        content = await asyncio.get_running_loop().run_in_executor(
+            _render_pool,
+            partial(render_chat_pdf_in_child, request.title, request.html, request.model),
         )
     except ChatPdfTooLong as error:
         raise log_and_http_error(
@@ -78,4 +93,6 @@ async def export_chat_pdf(
         ) from error
     except Exception as error:
         raise log_and_http_error(error, 500, "Could not render the PDF.", log = logger) from error
+    finally:
+        _pending_exports -= 1
     return Response(content = content, media_type = "application/pdf")

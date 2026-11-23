@@ -13663,10 +13663,11 @@ def test_cudnn_benchmark_opt_out_families():
         "ltx-2.5",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
+        "minimax-h3",
     } <= off
     assert all(
         fam.vae_force_fp32
-        or fam.name in ("ltx-2", "ltx-2.5")
+        or fam.name in ("ltx-2", "ltx-2.5", "minimax-h3")
         or fam.name.startswith("hunyuanvideo-1.5")
         or fam.name.startswith("cosmos3-")
         for fam in _FAMILIES
@@ -14349,3 +14350,16 @@ def test_h3_staged_reference_frames_raise_the_first_failure_in_frame_order(tmp_p
     monkeypatch.setattr(Image.Image, "save", failing_save)
     with pytest.raises(OSError, match = "disk full at 3"):
         h3.stage_h3_references(h3.MiniMaxH3References(videos = ((frames, None, None),)), tmp_path)
+
+
+def test_begin_load_refuses_an_unknown_attention_backend_before_loading(monkeypatch):
+    # Like the image backend: inside the load an unknown name only aborted the speed layer and ran it unoptimised.
+    import threading
+
+    started = []
+    monkeypatch.setattr(threading, "Thread", lambda *a, **k: started.append(1))
+    with pytest.raises(ValueError, match = "Unsupported attention_backend"):
+        VideoBackend().begin_load(
+            "Wan-AI/Wan2.2-TI2V-5B-Diffusers", attention_backend = "_native_bogus"
+        )
+    assert started == []

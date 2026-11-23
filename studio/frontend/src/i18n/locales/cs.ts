@@ -2604,12 +2604,16 @@ export const cs = {
         label: "Typ instalace",
         description:
           "Pouze chat (GGUF). Úplná instalace přidává trénování, export, video, modely safetensors a další funkce generování obrázků.",
+        descriptionMlx:
+          "Pouze chat (GGUF/MLX). Úplná instalace přidává trénování, export, video, modely safetensors a další funkce generování obrázků.",
         descriptionCpu:
           "Pouze chat (GGUF). Nebyla nalezena podporovaná GPU, takže úplná instalace přidává trénování na CPU.",
         action: "Upgradovat na úplnou instalaci",
         confirmTitle: "Upgradovat na úplnou instalaci?",
         confirmDescription:
           "Tato instalace Pouze chat spouští modely GGUF. Úplná instalace přidává PyTorch pro GPU tohoto počítače, což umožňuje trénování, export, video, modely safetensors a další funkce generování obrázků. Stáhne několik gigabajtů (potřeba je alespoň 5 GB místa na disku) a restartuje server. Chaty, modely a nastavení zůstanou zachovány. Může to trvat několik minut.",
+        confirmDescriptionMlx:
+          "Tato instalace Pouze chat spouští modely GGUF/MLX. Úplná instalace přidává PyTorch pro GPU tohoto počítače, což umožňuje trénování, export, video, modely safetensors a další funkce generování obrázků. Stáhne několik gigabajtů (potřeba je alespoň 5 GB místa na disku) a restartuje server. Chaty, modely a nastavení zůstanou zachovány. Může to trvat několik minut.",
         confirmDescriptionCpu:
           "Tato instalace Pouze chat spouští modely GGUF. V tomto počítači nebyla nalezena podporovaná GPU, takže úplná instalace přidává PyTorch pro CPU, což umožňuje trénování na CPU. Trénování na CPU je mnohem pomalejší než na GPU. Je potřeba alespoň 5 GB místa na disku a server se restartuje. Chaty, modely a nastavení zůstanou zachovány. Může to trvat několik minut.",
         confirmAction: "Upgradovat",
@@ -3454,7 +3458,7 @@ export const cs = {
       rememberParamsPerModelHint:
         "Když je vypnuto, používá se pro všechny modely stejné nastavení.",
       autoCompactHint:
-        "Místní chaty GGUF a MLX: vyřazené výměny se indexují, aby je model mohl vyhledáním vrátit zpět, a reset doslovně ocituje trvalé pokyny, které se vejdou, přičemž nejstarší a nejnovější mají přednost před prostředními. Archivace vyžaduje uložený chat a vektorový index; bez nich se starší výměny zahodí. Používá délku kontextu, kterou jste nastavili, ne dostupnou VRAM. Modely API: poskytovatel starší výměny shrne, kde to jde, jinak se nejstarší výměny zahodí, když se chat blíží zveřejněnému kontextovému oknu modelu.",
+        "Místní chaty GGUF a MLX: vyřazené výměny se indexují, aby je model mohl vyhledáním vrátit zpět, a reset doslovně ocituje trvalé pokyny, které se vejdou, přičemž nejstarší a nejnovější mají přednost před prostředními. Archivace vyžaduje uložený chat a vektorový index; bez nich se starší výměny zahodí. Používá délku kontextu, kterou jste nastavili, ne dostupnou VRAM. Modely API: poskytovatel starší výměny shrne, kde to jde, jinak se nejstarší výměny vyřadí z kontextu, když se chat blíží zveřejněnému kontextovému oknu modelu, a stejně se zaindexují.",
       pastedTextShortDescription:
         "Vložený text o délce alespoň {count} znaků se změní na přílohu .txt.",
       pastedTextOffDescription: "Vložený text vždy zůstane v poli zprávy.",
@@ -6469,5 +6473,77 @@ export const cs = {
       inVram: "{amount} ve VRAM",
       inRam: "{amount} v RAM",
     },
+  },
+  onboarding: {
+    dialogTitle: "Nastavení Unsloth",
+    close: "Zavřít",
+    back: "Zpět",
+    continue: "Pokračovat",
+    skipSetup: "Přeskočit nastavení",
+    getStarted: "Začít",
+    progress: "Krok {current} z {total}",
+    welcome: {
+      title: "Vítejte v Unsloth",
+      titleName: "Vítejte, {name}",
+      body: "Spouštějte a trénujte otevřené modely přímo na svém počítači.",
+    },
+    profile: {
+      label: "Vaše jméno",
+      placeholder: "Jak vám máme říkat?",
+      initials: "Iniciály",
+      sloth: "Lenochod",
+      upload: "Nahrát",
+      uploading: "Nahrávání…",
+      yours: "Vaše fotka",
+      uploadError: "Tento obrázek nelze použít. Zkuste JPEG, PNG, WebP nebo GIF.",
+    },
+    look: {
+      title: "Přizpůsobte si vzhled",
+      body: "Vše můžete později změnit v Nastavení.",
+      theme: "Motiv",
+    },
+    scene: {
+      wallpaper: "Tapeta",
+      none: "Žádná",
+      upload: "Nahrát",
+      error: "Tento obrázek nelze použít. Zkuste JPEG, PNG nebo WebP.",
+      solid: "Plný",
+      glassOn: "Sklo",
+    },
+    device: {
+      checking: "Zjišťujeme parametry počítače…",
+      error: "Počítač se nepodařilo zkontrolovat. Chatovat můžete i tak.",
+      cpuOnly: "GPU nenalezena, běží na CPU",
+      appleSilicon: "Apple Silicon, akcelerace přes Metal",
+      moreGpus: "+{count} další",
+      vram: "{size} GB VRAM",
+      unified: "{size} GB sdílené paměti",
+      ram: "{size} GB RAM",
+      chat: "Chat",
+      train: "Trénování",
+      image: "Obrázky",
+      video: "Video",
+    },
+    done: {
+      title: "Vše je připraveno",
+      titleName: "Vše je připraveno, {name}",
+      startChat: "Teď si vyberte model ke stažení a začněte chatovat.",
+      tour: "Provést mě",
+      tourBody: "Krátká prohlídka chatu.",
+      open: "Začít chatovat",
+    },
+    connect: {
+      title: "Vlastní účty",
+      body: "Volitelné. Používejte je v chatu vedle místních modelů.",
+      chatgpt: "ChatGPT",
+      chatgptBody: "Přihlaste se se svým plánem ChatGPT.",
+      claude: "Claude",
+      claudeBody: "Přidejte klíč API Anthropic.",
+      connect: "Připojit",
+      connected: "Připojeno",
+    },
+    settingsLabel: "Uvítací průvodce",
+    settingsDescription: "Projít úvodní nastavení znovu.",
+    settingsOpen: "Otevřít",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

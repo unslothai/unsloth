@@ -2405,12 +2405,16 @@ export const de = {
         label: "Installationstyp",
         description:
           "Nur Chat (GGUF). Die vollständige Installation ergänzt Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung.",
+        descriptionMlx:
+          "Nur Chat (GGUF/MLX). Die vollständige Installation ergänzt Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung.",
         descriptionCpu:
           "Nur Chat (GGUF). Es wurde keine unterstützte GPU gefunden, daher ergänzt die vollständige Installation Training auf der CPU.",
         action: "Auf vollständige Installation upgraden",
         confirmTitle: "Auf die vollständige Installation upgraden?",
         confirmDescription:
           "Diese Nur-Chat-Installation führt GGUF-Modelle aus. Die vollständige Installation ergänzt PyTorch für die GPU dieses Rechners und ermöglicht damit Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung. Sie lädt mehrere Gigabyte herunter (mindestens 5 GB Speicherplatz) und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
+        confirmDescriptionMlx:
+          "Diese Nur-Chat-Installation führt GGUF/MLX-Modelle aus. Die vollständige Installation ergänzt PyTorch für die GPU dieses Rechners und ermöglicht damit Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung. Sie lädt mehrere Gigabyte herunter (mindestens 5 GB Speicherplatz) und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
         confirmDescriptionCpu:
           "Diese Nur-Chat-Installation führt GGUF-Modelle aus. Auf diesem Rechner wurde keine unterstützte GPU gefunden, daher ergänzt die vollständige Installation PyTorch für die CPU und ermöglicht damit Training auf der CPU. CPU-Training ist deutlich langsamer als GPU-Training. Sie benötigt mindestens 5 GB Speicherplatz und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
         confirmAction: "Upgraden",
@@ -3232,7 +3236,7 @@ export const de = {
       rememberParamsPerModelHint:
         "Wenn deaktiviert, verwenden alle Modelle dieselben Einstellungen.",
       autoCompactHint:
-        "Lokale GGUF- und MLX-Chats: Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset zitiert die dauerhaft geltenden Anweisungen, die hineinpassen, wortgetreu und mit Vorrang für die ältesten und neuesten vor allem dazwischen. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM. API-Modelle: Der Anbieter fasst ältere Runden zusammen, wo er das unterstützt, sonst werden die ältesten Runden verworfen, sobald der Chat das veröffentlichte Kontextfenster des Modells erreicht.",
+        "Lokale GGUF- und MLX-Chats: Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset zitiert die dauerhaft geltenden Anweisungen, die hineinpassen, wortgetreu und mit Vorrang für die ältesten und neuesten vor allem dazwischen. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM. API-Modelle: Der Anbieter fasst ältere Runden zusammen, wo er das unterstützt, sonst werden die ältesten Runden aus dem Kontext entfernt, sobald der Chat das veröffentlichte Kontextfenster des Modells erreicht, und genauso indexiert.",
       pastedTextShortDescription:
         "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt.",
       pastedTextOffDescription:
@@ -6114,5 +6118,77 @@ export const de = {
       inVram: "{amount} im VRAM",
       inRam: "{amount} im RAM",
     },
+  },
+  onboarding: {
+    dialogTitle: "Unsloth einrichten",
+    close: "Schließen",
+    back: "Zurück",
+    continue: "Weiter",
+    skipSetup: "Einrichtung überspringen",
+    getStarted: "Los geht’s",
+    progress: "Schritt {current} von {total}",
+    welcome: {
+      title: "Willkommen bei Unsloth",
+      titleName: "Willkommen, {name}",
+      body: "Offene Modelle ausführen und trainieren, direkt auf deinem Computer.",
+    },
+    profile: {
+      label: "Dein Name",
+      placeholder: "Wie sollen wir dich nennen?",
+      initials: "Initialen",
+      sloth: "Faultier",
+      upload: "Hochladen",
+      uploading: "Wird hochgeladen…",
+      yours: "Dein Foto",
+      uploadError: "Dieses Bild konnte nicht verwendet werden. Versuche JPEG, PNG, WebP oder GIF.",
+    },
+    look: {
+      title: "Mach es zu deinem",
+      body: "Du kannst alles später in den Einstellungen ändern.",
+      theme: "Design",
+    },
+    scene: {
+      wallpaper: "Hintergrundbild",
+      none: "Keins",
+      upload: "Hochladen",
+      error: "Dieses Bild konnte nicht verwendet werden. Versuche JPEG, PNG oder WebP.",
+      solid: "Deckend",
+      glassOn: "Glas",
+    },
+    device: {
+      checking: "Dieser Computer wird geprüft…",
+      error: "Dieser Computer konnte nicht geprüft werden. Du kannst trotzdem loschatten.",
+      cpuOnly: "Keine GPU gefunden, läuft auf der CPU",
+      appleSilicon: "Apple Silicon, beschleunigt mit Metal",
+      moreGpus: "+{count} weitere",
+      vram: "{size} GB VRAM",
+      unified: "{size} GB gemeinsamer Speicher",
+      ram: "{size} GB RAM",
+      chat: "Chat",
+      train: "Training",
+      image: "Bilder",
+      video: "Videos",
+    },
+    done: {
+      title: "Alles bereit",
+      titleName: "Alles bereit, {name}",
+      startChat: "Wähle als Nächstes ein Modell zum Herunterladen und leg los.",
+      tour: "Zeig mir alles",
+      tourBody: "Eine kurze Tour durch den Chat.",
+      open: "Chat starten",
+    },
+    connect: {
+      title: "Eigene Konten verbinden",
+      body: "Optional. Nutze sie im Chat neben deinen lokalen Modellen.",
+      chatgpt: "ChatGPT",
+      chatgptBody: "Mit deinem ChatGPT-Abo anmelden.",
+      claude: "Claude",
+      claudeBody: "Einen Anthropic-API-Schlüssel hinzufügen.",
+      connect: "Verbinden",
+      connected: "Verbunden",
+    },
+    settingsLabel: "Willkommensanleitung",
+    settingsDescription: "Die Ersteinrichtung noch einmal durchgehen.",
+    settingsOpen: "Öffnen",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

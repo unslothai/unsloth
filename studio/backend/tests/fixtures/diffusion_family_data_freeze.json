@@ -453,8 +453,8 @@
    "vae_fused_encoder": true
   },
   "krea-2": {
-   "cudnn_benchmark": true,
-   "filter_reduction_configs": false,
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
@@ -477,7 +477,7 @@
    "vae_fused_encoder": true
   },
   "minimax-h3": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
@@ -596,7 +596,9 @@
   "wan2.2-ti2v-5b": {
    "cudnn_benchmark": false,
    "filter_reduction_configs": false,
-   "filter_reduction_configs_archs": [],
+   "filter_reduction_configs_archs": [
+    "gfx1151"
+   ],
    "vae_fused_encoder": true
   },
   "z-image": {

@@ -219,7 +219,7 @@ def test_durable_run_creation_hashes_images_off_the_event_loop(monkeypatch):
             {"role": "user", "content": "again"},
         ],
     }
-    monkeypatch.setattr(runs_route, "_sanitize_request", lambda payload: sanitized)
+    monkeypatch.setattr(runs_route, "_sanitize_request", lambda payload, request = None: sanitized)
     seen = {}
     real = runs_route.detach_embedded_images
 

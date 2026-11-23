@@ -76,12 +76,17 @@ from .models._utils import (
     _refuse_model_parallel_export,
     _convert_torchao_model,
     _merged_torchao_config_for_peft_qat,
+    _peft_merged_module_name,
     _peft_untied_lm_head,
     _strip_torchao_fake_quantization,
     lora_relative_to_original_base,
 )
 from .models.mistral_format import raise_if_merging_mistral_format_view
-from .models.inkling2 import raise_if_merging_inkling2
+from .models.inkling2 import (
+    is_inkling2_config,
+    raise_if_merging_inkling2,
+    save_inkling2_merged_16bit,
+)
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from .device_type import clean_gpu_cache
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
@@ -1062,6 +1067,18 @@ def _without_runtime_truncation(
             )
 
 
+@contextmanager
+def _left_padding_side(tokenizer):
+    # Restore even when the write raises: a caught save error must not leave training left-padded.
+    source_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    old_padding_side = source_tokenizer.padding_side
+    source_tokenizer.padding_side = "left"
+    try:
+        yield
+    finally:
+        source_tokenizer.padding_side = old_padding_side
+
+
 def _capture_source_tokenizer_class(
     tokenizer,
     *,
@@ -1531,9 +1548,7 @@ def _restore_tied_weights_keys(originals):
 _TP_IN_PLACE_MERGES = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit")
 
 
-def _refuse_tp_in_place_merge(fn, method, args, kwargs):
-    """merged_4bit merges the LoRA weights into the loaded 4-bit base (merge_and_unload): under tensor parallel
-    only rank 0 would hold that merged model. Refused on every rank (every rank makes the same call)."""
+def _is_in_place_merge(fn, args, kwargs):
     import inspect
 
     try:
@@ -1546,6 +1561,15 @@ def _refuse_tp_in_place_merge(fn, method, args, kwargs):
         isinstance(save_method, str)
         and save_method.lower().strip().replace("-", "_").replace(" ", "_") in _TP_IN_PLACE_MERGES
     ):
+        return save_method
+    return None
+
+
+def _refuse_tp_in_place_merge(fn, method, args, kwargs):
+    """merged_4bit merges the LoRA weights into the loaded 4-bit base (merge_and_unload): under tensor parallel
+    only rank 0 would hold that merged model. Refused on every rank (every rank makes the same call)."""
+    save_method = _is_in_place_merge(fn, args, kwargs)
+    if save_method is not None:
         raise RuntimeError(
             f'Unsloth: `{method}(save_method = "{save_method}")` merges the LoRA weights into the 4-bit base in '
             "place (merge_and_unload). On a tensor parallel model only rank 0 would end up with that merged "
@@ -1678,7 +1702,7 @@ def unsloth_save_model(
             "if you're planning to do multiple saves.\n"
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
-    elif save_method == "merged_4bit_forced":
+    elif save_method in ("merged_4bit_forced", "forced_merged_4bit"):
         save_method = "merged_4bit"
 
     save_pretrained_settings = dict(locals())
@@ -1709,6 +1733,13 @@ def unsloth_save_model(
 
     raise_if_merging_mistral_format_view(model, save_method)
     raise_if_merging_inkling2(model, save_method)
+    if save_method == "merged_16bit" and is_inkling2_config(getattr(model, "config", None)):
+        # The Inkling 2 writer has no rank guard and fixed shard names: only the writing rank runs it.
+        if not is_main_process:
+            return
+        return save_inkling2_merged_16bit(
+            model, tokenizer, save_directory, push_to_hub = push_to_hub, token = token, private = private
+        )
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
             "Unsloth: You must select one of 3 options when saving models:\n"
@@ -1780,14 +1811,9 @@ def unsloth_save_model(
         _model_push = getattr(model, "original_push_to_hub", model.push_to_hub)
         _model_push(**_filter_push_to_hub_kwargs(_model_push, _push_kwargs))
         if tokenizer is not None:
-            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-            old_padding_side = _tokenizer.padding_side
-            _tokenizer.padding_side = "left"
-
-            _tokenizer_push = getattr(tokenizer, "original_push_to_hub", tokenizer.push_to_hub)
-            _tokenizer_push(**_filter_push_to_hub_kwargs(_tokenizer_push, _push_kwargs))
-
-            _tokenizer.padding_side = old_padding_side
+            with _left_padding_side(tokenizer):
+                _tokenizer_push = getattr(tokenizer, "original_push_to_hub", tokenizer.push_to_hub)
+                _tokenizer_push(**_filter_push_to_hub_kwargs(_tokenizer_push, _push_kwargs))
 
         if hasattr(model, "config"):
             print(f"Saved {save_method} model to https://huggingface.co/" + save_directory)
@@ -1858,18 +1884,13 @@ def unsloth_save_model(
         if tokenizer is not None:
             print("Unsloth: Saving tokenizer...", end = "")
 
-            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-            old_padding_side = _tokenizer.padding_side
-            _tokenizer.padding_side = "left"
-
-            with _without_runtime_truncation(
-                tokenizer,
-                tokenizer_save_settings["save_directory"],
-                tokenizer_save_settings.get("filename_prefix"),
-            ):
-                tokenizer.save_pretrained(**tokenizer_save_settings)
-
-            _tokenizer.padding_side = old_padding_side
+            with _left_padding_side(tokenizer):
+                with _without_runtime_truncation(
+                    tokenizer,
+                    tokenizer_save_settings["save_directory"],
+                    tokenizer_save_settings.get("filename_prefix"),
+                ):
+                    tokenizer.save_pretrained(**tokenizer_save_settings)
 
             print(" Done.")
         else:
@@ -2133,35 +2154,30 @@ def unsloth_save_model(
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
 
-        _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-        old_padding_side = _tokenizer.padding_side
-        _tokenizer.padding_side = "left"
-
-        with _without_runtime_truncation(
-            tokenizer,
-            tokenizer_save_settings["save_directory"],
-            tokenizer_save_settings.get("filename_prefix"),
-        ):
-            tokenizer.save_pretrained(**tokenizer_save_settings)
-        _preserve_tokenizer_eos_token(
-            tokenizer,
-            tokenizer_save_settings["save_directory"],
-            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
-        )
-        _restore_source_tokenizer_class(
-            tokenizer,
-            tokenizer_save_settings["save_directory"],
-            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
-            token = tokenizer_save_settings.get("token"),
-            source_class = source_tokenizer_class,
-        )
-        _preserve_repaired_tokenizer_class(
-            tokenizer,
-            tokenizer_save_settings["save_directory"],
-            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
-        )
-
-        _tokenizer.padding_side = old_padding_side
+        with _left_padding_side(tokenizer):
+            with _without_runtime_truncation(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                tokenizer_save_settings.get("filename_prefix"),
+            ):
+                tokenizer.save_pretrained(**tokenizer_save_settings)
+            _preserve_tokenizer_eos_token(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+            )
+            _restore_source_tokenizer_class(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+                token = tokenizer_save_settings.get("token"),
+                source_class = source_tokenizer_class,
+            )
+            _preserve_repaired_tokenizer_class(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+            )
 
         print(" Done.")
     else:
@@ -2659,8 +2675,9 @@ def _convert_into_gguf_directory(
     print_output,
     gguf_directory,
     conversion_staging,
+    intermediate_is_transient = False,
 ):
-    """Convert to GGUF and place the files in `gguf_directory`; without a staging folder the converter writes to the CWD."""
+    """Convert to GGUF and place the files in `gguf_directory`; without a staging folder the converter writes to the CWD. `intermediate_is_transient` says the text GGUF is only the quantizer's input and is deleted afterwards, so it must not replace a file already at its name (a prior BF16 / F16 export)."""
     print("Unsloth: Preparing converter script...")
     with use_local_gguf():
         converter_path, supported_text_archs, supported_vision_archs = (
@@ -2706,12 +2723,36 @@ def _convert_into_gguf_directory(
                 )
 
     os.makedirs(gguf_directory, exist_ok = True)
+    destinations = {
+        fpath: os.path.join(gguf_directory, os.path.basename(fpath)) for fpath in initial_files
+    }
+    if intermediate_is_transient:
+        text_files = [f for f in initial_files if "-mmproj" not in os.path.basename(f).lower()]
+        if any(os.path.lexists(destinations[f]) for f in text_files):
+            destinations.update(_transient_gguf_names(text_files, gguf_directory))
     moved_files = []
     for fpath in initial_files:
-        dst = os.path.join(gguf_directory, os.path.basename(fpath))
+        dst = destinations[fpath]
         _place_gguf_output(fpath, dst)
         moved_files.append(dst)
     return moved_files, is_vlm_update
+
+
+def _transient_gguf_names(text_files, gguf_directory):
+    """Unused names in `gguf_directory` for a throwaway intermediate whose own name is taken. One
+    marker for every shard, ahead of the `-0000k-of-0000n` suffix llama-quantize finds the rest by."""
+    import uuid
+    while True:
+        marker = f".unsloth-intermediate-{uuid.uuid4().hex[:8]}"
+        names = {}
+        for fpath in text_files:
+            match = re.match(r"^(.*?)(-\d{5}-of-\d{5})?\.gguf$", os.path.basename(fpath))
+            stem, split = (
+                (match.group(1), match.group(2) or "") if match else (os.path.basename(fpath), "")
+            )
+            names[fpath] = os.path.join(gguf_directory, f"{stem}{marker}{split}.gguf")
+        if not any(os.path.lexists(dst) for dst in names.values()):
+            return names
 
 
 def _gguf_conversion_staging(gguf_directory):
@@ -3056,6 +3097,9 @@ def save_to_gguf(
             print_output = print_output,
             gguf_directory = gguf_directory,
             conversion_staging = conversion_staging,
+            # Deleted after quantizing (want_full_precision below), so it must never take a prior export's name.
+            intermediate_is_transient = not is_gpt_oss
+            and first_conversion not in quantization_method,
         )
     except BaseException:
         if conversion_staging is not None:
@@ -3745,23 +3789,26 @@ def upload_to_huggingface(
     if file_location is not None:
         hf_api = HfApi(token = token)
 
-        if "/" in file_location:
-            uploaded_location = file_location[file_location.rfind("/") + 1 :]
-        else:
-            uploaded_location = file_location
+        uploaded_location = os.path.basename(file_location)
 
         import glob
 
-        ftevent_files = glob.glob("*out.tfevents*", recursive = True)
+        # Only the export file's own folder, never the whole CWD tree.
+        tfevents_dir = os.path.dirname(file_location) or "."
+        ftevent_files = sorted(
+            path
+            for path in glob.glob(os.path.join(glob.escape(tfevents_dir), "*out.tfevents*"))
+            if os.path.isfile(path)
+        )
         if len(ftevent_files) > 0:
             print(
                 "Unsloth: Uploading tensorboard files... Please wait...",
-                file_location + "*out.tfevents*",
+                os.path.join(tfevents_dir, "*out.tfevents*"),
             )
             for ftevent_file in ftevent_files:
                 hf_api.upload_file(
                     path_or_fileobj = ftevent_file,
-                    path_in_repo = ftevent_file.replace(file_location, ""),
+                    path_in_repo = os.path.basename(ftevent_file),
                     repo_id = save_directory,
                     repo_type = "model",
                     commit_message = "(Trained with Unsloth)",
@@ -3776,18 +3823,25 @@ def upload_to_huggingface(
         )
 
         if create_config:
-            import json
-
-            with open("_temporary_unsloth_config.json", "w", encoding = "utf-8") as file:
-                json.dump({"model_type": model.config.model_type}, file, indent = 4)
-            hf_api.upload_file(
-                path_or_fileobj = "_temporary_unsloth_config.json",
-                path_in_repo = "config.json",
-                repo_id = save_directory,
-                repo_type = "model",
-                commit_message = "(Trained with Unsloth)",
+            import tempfile
+            temp_config = tempfile.NamedTemporaryFile(
+                mode = "w", encoding = "utf-8", suffix = ".json", delete = False
             )
-            os.remove("_temporary_unsloth_config.json")
+            try:
+                with temp_config as file:
+                    json.dump({"model_type": model.config.model_type}, file, indent = 4)
+                hf_api.upload_file(
+                    path_or_fileobj = temp_config.name,
+                    path_in_repo = "config.json",
+                    repo_id = save_directory,
+                    repo_type = "model",
+                    commit_message = "(Trained with Unsloth)",
+                )
+            finally:
+                try:
+                    os.remove(temp_config.name)
+                except OSError:
+                    pass
     return username
 
 
@@ -3884,7 +3938,7 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
     return modelfile.rstrip()
 
 
-def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path: str):
+def _check_ollama_server():
     try:
         init_check = subprocess.run(
             ["curl", "http://localhost:11434"],
@@ -3894,14 +3948,53 @@ def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path
             errors = "replace",
             timeout = 3,
         )
-        if init_check.returncode == 0:
-            print(init_check.stdout.strip())
-        else:
-            print("Ollama Server is not Running")
+    except FileNotFoundError:
+        # No curl (minimal containers): skip the advisory check, `ollama` may still work.
+        return
     except subprocess.TimeoutExpired:
-        return "Ollama Request Timeout"
+        raise RuntimeError(
+            "Unsloth: Timed out reaching the Ollama server at http://localhost:11434. "
+            "Check that `ollama serve` is running and responsive, then try again."
+        ) from None
+    if init_check.returncode == 0:
+        print(init_check.stdout.strip())
+    else:
+        print("Ollama Server is not Running")
 
-    process = subprocess.Popen(
+
+def _run_ollama_command(args: list, description: str):
+    try:
+        process = subprocess.Popen(
+            args,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            bufsize = 1,
+            encoding = "utf-8",
+            errors = "replace",
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"Unsloth: `ollama` is not installed or not on PATH, so `{description}` cannot run. "
+            "Install Ollama and start `ollama serve`, then try again."
+        ) from None
+
+    with process:
+        for line in iter(process.stdout.readline, ""):
+            print(line, end = "")
+            sys.stdout.flush()
+        return_code = process.wait()
+
+    if return_code != 0:
+        raise RuntimeError(
+            f"Unsloth: `{description}` failed with exit code {return_code}; "
+            "see its output above for the reason."
+        )
+
+
+def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path: str):
+    _check_ollama_server()
+    _run_ollama_command(
         [
             "ollama",
             "create",
@@ -3909,65 +4002,18 @@ def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path
             "-f",
             f"{modelfile_path}",
         ],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        bufsize = 1,
-        universal_newlines = True,
-        encoding = "utf-8",
-        errors = "replace",
+        f"ollama create {username}/{model_name}:{tag}",
     )
-
-    for line in iter(process.stdout.readline, ""):
-        print(line, end = "")
-        sys.stdout.flush()
-
-    return_code = process.wait()
-
-    if return_code != 0:
-        print(f"\nMODEL CREATED FAILED WITH RETURN CODE {return_code}")
-    else:
-        print("\nMODEL CREATED SUCCESSFULLY")
+    print("\nMODEL CREATED SUCCESSFULLY")
 
 
 def push_to_ollama_hub(username: str, model_name: str, tag: str):
-    try:
-        init_check = subprocess.run(
-            ["curl", "http://localhost:11434"],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 3,
-        )
-        if init_check.returncode == 0:
-            print(init_check.stdout.strip())
-        else:
-            print("Ollama Server is not Running")
-    except subprocess.TimeoutExpired:
-        return "Ollama Request Timeout"
-
-    process = subprocess.Popen(
+    _check_ollama_server()
+    _run_ollama_command(
         ["ollama", "push", f"{username}/{model_name}:{tag}"],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        bufsize = 1,
-        universal_newlines = True,
-        encoding = "utf-8",
-        errors = "replace",
+        f"ollama push {username}/{model_name}:{tag}",
     )
-
-    for line in iter(process.stdout.readline, ""):
-        print(line, end = "")
-        sys.stdout.flush()
-
-    return_code = process.wait()
-
-    if return_code != 0:
-        print(f"\nMODEL PUBLISHED FAILED WITH RETURN CODE {return_code}")
-    else:
-        print("\nMODEL PUBLISHED SUCCESSFULLY")
+    print("\nMODEL PUBLISHED SUCCESSFULLY")
 
 
 def push_to_ollama(
@@ -5344,6 +5390,8 @@ def unsloth_save_pretrained_gguf(
 
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
+    if _defer_to_main_process(is_main_process, self):
+        return None
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
     # Read before the processor is unwrapped to its tokenizer below.
@@ -5352,8 +5400,6 @@ def unsloth_save_pretrained_gguf(
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA, not a merged model.
     if save_method is not None and str(save_method).lower() == "lora":
-        if not is_main_process:
-            return None
         if push_to_hub:
             raise ValueError(
                 "Unsloth: Please use .push_to_hub_gguf(save_method='lora') instead of "
@@ -5463,82 +5509,85 @@ def unsloth_save_pretrained_gguf(
     old_chat_templates = [
         (obj, getattr(obj, "chat_template", None)) for obj in _tokenizer_objects(tokenizer)
     ]
-    fix_bos_token, _ = fix_tokenizer_bos_token(tokenizer)
 
-    # Resolve the imatrix (download, validate, rename *.gguf_file) up front, so a bad path or an unavailable upstream fails before the expensive merge and never reaches the IQ-quant gate.
-    imatrix_path = _resolve_imatrix_file(self, imatrix_file, token, save_directory)
-
-    # Settle ownership before a byte is written: reclamation may only take files this export made, and afterwards the directory cannot say, since a reused output directory can already hold a finished sharded save transformers neither removes nor distinguishes from ours.
+    # The BOS-stripped template is borrowed only until the save writes it; every exit restores the caller's.
     try:
-        preexisting_weights = frozenset(os.listdir(save_directory))
-    except FileNotFoundError:
-        # Nothing there yet, so everything that appears is this export's own.
-        preexisting_weights = frozenset()
-    except OSError:
-        # Provenance unreadable. Proving nothing, the reclamation takes nothing.
-        preexisting_weights = None
+        fix_bos_token, _ = fix_tokenizer_bos_token(tokenizer)
 
-    is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
-    staged_directory = None
+        # Resolve the imatrix (download, validate, rename *.gguf_file) up front, so a bad path or an unavailable upstream fails before the expensive merge and never reaches the IQ-quant gate.
+        imatrix_path = _resolve_imatrix_file(self, imatrix_file, token, save_directory)
 
-    # The flag holds for both branches that write the weights; the middle branch reuses the user's own checkpoint and clears it, whatever the caller asked for.
-    if is_peft_model:
-        print(f"Unsloth: Merging model weights to {'mxfp4' if is_gpt_oss else '16-bit'} format...")
+        # Settle ownership before a byte is written: reclamation may only take files this export made, and afterwards the directory cannot say, since a reused output directory can already hold a finished sharded save transformers neither removes nor distinguishes from ours.
         try:
-            with _hub_cache_prewarm_disabled(not _gguf_prewarm_ok):
-                unsloth_generic_save(**arguments)
+            preexisting_weights = frozenset(os.listdir(save_directory))
+        except FileNotFoundError:
+            # Nothing there yet, so everything that appears is this export's own.
+            preexisting_weights = frozenset()
+        except OSError:
+            # Provenance unreadable. Proving nothing, the reclamation takes nothing.
+            preexisting_weights = None
 
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to save/merge model: {_describe_exception(e)}"
-                f"{_offloaded_parameter_hint(self)}"
-            ) from e
-    else:
-        # Non-PEFT model: convert the loaded checkpoint in place when it still holds the weights to export.
-        original_path = getattr(self, "_unsloth_modelscope_snapshot", None) or getattr(
-            self.config, "_name_or_path", None
-        )
-        if _gguf_reuses_loaded_checkpoint(self, state_dict):
+        is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
+        staged_directory = None
+
+        # The flag holds for both branches that write the weights; the middle branch reuses the user's own checkpoint and clears it, whatever the caller asked for.
+        if is_peft_model:
             print(
-                f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
+                f"Unsloth: Merging model weights to {'mxfp4' if is_gpt_oss else '16-bit'} format..."
             )
-            # A staged copy, so the BOS-stripped tokenizer never lands in the user's checkpoint.
             try:
-                staged_directory = _stage_reused_checkpoint(original_path, gguf_directory)
-                save_directory = staged_directory
-                # Persist tokenizer fixes (BOS stripping) so the GGUF converter reads the corrected chat template.
-                if tokenizer is not None:
-                    tokenizer.save_pretrained(save_directory)
-            except BaseException:
-                _drop_staged_checkpoint(staged_directory)
-                # The caller keeps its tokenizer: the restore below is never reached.
-                for _template_owner, _old_template in old_chat_templates:
-                    _template_owner.chat_template = _old_template
-                raise
-            # The user's own checkpoint, not an intermediate: without this a save_pretrained_gguf on a tight disk would delete the model it was handed.
-            merge_is_disposable = False
-        else:
-            print("Unsloth: Model is not a PEFT model. Saving directly without LoRA merge...")
-            os.makedirs(save_directory, exist_ok = True)
-            # `gguf_directory` can point anywhere, and freeing bytes on one filesystem does nothing for a quantize pass writing to another: without this the merge could be deleted for a destination it cannot help, data gone and the export still out of space.
-            try:
-                with _internal_mtp_save():
-                    self.save_pretrained(save_directory, state_dict = state_dict)
-                _stitch_mtp_head(self, save_directory)
-                if tokenizer is not None:
-                    tokenizer.save_pretrained(save_directory)
+                with _hub_cache_prewarm_disabled(not _gguf_prewarm_ok):
+                    unsloth_generic_save(**arguments)
+
             except Exception as e:
                 raise RuntimeError(
-                    f"Failed to save model: {_describe_exception(e)}"
+                    f"Failed to save/merge model: {_describe_exception(e)}"
                     f"{_offloaded_parameter_hint(self)}"
                 ) from e
+        else:
+            # Non-PEFT model: convert the loaded checkpoint in place when it still holds the weights to export.
+            original_path = getattr(self, "_unsloth_modelscope_snapshot", None) or getattr(
+                self.config, "_name_or_path", None
+            )
+            if _gguf_reuses_loaded_checkpoint(self, state_dict):
+                print(
+                    f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
+                )
+                # A staged copy, so the BOS-stripped tokenizer never lands in the user's checkpoint.
+                try:
+                    staged_directory = _stage_reused_checkpoint(original_path, gguf_directory)
+                    save_directory = staged_directory
+                    # Persist tokenizer fixes (BOS stripping) so the GGUF converter reads the corrected chat template.
+                    if tokenizer is not None:
+                        tokenizer.save_pretrained(save_directory)
+                except BaseException:
+                    _drop_staged_checkpoint(staged_directory)
+                    raise
+                # The user's own checkpoint, not an intermediate: without this a save_pretrained_gguf on a tight disk would delete the model it was handed.
+                merge_is_disposable = False
+            else:
+                print("Unsloth: Model is not a PEFT model. Saving directly without LoRA merge...")
+                os.makedirs(save_directory, exist_ok = True)
+                # `gguf_directory` can point anywhere, and freeing bytes on one filesystem does nothing for a quantize pass writing to another: without this the merge could be deleted for a destination it cannot help, data gone and the export still out of space.
+                try:
+                    with _internal_mtp_save():
+                        self.save_pretrained(save_directory, state_dict = state_dict)
+                    _stitch_mtp_head(self, save_directory)
+                    if tokenizer is not None:
+                        tokenizer.save_pretrained(save_directory)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to save model: {_describe_exception(e)}"
+                        f"{_offloaded_parameter_hint(self)}"
+                    ) from e
+    finally:
+        # Not gated on fix_bos_token (the dedupe can raise midway); unchanged owners are skipped (read-only properties).
+        for _template_owner, _old_template in old_chat_templates:
+            if getattr(_template_owner, "chat_template", None) != _old_template:
+                _template_owner.chat_template = _old_template
 
     # Until the conversion's own finally, an error here would leave the staged copy in the GGUF folder.
     try:
-        if fix_bos_token:
-            for _template_owner, _old_template in old_chat_templates:
-                _template_owner.chat_template = _old_template
-
         if is_processor:
             tokenizer = tokenizer.tokenizer
 
@@ -5963,7 +6012,51 @@ def _free_merge_if_disk_is_tight(
     return freed
 
 
+def _is_fsdp1(model):
+    try:  # FSDP1 state dict hooks all-gather on every rank
+        from torch.distributed.fsdp import FullyShardedDataParallel
+        return isinstance(model, torch.nn.Module) and any(
+            isinstance(m, FullyShardedDataParallel) for m in model.modules()
+        )
+    except Exception:
+        return False
+
+
+def _defer_to_main_process(is_main_process, model = None):
+    """A non-main rank skips the export, except the FSDP2 writer (any rank of its mesh), which
+    reaches it inside the gather that chose it, and an FSDP1 `model`, whose state dict every rank
+    must join. A function, not an inline import, so callers that snapshot locals() forward no
+    extra name."""
+    if is_main_process or (model is not None and _is_fsdp1(model)):
+        return False
+    from .models.fsdp2_save import fsdp2_gather_active
+
+    return not fsdp2_gather_active()
+
+
+def _ddp_push_on_rank0(method):
+    """Plain DDP merged / GGUF Hub upload: rank 0 alone merges, converts and uploads, the others
+    return None without waiting (as `_tp_collective_save` does for push_to_hub)."""
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            # merged_4bit merges into the live model: every replica runs it, as before.
+            if (
+                _plain_data_parallel_push(self, method, fn, args, kwargs)
+                and _is_in_place_merge(fn, (self, *args), kwargs) is None
+            ):
+                from .models.tp_replica import tp_world_push
+                return tp_world_push(method, lambda: fn(self, *args, **kwargs))
+            return fn(self, *args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
 @_model_parallel_refuses_save("push_to_hub_gguf")
+@_ddp_push_on_rank0("push_to_hub")
 @_fsdp2_export_on_rank0("push_to_hub_gguf", adapter_only = _gguf_lora_only)
 def unsloth_push_to_hub_gguf(
     self,
@@ -5999,7 +6092,7 @@ def unsloth_push_to_hub_gguf(
     _assert_export_target_is_not_base_with_lora_layers(self)
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
-    if not is_main_process:
+    if _defer_to_main_process(is_main_process):
         return None
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA, not a merged model.
@@ -6927,7 +7020,7 @@ def _push_merged_to_hub_revision(save_kwargs):
     from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, LocalEntryNotFoundError
     from unsloth_zoo.saving_utils import get_original_model_id
 
-    if not save_kwargs["is_main_process"]:
+    if _defer_to_main_process(save_kwargs["is_main_process"]):
         return
     token = save_kwargs["token"]
     if token is None:
@@ -6950,8 +7043,15 @@ def _push_merged_to_hub_revision(save_kwargs):
             if not save_kwargs["create_pr"] or error.response.status_code != 403:
                 raise
     with tempfile.TemporaryDirectory(prefix = "unsloth-merged-") as directory:
+        # Past the gate this rank is the writer: the staged save must not skip itself.
         unsloth_generic_save(
-            **{**save_kwargs, "save_directory": directory, "push_to_hub": False, "token": token}
+            **{
+                **save_kwargs,
+                "save_directory": directory,
+                "push_to_hub": False,
+                "token": token,
+                "is_main_process": True,
+            }
         )
         card_path = Path(directory) / "README.md"
         try:
@@ -7347,6 +7447,21 @@ def unsloth_generic_save(
             "if you're planning to do multiple saves.\n"
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
+    if save_method not in (
+        "lora",
+        "merged_16bit",
+        "merged_4bit_forced",
+        "forced_merged_4bit",
+        "mxfp4",
+    ):
+        raise RuntimeError(
+            f"Unsloth: save_method = {save_method!r} is not recognised. You must select one of these options when saving models:\n"
+            '"lora"               ==> This is the fastest and easiest. Just saves LoRA modules.\n'
+            '"merged_16bit"       ==> This merges LoRA weights and saves to float16. Needed for llama.cpp / GGUF.\n'
+            '"merged_4bit_forced" ==> This merges LoRA weights and saves to 4bit. Useful for DPO / inference.\n'
+            '"mxfp4"              ==> This merges LoRA weights into the mxfp4 GPT-OSS base.\n'
+            "save_pretrained_merged also takes the compressed exports, e.g. fp8, nvfp4, torchao_fp8."
+        )
     _refuse_unsaveable_text_core(model, save_method)
 
     # Rebound, not a new local: `locals()` below is forwarded as keywords.
@@ -7398,6 +7513,8 @@ def unsloth_generic_save(
         or revision is not None
         or not isinstance(model, PeftModel)
         or _attached_mtp_head(model) is not None
+        # A separately trained lm_head is likewise written into a local copy before the upload.
+        or ("16bit" in str(save_method) and _untied_trained_vocab(model) is not None)
     ):
         return _push_merged_to_hub_revision(dict(locals()))
 
@@ -7407,13 +7524,13 @@ def unsloth_generic_save(
     if token is None and push_to_hub:
         token = get_token()
 
-    if save_method == "merged_4bit_forced":
+    if save_method in ("merged_4bit_forced", "forced_merged_4bit"):
         save_method = "merged_4bit"
 
     # Full-finetuned models have no adapters to merge, so fall back to save_pretrained, mirroring the torchao and GGUF save paths.
     _is_peft = isinstance(model, PeftModel)
     if not _is_peft:
-        if not is_main_process:
+        if _defer_to_main_process(is_main_process):
             return
 
         _save_kwargs = dict(
@@ -7438,9 +7555,15 @@ def unsloth_generic_save(
             state_dict = model.state_dict()
         _cast_shards = None
         if "16bit" in save_method:
+            # The model's own 16-bit dtype is what its saved config names: fp16 cast to bf16 rounds
+            # 65504 to 65536 (inf when reloaded as fp16), bf16 cast to fp16 writes inf outright.
+            # Only a float32 model falls back to what the hardware supports.
+            _model_dtype = getattr(model, "dtype", None)
             _target_dtype = (
                 torch.float32
                 if _requests_float32(dtype)
+                else _model_dtype
+                if _model_dtype in (torch.float16, torch.bfloat16)
                 else (torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16)
             )
             if (
@@ -7514,11 +7637,8 @@ def unsloth_generic_save(
         except ImportError:
             pass
         if tokenizer is not None:
-            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-            old_padding_side = _tokenizer.padding_side
-            _tokenizer.padding_side = "left"
-            tokenizer.save_pretrained(save_directory)
-            _tokenizer.padding_side = old_padding_side
+            with _left_padding_side(tokenizer):
+                tokenizer.save_pretrained(save_directory)
 
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
     elif _is_adapter_save_method(save_method):
@@ -7549,9 +7669,26 @@ def unsloth_generic_save(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
+    elif save_method == "merged_16bit" and is_inkling2_config(getattr(model, "config", None)):
+        # The generic merge cannot place Inkling 2's LoRA weights (own key names, NVFP4 / MXFP8 experts).
+        # Its writer has no rank guard and fixed shard names: only the writing rank runs it.
+        if is_main_process:
+            save_inkling2_merged_16bit(
+                model,
+                tokenizer,
+                save_directory,
+                push_to_hub = push_to_hub,
+                token = token,
+                private = private,
+                dtype = dtype,
+            )
     else:
         raise_if_merging_mistral_format_view(model, save_method)
         raise_if_merging_inkling2(model, save_method)
+        # merged_4bit merges into the live model (no conversion), so every replica must run it.
+        in_place = save_method == "merged_4bit"
+        if not in_place and _defer_to_main_process(is_main_process, model):
+            return
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
         # An older unsloth_zoo accepts `output_dtype` but still writes the base dtype.
@@ -7573,8 +7710,6 @@ def unsloth_generic_save(
             )
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
 
-        # merged_4bit merges into the loaded (already residual) weights, so it needs no conversion.
-        in_place = save_method in ("merged_4bit", "forced_merged_4bit")
         # Under FSDP2 the gathered packed 4-bit base waits on the CPU: merge it one layer at a time on
         # its GPU first, so the merge below only unloads those layers.
         streamed = []
@@ -7602,6 +7737,9 @@ def unsloth_generic_save(
         if not push_to_hub:
             if _trained_rope_factor is not None and _is_main_rank():
                 _write_trained_gemma_rope(model, save_directory, _trained_rope_factor)
+            _untied_vocab = _untied_trained_vocab(model) if "16bit" in save_method else None
+            if _untied_vocab is not None and _is_main_rank():
+                _untie_merged_checkpoint(save_directory, *_untied_vocab[0], embed = _untied_vocab[1])
             _stitch_mtp_head(model, save_directory)
             _release_layout_for_merged_save(model, save_directory, save_method)
         elif "16bit" in save_method and is_main_process:
@@ -7782,12 +7920,8 @@ def _plain_data_parallel_push(model, method, fn, args, kwargs):
 
     if fsdp2_units(model):
         return False
-    try:  # FSDP1 state dict hooks all-gather on every rank
-        from torch.distributed.fsdp import FullyShardedDataParallel
-        if any(isinstance(m, FullyShardedDataParallel) for m in model.modules()):
-            return False
-    except Exception:
-        pass
+    if _is_fsdp1(model):
+        return False
     return method == "push_to_hub" or bool(
         _fsdp2_save_arguments(fn, model, args, kwargs).get("push_to_hub")
     )
@@ -7827,6 +7961,7 @@ def _fsdp2_merged_gather_options(model, args, kwargs):
 
 
 @_model_parallel_refuses_save("save_pretrained_merged")
+@_ddp_push_on_rank0("save_pretrained")
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
     and _is_adapter_save_method(_merged_save_method(args, kwargs)),
@@ -7992,6 +8127,7 @@ def unsloth_generic_save_pretrained_merged(
 
 # Like save_pretrained_merged: every rank calls it, rank 0 gathers, merges and uploads.
 @_model_parallel_refuses_save("push_to_hub_merged")
+@_ddp_push_on_rank0("push_to_hub")
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
     and _is_adapter_save_method(_merged_save_method(args, kwargs)),
@@ -8202,8 +8338,91 @@ def _torchao_hf_quantizer_attached(model):
         del model.hf_quantizer
 
 
-def _untie_merged_checkpoint(save_directory, lm_head_key, lm_head_weight):
-    """Give a tied merged 16-bit checkpoint the model's own lm_head, so its torchao reload quantizes it apart from the embedding as QAT trained them."""
+def _plain_vocab_weight(module):
+    """The weight a vocab module computes with (embedding LoRA merged in), or None when a linear LoRA or DoRA covers it."""
+    if hasattr(module, "modules_to_save"):
+        if not getattr(module, "disable_adapters", False):
+            for adapter in getattr(module, "active_adapters", None) or []:
+                if adapter in module.modules_to_save:
+                    module = module.modules_to_save[adapter]
+                    break
+            else:
+                module = module.original_module
+        else:
+            module = module.original_module
+    if len(getattr(module, "lora_A", None) or {}):
+        return None
+    # An embedding LoRA keeps its factors in lora_embedding_A / _B: compare against (and write) the merged weight.
+    lora = module if len(getattr(module, "lora_embedding_A", None) or {}) else None
+    while hasattr(module, "base_layer"):
+        module = module.base_layer
+    weight = getattr(module, "weight", None)
+    if not isinstance(weight, torch.Tensor) or not weight.is_floating_point() or weight.is_meta:
+        return None
+    if (
+        lora is not None
+        and not getattr(lora, "merged", False)
+        and not getattr(lora, "disable_adapters", False)
+    ):
+        active = [
+            a for a in (getattr(lora, "active_adapters", None) or []) if a in lora.lora_embedding_A
+        ]
+        if any((getattr(lora, "use_dora", None) or {}).get(a) for a in active):
+            return None
+        try:
+            with torch.no_grad():
+                for adapter in active:
+                    weight = weight + lora.get_delta_weight(adapter).to(
+                        device = weight.device, dtype = weight.dtype
+                    )
+        except Exception:
+            return None
+    return weight
+
+
+def _untied_trained_vocab(model):
+    """((lm_head key, weight), (embed key, weight)) when a tied-config PEFT model trains its embedding and lm_head as
+    separate tensors (`ensure_weight_tying = False` with modules_to_save), else None. The merge writes such a model
+    tied, keeping one of the two, so the other is lost on reload."""
+    if not isinstance(model, PeftModel):
+        return None
+    configs = [getattr(model, "config", None)]
+    configs.append(getattr(configs[0], "text_config", None))
+    if not any(getattr(c, "tie_word_embeddings", False) for c in configs if c is not None):
+        return None
+    try:
+        embed, lm_head = model.get_input_embeddings(), model.get_output_embeddings()
+    except Exception:
+        return None
+    if embed is None or lm_head is None or embed is lm_head:
+        return None
+    if not any(hasattr(m, "modules_to_save") for m in (embed, lm_head)):
+        return None
+    w_embed, w_head = _plain_vocab_weight(embed), _plain_vocab_weight(lm_head)
+    if w_embed is None or w_head is None or w_embed.shape != w_head.shape:
+        return None
+    if w_embed.device == w_head.device and w_embed.data_ptr() == w_head.data_ptr():
+        return None
+    with torch.no_grad():
+        if torch.equal(w_embed, w_head.to(device = w_embed.device, dtype = w_embed.dtype)):
+            return None
+    names = {id(m): _peft_merged_module_name(n) for n, m in model.named_modules()}
+    embed_name, head_name = names.get(id(embed)), names.get(id(lm_head))
+    if not embed_name or not head_name:
+        return None
+    return (head_name + ".weight", w_head), (embed_name + ".weight", w_embed)
+
+
+def _untie_merged_checkpoint(
+    save_directory,
+    lm_head_key,
+    lm_head_weight,
+    embed = None,
+):
+    """Give a tied merged 16-bit checkpoint the model's own lm_head, so its torchao reload quantizes it apart from the embedding as QAT trained them.
+
+    `embed`: (key, weight) of the model's own embedding. The lm_head is then written into the embedding's file at its
+    dtype, and the embedding is rewritten too when the tied merge stored the head in its place."""
     from safetensors.torch import load_file, save_file
 
     config_path = os.path.join(save_directory, "config.json")
@@ -8216,13 +8435,23 @@ def _untie_merged_checkpoint(save_directory, lm_head_key, lm_head_weight):
         if not isinstance(node, dict):
             break
         candidates += [node, node.get("text_config")]
-    tied = [c for c in candidates if isinstance(c, dict) and c.get("tie_word_embeddings")]
+    # The model saved by `embed`'s caller is tied, so a config without the key relies on a default of True (Gemma 2).
+    tied = [
+        c
+        for c in candidates
+        if isinstance(c, dict) and c.get("tie_word_embeddings", embed is not None)
+    ]
     if not tied:
         return
 
     weight = lm_head_weight.detach().to("cpu").contiguous()
     index_path = os.path.join(save_directory, "model.safetensors.index.json")
-    if os.path.exists(index_path):
+    if embed is not None:
+        if not _write_untied_head_beside_embedding(
+            save_directory, index_path, lm_head_key, weight, *embed
+        ):
+            return
+    elif os.path.exists(index_path):
         with open(index_path, encoding = "utf-8") as f:
             index = json.load(f)
         if lm_head_key not in index["weight_map"]:
@@ -8260,6 +8489,55 @@ def _untie_merged_checkpoint(save_directory, lm_head_key, lm_head_weight):
         c["tie_word_embeddings"] = False
     with open(config_path, "w", encoding = "utf-8") as f:
         json.dump(config, f, indent = 2)
+
+
+def _write_untied_head_beside_embedding(
+    save_directory, index_path, lm_head_key, weight, embed_key, embed_weight
+):
+    """Store lm_head in the merged embedding's file at its dtype, restoring the embedding if the tied merge wrote the head there. False (nothing written) when the embedding is not found under `embed_key`."""
+    from safetensors.torch import load_file, save_file
+
+    index = None
+    if os.path.exists(index_path):
+        with open(index_path, encoding = "utf-8") as f:
+            index = json.load(f)
+        shard = index.get("weight_map", {}).get(embed_key)
+    else:
+        files = [
+            f
+            for f in os.listdir(save_directory)
+            if f.endswith(".safetensors") and not f.startswith("adapter_model")
+        ]
+        shard = (
+            "model.safetensors"
+            if "model.safetensors" in files
+            else (files[0] if len(files) == 1 else None)
+        )
+    tensors = load_file(os.path.join(save_directory, shard)) if shard is not None else {}
+    if embed_key not in tensors:
+        logger.warning_once(
+            f"Unsloth: the trained lm_head differs from the embedding, but `{embed_key}` was not found in "
+            f"`{save_directory}`, so the merged model stays tied and keeps only the embedding."
+        )
+        return False
+    path = os.path.join(save_directory, shard)
+    dtype = tensors[embed_key].dtype
+    added = 0 if lm_head_key in tensors else weight.numel() * dtype.itemsize
+    tensors[lm_head_key] = weight.to(dtype).contiguous()
+    embed_weight = embed_weight.detach().to(device = "cpu", dtype = dtype)
+    if not torch.equal(tensors[embed_key], embed_weight):
+        tensors[embed_key] = embed_weight.contiguous()
+    tmp = path + ".unsloth_untie"
+    save_file(tensors, tmp, metadata = {"format": "pt"})
+    del tensors
+    os.replace(tmp, path)
+    if index is not None:
+        index["weight_map"][lm_head_key] = shard
+        if isinstance(index.get("metadata", {}).get("total_size"), int):
+            index["metadata"]["total_size"] += added
+        with open(index_path, "w", encoding = "utf-8") as f:
+            json.dump(index, f, indent = 2)
+    return True
 
 
 def _unsloth_save_torchao_with_given_config(

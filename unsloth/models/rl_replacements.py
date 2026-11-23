@@ -1536,13 +1536,15 @@ def sft_trainer_compute_loss(function_name, function):
                     loss = loss * (self.accelerator.num_processes // max(int(tp_size or 1), 1))
                 aux_loss = getattr(outputs, "aux_loss", None)
                 if getattr(self, "aux_loss_enabled", False) and aux_loss is not None:
+                    # Eval accumulates nothing, and Trainer sets the attribute only inside the training loop (#2464).
                     steps = (
                         self.current_gradient_accumulation_steps
-                        if num_items_in_batch is not None
+                        if num_items_in_batch is not None and getattr(model, "training", True)
                         else 1
                     )
                     loss = loss + self.router_aux_loss_coef * aux_loss / steps
-                if return_outputs:
+                # Unsloth's prediction_step sets UNSLOTH_RETURN_LOGITS=1 only when it keeps the logits (#1801).
+                if return_outputs and os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1":
                     # prediction_step / compute_metrics read logits, which the fused head never builds (as TRL does).
                     with torch.no_grad():
                         outputs = model(**{k: v for k, v in inputs.items() if k != "labels"})
@@ -1597,6 +1599,66 @@ def sft_trainer_compute_loss(function_name, function):
 
 
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
+
+
+# TRL >= 1.15 SFTTrainer.prediction_step no longer calls super(), so it shadowed Unsloth's Trainer.prediction_step:
+# compute_metrics / predict() got the fused CE's EmptyLogits and the eval loss was never detached (trl#8246).
+def sft_trainer_prediction_step(function_name, function):
+    if function_name != "prediction_step" or "super().prediction_step" in function:
+        return function
+
+    def prediction_step(
+        self,
+        model,
+        inputs,
+        prediction_loss_only,
+        ignore_keys = None,
+    ):
+        # TRL's step used the collated labels whatever label_names says; with label_names = [] Unsloth's
+        # step would take its unlabelled branch and read inputs["prompt"].
+        label_names = getattr(self, "label_names", None)
+        relabel = (
+            label_names is not None and len(label_names) == 0 and inputs.get("labels") is not None
+        )
+        if relabel:
+            self.label_names = ["labels"]
+        # TRL's step returned outputs.logits only; Unsloth's keeps every non-loss field (aux_loss, router_logits).
+        captured = []
+        had_own = "compute_loss" in self.__dict__
+        compute_loss = self.compute_loss
+
+        def capture_compute_loss(*args, **kwargs):
+            result = compute_loss(*args, **kwargs)
+            if kwargs.get("return_outputs") and isinstance(result, tuple) and len(result) == 2:
+                outputs = result[1]
+                if isinstance(outputs, dict):
+                    captured.append(outputs.get("logits"))
+                else:
+                    captured.append(getattr(outputs, "logits", None))
+            return result
+
+        if not prediction_loss_only:
+            self.compute_loss = capture_compute_loss
+        try:
+            loss, logits, labels = super().prediction_step(
+                model, inputs, prediction_loss_only, ignore_keys = ignore_keys
+            )
+        finally:
+            if relabel:
+                self.label_names = label_names
+            if not prediction_loss_only:
+                if had_own:
+                    self.compute_loss = compute_loss
+                else:
+                    del self.compute_loss
+        if captured and captured[-1] is not None:
+            logits = captured[-1].detach()
+        return loss, logits, labels
+
+    return inspect.getsource(prediction_step)
+
+
+RL_FUNCTIONS["sft_trainer"].append(sft_trainer_prediction_step)
 
 
 # Route ORPO/CPO row tokenization through the underlying text tokenizer when the processing class is a multimodal processor; CPO reuses this code (#4952).
@@ -4143,6 +4205,9 @@ def _unsloth_vllm_sync_peft_merged(trainer):
         "server" if getattr(trainer, "vllm_client", None) is not None else "colocate"
     )
     is_main = getattr(trainer.accelerator, "is_main_process", True)
+    # TRL creates vllm_client on the main process only; the other ranks have nothing to send.
+    if mode == "server" and not is_main:
+        return None
     llm_model = None
     if mode == "colocate":
         llm_model = trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model
@@ -4166,11 +4231,10 @@ def _unsloth_vllm_sync_peft_merged(trainer):
         if not frozen_sync.keep(name, tensor, param):
             continue
         if mode == "server":
-            if is_main:
-                trainer.vllm_client.update_named_param(name, tensor)
+            trainer.vllm_client.update_named_param(name, tensor)
         elif mode == "colocate":
             llm_model.load_weights([(name, tensor)])
-    if mode == "server" and is_main:
+    if mode == "server":
         trainer.vllm_client.reset_prefix_cache()
     elif mode == "colocate":
         trainer.llm.reset_prefix_cache()
@@ -4640,7 +4704,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     dtype_bytes,
                     self.args.unsloth_logit_chunk_multiplier,
                 )
-                B = total_rows // B
+                # Rows per forward -> split count; floor division would put more rows in one forward than fit.
+                B = max(1, -(-total_rows // B))
                 if _grpo_collective_forwards:
                     # Sized from this rank's sequence length: agree, or the forward counts differ.
                     from unsloth_zoo.rl_replacements import grpo_agree_mini_batch
@@ -4789,6 +4854,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     )
                     if _pg_unsafe is None:
                         _pg_unsafe = set()
+                    if (
+                        _pg_layout is not None
+                        and _pg_layout.flat_ids.shape[1] > batch_size * seq_len
+                    ):
+                        # Over one padded mini-batch's tokens: the chunked loop keeps the mini-batch cap.
+                        _pg_layout = None
                     if _pg_layout is not None and _pg_layout.signature not in _pg_unsafe:
                         _pg_sig = _pg_layout.signature
                         _pg_verified = getattr(
@@ -5201,6 +5272,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 zipped_inputs = []
             else:
                 _pk_hidden = _pk_sel = _pk_result = _pk_ref = None
+                # A declined PrefixGrouper layout (and the deferred forward bound to it) too.
+                _pg_layout = _pg_forward_fn = None
                 # Index buffers of a declined packed batch would otherwise live through the padded loop.
                 _pk_keep = _pk_len = _pk_flat = _pk_pos = _pk_cmask = None
                 _pk_nz_idx = _pk_within = _pk_cstart = _pk_ctgt = _pk_tgt = _pk_ids = _pk_cm = None

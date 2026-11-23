@@ -179,6 +179,7 @@ import {
 import { audioPickSearch } from "../../../audio/route-search.ts";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
 import { modelConfigTarget } from "../../model-config/model-config-handoff";
+import { isServedByMlx } from "../../model-config/per-model-config";
 import { useHasRememberedRunSettings } from "../../model-config/remembered-run-settings";
 import {
   type CommunityModelPolicy,
@@ -252,7 +253,6 @@ import {
 import {
   type CuratedBudget,
   type FormatFilter,
-  cachedRepoIsMlx,
   coerceFormatFilter,
   curatedBudget,
   curatedBudgetText,
@@ -3608,6 +3608,11 @@ const FORMAT_FILTER_LABELS: Record<FormatFilter, string> = {
   npu: "NPU",
 };
 
+const VLLM_CHECKPOINT_QUANTS: ReadonlySet<string> = new Set([
+  "compressed-tensors",
+  "fbgemm_fp8",
+]);
+
 const FORMAT_FILTER_DOTS: Partial<Record<FormatFilter, string>> = {
   gguf: "bg-format-gguf",
   mlx: "bg-format-mlx",
@@ -4471,8 +4476,12 @@ export function HubModelPicker({
   );
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
-  // null is an older backend.
-  const mlxInference = usePlatformStore((s) => s.mlxInference);
+  const chatOnlyMeasured = usePlatformStore(
+    (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
+  );
+  const servesMlx = usePlatformStore((s) =>
+    isServedByMlx(false, s.deviceType, s.chatOnlyReason, s.mlxInference),
+  );
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
   const hostClass = useHostClass();
@@ -4504,9 +4513,9 @@ export function HubModelPicker({
   const chatSupportedCheckpointQuant = useCallback(
     (r: HfModelResult) =>
       isChatSupported(r) ||
-      // Only compressed-tensors: the vLLM engine loads it; fbgemm / fine-grained FP8 stay refused.
+      // Only vLLM loads these; plain fp8 passes on Default.
       (runsCheckpointQuant(r) &&
-        r.quantMethod?.toLowerCase() === "compressed-tensors" &&
+        VLLM_CHECKPOINT_QUANTS.has(r.quantMethod?.toLowerCase() ?? "") &&
         isChatSupported({ ...r, quantMethod: undefined })),
     [isChatSupported, runsCheckpointQuant],
   );
@@ -5398,7 +5407,7 @@ export function HubModelPicker({
             (!chatOnly ||
               Boolean(task) ||
               localModelIsGguf(m) ||
-              (isMac && mlxInference !== false && localModelIsMlx(m))) &&
+              servesMlx) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m) &&
             (!rowFilter ||
@@ -5421,7 +5430,7 @@ export function HubModelPicker({
       loadTimes,
       localQuery,
       chatOnly,
-      mlxInference,
+      servesMlx,
       task,
       catalog,
       activeCatalogArtifactIds,
@@ -5632,8 +5641,8 @@ export function HubModelPicker({
   // Empty-state logic must use this or the picker can go blank.
   const visibleCachedModelRows =
     chatOnly && !task
-      ? isMac && mlxInference === true
-        ? visibleCachedModels.filter(cachedRepoIsMlx)
+      ? servesMlx
+        ? visibleCachedModels
         : []
       : visibleCachedModels;
 
@@ -6218,7 +6227,12 @@ export function HubModelPicker({
         .filter(
           (id) =>
             !chatOnly ||
-            isRecommendableFormat(id, isKnownGgufRepo(id), isMac) ||
+            // Task pickers keep the Mac rule (Whisper runs without MLX); an unmeasured Chat only guess narrows nothing.
+            isRecommendableFormat(
+              id,
+              isKnownGgufRepo(id),
+              isMac && (Boolean(task) || !chatOnlyMeasured || servesMlx),
+            ) ||
             runsCheckpointQuant({ id }),
         )
         .filter(
@@ -6245,6 +6259,9 @@ export function HubModelPicker({
       cachedIdFor,
       searchRowFits,
       isMac,
+      chatOnlyMeasured,
+      servesMlx,
+      task,
       curatedOfferable,
       rowFilter,
       runsCheckpointQuant,

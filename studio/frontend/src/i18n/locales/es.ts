@@ -2400,12 +2400,16 @@ export const es = {
         label: "Tipo de instalación",
         description:
           "Solo chat (GGUF). La instalación completa añade entrenamiento, exportación, vídeo, modelos safetensors y más funciones de generación de imágenes.",
+        descriptionMlx:
+          "Solo chat (GGUF/MLX). La instalación completa añade entrenamiento, exportación, vídeo, modelos safetensors y más funciones de generación de imágenes.",
         descriptionCpu:
           "Solo chat (GGUF). No se ha encontrado una GPU compatible, así que la instalación completa añade entrenamiento en la CPU.",
         action: "Actualizar a la instalación completa",
         confirmTitle: "¿Actualizar a la instalación completa?",
         confirmDescription:
           "Esta instalación de solo chat ejecuta modelos GGUF. La instalación completa añade PyTorch para la GPU de este equipo, lo que habilita el entrenamiento, la exportación, el vídeo, los modelos safetensors y más funciones de generación de imágenes. Descarga varios gigabytes (al menos 5 GB de espacio en disco) y reinicia el servidor. Se conservan las conversaciones, los modelos y los ajustes. Puede tardar varios minutos.",
+        confirmDescriptionMlx:
+          "Esta instalación de solo chat ejecuta modelos GGUF/MLX. La instalación completa añade PyTorch para la GPU de este equipo, lo que habilita el entrenamiento, la exportación, el vídeo, los modelos safetensors y más funciones de generación de imágenes. Descarga varios gigabytes (al menos 5 GB de espacio en disco) y reinicia el servidor. Se conservan las conversaciones, los modelos y los ajustes. Puede tardar varios minutos.",
         confirmDescriptionCpu:
           "Esta instalación de solo chat ejecuta modelos GGUF. No se ha encontrado una GPU compatible en este equipo, así que la instalación completa añade PyTorch para la CPU, lo que habilita el entrenamiento en la CPU. Entrenar en la CPU es mucho más lento que en una GPU. Necesita al menos 5 GB de espacio en disco y reinicia el servidor. Se conservan las conversaciones, los modelos y los ajustes. Puede tardar varios minutos.",
         confirmAction: "Actualizar",
@@ -3223,7 +3227,7 @@ export const es = {
       rememberParamsPerModelHint:
         "Al desactivarlo, todos los modelos usan los mismos ajustes.",
       autoCompactHint:
-        "Chats GGUF y MLX locales: Los turnos expulsados se indexan para que el modelo pueda recuperarlos, y un reinicio cita palabra por palabra las instrucciones permanentes que quepan, dando prioridad a las más antiguas y a las más recientes frente a las intermedias. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto configurada, no la VRAM disponible. Modelos de API: el proveedor resume los turnos antiguos cuando lo admite; si no, se descartan los más antiguos cuando el chat se acerca a la ventana de contexto publicada del modelo.",
+        "Chats GGUF y MLX locales: Los turnos expulsados se indexan para que el modelo pueda recuperarlos, y un reinicio cita palabra por palabra las instrucciones permanentes que quepan, dando prioridad a las más antiguas y a las más recientes frente a las intermedias. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto configurada, no la VRAM disponible. Modelos de API: el proveedor resume los turnos antiguos cuando lo admite; si no, los más antiguos salen del contexto cuando el chat se acerca a la ventana de contexto publicada del modelo y se indexan de la misma forma.",
       pastedTextShortDescription:
         "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt.",
       pastedTextOffDescription:
@@ -6113,5 +6117,77 @@ export const es = {
       inVram: "{amount} en VRAM",
       inRam: "{amount} en RAM",
     },
+  },
+  onboarding: {
+    dialogTitle: "Configurar Unsloth",
+    close: "Cerrar",
+    back: "Atrás",
+    continue: "Continuar",
+    skipSetup: "Omitir configuración",
+    getStarted: "Empezar",
+    progress: "Paso {current} de {total}",
+    welcome: {
+      title: "Te damos la bienvenida a Unsloth",
+      titleName: "Hola, {name}",
+      body: "Ejecuta y entrena modelos abiertos, directamente en tu ordenador.",
+    },
+    profile: {
+      label: "Tu nombre",
+      placeholder: "¿Cómo te llamamos?",
+      initials: "Iniciales",
+      sloth: "Perezoso",
+      upload: "Subir",
+      uploading: "Subiendo…",
+      yours: "Tu foto",
+      uploadError: "No se pudo usar esa imagen. Prueba con JPEG, PNG, WebP o GIF.",
+    },
+    look: {
+      title: "Hazlo tuyo",
+      body: "Puedes cambiarlo todo más tarde en Ajustes.",
+      theme: "Tema",
+    },
+    scene: {
+      wallpaper: "Fondo de pantalla",
+      none: "Ninguno",
+      upload: "Subir",
+      error: "No se pudo usar esa imagen. Prueba con JPEG, PNG o WebP.",
+      solid: "Sólido",
+      glassOn: "Cristal",
+    },
+    device: {
+      checking: "Revisando este ordenador…",
+      error: "No se pudo revisar este ordenador. Aun así puedes empezar a chatear.",
+      cpuOnly: "No se encontró GPU, se ejecuta en la CPU",
+      appleSilicon: "Apple Silicon, acelerado con Metal",
+      moreGpus: "+{count} más",
+      vram: "{size} GB de VRAM",
+      unified: "{size} GB de memoria unificada",
+      ram: "{size} GB de RAM",
+      chat: "Chat",
+      train: "Entrenamiento",
+      image: "Imágenes",
+      video: "Vídeo",
+    },
+    done: {
+      title: "Todo listo",
+      titleName: "Todo listo, {name}",
+      startChat: "Ahora elige un modelo para descargar y empieza a chatear.",
+      tour: "Enséñame cómo funciona",
+      tourBody: "Un breve recorrido guiado por el chat.",
+      open: "Empezar a chatear",
+    },
+    connect: {
+      title: "Usa tus propias cuentas",
+      body: "Opcional. Úsalas en el chat junto a tus modelos locales.",
+      chatgpt: "ChatGPT",
+      chatgptBody: "Inicia sesión con tu plan de ChatGPT.",
+      claude: "Claude",
+      claudeBody: "Añade una clave de API de Anthropic.",
+      connect: "Conectar",
+      connected: "Conectada",
+    },
+    settingsLabel: "Guía de bienvenida",
+    settingsDescription: "Repite la configuración inicial.",
+    settingsOpen: "Abrir",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

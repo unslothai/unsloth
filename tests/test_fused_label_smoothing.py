@@ -172,6 +172,20 @@ def test_not_engaged_outside_training(tmp_path):
     assert model.logits_built == 2
 
 
+def test_opt_out_env_set_after_import_is_honored(tmp_path, monkeypatch):
+    # llama.py imports this module with unsloth, so the flag must be read at dispatch, not import.
+    model = LlamaForCausalLM()
+    trainer = _trainer(_FusedTrainer, model, 0.1, tmp_path)
+    monkeypatch.setenv("UNSLOTH_FUSED_LABEL_SMOOTHING", "0")
+    before = dict(fls.STATS)
+    _loss_and_grads(trainer, model, None)
+    assert fls.STATS["fused"] == before["fused"]
+    assert fls.STATS.get("skip_off", 0) == before.get("skip_off", 0) + 1
+    monkeypatch.setenv("UNSLOTH_FUSED_LABEL_SMOOTHING", "1")
+    _loss_and_grads(trainer, model, None)
+    assert fls.STATS["fused"] == before["fused"] + 1
+
+
 def test_sft_compute_loss_routes_through_fused_label_smoothing():
     source = (ROOT / "unsloth" / "models" / "rl_replacements.py").read_text(encoding = "utf-8")
     body = source[source.index("def sft_trainer_compute_loss(") :]

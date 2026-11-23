@@ -676,6 +676,16 @@ def drained():
     cc.wait_for_saves(timeout = 10.0)
 
 
+_WORKER_THREAD = "unsloth-compile-cache-save"
+
+
+@pytest.fixture
+def no_prior_compiles(monkeypatch):
+    """begin() snapshots torch's artifacts itself when Dynamo holds compiled code (#17110), which an earlier test
+    in the same xdist worker may have left. That call would land in a gated save on the test thread."""
+    monkeypatch.setattr(cc, "_dynamo_entries", lambda: None)
+
+
 def _fake_logger():
     class _L:
         def __init__(self):
@@ -726,7 +736,9 @@ def test_async_save_is_a_noop_on_a_clean_context(monkeypatch, tmp_path, fake_meg
     assert cc.save_async(ctx2) is False
 
 
-def test_worker_serialises_two_queued_saves(monkeypatch, tmp_path, fake_megacache, drained):
+def test_worker_serialises_two_queued_saves(
+    monkeypatch, tmp_path, fake_megacache, drained, no_prior_compiles
+):
     """One save in flight at a time: the second context waits in the queue, untouched."""
     import threading
 
@@ -736,10 +748,10 @@ def test_worker_serialises_two_queued_saves(monkeypatch, tmp_path, fake_megacach
     monkeypatch.delenv(cc._ENV_SYNC, raising = False)
     started = threading.Event()
     release = threading.Event()
-    calls: list[int] = []
+    calls: list[str] = []
 
     def gated_save():
-        calls.append(1)
+        calls.append(threading.current_thread().name)
         started.set()
         release.wait(10)
         return (b"ARTIFACT-BYTES", None)
@@ -761,11 +773,13 @@ def test_worker_serialises_two_queued_saves(monkeypatch, tmp_path, fake_megacach
 
     release.set()
     assert cc.wait_for_saves(timeout = 10.0) is True
-    assert len(calls) == 2
+    assert calls == [_WORKER_THREAD, _WORKER_THREAD]
     assert ctx1.bundle.exists() and ctx2.bundle.exists()
 
 
-def test_redirtied_context_queues_a_second_save(monkeypatch, tmp_path, fake_megacache, drained):
+def test_redirtied_context_queues_a_second_save(
+    monkeypatch, tmp_path, fake_megacache, drained, no_prior_compiles
+):
     """A shape registered WHILE a save runs is not in that bundle, so it must get its own save."""
     import threading
 
@@ -777,10 +791,10 @@ def test_redirtied_context_queues_a_second_save(monkeypatch, tmp_path, fake_mega
 
     started = threading.Event()
     release = threading.Event()
-    saves: list[int] = []
+    saves: list[str] = []
 
     def gated_save():
-        saves.append(1)
+        saves.append(threading.current_thread().name)
         if len(saves) == 1:
             started.set()
             release.wait(10)
@@ -799,7 +813,7 @@ def test_redirtied_context_queues_a_second_save(monkeypatch, tmp_path, fake_mega
 
     release.set()
     assert cc.wait_for_saves(timeout = 10.0) is True
-    assert len(saves) == 2
+    assert saves == [_WORKER_THREAD, _WORKER_THREAD]
     assert ctx.saved is True
     assert json.loads(ctx.manifest_path.read_text())["shapes"] == [[768, 768, 1], [1024, 1024, 1]]
 

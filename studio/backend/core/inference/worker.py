@@ -2846,9 +2846,10 @@ def run_inference_process(
 
             elif cmd_type == "shutdown":
                 logger.info("Shutdown command received, exiting")
+                unload = getattr(backend, "unload_model_for_exit", backend.unload_model)
                 for name in list(backend.models.keys()):
                     try:
-                        backend.unload_model(name)
+                        unload(name)
                     except Exception:
                         pass
                 _send_response(

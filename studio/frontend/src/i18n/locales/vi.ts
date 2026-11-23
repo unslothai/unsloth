@@ -2591,12 +2591,16 @@ export const vi = {
         label: "Loại cài đặt",
         description:
           "Chỉ trò chuyện (GGUF). Bản cài đặt đầy đủ bổ sung huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung.",
+        descriptionMlx:
+          "Chỉ trò chuyện (GGUF/MLX). Bản cài đặt đầy đủ bổ sung huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung.",
         descriptionCpu:
           "Chỉ trò chuyện (GGUF). Không tìm thấy GPU được hỗ trợ, nên bản cài đặt đầy đủ bổ sung huấn luyện trên CPU.",
         action: "Nâng cấp lên bản cài đặt đầy đủ",
         confirmTitle: "Nâng cấp lên bản cài đặt đầy đủ?",
         confirmDescription:
           "Bản cài đặt Chỉ trò chuyện này chạy các mô hình GGUF. Bản cài đặt đầy đủ bổ sung PyTorch cho GPU của máy này, cho phép huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung. Quá trình này tải xuống vài gigabyte (cần ít nhất 5 GB dung lượng ổ đĩa) và khởi động lại máy chủ. Cuộc trò chuyện, mô hình và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
+        confirmDescriptionMlx:
+          "Bản cài đặt Chỉ trò chuyện này chạy các mô hình GGUF/MLX. Bản cài đặt đầy đủ bổ sung PyTorch cho GPU của máy này, cho phép huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung. Quá trình này tải xuống vài gigabyte (cần ít nhất 5 GB dung lượng ổ đĩa) và khởi động lại máy chủ. Cuộc trò chuyện, mô hình và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
         confirmDescriptionCpu:
           "Bản cài đặt Chỉ trò chuyện này chạy các mô hình GGUF. Không tìm thấy GPU được hỗ trợ trên máy này, nên bản cài đặt đầy đủ bổ sung PyTorch cho CPU, cho phép huấn luyện trên CPU. Huấn luyện trên CPU chậm hơn nhiều so với trên GPU. Quá trình này cần ít nhất 5 GB dung lượng ổ đĩa và khởi động lại máy chủ. Cuộc trò chuyện, mô hình và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
         confirmAction: "Nâng cấp",
@@ -3436,7 +3440,7 @@ export const vi = {
       rememberParamsPerModelHint:
         "Khi tắt, dùng cùng một cài đặt cho mọi mô hình.",
       autoCompactHint:
-        "Cuộc trò chuyện GGUF và MLX cục bộ: các lượt bị loại ra được lập chỉ mục để mô hình có thể tìm lại, và khi đặt lại, các chỉ dẫn thường trực vừa chỗ sẽ được trích dẫn lại nguyên văn, ưu tiên giữ phần cũ nhất và mới nhất hơn phần giữa. Việc lưu trữ cần một cuộc trò chuyện đã lưu và chỉ mục vector; nếu không có, các lượt cũ hơn sẽ bị loại bỏ. Dùng độ dài ngữ cảnh bạn đặt, không phải VRAM khả dụng. Mô hình API: nhà cung cấp tóm tắt các lượt cũ hơn khi có thể, nếu không thì các lượt cũ nhất bị loại bỏ khi cuộc trò chuyện gần đạt cửa sổ ngữ cảnh công bố của mô hình.",
+        "Cuộc trò chuyện GGUF và MLX cục bộ: các lượt bị loại ra được lập chỉ mục để mô hình có thể tìm lại, và khi đặt lại, các chỉ dẫn thường trực vừa chỗ sẽ được trích dẫn lại nguyên văn, ưu tiên giữ phần cũ nhất và mới nhất hơn phần giữa. Việc lưu trữ cần một cuộc trò chuyện đã lưu và chỉ mục vector; nếu không có, các lượt cũ hơn sẽ bị loại bỏ. Dùng độ dài ngữ cảnh bạn đặt, không phải VRAM khả dụng. Mô hình API: nhà cung cấp tóm tắt các lượt cũ hơn khi có thể, nếu không thì các lượt cũ nhất bị đưa ra khỏi ngữ cảnh khi cuộc trò chuyện gần đạt cửa sổ ngữ cảnh công bố của mô hình và được lập chỉ mục theo cách tương tự.",
       pastedTextShortDescription:
         "Nội dung dán từ {count} ký tự trở lên sẽ thành tệp đính kèm .txt.",
       pastedTextOffDescription: "Văn bản dán luôn ở lại trong hộp tin nhắn.",
@@ -6447,5 +6451,77 @@ export const vi = {
       inVram: "{amount} trong VRAM",
       inRam: "{amount} trong RAM",
     },
+  },
+  onboarding: {
+    dialogTitle: "Thiết lập Unsloth",
+    close: "Đóng",
+    back: "Quay lại",
+    continue: "Tiếp tục",
+    skipSetup: "Bỏ qua thiết lập",
+    getStarted: "Bắt đầu",
+    progress: "Bước {current}/{total}",
+    welcome: {
+      title: "Chào mừng đến với Unsloth",
+      titleName: "Chào mừng, {name}",
+      body: "Chạy và huấn luyện mô hình mở ngay trên máy tính của bạn.",
+    },
+    profile: {
+      label: "Tên của bạn",
+      placeholder: "Chúng tôi nên gọi bạn là gì?",
+      initials: "Chữ cái đầu",
+      sloth: "Con lười",
+      upload: "Tải lên",
+      uploading: "Đang tải lên…",
+      yours: "Ảnh của bạn",
+      uploadError: "Không thể dùng ảnh đó. Hãy thử JPEG, PNG, WebP hoặc GIF.",
+    },
+    look: {
+      title: "Tùy chỉnh theo ý bạn",
+      body: "Bạn có thể thay đổi mọi thứ sau trong Cài đặt.",
+      theme: "Chủ đề",
+    },
+    scene: {
+      wallpaper: "Hình nền",
+      none: "Không có",
+      upload: "Tải lên",
+      error: "Không thể dùng ảnh đó. Hãy thử JPEG, PNG hoặc WebP.",
+      solid: "Đặc",
+      glassOn: "Kính",
+    },
+    device: {
+      checking: "Đang kiểm tra máy tính này…",
+      error: "Không thể kiểm tra máy tính này. Bạn vẫn có thể bắt đầu trò chuyện.",
+      cpuOnly: "Không tìm thấy GPU, đang chạy trên CPU",
+      appleSilicon: "Apple Silicon, tăng tốc bằng Metal",
+      moreGpus: "+{count} nữa",
+      vram: "{size} GB VRAM",
+      unified: "{size} GB bộ nhớ hợp nhất",
+      ram: "{size} GB RAM",
+      chat: "Trò chuyện",
+      train: "Huấn luyện",
+      image: "Tạo ảnh",
+      video: "Tạo video",
+    },
+    done: {
+      title: "Mọi thứ đã sẵn sàng",
+      titleName: "Mọi thứ đã sẵn sàng, {name}",
+      startChat: "Tiếp theo, hãy chọn một mô hình để tải xuống và bắt đầu trò chuyện.",
+      tour: "Hướng dẫn tôi",
+      tourBody: "Một chuyến tham quan ngắn về Trò chuyện.",
+      open: "Bắt đầu trò chuyện",
+    },
+    connect: {
+      title: "Dùng tài khoản của riêng bạn",
+      body: "Không bắt buộc. Dùng chúng trong trò chuyện cùng các mô hình cục bộ.",
+      chatgpt: "ChatGPT",
+      chatgptBody: "Đăng nhập bằng gói ChatGPT của bạn.",
+      claude: "Claude",
+      claudeBody: "Thêm khóa API Anthropic.",
+      connect: "Kết nối",
+      connected: "Đã kết nối",
+    },
+    settingsLabel: "Hướng dẫn chào mừng",
+    settingsDescription: "Xem lại phần thiết lập ban đầu.",
+    settingsOpen: "Mở",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

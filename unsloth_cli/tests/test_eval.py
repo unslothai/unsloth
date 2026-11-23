@@ -842,6 +842,209 @@ def test_vllm_backend_keeps_default_lora_rank_and_ignores_4bit(vllm_env, tmp_pat
     assert "16-bit" in result.output
 
 
+def _rank_adapter(tmp_path, **config):
+    adapter = tmp_path / "lora"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base", **config})
+    )
+    return adapter
+
+
+@pytest.mark.parametrize(
+    "config, expected",
+    [
+        ({}, None),
+        ({"r": 16}, None),
+        ({"r": 24}, 32),
+        ({"r": 32}, 32),
+        ({"r": 257}, 320),
+        ({"r": 300}, 320),
+        ({"r": 512}, 512),
+    ],
+)
+def test_vllm_backend_rounds_adapter_rank_to_a_supported_value(
+    vllm_env, tmp_path, config, expected
+):
+    result = _run(
+        str(_rank_adapter(tmp_path, **config)),
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    assert result.exit_code == 0, result.output
+    if expected is None:
+        assert "max_lora_rank" not in vllm_env["model_args"]
+    else:
+        assert vllm_env["model_args"]["max_lora_rank"] == expected
+
+
+@pytest.mark.parametrize(
+    "config, rank",
+    [
+        ({"r": 513}, "513"),
+        ({"r": 1024}, "1024"),
+        ({"r": 16, "rank_pattern": {"down_proj": 640}}, "640"),
+    ],
+)
+def test_vllm_backend_rejects_adapter_rank_above_its_limit(vllm_env, tmp_path, config, rank):
+    result = _run(
+        str(_rank_adapter(tmp_path, **config)),
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    assert result.exit_code == 2, result.output
+    assert f"rank {rank}" in result.output and "512" in result.output
+    assert "--backend unsloth" in result.output and "--backend hf" in result.output
+    assert "--format merged-16bit" in result.output
+    assert "model" not in vllm_env
+
+
+@pytest.mark.parametrize(
+    "config, ok",
+    [
+        ({"r": 16, "lora_alpha": 32, "rank_pattern": {}, "alpha_pattern": {}}, True),
+        ({"r": 16, "lora_alpha": 32, "rank_pattern": {"v_proj": 16}}, True),
+        (
+            {
+                "r": 16,
+                "lora_alpha": 32,
+                "rank_pattern": {"v_proj": 64},
+                "alpha_pattern": {"v_proj": 128},
+            },
+            True,
+        ),
+        ({"r": 16, "rank_pattern": {"v_proj": 64}}, True),
+        ({"r": 16, "lora_alpha": 32, "rank_pattern": {"v_proj": 64}}, False),
+        ({"r": 16, "lora_alpha": 32, "alpha_pattern": {"q_proj": 64}}, False),
+        ({"r": 16, "lora_alpha": 32, "use_rslora": True, "rank_pattern": {"v_proj": 64}}, False),
+        (
+            {
+                "r": 16,
+                "lora_alpha": 32,
+                "use_rslora": True,
+                "rank_pattern": {"v_proj": 64},
+                "alpha_pattern": {"v_proj": 64},
+            },
+            True,
+        ),
+    ],
+)
+def test_vllm_backend_rejects_per_module_lora_scale(vllm_env, tmp_path, config, ok):
+    # vLLM applies lora_alpha / r to every module, so rank_pattern / alpha_pattern that change a module's scale score wrong
+    result = _run(
+        str(_rank_adapter(tmp_path, **config)),
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    if ok:
+        assert result.exit_code == 0, result.output
+        assert vllm_env["model"] == "vllm"
+    else:
+        assert result.exit_code == 2, result.output
+        assert "rank_pattern / alpha_pattern" in result.output and "--backend hf" in result.output
+        assert "model" not in vllm_env
+
+
+def _write_lora_header(
+    adapter,
+    modules,
+    rank = 1,
+):
+    # safetensors header only: _adapter_module_names / _adapter_rank never read tensor data
+    header = {
+        f"base_model.model.{m}.lora_{ab}.weight": {
+            "dtype": "F32",
+            "shape": [rank, 8] if ab == "A" else [8, rank],
+            "data_offsets": [0, 4],
+        }
+        for m in modules
+        for ab in "AB"
+    }
+    raw = json.dumps(header).encode()
+    (adapter / "adapter_model.safetensors").write_bytes(
+        len(raw).to_bytes(8, "little") + raw + b"\0" * 4
+    )
+
+
+_ATTN = [f"model.layers.{i}.self_attn.{p}" for i in range(2) for p in ("q_proj", "v_proj")]
+
+
+@pytest.mark.parametrize(
+    "patterns, ok",
+    [
+        # PEFT resolves each pattern against the module name, so different suffix keys hit the same module
+        ({"rank_pattern": {"v_proj": 64}, "alpha_pattern": {"self_attn.v_proj": 128}}, True),
+        (
+            {
+                "rank_pattern": {r"layers\.0\.self_attn\.v_proj": 64},
+                "alpha_pattern": {"v_proj": 128},
+            },
+            False,
+        ),
+        ({"rank_pattern": {"v_proj": 64}, "alpha_pattern": {"mlp.v_proj": 128}}, False),
+        # a pattern no module matches leaves every scale at lora_alpha / r
+        ({"rank_pattern": {"down_proj": 64}}, True),
+    ],
+)
+def test_vllm_backend_resolves_lora_patterns_per_module(vllm_env, tmp_path, patterns, ok):
+    adapter = _rank_adapter(tmp_path, r = 16, lora_alpha = 32, **patterns)
+    _write_lora_header(adapter, _ATTN)
+    result = _run(str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path / "o"))
+    if ok:
+        assert result.exit_code == 0, result.output
+        assert vllm_env["model"] == "vllm"
+    else:
+        assert result.exit_code == 2, result.output
+        assert "rank_pattern / alpha_pattern" in result.output
+        assert "model" not in vllm_env
+
+
+@pytest.mark.parametrize(
+    "config, header_rank, expected",
+    [
+        # no adapted module matches the pattern: every saved module keeps r
+        ({"target_modules": ["q_proj"], "rank_pattern": {"down_proj": 640}}, 16, None),
+        ({"target_modules": ["q_proj"], "rank_pattern": {"down_proj": 640}}, None, None),
+        # an earlier matching key shadows the higher-rank one, as in PEFT
+        ({"rank_pattern": {"q_proj": 32, "self_attn.q_proj": 640}}, 32, 32),
+        # the saved lora_A rows are what vLLM loads
+        ({"rank_pattern": {"q_proj": 64}}, 64, 64),
+        # a fused-expert A stack has E * r rows (128 experts x r 16): the rank is still r
+        ({"target_modules": ["q_proj"]}, 128 * 16, None),
+        # adapter_model.bin: a regex pattern may match full module names that the short targets do not
+        (
+            {
+                "target_modules": ["q_proj"],
+                "rank_pattern": {r"layers\.\d+\.self_attn\.(q|v)_proj": 64},
+            },
+            None,
+            64,
+        ),
+        # adapter_model.bin: an unescaped dot is a regex wildcard, so "q.proj" matches q_proj as in PEFT
+        ({"target_modules": ["q_proj"], "rank_pattern": {"q.proj": 64}}, None, 64),
+    ],
+)
+def test_vllm_backend_reads_the_saved_lora_rank(vllm_env, tmp_path, config, header_rank, expected):
+    adapter = _rank_adapter(tmp_path, r = 16, **config)
+    if header_rank is not None:
+        _write_lora_header(adapter, [m for m in _ATTN if m.endswith("q_proj")], header_rank)
+    result = _run(str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path / "o"))
+    assert result.exit_code == 0, result.output
+    assert vllm_env["model_args"].get("max_lora_rank") == expected
+
+
 def test_vllm_backend_refuses_multi_process(vllm_env, monkeypatch):
     monkeypatch.setenv("WORLD_SIZE", "2")
     result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm")

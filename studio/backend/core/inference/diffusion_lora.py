@@ -792,6 +792,9 @@ _SAFETENSORS_DTYPE_BYTES = {
     "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
 }  # fmt: skip
 _FLUX1_MLP_RATIO = 4
+# Shapes come from the adapter's own header. Real FLUX.1 pieces (hidden 3072, rank 1) add well under 1 MiB in
+# total, so a header claiming more is not a FLUX.1 adapter and is staged as-is instead of padded.
+_FLUX1_MAX_SPLIT_PAD_BYTES = 256 * 1024 * 1024
 
 
 def _read_safetensors_header(path: str) -> tuple[int, dict]:
@@ -859,6 +862,11 @@ def write_flux1_split_complete_copy(src: str, dst: Path) -> bool:
             data_end = max(data_end, int(offsets[1]))
     except (OSError, ValueError, TypeError, IndexError, KeyError):
         return False
+    pad_bytes = sum(
+        _SAFETENSORS_DTYPE_BYTES[dtype] * shape[0] * shape[1] for dtype, shape in extra.values()
+    )
+    if pad_bytes > _FLUX1_MAX_SPLIT_PAD_BYTES:
+        return False
     new_header = dict(header)
     cursor = data_end
     for name, (dtype, shape) in extra.items():
@@ -884,7 +892,11 @@ def write_flux1_split_complete_copy(src: str, dst: Path) -> bool:
                     raise ValueError("truncated safetensors data")
                 fout.write(chunk)
                 remaining -= len(chunk)
-            fout.write(b"\0" * (cursor - data_end))
+            pad = cursor - data_end
+            zeros = b"\0" * min(pad, 1024 * 1024)
+            while pad > 0:
+                fout.write(zeros[: min(pad, len(zeros))])
+                pad -= len(zeros)
         os.replace(tmp, dst)
     except (OSError, ValueError):
         _unlink_quietly(tmp)

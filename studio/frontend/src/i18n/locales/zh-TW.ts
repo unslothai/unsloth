@@ -2469,12 +2469,16 @@ export const zhTW = {
         label: "安裝類型",
         description:
           "僅聊天（GGUF）。完整安裝會加入訓練、匯出、影片、safetensors 模型及更多圖片生成功能。",
+        descriptionMlx:
+          "僅聊天（GGUF/MLX）。完整安裝會加入訓練、匯出、影片、safetensors 模型及更多圖片生成功能。",
         descriptionCpu:
           "僅聊天（GGUF）。找不到支援的 GPU，因此完整安裝會加入 CPU 訓練。",
         action: "升級為完整安裝",
         confirmTitle: "要升級為完整安裝嗎？",
         confirmDescription:
           "此「僅聊天」安裝可執行 GGUF 模型。完整安裝會為這台電腦的 GPU 加入 PyTorch，以啟用訓練、匯出、影片、safetensors 模型及更多圖片生成功能。這會下載數 GB 的資料（至少需要 5 GB 磁碟空間）並重新啟動伺服器。聊天、模型和設定都會保留。此程序可能需要幾分鐘。",
+        confirmDescriptionMlx:
+          "此「僅聊天」安裝可執行 GGUF/MLX 模型。完整安裝會為這台電腦的 GPU 加入 PyTorch，以啟用訓練、匯出、影片、safetensors 模型及更多圖片生成功能。這會下載數 GB 的資料（至少需要 5 GB 磁碟空間）並重新啟動伺服器。聊天、模型和設定都會保留。此程序可能需要幾分鐘。",
         confirmDescriptionCpu:
           "此「僅聊天」安裝可執行 GGUF 模型。這台電腦找不到支援的 GPU，因此完整安裝會加入 CPU 版的 PyTorch，以啟用 CPU 訓練。CPU 訓練比 GPU 訓練慢得多。這需要至少 5 GB 磁碟空間，並會重新啟動伺服器。聊天、模型和設定都會保留。此程序可能需要幾分鐘。",
         confirmAction: "升級",
@@ -3285,7 +3289,7 @@ export const zhTW = {
       projectAttachmentsHint: "可在每個聊天的附件選單中覆寫此設定。",
       rememberParamsPerModelHint: "關閉時，所有模型都使用相同的設定。",
       autoCompactHint:
-        "本機 GGUF 與 MLX 聊天：被移出的對話回合會建立索引，讓模型可以再搜尋回來；重設時會逐字引用放得下的常駐指示，優先保留最舊與最新的部分，而非中間部分。封存需要已儲存的聊天和向量索引；若缺少這些，較舊的回合會被捨棄。使用您設定的上下文長度，而非可用的 VRAM。API 模型：供應商會盡可能摘要較舊的回合，否則在聊天接近模型公布的上下文視窗時，會捨棄最舊的回合。",
+        "本機 GGUF 與 MLX 聊天：被移出的對話回合會建立索引，讓模型可以再搜尋回來；重設時會逐字引用放得下的常駐指示，優先保留最舊與最新的部分，而非中間部分。封存需要已儲存的聊天和向量索引；若缺少這些，較舊的回合會被捨棄。使用您設定的上下文長度，而非可用的 VRAM。API 模型：供應商會盡可能摘要較舊的回合，否則在聊天接近模型公布的上下文視窗時，會移出最舊的回合，並同樣建立索引。",
       pastedTextShortDescription:
         "貼上 {count} 個字元以上的內容時，會轉為 .txt 附件。",
       pastedTextOffDescription: "貼上的文字一律保留在訊息輸入框中。",
@@ -6119,5 +6123,77 @@ export const zhTW = {
       inVram: "{amount} 位於 VRAM",
       inRam: "{amount} 位於 RAM",
     },
+  },
+  onboarding: {
+    dialogTitle: "設定 Unsloth",
+    close: "關閉",
+    back: "返回",
+    continue: "繼續",
+    skipSetup: "略過設定",
+    getStarted: "開始使用",
+    progress: "第 {current} 步，共 {total} 步",
+    welcome: {
+      title: "歡迎使用 Unsloth",
+      titleName: "歡迎，{name}",
+      body: "在你自己的電腦上執行與訓練開放模型。",
+    },
+    profile: {
+      label: "你的名字",
+      placeholder: "我們該怎麼稱呼你？",
+      initials: "縮寫",
+      sloth: "樹懶",
+      upload: "上傳",
+      uploading: "正在上傳…",
+      yours: "你的照片",
+      uploadError: "無法使用這張圖片。請試試 JPEG、PNG、WebP 或 GIF。",
+    },
+    look: {
+      title: "打造你的風格",
+      body: "之後可以隨時在設定中變更。",
+      theme: "主題",
+    },
+    scene: {
+      wallpaper: "桌布",
+      none: "無",
+      upload: "上傳",
+      error: "無法使用這張圖片。請試試 JPEG、PNG 或 WebP。",
+      solid: "實色",
+      glassOn: "玻璃",
+    },
+    device: {
+      checking: "正在檢查這台電腦…",
+      error: "無法檢查這台電腦。你仍然可以開始聊天。",
+      cpuOnly: "找不到 GPU，正在使用 CPU 執行",
+      appleSilicon: "Apple Silicon，由 Metal 加速",
+      moreGpus: "另外 {count} 個",
+      vram: "{size} GB 顯示記憶體",
+      unified: "{size} GB 統一記憶體",
+      ram: "{size} GB 記憶體",
+      chat: "聊天",
+      train: "訓練",
+      image: "圖像生成",
+      video: "影片生成",
+    },
+    done: {
+      title: "一切就緒",
+      titleName: "一切就緒，{name}",
+      startChat: "接下來，選擇一個模型下載並開始聊天。",
+      tour: "帶我看看",
+      tourBody: "聊天功能的簡短導覽。",
+      open: "開始聊天",
+    },
+    connect: {
+      title: "使用你自己的帳戶",
+      body: "選用。在聊天中與本機模型一起使用。",
+      chatgpt: "ChatGPT",
+      chatgptBody: "使用你的 ChatGPT 方案登入。",
+      claude: "Claude",
+      claudeBody: "新增 Anthropic API 金鑰。",
+      connect: "連線",
+      connected: "已連線",
+    },
+    settingsLabel: "歡迎指南",
+    settingsDescription: "重新進行首次設定。",
+    settingsOpen: "開啟",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

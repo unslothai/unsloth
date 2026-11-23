@@ -227,3 +227,16 @@ def test_flux3_pins_the_reduction_filter_and_conv_pick_on_every_arch(monkeypatch
     assert cc.family_filters_reductions(fam) is True
     assert _filter_reaching_compile(monkeypatch, fam) is True
     assert fam.cudnn_benchmark is False
+
+
+# Krea-2 pins on every arch: fresh Studio homes on one A100 rendered one INT8 seed two ways (the compile cache keeps
+# its cold benchmark's reduction configs), and forcing the slowest reduction config reproduced the other image.
+@pytest.mark.parametrize("cap", [(8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0), None])
+def test_krea2_pins_the_reduction_filter_and_conv_pick_on_every_arch(monkeypatch, cap):
+    _on(monkeypatch, cap)
+    fam = _family("krea-2")
+    assert fam.filter_reduction_configs is True
+    assert cc.family_filters_reductions(fam) is True
+    assert _filter_reaching_compile(monkeypatch, fam) is True
+    # cudnn.benchmark decoded one fixed latent 3 ways over 3 fresh L4 homes.
+    assert fam.cudnn_benchmark is False

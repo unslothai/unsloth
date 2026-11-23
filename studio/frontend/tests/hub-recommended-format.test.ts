@@ -185,7 +185,11 @@ test("the chat picker lists FP8 / NVFP4 checkpoints the GPU runs, whatever their
   // Only the quant-method check is waived: an FP8 image model is still not a chat model.
   assert.match(
     picker,
-    /runsCheckpointQuant\(r\) &&\s*r\.quantMethod\?\.toLowerCase\(\) === "compressed-tensors" &&\s*isChatSupported\(\{ \.\.\.r, quantMethod: undefined \}\)/,
+    /runsCheckpointQuant\(r\) &&\s*VLLM_CHECKPOINT_QUANTS\.has\(r\.quantMethod\?\.toLowerCase\(\) \?\? ""\) &&\s*isChatSupported\(\{ \.\.\.r, quantMethod: undefined \}\)/,
+  );
+  assert.match(
+    picker,
+    /VLLM_CHECKPOINT_QUANTS: ReadonlySet<string> = new Set\(\[\s*"compressed-tensors",\s*"fbgemm_fp8",\s*\]\)/,
   );
   assert.match(
     picker,
