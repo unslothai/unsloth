@@ -73,7 +73,6 @@ test("a plain checkpoint the listing already sized costs no file listing; MLX st
 
 test("the Safetensors filter lists plain checkpoints on any host that runs them", () => {
   const { discoverListsCheckpoints } = pickerModel;
-  // isMac, formatFilter, chatOnly, isMlx, servesMlx, chatOnlyKnown
   assert.equal(discoverListsCheckpoints(true, "all", false, false, true, false), true);
   assert.equal(discoverListsCheckpoints(true, "all", false, true, true, false), true);
   assert.equal(discoverListsCheckpoints(false, "all", false, false, false, false), false);
