@@ -72,6 +72,17 @@ def test_allow_oversized_request_still_releases_when_short():
     assert dm.graph_release_fits(_kwargs(7_600, allow_oversized = True), lambda: held) == held
 
 
+@pytest.mark.parametrize("value", ["1", "true"])
+def test_env_oversized_override_releases_like_the_request_flag(monkeypatch, value):
+    """UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE must not skip a release the per-request flag performs."""
+    monkeypatch.setenv(dm.OVERSIZED_GENERATE_ENV, value)
+    held = int(3.3 * GIB)
+    assert dm.image_activation_verdict(**_kwargs(7_600)).overridden
+    assert dm.graph_release_fits(_kwargs(7_600), lambda: held) == held
+    assert dm.graph_release_fits(_kwargs(7_600, allow_oversized = True), lambda: held) == held
+    assert dm.graph_release_fits(_kwargs(7_600), lambda: 64 * MP) == 0
+
+
 @pytest.mark.parametrize("held", [0, -5, 64 * MP])
 def test_no_release_when_held_pool_cannot_make_it_fit(held):
     assert dm.graph_release_fits(_kwargs(7_600), lambda: held) == 0
