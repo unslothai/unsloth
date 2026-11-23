@@ -404,7 +404,9 @@ def summary_chunks(
 
 
 def summary_first_line_timeout(prompt_tokens: Optional[int]) -> float:
-    return max(SUMMARY_FIRST_LINE_TIMEOUT_S, (prompt_tokens or 0) / SUMMARY_MIN_PREFILL_TOKENS_PER_S)
+    return max(
+        SUMMARY_FIRST_LINE_TIMEOUT_S, (prompt_tokens or 0) / SUMMARY_MIN_PREFILL_TOKENS_PER_S
+    )
 
 
 async def collect_summary(
