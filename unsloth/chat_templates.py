@@ -2096,11 +2096,9 @@ gptoss_template = \
     {%- if developer_message %}
         {{- "# Instructions\n\n" }}
         {{- developer_message }}
+        {{- "\n\n" }}
     {%- endif %}
     {%- if tools -%}
-        {%- if developer_message %}
-            {{- "\n\n" }}
-        {%- endif %}
         {{- "# Tools\n\n" }}
         {{- render_tool_namespace("functions", tools) }}
     {%- endif -%}
