@@ -317,6 +317,27 @@ def test_request_estimate_declines_uncached_generation():
     assert F._generate_request_bytes(model, (ids,), {}) is None
 
 
+def test_request_estimate_counts_dense_padding_mask():
+    """A padded prompt cannot elide the SDPA mask, so prefill holds a dense [batch, 1, prompt, keys]
+    mask plus its construction copies; an all-ones mask adds nothing."""
+    config = types.SimpleNamespace(
+        num_hidden_layers = 2, hidden_size = 64, num_attention_heads = 4, num_key_value_heads = 2,
+        head_dim = 16, intermediate_size = 128, vocab_size = 1000, torch_dtype = torch.bfloat16,
+    )  # fmt: skip
+    model = types.SimpleNamespace(config = config, generation_config = None)
+    ids = torch.zeros(2, 4096, dtype = torch.long)
+    ones = torch.ones(2, 4096, dtype = torch.long)
+    padded = ones.clone()
+    padded[0, :100] = 0
+
+    def estimate(**kw):
+        return F._generate_request_bytes(model, (ids,), {"max_new_tokens": 16, **kw})
+
+    assert estimate(attention_mask = ones) == estimate()
+    mask_bytes = 2 * 4096 * 4096 * (3 * 2 + 2)
+    assert abs(estimate(attention_mask = padded) - estimate() - 1.25 * mask_bytes) <= 1
+
+
 def _qwen_like(**extra):
     config = types.SimpleNamespace(
         num_hidden_layers = 28, hidden_size = 1536, num_attention_heads = 12, num_key_value_heads = 2,

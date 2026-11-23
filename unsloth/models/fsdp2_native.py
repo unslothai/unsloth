@@ -2745,6 +2745,17 @@ def _generate_request_bytes(model, args, kwargs):
         attn = getattr(config, "_attn_implementation", None)
         if attn == "eager" or pick("output_attentions"):
             act += batch * heads * prompt * (cached + prompt) * (2 * width + 4)
+        # Prefill builds a dense [batch, 1, prompt, keys] mask (_prepare_4d_causal_attention_mask_for_sdpa)
+        # unless it can be elided: an all-ones 2D mask, no cached history and keys inside the window.
+        # Count the mask and its construction copies (expanded, inverted, filled) plus bool temporaries.
+        mask = kwargs.get("attention_mask")
+        keys = cached + prompt
+        window = getattr(config, "sliding_window", None)
+        dense = isinstance(mask, torch.Tensor) and (mask.dim() != 2 or not bool(mask.all()))
+        dense = dense or (cached > 0 and prompt > 1)
+        dense = dense or (isinstance(window, int) and window > 0 and keys >= window - 1)
+        if dense:
+            act += batch * prompt * keys * (3 * width + 2)
         # Mixture of experts: each token is copied to its top-k experts (input, gate / up / activation and
         # output per copy) next to the float32 router logits.
         experts = 0
