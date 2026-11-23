@@ -55,7 +55,6 @@ export const MODES: {
   { value: "dark", label: "settings.appearance.theme.dark", icon: Moon02Icon },
 ];
 
-// One flavour per family, so the row reads as a range rather than near-duplicates.
 const SWATCHES: ColorThemeId[] = [
   "standard",
   "matcha",
@@ -359,7 +358,6 @@ function Wallpapers() {
   );
 }
 
-// The same control as Settings' Light / Dark / System (ThemeSegmented), so the pair reads as one family.
 function GlassSegmented({
   glass,
   onChange,

@@ -16,7 +16,6 @@ export const useOnboardingStore = create<OnboardingState>()((set) => ({
   close: () => set({ pages: null }),
 }));
 
-/** Settings replays every page, whatever the account has seen. */
 export function openOnboarding(): void {
   useOnboardingStore.getState().show([...ONBOARDING_PAGES]);
 }

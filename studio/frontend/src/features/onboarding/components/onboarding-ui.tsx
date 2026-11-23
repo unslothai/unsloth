@@ -37,7 +37,6 @@ export function Mascot({
   );
 }
 
-/** Rows separated by space alone. */
 export function Group({
   children,
   className,

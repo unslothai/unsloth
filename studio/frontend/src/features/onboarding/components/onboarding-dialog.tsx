@@ -45,7 +45,6 @@ function whenReady(attempt: () => boolean, timeoutMs = 3000): void {
   window.setTimeout(tick, 120);
 }
 
-/** Drawn once by the frame, so the bar holds still while the steps change under it. */
 function ProgressBar({
   pages,
   page,

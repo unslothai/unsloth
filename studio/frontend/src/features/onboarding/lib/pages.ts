@@ -8,7 +8,6 @@ export const ONBOARDING_PAGES = ["welcome", "look", "done"] as const;
 
 export type OnboardingPageId = (typeof ONBOARDING_PAGES)[number];
 
-/** Bookends are never shown on their own. */
 const BOOKENDS: ReadonlySet<OnboardingPageId> = new Set(["welcome", "done"]);
 
 export type OnboardingRecord = {
@@ -42,7 +41,6 @@ export function decideOnboarding(record: OnboardingRecord): OnboardingDecision {
   return { kind: "show", pages: [...pages, ...unseen, "done"] };
 }
 
-/** The guided tour the finish button can start, from features/tour/lib/tour-routes.ts. */
 export const CHAT_TOUR = "chat";
 
 /** The greeting addresses the first word, as useEffectiveProfile does. */
