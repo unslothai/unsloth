@@ -43,13 +43,16 @@ const NAME_ARCHITECTURES: [RegExp, string][] = [
   [/(^|[^a-z0-9])lfm2/i, "lfm2"],
 ];
 
-/** The architecture, else the one a model's name gives: a local GGUF is not read before converting.
- *  Only the last path segment counts, so a parent folder never names another family. */
+// The last path segment: a local GGUF's id is its path, and a parent folder names nothing about it.
+function leafName(name?: string | null): string {
+  return (name ?? "").trim().split(/[\\/]/).pop() ?? "";
+}
+
+/** The architecture, else the one a model's name gives: a local GGUF is not read before converting. */
 export function q4nxArchitecture(architecture?: string | null, name?: string | null): string | null {
   const arch = architecture?.trim().toLowerCase();
   if (arch) return arch;
-  const leaf = (name ?? "").trim().split(/[\\/]/).pop() ?? "";
-  return NAME_ARCHITECTURES.find(([re]) => re.test(leaf))?.[1] ?? null;
+  return NAME_ARCHITECTURES.find(([re]) => re.test(leafName(name)))?.[1] ?? null;
 }
 
 /** The quant that packs directly for an architecture, or null when it is not known. */
@@ -57,7 +60,7 @@ export function q4nxFitQuant(architecture?: string | null, name?: string | null)
   const arch = q4nxArchitecture(architecture, name);
   if (!arch) return null;
   // The q4k converter resolves a Qwen3.5 named Omni to qwen3.5_omni.json, which reads Q4_1.
-  if (arch === "qwen35" && /omni/i.test(name ?? "")) return "q4_1";
+  if (arch === "qwen35" && /omni/i.test(leafName(name))) return "q4_1";
   if (Q4K_ARCHITECTURES.includes(arch)) return "q4_k_m";
   return Q4_0_ARCHITECTURES.includes(arch) ? "q4_0" : "q4_1";
 }
