@@ -15,6 +15,7 @@ import pytest
 from core.inference import diffusion_int8_cutlass as cut
 
 torch = pytest.importorskip("torch")
+_REAL_PROBE_TILE = cut._probe_tile
 
 
 class _Store:
@@ -149,3 +150,21 @@ def test_a_real_namespace_misses_on_another_fingerprint(monkeypatch, tmp_path):
         ).get("cuda:0", "tiles|80")
         is None
     )
+
+
+def test_an_oom_the_allocator_stats_never_count_is_not_persisted(env, monkeypatch):
+    """Under PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync a probe allocation's out-of-memory error leaves num_ooms
+    at 0 (that allocator fills none of the native stats), so the repeated failure looked like a real one and the empty
+    verdict persisted: every later process on that card skipped the CUTLASS tiles. The probe's own OOM keeps it from
+    persisting."""
+    store, probes, _ = env
+    monkeypatch.setattr(cut, "_probe_tile", _REAL_PROBE_TILE)
+    monkeypatch.setattr(cut, "has_kernel", lambda *a, **k: True)
+    monkeypatch.setattr(cut, "_scale_dtypes", lambda fam: ((torch.float32, torch.float32),))
+
+    def _full_card(*a, **k):
+        raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 MiB")
+
+    monkeypatch.setattr(torch, "randint", _full_card)
+    assert cut.probed_tiles(0) == ()  # this process keeps the conservative verdict
+    assert store.table == {}
