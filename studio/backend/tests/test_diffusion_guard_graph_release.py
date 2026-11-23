@@ -257,6 +257,23 @@ def test_releasable_bytes_count_only_the_handles_own_block_pools(monkeypatch):
     assert bg.pool_bytes(1) == 7 * GIB  # the process-wide reading the guard used to credit
 
 
+def test_releasable_bytes_include_a_whole_step_graphs_block_fallback(monkeypatch):
+    """A whole-step graph that fell back to per-block graphs keeps them on fallback_handle; reset() frees them."""
+    import weakref
+
+    from core.inference import diffusion_block_graph as bg
+    from core.inference import diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(cg, "_LIVE_WRAPPERS", weakref.WeakSet())
+    monkeypatch.setattr(bg, "_LIVE", weakref.WeakSet())
+    blocks = bg._Shared(0)
+    blocks.pool_bytes = 2 * GIB
+    fallback = types.SimpleNamespace(_all_shared = lambda: [blocks])
+    outer = types.SimpleNamespace(fallback_handle = fallback)
+    assert cg.releasable_pool_bytes((outer,), 0) == 2 * GIB
+    assert cg.releasable_pool_bytes((types.SimpleNamespace(fallback_handle = None),), 0) == 0
+
+
 def test_guard_reads_the_pipelines_own_card(monkeypatch):
     monkeypatch.delenv(dm.GUARD_RELEASE_GRAPHS_ENV, raising = False)
     h = _Harness(monkeypatch)

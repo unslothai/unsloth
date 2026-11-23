@@ -1065,6 +1065,16 @@ def releasable_pool_bytes(handles: Any, device: Optional[int] = None) -> int:
     whole-step pools only these handles record into (another live wrapper, such as a co-resident video pipeline's,
     keeps a shared pool alive) and the block-graph pools these handles own. 0 when unreadable."""
     handles = tuple(handles or ())
+    # reset() also frees a whole-step graph's per-block fallback, so its block pools count too
+    nested = []
+    pending = list(handles)
+    while pending:
+        h = pending.pop()
+        if h is None or any(h is seen for seen in nested):
+            continue
+        nested.append(h)
+        pending.append(getattr(h, "fallback_handle", None))
+    handles = tuple(nested)
     own = {id(h) for h in handles}
     mine: set = set()
     others: set = set()
