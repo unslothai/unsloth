@@ -81,7 +81,7 @@ def test_scoring_refuses_before_its_first_forward_and_agrees_on_the_mini_batch()
     source = _scoring_source()
     refuse = source.index(f"_grpo_collective_forwards = {HELPER}(self, model)")
     assert refuse < source.index("unwrapped_model(")
-    tuned = source.index("B = total_rows // B")
+    tuned = source.index("B = max(1, -(-total_rows // B))")
     agree = source.index("B = grpo_agree_mini_batch(B, input_ids.device)")
     assert refuse < tuned < agree < source.index("B = self.args.unsloth_grpo_mini_batch")
     assert "if _grpo_collective_forwards:" in source[tuned:agree]

@@ -687,7 +687,7 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         )
     unsloth_grpo_mini_batch : Optional[int] = field(
         default = None,
-        metadata = {{'help': 'Mini batch size for GRPO hidden state accumulation. Default is None unless user defines it.'}},
+        metadata = {{'help': 'Number of splits of each GRPO batch for hidden state accumulation (each forward takes ceil(rows / splits) rows). Default None sizes it from free memory.'}},
     )
     {max_seq_length_pre}
     def __init__({RLConfig_arguments},

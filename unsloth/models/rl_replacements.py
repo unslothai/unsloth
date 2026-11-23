@@ -4687,7 +4687,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             forward_dtype = (
                 self._autocast_dtype if getattr(self, "_autocast_enabled", True) else lm_head.dtype
             )
-            dtype_bytes = 16 if forward_dtype in [torch.float16, torch.bfloat16] else 32
+            dtype_bytes = 2 if forward_dtype in [torch.float16, torch.bfloat16] else 4
             total_rows = input_ids.shape[0]
             seq_len = input_ids.shape[1]
             hidden_dim = lm_head.shape[1]
@@ -4702,7 +4702,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     dtype_bytes,
                     self.args.unsloth_logit_chunk_multiplier,
                 )
-                B = total_rows // B
+                # Rows per forward -> split count; floor division would put more rows in one forward than fit.
+                B = max(1, -(-total_rows // B))
                 if _grpo_collective_forwards:
                     # Sized from this rank's sequence length: agree, or the forward counts differ.
                     from unsloth_zoo.rl_replacements import grpo_agree_mini_batch
