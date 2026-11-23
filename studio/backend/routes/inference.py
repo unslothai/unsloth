@@ -485,6 +485,41 @@ def _clamp_finish_reason(value) -> str:
     )
 
 
+def _recover_cut_thought(payload) -> Optional[tuple[str, bool]]:
+    """When this thread's previous reply ended in a thought the window cut, compact instead of
+    resuming it: drop the cut partial, force the reset /compact does, and archive the thought for
+    search_conversation. Returns (note for the system prompt, searchable), or None."""
+    if getattr(payload, "context_overflow", None) in ("error", "truncate_middle"):
+        return None
+    from core.inference import cut_thought
+
+    thread_id = getattr(payload, "thread_id", None)
+    thought = cut_thought.take(thread_id)
+    if thought is None:
+        return None
+    messages = list(getattr(payload, "messages", None) or [])
+    if (
+        getattr(payload, "continue_final_message", None)
+        and _continue_final_message(payload, thought = True)
+        and not _continue_final_message(payload)
+    ):
+        # The automatic continuation resends the cut thought to be resumed; it is what cannot fit.
+        payload.messages = messages[:-1]
+        payload.continue_final_message = False
+    payload.compact_context = True
+    payload.context_overflow = "truncate_oldest"
+    from state.tool_policy import conversation_recall_allowed
+
+    searchable = bool(
+        cut_thought.archive(thread_id, thought)
+        and conversation_recall_allowed()
+        and _checkpoint_needs_search(payload)
+    )
+    return (
+        cut_thought.NOTE_SEARCHABLE if searchable else cut_thought.NOTE_NOT_SEARCHABLE
+    ), searchable
+
+
 def _continue_final_message(payload, *, thought: bool = False) -> bool:
     """Resume the trailing assistant turn, or start a new turn if none is resumable; thought also resumes a reasoning-only turn (llama-server, MLX)."""
     if not getattr(payload, "continue_final_message", None):
@@ -34166,6 +34201,9 @@ async def produce_openai_chat_completions(
             raise _reject(exc.status_code, exc.detail)
         _pre_parsed = None
 
+    # A thought the window cut on this thread's previous reply: compact rather than resume it.
+    _cut_recovery = _recover_cut_thought(payload) if using_gguf else None
+
     # ── Parse messages (handles multimodal content parts) ─────
     # Reuse the pre-hook parse when an auto-switch already did it; otherwise parse the messages here.
     if _pre_parsed is not None:
@@ -34177,6 +34215,9 @@ async def produce_openai_chat_completions(
     if using_gguf and not _has_system_turn(payload.messages):
         # Ollama applies a Modelfile SYSTEM only when the request has no system turn of its own.
         system_prompt = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
+    if _cut_recovery is not None:
+        # This request only: the next one rebuilds its system prompt without it.
+        system_prompt = f"{(system_prompt or '').rstrip()}\n\n{_cut_recovery[0]}".strip()
     # applied once so both backends inherit it, with or without tools, and never state it twice.
     _user_system_prompt = system_prompt
     # What renders through the processor template; the MCP scan runs off-loop (12 MB envelope).
@@ -34343,7 +34384,11 @@ async def produce_openai_chat_completions(
             not use_tools
             and not _tool_loop_unusable
             and llama_backend.supports_tools
-            and _checkpoint_recall_may_enable_tools(payload)
+            and (
+                _checkpoint_recall_may_enable_tools(payload)
+                # The cut thought is archived, so the note's search_conversation is there to call.
+                or (_cut_recovery is not None and _cut_recovery[1])
+            )
         ):
             use_tools = True
 
@@ -35461,6 +35506,8 @@ async def produce_openai_chat_completions(
                 # Tell the epoch gate tools are withheld; it cannot see that from process policy.
                 tools_withheld = _tool_loop_unusable,
                 chat_template_kwargs = _extra_chat_template_kwargs(payload),
+                # Once per thread: a recovery whose own thought is cut ends as before.
+                record_cut_thought = _cut_recovery is None,
             )
 
         _gguf_sentinel = object()

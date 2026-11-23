@@ -50,6 +50,8 @@ _TRUNCATION_MARKER = " ..."
 _MAX_TOOL_RESULT_CHARS = 4000
 # Tool arguments are usually short; the cap only stops a pathological blob dominating.
 _MAX_TOOL_ARGS_CHARS = 1000
+# The document a thought cut by the context window is archived as (core.inference.cut_thought).
+_CUT_THOUGHT_DOCUMENT = "earlier turn (thinking)"
 # Over-fetch before the branch filter so stale abandoned-branch turns cannot starve live hits.
 _BRANCH_FILTER_OVERFETCH = 4
 # Long abandoned branches can fill any fixed window, so widen and re-ask, up to this bound: a chat request, not a crawl.
@@ -2194,9 +2196,13 @@ def _document_on_live_branch(
         ).fetchall()
         # NULL for archives predating the column, which fall back to counting labels.
         row = conn.execute(
-            "SELECT archive_messages FROM documents WHERE id = ?", (document_id,)
+            "SELECT archive_messages, filename FROM documents WHERE id = ?", (document_id,)
         ).fetchone()
         message_count = row["archive_messages"] if row else None
+        if row is not None and row["filename"] == _CUT_THOUGHT_DOCUMENT:
+            # A cut thought is never in the branch text, which drops reasoning; it is this thread's own.
+            cache[document_id] = True
+            return True
     except Exception:
         # Never fail a recall on the strictness pass: fall back to what the candidate chunk itself said.
         cache[document_id] = True

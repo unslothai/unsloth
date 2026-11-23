@@ -2360,38 +2360,6 @@ _RESPAWN_REAP_GRACE_S = 1.0
 _GPU_OOM_HEADROOM_STEP_MIB = 1024.0
 _GPU_OOM_HEADROOM_MAX_STRIKES = 3
 
-# Closing a thought the window cut: tokens dropped from its end, and the least room worth answering in.
-_CUT_THOUGHT_BACKTRACK_TOKENS = 8
-_MIN_ANSWER_TOKENS_AFTER_THOUGHT = 64
-
-
-def _merge_attempt_metadata(first: dict, last: dict) -> dict:
-    """Usage and timings of both attempts, with the last attempt's finish reason."""
-    usage = dict(last.get("usage") or {})
-    # The context meter reads this; the window holds only the last request, not both.
-    if "context_tokens" not in usage and usage.get("prompt_tokens"):
-        usage["context_tokens"] = int(usage["prompt_tokens"]) + int(
-            usage.get("completion_tokens") or 0
-        )
-    for key in ("completion_tokens", "total_tokens"):
-        spent = (first.get("usage") or {}).get(key)
-        if spent:
-            usage[key] = (usage.get(key) or 0) + spent
-    timings = last.get("timings")
-    first_timings = first.get("timings")
-    if isinstance(timings, dict) and isinstance(first_timings, dict):
-        timings = dict(timings)
-        for key in ("predicted_n", "predicted_ms"):
-            if first_timings.get(key):
-                timings[key] = (timings.get(key) or 0) + first_timings[key]
-        # The timing badge reads the rates, so they follow the merged totals.
-        if timings.get("predicted_ms") and timings.get("predicted_n"):
-            timings["predicted_per_second"] = timings["predicted_n"] / (
-                timings["predicted_ms"] / 1000.0
-            )
-            timings["predicted_per_token_ms"] = timings["predicted_ms"] / timings["predicted_n"]
-    return {**last, "usage": usage, "timings": timings}
-
 
 def _finalize_reasoning_only_cumulative(
     cumulative: str,
@@ -8120,9 +8088,6 @@ def _context_usage_event(usage, timings):
 
 def _llama_chunk_has_generated_output(data: dict) -> bool:
     if data.get("type") == "diffusion_frame":
-        return True
-    # /completion streams its text at the top level, not in choices.
-    if isinstance(data.get("content"), str) and data["content"]:
         return True
     choices = data.get("choices")
     if not isinstance(choices, list):
@@ -39089,8 +39054,7 @@ class LlamaCppBackend:
         _allow_respawn_retry: bool = True,
         compact_context: bool = False,
         chat_template_kwargs: Optional[dict] = None,
-        _allow_length_recovery: bool = True,
-        _cumulative_prefix: str = "",
+        record_cut_thought: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """Streams a chat completion via /v1/chat/completions (llama-server applies template and vision); yields cumulative text like InferenceBackend."""
         if not self.is_loaded:
@@ -39264,13 +39228,12 @@ class LlamaCppBackend:
 
         served_by = getattr(self, "_process", None)
         url = f"{self.base_url}/v1/chat/completions"
-        cumulative = _cumulative_prefix
+        cumulative = ""
         in_thinking = False
         _stream_done = False
         _metadata_usage = None
         _metadata_timings = None
         _metadata_finish_reason = None
-        _length_recovery = None
 
         def _replay_on_replacement_server():
             context_overflow_ = retry_context_overflow
@@ -39450,34 +39413,31 @@ class LlamaCppBackend:
                     _metadata_usage = _backfill_usage_from_timings(
                         _metadata_usage, _metadata_timings
                     )
-                    _first_metadata = {
-                        "type": "metadata",
-                        # Never None: consumers call usage.get(...).
-                        "usage": _metadata_usage or {},
-                        "timings": _metadata_timings,
-                        "finish_reason": _metadata_finish_reason,
-                    }
-                    # A thought that filled the window (no EOS) is closed and answered once.
+                    # The window cut the thought (no EOS, no answer): the thread's next request
+                    # compacts and searches it instead of resuming a thought that cannot fit.
                     _spent = (_metadata_usage or {}).get("completion_tokens") or 0
                     if (
-                        _allow_length_recovery
+                        record_cut_thought
                         and _metadata_finish_reason == "length"
                         and reasoning_text.strip()
                         and not answer_text.strip()
                         and not (cancel_event is not None and cancel_event.is_set())
                         and (max_tokens is None or _spent < max_tokens)
                     ):
-                        # A Max Tokens as large as the window (the chat's default) caps nothing the
-                        # window does not, and what is left of it is only the prompt's size.
-                        _window = self._effective_context_length or 0
-                        _length_recovery = (
-                            _first_metadata,
-                            None
-                            if max_tokens is None or (_window and max_tokens >= _window)
-                            else max_tokens - _spent,
-                        )
-                    else:
-                        yield _first_metadata
+                        from core.inference import cut_thought
+                        if cut_thought.mark(thread_id, resumed_reasoning + reasoning_text):
+                            logger.info(
+                                "Thought cut by the context window (%d chars); the thread's next "
+                                "request compacts",
+                                len(resumed_reasoning + reasoning_text),
+                            )
+                    yield {
+                        "type": "metadata",
+                        # Never None: consumers call usage.get(...).
+                        "usage": _metadata_usage or {},
+                        "timings": _metadata_timings,
+                        "finish_reason": _metadata_finish_reason,
+                    }
 
         except _LlamaStreamCancelled:
             return
@@ -39511,259 +39471,6 @@ class LlamaCppBackend:
             # Died mid-generation: recover MTP, re-raise unchanged for this request.
             self._maybe_recover_from_mtp_crash(e)
             raise
-
-        if _length_recovery is None:
-            return
-        from core.inference.chat_template_helpers import append_assistant_turn
-
-        first_metadata, retry_cap = _length_recovery
-        logger.info(
-            "Turn ended inside its reasoning (%d chars, finish_reason length); closing the "
-            "thought and answering once",
-            len(reasoning_text),
-        )
-        if not retry_image_b64:
-            closed = yield from self._answer_after_closing_thought(
-                payload,
-                resumed_reasoning + reasoning_text,
-                cumulative,
-                retry_cap,
-                cancel_event,
-                continue_final_message,
-                first_metadata,
-            )
-            if closed:
-                return
-        if getattr(self, "_reasoning_always_on", False):
-            # Without a thinking switch the retry below would just think again.
-            yield first_metadata
-            return
-        # Image on the original question; copies, since n > 1 choices share the caller's list.
-        recovery_messages = [
-            dict(m) for m in self._build_openai_messages(retry_messages, retry_image_b64)
-        ]
-        append_assistant_turn(
-            recovery_messages,
-            {
-                "role": "assistant",
-                "content": _unfinished_thought_progress(resumed_reasoning + reasoning_text),
-            },
-            continue_final_message = continue_final_message,
-        )
-        if resumed_reasoning:
-            recovery_messages[-1].pop("reasoning_content", None)
-        recovery_messages.append(
-            {"role": "user", "content": _continue_after_length_message(tools = False)}
-        )
-        answered = False
-        try:
-            for event in self.generate_chat_completion(
-                recovery_messages,
-                temperature = temperature,
-                top_p = top_p,
-                top_k = top_k,
-                min_p = min_p,
-                max_tokens = retry_cap,
-                repetition_penalty = repetition_penalty,
-                presence_penalty = presence_penalty,
-                frequency_penalty = frequency_penalty,
-                logit_bias = logit_bias,
-                stop = stop,
-                cancel_event = cancel_event,
-                enable_thinking = False,
-                reasoning_effort = None,
-                preserve_thinking = preserve_thinking,
-                seed = seed,
-                promote_reasoning_only = promote_reasoning_only,
-                perf_callback = perf_callback,
-                reasoning_provenance = reasoning_provenance,
-                # No eviction: a fit protects only the added request and could drop the question.
-                context_overflow = None,
-                thread_id = thread_id,
-                tools_withheld = tools_withheld,
-                chat_template_kwargs = chat_template_kwargs,
-                _allow_respawn_retry = False,
-                _allow_length_recovery = False,
-                _cumulative_prefix = cumulative,
-            ):
-                answered = answered or isinstance(event, str)
-                if isinstance(event, dict) and event.get("type") == "metadata":
-                    event = _merge_attempt_metadata(first_metadata, event)
-                yield event
-        except Exception as e:
-            # Nothing of the retry reached the client: end the turn as it would have ended.
-            if answered:
-                raise
-            logger.info("Not answering after the thought: %s", e)
-            yield first_metadata
-
-    def _llama_post_json(self, path: str, body: dict) -> Optional[dict]:
-        """A small JSON call to llama-server; None on any failure."""
-        try:
-            with httpx.Client(
-                timeout = httpx.Timeout(60.0, connect = 10),
-                headers = self._auth_headers,
-                trust_env = False,
-                verify = _local_ssl_context(),
-            ) as client:
-                resp = client.post(f"{self.base_url}{path}", json = body)
-            return resp.json() if resp.status_code == 200 else None
-        except Exception:
-            return None
-
-    def _answer_after_closing_thought(
-        self,
-        payload: dict,
-        thought: str,
-        cumulative: str,
-        max_tokens: Optional[int],
-        cancel_event,
-        continue_final_message: bool,
-        first_metadata: dict,
-    ):
-        """Drop the cut thought's last few tokens, keep its tail, close it with a literal </think>
-        and continue the same turn as raw text, so the model writes its answer next.
-
-        Raw /completion, not the chat API: given the same text as an assistant prefill,
-        llama-server re-renders it through the template and the model starts thinking again.
-        Returns False, having yielded nothing, when it cannot run."""
-        from core.inference.chat_template_helpers import (
-            count_structured_images,
-            count_structured_videos,
-        )
-
-        template = (
-            getattr(self, "_chat_template_override", None)
-            or getattr(self, "_chat_template", None)
-            or ""
-        )
-        if "</think>" not in template or not thought.strip():
-            return False
-        messages = list(payload.get("messages") or [])
-        if continue_final_message and messages:
-            # The resumed partial's thought is already in `thought`.
-            messages = messages[:-1]
-        if any(
-            count_structured_images(m.get("content")) or count_structured_videos(m.get("content"))
-            for m in messages
-            if isinstance(m, dict)
-        ):
-            return False
-        body: dict = {"messages": messages}
-        if payload.get("chat_template_kwargs"):
-            body["chat_template_kwargs"] = payload["chat_template_kwargs"]
-        prompt = (self._llama_post_json("/apply-template", body) or {}).get("prompt")
-        if not isinstance(prompt, str) or not prompt:
-            return False
-        prompt_tokens = (
-            self._llama_post_json("/tokenize", {"content": prompt, "add_special": True}) or {}
-        ).get("tokens")
-        thought_tokens = (
-            self._llama_post_json("/tokenize", {"content": thought.strip(), "add_special": False})
-            or {}
-        ).get("tokens")
-        if not isinstance(prompt_tokens, list) or not isinstance(thought_tokens, list):
-            return False
-        # The cut can land mid-word; the closing tags take a few tokens.
-        thought_tokens = thought_tokens[:-_CUT_THOUGHT_BACKTRACK_TOKENS]
-        free = (self._effective_context_length or 0) - len(prompt_tokens) - 16
-        keep = max(0, min(len(thought_tokens), free // 2))
-        room = free - keep
-        if max_tokens is not None:
-            room = min(room, max_tokens)
-        if room < _MIN_ANSWER_TOKENS_AFTER_THOUGHT:
-            return False
-        tail = ""
-        if keep:
-            tail = (
-                self._llama_post_json("/detokenize", {"tokens": thought_tokens[-keep:]}) or {}
-            ).get("content")
-            if not isinstance(tail, str):
-                return False
-        opener = "" if prompt.rstrip().endswith("<think>") else "<think>\n"
-        logger.info(
-            "Closed the cut thought with </think> (kept its last %d tokens); answering in up to %d",
-            keep,
-            room,
-        )
-        request = {
-            "prompt": f"{prompt}{opener}{tail}\n</think>\n\n",
-            "n_predict": room,
-            "stream": True,
-            "cache_prompt": True,
-        }
-        for key in (
-            "temperature",
-            "top_p",
-            "top_k",
-            "min_p",
-            "repeat_penalty",
-            "presence_penalty",
-            "frequency_penalty",
-            "seed",
-            "stop",
-            "logit_bias",
-        ):
-            if payload.get(key) is not None:
-                request[key] = payload[key]
-
-        text = ""
-        final: dict = {}
-        try:
-            with self._open_stream(f"{self.base_url}/completion", request, cancel_event) as (
-                response,
-                first_token_deadline,
-            ):
-                buffer = ""
-                for raw_chunk in self._iter_text_cancellable(
-                    response, cancel_event, first_token_deadline = first_token_deadline
-                ):
-                    buffer += raw_chunk
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
-                        line = line.strip()
-                        if not line.startswith("data:"):
-                            continue
-                        try:
-                            data = json.loads(line[5:])
-                        except json.JSONDecodeError:
-                            continue
-                        if not isinstance(data, dict):
-                            continue
-                        _stream_error = stream_error_from_chunk(data)
-                        if _stream_error is not None:
-                            raise _stream_error
-                        piece = data.get("content")
-                        if isinstance(piece, str) and piece:
-                            text += piece
-                            yield cumulative + text
-                        if data.get("stop"):
-                            final = data
-        except _LlamaStreamCancelled:
-            return True
-        except Exception as e:
-            if cancel_event is not None and cancel_event.is_set():
-                return True
-            if text:
-                raise
-            logger.info("Could not answer after closing the thought: %s", e)
-            return False
-        evaluated = int(final.get("tokens_evaluated") or 0)
-        predicted = int(final.get("tokens_predicted") or 0)
-        yield _merge_attempt_metadata(
-            first_metadata,
-            {
-                "type": "metadata",
-                "usage": {
-                    "prompt_tokens": evaluated,
-                    "completion_tokens": predicted,
-                    "total_tokens": evaluated + predicted,
-                },
-                "timings": final.get("timings"),
-                "finish_reason": "stop" if final.get("stop_type") in ("eos", "word") else "length",
-            },
-        )
-        return True
 
     # ── Tool-calling agentic loop ──────────────────────────────
 
