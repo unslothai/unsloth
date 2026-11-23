@@ -687,7 +687,7 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         )
     unsloth_grpo_mini_batch : Optional[int] = field(
         default = None,
-        metadata = {{'help': 'Mini batch size for GRPO hidden state accumulation. Default is None unless user defines it.'}},
+        metadata = {{'help': 'Number of splits of each GRPO batch for hidden state accumulation (each forward takes ceil(rows / splits) rows). Default None sizes it from free memory.'}},
     )
     {max_seq_length_pre}
     def __init__({RLConfig_arguments},
@@ -707,11 +707,11 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
         if unsloth_grpo_mini_batch is not None:
-            if self.generation_batch_size >= unsloth_grpo_mini_batch:
+            if 1 <= unsloth_grpo_mini_batch <= self.generation_batch_size:
                 self.unsloth_grpo_mini_batch = unsloth_grpo_mini_batch
             else:
                 raise ValueError(
-                    f"Unsloth GRPO mini batch size needs to be less than or equal to the effective generation batch size, "
+                    f"Unsloth GRPO mini batch (the number of splits per batch) needs to be at least 1 and at most the effective generation batch size, "
                     f"which is self.per_device_train_batch_size * gradient_accumulation_steps."
                 )
         self.unsloth_logit_chunk_multiplier = unsloth_logit_chunk_multiplier
@@ -5480,8 +5480,9 @@ _ASYNC_GRPO_TREE_GDN_COUNTS = {"conv": 0, "chunk": 0}
 _TREE_GDN_NAMES = ("causal_conv1d_fn", "torch_chunk_gated_delta_rule")
 
 
-def _tree_gdn_callers(model):
-    # The functions that look up causal_conv1d_fn / torch_chunk_gated_delta_rule as globals, reached from each module
+def _tree_gdn_callers(model, names = _TREE_GDN_NAMES):
+    # The functions that look up any of `names` (causal_conv1d_fn / torch_chunk_gated_delta_rule by default) as
+    # globals, reached from each module
     # class's forward through its wrappers and the module-level functions it calls. Unsloth's compiled modeling files
     # define their own copies of these forwards (the class forward calls `Qwen3_5GatedDeltaNet_forward`) and import
     # transformers' __name__, so `type(model).forward.__module__` names the stock module while the layers read the
@@ -5498,7 +5499,7 @@ def _tree_gdn_callers(model):
             if not isinstance(fn, types.FunctionType) or id(fn) in seen:
                 continue
             seen.add(id(fn))
-            if any(name in fn.__code__.co_names for name in _TREE_GDN_NAMES):
+            if any(name in fn.__code__.co_names for name in names):
                 callers.append(fn)
             if depth >= 4:
                 continue
@@ -5613,6 +5614,115 @@ def _unsloth_patch_tree_gdn(original):
     patch_tree_gdn._unsloth_async_grpo_patched = True
     patch_tree_gdn._unsloth_original = original
     return patch_tree_gdn
+
+
+# TRL >= 1.19 patch_tree_recurrent(model, layer_type): the module-level functions each recurrent family runs through,
+# and the TRL kernel module + tree op that replaces each one. Families are tried in TRL's order.
+_TREE_RECURRENT_FAMILIES = {
+    "conv": (("causal_conv1d_fn",),),
+    "linear_attention": (
+        ("causal_conv1d_fn", "torch_chunk_gated_delta_rule"),
+        ("causal_conv1d_fn", "mamba2_chunk_scan", "mamba2_split_conv1d_scan_combined"),
+    ),
+}
+_TREE_RECURRENT_OPS = {
+    "causal_conv1d_fn": ("tree_gated_delta_rule", "tree_causal_conv1d"),
+    "torch_chunk_gated_delta_rule": ("tree_gated_delta_rule", "tree_chunk_gated_delta_rule"),
+    "mamba2_chunk_scan": ("tree_mamba2", "tree_mamba2_chunk_scan"),
+    "mamba2_split_conv1d_scan_combined": ("tree_mamba2", "tree_mamba2_split_conv1d_scan_combined"),
+}
+_ASYNC_GRPO_TREE_RECURRENT_COUNTS = {
+    "causal_conv1d_fn": 0,
+    "torch_chunk_gated_delta_rule": 0,
+    "mamba2_chunk_scan": 0,
+    "mamba2_split_conv1d_scan_combined": 0,
+}
+
+
+def _patch_tree_recurrent_namespace(space, tree_ops):
+    # TRL's patch_tree_recurrent wrappers (tree op gets the stock op first), on a given global namespace. No
+    # functools.wraps: Unsloth's block-compile adapters read forwarded keywords through __wrapped__.
+    if not all(callable(space.get(name)) for name in tree_ops):
+        return False
+
+    def follow_tree(name, op, tree_op):
+        @torch.compiler.disable
+        def wrapper(*args, **kwargs):
+            if "tree_segment_parents" not in kwargs:
+                return op(*args, **kwargs)
+            _ASYNC_GRPO_TREE_RECURRENT_COUNTS[name] += 1
+            return tree_op(op, *args, **kwargs)
+
+        wrapper._unsloth_tree_recurrent = True
+        wrapper.__name__ = wrapper.__qualname__ = name
+        return wrapper
+
+    for name, tree_op in tree_ops.items():
+        if not getattr(space[name], "_unsloth_tree_recurrent", False):
+            space[name] = follow_tree(name, space[name], tree_op)
+    return True
+
+
+def _unsloth_patch_tree_recurrent(original):
+    # TRL >= 1.19 renamed patch_tree_gdn(model) to patch_tree_recurrent(model, layer_type) and added Mamba2 and LFM2
+    # short convolutions. It still patches sys.modules[type(model).forward.__module__], so a PEFT model is refused and
+    # an Unsloth-compiled model's layers keep reading unpatched functions from the compiled namespace. Patch the
+    # namespace each layer actually reads, as for patch_tree_gdn.
+    def patch_tree_recurrent(model, layer_type):
+        target = model.get_base_model() if hasattr(model, "get_base_model") else model
+        try:
+            stock = bool(original(target, layer_type))
+        except Exception:
+            stock = False
+        families = _TREE_RECURRENT_FAMILIES.get(layer_type)
+        if families is None:
+            return stock
+        names = tuple(dict.fromkeys(name for family in families for name in family))
+        callers = _tree_gdn_callers(target, names)
+        if not callers:
+            return stock
+        # Per namespace, the family every caller in it fully runs through. A mixer that reaches only part of a family
+        # (the conv but another scan, such as KDA) would still scan across samples.
+        plan = []
+        for fn in callers:
+            family = next(
+                (f for f in families if all(name in fn.__code__.co_names for name in f)),
+                None,
+            )
+            if family is None:
+                return False
+            for space, chosen in plan:
+                if space is fn.__globals__:
+                    if chosen != family:
+                        return False
+                    break
+            else:
+                plan.append((fn.__globals__, family))
+        package = original.__module__.rsplit(".", 1)[0]
+        errors, tree_ops = [], {}
+        for name in dict.fromkeys(name for _, family in plan for name in family):
+            module_name, attr = _TREE_RECURRENT_OPS[name]
+            for prefix in ("trl.kernels", package):
+                try:
+                    tree_ops[name] = getattr(
+                        importlib.import_module(f"{prefix}.{module_name}"), attr
+                    )
+                    break
+                except Exception as error:
+                    errors.append(f"{prefix}.{module_name}.{attr}: {error}")
+            else:
+                logger.info(
+                    f"Unsloth: TRL's tree recurrent kernels are unavailable: {'; '.join(errors)}"
+                )
+                return False
+        return all(
+            _patch_tree_recurrent_namespace(space, {name: tree_ops[name] for name in family})
+            for space, family in plan
+        )
+
+    patch_tree_recurrent._unsloth_async_grpo_patched = True
+    patch_tree_recurrent._unsloth_original = original
+    return patch_tree_recurrent
 
 
 def _unsloth_async_grpo_lm_head(
@@ -6058,7 +6168,11 @@ def patch_trl_async_grpo():
         return original_create(model_id, *args, **kwargs)
 
     async_module.create_model_from_path = create_model_from_path
-    if callable(getattr(async_module, "patch_tree_gdn", None)):
+    if callable(getattr(async_module, "patch_tree_recurrent", None)):
+        async_module.patch_tree_recurrent = _unsloth_patch_tree_recurrent(
+            async_module.patch_tree_recurrent
+        )
+    elif callable(getattr(async_module, "patch_tree_gdn", None)):
         async_module.patch_tree_gdn = _unsloth_patch_tree_gdn(async_module.patch_tree_gdn)
     tree_attention = getattr(async_module, "TREE_ATTENTION", None)
     for name, flag in heads:

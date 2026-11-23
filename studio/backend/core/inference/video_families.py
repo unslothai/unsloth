@@ -602,6 +602,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         supports_torch_compile = True,
         # Near-equal inductor norm-reduction configs rendered different clips per fresh process for one seed.
         filter_reduction_configs = True,
+        # The conditioner's Qwen3-VL Conv3d patch embed reads every reference clip / keyframe: cudnn.benchmark's
+        # per-process algorithm pick moved its output (G4: two clip families per seed), so the denoiser diverged.
+        cudnn_benchmark = False,
         # CUDA graph declined: no measurable win (GPU-bound) for ~8 GB extra memory and 31 s capture.
         supports_cuda_graph = False,
         # Streamed, H3's prequant groups onload through diffusers' stream path, which waits on the host per group: a
