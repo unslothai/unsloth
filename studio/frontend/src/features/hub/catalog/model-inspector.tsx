@@ -617,7 +617,7 @@ export const ModelInspector = memo(function ModelInspector({
       }));
   const mlxRunsHere =
     runsAsMlx &&
-    isServedByMlx(false, deviceType, chatOnlyReason, mlxInference);
+    isServedByMlx(false, deviceType, chatOnlyReason, mlxInference, "auto");
   const runEligible = isHubModelRunEligible({
     model,
     isDataset,

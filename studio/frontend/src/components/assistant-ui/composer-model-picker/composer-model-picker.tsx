@@ -1942,7 +1942,7 @@ export function ComposerModelPicker({
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
   const servesMlx = usePlatformStore((s) =>
-    isServedByMlx(false, s.deviceType, s.chatOnlyReason, s.mlxInference),
+    isServedByMlx(false, s.deviceType, s.chatOnlyReason, s.mlxInference, "auto"),
   );
   // A CPU training host has torch, so it loads checkpoints without MLX.
   const hidesCheckpoints = usePlatformStore(

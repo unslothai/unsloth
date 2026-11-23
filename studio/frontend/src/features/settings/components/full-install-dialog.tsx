@@ -98,6 +98,6 @@ export function DesktopInstallTypeControl(): ReactElement | null {
 
 function useServesMlx(): boolean {
   return usePlatformStore((s) =>
-    isServedByMlx(false, s.deviceType, s.chatOnlyReason, s.mlxInference),
+    isServedByMlx(false, s.deviceType, s.chatOnlyReason, s.mlxInference, "auto"),
   );
 }

@@ -3048,6 +3048,7 @@ function platformServesMlx(
     platform.deviceType,
     platform.chatOnlyReason,
     platform.mlxInference,
+    "auto",
   );
 }
 
