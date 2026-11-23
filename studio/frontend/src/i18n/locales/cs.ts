@@ -5274,7 +5274,7 @@ export const cs = {
     translate: "Přeložit",
     stop: "Zastavit",
     sourceLabel: "Text k překladu",
-    sourcePlaceholder: "Napište nebo vložte text, nebo přetáhněte dokument či obrázek",
+    sourcePlaceholder: "Napište nebo vložte text, nebo přetáhněte dokument, obrázek či zvukový soubor",
     outputLabel: "Překlad",
     outputEmpty: "Překlad se zobrazí zde.",
     firstRunHint:
@@ -5285,7 +5285,7 @@ export const cs = {
     downloadConfirm: "Stáhnout",
     clear: "Vymazat",
     paste: "Vložit",
-    openFile: "Otevřít dokument nebo obrázek",
+    openFile: "Otevřít dokument, obrázek nebo zvukový soubor",
     dropFile: "Přetáhněte soubor a přeložte jeho text",
     fileNotText: "Tento soubor neobsahuje žádný text k překladu.",
     truncated: "Zachováno bylo pouze prvních {max} znaků.",
