@@ -3960,6 +3960,8 @@ class FastLlamaModel:
         **kwargs,
     ):
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
+        # loader.py sends full finetuning to FastModel, so this load is always LoRA. Say so, or load-time readers (packed experts, MXFP4, expert quantization) inherit an earlier full finetuning load's "1".
+        os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
         if trust_remote_code:
             if fast_inference:
                 raise NotImplementedError(
@@ -5156,7 +5158,7 @@ class FastLlamaModel:
                 prefetch_depth = prefetch_depth,
                 **kwargs,
             )
-        if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
+        if _is_full_finetuning(model):
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache.
             _unsloth_install_pretrain_detector(model)
