@@ -1021,6 +1021,17 @@ def test_vllm_backend_resolves_lora_patterns_per_module(vllm_env, tmp_path, patt
         ({"rank_pattern": {"q_proj": 32, "self_attn.q_proj": 640}}, 32, 32),
         # the saved lora_A rows are what vLLM loads
         ({"rank_pattern": {"q_proj": 64}}, 64, 64),
+        # a fused-expert A stack has E * r rows (128 experts x r 16): the rank is still r
+        ({"target_modules": ["q_proj"]}, 128 * 16, None),
+        # adapter_model.bin: a regex pattern may match full module names that the short targets do not
+        (
+            {
+                "target_modules": ["q_proj"],
+                "rank_pattern": {r"layers\.\d+\.self_attn\.(q|v)_proj": 64},
+            },
+            None,
+            64,
+        ),
     ],
 )
 def test_vllm_backend_reads_the_saved_lora_rank(vllm_env, tmp_path, config, header_rank, expected):

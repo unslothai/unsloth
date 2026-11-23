@@ -257,26 +257,33 @@ def _adapter_header(adapter_dir: str) -> dict:
 
 def _adapter_rank(adapter_dir: str) -> int:
     config = _read_config(Path(adapter_dir) / "adapter_config.json") or {}
-    ranks = [config.get("r")]
-    # the rank each saved module really has: rows of its lora_A (lora_embedding_A for embeddings)
-    for key, info in _adapter_header(adapter_dir).items():
-        shape = info.get("shape") if isinstance(info, dict) else None
-        if re.search(r"\.lora_(embedding_)?A(\.|$)", key) and isinstance(shape, list) and shape:
-            ranks.append(shape[0])
-    if len(ranks) == 1:
-        # no readable weights: count only rank_pattern entries that can match a target module
-        patterns = config.get("rank_pattern") or {}
+    r = config.get("r")
+    patterns = config.get("rank_pattern") or {}
+    if not isinstance(patterns, dict):
+        patterns = {}
+    names = _adapter_module_names(adapter_dir)
+    if names:
+        # each saved module's rank as PEFT resolves it (first matching rank_pattern key, else r):
+        # unmatched or shadowed patterns do not count, and fused-expert A stacks (E * r rows) are not read as rank
+        ranks = [_pattern_value(patterns, name, r) for name in names]
+    else:
+        # no readable safetensors header (e.g. adapter_model.bin): keep every pattern that may match an
+        # adapted module; only a literal name whose last part is not a target module is known to match nothing
         targets = config.get("target_modules")
-        if isinstance(patterns, dict):
-            for key, rank in patterns.items():
-                if not isinstance(targets, list) or any(
-                    _pattern_value({key: rank}, t, None) is not None
-                    or re.search(rf"(^|\.){re.escape(t)}$", key)
-                    for t in targets
-                    if isinstance(t, str)
-                ):
-                    ranks.append(rank)
-    return max((r for r in ranks if isinstance(r, int) and not isinstance(r, bool)), default = 0)
+        targets = (
+            {t.rsplit(".", 1)[-1] for t in targets if isinstance(t, str)}
+            if isinstance(targets, list)
+            else None
+        )
+        ranks = [
+            rank
+            for key, rank in patterns.items()
+            if targets is None
+            or re.escape(key) != key.replace(".", r"\.")
+            or key.rsplit(".", 1)[-1] in targets
+        ]
+    ranks.append(r)
+    return max((x for x in ranks if isinstance(x, int) and not isinstance(x, bool)), default = 0)
 
 
 def _adapter_module_names(adapter_dir: str) -> List[str]:
