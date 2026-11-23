@@ -3,7 +3,9 @@
 
 import type {
   ExpressionConfig,
+  ImageConfig,
   LlmConfig,
+  ModelConfig,
   NodeConfig,
   SamplerConfig,
   ValidatorConfig,
@@ -43,6 +45,20 @@ export function isExpressionConfig(
   config: NodeConfig | null | undefined,
 ): config is ExpressionConfig {
   return Boolean(config && config.kind === "expression");
+}
+
+export function isImageConfig(
+  config: NodeConfig | null | undefined,
+): config is ImageConfig {
+  return Boolean(config && config.kind === "image");
+}
+
+export function isImageModelConfig(
+  config: NodeConfig | null | undefined,
+): config is ModelConfig {
+  return Boolean(
+    config && config.kind === "model_config" && config.generation === "image",
+  );
 }
 
 export function isValidatorConfig(

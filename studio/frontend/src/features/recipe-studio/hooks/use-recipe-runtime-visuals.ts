@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  AiImageIcon,
   BalanceScaleIcon,
   Clock01Icon,
   CodeIcon,
@@ -70,6 +71,9 @@ function resolveExecutionColumnIcon(config: NodeConfig | null): IconType {
   }
   if (config.kind === "expression") {
     return FunctionIcon;
+  }
+  if (config.kind === "image") {
+    return AiImageIcon;
   }
   if (config.kind === "validator") {
     return Shield02Icon;

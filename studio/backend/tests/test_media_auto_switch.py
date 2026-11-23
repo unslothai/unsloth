@@ -896,6 +896,97 @@ def test_the_exact_resident_shortcut_never_answers_for_a_gguf(
         assert [p.gguf_filename for _o, p in loads] == [f"flux1-dev-{preferred}.gguf"]
 
 
+@pytest.mark.parametrize("publishes_filename", [False, True])
+def test_a_recipe_names_the_loaded_gguf_build_so_the_switch_keeps_it(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch, publishes_filename
+):
+    import sys
+
+    from routes.data_recipe import jobs as recipe_jobs
+
+    repo = tmp_path / "flux-gguf"
+    repo.mkdir()
+    (repo / "model_index.json").write_text("{}")
+    for quant in ("Q4_K_M", "Q8_0"):
+        (repo / f"flux1-dev-{quant}.gguf").write_bytes(b"")
+    catalog.append(_info("city96/FLUX.1-dev-gguf", repo, task = mas.IMAGE_TASK))
+    # Not the preferred quant, which a bare repo id would name.
+    backend.repo_id = "city96/FLUX.1-dev-gguf"
+    backend.gguf_variant = "Q8_0"
+    backend.model_kind = "gguf"
+    if publishes_filename:
+        status = backend.status
+        monkeypatch.setattr(
+            backend, "status", lambda: {**status(), "gguf_filename": "flux1-dev-Q8_0.gguf"}
+        )
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference.diffusion_engine_router",
+        types.SimpleNamespace(get_active_diffusion_engine = lambda: backend),
+    )
+
+    _switch(recipe_jobs._loaded_local_image_model())
+
+    assert loads == []
+
+
+@pytest.mark.parametrize("publishes_filename", [False, True])
+def test_a_recipe_names_a_gguf_loaded_from_a_local_folder_by_its_catalog_name(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch, publishes_filename
+):
+    import sys
+
+    from routes.data_recipe import jobs as recipe_jobs
+
+    folder = tmp_path / "flux-local"
+    folder.mkdir()
+    for quant in ("Q4_K_M", "Q8_0"):
+        (folder / f"flux1-dev-{quant}.gguf").write_bytes(b"")
+    # A scanned folder is listed by its path, which is never a name a request can send.
+    info = _gguf_info(str(folder), folder, task = mas.IMAGE_TASK, display_name = "flux-local")
+    info.model_id = None
+    catalog.append(info)
+    backend.repo_id = str(folder)
+    backend.gguf_variant = "Q8_0"
+    backend.model_kind = "gguf"
+    if publishes_filename:
+        status = backend.status
+        monkeypatch.setattr(
+            backend, "status", lambda: {**status(), "gguf_filename": "flux1-dev-Q8_0.gguf"}
+        )
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference.diffusion_engine_router",
+        types.SimpleNamespace(get_active_diffusion_engine = lambda: backend),
+    )
+
+    _switch(recipe_jobs._loaded_local_image_model())
+
+    assert loads == []
+
+
+def test_a_recipe_refuses_up_front_when_no_name_keeps_the_loaded_model(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    import sys
+
+    from routes.data_recipe import jobs as recipe_jobs
+
+    # Loaded from a folder the model list does not include: no name resolves to it.
+    backend.repo_id = str(tmp_path / "unlisted")
+    backend.gguf_variant = "Q8_0"
+    backend.model_kind = "gguf"
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference.diffusion_engine_router",
+        types.SimpleNamespace(get_active_diffusion_engine = lambda: backend),
+    )
+
+    with pytest.raises(ValueError, match = "Media auto-switch can't keep the loaded image model"):
+        recipe_jobs._loaded_local_image_model()
+    assert loads == []
+
+
 def test_a_bare_single_file_directory_is_planned_as_the_load_reads_it(
     catalog, tmp_path, monkeypatch
 ):

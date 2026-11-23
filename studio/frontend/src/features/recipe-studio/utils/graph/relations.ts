@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { NodeConfig } from "../../types";
+import type { ImageConfig, LlmConfig, NodeConfig } from "../../types";
 
 export function isTextFormatValidator(config: NodeConfig): boolean {
   return (
@@ -18,6 +18,12 @@ export function isTextFormatValidatorTarget(config: NodeConfig): boolean {
   );
 }
 
+export function isModelStep(
+  config: NodeConfig,
+): config is LlmConfig | ImageConfig {
+  return config.kind === "llm" || config.kind === "image";
+}
+
 export function isSemanticRelation(
   source: NodeConfig,
   target: NodeConfig,
@@ -25,7 +31,7 @@ export function isSemanticRelation(
   if (source.kind === "model_provider" && target.kind === "model_config") {
     return true;
   }
-  if (source.kind === "model_config" && target.kind === "llm") {
+  if (source.kind === "model_config" && isModelStep(target)) {
     return true;
   }
   if (source.kind === "tool_config" && target.kind === "llm") {

@@ -35,6 +35,11 @@ const booksAndDocumentsUrl = new URL(
   import.meta.url,
 ).href;
 
+const productPhotosUrl = new URL(
+  "./product-photos.json?no-inline",
+  import.meta.url,
+).href;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -165,5 +170,12 @@ export const LEARNING_RECIPES: LearningRecipeDef[] = [
     description:
       "Extract ebooks, PDFs and Office files into a text dataset for continued pretraining.",
     loadPayload: () => loadPayloadFromUrl(booksAndDocumentsUrl),
+  },
+  {
+    id: "product-photos",
+    title: "Product Photos",
+    description:
+      "Generate a product photo per row with a local image model and sampled subjects and styles.",
+    loadPayload: () => loadPayloadFromUrl(productPhotosUrl),
   },
 ];

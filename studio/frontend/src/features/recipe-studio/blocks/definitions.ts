@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  AiImageIcon,
   BalanceScaleIcon,
   Clock01Icon,
   CodeIcon,
@@ -30,6 +31,7 @@ import type {
 } from "../types";
 import {
   makeExpressionConfig,
+  makeImageConfig,
   makeLlmConfig,
   makeMarkdownNoteConfig,
   makeModelConfig,
@@ -59,6 +61,7 @@ export type BlockType =
   | LlmType
   | ValidatorBlockType
   | "expression"
+  | "image"
   | "markdown_note"
   | "seed"
   | "seed_hf"
@@ -101,7 +104,8 @@ export type BlockDialogKey =
   | "model_provider"
   | "model_config"
   | "tool_config"
-  | "expression";
+  | "expression"
+  | "image";
 
 export type BlockDefinition = {
   kind: BlockKind;
@@ -278,6 +282,15 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     icon: PencilEdit02Icon,
     dialogKey: "llm",
     createConfig: (id, existing) => makeLlmConfig(id, "text", existing),
+  },
+  {
+    kind: "llm",
+    type: "image",
+    title: "AI image",
+    description: "Generate an image from your prompt with an image model.",
+    icon: AiImageIcon,
+    dialogKey: "image",
+    createConfig: (id, existing) => makeImageConfig(id, existing),
   },
   {
     kind: "llm",
@@ -467,6 +480,9 @@ export function getBlockDefinitionForConfig(
   }
   if (config.kind === "markdown_note") {
     return getBlockDefinition("note", "markdown_note");
+  }
+  if (config.kind === "image") {
+    return getBlockDefinition("llm", "image");
   }
   return getBlockDefinition("expression", "expression");
 }

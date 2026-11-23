@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import {
+  AiImageIcon,
   BalanceScaleIcon,
   Clock01Icon,
   CodeIcon,
@@ -103,6 +104,9 @@ const NODE_META = {
   expression: {
     tone: RECIPE_STUDIO_NODE_TONES.expression,
   },
+  image: {
+    tone: RECIPE_STUDIO_NODE_TONES.image,
+  },
   note: {
     tone: RECIPE_STUDIO_NODE_TONES.note,
   },
@@ -154,6 +158,9 @@ function resolveNodeIcon(
   }
   if (kind === "expression") {
     return FunctionIcon;
+  }
+  if (kind === "image") {
+    return AiImageIcon;
   }
   if (kind === "note") {
     return PencilEdit02Icon;
@@ -226,6 +233,13 @@ function getConfigSummary(config: NodeConfig | undefined): string {
       return `Tools: ${config.tool_alias.trim()}`;
     }
     return "Add your prompt in settings";
+  }
+
+  if (config.kind === "image") {
+    if (!config.model_alias.trim()) {
+      return "Choose an image model preset";
+    }
+    return config.prompt.trim() || "Add your prompt in settings";
   }
 
   if (config.kind === "tool_config") {
@@ -418,6 +432,7 @@ function RecipeGraphNodeBase({
     data.kind === "llm" ||
     data.kind === "validator" ||
     data.kind === "expression" ||
+    data.kind === "image" ||
     data.kind === "sampler" ||
     data.kind === "seed";
   const showSemanticIn =
@@ -465,7 +480,8 @@ function RecipeGraphNodeBase({
           "opacity-80 border-dashed border-amber-400/70",
       )}
     >
-      {runtimeState === "running" && config?.kind === "llm" && (
+      {runtimeState === "running" &&
+        (config?.kind === "llm" || config?.kind === "image") && (
         <div className="pointer-events-none absolute -top-7 right-2 z-20 rounded-full bg-background">
           <Spinner className="size-6 text-primary/90" />
         </div>

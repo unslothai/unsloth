@@ -3,6 +3,7 @@
 
 import type {
   ExpressionConfig,
+  ImageConfig,
   LlmConfig,
   LlmType,
   MarkdownNoteConfig,
@@ -342,6 +343,21 @@ export function makeExpressionConfig(
     drop: false,
     expr: "",
     dtype: "str",
+  };
+}
+
+export function makeImageConfig(
+  id: string,
+  existing: NodeConfig[],
+): ImageConfig {
+  return {
+    id,
+    kind: "image",
+    name: nextName(existing, "image"),
+    drop: false,
+    prompt: "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    model_alias: "",
   };
 }
 

@@ -82,7 +82,7 @@ type BlockSheetProps = {
   onOpenChange?: (open: boolean) => void;
   onAddSampler: (type: SamplerType) => void;
   onAddSeed: (type: SeedBlockType) => void;
-  onAddLlm: (type: LlmType) => void;
+  onAddLlm: (type: LlmType | "image") => void;
   onAddModelProvider: () => void;
   onAddModelConfig: () => void;
   onAddToolProfile: () => void;
@@ -398,7 +398,7 @@ export function BlockSheet({
         onAddToolProfile();
         return;
       }
-      onAddLlm(type as LlmType);
+      onAddLlm(type as LlmType | "image");
       return;
     }
     if (kind === "validator") {

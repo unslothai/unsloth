@@ -26,6 +26,7 @@ import {
 import { readNodeWidth } from "../rf-node-dimensions";
 import {
   buildExpressionColumn,
+  buildImageColumn,
   buildLlmColumn,
   buildModelConfig,
   buildModelProvider,
@@ -39,6 +40,7 @@ import {
 } from "./builders";
 import type { RecipePayloadResult } from "./types";
 import {
+  validateModelAliasKinds,
   validateModelAliasLinks,
   validateModelConfigProviders,
   validateSubcategoryConfigs,
@@ -187,6 +189,14 @@ export function buildRecipePayload(
       nameToConfig.set(config.name, config);
       continue;
     }
+    if (config.kind === "image") {
+      columns.push(buildImageColumn(config));
+      if (config.model_alias) {
+        modelAliases.add(config.model_alias);
+      }
+      nameToConfig.set(config.name, config);
+      continue;
+    }
     if (config.kind === "validator") {
       columns.push(buildValidatorColumn(config, errors, allNameToConfig));
       nameToConfig.set(config.name, config);
@@ -240,6 +250,7 @@ export function buildRecipePayload(
   validateTimedeltaConfigs(configs, nameToConfig, errors);
   validateValidatorConfigs(configs, nameToConfig, errors);
   validateModelAliasLinks(modelAliases, modelConfigConfigs, errors);
+  validateModelAliasKinds(configs, modelConfigConfigs, errors);
   validateModelConfigProviders(
     modelConfigConfigs,
     modelAliases,
@@ -328,7 +339,7 @@ export function buildRecipePayload(
         ? getDefaultDataSourceHandle(layoutDirection)
         : getDefaultSemanticSourceHandle(layoutDirection);
     const semanticTargetDefault =
-      target.kind === "llm"
+      (target.kind === "llm" || target.kind === "image")
         ? getDefaultDataTargetHandle(layoutDirection)
         : getDefaultSemanticTargetHandle(layoutDirection);
     let sourceHandle = getDefaultDataSourceHandle(layoutDirection);

@@ -58,6 +58,7 @@ export type RecipeNodeData = {
     | "llm"
     | "validator"
     | "expression"
+    | "image"
     | "seed"
     | "note"
     | "model_provider"
@@ -73,6 +74,7 @@ export type RecipeNodeData = {
     | "validator_json"
     | "validator_markdown"
     | "expression"
+    | "image"
     | "seed"
     | "markdown_note"
     | "model_provider"
@@ -281,6 +283,26 @@ export type ModelConfig = {
   inference_extra_body?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   skip_health_check?: boolean;
+  // "image" presets serve Image blocks and send generation_type "image".
+  generation?: ModelGeneration;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  image_size?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  image_steps?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  image_guidance?: string;
+};
+
+export type ModelGeneration = "text" | "image";
+
+export type ImageConfig = {
+  id: string;
+  kind: "image";
+  name: string;
+  drop?: boolean;
+  prompt: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  model_alias: string;
 };
 
 export type ExpressionConfig = {
@@ -387,6 +409,7 @@ export type NodeConfig =
   | LlmConfig
   | ValidatorConfig
   | ExpressionConfig
+  | ImageConfig
   | MarkdownNoteConfig
   | SeedConfig
   | ModelProviderConfig
