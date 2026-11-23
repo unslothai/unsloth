@@ -1840,7 +1840,15 @@ def _explicit_saves_attention() -> bool:
         return True
     if not _saved_attention_active():
         return False
-    return _may_cross_into_saved_attention()
+    if _may_cross_into_saved_attention():
+        return True
+    # In-graph call inside a frame: fill / take this call's entry so a pass that falls back to eager lines up.
+    skip_slot = getattr(
+        sys.modules.get("unsloth_zoo.saved_attention"), "saved_attention_skip_slot", None
+    )
+    if skip_slot is not None:
+        skip_slot()
+    return False
 
 
 def _select_rocm_saved_sdpa(q):

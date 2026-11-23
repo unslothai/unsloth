@@ -483,6 +483,52 @@ def test_rocm_explicit_routing_first_pass_compiled_replay_eager(monkeypatch, che
         torch.testing.assert_close(got.grad, ref.grad, rtol = 1e-4, atol = 1e-6)
 
 
+def test_rocm_explicit_routing_strict_compile_falls_back_on_replay(monkeypatch, checkpointing):
+    """A fullgraph=False compile under error_on_graph_break keeps the call in the graph; at its
+    recompile limit the grad replay falls back to eager and enters the saving helpers. The in-graph
+    pass must still fill that call's entry, or the replay takes the second call's kept output."""
+    if not hasattr(SA, "saved_attention_skip_slot"):
+        pytest.skip("unsloth_zoo without saved_attention_skip_slot")
+    if not hasattr(torch._dynamo, "error_on_graph_break"):
+        pytest.skip("torch without error_on_graph_break")
+    _rocm_explicit_routing(monkeypatch)
+    attend = _attend()
+
+    def strict(q, k, v):
+        with torch._dynamo.error_on_graph_break(True):
+            return attend(q, k, v)
+
+    compiled = torch.compile(strict, backend = "eager", fullgraph = False)
+
+    def layer(q, k, v):
+        first = compiled(q, k, v)
+        second = attend(q + 0.7, k * 0.4, v + 3.0)
+        return (first + 2 * second).square().mean()
+
+    g = torch.Generator().manual_seed(0)
+    inputs = (
+        torch.randn(1, H, S, D, generator = g),
+        torch.randn(1, KV, S, D, generator = g),
+        torch.randn(1, KV, S, D, generator = g),
+    )
+    ref_args = [x.clone().requires_grad_() for x in inputs]
+    ref_loss = (
+        (attend(*ref_args) + 2 * attend(ref_args[0] + 0.7, ref_args[1] * 0.4, ref_args[2] + 3.0))
+        .square()
+        .mean()
+    )
+    ref_loss.backward()
+    args = [x.clone().requires_grad_() for x in inputs]
+    torch._dynamo.reset()
+    try:
+        with torch._dynamo.config.patch(recompile_limit = 1):
+            G.UnslothCheckpointFunction.apply(layer, True, *args).backward()
+    finally:
+        torch._dynamo.reset()
+    for got, ref in zip(args, ref_args):
+        torch.testing.assert_close(got.grad, ref.grad, rtol = 1e-4, atol = 1e-6)
+
+
 def test_graph_break_is_fatal_reads_the_compile_mode():
     seen = []
 
