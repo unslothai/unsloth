@@ -723,6 +723,22 @@ def test_zimage_scaled_mm_stays_finite_past_fp16_range_and_matches_fp32(scaled_m
     assert len(scaled_mm) == 2  # forward + dx
 
 
+def test_scaled_mm_forward_split_keeps_fp32_input_precision(scaled_mm):
+    """One fp16 rounding of the input costs ~1e-4; the hi + lo split must land at fp32 level, the dx term at fp16."""
+    from core.training import diffusion_dit_fp16 as f16
+
+    torch.manual_seed(1)
+    x = torch.randn(16, 64, dtype = torch.float64) * torch.logspace(-3, 3, 64, dtype = torch.float64)
+    w = torch.randn(32, 64).to(torch.bfloat16).double()
+    ref = x @ w.t()
+    w16t = w.t().to(torch.float16)
+    one = f16._scaled_fp32_mm(x.float(), w16t)
+    two = f16._scaled_fp32_mm(x.float(), w16t, split = True)
+    err = lambda y: float((y.double() - ref).norm() / ref.norm())  # noqa: E731
+    assert err(two) < 1e-6 < 1e-5 < err(one)
+    assert two.dtype is torch.float32 and two.shape == (16, 32)
+
+
 def test_pow2_scale_is_exact_and_lands_under_fp16_max():
     from core.training import diffusion_dit_fp16 as f16
 

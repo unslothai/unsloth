@@ -35,8 +35,10 @@ FP16_FP32_MODULES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# Islands whose nf4 matmul runs fp16 in, fp32 accumulate and out, inputs scaled by a power of two (exact),
-# instead of an fp32 sgemm. Only the fp16 cast of the input can overflow, and the scale keeps it in range.
+# Islands whose nf4 matmul runs on fp16 tensor cores with fp32 accumulate and output instead of an fp32 sgemm.
+# Inputs are scaled by a power of two (exact), so the fp16 cast cannot overflow. The forward splits the input
+# into fp16 high + low parts (about 22 mantissa bits): one fp16 rounding there moved the LoRA grads 2x further
+# from an fp32 reference on a T4. The input-grad GEMM takes one fp16 term: rounding it changed nothing measurable.
 FP16_SCALED_MM_MODULES: dict[str, tuple[str, ...]] = {
     "z-image": (
         r"\.attention\.to_out\.0$",
@@ -130,26 +132,38 @@ def _pow2_scale(t):
     return torch.exp2(torch.floor(torch.log2(_SCALE_TARGET / amax)).clamp(-64, 64))
 
 
-def _scaled_fp32_mm(x2, w16t):
+def _scaled_fp32_mm(
+    x2,
+    w16t,
+    split: bool = False,
+):
+    """``x2 @ w16t`` in fp32 from fp16 operands; ``split`` adds the input's fp16 rounding residual as a second term."""
     import torch
 
     s = _pow2_scale(x2)
-    x16 = torch.empty(x2.shape, dtype = torch.float16, device = x2.device)
-    torch.mul(x2, s, out = x16)
-    return _mm_fp32_out(x16, w16t).div_(s)
+    m = x2.shape[0]
+    x16 = torch.empty((2 * m if split else m, x2.shape[1]), dtype = torch.float16, device = x2.device)
+    if not split:
+        torch.mul(x2, s, out = x16)
+        return _mm_fp32_out(x16, w16t).div_(s)
+    xs = x2 * s
+    x16[:m].copy_(xs)
+    x16[m:].copy_(xs.sub_(x16[:m]))
+    y = _mm_fp32_out(x16, w16t)
+    return torch.add(y[:m], y[m:]).div_(s)
 
 
 def _make_scaled_mm_fn():
     import torch
     class ScaledFp16MM(torch.autograd.Function):
-        """y = x @ W^T for a frozen nf4 W: fp16 operands, fp32 accumulate and output; dx the same way."""
+        """y = x @ W^T for a frozen nf4 W: fp16 operands (input split hi + lo), fp32 accumulate and output; dx one term."""
 
         @staticmethod
         def forward(ctx, x, layer):
             ctx.layer = layer
             ctx.x_shape = x.shape
             w16 = _dequant_4bit(layer).to(torch.float16)
-            y = _scaled_fp32_mm(x.reshape(-1, x.shape[-1]).float(), w16.t())
+            y = _scaled_fp32_mm(x.reshape(-1, x.shape[-1]).float(), w16.t(), split = True)
             return y.reshape(*x.shape[:-1], w16.shape[0])
 
         @staticmethod
