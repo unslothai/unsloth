@@ -5,7 +5,7 @@ import { getAuthSessionEpoch, hasSettledAuthSession } from "@/features/auth";
 import { useRouterState } from "@tanstack/react-router";
 import { Suspense, lazy, useEffect } from "react";
 import { loadOnboarding, saveOnboarding } from "./api";
-import { ONBOARDING_PAGES, decideOnboarding } from "./lib/pages";
+import { ONBOARDING_PAGES, decideOnboarding, isAutomated } from "./lib/pages";
 import { useOnboardingStore } from "./store";
 
 const OnboardingDialog = lazy(() =>
@@ -22,7 +22,7 @@ export function OnboardingMount() {
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: epoch is the trigger, so a switched account decides afresh.
   useEffect(() => {
-    if (!settled) return;
+    if (!settled || isAutomated(globalThis.navigator)) return;
     let cancelled = false;
     useOnboardingStore.getState().close();
     loadOnboarding()

@@ -38,6 +38,11 @@ export function decideOnboarding(record: OnboardingRecord): OnboardingDecision {
   return { kind: "show", pages: [...pages, ...unseen, "done"] };
 }
 
+// Playwright and WebDriver test fresh accounts; an auto-opened modal would cover every page they drive.
+export function isAutomated(nav: { webdriver?: boolean } | undefined): boolean {
+  return nav?.webdriver === true;
+}
+
 export const CHAT_TOUR = "chat";
 
 export function greetingName(displayName: string): string {

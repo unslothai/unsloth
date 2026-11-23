@@ -9,6 +9,7 @@ import {
   ONBOARDING_PAGES,
   decideOnboarding,
   greetingName,
+  isAutomated,
   stepIndex,
   videoAvailable,
 } from "../src/features/onboarding/lib/pages.ts";
@@ -100,4 +101,10 @@ test("a step move never leaves the pages", () => {
   assert.equal(stepIndex(3, 3), 2);
   assert.equal(stepIndex(-1, 3), 0);
   assert.equal(stepIndex(1, 3), 1);
+});
+
+test("browser automation never gets the first-run modal", () => {
+  assert.equal(isAutomated({ webdriver: true }), true);
+  assert.equal(isAutomated({ webdriver: false }), false);
+  assert.equal(isAutomated(undefined), false);
 });
