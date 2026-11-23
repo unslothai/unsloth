@@ -215,7 +215,6 @@ test("Max Tokens reaches a catalogued window where the backend takes the prompt 
   assert.equal(getExternalMaxOutputTokens("ollama", model), 262144);
   assert.equal(externalRequestMaxTokens("ollama", model, null, 262144), null);
   assert.equal(externalRequestMaxTokens("ollama", model, null, 100_000), 100_000);
-  // A router id's catalogued window (2M for openrouter/auto) is not the routed endpoint's limit.
   for (const routed of ["qwen/qwen3-235b-a22b-2507", "openrouter/auto"]) {
     assert.equal(getExternalMaxOutputTokens("openrouter", routed), EXTERNAL_MAX_OUTPUT_TOKENS);
     assert.equal(

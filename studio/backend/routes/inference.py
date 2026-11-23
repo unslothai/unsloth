@@ -29932,8 +29932,7 @@ _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
 # Max fills what the window leaves after the prompt: unbounded, Ollama context-shifts past num_ctx.
-# Not OpenRouter: Max sends no limit there only for router ids (openrouter/auto) or an unloaded
-# catalog, where the catalogued window overstates the routed endpoint's output cap and context.
+# Not OpenRouter: a router id or an unloaded catalog overstates the routed endpoint's window.
 _WINDOW_ROOM_REPLY_PROVIDERS = frozenset({"ollama", "custom"})
 _UNKNOWN_WINDOW_MAX_TOKENS = 32_768
 _MIN_WINDOW_ROOM_TOKENS = 256
