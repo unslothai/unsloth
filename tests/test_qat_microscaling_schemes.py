@@ -672,3 +672,103 @@ def test_mx_forward_accepts_strided_activations():
     torch.testing.assert_close(out, ref, rtol = 0, atol = 0)
     out.float().sum().backward()
     assert x.grad is not None and x.grad.shape == x.shape
+
+
+def _two_biased_adapters():
+    from peft import LoraConfig, get_peft_model
+
+    base = _tiny_qwen3()
+    base.model.layers[0].self_attn.q_proj = torch.nn.Linear(128, 128, bias = True).to(torch.bfloat16)
+    config = LoraConfig(r = 32, target_modules = ["q_proj"], lora_bias = True)
+    model = get_peft_model(base, config, autocast_adapter_dtype = False)
+    model.add_adapter("second", config, autocast_adapter_dtype = False)
+    model.base_model.set_adapter("default")
+    return model.to(torch.bfloat16)
+
+
+@pytest.mark.parametrize("scheme", ["nvfp4", "mxfp8"])
+def test_adapter_activated_after_prepare_keeps_its_bias_grad(monkeypatch, scheme):
+    # PEFT freezes an inactive adapter's bias and unfreezes it on set_adapter. Prepared while only
+    # "default" was active, "second" was converted and its bias stopped training once selected.
+    _probe_ok(monkeypatch, bias_grad = False)
+    monkeypatch.setenv("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "1")
+    model = _two_biased_adapters()
+    q_proj = model.base_model.model.model.layers[0].self_attn.q_proj
+    assert not q_proj.lora_B["second"].bias.requires_grad
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = _prepare_model_for_qat(model, scheme)
+    linear_cls = _nvfp4_linear() if scheme == "nvfp4" else _mx_linear()
+    for name in ("default", "second"):
+        assert not isinstance(q_proj.lora_B[name], linear_cls), name
+    assert isinstance(q_proj.base_layer, linear_cls)
+    model.base_model.set_adapter("second")
+    lora_B = q_proj.lora_B["second"]
+    assert lora_B.bias.requires_grad
+    lora_B(torch.randn(4, 32, dtype = torch.bfloat16)).float().sum().backward()
+    assert lora_B.bias.grad is not None
+
+
+def test_bias_grad_probe_runs_unsloth_forward(monkeypatch):
+    # The probe must run the forward Unsloth installs (its NVFP4 custom op returns the bias gradient),
+    # not torchao's raw one, or opted-in biased adapters lose working NVFP4 QAT.
+    from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+
+    def forward(self, x):
+        return torch.nn.functional.linear(x, self.weight, self.bias)
+
+    monkeypatch.setattr(qat_utils, "_nvfp4_any_rank_forward", forward)
+    monkeypatch.setattr(qat_utils, "_nvfp4_qat_linear_op", lambda: None)
+    config = NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False)
+    assert qat_utils._qat_bias_grad_supported(config, torch.device("cpu"), torch.bfloat16)
+
+
+def _lora_bias_grad_after_real_prepare(monkeypatch, scheme):
+    from peft import LoraConfig, get_peft_model
+
+    monkeypatch.setenv("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "1")
+    base = _tiny_qwen3()
+    base.model.layers[0].self_attn.q_proj = torch.nn.Linear(128, 128, bias = True).to(torch.bfloat16)
+    model = get_peft_model(
+        base,
+        LoraConfig(r = 32, target_modules = ["q_proj"], lora_bias = True),
+        autocast_adapter_dtype = False,
+    ).to("cuda")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = _prepare_model_for_qat(model, scheme)
+    q_proj = model.base_model.model.model.layers[0].self_attn.q_proj
+    x = torch.randn(32, 128, device = "cuda", dtype = torch.bfloat16)
+    q_proj(x).float().sum().backward()
+    return q_proj.lora_B["default"]
+
+
+@_needs_fp4_gpu
+def test_nvfp4_opted_in_biased_adapter_stays_fake_quantized_on_gpu(monkeypatch):
+    lora_B = _lora_bias_grad_after_real_prepare(monkeypatch, "nvfp4")
+    assert isinstance(lora_B, _nvfp4_linear())
+    assert lora_B.bias.grad is not None and lora_B.bias.grad.abs().max() > 0
+
+
+@_needs_fp4_gpu
+def test_mxfp8_opted_in_biased_adapter_keeps_bias_grad_on_gpu(monkeypatch):
+    lora_B = _lora_bias_grad_after_real_prepare(monkeypatch, "mxfp8")
+    # torchao's MX backward drops the bias gradient, so lora_B stays in full precision.
+    assert not isinstance(lora_B, _mx_linear())
+    assert lora_B.bias.grad is not None and lora_B.bias.grad.abs().max() > 0
+
+
+def test_mx_backward_accepts_strided_output_grads():
+    # torchao's MX QAT backward flattens grad_output with .view: a transpose after the projection
+    # handed it a strided gradient and raised "view size is not compatible".
+    model = torch.nn.Sequential(torch.nn.Linear(128, 128, bias = False)).to(torch.bfloat16)
+    model = _prepare_model_for_qat(model, _mx_torchao_config())
+    assert isinstance(model[0], _mx_linear())
+    torch.manual_seed(0)
+    x = torch.randn(16, 2, 128, dtype = torch.bfloat16, requires_grad = True)
+    model(x).transpose(0, 1).contiguous().float().square().mean().backward()
+    grads = (x.grad.clone(), model[0].weight.grad.clone())
+    x.grad = model[0].weight.grad = None
+    model(x).float().square().mean().backward()
+    torch.testing.assert_close(grads[0], x.grad, rtol = 0, atol = 0)
+    torch.testing.assert_close(grads[1], model[0].weight.grad, rtol = 0, atol = 0)
