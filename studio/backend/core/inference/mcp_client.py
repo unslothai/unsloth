@@ -1721,6 +1721,7 @@ class McpToolList(list):
     """Tools plus the resources listed on the same connection."""
 
     resources: Optional[list[dict]] = None
+    complete: bool = True
 
 
 def _capabilities(client) -> Any:
@@ -1746,7 +1747,7 @@ async def _list_resources(client) -> Optional[list[dict]]:
     except Exception as exc:  # noqa: BLE001 - resources are optional, the tools still load
         logger.debug("MCP resources/list failed: %s", exc)
         if not listed:
-            return None
+            raise
     resources = []
     for resource in listed:
         uri = str(getattr(resource, "uri", "") or "")
@@ -1792,7 +1793,10 @@ async def list_tools_async(
                 raw_tools = []
             tools = McpToolList(t.model_dump(exclude_none = True) for t in raw_tools)
             listed.append(tools)
-            tools.resources = await _list_resources(client)
+            try:
+                tools.resources = await _list_resources(client)
+            except Exception:  # noqa: BLE001
+                tools.complete = False
         return tools
 
     try:
@@ -1800,6 +1804,7 @@ async def list_tools_async(
     except asyncio.TimeoutError:
         # A slow resources/list must not cost the server its tools.
         if listed:
+            listed[0].complete = False
             return listed[0]
         raise
 
@@ -1848,7 +1853,10 @@ def get_cached_resources(server_id: str) -> Optional[list[dict]]:
 
 def cache_tools(server_id: str, tools: list[dict]) -> None:
     _tool_cache[_account_key(server_id)] = tools
-    _probe_cooloff_until.pop(_account_key(server_id), None)
+    if getattr(tools, "complete", True):
+        _probe_cooloff_until.pop(_account_key(server_id), None)
+    else:
+        record_probe_failure(server_id)
 
 
 def record_probe_failure(server_id: str, use_oauth: bool = False) -> None:
@@ -1858,6 +1866,13 @@ def record_probe_failure(server_id: str, use_oauth: bool = False) -> None:
 
 def in_failure_cooloff(server_id: str) -> bool:
     return _probe_cooloff_until.get(_account_key(server_id), 0.0) > time.monotonic()
+
+
+def needs_discovery(server_id: str) -> bool:
+    tools = get_cached_tools(server_id)
+    return (tools is None or not getattr(tools, "complete", True)) and not in_failure_cooloff(
+        server_id
+    )
 
 
 def invalidate_tool_cache(server_id: Optional[str] = None) -> None:

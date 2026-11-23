@@ -185,6 +185,58 @@ def test_slow_resource_listing_keeps_the_tools(monkeypatch):
     assert tools == [{"name": "ping"}] and tools.resources is None
 
 
+@pytest.mark.parametrize("failure", ["slow", "error"])
+def test_a_send_after_a_failed_resource_listing_retries_it(failure, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    calls = {"tools": 0, "resources": 0}
+    broken = {"on": True}
+
+    class _Tool:
+        def model_dump(self, **_):
+            return {"name": "ping"}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def list_tools(self):
+            calls["tools"] += 1
+            return [_Tool()]
+
+        async def list_resources_mcp(self, cursor = None):
+            calls["resources"] += 1
+            if broken["on"]:
+                if failure == "slow":
+                    await asyncio.sleep(30)
+                raise RuntimeError("resources/list failed")
+            return SimpleNamespace(
+                resources = [SimpleNamespace(uri = "docs://readme", name = "readme")],
+                next_cursor = None,
+            )
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
+    mcp_servers_db.create_server(id = "srv1", display_name = "Docs", url = "https://x.example/mcp")
+    monkeypatch.setattr(mcp_client, "_client", lambda *a, **k: _Client())
+    monkeypatch.setattr(tools_mod, "probe_timeout", lambda *a: 0.5)
+
+    assert _names(asyncio.run(tools_mod.get_enabled_mcp_tools())) == ["mcp__srv1__ping"]
+    broken["on"] = False
+    assert _names(asyncio.run(tools_mod.get_enabled_mcp_tools())) == ["mcp__srv1__ping"]
+    assert calls == {"tools": 1, "resources": 1}
+
+    mcp_client._probe_cooloff_until.clear()
+    specs = asyncio.run(tools_mod.get_enabled_mcp_tools())
+    assert _names(specs) == ["mcp__srv1__ping", READ]
+    assert "docs://readme" in specs[1]["function"]["description"]
+    asyncio.run(tools_mod.get_enabled_mcp_tools())
+    assert calls == {"tools": 2, "resources": 2}
+
+
 def test_a_resource_only_server_stays_loadable_by_search(tmp_path, monkeypatch):
     _server(tmp_path, monkeypatch)
     tools = mcp_client.McpToolList()
