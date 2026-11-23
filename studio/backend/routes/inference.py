@@ -30316,7 +30316,9 @@ async def _finish_external_compaction(
         room = payload.context_window or plan.context_length
         # A saved summary written by a retry can be up to twice the reply.
         carried = (
-            estimate_message_tokens_without_unpriced_media({"role": "user", "content": plan.summary})
+            estimate_message_tokens_without_unpriced_media(
+                {"role": "user", "content": plan.summary}
+            )
             if plan.summary
             else 0
         )

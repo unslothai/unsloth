@@ -382,6 +382,7 @@ def test_an_earlier_summary_call_cut_off_is_not_retried():
     )
     assert len(summaries) == 1
 
+
 def test_a_summary_still_streaming_past_the_idle_timeout_is_kept(monkeypatch):
     # #18306: the whole summary took longer than the timeout, but the provider never went quiet.
     monkeypatch.setattr(cloud_compaction, "SUMMARY_IDLE_TIMEOUT_S", 0.3)
@@ -643,7 +644,12 @@ def test_a_responses_connection_gets_the_widened_read_timeout_too(monkeypatch):
     seen = []
 
     class _Recorder:
-        def stream(self, *args, timeout = None, **kwargs):
+        def stream(
+            self,
+            *args,
+            timeout = None,
+            **kwargs,
+        ):
             seen.append(timeout)
             raise RuntimeError("recorded")
 
