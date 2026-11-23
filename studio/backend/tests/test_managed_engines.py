@@ -3131,6 +3131,7 @@ def test_download_size_counts_the_flashinfer_kernel_wheel(isolated, kernel_host,
         with_kernels - install.download_bytes("vllm") == table[f"{version}+cu130"]["x86_64"]["size"]
     )
 
+
 def test_windows_local_checkpoint_served_names(monkeypatch):
     from contextlib import nullcontext
     from core.inference import managed_engine
