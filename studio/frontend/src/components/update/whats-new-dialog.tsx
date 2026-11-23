@@ -46,7 +46,7 @@ export function WhatsNewDialog() {
       }}
     >
       <DialogContent
-        className="flex h-[min(44rem,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] flex-col gap-0 overflow-hidden p-0 focus:outline-none sm:max-w-[60rem]"
+        className="flex h-[min(38rem,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] flex-col gap-0 overflow-hidden p-0 focus:outline-none sm:max-w-[60rem]"
         tabIndex={-1}
         onOpenAutoFocus={(event) => {
           event.preventDefault();
@@ -488,10 +488,6 @@ function ReleaseArticle({
 }) {
   const t = useT();
   const locale = useLocale();
-  const dateFormat = new Intl.DateTimeFormat(
-    document.documentElement.lang || undefined,
-    { dateStyle: "medium", timeZone: "UTC" },
-  );
   return (
     <>
       {from ? (
@@ -508,10 +504,8 @@ function ReleaseArticle({
             <>
               <p className="mt-2 flex flex-wrap items-center gap-x-2 text-ui-13 text-muted-foreground">
                 <time dateTime={entry.date}>
-                  {dateFormat.format(new Date(entry.date))}
+                  {releaseAge(entry.date, locale)}
                 </time>
-                <span aria-hidden="true">·</span>
-                <span>{releaseAge(entry.date, locale)}</span>
                 <span aria-hidden="true">·</span>
                 {releaseLink}
               </p>
