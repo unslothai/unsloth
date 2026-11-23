@@ -16805,7 +16805,8 @@ class LlamaCppBackend:
             if (
                 not is_vulkan_backend
                 and usable_mib > 0
-                and idx in LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+                and idx
+                in LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
                     LlamaCppBackend._integrated_cuda_mask_key(), ()
                 )
                 and (
