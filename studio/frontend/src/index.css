@@ -7512,26 +7512,26 @@ html[data-glass="macos"] [data-slot="chat-settings-panel"] {
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
-/* Not on WebKitGTK < 2.54: its strip mask keeps only the caption, so the panel keeps its own glass. */
-html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor)[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
+/* Not on WebKitGTK < 2.54 glass: its strip mask keeps only the caption, so the panel keeps its own. */
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
   --chat-settings-top: 0px;
   padding-top: var(--studio-custom-titlebar-height, 0px);
 }
-html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor)[data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-resize-handle"] {
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-resize-handle"] {
   top: var(--studio-custom-titlebar-height, 0px);
 }
 /* The strip's glass covers this column: two adjacent backdrop blurs always show a seam. */
-html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor)[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
   background: transparent;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   box-shadow: none;
 }
-html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor)[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"]::before {
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"]::before {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor)[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > div:last-child {
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > [data-chat-settings-content] {
   border-left-color: transparent;
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] .bg-panel-surface,
@@ -7556,7 +7556,7 @@ html[data-glass][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-sett
 html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-sidebar-glass-frame]) aside[data-slot="chat-settings-panel"] {
   border-top-left-radius: min(14px, var(--studio-custom-titlebar-height, 0px));
 }
-html[data-glass][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > div:last-child {
+html[data-glass][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > [data-chat-settings-content] {
   border-top-left-radius: inherit;
 }
 

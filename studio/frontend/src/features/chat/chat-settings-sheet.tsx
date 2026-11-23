@@ -1974,6 +1974,7 @@ export function ChatSettingsPanel({
       />
       ) : null}
       <div
+        data-chat-settings-content=""
         className={cn(
           "h-full w-full overflow-hidden",
           open && "border-l border-panel-edge",

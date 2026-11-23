@@ -25,7 +25,7 @@ const textOnly = (el: HTMLElement) =>
 
 // Beside the pinned strip, docked Run settings has no glass of its own: the strip draws it, so its lens takes the strip's.
 const STRIP_PANEL =
-  'html[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready]:not(.webkit-legacy-compositor) aside[data-slot="chat-settings-panel"]';
+  'html[data-glass][data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready]:not(.webkit-legacy-compositor) aside[data-slot="chat-settings-panel"]';
 const glassSource = (host: HTMLElement): HTMLElement =>
   (host.matches(STRIP_PANEL) &&
     document.querySelector<HTMLElement>('[data-slot="sidebar-container"][data-windows-glass-frame]')) ||
