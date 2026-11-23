@@ -11,12 +11,21 @@
     }
   ],
   "changes": [
-    ["Images", "Qwen-Image-2.1-Turbo renders in 8 steps, 2.5x faster."],
+    [
+      "Images",
+      "Qwen-Image-2.1-Turbo renders in 8 steps, 2.5x faster."
+    ],
     [
       "Training",
       "Train text-diffusion LLMs such as DiffusionGemma, LLaDA, and Dream."
     ],
-    ["MoE", "Run MoE GGUFs larger than your VRAM up to 3x faster."],
-    ["Mac", "Speculative decoding makes MLX replies up to 2.8x faster."]
+    [
+      "MoE",
+      "Run MoE GGUFs larger than your VRAM up to 3x faster."
+    ],
+    [
+      "Mac",
+      "Speculative decoding makes MLX replies up to 2.8x faster."
+    ]
   ]
 }

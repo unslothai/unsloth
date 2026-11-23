@@ -11,10 +11,25 @@
     }
   ],
   "changes": [
-    ["Export", "Export a chat to HTML or PDF from the chat menu."],
-    ["Models", "New Qwen3.8-27B Dynamic v3.1 GGUFs."],
-    ["Performance", "Smoother streaming, scrolling, and menus in long chats."],
-    ["Images", "Queue the next image while another one renders."],
-    ["Mac", "Run Claude Code and Codex on MLX models with unsloth start."]
+    [
+      "Export",
+      "Export a chat to HTML or PDF from the chat menu."
+    ],
+    [
+      "Models",
+      "New Qwen3.8-27B Dynamic v3.1 GGUFs."
+    ],
+    [
+      "Performance",
+      "Smoother streaming, scrolling, and menus in long chats."
+    ],
+    [
+      "Images",
+      "Queue the next image while another one renders."
+    ],
+    [
+      "Mac",
+      "Run Claude Code and Codex on MLX models with unsloth start."
+    ]
   ]
 }

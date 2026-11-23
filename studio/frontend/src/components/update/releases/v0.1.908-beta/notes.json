@@ -21,7 +21,10 @@
       "Coding agents",
       "Claude Code and Codex reprocess far less of each prompt on local GGUFs."
     ],
-    ["Browser use", "Each chat gets its own tab, and Always allow now sticks."],
+    [
+      "Browser use",
+      "Each chat gets its own tab, and Always allow now sticks."
+    ],
     [
       "Image servers",
       "Generate images through sd-server, Ollama, Lemonade, and more."

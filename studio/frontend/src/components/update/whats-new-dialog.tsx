@@ -8,6 +8,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useT } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
 import { cn } from "@/lib/utils";
@@ -64,8 +65,8 @@ function ReleaseHistory({
   url?: string | null;
 }) {
   const t = useT();
-  const close = useWhatsNew((state) => state.close);
   const liveOffer = useUpdateOffer((state) => state.offer);
+  const railFades = useScrollFades();
   const target = version ?? liveOffer?.latestVersion;
   const bundled = target
     ? releases.find((r) => sameVersion(r.version, target))
@@ -83,6 +84,21 @@ function ReleaseHistory({
   const href = entry
     ? `https://github.com/unslothai/unsloth/releases/tag/v${entry.version}`
     : (url ?? liveOffer?.notesUrl ?? null);
+
+  const releaseLink = href ? (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      onClick={(e) => {
+        e.preventDefault();
+        openExternalLink(href);
+      }}
+      className="font-medium text-muted-foreground hover:text-foreground hover:underline"
+    >
+      {t("updateNotes.openRelease")} ↗
+    </a>
+  ) : null;
 
   return (
     <>
@@ -105,11 +121,17 @@ function ReleaseHistory({
               : t("updateNotes.history")}
           </DialogDescription>
         </div>
+        <UpdateAction />
       </header>
       <div className="grid min-h-0 flex-1 gap-x-2 px-3 max-sm:grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[11.5rem_minmax(0,1fr)]">
         <nav
+          ref={railFades.attach}
+          onScroll={railFades.onScroll}
           aria-label={t("updateNotes.versions")}
-          className="min-w-0 px-1 pb-3 pt-1 sm:overflow-y-auto"
+          className={cn(
+            "hover-scrollbar panel-scroll-fade-action min-w-0 px-1 pb-3 pt-1 sm:overflow-y-auto",
+            railFades.className,
+          )}
         >
           <p className="mb-1.5 px-2.5 text-xs font-medium text-muted-foreground">
             {t("updateNotes.versions")}
@@ -164,7 +186,7 @@ function ReleaseHistory({
         </nav>
         <article
           key={selected}
-          className="hover-scrollbar min-h-0 min-w-0 overflow-y-auto px-3 pb-6 pt-1"
+          className="hover-scrollbar min-h-0 min-w-0 overflow-y-auto px-7 pb-6 pt-1"
         >
           <h2 className="font-heading text-lg font-semibold leading-tight">
             {entry?.title ??
@@ -174,12 +196,13 @@ function ReleaseHistory({
           </h2>
           {entry ? (
             <>
-              <time
-                dateTime={entry.date}
-                className="mt-1 block text-xs text-muted-foreground"
-              >
-                {dateFormat.format(new Date(entry.date))}
-              </time>
+              <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                <time dateTime={entry.date}>
+                  {dateFormat.format(new Date(entry.date))}
+                </time>
+                {releaseLink && <span aria-hidden="true">·</span>}
+                {releaseLink}
+              </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 {entry.features.map((feature) => (
                   <figure
@@ -192,7 +215,7 @@ function ReleaseHistory({
                         event.currentTarget.style.display = "none";
                       }}
                       alt={feature.alt}
-                      className="block aspect-[20/7] w-full object-cover"
+                      className="block aspect-[12/5] w-full object-cover"
                     />
                     <figcaption className="p-3">
                       <h3 className="font-heading text-sm font-semibold">
@@ -235,52 +258,42 @@ function ReleaseHistory({
               </section>
             </>
           ) : (
-            <ReleaseNotesPanel
-              version={selected}
-              open={true}
-              releaseNotesUrl={url ?? liveOffer?.notesUrl ?? null}
-            />
+            <>
+              {releaseLink && <p className="mt-1 text-xs">{releaseLink}</p>}
+              <ReleaseNotesPanel
+                version={selected}
+                open={true}
+                releaseNotesUrl={url ?? liveOffer?.notesUrl ?? null}
+              />
+            </>
           )}
         </article>
       </div>
-      <footer
-        className={cn(
-          "flex shrink-0 items-center justify-between gap-3 px-6 py-4",
-          WASH,
-        )}
-      >
-        {href ? (
-          <a
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            onClick={(e) => {
-              e.preventDefault();
-              openExternalLink(href);
-            }}
-            className="text-xs font-medium text-muted-foreground hover:text-foreground hover:underline"
-          >
-            {t("updateNotes.openRelease")} ↗
-          </a>
-        ) : (
-          <span />
-        )}
-        {liveOffer && (
-          <Button
-            size="sm"
-            variant="primary"
-            className="h-auto rounded-full px-4 py-2 text-ui-13"
-            disabled={liveOffer.actionDisabled}
-            onClick={() => {
-              if (liveOffer.source === "desktop") close();
-              liveOffer.runAction();
-            }}
-            data-testid="whats-new-update"
-          >
-            {liveOffer.actionLabel}
-          </Button>
-        )}
-      </footer>
     </>
+  );
+}
+
+function UpdateAction() {
+  const close = useWhatsNew((state) => state.close);
+  const liveOffer = useUpdateOffer((state) => state.offer);
+  if (!liveOffer) {
+    return null;
+  }
+  return (
+    <Button
+      size="sm"
+      variant="primary"
+      className="ml-auto h-auto shrink-0 rounded-full px-4 py-2 text-ui-13"
+      disabled={liveOffer.actionDisabled}
+      onClick={() => {
+        if (liveOffer.source === "desktop") {
+          close();
+        }
+        liveOffer.runAction();
+      }}
+      data-testid="whats-new-update"
+    >
+      {liveOffer.actionLabel}
+    </Button>
   );
 }
