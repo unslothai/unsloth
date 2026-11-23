@@ -157,7 +157,7 @@ def _run_cpu_fallback_load(
     }
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
-    backend._llama_server_env_for_binary = lambda _binary: {
+    backend._llama_server_env_for_binary = lambda _binary, **_kwargs: {
         "PATH": os.environ.get("PATH", ""),
         **(mmproj_env or {}),
     }
@@ -1238,7 +1238,7 @@ def test_terminal_signal_with_explicit_child_placement_does_not_replay(
     backend._wait_for_health = lambda timeout, **_kw: False
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
-    backend._llama_server_env_for_binary = lambda _binary: {
+    backend._llama_server_env_for_binary = lambda _binary, **_kwargs: {
         "PATH": os.environ.get("PATH", ""),
         **placement_env,
     }
@@ -1695,4 +1695,46 @@ class TestHipRocrRetryKeepsFitBudget:
         assert len(launches) == 2
         assert _fit_mode(launches[1][0]) == "off"
         assert "HIP/ROCR" in str(error)
+        assert not LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")
+
+
+class TestHipRocrSegfaultRetriesBundleOnly:
+    """A segfault in the prepended system libamdhip64 never reaches the linker's
+    symbol-lookup error, so there is no output line for the mismatch check to
+    catch. The prepended dirs themselves are the evidence the retry can undo."""
+
+    def test_startup_segfault_drops_the_prepended_system_dirs(
+        self, monkeypatch, tmp_path
+    ):
+        launches, loaded, error = _run_full_offload_spawns(
+            monkeypatch,
+            tmp_path,
+            outputs = ["", ""],
+            returncodes = [-11, None],
+        )
+        assert error is None
+        assert loaded
+        assert len(launches) == 2
+        cmd0, env0 = launches[0]
+        cmd1, env1 = launches[1]
+        assert env0["LD_LIBRARY_PATH"].startswith("/opt/rocm/lib")
+        assert "/opt/rocm/lib" not in env1["LD_LIBRARY_PATH"].split(":")
+        # The retry keeps the placement argv; only the ROCm env changes.
+        assert _fit_mode(cmd0) == _fit_mode(cmd1)
+        assert LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")
+
+    def test_an_oom_kill_does_not_spend_the_bundle_only_retry(
+        self, monkeypatch, tmp_path
+    ):
+        """SIGKILL means the OOM killer, not a library mix; the system dirs stay."""
+        launches, loaded, error = _run_full_offload_spawns(
+            monkeypatch,
+            tmp_path,
+            outputs = ["", ""],
+            returncodes = [-9, None],
+        )
+        assert error is None
+        assert loaded
+        assert len(launches) == 2
+        assert "/opt/rocm/lib" in launches[1][1]["LD_LIBRARY_PATH"].split(":")
         assert not LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")

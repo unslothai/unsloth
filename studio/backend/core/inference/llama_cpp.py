@@ -33353,6 +33353,21 @@ class LlamaCppBackend:
                             "\n".join(self._stdout_lines)
                         ) or self._is_tensor_quant_kv_unsupported(_startup_output)
                         _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
+                        # A hard fault inside the prepended system libs prints no
+                        # symbol-lookup line for the check above to match (#18948:
+                        # a GPF in the system libamdhip64 exits -11). While the
+                        # child env still carries the prepend, a signal crash is
+                        # the same HIP/ROCR mix the bundle-only retry undoes.
+                        if not _hip_rocr_mismatch and self._is_signal_crash(
+                            _crashed_proc.returncode if _crashed_proc is not None else None
+                        ):
+                            _clean_env = self._llama_server_env_for_binary(
+                                binary, use_system_rocm = False
+                            )
+                            _clean_ld = _clean_env.get("LD_LIBRARY_PATH", "")
+                            _hip_rocr_mismatch = bool(_clean_ld) and _clean_ld != env.get(
+                                "LD_LIBRARY_PATH"
+                            )
                         # A startup crash means the spill prediction was wrong, so placement returns to llama.cpp.
                         _capability_crash = _tensor_capability_crash or self._is_kv_unified_refused(
                             "\n".join(self._stdout_lines)
@@ -33375,9 +33390,9 @@ class LlamaCppBackend:
                             if _retry_ld and _retry_ld != env.get("LD_LIBRARY_PATH"):
                                 logger.warning(
                                     "llama-server crashed during startup (exit code %s) "
-                                    "because a bundled ROCm library could not resolve a "
-                                    "symbol against the system ROCm; retrying once "
-                                    "with the bundled runtime only. Crash log: %s",
+                                    "with the system ROCm libraries prepended; "
+                                    "retrying once with the bundled runtime only. "
+                                    "Crash log: %s",
                                     _crashed_proc.returncode,
                                     self._llama_log_path,
                                 )
