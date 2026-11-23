@@ -609,7 +609,8 @@ def _snapshot_in_root(cache_root: Path, repo_id: str) -> Optional[Path]:
     """``repo_id``'s main-revision snapshot under exactly ``cache_root``, or None."""
     try:
         return _snapshot_in_repo_dir(cache_root / _repo_folder_name(repo_id))
-    except (OSError, UnicodeDecodeError):
+    # HFValidationError (a ValueError): an audio.cpp ``<namespace>/<repo>/<folder>`` id has no cache dir of its own.
+    except (OSError, ValueError):
         return None
 
 

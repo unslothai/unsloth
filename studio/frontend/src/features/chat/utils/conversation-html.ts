@@ -24,6 +24,7 @@ export type ConversationHtmlMessage = ConversationMarkdownMessage & {
 
 export type NamedConversationHtml = {
   readonly title: string;
+  readonly model?: string;
   readonly messages: readonly ConversationHtmlMessage[];
 };
 
@@ -123,14 +124,16 @@ export function buildConversationHtmlBody(
   conversations: readonly NamedConversationHtml[],
 ): string {
   const rendered = conversations
-    .map(({ title, messages }) => ({ title, body: renderMessages(messages) }))
+    .map(({ title, model, messages }) => ({ title, model, body: renderMessages(messages) }))
     .filter(({ body }) => body);
   return rendered
-    .map(({ title, body }) =>
-      rendered.length > 1
-        ? `<article class="conversation">\n<h2 class="conversation-title">${escapeHtml(title)}</h2>\n${body}\n</article>`
-        : `<article class="conversation">\n${body}\n</article>`,
-    )
+    .map(({ title, model, body }) => {
+      const heading = rendered.length > 1
+        ? `<h2 class="conversation-title">${escapeHtml(title)}</h2>\n`
+        : "";
+      const metadata = rendered.length > 1 && model ? `<p class="model">Model: ${escapeHtml(model)}</p>\n` : "";
+      return `<article class="conversation">\n${heading}${metadata}${body}\n</article>`;
+    })
     .join("\n<hr>\n");
 }
 

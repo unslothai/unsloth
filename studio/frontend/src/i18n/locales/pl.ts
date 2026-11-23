@@ -1827,6 +1827,7 @@ export const pl = {
       memoryLabel: "Limit pamięci",
       memoryDescription:
         "Maksymalna ilość pamięci, jaką może zarezerwować jedno wywołanie Python lub Terminal w piaskownicy. Obowiązuje od następnego wywołania. Domyślnie {defaultSize} GB.",
+      memoryAuto: "Automatycznie",
       memoryLocked: "Ustawione przez UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Wpisz liczbę całkowitą od {min} do {max}.",
       restored: "Odebrano dostęp do folderów (liczba: {count}).",
@@ -6286,7 +6287,7 @@ export const pl = {
     checking: "Sprawdzanie...",
     installPrompt: "Aby zainstalować Unsloth, kliknij Rozpocznij.",
     getStarted: "Rozpocznij",
-    chatOnly: "Tylko czat (GGUF): mniejsza instalacja, bez trenowania",
+    chatOnly: "Tylko czat: mniejsza instalacja, bez trenowania",
     installLocation: "Lokalizacja instalacji:",
     changeLocation: "Zmień",
     useDefaultLocation: "Użyj domyślnej",

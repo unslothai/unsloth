@@ -67,7 +67,35 @@ if TORCH_SUPPORTS_PREFIX_GROUPER:
 
 
 # dynamic=True: T changes almost every batch; static recompiles per T (~14 s each).
-_flex_attention_compiled = torch.compile(flex_attention, dynamic = True)
+_flex_attention_dynamic = torch.compile(flex_attention, dynamic = True)
+
+
+def _rocm_static_flex_entry(query, key, value, **kwargs):
+    # Its own code object, so static graphs keep their own recompile budget.
+    return flex_attention(query, key, value, **kwargs)
+
+
+# ROCm: flex compiled with a symbolic sequence length returned inf / NaN gradients on gfx1151 (torch 2.11), so
+# calls whose backward runs compile per padded length there. UNSLOTH_ROCM_FLEX_STATIC=0 keeps the dynamic kernel.
+_ROCM_FLEX_STATIC = bool(getattr(torch.version, "hip", None)) and (
+    os.environ.get("UNSLOTH_ROCM_FLEX_STATIC", "1") != "0"
+)
+_flex_attention_static = (
+    torch.compile(_rocm_static_flex_entry, dynamic = False) if _ROCM_FLEX_STATIC else None
+)
+
+
+def _flex_attention_compiled(query, key, value, **kwargs):
+    if (
+        _flex_attention_static is not None
+        and query.device.type == "cuda"
+        and torch.is_grad_enabled()
+        and (query.requires_grad or key.requires_grad or value.requires_grad)
+    ):
+        return _flex_attention_static(query, key, value, **kwargs)
+    return _flex_attention_dynamic(query, key, value, **kwargs)
+
+
 _create_block_mask_compiled = torch.compile(create_block_mask, dynamic = True)
 
 # fp32 needs 32/32 for a ~1e-6 floor; bf16 128/64 is ~5x faster; 128/128 OOMs Triton on B200.
@@ -503,6 +531,12 @@ def _keep_saved(tensor):
     return tensor
 
 
+def _detach_saved(tensor):
+    # Returning the input saves an op's output on its own node, a cycle gc cannot break: a probe whose
+    # backward fails (out of resource retry, compile failure) would keep its Q / K / V copies alive.
+    return tensor.detach()
+
+
 def _record_compile_failure(key, reason):
     global _COMPILE_FAILURE
     _COMPILE_CHECKED[key] = False
@@ -543,7 +577,7 @@ def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, k
                 block_mask = get_block_mask(seg, q.device, compile_mask = True)
             out = _run_flex(q, k, v, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)
             # Else inside a non-reentrant checkpoint the backward unpacks through it and stops recompute.
-            own_hooks = torch.autograd.graph.saved_tensors_hooks(_keep_saved, _keep_saved)
+            own_hooks = torch.autograd.graph.saved_tensors_hooks(_detach_saved, _keep_saved)
             with torch.inference_mode(False), torch.enable_grad(), own_hooks:
                 qc, kc, vc = (x.detach().clone().requires_grad_(True) for x in (q, k, v))
                 oc = _run_flex(qc, kc, vc, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)

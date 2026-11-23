@@ -1820,6 +1820,7 @@ export const vi = {
       memoryLabel: "Giới hạn bộ nhớ",
       memoryDescription:
         "Lượng bộ nhớ tối đa mà một lệnh gọi Python hoặc Terminal trong sandbox có thể dành riêng. Áp dụng từ lệnh gọi tiếp theo. Mặc định là {defaultSize} GB.",
+      memoryAuto: "Tự động",
       memoryLocked: "Được đặt bởi UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Nhập một số nguyên từ {min} đến {max}.",
       restored: "Đã gỡ quyền truy cập khỏi {count} thư mục.",
@@ -6235,7 +6236,7 @@ export const vi = {
     checking: "Đang kiểm tra...",
     installPrompt: "Để cài đặt Unsloth, hãy nhấp vào Bắt đầu.",
     getStarted: "Bắt đầu",
-    chatOnly: "Chỉ trò chuyện (GGUF): bản cài đặt nhỏ hơn, không có huấn luyện",
+    chatOnly: "Chỉ trò chuyện: bản cài đặt nhỏ hơn, không có huấn luyện",
     installLocation: "Vị trí cài đặt:",
     changeLocation: "Thay đổi",
     useDefaultLocation: "Dùng mặc định",

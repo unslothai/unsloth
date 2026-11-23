@@ -549,10 +549,12 @@ export function ChatSettingsPanel({
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
   const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const platformMlxInference = usePlatformStore((s) => s.mlxInference);
   const loadSettingNames = presetLoadSettingNames(
     isGguf,
     platformDeviceType,
     platformChatOnlyReason,
+    platformMlxInference,
   );
   // The backend's own classification: the native token survives a switch to a remote GGUF, and
   // org/name.gguf is a repo id, not a file.

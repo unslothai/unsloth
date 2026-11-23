@@ -194,10 +194,10 @@ def _target(device = "cuda", dtype = None):
     return types.SimpleNamespace(device = device, dtype = torch.bfloat16 if dtype is None else dtype)
 
 
-def test_explicit_w8a8_ships_for_flux3_klein_only():
-    assert set(tq._FAMILY_RDNA_EXPLICIT_W8A8) == {"flux.3-klein"}
-    # AUTO keeps bf16 for it
+def test_explicit_w8a8_ships_for_the_measured_families_only():
+    assert set(tq._FAMILY_RDNA_EXPLICIT_W8A8) == {"flux.3-klein", "ltx-2.5"}
     assert "flux.3-klein" not in tq._FAMILY_RDNA_AUTO_W8A8
+    assert "ltx-2.5" not in tq._FAMILY_RDNA_AUTO_W8A8
 
 
 def test_explicit_w8a8_reason_follows_the_explicit_compile_gates(rocm, monkeypatch):
