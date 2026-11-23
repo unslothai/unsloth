@@ -563,7 +563,7 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 	assert.match(lens, /motion\.observe\(preview \? workspace : document\.body, \{ attributes: true, subtree: true, attributeFilter: \[GLASS_MOVING_ATTR\] \}\);/);
 	// The Desktop sidebar frame and layered panels draw their glass (and fill) on ::before.
 	assert.match(lens, /for \(const pseudo of \[null, "::before"\]\)/);
-	assert.match(lens, /const fill = glass \?\? getComputedStyle\(host\);/);
+	assert.match(lens, /const fill = !glass \|\| painted\(own\) \? own : glass;/);
 	// The copy blurs as much as the surface it sits in, not the shared --glass-blur.
 	assert.match(lens, /if \(fillCopy\) fillCopy\.style\.filter = blur \|\| "none";/);
 	// Outside the workspace the wash stops at <body>, whose opaque fill would hide the copy.
@@ -666,6 +666,28 @@ test("each lens portal is keyed by its host, so a host joining the list does not
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
 	assert.match(lens, /`glass-lens-\$\{hostKey\(host\)\}`/);
 	assert.doesNotMatch(lens, /`glass-lens-\$\{i\}`/);
+});
+
+test("the lens tint copies the host's fill when only its ::before carries the blur", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /const fill = !glass \|\| painted\(own\) \? own : glass;/);
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /:not\(\[data-glass-layers\]\) \[data-slot="dialog-content"\]\[data-settings-dialog\] \{\s*-webkit-backdrop-filter: none;/);
+});
+
+test("a lens stays on the visible box of a host that scrolls itself", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /el\.style\.translate = host\.scrollLeft \|\| host\.scrollTop \? `\$\{host\.scrollLeft\}px \$\{host\.scrollTop\}px` : "";/);
+	assert.match(lens, /host\.addEventListener\("scroll", place, \{ passive: true \}\);/);
+	assert.match(lens, /host\.removeEventListener\("scroll", place\);/);
+});
+
+test("legacy WebKitGTK's sidebar glass takes the lens instead of the masked frame, never both", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /const FRAME_SIDEBAR = '\[data-windows-glass-frame\] > \[data-slot="sidebar-inner"\]';/);
+	assert.match(lens, /if \(framed\.size\) found = found\.filter\(\(h\) => !framed\.has\(h\)\);/);
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /webkit-legacy-compositor\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-windows-glass-frame\] > \[data-slot="sidebar-inner"\] \{[^}]*backdrop-filter: blur/);
 });
 
 test("a lens copy drops its blur while its host is moving, instead of falling back to the CSS blur", () => {

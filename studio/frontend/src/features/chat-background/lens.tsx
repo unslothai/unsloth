@@ -26,6 +26,12 @@ function drawsGlass(el: HTMLElement): boolean {
   return el.hasAttribute(GLASS_MOVING_ATTR) || glassLayer(el) !== null;
 }
 
+const painted = (s: CSSStyleDeclaration) =>
+  (s.backgroundColor !== "rgba(0, 0, 0, 0)" && s.backgroundColor !== "transparent") || s.backgroundImage !== "none";
+
+// Legacy WebKitGTK masks the frame's ::before to the caption and gives the sidebar its own glass: one lens, not two.
+const FRAME_SIDEBAR = '[data-windows-glass-frame] > [data-slot="sidebar-inner"]';
+
 const PREVIEW_HOSTS = ".wallpaper-preview-composer";
 
 // Keyed per host, not by index: a host joining earlier in the list would otherwise remount every later lens.
@@ -59,9 +65,11 @@ export function GlassLenses({
     const scan = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        const found = [
+        let found = [
           ...(preview ? workspace : document).querySelectorAll<HTMLElement>(preview ? PREVIEW_HOSTS : LENS_HOSTS),
         ].filter((h) => drawsGlass(h) && (!clear || h.matches(LENS_CLEAR_HOSTS)));
+        const framed = new Set(found.filter((h) => h.matches(FRAME_SIDEBAR)).map((h) => h.parentElement));
+        if (framed.size) found = found.filter((h) => !framed.has(h));
         setHosts((prev) =>
           prev.length === found.length && prev.every((h, i) => h === found[i])
             ? prev
@@ -122,7 +130,9 @@ function Lens({
       const h = host.getBoundingClientRect();
       const opacity = getComputedStyle(wallpaper).opacity;
       const glass = glassLayer(host);
-      const fill = glass ?? getComputedStyle(host);
+      const own = getComputedStyle(host);
+      // Settings and layered panels blur on ::before but keep their fill on the host.
+      const fill = !glass || painted(own) ? own : glass;
       // The copy takes the surface's own blur: menus and dialogs blur more than the shared --glass-blur.
       const blur = glass ? glass.backdropFilter || glass.getPropertyValue("-webkit-backdrop-filter") : "";
       const key = [
@@ -134,6 +144,8 @@ function Lens({
         h.top,
         h.width,
         h.height,
+        host.scrollLeft,
+        host.scrollTop,
         opacity,
         fill.backgroundColor,
         fill.backgroundImage,
@@ -141,6 +153,8 @@ function Lens({
       ].join();
       if (key === last) return;
       last = key;
+      // A dialog scrolling its own box would carry the lens away with its content.
+      el.style.translate = host.scrollLeft || host.scrollTop ? `${host.scrollLeft}px ${host.scrollTop}px` : "";
       for (const copy of copies) {
         copy.style.left = `${w.left - h.left}px`;
         copy.style.top = `${w.top - h.top}px`;
@@ -185,6 +199,7 @@ function Lens({
     // The lens paints at z-index -1, so the host becomes its stacking context (index.css).
     host.setAttribute(HOST_FLAG, getComputedStyle(host).position === "static" ? "static" : "");
     host.addEventListener("animationend", place);
+    host.addEventListener("scroll", place, { passive: true });
     const resize = new ResizeObserver(place);
     resize.observe(host);
     resize.observe(wallpaper);
@@ -201,6 +216,7 @@ function Lens({
     return () => {
       host.removeAttribute(HOST_FLAG);
       host.removeEventListener("animationend", place);
+      host.removeEventListener("scroll", place);
       resize.disconnect();
       motion.disconnect();
       mutations.disconnect();
