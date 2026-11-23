@@ -211,7 +211,6 @@ def test_page_break_markers_keep_word_separators(ebooks, html, expected):
     ],
 )
 def test_unclosed_page_break_markers_keep_their_text(ebooks, html, expected):
-    # An omitted end tag makes the marker's extent ambiguous, so nothing is dropped.
     assert ebooks._html_text(html) == expected
 
 

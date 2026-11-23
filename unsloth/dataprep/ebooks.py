@@ -116,13 +116,11 @@ class _BookTextParser(HTMLParser):
         self.encoding = None
         # <pre> text is kept verbatim and spliced back after whitespace cleanup.
         self.preformatted = []
-        # (stack depth, parts index) of open print page-number markers.
         self.page_marks = []
 
     def handle_starttag(self, tag, attrs):
         if tag not in _PAGE_LABEL_TAGS:
-            # A page label is phrasing content; any other tag may imply the marker's end tag, which
-            # leaves its extent ambiguous, so its text is kept.
+            # Any other tag may imply the marker's end tag; its extent is then unknown, so keep its text.
             self.page_marks.clear()
         if tag == "body":
             self.handle_endtag("head")
@@ -172,8 +170,7 @@ class _BookTextParser(HTMLParser):
                 del self.stack[i:]
                 closed = i
                 break
-        # Only the outermost marker, closed by its own end tag, is dropped; an implicitly ended
-        # one (omitted end tag) may hold prose, so its text is kept.
+        # Drop only the outermost marker, and only when closed by its own end tag.
         while self.page_marks and self.page_marks[-1][0] >= len(self.stack):
             depth, start = self.page_marks.pop()
             if not self.page_marks and depth == closed:
@@ -189,7 +186,7 @@ class _BookTextParser(HTMLParser):
             "".join(self.parts[start:]),
         )
         if len("".join(text.split())) > _MAX_PAGE_LABEL:
-            return  # Too long for a page label: keep the text rather than lose prose.
+            return  # Not a page label.
         del self.parts[start:]
         if text.strip():
             text = text[: len(text) - len(text.lstrip())] + text[len(text.rstrip()) :]
