@@ -104,7 +104,7 @@ def normalize_provider_extra_headers(value) -> dict[str, str]:
 
 
 AUTO_COMPACT_TOKENS_MIN = 1_000
-AUTO_COMPACT_TOKENS_MAX = 2_000_000
+AUTO_COMPACT_TOKENS_MAX = 1_200_000
 _MAX_AUTO_COMPACT_MODELS = 500
 
 
@@ -255,7 +255,7 @@ class ProviderCreate(ExtraHeadersMixin, AutoCompactByModelMixin):
         None,
         strict = True,
         ge = 1_000,
-        le = 2_000_000,
+        le = AUTO_COMPACT_TOKENS_MAX,
         description = (
             "Optional token count after which chats on this connection compact, "
             "instead of the default three quarters of the model's context window"
@@ -307,7 +307,7 @@ class ProviderUpdate(ExtraHeadersMixin, AutoCompactByModelMixin):
         None,
         strict = True,
         ge = 1_000,
-        le = 2_000_000,
+        le = AUTO_COMPACT_TOKENS_MAX,
         description = (
             "Optional token count after which chats on this connection compact, "
             "instead of the default three quarters of the model's context window"

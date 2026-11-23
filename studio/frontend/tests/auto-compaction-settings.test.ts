@@ -12,6 +12,7 @@ import {
   autoCompactTokensForModel,
   formatAutoCompactDraft,
   ggufCompactionRequestFields,
+  normalizeAutoCompactTokens,
   normalizeAutoCompactTokensByModel,
   parseAutoCompactTokens,
   parseAutoCompactTokensByModel,
@@ -431,7 +432,9 @@ test("a model's known window ends its slider there", () => {
   assert.equal(stops[0], 0);
   assert.equal(stops.at(-1), 262_144);
   assert.ok(stops.every((tokens) => tokens <= 262_144));
-  assert.equal(autoCompactSliderStops().at(-1), 2_000_000);
+  assert.equal(autoCompactSliderStops().at(-1), 1_200_000);
+  // A 2M limit saved before the ceiling dropped reads as the new top, not as unset.
+  assert.equal(normalizeAutoCompactTokens(2_000_000), 1_200_000);
 });
 
 test("a model's own auto-compact limit wins over the connection's", () => {

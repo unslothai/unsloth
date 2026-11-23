@@ -46,7 +46,8 @@ const API_COMPACTION_THRESHOLD_MAX = 2_000_000;
 
 /** Bounds of a connection's "Auto-compact after" setting, matching the backend's. */
 export const AUTO_COMPACT_TOKENS_MIN = 1_000;
-export const AUTO_COMPACT_TOKENS_MAX = API_COMPACTION_THRESHOLD_MAX;
+// No widely used model has a window past 1M; the request schema itself allows more.
+export const AUTO_COMPACT_TOKENS_MAX = 1_200_000;
 
 // Server-side compaction limits, mirrored from external_provider.py so the meter marks the real trigger.
 const NATIVE_COMPACTION_DEFAULT_MAX = 200_000;
@@ -56,12 +57,12 @@ export function normalizeAutoCompactTokens(value: unknown): number | undefined {
   if (
     typeof value !== "number" ||
     !Number.isSafeInteger(value) ||
-    value < AUTO_COMPACT_TOKENS_MIN ||
-    value > AUTO_COMPACT_TOKENS_MAX
+    value < AUTO_COMPACT_TOKENS_MIN
   ) {
     return undefined;
   }
-  return value;
+  // A value saved before the ceiling dropped from 2M keeps the closest limit it can.
+  return Math.min(value, AUTO_COMPACT_TOKENS_MAX);
 }
 
 /** Model ID to tokens; drops entries out of range, and is undefined when none are left. */
@@ -124,7 +125,7 @@ export function parseAutoCompactTokens(input: string): number | null {
 // Slider notches; index 0 is Default (blank). The box beside it takes any value in range.
 const AUTO_COMPACT_SLIDER_TOKENS = [
   8_000, 16_000, 32_000, 64_000, 100_000, 128_000, 200_000, 256_000, 400_000,
-  512_000, 1_000_000, 2_000_000,
+  512_000, 1_000_000, 1_200_000,
 ];
 
 /** A known window ends the slider there: past it the limit is capped anyway. */

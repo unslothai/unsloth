@@ -709,7 +709,7 @@ def test_the_connection_stores_its_auto_compact_trigger(tmp_path, monkeypatch):
 
     assert ProviderUpdate(auto_compact_tokens = 400_000).auto_compact_tokens == 400_000
     assert ProviderUpdate(auto_compact_tokens = None).auto_compact_tokens is None
-    for rejected in (999, 2_000_001):
+    for rejected in (999, 1_200_001):
         with pytest.raises(ValidationError):
             ProviderCreate(
                 provider_type = "openrouter", display_name = "x", auto_compact_tokens = rejected
@@ -744,7 +744,7 @@ def test_the_connection_stores_per_model_auto_compact_triggers(tmp_path, monkeyp
     update = ProviderUpdate(auto_compact_tokens_by_model = {" gpt-oss:20b ": 64_000})
     assert update.auto_compact_tokens_by_model == {"gpt-oss:20b": 64_000}
     assert "auto_compact_tokens_by_model" not in ProviderUpdate(display_name = "x").model_fields_set
-    for rejected in ({"m": 999}, {"m": 2_000_001}, {"m": True}, {"": 5_000}, ["m"]):
+    for rejected in ({"m": 999}, {"m": 1_200_001}, {"m": True}, {"": 5_000}, ["m"]):
         with pytest.raises(ValidationError):
             ProviderCreate(
                 provider_type = "ollama", display_name = "x", auto_compact_tokens_by_model = rejected

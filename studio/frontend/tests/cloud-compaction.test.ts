@@ -84,14 +84,15 @@ test("the Auto-compact after field takes whole tokens within the server's range"
   assert.equal(parseAutoCompactTokens("  "), null);
   assert.equal(parseAutoCompactTokens("300,000"), 300_000);
   assert.equal(parseAutoCompactTokens("1000"), 1_000);
-  assert.equal(parseAutoCompactTokens("2000000"), 2_000_000);
-  for (const bad of ["999", "2000001", "12.5", "lots", "-5"]) {
+  assert.equal(parseAutoCompactTokens("1200000"), 1_200_000);
+  for (const bad of ["999", "1200001", "12.5", "lots", "-5"]) {
     assert.throws(() => parseAutoCompactTokens(bad), /Auto-compact after/);
   }
   assert.equal(normalizeAutoCompactTokens(300_000), 300_000);
-  for (const bad of [999, 2_000_001, 1.5, "300000", null, undefined]) {
+  for (const bad of [999, 1.5, "300000", null, undefined]) {
     assert.equal(normalizeAutoCompactTokens(bad), undefined);
   }
+  assert.equal(normalizeAutoCompactTokens(2_000_001), 1_200_000);
 });
 
 test("the meter's trigger mirrors what each provider really does", () => {
