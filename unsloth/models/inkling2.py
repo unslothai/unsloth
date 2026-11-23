@@ -261,6 +261,27 @@ def _inkling2_trainable_tokens(model):
     return tokens
 
 
+_STALE_WEIGHT_FILE = re.compile(
+    r"(?:model\.safetensors|pytorch_model\.bin|(?:model|pytorch_model)-\d{5}(?:-of-\d{5})?\.(?:safetensors|bin))"
+    r"|pytorch_model\.bin\.index\.json"
+)
+
+
+def _remove_stale_inkling2_weights(save_directory, kept):
+    """Drop weight files an earlier save left that the new index does not list.
+
+    transformers loads model.safetensors ahead of an index, so a leftover unsharded file would
+    silently shadow the merged shards. Runs only after the new shards and index are in place.
+    """
+    import os
+    for filename in os.listdir(save_directory):
+        if filename in kept or not _STALE_WEIGHT_FILE.fullmatch(filename):
+            continue
+        path = os.path.join(save_directory, filename)
+        if os.path.isfile(path) or os.path.islink(path):
+            os.remove(path)
+
+
 def save_inkling2_merged_16bit(
     model,
     tokenizer,
@@ -354,6 +375,10 @@ def save_inkling2_merged_16bit(
     if push_to_hub:
         save_directory = tempfile.mkdtemp(prefix = "unsloth_inkling2_merge_")
     os.makedirs(save_directory, exist_ok = True)
+    if os.path.samefile(save_directory, source):
+        raise RuntimeError(
+            "Unsloth: the merged Inkling 2 export would overwrite the checkpoint it reads; pick another directory."
+        )
 
     handles = {}
 
@@ -483,8 +508,11 @@ def save_inkling2_merged_16bit(
         final = f"model-{i:05d}-of-{total:05d}.safetensors"
         os.replace(os.path.join(save_directory, filename), os.path.join(save_directory, final))
         new_map.update({k: final for k in keys})
-    with open(os.path.join(save_directory, "model.safetensors.index.json"), "w") as f:
+    index_file = os.path.join(save_directory, "model.safetensors.index.json")
+    with open(index_file + ".tmp", "w") as f:
         json.dump({"metadata": {}, "weight_map": new_map}, f, indent = 2)
+    os.replace(index_file + ".tmp", index_file)
+    _remove_stale_inkling2_weights(save_directory, set(new_map.values()))
 
     with open(os.path.join(source, "config.json")) as f:
         config = json.load(f)

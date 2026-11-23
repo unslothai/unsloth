@@ -634,3 +634,42 @@ def test_save_pretrained_merged_forwards_dtype_to_inkling2():
     call = source[source.index("        save_inkling2_merged_16bit(\n") :]
     call = call[: call.index(")")]
     assert "dtype = dtype" in call
+
+
+def test_merged_export_replaces_an_earlier_save(tmp_path):
+    # transformers loads model.safetensors ahead of an index, so weights from an earlier unsharded save
+    # left in the directory would silently shadow the new merged shards on reload.
+    from safetensors.torch import save_file
+    from transformers import AutoModelForImageTextToText
+
+    model = _export_setup(tmp_path, target_parameters = ["mlp.experts.gate_up_proj"])
+    torch.manual_seed(5)
+    for name, param in model.named_parameters():
+        if "lora_" in name:
+            param.data.normal_(0, 0.1)
+    ink = _inkling2()
+    ink.save_inkling2_merged_16bit(model, None, str(tmp_path / "clean"))
+    fresh = _checkpoint(tmp_path / "clean")
+
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    old = {k: torch.zeros_like(v) for k, v in fresh.items()}
+    save_file(old, str(stale / "model.safetensors"), metadata = {"format": "pt"})
+    save_file(old, str(stale / "model-00007-of-00009.safetensors"), metadata = {"format": "pt"})
+    torch.save(old, stale / "pytorch_model.bin")
+    (stale / "pytorch_model.bin.index.json").write_text('{"metadata": {}, "weight_map": {}}')
+    (stale / "notes.txt").write_text("keep")
+    ink.save_inkling2_merged_16bit(model, None, str(stale))
+
+    assert not (stale / "model.safetensors").exists()
+    assert not (stale / "model-00007-of-00009.safetensors").exists()
+    assert not (stale / "pytorch_model.bin").exists()
+    assert not (stale / "pytorch_model.bin.index.json").exists()
+    assert (stale / "notes.txt").read_text() == "keep"
+    reloaded = dict(AutoModelForImageTextToText.from_pretrained(stale).named_parameters())
+    expected = dict(
+        AutoModelForImageTextToText.from_pretrained(tmp_path / "clean").named_parameters()
+    )
+    assert reloaded.keys() == expected.keys()
+    assert any(v.abs().max() > 0 for v in expected.values())
+    assert all(torch.equal(reloaded[k], expected[k]) for k in expected)
