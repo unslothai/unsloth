@@ -10,8 +10,10 @@ gradients and parameters are concatenated, updated by the same bitsandbytes kern
 The kernel quantizes in independent blocks of 256 elements, so when every tensor's size is a
 multiple of 256 the result is bitwise the stock one, and the state stays in the stock per-parameter
 layout (views into one buffer): checkpoints load into either optimizer. Anything else (paged,
-per-parameter overrides such as 32-bit embeddings, 32-bit state, missing gradients, DTensor, CPU)
-runs the stock step. UNSLOTH_FLAT_ADAMW8BIT=0 turns it off.
+per-parameter overrides such as 32-bit embeddings, 32-bit state, per-tensor state such as
+percentile_clipping / max_unorm / non-blockwise 8-bit, missing gradients, CPU) runs the stock step.
+FSDP / DeepSpeed trainers and DTensor parameters are left alone (the class is not swapped), since
+FSDP2 localizes only the plain bitsandbytes class. UNSLOTH_FLAT_ADAMW8BIT=0 turns it off.
 """
 
 import os
@@ -61,13 +63,45 @@ def _stock_classes():
     )
 
 
+def _unsupported_args(optimizer):
+    """Why the optimizer's options rule out the fused update (None when they do not). The fused
+    update hands bitsandbytes' update_step one concatenated segment with only the blockwise 8-bit
+    moments, so every option that keeps per-tensor state, or reduces over the whole tensor, runs
+    stock: percentile_clipping < 100 (gnorm_vec, a per-tensor gradient norm history, bnb < 0.50),
+    max_unorm > 0 (unorm_vec, a per-tensor update norm), block_wise=False (per-tensor max1 /
+    new_max1, bnb < 0.50), 32-bit state, paged state. skip_zeros is elementwise in the kernel but
+    is not covered by the parity tests, so it runs stock too."""
+    args = getattr(optimizer, "args", None)
+    if args is None:
+        return "no bitsandbytes args"
+    if getattr(optimizer, "is_paged", False):
+        return "paged"
+    if getattr(args, "optim_bits", 32) != 8:
+        return "optim_bits != 8"
+    if getattr(args, "percentile_clipping", 100) < 100:
+        return "percentile_clipping < 100"
+    if getattr(args, "max_unorm", 0.0) > 0.0:
+        return "max_unorm > 0"
+    if not getattr(args, "block_wise", True):
+        return "block_wise = False"
+    if getattr(args, "skip_zeros", False):
+        return "skip_zeros"
+    return None
+
+
+def _has_dtensor_params(optimizer):
+    for group in getattr(optimizer, "param_groups", ()):
+        for p in group["params"]:
+            if type(p.data) is not torch.Tensor:
+                return True  # DTensor (FSDP2 / TP) or another tensor subclass
+    return False
+
+
 def _group_plan(optimizer, gindex, group):
     """Segments of the group for the fused update, or None when the group must run stock."""
+    if _unsupported_args(optimizer) is not None:
+        return None
     args = optimizer.args
-    if getattr(args, "optim_bits", 32) != 8 or getattr(args, "max_unorm", 0.0) > 0.0:
-        return None
-    if getattr(optimizer, "is_paged", False):
-        return None
     mng = optimizer.mng
     params = group["params"]
     if not params:
@@ -249,6 +283,7 @@ def _flat_class(base):
             "__module__": base.__module__,
             "__qualname__": base.__qualname__,
             "_unsloth_flat_adamw8bit": True,
+            "_unsloth_flat_base": base,
         },
     )
     _CLASSES[base] = cls
@@ -265,16 +300,41 @@ def install_flat_adamw8bit(optimizer):
         return inner
     if type(inner) not in _stock_classes():
         return None
-    if getattr(inner, "is_paged", False) or getattr(inner.args, "optim_bits", 32) != 8:
+    if _unsupported_args(inner) is not None or _has_dtensor_params(inner):
         return None
     inner.__class__ = _flat_class(type(inner))
     return inner
 
 
+def _distributed_wrapper(trainer):
+    """Whether the trainer shards or wraps the optimizer itself: FSDP (any version, incl. XLA FSDP)
+    or DeepSpeed. accelerate's FSDP2 prepare localizes only the plain bitsandbytes class
+    (fsdp2_bnb_optim) and DeepSpeed builds its own optimizer, so the class is left stock there."""
+    for name in ("is_deepspeed_enabled", "is_fsdp_enabled", "is_fsdp_xla_enabled"):
+        if getattr(trainer, name, False):
+            return True
+    args = getattr(trainer, "args", None)
+    if getattr(args, "deepspeed", None) or getattr(args, "fsdp", None):
+        return True
+    state = getattr(getattr(trainer, "accelerator", None), "state", None)
+    if state is not None:
+        if getattr(state, "fsdp_plugin", None) is not None:
+            return True
+        if getattr(state, "deepspeed_plugin", None) is not None:
+            return True
+        kind = str(getattr(state, "distributed_type", "") or "").upper()
+        if "FSDP" in kind or "DEEPSPEED" in kind:
+            return True
+    for env in ("ACCELERATE_USE_FSDP", "ACCELERATE_USE_DEEPSPEED"):
+        if os.environ.get(env, "false").strip().lower() in ("1", "true", "yes", "on"):
+            return True
+    return False
+
+
 def install_flat_adamw8bit_hook(trainer):
     """Switch the trainer's optimizer once it is final (inside create_scheduler, before accelerate
-    wraps it), as install_optimizer_state_offload does. DeepSpeed builds its own optimizer."""
-    if not flat_adamw8bit_enabled() or getattr(trainer, "is_deepspeed_enabled", False):
+    wraps it), as install_optimizer_state_offload does. Not under FSDP / DeepSpeed."""
+    if not flat_adamw8bit_enabled() or _distributed_wrapper(trainer):
         return False
     create_scheduler = trainer.create_scheduler
     if getattr(create_scheduler, "_unsloth_flat_adamw8bit", False):
@@ -284,7 +344,8 @@ def install_flat_adamw8bit_hook(trainer):
         optimizer = kwargs.get("optimizer", args[1] if len(args) > 1 else None)
         optimizer = optimizer if optimizer is not None else getattr(trainer, "optimizer", None)
         try:
-            install_flat_adamw8bit(optimizer)
+            if not _distributed_wrapper(trainer):
+                install_flat_adamw8bit(optimizer)
         except Exception:
             pass
         return create_scheduler(*args, **kwargs)
