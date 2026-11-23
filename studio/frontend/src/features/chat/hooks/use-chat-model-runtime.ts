@@ -1537,8 +1537,16 @@ export function useChatModelRuntime() {
       const pendingConfig =
         typeof selection !== "string" ? selection.config : undefined;
       if (!forceReload && !nativePathToken) {
+        // A quant loaded beside its repo's other quant answers only to its own name.
         const readPickStatus = () =>
-          getInferenceStatus(undefined, modelId).catch(() => null);
+          getInferenceStatus(
+            undefined,
+            servedCheckpoint(
+              useChatRuntimeStore.getState().loadedModels,
+              modelId,
+              ggufVariant,
+            ),
+          ).catch(() => null);
         const residentStatus = await readPickStatus();
         // Warm the GPU cache first: a cold cache passes the pick through unvalidated.
         if (residentStatus && pendingConfig?.selectedGpuIds !== undefined) {

@@ -190,7 +190,8 @@ def test_download_progress_is_used_before_the_load_starts(monkeypatch, fast_poll
         ({"model": "unsloth/not-loaded"}, (STATUS,), "unsloth/not-loaded", None),
         ({"model": LLM}, (STATUS,), LLM, None),
         ({}, (EMPTY_STATUS,), None, []),
-        ({"model": LLM}, (TWO_QUANTS, ONE_QUANT), LLM, [{"model_path": f"{LLM}:Q8_0"}]),
+        ({"model": LLM}, (TWO_QUANTS, ONE_QUANT), LLM, [{"model_path": LLM}]),
+        ({"model": LLM}, (TWO_QUANTS,), LLM, None),
         ({}, (TWO_QUANTS, ONE_QUANT), LLM, [{"model_path": f"{LLM}:Q8_0"}]),
         (
             {"model": f"{LLM}:Q4_K_M"},
