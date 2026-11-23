@@ -190,3 +190,103 @@ test("an uncanceled run dispatches every operation", async () => {
     useExportRuntimeStore.getState().reset();
   }
 });
+
+// Models the backend: an op whose id was cancelled before it began is refused.
+function refusingBackend() {
+  const cancelledIds = new Set<unknown>();
+  const begun: string[] = [];
+  stub.responses.set("cancelExport", (id: unknown) => {
+    if (id) cancelledIds.add(id);
+    return Promise.resolve({ success: true, message: "ok" });
+  });
+  const op =
+    (name: string, beforeBegin?: () => Promise<void>) =>
+    async (body: { op_id?: string }) => {
+      await beforeBegin?.();
+      if (cancelledIds.has(body.op_id)) throw new Error("Export cancelled");
+      begun.push(name);
+      return { success: true, message: "ok", details: null };
+    };
+  return { begun, op };
+}
+
+test("a cancel landing after the dispatch check but before the op begins is refused", async () => {
+  const store = useExportRuntimeStore.getState();
+  store.reset();
+  stub.resetStub();
+  const backend = refusingBackend();
+  stub.responses.set(
+    "loadCheckpoint",
+    backend.op("loadCheckpoint", () => store.requestCancel()),
+  );
+  stub.responses.set("exportGGUF", backend.op("exportGGUF"));
+  try {
+    await store.runExport(params());
+    assert.equal(useExportRuntimeStore.getState().phase, "canceled");
+    assert.deepEqual(backend.begun, []);
+    assert.deepEqual(operationPosts(), ["loadCheckpoint"]);
+  } finally {
+    stub.resetStub();
+    useExportRuntimeStore.getState().reset();
+  }
+});
+
+test("a cancel during an op targets that op's id", async () => {
+  const store = useExportRuntimeStore.getState();
+  store.reset();
+  stub.resetStub();
+  const load = deferred();
+  stub.responses.set("loadCheckpoint", () => load.promise);
+  try {
+    const run = store.runExport(params());
+    while (!operationPosts().length) await tick();
+    await store.requestCancel();
+    load.resolve({ success: true, message: "ok", details: null });
+    await run;
+
+    const sent = stub.calls.find((c) => c.name === "loadCheckpoint")!.args[0];
+    const cancel = stub.calls.find((c) => c.name === "cancelExport")!;
+    assert.ok(sent.op_id);
+    assert.equal(cancel.args[0], sent.op_id);
+    assert.equal(useExportRuntimeStore.getState().phase, "canceled");
+    assert.deepEqual(operationPosts(), ["loadCheckpoint"]);
+  } finally {
+    stub.resetStub();
+    useExportRuntimeStore.getState().reset();
+  }
+});
+
+test("each op of a run carries its own id", async () => {
+  const store = useExportRuntimeStore.getState();
+  store.reset();
+  stub.resetStub();
+  try {
+    await store.runExport(params());
+    const ids = stub.calls
+      .filter((c) => ["loadCheckpoint", "exportGGUF"].includes(c.name))
+      .map((c) => c.args[0].op_id);
+    assert.equal(ids.length, 2);
+    assert.ok(ids[0] && ids[1] && ids[0] !== ids[1]);
+  } finally {
+    stub.resetStub();
+    useExportRuntimeStore.getState().reset();
+  }
+});
+
+test("cancelling a run attached from another tab stops whatever runs", async () => {
+  const store = useExportRuntimeStore.getState();
+  store.reset();
+  stub.resetStub();
+  try {
+    await store.runExport(params());
+    store.applyBackendStatus({ is_export_active: true } as Status);
+    assert.equal(useExportRuntimeStore.getState().ownsRun, false);
+    stub.resetStub();
+    await store.requestCancel();
+    const cancel = stub.calls.find((c) => c.name === "cancelExport")!;
+    assert.equal(cancel.args[0], null);
+  } finally {
+    stub.resetStub();
+    useExportRuntimeStore.getState().reset();
+  }
+});
