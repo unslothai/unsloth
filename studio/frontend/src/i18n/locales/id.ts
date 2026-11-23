@@ -1489,7 +1489,7 @@ export const id = {
       voice: "Suara",
       connections: "Koneksi",
       data: "Data",
-      knowledge: "Basis pengetahuan",
+      knowledge: "Pengetahuan",
       apiKeys: "API",
       remoteLan: "Jarak jauh & LAN",
       agents: "Agen",

@@ -19,10 +19,10 @@ test("a knowledge base reports embedding progress only while documents are embed
   assert.equal(embeddedSummary({}), "");
 });
 
-test("knowledge bases get a Settings tab under Data & access, not a sidebar entry", () => {
+test("Knowledge gets a Settings tab under Library, not a sidebar entry", () => {
   assert.ok((SETTINGS_TABS as readonly string[]).includes("knowledge"));
   const dialog = readSrc("features/settings/settings-dialog.tsx");
-  assert.match(dialog, /ids: \["sandbox", "accounts", "data", "knowledge", "library"\]/);
+  assert.match(dialog, /ids: \["sandbox", "accounts", "data", "library", "knowledge"\]/);
   assert.doesNotMatch(readSrc("components/app-sidebar.tsx"), /settings\.tabs\.knowledge/);
 });
 
@@ -31,4 +31,11 @@ test("Settings and the chat dialog render the same manager", () => {
   const kbDialog = readSrc("features/rag/components/knowledge-base-dialog.tsx");
   assert.match(kbDialog, /<Dialog open=\{open\} onOpenChange=\{onOpenChange\}>\s*<KnowledgeBaseManager\s/);
   assert.match(kbDialog, /frame=\{\(content\) => \(\s*<DialogContent className="max-w-2xl"/);
+});
+
+test("the chat bar's retrieval menu opens Knowledge in Settings", () => {
+  const menu = readSrc("features/rag/components/knowledge-base-composer-button.tsx");
+  assert.match(menu, /openDialog\("knowledge"\);\s*\}\}\s*>\s*Open Knowledge in Settings/);
+  // The existing dialog entry stays, so the chat bar flow is unchanged.
+  assert.match(menu, /Manage knowledge bases…/);
 });

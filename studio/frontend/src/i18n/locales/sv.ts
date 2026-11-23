@@ -1436,7 +1436,7 @@ export const sv = {
       voice: "Röst",
       connections: "Anslutningar",
       data: "Data",
-      knowledge: "Kunskapsbaser",
+      knowledge: "Kunskap",
       apiKeys: "API",
       remoteLan: "Fjärråtkomst och LAN",
       agents: "Agenter",

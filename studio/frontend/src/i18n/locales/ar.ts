@@ -1362,7 +1362,7 @@ export const ar = {
       remoteLan: "الوصول عن بُعد والشبكة المحلية",
       about: "حول",
       data: "البيانات",
-      knowledge: "قواعد المعرفة",
+      knowledge: "المعرفة",
       agents: "الوكلاء",
       debugging: "السجلات",
       voice: "الصوت",

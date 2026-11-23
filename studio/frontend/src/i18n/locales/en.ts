@@ -1369,7 +1369,7 @@ export const en = {
       voice: "Voice",
       connections: "Connections",
       data: "Data",
-      knowledge: "Knowledge bases",
+      knowledge: "Knowledge",
       apiKeys: "API",
       remoteLan: "Remote & LAN",
       agents: "Agents",

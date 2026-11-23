@@ -334,14 +334,14 @@ const TABS: TabDef[] = [
     icon: DatabaseSettingIcon,
   },
   {
-    id: "knowledge",
-    labelKey: "settings.tabs.knowledge",
-    icon: FileSearchIcon,
-  },
-  {
     id: "library",
     labelKey: "shell.navigation.library",
     icon: LibrariesIcon,
+  },
+  {
+    id: "knowledge",
+    labelKey: "settings.tabs.knowledge",
+    icon: FileSearchIcon,
   },
   {
     id: "debugging",
@@ -376,7 +376,7 @@ export const SETTINGS_NAV_GROUPS: {
   },
   {
     headingKey: "settings.navGroups.dataAccess",
-    ids: ["sandbox", "accounts", "data", "knowledge", "library"],
+    ids: ["sandbox", "accounts", "data", "library", "knowledge"],
   },
   { headingKey: null, ids: ["debugging", "about"] },
 ];

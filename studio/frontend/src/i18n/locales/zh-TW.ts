@@ -1422,7 +1422,7 @@ export const zhTW = {
       voice: "語音",
       connections: "連線",
       data: "資料",
-      knowledge: "知識庫",
+      knowledge: "知識",
       apiKeys: "API",
       remoteLan: "遠端與區域網路",
       agents: "代理程式",

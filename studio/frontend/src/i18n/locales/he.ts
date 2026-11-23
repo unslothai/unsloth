@@ -1410,7 +1410,7 @@ export const he = {
       voice: "קול",
       connections: "חיבורים",
       data: "נתונים",
-      knowledge: "מאגרי ידע",
+      knowledge: "ידע",
       apiKeys: "API",
       remoteLan: "שליטה מרחוק ורשת מקומית",
       agents: "סוכנים",

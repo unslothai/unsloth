@@ -1365,7 +1365,7 @@ export const ru = {
       remoteLan: "Удалённый доступ и LAN",
       about: "О программе",
       data: "Данные",
-      knowledge: "Базы знаний",
+      knowledge: "Знания",
       agents: "Агенты",
       debugging: "Журналы",
       voice: "Голос",

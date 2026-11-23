@@ -1367,7 +1367,7 @@ export const de = {
       remoteLan: "Remote & LAN",
       about: "Info",
       data: "Daten",
-      knowledge: "Wissensdatenbanken",
+      knowledge: "Wissen",
       agents: "Agenten",
       debugging: "Protokolle",
       voice: "Sprachfunktionen",
