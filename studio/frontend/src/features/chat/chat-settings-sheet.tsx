@@ -140,7 +140,6 @@ import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
 import { resolveQwenThinkingParams } from "./utils/qwen-sampling-table";
 
 const SamplingFooter = lazy(() => import("./components/sampling-footer"));
-// Glass over a wallpaper zeroes --chat-settings-top so the panel's own glass runs under the caption.
 const CHAT_SETTINGS_TOP =
   "var(--chat-settings-top, var(--studio-custom-titlebar-height, 0px))";
 const CHAT_SETTINGS_DOCKED_WIDTH_VAR = "--studio-chat-settings-docked-width";
@@ -532,7 +531,6 @@ export function ChatSettingsPanel({
       uiSpaceScale,
     );
   }, [open, isCompact, settingsWidth, settingsScale, uiSpaceScale]);
-  // The pinned sidebar's title bar glass stops at the docked panel, whose own glass runs to the top.
   useEffect(() => {
     const panel = asideRef.current;
     if (!open || isCompact || !panel) return;

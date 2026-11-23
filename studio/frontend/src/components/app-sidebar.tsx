@@ -1346,7 +1346,7 @@ export function AppSidebar() {
     setOpenMobile,
     state: sidebarState,
   } = useSidebar();
-  // On <html>: docked Run settings, outside the sidebar, rounds its corner when no strip meets it.
+  // On <html>, not a :has() over the thread, which would restyle it on every change.
   const glassFrame = pinned && usesCustomTitlebar;
   useEffect(() => {
     const el = document.documentElement;

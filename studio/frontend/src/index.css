@@ -7274,7 +7274,7 @@ html[data-glass] .wallpaper-preview[data-wallpaper-conversation] .wallpaper-prev
   --glass-composer-boost: 9%;
   --glass-blur: calc(max(var(--glass-read-blur), (var(--glass-blur-base) + 5px) * var(--glass-strength, 1)) + var(--glass-repaint, 0) * .01px);
 }
-/* Bubble: the composer's tint; code: the panes' darker floor. No blur: the viewport mask is a backdrop root. */
+/* No blur: the thread viewport's mask is a backdrop root. */
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-user-message-content {
   background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc((max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) + 9%) * var(--glass-opacity, 1))), transparent);
 }
@@ -7367,7 +7367,7 @@ html[data-glass-clear][data-chat-wallpaper-workspace-ready] [data-windows-glass-
 html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-slot="sidebar-container"][data-windows-glass-frame]::before {
   content: "";
   position: absolute;
-  /* Window-anchored, so the sheen and noise run on unbroken into docked Run settings. */
+  /* Window-anchored so the sheen continues unbroken into docked Run settings. */
   background-attachment: fixed;
   /* Keep the corner above the scrolled conversation canvas. */
   z-index: 1;
@@ -7381,7 +7381,6 @@ html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [
     radial-gradient(circle at right bottom, transparent calc(var(--radius-md) - 1px), black var(--radius-md))
       var(--sidebar-width) var(--studio-custom-titlebar-height) / var(--radius-md) var(--radius-md) no-repeat,
     linear-gradient(black 0 0) right top / var(--studio-chat-settings-docked-width, 0px) 100% no-repeat,
-    /* The same inner curve where the strip meets docked Run settings; zero-sized while it is closed. */
     radial-gradient(circle at left bottom, transparent calc(var(--studio-run-settings-fillet) - 1px), black var(--studio-run-settings-fillet))
       calc(100vw - var(--studio-chat-settings-docked-width, 0px) - var(--studio-run-settings-fillet)) var(--studio-custom-titlebar-height) / var(--studio-run-settings-fillet) var(--studio-run-settings-fillet) no-repeat;
   --studio-run-settings-fillet: min(var(--radius-md), var(--studio-chat-settings-docked-width, 0px));
@@ -7513,7 +7512,6 @@ html[data-glass="macos"] [data-slot="chat-settings-panel"] {
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
-/* The pinned strip stops at the docked panel, whose glass runs to the window top instead of meeting it in a seam. */
 html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
   --chat-settings-top: 0px;
   padding-top: var(--studio-custom-titlebar-height, 0px);
@@ -7521,8 +7519,7 @@ html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wa
 html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-resize-handle"] {
   top: var(--studio-custom-titlebar-height, 0px);
 }
-/* Beside the pinned strip, the strip's own glass runs down the panel column too, so sidebar, caption and
-   panel are one blurred sheet; two backdrop blurs side by side always show an edge where they meet. */
+/* The strip's glass covers this column: two adjacent backdrop blurs always show a seam. */
 html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
   background: transparent;
   -webkit-backdrop-filter: none;
@@ -7533,7 +7530,6 @@ html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wa
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-/* No edge line either, as the pinned sidebar has none: it would cut straight through the strip's inner curve. */
 html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > div:last-child {
   border-left-color: transparent;
 }
@@ -7553,7 +7549,6 @@ html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat
 html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
   box-shadow: inset 1px 0 0 rgb(255 255 255 / .08);
 }
-/* No pinned sidebar strip to meet, so the docked panel's top corner rounds under the custom titlebar. */
 html[data-glass][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
   transition: border-top-left-radius .2s ease;
 }
@@ -7655,7 +7650,6 @@ html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.un
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] .unsloth-model-selector-trigger:is(:hover:not(:has([data-eject-hit]:hover)), [aria-expanded="true"]) {
   background-image: linear-gradient(var(--glass-hover), var(--glass-hover)), var(--glass-sheen, linear-gradient(transparent, transparent));
 }
-/* Window buttons keep the full caption corner as their hit area; the glass is an inset pill. */
 html[data-glass][data-chat-wallpaper-ready]:not([data-sidebar-glass-frame]) [data-window-controls] > button {
   background-color: transparent !important;
 }
