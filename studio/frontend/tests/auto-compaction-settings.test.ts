@@ -6,16 +6,13 @@ import test from "node:test";
 import ts from "@typescript/typescript6";
 import {
   apiCompactionRequestFields,
-  autoCompactSliderIndex,
-  autoCompactSliderLabel,
-  autoCompactSliderStops,
-  autoCompactTokensForModel,
-  formatAutoCompactDraft,
+  autoCompactPercentForModel,
+  cloudCompactionTrigger,
   ggufCompactionRequestFields,
+  normalizeAutoCompactPercentByModel,
   normalizeAutoCompactTokens,
-  normalizeAutoCompactTokensByModel,
-  parseAutoCompactTokens,
-  parseAutoCompactTokensByModel,
+  parseAutoCompactPercent,
+  parseAutoCompactPercentByModel,
 } from "../src/features/chat/utils/auto-compaction.ts";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -407,70 +404,76 @@ test("provider compaction replay stays on the tool-loop subturn that produced it
   );
 });
 
-test("the auto-compact slider starts on Default and follows the typed value", () => {
-  const stops = autoCompactSliderStops();
-  assert.equal(stops[0], 0);
-  assert.equal(autoCompactSliderIndex("", stops), 0);
-  assert.equal(autoCompactSliderIndex("abc", stops), 0);
-  assert.equal(stops[autoCompactSliderIndex("128,000", stops)], 128_000);
-  // Off-notch values sit on the nearest notch on a log scale.
-  assert.equal(stops[autoCompactSliderIndex("450000", stops)], 400_000);
-  assert.equal(stops[autoCompactSliderIndex("1000", stops)], 8_000);
-  assert.equal(autoCompactSliderLabel(0), "Default");
-  assert.equal(autoCompactSliderLabel(256_000), "256,000 tokens");
-  assert.equal(autoCompactSliderLabel(0, "Same as all models"), "Same as all models");
-});
-
-test("Claude's auto-compact slider starts at its 50,000 minimum", () => {
-  const stops = autoCompactSliderStops(50_000);
-  assert.equal(stops[0], 0);
-  assert.equal(stops[1], 64_000);
-});
-
-test("a model's known window ends its slider there", () => {
-  const stops = autoCompactSliderStops(undefined, 262_144);
-  assert.equal(stops[0], 0);
-  assert.equal(stops.at(-1), 262_144);
-  assert.ok(stops.every((tokens) => tokens <= 262_144));
-  assert.equal(autoCompactSliderStops().at(-1), 1_200_000);
-  // A 2M limit saved before the ceiling dropped reads as the new top, not as unset.
+test("Auto-compact at is a whole percent of the window, typed with or without %", () => {
+  assert.equal(parseAutoCompactPercent(""), null);
+  assert.equal(parseAutoCompactPercent("60"), 60);
+  assert.equal(parseAutoCompactPercent(" 85 % "), 85);
+  for (const bad of ["5", "101", "50.5", "lots", "-20"]) {
+    assert.throws(() => parseAutoCompactPercent(bad), /Auto-compact at/);
+  }
+  // A token limit saved before the percent setting still reads, capped at 1.2M.
   assert.equal(normalizeAutoCompactTokens(2_000_000), 1_200_000);
 });
 
-test("a model's own auto-compact limit wins over the connection's", () => {
-  const provider = {
-    autoCompactTokens: 100_000,
-    autoCompactTokensByModel: { "qwen3:32b": 24_000 },
-  };
-  assert.equal(autoCompactTokensForModel(provider, "qwen3:32b"), 24_000);
-  assert.equal(autoCompactTokensForModel(provider, "gpt-oss:20b"), 100_000);
-  assert.equal(autoCompactTokensForModel({}, "qwen3:32b"), undefined);
-  assert.equal(autoCompactTokensForModel(provider, null), 100_000);
+test("a percent becomes that share of whichever window the model has", () => {
+  for (const window of [128_000, 1_000_000]) {
+    assert.deepEqual(
+      apiCompactionRequestFields({
+        autoCompactEnabled: true,
+        contextLength: window,
+        autoCompactPercent: 50,
+      }),
+      {
+        context_overflow: "truncate_oldest",
+        compaction_percent: 50,
+        compaction_threshold: window / 2,
+        compaction_uncapped: true,
+        context_window: window,
+      },
+    );
+  }
+  // No catalogued window (a self-hosted server): the backend applies it to the served window.
+  assert.deepEqual(
+    apiCompactionRequestFields({
+      autoCompactEnabled: true,
+      contextLength: null,
+      autoCompactPercent: 60,
+    }),
+    { context_overflow: "truncate_oldest", compaction_percent: 60 },
+  );
+  // The percent wins over tokens saved before it existed.
+  assert.equal(
+    cloudCompactionTrigger({
+      providerType: "openrouter",
+      contextLength: 200_000,
+      autoCompactTokens: 30_000,
+      autoCompactPercent: 90,
+    }),
+    180_000,
+  );
 });
 
-test("per-model drafts save only listed models and skip blanks", () => {
+test("a model's own percent wins over the connection's", () => {
+  const provider = {
+    autoCompactPercent: 80,
+    autoCompactPercentByModel: { "qwen3:32b": 50 },
+  };
+  assert.equal(autoCompactPercentForModel(provider, "qwen3:32b"), 50);
+  assert.equal(autoCompactPercentForModel(provider, "gpt-oss:20b"), 80);
+  assert.equal(autoCompactPercentForModel({}, "qwen3:32b"), undefined);
+});
+
+test("per-model percent drafts save only listed models and skip blanks", () => {
   assert.deepEqual(
-    parseAutoCompactTokensByModel(
-      { a: "24,000", b: "", gone: "50000" },
-      ["a", "b"],
-    ),
-    { a: 24_000 },
+    parseAutoCompactPercentByModel({ a: "50%", b: "", gone: "60" }, ["a", "b"]),
+    { a: 50 },
   );
   assert.throws(
-    () => parseAutoCompactTokensByModel({ a: "12" }, ["a"]),
-    /^Error: a: Auto-compact after must be between/,
+    () => parseAutoCompactPercentByModel({ a: "5" }, ["a"]),
+    /^Error: a: Auto-compact at must be/,
   );
-  assert.deepEqual(
-    normalizeAutoCompactTokensByModel({ a: 24_000, b: 5, c: "x" }),
-    { a: 24_000 },
-  );
-  assert.equal(normalizeAutoCompactTokensByModel({ b: 5 }), undefined);
-});
-
-test("a slider-written value parses back whatever the browser locale", () => {
-  // de-DE would group 128000 as "128.000", which the parser rejects.
-  assert.throws(() => parseAutoCompactTokens((128_000).toLocaleString("de-DE")));
-  for (const tokens of autoCompactSliderStops().slice(1)) {
-    assert.equal(parseAutoCompactTokens(formatAutoCompactDraft(tokens)), tokens);
-  }
+  assert.deepEqual(normalizeAutoCompactPercentByModel({ a: 50, b: 5, c: "x" }), {
+    a: 50,
+  });
+  assert.equal(normalizeAutoCompactPercentByModel({ b: 5 }), undefined);
 });

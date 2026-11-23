@@ -10,7 +10,8 @@ import type {
 import { modelCatalogSupportsVision } from "./model-catalog.ts";
 import {
   normalizeAutoCompactTokens,
-  normalizeAutoCompactTokensByModel,
+  normalizeAutoCompactPercent,
+  normalizeAutoCompactPercentByModel,
   normalizeCompactionMode,
   type ProviderCompactionMode,
 } from "./utils/auto-compaction.ts";
@@ -36,7 +37,9 @@ export interface ExternalProviderConfig {
   maxOutputTokens?: number;
   /** Tokens after which chats on this connection compact; unset uses 75% of the model's window. */
   autoCompactTokens?: number;
-  autoCompactTokensByModel?: Record<string, number>;
+  /** "Auto-compact at", as a percent of the model's window; replaces autoCompactTokens. */
+  autoCompactPercent?: number;
+  autoCompactPercentByModel?: Record<string, number>;
   compactionMode?: ProviderCompactionMode;
   extraHeaders?: Record<string, string>;
 
@@ -776,8 +779,9 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
         : undefined,
     maxOutputTokens: normalizeProviderMaxOutputTokens(raw.maxOutputTokens),
     autoCompactTokens: normalizeAutoCompactTokens(raw.autoCompactTokens),
-    autoCompactTokensByModel: normalizeAutoCompactTokensByModel(
-      raw.autoCompactTokensByModel,
+    autoCompactPercent: normalizeAutoCompactPercent(raw.autoCompactPercent),
+    autoCompactPercentByModel: normalizeAutoCompactPercentByModel(
+      raw.autoCompactPercentByModel,
     ),
     compactionMode: normalizeCompactionMode(raw.compactionMode),
     extraHeaders: extraHeadersFromSaved(raw.extraHeaders),

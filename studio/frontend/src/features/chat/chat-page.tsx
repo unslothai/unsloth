@@ -201,7 +201,7 @@ import {
 import { LiveContextUsageBar } from "./components/live-context-usage-bar";
 import { resolveModelCatalogEntry } from "./model-catalog";
 import {
-  autoCompactTokensForModel,
+  autoCompactPercentForModel,
   cloudCompactionTrigger,
 } from "./utils/auto-compaction";
 import { contextUsageRows } from "./lib/context-usage-bar-state";
@@ -3271,7 +3271,8 @@ export function ChatPage({
       ? cloudCompactionTrigger({
           providerType: activeExternalProviderType,
           contextLength: cloudContextWindow,
-          autoCompactTokens: autoCompactTokensForModel(
+          autoCompactTokens: activeExternalProvider?.autoCompactTokens,
+          autoCompactPercent: autoCompactPercentForModel(
             activeExternalProvider,
             parseExternalModelId(inferenceCheckpoint)?.modelId,
           ),

@@ -177,15 +177,19 @@ test("the thread says whether history was summarized or had to be dropped", () =
   assert.doesNotMatch(adapter, /This conversation was compacted/);
 });
 
-test("the connection form stores Auto-compact after with the connection", () => {
+test("the connection form stores Auto-compact at with the connection", () => {
   const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
   assert.match(dialog, /id="provider-auto-compact-tokens"/);
-  assert.match(dialog, /parseAutoCompactTokens\(autoCompactTokensDraft\)/);
+  assert.match(dialog, /parseAutoCompactPercent\(autoCompactPercentDraft\)/);
+  // A percent clears tokens saved before it; older token limits still load.
+  assert.match(dialog, /autoCompactPercent != null \? \{ autoCompactTokens: null \} : \{\}/);
   assert.match(dialog, /autoCompactTokens: updated\.auto_compact_tokens \?\? undefined/);
   const api = readSrc("features/chat/api/providers-api.ts");
+  assert.equal(api.match(/auto_compact_percent: payload\.autoCompactPercent/g)?.length, 2);
   assert.equal(api.match(/auto_compact_tokens: payload\.autoCompactTokens/g)?.length, 2);
   const sync = readSrc("features/chat/sync-external-providers.ts");
   assert.match(sync, /autoCompactTokens: config\.auto_compact_tokens \?\? undefined/);
+  assert.match(sync, /autoCompactPercent: normalizeAutoCompactPercent\(config\.auto_compact_percent\)/);
 });
 
 test("the composer offers no Compact chip: the header meter shows the context", () => {

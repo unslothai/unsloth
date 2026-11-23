@@ -146,7 +146,7 @@ import { contextUsageMarkers, threadBranchRecords } from "../utils/saved-context
 import { contextUsageReasoningKey } from "../utils/context-usage-reasoning";
 import {
   apiCompactionRequestFields,
-  autoCompactTokensForModel,
+  autoCompactPercentForModel,
   ggufCompactionRequestFields,
 } from "../utils/auto-compaction";
 import { tabCloseRunFields } from "../utils/keep-running-when-tab-closed";
@@ -7082,7 +7082,8 @@ export function createOpenAIStreamAdapter(
                   externalModelId,
                 )?.contextLength,
                 compactionMode: externalProvider.compactionMode,
-                autoCompactTokens: autoCompactTokensForModel(
+                autoCompactTokens: externalProvider.autoCompactTokens,
+                autoCompactPercent: autoCompactPercentForModel(
                   externalProvider,
                   externalModelId,
                 ),

@@ -65,34 +65,84 @@ export function normalizeAutoCompactTokens(value: unknown): number | undefined {
   return Math.min(value, AUTO_COMPACT_TOKENS_MAX);
 }
 
-/** Model ID to tokens; drops entries out of range, and is undefined when none are left. */
-export function normalizeAutoCompactTokensByModel(
+// "Auto-compact at": a share of each model's own window, so one setting suits every window size.
+export const AUTO_COMPACT_PERCENT_MIN = 10;
+export const AUTO_COMPACT_PERCENT_MAX = 100;
+export const AUTO_COMPACT_PERCENT_STEP = 5;
+export const AUTO_COMPACT_PERCENT_DEFAULT = (1 - API_COMPACTION_HEADROOM) * 100;
+
+export function normalizeAutoCompactPercent(value: unknown): number | undefined {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= AUTO_COMPACT_PERCENT_MIN &&
+    value <= AUTO_COMPACT_PERCENT_MAX
+    ? value
+    : undefined;
+}
+
+/** Model ID to percent; drops entries out of range, and is undefined when none are left. */
+export function normalizeAutoCompactPercentByModel(
   value: unknown,
 ): Record<string, number> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
   const limits: Record<string, number> = {};
-  for (const [model, tokens] of Object.entries(value)) {
-    const normalized = normalizeAutoCompactTokens(tokens);
+  for (const [model, percent] of Object.entries(value)) {
+    const normalized = normalizeAutoCompactPercent(percent);
     if (model.trim() && normalized !== undefined) limits[model.trim()] = normalized;
   }
   return Object.keys(limits).length > 0 ? limits : undefined;
 }
 
-export function autoCompactTokensForModel(
+export function autoCompactPercentForModel(
   provider:
     | {
-        autoCompactTokens?: number;
-        autoCompactTokensByModel?: Record<string, number>;
+        autoCompactPercent?: number;
+        autoCompactPercentByModel?: Record<string, number>;
       }
     | null
     | undefined,
   modelId: string | null | undefined,
 ): number | undefined {
   const own =
-    modelId == null ? undefined : provider?.autoCompactTokensByModel?.[modelId];
-  return own ?? provider?.autoCompactTokens;
+    modelId == null ? undefined : provider?.autoCompactPercentByModel?.[modelId];
+  return own ?? provider?.autoCompactPercent;
+}
+
+/** Blank clears the setting; anything else is a whole percent in range, with or without "%". */
+export function parseAutoCompactPercent(input: string): number | null {
+  const trimmed = input.trim().replace(/[%\s]/g, "");
+  if (!trimmed) return null;
+  const value = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
+  if (!(value >= AUTO_COMPACT_PERCENT_MIN && value <= AUTO_COMPACT_PERCENT_MAX)) {
+    throw new Error(
+      `Auto-compact at must be a whole percent from ${AUTO_COMPACT_PERCENT_MIN}% to ${AUTO_COMPACT_PERCENT_MAX}%.`,
+    );
+  }
+  return value;
+}
+
+export function formatAutoCompactPercent(percent: number): string {
+  return `${percent}%`;
+}
+
+/** Saves the per-model drafts of the listed models; blank ones fall back to the connection. */
+export function parseAutoCompactPercentByModel(
+  drafts: Record<string, string>,
+  models: readonly string[],
+): Record<string, number> {
+  const limits: Record<string, number> = {};
+  for (const model of models) {
+    let value: number | null;
+    try {
+      value = parseAutoCompactPercent(drafts[model] ?? "");
+    } catch (error) {
+      throw new Error(`${model}: ${(error as Error).message}`);
+    }
+    if (value !== null) limits[model] = value;
+  }
+  return limits;
 }
 
 /** Unset is "summary"; "rolling" and "checkpoint" drop whole turns into the archive, no summary call. */
@@ -122,81 +172,23 @@ export function parseAutoCompactTokens(input: string): number | null {
   return value;
 }
 
-// Slider notches; index 0 is Default (blank). The box beside it takes any value in range.
-const AUTO_COMPACT_SLIDER_TOKENS = [
-  8_000, 16_000, 32_000, 64_000, 100_000, 128_000, 200_000, 256_000, 400_000,
-  512_000, 1_000_000, 1_200_000,
-];
-
-/** A known window ends the slider there: past it the limit is capped anyway. */
-export function autoCompactSliderStops(
-  minimum = AUTO_COMPACT_TOKENS_MIN,
-  window?: number | null,
-): number[] {
-  const top =
-    window && window >= minimum
-      ? Math.min(window, AUTO_COMPACT_TOKENS_MAX)
-      : AUTO_COMPACT_TOKENS_MAX;
-  const stops = AUTO_COMPACT_SLIDER_TOKENS.filter(
-    (tokens) => tokens >= minimum && tokens < top,
-  );
-  return [0, ...stops, top];
-}
-
-/** The notch nearest the typed value (log scale); blank or unparsable sits on Default. */
-export function autoCompactSliderIndex(input: string, stops: number[]): number {
-  let value: number | null;
-  try {
-    value = parseAutoCompactTokens(input);
-  } catch {
-    return 0;
-  }
-  if (value === null) return 0;
-  const distance = (index: number) => Math.abs(Math.log(stops[index] / value));
-  let best = 1;
-  for (let index = 2; index < stops.length; index += 1) {
-    if (distance(index) < distance(best)) best = index;
-  }
-  return best;
-}
-
-/** What the slider writes into the box: en-US grouping, which parseAutoCompactTokens strips in any locale. */
-export function formatAutoCompactDraft(tokens: number): string {
-  return tokens.toLocaleString("en-US");
-}
-
-export function autoCompactSliderLabel(
-  tokens: number,
-  unset = "Default",
-): string {
-  if (tokens === 0) return unset;
-  return `${tokens.toLocaleString()} tokens`;
-}
-
-/** Saves the per-model drafts of the listed models; blank ones fall back to the connection. */
-export function parseAutoCompactTokensByModel(
-  drafts: Record<string, string>,
-  models: readonly string[],
-): Record<string, number> {
-  const limits: Record<string, number> = {};
-  for (const model of models) {
-    let value: number | null;
-    try {
-      value = parseAutoCompactTokens(drafts[model] ?? "");
-    } catch (error) {
-      throw new Error(`${model}: ${(error as Error).message}`);
-    }
-    if (value !== null) limits[model] = value;
-  }
-  return limits;
-}
-
-/** The threshold a request carries: the connection's setting, else 75% of the catalogued window. */
+/** The threshold a request carries: the connection's percent or (older saves) tokens, else 75%. */
 function requestedCompactionThreshold(
   contextLength: number | null | undefined,
   autoCompactTokens: number | null | undefined,
+  autoCompactPercent?: number | null,
 ): { threshold: number; uncapped: boolean } | null {
   const window = contextLength && contextLength > 0 ? contextLength : null;
+  const percent = normalizeAutoCompactPercent(autoCompactPercent);
+  if (percent !== undefined) {
+    // No catalogued window: compaction_percent lets the backend apply it to the served one.
+    return window
+      ? {
+          threshold: Math.max(1, Math.floor((window * percent) / 100)),
+          uncapped: true,
+        }
+      : null;
+  }
   const override = normalizeAutoCompactTokens(autoCompactTokens);
   if (override !== undefined) {
     return { threshold: window ? Math.min(override, window) : override, uncapped: true };
@@ -220,10 +212,12 @@ export function cloudCompactionTrigger(options: {
   providerType: string | null | undefined;
   contextLength: number | null | undefined;
   autoCompactTokens?: number | null;
+  autoCompactPercent?: number | null;
 }): number | null {
   const requested = requestedCompactionThreshold(
     options.contextLength,
     options.autoCompactTokens,
+    options.autoCompactPercent,
   );
   if (!requested) return null;
   let trigger = requested.threshold;
@@ -241,8 +235,10 @@ export function cloudCompactionTrigger(options: {
 export function apiCompactionRequestFields(options: {
   autoCompactEnabled: boolean;
   contextLength: number | null | undefined;
-  /** The connection's "Auto-compact after", which replaces the 75% default. */
+  /** A connection's "Auto-compact after" from before the percent setting; the percent wins. */
   autoCompactTokens?: number | null;
+  /** The model's or connection's "Auto-compact at", which replaces the 75% default. */
+  autoCompactPercent?: number | null;
   compactionMode?: ProviderCompactionMode | null;
   // /compact: asked for by the user, so it applies with auto-compaction off too
   compactNow?: boolean;
@@ -250,6 +246,7 @@ export function apiCompactionRequestFields(options: {
   context_overflow?: "truncate_oldest";
   compaction_threshold?: number;
   compaction_uncapped?: true;
+  compaction_percent?: number;
   context_window?: number;
   compact_context?: true;
   compaction_mode?: "rolling" | "checkpoint";
@@ -263,9 +260,12 @@ export function apiCompactionRequestFields(options: {
   const requested = requestedCompactionThreshold(
     contextLength,
     options.autoCompactTokens,
+    options.autoCompactPercent,
   );
+  const percent = normalizeAutoCompactPercent(options.autoCompactPercent);
   return {
     context_overflow: "truncate_oldest",
+    ...(percent !== undefined ? { compaction_percent: percent } : {}),
     // without a catalogued window, the backend reads the self-hosted server's reported window
     ...(requested ? { compaction_threshold: requested.threshold } : {}),
     ...(requested?.uncapped ? { compaction_uncapped: true as const } : {}),

@@ -3498,6 +3498,16 @@ class ChatCompletionRequest(BaseModel):
             "raised to the provider's floor and never exceeds context_window."
         ),
     )
+    compaction_percent: Optional[int] = Field(
+        None,
+        ge = 10,
+        le = 100,
+        description = (
+            "[x-unsloth] The connection's \"Auto-compact at\" share of the model's window, in "
+            "percent. Where Unsloth reads the window from a self-hosted server (no "
+            "compaction_threshold, or Ollama's loaded num_ctx), it replaces the 75% default."
+        ),
+    )
     compaction_mode: Optional[Literal["summary", "rolling", "checkpoint"]] = Field(
         None,
         description = (

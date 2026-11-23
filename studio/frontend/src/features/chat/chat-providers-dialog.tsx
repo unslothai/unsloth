@@ -160,14 +160,16 @@ import {
 } from "./sync-external-providers";
 import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
 import {
-  autoCompactSliderIndex,
-  autoCompactSliderLabel,
-  autoCompactSliderStops,
-  formatAutoCompactDraft,
-  normalizeAutoCompactTokensByModel,
+  AUTO_COMPACT_PERCENT_DEFAULT,
+  AUTO_COMPACT_PERCENT_MAX,
+  AUTO_COMPACT_PERCENT_MIN,
+  AUTO_COMPACT_PERCENT_STEP,
+  formatAutoCompactPercent,
+  normalizeAutoCompactPercent,
+  normalizeAutoCompactPercentByModel,
   normalizeCompactionMode,
-  parseAutoCompactTokens,
-  parseAutoCompactTokensByModel,
+  parseAutoCompactPercent,
+  parseAutoCompactPercentByModel,
   type ProviderCompactionMode,
 } from "./utils/auto-compaction";
 import { SettingsSection } from "@/features/settings/components/settings-section";
@@ -405,7 +407,11 @@ export function ChatProvidersSettings({
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
   const [apiType, setApiType] = useState<ConnectionApiType>("chat_completions");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
-  const [autoCompactTokensDraft, setAutoCompactTokensDraft] = useState("");
+  // Tokens saved before the percent setting; kept until a percent replaces it.
+  const [legacyAutoCompactTokens, setLegacyAutoCompactTokens] = useState<
+    number | null
+  >(null);
+  const [autoCompactPercentDraft, setAutoCompactPercentDraft] = useState("");
   const [autoCompactByModelDraft, setAutoCompactByModelDraft] = useState<
     Record<string, string>
   >({});
@@ -490,20 +496,26 @@ export function ChatProvidersSettings({
     ? (resolveModelCatalogEntry(providerType, autoCompactModel)?.contextLength ??
       null)
     : null;
-  const autoCompactStops = autoCompactSliderStops(
-    providerType === "anthropic" ? 50_000 : undefined,
-    autoCompactModelWindow,
-  );
+  const readPercent = (draft: string): number | null => {
+    try {
+      return parseAutoCompactPercent(draft);
+    } catch {
+      return null;
+    }
+  };
+  const allModelsPercent =
+    readPercent(autoCompactPercentDraft) ?? AUTO_COMPACT_PERCENT_DEFAULT;
   const autoCompactDraft = autoCompactModel
     ? (autoCompactByModelDraft[autoCompactModel] ?? "")
-    : autoCompactTokensDraft;
+    : autoCompactPercentDraft;
+  const autoCompactPercent = readPercent(autoCompactDraft) ?? allModelsPercent;
   const setAutoCompactDraft = (value: string) =>
     autoCompactModel
       ? setAutoCompactByModelDraft((drafts) => ({
           ...drafts,
           [autoCompactModel]: value,
         }))
-      : setAutoCompactTokensDraft(value);
+      : setAutoCompactPercentDraft(value);
   const autoCompactOverrideCount = autoCompactModels.filter(
     (model) => (autoCompactByModelDraft[model] ?? "").trim() !== "",
   ).length;
@@ -779,7 +791,8 @@ export function ChatProvidersSettings({
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
     setMaxOutputTokensDraft("");
-    setAutoCompactTokensDraft("");
+    setLegacyAutoCompactTokens(null);
+    setAutoCompactPercentDraft("");
     setAutoCompactByModelDraft({});
     setAutoCompactScope("");
     setCompactionModeDraft("summary");
@@ -890,7 +903,8 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft("");
     setMaxOutputTokensDraft("");
-    setAutoCompactTokensDraft("");
+    setLegacyAutoCompactTokens(null);
+    setAutoCompactPercentDraft("");
     setAutoCompactByModelDraft({});
     setAutoCompactScope("");
     setCompactionModeDraft("summary");
@@ -1381,11 +1395,11 @@ export function ChatProvidersSettings({
       const maxOutputTokens = supportsMaxOutputTokens
         ? parseMaxOutputTokens(maxOutputTokensDraft)
         : undefined;
-      const autoCompactTokens = supportsAutoCompactTokens
-        ? parseAutoCompactTokens(autoCompactTokensDraft)
-        : undefined;
-      const autoCompactTokensByModel = supportsAutoCompactTokens
-        ? parseAutoCompactTokensByModel(autoCompactByModelDraft, modelsToSave)
+      const autoCompactPercent = supportsAutoCompactTokens
+        ? parseAutoCompactPercent(autoCompactPercentDraft)
+        : null;
+      const autoCompactPercentByModel = supportsAutoCompactTokens
+        ? parseAutoCompactPercentByModel(autoCompactByModelDraft, modelsToSave)
         : {};
       const extraHeaders = parseExtraHeadersDraft(extraHeadersDraft);
       const created = await createProviderConfig({
@@ -1398,9 +1412,9 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens,
-        autoCompactTokens: autoCompactTokens ?? undefined,
-        ...(Object.keys(autoCompactTokensByModel).length > 0
-          ? { autoCompactTokensByModel }
+        autoCompactPercent: autoCompactPercent ?? undefined,
+        ...(Object.keys(autoCompactPercentByModel).length > 0
+          ? { autoCompactPercentByModel }
           : {}),
         ...(supportsAutoCompactTokens && compactionModeDraft !== "summary"
           ? { compactionMode: compactionModeDraft }
@@ -1435,8 +1449,9 @@ export function ChatProvidersSettings({
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens: created.max_output_tokens ?? undefined,
         autoCompactTokens: created.auto_compact_tokens ?? undefined,
-        autoCompactTokensByModel: normalizeAutoCompactTokensByModel(
-          created.auto_compact_tokens_by_model,
+        autoCompactPercent: normalizeAutoCompactPercent(created.auto_compact_percent),
+        autoCompactPercentByModel: normalizeAutoCompactPercentByModel(
+          created.auto_compact_percent_by_model,
         ),
         compactionMode: normalizeCompactionMode(created.compaction_mode),
         extraHeaders: created.extra_headers ?? extraHeaders,
@@ -1581,11 +1596,11 @@ export function ChatProvidersSettings({
       const maxOutputTokens = supportsMaxOutputTokens
         ? parseMaxOutputTokens(maxOutputTokensDraft)
         : undefined;
-      const autoCompactTokens = supportsAutoCompactTokens
-        ? parseAutoCompactTokens(autoCompactTokensDraft)
+      const autoCompactPercent = supportsAutoCompactTokens
+        ? parseAutoCompactPercent(autoCompactPercentDraft)
         : undefined;
-      const autoCompactTokensByModel = supportsAutoCompactTokens
-        ? parseAutoCompactTokensByModel(
+      const autoCompactPercentByModel = supportsAutoCompactTokens
+        ? parseAutoCompactPercentByModel(
             autoCompactByModelDraft,
             keepSavedModels ? existing.models : modelsToSave,
           )
@@ -1601,8 +1616,10 @@ export function ChatProvidersSettings({
         models: keepSavedModels ? undefined : modelsToSave,
         availableModels: keepSavedModels ? undefined : availableModelsToSave,
         maxOutputTokens,
-        autoCompactTokens,
-        autoCompactTokensByModel,
+        autoCompactPercent,
+        autoCompactPercentByModel,
+        // A percent replaces tokens saved before it existed.
+        ...(autoCompactPercent != null ? { autoCompactTokens: null } : {}),
         // null clears the column back to the default summary.
         compactionMode: supportsAutoCompactTokens
           ? (compactionModeDraft === "summary" ? null : compactionModeDraft)
@@ -1644,8 +1661,9 @@ export function ChatProvidersSettings({
           : availableModelsToSave,
         maxOutputTokens: updated.max_output_tokens ?? undefined,
         autoCompactTokens: updated.auto_compact_tokens ?? undefined,
-        autoCompactTokensByModel: normalizeAutoCompactTokensByModel(
-          updated.auto_compact_tokens_by_model,
+        autoCompactPercent: normalizeAutoCompactPercent(updated.auto_compact_percent),
+        autoCompactPercentByModel: normalizeAutoCompactPercentByModel(
+          updated.auto_compact_percent_by_model,
         ),
         compactionMode: normalizeCompactionMode(updated.compaction_mode),
         extraHeaders: updated.extra_headers ?? extraHeaders,
@@ -1832,13 +1850,16 @@ export function ChatProvidersSettings({
             getExternalMinOutputTokens(provider.providerType),
           ).toString(),
     );
-    setAutoCompactTokensDraft(
-      provider.autoCompactTokens == null ? "" : provider.autoCompactTokens.toString(),
+    setLegacyAutoCompactTokens(provider.autoCompactTokens ?? null);
+    setAutoCompactPercentDraft(
+      provider.autoCompactPercent == null
+        ? ""
+        : formatAutoCompactPercent(provider.autoCompactPercent),
     );
     setAutoCompactByModelDraft(
       Object.fromEntries(
-        Object.entries(provider.autoCompactTokensByModel ?? {}).map(
-          ([model, tokens]) => [model, tokens.toString()],
+        Object.entries(provider.autoCompactPercentByModel ?? {}).map(
+          ([model, percent]) => [model, formatAutoCompactPercent(percent)],
         ),
       ),
     );
@@ -2130,7 +2151,7 @@ export function ChatProvidersSettings({
         <div className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-3">
           <section>
             <div>
-              <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+              <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,calc(320px*var(--ui-space-scale,1)))] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <Label
                     htmlFor="provider-preset"
@@ -2197,7 +2218,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {isOpenCodeProviderType(providerType) ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,calc(320px*var(--ui-space-scale,1)))] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label htmlFor="provider-opencode-plan" className="text-sm font-medium">
                       Plan
@@ -2226,7 +2247,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {showApiKeyField ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,calc(320px*var(--ui-space-scale,1)))] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-api-key"
@@ -2320,7 +2341,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {isCustomProvider ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-center gap-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,calc(320px*var(--ui-space-scale,1)))] items-center gap-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
                     htmlFor="provider-custom-name"
                     className="text-sm font-medium"
@@ -2341,7 +2362,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {shouldShowProviderApiType(providerType) ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,calc(320px*var(--ui-space-scale,1)))] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label htmlFor="provider-api-type" className="text-sm font-medium">
                       API type
@@ -2373,7 +2394,7 @@ export function ChatProvidersSettings({
               ) : null}
               {isCustomProvider &&
               selectedProviderContract?.base_url_editable !== false ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,calc(320px*var(--ui-space-scale,1)))] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-base-url"
@@ -2430,25 +2451,24 @@ export function ChatProvidersSettings({
           </section>
 
           {supportsAutoCompactTokens ? (
-            <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+            <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,calc(320px*var(--ui-space-scale,1)))] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
               <div className="flex min-w-0 flex-col gap-0.5">
                 <Label
                   htmlFor="provider-auto-compact-tokens"
                   className="text-sm font-medium"
                 >
-                  Auto-compact after
+                  Auto-compact at
                 </Label>
                 <p
                   id="provider-auto-compact-tokens-help"
                   className="text-xs leading-snug text-muted-foreground"
                 >
                   {compactionModeDraft !== "summary"
-                    ? "Tokens before the oldest messages are dropped."
-                    : "Tokens before older messages are summarized."}{" "}
-                  Default uses 75% of
-                  the model's context window
+                    ? "How full the model's context window gets before the oldest messages are dropped."
+                    : "How full the model's context window gets before older messages are summarized."}{" "}
+                  Default {AUTO_COMPACT_PERCENT_DEFAULT}%
                   {providerType === "anthropic" || providerType === "openai"
-                    ? ", up to 200,000"
+                    ? ", up to 200,000 tokens"
                     : ""}
                   .
                 </p>
@@ -2456,20 +2476,25 @@ export function ChatProvidersSettings({
                   id="provider-auto-compact-tokens-note"
                   className="mt-1 text-xs leading-snug text-muted-foreground"
                 >
-                  {providerType === "anthropic" ? "At least 50,000 for Claude. " : ""}
+                  {providerType === "anthropic"
+                    ? "Never below 50,000 tokens on this provider. "
+                    : ""}
                   {autoCompactModel
                     ? `Blank uses the setting for all models.${
                         autoCompactModelWindow
-                          ? ` This model's context window is ${autoCompactModelWindow.toLocaleString()} tokens.`
-                          : " Capped at the model's context window."
+                          ? ` ${autoCompactPercent}% of this model's ${autoCompactModelWindow.toLocaleString()}-token window is ${Math.floor((autoCompactModelWindow * autoCompactPercent) / 100).toLocaleString()} tokens.`
+                          : ""
                       }`
-                    : `Capped at each model's context window.${
-                        autoCompactOverrideCount > 0
-                          ? ` ${autoCompactOverrideCount === 1 ? "1 model has its own limit" : `${autoCompactOverrideCount} models have their own limits`}.`
-                          : autoCompactModels.length > 0
-                            ? " Pick a model in the menu to give it its own limit."
-                            : ""
-                      }`}
+                    : autoCompactOverrideCount > 0
+                      ? `${autoCompactOverrideCount === 1 ? "1 model has its own setting" : `${autoCompactOverrideCount} models have their own settings`}.`
+                      : autoCompactModels.length > 0
+                        ? "Pick a model in the menu to give it its own setting."
+                        : ""}
+                  {!autoCompactModel &&
+                  legacyAutoCompactTokens != null &&
+                  !autoCompactPercentDraft.trim()
+                    ? ` Saved earlier as ${legacyAutoCompactTokens.toLocaleString()} tokens; picking a percent replaces it.`
+                    : ""}
                 </p>
               </div>
               <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
@@ -2483,7 +2508,7 @@ export function ChatProvidersSettings({
                     }
                   >
                     <SelectTrigger
-                      aria-label="Auto-compact limit for"
+                      aria-label="Auto-compact setting for"
                       className="h-9 w-full text-sm"
                     >
                       <SelectValue />
@@ -2496,21 +2521,16 @@ export function ChatProvidersSettings({
                         All models
                       </SelectItem>
                       {autoCompactModels.map((model) => {
-                        let own: number | null = null;
-                        try {
-                          own = parseAutoCompactTokens(
-                            autoCompactByModelDraft[model] ?? "",
-                          );
-                        } catch {
-                          // Mid-edit: the menu shows the bare model until it parses.
-                        }
+                        const own = readPercent(
+                          autoCompactByModelDraft[model] ?? "",
+                        );
                         return (
                           <SelectItem
                             key={model}
                             value={model}
                             className="rounded-full"
                           >
-                            {own ? `${model} (${own.toLocaleString()})` : model}
+                            {own === null ? model : `${model} (${own}%)`}
                           </SelectItem>
                         );
                       })}
@@ -2519,24 +2539,15 @@ export function ChatProvidersSettings({
                 ) : null}
                 <div className="flex min-w-0 items-center gap-3">
                   <Slider
-                    min={0}
-                    max={autoCompactStops.length - 1}
-                    step={1}
-                    value={[
-                      autoCompactSliderIndex(autoCompactDraft, autoCompactStops),
-                    ]}
-                    onValueChange={([index]) =>
-                      setAutoCompactDraft(
-                        index ? formatAutoCompactDraft(autoCompactStops[index]) : "",
-                      )
+                    min={AUTO_COMPACT_PERCENT_MIN}
+                    max={AUTO_COMPACT_PERCENT_MAX}
+                    step={AUTO_COMPACT_PERCENT_STEP}
+                    value={[autoCompactPercent]}
+                    onValueChange={([percent]) =>
+                      setAutoCompactDraft(formatAutoCompactPercent(percent))
                     }
-                    aria-label="Auto-compact after"
-                    thumbValueText={(index) =>
-                      autoCompactSliderLabel(
-                        autoCompactStops[index] ?? 0,
-                        autoCompactModel ? "Same as all models" : "Default",
-                      )
-                    }
+                    aria-label="Auto-compact at"
+                    thumbValueText={(percent) => `${percent}% of the context window`}
                     className="min-w-0 flex-1"
                   />
                   <Input
@@ -2547,13 +2558,11 @@ export function ChatProvidersSettings({
                     spellCheck={false}
                     value={autoCompactDraft}
                     onChange={(event) => setAutoCompactDraft(event.target.value)}
-                    placeholder={
-                      autoCompactModel
-                        ? autoCompactTokensDraft.trim() || "Default"
-                        : "Default"
-                    }
+                    placeholder={formatAutoCompactPercent(
+                      autoCompactModel ? allModelsPercent : AUTO_COMPACT_PERCENT_DEFAULT,
+                    )}
                     aria-describedby="provider-auto-compact-tokens-help provider-auto-compact-tokens-note"
-                    className="h-9 w-28 shrink-0 text-sm tabular-nums"
+                    className="h-9 w-20 shrink-0 text-sm tabular-nums"
                   />
                 </div>
               </div>
@@ -2561,7 +2570,7 @@ export function ChatProvidersSettings({
           ) : null}
 
           {supportsAutoCompactTokens ? (
-            <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+            <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,calc(320px*var(--ui-space-scale,1)))] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
               <div className="flex min-w-0 flex-col gap-0.5">
                 <Label
                   htmlFor="provider-compaction-mode"
@@ -2622,7 +2631,7 @@ export function ChatProvidersSettings({
             <CollapsibleContent>
             <div>
               {supportsMaxOutputTokens ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,calc(320px*var(--ui-space-scale,1)))] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-max-output-tokens"
@@ -2666,7 +2675,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {providerType !== "openai_codex" ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,calc(320px*var(--ui-space-scale,1)))] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-extra-headers"
@@ -2763,7 +2772,7 @@ export function ChatProvidersSettings({
 
               {showCustomReasoning ? (
                 <>
-                  <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,calc(320px*var(--ui-space-scale,1)))] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                     <div className="flex min-w-0 flex-col gap-0.5">
                       <Label htmlFor="provider-reasoning-support" className="text-sm font-medium">
                         Reasoning support
@@ -2786,7 +2795,7 @@ export function ChatProvidersSettings({
                     </label>
                   </div>
                   {reasoningConfig?.enabled ? (
-                    <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+                    <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,calc(320px*var(--ui-space-scale,1)))] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                       <div className="flex min-w-0 flex-col gap-0.5">
                         <Label htmlFor="provider-reasoning-style" className="text-sm font-medium">
                           Reasoning parameter style
@@ -2828,7 +2837,7 @@ export function ChatProvidersSettings({
                 </>
               ) : null}
               {showReasoningToggle ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-center gap-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,calc(320px*var(--ui-space-scale,1)))] items-center gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-is-reasoning"
