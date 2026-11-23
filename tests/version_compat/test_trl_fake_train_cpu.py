@@ -71,6 +71,14 @@ def _fake_cpu_gpu(mp):
         mp.setattr(torch.accelerator, "is_available", lambda *a, **k: False)
 
     # Redirect cuda allocations to CPU: the spoof keeps real allocators, but inductor allocates on cuda.
+    # torch.device("meta") recognises factories through a set cached on first use. Built after the wrappers
+    # below, it holds them instead of the real factories, so transformers 5's `torch.tensor([]).device` meta
+    # probe reads cpu, runs _init_weights on the meta model, and leaves RoPE inv_freq uninitialised.
+    try:
+        from torch.utils._device import _device_constructors
+        _device_constructors()
+    except Exception:
+        pass
     for _name in (
         "empty",
         "zeros",
