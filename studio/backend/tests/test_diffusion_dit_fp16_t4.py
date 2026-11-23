@@ -675,9 +675,7 @@ def scaled_mm(monkeypatch):
 
     monkeypatch.setattr(f16, "scaled_mm_supported", lambda device_type: True)
     monkeypatch.setattr(f16, "_mm_fp32_out", mm)
-    monkeypatch.setattr(
-        f16, "_dequant_4bit", lambda layer: layer.weight.detach().to(torch.bfloat16)
-    )
+    monkeypatch.setattr(f16, "_dequant_4bit", lambda layer: layer.weight.detach().to(torch.float16))
     return calls
 
 
@@ -896,7 +894,7 @@ def test_scaled_mm_kill_switch_installs_nothing(scaled_mm, monkeypatch):
 
 
 def test_scaled_mm_needs_tensor_cores_and_mm_out_dtype(monkeypatch):
-    """Pascal (sm6x) keeps the fp32 islands; sm75 takes the scaled GEMM when torch.mm(out_dtype=) works."""
+    """Pascal (sm6x) and GTX 16xx keep the fp32 islands; T4 takes the scaled GEMM when torch.mm(out_dtype=) works."""
     from core.training import diffusion_dit_fp16 as f16
 
     monkeypatch.delenv(f16.SCALED_MM_ENV, raising = False)
@@ -911,9 +909,14 @@ def test_scaled_mm_needs_tensor_cores_and_mm_out_dtype(monkeypatch):
         torch, "ones", lambda *a, **k: torch.full((16, 16), 1.0, dtype = k.get("dtype"))
     )
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
-    for cap, want in (((6, 1), False), ((7, 5), True)):
+    for cap, name, want in (
+        ((6, 1), "Tesla P100-PCIE-16GB", False),
+        ((7, 5), "NVIDIA GeForce GTX 1660 Ti", False),
+        ((7, 5), "Tesla T4", True),
+    ):
         monkeypatch.setattr(f16, "_MM_FP32_OUT_OK", {})
         monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, cap = cap: cap)
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a, name = name: name)
         assert f16.scaled_mm_supported("cuda") is want
     assert probe == [torch.float16]
 

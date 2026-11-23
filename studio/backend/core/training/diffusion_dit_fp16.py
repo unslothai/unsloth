@@ -104,6 +104,15 @@ def _mm_fp32_out(a, b):
     return torch.mm(a, b, out_dtype = torch.float32)
 
 
+def _no_tensor_cores_sm75(dev) -> bool:
+    """GTX 16xx cards are sm75 without tensor cores."""
+    import torch
+    try:
+        return "GTX 16" in torch.cuda.get_device_name(dev)
+    except Exception:  # noqa: BLE001 -- no name: the capability check decides
+        return False
+
+
 def scaled_mm_supported(device) -> bool:
     """fp16 x fp16 -> fp32 cuBLAS GEMM (``torch.mm(out_dtype=)``) runs on ``device`` (``"cuda"``, ``"cuda:1"``,
     a ``torch.device``) and this torch, on tensor cores."""
@@ -128,7 +137,7 @@ def scaled_mm_supported(device) -> bool:
     if key not in _MM_FP32_OUT_OK:
         try:
             # Tensor cores (sm70+) only: on Pascal an fp16 GEMM is no faster than the fp32 one it replaces.
-            if tuple(torch.cuda.get_device_capability(dev)) < (7, 0):
+            if tuple(torch.cuda.get_device_capability(dev)) < (7, 0) or _no_tensor_cores_sm75(dev):
                 _MM_FP32_OUT_OK[key] = False
                 return False
             a = torch.ones(16, 16, device = dev, dtype = torch.float16)
