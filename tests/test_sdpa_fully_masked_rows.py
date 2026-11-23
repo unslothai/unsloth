@@ -395,6 +395,45 @@ def test_native_sdpa_dispatch_opens_only_the_own_key_for_a_causal_pad_row():
     torch.testing.assert_close(out[0, 0], V[0, :, 0])
 
 
+@pytest.mark.parametrize("mask_rank", [2, 4])
+def test_native_sdpa_dispatch_reads_positions_from_the_filled_length(mask_rank):
+    """K preallocated past the filled slots (a static cache: 8 columns, 4 filled by a prefill at positions 0..3).
+    The queries sit at kv_seq_len - q_len, not at K's last q_len columns: a fully masked left pad query attends
+    its own slot, not an unfilled one, and with a 2D mask a real query sees no later filled position."""
+    ad = pytest.importorskip("unsloth.utils.attention_dispatch")
+    torch.manual_seed(0)
+    B, H, L, S, D = 2, 2, 4, 8, 8
+    Q = torch.randn(B, H, L, D)
+    K, V = torch.zeros(B, H, S, D), torch.zeros(B, H, S, D)
+    K[:, :, :L], V[:, :, :L] = torch.randn(B, H, L, D), torch.randn(B, H, L, D)
+    keys = torch.zeros((B, S), dtype = torch.long)
+    keys[:, :L] = 1
+    keys[0, :2] = 0  # row 0 left padded by two
+    if mask_rank == 2:
+        mask = keys
+    else:
+        position = torch.arange(L)[:, None]
+        mask = (torch.arange(S)[None, :] <= position)[None, None] & keys.bool()[:, None, None, :]
+    config = ad.AttentionConfig(backend = ad.SDPA, n_kv_heads = H, n_groups = 1)
+    context = ad.AttentionContext(
+        bsz = B,
+        q_len = L,
+        kv_seq_len = L,
+        n_heads = H,
+        head_dim = D,
+        requires_grad = False,
+        seq_info = None,
+        attention_mask = mask,
+        causal_mask = None,
+        training = True,
+    )
+    out = ad.run_attention(config = config, context = context, Q = Q, K = K, V = V)
+    out = out.reshape(B, L, H, D) if out.dim() == 4 and out.shape[1] == L else out.transpose(1, 2)
+    for query in (0, 1):  # pad queries: their own slot
+        torch.testing.assert_close(out[0, query], V[0, :, query])
+    torch.testing.assert_close(out[1, 0], V[1, :, 0])  # a real first query reads only position 0
+
+
 def test_left_padded_model_loss_cannot_read_future_tokens(unpatched):
     """End to end on a random tiny Llama (transformers' own forward, sdpa): the last pad position's
     logits must not change when a later token does, and real rows must be bitwise unchanged."""
