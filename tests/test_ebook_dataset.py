@@ -161,6 +161,19 @@ def test_print_page_numbers_are_not_inlined_into_the_text(ebooks, marker):
     assert ebooks._html_text(html.encode()) == "The quick brown fox.\n\nNext."
 
 
+@pytest.mark.parametrize(
+    "html, expected",
+    [
+        (b'<p>quick<span epub:type="pagebreak"> </span>brown</p>', "quick brown"),
+        (b'<p>quick<span epub:type="pagebreak"> 12 </span>brown</p>', "quick brown"),
+        (b'<p>quick<span role="doc-pagebreak"><b>12</b> </span>brown</p>', "quick brown"),
+        (b'<p>exam<span epub:type="pagebreak">12</span>ple</p>', "example"),
+    ],
+)
+def test_page_break_markers_keep_word_separators(ebooks, html, expected):
+    assert ebooks._html_text(html) == expected
+
+
 def test_block_page_break_markers_still_separate_text(ebooks):
     html = b'<body>end<hr epub:type="pagebreak" title="5"/>start<div role="doc-pagebreak">6</div>more</body>'
     assert ebooks._html_text(html) == "end\n\nstart\n\nmore"

@@ -101,12 +101,12 @@ class _BookTextParser(HTMLParser):
                 if charset:
                     self.encoding = charset[1]
         hidden = (
-            bool(self.stack and self.stack[-1][1])
+            (self.stack[-1][1] if self.stack else False)
             or tag in _IGNORE
             or "hidden" in attrs
             or attrs.get("aria-hidden", "").lower() == "true"
         )
-        # Print page numbers are not prose; a block-level marker still breaks the text.
+        # Print page numbers are not prose, but their block breaks and edge whitespace still separate words.
         page_number = (
             "pagebreak" in (attrs.get("epub:type") or "").split()
             or "doc-pagebreak" in (attrs.get("role") or "").split()
@@ -119,7 +119,7 @@ class _BookTextParser(HTMLParser):
             elif tag in {"td", "th"}:
                 self.parts.append(" ")
         if tag not in _VOID:
-            self.stack.append((tag, hidden or page_number))
+            self.stack.append((tag, hidden or ("page" if page_number else False)))
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -136,7 +136,10 @@ class _BookTextParser(HTMLParser):
             self.parts.append("\n\n")
 
     def handle_data(self, data):
-        if not self.stack or not self.stack[-1][1]:
+        if self.stack and self.stack[-1][1] == "page":
+            if data[:1].isspace() or data[-1:].isspace():
+                self.parts.append(" ")
+        elif not self.stack or not self.stack[-1][1]:
             if any(tag == "pre" for tag, _ in self.stack):
                 self.parts.append(f"\ue000{len(self.preformatted)}\ue001")
                 self.preformatted.append(data)
