@@ -427,17 +427,21 @@ _METAL_WORKING_SET = (
 
 
 def _metal_working_set(info: dict, child_env: dict) -> int:
-    output = subprocess.run(
-        [info["path"] + "/bin/python", "-I", "-c", _METAL_WORKING_SET],
-        env = child_env,
-        capture_output = True,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
-        timeout = 120,
-        check = True,
-    ).stdout
-    return int(output.strip().splitlines()[-1])
+    """0 (budget against total RAM) when the engine env cannot report it."""
+    try:
+        output = subprocess.run(
+            [info["path"] + "/bin/python", "-I", "-c", _METAL_WORKING_SET],
+            env = child_env,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 120,
+            check = True,
+        ).stdout
+        return max(0, int(output.strip().splitlines()[-1]))
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return 0
 
 
 def _memory_line(output: str) -> list:

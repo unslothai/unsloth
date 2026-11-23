@@ -98,6 +98,14 @@ def test_metal_working_set_is_read_from_the_engine_env(monkeypatch):
         seen["argv"][0] == "/env/bin/python"
         and "max_recommended_working_set_size" in seen["argv"][-1]
     )
+    for broken in (
+        lambda *a, **k: SimpleNamespace(stdout = ""),
+        lambda *a, **k: SimpleNamespace(stdout = "Traceback\nKeyError\n"),
+        lambda *a, **k: (_ for _ in ()).throw(managed_engine.subprocess.CalledProcessError(1, "x")),
+        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()),
+    ):
+        monkeypatch.setattr(managed_engine.subprocess, "run", broken)
+        assert managed_engine._metal_working_set({"path": "/env"}, {}) == 0
 
 
 @pytest.mark.parametrize(
