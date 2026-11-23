@@ -40008,15 +40008,7 @@ class LlamaCppBackend:
                         and not (cancel_event is not None and cancel_event.is_set())
                         and (max_tokens is None or _spent < max_tokens)
                     ):
-                        from core.inference import cut_thought
-                        _kept, _close = self._close_cut_thought(resumed_reasoning + reasoning_text)
-                        if cut_thought.mark(thread_id, _kept, _close):
-                            logger.info(
-                                "Thought cut by the context window (%d chars); closed with %r and "
-                                "the thread's next request compacts",
-                                len(_kept),
-                                _close,
-                            )
+                        self._mark_cut_thought(thread_id, resumed_reasoning + reasoning_text)
                     yield {
                         "type": "metadata",
                         # Never None: consumers call usage.get(...).
@@ -40095,6 +40087,20 @@ class LlamaCppBackend:
         return cut_thought.window_budget(
             self._effective_context_length, prompt, max_tokens, requested
         )
+
+    def _mark_cut_thought(self, thread_id: Optional[str], thought: str) -> bool:
+        from core.inference import cut_thought
+
+        kept, close = self._close_cut_thought(thought)
+        if not cut_thought.mark(thread_id, kept, close):
+            return False
+        logger.info(
+            "Thought cut by the context window (%d chars); closed with %r and "
+            "the thread's next request compacts",
+            len(kept),
+            close,
+        )
+        return True
 
     def _close_cut_thought(self, thought: str) -> tuple[str, str]:
         """The cut thought minus its last few tokens, and this model's own thought-closing marker
@@ -40185,6 +40191,7 @@ class LlamaCppBackend:
         live_permissions = None,
         chat_template_kwargs: Optional[dict] = None,
         mcp_match_exchange: Optional[dict] = None,
+        record_cut_thought: bool = True,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -42117,15 +42124,25 @@ class LlamaCppBackend:
                             _spent_g = _fu_g.get("completion_tokens", 0) or int(
                                 payload.get("max_tokens") or 0
                             )
+                            _cap_spent_g = _reasoning_cap_spent or _loop_budget_left(_spent_g) == 0
                             yield {"type": "status", "text": ""}
-                            yield {
-                                "type": "content",
-                                "text": (
-                                    _reasoning_cap_spent_message(max_tokens)
-                                    if _reasoning_cap_spent or _loop_budget_left(_spent_g) == 0
-                                    else _thinking_exhausted_message(self._effective_context_length)
-                                ),
-                            }
+                            if not (
+                                record_cut_thought
+                                and not _cap_spent_g
+                                and self._mark_cut_thought(
+                                    thread_id, _resumed_reasoning + reasoning_accum
+                                )
+                            ):
+                                yield {
+                                    "type": "content",
+                                    "text": (
+                                        _reasoning_cap_spent_message(max_tokens)
+                                        if _cap_spent_g
+                                        else _thinking_exhausted_message(
+                                            self._effective_context_length
+                                        )
+                                    ),
+                                }
                             _meta = _build_metadata_event(
                                 _iter_usage, _iter_timings, _iter_finish_reason
                             )

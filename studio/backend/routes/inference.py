@@ -34945,6 +34945,7 @@ async def produce_openai_chat_completions(
                     context_policy = _request_context_policy(payload),
                     compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                     compact_context = getattr(payload, "compact_context", None) is True,
+                    record_cut_thought = _cut_recovery is None,
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
