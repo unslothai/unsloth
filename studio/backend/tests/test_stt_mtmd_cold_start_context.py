@@ -21,7 +21,7 @@ RATE = 16000
 
 
 def _runtime_tokens(seconds):
-    # What the bundled runtime counts for Qwen3-ASR: 13 audio tokens per whole second plus the prompt.
+    # Bundled runtime's Qwen3-ASR count: 13 audio tokens per whole second plus the prompt.
     return 13 * int(seconds) + 28
 
 
@@ -237,7 +237,6 @@ def test_warm_auto_server_keeps_its_window_and_resizes_as_before(studio):
     studio.transcribe(180)
     assert [_context(process) for process in studio.processes] == [4096, 8192]
     studio.transcribe(28)
-    # A warm server is never sized from the clip: the count resizes it, as before.
     assert [_context(process) for process in studio.processes] == [4096, 8192, 4096]
     assert len(studio.decodes) == 3
 
@@ -287,7 +286,6 @@ def test_start_window_never_exceeds_the_counted_window():
     for seconds in long_clips:
         for model_id in mtmd.MTMD_STT_MODELS:
             start = mtmd._cold_start_context(model_id, seconds)
-            # Larger would leave the final --ctx-size to a resize and allocate more than needed.
             assert start <= _counted_context(seconds)
             if start < _counted_context(seconds):
                 still_twice.append(seconds)

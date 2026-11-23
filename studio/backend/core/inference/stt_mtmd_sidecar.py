@@ -75,7 +75,7 @@ class MtmdSttModel:
     label: str
     # Qwen3-ASR emits "language English<asr_text>" before the transcript.
     transcript_marker: Optional[str] = None
-    # Audio tokens/s, prompt excluded; sizes a cold Auto start (0 = from the output budget alone, still <= counted size).
+    # Audio tokens/s, prompt excluded so a cold Auto start never exceeds the counted size.
     audio_tokens_per_second: float = 0.0
 
 
@@ -87,7 +87,6 @@ MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
         mmproj_file = "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
         label = "Qwen3-ASR 0.6B",
         transcript_marker = "<asr_text>",
-        # qwen3a: the bundled runtime counts 13 per whole second, plus the prompt.
         audio_tokens_per_second = 13.0,
     ),
     "qwen3-asr-1.7b": MtmdSttModel(
@@ -113,7 +112,6 @@ _CONTEXT_MARGIN = 64
 
 
 def _auto_start_size(hint: Optional[int]) -> int:
-    """A hint outside the Auto range is ignored rather than trusted."""
     if type(hint) is int and _AUTO_CONTEXT_MIN < hint <= _MAX_CONTEXT_LENGTH and hint % 256 == 0:
         return hint
     return _AUTO_CONTEXT_MIN
@@ -148,7 +146,7 @@ def _transcript_token_budget(audio_seconds: Optional[float]) -> int:
 
 
 def _cold_start_context(model_id: str, audio_seconds: Optional[float]) -> int:
-    """Lower bound of the counted size, so the existing resize still runs if short and never adds a start."""
+    """Lower bound of the counted size: a short guess still resizes, never adds a start."""
     audio_tokens = int((audio_seconds or 0) * MTMD_STT_MODELS[model_id].audio_tokens_per_second)
     try:
         return _auto_context_length(audio_tokens, _transcript_token_budget(audio_seconds))
@@ -1351,8 +1349,7 @@ class MtmdSttSidecar:
         model: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> Optional[tuple[Optional[int], object]]:
-        """None for a warm Auto server or undownloaded model, so the 409 runs before any decode, and on decode
-        failure, so the old path raises the same 400."""
+        """None (old path, same errors in the same order) for a warm Auto server, undownloaded model or bad clip."""
         try:
             model_id = resolve_mtmd_model_id(model)
             keeps_window = (
@@ -1363,7 +1360,7 @@ class MtmdSttSidecar:
             if keeps_window or not is_model_downloaded(model_id):
                 return None
             decoded = _decode_audio_bounded(audio, cancel_event)
-        except Exception:  # noqa: BLE001 - transcribe raises the same error after the load, as before
+        except Exception:  # noqa: BLE001 - transcribe re-raises it after the load
             return None
         if len(decoded) < _TARGET_SAMPLE_RATE // 1000:
             return None
