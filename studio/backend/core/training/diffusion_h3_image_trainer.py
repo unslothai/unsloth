@@ -276,7 +276,8 @@ def release_text_encoder(encoder) -> None:
 
 
 def encode_captions(encoder, tokenizer, processor, captions, device) -> dict:
-    """caption -> ``hidden_states[50]`` ``(1, L, text_dim)`` float32 on the host, tokenized as the pipeline does."""
+    """caption -> ``hidden_states[50]`` ``(1, L, text_dim)`` on the host in the encoder's dtype (bf16 rows stay bf16:
+    exact after the cast to the compute dtype), tokenized as the pipeline does."""
     import torch
 
     from core.inference.diffusion_minimax_h3_image import (
@@ -294,7 +295,7 @@ def encode_captions(encoder, tokenizer, processor, captions, device) -> dict:
             hidden = qwen3vl_hidden_state(
                 encoder, processor, ids, {}, layer = H3_IMAGE_TEXT_ENCODER_LAYER, device = device
             )
-            out[caption] = hidden.to("cpu", torch.float32)
+            out[caption] = hidden.to("cpu")
     return out
 
 

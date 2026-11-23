@@ -714,6 +714,7 @@ export const vi = {
       anyApp: "Sử dụng máy tính",
       anyAppDescription: "Cho phép mô hình nhìn thấy màn hình và điều khiển <b>chuột và bàn phím</b>. Các cuộc trò chuyện sẽ xin phép trước khi bắt đầu, trước khi dùng một ứng dụng mới và trước mọi thao tác rủi ro. Ảnh chụp màn hình được gửi đến mô hình bạn đang trò chuyện.",
       browser: "Trình duyệt",
+      desktopOnlyDescription: "Sử dụng máy tính chạy trong ứng dụng Unsloth trên máy tính. Mở phần cài đặt này ở đó để bật.",
       browserDescription: "Cho phép mô hình mở trang trong bảng trình duyệt của Unsloth, đọc trang, rồi nhấp và nhập thay bạn.",
       screen: "Xem màn hình",
       screenDescription: "macOS yêu cầu quyền này trong \"Screen & System Audio Recording\".",
@@ -3435,7 +3436,7 @@ export const vi = {
       rememberParamsPerModelHint:
         "Khi tắt, dùng cùng một cài đặt cho mọi mô hình.",
       autoCompactHint:
-        "Cuộc trò chuyện GGUF và MLX cục bộ: các lượt bị loại ra được lập chỉ mục để mô hình có thể tìm lại, và khi đặt lại, các chỉ dẫn thường trực vừa chỗ sẽ được trích dẫn lại nguyên văn, ưu tiên giữ phần cũ nhất và mới nhất hơn phần giữa. Việc lưu trữ cần một cuộc trò chuyện đã lưu và chỉ mục vector; nếu không có, các lượt cũ hơn sẽ bị loại bỏ. Dùng độ dài ngữ cảnh bạn đặt, không phải VRAM khả dụng. Mô hình API: nhà cung cấp tóm tắt các lượt cũ hơn khi có thể, nếu không thì các lượt cũ nhất bị loại bỏ khi cuộc trò chuyện gần đạt cửa sổ ngữ cảnh công bố của mô hình.",
+        "Cuộc trò chuyện GGUF và MLX cục bộ: các lượt bị loại ra được lập chỉ mục để mô hình có thể tìm lại, và khi đặt lại, các chỉ dẫn thường trực vừa chỗ sẽ được trích dẫn lại nguyên văn, ưu tiên giữ phần cũ nhất và mới nhất hơn phần giữa. Việc lưu trữ cần một cuộc trò chuyện đã lưu và chỉ mục vector; nếu không có, các lượt cũ hơn sẽ bị loại bỏ. Dùng độ dài ngữ cảnh bạn đặt, không phải VRAM khả dụng. Mô hình API: nhà cung cấp tóm tắt các lượt cũ hơn khi có thể, nếu không thì các lượt cũ nhất bị đưa ra khỏi ngữ cảnh khi cuộc trò chuyện gần đạt cửa sổ ngữ cảnh công bố của mô hình và được lập chỉ mục theo cách tương tự.",
       pastedTextShortDescription:
         "Nội dung dán từ {count} ký tự trở lên sẽ thành tệp đính kèm .txt.",
       pastedTextOffDescription: "Văn bản dán luôn ở lại trong hộp tin nhắn.",
@@ -5272,6 +5273,14 @@ export const vi = {
     copied: "Đã sao chép",
     useAsSource: "Dịch văn bản này",
     downloadSubtitles: "Tải phụ đề xuống",
+    imageOverlay: {
+      show: "Hiển thị trên ảnh",
+      title: "Bản dịch trên ảnh",
+      description: "Văn bản đã dịch được vẽ lên ảnh, tại vị trí của văn bản gốc.",
+      working: "Đang dịch văn bản trên ảnh…",
+      download: "Tải ảnh xuống",
+      failed: "Không thể vẽ bản dịch lên ảnh.",
+    },
     stale: "Văn bản hoặc cài đặt đã thay đổi. Hãy dịch lại để cập nhật.",
     stopped: "Đã dừng trước khi xong. Hãy dịch lại để có phần còn lại.",
     chat: "Trò chuyện với văn bản đã dịch",

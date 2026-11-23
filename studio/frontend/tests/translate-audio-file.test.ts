@@ -73,7 +73,7 @@ test("every audio file the drop zone takes is transcribed, not sent to the docum
 test("an audio file is transcribed with the Voice settings model and fills the text box", () => {
   assert.match(
     audio,
-    /transcribeAudioBlob\(file, \{ model, ggufVariant, signal \}\)/,
+    /transcribeAudioBlob\(file, \{\s*model,\s*ggufVariant,\s*signal,\s*onSegments: timed/,
   );
   assert.match(
     audio,
@@ -83,10 +83,29 @@ test("an audio file is transcribed with the Voice settings model and fills the t
   // A text typed or picked from history while the file transcribes wins.
   assert.match(
     page,
-    /if \(text && useTranslateStore\.getState\(\)\.source === before\) \{\s*loadText\(text\);/,
+    /if \(text && useTranslateStore\.getState\(\)\.source === before\) \{\s*loadText\(text, video \? file\.name : null\);/,
   );
   assert.match(
     page,
     /useEffect\(\(\) => \(\) => audioAbort\.current\?\.abort\(\), \[\]\);/,
+  );
+});
+
+test("only a video asks for segment timings, and timed segments load as SRT", () => {
+  assert.match(
+    page,
+    /const video = !isAudioAttachmentFile\(file\);\s*try \{\s*const text = await transcribeAudioFile\(file, controller\.signal, t, video\);/,
+  );
+  assert.match(audio, /timed = false,\n\): Promise<string \| null>/);
+  assert.match(
+    audio,
+    /const text = subtitles \?\? applyDictationDictionary\(transcript\)\.trim\(\);/,
+  );
+  const adapter = readSrc(
+    "features/chat/adapters/studio-model-dictation-adapter.ts",
+  );
+  assert.match(
+    adapter,
+    /if \(options\.onSegments\) params\.set\("timestamps", "true"\);/,
   );
 });

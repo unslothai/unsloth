@@ -3608,6 +3608,11 @@ const FORMAT_FILTER_LABELS: Record<FormatFilter, string> = {
   npu: "NPU",
 };
 
+const VLLM_CHECKPOINT_QUANTS: ReadonlySet<string> = new Set([
+  "compressed-tensors",
+  "fbgemm_fp8",
+]);
+
 const FORMAT_FILTER_DOTS: Partial<Record<FormatFilter, string>> = {
   gguf: "bg-format-gguf",
   mlx: "bg-format-mlx",
@@ -4504,9 +4509,9 @@ export function HubModelPicker({
   const chatSupportedCheckpointQuant = useCallback(
     (r: HfModelResult) =>
       isChatSupported(r) ||
-      // Only compressed-tensors: the vLLM engine loads it; fbgemm / fine-grained FP8 stay refused.
+      // Only vLLM loads these; plain fp8 passes on Default.
       (runsCheckpointQuant(r) &&
-        r.quantMethod?.toLowerCase() === "compressed-tensors" &&
+        VLLM_CHECKPOINT_QUANTS.has(r.quantMethod?.toLowerCase() ?? "") &&
         isChatSupported({ ...r, quantMethod: undefined })),
     [isChatSupported, runsCheckpointQuant],
   );

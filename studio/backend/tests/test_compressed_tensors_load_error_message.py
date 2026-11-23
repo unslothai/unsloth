@@ -245,15 +245,14 @@ def test_no_other_quantization_family_is_re_routed_into_this_refusal():
 
 def test_the_mlx_refusal_is_unchanged():
     """The signature this route already recognised keeps its own wording."""
-    error = _load_failure(
-        "Unsloth: 'unsloth/gemma-4-E2B-it-NVFP4' has per-module MLX quantization "
-        "metadata {'config_groups': {'group_1': {'format': 'nvfp4-pack-quantized'}}}",
-        exception_type = RuntimeError,
-    )
+    with patch("core.inference.engine_install.support_reason", return_value = "no GPU"):
+        error = _load_failure(
+            "Unsloth: 'unsloth/gemma-4-E2B-it-NVFP4' has per-module MLX quantization "
+            "metadata {'config_groups': {'group_1': {'format': 'nvfp4-pack-quantized'}}}",
+            exception_type = RuntimeError,
+        )
 
-    assert error.detail == (
-        "We are working on supporting NVFP4 inference. For now it is not supported"
-    )
+    assert error.detail == _load_route_module()._NVFP4_NO_ENGINE_MESSAGE
 
 
 @pytest.mark.parametrize(
@@ -294,7 +293,7 @@ def test_the_refusal_names_no_quantization_scheme():
     assert "GGUF" in refusal
     assert "bitsandbytes 4-bit" in refusal
 
-    assert "NVFP4" in inference_route._NVFP4_INFERENCE_UNSUPPORTED_MESSAGE
+    assert "NVFP4" in inference_route._NVFP4_NO_ENGINE_MESSAGE
 
 
 @pytest.mark.parametrize("message", REFUSALS.values(), ids = list(REFUSALS))
@@ -348,7 +347,7 @@ def test_the_vllm_hint_never_touches_other_refusals():
             inference_route._unsupported_quantization_detail(
                 "Unsloth: 'x' has per-module MLX quantization metadata {'format': 'nvfp4-pack-quantized'}"
             )
-            == inference_route._NVFP4_INFERENCE_UNSUPPORTED_MESSAGE
+            == inference_route._NVFP4_ENGINE_MESSAGE
         )
         assert (
             inference_route._unsupported_quantization_detail("Network connection timed out") is None

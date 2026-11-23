@@ -651,6 +651,7 @@ export const zhCN = {
       anyApp: "电脑操作",
       anyAppDescription: "允许模型查看屏幕并控制<b>鼠标和键盘</b>。对话在开始前、使用新应用前以及执行有风险的操作前都会询问。截图会发送给与你对话的模型。",
       browser: "浏览器",
+      desktopOnlyDescription: "电脑操作在 Unsloth 桌面应用中运行。请在应用中打开此设置来开启。",
       browserDescription: "允许模型在 Unsloth 的浏览器面板中打开并阅读网页，并替你点击和输入。",
       screen: "查看屏幕",
       screenDescription: "macOS 会在“录屏与系统录音”中请求此权限。",
@@ -3146,7 +3147,7 @@ export const zhCN = {
       },
       projectAttachmentsHint: "可在各聊天的附件菜单中单独调整此设置。",
       rememberParamsPerModelHint: "关闭后，所有模型使用同一套设置。",
-      autoCompactHint: "本地 GGUF 和 MLX 聊天：被移出的轮次会建立索引，模型可以再检索回来；重置时会原文保留放得下的长期指令，优先保留最早和最新的，而不是中间的。归档需要已保存的聊天和向量索引，两者缺一时较早的轮次会被直接丢弃。依据你设置的上下文长度，而不是可用显存。API 模型：提供商支持时会对较早的轮次生成摘要，否则在聊天接近模型公布的上下文窗口时丢弃最早的轮次。",
+      autoCompactHint: "本地 GGUF 和 MLX 聊天：被移出的轮次会建立索引，模型可以再检索回来；重置时会原文保留放得下的长期指令，优先保留最早和最新的，而不是中间的。归档需要已保存的聊天和向量索引，两者缺一时较早的轮次会被直接丢弃。依据你设置的上下文长度，而不是可用显存。API 模型：提供商支持时会对较早的轮次生成摘要，否则在聊天接近模型公布的上下文窗口时移出最早的轮次，并同样建立索引。",
       pastedTextShortDescription:
         "粘贴的文本达到 {count} 个字符或以上时会转为 .txt 附件。",
       pastedTextOffDescription:
@@ -4834,6 +4835,14 @@ export const zhCN = {
     copied: "已复制",
     useAsSource: "翻译此文本",
     downloadSubtitles: "下载字幕",
+    imageOverlay: {
+      show: "在图片上显示",
+      title: "图片上的译文",
+      description: "译文会绘制在图片上原文所在的位置。",
+      working: "正在翻译图片中的文字…",
+      download: "下载图片",
+      failed: "无法将译文绘制到图片上。",
+    },
     stale: "文本或设置已更改。请重新翻译以更新。",
     stopped: "在结束前已停止。再次翻译以获取剩余部分。",
     chat: "用译文开始聊天",

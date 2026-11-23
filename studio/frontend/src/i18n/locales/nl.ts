@@ -717,6 +717,7 @@ export const nl = {
       anyApp: "Computergebruik",
       anyAppDescription: "Laat modellen het scherm zien en de <b>muis en het toetsenbord</b> bedienen. Chats vragen toestemming voordat ze beginnen, vóór het gebruiken van een nieuwe app en voordat er iets riskants gebeurt. Schermafbeeldingen gaan naar het model waarmee je chat.",
       browser: "Browser",
+      desktopOnlyDescription: "Computergebruik werkt in de Unsloth-desktopapp. Open deze instellingen daar om het aan te zetten.",
       browserDescription: "Laat modellen pagina's openen in het browserpaneel van Unsloth, ze lezen en voor je klikken en typen.",
       screen: "Het scherm zien",
       screenDescription: "macOS vraagt hierom onder 'Scherm- en systeemaudio-opname'.",
@@ -3477,7 +3478,7 @@ export const nl = {
       rememberParamsPerModelHint:
         "Als dit uit staat, worden voor elk model dezelfde instellingen gebruikt.",
       autoCompactHint:
-        "Lokale GGUF- en MLX-chats: verwijderde beurten worden geïndexeerd zodat het model ze terug kan zoeken, en bij een reset worden de vaste instructies die passen woordelijk teruggeplaatst, waarbij de oudste en nieuwste voorrang krijgen boven het midden. Archiveren vereist een opgeslagen chat en de vectorindex; zonder die worden oudere beurten weggelaten. Gebruikt de contextlengte die je hebt ingesteld, niet het beschikbare VRAM. API-modellen: de provider vat oudere beurten samen waar mogelijk, anders worden de oudste beurten weggelaten wanneer de chat het gepubliceerde contextvenster van het model nadert.",
+        "Lokale GGUF- en MLX-chats: verwijderde beurten worden geïndexeerd zodat het model ze terug kan zoeken, en bij een reset worden de vaste instructies die passen woordelijk teruggeplaatst, waarbij de oudste en nieuwste voorrang krijgen boven het midden. Archiveren vereist een opgeslagen chat en de vectorindex; zonder die worden oudere beurten weggelaten. Gebruikt de contextlengte die je hebt ingesteld, niet het beschikbare VRAM. API-modellen: de provider vat oudere beurten samen waar mogelijk, anders gaan de oudste beurten uit de context wanneer de chat het gepubliceerde contextvenster van het model nadert, en worden ze op dezelfde manier geïndexeerd.",
       pastedTextShortDescription:
         "Geplakte tekst van {count} tekens of meer wordt een .txt-bijlage.",
       pastedTextOffDescription:
@@ -5324,6 +5325,14 @@ export const nl = {
     copied: "Gekopieerd",
     useAsSource: "Deze tekst vertalen",
     downloadSubtitles: "Ondertitels downloaden",
+    imageOverlay: {
+      show: "Op afbeelding tonen",
+      title: "Vertaling op de afbeelding",
+      description: "De vertaalde tekst wordt over de afbeelding getekend op de plek van de oorspronkelijke tekst.",
+      working: "Tekst op de afbeelding wordt vertaald…",
+      download: "Afbeelding downloaden",
+      failed: "De vertaling kon niet op de afbeelding worden getekend.",
+    },
     stale: "De tekst of instellingen zijn gewijzigd. Vertaal opnieuw om bij te werken.",
     stopped: "Gestopt voor het einde. Vertaal opnieuw voor de rest.",
     chat: "Chatten met vertaalde tekst",

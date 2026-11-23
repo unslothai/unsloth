@@ -953,6 +953,13 @@ DISABLE_COMPILE_MODEL_NAMES = [
     "granite,llava_next",  # Granite-vision 3
 ]
 
+
+def _set_partial_compile_disable():
+    # Keep a full disable full; true/yes become "1" since zoo only reads "1" / "partial" as off.
+    value = os.environ.get("UNSLOTH_COMPILE_DISABLE", "0").lower()
+    os.environ["UNSLOTH_COMPILE_DISABLE"] = "1" if value in ("1", "true", "yes") else "partial"
+
+
 # Architectures with gated-deltanet (linear attention) layers. Unsloth bundles the flash-linear-attention Triton kernels, so no install is needed; transformers falls back to the much slower pure PyTorch path only when they cannot be enabled.
 FLA_MODEL_TYPE_PREFIXES = ("qwen3_next", "qwen3_5", "kimi_linear", "olmo_hybrid")
 _fla_advised = False
@@ -2943,7 +2950,7 @@ class FastModel(FastBaseModel):
             from unsloth.kernels.utils import is_rdna
 
             if is_rdna():
-                os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+                _set_partial_compile_disable()
         elif "cohere2" in model_types_all and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError(
                 "Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY
@@ -2955,9 +2962,9 @@ class FastModel(FastBaseModel):
             except ImportError:
                 prepare_compiled_checkpoint = None
             if prepare_compiled_checkpoint is None or not prepare_compiled_checkpoint():
-                os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+                _set_partial_compile_disable()
         elif "csm" in model_types_all:
-            os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"  # Inference is too slow
+            _set_partial_compile_disable()  # Inference is too slow
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"  # Sesame fails
             # Set the down projection compute dtype to float32 for float16 machines, and norms to float32 since they get upcasted anyway.
             register_custom_dtype(
@@ -3036,6 +3043,8 @@ class FastModel(FastBaseModel):
                 )
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
         elif "inkling2" in model_types_all:
+            from .inkling2 import raise_if_inkling2_parallel_unsupported
+            raise_if_inkling2_parallel_unsupported(model_config, model_types)
             # Inkling 2 (Mini and Small): compiled, every new sequence length recompiles the layers (A100, Mini QLoRA at
             # 1024 tokens: 85-840 s per step, eager 4.4 s), and the compiled block attention residual has wrong grads.
             if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "0":
@@ -3043,7 +3052,7 @@ class FastModel(FastBaseModel):
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
-                    os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+                    _set_partial_compile_disable()
                     os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
                     if transformers_version < Version("4.50.0.dev0"):
                         raise RuntimeError(
@@ -3057,7 +3066,7 @@ class FastModel(FastBaseModel):
             and getattr(model_config, "model_type", None) in ("t5", "mt5", "umt5")
             and _is_text_seq2seq_config(model_config)
         ):
-            os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+            _set_partial_compile_disable()
 
         if auto_model is not None:
             # All other models need to disable static cache.

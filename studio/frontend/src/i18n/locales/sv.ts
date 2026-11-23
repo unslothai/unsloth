@@ -677,6 +677,7 @@ export const sv = {
       anyApp: "Datoranvändning",
       anyAppDescription: "Låt modeller se skärmen och styra <b>musen och tangentbordet</b>. Chattar frågar innan de börjar, inför en ny app och innan något riskabelt görs. Skärmbilder skickas till modellen du chattar med.",
       browser: "Webbläsare",
+      desktopOnlyDescription: "Datoranvändning fungerar i Unsloths skrivbordsapp. Öppna de här inställningarna där för att slå på den.",
       browserDescription: "Låt modeller öppna sidor i Unsloths webbläsarpanel, läsa dem och klicka och skriva åt dig.",
       screen: "Se skärmen",
       screenDescription: "macOS frågar om detta under ”Skärm- och systemljudinspelning”.",
@@ -3351,7 +3352,7 @@ export const sv = {
       rememberParamsPerModelHint:
         "När det är av används samma inställningar för alla modeller.",
       autoCompactHint:
-        "Endast lokala GGUF- och MLX-chattar. Borttagna turer indexeras så att modellen kan söka fram dem igen, och en återställning citerar de stående instruktioner som får plats ordagrant, där de äldsta och nyaste prioriteras före mitten. Arkivering kräver en sparad chatt och vektorindexet; utan dem tas äldre turer bort. Använder den kontextlängd du har angett, inte tillgängligt VRAM.",
+        "Lokala GGUF- och MLX-chattar: borttagna turer indexeras så att modellen kan söka fram dem igen, och en återställning citerar de stående instruktioner som får plats ordagrant, där de äldsta och nyaste prioriteras före mitten. Arkivering kräver en sparad chatt och vektorindexet; utan dem tas äldre turer bort. Använder den kontextlängd du har angett, inte tillgängligt VRAM. API-modeller: leverantören sammanfattar äldre turer där den kan, annars tas de äldsta turerna bort ur kontexten när chatten närmar sig modellens publicerade kontextfönster och indexeras på samma sätt.",
       pastedTextShortDescription:
         "Inklistringar på {count} tecken eller fler blir .txt-bilagor.",
       pastedTextOffDescription:
@@ -5149,6 +5150,14 @@ export const sv = {
     copied: "Kopierat",
     useAsSource: "Översätt den här texten",
     downloadSubtitles: "Ladda ned undertexter",
+    imageOverlay: {
+      show: "Visa på bilden",
+      title: "Översättning på bilden",
+      description: "Den översatta texten ritas över bilden där originaltexten fanns.",
+      working: "Översätter texten på bilden…",
+      download: "Ladda ned bilden",
+      failed: "Det gick inte att rita översättningen på bilden.",
+    },
     stale: "Texten eller inställningarna har ändrats. Översätt igen för att uppdatera.",
     stopped: "Stoppades före slutet. Översätt igen för resten.",
     chat: "Chatta med översatt text",

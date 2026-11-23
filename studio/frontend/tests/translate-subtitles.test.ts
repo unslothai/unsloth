@@ -8,6 +8,7 @@ import {
   numberedBatch,
   parseSubtitles,
   rebuildSubtitles,
+  segmentsToSrt,
   splitNumberedBatch,
   subtitleBatches,
   subtitleFileName,
@@ -212,6 +213,7 @@ test("the download is named after the opened file and the target language", () =
   );
   assert.equal(subtitleFileName("talk.vtt", "ja", "vtt"), "talk.ja.vtt");
   assert.equal(subtitleFileName(null, "de", "srt"), "subtitles.de.srt");
+  assert.equal(subtitleFileName("Trip.MP4", "es", "srt"), "Trip.es.srt");
 });
 
 test("only text that parses as subtitles takes the cue path; other text is chunked as before", () => {
@@ -264,4 +266,28 @@ test("cues whose own lines look numbered go one by one", async () => {
     /00:00:01,000 --> 00:00:02,000\nSHOPPING LIST:\n2\. APPLES/,
   );
   assert.match(out, /00:00:03,000 --> 00:00:04,000\nBANANAS/);
+});
+
+test("timed transcript segments become an SRT file the subtitle path reads", () => {
+  const srt = segmentsToSrt([
+    { start: 0, end: 1.5, text: " Hello there. " },
+    { start: 1.5, end: 1.2, text: "General\n\nKenobi." },
+    { start: 2, end: 3, text: "   " },
+    { start: 3725.0004, end: 3727.9996, text: "Bye." },
+  ]);
+  assert.equal(
+    srt,
+    "1\n00:00:00,000 --> 00:00:01,500\nHello there.\n\n" +
+      "2\n00:00:01,500 --> 00:00:01,500\nGeneral\nKenobi.\n\n" +
+      "3\n01:02:05,000 --> 01:02:08,000\nBye.\n",
+  );
+  const doc = parseSubtitles(srt ?? "");
+  assert.ok(doc);
+  assert.equal(doc.format, "srt");
+  assert.deepEqual(
+    doc.cues.map((cue) => cue.text),
+    ["Hello there.", "General\nKenobi.", "Bye."],
+  );
+  assert.equal(segmentsToSrt([]), null);
+  assert.equal(segmentsToSrt([{ start: 0, end: 1, text: " " }]), null);
 });

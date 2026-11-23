@@ -713,6 +713,7 @@ export const cs = {
       anyApp: "Ovládání počítače",
       anyAppDescription: "Umožní modelům vidět obrazovku a ovládat <b>myš a klávesnici</b>. Chaty se zeptají před zahájením, před použitím nové aplikace a před čímkoli riskantním. Snímky obrazovky se odesílají modelu, se kterým chatujete.",
       browser: "Prohlížeč",
+      desktopOnlyDescription: "Ovládání počítače funguje v desktopové aplikaci Unsloth. Zapnete ho tam v těchto nastaveních.",
       browserDescription: "Umožní modelům otevírat stránky v panelu prohlížeče Unsloth, číst je a klikat a psát za vás.",
       screen: "Vidět obrazovku",
       screenDescription: "macOS o to žádá v části \"Screen & System Audio Recording\".",
@@ -3453,7 +3454,7 @@ export const cs = {
       rememberParamsPerModelHint:
         "Když je vypnuto, používá se pro všechny modely stejné nastavení.",
       autoCompactHint:
-        "Místní chaty GGUF a MLX: vyřazené výměny se indexují, aby je model mohl vyhledáním vrátit zpět, a reset doslovně ocituje trvalé pokyny, které se vejdou, přičemž nejstarší a nejnovější mají přednost před prostředními. Archivace vyžaduje uložený chat a vektorový index; bez nich se starší výměny zahodí. Používá délku kontextu, kterou jste nastavili, ne dostupnou VRAM. Modely API: poskytovatel starší výměny shrne, kde to jde, jinak se nejstarší výměny zahodí, když se chat blíží zveřejněnému kontextovému oknu modelu.",
+        "Místní chaty GGUF a MLX: vyřazené výměny se indexují, aby je model mohl vyhledáním vrátit zpět, a reset doslovně ocituje trvalé pokyny, které se vejdou, přičemž nejstarší a nejnovější mají přednost před prostředními. Archivace vyžaduje uložený chat a vektorový index; bez nich se starší výměny zahodí. Používá délku kontextu, kterou jste nastavili, ne dostupnou VRAM. Modely API: poskytovatel starší výměny shrne, kde to jde, jinak se nejstarší výměny vyřadí z kontextu, když se chat blíží zveřejněnému kontextovému oknu modelu, a stejně se zaindexují.",
       pastedTextShortDescription:
         "Vložený text o délce alespoň {count} znaků se změní na přílohu .txt.",
       pastedTextOffDescription: "Vložený text vždy zůstane v poli zprávy.",
@@ -5294,6 +5295,14 @@ export const cs = {
     copied: "Zkopírováno",
     useAsSource: "Přeložit tento text",
     downloadSubtitles: "Stáhnout titulky",
+    imageOverlay: {
+      show: "Zobrazit na obrázku",
+      title: "Překlad na obrázku",
+      description: "Přeložený text je vykreslen přes obrázek tam, kde byl původní text.",
+      working: "Překládá se text na obrázku…",
+      download: "Stáhnout obrázek",
+      failed: "Překlad se nepodařilo vykreslit na obrázek.",
+    },
     stale: "Text nebo nastavení se změnily. Pro aktualizaci přeložte znovu.",
     stopped: "Zastaveno před koncem. Pro zbytek přeložte znovu.",
     chat: "Chatovat s přeloženým textem",

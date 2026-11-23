@@ -500,7 +500,7 @@ def _fallback_revisions(repo: str, *, hub_cache: Optional[Path] = None) -> list[
         main_revision = (repo_cache / "refs" / "main").read_text(encoding = "utf-8").strip()
         if _HF_COMMIT_SHA.fullmatch(main_revision):
             candidates.append(main_revision)
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
     try:
         snapshots = sorted(
@@ -571,7 +571,7 @@ def _complete_snapshot_in(
     ref = _repo_cache_dir(repo, hub_cache = hub_cache) / "refs" / "main"
     try:
         revision = ref.read_text(encoding = "utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         revision = ""
     snapshot = _safe_snapshot_for_revision(repo, revision, hub_cache = hub_cache)
     if snapshot is not None and _snapshot_usable(model_id, snapshot):

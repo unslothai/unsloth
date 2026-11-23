@@ -685,6 +685,7 @@ export const zhTW = {
       anyApp: "電腦操作",
       anyAppDescription: "允許模型查看螢幕並控制<b>滑鼠和鍵盤</b>。對話在開始前、使用新 App 前以及執行有風險的操作前都會詢問。截圖會傳送給與你對話的模型。",
       browser: "瀏覽器",
+      desktopOnlyDescription: "電腦操作在 Unsloth 桌面應用程式中執行。請在應用程式中開啟此設定來啟用。",
       browserDescription: "允許模型在 Unsloth 的瀏覽器面板中開啟頁面、閱讀內容，並代為點按與輸入。",
       screen: "查看螢幕",
       screenDescription: "macOS 會在「Screen & System Audio Recording」中要求此權限。",
@@ -3284,7 +3285,7 @@ export const zhTW = {
       projectAttachmentsHint: "可在每個聊天的附件選單中覆寫此設定。",
       rememberParamsPerModelHint: "關閉時，所有模型都使用相同的設定。",
       autoCompactHint:
-        "本機 GGUF 與 MLX 聊天：被移出的對話回合會建立索引，讓模型可以再搜尋回來；重設時會逐字引用放得下的常駐指示，優先保留最舊與最新的部分，而非中間部分。封存需要已儲存的聊天和向量索引；若缺少這些，較舊的回合會被捨棄。使用您設定的上下文長度，而非可用的 VRAM。API 模型：供應商會盡可能摘要較舊的回合，否則在聊天接近模型公布的上下文視窗時，會捨棄最舊的回合。",
+        "本機 GGUF 與 MLX 聊天：被移出的對話回合會建立索引，讓模型可以再搜尋回來；重設時會逐字引用放得下的常駐指示，優先保留最舊與最新的部分，而非中間部分。封存需要已儲存的聊天和向量索引；若缺少這些，較舊的回合會被捨棄。使用您設定的上下文長度，而非可用的 VRAM。API 模型：供應商會盡可能摘要較舊的回合，否則在聊天接近模型公布的上下文視窗時，會移出最舊的回合，並同樣建立索引。",
       pastedTextShortDescription:
         "貼上 {count} 個字元以上的內容時，會轉為 .txt 附件。",
       pastedTextOffDescription: "貼上的文字一律保留在訊息輸入框中。",
@@ -5006,6 +5007,14 @@ export const zhTW = {
     copied: "已複製",
     useAsSource: "翻譯這段文字",
     downloadSubtitles: "下載字幕",
+    imageOverlay: {
+      show: "在圖片上顯示",
+      title: "圖片上的譯文",
+      description: "譯文會繪製在圖片上原文所在的位置。",
+      working: "正在翻譯圖片中的文字…",
+      download: "下載圖片",
+      failed: "無法將譯文繪製到圖片上。",
+    },
     stale: "文字或設定已變更。請重新翻譯以更新。",
     stopped: "在結束前已停止。再次翻譯以取得剩餘部分。",
     chat: "用譯文開始聊天",

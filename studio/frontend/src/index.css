@@ -3888,6 +3888,9 @@ html[data-chat-font] .aui-root {
 
 		/* The icon chip opens the picker, which has Eject. */
 		@media (width < 48rem) {
+			.composer-model-chip .composer-chip-mark {
+				scale: 1.2;
+			}
 			.composer-model-chip [data-eject-hit] {
 				pointer-events: none;
 			}
@@ -7274,6 +7277,13 @@ html[data-glass] .wallpaper-preview[data-wallpaper-conversation] .wallpaper-prev
   --glass-composer-boost: 9%;
   --glass-blur: calc(max(var(--glass-read-blur), (var(--glass-blur-base) + 5px) * var(--glass-strength, 1)) + var(--glass-repaint, 0) * .01px);
 }
+/* No blur: the thread viewport's mask is a backdrop root. */
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-user-message-content {
+  background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc((max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) + 9%) * var(--glass-opacity, 1))), transparent);
+}
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root [data-streamdown="code-block"] {
+  background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc((max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-pane-floor)) + 9%) * var(--glass-opacity, 1))), transparent);
+}
 html[data-glass="frosted"][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame]::before,
 html[data-glass="frosted"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"],
 html[data-glass="frosted"] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] :is(.unsloth-composer-surface, .unsloth-files-panel),
@@ -7360,6 +7370,8 @@ html[data-glass-clear][data-chat-wallpaper-workspace-ready] [data-windows-glass-
 html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-slot="sidebar-container"][data-windows-glass-frame]::before {
   content: "";
   position: absolute;
+  /* So the sheen runs on into docked Run settings. */
+  background-attachment: fixed;
   /* Keep the corner above the scrolled conversation canvas. */
   z-index: 1;
   inset: 0 auto 0 0;
@@ -7368,9 +7380,13 @@ html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [
   box-shadow: none;
   mask:
     linear-gradient(black 0 0) left top / var(--sidebar-width) 100% no-repeat,
-    linear-gradient(black 0 0) left top / 100% var(--studio-custom-titlebar-height) no-repeat,
+    linear-gradient(black 0 0) left top / calc(100% - var(--studio-chat-settings-docked-width, 0px)) var(--studio-custom-titlebar-height) no-repeat,
     radial-gradient(circle at right bottom, transparent calc(var(--radius-md) - 1px), black var(--radius-md))
-      var(--sidebar-width) var(--studio-custom-titlebar-height) / var(--radius-md) var(--radius-md) no-repeat;
+      var(--sidebar-width) var(--studio-custom-titlebar-height) / var(--radius-md) var(--radius-md) no-repeat,
+    linear-gradient(black 0 0) right top / var(--studio-chat-settings-docked-width, 0px) 100% no-repeat,
+    radial-gradient(circle at left bottom, transparent calc(var(--studio-run-settings-fillet) - 1px), black var(--studio-run-settings-fillet))
+      calc(100vw - var(--studio-chat-settings-docked-width, 0px) - var(--studio-run-settings-fillet)) var(--studio-custom-titlebar-height) / var(--studio-run-settings-fillet) var(--studio-run-settings-fillet) no-repeat;
+  --studio-run-settings-fillet: min(var(--radius-md), var(--studio-chat-settings-docked-width, 0px));
 }
 html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-windows-glass-frame] > [data-slot="sidebar-inner"] {
   position: relative;
@@ -7499,6 +7515,28 @@ html[data-glass="macos"] [data-slot="chat-settings-panel"] {
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
+/* Not WebKitGTK < 2.54 glass: its strip mask keeps only the caption. */
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
+  --chat-settings-top: 0px;
+  padding-top: var(--studio-custom-titlebar-height, 0px);
+}
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-resize-handle"] {
+  top: var(--studio-custom-titlebar-height, 0px);
+}
+/* The strip's glass covers this column: two adjacent backdrop blurs always show a seam. */
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"]::before {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > [data-chat-settings-content] {
+  border-left-color: transparent;
+}
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] .bg-panel-surface,
 html[data-glass="macos"] [data-slot="chat-settings-panel"] .bg-panel-surface {
   background-color: transparent;
@@ -7514,6 +7552,15 @@ html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat
 }
 html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
   box-shadow: inset 1px 0 0 rgb(255 255 255 / .08);
+}
+html[data-glass][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
+  transition: border-top-left-radius .2s ease;
+}
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-sidebar-glass-frame]) aside[data-slot="chat-settings-panel"] {
+  border-top-left-radius: min(14px, var(--studio-custom-titlebar-height, 0px));
+}
+html[data-glass][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > [data-chat-settings-content] {
+  border-top-left-radius: inherit;
 }
 
 html[data-glass] {
@@ -7571,6 +7618,7 @@ html[data-glass="macos"] :is([data-slot="sidebar-inner"], [data-slot="chat-setti
   background-color: color-mix(in srgb, var(--foreground) calc(14% * var(--contrast-wash-gain, 1)), transparent);
 }
 /* On the buttons, not the row, so the glass is the hover's box. */
+html[data-glass][data-chat-wallpaper-ready] :is([data-chat-header-actions] > button, [data-chat-new-chat], html:not([data-sidebar-glass-frame]) [data-titlebar-nav]:not([data-slot="sidebar"] *) > button),
 html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]),
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] .unsloth-model-selector-trigger {
   position: relative;
@@ -7581,10 +7629,12 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="pag
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   text-shadow: none;
 }
+html[data-glass^="liquid"][data-chat-wallpaper-ready] :is([data-chat-header-actions] > button, [data-chat-new-chat], html:not([data-sidebar-glass-frame]) [data-titlebar-nav]:not([data-slot="sidebar"] *) > button),
 html[data-glass^="liquid"][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]),
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] .unsloth-model-selector-trigger {
   box-shadow: var(--glass-rim);
 }
+html[data-glass="liquid-3d"][data-chat-wallpaper-ready] :is([data-chat-header-actions] > button, [data-chat-new-chat], html:not([data-sidebar-glass-frame]) [data-titlebar-nav]:not([data-slot="sidebar"] *) > button)::before,
 html[data-glass="liquid-3d"][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice])::before,
 html[data-glass="liquid-3d"][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] .unsloth-model-selector-trigger::before {
   content: "";
@@ -7596,6 +7646,7 @@ html[data-glass="liquid-3d"][data-chat-wallpaper-workspace-ready] [data-wallpape
   mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
   pointer-events: none;
 }
+html[data-glass][data-chat-wallpaper-ready] :is([data-chat-header-actions] > button, [data-chat-new-chat], html:not([data-sidebar-glass-frame]) [data-titlebar-nav]:not([data-slot="sidebar"] *) > button):is(:hover, [aria-expanded="true"], [aria-pressed="true"]),
 html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]):is(:hover:not(:has([data-eject-hit]:hover)), [aria-expanded="true"]),
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] .unsloth-model-selector-trigger:is(:hover:not(:has([data-eject-hit]:hover)), [aria-expanded="true"]) {
   background-image: linear-gradient(var(--glass-hover), var(--glass-hover)), var(--glass-sheen, linear-gradient(transparent, transparent));
@@ -7661,6 +7712,7 @@ html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper
   backdrop-filter: none;
 }
 /* Focus rings are box-shadows: let them beat the glass edge. */
+html[data-glass][data-chat-wallpaper-ready] :is([data-chat-header-actions] > button, [data-chat-new-chat], html:not([data-sidebar-glass-frame]) [data-titlebar-nav]:not([data-slot="sidebar"] *) > button):focus-visible,
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :focus-visible:is([class*="focus-visible:ring"]) {
   box-shadow: var(--tw-inset-shadow, 0 0 #0000), var(--tw-inset-ring-shadow, 0 0 #0000), var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow, 0 0 #0000) !important;
 }
@@ -7686,6 +7738,7 @@ html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper
 html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .glass-inset {
   box-shadow: var(--glass-light-edge);
 }
+html:not(.dark)[data-glass][data-chat-wallpaper-ready] :is([data-chat-header-actions] > button, [data-chat-new-chat], html:not([data-sidebar-glass-frame]) [data-titlebar-nav]:not([data-slot="sidebar"] *) > button),
 html:not(.dark)[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]) {
   box-shadow: var(--glass-light-edge);
 }

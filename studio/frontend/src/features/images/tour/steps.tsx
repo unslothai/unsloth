@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { TourStep } from "@/features/tour";
+import { DIFFUSION_TRAIN_GUIDE_URLS } from "../train/diffusion-train-guides";
+import { ReadMore, type TourStep } from "@/features/tour";
 
 const modeStep: TourStep = {
   id: "mode",
@@ -18,8 +19,10 @@ const modeStep: TourStep = {
 
 export function buildImagesTourSteps({
   pageMode,
+  trainGuide = "image",
 }: {
   pageMode: "create" | "train";
+  trainGuide?: keyof typeof DIFFUSION_TRAIN_GUIDE_URLS;
 }): TourStep[] {
   if (pageMode === "train") {
     return [
@@ -42,7 +45,8 @@ export function buildImagesTourSteps({
         body: (
           <>
             Runs a LoRA on the base model above. Progress and samples appear on
-            the right, and finished LoRAs load back into Create.
+            the right, and finished LoRAs load back into Create.{" "}
+            <ReadMore href={DIFFUSION_TRAIN_GUIDE_URLS[trainGuide]} />
           </>
         ),
       },
