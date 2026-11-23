@@ -74,7 +74,6 @@ def _handoff(server, samples):
 
 
 def test_a_stale_stable_pair_does_not_end_the_wait_before_the_release():
-    # Without the baseline the first two equal (pre-release) samples ended the wait.
     assert _handoff(_Server(), [_BEFORE, _BEFORE, _BEFORE, _AFTER, _AFTER]) == 5
 
 
@@ -153,7 +152,6 @@ def test_the_worker_shutdown_uses_the_exit_variant_when_the_backend_has_one():
     branch = src[src.index('"Shutdown command received, exiting"') :]
     branch = branch[: branch.index("_exit_after_shutdown(resp_queue)")]
     assert 'getattr(backend, "unload_model_for_exit", backend.unload_model)' in branch
-    # Backends without it (MLX, native audio, audio.cpp) keep their full unload.
     core = Path(worker_module.__file__).parent
     for name in ("mlx_inference.py", "native_audio.py", "audio_cpp_backend.py"):
         assert "def unload_model_for_exit" not in (core / name).read_text(encoding = "utf-8")
