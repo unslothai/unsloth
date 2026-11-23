@@ -4123,13 +4123,19 @@ def _small_host_fetch(
     return lambda: download(repo, **pipe_kwargs)
 
 
-def _moss_small_host_fetch(
-    repo: Any, local_dir: Optional[str], local_files_only: bool, token: Any
+def _per_component_small_host_fetch(
+    repo: Any,
+    local_dir: Optional[str],
+    local_files_only: bool,
+    token: Any,
+    skip: Any = (),
 ) -> Optional[Callable[[], Any]]:
-    """MOSS-Image's components, fetched before the small-host decision as ``_small_host_fetch`` does for diffusers
-    pipelines (the in-tree pipeline class has no Hub ``download``); None offline or with a staged snapshot."""
+    """A per-component assembly's (MOSS-Image, Krea 2) components, fetched before the small-host decision as
+    ``_small_host_fetch`` does for diffusers pipelines (those loaders have no Hub ``download``); ``skip`` names
+    supplied components whose weights are not fetched. None offline or with a staged snapshot."""
     if local_files_only or local_dir or not isinstance(repo, str) or _is_local_path(repo):
         return None
+    ignore = [f"{name}/*.safetensors" for name in skip] or None
 
     def _fetch() -> Any:
         from huggingface_hub import snapshot_download
@@ -4145,6 +4151,7 @@ def _moss_small_host_fetch(
                 "scheduler/*",
                 "tokenizer/*",
             ],
+            ignore_patterns = ignore,
         )
 
     return _fetch
@@ -10818,7 +10825,7 @@ class DiffusionBackend:
                                             dtype,
                                             lora_active = _has_active_lora(loras),
                                             dense_denoiser = small_host_dense,
-                                            fetch = _moss_small_host_fetch(
+                                            fetch = _per_component_small_host_fetch(
                                                 fetch_base,
                                                 _base_local_dir,
                                                 local_files_only,
@@ -10847,6 +10854,24 @@ class DiffusionBackend:
                                     # krea's transformers-5.x configs break the 4.x line: assemble per component from
                                     # pipe_kwargs (pre-cast TE, seeded denoiser or None = dense shards).
                                     try:
+                                        # A float32 load (fp16-only card) widens the 12.8B DiT (51 GB) and the
+                                        # encoder in host RAM: the small-host route keeps them at their stored bf16,
+                                        # memory-mapped. Decided on fetch_base, the source the assembly reads.
+                                        small_host = self._small_host_decision(
+                                            fetch_base,
+                                            pipe_kwargs,
+                                            target,
+                                            dtype,
+                                            lora_active = _has_active_lora(loras),
+                                            dense_denoiser = small_host_dense,
+                                            fetch = _per_component_small_host_fetch(
+                                                fetch_base,
+                                                None,
+                                                local_files_only,
+                                                hub_token,
+                                                skip = tuple(pipe_kwargs),
+                                            ),
+                                        )
                                         pipe = load_krea2_pipeline(
                                             fetch_base,
                                             dtype,
@@ -10858,6 +10883,9 @@ class DiffusionBackend:
                                             text_encoder = pipe_kwargs.get("text_encoder"),
                                             transformer = pipe_kwargs.get("transformer"),
                                             vae = pipe_kwargs.get("vae"),
+                                            storage_dtypes = small_host.storage_dtypes
+                                            if small_host is not None and small_host.engaged
+                                            else None,
                                         )
                                     finally:
                                         self._stop_load_prefetch()

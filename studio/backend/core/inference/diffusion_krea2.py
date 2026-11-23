@@ -148,11 +148,16 @@ def load_krea2_pipeline(
     local_files_only: bool = False,
     check_cancelled: Optional[Callable[[], None]] = None,
     vae = None,
+    storage_dtypes: Optional[dict] = None,
 ):
-    """local_files_only raises rather than fetching a component after the resident pipeline was evicted."""
+    """local_files_only raises rather than fetching a component after the resident pipeline was evicted.
+    ``storage_dtypes`` (component -> dtype name, the small-host route's ``SmallHostDecision.storage_dtypes``) loads
+    those components at their stored dtype instead of ``dtype``, so they stay memory-mapped until the route converts
+    them; a float32 load on an fp16-only card otherwise widens the 12.8B DiT to 51 GB in host RAM first."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     import diffusers
+    import torch
 
     # diffusers gained Krea2Pipeline in 0.39; on an older install the getattr chain below dies with a bare
     # AttributeError, so fail first with the fix.
@@ -176,10 +181,14 @@ def load_krea2_pipeline(
         check_cancelled = check_cancelled,
     )
     check_cancelled()
+    stored = {
+        name: getattr(torch, str(dt).replace("torch.", ""))
+        for name, dt in (storage_dtypes or {}).items()
+    }
     if text_encoder is None:
         text_encoder = load_krea2_text_encoder(
             repo_id,
-            dtype,
+            stored.get("text_encoder", dtype),
             hf_token = token,
             local_files_only = local_files_only,
             check_cancelled = check_cancelled,
@@ -197,7 +206,7 @@ def load_krea2_pipeline(
         vae = diffusers.AutoencoderKLQwenImage.from_pretrained(
             repo_id,
             subfolder = "vae",
-            torch_dtype = dtype,
+            torch_dtype = stored.get("vae", dtype),
             token = token,
             local_files_only = local_files_only,
             cache_dir = cache_dir,
@@ -207,7 +216,7 @@ def load_krea2_pipeline(
         transformer = diffusers.Krea2Transformer2DModel.from_pretrained(
             repo_id,
             subfolder = "transformer",
-            torch_dtype = dtype,
+            torch_dtype = stored.get("transformer", dtype),
             token = token,
             local_files_only = local_files_only,
             cache_dir = cache_dir,
