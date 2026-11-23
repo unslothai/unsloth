@@ -3503,24 +3503,34 @@ def _find_local_gguf_by_variant(
         if path_selector == literal_selector
         else (literal_selector, path_selector)
     )
+    from utils.gguf_legacy_layout import canonical_layout_path
+
     matches = []
     literal_exact = []
     literal_casefold = []
     path_exact = []
     owned = []
+    legacy_owned = []
     for f in _iter_gguf_files(p, recursive = True):
         rel = f.relative_to(p).as_posix()
         if _is_mmproj(f.name) or _is_local_mtp_drafter(f, root, rel) or _is_imatrix_path(f.name):
             continue
         quant = _extract_quant_label(rel)
         fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
+        # A legacy-layout copy is listed under its root-relative name, so the selector may name that instead.
+        canon = canonical_layout_path(rel)
+        canon_labels = (
+            (canon, re.sub(r"-\d{3,}-of-\d{3,}$", "", canon.rsplit(".", 1)[0]))
+            if canon != rel
+            else ()
+        )
         # bpw-stripped labels and basename quant tokens identify the file, never a parent quant.
         stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
         basename_stem = fallback_variant.rsplit("/", 1)[-1]
         stem_tokens = [
             f"{m.group(1) or ''}{m.group(2)}" for m in _GGUF_KNOWN_QUANT_RE.finditer(basename_stem)
         ]
-        labels = (rel, quant, fallback_variant, stripped, *stem_tokens)
+        labels = (rel, quant, fallback_variant, stripped, *stem_tokens, *canon_labels)
         if not any(
             _variant_matches(selector, *labels) for selector in selectors
         ) or _is_big_endian_gguf_path(rel, quant):
@@ -3535,7 +3545,12 @@ def _find_local_gguf_by_variant(
             path_exact.append(f)
         elif _variant_matches(path_selector, rel, _gguf_variant_key(rel)):
             owned.append(f)
+        elif canon_labels and _variant_matches(
+            path_selector, *canon_labels, _gguf_variant_key(canon)
+        ):
+            legacy_owned.append(f)
     matches.sort()
+    legacy_owned.sort()
     literal_exact.sort()
     literal_casefold.sort()
     path_exact.sort()
@@ -3548,6 +3563,8 @@ def _find_local_gguf_by_variant(
         return str(_local_gguf_load_path(path_exact[0]))
     if owned:
         return str(_local_gguf_load_path(owned[0]))
+    if legacy_owned:
+        return str(_local_gguf_load_path(legacy_owned[0]))
     if matches:
         return str(_local_gguf_load_path(matches[0]))
     return None

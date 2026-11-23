@@ -558,3 +558,23 @@ def test_a_filesystem_error_in_cross_revision_reuse_falls_back_to_the_download(
     found = _lookup(two_snapshots.weight)
     assert two_snapshots.downloads == ["dspark-Model-Q8_0.gguf"]
     assert found == "/hub/org/Model-GGUF/dspark-Model-Q8_0.gguf"
+
+
+def test_a_legacy_copy_in_a_subfolder_resolves_by_its_listed_variant(tmp_path):
+    """The listing advertises Unsloth_Layout/distilled/Model-Q4_K_M.gguf as distilled/Model-Q4_K_M, and loading
+    that row must find the file; a current copy of the same name still wins."""
+    from utils.models.model_config import _find_local_gguf_by_variant, _gguf_variant_key
+
+    snapshot = tmp_path / "snap"
+    legacy = snapshot / "Unsloth_Layout" / "distilled" / "Model-Q4_K_M.gguf"
+    legacy.parent.mkdir(parents = True)
+    legacy.write_bytes(b"x" * 64)
+    (snapshot / "other-Q8_0.gguf").write_bytes(b"x" * 64)
+    key = _gguf_variant_key("distilled/Model-Q4_K_M.gguf")
+    for selector in (key, "distilled/Model-Q4_K_M", "distilled/Model-Q4_K_M.gguf"):
+        assert _find_local_gguf_by_variant(str(snapshot), selector) == str(legacy)
+
+    current = snapshot / "distilled" / "Model-Q4_K_M.gguf"
+    current.parent.mkdir(parents = True)
+    current.write_bytes(b"x" * 64)
+    assert _find_local_gguf_by_variant(str(snapshot), "distilled/Model-Q4_K_M") == str(current)
