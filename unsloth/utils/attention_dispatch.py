@@ -1840,14 +1840,16 @@ def _explicit_saves_attention() -> bool:
         return True
     if not _saved_attention_active():
         return False
-    if _may_cross_into_saved_attention():
-        return True
-    # In-graph call inside a frame: fill / take this call's entry so a pass that falls back to eager lines up.
+    # The in-graph route must fill / take its call's entry so both passes line up whichever route each takes.
+    # A zoo without that slot keeps nothing on ROCm, so no pass can consume another call's entry.
     skip_slot = getattr(
         sys.modules.get("unsloth_zoo.saved_attention"), "saved_attention_skip_slot", None
     )
-    if skip_slot is not None:
-        skip_slot()
+    if skip_slot is None:
+        return False
+    if _may_cross_into_saved_attention():
+        return True
+    skip_slot()
     return False
 
 

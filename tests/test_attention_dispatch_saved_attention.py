@@ -452,13 +452,18 @@ def test_rocm_explicit_routing_inside_a_frame_user_compile_may_break_the_graph(
     assert SA.SAVED_ATTENTION_STATS["stored"] >= 1 and SA.SAVED_ATTENTION_STATS["reused"] >= 1
 
 
-def test_rocm_explicit_routing_first_pass_compiled_replay_eager(monkeypatch, checkpointing):
+@pytest.mark.parametrize("fullgraph", [False, True])
+def test_rocm_explicit_routing_first_pass_compiled_replay_eager(
+    monkeypatch, checkpointing, fullgraph
+):
     """A checkpoint whose first pass is traced by a fullgraph=False compile and whose replay runs eager
     (two same-shaped calls): both passes must route alike, or the replay of the first call consumes
     the second call's kept output (zoo matches by position) and the gradients are wrong."""
     _rocm_explicit_routing(monkeypatch)
     attend = _attend()
-    compiled = torch.compile(attend, backend = "eager", fullgraph = False)
+    if fullgraph and not hasattr(SA, "saved_attention_skip_slot"):
+        pytest.skip("unsloth_zoo without saved_attention_skip_slot")
+    compiled = torch.compile(attend, backend = "eager", fullgraph = fullgraph)
 
     def layer(q, k, v):
         first = (attend if torch.is_grad_enabled() else compiled)(q, k, v)
