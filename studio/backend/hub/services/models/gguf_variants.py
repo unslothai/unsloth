@@ -232,16 +232,16 @@ def _llama_loads_engram_tables() -> Optional[bool]:
     return bool(caps.get("supports_ple"))
 
 
-def _all_shards_cached(repo_id: str, filename: Optional[str], answered_from: Optional[str]) -> bool:
-    """Every split shard of ``filename`` in one snapshot (the answering one when known): the quant
-    still holds its own table."""
+def _all_shards_cached(repo_id: str, filename: Optional[str], pinned_to: Optional[str]) -> bool:
+    """Every split shard of ``filename`` in one snapshot (only the pinned one for a request that
+    names a copy): the quant still holds its own table."""
     from core.inference.engram_tables import repo_snapshots
     from hub.utils.gguf_lookup_tables import shard_names
 
     if not filename:
         return False
     names = shard_names(filename)
-    pinned = Path(answered_from) if answered_from else None
+    pinned = Path(pinned_to) if pinned_to else None
     snapshots = [pinned] if pinned is not None and pinned.is_dir() else repo_snapshots(repo_id)
     return any(
         all(snapshot.joinpath(*name.split("/")).is_file() for name in names)
@@ -274,7 +274,7 @@ def _with_remembered_engram(
             variants.append(v)
             continue
         ready = [p for p, hit in cached.items() if hit and p != own] if v.downloaded else []
-        if v.downloaded and _all_shards_cached(repo_id, v.filename, answered_from):
+        if v.downloaded and _all_shards_cached(repo_id, v.filename, pinned_to):
             ready.insert(0, own)
         variants.append(v.model_copy(update = {"engram_precision": own, "engram_ready": ready}))
     return response.model_copy(
@@ -2718,7 +2718,9 @@ async def get_gguf_variants_answer(
         # Returned with the answer: coalesced callers must all see the copy it answered from.
         response = _compute_response()
         if cache_authorized[0]:
-            response = _with_remembered_engram(repo_id, response, answered_from[0])
+            response = _with_remembered_engram(
+                repo_id, response, pinned_snapshot_for_request(repo_id, local_path)
+            )
         return VariantsAnswer(
             response, answered_from[0], cache_authorized[0], variant_context_sources
         )
