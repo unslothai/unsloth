@@ -339,10 +339,8 @@ def resolve_speed_mode(
 def int8_attention_speed_active(
     speed_mode: Optional[str], effective_speed: str, deferred: bool
 ) -> bool:
-    """Whether the automatic INT8 attention routes race at load: a speed profile is active, or speed was left unset
-    and no deferred profile follows (an int8 DiT the offload streams, a load that cannot compile). The kernel needs no
-    compile and passes an accuracy check and a race per card; speed off by request stays bit-identical, and a deferred
-    profile installs the routes when it engages."""
+    """Auto INT8 attention races at load when speed is active, or unset with no deferred profile;
+    speed off stays bit-identical."""
     return effective_speed != SPEED_OFF or (speed_mode is None and not deferred)
 
 
@@ -1381,10 +1379,17 @@ def _compile_repeated_blocks(
             return _compile_unet_blocks(unet, unet_kwargs, logger)
         try:
             unet.compile(**unet_kwargs)
-            return True
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "unet whole-module compile", exc)
             return False
+        try:
+            # A static step skip in the forward slot decides in front of the compiled call: inside a fullgraph trace
+            # its dynamo-disabled frames leave no compiled frame (torch 2.13+ raises on the first render).
+            from .diffusion_step_skip import front_compiled_call
+            front_compiled_call(unet)
+        except Exception as exc:  # noqa: BLE001 - the compile stands; only the skip placement failed
+            _warn(logger, "static skip in front of the compiled unet", exc)
+        return True
     # Compile every denoiser DiT (dual-DiT families run both); a per-DiT failure degrades only that one to eager.
     engaged = False
     for transformer in dits:
@@ -1895,14 +1900,13 @@ def _fused_vae_planned(pipe: Any) -> bool:
 
 
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """U-Nets always; a DiT only in max mode or when the env forces it; never with the fused eager VAE. Never on
-    Windows ROCm: a compiled decode skips the eager routing (diffusion_vae_attn_chunked) that keeps the VAE's head-512
-    attention off the fused kernels that miscompute it there."""
+    """U-Nets always; DiTs only in max mode or when the env forces it; never for a VAE with an attention head wider
+    than 256 on Windows ROCm, where compiled decode skips the routing that keeps it off the broken fused kernels."""
     if _fused_vae_planned(pipe):
         return False
-    from .diffusion_vae_attn_chunked import windows_rocm
+    from .diffusion_vae_attn_chunked import vae_has_untrusted_head, windows_rocm
 
-    if windows_rocm():
+    if windows_rocm() and vae_has_untrusted_head(getattr(pipe, "vae", None)):
         return False
     if _denoiser_unet(pipe) is not None:
         return True

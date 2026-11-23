@@ -1082,7 +1082,9 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
     let window = app.get_webview_window("main").ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
     })?;
-    window.with_webview(|webview| {
+    let handle = app.handle().clone();
+    // Runs synchronously here (setup is on the main thread), before any command is served.
+    window.with_webview(move |webview| {
         let webview = webview.inner();
         if let Some(settings) = webview.settings() {
             settings.set_enable_media_stream(true);
@@ -1092,6 +1094,11 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
             );
             if !linux_webkit::smooth_scrolling_enabled(policy_never) {
                 settings.set_enable_smooth_scrolling(false);
+            }
+            // Not compositing paints on the CPU, also when WebKit turned it off itself (no variable).
+            let launch = handle.state::<gpu_rendering::LaunchState>();
+            if policy_never && launch.note_cpu_painting() {
+                info!("GPU rendering: WebKitGTK is not compositing; cpu_painting=true");
             }
         }
         // Process-wide in WebKit. An empty list = the locale's dictionary, else the first one
@@ -2392,9 +2399,11 @@ fn main() {
             webkit_rendering.wayland_session,
         ),
         webkit_rendering.cpu_painting,
+        linux_webkit::legacy_compositor(webkit_rendering.webkit_version),
     );
     #[cfg(not(target_os = "linux"))]
-    let gpu_launch = gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None, false);
+    let gpu_launch =
+        gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None, false, false);
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -2433,7 +2442,7 @@ fn main() {
         }
         let (major, minor, micro) = webkit_rendering.webkit_version;
         info!(
-            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={} cpu_painting={}",
+            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={} hardware_gl={} cpu_painting={}",
             gpu_setting.as_str(),
             if webkit_rendering.gpu_path.is_some() { "gpu" } else { "default-or-cpu" },
             webkit_rendering
@@ -2443,6 +2452,11 @@ fn main() {
             webkit_rendering.env_override.unwrap_or("none"),
             gpu_fallback_active,
             gpu_child.supervised,
+            match webkit_rendering.hardware_gl {
+                Some(true) => "true",
+                Some(false) => "false",
+                None => "unchecked",
+            },
             webkit_rendering.cpu_painting,
         );
     }

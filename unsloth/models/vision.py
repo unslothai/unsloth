@@ -283,6 +283,7 @@ from ._utils import (
 )
 from ._utils import *
 from ._utils import _ignore_block_swap_params_for_ddp
+from ._frozen_prefix import install_frozen_prefix_skip
 from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
@@ -3360,6 +3361,14 @@ def _architecture_skip_modules(model_types):
     # for a plain Linear4bit whose forward multiplies every group by the whole weight.
     if any(mt.startswith("deepseek_v41") for mt in model_types):
         skip.append("o_a_proj")
+    # Inkling 2 Mini's loop message gates cast their input to `down_proj.weight.dtype` (uint8 once packed, which
+    # truncates the activations to integers) and declare both gate projections fp32-strict; all three are rank 64.
+    if any(mt.startswith("inkling2_loop") for mt in model_types):
+        skip.extend(
+            f"{gate}_message_gate.{proj}"
+            for gate in ("q", "k", "v", "mlp")
+            for proj in ("down_proj", "forget_gate_proj", "message_gate_proj")
+        )
     # Gemma 3n AltUp clamps prediction_coefs.weight.data in place every training step, which fails on packed
     # uint8 weights; the same four modules unsloth/gemma-3n-*-unsloth-bnb-4bit keeps in 16-bit.
     # transformers 5 matches a skip key as a suffix of each Linear's name, so the ModuleList children are listed too.
@@ -5160,6 +5169,9 @@ class FastBaseModel:
                     )
 
                 llm = load_vllm(**load_vllm_kwargs)
+                if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
+                    from unsloth.utils.run_report import report_memory
+                    report_memory("vLLM init", llm)
 
                 _, quant_state_dict = get_vllm_state_dict(
                     llm,
@@ -5458,6 +5470,11 @@ class FastBaseModel:
                 raise _patch_err
         model = post_patch_loss_function(model)
 
+        # Inkling 2 wraps its attention Linears: map the usual LoRA names onto them.
+        from .inkling2 import patch_inkling2_model
+
+        patch_inkling2_model(model)
+
         if hasattr(model, "config"):
             model.config.update({"unsloth_version": __version__})
         patch_saving_functions(model, vision = True)
@@ -5683,22 +5700,53 @@ class FastBaseModel:
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
             _unsloth_install_pretrain_detector(model)
+            install_frozen_prefix_skip(model)
             # checkpoint_skip_layers / UNSLOTH_GC_KEEP_LAYERS apply to full finetuning too.
             skip_checkpointing(model, checkpoint_skip_layers)
             return model
         transformers_set_seed(random_state)
 
+        # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
+        _audio_explicitly_requested = bool(finetune_audio_layers)
+
         # Models with their own projection names (native DeepSeek-V4.1) map the standard aliases to real Linears.
         _remap_targets = getattr(model, "unsloth_lora_target_modules", None)
+        # Multimodal models with their own projection names (Inkling 2) also map the vision tower's leaves.
+        try:
+            _remap_takes_vision = (
+                callable(_remap_targets)
+                and "vision" in inspect.signature(_remap_targets).parameters
+            )
+        except (TypeError, ValueError):
+            _remap_takes_vision = False
+        # "all-linear" means every family, and a multimodal remap reads these flags, so set them before it runs. Every
+        # other model keeps the caller's flags until the all-linear block below (T5 / BART turn all-linear into leaf names
+        # first; forcing finetune_audio_layers here sent those through get_peft_regex, which knows neither).
+        if target_modules == "all-linear" and _remap_takes_vision:
+            finetune_vision_layers = True
+            finetune_language_layers = True
+            finetune_attention_modules = True
+            finetune_mlp_modules = True
+            finetune_audio_layers = True
         _targets_remapped = False
         _remapped_moe_targets = None
-        if callable(_remap_targets) and finetune_language_layers:
+        # A multimodal remap also serves vision-only requests (the vision tower has its own leaf names).
+        if callable(_remap_targets) and (
+            finetune_language_layers or (_remap_takes_vision and finetune_vision_layers)
+        ):
             _requested_targets = target_modules
-            _remapped = _remap_targets(
-                target_modules,
+            _remap_kwargs = dict(
                 attention = finetune_attention_modules,
                 mlp = finetune_mlp_modules,
             )
+            if _remap_takes_vision:
+                _remap_kwargs["vision"] = finetune_vision_layers
+                try:
+                    if "language" in inspect.signature(_remap_targets).parameters:
+                        _remap_kwargs["language"] = finetune_language_layers
+                except (TypeError, ValueError):
+                    pass
+            _remapped = _remap_targets(target_modules, **_remap_kwargs)
             if _remapped is not target_modules:
                 # Routed-expert intent comes from the caller's bare aliases; remapped MLP names are shared-expert only.
                 if _requested_targets is None or _requested_targets == "all-linear":
@@ -5707,6 +5755,7 @@ class FastBaseModel:
                     name
                     for name in _requested_targets
                     if finetune_mlp_modules
+                    and finetune_language_layers
                     and name in ("gate_proj", "up_proj", "down_proj", "gate_up_proj")
                 ]
                 target_modules = _remapped
@@ -5765,8 +5814,6 @@ class FastBaseModel:
                     # Full paths carry the family choice; get_peft_regex would reject them.
                     finetune_attention_modules = finetune_mlp_modules = True
 
-        # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
-        _audio_explicitly_requested = bool(finetune_audio_layers)
         if target_modules == "all-linear":
             finetune_vision_layers = True
             finetune_language_layers = True
@@ -6177,6 +6224,7 @@ class FastBaseModel:
         enable_fp8_lora(model)
         # Detect a stray pre-train forward so train() can drop the torch.compile graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
+        install_frozen_prefix_skip(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
         # Not at load: the frozen set matches across ranks only after PEFT; custom loops skip Trainer.
         _ignore_block_swap_params_for_ddp(model)

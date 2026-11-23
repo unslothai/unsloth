@@ -2411,6 +2411,23 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
+# UNSLOTH_HNSW_PREFETCH=1 only: by default the backend fetches the pair when a knowledge base needs
+# it. A skipped (current) Python stack leaves it unchecked; --check-only is offline.
+_hnsw_backfill() {
+    case "${UNSLOTH_HNSW_PREFETCH:-0}" in 1|true|yes|on) ;; *) return 0 ;; esac
+    case "${RAG_VEC_ANN_AUTO_INSTALL:-1}" in 0|false|no|off) return 0 ;; esac
+    local _installer="$SCRIPT_DIR/install_hnsw_prebuilt.py" _status
+    [ -f "$_installer" ] || return 0
+    _status=$(python "$_installer" --check-only --json 2>/dev/null | tail -n 1 \
+        | sed -n 's/.*"status": *"\([a-z_]*\)".*/\1/p') || return 0
+    case "$_status" in
+        already|disabled|unsupported|offline|"") return 0 ;;
+    esac
+    _status=$(python "$_installer" --json --timeout 300 2>/dev/null | tail -n 1 \
+        | sed -n 's/.*"status": *"\([a-z_]*\)".*/\1/p') || true
+    step "HNSW search" "${_status:-failed}" "$([ "$_status" = ready ] || printf '%s' "$C_WARN")"
+}
+
 # Phases a release adds below would be skipped by the update installing it; exec keeps the CLI's PID.
 _setup_rerun_if_replaced() {
     if [ "${UNSLOTH_SETUP_RERUN:-}" = 1 ] || [ -z "$_SETUP_SELF_SUM" ]; then
@@ -3412,6 +3429,7 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
+    _hnsw_backfill || true
 fi
 _frontend_bg_reap
 
@@ -3594,14 +3612,14 @@ elif [ -d "$STUDIO_HOME/.venv_t5" ]; then
 fi
 _sidecar_current "$VENV_T5_530_DIR" "5.3.0" || _NEED_T5_530=true
 _sidecar_current "$VENV_T5_550_DIR" "5.5.4" || _NEED_T5_550=true
-_sidecar_current "$VENV_T5_510_DIR" "5.13.1" || _NEED_T5_510=true
+_sidecar_current "$VENV_T5_510_DIR" "5.15.1" || _NEED_T5_510=true
 # Sidecar rebuilds reach the network; defer under offline keep. Deferred tiers are not reported current.
 _DEFER_T5_530=false
 _DEFER_T5_550=false
 _DEFER_T5_510=false
 # The pip fallback does not read UV_OFFLINE.
 if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then
-    for _ofp in "530 5.3.0" "550 5.5.4" "510 5.13.1"; do
+    for _ofp in "530 5.3.0" "550 5.5.4" "510 5.15.1"; do
         # Not `set --`: at top-level scope that overwrites the script's own "$@".
         _ofp_key=${_ofp%% *}; _ofp_ver=${_ofp#* }
         if eval "[ \"\$_NEED_T5_$_ofp_key\" = true ]"; then
@@ -3613,7 +3631,7 @@ if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then
     unset _ofp _ofp_key _ofp_ver
 fi
 if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then
-    for _ofp in "530 5.3.0" "550 5.5.4" "510 5.13.1"; do
+    for _ofp in "530 5.3.0" "550 5.5.4" "510 5.15.1"; do
         _ofp_key=${_ofp%% *}; _ofp_ver=${_ofp#* }
         if eval "[ \"\$_NEED_T5_$_ofp_key\" = true ]"; then
             substep "transformers $_ofp_ver sidecar is stale but UV_OFFLINE is set -- left for the next online update"
@@ -3641,12 +3659,12 @@ else
     _sidecar_top_up_tiktoken "$VENV_T5_550_DIR" "5.5"
 fi
 if [ "$_NEED_T5_510" = true ]; then
-    _install_sidecar "$VENV_T5_510_DIR" "5.13.1" "5.13"
+    _install_sidecar "$VENV_T5_510_DIR" "5.15.1" "5.15"
 elif [ "$_DEFER_T5_510" = true ]; then
-    step "transformers" "5.13.1 sidecar stale -- left for the next online update"
+    step "transformers" "5.15.1 sidecar stale -- left for the next online update"
 else
-    step "transformers" "5.13.1 sidecar current"
-    _sidecar_top_up_tiktoken "$VENV_T5_510_DIR" "5.13"
+    step "transformers" "5.15.1 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_510_DIR" "5.15"
 fi
 fi
 

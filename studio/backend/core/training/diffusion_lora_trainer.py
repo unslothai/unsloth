@@ -73,6 +73,11 @@ from core.training.diffusion_train_common import (  # noqa: F401
     restore_resume_state,
     write_resume_checkpoint,
 )
+from core.training.diffusion_gc_budget import (
+    OUT_OF_MEMORY,
+    BudgetedSteps,
+    enable_budgeted_checkpointing,
+)
 from core.training.diffusion_samples import (
     discard_samples,
     initial_noise,
@@ -323,6 +328,17 @@ def _mps_available() -> bool:
         return False
 
 
+def _unet_lora_metadata_kwargs(save, unet) -> dict:
+    # Without the adapter metadata diffusers' loader assumes lora_alpha == rank.
+    import inspect
+    try:
+        if "unet_lora_adapter_metadata" not in inspect.signature(save).parameters:
+            return {}
+        return {"unet_lora_adapter_metadata": unet.peft_config["default"].to_dict()}
+    except Exception:  # noqa: BLE001 -- metadata is best-effort; the weights still save
+        return {}
+
+
 def run_diffusion_lora_training(
     config: DiffusionLoraConfig,
     *,
@@ -441,6 +457,11 @@ def run_diffusion_lora_training(
         for m in (unet, vae, *text_encoders):
             m.requires_grad_(False)
         vae.to(device, dtype = torch.float32)
+        # ROCm: the VAE's single-head attention (head dim 512) takes the routed exact path inference uses; Windows
+        # ROCm's fused kernels return garbage there, which would encode every training latent wrong.
+        from core.inference.diffusion_vae_attn_chunked import install as _route_vae_attention
+
+        _route_vae_attention(vae)
         for m in (unet, *text_encoders):
             m.to(device, dtype = weight_dtype)
 
@@ -453,8 +474,12 @@ def run_diffusion_lora_training(
                 target_modules = list(cfg.lora_target_modules),
             )
         )
+        gc_budget = None
         if cfg.gradient_checkpointing:
-            enable_diffusion_gradient_checkpointing(unet)
+            # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
+            gc_budget = enable_budgeted_checkpointing(unet, device)
+            if gc_budget is None:
+                enable_diffusion_gradient_checkpointing(unet)
         # LoRA params must be fp32 for a stable optimizer under mixed precision.
         if weight_dtype != torch.float32:
             cast_training_params(unet, dtype = torch.float32)
@@ -732,6 +757,38 @@ def run_diffusion_lora_training(
                 _sample(resumed)
 
         train_peak = TrainingPeakMemory(device)
+
+        def _restart_peak():
+            # The failed attempt's peak is not the training cost.
+            train_peak.pause()
+            train_peak.resume()
+
+        budget_steps = BudgetedSteps(
+            gc_budget,
+            device,
+            optimizer,
+            warn = lambda message: _emit(on_event, "warning", message = message),
+            on_step_down = _restart_peak,
+        )
+
+        def _forward_backward(noisy, timesteps, prompt_embeds, added, target):
+            model_pred = unet(
+                noisy, timesteps, prompt_embeds, added_cond_kwargs = added, return_dict = False
+            )[0]
+            if cfg.snr_gamma is not None:
+                snr = compute_snr(noise_scheduler, timesteps)
+                w = torch.stack([snr, cfg.snr_gamma * torch.ones_like(timesteps)], dim = 1).min(
+                    dim = 1
+                )[0]
+                w = w / snr if prediction_type != "v_prediction" else w / (snr + 1)
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
+                loss = loss.mean(dim = list(range(1, loss.ndim))) * w
+                loss = loss.mean()
+            else:
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
+            scaler.scale(loss / cfg.gradient_accumulation_steps).backward()
+            return loss
+
         compile_watch = _dynamo_compile_counters() if compiled else None
         for opt_step in range(resumed, cfg.train_steps):
             if stop_latched:
@@ -739,6 +796,7 @@ def run_diffusion_lora_training(
                 break
             optimizer.zero_grad(set_to_none = True)
             step_acc = None
+            budget_steps.start_step()
             for _ in range(cfg.gradient_accumulation_steps):
                 idx, img_paths, captions = _next_batch()
                 if latent_cache is not None:
@@ -789,29 +847,26 @@ def run_diffusion_lora_training(
                 pooled = pooled.to(dtype = weight_dtype)
                 added = {"text_embeds": pooled, "time_ids": batch_time_ids}
 
-                model_pred = unet(
-                    noisy, timesteps, prompt_embeds, added_cond_kwargs = added, return_dict = False
-                )[0]
-
                 if prediction_type == "v_prediction":
                     target = noise_scheduler.get_velocity(latents, noise, timesteps)
                 else:
                     target = noise
 
-                if cfg.snr_gamma is not None:
-                    snr = compute_snr(noise_scheduler, timesteps)
-                    w = torch.stack([snr, cfg.snr_gamma * torch.ones_like(timesteps)], dim = 1).min(
-                        dim = 1
-                    )[0]
-                    w = w / snr if prediction_type != "v_prediction" else w / (snr + 1)
-                    loss = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
-                    loss = loss.mean(dim = list(range(1, loss.ndim))) * w
-                    loss = loss.mean()
+                if gc_budget is not None and not gc_budget.planned and canvases is not None:
+                    # Bucketed runs: the plan is measured on this canvas and scaled to the largest bucket.
+                    gc_budget.note_canvas(max(canvases[i][0] * canvases[i][1] for i in idx))
+                loss = budget_steps.forward_backward(
+                    _forward_backward, (noisy, timesteps, prompt_embeds, added, target)
+                )
+                if loss is OUT_OF_MEMORY:
+                    # Drop every device reference to the micro-batch first, so the rerun has a clean step's memory.
+                    loss = noisy = timesteps = prompt_embeds = pooled = added = target = None
+                    latents = noise = batch_time_ids = pixel_values = None
+                    step_acc = None
+                    for loss in budget_steps.rerun(_forward_backward):
+                        step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
                 else:
-                    loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
-
-                scaler.scale(loss / cfg.gradient_accumulation_steps).backward()
-                step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
+                    step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
                 micro += 1
 
             # max_grad_norm <= 0 disables clipping; clip_grad_norm_(0.0) would zero all grads.
@@ -824,11 +879,16 @@ def run_diffusion_lora_training(
                     grad_norm = None
             step_loss = loss_value(step_acc)
             scale_before = scaler.get_scale() if scaler.is_enabled() else None
+            budget_steps.before_update()
             scaler.step(optimizer)
             scaler.update()
             # An overflow step lowers the scale and skips the update; the schedule must not run ahead of the weights.
             if scale_before is None or scaler.get_scale() >= scale_before:
                 lr_sched.step()
+                # After step 1: plan the checkpointing budget (bucketed runs scale to the largest canvas).
+                budget_steps.after_update(
+                    max(c[0] * c[1] for c in canvases) if canvases is not None else None
+                )
 
             running_loss += step_loss
             done = opt_step + 1
@@ -898,6 +958,7 @@ def run_diffusion_lora_training(
                 unet_lora_layers = unet_lora,
                 safe_serialization = True,
                 weight_name = DEFAULT_LORA_FILENAME,
+                **_unet_lora_metadata_kwargs(StableDiffusionXLPipeline.save_lora_weights, unet),
             )
             lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
             # Mirror into loras/diffusion for the Images picker (scan skips subdirs); use done, not cfg.train_steps, so a stop at 11/500 does not advertise 500.
@@ -989,6 +1050,15 @@ def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config:
         # normalized() validates the family; the registry sends DiT families to their own trainer.
         cfg = _config_from_dict(config).normalized()
         trainer = get_trainer(cfg.resolved_family)
+        if cfg.num_gpus > 1 and getattr(trainer, "__name__", "") != "run_dit_lora_training":
+            on_event(
+                {
+                    "type": "warning",
+                    "message": f"num_gpus={cfg.num_gpus} applies to DiT families only; "
+                    f"{cfg.resolved_family} trains on one GPU.",
+                    "ts": time.time(),
+                }
+            )
         from .diffusion_download_progress import TrainingDownloadProgress
 
         with TrainingDownloadProgress(on_event) as report:

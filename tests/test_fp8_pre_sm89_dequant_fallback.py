@@ -182,13 +182,16 @@ def test_fallback_matches_the_triton_kernel_bit_for_bit(monkeypatch, shape, bloc
     from unsloth.kernels import fp8
 
     # The cache is keyed on the device, so clear it between the simulated capabilities.
+    # Simulated NVIDIA capabilities: hip = None, else a real ROCm host routes on its gfx arch instead.
     with monkeypatch.context() as mp:
         mp.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (9, 0))
+        mp.setattr(torch.version, "hip", None)
         fp8._fp8_device_lacks_kernel.cache_clear()
         assert not fp8._fp8_kernel_unsupported(weight)
         via_triton = fp8._blockwise_weight_dequant_any_shape(weight, scale, block, torch.bfloat16)
     with monkeypatch.context() as mp:
         mp.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
+        mp.setattr(torch.version, "hip", None)
         fp8._fp8_device_lacks_kernel.cache_clear()
         assert fp8._fp8_kernel_unsupported(weight)
         via_torch = fp8._blockwise_weight_dequant_any_shape(weight, scale, block, torch.bfloat16)
@@ -239,6 +242,7 @@ def test_pre_sm89_forward_never_reaches_the_fp8_only_kernels(monkeypatch, weight
         or (_ for _ in ()).throw(AssertionError("fp8_block_matmul reached on a pre-sm89 device")),
     )
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
+    monkeypatch.setattr(torch.version, "hip", None)  # an A100, also on a real ROCm host
 
     torch.manual_seed(0)
     bs, m, k = 128, 512, 1024

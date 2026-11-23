@@ -1660,7 +1660,7 @@ function GeneralCompareHeader({
   return (
     <div
       className={cn(
-        "pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+        "pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)] compare-pane-header",
         side === "left"
           ? pinned
             ? "pl-12 pr-3 md:pl-2"
@@ -3041,6 +3041,7 @@ export function ChatPage({
   const platformChatOnlyReason = usePlatformStore(
     (state) => state.chatOnlyReason,
   );
+  const platformMlxInference = usePlatformStore((state) => state.mlxInference);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
@@ -5134,6 +5135,7 @@ export function ChatPage({
                   Boolean(loadedIsGguf),
                   platformDeviceType,
                   platformChatOnlyReason,
+                  platformMlxInference,
                 )}
                 contextEnforced={loadedContextEnforced}
                 contextUnboundedWhenBatched={loadedContextUnboundedWhenBatched}

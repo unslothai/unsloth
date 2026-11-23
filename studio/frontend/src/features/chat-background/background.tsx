@@ -7,7 +7,12 @@ import {
 	type CSSProperties,
 } from "react";
 import { useAppearanceCustomStore } from "@/features/settings/stores/appearance-custom-store";
-import { useChatBackground, setBackgroundError } from "./storage";
+import {
+	clearBackgroundError,
+	setBackgroundError,
+	useChatBackground,
+} from "./storage";
+import { loadImage } from "./image";
 import { acquireRender } from "./render";
 import { safeArtworkOpacity, type RGB } from "./contrast";
 import {
@@ -172,10 +177,8 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			.then(async (blob) => {
 				if (cancelled) return;
 				const url = URL.createObjectURL(blob);
-				const image = new Image();
-				image.src = url;
 				try {
-					await image.decode();
+					await loadImage(new Image(), url);
 				} catch {
 					urls.current.delete(url);
 					URL.revokeObjectURL(url);
@@ -187,6 +190,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 					return;
 				}
 				adoptFrame(url);
+				clearBackgroundError("effect");
 			})
 			.catch(() => {
 				if (!cancelled) setBackgroundError("effect");

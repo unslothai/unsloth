@@ -2199,6 +2199,7 @@ app.add_middleware(
     # exposed, and Studio is cross-origin from tauri://localhost and tunnels.
     expose_headers = [
         "X-Unsloth-Conflict-Kind",
+        "X-Unsloth-Chat-Revision",
         "X-Unsloth-Refusal",
         "x-typesafe-request-id",
         "X-Unsloth-Monitor-ID",
@@ -2323,8 +2324,9 @@ async def _await_hardware_detection(budget: float) -> bool:
     return True
 
 
-def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
-    """Seqlock read so a half-finished re-detect is never returned; config/env.ts caches the first reply."""
+def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str], bool]]:
+    """Seqlock read so a half-finished re-detect is never returned; config/env.ts caches the first reply.
+    Returns (chat_only, reason, detail, device is MLX)."""
     for _ in range(3):
         if not _hw_module.DETECTION_COMPLETE.is_set():
             return None
@@ -2342,7 +2344,7 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
             and _hw_module.DETECTION_COMPLETE.is_set()
             and _hw_module.DETECTION_GENERATION == generation
         ):
-            return chat_only, reason, detail
+            return chat_only, reason, detail, device == _hw_module.DeviceType.MLX
     return None
 
 
@@ -2609,6 +2611,8 @@ async def health_check(request: Request, detect_hardware: bool = False):
                 pass
         # chat_only stays set: chat stays GGUF-only and Export and Video keep their own verdicts.
         authed["cpu_training"] = bool(snapshot[0]) and _hw_module.trains_on_cpu(snapshot[1])
+        # Not the reason: no_torch covers a Chat only Mac with and without a working MLX stack.
+        authed["mlx_inference"] = snapshot[3]
         # What specifically blocked that reason, when detection recorded one. Only the MLX gate does today, and only
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.
@@ -2792,6 +2796,7 @@ def _get_cached_system_gpu_info(
     from utils.hardware import (
         LIVE_GPU_TELEMETRY_KEYS,
         amd_driver_warning_report,
+        get_apple_metal_inference_gpu_info,
         get_backend_visible_gpu_info,
         get_cross_vendor_inference_gpu_info,
         get_mixed_vulkan_inference_gpu_info,
@@ -2915,7 +2920,7 @@ def _get_cached_system_gpu_info(
                 # SMI row numbers, not the ordinals a pin is applied in.
                 inference_gpu_info = {**cross_vendor_info, "gguf_gpu_ids_supported": False}
             else:
-                inference_gpu_info = gpu_info
+                inference_gpu_info = get_apple_metal_inference_gpu_info() or gpu_info
             if vulkan_info is None:
                 # A CUDA + Vulkan llama.cpp also runs on the cards only Vulkan reaches (#15444).
                 with (
@@ -3134,8 +3139,7 @@ def get_system_info(
 
     logger = logging.getLogger(__name__)
 
-    # The image/video picker explicitly asks on first use; ordinary system polls
-    # must not import torchao or diffusers just to populate optional picker tiers.
+    # Media probes run only when the picker asks; polls must not import torchao or diffusers.
     if probe_media:
         # Like an image or video load: the probes import torchao and diffusers, which must not race Dynamo.
         gate_torch_stack_import("media capability probe", logger)

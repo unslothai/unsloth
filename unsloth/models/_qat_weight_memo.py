@@ -32,10 +32,12 @@ that limit is evicted. Eval mode (model.eval(), Trainer evaluation, for_inferenc
 cache and passes through, so evaluation and generation have the memory they had before. A CUDA out
 of memory error anywhere turns the cache off for the rest of the process. UNSLOTH_QAT_WEIGHT_MEMO=1
 lifts the limit, =0 turns the cache off. A weight is cached on its second call with the same
-tensor, so weights streamed in per forward (offloading) are never held. Skipped: weights that require grad (full
-fine-tuning), range learning, tensor subclasses / DTensors, multi-process runs (FSDP reshards
-weights), inference-mode calls (whose outputs autograd cannot save) and torch.compile traces: a
-compiled region (torch >= 2.11 block compile) keeps fake quantizing inside its graph, unchanged.
+tensor, so weights streamed in per forward (offloading) are never held. A cached weight is served
+only on the stream that produced it. Skipped: weights that require grad (full fine-tuning), range
+learning, static scales (quantizer state the key cannot see), inference tensors (no version
+counter), tensor subclasses / DTensors, multi-process runs (FSDP reshards weights), inference-mode
+calls (whose outputs autograd cannot save) and torch.compile traces: a compiled region
+(torch >= 2.11 block compile) keeps fake quantizing inside its graph, unchanged.
 PEFT merge / unmerge write the weight through .data (no version bump) and drop the cache; any other
 in place rewrite of a frozen base weight must bump its version (write it under torch.no_grad(), not
 through .data) or call clear_qat_weight_memo."""
@@ -314,13 +316,33 @@ class _WeightMemo:
         self.nbytes = 0
 
 
+def _current_stream(device):
+    """(stream id, device index) of the current stream on an accelerator, None on CPU or if unknown."""
+    if device.type == "cpu":
+        return None
+    current = getattr(getattr(torch, device.type, None), "current_stream", None)
+    if current is None:
+        return None
+    try:
+        stream = current(device)
+        return (stream.stream_id, stream.device_index)
+    except Exception:
+        return None
+
+
 def _weight_key(quantizer, w):
+    config = getattr(quantizer, "config", None)
     if (
         type(w) not in _PLAIN_TENSOR_TYPES
         or w.requires_grad
         or w.device.type == "meta"
+        # An inference tensor (built under torch.inference_mode, e.g. weights shared with vLLM) has no
+        # version counter to detect an in place write.
+        or w.is_inference()
         or not getattr(quantizer, "enabled", True)
-        or getattr(getattr(quantizer, "config", None), "range_learning", False)
+        or getattr(config, "range_learning", False)
+        # Static scales / zero points are quantizer state that can change while W stays the same.
+        or not getattr(config, "is_dynamic", True)
         or _multi_process()
     ):
         return None
@@ -335,6 +357,8 @@ def _weight_key(quantizer, w):
         w._version,
         autocast,
         torch.get_autocast_dtype(device_type) if autocast else None,
+        # The cached tensor carries no event: serve it only on the stream that wrote it.
+        _current_stream(w.device),
     )
 
 

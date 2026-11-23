@@ -470,10 +470,8 @@ def _image_payload(part) -> Optional[str]:
 
 
 def _local_image_request(messages: list, several: bool):
-    """Studio's local route shape: an image marker where each image stood, plus the payloads in order.
-
-    A model that reads one image per conversation gets only the newest turn's, like the app.
-    """
+    """Studio's local route shape: an image marker where each image stood plus payloads in order; a
+    model that reads one image per conversation gets only the newest turn's image, like the app."""
     owners = []  # (message index, user ordinal, payloads)
     ordinal = 0
     for index, message in enumerate(messages):
@@ -1121,15 +1119,12 @@ class HttpChatBackend:
         trust_remote_code: bool = False,
     ) -> None:
         typer.echo(f"Loading {model} on the Unsloth server", err = True)
-        status = None if model.lower().endswith(".gguf") else self._inference_status()
-        if max_seq_length is None:
-            max_seq_length = _resident_npu_context(status, model)
-        payload = {
-            "model_path": model,
-            "hf_token": hf_token,
-            "max_seq_length": max_seq_length,
-            "tensor_parallel": tensor_parallel,
-        }
+        status = self._inference_status()
+        payload = {"model_path": model, "hf_token": hf_token}
+        if max_seq_length is not None:
+            payload["max_seq_length"] = max_seq_length
+        if tensor_parallel is not None:
+            payload["tensor_parallel"] = tensor_parallel
         if load_in_4bit is not None:
             payload["load_in_4bit"] = load_in_4bit
         if llama_extra_args:
@@ -1140,10 +1135,20 @@ class HttpChatBackend:
             payload["spec_draft_n_max"] = spec_draft_n_max
         if trust_remote_code:
             payload["trust_remote_code"] = trust_remote_code
-        resident_variant = self._resident_gguf_variant(model, status)
+        resident = self._serves(model, status)
+        resident_variant = (
+            status.get("gguf_variant")
+            if resident and status.get("is_gguf") and not model.lower().endswith(".gguf")
+            else None
+        )
         if resident_variant:
             payload["gguf_variant"] = resident_variant
         self.gguf_variant = resident_variant
+        if resident:
+            from unsloth_cli.commands.start import _resident_reload_payload
+            payload.update(_resident_reload_payload(status, payload))
+        else:
+            payload["use_saved_settings"] = True
         try:
             # Read the whole body, not just headers: closing early discards the only in-band report of a late load failure.
             loaded = read_json_checking_deferred_error(
@@ -1165,13 +1170,13 @@ class HttpChatBackend:
             return None
         return status if isinstance(status, dict) else None
 
-    def _resident_gguf_variant(self, model: str, status: Optional[dict]) -> Optional[str]:
-        if not status or not status.get("is_gguf"):
-            return None
+    def _serves(self, model: str, status: Optional[dict]) -> bool:
+        if not status:
+            return False
         # A local load's active_model is only its basename.
         loaded = status.get("model_identifier") or status.get("active_model")
         if not loaded:
-            return None
+            return False
         loaded = str(loaded)
         if model == status.get("model_identifier"):
             same = True
@@ -1182,7 +1187,7 @@ class HttpChatBackend:
             # The server loads an ownerless id as unsloth/<id> (ModelConfig.from_identifier).
             requested = model if "/" in model else f"unsloth/{model}"
             same = requested.casefold() == loaded.casefold()
-        return status.get("gguf_variant") if same else None
+        return same
 
     def stream(
         self,
@@ -1280,20 +1285,11 @@ class HttpChatBackend:
         pass
 
 
-def _resident_npu_context(status: Optional[dict], model: str) -> int:
-    """The context the resident NPU model was asked for (0 = Auto) when it is `model`, else 0:
-    /load keeps an NPU model only when the requested context matches exactly."""
-    if not status or not status.get("is_npu") or status.get("model_identifier") != model:
-        return 0
-    requested = status.get("requested_context_length")
-    return requested if isinstance(requested, int) and requested > 0 else 0
-
-
 def server_load_opts(ctx, load_opts: dict) -> dict:
-    """Drop an untyped --load-in-4bit or --max-seq-length so the server can keep a resident
-    model's precision, and a resident NPU model's context."""
+    """Drop untyped load options so the server keeps a resident model's settings or applies
+    the model's saved ones."""
     opts = dict(load_opts)
-    for name in ("load_in_4bit", "max_seq_length"):
+    for name in ("load_in_4bit", "max_seq_length", "tensor_parallel"):
         source = ctx.get_parameter_source(name)
         if source is None or source.name != "COMMANDLINE":
             opts[name] = None

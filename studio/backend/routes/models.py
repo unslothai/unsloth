@@ -3230,6 +3230,10 @@ async def scan_diffusion_loras(
     from core.inference import diffusion_lora
 
     entries = await asyncio.to_thread(diffusion_lora.list_loras, family = family)
+    # A two-expert video model loads only high / low-noise pairs, every other model only single adapters, so each
+    # picker lists only what its load accepts.
+    two_expert = diffusion_lora.two_expert_family(family)
+    entries = [e for e in entries if bool(e.weight_name_2) == two_expert]
     if account_access.managed_account():
         entries = await asyncio.to_thread(account_access.filter_model_rows, entries)
     return {
@@ -3243,6 +3247,11 @@ async def scan_diffusion_loras(
                 "size_bytes": e.size_bytes,
                 "weight_default": e.weight_default,
                 "fine_tuned": e.fine_tuned,
+                # Step-distilled adapters: the publisher's steps / guidance, set as the defaults when picked.
+                "recommended_steps": e.recommended_steps,
+                "recommended_guidance": e.recommended_guidance,
+                # A two-expert pair (high- and low-noise files), baked one per expert.
+                "expert_pair": e.weight_name_2 is not None,
             }
             for e in entries
         ],

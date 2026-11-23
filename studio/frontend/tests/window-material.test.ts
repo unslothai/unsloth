@@ -279,6 +279,19 @@ test("glass frosts the chat model controls and gives the account row the row hov
 	assert.match(page, /data-wallpaper-chrome-controls="" data-chat-model-controls=""/);
 });
 
+test("the narrow window's Run settings sheet takes the docked panel's glass", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
+	const compact = sheet.slice(sheet.indexOf("if (isCompact) {"), sheet.indexOf("</Sheet>"));
+	assert.match(compact, /<SheetContent side="right" data-chat-settings-sheet=""/);
+	assert.match(compact, /data-slot="chat-settings-panel" className="relative flex h-full flex-col"/);
+	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-chat-settings-sheet\],\nhtml\[data-glass="macos"\] \[data-chat-settings-sheet\] \{\n  background-color: transparent;/);
+	// The floating monitor measures whichever panel is shown, so it docks by the sheet's real width too.
+	const monitor = readFileSync(new URL("../src/components/floating-monitor.tsx", import.meta.url), "utf8");
+	assert.match(monitor, /document\.querySelector\('\[data-slot="chat-settings-panel"\]'\)/);
+	assert.match(monitor, /if \(!attach\(\)\) \{\n\s*setPaintedSettingsWidth\(0\);\n\s*frame = requestAnimationFrame/);
+});
+
 test("glass frosts sticky bars in panels and popups, floating buttons, and softens shared shadows", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /html\[data-glass\] :is\(\[data-slot="chat-settings-panel"\], \[data-slot\$="popover-content"\][^)]*\) \.sticky \{\n  -webkit-backdrop-filter: blur\(12px\)/);

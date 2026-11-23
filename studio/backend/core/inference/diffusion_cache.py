@@ -48,6 +48,23 @@ def _auto_static_skip_table() -> dict:
 
 AUTO_STATIC_SKIP: dict = _auto_static_skip_table()
 
+
+# Per-tier measured step masks (``FamilyProfile.auto_static_skip_masks``): {repo: {tier: {steps: mask}}}. A mask
+# replaces the interval at exactly its own step count, where it measured better than the interval.
+def _auto_static_skip_masks_table() -> dict:
+    from .family_profile import profile_table
+
+    table: dict = {}
+    for rows in profile_table("auto_static_skip_masks").values():
+        for repo, entries in rows:
+            tiers = table.setdefault(repo.strip().lower(), {})
+            for tier, mask in entries:
+                tiers.setdefault(tier, {})[len(mask)] = mask
+    return table
+
+
+AUTO_STATIC_SKIP_MASKS: dict = _auto_static_skip_masks_table()
+
 AUTO_STATIC_SKIP_TIERS = (_TIER_MAX,)
 
 # Load gate on the model's default steps (keeps distilled siblings out); explicit "static" keeps STATIC_MIN_STEPS (12).
@@ -110,10 +127,29 @@ def auto_static_skip_plan(
         steps_ok = False
     if not every or not steps_ok:
         return None
-    return {
+    plan = {
         "every": int(every),
         "min_steps": max(AUTO_STATIC_MIN_STEPS, int(entry.get("steps") or 0)),
     }
+    masks = auto_static_skip_masks(identifiers, _TIER_MAX)
+    if masks:
+        plan["masks"] = masks
+    return plan
+
+
+def auto_static_skip_masks(identifiers: Any, tier: str) -> dict:
+    """``{steps: mask}`` measured for the first identifier naming a listed checkpoint on ``tier``, else {}."""
+    from .diffusion_families import canonical_base
+
+    if isinstance(identifiers, str) or identifiers is None:
+        identifiers = (identifiers,)
+    for identifier in identifiers:
+        if not identifier:
+            continue
+        key = canonical_base(str(identifier)).strip().lower()
+        if key in AUTO_STATIC_SKIP:
+            return dict(AUTO_STATIC_SKIP_MASKS.get(key, {}).get(tier, {}))
+    return {}
 
 
 def auto_step_cache_allowed(speed_mode: Optional[str]) -> bool:
@@ -406,6 +442,10 @@ def install_fbcache_length_guard() -> bool:
         return False
     if getattr(original, "_unsloth_length_guard", False):
         return True
+    # An installed counter stays outermost over the guard.
+    counted = getattr(original, "_unsloth_fbc_counter", False)
+    if counted:
+        original = getattr(original, "_unsloth_fbc_inner", original)
     import torch
 
     @torch.compiler.disable
@@ -424,7 +464,94 @@ def install_fbcache_length_guard() -> bool:
 
     _should_compute_remaining_blocks._unsloth_length_guard = True
     FBCHeadBlockHook._should_compute_remaining_blocks = _should_compute_remaining_blocks
+    if counted:
+        install_fbcache_counter()
     return True
+
+
+_FBC_COUNTS_ATTR = "_unsloth_fbc_counts"
+
+
+def install_fbcache_counter() -> bool:
+    """Count FBCache computed vs skipped decisions; host-side bool, inside compiler.disable: no sync, no graph break."""
+    try:
+        from diffusers.hooks.first_block_cache import FBCHeadBlockHook
+    except Exception:  # noqa: BLE001 - no FBCache in this diffusers
+        return False
+    original = getattr(FBCHeadBlockHook, "_should_compute_remaining_blocks", None)
+    if original is None:
+        return False
+    if getattr(original, "_unsloth_fbc_counter", False):
+        return True
+
+    def _should_compute_remaining_blocks(self, hidden_states_residual):
+        compute = original(self, hidden_states_residual)
+        counts = self.__dict__.get(_FBC_COUNTS_ATTR)
+        if counts is None:
+            counts = {"computed": 0, "skipped": 0}
+            self.__dict__[_FBC_COUNTS_ATTR] = counts
+        # A non-bool decision is not coerced: that would sync on a device tensor.
+        if compute is True:
+            counts["computed"] += 1
+        elif compute is False:
+            counts["skipped"] += 1
+        return compute
+
+    try:
+        from torch.compiler import disable as compiler_disable
+        _should_compute_remaining_blocks = compiler_disable(_should_compute_remaining_blocks)
+    except Exception:  # noqa: BLE001 - counters are diagnostics: never block the cache
+        return False
+    _should_compute_remaining_blocks._unsloth_fbc_counter = True
+    _should_compute_remaining_blocks._unsloth_fbc_inner = original
+    _should_compute_remaining_blocks._unsloth_length_guard = getattr(
+        original, "_unsloth_length_guard", False
+    )
+    FBCHeadBlockHook._should_compute_remaining_blocks = _should_compute_remaining_blocks
+    return True
+
+
+def _fbcache_head_hooks(pipe: Any) -> list:
+    try:
+        from diffusers.hooks.first_block_cache import _FBC_LEADER_BLOCK_HOOK
+    except Exception:  # noqa: BLE001 - no FBCache in this diffusers
+        return []
+    hooks, seen = [], set()
+    for name in ("transformer", "transformer_2"):
+        transformer = getattr(pipe, name, None)
+        if transformer is None or id(transformer) in seen:
+            continue
+        seen.add(id(transformer))
+        try:
+            modules = list(transformer.modules())
+        except Exception:  # noqa: BLE001
+            continue
+        for module in modules:
+            registry = getattr(module, "_diffusers_hook", None)
+            table = getattr(registry, "hooks", None) if registry is not None else None
+            hook = table.get(_FBC_LEADER_BLOCK_HOOK) if isinstance(table, dict) else None
+            if hook is not None:
+                hooks.append(hook)
+    return hooks
+
+
+def fbcache_counts(pipe: Any, *, reset: bool = False) -> Optional[dict]:
+    """Summed ``{"computed", "skipped"}`` since reset (CFG counts twice per step); None without FBCache."""
+    try:
+        hooks = _fbcache_head_hooks(pipe)
+        if not hooks:
+            return None
+        total = {"computed": 0, "skipped": 0}
+        for hook in hooks:
+            counts = hook.__dict__.get(_FBC_COUNTS_ATTR)
+            if counts:
+                total["computed"] += counts["computed"]
+                total["skipped"] += counts["skipped"]
+                if reset:
+                    counts["computed"] = counts["skipped"] = 0
+        return total
+    except Exception:  # noqa: BLE001 - counters are diagnostics only
+        return None
 
 
 def _register_layer_split_blocks(transformer: Any) -> bool:
@@ -750,6 +877,7 @@ def apply_step_cache(
                 transformer._unsloth_step_cache = None
             except Exception:  # noqa: BLE001 - marker is best-effort
                 pass
+    install_fbcache_counter()
     # Before the engage: afterwards partial and foreign installs look identical.
     hooked_before = _first_block_cache_is_hooked(transformer)
     try:

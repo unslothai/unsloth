@@ -416,8 +416,7 @@ def test_a_lost_race_gives_every_module_back_its_own_processor(card, monkeypatch
 
 
 def test_a_won_race_keeps_only_the_engaged_strided_processors(card, monkeypatch):
-    """Won where the card has a kernel: those modules run the strided processor; the head dim with no kernel gets its
-    own processor back."""
+    """Only head dims with a kernel keep the strided processor; the rest get their own back."""
     pipe, stocks = _swapping_pipe(card, monkeypatch)
     assert I.install_auto(pipe, _TARGET) == 3
     blocks = list(pipe.transformer.blocks)
@@ -555,6 +554,206 @@ def test_a_sink_family_route_learns_and_takes_the_sink_path(monkeypatch):
     q = torch.zeros(1, 4, 2, 8)
     I._cuda_attention(q, q, q, {}, None, 0, I.MODE_RACE)
     assert launched == [("quant", True), ("check", None), ("attn", True)] and plan["calls"] == 1
+
+
+def _decide_at(plan, race, live):
+    """The SINK_DECIDE_AT-th call of a plan one of whose read calls clipped, used by a render (live) or a thrown-away
+    graph warm-up."""
+    plan["calls"] = I.SINK_DECIDE_AT
+    plan["checks"] = [(_Seen(), torch.ones(2, dtype = torch.int32), live)]
+    return I._choose_path(plan, race = race)[0]
+
+
+@pytest.mark.parametrize("verdict", [False, "native"])
+def test_used_sink_path_outputs_keep_the_path_for_the_load(monkeypatch, verdict):
+    """Graphs off, or real-step graph warm-ups: a render used this plan's clipped sink-path calls, so a race verdict
+    other than the sink path is not taken this load (the first render would differ from the next). The bucket keeps
+    the verdict for this load only: the next load races again."""
+    import contextlib
+
+    I.forget_plans()
+    plan = _fake_plan(mode = I.MODE_RACE)
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(I, "_drop_routes", lambda plan: pytest.fail("the load keeps its routes"))
+    races = []
+
+    def race():
+        races.append(1)
+        return verdict
+
+    assert _decide_at(plan, race, live = True) is True
+    assert races == [1] and plan["sinks"] is True
+    assert I._decisions()[plan["decision"] + (True,)] == verdict
+    I.forget_plans()  # the next load
+    assert plan["decision"] + (True,) not in I._decisions()
+    monkeypatch.setattr(I, "_drop_routes", lambda plan: None)
+    assert _decide_at(_fake_plan(mode = I.MODE_RACE), race, live = False) == verdict and races == [1, 1]
+    I.forget_plans()
+
+
+@pytest.mark.parametrize("verdict", [False, "native"])
+def test_a_bucket_verdict_of_this_load_keeps_a_used_clipped_sink_path(monkeypatch, verdict):
+    """Another plan of the bucket raced earlier in the load: a plan whose used calls clipped on the sink path keeps it
+    for the load instead of that verdict, with no race of its own; the bucket keeps the verdict."""
+    import contextlib
+
+    I.forget_plans()
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(
+        I, "_drop_routes", lambda plan: pytest.fail("the kept sink path moves no route")
+    )
+    plan = _fake_plan(mode = I.MODE_RACE)
+    I._decisions()[plan["decision"] + (True,)] = verdict
+    assert _decide_at(plan, lambda: pytest.fail("a known verdict: no race"), live = True) is True
+    assert plan["checks"] == [] and I._decisions()[plan["decision"] + (True,)] == verdict
+    I.forget_plans()
+
+
+@pytest.mark.parametrize("own_race", [True, False])
+def test_a_sink_path_rejected_on_accuracy_is_never_kept_for_repeatability(monkeypatch, own_race):
+    """The race rejected the sink path because its error was non-finite: even with used clipped sink-path outputs,
+    the load takes the race's verdict (numerical safety over a repeated seed), for this plan and later plans of the
+    bucket."""
+    import contextlib
+
+    I.forget_plans()
+    plan = _fake_plan(mode = I.MODE_RACE)
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(I, "_drop_routes", lambda plan: None)
+
+    def race():
+        plan["sink_error"] = {"sinks": float("nan"), "plain": 0.01}
+        return False
+
+    if own_race:
+        assert _decide_at(plan, race, live = True) is False and plan["sinks"] is False
+    else:
+        assert _decide_at(plan, race, live = False) is False
+        later = _fake_plan(mode = I.MODE_RACE)
+        assert (
+            _decide_at(later, lambda: pytest.fail("a known verdict: no race"), live = True) is False
+        )
+    I.forget_plans()
+    assert not I._sink_unsafe()
+
+
+def test_a_bucket_verdict_after_thrown_away_clips_is_taken_as_before(monkeypatch):
+    """A clip only in thrown-away graph warm-ups is not a used output: the bucket's verdict is taken as on main."""
+    import contextlib
+
+    I.forget_plans()
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    plan = _fake_plan(mode = I.MODE_RACE)
+    I._decisions()[plan["decision"] + (True,)] = False
+    assert _decide_at(plan, lambda: pytest.fail("a known verdict: no race"), live = False) is False
+    I.forget_plans()
+
+
+def test_a_native_verdict_never_moves_routes_another_used_plan_runs_on(monkeypatch):
+    """Graphs off, two resolutions in one load: a torch verdict raced for the second plan's bucket would raise the
+    shared floor (or restore the stock processor) under the first plan's used INT8 calls, so it keeps the kernels."""
+    import contextlib
+
+    I.forget_plans()
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(
+        I,
+        "_drop_routes",
+        lambda plan: pytest.fail("no route moves under another plan's used calls"),
+    )
+    plan = _fake_plan(mode = I.MODE_RACE, shape = (1, 8192, 8192, 2, 8))
+    earlier = _fake_plan(mode = I.MODE_RACE, shape = (1, 4096, 4096, 2, 8), calls = 40, sinks = True)
+    earlier["decision"] = ("other bucket", I.MODE_RACE)
+    I._plans()["plan"], I._plans()["earlier"] = plan, earlier
+    # the clip was in a thrown-away warm-up: only the other plan's used calls keep the kernels
+    assert _decide_at(plan, lambda: "native", live = False) is True
+    I.forget_plans()
+
+
+@pytest.mark.parametrize("discarded, moves", [(3, True), (2, False)])
+def test_thrown_away_graph_warmups_of_another_plan_do_not_pin_its_routes(
+    monkeypatch, discarded, moves
+):
+    """Graphs on: another plan's calls so far were side-stream warm-ups whose outputs a capture throws away, so a
+    torch verdict moves the routes as on main; one used call of that plan keeps them."""
+    import contextlib
+
+    I.forget_plans()
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    dropped = []
+    monkeypatch.setattr(I, "_drop_routes", lambda plan: dropped.append(plan))
+    plan = _fake_plan(mode = I.MODE_RACE, shape = (2, 4096, 4096, 24, 128))
+    other = _fake_plan(
+        mode = I.MODE_RACE, shape = (2, 4352, 4352, 24, 128), calls = 3, discarded = discarded
+    )
+    other["decision"] = ("other bucket", I.MODE_RACE)
+    I._plans()["plan"], I._plans()["other"] = plan, other
+    path = _decide_at(plan, lambda: "native", live = False)
+    assert (path == "native" and dropped == [plan]) if moves else (path is True and not dropped)
+    I.forget_plans()
+
+
+def test_thrown_away_warmup_clips_take_the_race_verdict_as_before(monkeypatch):
+    """The side-stream warm-ups of a capture are not used: a verdict other than the sink path is taken as on main."""
+    import contextlib
+
+    I.forget_plans()
+    plan = _fake_plan(mode = I.MODE_RACE)
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    assert _decide_at(plan, lambda: False, live = False) is False and plan["sinks"] is False
+    I.forget_plans()
+
+
+def _no_cuda_checks(monkeypatch):
+    import contextlib
+
+    class _Event:
+        def record(self):
+            pass
+
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "Event", _Event)
+    real_empty = torch.empty
+    monkeypatch.setattr(
+        torch,
+        "empty",
+        lambda *a, **k: real_empty(*a, **{x: y for x, y in k.items() if x != "pin_memory"}),
+    )
+
+
+def test_a_learning_call_inside_a_graph_warmup_is_marked_thrown_away(monkeypatch):
+    """_check_sinks records whether the call's output is used: not inside a capture's side-stream warm-ups."""
+    from core.inference import diffusion_cuda_graph as cg
+
+    # the clipped-key counts (rcnt) of its two heads: the first 8 bytes of the scratch buffer
+    plan = _fake_plan(mode = I.MODE_RACE, off = {"rcnt": 0}, layout = {"rcnt": (0, (2,))})
+    _no_cuda_checks(monkeypatch)
+    i8 = torch.zeros(64, dtype = torch.int8)
+    I._check_sinks(plan, i8, 0)
+    with cg._recording_step():
+        I._check_sinks(plan, i8, 1)
+    assert [c[2] for c in plan["checks"]] == [True, False]
+
+
+def test_every_undecided_call_before_the_decision_is_checked(monkeypatch):
+    """Calls between the learning window and the decision still run the sink path a render uses: a first clip there
+    must be seen, or a verdict other than the sink path would change the next render of the same seed."""
+    # the clipped-key counts (rcnt) of its two heads: the first 8 bytes of the scratch buffer
+    plan = _fake_plan(mode = I.MODE_RACE, off = {"rcnt": 0}, layout = {"rcnt": (0, (2,))})
+    _no_cuda_checks(monkeypatch)
+    i8 = torch.zeros(64, dtype = torch.int8)
+    for n in (I.SINK_LEARN_CALLS, I.SINK_DECIDE_AT - 1, I.SINK_DECIDE_AT):
+        I._check_sinks(plan, i8, n)
+    assert (
+        len(plan["checks"]) == 2
+    ), "the calls before the decision are checked, the deciding one is not"
 
 
 def _dispatch_card(monkeypatch, card_floor = None):
@@ -728,9 +927,8 @@ def test_a_bucket_decision_applies_only_to_plans_that_also_had_sinks(monkeypatch
 
 
 def test_after_a_capture_no_plan_races_or_moves_a_route(monkeypatch):
-    """A CUDA graph that recorded an undecided sink-route plan replays the sink path: from then on a plan with sinks
-    keeps that path without a race (so no route or processor changes under a recorded graph), one without sinks
-    runs the kernels without it (the same bits); a new pipeline races again."""
+    """A recorded CUDA graph fixes the sink path: sink plans keep it, sink-free plans run without it
+    with the same bits; no route moves under it; a new pipeline races again."""
     import contextlib
 
     I.forget_plans()
@@ -751,3 +949,79 @@ def test_after_a_capture_no_plan_races_or_moves_a_route(monkeypatch):
     fresh = _deciding_plan(I.MODE_RACE)
     races = []
     assert I._choose_path(fresh, race = lambda: races.append(1) or True)[0] is True and races == [1]
+
+
+def test_a_raced_route_does_not_keep_an_unloaded_pipeline_alive(card):
+    """Routes outlive an unload; a strong module ref there kept the attention weights on the card."""
+    import gc
+    import weakref
+
+    I.forget_plans()
+    pipe = _pipe()
+    assert I.install_auto(pipe, _TARGET) == 3
+    assert len(I._ROUTES) == 3
+    refs = [weakref.ref(m) for m in pipe.transformer.blocks]
+    procs = [weakref.ref(m.processor) for m in pipe.transformer.blocks]
+    card.strided.clear()  # the faked strided-processor install records the pipe
+    del pipe
+    gc.collect()
+    assert all(r() is None for r in refs + procs)
+    I._prune_routes()
+    assert I._ROUTES == []
+
+
+def test_a_weak_route_still_restores_the_stock_processor_or_raises_the_floor():
+    import gc
+
+    stock = _Processor()
+    proc = _Processor()
+    proc._unsloth_stock = stock
+    module = _Attention(2, 128)
+    module.processor = proc
+    raise_floor = I._raise_processor_floor(proc, module)
+    assert raise_floor.alive() and raise_floor(4096) is True
+    assert module.processor is stock
+    other = _Processor()
+    floor_only = I._raise_processor_floor(other)
+    assert floor_only(2048) is False and other._unsloth_int8_min_tokens == 2048
+    del proc, other
+    gc.collect()
+    assert not raise_floor.alive() and not floor_only.alive()
+    assert raise_floor(8192) is False and module.processor is stock
+
+
+def test_register_route_prunes_dead_routes_and_keeps_live_ones():
+    import gc
+
+    I.forget_plans()
+    keep, gone = _Processor(), _Processor()
+    I.register_route(0, 128, I._raise_processor_floor(keep))
+    I.register_route(0, 128, I._raise_processor_floor(gone))
+    plain = lambda tokens: False  # noqa: E731 - no ``alive``: never pruned
+    I.register_route(0, 64, plain)
+    del gone
+    gc.collect()
+    I._prune_routes()
+    assert [r[2].alive() if hasattr(r[2], "alive") else r[2] for r in I._ROUTES] == [True, plain]
+    I.forget_plans()
+
+
+def test_a_register_on_another_thread_during_a_prune_is_kept(monkeypatch):
+    import threading
+
+    late = lambda tokens: False  # noqa: E731
+    live = lambda tokens: False  # noqa: E731
+    racer: list = []
+
+    class _Routes(list):
+        def __setitem__(self, key, value):
+            if isinstance(key, slice) and not racer:
+                racer.append(threading.Thread(target = I.register_route, args = (0, 64, late)))
+                racer[0].start()
+                racer[0].join(0.5)
+            super().__setitem__(key, value)
+
+    monkeypatch.setattr(I, "_ROUTES", _Routes([(0, 128, live)]))
+    I._prune_routes()
+    racer[0].join(5)
+    assert [route[2] for route in I._ROUTES] == [live, late]

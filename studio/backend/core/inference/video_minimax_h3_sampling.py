@@ -1,24 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 on Diffusers, following the reference implementation's sampling and conditioning.
-
-``install_h3_reference_recipe(pipe, ...)`` swaps classes per render on the pipeline's own blocks and schedulers;
-nothing global is patched.
-
-- Sigma grid: the ``simple`` schedule off the 1000-entry shifted table; the audio timestep comes from the video sigma.
-- Sampler: ``res_multistep`` (eta 0). Audio is stepped in the carried variable ``(sigma_v / sigma_a) * x_a`` on the
-  video sigmas, which matches the reference where a second-order step in audio space would not. Euler for PDD
-  banks; ``UNSLOTH_H3_SAMPLER=euler`` forces it everywhere.
-- Noise: video then audio from one CPU generator seeded with the request seed; conditioning noise re-seeds per
-  condition, in packed-row shape.
-- Ref2VA vision: each two-frame block gets its own pixel budget, from the frames after the ``17 n + 5`` snap.
-  ``UNSLOTH_H3_VISION_BUDGET=clip`` restores the whole-clip budget (fewer tokens on long references).
-- Vision tower: float32 compute on the bf16 weights, as the reference runs it (``h3_vision_fp32``;
-  ``UNSLOTH_H3_VISION_FP32=0`` restores bf16).
-- Condition latents: the VAE posterior mean (``video_minimax_h3_ref_encode``).
-- Output frames: truncated to 8 bits, ``(x * 255).clamp(0, 255).byte()``, as the reference's video save does.
-"""
+"""MiniMax-H3 recipe (res_multistep, simple sigmas, seeded noise, VAE mean, fp32 vision, 8-bit
+truncation), per-render class swaps, nothing global patched; UNSLOTH_H3_SAMPLER=euler forces
+Euler; UNSLOTH_H3_VISION_BUDGET=clip restores whole-clip budget; UNSLOTH_H3_VISION_FP32=0
+restores bf16."""
 
 from __future__ import annotations
 
@@ -73,9 +59,7 @@ def time_shift_sigma(sigma: Any, from_shift: float, to_shift: float) -> Any:
 
 
 def h3_simple_sigmas(shift: float, steps: int) -> Any:
-    """``steps`` sigmas plus a terminal 0, float32: entry ``int(i * 1000 / steps)`` from the top of the 1000-entry
-    shifted table. Equal to the shifted ``linspace(1, 0, steps + 1)`` when ``steps`` divides 1000, floored to the
-    table otherwise."""
+    """Sigmas from the 1000-entry shifted table plus 0; exact linspace only when steps divides 1000."""
     import torch
 
     multiplier = H3_SIGMA_TABLE_SIZE
@@ -240,8 +224,7 @@ def _scheduler_class(base: type) -> type:
 
 
 def install_h3_schedulers(pipe: Any, sampler: str) -> bool:
-    """Put the pipeline's video and audio schedulers on the reference grid with ``sampler``; False when the pipeline
-    has no MiniMax-H3 scheduler pair."""
+    """Puts both schedulers on the reference grid with sampler; False without an H3 pair."""
     try:
         from diffusers.schedulers.scheduling_minimax_h3 import MiniMaxH3Scheduler
     except Exception:  # noqa: BLE001 - diffusers wraps a failed lazy import in RuntimeError
@@ -506,8 +489,7 @@ def _ref2va_text_encoder_class(base: type) -> type:
                     )
                     grid = block_grid
                     video_pixels.append(flat)
-                # One video grid of len(blocks) frames: Qwen3-VL attends and positions each frame on its own,
-                # exactly as for that many single-frame grids.
+                # Qwen3-VL attends and positions each frame alone, as for single-frame grids.
                 video_grids.append([len(blocks), grid[0], grid[1]])
                 video_tokens.append(grid[0] * grid[1] // per_token)
                 video_timestamps.append(blocks)
@@ -614,11 +596,9 @@ _TRUNCATED_MARK = "_unsloth_h3_truncated_postprocess"
 
 
 def h3_truncate_frames(frames: Any) -> Any:
-    """[0, 1] float frames on the 8-bit grid by truncation, the reference's ``(x * 255).clamp(0, 255).byte()``, as
-    float32 ``k / 255``: every later ``round(x * 255)`` (np, PIL, the on-device uint8 path, the stream encoder)
-    then returns the truncated ``k``. In place on float32 input (the decode's own fresh tensor), so no copy is
-    made; idempotent on the grid (``floor(fp32(k / 255) * 255) == k`` for every k), so a fallback that
-    postprocesses the same tensor again gets the same frames."""
+    """Truncates [0, 1] floats to the 8-bit grid as float32 k / 255 (reference (x * 255).clamp(0,
+    255).byte()) so later round(x * 255) returns k; in place on float32; idempotent, safe to
+    re-run."""
     import torch
 
     if frames.dtype is not torch.float32:

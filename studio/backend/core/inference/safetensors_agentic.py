@@ -21,7 +21,7 @@ from typing import Callable, Generator, Optional
 
 from loggers import get_logger
 
-from core.inference.llama_cpp import _has_answer_artifact
+from core.inference.llama_cpp import _FINAL_ANSWER_TOOL_LIMIT_MESSAGE, _has_answer_artifact
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _balanced_brace_end,
@@ -583,6 +583,7 @@ def run_safetensors_tool_loop(
     context_fitter: Optional[Callable[[list, list, list], dict]] = None,
     tool_choice = None,
     disable_parallel_tool_use: bool = False,
+    mcp_match_exchange: Optional[dict] = None,
 ) -> Generator[dict, None, None]:
     """Yields status, content, tool_start and tool_end event dicts; content is cumulative text per turn."""
     if mcp_image is not None:
@@ -663,6 +664,18 @@ def run_safetensors_tool_loop(
     rag_autoinjected = bool(_auto)
     # As on llama-server: a forced tool is the only one offered until a call runs or is denied.
     forced_resolved = rag_autoinjected and forced_tool_name(tool_choice) == "search_knowledge_base"
+    if (
+        mcp_match_exchange
+        and mcp_match_exchange.get("messages")
+        and tool_choice != "none"
+        and not forced_tool_name(tool_choice)
+        and not (
+            continue_final_message and trailing_assistant_resume_kind(conversation) is not None
+        )
+    ):
+        for _ev in mcp_match_exchange["events"]:
+            yield _ev
+        conversation.extend(mcp_match_exchange["messages"])
 
     unrestricted_tools = not tools
     # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
@@ -1307,6 +1320,19 @@ def run_safetensors_tool_loop(
             return
 
         if final_attempt_done:
+            # Only another call (reasoning aside), already without tools: an empty bubble is not actionable.
+            if tool_calls and not _reprompt_intent_text(
+                content_text, reasoning_prefilled = reasoning_prefilled, visible_only = True
+            ):
+                # Extend the shown snapshot, never restart it: a prefilled turn needs its </think> in the same snapshot.
+                display = _strip_streaming_display(cumulative_display)
+                sep = "\n\n" if display.strip() else ""
+                yield {
+                    "type": "content",
+                    "text": f"{display}{sep}{_FINAL_ANSWER_TOOL_LIMIT_MESSAGE}",
+                }
+                yield {"type": "status", "text": ""}
+                return
             if content_text:
                 yield {"type": "content", "text": content_text}
             yield {"type": "status", "text": ""}

@@ -147,6 +147,11 @@ test("MLX is a Mac non-GGUF load, and the reasons that rule it out", () => {
   assert.equal(isServedByMlx(false, "mac", null), true);
   assert.equal(isServedByMlx(true, "mac", null), false);
   assert.equal(isServedByMlx(false, "cuda", null), false);
+  assert.equal(isServedByMlx(false, "mac", "no_torch", true), true);
+  assert.equal(isServedByMlx(false, "mac", "no_torch", false), false);
+  assert.equal(isServedByMlx(false, "mac", null, false), false);
+  assert.equal(isServedByMlx(true, "mac", "no_torch", true), false);
+  assert.equal(isServedByMlx(false, "cuda", null, true), false);
   for (const reason of [
     "mlx_unavailable",
     "no_torch",
@@ -247,13 +252,9 @@ test("an outgoing self-sizing window does not become the next model's request", 
       ggufVariant: null,
       isGguf: false,
       customContextLength: null,
-      loadedContextLength: null,
-      currentCheckpoint: "mlx-community/Some-MLX",
-      activeGgufVariant: null,
       isMlx: false,
       pinnedMaxSeqLength: null,
       defaultMaxSeqLength: unpinnedDefaultRequest(true, afterMlx, DEFAULT_MAX_SEQ_LENGTH),
-      presetSource: "builtin-default",
     }),
     4096,
   );
@@ -302,12 +303,9 @@ test("a load keeps the pin it was built from, wherever the record held it", () =
       modelId: "org/mlx-model",
       isGguf: false,
       customContextLength: null,
-      loadedContextLength: null,
-      currentCheckpoint: "",
       isMlx: true,
       pinnedMaxSeqLength: 8192,
       defaultMaxSeqLength: DEFAULT_MAX_SEQ_LENGTH,
-      presetSource: "custom",
     }),
   );
 });

@@ -37,6 +37,34 @@ def fused(pipe: Any) -> bool:
     return bool(getattr(pipe, _FUSED_ATTR, None))
 
 
+def _moves_with_hooks(module: Any) -> bool:
+    for sub in module.modules():
+        if getattr(sub, "_hf_hook", None) is not None:
+            return True
+        hooks = getattr(getattr(sub, "_diffusers_hook", None), "hooks", None) or {}
+        if any("offload" in str(key) for key in hooks):
+            return True
+    return False
+
+
+def _on_card(module: Any) -> bool:
+    devices = {t.device for t in (*module.parameters(), *module.buffers())}
+    return len(devices) == 1 and next(iter(devices)).type not in ("cpu", "meta")
+
+
+def denoisers_resident(offload_policy: Any, memory_mode: Any, denoisers: list) -> bool:
+    """Folded weights must not move: group offload qualifies only if every denoiser is whole on the card, unhooked."""
+    from .diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE, keeps_denoiser_streamed
+
+    if offload_policy == OFFLOAD_NONE:
+        return True
+    if offload_policy != OFFLOAD_GROUP or not denoisers:
+        return False
+    if keeps_denoiser_streamed(memory_mode):
+        return False
+    return all(not _moves_with_hooks(m) and _on_card(m) for m in denoisers)
+
+
 def _lora_layers(module: Any) -> list:
     return [
         m
@@ -83,9 +111,7 @@ def _plan(denoisers: list) -> Optional[list]:
 
 
 def _delta_fp32(layer: Any, adapter: str) -> Any:
-    """``scale * (B @ A)`` computed in fp32. PEFT's ``get_delta_weight`` multiplies in the adapter dtype on the GPU
-    (one bf16 rounding before the add); here its own math runs on fp32 copies of A and B, which are put back as they
-    were, so the layout rules (fan_in_fan_out, conv kernels) stay PEFT's."""
+    """scale * (B @ A) in fp32 to skip PEFT's bf16 rounding; layout rules stay PEFT's."""
     import torch
 
     mods = [

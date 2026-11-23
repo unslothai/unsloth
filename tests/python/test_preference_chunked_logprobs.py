@@ -396,6 +396,7 @@ def test_generated_items_are_self_contained():
             "_unsloth_gkd_dense_head",
             "_unsloth_global_module_hooks",
             "_unsloth_grpo_returns_hidden_states",
+            "_unsloth_forward_returns_hidden_states",
             "_unsloth_grpo_hidden_states_signal",
             "_unsloth_pref_returns_hidden_states",
             "_unsloth_get_model_config",

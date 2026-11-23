@@ -68,10 +68,12 @@ _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
         "qwen-image-2.1",
         "z-image",
         "krea-2",
+        "moss-image",
         "flux.2-klein",
         "flux.2-dev",
         "flux.3-klein-base",
         "ltx-2",
+        "ltx-2.5",
         "wan2.2-ti2v-5b",
         "minimax-h3",
         "minimax-h3-image",
@@ -84,14 +86,18 @@ TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset(f.name for f in _VIDEO_REGI
 
 # flow_shift defaults to auto to reproduce inference sigmas; dynamic-shift schedulers and MiniMax-H3 otherwise train unshifted.
 AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset(
-    {"qwen-image", "qwen-image-2.1", "ltx-2", "minimax-h3"}
+    {"qwen-image", "qwen-image-2.1", "ltx-2", "ltx-2.5", "minimax-h3"}
 )
 
 # Video latents are allocated on the family's spatial compression grid, so a training resolution off that grid
 # silently changes the latent geometry. LTX-2: 32x VAE; Wan2.2-TI2V-5B: 16x VAE x 2x2 patch.
 _VIDEO_RESOLUTION_MULTIPLE = 32
 # Image families whose latent grid is coarser than the generic multiple-of-8 check.
-_IMAGE_RESOLUTION_MULTIPLE: dict[str, int] = {"qwen-image-2.1": 32, "flux.3-klein-base": 16}
+_IMAGE_RESOLUTION_MULTIPLE: dict[str, int] = {
+    "qwen-image-2.1": 32,
+    "flux.3-klein-base": 16,
+    "moss-image": 16,
+}
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _CAPTION_EXTS = (".txt", ".caption")
@@ -222,9 +228,14 @@ def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
 
 def resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
     family = _resolve_trainable_family(base_model, model_family)
-    from core.inference.video_families import assert_ltx_pick_supported
+    from core.inference.video_families import (
+        assert_local_pipeline_family,
+        assert_ltx_pick_supported,
+    )
 
     assert_ltx_pick_supported(family, base_model)
+    # "ltx-2" must not train a local LTX-2.5 pipeline, nor vice versa.
+    assert_local_pipeline_family(base_model, family)
     return family
 
 
@@ -258,10 +269,6 @@ def _resolve_trainable_family(base_model: str, model_family: Optional[str] = Non
     _refuse_component_only_repo(base_model)
     # Like component-only refusal: the family is trainable, but the loader cannot open this repo.
     _refuse_ltx23_training_base(base_model)
-    # Before either branch: model_family="ltx-2" must not train a local LTX-2.5 pipeline.
-    from core.inference.video_families import assert_local_pipeline_not_ltx25
-
-    assert_local_pipeline_not_ltx25(base_model)
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
         fam = detect_family("", override = key)
@@ -294,7 +301,11 @@ def _resolve_trainable_family(base_model: str, model_family: Optional[str] = Non
     vid = detect_video_family(base_model)
     if vid is None and is_local_diffusers:
         from core.inference.video_families import local_cosmos3_pipeline_family
-        local_family = local_cosmos3_pipeline_family(base_model)
+        from core.inference.video_families import local_ltx_pipeline_family
+
+        local_family = local_cosmos3_pipeline_family(base_model) or local_ltx_pipeline_family(
+            base_model
+        )
         vid = detect_video_family("", override = local_family) if local_family else None
     if vid is not None:
         if vid.name not in TRAINABLE_VIDEO_FAMILIES:
@@ -352,12 +363,22 @@ def has_functional_torchao() -> bool:
         return False
 
 
+def mxfp8_training_offered(capability: tuple) -> bool:
+    """Whether the Train tab offers base_precision='mxfp8': datacenter Blackwell (sm100 / sm103) only. On an sm120
+    card (RTX PRO 6000 / RTX 50) torchao's MXFP8 linear does engage, but it re-casts the frozen weight and the
+    activations to MX blocks on every step and keeps bf16 weight storage, so it trails frozen fp8 (offered there) in
+    speed and memory, and bf16 too at 512 px (FLUX.2 klein 4B LoRA: 0.087 s/step vs fp8 0.064, bf16 0.081).
+    An explicit mxfp8 request still runs on sm100+; this only decides what is advertised."""
+    major = int(capability[0]) if capability else 0
+    return major == 10
+
+
 def train_precision_modes() -> tuple[list[str], str]:
     """(supported base_precision modes, recommended pick) for the current machine: nf4 always works;
     bf16/auto need a bf16-capable CUDA GPU (Ampere+); int8/mxfp8 additionally need a
     FUNCTIONAL torchao (their explicit paths import it with no fallback, and the Windows-ROCm
-    stub only looks installed). fp8 needs sm89+ (torch's own _scaled_mm); mxfp8 needs the Blackwell tensor cores
-    (sm100+) its cuBLAS kernels target. The dense modes all train in bf16 compute, which the DiT
+    stub only looks installed). fp8 needs sm89+ (torch's own _scaled_mm); mxfp8 is offered on datacenter
+    Blackwell only (``mxfp8_training_offered``). The dense modes all train in bf16 compute, which the DiT
     trainer requires, so a non-bf16 CUDA GPU (T4/V100/RTX 20xx) is offered only nf4 -- otherwise
     /info would advertise a start that evicts resident models and then fails the trainer's bf16
     guard. Never raises."""
@@ -375,7 +396,7 @@ def train_precision_modes() -> tuple[list[str], str]:
             major, minor = torch.cuda.get_device_capability()
             if not rocm and (major, minor) >= (8, 9) and hasattr(torch, "float8_e4m3fn"):
                 modes.append("fp8")
-            if torchao_ok and (major, minor) >= (10, 0):
+            if torchao_ok and mxfp8_training_offered((major, minor)):
                 modes.append("mxfp8")
             modes.append("auto")
             recommended = "auto"
@@ -433,6 +454,14 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
     # The Krea 2 authors' recommended starting point (their DreamBooth defaults): rank/alpha 32, lr 3e-4, 512px.
     "krea-2": {"lora_rank": 32, "learning_rate": 3e-4, "resolution": 512},
+    # Published MOSS LoRA recipe: rank 32 / lr 1e-4 at 512, rank 16 at 1024.
+    "moss-image": {
+        "lora_rank": 32,
+        "learning_rate": 1e-4,
+        "resolution": 768,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
     # Upstream FLUX.2 DreamBooth uses rank 16 / lr 1e-4; uniform timestep draws need a warmup ramp.
     "flux.2-klein": {
         "lora_rank": 16,
@@ -458,6 +487,13 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     },
     # Resolution must be a multiple of 32 (LTX-2 VAE spatial compression).
     "ltx-2": {
+        "lora_rank": 32,
+        "learning_rate": 1e-4,
+        "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
+    "ltx-2.5": {
         "lora_rank": 32,
         "learning_rate": 1e-4,
         "resolution": 512,
@@ -528,6 +564,12 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Trains on Krea-2-Raw, runs on Turbo.",
     },
+    "moss-image": {
+        "params": "5B",
+        "qlora_vram_gb": 18,
+        "gated": False,
+        "note": "Trains on SFT or Base; the adapter runs on both.",
+    },
     "flux.2-klein": {"params": "4B", "qlora_vram_gb": 10, "gated": False, "note": ""},
     "flux.2-dev": {"params": "32B", "qlora_vram_gb": 28, "gated": True, "note": ""},
     # Encoder freed before the DiT loads: nf4 peaks at 6.9 GB, bf16 13.1 GB (768 px, rank 32).
@@ -543,6 +585,12 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "qlora_vram_gb": 36,
         "gated": False,
         "note": "Video: trains a style LoRA on still images.",
+    },
+    "ltx-2.5": {
+        "params": "22B",
+        "qlora_vram_gb": 24,
+        "gated": False,
+        "note": "Video: trains a style LoRA on still images; runs on the Video page's distilled model.",
     },
     # Measured on a B200 (nf4, 704px, rank 32): run peaks at 11.6 GB during the one-time UMT5-XXL encode.
     "wan2.2-ti2v-5b": {
@@ -598,10 +646,12 @@ _DIT_TRAIN_FAMILIES = frozenset(
         "qwen-image-2.1",
         "z-image",
         "krea-2",
+        "moss-image",
         "flux.2-klein",
         "flux.2-dev",
         "flux.3-klein-base",
         "ltx-2",
+        "ltx-2.5",
         "wan2.2-ti2v-5b",
     }
 )
@@ -616,7 +666,10 @@ def effective_mixed_precision(cfg: Any) -> str:
     requested = str(getattr(cfg, "mixed_precision", "") or "")
     if str(getattr(cfg, "resolved_family", "") or "").strip().lower() in _FLOW_TRAIN_FAMILIES:
         # Record the device-resolved precision, not the request, or identical resumes mismatch.
-        return "bf16" if resolve_train_device() in ("cuda", "xpu") else "no"
+        device = resolve_train_device()
+        if device == "cuda" and dit_fp16_fallback(getattr(cfg, "resolved_family", "")):
+            return "fp16"
+        return "bf16" if device in ("cuda", "xpu") else "no"
     if not torch.cuda.is_available():
         return "no"
     if requested == "bf16" and not native_bf16_supported():
@@ -657,6 +710,38 @@ def flow_bf16_trainable() -> bool:
         )
     except Exception:  # noqa: BLE001 -- no torch / probe failure -> treat as unsupported
         return False
+
+
+# DiT families with a validated fp16 path on non-bf16 CUDA cards; others keep the bf16 refusal.
+DIT_FP16_TRAIN_FAMILIES: frozenset[str] = frozenset({"flux.2-klein", "z-image", "wan2.2-ti2v-5b"})
+# "0" disables the fallback; "force" uses it on bf16 cards too (parity checks only).
+DIT_FP16_ENV = "UNSLOTH_STUDIO_DIT_FP16"
+
+
+def dit_fp16_fallback(resolved_family: str) -> bool:
+    """Supported family on an NVIDIA GPU without native bf16 (or env ``force``); ROCm excluded. Never raises."""
+    if (resolved_family or "").strip().lower() not in DIT_FP16_TRAIN_FAMILIES:
+        return False
+    mode = os.environ.get(DIT_FP16_ENV, "").strip().lower()
+    if mode in ("0", "off", "false", "no"):
+        return False
+    try:
+        import torch
+
+        if not torch.cuda.is_available() or torch_is_rocm():
+            return False
+        if mode == "force":
+            return True
+        return not flow_bf16_trainable()
+    except Exception:  # noqa: BLE001 -- probe failure -> the old (refusing) behaviour
+        return False
+
+
+def dit_fp16_dense_reason(mode: str) -> str:
+    return (
+        f"base_precision={mode!r} trains in bf16 compute, which this GPU does not have; on this GPU the "
+        "DiT trainer runs fp16 on the nf4 base. Use base_precision='nf4' or 'auto'."
+    )
 
 
 def resolve_train_device() -> str:
@@ -728,6 +813,8 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
     try:
         import torch
         if torch.cuda.is_available() and not flow_bf16_trainable():
+            if dit_fp16_fallback(resolved_family):
+                return None
             return (
                 "This trainer requires a bfloat16-capable GPU (Ampere or newer); this CUDA "
                 "device does not support bf16. Train the DiT families on a newer GPU."
@@ -936,6 +1023,26 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
         return reason
     fam = (resolved_family or "").strip().lower()
     mode = (base_precision or "").strip().lower()
+    # The W8A8 int8 prototype (UNSLOTH_DIFFUSION_INT8_TRAIN=w8a8) computes in fp16 too, as the trainer allows.
+    w8a8 = (
+        mode == "int8"
+        and os.environ.get("UNSLOTH_DIFFUSION_INT8_TRAIN", "").strip().lower() == "w8a8"
+    )
+    if mode in ("bf16", "int8", "fp8", "mxfp8") and not w8a8 and dit_fp16_fallback(fam):
+        return dit_fp16_dense_reason(mode)
+    if w8a8 and dit_fp16_fallback(fam):
+        # The trainer refuses W8A8 on an fp16 card whose int8 GEMM probe fails (sm70 has no int8 tensor cores);
+        # refuse here so residents are not evicted first.
+        try:
+            import torch
+            cap = torch.cuda.get_device_capability() if torch.cuda.is_available() else None
+        except Exception:  # noqa: BLE001 -- probe failure: leave it to the trainer's own check
+            cap = None
+        if cap is not None and tuple(cap) < (7, 5):
+            return (
+                f"int8 W8A8 needs int8 tensor cores (compute capability 7.5+), this GPU is "
+                f"sm{cap[0]}{cap[1]}; use base_precision='nf4' or 'auto'."
+            )
     if fam in _FLOW_TRAIN_FAMILIES and mode in ("bf16", "int8", "fp8", "mxfp8"):
         # Dense precisions need CUDA; reject here so residents are not evicted first.
         try:
@@ -954,7 +1061,12 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
                 f"base_precision={mode!r} is a torchao NVIDIA tensor-core path (int8 sm_80+, fp8 "
                 "sm_89+, mxfp8 sm_100+) and this is a ROCm/AMD GPU. Use 'nf4', 'bf16', or 'auto'."
             )
-        if mode == "int8" and not has_functional_torchao():
+        # The fp16 path's W8A8 base runs torch._int_mm and never falls back to torchao (the trainer raises instead).
+        if (
+            mode == "int8"
+            and not (w8a8 and dit_fp16_fallback(fam))
+            and not has_functional_torchao()
+        ):
             return (
                 "base_precision='int8' needs a functional torchao install; this host's torchao is "
                 "missing or the non-functional Windows-ROCm stub. Use 'nf4', 'bf16', or 'auto'."
@@ -1059,8 +1171,10 @@ def family_train_infos() -> list[dict[str, Any]]:
             if is_dit
             else None
         )
-        # H3 compiles under the auto rule; the panel control stays DiT / SDXL only.
-        supports_compile = bool(not dit_block) and name in _DIT_TRAIN_FAMILIES
+        # H3 compiles under the auto rule; the panel control stays DiT / SDXL only. The fp16 path trains eager.
+        supports_compile = (
+            bool(not dit_block) and name in _DIT_TRAIN_FAMILIES and not dit_fp16_fallback(name)
+        )
         if not is_dit or dit_block:
             fam_modes: list[str] = []
         else:
@@ -1111,6 +1225,12 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,
                 # Compile: SDXL and DiT trainers, except where the GPU lacks bf16 or the trainer cannot compile.
                 "supports_compile": supports_compile or name == "sdxl",
+                # The DiT trainer streams a bf16 base's blocks from host RAM; block_swap is refused elsewhere.
+                "supports_block_swap": bool(
+                    name in _DIT_TRAIN_FAMILIES
+                    and "bf16" in fam_modes
+                    and not dit_fp16_fallback(name)
+                ),
                 # save_steps is refused for checkpointless families, so hide the control.
                 "supports_checkpoints": name not in CHECKPOINTLESS_FAMILIES,
                 # sample_every is refused elsewhere, so the panel offers "Sample every" only where it runs.
@@ -1174,7 +1294,8 @@ class DiffusionLoraConfig:
     # cache_variants crop/flip draws are frozen per image; the per-step VAE sampling noise is preserved.
     cache_latents: bool = True
     cache_variants: int = 4
-    # Latent stats and caption embeddings, keyed by hash; a warm cache skips VAE and text encoders.
+    # Persistent latent stats and caption embeddings, keyed by hash; a warm cache skips VAE and text encoders.
+    # None (or blank) = the default directory (diffusion_train_extras.effective_cond_cache_dir); "off" disables it.
     cond_cache_dir: Optional[str] = None
     # DiT LoRA EMA decay; 0.0 disables; otherwise a warmup-ramped EMA is exported under ema/.
     ema_decay: float = 0.0
@@ -1184,6 +1305,12 @@ class DiffusionLoraConfig:
     enable_tf32: bool = True
     # "nf4" | "bf16" | "int8" | "fp8" | "auto"; non-nf4 needs a dense base.
     base_precision: str = "nf4"
+    # bf16 only: "auto" (as few blocks as fit) or N repeated blocks kept in host RAM and streamed per step; "off" or
+    # 0 none. "" (the default) takes UNSLOTH_DIT_BLOCK_SWAP, so an explicit "off" overrides the server's env.
+    block_swap: str = ""
+    # DiT families on CUDA: data-parallel over this many identical visible GPUs, one process each (diffusion_ddp);
+    # train_batch_size is per GPU. 1 (the default) is the single-device run.
+    num_gpus: int = 1
     # None: model's own schedule ("auto" for AUTO_FLOW_SHIFT_FAMILIES); a number is the effective shift on unshifted u.
     flow_shift: Optional[Any] = None
     # Per-sample chance of using an empty prompt instead of the caption (CFG dropout); 0.0 disables.
@@ -1218,6 +1345,12 @@ class DiffusionLoraConfig:
             raise ValueError("train_batch_size must be >= 1")
         if self.gradient_accumulation_steps < 1:
             raise ValueError("gradient_accumulation_steps must be >= 1")
+        try:
+            num_gpus = int(self.num_gpus if self.num_gpus is not None else 1)
+        except (TypeError, ValueError):
+            raise ValueError("num_gpus must be a whole number >= 1") from None
+        if not 1 <= num_gpus <= 64:
+            raise ValueError("num_gpus must be between 1 and 64")
         if self.lora_rank < 1:
             raise ValueError("lora_rank must be >= 1")
         if self.lora_alpha is not None and self.lora_alpha < 1:
@@ -1311,10 +1444,14 @@ class DiffusionLoraConfig:
         sample_every, sample_prompts = validate_sample_settings(
             self.sample_every, self.sample_prompts, resolved_family
         )
-        # A blank cond_cache_dir (the Unsloth default when unset) means "off", not cwd.
+        # Blank or unset means the default persistent cache (never cwd); an off value ("off", "none", ...) disables it.
         cond_cache_dir = (
             str(self.cond_cache_dir).strip() if self.cond_cache_dir is not None else ""
         ) or None
+        from core.training.diffusion_train_extras import cond_cache_is_off
+
+        if cond_cache_dir is not None and cond_cache_is_off(cond_cache_dir):
+            cond_cache_dir = "off"
         compile_transformer = str(self.compile_transformer or "auto").strip().lower()
         if compile_transformer not in ("off", "on", "auto"):
             raise ValueError("compile_transformer must be one of off / on / auto")
@@ -1419,6 +1556,7 @@ class DiffusionLoraConfig:
             caption_column = caption_column,
             num_epochs = int(self.num_epochs),
             cache_variants = int(self.cache_variants),
+            num_gpus = num_gpus,
             bucketing = bucketing,
             save_steps = save_steps,
             save_total_limit = save_total_limit,
@@ -1667,19 +1805,12 @@ def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
             "row layout is set by the clip's own geometry and its caption's length. Use "
             "gradient_accumulation_steps to raise the effective batch."
         )
-    # No conditioning cache exists on this path, so accepting the directory would promise a saving that never happens.
-    if str(getattr(cfg, "cond_cache_dir", "") or "").strip():
-        return (
-            "MiniMax-H3 has no persistent conditioning cache yet: each run loads the "
-            "conditioner and recomputes its captions and latents, so cond_cache_dir would be "
-            "recorded and never read. Leave it unset."
-        )
     return None
 
 
 def h3_image_train_unsupported_reason(cfg: Any) -> Optional[str]:
     """The MiniMax-H3-Image refusals: the loop's fixed bf16 compute, the 32 px canvas grid, no unconditional branch,
-    one packed sequence per step, no conditioning cache, and only the bf16 / int8 bases."""
+    one packed sequence per step, and only the bf16 / int8 bases."""
     if cfg.mixed_precision != "bf16":
         return (
             "MiniMax-H3-Image LoRA training requires bf16: the checkpoint keeps its patch projection and output heads "
@@ -1705,11 +1836,6 @@ def h3_image_train_unsupported_reason(cfg: Any) -> Optional[str]:
             "MiniMax-H3-Image trains at batch size 1: one forward covers one packed [text | image] sequence whose "
             "length is set by the picture's canvas and its caption. Use gradient_accumulation_steps to raise the "
             "effective batch."
-        )
-    if str(getattr(cfg, "cond_cache_dir", "") or "").strip():
-        return (
-            "MiniMax-H3-Image has no persistent conditioning cache yet: each run encodes its captions and latents "
-            "once in memory, so cond_cache_dir would be recorded and never read. Leave it unset."
         )
     if str(getattr(cfg, "base_precision", "") or "").strip().lower() in ("fp8", "mxfp8"):
         return (
@@ -1901,6 +2027,69 @@ def _latent_cache_over_budget(
     return per_variant_bytes * max(0, total_variants) > budget_bytes
 
 
+# Cards where cuDNN SDPA fwd+bwd matched fp32 as closely as flash / mem-eff at DiT training shapes:
+# A100 (sm80), L4 (sm89), RTX PRO 6000 (sm120), on torch 2.10 and 2.14.
+_MASKED_CUDNN_CAPS = frozenset({(8, 0), (8, 9), (12, 0)})
+_MASKED_CUDNN_MIN_TORCH = (2, 10)
+
+
+def _masked_cudnn_priority(torch, device: Any = None) -> Optional[list]:
+    """SDPA priority flash > cuDNN > mem-eff > rest, or None to keep cuDNN off.
+
+    Flash takes no mask, so a masked call (Krea-2 text padding, LTX-2, Qwen-Image) falls to mem-eff, which
+    cuDNN beats on fwd+bwd 1.4-1.6x on A100, 2.0-2.1x on L4 and 3.0-3.6x on RTX PRO 6000. Unmasked calls stay
+    on flash, which beats cuDNN there. Unmeasured cards (sm90 / sm100, where the FLUX crash was) keep cuDNN off.
+    ``UNSLOTH_DIFFUSION_TRAIN_CUDNN_SDPA=0`` restores the old behaviour."""
+    if os.environ.get("UNSLOTH_DIFFUSION_TRAIN_CUDNN_SDPA", "").strip().lower() in (
+        "0",
+        "false",
+        "off",
+        "no",
+    ):
+        return None
+    get = getattr(torch._C, "_get_sdp_priority_order", None)
+    if get is None or not hasattr(torch._C, "_set_sdp_priority_order"):
+        return None
+    try:
+        major_minor = tuple(int(x) for x in str(torch.__version__).split("+")[0].split(".")[:2])
+        if major_minor < _MASKED_CUDNN_MIN_TORCH:
+            return None
+        if not torch.cuda.is_available():
+            return None
+        # the training card, not whichever card is current
+        dev = torch.device(device) if device is not None else None
+        index = dev.index if dev is not None and dev.type == "cuda" else None
+        if tuple(torch.cuda.get_device_capability(index)) not in _MASKED_CUDNN_CAPS:
+            return None
+        from torch.nn.attention import SDPBackend
+
+        want = [
+            int(SDPBackend.FLASH_ATTENTION),
+            int(SDPBackend.CUDNN_ATTENTION),
+            int(SDPBackend.EFFICIENT_ATTENTION),
+            int(SDPBackend.MATH),
+        ]
+        current = [int(b) for b in get()]
+    except Exception:  # noqa: BLE001 -- any doubt keeps the old pin
+        return None
+    return want + [b for b in current if b not in want]
+
+
+_SDPA_CACHE_TAG = "|unsloth_train_sdpa=flash,cudnn,efficient"
+
+
+def _tag_compile_cache(torch, snap: dict) -> None:
+    """The compile caches key on the traced graph, not on the SDPA priority, so a warm cache would hand back a graph
+    whose attention op was picked under the old pin. A cache key tag keeps the two apart."""
+    cconfig = getattr(getattr(torch, "compiler", None), "config", None)
+    if cconfig is None or not hasattr(cconfig, "cache_key_tag"):
+        return
+    prev = cconfig.cache_key_tag or ""
+    snap["cache_key_tag"] = prev
+    if _SDPA_CACHE_TAG not in prev:
+        cconfig.cache_key_tag = prev + _SDPA_CACHE_TAG
+
+
 def _apply_perf_flags(
     cfg: "DiffusionLoraConfig",
     device: str,
@@ -1927,7 +2116,8 @@ def _apply_perf_flags(
             torch.set_float32_matmul_precision("highest")
         if cudnn_benchmark:
             torch.backends.cudnn.benchmark = True
-        # cuDNN SDPA training is broken for FLUX shapes on torch 2.10 + cu130; pin flash/mem-eff.
+        # cuDNN SDPA training is broken for FLUX shapes on torch 2.10 + cu130 (B200); pin flash/mem-eff,
+        # except on the measured cards, where masked attention moves from mem-eff to cuDNN (see below).
         cuda_backends = getattr(torch.backends, "cuda", None)
         if cuda_backends is not None and hasattr(cuda_backends, "enable_cudnn_sdp"):
             try:
@@ -1935,8 +2125,20 @@ def _apply_perf_flags(
             except Exception:  # noqa: BLE001 -- flag unreadable: skip the tweak entirely
                 snap["cudnn_sdp"] = None
             if snap["cudnn_sdp"]:
-                cuda_backends.enable_cudnn_sdp(False)
+                prio = _masked_cudnn_priority(torch, device)
+                if prio is not None:
+                    snap["sdp_priority"] = list(torch._C._get_sdp_priority_order())
+                    torch._C._set_sdp_priority_order(prio)
+                    _tag_compile_cache(torch, snap)
+                else:
+                    cuda_backends.enable_cudnn_sdp(False)
     except Exception:  # noqa: BLE001 -- perf flags are never fatal
+        pass
+    try:
+        # gfx1151: diffusers hands SDPA strided q/k/v; contiguous copies train faster.
+        from core.inference.diffusion_attention import install_rocm_contiguous_qkv_training
+        snap["rocm_contiguous_qkv"] = install_rocm_contiguous_qkv_training()
+    except Exception:  # noqa: BLE001 -- perf only
         pass
     return snap
 
@@ -1949,11 +2151,21 @@ def _restore_perf_flags(snap: Optional[dict]) -> None:
     from core.inference.diffusion_speed import restore_backend_flags
 
     restore_backend_flags(snap.get("flags"))
+    if snap.get("rocm_contiguous_qkv"):
+        try:
+            from core.inference.diffusion_attention import uninstall_rocm_contiguous_qkv_training
+            uninstall_rocm_contiguous_qkv_training(snap["rocm_contiguous_qkv"])
+        except Exception:  # noqa: BLE001 -- best-effort restore
+            pass
     try:
         import torch
 
         if snap.get("matmul_precision"):
             torch.set_float32_matmul_precision(snap["matmul_precision"])
+        if snap.get("sdp_priority"):
+            torch._C._set_sdp_priority_order(snap["sdp_priority"])
+        if snap.get("cache_key_tag") is not None:
+            torch.compiler.config.cache_key_tag = snap["cache_key_tag"]
         # Restore cudnn SDPA state; None means the flag was unreadable at apply time and was left alone.
         cuda_backends = getattr(torch.backends, "cuda", None)
         if (
@@ -1975,6 +2187,7 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
         "black-forest-labs/flux.2-klein-base-9b",
         # A video family, so the image-side inference allowlist never covered it; safetensors-only, no remote code.
         "lightricks/ltx-2",
+        "lightricks/ltx-2.5-diffusers",
         # MiniMax-H3's official base, for the same reason: safetensors-only, no remote code.
         "minimaxai/minimax-h3",
         "wan-ai/wan2.2-ti2v-5b-diffusers",
@@ -1983,10 +2196,16 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
 
 # LTX-2.3 repos are single-file checkpoints the trainer cannot load; refuse before eviction.
 _LTX23_TRAIN_UNSUPPORTED = ("lightricks/ltx-2.3", "lightricks/ltx-2.3-fp8")
+_LTX25_SINGLE_FILE_TRAIN_UNSUPPORTED = ("lightricks/ltx-2.5",)
 
 
 def _refuse_ltx23_training_base(base_model: str) -> None:
     """Raise for an LTX-2.3 base: the family routing accepts it, the training loader cannot."""
+    if str(base_model or "").strip().lower() in _LTX25_SINGLE_FILE_TRAIN_UNSUPPORTED:
+        raise ValueError(
+            f"'{base_model}' ships LTX-2.5 as single-file checkpoints, which cannot be a training base: the "
+            f"trainer loads a diffusers pipeline. Train from 'Lightricks/LTX-2.5-Diffusers' instead."
+        )
     if str(base_model or "").strip().lower() not in _LTX23_TRAIN_UNSUPPORTED:
         return
     raise ValueError(

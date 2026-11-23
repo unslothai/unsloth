@@ -1097,7 +1097,10 @@ class DiffusionTrainingStartRequest(BaseModel):
             "across runs: a rerun whose images, captions and resolution are unchanged skips "
             "loading the VAE and the multi-GB text encoders entirely. Unsloth-relative names are "
             "resolved under the Unsloth outputs root and absolute paths must stay inside it. "
-            "null or blank keeps the in-memory cache, which is rebuilt every run."
+            "null or blank uses the default cache in the Studio cache folder (on for the DiT and "
+            "MiniMax-H3 families, oldest entries evicted past "
+            "UNSLOTH_DIFFUSION_TRAIN_COND_CACHE_MAX_GB, 20 by default); 'off' keeps the in-memory "
+            "cache only, rebuilt every run, as does UNSLOTH_DIFFUSION_TRAIN_COND_CACHE=0 for the default."
         ),
     )
     compile_transformer: Literal["off", "on", "auto"] = Field(
@@ -1113,6 +1116,26 @@ class DiffusionTrainingStartRequest(BaseModel):
             "int8 torchao weight-only, fp8 float8 training compute (Ada/Hopper/Blackwell), "
             "mxfp8 block-scaled float8 compute (Blackwell, best at high resolution/batch), "
             "or auto (pick by free VRAM + GPU class). Dense modes need a non-prequant base."
+        ),
+    )
+    block_swap: Optional[Union[Literal["off", "auto"], Annotated[int, Field(ge = 0, le = 1024)]]] = (
+        Field(
+            None,
+            description = (
+                "DiT families with base_precision='bf16' only: repeated transformer blocks kept in host RAM and "
+                "streamed to the GPU each step, so a bf16 base larger than the card trains at bf16 accuracy. "
+                "'auto' swaps as few as fit, a number swaps that many, 'off' or 0 none. Needs gradient "
+                "checkpointing and a discrete CUDA / ROCm GPU. null keeps the server default (UNSLOTH_DIT_BLOCK_SWAP)."
+            ),
+        )
+    )
+    num_gpus: int = Field(
+        1,
+        ge = 1,
+        le = 64,
+        description = (
+            "DiT families on CUDA: data-parallel training over this many identical visible GPUs (one process each); "
+            "train_batch_size is per GPU. Falls back to one GPU with a warning when the host cannot."
         ),
     )
     # DiT-only lever: undeclared, model_dump() silently dropped it. Defaults match DiffusionLoraConfig.
@@ -1279,6 +1302,8 @@ class DiffusionTrainingStatusResponse(BaseModel):
     # Live throughput + peak VRAM (from the trainer's progress events).
     samples_per_second: Optional[float] = None
     peak_memory_gb: Optional[float] = None
+    # What block_swap resolved to once the base loaded: swapped_blocks, total_blocks, host_gib, pinned_gib.
+    block_swap: Optional[Dict[str, float]] = None
     # Newest bundle and step, why it could not be written (Resume tooltip), and where a resume started.
     checkpoint_path: Optional[str] = None
     checkpoint_step: Optional[int] = None
@@ -1370,6 +1395,8 @@ class DiffusionTrainableFamily(BaseModel):
     precision_modes: List[str] = Field(default_factory = list)
     recommended_precision: str = "nf4"
     supports_compile: bool = False
+    # block_swap is refused outside the DiT trainer and without bf16, so the panel offers it only here.
+    supports_block_swap: bool = False
     # save_steps is refused for checkpointless families; True keeps old payloads.
     supports_checkpoints: bool = True
     supports_samples: bool = False

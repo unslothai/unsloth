@@ -78,6 +78,21 @@ to five tools ranked against the user's message. Tools a turn loads stay within
 half of the window, the oldest leaving first; a tool too large for that is refused
 with a message naming it.
 
+To help a local model reuse its prompt cache when a follow-up mentions a new
+topic, start Studio with `UNSLOTH_STUDIO_MCP_SEARCH_ONLY=1`. For oversized
+catalogs, Studio advertises only `mcp_tool_search`, forced tools and tools
+mapped to an attached image. The model may need extra search calls to find a
+tool, and smaller models may miss tools they need. Only the value `1` turns it
+on, and it is an environment variable only, with no toggle in Settings.
+
+```sh
+UNSLOTH_STUDIO_MCP_SEARCH_ONLY=1 unsloth studio
+```
+
+```powershell
+$env:UNSLOTH_STUDIO_MCP_SEARCH_ONLY = "1"; unsloth studio
+```
+
 ## Unsloth Decisions MCP
 
 When the Decision API is on (**Settings → API**), the chat's MCP menu lists
@@ -100,7 +115,9 @@ your API key, so it sees what that key may see and nothing more.
 
 ### Turn it on
 
-The server is off by default. While it is off, `/mcp/` answers 404. The Unsloth
+The server is off by default. While it is off, `/mcp/` answers 404. A request
+with a valid full access API key gets a 404 that says the server is off and how
+to turn it on; every other request gets a plain 404. The Unsloth
 Studio owner turns it on in Settings > Agents with **Allow agent connections**.
 Starting Unsloth Studio with `UNSLOTH_STUDIO_ENABLE_MCP=1` also turns it on and
 locks the switch, which then reads "Set by UNSLOTH_STUDIO_ENABLE_MCP."
@@ -298,10 +315,10 @@ api_key_format = "Bearer {token}"
 |---|---|
 | `studio_status` | What is loaded, loading and running: chat, image, video, speech-to-text and embedding models, training, export and GPUs. |
 | `list_models` | Models Unsloth Studio can serve, by kind or by Audio page `workflow`. With `model`, its training defaults. With `source="catalog"`, the image, video and audio models it can download, with their size and whether they fit on the GPU now. |
-| `load_model` | Load a chat, image, video or speech-to-text model, downloading it first if needed. Reports progress, waits up to `wait_s` (240 s by default) and lists what it unloaded. |
+| `load_model` | Load a chat, image, video or speech-to-text model, downloading it first if needed. Leave `kind` out and it is read from the catalog or the model's task. Reports progress, waits up to `wait_s` (240 s by default) and lists what it unloaded. |
 | `unload_model` | Unload a model, or every chat, speech, image, video and speech-to-text model with `kind="all"`. The embedding model stays. |
-| `plan_load` | Preview a load without loading anything: GGUF variants and sizes, bytes to download, and the models it would unload. |
-| `download_model` | Download a model ahead of time without loading it. Follow it with `get_job`; `load_model` waits for it. |
+| `plan_load` | Preview a load without loading anything: GGUF variants and sizes, bytes to download, and the models it would unload. `kind` is inferred as for `load_model`. |
+| `download_model` | Download a model ahead of time without loading it. Follow it with `get_job`; `load_model` waits for it. `kind` is inferred as for `load_model`. |
 | `chat` | Ask the loaded model, with optional images, thinking controls and a `response_format`. Reports progress and returns a `cancel_id`. |
 | `embed` | Embed up to 2048 texts, or rank them against a `query` and return the `top_k` best matches. |
 | `system_one` | Ask the Decision API typed questions. The Decision API must be on. |
@@ -341,6 +358,37 @@ choices.
 Agents read the tool list when they connect, so an agent that is already
 connected keeps showing a tool you turned off until it reconnects. Its calls to
 that tool are refused at once.
+
+### Kind inference
+
+`load_model`, `plan_load` and `download_model` take an optional `kind`. Left
+out, it is the kind of the matching catalog row (`list_models(source="catalog")`),
+else the kind `list_models` reports for a downloaded model, else `"llm"`. So
+`load_model(model="unsloth/FLUX.2-klein-4B")` loads the image model. A name with
+no organization that matches one catalog row, such as `"FLUX.2-klein-4B"`, means
+that row. A load of a repo the chat route cannot read says which `kind` to pass.
+
+### Models from Unsloth Studio chat
+
+The chat's **Unsloth Studio** tools row can load and unload image, video and
+speech-to-text models, so a chat can load an image model and then draw with it.
+It works only within these limits:
+
+- It never unloads the model serving the chat. It downloads an image or video
+  model first, so Unsloth Studio can check it fits beside the chat model, then
+  loads it. A load that would need the chat model's memory is refused, and the
+  message says what the user can change. Under Keep multiple models loaded set
+  to Off, an image or video load or download is refused, before anything
+  downloads, while a chat model is loaded on this computer; set it to When they fit.
+- It loads and downloads only models in the Unsloth Studio catalog, never another
+  Hugging Face repo, a local folder, a checkpoint or an export, and never with a
+  Hugging Face token.
+- It cannot load or unload chat, text-to-speech or music models, or use
+  `kind="all"`. `plan_load` stays agent only.
+- A chat started with an inference only API key gets no server-side tools, so it
+  has no Unsloth Studio row and cannot load, unload or download.
+- A load is followed to the end inside the tool call. When the call ends first,
+  Unsloth Studio still finishes a load it has started.
 
 ### Media and files
 

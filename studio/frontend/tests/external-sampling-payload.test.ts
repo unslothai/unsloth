@@ -163,6 +163,27 @@ test("ollama is sent none of the three its /v1 layer drops", () => {
   assert.equal(body.temperature, PARAMS.temperature);
 });
 
+test("Gemini 4 and 3.7/3.8 Flash omit presence_penalty from the request body", () => {
+  for (const model of [
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+    "gemini-4-argon",
+    "gemini-4-carbon",
+    "gemini-4-neon",
+    "gemini-4-hydrogen",
+  ]) {
+    const body = bodyFor("gemini", PARAMS, undefined, model);
+    assert.ok(!("presence_penalty" in body), model);
+    assert.equal(body.temperature, PARAMS.temperature, model);
+    assert.equal(body.top_p, PARAMS.topP, model);
+    assert.equal(body.top_k, PARAMS.topK, model);
+  }
+  assert.equal(
+    bodyFor("gemini", PARAMS, undefined, "gemini-2.5-flash").presence_penalty,
+    PARAMS.presencePenalty,
+  );
+});
+
 test("a hosted provider's body is unchanged by the new rows", () => {
   for (const providerType of [
     "anthropic",

@@ -16,6 +16,8 @@ import types
 from functools import lru_cache
 from typing import Any, Optional
 
+from .triton_closure_globals import publishes_closure_globals
+
 RDNA_TRITON_ENV = "UNSLOTH_NATIVE_INT8_RDNA_TRITON"
 _NS = "unsloth_studio"
 _ROTQ_OP = "native_rdna_rotq_rows"
@@ -81,6 +83,7 @@ def _triton_version_ok() -> bool:
 
 
 @lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _kernels() -> Optional[types.SimpleNamespace]:
     try:
         import triton

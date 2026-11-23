@@ -13,7 +13,7 @@ import stat
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 from utils.paths.storage_roots import account_path
@@ -51,6 +51,14 @@ class LoraCatalogEntry:
     fine_tuned: bool = False
     # Id of the loras/diffusion adapter this custom-folder file is an export of: listed once, still resolvable.
     copy_of: Optional[str] = None
+    # Two-expert video models (Wan2.2-A14B): weight_name adapts the high-noise transformer, this file the low-noise
+    # transformer_2. Set only on pairs, which load only on a two-expert family.
+    weight_name_2: Optional[str] = None
+    # Step-distilled adapters: the publisher's (steps, guidance), applied as the generation defaults when picked.
+    recommended_steps: Optional[int] = None
+    recommended_guidance: Optional[float] = None
+    # The publisher's sampler as scheduler config overrides on the loaded scheduler (empty = keep it).
+    recommended_scheduler: tuple[tuple[str, Any], ...] = ()
 
 
 @dataclass(frozen = True)
@@ -62,6 +70,8 @@ class ResolvedLora:
     path: str
     fmt: str
     weight: float
+    # The second expert's file of a two-expert pair (LoraCatalogEntry.weight_name_2), else None.
+    path_2: Optional[str] = None
 
 
 # Known-good diffusion LoRA catalog (single-file HF repos); any public HF LoRA repo id also works.
@@ -79,7 +89,100 @@ def _krea2_lora(style: str, display_name: str) -> LoraCatalogEntry:
     )
 
 
+def _distill_lora(
+    repo_id: str,
+    weight_name: str,
+    display_name: str,
+    family: str,
+    steps: int,
+    *,
+    weight_name_2: Optional[str] = None,
+    entry_id: Optional[str] = None,
+    scheduler: tuple[tuple[str, Any], ...] = (),
+) -> LoraCatalogEntry:
+    """A step-distilled adapter (CFG-free): picking it sets ``steps`` at guidance 1 as the defaults, and
+    ``scheduler`` (config overrides) as the sampler when the loaded scheduler differs from the publisher's."""
+    return LoraCatalogEntry(
+        id = entry_id or f"{repo_id}:{weight_name}",
+        display_name = display_name,
+        source = "hub",
+        fmt = "safetensors",
+        families = (family,),
+        repo_id = repo_id,
+        weight_name = weight_name,
+        weight_name_2 = weight_name_2,
+        recommended_steps = steps,
+        recommended_guidance = 1.0,
+        recommended_scheduler = scheduler,
+    )
+
+
+# First-order Euler on the Wan scheduler's own grid: UniPC at order 1 with the corrector off is the flow Euler step
+# x - (sigma - sigma_next) * v (data-prediction DDIM == Euler for a linear flow path), on the same shift-5 grid
+# [1, .9375, .833, .625] the lightx2v recipes sample (LightX2V WanStepDistillScheduler, sample_shift 5; the
+# Lightning V1.1 workflow's euler / simple at shift 5). The base Wan2.2 scheduler is 2nd-order UniPC with corrector.
+_WAN_EULER: tuple[tuple[str, Any], ...] = (
+    ("solver_order", 1),
+    ("disable_corrector", tuple(range(64))),
+)
+
+
+# lightx2v step-distill adapters (Apache-2.0). Wan2.2-A14B pairs: high-noise file -> transformer, low-noise ->
+# transformer_2; the publisher's recipe is 4 Euler steps at shift 5, CFG 1 (2 steps per expert at boundary 0.875).
+_DISTILL: tuple[LoraCatalogEntry, ...] = (
+    _distill_lora(
+        "lightx2v/Wan2.2-Distill-Loras",
+        "wan2.2_t2v_A14b_high_noise_lora_rank64_lightx2v_4step_1217.safetensors",
+        "Wan2.2 T2V A14B 4-step distill (lightx2v)",
+        "wan2.2-t2v-a14b",
+        4,
+        weight_name_2 = "wan2.2_t2v_A14b_low_noise_lora_rank64_lightx2v_4step_1217.safetensors",
+        entry_id = "lightx2v/Wan2.2-Distill-Loras",
+        scheduler = _WAN_EULER,
+    ),
+    _distill_lora(
+        "lightx2v/Wan2.2-Lightning",
+        "Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors",
+        "Wan2.2 T2V A14B Lightning 4-step V1.1",
+        "wan2.2-t2v-a14b",
+        4,
+        weight_name_2 = "Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors",
+        entry_id = "lightx2v/Wan2.2-Lightning",
+        scheduler = _WAN_EULER,
+    ),
+    _distill_lora(
+        "lightx2v/Qwen-Image-Lightning",
+        "Qwen-Image-Lightning-8steps-V2.0-bf16.safetensors",
+        "Qwen-Image Lightning 8-step V2.0",
+        "qwen-image",
+        8,
+    ),
+    _distill_lora(
+        "lightx2v/Qwen-Image-Lightning",
+        "Qwen-Image-Lightning-4steps-V2.0-bf16.safetensors",
+        "Qwen-Image Lightning 4-step V2.0",
+        "qwen-image",
+        4,
+    ),
+    _distill_lora(
+        "lightx2v/Qwen-Image-2512-Lightning",
+        "Qwen-Image-2512-Lightning-8steps-V1.0-bf16.safetensors",
+        "Qwen-Image-2512 Lightning 8-step",
+        "qwen-image",
+        8,
+    ),
+    _distill_lora(
+        "lightx2v/Qwen-Image-Edit-2511-Lightning",
+        "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors",
+        "Qwen-Image-Edit-2511 Lightning 8-step",
+        "qwen-image-edit",
+        8,
+    ),
+)
+
+
 _CURATED: tuple[LoraCatalogEntry, ...] = (
+    *_DISTILL,
     _krea2_lora("retroanime", "Krea 2 Retro Anime"),
     _krea2_lora("neondrip", "Krea 2 Neon Drip"),
     _krea2_lora("darkbrush", "Krea 2 Dark Brush"),
@@ -358,8 +461,41 @@ def list_loras(
     return merged
 
 
+def two_expert_family(family: Optional[str]) -> bool:
+    """A two-expert video family (Wan2.2-A14B): it loads only high / low-noise pairs."""
+    if not family:
+        return False
+    try:
+        from .video_families import detect_video_family
+        fam = detect_video_family("", override = family)
+    except Exception:  # noqa: BLE001 - an image family name is not a video family
+        return False
+    return bool(getattr(fam, "is_moe", False))
+
+
 def _catalog_by_id() -> dict[str, LoraCatalogEntry]:
     return {e.id: e for e in (list(_CURATED) + _scan_local())}
+
+
+def recommended_scheduler(lora_ids: Any) -> tuple[tuple[str, Any], ...]:
+    """The publisher's scheduler overrides of the first curated adapter in ``lora_ids`` that has any, else ()."""
+    curated = {e.id: e for e in _CURATED if e.recommended_scheduler}
+    for lora_id in lora_ids or ():
+        entry = curated.get(str(lora_id))
+        if entry is not None:
+            return entry.recommended_scheduler
+    return ()
+
+
+def recommended_params(lora_ids: Any) -> Optional[tuple[int, float]]:
+    """The publisher's ``(steps, guidance)`` of the first step-distilled curated adapter in ``lora_ids``, else None.
+    Curated entries only (in memory, no folder scan), so a status poll may call it."""
+    curated = {e.id: e for e in _CURATED if e.recommended_steps}
+    for lora_id in lora_ids or ():
+        entry = curated.get(str(lora_id))
+        if entry is not None:
+            return int(entry.recommended_steps), float(entry.recommended_guidance or 1.0)
+    return None
 
 
 def _staging_name(dest_dir: Path, stem: str) -> str:
@@ -438,6 +574,25 @@ class LoraSelectionError(ValueError):
     """A LoRA selection the loaded model cannot take; the caller's to fix."""
 
 
+# X-Unsloth-Refusal / OpenAI error code, so a client can offer the reload instead of a failure.
+LORA_RELOAD_REFUSAL = "lora-reload"
+LORA_RELOAD_OPENAI_CODE = "lora_reload_required"
+
+LORA_RELOAD_REMEDY = (
+    "Reload the model with the LoRA selection: on the Images page click Reapply (Generate and this error offer "
+    'the same reload), or send the adapters as "loras" in POST /api/inference/images/load. The reload rebuilds '
+    "the transformer from its full-precision weights, which may download them first."
+)
+
+
+class LoraReloadRequiredError(LoraSelectionError):
+    """The loaded build fixes its adapters at load time (int8 / fp8 / nvfp4 / mxfp8 bake, a merge into quantized or
+    streamed weights), so this selection needs a reload that bakes it; never a silent reload behind a generate."""
+
+    refusal = LORA_RELOAD_REFUSAL
+    openai_code = LORA_RELOAD_OPENAI_CODE
+
+
 def resolve_one(
     spec_id: str,
     weight: float,
@@ -469,14 +624,19 @@ def resolve_one(
             return ResolvedLora(spec_id, sanitize_alias(spec_id), path, entry.fmt, weight)
         if not entry.repo_id or not entry.weight_name:
             raise LoraSelectionError(f"LoRA '{spec_id}' has no downloadable weight")
-        path = hf_hub_download_with_xet_fallback(
-            entry.repo_id,
-            entry.weight_name,
-            hf_token,
-            cancel_event = cancel_event,
-            local_files_only = local_files_only,
-        )
-        return ResolvedLora(spec_id, sanitize_alias(spec_id), path, entry.fmt, weight)
+
+        def fetch(name: str) -> str:
+            return hf_hub_download_with_xet_fallback(
+                entry.repo_id,
+                name,
+                hf_token,
+                cancel_event = cancel_event,
+                local_files_only = local_files_only,
+            )
+
+        path = fetch(entry.weight_name)
+        path_2 = fetch(entry.weight_name_2) if entry.weight_name_2 else None
+        return ResolvedLora(spec_id, sanitize_alias(spec_id), path, entry.fmt, weight, path_2)
 
     # Not in the catalog: allow a bare public HF repo id (owner/name[:weight_file]).
     if "/" in spec_id:

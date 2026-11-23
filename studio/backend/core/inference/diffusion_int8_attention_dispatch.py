@@ -58,6 +58,18 @@ AUTO_DITS = frozenset(
 # AUTO_DITS members raced only when their own weights are quantized (an INT8 / FP8 checkpoint): measured against its
 # INT8-ConvRot default only, so a bf16 load (the accuracy reference) keeps its attention.
 AUTO_QUANTIZED_ONLY = frozenset({"MOSSImageTransformer"})
+# AUTO_DITS members the unset switch leaves alone in a two-expert pipeline (a ``transformer_2``): Wan 2.2 A14B on A100
+# (hosted INT8 pair, 832x480x33, 10 steps) ran 10% faster per step with the kernel, but the clip drifts step over step
+# through both experts (latent rel L2 0.20 / 0.39 at the end, LPIPS 0.135 / 0.277 against the kernel off, whose own
+# fresh-process repeat is bit-identical): a different clip, not a near copy. Wan 2.2 5B (one expert) keeps its race.
+AUTO_SINGLE_EXPERT_ONLY = frozenset({"WanTransformer3DModel"})
+
+
+def two_expert_pipeline(pipe: Any) -> bool:
+    """Whether ``pipe`` denoises with a second expert (Wan 2.2 A14B's ``transformer_2``)."""
+    return getattr(pipe, "transformer_2", None) is not None
+
+
 # Also race with speed unset and no profile (e.g. offloaded INT8 DiT on T4): only the families measured that way.
 SPEED_UNSET_DITS = frozenset(
     {
@@ -90,6 +102,33 @@ ROCM_AUTO_DITS: dict = {
 }
 # processors that already run the kernel themselves
 _STRIDED_FLAG = "_unsloth_int8"
+# Blocks kept native under Auto (forced or NATIVE_BLOCKS_ENV=0 routes them): Qwen-Image-2.1 block 0 INT8 rel L2 error
+# is 0.06-0.14 vs <=0.0175 for blocks 1-31 (A100, L4) and drove most of the image drift.
+NATIVE_BLOCKS: dict = {"QwenImage21Transformer2DModel": frozenset({0})}
+NATIVE_BLOCKS_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_NATIVE_BLOCKS"
+_BLOCK_LISTS = ("transformer_blocks",)
+
+
+def native_blocks_enabled() -> bool:
+    raw = (os.environ.get(NATIVE_BLOCKS_ENV) or "1").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def block_index(name: str) -> Optional[int]:
+    parts = str(name).split(".")
+    for i, part in enumerate(parts[:-1]):
+        if part in _BLOCK_LISTS and parts[i + 1].isdigit():
+            return int(parts[i + 1])
+    return None
+
+
+def native_block_modules(dit: Any) -> set:
+    blocks = NATIVE_BLOCKS.get(type(dit).__name__)
+    named = getattr(dit, "named_modules", None)
+    if not blocks or not native_blocks_enabled() or not callable(named):
+        return set()
+    return {id(m) for name, m in named() if block_index(name) in blocks}
+
 
 # (large, small) token counts of the second race, for a card where the kernel loses at RACE_TOKENS
 LONG_RACE_TOKENS = (16384, 8192)
@@ -120,10 +159,22 @@ def _backend_name(backend: Any) -> str:
     return str(getattr(backend, "value", backend))
 
 
-def _race_name(incumbent: Any) -> str:
-    """Verdict-cache name; a strided cuDNN pin runs a different call, so it is cached apart."""
+def _race_name(
+    incumbent: Any,
+    card: Optional[int] = None,
+    dtype: Any = None,
+) -> str:
+    """Verdict-cache name; a strided cuDNN pin runs a different call, so it is cached apart. With ``card`` / ``dtype``
+    the strided name is kept only where the pin takes the strided call (a probed card, its probed dtype): elsewhere
+    the race times diffusers' call and shares that verdict."""
     name = f"dispatch:{_backend_name(incumbent)}"
-    return name + ":strided" if isinstance(incumbent, _Q21.StridedCudnn) else name
+    if not isinstance(incumbent, _Q21.StridedCudnn):
+        return name
+    if card is not None and int(card) not in incumbent.cards:
+        return name
+    if dtype is not None and incumbent.dtype is not None and dtype != incumbent.dtype:
+        return name
+    return name + ":strided"
 
 
 class Int8Route(str):
@@ -301,8 +352,7 @@ def _signature(route: Int8Route, args: tuple, kwargs: dict) -> Optional[tuple]:
 
 
 def _cached_reason(route: Int8Route, args: tuple, kwargs: dict) -> Optional[str]:
-    """``_reason`` memoised per route and call signature (eager calls only; a route rebuilt by ``install`` is a new
-    object, so its decisions start over)."""
+    """_reason memoised per route and signature (eager only); a rebuilt route starts over."""
     key = _signature(route, args, kwargs)
     if key is None:
         return _reason(route, args, kwargs)
@@ -529,10 +579,9 @@ def install(
     speed_unset_only: bool = False,
     policy: Any = None,
 ) -> int:
-    """Route the pipeline's DiT attention dispatch calls to the INT8 kernel where this card and the switch allow it
-    (module docstring). ``speed_active=False`` (speed off) keeps the automatic route off so output stays
-    bit-identical; a request by name or the env switch still routes. ``policy``: the load's ``Int8Policy`` (its
-    ``on`` / ``off`` beat the env switch). Returns the number of modules routed; never raises."""
+    """Routes DiT attention to INT8 where allowed; speed_active=False keeps auto routing off so
+    output stays bit-identical; policy on or off beats the env switch; returns count; never
+    raises"""
     try:
         return _install(pipe, target, requested, logger, speed_active, speed_unset_only, policy)
     except Exception as exc:  # noqa: BLE001 -- an optimisation: the processors keep their backend
@@ -624,8 +673,7 @@ def long_verdict(
 def mid_verdict(
     device: Any, dtype: Any, heads: int, head_dim: int, incumbent: Any, name: str
 ) -> int:
-    """The floor where the card race won at its large size only: the crossover lies on the side of
-    ``MID_RACE_TOKENS`` the kernel loses on."""
+    """Floor: the race won only at the large size; the crossover lies where the kernel loses."""
     from . import diffusion_int8_attention as I8
 
     large, small = int(I8.RACE_TOKENS[0]), int(I8.RACE_TOKENS[-1])
@@ -769,14 +817,27 @@ def _install(
             type(dit).__name__ not in auto_dits
             or (speed_unset_only and type(dit).__name__ not in SPEED_UNSET_DITS)
             or (type(dit).__name__ in AUTO_QUANTIZED_ONLY and not quantized_weights(dit))
+            or (type(dit).__name__ in AUTO_SINGLE_EXPERT_ONLY and two_expert_pipeline(pipe))
         ):
             continue
+        native = set() if forced else native_block_modules(dit)
         mods = [
             m
             for m in routable_modules(dit)
             # a processor the strided race already lost for (install_auto) stays as it was
             if forced or not getattr(m.processor, "_unsloth_int8_raced", False)
         ]
+        if native:
+            kept = [m for m in mods if id(m) in native]
+            mods = [m for m in mods if id(m) not in native]
+            if kept and logger is not None:
+                logger.info(
+                    "diffusion.int8_attention: %d attention module(s) of %s keep %s (NATIVE_BLOCKS: INT8 error on "
+                    "their real inputs is several times the other blocks')",
+                    len(kept),
+                    type(dit).__name__,
+                    _backend_name(getattr(kept[0].processor, "_attention_backend", None)),
+                )
         candidates.extend(mods)
         family.update((id(m), type(dit).__name__) for m in mods)
         if not forced and not rocm and type(dit).__name__ in AUTO_CUDA_ONLY:
@@ -795,7 +856,6 @@ def _install(
         if head_dim is None:
             continue
         incumbent = proc._attention_backend
-        name = _race_name(incumbent)
 
         def run(
             q: Any,
@@ -813,6 +873,7 @@ def _install(
             impl_here = I8.implementation(card, head_dim)
             if impl_here is None or (id(m) in cuda_only and impl_here != "cuda"):
                 continue
+            name = _race_name(incumbent, card, dtype)
             found, minimum = _card_floor(
                 torch.device("cuda", card),
                 dtype,

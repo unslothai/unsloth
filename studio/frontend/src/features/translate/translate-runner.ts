@@ -42,6 +42,8 @@ import {
   translateMessages,
   translatePromptModel,
 } from "./models";
+import { quantOnDisk } from "./quant-on-disk";
+import { parseSubtitles, translateSubtitles } from "./translate-subtitles";
 import {
   type TranslatePromptOptions,
   restoreChunkWhitespace,
@@ -115,23 +117,21 @@ type LocalModel = {
   sizeBytes: number;
 };
 
+/** Disk first: a quant already on disk needs no Hub listing. `remote: false` never asks the Hub. */
 export async function translateModelDownloaded(
   model: LocalModel,
   signal?: AbortSignal,
+  options?: { remote?: boolean },
 ): Promise<boolean | null> {
   const quant = model.variant?.toLowerCase();
   if (!quant) return null;
-  try {
-    const listing = await listGgufVariants(model.repo, undefined, { signal });
-    const variant = listing.variants.find(
-      (entry) => entry.quant?.toLowerCase() === quant,
-    );
-    return variant
-      ? variant.downloaded === true && variant.partial !== true
-      : null;
-  } catch {
-    return null;
-  }
+  return quantOnDisk(
+    quant,
+    async (localOnly) =>
+      (await listGgufVariants(model.repo, undefined, { signal, localOnly }))
+        .variants,
+    { remote: options?.remote !== false, signal },
+  );
 }
 
 async function downloadModel(
@@ -384,25 +384,16 @@ export async function runTranslation(
     (custom && isTranslationOnlyRepo(custom.id) ? HY_MT2_SAMPLING : null);
   const base = await baseRequest(sampling, requestModel);
 
-  const chunks = splitForTranslation(text);
-  const parts = chunks.filter((chunk) => chunk.text).length;
-  let output = "";
-  let part = 0;
-  for (const chunk of chunks) {
-    signal.throwIfAborted();
-    if (!chunk.text) {
-      output += chunk.after;
-      onOutput(output);
-      continue;
-    }
-    part += 1;
-    onPhase({ kind: "translating", part, parts });
+  const complete = async (
+    source: string,
+    onText?: (text: string) => void,
+  ): Promise<string> => {
     let raw = "";
     let finishReason: string | null = null;
     const stream = streamChatCompletions(
       {
         ...base,
-        messages: translateMessages(promptModel, chunk.text, prompt),
+        messages: translateMessages(promptModel, source, prompt),
       },
       signal,
     );
@@ -413,14 +404,42 @@ export async function runTranslation(
       const delta = deltaText(choice?.delta?.content);
       if (!delta) continue;
       raw += delta;
-      onOutput(output + stripLeadingReasoning(raw).trimStart());
+      onText?.(stripLeadingReasoning(raw).trimStart());
     }
     // Either stop leaves a partial passage: never one to save as a finished translation.
     if (finishReason === "length") throw new TranslateRunError("cutOff");
     if (finishReason === "content_filter")
       throw new TranslateRunError("filtered");
-    output += restoreChunkWhitespace(chunk, stripLeadingReasoning(raw));
-    onOutput(output);
+    return stripLeadingReasoning(raw);
+  };
+
+  const subtitles = parseSubtitles(text);
+  let output = "";
+  if (subtitles) {
+    output = await translateSubtitles(subtitles, complete, {
+      signal,
+      onPhase,
+      onOutput,
+    });
+  } else {
+    const chunks = splitForTranslation(text);
+    const parts = chunks.filter((chunk) => chunk.text).length;
+    let part = 0;
+    for (const chunk of chunks) {
+      signal.throwIfAborted();
+      if (!chunk.text) {
+        output += chunk.after;
+        onOutput(output);
+        continue;
+      }
+      part += 1;
+      onPhase({ kind: "translating", part, parts });
+      const translated = await complete(chunk.text, (partial) =>
+        onOutput(output + partial),
+      );
+      output += restoreChunkWhitespace(chunk, translated);
+      onOutput(output);
+    }
   }
   return {
     output,
