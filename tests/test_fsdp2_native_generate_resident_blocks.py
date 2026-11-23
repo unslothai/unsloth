@@ -252,6 +252,71 @@ def test_request_estimate_counts_retained_outputs_and_cached_history():
     )
 
 
+def _qwen_like(**extra):
+    config = types.SimpleNamespace(
+        num_hidden_layers = 28, hidden_size = 1536, num_attention_heads = 12, num_key_value_heads = 2,
+        head_dim = 128, intermediate_size = 8960, vocab_size = 151936, torch_dtype = torch.bfloat16,
+        **extra,
+    )  # fmt: skip
+    return types.SimpleNamespace(config = config, generation_config = None)
+
+
+def test_request_estimate_counts_prefill_logits_scores_and_experts():
+    """Prefill work the request itself selects: full prompt logits (explicit logits_to_keep=0, a tensor
+    of positions, or a model that cannot slice logits), eager attention's score matrices (also forced by
+    output_attentions) and MoE routed copies. Media inputs run a tower that is not sized: None."""
+    model = _qwen_like()
+    prompt = 4096
+    ids = torch.zeros(1, prompt, dtype = torch.long)
+    call = {"max_new_tokens": 16}
+    base = F._generate_request_bytes(model, (ids,), call)
+    assert F._generate_request_bytes(model, (ids,), {**call, "logits_to_keep": 1}) == base
+    full = F._generate_request_bytes(model, (ids,), {**call, "logits_to_keep": 0})
+    # Every prompt row of fp32 logits instead of one, times the 1.25 margin.
+    assert abs(full - base - 1.25 * (prompt - 1) * 151936 * 4) <= 1
+    assert (
+        F._generate_request_bytes(model, (ids,), {**call, "logits_to_keep": torch.arange(prompt)})
+        == full
+    )
+    assert F._generate_request_bytes(model, (ids,), {**call, "logits_to_keep": 64}) < full
+    unsliced = types.SimpleNamespace(**vars(model), _supports_logits_to_keep = lambda: False)
+    assert F._generate_request_bytes(unsliced, (ids,), call) == full
+
+    scores = 1.25 * 12 * prompt * prompt * (2 * 2 + 4)  # bf16 scores + fp32 softmax + cast back
+    eager = F._generate_request_bytes(_qwen_like(_attn_implementation = "eager"), (ids,), call)
+    assert abs(eager - base - scores) <= 1
+    assert F._generate_request_bytes(_qwen_like(_attn_implementation = "sdpa"), (ids,), call) == base
+    assert (
+        abs(F._generate_request_bytes(model, (ids,), {**call, "output_attentions": True}) - eager)
+        <= 1
+    )
+
+    moe = F._generate_request_bytes(
+        _qwen_like(num_experts = 128, num_experts_per_tok = 8, moe_intermediate_size = 768), (ids,), call
+    )
+    assert abs(moe - base - 1.25 * prompt * (8 * (2 * 1536 + 3 * 768) * 2 + 128 * 4)) <= 1
+
+    for name in ("pixel_values", "pixel_values_videos", "input_features"):
+        assert (
+            F._generate_request_bytes(model, (ids,), {**call, name: torch.zeros(1, 3, 8, 8)})
+            is None
+        )
+    assert F._generate_request_bytes(model, (ids,), {**call, "pixel_values": None}) == base
+
+
+def test_plan_full_prompt_logits_keep_fewer_blocks_resident(monkeypatch):
+    """A long logits_to_keep=0 request must not spend its own logits memory on resident blocks."""
+    monkeypatch.delenv("UNSLOTH_FSDP2_GENERATE_RESIDENT", raising = False)
+    model = _qwen_like()
+    ids = torch.zeros(1, 4096, dtype = torch.long)
+    call = {"max_new_tokens": 16}
+    last = F._generate_request_bytes(model, (ids,), call)
+    full = F._generate_request_bytes(model, (ids,), {**call, "logits_to_keep": 0})
+    free = GIB + 850 * MIB
+    assert _plan(monkeypatch, free = free, request_bytes = last) == (True, 3)
+    assert _plan(monkeypatch, free = free, request_bytes = full) == (True, 0)
+
+
 def _decode_allocated_bytes(config, batch, prompt, new_tokens):
     """Bytes alloc_decode_buffers (eager) + resize_decode_buffers really hold on CPU for one call."""
     from unsloth.models import _decode_graphs as G

@@ -2612,8 +2612,12 @@ def _generate_request_bytes(model, args, kwargs):
     also covers HF generate's prompt + max_new_tokens cache) and the per-layer attention score buffer
     for batch x beams x return sequences, one decoder layer's prefill activations and the last-token
     logits (plus any scores / logits generate returns per token), times 1.25. A supplied past_key_values
-    counts toward the cache length. None when the request's shape, the cache length, the retained outputs or
-    the model's dimensions are unknown."""
+    counts toward the cache length. Prefill extras the call can trigger are counted too: full prompt logits
+    for an explicit logits_to_keep=0 (or a model that cannot slice them), the [batch, heads, prompt, keys]
+    score matrices of eager attention (also requested by output_attentions), and the routed token copies of
+    a mixture-of-experts layer. None when the request's shape, the cache length, the retained outputs or
+    the model's dimensions are unknown, and for vision / audio inputs, whose tower activations are not
+    sized here."""
     try:
         ids = kwargs.get("input_ids")
         if ids is None:
@@ -2625,6 +2629,14 @@ def _generate_request_bytes(model, args, kwargs):
         if not isinstance(ids, torch.Tensor) or ids.dim() < 2:
             return None
         batch, prompt = int(ids.shape[0]), int(ids.shape[1])
+        # Media prompts run a vision / audio tower in prefill whose activations depend on the media
+        # shape and the tower config: decline (no block stays resident) instead of under-counting.
+        for name, value in kwargs.items():
+            if value is not None and (
+                name.startswith(("pixel_values", "image_", "video_", "audio_"))
+                or name in ("input_features", "input_values", "images", "videos")
+            ):
+                return None
         gen = kwargs.get("generation_config") or getattr(model, "generation_config", None)
 
         def pick(name):
@@ -2679,7 +2691,45 @@ def _generate_request_bytes(model, args, kwargs):
         # [batch, heads, 1, rows] alloc_decode_buffers allocates next to it.
         kv = layers * batch * rows * (2 * kv_heads * head_dim + heads) * width
         act = batch * prompt * (4 * hidden + 3 * inter) * width
-        logits = (2 + retained_per_token * int(new)) * batch * vocab * 4
+        # Prefill logits rows: generate passes logits_to_keep = 1 unless the caller set it (0 = every
+        # prompt position) or the model cannot slice them. One row is inside the 2 below.
+        keep = kwargs.get("logits_to_keep", kwargs.get("num_logits_to_keep"))
+        supports = getattr(model, "_supports_logits_to_keep", None)
+        if keep is None and callable(supports):
+            try:
+                keep = None if supports() else 0
+            except Exception:
+                keep = None
+        if isinstance(keep, torch.Tensor):
+            keep_rows = prompt  # positions or a mask: at most every prompt position
+        elif keep is None:
+            keep_rows = 1
+        else:
+            keep_rows = prompt if int(keep) <= 0 else int(keep)
+        keep_rows = max(1, min(prompt, keep_rows))
+        # Eager attention materialises one layer's prefill scores in the model dtype, their float32
+        # softmax and the cast back.
+        attn = getattr(config, "_attn_implementation", None)
+        if attn == "eager" or pick("output_attentions"):
+            act += batch * heads * prompt * (cached + prompt) * (2 * width + 4)
+        # Mixture of experts: each token is copied to its top-k experts (input, gate / up / activation and
+        # output per copy) next to the float32 router logits.
+        experts = 0
+        for name in ("num_experts", "num_local_experts", "n_routed_experts"):
+            value = getattr(config, name, None)
+            if isinstance(value, int) and value > 1:
+                experts = value
+                break
+        if experts:
+            top_k = experts
+            for name in ("num_experts_per_tok", "num_experts_per_token", "moe_topk"):
+                value = getattr(config, name, None)
+                if isinstance(value, int) and value > 0:
+                    top_k = value
+                    break
+            moe_inter = getattr(config, "moe_intermediate_size", None) or inter
+            act += batch * prompt * (top_k * (2 * hidden + 3 * moe_inter) * width + experts * 4)
+        logits = (2 + keep_rows - 1 + retained_per_token * int(new)) * batch * vocab * 4
         return int(1.25 * (kv + act + logits))
     except Exception:
         return None
