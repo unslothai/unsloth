@@ -267,20 +267,18 @@ def _adapter_rank(adapter_dir: str) -> int:
         # unmatched or shadowed patterns do not count, and fused-expert A stacks (E * r rows) are not read as rank
         ranks = [_pattern_value(patterns, name, r) for name in names]
     else:
-        # no readable safetensors header (e.g. adapter_model.bin): keep every pattern that may match an
-        # adapted module; only a literal name whose last part is not a target module is known to match nothing
+        # no readable safetensors header (e.g. adapter_model.bin): keep every pattern that may match an adapted
+        # module (it matches a target as PEFT would, or it is a regex); only a literal name that matches no target
+        # module is known to match nothing
         targets = config.get("target_modules")
-        targets = (
-            {t.rsplit(".", 1)[-1] for t in targets if isinstance(t, str)}
-            if isinstance(targets, list)
-            else None
-        )
+        targets = [t for t in targets if isinstance(t, str)] if isinstance(targets, list) else None
         ranks = [
             rank
             for key, rank in patterns.items()
             if targets is None
             or re.escape(key) != key.replace(".", r"\.")
-            or key.rsplit(".", 1)[-1] in targets
+            or any(_pattern_value({key: rank}, t, None) is not None for t in targets)
+            or key.rsplit(".", 1)[-1] in {t.rsplit(".", 1)[-1] for t in targets}
         ]
     ranks.append(r)
     return max((x for x in ranks if isinstance(x, int) and not isinstance(x, bool)), default = 0)

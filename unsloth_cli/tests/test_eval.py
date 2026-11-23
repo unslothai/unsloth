@@ -1032,6 +1032,8 @@ def test_vllm_backend_resolves_lora_patterns_per_module(vllm_env, tmp_path, patt
             None,
             64,
         ),
+        # adapter_model.bin: an unescaped dot is a regex wildcard, so "q.proj" matches q_proj as in PEFT
+        ({"target_modules": ["q_proj"], "rank_pattern": {"q.proj": 64}}, None, 64),
     ],
 )
 def test_vllm_backend_reads_the_saved_lora_rank(vllm_env, tmp_path, config, header_rank, expected):
