@@ -16,6 +16,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    TypeAdapter,
     ValidationError,
     field_serializer,
     field_validator,
@@ -1914,13 +1915,37 @@ async def delete_project(
     return ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)
 
 
+_MESSAGE_JSON = TypeAdapter(ChatMessage)
+_KEY_JSON = TypeAdapter(str)
+
+
+def _append_messages_json(parts: list[bytes], messages: list[ChatMessage]) -> None:
+    parts.append(b"[")
+    for i, message in enumerate(messages):
+        if i:
+            parts.append(b",")
+        parts.append(_MESSAGE_JSON.dump_json(message, by_alias = True))
+    parts.append(b"]")
+
+
+def _json_response(parts: list[bytes]) -> Response:
+    """The bytes FastAPI would send for the route's response_model, built in the threadpool.
+
+    FastAPI serializes a sync route's returned model on the event loop in one pydantic call that
+    holds the GIL, so an image chat (tens of MB of data URLs) stalled every stream for hundreds
+    of ms. One dump per message here lets the loop run between messages.
+    """
+    return Response(content = b"".join(parts), media_type = "application/json")
+
+
 @router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
 def get_thread_messages(thread_id: str, current_subject: str = Depends(get_current_subject)):
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    return ChatMessageListResponse(
-        messages = [ChatMessage(**m) for m in list_chat_messages(thread_id)]
-    )
+    parts = [b'{"messages":']
+    _append_messages_json(parts, [ChatMessage(**m) for m in list_chat_messages(thread_id)])
+    parts.append(b"}")
+    return _json_response(parts)
 
 
 # Part types extractText (frontend use-chat-search-index.ts) reads; a frontend test guards drift.
@@ -2088,7 +2113,15 @@ def batch_thread_messages(
         tid = m["threadId"]
         if tid in by_thread:
             by_thread[tid].append(ChatMessage(**(_search_view_message(m) if search_view else m)))
-    return ChatMessagesBatchResponse(messagesByThreadId = by_thread)
+    parts = [b'{"messagesByThreadId":{']
+    for i, (tid, messages) in enumerate(by_thread.items()):
+        if i:
+            parts.append(b",")
+        parts.append(_KEY_JSON.dump_json(tid))
+        parts.append(b":")
+        _append_messages_json(parts, messages)
+    parts.append(b"}}")
+    return _json_response(parts)
 
 
 @router.post("/messages:counts", response_model = ChatMessageCountsResponse)
