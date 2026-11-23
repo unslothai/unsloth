@@ -148,6 +148,22 @@ _RACE_CHANGING = {
         "ok = tuple(t for t in range(len(tiles(fam))) if _probe_tile(index, fam, t, pairs))",
         "ok = tuple(t for t in range(1, len(tiles(fam))) if _probe_tile(index, fam, t, pairs))",
     ),
+    # the live race writes its winners into the cached entry a later load reads back
+    "the live race's force pick": (
+        "gemm",
+        '        r["live"] = True\n',
+        '        r["live"] = True\n        r["tile"] = None\n',
+    ),
+    "the live race's row range": (
+        "gemm",
+        "    if not (cut._LARGE_M <= m < cut._HUGE_M):\n",
+        "    if not (cut._LARGE_M <= m <= cut._HUGE_M):\n",
+    ),
+    "the live race switch": (
+        "cut",
+        "    return row_race_enabled() and raw not in",
+        "    return raw not in",
+    ),
     "the prefetch fix version": (
         "prefetch",
         '"unsloth-sm8x-8bit-prefetch-skip-1"',

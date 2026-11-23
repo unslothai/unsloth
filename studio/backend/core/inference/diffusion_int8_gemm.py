@@ -846,6 +846,8 @@ _RACE_SOURCES = {
         "_aligned",
         "_cutlass_tile",
         "_cutlass_plan",
+        # the live race of a new row bucket writes its verdict into the same cache entry _cutlass_plan reads back
+        "_live_row_race",
         "_huge_race_fits",
         "_HUGE_RACE_HEADROOM",
         "_CUT_LARGE_M",
@@ -865,6 +867,7 @@ _RACE_SOURCES = {
         "_LARGE_M",
         "ROW_BUCKET",
         "_MAX_ROW_RACES",
+        "live_race_enabled",
         "row_bucket",
         "large_points",
         "race_points",
