@@ -5229,7 +5229,7 @@ export const fa = {
     translate: "ترجمه",
     stop: "توقف",
     sourceLabel: "متن برای ترجمه",
-    sourcePlaceholder: "متن را بنویسید یا جای‌گذاری کنید، یا سند یا تصویری را رها کنید",
+    sourcePlaceholder: "متن را بنویسید یا جای‌گذاری کنید، یا سند، تصویر یا فایل صوتی را رها کنید",
     outputLabel: "ترجمه",
     outputEmpty: "ترجمه اینجا نمایش داده می‌شود.",
     firstRunHint:
@@ -5240,7 +5240,7 @@ export const fa = {
     downloadConfirm: "دانلود",
     clear: "پاک کردن",
     paste: "جای‌گذاری",
-    openFile: "باز کردن سند یا تصویر",
+    openFile: "باز کردن سند، تصویر یا فایل صوتی",
     dropFile: "فایلی را رها کنید تا متن آن ترجمه شود",
     fileNotText: "این فایل متنی برای ترجمه ندارد.",
     truncated: "فقط {max} نویسهٔ اول نگه داشته شد.",

@@ -83,6 +83,11 @@ import { useNativeFileDrop } from "@/features/native-intents";
 import { extractDocumentText } from "@/features/rag/api/rag-api";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { ReadAloudIcon } from "@/lib/action-bar-icons";
+import {
+  AUDIO_ACCEPT_EXTENSIONS,
+  AUDIO_ATTACHMENT_ACCEPT,
+  isAudioAttachmentFile,
+} from "@/lib/audio-utils";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -122,6 +127,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import { chatAboutTranslations } from "./chat-handoff";
 import { TranslateHistoryList } from "./history-list";
+import { transcribeAudioFile } from "./translate-audio";
 import { detectTranslateLanguage } from "./detect-language";
 import { ICON_ACTION, IconAction } from "./icon-action";
 import {
@@ -246,6 +252,9 @@ function serverUpload(file: File): File {
 const IS_MAC =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad/.test(navigator.platform);
+
+const DROP_ACCEPT = `${OPEN_FILE_EXTENSIONS},${AUDIO_ACCEPT_EXTENSIONS}`;
+const PICKER_ACCEPT = `text/*,${OPEN_FILE_EXTENSIONS},${AUDIO_ATTACHMENT_ACCEPT}`;
 
 const ACTION_BUTTON = "relative z-10 transition-opacity disabled:opacity-40";
 const GO_BUTTON =
@@ -1384,8 +1393,29 @@ export function TranslatePage() {
   };
 
   const [readingFile, setReadingFile] = useState<string | null>(null);
+  const audioAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => audioAbort.current?.abort(), []);
+  const openAudio = async (file: File) => {
+    const controller = new AbortController();
+    audioAbort.current = controller;
+    setReadingFile(file.name);
+    const before = useTranslateStore.getState().source;
+    try {
+      const text = await transcribeAudioFile(file, controller.signal, t);
+      if (text && useTranslateStore.getState().source === before) {
+        loadText(text);
+      }
+    } finally {
+      if (audioAbort.current === controller) audioAbort.current = null;
+      setReadingFile(null);
+    }
+  };
   const openFile = async (file: File | undefined) => {
     if (!file) return;
+    if (isAudioAttachmentFile(file)) {
+      await openAudio(file);
+      return;
+    }
     if (isTextFile(file)) {
       let text: string | null;
       try {
@@ -1450,7 +1480,7 @@ export function TranslatePage() {
     dragHandlers,
   } = useNativeFileDrop({
     onFiles: (files) => void openFile(files[0]),
-    accept: OPEN_FILE_EXTENSIONS,
+    accept: DROP_ACCEPT,
     multiple: false,
     disabled: readingFile !== null,
     disabledReason: readingFile
@@ -1766,7 +1796,7 @@ export function TranslatePage() {
             <input
               ref={fileInput}
               type="file"
-              accept={`text/*,${OPEN_FILE_EXTENSIONS}`}
+              accept={PICKER_ACCEPT}
               className="hidden"
               onChange={(event) => {
                 void openFile(event.target.files?.[0]);

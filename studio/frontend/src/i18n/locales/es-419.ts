@@ -5338,7 +5338,7 @@ export const es419 = {
     translate: "Traducir",
     stop: "Detener",
     sourceLabel: "Texto para traducir",
-    sourcePlaceholder: "Escribe o pega texto, o suelta un documento o una imagen",
+    sourcePlaceholder: "Escribe o pega texto, o suelta un documento, una imagen o un archivo de audio",
     outputLabel: "Traducción",
     outputEmpty: "La traducción aparece aquí.",
     firstRunHint:
@@ -5349,7 +5349,7 @@ export const es419 = {
     downloadConfirm: "Descargar",
     clear: "Borrar",
     paste: "Pegar",
-    openFile: "Abrir un documento o una imagen",
+    openFile: "Abrir un documento, una imagen o un archivo de audio",
     dropFile: "Suelta un archivo para traducir su texto",
     fileNotText: "Este archivo no tiene texto para traducir.",
     truncated: "Solo se conservaron los primeros {max} caracteres.",
