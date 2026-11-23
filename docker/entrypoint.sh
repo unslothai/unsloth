@@ -52,6 +52,15 @@ select_cuda_jit_tools() {
 }
 select_cuda_jit_tools || true
 
+# Studio and JupyterLab run as root, so hand what they download into a host-owned HF cache mount back to its owner.
+hf_cache_owner="$(stat -c '%u:%g' "${HF_HOME:-}" 2>/dev/null || true)"
+if [[ "$(id -u)" == 0 && -n "${hf_cache_owner}" && "${hf_cache_owner}" != 0:* ]]; then
+    while :; do
+        chown -R -h --from=0 "${hf_cache_owner}" "${HF_HOME}" 2>/dev/null || true
+        sleep 30
+    done </dev/null >/dev/null 2>&1 &
+fi
+
 # best-effort, gated by UNSLOTH_SKIP_NOTEBOOK_SYNC, never blocks the container
 sync_notebooks() {
     if [[ -x /usr/local/bin/unsloth-sync-notebooks ]]; then
