@@ -314,6 +314,10 @@ def _boundary_namespace(
     ns["_unsloth_grpo_packing_leaks"] = lambda self, unwrapped: False
     packing = types.ModuleType("unsloth.utils.packing")
     packing.packing_boundary_blocker = lambda model, model_types: blocker
+    # No stateful mixers here, so the hybrid boundary shim is never consulted.
+    packing._iter_stateful_mixers = lambda model: []
+    packing._hybrid_varlen_dispatched = lambda module: False
+    packing.patch_hybrid_linear_attention_varlen = lambda model: False
     packing._enable_hf_packed_attention = lambda model = None, trainer = None: calls.append(
         (model, trainer)
     )
