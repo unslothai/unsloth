@@ -109,7 +109,6 @@ def test_text_chunks_cut_between_characters_not_inside_one(raw_text, byte_tokeni
     if stride == 0:
         assert "".join(chunks) == text + "[EOS]"
 
-    # Lone-EOS window also starts on a character edge.
     loader = raw_text.RawTextDataLoader(tokenizer, chunk_size = 6, stride = 4)
     chunks = loader.chunk_text("aébb é語\né", return_tokenized = False)
     assert chunks[-1] == "\né[EOS]" and not any("�" in chunk for chunk in chunks)
