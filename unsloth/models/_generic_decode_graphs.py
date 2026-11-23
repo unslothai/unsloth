@@ -191,6 +191,13 @@ class _Cuda:
         G._begin(graph, pool)
 
     @staticmethod
+    def reset_rng_capture(indices):
+        """After a failed capture: clear the CUDA RNG's capturing flag on every card the capture may
+        have begun on (see _decode_graphs._reset_rng_capture_flag)."""
+        for index in indices:
+            G._reset_rng_capture_flag(torch.device("cuda", index))
+
+    @staticmethod
     def end_on(graph):
         with warnings.catch_warnings():
             # A segment with no kernels (the tail after the last hand-off) is an empty, valid graph.
@@ -2248,6 +2255,13 @@ def _capture(state, key, forward, kwargs, leaves, cache):
     except Exception as error:
         if graph is None:
             raise
+        # capture_begin marks the RNG as capturing and only a clean capture_end clears it, so a capture
+        # that died in between leaves every later random op (sampling, dropout, vLLM's sampler) raising
+        # "Offset increment outside graph capture encountered unexpectedly".
+        try:
+            _BACKEND.reset_rng_capture((_BACKEND.current_device(),) + tuple(state.others))
+        except Exception:
+            pass
         if isinstance(error, torch.cuda.OutOfMemoryError):
             # Out of memory while recording: free every graph of this call and decode the rest of it eagerly.
             # Not refused for the process (the next call may have the room).
