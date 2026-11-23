@@ -323,6 +323,15 @@ def _same(tensor):
     return tensor
 
 
+def _detached(tensor):
+    # Pack hook of the non-reentrant trial. Nothing backpropagates the trial graph, so it is only freed
+    # when its output dies; a pack hook returning its input saves an op's output on that op's own node,
+    # a cycle through the C++ graph that gc cannot see (torch's saved_tensors_hooks warning). Each
+    # block's first non-reentrant call then kept its whole trial forward until exit (Qwen3-30B-A3B
+    # shape, 4 layers, 32K tokens, aux loss on: 14 GiB between steps).
+    return tensor.detach()
+
+
 @contextlib.contextmanager
 def _no_output_capture(layer):
     """Hide the trial forward from transformers output recording (an extra router_logits entry skews the aux loss)."""
@@ -512,7 +521,11 @@ def _in_nonreentrant_checkpoint():
         hooks = torch._C._autograd._top_saved_tensors_default_hooks(False)
     except Exception:
         return False
-    return bool(hooks) and getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
+    # The trial's own pair is only pushed inside a non-reentrant checkpoint (see _wrap).
+    return bool(hooks) and (
+        getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
+        or (hooks[0] is _detached and hooks[1] is _same)
+    )
 
 
 def _graphs_unsafe_moe(layer, note = True):
@@ -2232,11 +2245,14 @@ def _wrap(
         )
         if (bit == 1 or nonreentrant) and not checked & trial_bit:
             # Grad-mode trial runs first (RNG forked); a checkpoint recompute must not demote below
-            # this call. Non-reentrant: identity saved-tensor hooks keep a failed trial graph out
+            # this call. Inside a non-reentrant checkpoint (also a no-grad call: a reentrant layer in a
+            # non-reentrant parent) our own saved-tensor hooks keep the trial graph out of the
+            # checkpoint frame, whose recompute would otherwise save fewer tensors (detaching pack,
+            # see _detached)
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
             hooks = (
-                torch.autograd.graph.saved_tensors_hooks(_same, _same)
-                if nonreentrant
+                torch.autograd.graph.saved_tensors_hooks(_detached, _same)
+                if nonreentrant or (bit == 1 and _in_nonreentrant_checkpoint())
                 else contextlib.nullcontext()
             )
             with (
