@@ -1825,6 +1825,7 @@ export const uk = {
       memoryLabel: "Ліміт пам’яті",
       memoryDescription:
         "Максимальний обсяг пам’яті, який може зарезервувати один виклик Python або Terminal в ізольованому середовищі. Застосовується з наступного виклику. За замовчуванням: {defaultSize} GB.",
+      memoryAuto: "Авто",
       memoryLocked: "Задано змінною UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Введіть ціле число від {min} до {max}.",
       restored: "Доступ скасовано для папок: {count}.",
@@ -6277,7 +6278,7 @@ export const uk = {
     checking: "Перевірка...",
     installPrompt: "Щоб інсталювати Unsloth, натисніть «Почати».",
     getStarted: "Почати",
-    chatOnly: "Лише чат (GGUF): менша інсталяція, без навчання",
+    chatOnly: "Лише чат: менша інсталяція, без навчання",
     installLocation: "Розташування інсталяції:",
     changeLocation: "Змінити",
     useDefaultLocation: "Використати стандартне",

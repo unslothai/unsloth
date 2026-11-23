@@ -1804,6 +1804,7 @@ export const fa = {
       memoryLabel: "محدودیت حافظه",
       memoryDescription:
         "بیشترین حافظه‌ای که یک فراخوانی Python یا Terminal در سندباکس می‌تواند رزرو کند. از فراخوانی بعدی اعمال می‌شود. پیش‌فرض {defaultSize} GB است.",
+      memoryAuto: "خودکار",
       memoryLocked: "تنظیم‌شده با UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "یک عدد صحیح از {min} تا {max} وارد کنید.",
       restored: "دسترسی از {count} پوشه برداشته شد.",
@@ -6210,7 +6211,7 @@ export const fa = {
     checking: "در حال بررسی...",
     installPrompt: "برای نصب Unsloth، روی «شروع کنید» کلیک کنید.",
     getStarted: "شروع کنید",
-    chatOnly: "فقط گفتگو (GGUF): نصب کوچک‌تر، بدون آموزش",
+    chatOnly: "فقط گفتگو: نصب کوچک‌تر، بدون آموزش",
     installLocation: "محل نصب:",
     changeLocation: "تغییر",
     useDefaultLocation: "استفاده از پیش‌فرض",

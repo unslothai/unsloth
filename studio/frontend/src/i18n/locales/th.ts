@@ -1742,6 +1742,7 @@ export const th = {
       memoryLabel: "ขีดจำกัดหน่วยความจำ",
       memoryDescription:
         "หน่วยความจำสูงสุดที่การเรียกใช้ Python หรือ Terminal ในแซนด์บ็อกซ์หนึ่งครั้งจองได้ มีผลตั้งแต่การเรียกใช้ครั้งถัดไป ค่าเริ่มต้นคือ {defaultSize} GB",
+      memoryAuto: "อัตโนมัติ",
       memoryLocked: "กำหนดโดย UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "ป้อนจำนวนเต็มตั้งแต่ {min} ถึง {max}",
       restored: "นำสิทธิ์การเข้าถึงออกจาก {count} โฟลเดอร์แล้ว",
@@ -5960,7 +5961,7 @@ export const th = {
     checking: "กำลังตรวจสอบ...",
     installPrompt: "หากต้องการติดตั้ง Unsloth ให้คลิก “เริ่มต้นใช้งาน”",
     getStarted: "เริ่มต้นใช้งาน",
-    chatOnly: "แชทเท่านั้น (GGUF): ติดตั้งขนาดเล็กกว่า ไม่มีการเทรน",
+    chatOnly: "แชทเท่านั้น: ติดตั้งขนาดเล็กกว่า ไม่มีการเทรน",
     installLocation: "ตำแหน่งที่ติดตั้ง:",
     changeLocation: "เปลี่ยน",
     useDefaultLocation: "ใช้ค่าเริ่มต้น",

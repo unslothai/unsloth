@@ -1814,6 +1814,7 @@ export const id = {
       memoryLabel: "Batas memori",
       memoryDescription:
         "Memori maksimum yang dapat dicadangkan oleh satu panggilan Python atau Terminal dalam sandbox. Berlaku mulai panggilan berikutnya. Default-nya {defaultSize} GB.",
+      memoryAuto: "Otomatis",
       memoryLocked: "Diatur oleh UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Masukkan bilangan bulat dari {min} hingga {max}.",
       restored: "Akses dicabut dari {count} folder.",
@@ -6235,7 +6236,7 @@ export const id = {
     checking: "Memeriksa...",
     installPrompt: "Untuk menginstal Unsloth, klik Mulai.",
     getStarted: "Mulai",
-    chatOnly: "Hanya chat (GGUF): instalasi lebih kecil, tanpa pelatihan",
+    chatOnly: "Hanya chat: instalasi lebih kecil, tanpa pelatihan",
     installLocation: "Lokasi instalasi:",
     changeLocation: "Ubah",
     useDefaultLocation: "Gunakan default",

@@ -1171,7 +1171,8 @@ def test_compare_pane_non_gguf_falls_back_to_app_default():
     assert (
         "const effectiveMaxSeqLength = savedContextPin(ownConfig) ?? "
         "unpinnedLoadContext( targetIsGguf, "
-        "isServedByMlx(targetIsGguf, platform.deviceType, platform.chatOnlyReason), "
+        "isServedByMlx( targetIsGguf, platform.deviceType, platform.chatOnlyReason, "
+        "platform.mlxInference, ), "
         "DEFAULT_MAX_SEQ_LENGTH, );" in src
     )
     assert "(isGgufLoad ? 0 : maxSeqLength)" not in src
@@ -1181,10 +1182,16 @@ def test_compare_pane_non_gguf_falls_back_to_app_default():
 def test_every_load_path_asks_the_backend_before_it_asks_for_a_window():
     """Load paths take the serving backend and its reported window, never a literal or raw context field."""
     load_paths = ("chat/hooks/use-chat-model-runtime.ts", "chat/api/chat-adapter.ts")
-    derived_backend = r"isMlx: isServedByMlx\(\s*[\w.=\" ]+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,?\s*\)"
+    derived_backend = (
+        r"isMlx: isServedByMlx\(\s*[\w.=\" ]+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,"
+        r"\s*platform\.mlxInference,?\s*\)"
+    )
     # A name bound to that same call counts; the binding is checked below.
     hoisted = r"isMlx: (\w+),"
-    hoist_source = r"const {name} = isServedByMlx\(\s*\w+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,?\s*\);"
+    hoist_source = (
+        r"const {name} = isServedByMlx\(\s*\w+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,"
+        r"\s*platform\.mlxInference,?\s*\);"
+    )
     for name in load_paths:
         src = _read(f"features/{name}")
         calls = src.count("resolveLoadMaxSeqLength({") + src.count("retainedContextPin({")
@@ -1250,8 +1257,8 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "update(contextPinPatch(value, pinsContextLength, config.npuPrefillChunkLen))" in page
     # "Anything not GGUF" would relabel CUDA; the platform decides.
     assert (
-        "isServedByMlx(\n    target.isGguf,\n    platformDeviceType,\n    platformChatOnlyReason,\n  )"
-        in page
+        "isServedByMlx(\n    target.isGguf,\n    platformDeviceType,\n    platformChatOnlyReason,\n"
+        "    platformMlxInference,\n  )" in page
     )
     assert "const targetIsMlx = servedByMlx;" in page
     # Both props are optional, so dropping either still typechecks.
@@ -3635,11 +3642,12 @@ def test_the_default_is_preflighted_before_the_managed_download():
 
 
 def test_cached_non_gguf_rows_get_the_chat_only_platform_gate():
-    """The picker hides them outright there (visibleCachedModelRows)."""
+    """The picker hides them there (visibleCachedModelRows), except MLX repos on an MLX-serving Mac."""
     src = _read("features/chat/api/chat-adapter.ts")
-    gate = src.split("function cachedModelsRunOnThisPlatform", 1)[1].split("\n}", 1)[0]
-    assert "return platform.capabilitiesUnknown() || !platform.isChatOnly();" in gate
-    assert "cachedModelsRunOnThisPlatform()\n          ? allModelRepos.filter(" in src
+    gate = src.split("function cachedModelRunsOnThisPlatform", 1)[1].split("\n}", 1)[0]
+    assert "if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;" in gate
+    assert "platform.mlxInference === true" in gate
+    assert "isChattableCachedRepo(repo) && cachedModelRunsOnThisPlatform(repo)" in src
     assert "allGgufRepos.filter(isChattableCachedRepo)," in src
 
 

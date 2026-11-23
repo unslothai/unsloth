@@ -1835,6 +1835,7 @@ export const nl = {
       memoryLabel: "Geheugenlimiet",
       memoryDescription:
         "Maximale hoeveelheid geheugen die één Python- of Terminal-aanroep in de sandbox kan reserveren. Geldt vanaf de volgende aanroep. Standaard is {defaultSize} GB.",
+      memoryAuto: "Automatisch",
       memoryLocked: "Ingesteld door UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Voer een geheel getal in van {min} tot {max}.",
       restored: "Toegang tot {count} mappen verwijderd.",
@@ -6291,7 +6292,7 @@ export const nl = {
     checking: "Controleren...",
     installPrompt: "Klik op Aan de slag om Unsloth te installeren.",
     getStarted: "Aan de slag",
-    chatOnly: "Alleen chat (GGUF): kleinere installatie, geen training",
+    chatOnly: "Alleen chat: kleinere installatie, geen training",
     installLocation: "Installatielocatie:",
     changeLocation: "Wijzigen",
     useDefaultLocation: "Standaard gebruiken",

@@ -10049,6 +10049,9 @@ def _default_qat_linear_filter(module, fqn):
         from torchao.quantization.quant_api import _is_linear
     except Exception:
         return isinstance(module, torch.nn.Linear)
+    if not callable(_is_linear) or isinstance(_is_linear, type):
+        # A torchao stub (unsloth_zoo's sentinel classes when torchao is absent) is not the filter.
+        return isinstance(module, torch.nn.Linear)
     return _is_linear(module, fqn)
 
 
