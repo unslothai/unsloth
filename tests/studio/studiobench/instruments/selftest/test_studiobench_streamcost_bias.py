@@ -217,8 +217,8 @@ def test_reasoning_and_content_are_both_counted(browser):
 
 
 def test_chat_run_events_are_counted_like_plain_chunks(browser):
-    """Connected-model chats stream through chat runs, whose SSE frames wrap the OpenAI chunk as
-    {seq, type: "chunk", payload}; their non-chunk events carry no delta and add nothing."""
+    """Connected-model chats stream through chat runs: each SSE block starts with id: and event: lines,
+    and its data wraps the OpenAI chunk as {seq, type: "chunk", payload}. Non-chunk events add nothing."""
     page, _ = _page(browser, WINDOWED_ELEMENTS)
     try:
         got = page.evaluate("""
@@ -226,7 +226,8 @@ def test_chat_run_events_are_counted_like_plain_chunks(browser):
             const enc = new TextEncoder();
             const dec = new TextDecoder();
             const before = window.__sb.streamcost.wireStats();
-            const event = (type, payload) => 'data: ' + JSON.stringify(
+            // The wire format of /api/inference/chat-runs/{id}/events: id and event lines precede the data.
+            const event = (type, payload) => "id: 1\\nevent: " + type + "\\ndata: " + JSON.stringify(
               { seq: 1, type, payload, createdAt: 0 }) + "\\n\\n";
             dec.decode(enc.encode(
               event("chunk", { choices: [{ index: 0, delta: { content: "abcdefg" } }] })
