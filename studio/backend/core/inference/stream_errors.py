@@ -34,8 +34,7 @@ _TOOL_PARSE_REJECTIONS = (
     "failed to parse tool call arguments as json",
 )
 
-# llama-server failing on an attached image or audio clip. The bare text says nothing a user can act on,
-# and a pre-stream 500 carrying it was redacted to "An internal error occurred".
+# llama-server failing on an attached image or audio clip.
 _MEDIA_FAILURE_MARKERS = (
     "failed to process mtmd chunk",
     "failed to load image or audio file",

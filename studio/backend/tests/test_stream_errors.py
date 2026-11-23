@@ -384,11 +384,9 @@ class TestARefusalBeforeTheReplyStartsKeepsItsCause:
 
 
 class TestAnImageTheServerCouldNotProcessNamesTheCause:
-    """llama-server answers an image it cannot fit or encode with "failed to process mtmd chunk": bare
-    mid-stream, redacted to "An internal error occurred" when it came back as a 500 before the first token."""
+    """An image the server cannot fit or encode yields a bare "failed to process mtmd chunk"."""
 
     MTMD = "failed to process mtmd chunk"
-    # The wording a llama-server that tells a full KV cache apart sends for the same failure.
     MTMD_NO_KV = "failed to process mtmd chunk: Context size has been exceeded."
     CLIENT_CONTEXT_LIMIT_MARKERS = (
         TestTheStarvationTextDoesNotReadAsAContextLimitOnTheClient.CLIENT_CONTEXT_LIMIT_MARKERS

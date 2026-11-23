@@ -409,8 +409,7 @@ def _friendly_error(exc: Exception) -> str:
         except ValueError:
             pass
         return _friendly_upstream_error(body[:500])
-    # Other 5xx stay redacted, except the media and KV failures llama-server reports before the first
-    # token (an image that cannot be decoded), which are fixed strings that name no path.
+    # Other 5xx stay redacted; media/KV failures are fixed strings that name no path.
     server_error = _LLAMA_SERVER_ERROR_RE.match(msg)
     if server_error:
         try:
