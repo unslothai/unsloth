@@ -565,7 +565,7 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 	assert.match(lens, /for \(const pseudo of \[null, "::before"\]\)/);
 	assert.match(lens, /const fill = !glass \|\| painted\(own\) \? own : glass;/);
 	// The copy blurs as much as the surface it sits in, not the shared --glass-blur.
-	assert.match(lens, /if \(fillCopy\) fillCopy\.style\.filter = blur \|\| "none";/);
+	assert.match(lens, /if \(fillCopy\) fillCopy\.style\.filter = blur \|\| \(host\.hasAttribute\(GLASS_MOVING_ATTR\) \? "none" : ""\);/);
 	// Outside the workspace the wash stops at <body>, whose opaque fill would hide the copy.
 	assert.match(lens, /node && node !== workspace && node !== document\.body;/);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
@@ -690,9 +690,23 @@ test("legacy WebKitGTK's sidebar glass takes the lens instead of the masked fram
 	assert.match(css, /webkit-legacy-compositor\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-windows-glass-frame\] > \[data-slot="sidebar-inner"\] \{[^}]*backdrop-filter: blur/);
 });
 
+test("a lens never portals into a text-only host, and the title tooltip wraps its text", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /if \(width < 8 \|\| height < 8 \|\| textOnly\(el\)\) return false;/);
+	const tip = readFileSync(new URL("../src/components/ui/title-tooltip.tsx", import.meta.url), "utf8");
+	assert.match(tip, /<span>\{shown\.text\}<\/span>/);
+});
+
+test("the composer keeps its lens without a backdrop filter, as on main (Transparent)", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /return el\.matches\(LENS_CLEAR_HOSTS\) \|\| el\.hasAttribute\(GLASS_MOVING_ATTR\) \|\| glassLayer\(el\) !== null;/);
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /html\[data-glass-clear\] #root \* \{\s*-webkit-backdrop-filter: none !important;/);
+});
+
 test("a lens copy drops its blur while its host is moving, instead of falling back to the CSS blur", () => {
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
-	assert.match(lens, /if \(fillCopy\) fillCopy\.style\.filter = blur \|\| "none";/);
+	assert.match(lens, /if \(fillCopy\) fillCopy\.style\.filter = blur \|\| \(host\.hasAttribute\(GLASS_MOVING_ATTR\) \? "none" : ""\);/);
 	assert.match(lens, /motion\.observe\(host, \{ attributes: true, attributeFilter: \[GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR\] \}\);/);
 	assert.match(lens, /motion\.disconnect\(\);/);
 });

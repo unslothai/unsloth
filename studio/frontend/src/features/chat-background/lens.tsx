@@ -19,11 +19,16 @@ function glassLayer(el: HTMLElement): CSSStyleDeclaration | null {
   return null;
 }
 
+// React rewrites a text-only element with textContent, which would delete a portaled lens.
+const textOnly = (el: HTMLElement) =>
+  [...el.childNodes].every((n) => n.nodeType === Node.TEXT_NODE || (n as Element).classList?.contains("glass-lens"));
+
 // Only surfaces drawing glass right now: Glass menus off, an opaque sheet or a split card has no backdrop filter.
+// The composer keeps its lens without one, as on main (Transparent forces backdrop-filter off).
 function drawsGlass(el: HTMLElement): boolean {
   const { width, height } = el.getBoundingClientRect();
-  if (width < 8 || height < 8) return false;
-  return el.hasAttribute(GLASS_MOVING_ATTR) || glassLayer(el) !== null;
+  if (width < 8 || height < 8 || textOnly(el)) return false;
+  return el.matches(LENS_CLEAR_HOSTS) || el.hasAttribute(GLASS_MOVING_ATTR) || glassLayer(el) !== null;
 }
 
 const painted = (s: CSSStyleDeclaration) =>
@@ -165,7 +170,7 @@ function Lens({
         copy.style.transform = `scale(${scale})`;
       }
       // A moving host drops its backdrop filter (glass-motion.ts); the copy drops its blur with it instead of the CSS fallback.
-      if (fillCopy) fillCopy.style.filter = blur || "none";
+      if (fillCopy) fillCopy.style.filter = blur || (host.hasAttribute(GLASS_MOVING_ATTR) ? "none" : "");
       if (wash) {
         const fills: string[] = [];
         for (
