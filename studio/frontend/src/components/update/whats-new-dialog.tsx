@@ -180,20 +180,11 @@ function ReleaseHistory({
               >
                 {dateFormat.format(new Date(entry.date))}
               </time>
-              <div
-                className={cn(
-                  "mt-4 grid gap-3",
-                  entry.features.length > 1 && "sm:grid-cols-2",
-                )}
-              >
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 {entry.features.map((feature) => (
                   <figure
                     key={feature.title}
-                    className={cn(
-                      "overflow-hidden rounded-lg",
-                      WASH,
-                      entry.features.length === 1 && "sm:flex sm:items-center",
-                    )}
+                    className={cn("overflow-hidden rounded-lg", WASH)}
                   >
                     <img
                       src={feature.image}
@@ -201,12 +192,7 @@ function ReleaseHistory({
                         event.currentTarget.style.display = "none";
                       }}
                       alt={feature.alt}
-                      className={cn(
-                        "block w-full object-cover",
-                        entry.features.length > 1
-                          ? "h-[7.5rem]"
-                          : "aspect-[20/7] sm:w-[58%] sm:shrink-0",
-                      )}
+                      className="block aspect-[20/7] w-full object-cover"
                     />
                     <figcaption className="p-3">
                       <h3 className="font-heading text-sm font-semibold">
