@@ -285,8 +285,8 @@ def _run_join_active(rank, res, bc):
 def _run_compiled(rank, res, bc):
     # A user torch.compile of the wrapped module (no Unsloth blocks inside, so its session refuses
     # graphs): compiled after an eager step, before any step, fullgraph off, and a compiled function
-    # calling ddp.module directly. The agreement hook must trace away (no graph break, no
-    # collective in a graph) and every rank must keep the same vote schedule.
+    # calling ddp.module directly. The agreement hook on the DDP wrapper stays eager (no graph
+    # break, no collective in a graph) and every rank must keep the same vote schedule.
     _real_compile = torch.compile
     votes = [0]
 
@@ -335,6 +335,62 @@ def _run_compiled(rank, res, bc):
     dist.all_reduce = _ALL_REDUCE
 
 
+def _run_rank_local(rank, res, bc):
+    # The same DDP model and data on both ranks, with one rank-local difference each: rank 1 alone
+    # compiles ddp.module, or rank 0 alone cannot allocate a tensor while it builds its vote. Both
+    # ranks must still enter the same collectives, so DDP's gradient all_reduce stays in step.
+    votes = [0]
+
+    def all_reduce_spy(*args, **kwargs):
+        if sys._getframe(1).f_globals.get("__name__") == bc.__name__:
+            votes[0] += 1
+        return _ALL_REDUCE(*args, **kwargs)
+
+    def failing(real):
+        def alloc(*args, **kwargs):
+            if sys._getframe(1).f_code.co_name == "_auto_ddp_agree":
+                raise torch.OutOfMemoryError("vote allocation failed on this rank only")
+            return real(*args, **kwargs)
+
+        return alloc
+
+    names = ("tensor", "zeros", "empty", "full", "ones")
+    real = {n: getattr(torch, n) for n in names}
+    dist.all_reduce = all_reduce_spy
+    try:
+        for name in ("one_rank_compiled", "one_rank_vote_alloc_fails"):
+            torch._dynamo.reset()
+            votes[0] = 0
+            model = torch.nn.parallel.DistributedDataParallel(torch.nn.Linear(8, 8, bias = False))
+            session = bc._AUTO_DDP_SESSIONS.get(model)
+            if name == "one_rank_compiled" and rank == 1:
+                model.module.compile(backend = "eager", fullgraph = True)
+            if name == "one_rank_vote_alloc_fails" and rank == 0:
+                for n in names:
+                    setattr(torch, n, failing(real[n]))
+            grads, error = [], None
+            try:
+                for step in range(3):
+                    model.module.weight.grad = None
+                    model(torch.full((4, 8), rank + 1.0)).sum().backward()
+                    grads.append(model.module.weight.grad.sum().item())
+            except Exception as e:
+                error = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
+            finally:
+                for n in names:
+                    setattr(torch, n, real[n])
+            res[name] = {
+                "error": error,
+                "grads": grads,
+                "votes": votes[0],
+                "schedule": (session["count"], session["next"], session["done"])
+                if session
+                else None,
+            }
+    finally:
+        dist.all_reduce = _ALL_REDUCE
+
+
 def _worker(
     rank,
     world,
@@ -368,6 +424,8 @@ def _worker(
             _run_join_active(rank, res, bc)
         elif group == "compiled":
             _run_compiled(rank, res, bc)
+        elif group == "rank_local":
+            _run_rank_local(rank, res, bc)
         else:
             _run_main(rank, res, bc)
         dist.barrier()
@@ -611,11 +669,27 @@ def test_rank_that_never_finishes_probing_keeps_graphs_off_everywhere():
 
 
 @pytest.mark.parametrize("name", ["after_eager", "before_any", "graph_break_free", "direct_module"])
-def test_user_compile_of_the_ddp_module_traces_the_hook_away(name):
+def test_user_compile_of_the_ddp_module_keeps_one_vote_schedule(name):
     r = _results("compiled")
     s0, s1 = r[0][name], r[1][name]
     for s in (s0, s1):
         assert s["error"] is None, s
         assert s["graph_breaks"] == 0, s
-        assert s["votes"] == 0, s  # no collective of ours in or around a compiled forward
+        # The wrapper's hook runs eagerly around a compiled ddp.module: at most one vote, a veto
+        # (no Unsloth blocks here, or a compiled module), then none; never a collective in a graph.
+        assert s["votes"] <= 1, s
+        assert s["schedule"] is not None and s["schedule"][2], s
+    assert s0["votes"] == s1["votes"], (s0, s1)
+    assert s0["schedule"] == s1["schedule"], (s0, s1)
+
+
+@pytest.mark.parametrize("name", ["one_rank_compiled", "one_rank_vote_alloc_fails"])
+def test_rank_local_compile_or_vote_failure_keeps_the_collectives_aligned(name):
+    r = _results("rank_local")
+    s0, s1 = r[0][name], r[1][name]
+    for s in (s0, s1):
+        assert s["error"] is None, (s0, s1)
+        # 64 weights, each 4 rows of (1 + 2) / 2 ranks: DDP's gradient all_reduce ran in step.
+        assert s["grads"] == [384.0] * 3, (s0, s1)
+    assert s0["votes"] == s1["votes"] > 0, (s0, s1)
     assert s0["schedule"] == s1["schedule"], (s0, s1)

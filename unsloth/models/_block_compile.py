@@ -589,8 +589,8 @@ def _auto_off(auto, why):
 # Without it any process group keeps graphs off and nothing below runs (no hook, no collective).
 # With it, every DDP wrapper is enrolled when it is built (every rank builds it together: its
 # constructor runs collectives), so every rank has the agreement hook before its first forward,
-# whatever its data does. The hook sits on the wrapped module, so it runs inside the DDP forward after
-# DDP's own pre-forward collectives (bucket rebuild, buffer broadcast, join notice). On grad-synced
+# whatever its data does. The hook sits on the DDP wrapper, so it runs eagerly before DDP's own forward
+# on every rank, also when one rank compiled ddp.module (a vote of 0 there). On grad-synced
 # forwards (the forwards DDP itself needs every rank to run) it runs one all_reduce(MIN) of every rank's
 # verdict (0 off, 1 still probing, 2 ready, 3 on), eagerly. Each rank probes alone but never turns
 # graphs on alone: they go on in the forward where every rank reported ready, and any rank's veto turns
@@ -769,6 +769,15 @@ def _auto_ddp_enroll(ddp):
     except Exception:
         why = why or "DDP layout unavailable"
         device = torch.device("cpu")
+    try:
+        import torch.distributed as dist
+        rank = dist.get_rank(group)
+        # The vote buffer is allocated here, not in a forward: a rank-local allocation failure at vote
+        # time would leave that rank out of the collective the others are already waiting in.
+        vote = torch.zeros(4, dtype = torch.int64, device = device)
+    except Exception:
+        why = why or "DDP layout unavailable"
+        rank, vote = None, None
     session = {
         "owner": weakref.ref(ddp),
         "auto": auto,
@@ -777,6 +786,8 @@ def _auto_ddp_enroll(ddp):
         "owned": weakref.WeakKeyDictionary(),  # layer -> its last forward call ran in the owner
         "why": why,
         "device": device,
+        "rank": rank,
+        "vote": vote,
         "count": 0,
         "next": 1,
         "interval": 1,
@@ -784,8 +795,13 @@ def _auto_ddp_enroll(ddp):
         "switching": False,
     }
     _AUTO_DDP_SESSIONS[ddp] = session
-    if _auto_ddp_pre_forward not in ddp.module._forward_pre_hooks.values():
-        ddp.module.register_forward_pre_hook(_auto_ddp_pre_forward)
+    # On the DDP wrapper, not on ddp.module: a torch.compile of ddp.module (ddp.module.compile(),
+    # DDP(torch.compile(model))) on one rank only would trace a module hook away there while an eager
+    # rank votes, so the ranks would enter different collectives. The wrapper's own call stays eager
+    # under any compile of the module it wraps, so every rank reaches this hook; a compiled module is
+    # a vote of 0 there.
+    if _auto_ddp_pre_forward not in ddp._forward_pre_hooks.values():
+        ddp.register_forward_pre_hook(_auto_ddp_pre_forward)
     previous = auto["ddp"]
     auto["ddp"] = session  # a previous session retires: it votes 0 at its next forward, if any
     if previous:
@@ -804,25 +820,27 @@ def _join_enabled(ddp):
     return bool(getattr(getattr(ddp, "_join_config", None), "enable", False))
 
 
-def _auto_ddp_pre_forward(module, args):
-    # Registered on ddp.module; a plain function so torch.save(ddp) can pickle the hook. A user
-    # torch.compile of the DDP model, of ddp.module or of a function calling either traces this hook:
-    # it traces to nothing (no call into the compiler-disabled step, so fullgraph=True still works and
+def _auto_ddp_pre_forward(ddp, args):
+    # Registered on the DDP wrapper; a plain function so torch.save(ddp) can pickle the hook. It runs
+    # before DDP's own forward, eagerly, also when ddp.module is compiled (a vote of 0 there). A user
+    # torch.compile of the DDP model itself or of a function calling it traces this hook: it traces to
+    # nothing (no call into the compiler-disabled step, so fullgraph=True still works and
     # fullgraph=False gets no graph break), and a forward that runs a compiled graph never runs it.
     # Run eagerly under the compiler's callback (a recompile or cache-limit fallback, which can differ
-    # by rank), it only vetoes locally. So no compiled forward counts or votes on any rank, whether
-    # that rank traced, replayed or fell back, and the ranks keep one schedule; the local veto reaches
-    # the other ranks at the next eager vote, if there is one.
+    # by rank), it only vetoes locally. So no compiled DDP forward counts or votes on any rank,
+    # whether that rank traced, replayed or fell back, and the ranks keep one schedule; the local veto
+    # reaches the other ranks at the next eager vote, if there is one.
     if torch.compiler.is_compiling():
         return
-    _auto_ddp_step(module, _dynamo_callback_active())
+    _auto_ddp_step(ddp, _dynamo_callback_active())
 
 
 @_DISABLE_DYNAMO
-def _auto_ddp_step(module, compiling):
-    ddp = _DDP._get_active_ddp_module() if _DDP is not None else None
-    if ddp is None or ddp.module is not module:
-        return  # a direct ddp.module(...) call: no DDP collectives, no vote
+def _auto_ddp_step(ddp, compiling):
+    if getattr(ddp, "_delay_all_reduce_all_params", False) or getattr(
+        ddp, "_use_python_reducer", False
+    ):
+        return  # no DDP forward of ours to own (the same on every rank): no vote
     session = _AUTO_DDP_SESSIONS.get(ddp)
     if session is None or session["done"]:
         return
@@ -864,6 +882,8 @@ def _auto_ddp_agree(auto, session, ddp, live):
     if live:
         try:
             why = session["why"] or _auto_cp_reason()
+            if why is None and _compiled_inside_ddp(ddp):
+                why = "torch.compile inside the DDP wrapper"
             if why is not None:
                 _auto_ddp_veto(auto, why)
         except Exception:
@@ -877,12 +897,19 @@ def _auto_ddp_agree(auto, session, ddp, live):
             flag = 2
         else:
             flag = 1
+    # Outside the try below: a rank-local failure here raises on that rank instead of being taken
+    # as a finished session, which would skip the collective the other ranks already entered.
+    group = ddp.process_group
+    world = group.size()
+    rank = session["rank"]
+    vote = session["vote"]
+    if rank is None:
+        rank = dist.get_rank(group)
+    if vote is None:
+        vote = session["vote"] = torch.zeros(4, dtype = torch.int64, device = session["device"])
+    for i, value in enumerate((flag * world + rank, count, -count, -flag)):
+        vote[i] = value  # in place: no allocation at vote time
     try:
-        group = ddp.process_group
-        world, rank = group.size(), dist.get_rank(group)
-        vote = torch.tensor(
-            [flag * world + rank, count, -count, -flag], dtype = torch.int64, device = session["device"]
-        )
         dist.all_reduce(vote, op = dist.ReduceOp.MIN, group = group)
         low, lowest, negative_highest, negative_top = vote.tolist()
     except Exception:
