@@ -74,7 +74,7 @@ def _portable() -> bool:
 
 
 def _fold_allowed() -> bool:
-    # False while a decoder whose strip decode already failed runs its torch-ops retry (``full_map_decode``)
+    # False on a decoder whose strip decode or fold already failed (``full_map_decode``)
     return bool(getattr(_LOCAL, "fold", True))
 
 
@@ -736,10 +736,11 @@ def _upsample(
     """(conv(nearest_2x(x)) in strips of input rows, the conv bias still to add). The 2x rows are written straight
     into the padded strip; ``defer_bias``: cuDNN writes the bias-free conv into the output and the bias is returned
     for the next stage to fold in, else the bias is added here. On the fold's cards one transposed conv replaces both
-    (``UPSAMPLE_FOLD_ENV``), except on a decoder whose strip decode failed (``full_map_decode``'s retry), so a
-    failing fold is not run again before the tiles take over."""
+    (``UPSAMPLE_FOLD_ENV``), except on a decoder whose strip decode or fold failed (``full_map_decode``'s retry and
+    later decodes), so a failing fold is not run again."""
     conv = up.conv
     if _fold_allowed() and _fold_on(x) and _fold_ok(conv, x):
+        _LOCAL.folded = True
         out = _fold_upsample(conv, x, None if defer_bias else conv.bias, full_max = _fold_full_max(x))
         return out, (conv.bias if defer_bias else None)
     _, c, h, w = x.shape
@@ -889,7 +890,8 @@ def _full_map_run(
 ) -> Any:
     torch = fused._torch()
     prev = (getattr(_LOCAL, "portable", False), getattr(_LOCAL, "fold", True))
-    _LOCAL.portable, _LOCAL.fold = portable, fold
+    # ``folded`` stays set after the run: whether a failure happened with the fold engaged
+    _LOCAL.portable, _LOCAL.fold, _LOCAL.folded = portable, fold, False
     try:
         # The mid block attends over every latent: where no fused SDPA takes head dim 512 (ROCm, MPS), Studio's
         # chunked mode bounds the score matrix, else the math path holds all of it (65,536 tokens at 2048 px: 8 GiB per bf16 copy).
@@ -917,15 +919,22 @@ def full_map_decode(vae: Any, z: Any) -> Any:
     if getattr(vae, "post_quant_conv", None) is not None:
         z = vae.post_quant_conv(z.to(vae.post_quant_conv.weight.dtype))
     z = z.to(dtype)
-    # After a strip-decode failure: torch ops without the fold (it may be what failed). Portable hosts keep the fold.
+    # After a strip-decode failure: torch ops, not the tiles. After a strip-decode or fold failure: no fold (it may be
+    # what failed), from then on. Portable hosts keep the fold until it fails on them.
     failed = decoder.__dict__.get("_unsloth_vae_strips_failed", False)
     kernels = _kernels_ok(decoder, z) and not failed
+    fold = not (failed or decoder.__dict__.get("_unsloth_vae_fold_failed", False))
     try:
-        out = _full_map_run(decoder, z, portable = not kernels, fold = not failed)
+        out = _full_map_run(decoder, z, portable = not kernels, fold = fold)
     except Exception as exc:  # noqa: BLE001
-        if not kernels or fused._is_oom(exc):
+        if fused._is_oom(exc):
             raise
-        decoder._unsloth_vae_strips_failed = True
+        if kernels:
+            decoder._unsloth_vae_strips_failed = True
+        elif getattr(_LOCAL, "folded", False):
+            decoder._unsloth_vae_fold_failed = True
+        else:
+            raise
         out = None
     if out is None:
         out = _full_map_run(decoder, z, portable = True, fold = False)
