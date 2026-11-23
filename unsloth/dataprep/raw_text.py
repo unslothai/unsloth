@@ -175,18 +175,44 @@ class RawTextDataLoader:
             else:
                 return [text + eos_token]
 
+        def cut(idx, step = -1):
+            # Text chunks: move a cut inside a multi-token character (U+FFFD on both sides) to its edge, at most 3 tokens.
+            if return_tokenized:
+                return idx
+            decode = self.tokenizer.decode
+            for at in range(idx, idx + 4 * step, step):
+                if not 0 < at < len(tokens):
+                    return at
+                lo = max(0, at - 4)
+                try:
+                    left, right = decode(tokens[lo:at]), decode(tokens[at : at + 4])
+                    # Literal U+FFFD in the corpus decodes the same split or joined.
+                    if not (left.endswith("\ufffd") and right.startswith("\ufffd")) or (
+                        left + right == decode(tokens[lo : at + 4])
+                    ):
+                        return at
+                except UnicodeDecodeError:  # errors="strict" tokenizers: keep the plain cut.
+                    return at
+            return idx
+
         bounds = []
         start_idx = 0
         while True:
             end_idx = min(start_idx + chunk_size, num_tokens)
+            end_idx = max(cut(end_idx), start_idx + 1)
             bounds.append([start_idx, end_idx])
             if end_idx == num_tokens:
                 break
-            start_idx += chunk_size - stride
+            next_idx = cut(end_idx - stride)
+            if next_idx <= start_idx:
+                next_idx = min(cut(end_idx - stride, 1), end_idx)
+            start_idx = next_idx if next_idx > start_idx else end_idx
 
         # Stride 0 with an exact multiple leaves a lone-EOS chunk; end a full window at EOS so EOS keeps context and no token loses its label.
         if reserve_eos and len(bounds) > 1 and bounds[-1][0] == len(tokens):
-            bounds[-1][0] = num_tokens - chunk_size
+            # Forward keeps the window within chunk_size.
+            first = cut(num_tokens - chunk_size, 1)
+            bounds[-1][0] = first if first < len(tokens) else num_tokens - chunk_size
 
         chunks = []
         for i, (start_idx, end_idx) in enumerate(bounds):
