@@ -441,8 +441,7 @@ def _login_failure_detail() -> str:
     return f"Incorrect password. To reset it, run this in your terminal, {where}: {command}"
 
 
-# PBKDF2 off the event loop, so unauthenticated guesses cannot stall every signed-in client; a
-# small pool of its own, so they cannot hold the default executor the other routes share either.
+# PBKDF2 off the event loop, in its own pool so guesses cannot hold the shared default executor.
 _login_check_pool = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "auth-login")
 
 
@@ -477,8 +476,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             headers = {"Retry-After": str(blocked_for)},
         )
 
-    # Counted before the hash is awaited, so a burst cannot all pass the check above while the first
-    # guesses are still hashing; a success clears it below, as it cleared a failure before.
+    # Counted before awaiting the hash so a burst cannot all pass the check above; success clears it.
     _record_login_failure(key)
     record = await asyncio.get_running_loop().run_in_executor(
         _login_check_pool, _check_login, username, payload.password
