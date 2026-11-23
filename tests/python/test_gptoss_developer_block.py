@@ -68,9 +68,7 @@ DEVELOPER_BLOCK = "<|start|>developer<|message|># Instructions\n\nBe helpful.\n\
 )
 def test_developer_message_has_blank_lines_before_end(name, messages):
     tokenizer = _tokenizer(name)
-    out = tokenizer.apply_chat_template(
-        messages, tokenize = False, add_generation_prompt = False
-    )
+    out = tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = False)
     assert DEVELOPER_BLOCK in out
     assert "Be helpful.<|end|>" not in out
 
@@ -96,8 +94,6 @@ def test_plain_conversation_renders(name):
         {"role": "assistant", "content": "Hello!"},
     ]
     tokenizer = _tokenizer(name)
-    out = tokenizer.apply_chat_template(
-        messages, tokenize = False, add_generation_prompt = False
-    )
+    out = tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = False)
     assert "<|start|>developer<|message|>" not in out
     assert out.endswith("<|return|>")
