@@ -257,13 +257,11 @@ def test_keeps_float32_only_where_from_pretrained_does(tmp_path):
         state["scale_shift_table"] = state["scale_shift_table"].float()
 
     path, cfg_dir, _ = _write_hosted(tmp_path, mutate = widen)
-    # Without a keep-list entry a float32 dense tensor is not the bf16 build: refused, as before.
     assert _load(path, cfg_dir) is None
 
     class Kept(CLS):
         _keep_in_fp32_modules = ["scale_shift_table"]
 
-    # The video callers keep the strict bf16 rule; only the image caller opts in.
     assert (
         NH.load_native_from_hosted(
             str(path), Kept, str(cfg_dir), spec = _spec(), family = FAMILY, logger = None

@@ -109,8 +109,6 @@ def rocm_image_hosted_int8_reason(fam: Any, requested: Optional[str], target: An
         name = getattr(fam, "name", None)
         if _hosted_convrot_file(fam) is None or not int8_convrot_enabled(name):
             return None
-        # ROCm RDNA explicit int8 on the compiled tier only (checks ROCm, bf16, UNSLOTH_NATIVE_INT8_ACT=0, the fused
-        # W8A8 kernel and the compile tier); every other host keeps its existing route.
         if rdna_explicit_int8_reason(target, name) is None:
             return None
         if not _target_arch_measured(target):
@@ -119,7 +117,6 @@ def rocm_image_hosted_int8_reason(fam: Any, requested: Optional[str], target: An
 
         if int(int8_rotation_group() or 0) <= 0:
             return None
-        # The same W8A8 rule the load applies to the runtime build (weight-only families keep the dense shards).
         return (
             rdna_explicit_w8a8_reason(target, name)
             or rdna_auto_w8a8_reason(target, name)
@@ -165,7 +162,6 @@ def load_rocm_hosted_transformer(
             scheme = TQ_INT8,
             logger = logger,
         )
-        # The ConvRot safetensors build only: a plain or pickled int8 file is not the native W8A8 build.
         base_name = os.path.basename(str(path or "")).lower()
         if not _is_convrot_safetensors(base_name):
             if path is not None and logger is not None:

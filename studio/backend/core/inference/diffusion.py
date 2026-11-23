@@ -4268,7 +4268,6 @@ def _rocm_hosted_int8_route_reason(
             rocm_image_hosted_int8_reason,
         )
 
-        # The kill switch first: UNSLOTH_ROCM_IMAGE_HOSTED_INT8=0 asks nothing else of the host.
         if not rocm_image_hosted_int8_enabled() or kind != "pipeline" or fam is None:
             return None
         if _memory_request_forces_offload(memory_mode, cpu_offload):

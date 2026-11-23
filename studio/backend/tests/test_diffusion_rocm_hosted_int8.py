@@ -104,7 +104,6 @@ def test_rocm_gate_quotes_the_family_measurement(rocm):
     assert "1.365 vs 1.418 s/step" in RH.rocm_image_hosted_int8_reason(
         _fam(FLUX3), "int8", GPU_BF16
     )
-    # Qwen-Image-2.1's explicit int8 already runs W8A8 through its AUTO row.
     assert "83.3 vs 95.1 s/image" in RH.rocm_image_hosted_int8_reason(
         _fam(QWEN21), "int8", GPU_BF16
     )
