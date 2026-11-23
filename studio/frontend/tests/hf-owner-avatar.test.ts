@@ -41,6 +41,7 @@ globalThis.fetch = (async (input: string) => {
 
 const {
   _resetAvatarCacheForTest,
+  expireHfOwnerAvatarUrl,
   readCachedHfOwnerAvatar,
   useHfOwnerAvatar,
 } = await import("../src/features/hub/lib/hf-owner-avatar.ts");
@@ -104,4 +105,26 @@ test("hits and 404s both survive a relaunch, so neither is asked for again", asy
   useHfOwnerAvatar("gone-owner", true);
   await settle();
   assert.deepEqual(requests, []);
+});
+
+test("a cached URL whose image failed is asked for again on the next mount", async () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 400));
+  const endpoint = getHfEndpoint();
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify([
+      { key: `${endpoint}::user-owner`, url: "https://cdn/dead.png", expiresAt: Date.now() + 3_600_000 },
+    ]),
+  );
+  _resetAvatarCacheForTest();
+  requests.length = 0;
+  useHfOwnerAvatar("user-owner", true);
+  await settle();
+  assert.deepEqual(requests, []);
+
+  expireHfOwnerAvatarUrl("https://cdn/dead.png");
+  useHfOwnerAvatar("user-owner", true);
+  await settle();
+  assert.equal(requests.length, 2);
+  assert.equal(readCachedHfOwnerAvatar("user-owner"), "https://cdn/user.png");
 });

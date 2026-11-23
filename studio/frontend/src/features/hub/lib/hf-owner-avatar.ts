@@ -186,6 +186,23 @@ export function readCachedHfOwnerAvatar(name: string): string | null {
   return entry?.kind === "url" ? entry.url : null;
 }
 
+/** An avatar <img> failed: expire every owner cached with that URL so the next mount asks HF again. */
+export function expireHfOwnerAvatarUrl(url: string): void {
+  let changed = false;
+  for (const entry of persisted.values()) {
+    if (entry.url !== url || entry.expiresAt === 0) continue;
+    entry.expiresAt = 0;
+    cache.set(entry.key, { kind: "url", url, expiresAt: 0 });
+    changed = true;
+  }
+  if (!changed) return;
+  try {
+    readStorage()?.setItem(STORAGE_KEY, JSON.stringify([...persisted.values()]));
+  } catch {
+    // Ignore quota or private-mode storage errors.
+  }
+}
+
 function transientMiss(name: string): AvatarCacheEntry {
   const prev = cache.get(avatarKey(name));
   const failures = prev?.kind === "miss-transient" ? prev.failures + 1 : 1;

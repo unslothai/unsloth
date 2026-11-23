@@ -4,7 +4,10 @@
 import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
 import { ownerPaletteColor } from "../lib/avatar-theme";
-import { useHfOwnerAvatar } from "../lib/hf-owner-avatar";
+import {
+  expireHfOwnerAvatarUrl,
+  useHfOwnerAvatar,
+} from "../lib/hf-owner-avatar";
 import {
   type ProviderLogo,
   resolveOwnerProviderLogo,
@@ -81,6 +84,7 @@ export function useAvatarImageRetry(url: string | null): {
     onLoad: () => setFailedImage(null),
     onError: () => {
       if (!url) return;
+      expireHfOwnerAvatarUrl(url);
       setFailedImage((current) => ({
         url,
         failures: current?.url === url ? current.failures + 1 : 1,
