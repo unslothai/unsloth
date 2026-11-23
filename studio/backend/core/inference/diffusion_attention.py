@@ -38,7 +38,6 @@ _ALIASES: dict[str, str] = {
     "flash_sdpa": "_native_flash",
 }
 ATTN_ALIASES = (ATTN_AUTO,) + tuple(dict.fromkeys(_ALIASES))
-# diffusers dispatcher names Studio runs, accepted as requests and folded onto Studio's alias for the same kernel
 _DISPATCHER_NAMES: dict[str, str] = {
     "_native_flash": "flash_sdpa",
     "_native_cudnn": "cudnn",
@@ -4127,7 +4126,6 @@ def _auto_request(requested: Any) -> bool:
         return False
 
 
-# FlashAttention picks whose closest stand-in is torch SDPA's flash kernel
 _FLASH_FAMILY = frozenset({"flash", "_flash_3_hub", "flash_4_hub"})
 
 
@@ -4138,15 +4136,10 @@ def explicit_pick_fallback(
     speed_active: bool,
     family: Any = None,
 ) -> Optional[str]:
-    """The closest kernel an explicit pick falls back to when it cannot run (flash_attn missing, Sage unusable, an
-    out-of-range arch), so the levers that never needed that kernel (strided processors, fused QK-RoPE) stay:
+    """Closest kernel for an explicit pick that cannot run, keeping strided processors / fused QK-RoPE.
 
-    - flash / flash2 / flash3 / flash4: torch SDPA's flash kernel, the same exact FlashAttention algorithm without the
-      flash_attn package or the arch-gated hub build (apply moves it to cuDNN if this torch build has no flash SDPA).
-    - sage, xformers, cudnn and the rest: Studio's automatic pick (the cuDNN upgrade), as no SDPA kernel is closer.
-
-    NVIDIA with speed on only: None for an auto / native / unsloth_int8 / unknown request, with speed off (which stays
-    bit-identical), and off NVIDIA (the automatic pick there is native SDPA or a timed ROCm flash race)."""
+    Flash family -> SDPA's flash kernel (same algorithm, no flash_attn package); others -> the automatic cuDNN pick.
+    None unless NVIDIA with speed on (speed off must stay bit-identical)."""
     try:
         alias = normalize_attention_backend(requested)
     except ValueError:
@@ -4159,7 +4152,7 @@ def explicit_pick_fallback(
         return "_native_flash"
     try:
         pick = select_attention_backend(target, None, speed_active = speed_active, family = family)
-    except Exception:  # noqa: BLE001 - no fallback: the explicit pick's own native fallback stays
+    except Exception:  # noqa: BLE001
         return None
     return pick if isinstance(pick, _AutoCudnn) else None
 

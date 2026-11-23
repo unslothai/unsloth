@@ -6524,8 +6524,7 @@ class VideoBackend:
         # raise OfflineModeIsEnabled, so the load reads the cache only, as a local_files_only one does.
         local_files_only = bool(local_files_only) or hub_reachability.offline_mode()
         int8_policy = resolve_policy(normalize_int8_attention(int8_attention))
-        # Refused here like the image backend, before this load evicts anything: inside the load an unknown name would
-        # only abort the speed layer and run the whole load unoptimised.
+        # Refuse before the load evicts anything; inside it an unknown name silently runs unoptimised.
         normalize_attention_backend(attention_backend)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         from .diffusion_nvfp4_route import ROUTE_UNCHANGED, plan_nvfp4_route
@@ -13686,7 +13685,6 @@ class VideoBackend:
             h3_torch_device = str(getattr(umem_target, "torch_device", None) or device)
             # Install after the strided processors exist, else the dispatch route takes it and loses fused q/k norm + RoPE
             h3_probe_target = types.SimpleNamespace(device = device, dtype = dtype)
-            # an explicit kernel that cannot run keeps the automatic pick (and so the strided processors + QK-RoPE)
             h3_fallback = explicit_pick_fallback(
                 umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
             )

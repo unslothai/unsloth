@@ -5133,7 +5133,6 @@ class DiffusionLoadRequest(BaseModel):
     @classmethod
     def _normalize_attention_backend(cls, value):
         # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
-        # A diffusers dispatcher name Studio runs ("_native_flash", "_native_cudnn", ...) folds onto Studio's alias.
         from core.inference.diffusion_attention import canonical_attention_request
         return canonical_attention_request(value)
 
@@ -7812,7 +7811,6 @@ class VideoLoadRequest(BaseModel):
     @classmethod
     def _normalize_attention_backend(cls, value):
         # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
-        # A diffusers dispatcher name Studio runs ("_native_flash", "_native_cudnn", ...) folds onto Studio's alias.
         from core.inference.diffusion_attention import canonical_attention_request
         return canonical_attention_request(value)
 
