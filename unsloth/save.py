@@ -1690,7 +1690,7 @@ def unsloth_save_model(
             "if you're planning to do multiple saves.\n"
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
-    elif save_method == "merged_4bit_forced":
+    elif save_method in ("merged_4bit_forced", "forced_merged_4bit"):
         save_method = "merged_4bit"
 
     save_pretrained_settings = dict(locals())
@@ -3742,23 +3742,26 @@ def upload_to_huggingface(
     if file_location is not None:
         hf_api = HfApi(token = token)
 
-        if "/" in file_location:
-            uploaded_location = file_location[file_location.rfind("/") + 1 :]
-        else:
-            uploaded_location = file_location
+        uploaded_location = os.path.basename(file_location)
 
         import glob
 
-        ftevent_files = glob.glob("*out.tfevents*", recursive = True)
+        # Only the export file's own folder, never the whole CWD tree.
+        tfevents_dir = os.path.dirname(file_location) or "."
+        ftevent_files = sorted(
+            path
+            for path in glob.glob(os.path.join(glob.escape(tfevents_dir), "*out.tfevents*"))
+            if os.path.isfile(path)
+        )
         if len(ftevent_files) > 0:
             print(
                 "Unsloth: Uploading tensorboard files... Please wait...",
-                file_location + "*out.tfevents*",
+                os.path.join(tfevents_dir, "*out.tfevents*"),
             )
             for ftevent_file in ftevent_files:
                 hf_api.upload_file(
                     path_or_fileobj = ftevent_file,
-                    path_in_repo = ftevent_file.replace(file_location, ""),
+                    path_in_repo = os.path.basename(ftevent_file),
                     repo_id = save_directory,
                     repo_type = "model",
                     commit_message = "(Trained with Unsloth)",
@@ -3773,18 +3776,25 @@ def upload_to_huggingface(
         )
 
         if create_config:
-            import json
-
-            with open("_temporary_unsloth_config.json", "w", encoding = "utf-8") as file:
-                json.dump({"model_type": model.config.model_type}, file, indent = 4)
-            hf_api.upload_file(
-                path_or_fileobj = "_temporary_unsloth_config.json",
-                path_in_repo = "config.json",
-                repo_id = save_directory,
-                repo_type = "model",
-                commit_message = "(Trained with Unsloth)",
+            import tempfile
+            temp_config = tempfile.NamedTemporaryFile(
+                mode = "w", encoding = "utf-8", suffix = ".json", delete = False
             )
-            os.remove("_temporary_unsloth_config.json")
+            try:
+                with temp_config as file:
+                    json.dump({"model_type": model.config.model_type}, file, indent = 4)
+                hf_api.upload_file(
+                    path_or_fileobj = temp_config.name,
+                    path_in_repo = "config.json",
+                    repo_id = save_directory,
+                    repo_type = "model",
+                    commit_message = "(Trained with Unsloth)",
+                )
+            finally:
+                try:
+                    os.remove(temp_config.name)
+                except OSError:
+                    pass
     return username
 
 
@@ -5452,82 +5462,85 @@ def unsloth_save_pretrained_gguf(
     old_chat_templates = [
         (obj, getattr(obj, "chat_template", None)) for obj in _tokenizer_objects(tokenizer)
     ]
-    fix_bos_token, _ = fix_tokenizer_bos_token(tokenizer)
 
-    # Resolve the imatrix (download, validate, rename *.gguf_file) up front, so a bad path or an unavailable upstream fails before the expensive merge and never reaches the IQ-quant gate.
-    imatrix_path = _resolve_imatrix_file(self, imatrix_file, token, save_directory)
-
-    # Settle ownership before a byte is written: reclamation may only take files this export made, and afterwards the directory cannot say, since a reused output directory can already hold a finished sharded save transformers neither removes nor distinguishes from ours.
+    # The BOS-stripped template is borrowed only until the save writes it; every exit restores the caller's.
     try:
-        preexisting_weights = frozenset(os.listdir(save_directory))
-    except FileNotFoundError:
-        # Nothing there yet, so everything that appears is this export's own.
-        preexisting_weights = frozenset()
-    except OSError:
-        # Provenance unreadable. Proving nothing, the reclamation takes nothing.
-        preexisting_weights = None
+        fix_bos_token, _ = fix_tokenizer_bos_token(tokenizer)
 
-    is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
-    staged_directory = None
+        # Resolve the imatrix (download, validate, rename *.gguf_file) up front, so a bad path or an unavailable upstream fails before the expensive merge and never reaches the IQ-quant gate.
+        imatrix_path = _resolve_imatrix_file(self, imatrix_file, token, save_directory)
 
-    # The flag holds for both branches that write the weights; the middle branch reuses the user's own checkpoint and clears it, whatever the caller asked for.
-    if is_peft_model:
-        print(f"Unsloth: Merging model weights to {'mxfp4' if is_gpt_oss else '16-bit'} format...")
+        # Settle ownership before a byte is written: reclamation may only take files this export made, and afterwards the directory cannot say, since a reused output directory can already hold a finished sharded save transformers neither removes nor distinguishes from ours.
         try:
-            with _hub_cache_prewarm_disabled(not _gguf_prewarm_ok):
-                unsloth_generic_save(**arguments)
+            preexisting_weights = frozenset(os.listdir(save_directory))
+        except FileNotFoundError:
+            # Nothing there yet, so everything that appears is this export's own.
+            preexisting_weights = frozenset()
+        except OSError:
+            # Provenance unreadable. Proving nothing, the reclamation takes nothing.
+            preexisting_weights = None
 
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to save/merge model: {_describe_exception(e)}"
-                f"{_offloaded_parameter_hint(self)}"
-            ) from e
-    else:
-        # Non-PEFT model: convert the loaded checkpoint in place when it still holds the weights to export.
-        original_path = getattr(self, "_unsloth_modelscope_snapshot", None) or getattr(
-            self.config, "_name_or_path", None
-        )
-        if _gguf_reuses_loaded_checkpoint(self, state_dict):
+        is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
+        staged_directory = None
+
+        # The flag holds for both branches that write the weights; the middle branch reuses the user's own checkpoint and clears it, whatever the caller asked for.
+        if is_peft_model:
             print(
-                f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
+                f"Unsloth: Merging model weights to {'mxfp4' if is_gpt_oss else '16-bit'} format..."
             )
-            # A staged copy, so the BOS-stripped tokenizer never lands in the user's checkpoint.
             try:
-                staged_directory = _stage_reused_checkpoint(original_path, gguf_directory)
-                save_directory = staged_directory
-                # Persist tokenizer fixes (BOS stripping) so the GGUF converter reads the corrected chat template.
-                if tokenizer is not None:
-                    tokenizer.save_pretrained(save_directory)
-            except BaseException:
-                _drop_staged_checkpoint(staged_directory)
-                # The caller keeps its tokenizer: the restore below is never reached.
-                for _template_owner, _old_template in old_chat_templates:
-                    _template_owner.chat_template = _old_template
-                raise
-            # The user's own checkpoint, not an intermediate: without this a save_pretrained_gguf on a tight disk would delete the model it was handed.
-            merge_is_disposable = False
-        else:
-            print("Unsloth: Model is not a PEFT model. Saving directly without LoRA merge...")
-            os.makedirs(save_directory, exist_ok = True)
-            # `gguf_directory` can point anywhere, and freeing bytes on one filesystem does nothing for a quantize pass writing to another: without this the merge could be deleted for a destination it cannot help, data gone and the export still out of space.
-            try:
-                with _internal_mtp_save():
-                    self.save_pretrained(save_directory, state_dict = state_dict)
-                _stitch_mtp_head(self, save_directory)
-                if tokenizer is not None:
-                    tokenizer.save_pretrained(save_directory)
+                with _hub_cache_prewarm_disabled(not _gguf_prewarm_ok):
+                    unsloth_generic_save(**arguments)
+
             except Exception as e:
                 raise RuntimeError(
-                    f"Failed to save model: {_describe_exception(e)}"
+                    f"Failed to save/merge model: {_describe_exception(e)}"
                     f"{_offloaded_parameter_hint(self)}"
                 ) from e
+        else:
+            # Non-PEFT model: convert the loaded checkpoint in place when it still holds the weights to export.
+            original_path = getattr(self, "_unsloth_modelscope_snapshot", None) or getattr(
+                self.config, "_name_or_path", None
+            )
+            if _gguf_reuses_loaded_checkpoint(self, state_dict):
+                print(
+                    f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
+                )
+                # A staged copy, so the BOS-stripped tokenizer never lands in the user's checkpoint.
+                try:
+                    staged_directory = _stage_reused_checkpoint(original_path, gguf_directory)
+                    save_directory = staged_directory
+                    # Persist tokenizer fixes (BOS stripping) so the GGUF converter reads the corrected chat template.
+                    if tokenizer is not None:
+                        tokenizer.save_pretrained(save_directory)
+                except BaseException:
+                    _drop_staged_checkpoint(staged_directory)
+                    raise
+                # The user's own checkpoint, not an intermediate: without this a save_pretrained_gguf on a tight disk would delete the model it was handed.
+                merge_is_disposable = False
+            else:
+                print("Unsloth: Model is not a PEFT model. Saving directly without LoRA merge...")
+                os.makedirs(save_directory, exist_ok = True)
+                # `gguf_directory` can point anywhere, and freeing bytes on one filesystem does nothing for a quantize pass writing to another: without this the merge could be deleted for a destination it cannot help, data gone and the export still out of space.
+                try:
+                    with _internal_mtp_save():
+                        self.save_pretrained(save_directory, state_dict = state_dict)
+                    _stitch_mtp_head(self, save_directory)
+                    if tokenizer is not None:
+                        tokenizer.save_pretrained(save_directory)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to save model: {_describe_exception(e)}"
+                        f"{_offloaded_parameter_hint(self)}"
+                    ) from e
+    finally:
+        # Not gated on fix_bos_token (the dedupe can raise midway); unchanged owners are skipped (read-only properties).
+        for _template_owner, _old_template in old_chat_templates:
+            if getattr(_template_owner, "chat_template", None) != _old_template:
+                _template_owner.chat_template = _old_template
 
     # Until the conversion's own finally, an error here would leave the staged copy in the GGUF folder.
     try:
-        if fix_bos_token:
-            for _template_owner, _old_template in old_chat_templates:
-                _template_owner.chat_template = _old_template
-
         if is_processor:
             tokenizer = tokenizer.tokenizer
 
@@ -7336,6 +7349,21 @@ def unsloth_generic_save(
             "if you're planning to do multiple saves.\n"
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
+    if save_method not in (
+        "lora",
+        "merged_16bit",
+        "merged_4bit_forced",
+        "forced_merged_4bit",
+        "mxfp4",
+    ):
+        raise RuntimeError(
+            f"Unsloth: save_method = {save_method!r} is not recognised. You must select one of these options when saving models:\n"
+            '"lora"               ==> This is the fastest and easiest. Just saves LoRA modules.\n'
+            '"merged_16bit"       ==> This merges LoRA weights and saves to float16. Needed for llama.cpp / GGUF.\n'
+            '"merged_4bit_forced" ==> This merges LoRA weights and saves to 4bit. Useful for DPO / inference.\n'
+            '"mxfp4"              ==> This merges LoRA weights into the mxfp4 GPT-OSS base.\n'
+            "save_pretrained_merged also takes the compressed exports, e.g. fp8, nvfp4, torchao_fp8."
+        )
     _refuse_unsaveable_text_core(model, save_method)
 
     # Rebound, not a new local: `locals()` below is forwarded as keywords.
@@ -7396,7 +7424,7 @@ def unsloth_generic_save(
     if token is None and push_to_hub:
         token = get_token()
 
-    if save_method == "merged_4bit_forced":
+    if save_method in ("merged_4bit_forced", "forced_merged_4bit"):
         save_method = "merged_4bit"
 
     # Full-finetuned models have no adapters to merge, so fall back to save_pretrained, mirroring the torchao and GGUF save paths.
@@ -7560,7 +7588,7 @@ def unsloth_generic_save(
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
 
         # merged_4bit merges into the loaded (already residual) weights, so it needs no conversion.
-        in_place = save_method in ("merged_4bit", "forced_merged_4bit")
+        in_place = save_method == "merged_4bit"
         # Under FSDP2 the gathered packed 4-bit base waits on the CPU: merge it one layer at a time on
         # its GPU first, so the merge below only unloads those layers.
         streamed = []

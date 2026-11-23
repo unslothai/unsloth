@@ -349,7 +349,9 @@ def test_the_adapter_save_method_the_router_forwards_is_one_unsloth_save_model_a
         ), f"unsloth_save_model would reject the forwarded save_method {value!r}"
 
 
-@pytest.mark.parametrize("save_method", ["merged_16bit", "mxfp4", "fp8", "merged_4bit_forced"])
+@pytest.mark.parametrize(
+    "save_method", ["merged_16bit", "mxfp4", "merged_4bit_forced", "forced_merged_4bit"]
+)
 def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
     """The merge is what changed for exactly one value of save_method and no other."""
     model = _PeftModel()
@@ -358,7 +360,9 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
     assert calls["adapter"] == []
     assert len(calls["merge"]) == 1
     assert len(calls["prewarm"]) == 1
-    assert len(calls["convert"]) == (save_method != "merged_4bit_forced")
+    assert len(calls["convert"]) == (
+        save_method not in ("merged_4bit_forced", "forced_merged_4bit")
+    )
 
 
 @pytest.mark.parametrize(
@@ -369,6 +373,8 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
         ("merged-16bit", "merged_16bit"),
         (" merged_16bit ", "merged_16bit"),
         ("Merged_4bit_Forced", "merged_4bit"),
+        ("Forced_Merged_4bit", "merged_4bit"),
+        ("forced merged 4bit", "merged_4bit"),
     ],
 )
 def test_a_respelled_merge_method_reaches_the_merge_canonically(
@@ -453,6 +459,79 @@ def test_a_respelled_merged_4bit_still_hits_the_accuracy_guard(monkeypatch, tmp_
     with pytest.raises(RuntimeError, match = "merged_4bit_forced"):
         generic_save(model, None, save_directory = str(tmp_path), save_method = spelling)
     assert calls["merge"] == []
+
+
+@pytest.mark.parametrize(
+    "save_method",
+    ["merged_16bti", "merged_4bit_gguf", "lora_16bit", "4bit", "", None, 17],
+)
+def test_an_unknown_save_method_is_refused_before_the_full_save(monkeypatch, tmp_path, save_method):
+    """A full fine-tune wrote itself for ANY save_method, however mistyped."""
+    model = _FullModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    with pytest.raises(RuntimeError, match = "must select"):
+        generic_save(model, None, save_directory = str(tmp_path), save_method = save_method)
+    assert model.saved == []
+    assert calls["merge"] == [] and calls["adapter"] == []
+
+
+@pytest.mark.parametrize(
+    "save_method",
+    ["merged_16bti", "merged_4bit_gguf", "fp8", "nvfp4", "int8", None],
+)
+def test_an_unknown_save_method_never_reaches_the_merge(monkeypatch, tmp_path, save_method):
+    """The zoo merge wrote 16-bit weights without config.json for a method it did not know."""
+    model = _PeftModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    with pytest.raises(RuntimeError, match = "must select"):
+        generic_save(model, None, save_directory = str(tmp_path), save_method = save_method)
+    assert calls["merge"] == [] and calls["adapter"] == [] and calls["prewarm"] == []
+
+
+@pytest.mark.parametrize("model_kind", ["peft", "full"])
+def test_an_unknown_save_method_is_refused_before_a_hub_push(monkeypatch, tmp_path, model_kind):
+    """The revision route creates the Hub repo first, so the check must run before it."""
+    model = _PeftModel() if model_kind == "peft" else _FullModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    with pytest.raises(RuntimeError, match = "must select"):
+        generic_save(
+            model,
+            None,
+            save_directory = "owner/model",
+            push_to_hub = True,
+            create_pr = True,
+            save_method = "merged_16bti",
+        )
+    assert calls.get("revision", []) == []
+    assert calls["merge"] == [] and calls["adapter"] == []
+
+
+@pytest.mark.parametrize(
+    "save_method",
+    ["lora", "merged_16bit", "merged_4bit_forced", "forced_merged_4bit", "mxfp4"],
+)
+def test_every_real_save_method_still_writes_a_full_finetune(monkeypatch, tmp_path, save_method):
+    model = _FullModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    generic_save(model, None, save_directory = str(tmp_path), save_method = save_method)
+    assert calls["merge"] == [] and calls["adapter"] == []
+    assert len(model.saved) == 1
+
+
+def test_unsloth_save_model_accepts_the_zoo_spelling_of_a_forced_4bit_merge(monkeypatch, tmp_path):
+    """unsloth_zoo's own error tells users to pass `forced_merged_4bit`."""
+    namespace, _ = _adapter_save_environment(monkeypatch)
+    model = _AdapterModel(lambda sink: (lambda **kwargs: sink.append(kwargs)))
+    namespace["unsloth_save_model"](model, None, str(tmp_path), save_method = "forced_merged_4bit")
+    assert len(model.saved) == 1
+
+
+def test_unsloth_save_model_still_rejects_an_unknown_save_method(monkeypatch, tmp_path):
+    namespace, _ = _adapter_save_environment(monkeypatch)
+    model = _AdapterModel(lambda sink: (lambda **kwargs: sink.append(kwargs)))
+    with pytest.raises(RuntimeError, match = "must select one of 3 options"):
+        namespace["unsloth_save_model"](model, None, str(tmp_path), save_method = "forced_4bit")
+    assert model.saved == []
 
 
 @pytest.mark.parametrize(

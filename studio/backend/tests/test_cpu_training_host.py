@@ -112,10 +112,21 @@ def test_health_reports_mlx_inference_from_the_detected_backend(monkeypatch, dev
     assert body["mlx_inference"] is expected
 
 
-def test_the_start_route_refuses_training_on_a_chat_only_mlx_mac(monkeypatch):
-    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
+@pytest.mark.parametrize(
+    "device, reason",
+    [
+        (hw.DeviceType.MLX, "no_torch"),
+        (hw.DeviceType.CPU, "no_torch"),
+        (hw.DeviceType.CPU, "mlx_unavailable"),
+    ],
+)
+def test_the_start_route_refuses_training_on_a_chat_only_mac(monkeypatch, device, reason):
+    """Whether or not MLX loaded, and while a self-heal still holds mlx_unavailable."""
+    monkeypatch.setattr(hw, "DEVICE", device)
     monkeypatch.setattr(hw, "CHAT_ONLY", True)
-    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "no_torch")
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", reason)
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
     with pytest.raises(HTTPException) as exc_info:
         _route()._validate_training_platform(_request())
     assert exc_info.value.status_code == 400

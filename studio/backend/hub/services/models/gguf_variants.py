@@ -25,7 +25,14 @@ from typing import NamedTuple, Optional
 from fastapi import HTTPException
 from loggers import get_logger
 
-from core.inference.engram_tables import cached_engram_tables, engram_table_precision, engram_tables
+from core.inference.engram_tables import (
+    cached_engram_tables,
+    cached_table_path,
+    engram_table_precision,
+    engram_tables,
+    remember_listing,
+    remembered_listing,
+)
 from hub.schemas.inventory import EngramTableDetail, GgufVariantDetail, GgufVariantsResponse
 from hub.utils import download_manifest
 from hub.utils import download_registry
@@ -69,6 +76,7 @@ from hub.services.models.common import (
     _is_mtp_drafter_path,
     _iter_gguf_paths,
 )
+from hub.utils.gguf_alternates import repo_alternate_blobs
 from hub.utils.gguf_plan import (
     GgufVariantPlan as _GgufVariantRequirement,
     build_gguf_variant_plans,
@@ -223,6 +231,68 @@ def _llama_loads_engram_tables() -> Optional[bool]:
     if not caps.get("found") or not caps.get("help_probe_ok"):
         return None
     return bool(caps.get("supports_ple"))
+
+
+def _all_shards_cached(repo_id: str, filename: Optional[str], pinned_to: Optional[str]) -> bool:
+    """Every split shard of ``filename`` in one snapshot (only the pinned one for a request that
+    names a copy): the quant still holds its own table."""
+    from core.inference.engram_tables import repo_snapshots
+    from hub.utils.gguf_lookup_tables import shard_names
+
+    if not filename:
+        return False
+    names = shard_names(filename)
+    pinned = Path(pinned_to) if pinned_to else None
+    snapshots = [pinned] if pinned is not None and pinned.is_dir() else repo_snapshots(repo_id)
+    return any(
+        all(snapshot.joinpath(*name.split("/")).is_file() for name in names)
+        for snapshot in snapshots
+    )
+
+
+def _with_remembered_engram(
+    repo_id: str,
+    response: GgufVariantsResponse,
+    pinned_to: Optional[str] = None,
+) -> GgufVariantsResponse:
+    """A cache-only answer (offline, or the Hub unreachable) names no Engram tables, which hid the
+    Engram Table row; the last Hub answer fills them in, with ``downloaded`` read from disk."""
+    if response.engram_tables or not response.variants or not _is_valid_repo_id(repo_id):
+        return response
+    remembered = remembered_listing(repo_id)
+    if remembered is None:
+        return response
+    tables, own_by_quant = remembered
+    cached = {t.precision: cached_table_path(repo_id, t) is not None for t in tables}
+    # Without the Hub only a cached table or a quant's own one can load.
+    on_disk = {(v.quant or "").lower() for v in response.variants if v.downloaded or v.partial}
+    owns = {own_by_quant.get(q) for q in on_disk}
+    tables = [t for t in tables if cached[t.precision] or t.precision in owns]
+    variants = []
+    for v in response.variants:
+        own = own_by_quant.get((v.quant or "").lower())
+        if own is None or v.engram_precision or (v.quant or "").lower() not in on_disk:
+            variants.append(v)
+            continue
+        ready = [p for p, hit in cached.items() if hit and p != own] if v.downloaded else []
+        if v.downloaded and _all_shards_cached(repo_id, v.filename, pinned_to):
+            ready.insert(0, own)
+        variants.append(v.model_copy(update = {"engram_precision": own, "engram_ready": ready}))
+    return response.model_copy(
+        update = {
+            "variants": variants,
+            "engram_tables": [
+                EngramTableDetail(
+                    precision = t.precision,
+                    filename = t.filename,
+                    size_bytes = t.size_bytes,
+                    downloaded = cached[t.precision],
+                )
+                for t in tables
+            ],
+            "engram_supported": _llama_loads_engram_tables(),
+        }
+    )
 
 
 def _variant_requirement_last_known(key: tuple[str, ...]) -> Optional[_GgufVariantRequirement]:
@@ -581,7 +651,10 @@ def _size_identity_matches(local_set: set[str], remote_size: int) -> bool:
 
 
 def _variant_update_available_from_requirement(
-    local_blobs: dict[str, set[str]], requirement: Optional[_GgufVariantRequirement], variant: str
+    local_blobs: dict[str, set[str]],
+    requirement: Optional[_GgufVariantRequirement],
+    variant: str,
+    alternates: Optional[dict[str, frozenset[str]]] = None,
 ) -> bool:
     if requirement is None or not local_blobs:
         return False
@@ -601,6 +674,9 @@ def _variant_update_available_from_requirement(
         if not local_set:
             return True
         if remote_blob in local_set:
+            continue
+        # An earlier blob the repo declares equivalent (unsloth_alternates.json) is current too.
+        if alternates and local_set & alternates.get(path, frozenset()):
             continue
         if _size_identity_matches(local_set, expected.size):
             continue
@@ -2539,6 +2615,9 @@ async def get_gguf_variants_answer(
             if cache_reads_authorized
             else {}
         )
+        alternates = (
+            repo_alternate_blobs(repo_id, hf_token, siblings) if local_blobs_by_quant else {}
+        )
 
         def _engram_ready(
             requirement: Optional[_GgufVariantRequirement], downloaded: bool
@@ -2603,6 +2682,7 @@ async def get_gguf_variants_answer(
                     local_blobs_by_quant.get(v.quant.lower(), {}),
                     requirement,
                     v.quant,
+                    alternates,
                 ),
                 partial = is_partial,
                 partial_transport = (partial_quant_transports.get(v.quant) if is_partial else None),
@@ -2620,6 +2700,13 @@ async def get_gguf_variants_answer(
             (r.engram_tables for r in requirements_by_quant.values() if r and r.engram_tables),
             (),
         )
+        repo_tables = engram_tables((f.path, int(f.size or 0)) for f in engram_files)
+        if repo_tables and siblings is not None and _is_valid_repo_id(repo_id):
+            remember_listing(
+                repo_id,
+                repo_tables,
+                {q: r.engram_precision for q, r in requirements_by_quant.items() if r},
+            )
         return GgufVariantsResponse(
             repo_id = repo_id,
             variants = [_variant_detail(v) for v in variants],
@@ -2633,7 +2720,7 @@ async def get_gguf_variants_answer(
                     size_bytes = table.size_bytes,
                     downloaded = _filenames_cached(frozenset({table.filename}), table.size_bytes),
                 )
-                for table in engram_tables((f.path, int(f.size or 0)) for f in engram_files)
+                for table in repo_tables
             ],
             engram_supported = _llama_loads_engram_tables() if engram_files else None,
         )
@@ -2641,6 +2728,10 @@ async def get_gguf_variants_answer(
     def _compute_with_cleanables() -> VariantsAnswer:
         # Returned with the answer: coalesced callers must all see the copy it answered from.
         response = _compute_response()
+        if cache_authorized[0]:
+            response = _with_remembered_engram(
+                repo_id, response, pinned_snapshot_for_request(repo_id, local_path)
+            )
         return VariantsAnswer(
             response, answered_from[0], cache_authorized[0], variant_context_sources
         )

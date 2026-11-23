@@ -200,7 +200,7 @@ test("the composer reads /compact before any send path, and only for GGUF or MLX
   );
   assert.match(
     adapter,
-    /autoCompactTokens: externalProvider\.autoCompactTokens,\n\s+compactNow,\n\s+\}\),/,
+    /autoCompactPercent: autoCompactPercentForModel\(\s*externalProvider,\s*externalModelId,\s*\),\n\s+compactNow,\n\s+\}\),/,
   );
   assert.match(adapter, /takeThreadCompactionRequest\(resolvedThreadId\) &&/);
   assert.match(adapter, /compactNow,\n\s+\}\),/);

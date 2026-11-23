@@ -28,7 +28,6 @@ __all__ = [
     "raise_if_merging_inkling2",
     "raise_if_inkling2_parallel_unsupported",
     "INKLING2_TP_REASON",
-    "INKLING2_PP_REASON",
     "INKLING2_PARALLEL_ALTERNATIVE",
     "inkling2_pipeline_adapter",
 ]
@@ -107,15 +106,9 @@ def raise_if_merging_inkling2(model, save_method):
 
 
 INKLING2_TP_REASON = (
-    "its attention projections are wrapper modules (q / k / v / o hold the Linear beside scaled L2 clips, short "
-    "convolutions over the key / value channels and a sigmoid output gate), next to per-head attention sink and "
-    "hidden-state-conditioned relative position bias projections, and tensor parallel has no sharding rule for them"
-)
-INKLING2_PP_REASON = (
-    "its decoder carries a stack of block states (block attention residuals: every layer and the final norm read "
-    "learned queries over the block outputs) beside hidden_states, and Inkling-2-Mini also runs layers 6-17 three "
-    "times per forward with message gates feeding pass k-1 into pass k, so a pipeline stage boundary would cut "
-    "state the pipeline does not carry"
+    "tensor parallel shards its attention by heads (query and key / value heads, with their short convolutions, "
+    "sinks and relative position bias), so the tp size must divide every attention's query and key / value head "
+    "counts"
 )
 INKLING2_PARALLEL_ALTERNATIVE = (
     'train data parallel instead: UNSLOTH_PARALLEL="dp=N" (DDP, the whole model on every GPU) or '
@@ -124,11 +117,29 @@ INKLING2_PARALLEL_ALTERNATIVE = (
 )
 
 
+def _inkling2_tp_head_problem(config, tp):
+    """Why tensor parallel over `tp` ranks cannot shard this Inkling 2 config's attention heads, or None. The
+    model's own attention (models/tp_native.py, _inkling2_attention_region) shards query and key / value heads
+    alike, so tp must divide both counts of the full and the sliding window attention."""
+    text = _get(config, "text_config") or config
+    bad = []
+    for key in (
+        "num_attention_heads",
+        "num_key_value_heads",
+        "swa_num_attention_heads",
+        "swa_num_key_value_heads",
+    ):
+        value = _get(text, key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0 and value % tp:
+            bad.append(f"{key} = {value}")
+    return ", ".join(bad) or None
+
+
 def raise_if_inkling2_parallel_unsupported(config, model_types = ()) -> None:
     """Tensor / pipeline parallel (UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE, which UNSLOTH_PARALLEL tp= / pp= and
-    unsloth.parallelize set) on Inkling 2, refused from the config before any weight loads. Left alone, tensor
-    parallel stops at the first wrapper projection and pipeline parallel at the residual modules, both after a full
-    load on every rank when quantizing on load (the Mini checkpoint is 14.4 GB in 4-bit)."""
+    unsloth.parallelize set) on Inkling 2, checked from the config before any weight loads. Tensor parallel is
+    refused only for a tp size that does not divide the attention head counts; pipeline parallel runs through
+    Inkling2PipelineAdapter (models/pp_native.py); the two together are refused."""
     types = {str(t).lower() for t in (model_types or ())}
     if not (is_inkling2_config(config) or types & INKLING2_MODEL_TYPES):
         return
@@ -140,22 +151,24 @@ def raise_if_inkling2_parallel_unsupported(config, model_types = ()) -> None:
         except ValueError:
             return 1  # parallel_env reports the malformed value itself
 
-    tp = size("UNSLOTH_TP_SIZE")
-    asked = [
-        (f"tensor parallel (UNSLOTH_TP_SIZE={tp})", INKLING2_TP_REASON) if tp > 1 else None,
-    ]
-    asked = [x for x in asked if x is not None]
-    if not asked:
-        return
-    raise NotImplementedError(
-        "Unsloth: "
-        + "; ".join(f"{what} does not support Inkling 2 yet: {why}" for what, why in asked)
-        + ". Expert parallel is not supported either. Unset "
-        + " / ".join(what.split("(")[1].split("=")[0] for what, _ in asked)
-        + " (or drop tp / pp from UNSLOTH_PARALLEL) and "
-        + INKLING2_PARALLEL_ALTERNATIVE
-        + "."
-    )
+    tp, pp = size("UNSLOTH_TP_SIZE"), size("UNSLOTH_PP_SIZE")
+    if tp > 1 and pp > 1:
+        raise NotImplementedError(
+            f"Unsloth: pipeline parallel x tensor parallel (UNSLOTH_PP_SIZE={pp}, UNSLOTH_TP_SIZE={tp}) does not "
+            "support Inkling 2 yet: each runs alone (pipeline stages keep Inkling-2-Mini's looped layers on one "
+            "stage; tensor parallel shards the attention heads), never combined. Unset UNSLOTH_PP_SIZE / "
+            "UNSLOTH_TP_SIZE (or drop pp / tp from UNSLOTH_PARALLEL) for one of them, or "
+            + INKLING2_PARALLEL_ALTERNATIVE
+            + "."
+        )
+    heads = _inkling2_tp_head_problem(config, tp) if tp > 1 and config is not None else None
+    if heads:
+        raise NotImplementedError(
+            f"Unsloth: tensor parallel (UNSLOTH_TP_SIZE={tp}) cannot shard this Inkling 2 model: "
+            f"{INKLING2_TP_REASON}, and {tp} does not divide {heads}. Choose a tp size that divides them, or "
+            + INKLING2_PARALLEL_ALTERNATIVE
+            + "."
+        )
 
 
 def inkling2_owns_modelopt_quantization(config) -> bool:
