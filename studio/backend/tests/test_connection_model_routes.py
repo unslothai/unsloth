@@ -20,9 +20,6 @@ class FakeExternalClient:
     calls: list = []
     tool_extra: dict = {}
 
-    async def served_context_window(self, model):
-        return None
-
     def __init__(self, **kwargs):
         FakeExternalClient.calls.append({"ctor": kwargs})
 
