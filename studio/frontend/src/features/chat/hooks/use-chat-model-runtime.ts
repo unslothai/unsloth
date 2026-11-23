@@ -2937,9 +2937,15 @@ export function useChatModelRuntime() {
                     await consumeNativePathToken(previousActiveNativePathToken, "load-model")
                   ).nativePathLease;
                 } catch {
-                  throw new Error(
-                    "Could not reload the previous local model: please re-select the file.",
-                  );
+                  const guidance = "Could not reload the previous local model: please re-select the file.";
+                  if (error instanceof LoadModelError) {
+                    throw new LoadModelError(
+                      [error.message, guidance].join("\n\n"),
+                      error.status,
+                      error.detail,
+                    );
+                  }
+                  throw new Error(guidance);
                 }
               }
               try {

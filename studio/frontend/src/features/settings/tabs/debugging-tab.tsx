@@ -289,14 +289,17 @@ export function DebuggingTab() {
         return;
       }
       if (isLogSourceGone(error)) {
-        // Default reselection terminates: an empty source list returns 200, not another 404.
         cursorRef.current = null;
-        await refreshSources({ signal, reselect: true });
+        const missingAttempt = isManagedEngineLogFamily(sourceId?.split(":")[0]);
+        if (missingAttempt) {
+          setSourceId((current) => current === sourceId ? REQUESTED_LOG_MISSING : current);
+        }
+        await refreshSources({ signal, reselect: !missingAttempt });
         return;
       }
       setNotice((error as Error).message);
     },
-    [refreshSources, t],
+    [refreshSources, sourceId, t],
   );
 
   const rescanSourcesIfStale = useCallback(

@@ -137,6 +137,33 @@ def test_failed_launch_stays_selectable_after_retry(tmp_path, monkeypatch, engin
     assert debug_log_sources.resolve_source_id(old_id) == failed_path
 
 
+def test_guest_output_masks_a_registered_project_folder(engine, monkeypatch):
+    from io import StringIO
+    from utils import native_path_leases
+
+    folder = r"C:\Users\Fixture\PrivateProject"
+    monkeypatch.setattr(native_path_leases, "_NATIVE_PATH_REDACTIONS", [folder])
+    log = managed_engine_log.ManagedEngineLog.open(engine.engine)
+    assert log is not None
+    guest_path = wsl_host.to_guest_path(folder) + "/checkpoints/model"
+    try:
+        engine._drain(SimpleNamespace(stdout = StringIO(guest_path)), log, (engine.key,))
+    finally:
+        log.close()
+    raw = Path(log.path).read_text(encoding = "utf-8")
+    assert "PrivateProject" not in raw
+    assert "<native_path>/checkpoints/model" in raw
+
+
+def test_diagnostic_token_lookup_skips_devices(engine):
+    # The null device returns EOF, so this also terminates on a regressed implementation.
+    from unittest.mock import patch
+
+    with patch.object(Path, "open", side_effect = AssertionError("opened credential device")):
+        masked = engine._log_secrets({"HF_TOKEN": _TOKEN, "HF_TOKEN_PATH": os.devnull})
+    assert _TOKEN in masked
+
+
 def test_spawn_failure_retains_a_closed_redacted_log(engine, monkeypatch):
     def fail(*args, **kwargs):
         raise OSError(f"spawn failed with {_TOKEN}")

@@ -541,7 +541,7 @@ class _EngineExited(RuntimeError):
     """The engine process exited during startup (not a stop, cancel or timeout)."""
 
 
-def _token_file_token(env) -> str | None:
+def _token_file_token(env, *, for_log = False) -> str | None:
     """The `hf auth login` token a local engine would read from its inherited HF_HOME; the WSL
     guest gets its own HF_HOME, so the token has to cross over. Anonymous loads keep none."""
     if (env.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") or "").upper() in ("1", "ON", "YES", "TRUE"):
@@ -553,9 +553,18 @@ def _token_file_token(env) -> str | None:
         os.path.expandvars(os.path.expanduser(home)), "token"
     )
     try:
-        token = (
-            Path(os.path.expandvars(os.path.expanduser(path))).read_text(encoding = "utf-8").strip()
-        )
+        token_path = Path(os.path.expandvars(os.path.expanduser(path)))
+        if for_log:
+            # A credential helper can supply a FIFO. Only the actual credential consumer
+            # may read it. Bound diagnostic reads of ordinary files as well.
+            if not token_path.is_file():
+                return None
+            with token_path.open("rb") as stream:
+                raw = stream.read(4097)
+            if len(raw) > 4096:
+                return None
+            return raw.decode("utf-8").strip() or None
+        token = token_path.read_text(encoding = "utf-8").strip()
     except (OSError, UnicodeDecodeError):
         return None
     return token or None
@@ -769,6 +778,9 @@ class ManagedEngine:
                     if capture_logs:
                         # Keep launcher diagnostics in the same encoding as guest stdout.
                         child_env["WSL_UTF8"] = "1"
+                        # The guest may have received an implicit token from a credential helper.
+                        if child_env.get("HF_TOKEN"):
+                            secrets_to_redact += (child_env["HF_TOKEN"],)
                     # The guest runner ends the engine when this pipe closes (stop, or Studio dying).
                     stdin = subprocess.PIPE
                     self._guest_environment = info["path"]
@@ -1041,7 +1053,7 @@ class ManagedEngine:
     def _log_secrets(self, env) -> tuple[str, ...]:
         from hub.utils.hf_tokens import _HF_TOKEN_ENV_KEYS
 
-        exact = {self.key, _token_file_token(env)}
+        exact = {self.key, _token_file_token(env, for_log = True)}
         exact.update(env.get(key) for key in _HF_TOKEN_ENV_KEYS)
         return tuple(sorted(filter(None, exact), key = len, reverse = True))
 
