@@ -362,6 +362,16 @@ def validate_model(
                 "An FP8 KV cache needs an Ampere or newer NVIDIA GPU. "
                 "Choose Model default for KV cache on this GPU."
             )
+    if (
+        kv_cache_dtype == "turboquant"
+        and metadata.get("model_type") == "gemma4"
+        and metadata.get("vision_config")
+        and quant.get("quant_method") != "awq"
+    ):
+        # vllm-metal's Gemma 4 vision sidecar refuses TurboQuant at engine start.
+        raise ValueError(
+            "TurboQuant cannot be used with Gemma 4 vision on Apple Silicon. Choose Model default for KV cache."
+        )
     metadata = metadata.get("text_config") or metadata
     if engine == "sglang" and kv_cache_dtype == "fp8" and metadata.get("kv_lora_rank"):
         # Studio pins SGLang to the Triton attention backend, whose MLA path has no FP8 KV cache.
@@ -414,6 +424,24 @@ _DEVICE_MEMORY = (
     "import json, torch; print(json.dumps("
     "[torch.cuda.mem_get_info(i) for i in range(torch.cuda.device_count())]))"
 )
+# vllm-metal budgets --gpu-memory-utilization against this, not total RAM.
+_METAL_WORKING_SET = (
+    "import mlx.core as mx; print(mx.device_info()['max_recommended_working_set_size'])"
+)
+
+
+def _metal_working_set(info: dict, child_env: dict) -> int:
+    output = subprocess.run(
+        [info["path"] + "/bin/python", "-I", "-c", _METAL_WORKING_SET],
+        env = child_env,
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        timeout = 120,
+        check = True,
+    ).stdout
+    return int(output.strip().splitlines()[-1])
 
 
 def _memory_line(output: str) -> list:
@@ -834,7 +862,9 @@ class ManagedEngine:
                     measure = (
                         (lambda ids: _engine_memory_rows(info, child_env, ids))
                         if rocm
-                        else metal_memory_rows
+                        else (
+                            lambda ids: metal_memory_rows(ids, _metal_working_set(info, child_env))
+                        )
                         if info.get("platform") == "metal"
                         else None
                     )

@@ -446,12 +446,13 @@ def gpu_memory_fraction(
         ) from exc
 
 
-def metal_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:
-    """Apple Silicon's one GPU shares system memory; vllm-metal reads its budget as a share of all of it."""
+def metal_memory_rows(gpu_ids: list[int], working_set: int = 0) -> list[tuple[float, float]]:
+    """Apple Silicon's one GPU shares system memory, capped at Metal's recommended working set."""
     import psutil
 
     memory = psutil.virtual_memory()
-    return [(memory.total / 2**20, memory.available / 2**20)]
+    total = min(working_set or memory.total, memory.total)
+    return [(total / 2**20, min(memory.available, total) / 2**20)]
 
 
 def _nvidia_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:

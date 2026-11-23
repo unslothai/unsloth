@@ -77,6 +77,27 @@ def test_metal_budget_reads_unified_memory(monkeypatch):
     monkeypatch.setattr("utils.vram_budget_settings.get_vram_budget_fraction", lambda: 0.9)
     fraction = engine_adapters.gpu_memory_fraction([0], 512, 0.0, engine_adapters.metal_memory_rows)
     assert fraction == int((64 * 1024 - 512) / (128 * 1024) * 1000) / 1000
+    # vllm-metal multiplies the fraction by Metal's recommended working set, not by all of RAM.
+    rows = lambda ids: engine_adapters.metal_memory_rows(ids, 96 * gib)
+    assert rows([0]) == [(96 * 1024, 64 * 1024)]
+    fraction = engine_adapters.gpu_memory_fraction([0], 512, 0.0, rows)
+    assert fraction == int((64 * 1024 - 512) / (96 * 1024) * 1000) / 1000
+    assert engine_adapters.metal_memory_rows([0], 200 * gib) == [(128 * 1024, 64 * 1024)]
+
+
+def test_metal_working_set_is_read_from_the_engine_env(monkeypatch):
+    seen = {}
+
+    def run(argv, **kwargs):
+        seen["argv"] = argv
+        return SimpleNamespace(stdout = "some import warning\n103079215104\n")
+
+    monkeypatch.setattr(managed_engine.subprocess, "run", run)
+    assert managed_engine._metal_working_set({"path": "/env"}, {}) == 103079215104
+    assert (
+        seen["argv"][0] == "/env/bin/python"
+        and "max_recommended_working_set_size" in seen["argv"][-1]
+    )
 
 
 @pytest.mark.parametrize(
@@ -111,6 +132,15 @@ def test_kv_cache_options_follow_the_platform(tmp_path, monkeypatch, platform, k
         )
         with pytest.raises(ValueError, match = "MLA"):
             managed_engine.validate_model(config, kv_cache_dtype = "turboquant")
+        gemma4 = {"model_type": "gemma4", "text_config": {"num_attention_heads": 8}}
+        (tmp_path / "config.json").write_text(json.dumps({**gemma4, "vision_config": {}}))
+        assert managed_engine.validate_model(config, kv_cache_dtype = "turboquant")
+        (tmp_path / "config.json").write_text(
+            json.dumps({**gemma4, "vision_config": {"depth": 16}})
+        )
+        with pytest.raises(ValueError, match = "Gemma 4 vision"):
+            managed_engine.validate_model(config, kv_cache_dtype = "turboquant")
+        assert managed_engine.validate_model(config)
 
 
 def test_turboquant_reaches_vllm_metal_as_platform_config():
