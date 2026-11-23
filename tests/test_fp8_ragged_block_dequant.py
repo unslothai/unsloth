@@ -31,9 +31,39 @@ class _Quantizer:
 def _op_cls(patched):
     # A subclass, so patching never leaks into the real class other tests use.
     cls = type("Fp8DequantizeUnderTest", (fp8.Fp8Dequantize,), {})
+    # An in-process fp8 load earlier in the session (test_fp8_16bit_text_loader_dequant) patches
+    # the real class, and so does unsloth_zoo's partial-block patch on import; unwrap both so the
+    # unpatched case is transformers' own op.
+    for attr in ("_dequantize_one", "convert"):
+        fn = getattr(cls, attr, None)
+        while fn is not None:
+            if getattr(fn, "_unsloth_ragged_blocks", False):
+                fn = fn.__wrapped__
+            elif getattr(fn, "_unsloth_partial_block_patched", False):
+                fn = fn._unsloth_original
+            else:
+                break
+        if fn is not None:
+            setattr(cls, attr, fn)
     if patched:
         _import_fixes()._pad_fp8_dequantize_ragged_blocks(cls)
     return cls
+
+
+def _unsloth_markers(cls):
+    found = []
+    for attr in ("_dequantize_one", "convert"):
+        fn = getattr(cls, attr, None)
+        for _ in range(8):
+            if getattr(fn, "_unsloth_ragged_blocks", False):
+                found.append((attr, "ragged"))
+                fn = fn.__wrapped__
+            elif getattr(fn, "_unsloth_partial_block_patched", False):
+                found.append((attr, "partial_block"))
+                fn = fn._unsloth_original
+            else:
+                break
+    return found
 
 
 def _dequant(
@@ -97,3 +127,26 @@ def test_grid_that_is_not_a_ceil_tiling_still_raises():
     q, _ = _case(576, 256)
     with pytest.raises(ValueError):
         _dequant(q, torch.ones(7, 2))  # no block edge gives ceil(576 / b) == 7
+
+
+def test_unpatched_op_carries_no_unsloth_wrapper():
+    # The ValueError baseline above is only meaningful against transformers' own op.
+    assert _unsloth_markers(_op_cls(patched = False)) == []
+
+
+def test_ragged_padding_composes_over_the_zoo_partial_block_patch(monkeypatch):
+    # Both patches can be live in one process; stacked, they must still give the block reference.
+    zoo = pytest.importorskip("unsloth_zoo.temporary_patches.fp8_partial_block_dequant")
+    if not hasattr(fp8.Fp8Dequantize, "_dequantize_one"):
+        pytest.skip("this transformers has no Fp8Dequantize._dequantize_one")
+    monkeypatch.setattr(
+        fp8.Fp8Dequantize, "_dequantize_one", _op_cls(patched = False)._dequantize_one
+    )
+    zoo.patch_fp8_dequantize_partial_blocks()
+    cls = type("Fp8DequantizeStacked", (fp8.Fp8Dequantize,), {})
+    _import_fixes()._pad_fp8_dequantize_ragged_blocks(cls)
+    assert [kind for _, kind in _unsloth_markers(cls)] == ["ragged", "partial_block"]
+    for shape in [(576, 384), (576, 2560), (2, 256, 200)]:
+        q, s = _case(*shape, seed = 4)
+        out = cls(_Quantizer())._dequantize_one(q, s, output_dtype = torch.bfloat16)
+        assert torch.equal(out.to(torch.bfloat16), _reference(q, s)), shape

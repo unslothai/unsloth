@@ -8,8 +8,7 @@ const NAME_BYTES = 80;
 const encoder = new TextEncoder();
 const utf8Length = (text: string) => encoder.encode(text).length;
 
-/** sandbox_attachment_path in core/inference/tools.py. Its result is a fixed point there, so the
- *  basename sent back derives this same path on the server. */
+/** Mirrors sandbox_attachment_path in core/inference/tools.py; must match the server. */
 export function sandboxAttachmentPath(sha256: string, name: string): string {
   let base =
     name
@@ -36,10 +35,18 @@ export function sandboxAttachmentPath(sha256: string, name: string): string {
   return `.unsloth_attachments/${sha256.slice(0, 12)}/${base}`;
 }
 
-// ChatCompletionRequest.sandbox_attachments cap: past it the whole request is refused.
+// Backend cap: past it the whole request is refused.
 const MAX_SANDBOX_ATTACHMENTS = 64;
 
 type Attachment = { name?: string; content?: readonly unknown[] };
+
+// attachmentContentText's wrapper, which the server-document adapter sends.
+function hasInlineText(content: readonly unknown[]): boolean {
+  return content.some((part) => {
+    const text = (part as { text?: unknown } | null)?.text;
+    return typeof text === "string" && text.startsWith("<attachment name=");
+  });
+}
 
 function sandboxCopy(attachment: unknown): { sha256: string; path: string } | null {
   const original = attachmentOriginal(attachment);
@@ -48,7 +55,6 @@ function sandboxCopy(attachment: unknown): { sha256: string; path: string } | nu
   return { sha256: original.sha256, path: sandboxAttachmentPath(original.sha256, name) };
 }
 
-/** Notes each kept file's sandbox path for the model, and lists the copies the backend makes. */
 export function withSandboxAttachmentPaths<
   M extends { attachments?: readonly unknown[] },
 >(messages: readonly M[]) {
@@ -75,7 +81,8 @@ export function withSandboxAttachmentPaths<
       const { name = "", content = [] } = attachment as Attachment;
       const reader = sandboxReader(copy.path);
       const path = JSON.stringify(copy.path);
-      const note = isToolOnlyAttachmentName(name)
+      // By content, not name: an .epub sent before its text was inlined still holds only a placeholder.
+      const note = isToolOnlyAttachmentName(name) && !hasInlineText(content)
         ? `[${name} is saved at ${copy.path} in the python tool's working directory${reader ? `; open it with ${reader}, where path = ${path}` : ""}]`
         : `[${name}: its text is below, so answer from it. For calculations, the python tool has the file at path = ${path}${reader ? `; ${reader}` : ""}]`;
       return {
@@ -98,7 +105,7 @@ const READERS: ReadonlyArray<readonly [string, string]> = [
     ".pdf,.pptx,.pptm,.ppsx,.potx,.potm,.ppsm,.docm,.dotx,.dotm,.epub,.mobi,.fb2,.cbz,.xps,.oxps",
     "fitz.open(path)",
   ],
-  // No reader for .ods/.odt or Excel: their text is inline, and the raw zip sends small models into XML.
+  // No reader for .ods/.odt or Excel: the raw zip XML confuses small models.
   [".odp,.odg", 'zipfile.ZipFile(path).read("content.xml")'],
   [".zip,.jar,.whl,.apk,.kmz,.3mf,.vsdx", "zipfile.ZipFile(path)"],
   [".tar,.tar.gz,.tgz,.tar.bz2,.tbz2,.tbz,.tar.xz,.txz", "tarfile.open(path)"],
@@ -109,7 +116,7 @@ const READERS: ReadonlyArray<readonly [string, string]> = [
   [".feather", "pandas.read_feather(path)"],
   [".arrow", "pyarrow.ipc.open_file(path).read_all()"],
   [".orc", "pyarrow.orc.read_table(path)"],
-  // `path` stays a variable: the sandbox scanner treats a literal passed to .connect() as a network host.
+  // `path` stays a variable: the sandbox scanner treats a literal in .connect() as a host.
   [".sqlite,.sqlite3,.db,.gpkg,.mbtiles", "sqlite3.connect(path)"],
   [".duckdb", "duckdb.connect(path, read_only=True)"],
   [".npy,.npz", "numpy.load(path)"],

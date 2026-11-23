@@ -4,6 +4,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  orderHighlightRequests,
+  reasoningHighlightFailure,
   reasoningHighlightReply,
   reasoningHighlightSource,
 } from "../src/components/assistant-ui/reasoning-highlight.ts";
@@ -52,4 +54,26 @@ test("unavailable grammar produces no stale highlighted lines", () => {
     ),
     { client: 3, revision: 4, lines: [] },
   );
+});
+
+test("a failed request is reported without tokens and never by the ordinary reply", () => {
+  const failure = reasoningHighlightFailure(3, 4);
+  assert.deepEqual(failure, { client: 3, revision: 4, lines: [], failed: true });
+  assert.equal("result" in failure, false);
+  const reply = reasoningHighlightReply(
+    { client: 1, revision: 1, source: "x", language: null, lines: [], full: true },
+    null,
+  );
+  assert.equal("failed" in reply, false);
+});
+
+test("demanded requests go before speculative ones, each group in arrival order", () => {
+  const ordered = orderHighlightRequests([
+    { client: 1, speculative: true },
+    { client: 2 },
+    { client: 3, speculative: true },
+    { client: 4, speculative: false },
+  ]);
+  assert.deepEqual(ordered.map((request) => request.client), [2, 4, 1, 3]);
+  assert.deepEqual(orderHighlightRequests([]), []);
 });

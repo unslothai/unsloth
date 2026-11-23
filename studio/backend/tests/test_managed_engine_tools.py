@@ -59,15 +59,22 @@ def test_named_tool_template_and_unknown_syntax(tmp_path):
 def native(monkeypatch):
     from routes import managed_engine_chat
 
-    # The module the route really uses: another test module re-imports httpx at collection.
+    # Use the route's own httpx: another test module re-imports httpx at collection.
     httpx = managed_engine_chat.httpx
     backend = route_test._ScriptedBackend(route_test._fixed("plain"))
     backend.models["sf-model"].update(engine = "vllm", supports_tools = True)
+    from core.inference.managed_engine import ManagedEngine
+
+    real = ManagedEngine("vllm")
     backend._managed_engine = SimpleNamespace(
         model = "sf-model",
         context = 4096,
         base_url = "http://native.test",
         headers = {"Authorization": "Bearer private"},
+        engine = "vllm",
+        reasoning_parser = None,
+        reasoning_fields = real.reasoning_fields,
+        replay_reasoning = real.replay_reasoning,
     )
     route_test._install(monkeypatch, backend)
     requests = []
@@ -234,6 +241,52 @@ def test_client_tools_and_history_reach_native_engine(native, stream):
     assert api.active_generations.count() == 0
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_tool_request_cap_is_fitted_to_the_window(native, monkeypatch, stream):
+    from core.inference import managed_engine
+
+    backend, requests = native
+    counted = []
+
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(
+            self,
+            url,
+            headers = None,
+            json = None,
+        ):
+            counted.append(json)
+            return SimpleNamespace(raise_for_status = lambda: None, json = lambda: {"count": 3000})
+
+    monkeypatch.setattr(managed_engine.httpx, "Client", _Client)
+    engine = managed_engine.ManagedEngine("vllm")
+    engine.model, engine.context, engine.key = "sf-model", 4096, "private"
+    engine.base_url = "http://native.test"
+    backend._managed_engine = engine
+    request = dict(tools = [route_test.LOOKUP_TOOL], stream = stream, enable_tools = False)
+    run(route_test._request(max_tokens = 2000, **request))
+    assert requests[-1]["max_tokens"] == 1096
+    assert counted[-1]["tools"] == [route_test.LOOKUP_TOOL]
+    run(route_test._request(max_tokens = 64, **request))
+    assert requests[-1]["max_tokens"] == 64
+    counts = len(counted)
+    backend.models["sf-model"]["is_vision"] = True
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}
+    parts = [{"type": "text", "text": "hi"}, image]
+    looking = [route_test.ChatMessage(role = "user", content = parts)]
+    run(route_test._request(max_tokens = 2000, messages = looking, **request))
+    assert requests[-1]["max_tokens"] == 2000 and len(counted) == counts
+
+
 def test_studio_loop_executes_and_replays_native_tool_calls(native, monkeypatch):
     from core.inference import studio_tool_loop
 
@@ -255,6 +308,7 @@ def test_studio_loop_executes_and_replays_native_tool_calls(native, monkeypatch)
     assert executed == [("python", {"code": "print(3973)"})]
     assert result["choices"][0]["message"]["content"] == "3973"
     assert result["usage"]["prompt_tokens"] == 20
+    assert result["usage"]["context_tokens"] == 13
     assert "tool_calls" not in result["choices"][0]["message"]
     assert any(
         m.get("role") == "tool" and m.get("content") == "3973" for m in native[1][-1]["messages"]
@@ -262,9 +316,74 @@ def test_studio_loop_executes_and_replays_native_tool_calls(native, monkeypatch)
     assert api.active_generations.count() == 0
 
 
+def test_done_only_stream_end_still_emits_finish_reason(native, monkeypatch):
+    from core.inference import studio_tool_loop
+    from routes import managed_engine_chat
+
+    httpx = managed_engine_chat.httpx
+
+    def handle(request):
+        body = json.loads(request.content)
+        answered = any(m.get("role") == "tool" for m in body["messages"])
+        if answered:
+            chunks = [
+                {
+                    "id": "answer",
+                    "model": "sf-model",
+                    "choices": [{"index": 0, "delta": {"content": "3973"}}],
+                }
+            ]
+        else:
+            call = '<tool_call>{"name": "python", "arguments": {"code": "print(3973)"}}</tool_call>'
+            chunks = [
+                {
+                    "id": "call",
+                    "model": "sf-model",
+                    "choices": [{"index": 0, "delta": {"content": call}}],
+                },
+                {"id": "call", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+            ]
+        return httpx.Response(
+            200,
+            text = "".join("data: " + json.dumps(e) + "\n\n" for e in chunks) + "data: [DONE]\n\n",
+        )
+
+    client = httpx._client.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: client(transport = httpx.MockTransport(handle), **kwargs),
+    )
+    monkeypatch.setattr(studio_tool_loop, "execute_tool", lambda *a, **k: "3973")
+
+    class _Headerless(route_test._Request):
+        headers: dict = {}
+
+    async def request():
+        payload = route_test._request(
+            enable_tools = True,
+            enabled_tools = ["python"],
+            permission_mode = "off",
+            stream = True,
+        )
+        response = await api.openai_chat_completions(payload, _Headerless(), "u")
+        return [
+            json.loads(line[5:])
+            async for line in response.body_iterator
+            if line.startswith("data:") and line[5:].strip() != "[DONE]"
+        ]
+
+    result = asyncio.run(request())
+    finishes = [
+        choice["finish_reason"]
+        for event in result
+        for choice in event.get("choices", [])
+        if choice.get("finish_reason")
+    ]
+    assert finishes == ["stop"]
+
+
 def test_run_automatically_streams_arm_the_no_sandbox_gate(native, monkeypatch):
-    # Same rule as the llama.cpp and safetensors loops: a streaming UI chat in "off" arms the confirm
-    # gate, and the loop then asks only for a risky Python/Terminal call without OS isolation.
     from core.inference import studio_tool_loop
     from routes import managed_engine_chat
 
@@ -314,6 +433,33 @@ def test_deduplicate_tool_calls_reaches_the_managed_loop(native, monkeypatch, de
         )
     )
     assert seen == [dedup is not False]
+
+
+@pytest.mark.parametrize(
+    "policy", [None, {"allowedDomains": ["docs.python.org"], "blockedDomains": []}]
+)
+def test_web_search_domain_limits_reach_the_managed_loop(native, monkeypatch, policy):
+    from core.inference import studio_tool_loop
+    from routes import managed_engine_chat
+
+    seen = []
+    original = managed_engine_chat.stream_with_studio_tools
+
+    def capture(*args, **kwargs):
+        seen.append(kwargs["policy"].website_policy)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(managed_engine_chat, "stream_with_studio_tools", capture)
+    monkeypatch.setattr(studio_tool_loop, "execute_tool", lambda *a, **k: "ok")
+    payload = route_test._request(
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+        permission_mode = "off",
+        max_tool_calls_per_message = 1,
+    )
+    payload._website_policy = policy
+    run(payload)
+    assert seen == [policy]
 
 
 @pytest.mark.parametrize(
@@ -524,8 +670,7 @@ def test_managed_route_never_forwards_a_bare_image_path(native):
 
 
 def test_managed_engine_serves_multiple_choices_one_at_a_time():
-    # The non-streaming n > 1 route batches when slots > 1, and a managed engine yields plain
-    # text rather than the (row, text) events the batch drain unpacks.
+    # A managed engine yields plain text, not the (row, text) events batching expects.
     from core.inference.orchestrator import InferenceOrchestrator
 
     backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
@@ -550,7 +695,7 @@ def test_engine_left_by_a_cancelled_load_is_reaped_once_it_dies():
     backend._shutdown_subprocess = lambda *a, **k: reaped.append(True)
     backend.loading_models = {"m"}
     backend.reap_dead_managed_engine()
-    assert reaped == []  # a load still starting it is not reaped
+    assert reaped == []
     backend.loading_models = set()
 
     def shutdown(*a, **k):
@@ -563,7 +708,6 @@ def test_engine_left_by_a_cancelled_load_is_reaped_once_it_dies():
 
 
 def test_reaping_a_crashed_engine_drops_its_claim_and_sharers(monkeypatch):
-    # Otherwise other accounts keep getting the hidden-resident status for an engine that died.
     from core.inference import gpu_arbiter
     from routes import inference as api
 
@@ -577,7 +721,6 @@ def test_reaping_a_crashed_engine_drops_its_claim_and_sharers(monkeypatch):
     api.reap_dead_managed_engine(SimpleNamespace(reap_dead_managed_engine = lambda: False))
     assert calls == []
 
-    # A newer load took the claim before the release: its sharers stay.
     monkeypatch.setattr(api, "release_chat_gpu_claim", lambda: False)
     monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.CHAT)
     api.reap_dead_managed_engine(SimpleNamespace(reap_dead_managed_engine = lambda: True))
@@ -587,7 +730,6 @@ def test_reaping_a_crashed_engine_drops_its_claim_and_sharers(monkeypatch):
 @pytest.mark.parametrize("stream", [False, True])
 def test_tool_responses_report_the_public_model_id(native, stream):
     backend, requests = native
-    # The engine answers as "sf-model"; clients were told the model is "org/public".
     backend._openai_advertised_id = "org/public"
     result = run(
         route_test._request(tools = [route_test.LOOKUP_TOOL], stream = stream, enable_tools = False)
@@ -605,7 +747,7 @@ def test_a_catalog_with_tool_choice_none_is_plain_chat(native):
         route_test._request(tools = [route_test.LOOKUP_TOOL], tool_choice = "none", enable_tools = False)
     )
     assert result["choices"][0]["message"]["content"]
-    assert requests == []  # served by the plain path, not the native tool route
+    assert requests == []
 
 
 @pytest.mark.parametrize("tools", [False, True])
@@ -635,7 +777,7 @@ def test_managed_messages_get_no_unrequested_date(native, monkeypatch, tools):
         sent = requests[-1]["messages"]
     else:
         sent = [*seen[-1], {"role": "system", "content": backend.calls[-1]["system_prompt"]}]
-    # vLLM/SGLang render a template Studio never sees, so no system turn is made up for it.
+    # vLLM/SGLang render a template Studio never sees, so no system turn is made up.
     assert "2026-08-15" not in json.dumps(sent)
 
 
@@ -656,3 +798,71 @@ def test_managed_engine_offers_image_viewer_to_vision_models_only(native, monkey
     names = [t["function"]["name"] for t in native[1][0]["tools"]]
     assert "python" in names
     assert ("view_image" in names) == vision
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("contract", ["studio", "unmarked", "client_catalog"])
+def test_memory_replay_reaches_plain_managed_chat(native, monkeypatch, stream, engine, contract):
+    from core import chat_memory
+    from fastapi import HTTPException
+
+    backend, requests = native
+    backend.models["sf-model"].update(engine = engine, supports_tools = False)
+    route_test._install(monkeypatch, backend, supports_tools = False)
+    monkeypatch.setattr(chat_memory, "thread_context", lambda _: {"projectId": None})
+    monkeypatch.setattr(
+        chat_memory, "context", lambda *_: {"text": "Remembered fact: prefers Rust"}
+    )
+    history = [
+        {"role": "user", "content": "Remember I prefer Rust"},
+        {
+            "role": "assistant",
+            "content": "Saving that preference.",
+            "tool_calls": [
+                {
+                    "id": "memory-call",
+                    "type": "function",
+                    "function": {
+                        "name": "update_memory",
+                        "arguments": '{"scope":"personal","key":"language","value":"Rust"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "memory-call",
+            "name": "update_memory",
+            "content": "Memory updated: personal.language",
+        },
+        {"role": "user", "content": "What do you remember?"},
+    ]
+    payload = route_test._request(
+        messages = history,
+        thread_id = "saved",
+        studio_tool_history = contract != "unmarked",
+        tools = [route_test.LOOKUP_TOOL] if contract == "client_catalog" else None,
+        enable_tools = False,
+        stream = stream,
+    )
+    if contract != "studio":
+        with pytest.raises(HTTPException, match = "No native tool parser") as exc:
+            run(payload)
+        assert exc.value.status_code == 400
+        assert requests == []
+        assert backend.calls == []
+        return
+    result = run(payload)
+    assert "plain" in json.dumps(result)
+    assert requests == []
+    assert backend.calls
+    rendered = backend.calls[-1]
+    assert not rendered.get("tools")
+    assert all(m["role"] != "tool" and not m.get("tool_calls") for m in rendered["messages"])
+    text = json.dumps([rendered["system_prompt"], rendered["messages"]])
+    assert "prefers Rust" in text
+    assert "Saving that preference" in text
+    assert "update_memory" in text
+    assert "Memory updated: personal.language" in text
+    assert "What do you remember?" in text

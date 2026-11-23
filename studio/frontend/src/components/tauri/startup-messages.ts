@@ -1,38 +1,40 @@
-export const INITIAL_STARTUP_MESSAGE = "Starting Unsloth...";
-export const MODELS_STARTUP_MESSAGE = "Loading models...";
-export const SERVER_STARTUP_MESSAGE = "Nearly done...";
-export const UPDATE_STARTUP_MESSAGE = "Finishing update...";
+import type { TranslationKey } from "@/i18n";
+
+export const INITIAL_STARTUP_MESSAGE = "desktopStartup.starting";
+export const MODELS_STARTUP_MESSAGE = "desktopStartup.loadingModels";
+export const SERVER_STARTUP_MESSAGE = "desktopStartup.nearlyDone";
+export const UPDATE_STARTUP_MESSAGE = "desktopStartup.finishingUpdate";
 export const STATUS_MESSAGE_ROTATION_MS = 5_000;
 
 export interface InstallProgressMessage {
-  title: string;
-  subtitle: string;
+  title: TranslationKey;
+  subtitle: TranslationKey;
 }
 
 const INSTALL_PHASE_MESSAGES: readonly InstallProgressMessage[] = [
   {
-    title: "Preparing your workspace...",
-    subtitle: "Checking what this computer needs.",
+    title: "desktopStartup.install.preparing",
+    subtitle: "desktopStartup.install.preparingDetail",
   },
   {
-    title: "Downloading required components...",
-    subtitle: "Creating your local environment.",
+    title: "desktopStartup.install.downloading",
+    subtitle: "desktopStartup.install.downloadingDetail",
   },
   {
-    title: "Installing Unsloth...",
-    subtitle: "Setting up local AI tools...",
+    title: "desktopStartup.install.installing",
+    subtitle: "desktopStartup.install.installingDetail",
   },
   {
-    title: "Finishing setup...",
-    subtitle: "Getting everything ready.",
+    title: "desktopStartup.install.finishing",
+    subtitle: "desktopStartup.install.finishingDetail",
   },
 ];
 
 const INSTALL_WAITING_SUBTITLES = [
-  "Setup will continue automatically.",
-  "This can take a few minutes.",
-  "Some components take longer to configure.",
-] as const;
+  "desktopStartup.install.continuesAutomatically",
+  "desktopStartup.install.fewMinutes",
+  "desktopStartup.install.someTakeLonger",
+] as const satisfies readonly TranslationKey[];
 
 function normalizedRotationIndex(index: number, length: number): number {
   const wholeIndex = Number.isFinite(index) ? Math.trunc(index) : 0;
@@ -65,13 +67,13 @@ export type StartupMessage =
 
 const STARTUP_WAITING_MESSAGES = [
   INITIAL_STARTUP_MESSAGE,
-  "Loading projects...",
-] as const;
+  "desktopStartup.loadingProjects",
+] as const satisfies readonly TranslationKey[];
 
 export function startupWaitingMessage(
   phaseMessage: StartupMessage,
   rotationIndex: number,
-): string {
+): TranslationKey {
   if (phaseMessage !== INITIAL_STARTUP_MESSAGE) return phaseMessage;
   return STARTUP_WAITING_MESSAGES[
     normalizedRotationIndex(rotationIndex, STARTUP_WAITING_MESSAGES.length)

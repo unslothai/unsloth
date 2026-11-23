@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""On Windows ROCm (torch 2.11.0+rocm7.14.1, gfx1151) flash and memory-efficient SDPA fail with
-hipErrorInvalidValue on every call. `import unsloth` must turn off exactly the backends that fail,
-so attention runs on the math kernel. The failed launch only surfaces at the next checked kernel
-launch, so the probe must not blame a later call. The last two tests need the real host."""
+"""Import unsloth must disable exactly the SDPA backends that fail on Windows ROCm, and no others."""
 
 import json
 import subprocess

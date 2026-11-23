@@ -35,6 +35,7 @@ from .auth import (
 )
 from .export import (
     LoadCheckpointRequest,
+    ExportCancelRequest,
     ExportStatusResponse,
     ExportOperationResponse,
     ExportMergedModelRequest,
@@ -46,6 +47,8 @@ from .export import (
     LlmCompressorExportProbeResponse,
     DecisionExportInfo,
     ExportDecisionInfoResponse,
+    MoeInfoResponse,
+    ReapOptions,
 )
 from .users import Token
 from .inference import (
@@ -97,6 +100,7 @@ __all__ = [
     "ModelCheckpoints",
     "CheckpointListResponse",
     "LoadCheckpointRequest",
+    "ExportCancelRequest",
     "ExportStatusResponse",
     "ExportOperationResponse",
     "ExportMergedModelRequest",
@@ -108,6 +112,8 @@ __all__ = [
     "LlmCompressorExportProbeResponse",
     "DecisionExportInfo",
     "ExportDecisionInfoResponse",
+    "MoeInfoResponse",
+    "ReapOptions",
     "Token",
     "LoadRequest",
     "UnloadRequest",

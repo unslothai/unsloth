@@ -14,21 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""ACCELERATE_MIXED_PRECISION = 'no' is a value, not an absence.
-
-The GRPO replacements read it as a two-way switch, fp16 else bfloat16, so 'no'
-comes out as bfloat16 and autocast is entered anyway. On a T4 or V100 torch does
-not merely ignore that, it raises
-
-    RuntimeError: Current CUDA Device does not support bfloat16.
-                  Please switch dtype to float16.
-
-Two callers set 'no' and both land on exactly those GPUs: full finetuning
-already did, and rl.py now does for a model explicitly loaded in float32, so the
-branch meant to keep training in float32 could instead stop it. The fix is
-`enabled`, not a different dtype: torch only validates bfloat16 when autocast is
-on, and turning it off is what 'no' means.
-"""
+"""Value 'no' must disable autocast, not fall through to bfloat16, which T4 and V100 reject."""
 
 import ast
 import re
@@ -47,11 +33,7 @@ RL_PY = REPO_ROOT / "unsloth" / "models" / "rl.py"
 SRC = RL_REPLACEMENTS.read_text(encoding = "utf-8")
 
 
-# ---- the premise ---------------------------------------------------------
-#
-# Every check drives torch.amp.autocast(device_type = DEVICE_TYPE_TORCH), pinned to "cuda" in the namespaces below,
-# and on a CPU runner torch hands back a no-op instead.
-# Claiming the device is present is what lets these run anywhere; only torch's dispatch decisions are needed.
+# autocast is a no-op on CPU, so pretend CUDA is present; only torch's dispatch decisions matter.
 class _pretend_cuda:
     """torch.cuda answering as a card without bfloat16, or with it."""
 
@@ -69,9 +51,8 @@ class _pretend_cuda:
 
 
 def test_bfloat16_autocast_raises_without_hardware_support():
-    """Guards everything below: if torch ever downgraded this to a warning,
-    the bug would be a silent precision change instead of a crash, and these
-    tests would be asserting the wrong thing."""
+    """Guards everything below: if torch ever downgraded this to a warning, the bug would be a
+    silent precision change instead of a crash and these tests would assert the wrong thing."""
     with _pretend_cuda(has_bf16 = False):
         with pytest.raises(RuntimeError, match = "does not support bfloat16"):
             with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16):
@@ -84,9 +65,6 @@ def test_disabling_autocast_skips_that_check():
             pass
 
 
-# ---- _prepare_inputs, which is injected as source ------------------------
-
-
 def _prepare_inputs_snippet() -> str:
     """The `with` header grpo_trainer__prepare_inputs splices into TRL."""
     start = SRC.index('"with torch.inference_mode(), "')
@@ -95,8 +73,7 @@ def _prepare_inputs_snippet() -> str:
 
 
 def _autocast_helper_source() -> str:
-    """Module level helpers the header calls, mirrored into the generated
-    trainer through RL_PRE_ITEMS."""
+    """Module level helpers the header calls, mirrored into the generated trainer through RL_PRE_ITEMS."""
     parts = [
         ast.get_source_segment(SRC, node)
         for node in ast.parse(SRC).body
@@ -107,9 +84,8 @@ def _autocast_helper_source() -> str:
 
 
 def _namespace(env):
-    """What the generated trainer module offers the header. `self` carries no
-    args here, which is the fallback path; a trainer with args is covered in
-    test_grpo_autocast_per_trainer.py."""
+    """What the generated trainer module offers the header; with self carrying no args this is the
+    fallback path, and a trainer with args is covered in test_grpo_autocast_per_trainer.py."""
     from contextlib import nullcontext
 
     namespace = {
@@ -133,8 +109,7 @@ def test_the_injected_snippet_is_valid_python():
 @pytest.mark.parametrize(
     "precision,has_bf16,expect_enabled",
     [
-        # The T4/V100 case, where the bug bites. accelerate never asks for bf16 on this hardware, so that pairing is not
-        # a case.
+        # The T4/V100 case; accelerate never asks for bf16 on this hardware.
         ("no", False, False),
         ("fp16", False, True),
         (None, False, True),
@@ -166,18 +141,12 @@ def test_the_generated_trainer_imports_the_device_type_it_autocasts_with():
 
 
 def test_no_autocast_call_pins_the_device_type_to_cuda():
-    """A device_type that does not match the accelerator is inert, not loud
-    (pytorch#165730): a literal "cuda" drops autocast on every other one, so GRPO
-    ran its forward in float32 against the dtype _unsloth_grpo_autocast latched.
-    DEVICE_TYPE_TORCH is "npu" on Ascend, "xpu" on Intel, "cuda" on CUDA and ROCm."""
+    """Autocast must not pin device_type to 'cuda'; a mismatched device disables it silently."""
     calls = re.findall(r"torch\.amp\.autocast\((?:[^()]|\([^()]*\))*\)", SRC)
     pinning = [c for c in calls if re.search(r"device_type\s*=\s*[\"']cuda[\"']", c)]
     assert pinning == [], pinning
     typed = [c for c in calls if "device_type" in c]
     assert typed, "expected the autocast call sites to still choose a device_type"
-
-
-# ---- _get_per_token_logps and friends, which run as ordinary code --------
 
 
 def test_every_autocast_call_passes_enabled():
@@ -191,27 +160,45 @@ def test_every_autocast_call_passes_enabled():
 
 
 def test_the_flag_is_recorded_beside_the_dtype():
-    """Every `_autocast_dtype` assignment must record the flag beside it. Both
-    live in the one helper now, the default and the forced float32 override.
-
-    Paired by position rather than by counting a literal spelling: the repo's
-    ruff hook is free to collapse either assignment onto one line, and a test
-    that pins `= (` would fail on formatting alone while a genuinely missing
-    initialiser slipped through.
-    """
+    """Each _autocast_dtype assignment must have a matching _autocast_enabled flag set beside it."""
     lines = SRC.splitlines()
     dtype_at = [i for i, l in enumerate(lines) if "self._autocast_dtype = " in l]
     flag_at = [i for i, l in enumerate(lines) if "self._autocast_enabled = " in l]
-    assert len(dtype_at) == 2, dtype_at
+    # the latch, its forced float32 override, and the unscored forced float32 no-autocast record
+    assert len(dtype_at) == 3, dtype_at
     for i in dtype_at:
         assert any(0 < j - i <= 8 for j in flag_at), (i, lines[i].strip())
+
+
+# The GRPO packing leak probe (#18335) can run before the latch on the loss path: unlatched, it runs
+# without autocast rather than in the bfloat16 fallback dtype, which raises on a T4 or V100.
+_UNLATCHED_PROBES = ("_unsloth_grpo_packing_leaks",)
+_ENABLED_READ = r"getattr\(self, \"_autocast_enabled\"[^)]*\)"
+
+
+def _top_level_source(name):
+    node = next(n for n in ast.parse(SRC).body if isinstance(n, ast.FunctionDef) and n.name == name)
+    return ast.get_source_segment(SRC, node)
 
 
 def test_reading_it_tolerates_an_older_trainer():
     """The dtype is cached under `hasattr`, so an instance built before this
     change can reach a call site with only half the state."""
-    for call in re.findall(r"getattr\(self, \"_autocast_enabled\"[^)]*\)", SRC):
+    src = SRC
+    for name in _UNLATCHED_PROBES:
+        src = src.replace(_top_level_source(name), "")
+    calls = re.findall(_ENABLED_READ, src)
+    assert calls, "expected the scoring call sites to read the latched flag"
+    for call in calls:
         assert call.endswith("True)"), call
+
+
+@pytest.mark.parametrize("name", _UNLATCHED_PROBES)
+def test_an_unlatched_probe_runs_without_autocast(name):
+    calls = re.findall(_ENABLED_READ, _top_level_source(name))
+    assert calls, f"{name} no longer reads the latched flag"
+    for call in calls:
+        assert call.endswith("False)"), call
 
 
 def test_force_float32_still_autocasts_in_float16():

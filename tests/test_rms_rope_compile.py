@@ -27,7 +27,7 @@ from unsloth.kernels.rope_embedding import (
 
 # Without triton_op the implementation may keep a graph break; results must still be right.
 TRACEABLE = hasattr(torch.library, "triton_op") and hasattr(torch.library, "wrap_triton")
-# Pre-Ampere GPUs (T4) keep bf16 on the untraced path, so bf16 byte / graph-break checks need bf16 there.
+# Pre-Ampere GPUs (T4) keep bf16 on the untraced path.
 BF16 = pytest.param(
     torch.bfloat16,
     marks = pytest.mark.skipif(
@@ -87,6 +87,12 @@ def _rms_case(fn, shape, dtype, gemma, non_contiguous):
     return Y.detach(), X.grad, norm.weight.grad
 
 
+def _assert_rms_matches(eager, compiled):
+    assert eager[2] is not None and compiled[2] is not None, "trainable weight got no grad"
+    for e, c, name in zip(eager, compiled, ("Y", "dX", "dW")):
+        assert _bytes_equal(e, c), name
+
+
 @pytest.mark.parametrize("dtype", DTYPES, ids = str)
 @pytest.mark.parametrize("gemma", [False, True], ids = ["llama", "gemma"])
 @pytest.mark.parametrize(
@@ -100,8 +106,7 @@ def test_rms_layernorm_compiled_matches_eager(shape, non_contiguous, gemma, dtyp
     compiled = _rms_case(
         _compile(lambda n, x, gm: fast_rms_layernorm(n, x, gm)), shape, dtype, gemma, non_contiguous
     )
-    for e, c, name in zip(eager, compiled, ("Y", "dX", "dW")):
-        assert _bytes_equal(e, c), name
+    _assert_rms_matches(eager, compiled)
     if TRACEABLE:
         assert _graph_breaks() == 0
 
@@ -150,7 +155,7 @@ def _rope_case(
     cos, sin = _cos_sin(max(seq, 64) + 16, head_dim, dtype)
     indices = None
     if with_indices:
-        # TRL-style packed position ids: every packed sequence restarts at 0, int32.
+        # TRL-style packed position ids: each packed sequence restarts at 0, int32.
         lens = [seq // 3, seq // 3, seq - 2 * (seq // 3)]
         row = torch.cat([torch.arange(n, dtype = torch.int32) for n in lens])
         indices = row.repeat(bsz, 1).cuda()
@@ -192,6 +197,73 @@ def test_rope_compiled_matches_eager(shape, with_indices, dtype):
         assert _bytes_equal(e, c), name
     if TRACEABLE:
         assert _graph_breaks() == 0
+
+
+def _rope_kernel_launches(fn, *args):
+    from torch.profiler import ProfilerActivity, profile
+
+    torch.cuda.synchronize()
+    with profile(activities = [ProfilerActivity.CUDA]) as prof:
+        out = fn(*args)
+        torch.cuda.synchronize()
+    names = [e.name for e in prof.events() if e.device_type == torch.autograd.DeviceType.CUDA]
+    return out, sum("_rope_embedding_QK" in name for name in names)
+
+
+@pytest.mark.parametrize("one_launch", [True, False], ids = ["one_launch", "per_tensor"])
+def test_rope_compiled_positions_one_launch_each_way(monkeypatch, one_launch):
+    """Compiled positions RoPE: one launch each way (per tensor with the flag off), eager's bytes."""
+    if not TRACEABLE:
+        pytest.skip("this torch has no torch.library.triton_op")
+    monkeypatch.setattr(rope_embedding, "COMPILED_ROPE_QK_ONE_LAUNCH", one_launch)
+    compiled = _compile(lambda q, k, c, s, i: fast_rope_embedding(q, k, c, s, i))
+    shape = (2, 37, 8, 2, 64)
+    _rope_case(compiled, *shape, CDTYPE, False, pure = True)
+    got, launches = _rope_kernel_launches(
+        _rope_case,
+        compiled,
+        *shape,
+        CDTYPE,
+        False,
+        True,
+    )
+    assert launches == (2 if one_launch else 4), launches
+    eager = _rope_case(fast_rope_embedding, *shape, CDTYPE, False)
+    for e, c, name in zip(eager, got, ("Q", "K", "dQ", "dK")):
+        assert _bytes_equal(e, c), name
+    assert _graph_breaks() == 0
+
+
+@pytest.mark.parametrize("grad", ["q", "k"])
+def test_rope_compiled_positions_one_sided_grad_stays_per_tensor(grad):
+    if not TRACEABLE:
+        pytest.skip("this torch has no torch.library.triton_op")
+    assert rope_embedding.COMPILED_ROPE_QK_ONE_LAUNCH
+    bsz, seq, n_heads, n_kv, head_dim = 2, 37, 8, 2, 64
+    g = torch.Generator(device = "cuda").manual_seed(0)
+    Q = torch.randn(bsz, n_heads, seq, head_dim, device = "cuda", generator = g, dtype = CDTYPE)
+    K = torch.randn(bsz, n_kv, seq, head_dim, device = "cuda", generator = g, dtype = CDTYPE)
+    (Q if grad == "q" else K).requires_grad_(True)
+    cos, sin = _cos_sin(seq + 16, head_dim, CDTYPE)
+    compiled = _compile(lambda q, k, c, s: fast_rope_embedding(q, k, c, s))
+
+    def step():
+        Q.grad = K.grad = None
+        Q_out, K_out = compiled(Q, K, cos, sin)
+        (Q_out.float().sum() + K_out.float().sum()).backward()
+        return Q_out, K_out
+
+    step()
+    (Q_out, K_out), launches = _rope_kernel_launches(step)
+    assert Q_out.requires_grad == (grad == "q")
+    assert K_out.requires_grad == (grad == "k")
+    # Forward: one launch per tensor; backward: one for the tensor that needs the gradient.
+    assert launches == 3, launches
+    eager_Q, eager_K = fast_rope_embedding(Q.detach(), K.detach(), cos, sin)
+    assert _bytes_equal(Q_out.detach(), eager_Q) and _bytes_equal(K_out.detach(), eager_K)
+    leaf = Q if grad == "q" else K
+    assert leaf.grad is not None and (K if grad == "q" else Q).grad is None
+    assert _graph_breaks() == 0
 
 
 @pytest.mark.parametrize("with_indices", [False, True], ids = ["positions", "rope_indices"])
@@ -246,7 +318,8 @@ def test_bf16_without_native_support_stays_untraced(monkeypatch):
         False,
         False,
     )
-    assert all(_bytes_equal(e, c) for e, c in zip(eager, compiled)) and _graph_breaks() == 0
+    _assert_rms_matches(eager, compiled)
+    assert _graph_breaks() == 0
     torch._dynamo.reset()
     dynamo_utils.counters.clear()
     eager = _rms_case(fast_rms_layernorm, (64, 256), torch.bfloat16, False, False)
@@ -257,7 +330,50 @@ def test_bf16_without_native_support_stays_untraced(monkeypatch):
         False,
         False,
     )
-    assert all(_bytes_equal(e, c) for e, c in zip(eager, compiled)) and _graph_breaks() > 0
+    _assert_rms_matches(eager, compiled)
+    assert _graph_breaks() > 0
+
+
+@pytest.mark.parametrize("fullgraph", [False, True], ids = ["default", "fullgraph"])
+def test_rope_cache_cold_build_traces_without_graph_breaks(fullgraph):
+    """A compiled block that builds the per-device RoPE cache first (a device_map split, or an
+    attention that reads the cache itself) traces it with no graph break, as before lazy caches."""
+    from transformers import LlamaConfig
+    from unsloth.models.llama import LlamaRotaryEmbedding
+
+    config = LlamaConfig(hidden_size = 256, num_attention_heads = 4, max_position_embeddings = 4096)
+    rope = LlamaRotaryEmbedding(config = config)
+
+    def attention(V):
+        seq = V.shape[-2]
+        rope.extend_rope_embedding(V, seq_len = seq)
+        cos, sin = rope.get_cached(seq, V.device.index)
+        return V * cos[:seq] + sin[:seq]
+
+    torch._dynamo.reset()
+    dynamo_utils.counters.clear()
+    compiled = torch.compile(attention, dynamic = True, fullgraph = fullgraph, backend = "eager")
+    for seq in (64, 80, 96):
+        V = torch.randn(1, seq, 4, 64, device = "cuda").transpose(1, 2).contiguous()
+        torch.testing.assert_close(compiled(V), attention(V))
+    assert _graph_breaks() == 0
+
+
+@pytest.mark.parametrize("gemma", [False, True], ids = ["llama", "gemma"])
+@pytest.mark.parametrize("dim", [64, 4096])
+def test_rms_layernorm_dynamic_shapes(dim, gemma):
+    """dynamic=True gives the op's fake run a symbolic width, which the per-width settings cache
+    cannot hash; a compiled norm must still trace in one graph and match eager bytes."""
+    if not TRACEABLE:
+        pytest.skip("this torch has no torch.library.triton_op")
+    torch._dynamo.reset()
+    compiled = torch.compile(
+        lambda n, x, gm: fast_rms_layernorm(n, x, gm), fullgraph = True, dynamic = True
+    )
+    for seq in (16, 24, 40):
+        shape = (2, seq, dim)
+        eager = _rms_case(fast_rms_layernorm, shape, CDTYPE, gemma, False)
+        _assert_rms_matches(eager, _rms_case(compiled, shape, CDTYPE, gemma, False))
 
 
 def test_rope_dynamic_shapes():
@@ -350,7 +466,7 @@ def test_tiny_llama_decoder_layers_compile_fullgraph():
     model.train()
     vocab = model.config.vocab_size
     g = torch.Generator().manual_seed(0)
-    # With several GPUs visible Unsloth may place the model on the emptiest one, not cuda:0.
+    # With several GPUs Unsloth may place the model on the emptiest one, not cuda:0.
     ids = torch.randint(0, vocab, (2, 48), generator = g).to(
         model.get_input_embeddings().weight.device
     )
@@ -376,8 +492,7 @@ def test_tiny_llama_decoder_layers_compile_fullgraph():
     assert grads and all(gr is not None and torch.isfinite(gr).all() for gr in grads)
     scale = max(g.abs().max().item() for g in eager_grads)
     worst = max((a.float() - b.float()).abs().max().item() for a, b in zip(grads, eager_grads))
-    # Two bf16 rounding steps of the largest gradient: compiled kernels sum in another order (one
-    # step over 1% on an RTX PRO 6000).
+    # Two bf16 rounding steps: compiled kernels sum in another order (one step >1% on RTX PRO 6000).
     assert worst <= 2 * torch.finfo(torch.bfloat16).eps * scale, (worst, scale)
 
 

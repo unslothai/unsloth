@@ -27,6 +27,7 @@ from core.inference import (
     mxc_read_grants,
     mxc_runtime,
     os_sandbox,
+    sandbox_probe,  # noqa: F401 - imported under the real platform: `posix` would load libc on Windows
     tools,
 )
 from utils import client_ip, mxc_isolation_settings
@@ -146,7 +147,7 @@ def test_owner_reads_status_and_it_is_cached_until_refresh(host, posix):
         assert body["terminal"]["limitations"] == ["network_not_confined"]
         assert body["windows"] is None
         client.get("/sandbox")
-        assert calls["snapshot"] == 2  # python + terminal, once
+        assert calls["snapshot"] == 2
         client.get("/sandbox", params = {"refresh": "true"})
         assert calls["snapshot"] == 4
 
@@ -374,7 +375,6 @@ def test_a_loopback_peer_relaying_a_remote_browser_is_not_local():
         )
 
     assert client_ip.is_direct_local_request(request("127.0.0.1")) is True
-    # A reverse proxy or tunnel on this machine: the peer is loopback, the browser is not.
     for headers in ({"x-forwarded-for": "203.0.113.7"}, {"cf-connecting-ip": "203.0.113.7"}):
         assert client_ip.is_direct_local_request(request("127.0.0.1", **headers)) is False
     assert client_ip.is_direct_local_request(request("127.0.0.1", "studio.example.com")) is False
@@ -397,7 +397,7 @@ def test_a_status_built_before_a_save_is_not_cached(host, windows, monkeypatch):
 
     def build_then_save(force):
         status = real_build(force)
-        settings._forget_sandbox_status()  # a PUT landed while this status was being built
+        settings._forget_sandbox_status()
         return status
 
     monkeypatch.setattr(settings, "_build_sandbox_status", build_then_save)
@@ -411,6 +411,7 @@ def memory(monkeypatch):
 
     stored = {}
     monkeypatch.delenv(sandbox_memory_limit.MEMORY_LIMIT_ENV, raising = False)
+    monkeypatch.setattr(sandbox_memory_limit, "default_memory_limit_gb", lambda: 8)
     monkeypatch.setattr(
         sandbox_memory_limit,
         "saved_memory_limit_gb",
@@ -418,6 +419,10 @@ def memory(monkeypatch):
     )
     monkeypatch.setattr(
         sandbox_memory_limit, "set_memory_limit_gb", lambda v: stored.__setitem__("gb", v)
+    )
+    monkeypatch.setattr(sandbox_memory_limit, "is_auto", lambda: "gb" not in stored)
+    monkeypatch.setattr(
+        sandbox_memory_limit, "use_auto_memory_limit", lambda: stored.pop("gb", None)
     )
     return stored
 
@@ -429,6 +434,7 @@ def test_posix_status_carries_the_memory_limit(host, posix, memory):
         "limit_gb": 8,
         "saved_gb": 8,
         "default_gb": 8,
+        "auto": True,
         "min_gb": 1,
         "max_gb": 4096,
         "locked_by_environment": False,
@@ -447,6 +453,26 @@ def test_saving_the_memory_limit_shows_at_once_and_repeats_cleanly(host, posix, 
     assert memory == {"gb": 32}
     # Memory-only saves never touch the Windows MXC state.
     assert calls["invalidate"] == 0 and calls["revoke"] == 0
+
+
+def test_auto_clears_a_saved_memory_limit(host, posix, memory):
+    with _client(OWNER) as client:
+        client.put("/sandbox", json = {"memory_limit_gb": 32})
+        assert client.get("/sandbox").json()["memory"]["auto"] is False
+        for _ in range(2):
+            body = client.put("/sandbox", json = {"memory_limit_auto": True}).json()["memory"]
+            assert body["auto"] is True and body["limit_gb"] == 8
+    assert memory == {}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{"memory_limit_auto": False}, {"memory_limit_auto": True, "memory_limit_gb": 32}],
+)
+def test_a_bad_auto_save_is_refused(host, posix, memory, payload):
+    with _client(OWNER) as client:
+        assert client.put("/sandbox", json = payload).status_code == 422
+    assert memory == {}
 
 
 def test_the_memory_limit_env_var_wins_and_refuses_a_save(host, posix, memory, monkeypatch):
@@ -476,11 +502,21 @@ def test_the_memory_limit_is_owner_and_ui_session_only(host, posix, memory):
 
 
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
-def test_only_linux_has_the_memory_limit(host, memory, monkeypatch, platform):
+def test_windows_and_macos_have_the_memory_limit_too(host, memory, monkeypatch, platform):
     monkeypatch.setattr(sys, "platform", platform)
     with _client(OWNER) as client:
-        assert client.get("/sandbox").json()["memory"] is None
-        assert client.put("/sandbox", json = {"memory_limit_gb": 32}).status_code == 409
+        assert client.get("/sandbox").json()["memory"]["auto"] is True
+        response = client.put("/sandbox", json = {"memory_limit_gb": 32})
+        assert response.status_code == 200, response.text
+        assert response.json()["memory"]["limit_gb"] == 32
+        assert client.put("/sandbox", json = {"memory_limit_auto": True}).status_code == 200
+    assert memory == {}
+
+
+def test_the_memory_limit_is_saved_on_its_own(host, windows, memory):
+    with _client(OWNER) as client:
+        response = client.put("/sandbox", json = {"memory_limit_gb": 32, "allow_dacl_fallback": True})
+        assert response.status_code == 422
     assert memory == {}
 
 
@@ -489,3 +525,17 @@ def test_an_empty_windows_save_still_resets_every_cache(host, windows, memory):
     with _client(OWNER) as client:
         assert client.put("/sandbox", json = {}).status_code == 200
     assert calls["invalidate"] == 1 and calls["profile_reset"] == 1
+
+
+@pytest.mark.parametrize("update", [("26200.6584", "26200.9278"), None])
+def test_windows_status_names_the_update_that_adds_the_builtin_container(
+    windows, monkeypatch, update
+):
+    from core.inference import mxc_runtime, sandbox_setup_plan
+
+    monkeypatch.setattr(mxc_runtime, "installation_identity", lambda: "identity")
+    monkeypatch.setattr(mxc_runtime, "probe_host_prep_steps", lambda **_kw: [])
+    monkeypatch.setattr(sandbox_setup_plan, "windows_runtime_unsupported", lambda: None)
+    monkeypatch.setattr(sandbox_setup_plan, "windows_builtin_container_update", lambda: update)
+    block = settings._sandbox_windows_status()
+    assert (block.windows_build, block.builtin_container_build) == (update or (None, None))

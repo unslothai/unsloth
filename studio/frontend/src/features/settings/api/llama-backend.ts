@@ -26,10 +26,7 @@ export type {
   LlamaEffectiveBackend,
 } from "./llama-backend-payload";
 
-/**
- * Always refetches: the payload describes the install on disk and an in-flight
- * job, both of which change under it.
- */
+/** Always refetches: the install on disk and the in-flight job change under it. */
 export async function loadLlamaBackendStatus(
   forceRefresh = false,
 ): Promise<LlamaBackendStatus> {
@@ -44,7 +41,7 @@ export async function loadLlamaBackendStatus(
   return parseLlamaBackendStatus(await res.json());
 }
 
-/** Start the switch. Progress arrives through loadLlamaBackendStatus().job. */
+/** Progress arrives through loadLlamaBackendStatus().job. */
 export async function switchLlamaBackend(
   backend: LlamaBackend,
 ): Promise<LlamaBackendSwitchStarted> {

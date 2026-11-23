@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The selectors `image_upload` counts with are the ones the composer actually renders.
-
-`image_upload` decides it worked by counting attachment elements before and after the file is set.
-A selector that matches nothing counts zero both times, which is indistinguishable from an upload
-that silently did nothing, so the action can fail forever while pointing at the wrong file. That is
-not hypothetical: the original selector (`.aui-composer-attachment`, plus a `data-slot` the app has
-never set) matched no element in any build, and it went unnoticed because the action only mounts
-once a model is selected and `--allow-not-run image_upload` excused every run until then.
-
-So the class names are read out of the shipped source rather than retyped here, and checked against
-the frontend file that renders them. A rename on either side breaks this test instead of quietly
-turning the assertion into one that cannot pass.
-"""
+"""Checks the attachment selectors image_upload counts with against the frontend that renders them."""
 
 import ast
 import re
@@ -27,24 +15,16 @@ _FRONTEND = _SCENE.parents[3] / "studio" / "frontend" / "src"
 _ATTACHMENT_TSX = _FRONTEND / "components" / "assistant-ui" / "attachment.tsx"
 _SHARED_COMPOSER_TSX = _FRONTEND / "features" / "chat" / "shared-composer.tsx"
 
-#: Which file renders which composer's attachments. The pairs are positional in actions.py -- the
-#: first container goes with the first tile -- so they are checked as pairs here too.
+# Pairs are positional in actions.py, so they are checked as pairs.
 _RENDERED_BY = (_ATTACHMENT_TSX, _SHARED_COMPOSER_TSX)
 
-#: A class selector and nothing else: the coupling check below can only speak about bare class
-#: names, so a selector that grew a descendant combinator or an attribute must not slip past it
-#: wearing the same constant name.
+# The coupling check only understands bare class names.
 _BARE_CLASS = re.compile(r"^\.([A-Za-z][\w-]*)$")
-#: `[data-thing]`, the handle shape used where a class would be a utility class and drift.
 _BARE_ATTRIBUTE = re.compile(r"^\[([A-Za-z][\w-]*)\]$")
 
 
 def _shipped_constant(name: str) -> tuple[str, ...]:
-    """Return the tuple of selectors assigned to `name` at module level in actions.py.
-
-    Read from source, not imported: importing the scene package drags in Playwright and the whole
-    action registry, and the point here is to check the literal that ships.
-    """
+    """Reads the constant from actions.py source, not by import, which would pull in Playwright."""
     tree = ast.parse(_ACTIONS.read_text(encoding = "utf-8"))
     for node in tree.body:
         if not isinstance(node, ast.Assign):
@@ -103,14 +83,7 @@ def _component_body(text: str, name: str) -> str:
 
 
 def test_the_compare_composer_tags_its_image_thumb_and_not_only_its_audio_chip():
-    """A file-wide check cannot see one of two identical handles disappear.
-
-    The compare composer tags both its image thumb and its audio chip with the same attribute, so
-    dropping it from the thumb -- the one change that would silently stop image_upload counting on
-    the compare screen -- leaves the token in the file and keeps the coverage check above green.
-    Verified: that edit passes the coverage check and fails only this one. So the look is scoped to
-    the thumb's own component.
-    """
+    """Checks the image thumb's own component, since a file-wide search misses one of two identical tags."""
     attribute = _shipped_constant("_COMPOSER_ATTACHMENT_TILES")[1]
     match = _BARE_ATTRIBUTE.match(attribute)
     assert (
@@ -125,11 +98,7 @@ def test_the_compare_composer_tags_its_image_thumb_and_not_only_its_audio_chip()
 
 
 def test_the_counting_query_scopes_every_tile_to_its_own_container():
-    """The constants being right does not help if the query does not use them.
-
-    Each tile must be scoped to the container of the same composer. An unscoped tile would also
-    count the attachments on already-sent messages, and a cross-paired one would count nothing.
-    """
+    """Each tile must be scoped to its own composer container, or sent-message attachments get counted."""
     containers = _shipped_constant("_COMPOSER_ATTACHMENT_CONTAINERS")
     tiles = _shipped_constant("_COMPOSER_ATTACHMENT_TILES")
     query = _shipped_constant_expression("_COUNT_COMPOSER_ATTACHMENTS_JS")
@@ -161,11 +130,7 @@ def test_the_dead_selector_is_not_reintroduced():
 
 
 def _shipped_constant_expression(name: str) -> str:
-    """Evaluate the expression that builds `name`, using the other shipped constants.
-
-    `ast.literal_eval` cannot fold an f-string or a join, so the module's own constants are bound in
-    order and the expression is evaluated against them plus `zip`, and nothing else.
-    """
+    """Evaluates it with the module's other constants bound, since literal_eval cannot fold f-strings."""
     tree = ast.parse(_ACTIONS.read_text(encoding = "utf-8"))
     bound: dict[str, object] = {}
     for node in tree.body:

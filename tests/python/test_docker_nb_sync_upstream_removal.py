@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""A notebook deleted or renamed upstream has to leave the tree.
-
-The refresh loop walks the CLONE, so a file that vanished upstream is never visited,
-and the state file is then REPLACED by what that loop recorded. The copy we published
-stays on disk with no record, the next refresh reads it as user-owned, and
-unsloth_nb_view.py files it under "Other Notebooks" for good. Upstream deleted 10 and
-renamed 7 nb/ notebooks in the last year, so they accumulate.
-
-Only a file that still hashes to what the sync itself wrote is removed, which is what
-keeps a user's edit safe, so that is asserted here rather than assumed.
-"""
+"""The clone walk never sees upstream deletions; remove only files that still match the synced hash."""
 
 from __future__ import annotations
 
@@ -124,7 +114,6 @@ def _state(dest: Path) -> dict:
 def test_a_pristine_notebook_deleted_upstream_is_removed(tmp_path: Path):
     remote, template, dest = _setup(tmp_path)
     _advance(remote)
-    # the user edited one of the two that upstream dropped
     (dest / "nb" / "edited.ipynb").write_text("MY OWN WORK", encoding = "utf-8")
 
     run = _refresh(tmp_path, remote, template, dest)
@@ -188,9 +177,8 @@ def test_nothing_is_removed_when_upstream_removed_nothing(tmp_path: Path):
 
 
 def _refuse_rm(tmp_path: Path, target: Path) -> Path:
-    """A `rm` earlier on PATH that fails for one path, the way a writable single-FILE
-    bind mount fails with EBUSY. The publish above already works around that case for
-    rename, so it is not hypothetical here."""
+    """Stubs rm earlier on PATH to fail for one path, as a writable single-file bind mount does with
+    EBUSY; the publish already works around that case for rename."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok = True)
     stub = bindir / "rm"
@@ -208,14 +196,10 @@ def _refuse_rm(tmp_path: Path, target: Path) -> Path:
 
 @behavioural
 def test_a_removal_that_cannot_be_unlinked_keeps_its_record_and_retries(tmp_path: Path):
-    """Ignoring the failure dropped the record while leaving the file, which is the
-    exact state the removal exists to prevent: the next refresh reads the stale copy as
-    user-owned and never tries again. It also left `failed` at zero, so the sync marker
-    was stamped and the next start exited before it looked."""
+    """A removal that fails must keep its record and retry: dropping it leaves the stale copy read
+    as user-owned forever, and failed stays zero so the sync marker is stamped."""
     remote, template, dest = _setup(tmp_path)
     _advance(remote)
-    # upstream dropped this one too, but the user owns it now, so doomed is the only
-    # removal candidate and the counters below are about it alone
     (dest / "nb" / "edited.ipynb").write_text("MY OWN WORK", encoding = "utf-8")
     doomed = dest / "nb" / "doomed.ipynb"
     bindir = _refuse_rm(tmp_path, doomed)
@@ -257,9 +241,8 @@ def test_the_successful_removal_still_stamps_the_commit(tmp_path: Path):
 
 
 def _refuse_mv_to(tmp_path: Path, target: Path) -> Path:
-    """An `mv` earlier on PATH that fails for one destination, the way a full or
-    read-only /workspace fails when the state file is published. Every other move,
-    including the same-dir rename each notebook is published with, passes through."""
+    """Stubs mv earlier on PATH to fail for one destination, as a full or read-only /workspace does
+    when the state file is published; other moves pass through."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok = True)
     stub = bindir / "mv"
@@ -277,11 +260,8 @@ def _refuse_mv_to(tmp_path: Path, target: Path) -> Path:
 
 @behavioural
 def test_a_state_that_cannot_be_published_holds_the_sync_marker(tmp_path: Path):
-    """Stamping the commit over a failed state publish wedges the tree permanently.
-    The next boot exits on remote == last, and once upstream moves again the stale
-    hashes no longer match the notebooks this run wrote, so all of them read as
-    user-edited and are never updated again. `failed` already holds the marker back
-    for a notebook that could not be written; the state file has to count too."""
+    """Stamping the commit after a failed state publish wedges the tree, as stale hashes read every
+    notebook as user-edited; the state failure must hold the marker like failed does."""
     remote, template, dest = _setup(tmp_path)
     _advance(remote)
     before = _state(dest)
@@ -300,14 +280,8 @@ def test_a_state_that_cannot_be_published_holds_the_sync_marker(tmp_path: Path):
 
 @behavioural
 def test_the_state_temp_file_is_published_by_a_same_directory_rename(tmp_path: Path):
-    """Holding the marker is not on its own enough, which is why the temp file sits
-    beside the state file rather than in /tmp. The notebooks are published BEFORE the
-    state is, so a publish that fails on its own leaves disk ahead of state, and no
-    marker check undoes that: the next run reads every notebook it just wrote as
-    user-edited, because they no longer hash to the stale record. A sibling makes the
-    publish an atomic rename and makes it fail WITH the notebook writes, which already
-    hold the marker. Asserted on the script text because the failure it removes cannot
-    be provoked once the rename is atomic."""
+    """The state temp file must sit beside the state file so publishing it is an atomic rename;
+    notebooks publish first, so a standalone state publish failure leaves disk ahead of state."""
     source = SYNC.read_text(encoding = "utf-8")
     assert 'TMPSTATE="$STATE.tmp"' in source, (
         "the refresh state temp file left $DEST, so publishing it is a cross-device "
@@ -335,14 +309,8 @@ def test_a_published_state_still_stamps_the_commit(tmp_path: Path):
 
 @behavioural
 def test_an_unwritable_dest_publishes_nothing_and_recovers(tmp_path: Path):
-    """$DEST unwritable while a notebook subdir still is, which is the container shape:
-    the image bakes the root and only the subdirs get chowned to the host user.
-
-    Staging the state in /tmp here would publish the new notebook bytes and then be
-    unable to record them. Run two reads every one of them as a user edit, and a user
-    edit counts as `kept`, not `failed`, so the marker IS stamped and the whole managed
-    set is stranded permanently. Nothing is published yet at that point, so the refresh
-    must bail and leave the tree exactly as it was."""
+    """With DEST unwritable but its notebook subdirs writable (the container shape), staging in /tmp
+    would publish bytes it cannot record; the refresh must bail before publishing."""
     remote, template, dest = _setup(tmp_path)
     _advance(remote)
     before_state = _state(dest)
@@ -364,7 +332,6 @@ def test_an_unwritable_dest_publishes_nothing_and_recovers(tmp_path: Path):
     finally:
         dest.chmod(0o755)
 
-    # the whole point of bailing: the next start recovers instead of being stranded
     run2 = _refresh(tmp_path, remote, template, dest)
     assert run2.returncode == 0, run2.stdout + run2.stderr
     assert (dest / "nb" / "keep.ipynb").read_text(encoding = "utf-8") == "keep-v2"
@@ -374,12 +341,8 @@ def test_an_unwritable_dest_publishes_nothing_and_recovers(tmp_path: Path):
 
 @behavioural
 def test_a_stale_state_temp_file_does_not_block_the_refresh_forever(tmp_path: Path):
-    """The bail above must not become permanent. A run killed between the truncate and
-    the mv leaves $STATE.tmp behind, and if that run was a different uid (root once,
-    then --user) the file cannot be truncated even though $DEST is writable. Bailing
-    then would strand the tree on every future start, which is the failure the bail
-    exists to prevent. Unlinking needs write on $DEST, which the real bail case does
-    not have, so clearing it first cannot weaken the guard."""
+    """A stale $STATE.tmp left by a run under another uid must not block the refresh forever;
+    unlinking it needs write on DEST, which the real bail case lacks, so the guard holds."""
     remote, template, dest = _setup(tmp_path)
     _advance(remote)
 

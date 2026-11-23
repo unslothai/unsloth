@@ -12,7 +12,7 @@ function composerSource(): Promise<string> {
   );
 }
 
-test("stop stays available when the running composer can queue", async () => {
+test("the running composer shows one action: Queue with a draft, else Stop", async () => {
   const source = await composerSource();
   const start = source.indexOf(
     "<AuiIf condition={({ thread }) => thread.isRunning}>",
@@ -22,34 +22,32 @@ test("stop stays available when the running composer can queue", async () => {
   const end = source.indexOf("</AuiIf>", start);
   assert.ok(end > start, "the running composer controls must be closed");
   const controls = source.slice(start, end);
-  const stopLabel = 'aria-label="Stop generating"';
-  const queueGuard = "{!queueDisabled ?";
 
-  const stopIndex = controls.indexOf(stopLabel);
-  const queueGuardIndex = controls.indexOf(queueGuard);
-  assert.ok(stopIndex >= 0, "the running composer must expose Stop generating");
+  const guardIndex = controls.indexOf("{queueDisabled ? (");
+  const stopIndex = controls.indexOf('aria-label="Stop generating"');
+  const queueIndex = controls.indexOf("aria-label={followUpLabel}");
+  assert.ok(guardIndex >= 0, "Stop and Queue must be one exclusive choice");
   assert.ok(
-    queueGuardIndex > stopIndex,
-    "queue availability must be evaluated after the independent stop action",
+    guardIndex < stopIndex && stopIndex < queueIndex,
+    "Stop shows with nothing to queue, Queue once the draft is queueable",
   );
-  assert.doesNotMatch(
-    controls,
-    /\{queueDisabled \?/,
-    "Stop and Queue must not share an exclusive queueDisabled ternary",
-  );
-  assert.match(
-    controls.slice(queueGuardIndex),
-    /aria-label=\{followUpLabel\}/,
-    "the follow-up action must remain available when the draft is queueable",
-  );
+  assert.doesNotMatch(controls, /\{!queueDisabled \?/);
+
   const stopButton = controls.match(
     /<Button[\s\S]*?aria-label="Stop generating"[\s\S]*?>/,
   );
   assert.ok(stopButton, "the running composer must render a stop button");
-  // Without it a cancelled reply just advances the queue (#6244 wired it).
   assert.match(
     stopButton[0],
     /onClick=\{stop\}/,
     "stop must still end the prompt queue run, not only the active reply",
+  );
+});
+
+test("the stop shortcut still works while the draft hides the Stop button", async () => {
+  const source = await composerSource();
+  assert.match(
+    source,
+    /useShortcut\(\s*"stopGeneration",[\s\S]*?enabled: chatActive && \(threadRunning \|\| isResearchActive\)/,
   );
 });

@@ -45,6 +45,7 @@ def test_audio_cpp_table(hub, folder, family, timestamps, speakers, cpu_only, do
         assert (result["engine"], result["family"]) == ("audiocpp", family)
         assert (result["timestamps"], result["speakers"]) == (timestamps, speakers)
         assert result["cpu_only"] is cpu_only
+        assert result["accent_hint"] is False
         assert (result["aligner"] is not None) == (timestamps == "on_request")
 
 
@@ -52,7 +53,13 @@ def test_qwen3_reports_whether_its_aligner_is_downloaded(hub):
     def aligner():
         return caps.capabilities_for(f"{REPO}/Qwen3-ASR-1.7B-GGUF", "audiocpp")["aligner"]
 
-    assert aligner() == {"downloaded": False, "size_bytes": 1_129_966_496}
+    # The page stages the named quant through the Downloads panel before a timestamped run.
+    assert aligner() == {
+        "id": f"{REPO}/Qwen3-ForcedAligner-0.6B-GGUF",
+        "variant": "Q8_0",
+        "downloaded": False,
+        "size_bytes": 1_129_966_496,
+    }
     _add(hub, "Qwen3-ForcedAligner-0.6B-GGUF", "qwen3_forced_aligner")
     assert aligner()["downloaded"] is True and aligner()["size_bytes"] > 0
 
@@ -74,16 +81,41 @@ def test_qwen3_reports_whether_its_aligner_is_downloaded(hub):
         (f"{REPO}/Qwen3-ASR-0.6B-GGUF", "no-such-engine", None),
     ],
 )
-def test_other_engines_and_unknown_models_are_plain_text(hub, model, engine, expected_engine):
+def test_other_engines_and_unknown_models_are_plain_text(
+    hub, monkeypatch, model, engine, expected_engine
+):
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRANSCRIBE_MAX_MINUTES", raising = False)
     result = caps.capabilities_for(model, engine)
     assert result == {
         "engine": expected_engine,
         "family": None,
         "timestamps": "unsupported",
         "speakers": False,
+        "accent_hint": expected_engine == "mtmd",
         "aligner": None,
         "cpu_only": False,
+        "max_seconds": 4 * 3600 if expected_engine == "audiocpp" else 30 * 60,
     }
+
+
+@pytest.mark.parametrize(
+    "model, engine, env, seconds",
+    [
+        (f"{REPO}/Qwen3-ASR-0.6B-GGUF", "audiocpp", None, 14400),
+        (f"{REPO}/Qwen3-ASR-0.6B-GGUF", "audiocpp", "90", 5400),
+        ("small", "transformers", "90", 1800),
+        ("small", "gguf", None, 1800),
+    ],
+)
+def test_each_engine_reports_the_longest_audio_it_takes(
+    hub, monkeypatch, model, engine, env, seconds
+):
+    if env is None:
+        monkeypatch.delenv("UNSLOTH_STUDIO_TRANSCRIBE_MAX_MINUTES", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_STUDIO_TRANSCRIBE_MAX_MINUTES", env)
+    assert caps.capabilities_for(model, engine)["max_seconds"] == seconds
+    assert caps.max_seconds_for(engine) == seconds
 
 
 def test_a_failing_lookup_still_answers(hub, monkeypatch):

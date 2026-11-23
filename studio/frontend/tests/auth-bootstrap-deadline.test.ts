@@ -11,7 +11,6 @@ import {
 } from "../src/features/auth/bootstrap-deadline.ts";
 
 test("a server that does not send the field is not time-boxed", () => {
-  // A pre-deadline backend omits the key; a countdown from undefined prints "NaN".
   assert.equal(deadlineFromStatus(undefined, 1_000_000), null);
   assert.equal(deadlineFromStatus(null, 1_000_000), null);
 });
@@ -21,7 +20,6 @@ test("a loopback launch sends null and gets no countdown", () => {
 });
 
 test("seconds are turned into an absolute expiry", () => {
-  // Absolute, so a backgrounded tab whose timers stopped still renders correctly.
   assert.equal(deadlineFromStatus(3600, 1_000_000), 1_000_000 + 3_600_000);
 });
 
@@ -51,7 +49,6 @@ test("a minute or more reads in minutes", () => {
 });
 
 test("it never renders a negative", () => {
-  // The tab keeps ticking past the deadline; "-12 minutes" is worse than nothing.
   assert.equal(formatCountdown(-1), "0 seconds");
   assert.equal(formatCountdown(-10_000_000), "0 seconds");
 });
@@ -72,8 +69,7 @@ test("the boundary between the two messages is one tick wide", () => {
 });
 
 test("the deadline and the clock it is compared against must be one sample", () => {
-  // A request that takes 30ms turns a server 0 back into a positive remainder,
-  // which selects the countdown copy and prints "shuts down in 0 seconds".
+  // Request latency can turn a server 0 into a positive remainder.
   const mounted = 1_000_000;
   const responded = mounted + 30;
   const stale = deadlineFromStatus(0, responded);

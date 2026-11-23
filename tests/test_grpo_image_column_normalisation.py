@@ -112,10 +112,7 @@ def test_guard_names_the_column_and_the_issue():
 
 
 def test_the_guard_reads_every_row_not_only_the_first():
-    """One list cell anywhere puts that row's images and placeholders out of step, and a
-    dataset mixing a bare image with a list is exactly the shape that puts the list somewhere
-    other than row 0. Reading only `inputs[0]` would let it through to the processor, which is
-    the outcome this guard exists to replace."""
+    """A list cell in any row desyncs images from placeholders, so every row must be checked."""
     a, b = _Img("a"), _Img("b")
     for rows in (
         [{"image": [a, b]}, {"image": a}],
@@ -127,7 +124,6 @@ def test_the_guard_reads_every_row_not_only_the_first():
             _unsloth_reject_grpo_image_list(rows)
         assert "3605" in str(excinfo.value)
 
-    # Nothing that works today starts failing, including shapes the guard must not choke on.
     for rows in (
         [{"image": a}, {"image": a}],
         [{"image": [a]}, {"image": [a]}],
@@ -150,9 +146,8 @@ def test_guard_is_injected_when_no_anchor_matches():
 
 
 def test_guard_is_injected_when_the_legacy_reference_calls_drift():
-    """Rewriting the cell is half the job. A legacy TRL also has to carry the image counts
-    into the reference logprob calls; without them the images are sliced by sample index and
-    all but the first are dropped, which the model reports as a token/feature mismatch."""
+    """A legacy TRL must also pass image counts into the reference logprob calls, or images are
+    sliced by sample index and dropped, showing as a token/feature mismatch."""
     source = (
         "    def _generate_and_score_completions(self, inputs):\n"
         '        has_images = "image" in inputs[0]\n'
@@ -187,7 +182,6 @@ def test_guard_stays_off_a_trl_whose_reference_calls_do_take_the_counts():
     )
     assert "_unsloth_reject_grpo_image_list(inputs)" not in patched
     if 'pixel_values=prompt_inputs.get("pixel_values")' in source:
-        # A legacy TRL: every reference call site must have taken the counts.
         assert 'pixel_values=prompt_inputs.get("pixel_values")' not in patched
         assert "**_unsloth_legacy_vision," in patched
 
@@ -233,10 +227,8 @@ def _legacy_source(*, with_placeholder_helper):
 
 
 def test_a_trl_that_cannot_size_its_placeholders_refuses_the_multi_image_row():
-    """The cell rewrite alone would hand the processor two images while the prompt still
-    carries one placeholder, and nothing else in the batch disagrees, because the prologue
-    counts the same cells. That surfaces inside the processor naming neither the column nor
-    the fix, which is exactly what the guard exists to replace."""
+    """Without the guard, a TRL that cannot size its placeholders gets two images for one
+    placeholder and fails inside the processor, naming neither the column nor the fix."""
     patched = grpo_trainer__generate_and_score_completions(
         "_generate_and_score_completions", _legacy_source(with_placeholder_helper = False)
     )
@@ -282,9 +274,8 @@ def _run_legacy_placeholders(cells):
 
 
 def test_an_empty_cell_takes_no_placeholder_so_a_mixed_batch_stays_in_step():
-    """One placeholder for a row with no image leaves the prompt a token ahead of the pixels,
-    which the processor rejects. Measured against a real Gemma 3 processor: this batch fails
-    with one placeholder for the empty row and succeeds with none."""
+    """An image-less row must take no placeholder: one placeholder leaves the prompt a token ahead
+    of the pixels, which a real Gemma 3 processor rejects."""
     a, b = _Img("a"), _Img("b")
     assert _run_legacy_placeholders([a, []]) == ([[a], []], [1, 0])
     assert _run_legacy_placeholders([[a, b], []]) == ([[a, b], []], [2, 0])
@@ -314,10 +305,7 @@ class _VllmTrainer:
 
 
 def test_the_guard_refuses_a_multi_image_row_only_in_legacy_vllm_server_mode():
-    """A legacy TRL's vLLM server path hands the raw cells to VLLMClient.generate, which does
-    `[pil_to_base64(img) for img in images]` over the top level entries, so a cell holding two
-    images reaches `list.save(...)`. Colocate mode and the no vLLM path both go through the
-    processor, which this change fixed, so they must keep working."""
+    """Legacy vLLM server mode passes raw cells to VLLMClient.generate, so list cells reach list.save()."""
     a, b = _Img("a"), _Img("b")
     rows = [{"image": [a, b]}, {"image": a}]
 
@@ -325,13 +313,11 @@ def test_the_guard_refuses_a_multi_image_row_only_in_legacy_vllm_server_mode():
         _unsloth_reject_grpo_image_list(rows, _VllmTrainer(True, "server"))
     assert "3605" in str(excinfo.value)
 
-    # The modes that do carry it: no refusal.
     _unsloth_reject_grpo_image_list(rows, _VllmTrainer(True, "colocate"))
     _unsloth_reject_grpo_image_list(rows, _VllmTrainer(False, "server"))
     _unsloth_reject_grpo_image_list(rows, _VllmTrainer(False, None))
     _unsloth_reject_grpo_image_list(rows, object())
 
-    # A single image row is carried by every mode, server included.
     _unsloth_reject_grpo_image_list([{"image": a}], _VllmTrainer(True, "server"))
 
     # No trainer means the anchors did not land at all, so nothing is known to carry it.
@@ -382,7 +368,6 @@ def test_demoting_an_all_empty_column_also_clears_the_image_flag():
     assert namespace["has_images"] is False
     assert namespace["kwargs"] == {}
 
-    # An image bearing batch keeps the flag, so the vLLM paths still run for it.
     namespace = {
         "inputs": [{"image": _Img("a")}, {"image": _Img("b")}],
         "prompts": [[{"role": "user", "content": "x"}] for _ in range(2)],

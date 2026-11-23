@@ -88,7 +88,7 @@ def test_empty_dynamic_cache_is_dropped_before_prefill():
 
 
 def test_suffix_only_input_with_full_mask_feeds_the_whole_new_turn():
-    # transformers 5 generate() accepts only the new tokens when attention_mask spans cache + new.
+    # transformers 5 generate() takes only new tokens when attention_mask spans cache + new.
     new = torch.arange(BS * 2).reshape(BS, 2)
     mask = torch.ones(BS, PAST_LEN + 2, dtype = torch.long)
     result = _prepare(new, attention_mask = mask, past_key_values = _kv(PAST_LEN))

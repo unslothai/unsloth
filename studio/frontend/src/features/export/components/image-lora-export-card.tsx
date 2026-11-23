@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { SectionCard } from "@/components/section-card";
+import { SectionBox } from "@/components/section-box";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -16,18 +16,21 @@ import {
   type DiffusionLoraInfo,
   listDiffusionLoras,
 } from "@/features/images/api";
+import { matchCatalogId } from "@/features/images/train/diffusion-train-deploy";
 import { ImageAdd02Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import { exportDiffusionLora } from "../api/export-api";
+import { savedLabel } from "../constants";
 
 function imageLoraLabel(lora: DiffusionLoraInfo, clashes: boolean): string {
   const tags = [...lora.families, ...(lora.fine_tuned ? ["fine-tuned"] : [])];
-  const name = clashes ? `${lora.display_name} [${lora.id}]` : lora.display_name;
+  const name = clashes
+    ? `${lora.display_name} [${lora.id}]`
+    : lora.display_name;
   return tags.length > 0 ? `${name} (${tags.join(", ")})` : name;
 }
 
-export function ImageLoraExportCard() {
+export function ImageLoraExportCard({ preselect }: { preselect?: string }) {
   const [loras, setLoras] = useState<DiffusionLoraInfo[] | null>(null);
   const [loraId, setLoraId] = useState("");
   const [saveDirectory, setSaveDirectory] = useState("image-loras");
@@ -55,6 +58,18 @@ export function ImageLoraExportCard() {
     };
   }, []);
 
+  // From a finished image run: pick it and scroll here, since the text-model card above shows no runs.
+  useEffect(() => {
+    const id = preselect ? matchCatalogId(loras ?? [], preselect) : undefined;
+    if (!id) {
+      return;
+    }
+    setLoraId(id);
+    document
+      .getElementById("image-lora-id")
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [preselect, loras]);
+
   const canExport = !running && loraId !== "" && saveDirectory.trim() !== "";
 
   async function handleExport() {
@@ -67,7 +82,7 @@ export function ImageLoraExportCard() {
       });
       setResult({
         ok: true,
-        text: `Saved to ${response.details?.output_path ?? saveDirectory}`,
+        text: `Saved to ${savedLabel(String(response.details?.output_path ?? saveDirectory))}. To use it on another install, copy that folder over and add it from Images > LoRAs > Folders.`,
       });
     } catch (error) {
       setResult({
@@ -80,69 +95,78 @@ export function ImageLoraExportCard() {
   }
 
   return (
-    <SectionCard
-      icon={<HugeiconsIcon icon={ImageAdd02Icon} className="size-5" />}
+    <SectionBox
+      icon={ImageAdd02Icon}
+      chipTint="var(--chart-1)"
       title="Export an image LoRA"
       description="Save a copy of an image generation LoRA you trained (or added) on the Images page: the .safetensors adapter plus its .json metadata. Any Unsloth install lists it again from a custom models folder."
-      className="mt-6"
     >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <label htmlFor="image-lora-id" className="text-sm font-medium">
-            Image LoRA
-          </label>
-          <Select value={loraId} onValueChange={setLoraId}>
-            <SelectTrigger id="image-lora-id" className="w-full">
-              <SelectValue
-                placeholder={
-                  loras === null
-                    ? "Loading…"
-                    : loras.length === 0
-                      ? "No image LoRAs found"
-                      : "Select an image LoRA…"
-                }
-              />
-            </SelectTrigger>
-            <SelectContent>
-              {(loras ?? []).map((l) => (
-                <SelectItem key={l.id} value={l.id}>
-                  {imageLoraLabel(
-                    l,
-                    (loras ?? []).some(
-                      (o) => o.id !== l.id && o.display_name === l.display_name,
-                    ),
-                  )}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+      <div className="flex flex-col gap-6">
+        <div className="grid gap-4 @md/train-section:grid-cols-2">
+          <div className="flex flex-col gap-2">
+            <label
+              htmlFor="image-lora-id"
+              className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground"
+            >
+              Image LoRA
+            </label>
+            <Select value={loraId} onValueChange={setLoraId}>
+              <SelectTrigger id="image-lora-id" className="w-full">
+                <SelectValue
+                  placeholder={
+                    loras === null
+                      ? "Loading…"
+                      : loras.length === 0
+                        ? "No image LoRAs found"
+                        : "Select an image LoRA…"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {(loras ?? []).map((l) => (
+                  <SelectItem key={l.id} value={l.id}>
+                    {imageLoraLabel(
+                      l,
+                      (loras ?? []).some(
+                        (o) =>
+                          o.id !== l.id && o.display_name === l.display_name,
+                      ),
+                    )}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-col gap-2">
+            <label
+              htmlFor="image-lora-save"
+              className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground"
+            >
+              Save directory
+            </label>
+            <Input
+              id="image-lora-save"
+              value={saveDirectory}
+              onChange={(e) => setSaveDirectory(e.target.value)}
+            />
+          </div>
         </div>
-        <div className="space-y-1.5">
-          <label htmlFor="image-lora-save" className="text-sm font-medium">
-            Save directory
-          </label>
-          <Input
-            id="image-lora-save"
-            value={saveDirectory}
-            onChange={(e) => setSaveDirectory(e.target.value)}
-          />
+        <div className="flex items-center justify-between gap-3">
+          <p
+            className={
+              result?.ok === false
+                ? "text-xs text-destructive"
+                : "text-xs text-muted-foreground"
+            }
+          >
+            {result?.text ?? "A plain file copy: no model load or GPU needed."}
+          </p>
+          <Button variant="dark" disabled={!canExport} onClick={handleExport}>
+            {running && <Spinner />}
+            Export
+          </Button>
         </div>
       </div>
-      <div className="flex items-center justify-between gap-3">
-        <p
-          className={
-            result?.ok === false
-              ? "text-xs text-destructive"
-              : "text-xs text-muted-foreground"
-          }
-        >
-          {result?.text ?? "A plain file copy: no model load or GPU needed."}
-        </p>
-        <Button disabled={!canExport} onClick={handleExport}>
-          {running && <Spinner />}
-          Export
-        </Button>
-      </div>
-    </SectionCard>
+    </SectionBox>
   );
 }

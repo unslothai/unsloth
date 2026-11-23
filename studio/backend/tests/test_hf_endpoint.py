@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for HF_ENDPOINT / HF_DATASETS_SERVER env var handling in utils.hf_endpoint.
-
-Both getters read the environment on every call (no import-time freezing), so
-the tests just monkeypatch the environment and call them directly.
-"""
+"""Getters read HF_ENDPOINT and HF_DATASETS_SERVER per call, so tests just monkeypatch the env."""
 
 from __future__ import annotations
 
@@ -51,9 +47,9 @@ class TestGetHfEndpoint:
         "mirror",
         [
             "https://hf-mirror.com",
-            "https://hf-mirror.com/",  # trailing slash stripped
-            "hf-mirror.com",  # scheme-less gets https://
-            "hf-mirror.com/",  # scheme-less + trailing slash
+            "https://hf-mirror.com/",
+            "hf-mirror.com",
+            "hf-mirror.com/",
         ],
     )
     def test_mirror_forms_normalised(self, monkeypatch, mirror):
@@ -84,8 +80,8 @@ class TestGetHfDatasetsServer:
         "raw",
         [
             "https://ds.example.com/",
-            "ds.example.com",  # scheme-less gets https://
-            "ds.example.com/",  # scheme-less + trailing slash
+            "ds.example.com",
+            "ds.example.com/",
         ],
     )
     def test_forms_normalised(self, monkeypatch, raw):
@@ -120,8 +116,7 @@ class TestGetHfDatasetsServer:
         assert not [r for r in caplog.records if "HF_DATASETS_SERVER" in r.message]
 
 
-# These values reach the CSP connect-src built in main.py, and a source list is
-# whitespace-separated and semicolon-delimited.
+# These reach the CSP connect-src, which is whitespace- and semicolon-delimited.
 HOSTILE_ENDPOINTS = [
     "https://hf-mirror.com; script-src *",
     "https://hf-mirror.com *",
@@ -145,9 +140,7 @@ MALFORMED_ENDPOINTS = [
     "https://hf-mirror.com#frag",
     "https://hf-mirror.com:",
     "https://hf-mirror.com:not-a-port",
-    # An IPv6 literal written without its brackets, and the other authorities that
-    # make SplitResult.port raise. The rejection has to come from this module, not
-    # from an exception out of main.py's startup call to normalize_hf_endpoint_env.
+    # Authorities that make SplitResult.port raise; this module must reject them, not crash startup.
     "https://::1",
     "https://a:b:c",
     "https://hf-mirror.com:99999",
@@ -215,8 +208,7 @@ class TestMalformedUrlDoesNotCrash:
 
 
 class TestPlainHttpIsLoopbackOnly:
-    """The frontend attaches the Hub token to these requests, so off-box HTTP
-    would put a bearer token on the wire in cleartext."""
+    """Plain HTTP is loopback-only: the Hub token must not cross the wire in cleartext."""
 
     @pytest.mark.parametrize(
         "raw",
@@ -258,8 +250,7 @@ class TestAssetSources:
 
 
 def test_an_uppercase_scheme_is_accepted_and_folded(monkeypatch):
-    """RFC 3986 3.1: HTTPS://mirror is a real mirror, and the frontend keys its
-    cache on the folded form."""
+    """Schemes are case-insensitive (RFC 3986 3.1), and the cache is keyed on the folded form."""
     monkeypatch.setenv("HF_ENDPOINT", "HTTPS://hf-mirror.com")
     assert get_hf_endpoint() == "https://hf-mirror.com"
     monkeypatch.setenv("HF_ENDPOINT", "HTTP://127.0.0.1:9700")
@@ -281,8 +272,7 @@ def test_a_loopback_endpoint_is_not_handed_to_a_remote_browser(monkeypatch):
 
 
 def test_the_reachable_endpoint_follows_the_tunnel_aware_client_ip(monkeypatch):
-    """Every caller pairs this with client_ip(): through the managed tunnel the
-    socket peer is the local cloudflared process, not the visitor."""
+    """Behind the tunnel the socket peer is cloudflared, so client_ip() must be used."""
     from types import SimpleNamespace
 
     from utils.client_ip import client_ip
@@ -303,8 +293,7 @@ def test_the_reachable_endpoint_follows_the_tunnel_aware_client_ip(monkeypatch):
 
 
 def test_a_unicode_host_cannot_reach_the_csp_header(monkeypatch):
-    """Starlette encodes header values as latin-1, so a Unicode host in connect-src
-    turns EVERY response into a 500. All three sides take the punycode form."""
+    """Latin-1 header encoding means a Unicode CSP host 500s every response; use punycode."""
     monkeypatch.setenv("HF_ENDPOINT", "https://例子.测试")
     assert get_hf_endpoint() == "https://huggingface.co"
     monkeypatch.setenv("HF_ENDPOINT", "https://xn--fsqu00a.xn--0zwm56d")
@@ -324,9 +313,8 @@ def test_an_ipv6_loopback_mirror_is_compressed_the_way_the_browser_sends_it(monk
 
 
 def test_the_environment_is_normalised_for_huggingface_hub(monkeypatch):
-    """huggingface_hub reads HF_ENDPOINT itself, at import, unvalidated: a
-    scheme-less value breaks every HfApi call and a rejected one would still be
-    handed the user's token. Rewriting the variable first settles both."""
+    """huggingface_hub reads HF_ENDPOINT unvalidated at import: a scheme-less value breaks every
+    HfApi call and a rejected one still gets the token; rewrite the variable first."""
     monkeypatch.setenv("HF_ENDPOINT", "hf-mirror.com")
     hf_endpoint.normalize_hf_endpoint_env()
     assert os.environ["HF_ENDPOINT"] == "https://hf-mirror.com"
@@ -335,7 +323,6 @@ def test_the_environment_is_normalised_for_huggingface_hub(monkeypatch):
     hf_endpoint.normalize_hf_endpoint_env()
     assert os.environ["HF_ENDPOINT"] == "https://hf-mirror.com"
 
-    # Removed, so the library falls back rather than using a host we refused.
     for rejected in (
         "http://192.168.1.10:8080",
         "https://hf-mirror.com; script-src *",
@@ -360,11 +347,9 @@ def test_a_blank_endpoint_is_cleared_rather_than_left_for_the_library(monkeypatc
         hf_endpoint.normalize_hf_endpoint_env()
         assert "HF_ENDPOINT" not in os.environ, repr(blank)
 
-    # Idempotent, and it does not invent the variable when it was never set.
     hf_endpoint.normalize_hf_endpoint_env()
     assert "HF_ENDPOINT" not in os.environ
 
-    # Whitespace AROUND a real endpoint is trimmed, not treated as blank.
     monkeypatch.setenv("HF_ENDPOINT", "  https://hf-mirror.com  ")
     hf_endpoint.normalize_hf_endpoint_env()
     assert os.environ["HF_ENDPOINT"] == "https://hf-mirror.com"
@@ -393,14 +378,12 @@ def test_the_per_client_fallback_is_logged_once_per_endpoint(monkeypatch, caplog
             assert client_reachable_endpoint("8.8.8.8") == OFFICIAL_HF
     assert len([r for r in caplog.records if "not reachable" in r.getMessage()]) == 1
 
-    # A different endpoint is a different configuration, so it warns on its own.
     caplog.clear()
     monkeypatch.setenv("HF_ENDPOINT", "https://10.0.0.5:8443")
     with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
         assert client_reachable_endpoint("8.8.8.8") == OFFICIAL_HF
     assert len([r for r in caplog.records if "not reachable" in r.getMessage()]) == 1
 
-    # A client that CAN reach it is not a fallback and must not warn.
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
         assert client_reachable_endpoint("192.168.1.50") == "https://10.0.0.5:8443"

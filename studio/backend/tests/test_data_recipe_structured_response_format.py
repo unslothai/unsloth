@@ -83,7 +83,6 @@ def test_gguf_model_gets_grammar_response_format(monkeypatch):
 def test_non_gguf_model_keeps_prompt_level_json(monkeypatch):
     recipe = inject_with_loaded_model(monkeypatch, gguf = False)
 
-    # Whole columns, not just aliases: output_format feeds the fallback's prompt-level schema.
     assert recipe["columns"] == structured_recipe()["columns"]
     assert response_formats(recipe) == {}
     assert [mc["alias"] for mc in recipe["model_configs"]] == ["local_model"]
@@ -94,7 +93,7 @@ def test_non_gguf_model_keeps_prompt_level_json(monkeypatch):
 def test_the_injected_response_format_is_what_a_non_gguf_backend_refuses(monkeypatch):
     """The gate's premise: without llama.cpp, /v1 refuses the payload the GGUF path injects.
     Teaching the safetensors/MLX backend guided decoding must break this, not go unnoticed."""
-    # Its own context so the fake backend modules unwind before the route is called for real.
+    # Own context so the fake backend modules unwind before the route is called for real.
     with pytest.MonkeyPatch.context() as injection:
         recipe = inject_with_loaded_model(injection, gguf = True)
     extra_body = recipe["model_configs"][-1]["inference_parameters"]["extra_body"]

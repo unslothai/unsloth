@@ -122,7 +122,7 @@ def capability_snapshot(
             f"set {mxc_policy.DACL_FALLBACK_ENV}=1) to use the AppContainer "
             "tier: it adds temporary permission entries to the granted host folders, removed "
             "on exit, and needs a one-time administrator host preparation plus one per reboot. "
-            "Studio's own Python runtime folders get a permanent read-only entry instead, so "
+            "Unsloth's own Python runtime folders get a permanent read-only entry instead, so "
             "launches stay fast; turn that off in the same place (or set "
             f"{mxc_read_grants.PERSISTENT_GRANTS_ENV}=0) to keep every entry temporary."
         )
@@ -181,7 +181,7 @@ def prepare(plan, capability):
         network_policy = "mxc_compatibility_requested_unverified",
         backend_tier = "unknown",
         runtime_revision = mxc_runtime.MXC_REVISION,
-        runtime_artifact_digest = f"sha256:{mxc_runtime.WXC_EXEC_SHA256}",
+        runtime_artifact_digest = f"sha256:{mxc_runtime.artifact('exec')[2]}",
         schema_version = mxc_runtime.MXC_SCHEMA_VERSION,
         policy_hash = request["policyHash"],
         execution_status = "planned",
@@ -314,8 +314,7 @@ def verify_success(prepared, proc) -> dict:
             raise SandboxBuildError(
                 "MXC cleanup did not complete cleanly; execution state is uncertain"
             )
-        # Studio killed the tree, so the workload is gone; only ACE restore is unconfirmed, and every
-        # later wxc-exec start replays the journal. Report the timeout or cancel, not an error.
+        # Tree killed, workload gone; only ACE restore unconfirmed. Report timeout or cancel, not an error.
         logger.warning(
             "MXC could not confirm the DACL restore after a forced exit; it retries at the next start"
         )

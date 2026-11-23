@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Deep Research total-time minutes field had no ceiling, while ChatSettingsPayload and
-// the run route cap the seconds it turns into at one year: an over-cap value was dropped
-// from the settings patch and then 400d every run. These pin the ceiling on every path.
+// Settings and the run route cap the timeout at one year; over-cap values 400d every run.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -29,6 +27,10 @@ test("the cap matches the ceiling the backend payload enforces", () => {
   assert.equal(MAX_RESEARCH_MODEL_TIMEOUT_SECONDS, 365 * 24 * 3600);
 });
 
+test("a fresh store has no limit on a Deep Research model request", () => {
+  assert.equal(useChatRuntimeStore.getState().researchModelTimeoutSeconds, 0);
+});
+
 test("the mirrored patch keeps the cap and drops one second past it", () => {
   const atCap: PersistedChatSettings = {};
   assignSanitizedMirroredSettings(
@@ -51,15 +53,13 @@ test("the mirrored patch keeps the cap and drops one second past it", () => {
 test("an over-cap budget never reaches the store or storage", () => {
   const store = useChatRuntimeStore.getState();
 
-  // 1000000 minutes, which the composer's unbounded minutes field accepted.
   store.setResearchModelTimeoutSeconds(1000000 * 60);
   assert.equal(
     useChatRuntimeStore.getState().researchModelTimeoutSeconds,
     DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
   );
 
-  // One out-of-contract field rejects the whole patch, so what the store holds
-  // has to survive sanitisation rather than be dropped from it.
+  // One out-of-contract field rejects the whole patch.
   const mirrored: PersistedChatSettings = {};
   assignSanitizedMirroredSettings(
     {
@@ -73,7 +73,6 @@ test("an over-cap budget never reaches the store or storage", () => {
     DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
   );
 
-  // The cap itself and the unlimited sentinel still round trip.
   store.setResearchModelTimeoutSeconds(MAX_RESEARCH_MODEL_TIMEOUT_SECONDS);
   assert.equal(
     useChatRuntimeStore.getState().researchModelTimeoutSeconds,
@@ -83,8 +82,7 @@ test("an over-cap budget never reaches the store or storage", () => {
   assert.equal(useChatRuntimeStore.getState().researchModelTimeoutSeconds, 0);
 });
 
-// 0 is the unlimited sentinel, so it is legal below the run route's finite floor of 10.
-// Anything between the two would hydrate, be sent unchanged, and 400 every run.
+// 0 is the unlimited sentinel; finite values below the route's floor of 10 would 400.
 test("a sub-floor finite timeout is refused on every frontend path", () => {
   const store = useChatRuntimeStore.getState();
 
@@ -103,7 +101,6 @@ test("a sub-floor finite timeout is refused on every frontend path", () => {
     );
   }
 
-  // The sentinel and the floor itself stay legal.
   for (const accepted of [0, MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS]) {
     const mirrored: PersistedChatSettings = {};
     assignSanitizedMirroredSettings(
@@ -113,15 +110,13 @@ test("a sub-floor finite timeout is refused on every frontend path", () => {
     assert.equal(mirrored.researchModelTimeoutSeconds, accepted);
   }
 
-  // The shared sanitizer keeps the rule for any caller, not just this field.
   const bounds = { min: 0, minPositive: 10, max: 100, integer: true };
   assert.equal(sanitizeBoundedNumber(0, bounds), 0);
   assert.equal(sanitizeBoundedNumber(5, bounds), undefined);
   assert.equal(sanitizeBoundedNumber(10, bounds), 10);
 });
 
-// The max attribute does not stop a typed value reaching the save handler, so it clamps:
-// falling through to the default would hand someone asking for a long run a short one.
+// The max attribute does not stop typed values, so clamp rather than fall back to default.
 test("an over-cap typed value saves as the cap, not as the default", () => {
   const store = useChatRuntimeStore.getState();
   const maxMinutes = Math.floor(MAX_RESEARCH_MODEL_TIMEOUT_SECONDS / 60);

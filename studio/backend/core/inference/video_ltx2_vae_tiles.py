@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seam-free LTX-2 / 2.3 VAE decode: the fewest, largest tiles that fit free VRAM (untiled when it fits).
-
-Stock tiles (16 latents, 2-latent blend) are narrower than the decoder's receptive field, so every seam shows a line.
-Kill switch ``UNSLOTH_VIDEO_VAE_WIDE_TILES=0``; ``UNSLOTH_VIDEO_VAE_UNTILED=0`` keeps >= 2 tiles. Tiles span every
-frame: Studio never decodes LTX framewise.
-"""
+"""Seam-free LTX-2/2.3 VAE tiling: widest tiles fitting VRAM; tiles span every frame, Studio never
+decodes framewise; UNSLOTH_VIDEO_VAE_WIDE_TILES=0 reverts; UNSLOTH_VIDEO_VAE_UNTILED=0 keeps >=2
+tiles"""
 
 from __future__ import annotations
 
@@ -14,9 +11,14 @@ import os
 import types
 from typing import Any, Optional
 
+from .diffusion_vae_oom import clear_partial_decode
+from .diffusion_vae_oom import free_first as oom_free_first
 from .diffusion_vae_tiling import axis_weights as _axis_weights
 
 WIDE_TILES_ENV = "UNSLOTH_VIDEO_VAE_WIDE_TILES"
+# =0: the full-clip fp32 accumulator stays on the card
+BANDED_OUTPUT_ENV = "UNSLOTH_LTX_VAE_BANDED_OUTPUT"
+_HOST_RESERVE_BYTES = 4 * 2**30
 
 # Stock tile side: the smallest tile, so the tightest tier never needs more per tile than stock.
 MIN_TILE_LATENTS = 16
@@ -81,6 +83,23 @@ def axis_weights(
         MARGIN_LATENTS if margin is None else margin,
         RAMP_LATENTS if ramp is None else ramp,
     )
+
+
+_WEIGHTS_ATTR = "_unsloth_ltx2_tile_weights"
+
+
+def _cached_weights(
+    vae: Any, starts: list[int], tile: int, length: int, scale: int, torch: Any, device: Any
+) -> list:
+    """``axis_weights`` memoised per VAE (a repeat decode syncs no device)."""
+    cache = vae.__dict__.setdefault(_WEIGHTS_ATTR, {}) if hasattr(vae, "__dict__") else {}
+    key = (tuple(starts), int(tile), int(length), int(scale), str(device))
+    hit = cache.get(key)
+    if hit is None:
+        if len(cache) >= 64:
+            cache.clear()
+        hit = cache[key] = axis_weights(starts, tile, length, scale, torch, device)
+    return hit
 
 
 def output_frames(vae: Any, latent_frames: int) -> int:
@@ -183,6 +202,116 @@ def _plan(
     return tile, fits(*tile)
 
 
+def banded_output_disabled() -> bool:
+    return (os.environ.get(BANDED_OUTPUT_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _host_band_output(vae: Any, z: Any, ratio: int, itemsize: int) -> bool:
+    """Discrete NVIDIA card only, with host RAM for the clip above a reserve."""
+    device = getattr(z, "device", None)
+    if banded_output_disabled() or getattr(device, "type", None) != "cuda":
+        return False
+    import torch
+
+    from .rocm_bf16 import is_rocm_torch
+
+    if is_rocm_torch(torch):
+        return False
+    from .host_pinning import device_is_integrated
+
+    if device_is_integrated(device):
+        return False
+    batch, _, latent_frames, height, width = (int(x) for x in z.shape)
+    need = batch * 3 * output_frames(vae, latent_frames) * height * ratio * width * ratio * itemsize
+    try:
+        from .diffusion_memory import _available_system_memory_mib
+        avail = _available_system_memory_mib()
+    except Exception:  # noqa: BLE001 - unreadable host RAM: keep the device accumulator
+        return False
+    return avail is not None and need + _HOST_RESERVE_BYTES <= int(avail) * 2**20
+
+
+def _to_host(
+    chunk: Any,
+    torch: Any,
+    stream: Any = None,
+) -> Any:
+    """Contiguous pinned-RAM copy (one DMA), pageable if pinning is refused; overlaps the next decode on ``stream``."""
+    try:
+        host = torch.empty(chunk.shape, dtype = chunk.dtype, pin_memory = True)
+    except Exception:  # noqa: BLE001 - pinned allocation refused (e.g. Windows limits)
+        host = torch.empty(chunk.shape, dtype = chunk.dtype)
+    if stream is None:
+        return host.copy_(chunk, non_blocking = True)
+    stream.wait_stream(torch.cuda.current_stream(chunk.device))
+    with torch.cuda.stream(stream):
+        host.copy_(chunk, non_blocking = True)
+    chunk.record_stream(stream)  # its memory is not reused before the copy has read it
+    return host
+
+
+def _decode_bands(
+    vae: Any,
+    z: Any,
+    temb: Any,
+    causal: Any,
+    th: int,
+    tw: int,
+    hs: list,
+    ws: list,
+    wy: list,
+    wx: list,
+) -> Any:
+    """``_decode_tiles``'s math with one band on the card; done bands wait in host RAM, the last stays on the card."""
+    import torch
+
+    _, _, _, height, width = (int(x) for x in z.shape)
+    ratio = int(vae.spatial_compression_ratio)
+    rows = len(hs) > 1
+    axis, side, starts = (-2, th, hs) if rows else (-1, tw, ws)
+    done_bands, band, carry, copy = [], None, None, None
+    for b, s in enumerate(starts):
+        for i, j in [(b, j) for j in range(len(ws))] if rows else [(0, b)]:
+            y, x = hs[i], ws[j]
+            tile = vae.decoder(z[:, :, :, y : y + th, x : x + tw], temb, causal = causal)
+            if b == 0 and band is None:
+                lead, device, dtype = tuple(tile.shape[:3]), tile.device, tile.dtype
+            if band is None:
+                # Made after the band's first tile decodes: only the carried overlap is live during that decode.
+                shape = (
+                    (*lead, side * ratio, width * ratio)
+                    if rows
+                    else (*lead, height * ratio, side * ratio)
+                )
+                band = torch.zeros(shape, dtype = torch.float32, device = device)
+                if carry is not None:
+                    band.narrow(axis, 0, carry.shape[axis]).copy_(carry)
+                    carry = None
+            w = wy[i].view(-1, 1) * wx[j].view(1, -1)
+            y0, x0 = (0, x * ratio) if rows else (y * ratio, 0)
+            band[..., y0 : y0 + th * ratio, x0 : x0 + tw * ratio].addcmul_(tile.float(), w)
+            del tile
+        lo, hi = s * ratio, (s + side) * ratio
+        if b + 1 == len(starts):
+            # The last band never leaves the card: no decode follows it, so it cannot raise the peak.
+            dec = torch.empty((*lead, height * ratio, width * ratio), dtype = dtype, device = device)
+            dec.narrow(axis, lo, hi - lo).copy_(band)
+            del band
+            if copy is not None:
+                torch.cuda.current_stream(device).wait_stream(copy)
+            for start, host in done_bands:
+                dec.narrow(axis, start, host.shape[axis]).copy_(host, non_blocking = True)
+            return dec
+        if copy is None and device.type == "cuda":
+            copy = torch.cuda.Stream(device)
+        done = starts[b + 1] * ratio - lo
+        chunk = band.narrow(axis, 0, done).to(dtype).contiguous()
+        done_bands.append((lo, _to_host(chunk, torch, copy)))
+        del chunk
+        carry = band.narrow(axis, done, hi - lo - done).clone()
+        band = None
+
+
 def _decode_tiles(
     vae: Any,
     z: Any,
@@ -199,8 +328,10 @@ def _decode_tiles(
     hs, ws = tile_starts(height, th), tile_starts(width, tw)
     if len(hs) == 1 and len(ws) == 1:
         return vae.decoder(z, temb, causal = causal)
-    wy = axis_weights(hs, th, height, ratio, torch, z.device)
-    wx = axis_weights(ws, tw, width, ratio, torch, z.device)
+    wy = _cached_weights(vae, hs, th, height, ratio, torch, z.device)
+    wx = _cached_weights(vae, ws, tw, width, ratio, torch, z.device)
+    if fp32_accum and _host_band_output(vae, z, ratio, _itemsize(vae)):
+        return _decode_bands(vae, z, temb, causal, th, tw, hs, ws, wy, wx)
     out, dtype = None, None
     for i, y in enumerate(hs):
         for j, x in enumerate(ws):
@@ -233,7 +364,7 @@ def tiled_decode(
     """Decode ``z`` in the tiles ``plan_tiles`` picks; on OOM, once more in the stock-size 16-latent tiles."""
     from diffusers.models.autoencoders.vae import DecoderOutput
 
-    from .diffusion_batched import is_oom_error
+    from .video_vae_untiled import _is_oom  # CPU allocator refusals too: tiles plan from host RAM
 
     (th, tw), budgeted = _plan(vae, z)
     floor = (min(MIN_TILE_LATENTS, int(z.shape[-2])), min(MIN_TILE_LATENTS, int(z.shape[-1])))
@@ -245,14 +376,25 @@ def tiled_decode(
     try:
         dec = _decode_tiles(vae, z, temb, causal, th, tw, budgeted)
     except Exception as exc:  # noqa: BLE001
-        if (th, tw) == floor or not is_oom_error(exc):
+        if (th, tw) == floor or not _is_oom(exc):
             raise
         failed = True
+    if failed and oom_free_first(vae, z):
+        # the OOM retry freed the card (rest of the pipeline off it): the same tiles again before the floor tile
+        failed = False
+        clear_partial_decode(vae, z)  # the failed attempt's causal state goes before any retry
+        try:
+            dec = _decode_tiles(vae, z, temb, causal, th, tw, budgeted)
+        except Exception as exc:  # noqa: BLE001
+            if not _is_oom(exc):
+                raise
+            failed = True
     if failed:
         # Retried outside the handler so the failed attempt's tensors (held by the traceback) are gone first.
         import torch
 
         stats["oom_fallback"] += 1
+        clear_partial_decode(vae, z)
         torch.cuda.empty_cache()
         th, tw = floor
         vae._unsloth_last_decode_tile = floor
@@ -314,4 +456,5 @@ def uninstall(vae: Any) -> None:
     else:
         vae.tiled_decode = own
     vae.__dict__.pop("_unsloth_last_decode_tile", None)
+    vae.__dict__.pop(_WEIGHTS_ATTR, None)
     vae._unsloth_wide_tiles = False

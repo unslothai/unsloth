@@ -66,7 +66,7 @@ print("@@@" + json.dumps(results))
 """
 
 
-# Two post_patch_model calls then a positional enable: the newest (offloading) wrapper must bind.
+# Two post_patch_model calls then a positional enable: the newest wrapper must bind.
 _CHILD_REPATCH = r"""
 import json
 import unsloth  # noqa: F401
@@ -88,9 +88,8 @@ funcs = [
     if getattr(m, "_gradient_checkpointing_func", None) is not None
 ]
 def offload(f):
-    f = getattr(f, "func", f)
-    cells = dict(zip(f.__code__.co_freevars, (c.cell_contents for c in f.__closure__ or ())))
-    return cells.get("_offload")
+    # non_reentrant_checkpoint() records whether the wrapper offloads (mode "unsloth") on itself.
+    return getattr(getattr(f, "func", f), "_unsloth_offloads", None)
 out = {
     "n_funcs": len(funcs),
     "use_reentrant": sorted({str(getattr(f, "keywords", {}).get("use_reentrant")) for f in funcs}),
@@ -139,7 +138,6 @@ def test_other_models_keep_reentrant(tmp_path):
 
 
 def test_later_model_gets_reentrant_back(tmp_path):
-    # Same process: the deepseek_v41 wrapper must not leak into the next model's checkpointing.
     v41, llama = _run(tmp_path, "deepseek_v41", "llama")
     assert v41["wrapper_in_use"], v41
     assert v41["reenable_wrapper_in_use"], v41

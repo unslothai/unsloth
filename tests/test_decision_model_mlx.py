@@ -200,6 +200,14 @@ def test_decision_helpers_are_one_torch_free_module_for_both_backends():
     assert [a.name for n in taken for a in n.names] == ["*"]
 
 
+@pytest.mark.parametrize("clef", [False, True])
+def test_rows_problem_checks_rows_without_a_model(clef):
+    assert FastDecisionModel.rows_problem([{"state": "s"}, _row(0)], clef) is None
+    assert FastDecisionModel.rows_problem([{"state": "s"}], clef) == (
+        "row 1 needs state, questions and gold"
+    )
+
+
 @pytest.fixture
 def clef_checkpoint(tmp_path, monkeypatch):
     from types import SimpleNamespace
@@ -405,6 +413,27 @@ def test_predict_answers_at_the_calibrated_temperatures(checkpoint, monkeypatch)
         FastDecisionModel.predict(model, tokenizer, "s", {})
 
 
+@pytest.mark.parametrize("instructions", [None, ""])
+def test_a_question_without_instructions_is_read_by_its_id(checkpoint, instructions):
+    model, tokenizer = FastDecisionModel.from_pretrained(str(checkpoint))
+    state = "the server is down again"
+    blank = {"type": "noul", "instructions": instructions}
+    named = {name: {"type": "noul", "instructions": name} for name in ("outage", "billing")}
+
+    answers = FastDecisionModel.predict(model, tokenizer, state, dict.fromkeys(named, blank))
+    assert answers == FastDecisionModel.predict(model, tokenizer, state, named)
+
+    def tokens(questions):
+        gold = dict.fromkeys(questions, "true")
+        row = {"state": state, "questions": questions, "gold": gold}
+        return [
+            item["input_ids"]
+            for item in FastDecisionModel.build_dataset([row], tokenizer, model)[0]
+        ]
+
+    assert tokens(dict.fromkeys(named, blank)) == tokens(named)
+
+
 def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(
     clef_checkpoint, checkpoint, monkeypatch, tmp_path
 ):
@@ -435,12 +464,18 @@ def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(
 
     seen, real, keep = [], zoo.clef_training_item, [True]
 
-    def item(pipeline, state, questions, max_length, *images):
-        # A row without images is asked as before, with no fifth argument.
-        seen.append([getattr(image, "size", image) for image in images[0]] if images else None)
+    def item(
+        pipeline,
+        state,
+        questions,
+        max_length,
+        images = None,
+        audio = None,
+    ):
+        seen.append([getattr(image, "size", image) for image in images] if images else audio)
         return {
             **real(pipeline, state, questions, max_length),
-            **({"images": images[0]} if keep and images else {}),
+            **({"images": images} if keep and images else {}),
         }
 
     monkeypatch.setattr(zoo, "clef_training_item", item)
@@ -465,6 +500,40 @@ def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(
         model, tokenizer, "s", {"q": {"type": "noul", "instructions": "i"}}, images = url
     )
     assert seen[-1] == [url]
+    # Audio rows: data URLs as they are, an undecoded column's bytes or file as one, a decoded clip with its rate.
+    (tmp_path / "a.wav").write_bytes(b"RIFF")
+    sound = "data:audio/wav;base64," + base64.b64encode(b"RIFF").decode()
+    clip = {"path": None, "array": [0.0, 1.0], "sampling_rate": 16000}
+
+    class Decoder:
+        # What datasets 4 decodes an audio column to.
+        get_all_samples = None
+
+        def __getitem__(self, key):
+            return clip[key]
+
+    class Corrupt(Decoder):
+        def __getitem__(self, key):
+            raise RuntimeError("invalid data found")
+
+    heard = [
+        {**_row(0), "audio": [sound, {"bytes": b"RIFF"}]},
+        {**_row(1), "audio": {"bytes": None, "path": str(tmp_path / "a.wav")}},
+        {**_row(2), "audio": [None, {"bytes": None, "path": None}, clip, Decoder()]},
+        {**_row(3), "audio": {"bytes": None, "path": str(tmp_path / "none.wav")}},
+    ]
+    items, report = FastDecisionModel.build_dataset(
+        [_row(0), {**_row(1), "audio": [Decoder(), Corrupt()]}], tokenizer, model
+    )
+    assert [item["row"] for item in items] == [0] and "could not be decoded" in report["reason"]
+    del seen[:]
+    items, report = FastDecisionModel.build_dataset(heard, tokenizer, model)
+    assert [item["row"] for item in items] == [0, 1, 2] and "none.wav" in report["reason"]
+    assert seen == [[sound, sound], [sound], [{"array": [0.0, 1.0], "sampling_rate": 16000}] * 2]
+    FastDecisionModel.predict(
+        model, tokenizer, "s", {"q": {"type": "noul", "instructions": "i"}}, audio = sound
+    )
+    assert seen[-1] == [sound]
     # An unsloth-zoo that takes no images says so, where skipping the rows would train without them.
     monkeypatch.setattr(
         zoo,
@@ -477,7 +546,9 @@ def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(
     question = {"q": {"type": "noul", "instructions": "i"}}
     for call in (
         lambda: FastDecisionModel.build_dataset(rows, tokenizer, model),
+        lambda: FastDecisionModel.build_dataset(heard, tokenizer, model),
         lambda: FastDecisionModel.predict(model, tokenizer, "s", question, images = url),
+        lambda: FastDecisionModel.predict(model, tokenizer, "s", question, audio = sound),
     ):
         with pytest.raises(ImportError, match = "newer unsloth-zoo"):
             call()
@@ -486,6 +557,8 @@ def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(
         FastDecisionModel.predict(
             laya, laya_tokenizer, "s", {"q": {"type": "noul", "instructions": "i"}}, images = [url]
         )
+    with pytest.raises(unsloth._decision_mlx.DecisionDataError, match = "Laya reads text only"):
+        FastDecisionModel.predict(laya, laya_tokenizer, "s", question, audio = sound)
     assert FastDecisionModel.predict(
         laya, laya_tokenizer, "s", {"q": {"type": "noul", "instructions": "i"}}, images = "[]"
     )

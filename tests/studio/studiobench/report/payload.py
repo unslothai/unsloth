@@ -1,34 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Incremental JSONL payload: what survives when the renderer dies at rung 4.
-
-A benchmark that builds its result in memory and writes it at the end has one output state and
-one failure state, and the failure state is an empty directory. The runs that matter most are
-exactly the ones that fail: a build that kills the renderer at 500K tokens is the most
-interesting result the tool can produce, and losing the three rungs that DID complete because the
-fourth crashed the browser turns the best evidence into no evidence.
-
-So every window is appended to a JSONL file and flushed to the OS as it is produced. A crash at
-rung 4 leaves rungs 1-3 on disk plus, if the harness got the chance, a `crash` record naming what
-happened. `assemble()` reads whatever is there, tolerates a half-written final line (a process
-killed mid-write leaves one), and reports how many records it had to discard rather than pretending
-the file was complete.
-
-`assemble()` also runs `validate_payload()`, so the schema-level ban on bare zeros is enforced on
-the real payload and not only in the unit tests.
-
-RECORD KINDS, all of which carry `kind` and `at_ms`:
-    header      one per run, first: identity, machine, bench version, instrument levels
-    selfcheck   the integrity gates and their verdicts; if any failed the run should have aborted
-    window      one measured window: rung, arm, action, frame stats, metrics
-    arm         one ablation arm outcome: invariance verdict, potency counters, cost
-    excluded    one excluded cell with its reason
-    crash       something died; carries the last sample row and RSS at death
-    footer      one per run, last: totals, wall time, exit status
-A file with no footer record is a run that did not finish, which `assemble()` reports as
-`complete: false` rather than silently treating as finished.
-"""
+"""Appends every window to JSONL as produced, so a crash mid-run keeps every rung already written."""
 
 from __future__ import annotations
 
@@ -74,14 +47,7 @@ def encode(node: Any) -> Any:
 
 
 class PayloadWriter:
-    """Append-only JSONL writer. One line per record, flushed as it is written.
-
-    `fsync` is optional and off by default: it costs a few milliseconds per record, which on a
-    per-window cadence is measurable against the thing being measured. The default (flush to the
-    OS, no fsync) survives a renderer crash, a Python exception and a `SIGKILL` of the driver,
-    which is every failure this file exists for; it does not survive the machine losing power,
-    which is not a case worth slowing the benchmark down for.
-    """
+    """Flushes each record to the OS without fsync: survives crashes and SIGKILL, not power loss."""
 
     def __init__(
         self,
@@ -122,7 +88,6 @@ class PayloadWriter:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         if exc_type is not None:
-            # Best effort: if the driver is dying, say so in the file before it goes.
             try:
                 self.write(
                     "crash",
@@ -136,12 +101,7 @@ class PayloadWriter:
 
 
 def read_records(path: str | Path) -> tuple[list[dict[str, Any]], int]:
-    """Read a JSONL payload, tolerating a truncated final line.
-
-    Returns `(records, discarded)`. `discarded` is almost always 0 or 1: a process killed
-    mid-write leaves at most one partial line, and more than that means the file was corrupted
-    some other way, which the report prints rather than hides.
-    """
+    """A kill mid-write leaves one partial last line; it is skipped and counted in discarded."""
 
     records: list[dict[str, Any]] = []
     discarded = 0
@@ -161,11 +121,7 @@ def read_records(path: str | Path) -> tuple[list[dict[str, Any]], int]:
 
 
 def assemble(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
-    """Turn a JSONL stream into one payload dict, complete or not.
-
-    `excluded_cells` is materialised here and is always a list, never absent and never null,
-    because a report that cannot say what it dropped is a report that dropped things silently.
-    """
+    """excluded_cells is always a list, never absent or null, so the report always says what it dropped."""
 
     records, discarded = read_records(path)
     by_kind: dict[str, list[dict[str, Any]]] = {kind: [] for kind in RECORD_KINDS}
@@ -206,10 +162,6 @@ def assemble(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
     return payload
 
 
-#: How the harness layer's `row_type` values map onto the sections of an assembled payload. Layer 1
-#: writes rows through its `Recorder` and this layer reads them; keeping the mapping in one table
-#: means a new row type is one line here and a visible `unknown_rows` entry until somebody decides
-#: where it belongs.
 ROW_TYPE_SECTIONS: Mapping[str, str] = {
     "run_meta": "header",
     "gate": "selfcheck",
@@ -218,37 +170,18 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     "action": "actions",
     "sample": "samples",
     "failure": "crashes",
-    # Bookkeeping about HOW the A/B was run, not a measurement of the app. Its OWN section: the
-    # `header` section is collapsed to its FIRST row when the payload is assembled, so an ab_plan
-    # row filed there is silently dropped while record_counts still reports two header rows.
+    # Own section: header is collapsed to its first row, which would silently drop this row.
     "ab_plan": "ab_plan",
-    # The optional surface sweep. Its own section: a surface row is a coverage fact about the UI, not a
-    # timing, and folding it into `actions` would put it in front of the scorer.
     "surface": "surfaces",
-    # The comparability key. Its own section rather than `header` for two reasons: `header` is
-    # collapsed to its FIRST row when the payload is assembled, so a second row filed there is dropped
-    # without a word; and the row's `fields` block is identity bookkeeping, not a measurement, so the
-    # section is exempted from the bare-zero ban rather than made to fake a Measure. Left unmapped the
-    # row fell into `unknown_rows`, which nothing exempts, and the walker killed every real-path
-    # session on `$.unknown_rows[0].fields.instrument_level = 0`.
+    # Own section: header keeps only its first row, and these identity fields are exempt from the zero ban.
     "comparability": "comparability",
-    # The terminal marker for a cell that did not finish. NOT `cells`, which is what the scorer reads,
-    # and NOT an exclusion source: the `cell` row it follows is emitted with `completed: false`
-    # immediately before it and `excluded_from_rows` already turns that into a `rung_incomplete`
-    # exclusion, so filing this as a second exclusion would count one abort twice. It exists so a
-    # reader scanning FORWARD can discard the cell's window rows.
+    # Not an exclusion source: the preceding completed=false cell row already counts the abort.
     "cell_aborted": "aborted_cells",
 }
 
 
 def executed_balance(order: Sequence[Any], attempted: set[str]) -> bool | None:
-    """`runtime/ab.py` `order_is_balanced`, over the cells that actually ran.
-
-    Same rule: which arm led each `(rung, rep)` pair, every arm equally often, one arm never
-    balanced because nothing cancels. Read off `make_cell_id`'s `r{rung}.{arm}.rep{rep}`,
-    rsplit from the right so a dotted rung parses. None when the ids are another shape, which
-    is cannot-tell, not unbalanced.
-    """
+    """None for other id shapes, which means cannot tell rather than unbalanced."""
 
     labels: set[str] = set()
     first: dict[str, int] = {}
@@ -271,33 +204,12 @@ def executed_balance(order: Sequence[Any], attempted: set[str]) -> bool | None:
 
 
 def merged_ab_plan(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """One plan out of however many sessions wrote one.
-
-    `--resume` emits a fresh `ab_plan` for the work that session was asked to do, so `[0]`
-    drops the cells a later one added while `record_counts` still reports both plans, which is
-    the loss that moved this row out of `header`, one layer down.
-
-    `order` is the union; the refs come from the first plan, and a resume whose refs disagree
-    is refused upstream.
-
-    `balanced` is ANDed over the sessions that still own a cell, taking ownership from
-    `latest_attempt_rows`: `ATTEMPT_ROW_TYPES` rather than `cell` rows alone, keyed on the
-    `session_id` `Recorder.emit` stamps on every row. A second copy of that rule that
-    disagreed would be worse than none.
-
-    Each verdict is recomputed over what that session ATTEMPTED, since the row's own was
-    computed over the whole plan before it ran: a `--reps 2` interrupted after rep 0 planned
-    base, treatment, treatment, base and ran base, treatment, so base led every pair that
-    happened. `order` stays the requested ladder; `balanced` describes the run.
-    """
+    """Merges all ab_plan rows; balanced is recomputed per session over the cells it actually attempted."""
 
     plans = [r for r in records if r.get("row_type") == "ab_plan"]
     if not plans:
         return {}
     plan = dict(plans[0])
-    # The merged object is a synthesis of every session's plan, so the first row's own stamps
-    # would assert it was written by one of them at one moment. `sessions` says who contributed
-    # instead, which is the question those fields were being read for.
     plan["sessions"] = [row.get("session_id") for row in plans]
     for stamp in ("session_id", "ts_ms"):
         plan.pop(stamp, None)
@@ -312,7 +224,6 @@ def merged_ab_plan(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         if record.get("row_type") in ATTEMPT_ROW_TYPES and record.get("cell_id") is not None:
             owner[str(record["cell_id"])] = record.get("session_id")
     owning = set(owner.values())
-    # No attempt rows at all is not an experiment; the newest request is the best word there is.
     live = [row for row in plans if row.get("session_id") in owning] or [plans[-1]]
     verdicts = []
     for row in live:
@@ -325,18 +236,7 @@ def merged_ab_plan(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
-    """Assemble a payload from the HARNESS layer's row stream (`row_type`, not `kind`).
-
-    Two writers exist on purpose and they are not redundant. `PayloadWriter` is this layer's own
-    stream, used by the ablation batches, which run outside a Layer 1 session and have no
-    Recorder. `Recorder` is Layer 1's, and its rows are what a full session produces. Both end up
-    in the same assembled shape so the renderer has one input, and neither has to know about the
-    other while it is writing.
-
-    A completed run is one that emitted at least one `run_meta` row and at least one `cell` row
-    with `completed` true. There is no footer row in the harness contract, so completeness is
-    inferred from content rather than from a marker that a crash would remove.
-    """
+    """Harness rows have no footer, so completeness is inferred from run_meta and completed cell rows."""
 
     records, discarded = read_records(path)
     sections: dict[str, list[dict[str, Any]]] = {
@@ -386,12 +286,7 @@ def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
 
 
 def excluded_from_rows(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Derive `excluded_cells` from the harness rows that describe an exclusion.
-
-    Three row shapes mean a cell does not enter scoring, and all three have been seen to vanish
-    from a report by simply not being looked for: a cell that did not complete, a failed gate,
-    and an action that ran but whose own assertion said it did not do what it claimed.
-    """
+    """A cell is excluded if it did not complete, failed a gate, or an action's own assertion failed."""
 
     out: list[dict[str, Any]] = []
     for row in records:

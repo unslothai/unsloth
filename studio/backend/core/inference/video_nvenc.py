@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in NVENC H.264 mp4 export (``UNSLOTH_STUDIO_VIDEO_ENCODER=nvenc``); libx264 on any failure. Not the default:
-larger files, and slower than libx264 on many-core hosts."""
+"""Opt-in NVENC H.264 mp4 export (UNSLOTH_STUDIO_VIDEO_ENCODER=nvenc), falls back to libx264 on
+failure; not default: larger files, slower on many-core hosts."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import re
 import threading
 import time
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 ENCODER_ENV = "UNSLOTH_STUDIO_VIDEO_ENCODER"
 CODEC = "h264_nvenc"
@@ -99,7 +100,7 @@ def nvenc_gpu(device: Any = None, logger: Any = None) -> Optional[int]:
     try:
         import torch
 
-        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+        if not torch.cuda.is_available() or is_rocm_torch(torch):
             return None
         index = torch.device(device).index if device is not None else None
         if index is None:

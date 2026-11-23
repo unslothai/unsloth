@@ -10,12 +10,17 @@ export function InstructionsField({
   instructionsKind,
   musicNeedsDescription,
   voiceRequired = false,
+  cloning = false,
+  disabled = false,
   audioInstructions,
   setAudioInstructions,
 }: {
   instructionsKind: NativeAudioInstructionsKind;
   musicNeedsDescription: boolean;
   voiceRequired?: boolean;
+  /** Clone's copy: the description shapes the cloned voice's delivery. */
+  cloning?: boolean;
+  disabled?: boolean;
   audioInstructions: string;
   setAudioInstructions: (value: string) => void;
 }) {
@@ -38,9 +43,11 @@ export function InstructionsField({
           : instructionsKind === "scene"
             ? "Optional Higgs TTS 2 scene guidance such as room acoustics, recording conditions, or background ambience."
             : instructionsKind === "voice"
-              ? voiceRequired
-                ? "Required by this model. Describe the voice, accent, age and delivery."
-                : "Optional. Used by Qwen3-TTS VoiceDesign, Qwen3-TTS CustomVoice and VoxCPM2; other models ignore it."
+              ? cloning
+                ? "Optional. How the cloned voice should deliver the text, such as its mood, pace or tone."
+                : voiceRequired
+                  ? "Required by this model. Describe the voice, accent, age and delivery."
+                  : "Optional. Used by Qwen3-TTS VoiceDesign, Qwen3-TTS CustomVoice and VoxCPM2; other models ignore it."
               : "Optional MOSS Local guidance such as speaking style, emotion, pace, or delivery."
       }
       htmlFor="audio-instructions"
@@ -48,6 +55,7 @@ export function InstructionsField({
       <Textarea
         id="audio-instructions"
         value={audioInstructions}
+        disabled={disabled}
         onChange={(event) =>
           setAudioInstructions(event.target.value)
         }
@@ -57,7 +65,9 @@ export function InstructionsField({
             : instructionsKind === "scene"
               ? "Close-mic studio recording in a quiet, softly treated room…"
               : instructionsKind === "voice"
-                ? "A warm, low female voice, speaking slowly and calmly…"
+                ? cloning
+                  ? "Calm and warm, speaking a little slowly…"
+                  : "A warm, low female voice, speaking slowly and calmly…"
                 : "Warm, measured delivery with a calm conversational tone…"
         }
         className="min-h-24"

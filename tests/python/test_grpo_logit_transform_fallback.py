@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""The GRPO fallback must answer the same as ``detect_logit_transforms``.
-
-The fallback is inlined into two GRPO bodies by ``inspect.getsource``, so it cannot be
-imported: lift each ``else:`` arm out with ast and run it. A wrong factor here does not
-raise, it shifts every log-prob and with it the importance ratio.
-"""
+"""GRPO's inlined fallback is lifted out with ast and must match detect_logit_transforms."""
 
 from __future__ import annotations
 
@@ -64,8 +59,6 @@ class _Model:
 def _run(block, config):
     namespace = {
         "model_config": config,
-        # The real readers, not stubs: a stub would pass while the shipped fallback drops
-        # a field. The soft-cap one takes a model, so hand it one carrying this config.
         "model": _Model(config),
         "_unsloth_get_final_logit_softcapping": rl._unsloth_get_final_logit_softcapping,
         "_unsloth_resolve_logit_scales": rl._unsloth_resolve_logit_scales,

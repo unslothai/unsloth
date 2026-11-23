@@ -5,24 +5,13 @@ import type { DownloadJob, DownloadPresentation } from "../download-manager";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DownloadStopMode } from "./download-cancel-indicator";
 
-/** What the button on a partial row does. Never "Redownload": whichever
- * transport wrote the partial, files already on disk are kept and only the
- * interrupted one is fetched again.
- *
- * `partialResumable` is the backend's verdict on THIS partial, not on the
- * installed writer: a cache shared with a newer environment holds partials that
- * even a resuming huggingface_hub will not reopen. */
+/** Never "Redownload": finished files are kept. `partialResumable` is the backend's verdict
+ * on THIS partial, not on the installed writer. */
 export function partialResumeLabel(partialResumable = false): string {
   return partialResumable ? "Resume" : "Continue";
 }
 
-/** Tooltip for a "Partial" badge. The badge is not a control, so it names the
- * button that is, and says what continuing actually costs.
- *
- * The restart leads, because the unit is the FILE: a sharded repo keeps the
- * shards it finished, but a one-file quant has nothing to keep and fetches
- * every byte again. Leading with what survives reads as a promise the
- * single-file case cannot honour. */
+/** Leads with the restart because the unit is the file: one-file quants keep nothing. */
 export function partialDownloadHint(partialResumable = false): string {
   const label = partialResumeLabel(partialResumable);
   return partialResumable
@@ -30,27 +19,20 @@ export function partialDownloadHint(partialResumable = false): string {
     : `Partial download. Click ${label} to finish it. The interrupted file starts over; other files already on disk are kept.`;
 }
 
-/** Stopping a download that can be resumed is a pause; anything else is a
- * cancel, since the interrupted file has to start over.
- *
- * Reads the running job's transport, not the partial's: a fresh HTTP download
- * has no partial yet, and a restarted conflict switches transport, so the
- * partial describes neither. */
+/** Uses the running job's transport, not the partial's, which may describe neither. */
 export function downloadStopMode(
   activeTransport: string | null | undefined,
   partialTransport?: string | null,
   cancelTransport?: string | null,
   partialsResumable = false,
 ): DownloadStopMode {
-  // The cancel marker wins where there is one: a Xet run that fell back to HTTP still cancels into
-  // a restart-only partial, so Pause would promise a resume the marker does not allow.
+  // The cancel marker wins: a Xet run that fell back to HTTP still leaves a restart-only partial.
   const transport = cancelTransport ?? activeTransport ?? partialTransport;
-  // Capability, not a row verdict: the partial being written right now is this
-  // machine's own, so the installed writer decides whether stopping keeps it.
+  // Capability, not row verdict: this machine's own writer decides whether stopping keeps it.
   return transport === "http" && partialsResumable ? "pause" : "cancel";
 }
 
-// Snapshot job alone misses scoped ("@scope") jobs writing into the repo, showing "Resume" mid-download.
+// Also match scoped ("@scope") jobs, or the row shows "Resume" mid-download.
 export function isRepoDownloadProgress(
   progress: { variant: string | null } | null | undefined,
 ): boolean {
@@ -97,9 +79,7 @@ export function useDownloadCardState({
   disabled: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
-  /** This row's partial can be continued byte for byte (backend verdict). */
   partialResumable?: boolean;
-  /** Whether the installed writer resumes at all, for the running job's stop control. */
   partialsResumable?: boolean;
 }) {
   const [starting, setStarting] = useState(false);

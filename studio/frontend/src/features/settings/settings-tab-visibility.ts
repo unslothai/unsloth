@@ -11,6 +11,7 @@ export const OWNER_ONLY_SETTINGS_TABS: ReadonlySet<SettingsTab> = new Set<Settin
   "resources",
   "remote-lan",
   "agents",
+  "computer-use",
   "debugging",
 ]);
 
@@ -18,7 +19,6 @@ export function settingsTabVisible(tab: SettingsTab, isOwner: boolean): boolean 
   return isOwner || !OWNER_ONLY_SETTINGS_TABS.has(tab);
 }
 
-// A deep link or a stale stored tab that the account cannot open lands on General.
 export function resolveSettingsTab(requested: SettingsTab, isOwner: boolean): SettingsTab {
   return settingsTabVisible(requested, isOwner) ? requested : "general";
 }

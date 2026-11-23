@@ -13,8 +13,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
+import { clearSiteCookies } from "./api";
 import { useBrowserHistoryStore } from "./history-store";
 import { clearNativeBrowsingData, useNativeBrowser } from "./native-support";
+import { clearPageStorage } from "./page-storage";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { clearPageCache } from "./store";
 
@@ -44,9 +46,10 @@ export function ClearBrowsingDataDialog({
               history.clearHistory();
               history.clearDownloads();
               clearPageCache();
+              clearPageStorage();
               // Suggestions come from history, so the ones taken off come back with it gone.
               useBrowserPrefsStore.getState().restoreSuggestions();
-              clearNativeBrowsingData().then(
+              Promise.all([clearSiteCookies(), clearNativeBrowsingData()]).then(
                 () => toast.success(t("browser.clearData.done")),
                 () => toast.error(t("browser.native.clearDataFailed")),
               );

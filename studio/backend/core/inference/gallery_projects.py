@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Copy a gallery image or clip into a chat project's folder.
-
-Files land in ``<project root>/sandbox/{images,videos,audio}``, where the project's chats run their
-tools. It is a copy, so the gallery keeps its item.
-"""
+"""Copies a gallery item (not moves) into <project root>/sandbox/{images,videos,audio} for chat tools"""
 
 from __future__ import annotations
 
@@ -27,7 +23,7 @@ class ProjectNotFound(LookupError):
     """No live project has this id."""
 
 
-# POSIX: walk into the folder by descriptor so a symlink swapped in cannot redirect the write.
+# POSIX: walk in by descriptor so a swapped-in symlink cannot redirect the write.
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 _USE_DIR_FD = (
     hasattr(os, "O_NOFOLLOW")
@@ -43,7 +39,7 @@ _USE_DIR_FD = (
 
 
 def _sandbox_dir(project_id: str) -> str:
-    from storage.studio_db import ensure_chat_project_workspace
+    from storage.studio_db import available_project_working_folder, ensure_chat_project_workspace
 
     project = ensure_chat_project_workspace(project_id)
     if not project:
@@ -57,7 +53,7 @@ def _sandbox_dir(project_id: str) -> str:
     sandbox_real = os.path.realpath(sandbox_path)
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
         raise ProjectNotFound(project_id)
-    return sandbox_real
+    return available_project_working_folder(project) or sandbox_real
 
 
 UNSAFE_NAME_CHARS = r"\\/:*?\"<>|\x00-\x1f\x7f"
@@ -170,13 +166,7 @@ def copy_into_project(
     folder: str,
     name: str | None = None,
 ) -> dict[str, object]:
-    """Copy ``source`` into the project's ``folder`` and return ``{"path", "already"}``.
-
-    ``source`` is a path, or a file already open (then ``name`` is required): a caller that checked
-    the file it opened hands over that descriptor rather than a name that can be swapped since.
-    Keyed by the file name (the gallery id unless ``name`` is given), so a second add is a no-op.
-    Written via a temp file so a failed copy leaves nothing behind. Refuses a ``folder`` that leads
-    outside the sandbox. Raises ProjectNotFound, ValueError for a bad ``name``, or OSError."""
+    """Copies an open file by descriptor; refuses a folder outside the sandbox so a symlink cannot escape."""
     if name is None:
         if not isinstance(source, Path):
             raise ValueError("An open file needs a name to be copied as.")

@@ -1,11 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Unloading the last model tears the inference subprocess down.
-
-empty_cache in the child cannot return the accelerator context, so an idle
-worker sat on its high-water mark, and gpu_arbiter never evicts between the
-transformers and GGUF backends (both are chat-owned): the memory stayed
-stranded for the rest of the session.
-"""
+"""Last unload must kill the subprocess, since empty_cache cannot return the accelerator context."""
 
 import multiprocessing as mp
 import threading
@@ -57,17 +51,13 @@ def test_unload_keeps_the_worker_while_a_model_is_still_resident():
 
 
 def test_unload_keeps_the_worker_while_a_load_is_in_flight():
-    # Tearing down here would kill the load that is about to reuse the worker.
     o = _idle_orchestrator({"m": {}}, loading = ("incoming",))
 
     assert o.unload_model("m") is True
     assert o.shutdowns == []
 
 
-# The stubs above cannot see a teardown that deadlocks or raises: the real
-# _shutdown_subprocess runs while unload_model holds _gen_lock and has set
-# _unload_pending, and it nulls the very _drain_event the unload clears in its
-# finally. These drive it for real against a live worker.
+# The real _shutdown_subprocess runs under _gen_lock and nulls _drain_event; run it live.
 
 
 def _sleeper(cmd_queue, resp_queue):
@@ -111,7 +101,6 @@ def test_real_teardown_kills_the_worker_and_leaves_clean_state():
     time.sleep(0.5)
     assert not proc.is_alive(), "worker survived the teardown"
     assert o._proc is None and o._unload_pending is False
-    # _gen_lock must be free for the next load.
     assert o._gen_lock.acquire(timeout = 1)
     o._gen_lock.release()
 

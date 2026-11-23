@@ -1,12 +1,4 @@
-"""A trainer that fails to build must say so, not fall back in silence.
-
-`_patch_trl_rl_trainers` swallowed every exception into `logger.info`. The
-swallow is deliberate (TRL 1.x renames trainers), but that benign case never
-reaches the handler: `_patch_trl_rl_trainers_impl` returns early when
-`trl.trainer.<name>` cannot be imported. Anything reaching the handler means
-generation failed, and the run then continues on trl's own trainer, losing
-Unsloth's compute_loss, bf16/fp16 fixup and dataset handling in one go.
-"""
+"""A trainer that fails to build must be reported, not swallowed into a silent trl fallback."""
 
 import ast
 from pathlib import Path

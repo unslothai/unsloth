@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""THE WORST NUMBER ON THE PAGE DESCRIBES A GESTURE NOBODY MAKES.
-
-`reasoning_toggle` reads 2.2 fps at the 100K rung with a p95 frame of 2,084 ms. It gets there by
-opening EVERY reasoning pane in the thread in one gesture: 10 panes, 74,917 highlight spans, 2,143
-ms to open and 805 ms to close. That is a legitimate stress reading and it has been quoted as a
-user-journey reading, which it is not -- a user expands one pane.
-
-`reasoning_toggle_one` is that second number. These tests hold the property that makes the two worth
-having side by side: the cost of the thread-wide action scales with thread length and the cost of
-the single-pane one does not.
-"""
+"""Times one pane's expansion, unlike reasoning_toggle; its cost must not scale with thread length."""
 
 from __future__ import annotations
 
@@ -30,9 +20,7 @@ from studiobench.scene import actions as A  # noqa: E402
 
 _DOM_JS = _STUDIO_TESTS / "studiobench" / "scene" / "dom.js"
 
-#: A Radix Collapsible reduced to the two things `dom.js` reads: `data-state` on the ROOT, and a
-#: trigger that flips it. The content stays mounted when collapsed, exactly as Radix leaves it, so a
-#: presence check would read every pane as open and the assertion could never fail.
+#: Radix keeps collapsed content mounted, so only root `data-state` tells open from closed.
 BODY_TEMPLATE = """<!doctype html><meta charset=utf-8><title>t</title>
 <div class="aui-thread-root"><div class="aui-thread-viewport" id="vp"></div></div>
 <script>
@@ -106,7 +94,7 @@ def make_page(browser):
             "__SPANS__", str(spans_per_pane)
         )
         page.set_content(body)
-        # `set_content` does not reliably run an init script, so the module is attached after.
+        # `set_content` does not reliably run init scripts, so attach the module after.
         page.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
         opened.append(page)
         return page
@@ -135,21 +123,15 @@ def test_it_opens_exactly_one_pane_and_leaves_the_rest_shut(make_page):
     assert got.expect_ok is True, got.reason
     assert got.expect["open_after_expand"] == 1
     assert got.expect["open_after_collapse"] == 0
-    # The thread's pane count is reported as CONTEXT beside a fixed gesture; without it the reading
-    # cannot be told apart from the thread-wide one in a payload.
     assert got.expect["panes"] == 8
     assert got.expect["panes_opened"] == 1
 
 
 def test_the_cost_does_not_scale_with_thread_length(make_page):
-    """THE PROPERTY THAT MAKES IT A DIFFERENT NUMBER. `reasoning_toggle` materialises every pane's
-    spans, so it grows with the thread. This one materialises one pane's, so it does not -- and a
-    reading that quietly grew with thread length would be the thread-wide action under a new name.
-    """
+    """Cost must not grow with thread length: one pane's spans are materialised, not the whole thread's."""
     small = A.reasoning_toggle_one(_ctx(make_page(panes = 2, spans_per_pane = 4)))
     large = A.reasoning_toggle_one(_ctx(make_page(panes = 40, spans_per_pane = 4)))
     assert small.ran and large.ran
-    # Twentyfold the thread, the same number of spans revealed.
     assert small.expect["highlight_spans_added"] == large.expect["highlight_spans_added"] == 4
 
 
@@ -170,10 +152,7 @@ def test_it_refuses_a_thread_that_is_already_open(make_page):
 
 
 def test_it_is_not_in_the_standard_film(make_page):
-    """Adding a slot to a fixed-duration schedule shifts every window after it and voids
-    comparability against every payload already on disk. The action exists so the number can be
-    taken deliberately; it must not appear in the shipped scene until a corpus or tier bump is
-    invalidating those payloads anyway."""
+    """Not in the standard film: a new slot shifts later windows and breaks comparison with old payloads."""
     schedule = (Path(_STUDIO_TESTS) / "studiobench" / "scene" / "schedule.py").read_text(
         encoding = "utf-8"
     )

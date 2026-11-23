@@ -30,8 +30,6 @@ export interface UseHubFeedResult {
   refetch: (id: ChannelId) => void;
 }
 
-// Only the trending row is rendered in the feed now; "Fine-tune ready" moved
-// into the format dropdown and loads its channel on demand (channel-list mode).
 const CHANNEL_IDS: readonly ChannelId[] = ["unsloth-trending"];
 const FEED_PAGE_SIZE = 20;
 const MAX_RETRIES = 5;

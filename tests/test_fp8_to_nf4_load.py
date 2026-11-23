@@ -26,7 +26,8 @@ import pytest
 import torch
 
 import unsloth  # noqa: F401  (patches before transformers)
-from unsloth import FastLanguageModel, FastModel
+from unsloth import FastLanguageModel, FastModel, is_bfloat16_supported
+from unsloth.device_type import xpu_keeps_explicit_bf16
 from unsloth.models.loader_utils import check_and_disable_bitsandbytes_loading
 
 _BLOCK = 128
@@ -36,6 +37,11 @@ _KEEP_16BIT = "model.layers.1.self_attn.o_proj"
 cuda_available = torch.cuda.is_available()
 xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
 dev = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
+# The tests ask for bf16; as the loaders do, a GPU without bf16 (T4) loads in fp16 instead, except XPU,
+# which keeps an explicit bf16 request. fp8 dequantizes to the load dtype.
+_LOAD_DTYPE = (
+    torch.bfloat16 if is_bfloat16_supported() or xpu_keeps_explicit_bf16() else torch.float16
+)
 
 needs_gpu = pytest.mark.skipif(
     not (cuda_available or xpu_available), reason = "bitsandbytes 4bit needs a GPU"
@@ -72,12 +78,16 @@ def _quantize_block_fp8(weight):
     return quant, scale.contiguous()
 
 
-def _dequantize_reference(quant, scale):
+def _dequantize_reference(
+    quant,
+    scale,
+    dtype = torch.bfloat16,
+):
     rows, cols = quant.shape
     expanded = (
         scale.float().repeat_interleave(_BLOCK, 0)[:rows].repeat_interleave(_BLOCK, 1)[:, :cols]
     )
-    return (quant.float() * expanded).to(torch.bfloat16)
+    return (quant.float() * expanded).to(dtype)
 
 
 def _is_fp8_candidate(key, tensor):
@@ -88,7 +98,7 @@ def _is_fp8_candidate(key, tensor):
     return not key.startswith(_KEEP_16BIT + ".")
 
 
-def _write_pair(bf16_dir, root):
+def _write_pair(bf16_dir, root, deq_dtype):
     """bf16 save -> (fp8 dir, dequantized-bf16 dir)."""
     from safetensors.torch import load_file, save_file
 
@@ -108,7 +118,7 @@ def _write_pair(bf16_dir, root):
             quant, scale = _quantize_block_fp8(tensor)
             fp8_state[key] = quant
             fp8_state[key + "_scale_inv"] = scale
-            deq_state[key] = _dequantize_reference(quant, scale)
+            deq_state[key] = _dequantize_reference(quant, scale, deq_dtype)
         else:
             fp8_state[key] = tensor
             deq_state[key] = tensor
@@ -128,7 +138,11 @@ def _write_pair(bf16_dir, root):
     return fp8_dir, deq_dir
 
 
-def _build(root, moe):
+def _build(
+    root,
+    moe,
+    deq_dtype = torch.bfloat16,
+):
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(_TOKENIZER_REPO)
@@ -163,12 +177,12 @@ def _build(root, moe):
     bf16_dir = os.path.join(root, "bf16")
     model.save_pretrained(bf16_dir, safe_serialization = True)
     tokenizer.save_pretrained(bf16_dir)
-    return _write_pair(bf16_dir, root)
+    return _write_pair(bf16_dir, root, deq_dtype)
 
 
 @pytest.fixture(scope = "module")
 def dense_pair(tmp_path_factory):
-    return _build(str(tmp_path_factory.mktemp("fp8_dense")), moe = False)
+    return _build(str(tmp_path_factory.mktemp("fp8_dense")), moe = False, deq_dtype = _LOAD_DTYPE)
 
 
 @pytest.fixture(scope = "module")
@@ -246,18 +260,47 @@ def _free(*models):
     getattr(torch, dev, torch.cuda).empty_cache()
 
 
+@pytest.fixture(scope = "module")
+def dense_fp8_nf4(dense_pair):
+    """The plain fp8 -> NF4 load of the dense checkpoint, read once for every test that inspects it (each load is
+    the slow part): what it printed, its counts, fingerprint, 16-bit module and saved skip list."""
+    import contextlib
+    import io
+
+    fp8_dir, _ = dense_pair
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        model = _load(FastLanguageModel, fp8_dir, load_in_4bit = True)
+    print(out.getvalue(), end = "")
+    module = model.get_submodule(_KEEP_16BIT)
+    quantization_config = getattr(model.config, "quantization_config", None) or {}
+    if not isinstance(quantization_config, dict):
+        quantization_config = quantization_config.to_dict()
+    loaded = SimpleNamespace(
+        printed = out.getvalue(),
+        n4bit = _count_4bit(model),
+        nfp8 = _count_fp8(model),
+        marker_left = hasattr(model.config, "_unsloth_fp8_to_nf4"),
+        fingerprint = _fingerprint(model),
+        keep_type = type(module),
+        keep_weight = module.weight.detach().cpu().clone(),
+        skip_modules = list(
+            quantization_config.get("llm_int8_skip_modules") or []
+        ),  # asserted by the test
+    )
+    _free(model)
+    return loaded
+
+
 @needs_gpu
 @needs_feature
-def test_dense_fp8_loads_nf4_bit_identical_to_dequantized_bf16(dense_pair, capsys):
-    fp8_dir, deq_dir = dense_pair
-    model = _load(FastLanguageModel, fp8_dir, load_in_4bit = True)
-    printed = capsys.readouterr().out
-    assert _count_4bit(model) == 13  # 2 x (q, k, v, o, gate, up, down) minus the 16-bit o_proj
-    assert _count_fp8(model) == 0
-    assert "dequantizing each fp8 tensor" in printed
-    assert not hasattr(model.config, "_unsloth_fp8_to_nf4")
-    ours = _fingerprint(model)
-    _free(model)
+def test_dense_fp8_loads_nf4_bit_identical_to_dequantized_bf16(dense_pair, dense_fp8_nf4):
+    _, deq_dir = dense_pair
+    assert dense_fp8_nf4.n4bit == 13  # 2 x (q, k, v, o, gate, up, down) minus the 16-bit o_proj
+    assert dense_fp8_nf4.nfp8 == 0
+    assert "dequantizing each fp8 tensor" in dense_fp8_nf4.printed
+    assert not dense_fp8_nf4.marker_left
+    ours = dense_fp8_nf4.fingerprint
     reference = _load(FastLanguageModel, deq_dir, quantization_config = _reference_config())
     theirs = _fingerprint(reference)
     _free(reference)
@@ -274,7 +317,6 @@ def test_moe_fp8_loads_nf4_experts_bit_identical(moe_pair):
         for name, p in model.named_parameters()
         if ".experts." in name and type(p).__name__ == "Params4bit"
     ]
-    # gate_up_proj and down_proj stacks on both layers go through Unsloth's bnb expert path.
     assert len(experts) == 4, experts
     assert _count_fp8(model) == 0
     ours = _fingerprint(model)
@@ -287,25 +329,17 @@ def test_moe_fp8_loads_nf4_experts_bit_identical(moe_pair):
 
 @needs_gpu
 @needs_feature
-def test_checkpoint_16bit_modules_stay_16bit(dense_pair):
+def test_checkpoint_16bit_modules_stay_16bit(dense_pair, dense_fp8_nf4):
     from safetensors.torch import load_file
 
     fp8_dir, _ = dense_pair
-    model = _load(FastLanguageModel, fp8_dir, load_in_4bit = True)
-    module = model.get_submodule(_KEEP_16BIT)
-    assert type(module) is torch.nn.Linear
+    assert dense_fp8_nf4.keep_type is torch.nn.Linear
     stored = load_file(os.path.join(fp8_dir, "model.safetensors"))[_KEEP_16BIT + ".weight"]
     assert stored.dtype == torch.bfloat16
-    assert torch.equal(module.weight.detach().cpu(), stored)
-    quantization_config = model.config.quantization_config
-    if not isinstance(quantization_config, dict):
-        quantization_config = quantization_config.to_dict()
+    assert dense_fp8_nf4.keep_weight.dtype == _LOAD_DTYPE
+    assert torch.equal(dense_fp8_nf4.keep_weight, stored.to(_LOAD_DTYPE))
     # Saved with the model, so a reload of the 4bit save keeps it in 16bit too.
-    assert any(
-        p.replace("\\", "").rstrip("$") == _KEEP_16BIT
-        for p in quantization_config["llm_int8_skip_modules"]
-    )
-    _free(model)
+    assert any(p.replace("\\", "").rstrip("$") == _KEEP_16BIT for p in dense_fp8_nf4.skip_modules)
 
 
 @needs_fp8_gpu
@@ -328,7 +362,7 @@ def test_default_load_in_4bit_and_kill_switch_keep_fp8(dense_pair, monkeypatch):
 
 @needs_gpu
 @needs_feature
-def test_fp8_keys_the_model_does_not_have_are_ignored(dense_pair, tmp_path):
+def test_fp8_keys_the_model_does_not_have_are_ignored(dense_pair, dense_fp8_nf4, tmp_path):
     """MTP layers ship in fp8 but transformers drops them as unexpected (DeepSeek-V3, GLM-4 MoE,
     Qwen3-Next): they must not count as unapplied scales."""
     from safetensors.torch import load_file, save_file
@@ -345,10 +379,7 @@ def test_fp8_keys_the_model_does_not_have_are_ignored(dense_pair, tmp_path):
     assert _count_4bit(model) == 13
     ours = _fingerprint(model)
     _free(model)
-    plain = _load(FastLanguageModel, fp8_dir, load_in_4bit = True)
-    theirs = _fingerprint(plain)
-    _free(plain)
-    _assert_same(ours, theirs)
+    _assert_same(ours, dense_fp8_nf4.fingerprint)
 
 
 @needs_gpu
@@ -391,18 +422,21 @@ def test_moe_merged_16bit_save_equals_dequantized_checkpoint(moe_pair, tmp_path)
     model = FastModel.get_peft_model(
         model, r = 8, target_modules = ["q_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
-    # lora_B starts at zero, so the merge must give back the dequantized fp8 weights exactly,
-    # read from the fp8 shards on disk rather than the NF4 copy in memory.
+    # lora_B starts at zero, so the merge must equal the fp8 weights read from disk, not the NF4 copy.
     model.save_pretrained_merged(str(tmp_path / "merged"), tokenizer, save_method = "merged_16bit")
     _free(model)
     merged = {}
     for name in os.listdir(tmp_path / "merged"):
         if name.endswith(".safetensors"):
             merged.update(load_file(str(tmp_path / "merged" / name)))
+    fp8_state = load_file(os.path.join(fp8_dir, "model.safetensors"))
     reference = load_file(os.path.join(deq_dir, "model.safetensors"))
     assert merged.keys() == reference.keys()
     for key, tensor in reference.items():
-        assert torch.equal(merged[key], tensor), key
+        dtype = merged[key].dtype  # fp16 for merged weights on a GPU without bf16
+        if key + "_scale_inv" in fp8_state:  # straight from fp8 to the saved dtype
+            tensor = _dequantize_reference(fp8_state[key], fp8_state[key + "_scale_inv"], dtype)
+        assert torch.equal(merged[key], tensor.to(dtype)), key
 
 
 @needs_fp8_gpu
@@ -458,7 +492,6 @@ def test_arming_needs_an_explicit_request(monkeypatch):
     config = _fp8_config()
     assert from_pretrained("x", load_in_4bit = True)[:2] == (True, False)
     assert inside == {"armed": True, "stripped": True}
-    # The outermost from_pretrained hands the caller's config back as it was.
     assert config.quantization_config["quant_method"] == "fp8"
     assert not fp8_to_nf4.fp8_to_nf4_armed(config)
 
@@ -503,6 +536,22 @@ def test_packed_fp4_expert_checkpoints_are_not_armed(monkeypatch):
         False,
         False,
     )
+    assert config.quantization_config["quant_method"] == "fp8"
+
+
+@needs_feature
+def test_a_packed_fp4_release_says_it_keeps_the_released_weights(monkeypatch, capsys):
+    # DeepSeek-V4.1's release: fp8 32x32 ue8m0 linears, fp4 experts. An explicit load_in_4bit keeps them.
+    from unsloth.models import fp8_to_nf4
+
+    monkeypatch.setattr(fp8_to_nf4, "explicit_4bit_requested", lambda: True)
+    config = _fp8_config()
+    config.quantization_config.update(expert_dtype = "fp4", scale_fmt = "ue8m0")
+    assert fp8_to_nf4.maybe_arm_fp8_to_nf4(config, True, False, verbose = True) is False
+    out = capsys.readouterr().out
+    assert "FP4 (4-bit)" in out and "does not re-quantize the experts to NF4" in out
+    # No residency or memory promise: hardware fallback or `dequantize = True` can still expand the weights.
+    assert "memory" not in out
     assert config.quantization_config["quant_method"] == "fp8"
 
 
@@ -627,7 +676,7 @@ def test_planner_sizes_an_armed_load_expert_merge_in_the_load_dtype():
         finally:
             fp8_to_nf4._ARMED_CONFIGS.reset(token)
     assert measured[False][0] and not measured[True][0]
-    assert measured[True][1] == measured[False][1]  # weights still sized as 4bit
+    assert measured[True][1] == measured[False][1]
     assert measured[True][2] == 4 * measured[False][2]  # bf16 stack, not packed nibbles
 
 

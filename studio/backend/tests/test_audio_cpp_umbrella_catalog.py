@@ -12,13 +12,14 @@ from pathlib import Path
 import pytest
 
 from core.inference import audio_cpp_models as acm
-from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES
 
-# Folder -> (family its GGUF header names, Audio pages), audio-cpp/audio.cpp-gguf at e36610ac.
+# Folder -> (family its GGUF header names, Audio pages), audio-cpp/audio.cpp-gguf at f861648c;
+# VibeVoice-ASR-Streaming from the spec-refresh-v0.9.2 branch at 95ab5a44.
 UMBRELLA = {
     "ACE-Step1.5-GGUF": ("ace_step", ["music"]),
     "Apollo-GGUF": ("apollo", []),
     "AudioSR-GGUF": ("audiosr", []),
+    "AST-AudioSet-GGUF": ("ast_audioset", []),
     "BS-RoFormer-ep368-GGUF": ("bs_roformer", ["separate"]),
     "Breeze-TTS-2-GGUF": ("breeze_tts", ["speak", "clone"]),
     "Canary-180M-Flash-GGUF": ("canary_asr", ["transcribe"]),
@@ -26,10 +27,11 @@ UMBRELLA = {
     "Chatterbox-Turbo-GGUF": ("chatterbox_turbo", ["speak"]),
     "Citrinet-ASR-GGUF": ("citrinet_asr", ["transcribe"]),
     "Cohere-Transcribe-GGUF": ("cohere_asr", ["transcribe"]),
+    "CED-GGUF": ("ced", []),
     "Confucius4-TTS-GGUF": ("confucius4_tts", ["clone"]),
     "ControlFoley-GGUF": ("controlfoley", ["music"]),
     "CosyVoice3-GGUF": ("cosyvoice3", ["clone"]),
-    "CrisperWhisper2.0-GGUF": ("crisperwhisper", []),
+    "CrisperWhisper2.0-GGUF": ("crisperwhisper", ["transcribe"]),
     "DotTTS-Edit-GGUF": ("dots_tts", ["speak", "clone", "edit"]),
     "DotTTS-MF-GGUF": ("dots_tts", ["speak", "clone"]),
     "DotTTS-SOAR-GGUF": ("dots_tts", ["speak", "clone"]),
@@ -37,6 +39,7 @@ UMBRELLA = {
     "FireRedAudio-GGUF": ("firered_audio", ["clone", "edit"]),
     "FireRedTTS3-Base-GGUF": ("fireredtts3", ["clone"]),
     "FireRedTTS3-Instruct-GGUF": ("fireredtts3", ["clone"]),
+    "FireRedVAD-GGUF": ("firered_vad", []),
     "Fish-Audio-S2-Pro-GGUF": ("fish_audio", ["speak", "clone"]),
     "Fun-ASR-Nano-2512-GGUF": ("fun_asr_nano", ["transcribe"]),
     "GigaAM-ASR-GGUF": ("gigaam_asr", ["transcribe"]),
@@ -47,6 +50,7 @@ UMBRELLA = {
     "Higgs-Audio-v3-STT-GGUF": ("higgs_audio_stt", ["transcribe"]),
     "Higgs-Audio-v3-TTS-4B-GGUF": ("higgs_audio_tts", ["speak", "clone"]),
     "Hviske-v5.3-GGUF": ("hviske_asr", ["transcribe"]),
+    "Hviske-v6-GGUF": ("hviske_asr_v6", ["transcribe"]),
     "IndexTTS2-GGUF": ("index_tts2", ["clone"]),
     "IndexTTS2.5-GGUF": ("index_tts2", ["clone"]),
     "Inflect-Micro-v2-GGUF": ("inflect_v2", ["speak"]),
@@ -56,7 +60,7 @@ UMBRELLA = {
     "KittenTTS-GGUF": ("kitten_tts", ["speak"]),
     "Kokoro-82M-GGUF": ("kokoro_tts", ["speak"]),
     "Kroko-ASR-GGUF": ("kroko_asr", ["transcribe"]),
-    "KugelAudio-0-Open-GGUF": ("kugelaudio", []),
+    "KugelAudio-0-Open-GGUF": ("kugelaudio", ["speak"]),
     "MMS-Forced-Aligner-GGUF": ("mms_forced_aligner", []),
     "MOSS-TTS-Local-v1.5-GGUF": ("moss_tts_local", ["speak", "clone"]),
     "MOSS-TTS-Nano-100M-GGUF": ("moss_tts_nano", ["speak", "clone"]),
@@ -67,19 +71,22 @@ UMBRELLA = {
     "MeanVC2-GGUF": ("meanvc2", ["convert"]),
     "Mel-Band-RoFormer-GGUF": ("mel_band_roformer", ["separate"]),
     "MiDashengLM-Gen-GGUF": ("midashenglm_gen", ["music"]),
+    "MicroWakeWord-GGUF": ("micro_wake_word", []),
     "MiniMax-H3-Q4-GGUF": ("minimax_h3", []),
     "MioCodec-25Hz-44.1kHz-v2-GGUF": ("miocodec", []),
     "MioTTS-1.7B-GGUF": ("miotts", ["clone"]),
     "Moonshine-Streaming-GGUF": ("moonshine_asr", ["transcribe"]),
+    "MossFormer2-GGUF": ("mossformer2", []),
     "MuScriptor-Small-GGUF": ("muscriptor", []),
     "Nemotron-3.5-ASR-Streaming-0.6B-GGUF": ("nemotron_asr", ["transcribe"]),
     "NeuTTS-2E-GGUF": ("neutts", ["speak"]),
     "Niagara-ASR-GGUF": ("niagara_asr", ["transcribe"]),
-    "OWSM-CTC-GGUF": ("owsm_ctc", []),
-    "OWSM-GGUF": ("owsm", []),
+    "OWSM-CTC-GGUF": ("owsm_ctc", ["transcribe"]),
+    "OWSM-GGUF": ("owsm", ["transcribe"]),
     "OmniVoice-GGUF": ("omnivoice", ["speak", "clone"]),
     "Parakeet-TDT-0.6B-v3-GGUF": ("parakeet_tdt", ["transcribe"]),
     "PersonaPlex-GGUF": ("personaplex", []),
+    "Phonon-2-GGUF": ("parakeet_tdt", []),
     "Piper-TTS-GGUF": ("piper_tts", ["speak"]),
     "PocketTTS-GGUF": ("pocket_tts", ["speak", "clone"]),
     "PulseVAD-GGUF": ("pulsevad", []),
@@ -93,6 +100,7 @@ UMBRELLA = {
     "RVC-GGUF": ("rvc", ["convert"]),
     "Samsone-GGUF": ("samsone", []),
     "SeedVC-MLX-GGUF": ("seed_vc", ["convert"]),
+    "Sherpa-KWS-GGUF": ("sherpa_kws", []),
     "Sidon-GGUF": ("sidon", []),
     "Smart-Turn-v3-GGUF": ("smart_turn", []),
     "Sortformer-Diar-4spk-v1-GGUF": ("sortformer_diar", []),
@@ -100,19 +108,23 @@ UMBRELLA = {
     "Stable-Audio-3-Small-Music-GGUF": ("stable_audio", ["music"]),
     "Stable-Audio-3-Small-SFX-GGUF": ("stable_audio", ["music"]),
     "Supertonic-3-GGUF": ("supertonic", ["speak"]),
+    "TF-GridNet-GGUF": ("tf_gridnet", []),
     "Tone-Color-VC-GGUF": ("tone_color_vc", ["convert"]),
     "UniverSR-GGUF": ("universr", []),
     "Vevo2-GGUF": ("vevo2", ["clone", "edit", "convert"]),
     "VibeVoice-1.5B-GGUF": ("vibevoice", ["speak"]),
     "VibeVoice-ASR-GGUF": ("vibevoice_asr", ["transcribe"]),
+    "VibeVoice-ASR-Streaming-7B-GGUF": ("vibevoice_asr_streaming", ["transcribe"]),
     "VoxCPM1-GGUF": ("voxcpm1", ["speak", "clone"]),
     "VoxCPM2-GGUF": ("voxcpm2", ["speak", "clone"]),
+    "Voxtral-4B-TTS-2603-GGUF": ("voxtral_tts", ["speak"]),
     "Voxtral-Mini-4B-Realtime-2602-GGUF": ("voxtral_realtime", ["transcribe"]),
 }
 
 # Families outside acm.FAMILIES are classified by the tasks their spec lists.
 SPEC_TASKS = {
     "gigaam_asr": ["asr"],
+    "hviske_asr_v6": ["asr"],
     "maya1": ["tts"],
     "crisperwhisper": ["asr", "align"],
     "kugelaudio": ["tts"],
@@ -120,6 +132,7 @@ SPEC_TASKS = {
     "owsm_ctc": ["asr"],
     "sidon": ["s2s"],
     "smart_turn": ["turn"],
+    "voxtral_tts": ["tts"],
 }
 
 TASK_PAGE = {"tts": "speak", "music": "music", "asr": "transcribe", "sep": "separate"}
@@ -129,12 +142,16 @@ CATALOG = Path(__file__).resolve().parents[2] / "frontend/src/features/audio/aud
 
 @pytest.fixture(autouse = True)
 def pinned_runtime(monkeypatch):
-    monkeypatch.setattr(
-        acm, "runtime_knows_family", lambda family: family in AUDIO_CPP_SPEC_FAMILIES
-    )
+    # A v0.9.2 runtime loads every family these GGUFs name.
+    monkeypatch.setattr(acm, "runtime_knows_family", lambda family: True)
 
 
-@pytest.mark.parametrize("folder", sorted(UMBRELLA))
+# Variants of a family the pinned runtime knows that only a newer runtime loads: the pickers leave
+# them out, but a load by id still resolves through the family, so they skip the per-folder check.
+NEWER_RUNTIME_VARIANTS = {"Phonon-2-GGUF"}
+
+
+@pytest.mark.parametrize("folder", sorted(set(UMBRELLA) - NEWER_RUNTIME_VARIANTS))
 def test_each_folder_lands_on_its_pages(folder):
     family, pages = UMBRELLA[folder]
     spec = {"tasks": SPEC_TASKS[family]} if family in SPEC_TASKS else None
@@ -155,10 +172,21 @@ def _catalog() -> tuple[dict[str, list[str]], set[str]]:
     return seeded, set(re.findall(r'^\s*"([^"]+)":', block, re.M))
 
 
+# Runnable, but the pickers hold them back until the Hub's main branch carries their files.
+NOT_ON_HUB_MAIN = {"VibeVoice-ASR-Streaming-7B-GGUF"}
+
+
 def test_the_pickers_offer_every_runnable_folder_on_its_pages():
     seeded, unoffered = _catalog()
-    assert seeded == {folder: pages for folder, (_, pages) in UMBRELLA.items() if pages}
-    assert unoffered == {folder for folder, (_, pages) in UMBRELLA.items() if not pages}
+    assert seeded == {
+        folder: pages
+        for folder, (_, pages) in UMBRELLA.items()
+        if pages and folder not in NOT_ON_HUB_MAIN
+    }
+    assert (
+        unoffered
+        == {folder for folder, (_, pages) in UMBRELLA.items() if not pages} | NOT_ON_HUB_MAIN
+    )
 
 
 @pytest.mark.parametrize(

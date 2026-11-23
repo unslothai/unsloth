@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+from pathlib import Path
 from typing import List, Optional
 
 import typer
@@ -10,12 +11,15 @@ from unsloth_cli._inference import (
     collect_stream,
     configure_quiet_logging,
     connect_studio_server,
+    image_part,
     load_chat_backend,
     mlx_distributed_info,
     mlx_distributed_uses_mpi,
     raise_on_streamed_error,
     server_load_opts,
     stream_to_stdout,
+    use_plain_tracebacks,
+    user_turn,
 )
 
 
@@ -23,6 +27,11 @@ def inference(
     ctx: typer.Context,
     model: str = typer.Argument(..., help = "HF model id or local path."),
     prompt: str = typer.Argument(..., help = "Prompt to send to the model."),
+    image: Optional[List[Path]] = typer.Option(
+        None,
+        "--image",
+        help = "Image file to send with the prompt, for vision models. Repeat for several.",
+    ),
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "Hugging Face token if needed."
     ),
@@ -61,6 +70,13 @@ def inference(
         "--load-in-4bit/--no-load-in-4bit",
         help = "Load the model in 4-bit. Left unset, a running Unsloth server that already "
         "has this model loaded keeps its precision.",
+    ),
+    trust_remote_code: bool = typer.Option(
+        False,
+        "--trust-remote-code",
+        help = "Run the model repo's own code, for architectures this transformers does not "
+        "implement. Only for repositories you trust: it executes Python from the repo in "
+        "this process.",
     ),
     tensor_parallel: bool = typer.Option(
         False,
@@ -112,6 +128,15 @@ def inference(
     """Run a single inference using the specified model."""
     if not verbose:
         configure_quiet_logging()
+    else:
+        use_plain_tracebacks()
+
+    # Read the images before the slow load, so a bad path fails at once.
+    try:
+        images = [image_part(path) for path in image or ()]
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err = True)
+        raise typer.Exit(code = 1)
 
     is_mlx_distributed, rank, _world_size = mlx_distributed_info()
     if is_mlx_distributed and mlx_distributed_uses_mpi():
@@ -132,28 +157,52 @@ def inference(
         tensor_parallel = tensor_parallel,
         llama_extra_args = llama_extra_args,
     )
+    if trust_remote_code:
+        load_opts["trust_remote_code"] = trust_remote_code
     if speculative_type is not None:
         load_opts["speculative_type"] = speculative_type
     if spec_draft_n_max is not None:
         load_opts["spec_draft_n_max"] = spec_draft_n_max
+    from unsloth_cli._npu import npu_model_path, npu_needs_studio_message
+
+    # An NPU model runs inside Unsloth Studio, never in this process.
+    npu_path = npu_model_path(model)
+    if npu_path and (no_server or is_mlx_distributed):
+        typer.echo(f"Error: {npu_needs_studio_message(npu_path, no_server = True)}", err = True)
+        raise typer.Exit(code = 1)
     chat_backend = (
         None
         if (no_server or is_mlx_distributed)
         else connect_studio_server(model, **server_load_opts(ctx, load_opts))
     )
+    if chat_backend is None and npu_path:
+        typer.echo(f"Error: {npu_needs_studio_message(npu_path, no_server = False)}", err = True)
+        raise typer.Exit(code = 1)
     if chat_backend is None:
         chat_backend = load_chat_backend(model, **load_opts)
     try:
-        stream = chat_backend.stream(
-            [{"role": "user", "content": prompt}],
-            system_prompt = system_prompt,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            max_new_tokens = max_new_tokens,
-            repetition_penalty = repetition_penalty,
-            enable_thinking = think,
-        )
+        if images and not getattr(chat_backend, "supports_images", False):
+            if rank == 0:
+                typer.echo(
+                    f"Error: {model} is not a vision model, so it can't read --image.",
+                    err = True,
+                )
+            raise typer.Exit(code = 1)
+        try:
+            stream = chat_backend.stream(
+                [user_turn(prompt, images)],
+                system_prompt = system_prompt,
+                temperature = temperature,
+                top_p = top_p,
+                top_k = top_k,
+                max_new_tokens = max_new_tokens,
+                repetition_penalty = repetition_penalty,
+                enable_thinking = think,
+            )
+        except ValueError as exc:
+            if rank == 0:
+                typer.echo(f"Error: {exc}", err = True)
+            raise typer.Exit(code = 1)
         stream = raise_on_streamed_error(stream)
         if rank == 0:
             typer.echo("Assistant:")

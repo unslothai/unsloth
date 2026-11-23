@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { classifyUnslothSupport } from "../src/features/hub/lib/unsloth-support.ts";
 
-// Tag sets as the Hub API returns them for these repositories.
 const GPT2 = ["pytorch", "tf", "jax", "tflite", "onnx", "safetensors"];
 const MINILM = ["pytorch", "tf", "rust", "onnx", "safetensors", "openvino"];
 
@@ -37,7 +36,6 @@ for (const deviceType of ["mac", "cuda"]) {
         classifyUnslothSupport({ modelId: `owner/model-${format}`, tags: [format], deviceType }).status,
         "unsupported",
       );
-      // A name alone must not excuse a repo with no native weights.
       assert.equal(
         classifyUnslothSupport({ modelId: "owner/model-onnx", tags: ["onnx", "openvino"], deviceType }).status,
         "unsupported",

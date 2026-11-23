@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``vram_fit_context_length`` names only a ceiling a fit priced inside the budget (#12571).
-
-``max_context_length`` also carries anchors and floors nobody measured (the Auto offload
-context, the Metal fit floor, native when no fit ran), so mirroring it would advertise a
-no-spill capacity the machine does not have.
-"""
+"""vram_fit_context_length only reports fits priced inside the budget, not unmeasured anchors."""
 
 from __future__ import annotations
 

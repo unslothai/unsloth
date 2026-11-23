@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Spark-TTS's tokenizer lives under LLM/, so the pre-detect load needs the subfolder.
-
-unsloth/Spark-TTS-0.5B keeps only BiCodec/, config.yaml, src/ and wav2vec2-* at its repo
-root. AutoTokenizer on the root finds no vocab and raises "Couldn't instantiate the
-backend tokenizer ... You need to have sentencepiece or tiktoken installed", which sends
-the reader after a dependency that is installed and irrelevant. _load_model already reads
-weights from LLM/; the tokenizer pre-detect has to agree.
-
-Source-level: the real call needs the network and a 2 GB download.
-"""
+"""Spark-TTS keeps its tokenizer under LLM/, so the pre-detect load must pass that subfolder."""
 
 from __future__ import annotations
 

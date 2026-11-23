@@ -389,8 +389,7 @@ def compute_snapshot_progress(
     active_root = Path(metadata_hub_cache) if metadata_hub_cache else None
 
     expected_total = max(expected_bytes, 0)
-    # Resolve revision hashes so superseded blobs cannot inflate the count.
-    # Unavailable metadata falls back to the caller's estimate.
+    # Resolve revision hashes so superseded blobs aren't counted; without metadata, use the estimate.
     meta_total, expected_hashes = metadata_resolver(repo_id, hf_token)
     meta_total = max(0, meta_total)
     # A resolved variant's total is exact: max() with a hint left over from an earlier scoped pick never shrinks.

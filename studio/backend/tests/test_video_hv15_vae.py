@@ -57,7 +57,6 @@ def test_install_patches_instances_only():
     assert hv.install_vectorised_causal_mask(types.SimpleNamespace(vae = vae)) == 1
     assert vae.mid.prepare_causal_attention_mask is hv.causal_attention_mask
     assert torch.equal(vae.mid(3, 4), _stock(3, 4, torch.float32, "cpu", 1))
-    # the class, and so every other pipe, keeps diffusers' own mask
     assert HunyuanVideo15AttnBlock.__dict__["prepare_causal_attention_mask"].__func__ is _stock
     assert HunyuanVideo15AttnBlock().prepare_causal_attention_mask is _stock
 
@@ -154,5 +153,4 @@ def test_mask_peak_cuda_memory_is_the_output_alone():
     mask = hv.causal_attention_mask(n_frame, n_hw, torch.float32, "cuda", 1)
     torch.cuda.synchronize()
     extra = torch.cuda.max_memory_allocated() - base - mask.untyped_storage().nbytes()
-    # A seq_len x seq_len bool would be 2.36 MB here; the frame-level predicate is n_frame ** 2 bytes.
     assert extra < seq_len * seq_len // 4

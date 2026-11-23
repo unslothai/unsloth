@@ -2,10 +2,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import sys
+from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Optional
 
 import typer
-from rich.console import Console
 
 from unsloth_cli._inference import (
     SpeculativeType,
@@ -13,6 +14,7 @@ from unsloth_cli._inference import (
     configure_quiet_logging,
     connect_studio_server,
     ensure_studio_backend_path,
+    image_part,
     load_chat_backend,
     mlx_distributed_info,
     mlx_distributed_uses_mpi,
@@ -22,13 +24,24 @@ from unsloth_cli._inference import (
     resolve_model_config,
     server_load_opts,
     stream_markdown,
+    use_plain_tracebacks,
+    user_turn,
     visible_text,
 )
 
 _HELP = (
     "Commands: /exit (quit), /reset (clear history), "
-    "/think (toggle reasoning), /compare (base vs tuned), /help"
+    "/think (toggle reasoning), /compare (base vs tuned), "
+    "/image <path> (attach to your next message), /help"
 )
+
+
+def _image_path(argument: str) -> str:
+    # A path dragged into a terminal arrives quoted when it has spaces.
+    argument = argument.strip()
+    if len(argument) >= 2 and argument[0] == argument[-1] and argument[0] in "\"'":
+        argument = argument[1:-1]
+    return argument
 
 
 def _you_prompt(colors: bool) -> str:
@@ -98,8 +111,7 @@ def _get_base_load_in_4bit(model_config) -> bool:
 
 
 def _compare_needs_second_model() -> bool:
-    # MLX cannot toggle the adapter off, so compare loads the base separately; probe MLX quietly since
-    # detect_hardware() prints into the chat and imports torch.
+    # MLX cannot toggle the adapter off; probe quietly since detect_hardware() prints and imports torch.
     try:
         from studio.backend.utils.hardware import hardware as hw
 
@@ -168,6 +180,12 @@ def chat(
     model: Optional[str] = typer.Argument(
         None, help = "HF model id or local path. Omit to pick one of your local models."
     ),
+    image: Optional[List[Path]] = typer.Option(
+        None,
+        "--image",
+        help = "Image file to attach to your first message, for vision models. Repeat for "
+        "several; attach more later with /image <path>.",
+    ),
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "Hugging Face token if needed."
     ),
@@ -195,15 +213,24 @@ def chat(
     max_seq_length: int = typer.Option(
         0,
         "--max-seq-length",
-        help = "Context length in tokens. 0 takes the checkpoint's trained window on GGUF "
-        "and MLX, and 2048 on the transformers backend. A value that differs from a "
-        "running Unsloth server's reloads the model.",
+        "--context-length",
+        help = "Runtime context length in tokens (0 = model default for GGUF and MLX; 2048 "
+        "for hub models). --context-length works too. A value that differs from a running "
+        "Unsloth server's reloads the model; left unset, an NPU model it already has loaded "
+        "keeps its context.",
     ),
     load_in_4bit: bool = typer.Option(
         True,
         "--load-in-4bit/--no-load-in-4bit",
         help = "Load the model in 4-bit. Left unset, a running Unsloth server that already "
         "has this model loaded keeps its precision.",
+    ),
+    trust_remote_code: bool = typer.Option(
+        False,
+        "--trust-remote-code",
+        help = "Run the model repo's own code, for architectures this transformers does not "
+        "implement. Only for repositories you trust: it executes Python from the repo in "
+        "this process.",
     ),
     tensor_parallel: bool = typer.Option(
         False,
@@ -257,6 +284,10 @@ def chat(
     """Start an interactive chat with a model (loads once, stays warm)."""
     if not verbose:
         configure_quiet_logging()
+    else:
+        use_plain_tracebacks()
+
+    from rich.console import Console
 
     console = Console()
     err = Console(stderr = True)
@@ -274,6 +305,21 @@ def chat(
             )
         raise typer.Exit(code = 1)
 
+    if image and is_mlx_distributed:
+        if should_print:
+            err.print(
+                "Distributed `unsloth chat` does not take images yet.",
+                style = "red",
+                markup = False,
+            )
+        raise typer.Exit(code = 1)
+    # Read the images before the slow load, so a bad path fails at once.
+    try:
+        pending_images = [image_part(path) for path in image or ()]
+    except ValueError as exc:
+        err.print(f"Error: {exc}", style = "red", markup = False)
+        raise typer.Exit(code = 1)
+
     if model is None:
         if is_mlx_distributed:
             if should_print:
@@ -285,9 +331,32 @@ def chat(
             raise typer.Exit(code = 1)
         model = _pick_model(console)
 
-    # Resolve first so --compare can be rejected before the slow load.
-    with quiet_if_nonzero_mlx_rank():
-        model_config = resolve_model_config(model, hf_token = hf_token)
+    from unsloth_cli._npu import npu_model_path, npu_needs_studio_message
+
+    # An NPU model runs inside Unsloth Studio, never in this process: no HF config to resolve.
+    npu_path = npu_model_path(model)
+    if npu_path:
+        model = npu_path
+        model_config = SimpleNamespace(
+            display_name = npu_path.split(":", 1)[1],
+            is_gguf = False,
+            is_lora = False,
+            path = None,
+            base_model = None,
+            gguf_variant = None,
+        )
+        if no_server or is_mlx_distributed:
+            if should_print:
+                err.print(
+                    npu_needs_studio_message(npu_path, no_server = True),
+                    style = "red",
+                    markup = False,
+                )
+            raise typer.Exit(code = 1)
+    else:
+        # Resolve first so --compare can be rejected before the slow load.
+        with quiet_if_nonzero_mlx_rank():
+            model_config = resolve_model_config(model, hf_token = hf_token)
     compare_blocked = _compare_blocked_reason(model_config)
     if is_mlx_distributed:
         compare_blocked = (
@@ -306,6 +375,8 @@ def chat(
         tensor_parallel = tensor_parallel,
         llama_extra_args = llama_extra_args,
     )
+    if trust_remote_code:
+        load_opts["trust_remote_code"] = trust_remote_code
     if speculative_type is not None:
         load_opts["speculative_type"] = speculative_type
     if spec_draft_n_max is not None:
@@ -318,6 +389,14 @@ def chat(
         else connect_studio_server(model, **server_load_opts(ctx, load_opts))
     )
     server_mode = chat_backend is not None
+    if npu_path and not server_mode:
+        if should_print:
+            err.print(
+                npu_needs_studio_message(npu_path, no_server = False),
+                style = "red",
+                markup = False,
+            )
+        raise typer.Exit(code = 1)
     if server_mode and should_print:
         console.print(
             "(Unsloth server connected — model stays warm after /exit)",
@@ -336,6 +415,15 @@ def chat(
         else:
             base = model.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         name = f"{base} ({kept})"
+    supports_images = bool(getattr(chat_backend, "supports_images", False))
+    if pending_images and not supports_images:
+        chat_backend.close()
+        err.print(
+            f"Error: {name} is not a vision model, so it can't read --image.",
+            style = "red",
+            markup = False,
+        )
+        raise typer.Exit(code = 1)
     show_thinking = think
     compare_mode = compare
     messages = []
@@ -437,8 +525,36 @@ def chat(
                 break
             if user == "/reset":
                 messages = []
+                pending_images = []
                 if should_print:
                     console.print("(history cleared)", style = "bright_black")
+                continue
+            if user == "/image" or user.startswith("/image "):
+                if not should_print:
+                    continue
+                path = _image_path(user[len("/image") :])
+                if is_mlx_distributed:
+                    console.print("(distributed chat does not take images yet)", style = "yellow")
+                elif not supports_images:
+                    console.print(
+                        f"({name} is not a vision model, so it can't read images)",
+                        style = "yellow",
+                        markup = False,
+                    )
+                elif not path:
+                    console.print("(usage: /image <path>)", style = "yellow")
+                else:
+                    try:
+                        pending_images.append(image_part(path))
+                    except ValueError as exc:
+                        console.print(f"({exc})", style = "yellow", markup = False)
+                    else:
+                        count = len(pending_images)
+                        noun = "image" if count == 1 else "images"
+                        console.print(
+                            f"({count} {noun} attached to your next message)",
+                            style = "bright_black",
+                        )
                 continue
             if user == "/think":
                 show_thinking = not show_thinking
@@ -463,7 +579,8 @@ def chat(
                     console.print(_HELP, style = "bright_black")
                 continue
 
-            messages.append({"role": "user", "content": user})
+            messages.append(user_turn(user, pending_images))
+            sent_images, pending_images = pending_images, []
 
             try:
                 if compare_mode:
@@ -488,10 +605,11 @@ def chat(
                     else:
                         answer = collect_stream(generate(), show_thinking)
             except KeyboardInterrupt:
-                # Ctrl-C aborts this answer only; drop the unanswered turn.
+                # Ctrl-C aborts this answer only; drop the unanswered turn, keep its images for a retry.
                 if should_print:
                     console.print("\n(interrupted)", style = "bright_black")
                 messages.pop()
+                pending_images = sent_images
                 continue
             except Exception as exc:
                 if should_print:

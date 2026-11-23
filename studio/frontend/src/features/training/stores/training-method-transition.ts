@@ -109,8 +109,7 @@ function completionsAllowedOnExit(
   >,
 ): boolean {
   if (state.datasetStreaming || state.isEmbeddingModel) return false;
-  if (state.isVisionModel && state.isDatasetImage === true) return false;
-  if (state.isAudioModel && (!state.isVisionModel || state.isDatasetAudio)) {
+  if (state.isAudioModel && !state.isVisionModel) {
     return false;
   }
   return true;

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""An inherited `UNSLOTH_FORCE_CUSTOM_DTYPE` must be harmless to EVERY reader.
-
-`unsloth_zoo==2026.8.15`, which this package's floor resolves to, still `eval`s the
-dtype field, and a version floor cannot fix an already resolved install, so the VALUE
-is rewritten at import. The old reader is reproduced as the one line that matters,
-`eval(field)`. Imported inside each test, for the four-package runner.
-"""
+"""Rewrite an inherited UNSLOTH_FORCE_CUSTOM_DTYPE at import; unsloth_zoo still evals its dtype."""
 
 from __future__ import annotations
 
@@ -25,11 +19,7 @@ def _import_with(value, marker = None):
     """Imports the module in a fresh process with `value` inherited, returns the env."""
     environment = dict(os.environ)
     environment[_ENV_KEY] = value.format(marker = marker) if marker else value
-    # The child imports unsloth, and unsloth_zoo.get_device_type() raises on a host with no torch accelerator.
-    # In-process this file rides on whatever set the variable earlier in the session
-    # (studio/backend/tests/conftest.py does, with setdefault), so whether the child inherited it came down to what
-    # else was in the run. It was not set in Repo tests (CPU), and the child died before reaching the module under
-    # test. Pin it: this test is about the dtype field, and it should read the same with a card and without one.
+    # Pin it: the child imports unsloth, and get_device_type() raises on a host with no accelerator.
     environment.setdefault("UNSLOTH_ALLOW_CPU", "1")
     program = (
         "import unsloth.models._custom_dtype as module, os;"
@@ -68,8 +58,7 @@ def test_the_code_fields_of_an_inherited_value_are_emptied(monkeypatch):
     sanitized = neutralize_inherited_custom_dtype()
     checker, dtype, bnb, custom, execute = sanitized.split(";", 4)
     assert (custom, execute) == ("", "")
-    # The dtype fields of a well formed value still apply: that is what they already
-    # did, and the five fields stay because both packages assert on the count.
+    # The dtype fields of a well formed value still apply; the five fields stay for the count assert.
     assert (checker, dtype, bnb) == ("all", "torch.float16", "torch.float16")
     assert sanitized.count(";") == 4
 
@@ -175,8 +164,7 @@ def test_a_value_set_after_import_is_still_neutralized(monkeypatch):
     monkeypatch.setenv(_ENV_KEY, hostile)
     monkeypatch.delenv("UNSLOTH_TEST_MARKER", raising = False)
 
-    # `disable = True` returns before any compilation, which is all this needs: the
-    # sanitizing runs first.
+    # `disable = True` returns before compilation; the sanitizing runs first.
     unsloth_compile_transformers(
         dtype = None,
         model_name = "unsloth/tiny",
@@ -203,7 +191,6 @@ def test_a_shorthand_alias_is_written_back_canonically(monkeypatch):
 
     monkeypatch.setenv(_ENV_KEY, "all;fp16;bf16;;")
     assert neutralize_inherited_custom_dtype() == "all;torch.float16;torch.bfloat16;;"
-    # And each canonical spelling is one the legacy reader's `eval` can evaluate.
     _checker, dtype, compute, _code, _execute = os.environ[_ENV_KEY].split(";", 4)
     for field in (dtype, compute):
         assert eval(field, {"torch": torch}) is resolve_dtype(field)

@@ -1,9 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# Verify hung probes and lingering children cannot stall setup (#11709),
-# with GNU timeout and the watchdog used on stock macOS.
+# Hung probes and lingering children must not stall setup, with GNU timeout or the macOS watchdog.
 set -e
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -42,8 +40,7 @@ printf '#!/bin/sh\necho v22.17.1\n' > "$WORK/good/node"
 # Stock macOS has no GNU timeout; a failing stand-in sends the probe down its watchdog branch.
 printf '#!/bin/sh\nexit 1\n' > "$WORK/notimeout/timeout"
 chmod +x "$WORK"/*/*
-# Exclude the host's Node. Include an external `true` for the GNU timeout check;
-# `type -P` resolves its binary rather than the shell builtin.
+# `type -P` resolves an external `true` rather than the builtin.
 for _t in bash sh mktemp head rm sleep ps cat timeout true; do
     _src=$(type -P "$_t") && ln -s "$_src" "$WORK/tools/$_t"
 done

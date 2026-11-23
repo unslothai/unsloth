@@ -69,15 +69,13 @@ test("routed image picks apply and transactionally roll back model defaults", ()
     "const pick = diffusionRoutePick(",
     source.indexOf("const handledRouteModel"),
   );
-  const routeEnd = source.indexOf(
-    "// Reload the current model with the current advanced options.",
-    routeStart,
-  );
+  // The route effect ends at its dependency list, which closes with "]);".
+  const routeEnd = source.indexOf("]);", routeStart);
   assert.ok(routeStart >= 0 && routeEnd > routeStart);
   const routeBlock = source.slice(routeStart, routeEnd);
   assert.match(routeBlock, /imagePresets\.hydrated/);
   assert.match(routeBlock, /quantRevert\.current = revert/);
-  assert.match(routeBlock, /applyImageModelDefaults\(wanted, "auto"\)/);
+  assert.match(routeBlock, /applyImageModelDefaults\(\s*wanted,\s*"auto",/);
   assert.match(routeBlock, /!started[\s\S]*revertPick\(revert\)/);
 });
 
@@ -175,6 +173,8 @@ test("defaults follow ComfyUI's official templates for the same model", () => {
     // diffusers Z-Image guidance g equals ComfyUI cfg g + 1.
     ["Tongyi-MAI/Z-Image", { steps: 25, guidance: 3 }],
     ["stabilityai/stable-diffusion-xl-base-1.0", { steps: 25, guidance: 7 }],
+    ["stabilityai/sdxl-turbo", { steps: 1, guidance: 0 }],
+    ["unsloth/sdxl-turbo", { steps: 1, guidance: 0 }],
     ["ideogram-ai/ideogram-4-fp8", { steps: 20, guidance: 7 }],
   ] as const) {
     assert.deepEqual(defaultsFor(id), want, id);
@@ -254,4 +254,169 @@ test("the Images page seeds Default from the resident recipe and drops the pick 
   assert.doesNotMatch(src, /defaultsFor\(residentDefaults\)/);
   const revert = src.slice(src.indexOf("const revertPick = useCallback"), src.indexOf("}, []);", src.indexOf("const revertPick = useCallback")));
   assert.match(revert, /pickDefaults\.current = null/);
+});
+
+test("every FLUX.3 Klein alias the backend registers gets its family recipe", () => {
+  for (const id of [
+    "black-forest-labs/flux-3-image-klein-base",
+    "someone/flux3-image-klein-base-finetune",
+    "someone/flux3_image_klein_base",
+    "someone/flux3-klein-base-merge",
+    "flux.3-klein-base",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 50, guidance: 3.5 }, id);
+  }
+  for (const id of [
+    "black-forest-labs/flux-3-image-klein",
+    "someone/flux3-image-klein-finetune",
+    "someone/flux3_image_klein",
+    "someone/flux3-klein-lora-merge",
+    "flux.3-klein",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 16, guidance: 1 }, id);
+  }
+});
+
+test("an opaque FLUX.3 path keys its defaults by the explicit family", () => {
+  for (const [family, want] of [
+    ["flux.3-klein", { steps: 16, guidance: 1 }],
+    ["flux.3-klein-base", { steps: 50, guidance: 3.5 }],
+  ] as const) {
+    const key = defaultsKeyFor("/models/my-model", family);
+    assert.equal(key, family);
+    assert.deepEqual(defaultsFor(key), want);
+  }
+});
+
+test("an explicit FLUX.3 family decides the recipe over a name that reads as the other variant", () => {
+  // BFL's ComfyUI base file has no "base" in its name; the backend checks it against the family.
+  const comfyBase = "black-forest-labs/flux-3-image-klein-comfy";
+  assert.equal(defaultsKeyFor(comfyBase, "flux.3-klein-base"), "flux.3-klein-base");
+  assert.deepEqual(defaultsFor(defaultsKeyFor(comfyBase, "flux.3-klein-base")), { steps: 50, guidance: 3.5 });
+  assert.deepEqual(defaultsFor(defaultsKeyFor(comfyBase, "flux.3-klein")), { steps: 16, guidance: 1 });
+  assert.deepEqual(defaultsFor(defaultsKeyFor(comfyBase, "auto")), { steps: 16, guidance: 1 });
+  assert.equal(
+    residentDefaultsKey("/models/flux3_image_klein_bf16.safetensors", "black-forest-labs/flux-3-image-klein", {
+      value: "flux.3-klein-base",
+      source: "explicit",
+    }),
+    "flux.3-klein-base",
+  );
+});
+
+test("MOSS-Image SFT and Base get the reference workflow's 25 / 2.5 recipe", () => {
+  for (const id of [
+    "OpenMOSS-Team/MOSS-Image-SFT",
+    "OpenMOSS-Team/MOSS-Image-Base",
+    "someone/moss_image_sft_merge",
+    "moss-image",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 25, guidance: 2.5 }, id);
+  }
+  const key = defaultsKeyFor("/models/my-model", "moss-image");
+  assert.equal(key, "moss-image");
+  assert.deepEqual(defaultsFor(key), { steps: 25, guidance: 2.5 });
+});
+
+test("a GGUF filename naming Krea 2 Raw outranks its multi-checkpoint repo", () => {
+  const repo = "realrebelai/KREA-2_GGUFs";
+  const raw = { steps: 52, guidance: 3.5 };
+  const turbo = { steps: 8, guidance: 0 };
+  assert.deepEqual(defaultsFor(defaultsKeyFor(repo, "auto", "BASE/Krea-2-Base-Q4_K_M.gguf")), raw);
+  assert.deepEqual(defaultsFor(defaultsKeyFor(repo, "auto", "TURBO/Krea-2-Turbo-Q4_K_M.gguf")), turbo);
+  assert.deepEqual(defaultsFor(defaultsKeyFor("vantagewithai/Krea-2-Raw-GGUF", "auto", "krea2_raw-Q4_K_M.gguf")), raw);
+  // No filename (or one naming nothing) keeps the repo key.
+  assert.deepEqual(defaultsFor(defaultsKeyFor(repo, "auto")), turbo);
+  assert.deepEqual(defaultsFor(defaultsKeyFor("krea/Krea-2-Raw", "auto", "model-Q4_K_M.gguf")), raw);
+  // The resident recipe reads the loaded GGUF the same way.
+  assert.deepEqual(
+    residentRecipeFor(residentDefaultsKey(repo, "krea/Krea-2-Turbo", null, "BASE/Krea-2-Base-Q4_K_M.gguf")),
+    raw,
+  );
+});
+
+test("every GGUF or single-file pick path keys its defaults on the selected filename", () => {
+  const src = readSrc("features/images/images-page.tsx");
+  assert.match(src, /applyImageModelDefaults\(repoId, effectiveFamilyOverride, false, filename\)/);
+  assert.match(src, /applyImageModelDefaults\(id, nextFamilyOverride, false, meta\.ggufFilename\)/);
+  assert.match(src, /applyImageModelDefaults\(id, nextFamilyOverride, false, filename\)/);
+  assert.match(src, /"auto",\s*false,\s*pick\.opts\.kind === "pipeline" \? null : \(pick\.opts\.filename \?\? null\)/);
+  assert.match(src, /defaultsKeyFor\(repoId, effectiveFamilyOverride, ggufFilename\)/);
+  assert.match(src, /status\?\.resolved\?\.family_override,\s*status\?\.gguf_filename/);
+  assert.match(src, /loaded\.resolved\?\.family_override,\s*loaded\.gguf_filename/);
+});
+
+test("a Hub-routed single-file checkpoint keys its recipe on the selected file", () => {
+  const key = defaultsKeyFor("acme/sdxl-checkpoints", "auto", "sdxl-turbo.safetensors");
+  assert.deepEqual(
+    { steps: defaultsFor(key).steps, guidance: defaultsFor(key).guidance },
+    { steps: 1, guidance: 0 },
+  );
+});
+
+test("distilled checkpoints get their publishers' recipes, not their family's", () => {
+  for (const id of [
+    "hunyuanvideo-community/HunyuanImage-2.1-Distilled-Diffusers",
+    "hunyuanimage2.1_distilled_bf16.safetensors",
+    "dit/hunyuanimage2.1-distilled.safetensors",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 8, guidance: 3.25 }, id);
+  }
+  assert.deepEqual(defaultsFor("hunyuanvideo-community/HunyuanImage-2.1-Diffusers"), { steps: 50, guidance: 3.25 });
+  assert.deepEqual(defaultsFor("anima-turbo-v1.1.safetensors"), { steps: 10, guidance: 1 });
+  assert.equal(
+    defaultsKeyFor("circlestone-labs/Anima", "anima", "split_files/diffusion_models/anima-turbo-v1.1.safetensors"),
+    "split_files/diffusion_models/anima-turbo-v1.1.safetensors",
+  );
+  for (const id of ["lodestones/Chroma1-Flash", "Chroma1-HD-Flash.safetensors", "silveroxides/Chroma1-Flash-GGUF"]) {
+    assert.deepEqual(defaultsFor(id), { steps: 16, guidance: 1 }, id);
+  }
+});
+
+test("a base file in a Turbo / Flash folder or repo keeps the backend's recipe, not the distilled one", () => {
+  // The base file's own recipe, whatever the table gives it, and never the distilled one.
+  for (const [repo, file, distilled] of [
+    ["/home/me/.cache/anima-turbo", "anima-base-v1.0.safetensors", { steps: 10, guidance: 1 }],
+    ["/home/me/.cache/anima-turbo", "anima-aesthetic-v1.1.safetensors", { steps: 10, guidance: 1 }],
+    ["/models/chroma1-flash", "Chroma1-HD.safetensors", { steps: 16, guidance: 1 }],
+  ] as const) {
+    const got = defaultsFor(defaultsKeyFor(repo, "auto", file));
+    assert.deepEqual(got, defaultsFor(file), `${repo} ${file}`);
+    assert.notDeepEqual(got, distilled, `${repo} ${file}`);
+  }
+  // The file naming the distilled checkpoint, or a component file naming none, still gets it.
+  assert.deepEqual(defaultsFor(defaultsKeyFor("/models/anima", "auto", "anima-turbo-v1.1.safetensors")), {
+    steps: 10,
+    guidance: 1,
+  });
+  assert.deepEqual(
+    defaultsFor(defaultsKeyFor("/models/anima-turbo", "auto", "transformer/diffusion_pytorch_model.safetensors")),
+    { steps: 10, guidance: 1 },
+  );
+  assert.deepEqual(defaultsFor(defaultsKeyFor("lodestones/Chroma1-Flash", "auto", null)), { steps: 16, guidance: 1 });
+  assert.deepEqual(defaultsFor(defaultsKeyFor("/models/anima-turbo", "auto", "my_merge.safetensors")), {
+    steps: 10,
+    guidance: 1,
+  });
+});
+
+test("a local safetensors pick keys its defaults on the selected file, not its folder", () => {
+  // The page passes the picked file, so a base Anima file in a Turbo folder gets the fallback the loaded recipe replaces.
+  const pick = "/models/anima-turbo/anima-base-v1.0.safetensors";
+  assert.deepEqual(defaultsFor(defaultsKeyFor(pick, "auto", "anima-base-v1.0.safetensors")), { steps: 9, guidance: 0 });
+  assert.deepEqual(defaultsFor(defaultsKeyFor("/models/anima/anima-turbo-v1.1.safetensors", "auto", "anima-turbo-v1.1.safetensors")), {
+    steps: 10,
+    guidance: 1,
+  });
+  const page = readFileSync(new URL("../src/features/images/images-page.tsx", import.meta.url), "utf8");
+  const branch = page.slice(page.indexOf('id.toLowerCase().endsWith(".safetensors")'));
+  const call = branch.slice(0, branch.indexOf('kind: "single_file"'));
+  assert.match(call, /applyImageModelDefaults\(id, nextFamilyOverride, false, filename\)/);
+});
+
+test("Kromoss picks take the MOSS-Image recipe", () => {
+  for (const id of ["lodestones/Kromoss", "molbal/Kromoss-GGUF", "kromoss-Q8_0.gguf"]) {
+    assert.deepEqual(defaultsFor(id), { steps: 25, guidance: 2.5 }, id);
+  }
+  assert.equal(defaultsKeyFor("molbal/Kromoss-GGUF", null, "kromoss-Q8_0.gguf"), "kromoss-Q8_0.gguf");
 });

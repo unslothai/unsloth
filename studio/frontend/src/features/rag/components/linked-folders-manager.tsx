@@ -22,17 +22,29 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/api-base";
+import {
+  FOLDER_SYNC_HELP,
+  SOURCE_FOLDER_DESCRIPTION,
+  folderSyncLabel,
+  folderSyncProgress,
+  sourceFolderUnavailableMessage,
+} from "./source-folder-copy";
 import { RefreshGlyph } from "@/lib/refresh-icon";
-import { FolderAddIcon, FolderSyncIcon } from "@hugeicons/core-free-icons";
+import { MoreHorizontalIcon } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderSyncIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MoreHorizontalIcon } from "lucide-react";
 import { useState } from "react";
-import type { FolderSyncJob, LinkedFolderScope } from "../types/rag";
+import type {
+  FolderSyncJob,
+  LinkedFolder,
+  LinkedFolderScope,
+  LinkedFolderSkipReason,
+} from "../types/rag";
 import { useLinkedFolders } from "./use-linked-folders";
 
-/** Grouped folder card, shared with the create project dialog. */
 export const FOLDER_CARD_CLASS =
-  "overflow-hidden rounded-[16px] border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]";
+  "overflow-hidden rounded-xl border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]";
 export const FOLDER_ROW_CLASS =
   "flex min-w-0 items-center gap-3 px-3.5 py-2.5 border-t border-border/60 first:border-t-0 dark:border-[rgb(255_255_255_/_calc(0.08*var(--contrast-edge-gain,1)))]";
 
@@ -48,13 +60,92 @@ function jobSummary(job: FolderSyncJob): string {
     const indexed = job.indexedFiles ?? job.processedFiles;
     return indexed == null
       ? "Sync complete"
-      : `${indexed} file${indexed === 1 ? "" : "s"} indexed`;
+      : `${indexed} file${indexed === 1 ? "" : "s"} indexed this sync`;
+  }
+  const folderProgress = folderSyncProgress(job);
+  if (folderProgress) {
+    return folderSyncLabel(folderProgress.synced, folderProgress.discovered);
   }
   const processed = job.processedFiles ?? 0;
   const discovered = job.discoveredFiles;
   return discovered == null
     ? job.stage || "Scanning folder"
     : `${processed} of ${discovered} files`;
+}
+
+function jobPercent(job: FolderSyncJob | undefined): number | null {
+  if (!job) return null;
+  const folderProgress = folderSyncProgress(job);
+  return folderProgress
+    ? percent(folderProgress.synced / folderProgress.discovered)
+    : percent(job.progress);
+}
+
+const SKIP_LABELS: Record<LinkedFolderSkipReason, (count: number) => string> = {
+  gitignored: (n) => `${n} ignored by .gitignore`,
+  build_dirs: (n) => `${n} build folder${n === 1 ? "" : "s"}`,
+  too_large: (n) => `${n} large data file${n === 1 ? "" : "s"}`,
+  over_limit: (n) => `${n} past the file limit`,
+};
+
+export function skippedSummary(folder: LinkedFolder): string | null {
+  const parts = (Object.keys(SKIP_LABELS) as LinkedFolderSkipReason[]).flatMap(
+    (reason) => {
+      const count = folder.skipped?.[reason] ?? 0;
+      return count > 0 ? [SKIP_LABELS[reason](count)] : [];
+    },
+  );
+  return parts.length > 0 ? `Skipped ${parts.join(" · ")}` : null;
+}
+
+function FolderReport({ folder }: { folder: LinkedFolder }) {
+  const [open, setOpen] = useState(false);
+  const skipped = skippedSummary(folder);
+  const failures = folder.failures ?? [];
+  const failureCount = folder.failureCount ?? failures.length;
+  if (!skipped && failureCount === 0) return null;
+  return (
+    <div className="mt-1 flex flex-col gap-1 text-ui-11 text-muted-foreground">
+      {skipped ? (
+        <p
+          className="truncate"
+          title={`${skipped}. Hidden folders, dependencies and secrets are never indexed.`}
+        >
+          {skipped}
+        </p>
+      ) : null}
+      {failureCount > 0 ? (
+        <>
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen((value) => !value)}
+            className="self-start text-destructive underline-offset-2 hover:underline"
+          >
+            {open ? "Hide" : "Show"} {failureCount} file
+            {failureCount === 1 ? "" : "s"} that couldn't be indexed
+          </button>
+          {open ? (
+            <ul className="max-h-48 overflow-y-auto rounded-lg bg-muted/40 px-2.5 py-1.5">
+              {failures.map((failure) => (
+                <li key={failure.path} className="flex min-w-0 gap-2 py-0.5">
+                  <span className="min-w-0 shrink truncate font-mono" title={failure.path}>
+                    {failure.path}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate" title={failure.error}>
+                    {failure.error}
+                  </span>
+                </li>
+              ))}
+              {failureCount > failures.length ? (
+                <li className="py-0.5">and {failureCount - failures.length} more</li>
+              ) : null}
+            </ul>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
 }
 
 export function LinkedFoldersManager({
@@ -65,8 +156,6 @@ export function LinkedFoldersManager({
 }: {
   scope?: LinkedFolderScope;
   compact?: boolean;
-  /** "panel" is the settings-style block with its own heading and Link folder button. "card" is
-   *  the grouped list a dialog shows: one row per folder, an Add folder row at the foot of it. */
   variant?: "panel" | "card";
   onSourcesChanged?: () => void;
 }) {
@@ -76,7 +165,6 @@ export function LinkedFoldersManager({
     name: string;
   } | null>(null);
 
-  /** Whether the folder has a sync in flight, which is what the row reports while it does. */
   function runningJob(folderId: string): FolderSyncJob | undefined {
     const job = manager.jobs[folderId];
     return job?.status === "pending" || job?.status === "running"
@@ -84,8 +172,6 @@ export function LinkedFoldersManager({
       : undefined;
   }
 
-  /** The row's own actions, identical in both layouts: a card row's "×" would have to drop three
-   *  of them, and syncing a folder by hand is the reason most people open this list. */
   function folderMenu(folder: (typeof manager.folders)[number], running: boolean) {
     return (
       <DropdownMenu>
@@ -100,7 +186,7 @@ export function LinkedFoldersManager({
             {running ? (
               <Spinner className="size-3.5" />
             ) : (
-              <MoreHorizontalIcon className="size-4" />
+              <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
             )}
           </Button>
         </DropdownMenuTrigger>
@@ -139,7 +225,6 @@ export function LinkedFoldersManager({
     );
   }
 
-  /** The confirmation the destructive unlink opens. Mounted by whichever layout rendered. */
   const removeIndexConfirm = (
     <AlertDialog
       open={removeIndexFolder !== null}
@@ -149,7 +234,7 @@ export function LinkedFoldersManager({
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Unlink folder and remove files?</AlertDialogTitle>
+          <AlertDialogTitle>Unlink folder and remove indexed documents?</AlertDialogTitle>
           <AlertDialogDescription>
             This will unlink &quot;{removeIndexFolder?.name}&quot; and remove all
             documents it manages from the index. The files on disk will not be
@@ -173,8 +258,6 @@ export function LinkedFoldersManager({
     </AlertDialog>
   );
 
-  // One grouped card: the folders, then the row that adds another. A dialog has a name field
-  // above it in the same shape, so the two read as one stack rather than a panel inside a panel.
   if (variant === "card") {
     const rowClass = FOLDER_ROW_CLASS;
     return (
@@ -191,8 +274,6 @@ export function LinkedFoldersManager({
               const running = runningJob(folder.id) !== undefined;
               const failed =
                 folder.status === "error" || job?.status === "failed";
-              // A settled row is its name alone, the way a list of folders reads. The detail line
-              // is for the states that need one; what is indexed stays on the row's tooltip.
               const detail = running
                 ? jobSummary(job as FolderSyncJob)
                 : failed
@@ -215,7 +296,10 @@ export function LinkedFoldersManager({
                     className="size-4 shrink-0 text-muted-foreground"
                   />
                   <div className="min-w-0 flex-1">
-                    <span className="block truncate text-sm">
+                    <span
+                      className="block truncate text-sm"
+                      title={folder.displayName}
+                    >
                       {folder.displayName}
                     </span>
                     {detail ? (
@@ -224,17 +308,20 @@ export function LinkedFoldersManager({
                           "truncate text-ui-11 text-muted-foreground",
                           failed && "text-destructive",
                         )}
+                        title={running && !failed ? FOLDER_SYNC_HELP : detail}
                       >
                         {detail}
                       </p>
                     ) : null}
                     {running ? (
                       <Progress
-                        value={percent(job?.progress) ?? 0}
+                        value={jobPercent(job) ?? 0}
                         aria-label={`Sync progress for ${folder.displayName}`}
                         className="mt-1.5 h-1"
                       />
-                    ) : null}
+                    ) : (
+                      <FolderReport folder={folder} />
+                    )}
                   </div>
                   {folderMenu(folder, running)}
                 </div>
@@ -246,13 +333,12 @@ export function LinkedFoldersManager({
               type="button"
               disabled={!manager.desktopSupported || manager.mutating}
               onClick={() => void manager.link()}
-              // Named for what it does; the title is the tooltip saying why it cannot, which
-              // would otherwise be read out as the row's name.
+              // The title is the tooltip saying why it is disabled, which would otherwise be read as the name.
               aria-label="Add folder"
               title={
                 manager.desktopSupported
                   ? "Choose a local folder"
-                  : "Requires the managed desktop backend"
+                  : sourceFolderUnavailableMessage(isTauri)
               }
               className={cn(
                 rowClass,
@@ -272,12 +358,10 @@ export function LinkedFoldersManager({
             </button>
           ) : null}
         </div>
-        {/* Only where it changes what the row above can do: in the browser build there is no
-            native folder picker, and the rows already linked keep syncing regardless. */}
         {!manager.desktopSupported ? (
           <p className="px-1 text-ui-11 text-muted-foreground">
-            Linking a folder needs the managed desktop backend. Folders already
-            linked stay synced.
+            {sourceFolderUnavailableMessage(isTauri)} Existing source folders
+            continue to sync.
           </p>
         ) : null}
         {removeIndexConfirm}
@@ -290,12 +374,12 @@ export function LinkedFoldersManager({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-sm font-medium text-foreground">
-            Linked local folders
+            Source folders
           </h3>
           <p className="text-xs leading-snug text-muted-foreground">
             {manager.desktopSupported
-              ? "Keep supported documents indexed as this folder changes."
-              : "Existing linked folders stay synced; linking requires the managed desktop backend."}
+              ? SOURCE_FOLDER_DESCRIPTION
+              : `${sourceFolderUnavailableMessage(isTauri)} Existing source folders continue to sync.`}
           </p>
         </div>
         {scope ? (
@@ -303,21 +387,21 @@ export function LinkedFoldersManager({
             type="button"
             size="sm"
             variant="outline"
-            className="shrink-0"
+            className="mt-[var(--ui-title-cap-inset)] shrink-0"
             disabled={!manager.desktopSupported || manager.mutating}
             onClick={() => void manager.link()}
             title={
               manager.desktopSupported
                 ? "Choose a local folder"
-                : "Requires the managed desktop backend"
+                : sourceFolderUnavailableMessage(isTauri)
             }
           >
             {manager.mutating ? (
               <Spinner className="size-3.5" />
             ) : (
-              <HugeiconsIcon icon={FolderSyncIcon} strokeWidth={1.75} className="size-3.5" />
+              <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-3.5" />
             )}
-            Link folder
+            Add folder
           </Button>
         ) : null}
       </div>
@@ -327,8 +411,11 @@ export function LinkedFoldersManager({
           <Spinner />
         </div>
       ) : manager.folders.length === 0 ? (
-        <div className="rounded-xl border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
-          No linked folders.
+        <div className="rounded-lg border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
+          {/* The unscoped list has no Add: a folder is linked to one project or knowledge base. */}
+          {scope
+            ? "No source folders."
+            : "No source folders. Link one from a project or knowledge base."}
         </div>
       ) : (
         <ul className="flex flex-col gap-1.5">
@@ -336,11 +423,11 @@ export function LinkedFoldersManager({
             const job = manager.jobs[folder.id];
             const running =
               job?.status === "pending" || job?.status === "running";
-            const progress = percent(job?.progress);
+            const progress = jobPercent(job);
             return (
               <li
                 key={folder.id}
-                className="flex min-w-0 items-start gap-3 rounded-xl border border-border/70 bg-background px-3 py-2.5"
+                className="flex min-w-0 items-start gap-3 rounded-lg border border-border/70 bg-background px-3 py-2.5"
               >
                 <HugeiconsIcon icon={FolderSyncIcon} strokeWidth={1.75} className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
@@ -370,6 +457,7 @@ export function LinkedFoldersManager({
                       (folder.status === "error" || job?.status === "failed") &&
                         "text-destructive",
                     )}
+                    title={running ? FOLDER_SYNC_HELP : undefined}
                   >
                     {job
                       ? jobSummary(job)
@@ -384,7 +472,9 @@ export function LinkedFoldersManager({
                       aria-label={`Sync progress for ${folder.displayName}`}
                       className="mt-2 h-1.5"
                     />
-                  ) : null}
+                  ) : (
+                    <FolderReport folder={folder} />
+                  )}
                 </div>
                 {folderMenu(folder, running)}
               </li>

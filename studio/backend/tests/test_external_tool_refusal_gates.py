@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Two ways a provider can present a call the loop must refuse to execute.
-
-Withdrawing the catalog on the way out only tells a well-behaved provider what
-not to do. These cover what happens when one asks anyway:
-
-* ``tool_choice: "none"``. Deep Research sets it precisely so the scraped web
-  text in its prompts cannot reach ``python`` or ``terminal``, so an endpoint
-  that echoes a call back regardless must not be able to run one here.
-* a turn that ended early. ``length`` hit the token ceiling and
-  ``content_filter`` had the output cut by the provider, so in both cases the
-  arguments collected so far may be half written.
-
-``stop`` is deliberately absent from that second set: llama.cpp and vLLM
-routinely finish a perfectly good tool call with it.
-"""
+"""Refuse calls under tool_choice none, and on length or content_filter finishes; stop is allowed."""
 
 from __future__ import annotations
 
@@ -164,11 +150,7 @@ def _events(lines, kind):
 
 
 def test_tool_choice_none_refuses_a_call_the_provider_sent_anyway(executed):
-    """The Deep Research containment case.
-
-    Its hops carry scraped third-party text, so a page that talks a naive
-    endpoint into emitting a python call must not get one executed.
-    """
+    """Deep Research hops carry scraped text, so a tool_choice none call must never execute."""
     transport = FakeTransport([[_call_line(), _finish("tool_calls")], [_DONE]])
     lines = _run(transport, tool_choice = "none")
 
@@ -239,9 +221,6 @@ def test_tool_choice_auto_still_executes(executed):
     assert executed == ["web_search"]
 
 
-# ── a turn that ended early is described, not run ────────────────────
-
-
 @pytest.mark.parametrize("reason", ["length", "content_filter"])
 def test_a_turn_cut_short_does_not_execute_its_call(executed, reason):
     """Both endings mean the model never finished saying what it wanted."""
@@ -252,11 +231,7 @@ def test_a_turn_cut_short_does_not_execute_its_call(executed, reason):
 
 @pytest.mark.parametrize("reason", ["tool_calls", "stop"])
 def test_a_completed_turn_still_executes(executed, reason):
-    """ "stop" is how llama.cpp and vLLM commonly end a good tool call.
-
-    Refusing it would disable tool calling on exactly the self-hosted servers
-    this path exists to serve.
-    """
+    """Turns ending in stop must execute: llama.cpp and vLLM commonly finish good tool calls that way."""
     transport = FakeTransport([[_call_line(), _finish(reason)], [_DONE]])
     _run(transport, tool_choice = "auto")
     assert executed == ["web_search"]

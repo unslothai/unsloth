@@ -1,16 +1,9 @@
-"""Regression test for BAD_MAPPINGS redirecting oversized dynamic quants.
-
-get_model_name previously applied BAD_MAPPINGS only to the resolver's output,
-but several listed names (the `-unsloth-bnb-4bit` dynamic quants, plus any name
-the resolver doesn't map) come back as None, so their BAD_MAPPINGS entries were
-dead and the oversized model loaded. Asserting over every entry catches all of
-them. The mapper table and the resolver have no heavy imports of their own,
-so we exec the import-free mapper module and ast-extract the resolver functions
-rather than importing unsloth (which needs a GPU).
-"""
+"""BAD_MAPPINGS must cover names the resolver maps to None, or oversized dynamic quants still load."""
 
 import ast
 import os
+
+import pytest
 
 _MODELS = os.path.join(os.path.dirname(__file__), os.pardir, "unsloth", "models")
 
@@ -56,3 +49,20 @@ def test_bad_mapping_redirects_keep_canonical_repo_case():
     get_model_name, _ = _load_get_model_name()
     assert get_model_name("Qwen/Qwen3-32B", load_in_4bit = True) == "unsloth/Qwen3-32B-bnb-4bit"
     assert get_model_name("Qwen/Qwen3-30B-A3B", load_in_4bit = True) == "unsloth/Qwen3-30B-A3B"
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("upstage/SOLAR-10.7B-v1.0", "upstage/SOLAR-10.7B-v1.0"),
+        ("allenai/Llama-3.1-Tulu-3-8B", "unsloth/Llama-3.1-Tulu-3-8B"),
+        ("unsloth/Llama-3.1-Tulu-3-8B", "unsloth/Llama-3.1-Tulu-3-8B"),
+        ("allenai/Llama-3.1-Tulu-3-70B", "allenai/Llama-3.1-Tulu-3-70B"),
+        ("NousResearch/Hermes-3-Llama-3.1-405B", "NousResearch/Hermes-3-Llama-3.1-405B"),
+        ("open-thoughts/OpenThinker-7B", "open-thoughts/OpenThinker-7B"),
+        ("mistralai/Pixtral-12B-Base-2409", "unsloth/Pixtral-12B-Base-2409-bnb-4bit"),
+    ],
+)
+def test_4bit_load_avoids_unpublished_bnb_repos(name, expected):
+    get_model_name, _ = _load_get_model_name()
+    assert get_model_name(name, load_in_4bit = True) == expected

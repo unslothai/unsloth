@@ -13,7 +13,6 @@ FILENAME = "rag-matrix-sentinel.txt"
 KB_NAME = "rag-matrix-kb-name"
 EDITED = "rag-matrix-edited"
 CONTENT = b"rag matrix sentinel document body\n"
-# Unsigned, so verify_native_path_lease rejects it before any folder is created.
 BAD_LEASE = {"nativePathLease": "rag-matrix-invalid-lease"}
 
 
@@ -231,9 +230,6 @@ FACTORIES = {
     "routes.rag:DELETE:/documents/{document_id}": Factory("rag-document"),
     "routes.rag:GET:/documents/{document_id}/file-url": Factory(
         "rag-document", fragment = "file-signed"
-    ),
-    "routes.rag:GET:/documents/{document_id}/preview-target": Factory(
-        "rag-document", fragment = FILENAME
     ),
     "routes.rag:GET:/jobs/{job_id}": Factory("rag-job", fragment = DOCUMENT_ID),
     "routes.rag:GET:/jobs/{job_id}/events": Factory(

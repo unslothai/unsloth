@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/tooltip";
 import { CONTEXT_LENGTHS } from "@/config/training";
 import {
+  useDrafterCapability,
   useMaxStepsEpochsToggle,
   useTrainingConfigStore,
 } from "@/features/training";
@@ -26,6 +27,7 @@ import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { DrafterSection } from "./drafter-section";
 import { FieldHint } from "./field-hint";
 import { LoraParamsSection } from "./lora-params-section";
 import { TrainingHyperparametersSection } from "./training-hyperparameters-section";
@@ -47,6 +49,9 @@ export function ParamsSection({
   mode?: "simple" | "advanced";
 }): ReactElement {
   const t = useT();
+  // Simple mode hides the section, but a drafter turned on earlier still needs its capability.
+  const drafterEnabled = useTrainingConfigStore((state) => state.drafterEnabled);
+  useDrafterCapability(drafterEnabled);
   const store = useTrainingConfigStore(
     useShallow((state) => ({
       projectName: state.projectName,
@@ -170,7 +175,7 @@ export function ParamsSection({
                   {useEpochs
                     ? t("studio.params.epochs")
                     : t("studio.params.maxSteps")}
-                  <Tooltip>
+                  <Tooltip disableHoverableContent={false}>
                     <TooltipTrigger asChild={true}>
                       <button
                         type="button"
@@ -250,7 +255,7 @@ export function ParamsSection({
                     max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                     step={1}
                     // Same floor: a step count needs more room at 16px.
-                    className="w-14 pointer-coarse:w-20 shrink-0 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
+                    className="w-14 pointer-coarse:w-20 shrink-0 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-full px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
                   />
                 </div>
               </div>
@@ -274,7 +279,7 @@ export function ParamsSection({
             <div className="flex flex-col gap-2">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 {t("studio.params.contextLength")}
-                <Tooltip>
+                <Tooltip disableHoverableContent={false}>
                   <TooltipTrigger asChild={true}>
                     <button
                       type="button"
@@ -356,7 +361,7 @@ export function ParamsSection({
           <div className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               {t("studio.params.learningRate")}
-              <Tooltip>
+              <Tooltip disableHoverableContent={false}>
                 <TooltipTrigger asChild={true}>
                   <button
                     type="button"
@@ -487,6 +492,7 @@ export function ParamsSection({
             epochsSliderMax={epochsSliderMax}
           />
         )}
+        {showAdvanced && <DrafterSection />}
       </div>
     </div>
   );

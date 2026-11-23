@@ -1,14 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""The published transformers window and every CI lane that mirrors it have to agree.
-
-The cap is spelled in pyproject.toml, unsloth_zoo's pyproject, and several workflows. A site
-left behind when the cap moves keeps CI green while testing a range users no longer get, so
-the assertions are not "the number is 5.17.0" but "the window admits what was measured,
-still rejects what was rejected, and no lane sits below it without saying why".
-
-Reads files only, which is what lets it run on the Windows and macOS runners too.
-"""
+"""Every copy of the transformers cap (pyproject, workflows) must agree, or CI tests a stale range."""
 
 from __future__ import annotations
 
@@ -27,10 +19,10 @@ REPO = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO / "pyproject.toml"
 WORKFLOWS = REPO / ".github" / "workflows"
 
-# Newest transformers the matrix was run against; moving it means re-running the sweep first.
-TESTED_CEILING = Version("5.17.0")
+# Newest transformers tested; moving it means re-running the sweep first.
+TESTED_CEILING = Version("5.18.0")
 
-# Not 4.51.3: peft 0.18.0 imports GradientCheckpointingLayer (4.52.0+); 4.52.0-4.52.3 are rejected below.
+# Not 4.51.3: peft 0.18.0 needs GradientCheckpointingLayer (4.52.0+); 4.52.0-4.52.3 rejected.
 TESTED_FLOOR = Version("4.52.4")
 
 # Tested and rejected; a specifier rewrite that drops one silently re-admits a broken release.
@@ -50,9 +42,17 @@ REJECTED = (
     "5.1.0",
 )
 
-NEWLY_ADMITTED = ("5.6.0", "5.10.1", "5.14.1", "5.15.1", "5.16.1", "5.17.0")
+NEWLY_ADMITTED = (
+    "5.6.0",
+    "5.10.1",
+    "5.14.1",
+    "5.15.1",
+    "5.16.1",
+    "5.17.0",
+    "5.18.0",
+)
 
-# Keyed on (workflow, exact requirement), never the workflow alone. Empty on purpose.
+# Keyed on (workflow, exact requirement), never the workflow alone.
 PINNED_BY_DESIGN: dict[tuple[str, str], str] = {}
 
 # pip intersects our window with the zoo's, so the zoo's ceiling decides what resolves.
@@ -60,7 +60,7 @@ ZOO_TRANSFORMERS_CEILING_BEFORE_THE_LIFT = Version("5.5.0")
 
 ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP = Version("2026.9.7")
 
-# CPU lanes must admit what the zoo's torch bound admits, or they test a torch nobody gets.
+# CPU lanes must admit what the zoo's torch bound admits.
 TESTED_TORCH = Version("2.14.0")
 TORCH_MIRROR_WORKFLOW = WORKFLOWS / "studio-export-capability-ci.yml"
 
@@ -349,9 +349,8 @@ def test_no_workflow_lane_sits_below_the_declared_ceiling() -> None:
 
 
 def test_every_exemption_names_a_lane_that_exists_today() -> None:
-    """A dormant exemption is a pre-authorisation: the day its string returns, the scan finds it and
-    skips it, which is the failure this file exists to prevent.
-    """
+    """A dormant exemption is a pre-authorisation: once its string reappears the scan finds it and
+    skips it, which is the failure this file exists to prevent."""
     spelled = {
         (path.name, raw.strip())
         for path in sorted(WORKFLOWS.glob("*.yml"))
@@ -404,7 +403,7 @@ def test_this_file_is_triggered_by_everything_it_scans() -> None:
     import yaml
 
     workflow = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
-    # PyYAML resolves a bare `on:` key to the boolean True (YAML 1.1), so read both.
+    # PyYAML resolves a bare `on:` key to True (YAML 1.1), so read both.
     triggers = workflow.get("on", workflow.get(True)) or {}
     paths = (triggers.get("pull_request") or {}).get("paths") or []
 
@@ -418,15 +417,14 @@ def test_this_file_is_triggered_by_everything_it_scans() -> None:
 
 
 def test_a_stale_range_cap_is_caught_even_in_an_allowlisted_workflow(tmp_path, monkeypatch) -> None:
-    """NEGATIVE CONTROL: keyed on the filename, one intentional pin exempted every other
-    transformers requirement in that file, so a range cap could go stale in the scanned workflow.
-    """
+    """Negative control: exemptions keyed on the filename let one intentional pin exempt every other
+    transformers requirement in that file, hiding a stale range cap."""
     workflows = tmp_path / "workflows"
     workflows.mkdir()
     (workflows / "version-compat-ci.yml").write_text(
         "run: |\n"
-        "  pip install 'transformers==4.51.3'\n"  # exact pin: a point, not a cap
-        "  pip install 'transformers>=4.51.3,<=5.5.0'\n",  # stale range cap: must be caught
+        "  pip install 'transformers==4.51.3'\n"
+        "  pip install 'transformers>=4.51.3,<=5.5.0'\n",
         encoding = "utf-8",
     )
     monkeypatch.setattr(sys.modules[__name__], "WORKFLOWS", workflows)
@@ -440,9 +438,8 @@ def test_a_stale_range_cap_is_caught_even_in_an_allowlisted_workflow(tmp_path, m
 
 
 def _matrix_module(urlopen):
-    """The pinned-symbols module, imported fresh with `urlopen` replaced, under its own name: the
-    matrix is built at import, so the substitution must precede the module body.
-    """
+    """Imports the pinned-symbols module fresh with urlopen replaced; the matrix is built at import,
+    so the substitution must precede the module body."""
     import importlib.util
     import urllib.request
 
@@ -502,9 +499,8 @@ def test_the_outage_fallback_reaches_the_declared_floor() -> None:
 
 
 def test_an_empty_release_index_keeps_every_load_bearing_tag() -> None:
-    """NEGATIVE CONTROL: a reachable PyPI yielding no usable release takes a different return
-    path, which has to merge the anchors too.
-    """
+    """Negative control: a reachable PyPI with no usable release takes a different return path,
+    which must also merge the anchors."""
     import io
     import json as _json
 
@@ -525,9 +521,8 @@ def test_an_empty_release_index_keeps_every_load_bearing_tag() -> None:
 
 
 def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> None:
-    """One tag per minor means a 5.17.1 would evict 5.17.0, the exact maximum the window admits, and
-    check a version no user can resolve instead. The anchor derives from pyproject's cap.
-    """
+    """One tag per minor would let a 5.17.1 evict 5.17.0, the exact maximum the window admits, and
+    check a version no user can resolve; the anchor derives from pyproject's cap."""
     import io
     import json as _json
 
@@ -540,8 +535,8 @@ def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> Non
             return False
 
     published = {
-        "5.17.0": [{"yanked": False}],
-        "5.17.1": [{"yanked": False}],
+        "5.18.0": [{"yanked": False}],
+        "5.18.1": [{"yanked": False}],
     }
 
     def releases(*args, **kwargs):
@@ -550,18 +545,17 @@ def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> Non
     module = _matrix_module(releases)
 
     assert module._declared_ceiling_tag() == (
-        "v5.17.0",
+        "v5.18.0",
     ), "the anchor is no longer read from pyproject's transformers cap"
-    assert "v5.17.1" in module.TRANSFORMERS_TAGS, "the newest patch is still measured"
+    assert "v5.18.1" in module.TRANSFORMERS_TAGS, "the newest patch is still measured"
     assert (
-        "v5.17.0" in module.TRANSFORMERS_TAGS
+        "v5.18.0" in module.TRANSFORMERS_TAGS
     ), "a patch release evicted the declared ceiling from the matrix"
 
 
 def test_the_matrix_is_shared_between_xdist_workers(tmp_path, monkeypatch) -> None:
-    """Each worker resolves the matrix during collection, so one timing out takes the fallback list,
-    the parameter sets diverge and xdist aborts. With the cache set, the first to resolve publishes.
-    """
+    """Each worker resolves the matrix during collection, so one timing out would take the fallback
+    list and diverge the parameter sets, aborting xdist; with the cache set, the first publishes."""
     import io
     import json as _json
     import urllib.error
@@ -607,9 +601,8 @@ def test_without_the_cache_a_failed_read_still_falls_back(tmp_path, monkeypatch)
 
 
 def test_a_pinned_patch_release_is_not_evicted_by_a_later_one() -> None:
-    """Notebooks pin 5.10.1; with 5.10.4 published the (5, 10) slot becomes 5.10.4, so a symbol
-    arriving in a later 5.10 patch would break them while this matrix stayed green.
-    """
+    """Notebooks pin 5.10.1; once 5.10.4 is published the (5, 10) slot becomes 5.10.4, so a symbol
+    added in a later 5.10 patch would break the notebooks unseen."""
     import io
     import json as _json
 
@@ -640,9 +633,8 @@ def test_a_pinned_patch_release_is_not_evicted_by_a_later_one() -> None:
 
 
 def test_an_import_lane_pins_the_declared_ceiling() -> None:
-    """The `latest` lane is unpinned, so once upstream publishes above the cap it resolves a
-    combination no user can install. The static symbol suite cannot see import-time breakage.
-    """
+    """The latest lane is unpinned, so once upstream publishes above the cap it resolves a
+    combination no user can install; static symbol checks cannot see import-time breakage."""
     import yaml
 
     workflow = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
@@ -697,9 +689,8 @@ def test_no_two_import_lanes_mint_the_same_pip_cache_key() -> None:
 
 
 def test_a_published_matrix_still_carries_the_anchors(tmp_path, monkeypatch) -> None:
-    """The published file can come from another revision or an earlier run, and returning it verbatim
-    dropped the floor, the old ceiling and the notebook pins while the suite reported green.
-    """
+    """A published matrix may come from another revision or an earlier run; returning it verbatim
+    dropped the floor, old ceiling and notebook pins while the suite stayed green."""
     import json as _json
     import urllib.error
 
@@ -720,9 +711,8 @@ def test_a_published_matrix_still_carries_the_anchors(tmp_path, monkeypatch) -> 
 
 
 def test_the_declared_ceiling_anchor_uses_the_tag_upstream_pushed() -> None:
-    """NEGATIVE CONTROL: upstream does not always tag a release under its own name, so a ceiling
-    landing on one must resolve to the tag pushed or every check fails on the fetch.
-    """
+    """Negative control: upstream does not always tag a release under its own name, so a ceiling
+    must resolve to the tag actually pushed or every check fails on the fetch."""
     import importlib.util
 
     path = (
@@ -760,7 +750,7 @@ def _newest_published_zoo_transformers_ceiling(timeout: float = 10.0):
     if not released:
         return None
 
-    # Whole SpecifierSets: `<5.17.0` and `<=5.17.0` name the same number but differ.
+    # Whole SpecifierSets: `<5.17.0` and `<=5.17.0` differ.
     windows = []
     for raw in info.get("requires_dist") or []:
         try:
@@ -777,8 +767,7 @@ def _newest_published_zoo_transformers_ceiling(timeout: float = 10.0):
 
 def test_the_zoo_deferral_expires_when_the_zoo_release_ships() -> None:
     """The gate above skips on a hand-written constant, so this asks PyPI what the newest zoo allows
-    and fails only on POSITIVE evidence it is obsolete; an offline runner stays skipped.
-    """
+    and fails only on positive evidence the deferral is obsolete; offline stays skipped."""
     if ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP is not None:
         pytest.skip(
             "the floor already names a zoo release carrying the lift, so the deferral is "

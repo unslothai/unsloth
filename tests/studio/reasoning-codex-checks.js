@@ -19,7 +19,8 @@ async (page) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.waitForFunction(() => window.__reasoning);
   await page.evaluate(() => window.__reasoning.run({ size: 250000, kind: "code", chunk: 512, gap: 12 }));
-  await page.waitForFunction(() => window.__reasoning.stats().done, { timeout: 60000 });
+  // Options are the THIRD arg; in second place the 60 s timeout is silently ignored.
+  await page.waitForFunction(() => window.__reasoning.stats().done, null, { timeout: 60000 });
   await page.waitForTimeout(400);
   const streaming = await page.evaluate(() => ({ ...window.__reasoning.stats(), transfers: window.__fenceTransfers }));
   check(streaming.mounted < 30000, "live code mounted unbounded content");

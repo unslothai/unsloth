@@ -96,7 +96,6 @@ def test_force_enable_refuses_an_explicit_opt_out():
     )
     u._FLEX_SUPPORT_FORCED.clear()
     assert u._enable_flex_attention_support(cls, "t5gemma2") is False
-    # and it must not have mutated the class on the way out
     assert u._declares_flex_support(cls) is False
 
 
@@ -141,7 +140,6 @@ def test_head_dim_derived_from_hidden_size_when_absent(_no_env):
 
 
 def test_per_layer_head_dims_take_the_maximum(_no_env):
-    # 5.x per_layer_config: the largest layer decides.
     cfg = _Cfg(
         model_type = "fake",
         head_dim = 128,
@@ -157,7 +155,6 @@ def test_per_layer_head_dims_take_the_maximum(_no_env):
 
 
 def test_a_homogeneous_small_config_is_unaffected_by_the_per_layer_read(_no_env):
-    # 4.x configs have no per_layer_config at all; the global head_dim must still decide.
     assert (
         u._prefers_flex_for_head_dim(_Cfg(model_type = "fake", head_dim = 128, num_attention_heads = 8))
         is False
@@ -246,7 +243,6 @@ def test_forcing_flex_that_cannot_be_scoped_keeps_flash_attention(monkeypatch, m
 
 
 def test_forcing_the_env_var_cannot_override_an_architecture_opt_out(monkeypatch):
-    # a deliberate _supports_flex_attn = False still wins over the env var
     monkeypatch.setenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, "1")
     cls = _real_model_class(
         "transformers.models.t5gemma2.modeling_t5gemma2", "T5Gemma2ForConditionalGeneration"
@@ -362,13 +358,7 @@ def test_upstream_still_materialises_a_mask_when_padded():
 
 
 def _mask_wrapper_is_compiled():
-    """Whether the installed create_causal_mask wrapper calls a compiled function.
-
-    Read off the wrapper rather than UNSLOTH_COMPILE_DISABLE: unsloth_zoo decides once, when it
-    patches at import, and a test module can flip the variable later in the same process. With
-    the switch set, zoo still installs the wrapper (its keyword fixes apply) around the
-    uncompiled original, which is what it stashes.
-    """
+    """Reads the installed wrapper, not UNSLOTH_COMPILE_DISABLE, since zoo decides once at import."""
     import inspect
 
     from transformers import masking_utils
@@ -431,12 +421,7 @@ def test_kill_switch_keeps_the_mask_for_an_unpadded_batch(monkeypatch):
 
 
 def test_an_uncompiled_wrapper_keeps_the_upstream_skip(_skip_on):
-    """Without compilation the wrapper agrees with upstream on unpadded and padded batches.
-
-    unsloth-zoo#1335 made the wrapper install under UNSLOTH_COMPILE_DISABLE=1 too, around the
-    uncompiled original. The mask is then skipped exactly as upstream skips it, and kept exactly
-    where upstream keeps it.
-    """
+    """Uncompiled, the mask wrapper skips exactly when upstream does, on padded and unpadded batches."""
     import torch
     from transformers import masking_utils
 

@@ -1,28 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The provider model backfill must be finished before the sync resolves (#7281).
-
-``syncExternalProvidersFromBackend`` is what the credential bootstrap gate awaits before it
-releases app content, so the backfill writes have to be complete when it returns. Two hops
-carry that: the ``await`` on ``settleTasksIfCurrent`` at the call site, and the ``await`` on
-``Promise.allSettled`` inside the helper. Drop either and the sync resolves while the writes
-are still in flight, so an immediate close or a session transition loses them.
-
-A string contract cannot hold this. ``await`` is one token in a source file; asserting it is
-present is defeated by any reformat, and asserting the call is present says nothing about
-whether it is awaited. So both hops are run for real instead: the helper and the call-site
-tail are sliced VERBATIM out of the studio sources into a node harness (see
-``_node_harness``) and driven with tasks that only finish on a timer. If either ``await``
-goes, the tail resolves with the timers still pending and the recorded order is empty.
-
-The same run pins the other half of the contract, that the batch SETTLES rather than
-rejecting on the first failure: one task rejects immediately, and the two that resolve later
-must still be recorded. Under ``Promise.all`` the tail would reject instead.
-"""
+"""Sync must await the backfill, and the batch must settle, not reject on the first failure."""
 
 from __future__ import annotations
 
+import re
 import textwrap
 
 import pytest
@@ -43,9 +26,7 @@ SOURCES = (RECONCILIATION, SYNC_PROVIDERS)
 
 TEMP = WORKDIR / "temp" / "provider_backfill_awaits_batch"
 
-# The end of syncExternalProvidersFromBackend, which is where the backfill batch is awaited.
-# Anchored on the unique return and walked BACK to the staleness guard, so the slice is taken
-# without matching on the word being tested.
+# Walked back from the unique return so the slice does not match on the tested word.
 TAIL_END = "\n  return syncedProviders;\n}"
 TAIL_START = "if (isCurrent && !isCurrent()) return existingProviders;"
 
@@ -66,12 +47,43 @@ def _tail_source() -> str:
     return text[start:end]
 
 
+# The sliced tail runs inside syncBackfillTail, so every local of the sync it reads must be one of these.
+TAIL_PARAMS = (
+    "backfillTasks",
+    "isCurrent",
+    "existingProviders",
+    "syncedProviders",
+    "registryRows",
+    "enabledIds",
+    "syncedRows",
+)
+
+
+def _sync_locals_read_by_tail() -> set[str]:
+    """Locals (and parameters) of syncExternalProvidersFromBackend that the sliced tail reads."""
+    text = read(SYNC_PROVIDERS)
+    start = text.index("export async function syncExternalProvidersFromBackend(")
+    tail = _tail_source()
+    body = text[start : text.index(tail, start)]
+    names = set()
+    # Function-scope declarations only (two-space indent); nested blocks cannot leak into the tail.
+    for group in re.findall(r"^  (?:const|let|var)\s+(\[[^\]]*\]|\{[^}]*\}|\w+)", body, re.M):
+        names.update(re.findall(r"\b[A-Za-z_]\w*\b", group.split("=")[0]))
+    signature = body[: body.index(")")]
+    names.update(re.findall(r"\b([A-Za-z_]\w*)\??\s*:", signature))
+    return {name for name in names if re.search(rf"\b{name}\b", tail)}
+
+
 def _harness_source() -> str:
     return (
         textwrap.dedent(
             """
         // @ts-nocheck
         // ---- PRELUDE: the sliced tail reads only through its parameters ----
+        const disabledWrites = [];
+        const useExternalProvidersStore = {
+          getState: () => ({ setDisabledProviders: (rows) => disabledWrites.push(rows) }),
+        };
         // ---- PRELUDE ENDS: verbatim studio source follows ----
         """
         )
@@ -79,13 +91,10 @@ def _harness_source() -> str:
         + textwrap.dedent(
             """
         export async function syncBackfillTail(
-          backfillTasks,
-          isCurrent,
-          existingProviders,
-          syncedProviders,
-        ) {
         """
         )
+        + "".join(f"  {name},\n" for name in TAIL_PARAMS)
+        + "){\n"
         + "  "
         + _tail_source()
         + "\n}\n"
@@ -112,6 +121,9 @@ const returned = await syncBackfillTail(
   () => true,
   ["existing"],
   ["synced"],
+  [],
+  new Set(),
+  [],
 );
 const finishedWhenSyncResolved = [...finished];
 
@@ -143,6 +155,13 @@ def test_the_backfill_batch_is_complete_when_the_sync_resolves(result: dict):
         "transition right after startup would lose them"
     )
     assert result["returned"] == ["synced"]
+
+
+def test_the_tail_reads_no_sync_local_the_harness_does_not_pass():
+    unpassed = sorted(_sync_locals_read_by_tail() - set(TAIL_PARAMS))
+    assert (
+        not unpassed
+    ), f"the sync's tail now reads {unpassed}; add them to TAIL_PARAMS and pass them in SCRIPT"
 
 
 def test_a_stale_session_runs_no_backfill(result: dict):

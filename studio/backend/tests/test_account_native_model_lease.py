@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A native GGUF selection is authorized on the lease's canonical path, not its display label.
-
-The desktop shell mints the signed lease; on a multi-account install the account signed in
-inside that shell is a managed one, and its ``model_path`` is the file's display label.
-"""
+"""Authorize native GGUF selections by canonical path; a managed model_path is only a display label."""
 
 from __future__ import annotations
 

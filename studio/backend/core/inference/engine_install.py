@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in serving environments. No engine packages are imported into Studio.
-
-When Studio's own PyTorch and CUDA libraries are the ones an engine is locked to,
-its environment runs on Studio's interpreter and holds only the packages Studio
-lacks or pins differently; Studio's site-packages follow its own on sys.path.
-Otherwise it is a complete isolated environment.
-
-Installation is serialized across Studio processes. Environments are built at
-their final paths (venv scripts contain absolute paths); only the active marker
-is replaced. Runtime leases prevent removing an environment another Studio uses.
-"""
+"""Opt-in engine envs share Studio torch/CUDA when locked, else isolated; none imported into Studio;
+installs serialized; runtime leases block removing an env in use"""
 
 from __future__ import annotations
 
@@ -34,19 +25,48 @@ from collections import deque
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
+PRECISIONS = ("auto", "bf16", "fp16", "int4", "int8", "fp8")
+ENGINE_NAMES = {"vllm": "vLLM", "sglang": "SGLang"}
 PROFILES = {
     "vllm": {
         "module": "vllm",
         "cuda": "cu130",
         "driver": 580,
-        # FlashInfer fetches the trtllm kernels it uses on demand rather than the whole cubin wheel.
-        # CUTLASS DSL loads its newest flavour the driver runs, and driver 580 runs CUDA 13.
+        # FlashInfer fetches trtllm kernels on demand; CUTLASS DSL loads the newest flavour driver 580 runs.
         "omit": ("flashinfer-cubin", "nvidia-cutlass-dsl-libs-cu12"),
+        # vLLM samples with FlashInfer (nvcc JIT at first launch); Studio's SGLang flags never do.
+        "flashinfer_kernels": True,
         # Newest first; each release pins one torch build (vLLM 0.27+ needs torch 2.13, 0.20-0.26 torch 2.11).
         "releases": (
             {"version": "0.30.0", "torch": "2.13.0", "lock": "vllm-linux-cu130-torch213"},
             {"version": "0.26.0", "torch": "2.11.0", "lock": "vllm-linux-cu130"},
         ),
+        # AMD: vLLM's ROCm build, Python 3.12 only; its torch loads /opt/rocm, so always isolated.
+        "rocm": {
+            "cuda": None,
+            "driver": None,
+            "index": "https://wheels.vllm.ai/rocm/0.30.0/rocm723",
+            "python": (3, 12),
+            "glibc": (2, 39),
+            "rocm": (7, 2),
+            "gfx": (
+                "gfx90a",
+                "gfx942",
+                "gfx950",
+                "gfx1100",
+                "gfx1101",
+                "gfx1150",
+                "gfx1151",
+                "gfx1200",
+                "gfx1201",
+            ),
+            "omit": (),
+            "platform": "rocm",
+            # The ROCm build has no bitsandbytes quantization, and TorchAO's packed INT4 is CUDA-only.
+            "bitsandbytes": False,
+            "precisions": tuple(p for p in PRECISIONS if p != "int4"),
+            "releases": ({"version": "0.30.0", "torch": "2.12.0", "lock": "vllm-linux-rocm723"},),
+        },
     },
     "sglang": {
         "module": "sglang",
@@ -75,8 +95,7 @@ PROFILES = {
 PYTHON = (3, 13)
 _BASE_PTH = "zz_unsloth_studio_base.pth"
 _BASE_MODULE = "_unsloth_studio_base"
-# Studio installs its own FlashInfer for NVFP4 diffusion; a jit-cache of another version fails the
-# engine's flashinfer import ("flashinfer-jit-cache version ... does not match"), so the engine never sees them.
+# A jit-cache of another FlashInfer version fails the engine's flashinfer import.
 _STUDIO_BASE_SOURCE = """import pkgutil, site, sys
 
 _HIDDEN = ("flashinfer", "flashinfer_jit_cache", "flashinfer_cubin")
@@ -126,18 +145,68 @@ def engine_root() -> Path:
     return studio_root() / "engines"
 
 
+_kfd_has_amd_gpu: bool | None = None
+
+
+def gpu_platform() -> str:
+    """The GPU family the engine runs on: "rocm" for AMD, else "cuda". A host with both, and
+    every Windows host, follows Studio's own PyTorch."""
+    global _kfd_has_amd_gpu
+    from utils.hardware import hardware
+
+    # Idle Chat reads this: the wheel's build family is enough; do not init the ML runtime.
+    if hardware.DETECTION_COMPLETE.is_set():
+        is_rocm = hardware.IS_ROCM
+    else:
+        from core._torchao_stub import _installed_torch_is_rocm, _module_is_rocm
+        torch = sys.modules.get("torch")
+        is_rocm = (
+            _module_is_rocm(torch)
+            if getattr(torch, "__version__", None) is not None
+            else _installed_torch_is_rocm()
+        )
+    if is_rocm:
+        return "rocm"
+    if platform.system() != "Linux" or os.path.exists("/proc/driver/nvidia/version"):
+        return "cuda"
+    # Asked many times per status poll; the GPUs do not change while Studio runs.
+    if _kfd_has_amd_gpu is None:
+        from utils.hardware.amd import amd_kfd_gpu_node_count
+
+        count = amd_kfd_gpu_node_count()
+        if count is None:
+            return "cuda"
+        _kfd_has_amd_gpu = count > 0
+    return "rocm" if _kfd_has_amd_gpu else "cuda"
+
+
+def _flavor(engine: str) -> dict:
+    """The engine's profile for this host's GPU platform, before a release is picked."""
+    base = {
+        "platform": "cuda",
+        "python": PYTHON,
+        "precisions": PRECISIONS,
+        "bitsandbytes": True,
+        **{key: value for key, value in PROFILES[engine].items() if key != "rocm"},
+    }
+    if gpu_platform() == "rocm" and "rocm" in PROFILES[engine]:
+        return {**base, **PROFILES[engine]["rocm"]}
+    return base
+
+
 def _release(engine: str) -> dict:
     """The release built on Studio's own torch, so the engine can share it; otherwise the newest,
     which then gets an isolated environment of its own."""
     from . import wsl_host
 
-    releases = PROFILES[engine]["releases"]
-    if wsl_host.active():
+    flavor = _flavor(engine)
+    releases = flavor["releases"]
+    if wsl_host.active() or flavor["platform"] == "rocm":
         # The WSL guest has no Studio torch to share, so it always gets the newest.
         return releases[0]
     torch = _studio_packages().get("torch")
     for release in releases:
-        if _same_build(torch, release["torch"], PROFILES[engine]["cuda"]):
+        if _same_build(torch, release["torch"], flavor["cuda"]):
             return release
     return releases[0]
 
@@ -145,7 +214,24 @@ def _release(engine: str) -> dict:
 def profile(engine: str) -> dict:
     if engine not in PROFILES:
         raise ValueError("Unknown inference engine")
-    return {**PROFILES[engine], **_release(engine)}
+    return {**_flavor(engine), **_release(engine)}
+
+
+def _python(engine: str) -> tuple[int, int]:
+    return profile(engine)["python"]
+
+
+def _venv_python_args(engine: str, guest: bool = False) -> list[str]:
+    """uv venv's interpreter. Triton compiles its HIP driver module against the interpreter's
+    Python.h at run time, and Ubuntu's python3.12 has none without python3.12-dev, so the ROCm
+    environment always gets a uv-managed CPython, which ships its headers. Studio's own
+    interpreter serves only a local environment, never the WSL guest's."""
+    version = "{}.{}".format(*_python(engine))
+    if profile(engine)["platform"] == "rocm":
+        return ["--python", version, "--python-preference", "only-managed"]
+    if not guest and sys.version_info[:2] == _python(engine):
+        return ["--python", sys.executable]
+    return ["--python", version]
 
 
 def requirements(engine: str) -> Path:
@@ -160,11 +246,19 @@ def _normalize(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+_pins_seen: dict[Path, tuple[tuple | None, dict[str, tuple[str, str]]]] = {}
+
+
 def _pins(engine: str) -> dict[str, tuple[str, str]]:
     """{name: (version, requirement line with its hashes)} from a uv-compiled lock."""
+    path = requirements(engine)
+    identity = _file_identity(path)
+    seen = _pins_seen.get(path)
+    if identity is not None and seen is not None and seen[0] == identity:
+        return dict(seen[1])
     entries: dict[str, tuple[str, str]] = {}
     name = None
-    for line in requirements(engine).read_text(encoding = "utf-8").splitlines(keepends = True):
+    for line in path.read_text(encoding = "utf-8").splitlines(keepends = True):
         match = re.match(r"([A-Za-z0-9][A-Za-z0-9_.\-]*)==([^\s;\\]+)", line)
         if match:
             name = _normalize(match.group(1))
@@ -173,7 +267,8 @@ def _pins(engine: str) -> dict[str, tuple[str, str]]:
             entries[name] = (entries[name][0], entries[name][1] + line)
         else:
             name = None
-    return entries
+    _pins_seen[path] = (identity, entries)
+    return dict(entries)
 
 
 def _studio_site() -> list[str]:
@@ -184,6 +279,10 @@ def _studio_site() -> list[str]:
 _studio_seen: tuple[tuple, dict[str, str]] | None = None
 
 
+def _studio_site_key(sites: list[str]) -> tuple:
+    return tuple((site, os.stat(site).st_mtime_ns) for site in sites if os.path.isdir(site))
+
+
 def _studio_packages() -> dict[str, str]:
     """Distributions in Studio's own site-packages, excluding sidecars on sys.path. Status polls
     read this several times; the scan is redone only when an install changes a site directory."""
@@ -191,7 +290,7 @@ def _studio_packages() -> dict[str, str]:
     import importlib.metadata as metadata
 
     sites = _studio_site()
-    key = tuple((site, os.stat(site).st_mtime_ns) for site in sites if os.path.isdir(site))
+    key = _studio_site_key(sites)
     if _studio_seen is None or _studio_seen[0] != key:
         _studio_seen = (
             key,
@@ -228,9 +327,7 @@ def _torch_runtime() -> set[str]:
     return names
 
 
-# nvcc's cudafe stubs need the crt headers of its own release, so mixing releases breaks
-# FlashInfer's JIT (Colab: crt 13.4.59 with nvcc 13.0.88, "macro __cudaLaunch passed 2 arguments").
-# Shared only when Studio holds every one at the locked version, else the engine brings all of them.
+# nvcc's cudafe stubs need crt headers of the same release, so share only when all match.
 _TOOLCHAIN = frozenset({"nvidia-cuda-nvcc", "nvidia-cuda-crt", "nvidia-nvvm", "nvidia-cuda-cccl"})
 
 
@@ -254,27 +351,82 @@ def _compat(engine: str) -> dict[str, list[str]]:
     return _compat_file(engine).get("requires", {})
 
 
+def _file_identity(path: Path) -> tuple | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
+
+
+# Status polls price every engine that is not current; reused until the key or an engine job moves.
+_priced_plans: dict[str, tuple[tuple, dict | None, frozenset[str]]] = {}
+
+
+def _forget_priced_plans() -> None:
+    with _lock:
+        _priced_plans.clear()
+
+
+def _priced_plan(engine: str) -> tuple[dict | None, frozenset[str]]:
+    """The lock's wheel sizes and the names Studio provides, as download_bytes prices them."""
+    lock = requirements(engine)
+    sites = _studio_site()
+    key = (
+        str(lock),
+        _file_identity(lock),
+        _file_identity(lock.with_suffix(".compat.json")),
+        _studio_site_key(sites),
+        tuple(sorted(_studio_packages().items())),
+        repr(profile(engine)),
+        sys.implementation.name,
+        tuple(sys.version_info[:2]),
+    )
+    with _lock:
+        seen = _priced_plans.get(engine)
+    if seen is not None and seen[0] == key:
+        return seen[1], seen[2]
+    sizes = _compat_file(engine).get("sizes")
+    provided = frozenset(install_plan(engine)["provided"]) if sizes else frozenset()
+    with _lock:
+        _priced_plans[engine] = (key, sizes, provided)
+    return sizes, provided
+
+
 def download_bytes(engine: str) -> int | None:
     """Wheel bytes an install of the selected release downloads: the lock minus what Studio provides."""
     from . import wsl_host
 
-    sizes = _compat_file(engine).get("sizes")
+    wsl = wsl_host.active()
+    if wsl:
+        sizes = _compat_file(engine).get("sizes")
+        provided: frozenset[str] | dict = {}
+    else:
+        sizes, provided = _priced_plan(engine)
     if not sizes:
         return None
-    wsl = wsl_host.active()
     # A WSL engine is always a complete environment, plus the distro and uv on first setup.
-    provided = {} if wsl else install_plan(engine)["provided"]
     omit = set(profile(engine).get("omit", ()))
     total = sum(
         size or 0 for name, size in sizes.items() if name not in provided and name not in omit
     )
-    if wsl and not wsl_host.summary().get("distro"):
+    if not wsl and (kernels := flashinfer_kernel_wheel(engine, wait = False)):
+        total += kernels.get("size") or 0
+    summary = wsl_host.summary() if wsl else {}
+    if wsl and not summary.get("distro"):
         total += wsl_host.ROOTFS["size"] + wsl_host.UV["size"]
+    if (
+        wsl
+        and profile(engine)["platform"] == "rocm"
+        and summary.get("rocm") != wsl_host.ROCM_RELEASE
+    ):
+        total += wsl_host.ROCM_APT_BYTES + sum(
+            spec["size"] for spec in (wsl_host.ROCDXG, wsl_host.ROCDXG_SMI)
+        )
     return total
 
 
-# Not engine dependencies, so absent from the compat file: the configs Studio's adapters build
-# (Int8WeightOnlyConfig and friends) use TorchAO 0.17's API, and 0.18 removed their version 1.
+# Studio's adapter configs use TorchAO 0.17's API; 0.18 removed their version 1.
 _ADAPTER_REQUIRES = {"torchao": ["==0.17.0"]}
 
 
@@ -347,8 +499,7 @@ def install_plan(engine: str) -> dict:
     def fits(name: str) -> bool:
         if _same_build(studio.get(name), lock.get(name, (None,))[0], cuda):
             return True
-        # Torch is the exact build; a CUDA library torch takes as a range (nvjitlink) only has to
-        # satisfy every locked package's requirement, since the engine then loads Studio's copy.
+        # Torch is exact; range-pinned CUDA libs only need to satisfy every locked requirement.
         specs = compat.get(name)
         return bool(
             name != "torch"
@@ -359,9 +510,11 @@ def install_plan(engine: str) -> dict:
             and all(SpecifierSet(spec).contains(studio[name], prereleases = True) for spec in specs)
         )
 
+    # The ROCm build's torch loads /opt/rocm rather than bundled libraries: never Studio's.
     shared = (
-        sys.implementation.name == "cpython"
-        and sys.version_info[:2] == PYTHON
+        profile(engine)["platform"] == "cuda"
+        and sys.implementation.name == "cpython"
+        and sys.version_info[:2] == _python(engine)
         and "torch" in studio
         and all(fits(name) for name in runtime - _TOOLCHAIN)
     )
@@ -383,7 +536,7 @@ def install_plan(engine: str) -> dict:
 
 
 def _cuda_trees(env: Path, shared: bool) -> list[Path]:
-    sites = [env / "lib" / "python{}.{}".format(*PYTHON) / "site-packages"]
+    sites = list(env.glob("lib/python3.*/site-packages"))
     sites += [Path(path) for path in _studio_site()] if shared else []
     return [site / "nvidia" / "cu13" for site in sites if (site / "nvidia" / "cu13").is_dir()]
 
@@ -394,8 +547,7 @@ def link_cuda_home(env: Path, shared: bool) -> None:
     home = env / "cuda"
     (home / "lib64").mkdir(parents = True, exist_ok = True)
     trees = _cuda_trees(env, shared)
-    # One include tree, the engine's entries first: a Studio header such as curand_kernel.h
-    # quote-includes crt/ from beside itself, which then resolves to the engine's crt.
+    # Engine entries first: Studio headers quote-include crt/ which must resolve to the engine's.
     include = home / "include"
     if include.is_symlink():
         include.unlink()
@@ -453,6 +605,12 @@ def stale(info: dict) -> bool:
         studio.get(name) != version or not _adapter_accepts(name, version)
         for name, version in info.get("provided", {}).items()
     )
+
+
+def built_for_this_gpu(engine: str, info: dict) -> bool:
+    """Whether an environment runs on this host's GPU platform; one from before AMD support is CUDA.
+    A restored environment skips the profile check, so this keeps it off the other vendor's GPU."""
+    return info.get("platform", "cuda") == profile(engine)["platform"]
 
 
 # Runs in the engine's interpreter, so it checks both layers as the engine imports them.
@@ -578,7 +736,9 @@ def support_reason(
     else:
         glibc = profile(engine).get("glibc", (2, 34))
         if tuple(int(x) for x in (platform.libc_ver()[1] or "0.0").split(".")[:2]) < glibc:
-            return f"{engine} requires glibc {glibc[0]}.{glibc[1]} or newer."
+            return f"{ENGINE_NAMES[engine]} requires glibc {glibc[0]}.{glibc[1]} or newer."
+    if gpu_platform() == "rocm":
+        return _rocm_reason(engine, gpu_id, wait)
     rows = _driver_rows(gpu_id, wait = wait)
     if rows is _PENDING:
         return "Checking for a supported NVIDIA GPU."
@@ -592,6 +752,223 @@ def support_reason(
     except ValueError:
         pass
     return f"Requires an NVIDIA GPU with compute capability 8.0 or newer and driver {profile(engine)['driver']} or newer."
+
+
+ROCM_HOME = Path("/opt/rocm")
+# What vLLM's ROCm torch and kernels load from the host (their RUNPATH is /opt/rocm/lib).
+ROCM_LIBRARIES = (
+    "libamdhip64.so.7",
+    "libhiprtc.so.7",
+    "libMIOpen.so.1",
+    "librocblas.so.5",
+    "libhipblas.so.3",
+    "libhipblaslt.so.1",
+    "libhipfft.so.0",
+    "libhiprand.so.1",
+    "libhipsparse.so.4",
+    "libhipsparselt.so.0",
+    "libhipsolver.so.1",
+    "librocsolver.so.0",
+    "librccl.so.1",
+    "librocprofiler-sdk.so.1",
+    # rocprofiler-sdk loads it but does not depend on its package (hsa-amd-aqlprofile).
+    "libhsa-amd-aqlprofile64.so.1",
+    "libroctx64.so.4",
+)
+# Linked by that torch from outside ROCm: {soname: Ubuntu 24.04 package}.
+ROCM_SYSTEM_LIBRARIES = {
+    "libmpi.so.40": "libopenmpi3t64",
+    "libmpi_cxx.so.40": "libopenmpi3t64",
+    "libnuma.so.1": "libnuma1",
+}
+
+
+def rocm_version() -> tuple[int, int] | None:
+    """The ROCm release installed in /opt/rocm, where the ROCm engine's torch looks for it."""
+    try:
+        text = (ROCM_HOME / ".info" / "version").read_text(encoding = "utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    match = re.match(r"\s*(\d+)\.(\d+)", text)
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def rocm_loads_quantization(quant) -> bool:
+    """Whether vLLM's ROCm build loads a checkpoint with this ``quantization_config``. Measured on
+    gfx1151 with vLLM 0.30.0: AWQ and integer compressed-tensors (W8A8, W4A16) load; GPTQ, FP8 and
+    NVFP4 checkpoints fail at engine start."""
+    if not isinstance(quant, dict) or not quant:
+        return True
+    method = str(quant.get("quant_method") or "").strip().lower()
+    if method in ("gptq", "fp8", "modelopt", "modelopt_fp4"):
+        return False
+    if method != "compressed-tensors":
+        return True
+    groups = quant.get("config_groups")
+    if not isinstance(groups, dict) or not groups:
+        return False
+    for group in groups.values():
+        if not isinstance(group, dict) or not isinstance(group.get("weights"), dict):
+            return False
+        for key in ("weights", "input_activations"):
+            spec = group.get(key)
+            if isinstance(spec, dict) and spec.get("type") != "int":
+                return False
+    return True
+
+
+_rocm_arches: dict[int, str] | None = None
+
+
+def _rocm_gpu_arches() -> dict[int, str]:
+    """{physical GPU id: the gfx target it presents} from Studio's own ROCm torch, read once, or {}
+    when the ordinals cannot be mapped to physical ids. The engine inherits Studio's environment,
+    so an HSA_OVERRIDE_GFX_VERSION spoof applies to both."""
+    global _rocm_arches
+    if _rocm_arches is None:
+        _rocm_arches = {}
+        try:
+            import torch
+            from utils.hardware.hardware import (
+                _props_gfx_arch,
+                _rocm_device_ordinal_active,
+                _rocm_visibility_masks_are_stacked,
+                _torch_ordinal_physical_ids,
+            )
+
+            # Stacked or ordinal masks renumber the devices; the KFD topology then answers instead.
+            # AMD's SDK / Radeon wheels leave torch.version.hip unset; their label carries ROCm.
+            if (
+                (getattr(torch.version, "hip", None) or "rocm" in torch.__version__.lower())
+                and torch.cuda.is_available()
+                and not _rocm_device_ordinal_active()
+                and not _rocm_visibility_masks_are_stacked()
+            ):
+                count = torch.cuda.device_count()
+                physical = _torch_ordinal_physical_ids(count) or list(range(count))
+                for ordinal, gpu_id in enumerate(physical[:count]):
+                    arch = _props_gfx_arch(torch.cuda.get_device_properties(ordinal))
+                    if arch:
+                        _rocm_arches[gpu_id] = arch
+        except Exception:
+            _rocm_arches = {}
+    return _rocm_arches
+
+
+def _known_rocm_gpu_arches(*, wait: bool) -> dict[int, str]:
+    """Status uses existing runtime information or sysfs; a load may initialize torch.
+
+    Do not cache an empty provisional answer: first use must still run the real
+    probe, including GPU masks and HSA_OVERRIDE_GFX_VERSION.
+    """
+    if wait or "torch" in sys.modules:
+        return _rocm_gpu_arches()
+    return _rocm_arches or {}
+
+
+def _unsupported_amd_gpu(found: list[str]) -> str:
+    return (
+        "Requires an AMD Instinct MI200, MI300 or MI350, Radeon RX 7700 to 7900, Radeon RX 9000, or Ryzen AI Max or AI 300 GPU"
+        + (f" (found {', '.join(found)})." if found else ".")
+    )
+
+
+def _rocm_reason(
+    engine: str,
+    gpu_id: int | None,
+    wait: bool = True,
+) -> str | None:
+    from . import wsl_host
+
+    if "rocm" not in PROFILES[engine]:
+        return f"{ENGINE_NAMES[engine]} requires an NVIDIA GPU. Use vLLM on AMD GPUs."
+    wanted = profile(engine)
+    if wsl_host.active():
+        # ROCm is checked inside WSL; a target torch or the driver already names (the selected GPU's) refuses first.
+        arches = _known_rocm_gpu_arches(wait = wait) if gpu_id is not None else {}
+        if gpu_id in arches:
+            known = [arches[gpu_id]]
+        else:
+            from utils.hardware.hardware import get_physical_gpu_inventory
+            known = [
+                device["gfx"]
+                for device in get_physical_gpu_inventory(block = wait).get("devices") or []
+                if device.get("vendor") == "amd" and device.get("gfx")
+            ]
+        # Without a mapping for the selected GPU, another adapter's target is no evidence for it.
+        unmapped = gpu_id is not None and gpu_id not in arches
+        if known and not (all if unmapped else any)(target in wanted["gfx"] for target in known):
+            return _unsupported_amd_gpu(
+                [target for target in known if target not in wanted["gfx"]] if unmapped else known
+            )
+        return None
+    found = rocm_version()
+    # The ROCm 7 libraries the engine links keep one soname for every 7.x release.
+    if found is None or found[0] != wanted["rocm"][0] or found < wanted["rocm"]:
+        return "Requires ROCm {}.{} or a newer {}.x release installed in /opt/rocm".format(
+            *wanted["rocm"], wanted["rocm"][0]
+        ) + (" (found {}.{}).".format(*found) if found else ".")
+    from utils.hardware.amd import (
+        _a_bare_soname_resolves,
+        amd_kfd_gpu_gfx_targets,
+        hsa_override_gfx_target,
+    )
+
+    missing = [soname for soname in ROCM_LIBRARIES if not (ROCM_HOME / "lib" / soname).exists()]
+    if missing:
+        return (
+            f"The ROCm installation in /opt/rocm is missing {', '.join(missing)}. Install the full "
+            "ROCm package (on Ubuntu: sudo apt install rocm), then retry."
+        )
+    missing = {
+        soname: package
+        for soname, package in ROCM_SYSTEM_LIBRARIES.items()
+        # The install and the engine both run without the caller's LD_LIBRARY_PATH.
+        if not (ROCM_HOME / "lib" / soname).exists()
+        and not _a_bare_soname_resolves(soname, with_ld_library_path = False, when_unknown = False)
+    }
+    if missing:
+        return (
+            f"Requires {', '.join(missing)}, which vLLM's AMD build links. "
+            f"On Ubuntu: sudo apt install {' '.join(dict.fromkeys(missing.values()))}"
+        )
+    if not (os.environ.get("CC") or shutil.which("gcc") or shutil.which("clang")):
+        # Triton builds its HIP driver module the first time the engine compiles a kernel.
+        return "Requires a C compiler, which vLLM's AMD build uses at run time (on Ubuntu: sudo apt install gcc)."
+    from utils.hardware.amd import amd_closed_nodes_block_the_runtime, amd_node_permission_hint
+
+    # HIP opens /dev/kfd and an AMD render node; a container mapping only one initialises no GPU.
+    if not os.access("/dev/kfd", os.R_OK | os.W_OK) or amd_closed_nodes_block_the_runtime():
+        return amd_node_permission_hint() or (
+            "Unsloth cannot open /dev/kfd and an AMD render node (/dev/dri/renderD*). Add your user "
+            "to the render and video groups, then sign in again."
+        )
+
+    # Each GPU's target as the engine sees it (HSA_OVERRIDE_GFX_VERSION included), else the kernel's.
+    arches = _known_rocm_gpu_arches(wait = wait)
+    if not arches and _rocm_arches is None:
+        kernel = amd_kfd_gpu_gfx_targets()
+        if os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").strip():
+            # ROCr presents a readable global override for every GPU KFD lists; the kernel's target ignores it.
+            override = hsa_override_gfx_target()
+            if override is None or not kernel:
+                return "Checking for a supported AMD GPU."
+            arches = dict.fromkeys(range(len(kernel)), override)
+        elif kernel is None:
+            return "Checking for a supported AMD GPU."
+    if gpu_id is None:
+        selected = list(arches.values()) or amd_kfd_gpu_gfx_targets() or []
+    elif gpu_id in arches:
+        selected = [arches[gpu_id]]
+    else:
+        selected = (amd_kfd_gpu_gfx_targets() or [])[gpu_id : gpu_id + 1]
+    selected = [target for target in selected if target]
+    if gpu_id is not None and not selected:
+        # Nothing names this GPU's target; vLLM refuses one it has no kernels for itself.
+        return None
+    if any(target in wanted["gfx"] for target in selected):
+        return None
+    return _unsupported_amd_gpu(selected)
 
 
 def _atomic_json(path: Path, data: dict) -> None:
@@ -640,7 +1017,7 @@ def engine_lease(
             except BlockingIOError:
                 if time.monotonic() >= deadline:
                     raise RuntimeError(
-                        "This engine is running or being changed in another Studio instance."
+                        "This engine is running or being changed in another Unsloth instance."
                     ) from None
                 time.sleep(0.05)
         try:
@@ -753,21 +1130,29 @@ def status(engine: str) -> dict:
             in_use = True
         except ImportError:
             pass
+    wanted = profile(engine)
     return {
         "engine": engine,
-        "version": profile(engine)["version"],
+        "version": wanted["version"],
         "installed_version": info.get("version") if info else None,
         "installed": info is not None,
         "in_use": in_use,
         "current": bool(
             info and info.get("profile_digest") == profile_digest(engine) and not outdated
         ),
-        "restored": bool(info and info.get("restored") and not outdated),
+        "restored": bool(
+            info and info.get("restored") and not outdated and built_for_this_gpu(engine, info)
+        ),
         "shared": bool(info and info.get("shared")),
         "can_rollback": bool(
-            info and isinstance(info.get("previous"), dict) and not stale(info["previous"])
+            info
+            and isinstance(info.get("previous"), dict)
+            and not stale(info["previous"])
+            and built_for_this_gpu(engine, info["previous"])
         ),
         "unsupported_reason": support_reason(engine, wait = False),
+        "precisions": list(wanted["precisions"]),
+        "platform": gpu_platform(),
         # Only priced while an install or update is on offer: the plan reads Studio's packages.
         "download_bytes": None
         if info and info.get("profile_digest") == profile_digest(engine) and not outdated
@@ -791,10 +1176,16 @@ def _safe_download_bytes(engine: str) -> int | None:
 
 
 def _update(engine: str, **values) -> None:
+    if "state" in values:
+        _forget_priced_plans()
     with _lock:
         job = _jobs.setdefault(engine, {})
         if "phase" in values and values["phase"] != job.get("phase"):
             values.setdefault("activity", "")
+        if values.get("state") == "running" and job.get("state") != "running":
+            values.setdefault("finished_at", None)
+        elif values.get("state") in ("success", "error", "cancelled", "waiting"):
+            values.setdefault("finished_at", time.time())
         job.update(values)
         root = engine_root()
         root.mkdir(parents = True, exist_ok = True)
@@ -833,9 +1224,18 @@ def install_environment() -> dict[str, str]:
             "https_proxy",
             "http_proxy",
             "no_proxy",
+            # Where uv puts a managed Python; a custom Studio home keeps it inside the home.
+            "UV_PYTHON_INSTALL_DIR",
         }
     }
     from utils.paths.storage_roots import cache_root
+
+    # Docker replaces the app tree (and /root) on update while engine venvs persist on the
+    # home volume, so their uv-managed interpreters must live beside them.
+    app = os.environ.get("UNSLOTH_STUDIO_APP")
+    python_home = env.get("UV_PYTHON_INSTALL_DIR")
+    if app and (not python_home or Path(python_home).resolve().is_relative_to(Path(app).resolve())):
+        env["UV_PYTHON_INSTALL_DIR"] = str(engine_root() / "python")
 
     recorded_cache = None
     try:
@@ -900,7 +1300,7 @@ def _run(
     if (engine_root() / f"{engine}.cancel").exists():
         cancel.set()
     if cancel.is_set() or is_process_shutting_down():
-        raise RuntimeError("Installation cancelled or Studio is shutting down.")
+        raise RuntimeError("Installation cancelled or Unsloth is shutting down.")
     proc = spawn_on_lifetime_thread(
         lambda: subprocess.Popen(
             argv,
@@ -952,7 +1352,7 @@ def _run(
     try:
         # A shutdown sweep may have finished between spawn and adoption; recheck even on clean exit.
         if is_process_shutting_down() or cancel.is_set():
-            raise RuntimeError("Installation cancelled or Studio is shutting down.")
+            raise RuntimeError("Installation cancelled or Unsloth is shutting down.")
         reader.start()
         while proc.poll() is None:
             if (engine_root() / f"{engine}.cancel").exists():
@@ -967,7 +1367,7 @@ def _run(
                 )
         reader.join(timeout = 2)
         if cancel.is_set() or is_process_shutting_down():
-            raise RuntimeError("Installation cancelled or Studio is shutting down.")
+            raise RuntimeError("Installation cancelled or Unsloth is shutting down.")
         if proc.returncode:
             raise RuntimeError("Engine installation failed. " + "\n".join(tail))
         return "\n".join(tail)
@@ -989,6 +1389,141 @@ def _run(
         proc.stdout.close()
 
 
+def _index_arguments(engine: str) -> list[str]:
+    """PyPI, plus the engine's own index first for the builds only it publishes (vLLM's ROCm torch)."""
+    extra = profile(engine).get("index")
+    return [
+        "--index-url",
+        "https://pypi.org/simple",
+        *(["--extra-index-url", extra] if extra else []),
+    ]
+
+
+# flashinfer.ai/whl/cu130 jit-cache per locked FlashInfer; UNSLOTH_ENGINE_FLASHINFER_KERNELS=0 skips.
+_FLASHINFER_KERNELS = _REQUIREMENTS / "flashinfer-kernels.json"
+
+
+def _kernels_run_on(arches: list[str], capability: str) -> bool:
+    """SASS only, no PTX: `X.Ya` runs on exactly X.Y, `X.Y` and `X.Yf` on X.Y and later X minors."""
+    major, minor = (int(part) for part in capability.strip().split(".")[:2])
+    for arch in arches:
+        built = tuple(int(part) for part in arch.rstrip("af").split("."))
+        if (major, minor) == built or (
+            not arch.endswith("a") and major == built[0] and minor > built[1]
+        ):
+            return True
+    return False
+
+
+def flashinfer_kernel_wheel(engine: str, *, wait: bool = True) -> dict | None:
+    """The jit-cache wheel if it has SASS for every GPU here (a missing arch fails, never JITs)."""
+    if os.environ.get("UNSLOTH_ENGINE_FLASHINFER_KERNELS", "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return None
+    wanted = profile(engine)
+    if (
+        not wanted.get("flashinfer_kernels")
+        or sys.platform != "linux"
+        or wanted["platform"] != "cuda"
+        or not wanted["cuda"]
+    ):
+        return None
+    version = _pins(engine).get("flashinfer-python", (None,))[0]
+    try:
+        entry = json.loads(_FLASHINFER_KERNELS.read_text(encoding = "utf-8")).get(
+            f"{version}+{wanted['cuda']}", {}
+        )
+        wheel = entry.get(platform.machine())
+        if not wheel:
+            return None
+        rows = _driver_rows(None, wait = wait)
+        if (
+            rows is _PENDING
+            or not rows
+            or not all(_kernels_run_on(entry["arches"], row[1]) for row in rows)
+        ):
+            return None
+    except (OSError, ValueError, AttributeError, KeyError, IndexError, TypeError):
+        return None
+    return wheel
+
+
+def _install_flashinfer_kernels(
+    engine: str, uv: str, python: str, destination: Path, cancel: threading.Event
+) -> bool:
+    """Best effort: a failure removes the wheel and keeps JIT; one that cannot be removed fails."""
+    wheel = flashinfer_kernel_wheel(engine)
+    if wheel is None:
+        return False
+    requirement = destination / "flashinfer-kernels.txt"
+    requirement.write_text(
+        f"flashinfer-jit-cache @ {wheel['url']} --hash=sha256:{wheel['sha256']}\n", encoding = "utf-8"
+    )
+    _update(engine, message = "Downloading FlashInfer's prebuilt kernels")
+    try:
+        _run(
+            engine,
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                python,
+                "--link-mode",
+                package_link_mode(destination),
+                "--no-deps",
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "-r",
+                str(requirement),
+            ],
+            cancel,
+        )
+        _run(engine, [python, "-I", "-c", "import flashinfer_jit_cache, flashinfer"], cancel)
+        return True
+    except RuntimeError:
+        if cancel.is_set():
+            raise
+        _run(engine, [uv, "pip", "uninstall", "--python", python, "flashinfer-jit-cache"], cancel)
+        return False
+
+
+def _smoke_source(engine: str) -> str:
+    """Imports the engine and the precision libraries its lock carries, on the locked torch build."""
+    wanted = profile(engine)
+    pins = _pins(engine)
+    modules = [
+        wanted["module"],
+        "torch",
+        *(name for name in ("bitsandbytes", "torchao") if name in pins),
+    ]
+    runtime = (
+        "assert torch.version.hip"
+        if wanted["platform"] == "rocm"
+        else "assert torch.version.cuda == '13.0'"
+    )
+    return (
+        "".join(f"import {module}\n" for module in modules)
+        + f"assert torch.__version__.split('+')[0] == {pins['torch'][0].split('+')[0]!r}\n"
+        + runtime
+        + "\n"
+    )
+
+
+def _uv_executable() -> str | None:
+    """PATH, then uv's install folders: service and web UI launches skip the shell profile."""
+    try:
+        from utils.mlx_repair import _uv_executable as find_uv
+        return find_uv()
+    except Exception:  # noqa: BLE001
+        return shutil.which("uv")
+
+
 def _install(
     engine: str,
     cancel: threading.Event,
@@ -1006,9 +1541,9 @@ def _install(
             if wsl_host.active():
                 _install_wsl(engine, cancel)
                 return
-            uv = shutil.which("uv")
+            uv = _uv_executable()
             if uv is None:
-                raise RuntimeError("uv is unavailable. Repair the Studio installation and retry.")
+                raise RuntimeError("uv is unavailable. Repair the Unsloth installation and retry.")
             root = engine_root() / engine
             if root.is_symlink():
                 raise RuntimeError("Engine directory must not be a symbolic link.")
@@ -1019,14 +1554,11 @@ def _install(
             _update(
                 engine,
                 phase = "creating",
-                message = "Preparing an engine environment on Studio's PyTorch"
+                message = "Preparing an engine environment on Unsloth's PyTorch"
                 if plan["shared"]
                 else "Preparing an isolated Python environment",
             )
-            interpreter = (
-                sys.executable if sys.version_info[:2] == PYTHON else "{}.{}".format(*PYTHON)
-            )
-            _run(engine, [uv, "venv", "--python", interpreter, str(destination)], cancel)
+            _run(engine, [uv, "venv", *_venv_python_args(engine), str(destination)], cancel)
             python = str(destination / "bin" / "python")
             packages = destination / "engine-requirements.txt"
             packages.write_text(plan["requirements"], encoding = "utf-8")
@@ -1046,20 +1578,23 @@ def _install(
                     "--require-hashes",
                     "--only-binary",
                     ":all:",
-                    "--index-url",
-                    "https://pypi.org/simple",
+                    *_index_arguments(engine),
                     str(packages),
                 ],
                 cancel,
             )
             if plan["shared"]:
                 # Appended after the engine's own site-packages, so its pins win.
-                site = destination / "lib" / "python{}.{}".format(*PYTHON) / "site-packages"
+                site = (
+                    destination / "lib" / "python{}.{}".format(*_python(engine)) / "site-packages"
+                )
                 (site / f"{_BASE_MODULE}.py").write_text(
                     _STUDIO_BASE_SOURCE.format(paths = _studio_site()), encoding = "utf-8"
                 )
                 (site / _BASE_PTH).write_text(f"import {_BASE_MODULE}\n", encoding = "utf-8")
-            link_cuda_home(destination, plan["shared"])
+            if profile(engine)["platform"] == "cuda":
+                link_cuda_home(destination, plan["shared"])
+            kernels = _install_flashinfer_kernels(engine, uv, python, destination, cancel)
             _update(engine, phase = "checking", message = "Checking the installed engine")
             _run(
                 engine,
@@ -1070,22 +1605,12 @@ def _install(
                     _CHECK,
                     str(requirements(engine)),
                     ",".join(profile(engine).get("omit", ())),
-                    profile(engine)["cuda"],
+                    profile(engine)["cuda"] or "",
                     json.dumps(plan["provided"]),
                 ],
                 cancel,
             )
-            torch_version = _pins(engine)["torch"][0]
-            _run(
-                engine,
-                [
-                    python,
-                    "-I",
-                    "-c",
-                    f"import {profile(engine)['module']}; import torch; import bitsandbytes; import torchao; assert torch.__version__.split('+')[0] == {torch_version!r}; assert torch.version.cuda == '13.0'",
-                ],
-                cancel,
-            )
+            _run(engine, [python, "-I", "-c", _smoke_source(engine)], cancel)
             from .engine_adapters import ADAPTERS
 
             module = ADAPTERS[engine].module
@@ -1097,7 +1622,7 @@ def _install(
             prior = installed(engine)
             if profile_digest(engine) != digest:
                 raise RuntimeError(
-                    "Studio's engine profile changed during installation. Retry to use the updated profile."
+                    "Unsloth's engine profile changed during installation. Retry to use the updated profile."
                 )
             _atomic_json(
                 root / "active.json",
@@ -1106,8 +1631,10 @@ def _install(
                     "version": profile(engine)["version"],
                     "profile_digest": digest,
                     "shared": plan["shared"],
+                    "platform": profile(engine)["platform"],
                     "python": platform.python_version(),
                     "provided": plan["provided"],
+                    **({"flashinfer_kernels": True} if kernels else {}),
                     "studio_prefix": sys.prefix,
                     "previous_directory": prior["directory"] if prior else None,
                     "previous": {
@@ -1146,8 +1673,7 @@ def _install(
             lease.__exit__(None, None, None)
 
 
-# Runs in the engine's interpreter inside WSL: the non-shared half of link_cuda_home and
-# managed_engine._deep_gemm_unloadable, whose paths Windows cannot inspect.
+# Runs inside WSL: the parts of link_cuda_home Windows cannot inspect.
 _GUEST_FINALIZE = r"""
 import json, sys
 from pathlib import Path
@@ -1181,8 +1707,10 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
     from . import wsl_host
 
     guest_root = wsl_host.GUEST_ROOT
+    rocm = profile(engine)["platform"] == "rocm"
+    progress = lambda text: _update(engine, activity = text)
     _update(engine, phase = "preparing_wsl", message = "Setting up the Unsloth WSL environment")
-    wsl_host.prepare(lambda text: _update(engine, activity = text), cancel)
+    wsl_host.prepare(progress, cancel, profile(engine)["platform"])
     if cancel.is_set():
         raise RuntimeError("Installation cancelled.")
     root = engine_root() / engine
@@ -1204,6 +1732,7 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
         # Cache and environments share the distro's ext4 disk.
         "UV_LINK_MODE": "hardlink",
         "DEBIAN_FRONTEND": "noninteractive",
+        **(wsl_host.rocm_environment() if rocm else {}),
     }
     secrets = {key: os.environ[key] for key in _PROXIES if os.environ.get(key)}
 
@@ -1214,9 +1743,11 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
         return _run(engine, command, cancel, env = windows_env, stdin_pipe = True)
 
     try:
-        wsl_host.ensure_build_tools(guest_run, lambda text: _update(engine, activity = text))
+        wsl_host.ensure_build_tools(guest_run, progress)
+        if rocm:
+            _install_wsl_rocm(engine, guest_run, progress, cancel)
         _update(engine, phase = "creating", message = "Preparing an isolated Python environment")
-        guest_run([uv, "venv", "--python", "{}.{}".format(*PYTHON), destination])
+        guest_run([uv, "venv", *_venv_python_args(engine, guest = True), destination])
         _update(engine, phase = "installing", message = "Downloading and installing engine packages")
         lock = wsl_host.to_guest_path(requirements(engine))
         guest_run(
@@ -1229,21 +1760,17 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
                 "--require-hashes",
                 "--only-binary",
                 ":all:",
-                "--index-url",
-                "https://pypi.org/simple",
+                *_index_arguments(engine),
                 lock,
             ]
         )
         _update(engine, phase = "checking", message = "Checking the installed engine")
         from .engine_adapters import ADAPTERS
 
-        torch_version = _pins(engine)["torch"][0]
         scripts = {
             "check.py": _CHECK,
             "finalize.py": _GUEST_FINALIZE,
-            "smoke.py": f"import {profile(engine)['module']}; import torch; import bitsandbytes; import torchao\n"
-            f"assert torch.__version__.split('+')[0] == {torch_version!r}\n"
-            "assert torch.version.cuda == '13.0'\n",
+            "smoke.py": _smoke_source(engine),
         }
         for name, source in scripts.items():
             wsl_host.put(f"{destination}/{name}", source)
@@ -1254,7 +1781,7 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
                 f"{destination}/check.py",
                 lock,
                 ",".join(profile(engine).get("omit", ())),
-                profile(engine)["cuda"],
+                profile(engine)["cuda"] or "",
                 "{}",
             ]
         )
@@ -1271,7 +1798,7 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
             raise RuntimeError("Installation cancelled.")
         if profile_digest(engine) != digest:
             raise RuntimeError(
-                "Studio's engine profile changed during installation. Retry to use the updated profile."
+                "Unsloth's engine profile changed during installation. Retry to use the updated profile."
             )
         prior = installed(engine)
         _atomic_json(
@@ -1281,7 +1808,8 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
                 "version": profile(engine)["version"],
                 "profile_digest": digest,
                 "shared": False,
-                "python": "{}.{}".format(*PYTHON),
+                "platform": profile(engine)["platform"],
+                "python": "{}.{}".format(*_python(engine)),
                 "provided": {},
                 "host": "wsl",
                 "distro": wsl_host.distro_name(),
@@ -1315,6 +1843,40 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
                 pass
     _record_manifest(engine)
     _update(engine, state = "success", phase = "ready", message = "Engine installed")
+
+
+def _install_wsl_rocm(engine: str, guest_run, progress, cancel: threading.Event) -> None:
+    """ROCm's userspace and the DXG bridge in the distro, then the GPU check the host cannot make."""
+    from . import wsl_host
+
+    _update(
+        engine, phase = "preparing_rocm", message = "Installing AMD ROCm in the Unsloth WSL environment"
+    )
+    key = wsl_host.ROCM_APT_KEY
+    if wsl_host._sha256(key) != wsl_host.ROCM_APT_KEY_SHA256:
+        raise RuntimeError(
+            "Unsloth's copy of AMD's ROCm repository key is damaged. Reinstall Unsloth."
+        )
+    packages = [
+        wsl_host.download(spec, spec["url"].rsplit("/", 1)[1], progress, cancel)
+        for spec in (wsl_host.ROCDXG, wsl_host.ROCDXG_SMI)
+    ]
+    setup = f"{wsl_host.GUEST_ROOT}/bin/setup-rocm"
+    wsl_host.put(setup, wsl_host.ROCM_SETUP, "755")
+    guest_run([setup, *(wsl_host.to_guest_path(path) for path in (key, *packages))])
+    found = sorted(
+        set(
+            re.findall(
+                r"\bgfx[0-9a-f]+\b",
+                wsl_host.guest(
+                    ["/opt/rocm/bin/rocminfo"], env = wsl_host.rocm_environment(), timeout = 300
+                ),
+            )
+        )
+    )
+    if not any(target in profile(engine)["gfx"] for target in found):
+        raise RuntimeError(_unsupported_amd_gpu(found))
+    wsl_host.write_state(rocm = wsl_host.ROCM_RELEASE)
 
 
 def start_install(engine: str) -> dict:
@@ -1384,6 +1946,7 @@ def remove(engine: str) -> dict:
             _jobs.pop(engine, None)
         (engine_root() / f"{engine}.job.json").unlink(missing_ok = True)
         (engine_root() / f"{engine}.cancel").unlink(missing_ok = True)
+    _forget_priced_plans()
     _record_manifest(engine)
     return status(engine)
 
@@ -1394,7 +1957,7 @@ def remove_wsl_environment() -> list[dict]:
     from . import wsl_host
 
     if not wsl_host.active():
-        raise RuntimeError("Studio only creates a WSL environment on Windows.")
+        raise RuntimeError("Unsloth only creates a WSL environment on Windows.")
     with ExitStack() as stack:
         for engine in PROFILES:
             stack.enter_context(engine_lease(engine, exclusive = True))
@@ -1412,6 +1975,7 @@ def remove_wsl_environment() -> list[dict]:
 
 
 def rollback(engine: str) -> dict:
+    _forget_priced_plans()
     with engine_lease(engine, exclusive = True):
         info = installed(engine)
         previous = info.get("previous") if info else None
@@ -1441,7 +2005,11 @@ def rollback(engine: str) -> dict:
             )
         if stale(previous):
             raise RuntimeError(
-                "The previous engine installation was built on packages Studio no longer has. Repair the engine instead."
+                "The previous engine installation was built on packages Unsloth no longer has. Repair the engine instead."
+            )
+        if not built_for_this_gpu(engine, previous):
+            raise RuntimeError(
+                "The previous engine installation was built for another GPU platform. Update the engine instead."
             )
         _atomic_json(
             root / "active.json",

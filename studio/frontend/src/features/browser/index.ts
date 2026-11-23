@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isLoopbackUrl } from "./address";
 import { browserPanelAvailable } from "./panel-availability";
+import { REACT_PREVIEW_KEY_PREFIX, REACT_PREVIEW_TYPE } from "./react-preview-type";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { type FileViewMode, type OpenFileInput, useBrowserStore } from "./store";
 
@@ -19,11 +21,15 @@ export {
 export { BookmarksFileError, exportBookmarksFile, importBookmarksFile } from "./bookmarks-io";
 export { MAX_BOOKMARKS } from "./bookmarks-store";
 export { canScreenshot } from "./screenshot-support";
-export { browserTabType, textFileKind } from "./file-kind";
+export { browserTabType, fileBarKind, textFileKind } from "./file-kind";
 export { SEARCH_ENGINES, type SearchEngineId } from "./address";
+export { HistoryFileError, importHistoryFile } from "./history-import";
 export { useBrowserHistoryStore } from "./history-store";
 export { useNativeBrowser } from "./native-support";
 export { pinBrowserPage } from "./resize-pin";
+export { FloatingResizeHandles } from "./floating-frame";
+export { floatSurface } from "./floating-preview";
+export { closeOrFloatBrowser } from "./close-browser";
 export {
   type AnnotationScreenshots,
   type BookmarksToolbarMode,
@@ -31,20 +37,28 @@ export {
   HISTORY_RETENTION_DAYS,
   useBrowserPrefsStore,
 } from "./prefs-store";
-export { type FileViewMode, type OpenFileInput, useBrowserStore } from "./store";
+export { type FileViewMode, type OpenFileInput, chatKeyOfThread, useBrowserStore } from "./store";
+export { useBrowserAgentStore } from "./agent/agent-store";
+export {
+  DEFAULT_RULE as DEFAULT_AGENT_RULE,
+  type HistoryAccess,
+  type ScriptAccess,
+  type SiteRule,
+  normalizeSitePattern,
+} from "./agent/permissions";
 
 export { browserPanelAvailable, setBrowserPanelAvailable } from "./panel-availability";
 export { PinnedPageRow, usePinnedPages } from "./pinned-page-row";
 export type { PinnedPage } from "./pinned-pages-store";
 
-/** Open a link in the browser panel; false if unavailable or links go to the system browser. */
 export function openUrlInBrowser(url: string): boolean {
   if (!browserPanelAvailable() || !useBrowserPrefsStore.getState().openLinksInBrowser) return false;
+  // A local page opens in the panel only when typed there (browser-panel.tsx): its links go to the default browser.
+  if (isLoopbackUrl(url)) return false;
   useBrowserStore.getState().openUrl(url);
   return true;
 }
 
-/** Open a link in the browser panel whatever the preference; false while the panel can't show. */
 export function openUrlInBrowserPanel(url: string): boolean {
   if (!browserPanelAvailable() || !/^https?:\/\//i.test(url)) return false;
   useBrowserStore.getState().openUrl(url);
@@ -74,6 +88,29 @@ export function openHtmlInBrowser({
 }): void {
   const store = useBrowserStore.getState();
   store.openFile({ blob: new Blob([code], { type: "text/html" }), name, contentType: "text/html", key: `html:${key}` });
+  const tabId = useBrowserStore.getState().activeTabId;
+  if (tabId) store.setFileView(tabId, { mode: view });
+}
+
+/** Opens a React component from chat as a preview tab; `key` is the artifact's id. */
+export function openReactInBrowser({
+  key,
+  name,
+  code,
+  view = "preview",
+}: {
+  key: string;
+  name: string;
+  code: string;
+  view?: FileViewMode;
+}): void {
+  const store = useBrowserStore.getState();
+  store.openFile({
+    blob: new Blob([code], { type: REACT_PREVIEW_TYPE }),
+    name,
+    contentType: REACT_PREVIEW_TYPE,
+    key: `${REACT_PREVIEW_KEY_PREFIX}${key}`,
+  });
   const tabId = useBrowserStore.getState().activeTabId;
   if (tabId) store.setFileView(tabId, { mode: view });
 }

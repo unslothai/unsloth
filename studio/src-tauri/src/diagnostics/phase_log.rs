@@ -429,7 +429,14 @@ struct PhaseLogMeta {
 }
 
 fn scan_phase_logs(warnings: &mut Vec<String>) -> Vec<PhaseLogMeta> {
-    scan_phase_logs_in_dir(&logs_dir(), warnings)
+    let mut found = scan_phase_logs_in_dir(&logs_dir(), warnings);
+    for root in super::log_roots().into_iter().skip(1) {
+        let dir = root.join("logs");
+        if dir.is_dir() {
+            found.extend(scan_phase_logs_in_dir(&dir, warnings));
+        }
+    }
+    found
 }
 
 fn scan_phase_logs_in_dir(dir: &Path, warnings: &mut Vec<String>) -> Vec<PhaseLogMeta> {
@@ -664,10 +671,8 @@ fn repair_group_from_filename(name: &str) -> Option<String> {
     let rest = stem.strip_prefix("repair-")?;
     let (before_segment, _) = rest.rsplit_once("-s")?;
 
-    // New repair filenames include both child type and attempt id:
-    // repair-<repair_group_id>-<child_type>-<attempt_id>-sNN.log.
-    // Repair/attempt ids contain hyphens, so split on the deterministic
-    // child/attempt prefix pair emitted by SegmentOwner::Repair.
+    // Format: repair-<group>-<child_type>-<attempt_id>-sNN.log. Ids contain hyphens, so split on
+    // the child/attempt prefix pair emitted by SegmentOwner::Repair.
     for child_type in [
         "update",
         "install",
@@ -682,7 +687,7 @@ fn repair_group_from_filename(name: &str) -> Option<String> {
         }
     }
 
-    // Backward-compatible fallback for the older repair-<group>-<child>-sNN form.
+    // Fallback for the older repair-<group>-<child>-sNN form.
     let (group, _) = before_segment.rsplit_once('-')?;
     Some(group.to_string())
 }

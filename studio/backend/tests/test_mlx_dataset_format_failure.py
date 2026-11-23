@@ -1,15 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The MLX text path must react to a dataset format failure the way the GPU trainer does.
-
-format_and_template_dataset returns success=False when the chat template raised on every
-row. Ignoring that leaves the raw, untemplated dataset in place and trains on it.
-"""
+"""Ignoring format_and_template_dataset's success=False would train on the raw, untemplated dataset."""
 
 import ast
 import inspect
+import json
+import sys
 import textwrap
+import types
 
 import pytest
 
@@ -36,11 +35,7 @@ def _run(
     eval_warning = None,
     formatted_eval = "FORMATTED_EVAL",
 ):
-    """Execute the real block from _run_mlx_training and report what it did.
-
-    _run_mlx_training only runs on Apple Silicon, so the block is lifted out and executed
-    directly, the same technique test_mlx_training_worker_config.py uses.
-    """
+    """Runs the real block lifted from _run_mlx_training, which runs only on Apple Silicon."""
     block = compile(ast.Module(body = _format_block().body, type_ignores = []), "<fmt>", "exec")
     events = []
     calls = {"n": 0}
@@ -134,3 +129,198 @@ def test_an_eval_split_formatted_to_nothing_disables_evaluation():
     assert result["warnings"] == [
         "The eval dataset is empty after preprocessing, so this run has no evaluation."
     ]
+
+
+def _run_mlx_until_model_load(
+    monkeypatch,
+    config,
+    stop_requested,
+    prepare = None,
+    exit_stack = None,
+    on_load = None,
+    stop_save = True,
+):
+    """Runs the real _run_mlx_training with MLX stubbed; a model load fails the test."""
+    loaded = []
+    events = []
+
+    class _FastMLXModel:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            loaded.append(args)
+            if on_load is not None:
+                on_load()
+            raise AssertionError("the model loaded")
+
+        @staticmethod
+        def get_peft_model(model, **kwargs):
+            return model
+
+    mlx = types.ModuleType("mlx")
+    mlx_core = types.ModuleType("mlx.core")
+    mlx_core.metal = types.SimpleNamespace(is_available = lambda: False)
+    mlx.core = mlx_core
+    mlx_utils = types.ModuleType("mlx.utils")
+    mlx_utils.tree_flatten = lambda tree: []
+    mlx.utils = mlx_utils
+    zoo_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+    zoo_utils.iter_mlx_lora_modules = lambda model: iter(())
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _FastMLXModel
+    trainer = types.ModuleType("unsloth_zoo.mlx.trainer")
+    trainer.MLXTrainer = trainer.MLXTrainingConfig = trainer.train_on_responses_only = object
+    s3_dataset = types.ModuleType("core.training.s3_dataset")
+    s3_dataset.S3DownloadCancelled = type("S3DownloadCancelled", (Exception,), {})
+
+    def _reject_manifest(*_args, **_kwargs):
+        raise ValueError("ambiguous audio reference")
+
+    s3_dataset.prepare_s3_dataset_download = prepare or _reject_manifest
+    for name, module in {
+        "mlx": mlx,
+        "mlx.core": mlx_core,
+        "mlx.utils": mlx_utils,
+        "unsloth_zoo.mlx.utils": zoo_utils,
+        "unsloth_zoo.mlx.loader": loader,
+        "unsloth_zoo.mlx.trainer": trainer,
+        "core.training.s3_dataset": s3_dataset,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(_worker, "_model_load_security_error", lambda *_args: None)
+    monkeypatch.setattr(
+        _worker,
+        "_start_mlx_stop_poller",
+        lambda _queue: ([stop_save], stop_requested, [None], lambda: stop_requested[0], None),
+    )
+
+    class _Queue:
+        def put(self, event):
+            events.append(event)
+
+    _worker._run_mlx_training(_Queue(), None, {"model_name": "org/model", **config}, exit_stack)
+    return loaded, events
+
+
+def test_mlx_dataset_error_surfaces_before_the_model_loads(monkeypatch):
+    with pytest.raises(ValueError, match = "ambiguous audio reference"):
+        _run_mlx_until_model_load(monkeypatch, {"s3_config": {"bucket": "b"}}, [False])
+
+
+@pytest.mark.parametrize(
+    "stop_save, message", [(True, "Training stopped"), (False, "Training cancelled")]
+)
+def test_mlx_stop_during_dataset_load_skips_the_model_load(monkeypatch, stop_save, message):
+    stop_requested = [False]
+
+    def _load_and_stop(*_args):
+        stop_requested[0] = True
+        return ["row"], None
+
+    monkeypatch.setattr(_worker, "_load_hf_train_and_eval_datasets", _load_and_stop)
+    loaded, events = _run_mlx_until_model_load(
+        monkeypatch, {"hf_dataset": "org/data"}, stop_requested, stop_save = stop_save
+    )
+
+    assert loaded == []
+    assert events[-1]["type"] == "complete"
+    assert events[-1]["status_message"] == message
+
+
+@pytest.mark.parametrize(
+    "stop_save, message", [(True, "Training stopped"), (False, "Training cancelled")]
+)
+def test_mlx_stop_during_s3_download_skips_the_model_load(monkeypatch, stop_save, message):
+    def _cancelled_download(*_args, **_kwargs):
+        raise sys.modules["core.training.s3_dataset"].S3DownloadCancelled()
+
+    loaded, events = _run_mlx_until_model_load(
+        monkeypatch,
+        {"s3_config": {"bucket": "b"}},
+        [True],
+        prepare = _cancelled_download,
+        stop_save = stop_save,
+    )
+
+    assert loaded == []
+    assert events[-1]["type"] == "complete"
+    assert events[-1]["status_message"] == message
+
+
+def _checkpoint_with_tokens(path, *tokens):
+    decoder = {str(index): {"content": token} for index, token in enumerate(tokens)}
+    (path / "tokenizer_config.json").write_text(
+        json.dumps({"added_tokens_decoder": decoder}), encoding = "utf-8"
+    )
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [("<|startoftranscript|>",), ("<|AUDIO|>", "<|audio_eos|>"), ("<|bicodec_semantic_0|>",)],
+    ids = ["whisper", "csm", "bicodec"],
+)
+def test_mlx_audio_run_refuses_a_speech_checkpoint_before_any_download(
+    monkeypatch, tmp_path, tokens
+):
+    def _no_dataset(*_args):
+        raise AssertionError("the dataset loaded")
+
+    monkeypatch.setattr(_worker, "_load_hf_train_and_eval_datasets", _no_dataset)
+    with pytest.raises(ValueError, match = "speech-recognition checkpoints are not supported"):
+        _run_mlx_until_model_load(
+            monkeypatch,
+            {
+                "model_name": _checkpoint_with_tokens(tmp_path, *tokens),
+                "hf_dataset": "org/data",
+                "is_dataset_audio": True,
+            },
+            [False],
+        )
+
+
+@pytest.mark.parametrize(
+    "is_audio, tokens", [(True, "<audio_soft_token>"), (False, "<|startoftranscript|>")]
+)
+def test_mlx_audio_refusal_leaves_other_runs_alone(monkeypatch, tmp_path, is_audio, tokens):
+    monkeypatch.setattr(_worker, "_load_hf_train_and_eval_datasets", lambda *_args: (["row"], None))
+    with pytest.raises(AssertionError, match = "the model loaded"):
+        _run_mlx_until_model_load(
+            monkeypatch,
+            {
+                "model_name": _checkpoint_with_tokens(tmp_path, tokens),
+                "hf_dataset": "org/data",
+                "is_dataset_audio": is_audio,
+            },
+            [False],
+        )
+
+
+@pytest.mark.parametrize("is_audio", [True, False])
+def test_mlx_s3_audio_download_outlives_the_model_load(monkeypatch, tmp_path, is_audio):
+    import contextlib
+    import shutil
+
+    download_dir = tmp_path / "unsloth_s3_dataset_x"
+    download_dir.mkdir()
+    manifest = download_dir / "train.jsonl"
+    manifest.write_text('{"text": "hi", "audio": "a.wav"}\n', encoding = "utf-8")
+
+    class _Download:
+        files = [str(manifest)]
+
+        def cleanup(self):
+            shutil.rmtree(download_dir, ignore_errors = True)
+
+    alive_at_load = []
+    with contextlib.ExitStack() as stack:
+        with pytest.raises(AssertionError, match = "the model loaded"):
+            _run_mlx_until_model_load(
+                monkeypatch,
+                {"s3_config": {"bucket": "b"}, "is_dataset_audio": is_audio},
+                [False],
+                prepare = lambda *_a, **_k: _Download(),
+                exit_stack = stack,
+                on_load = lambda: alive_at_load.append(download_dir.exists()),
+            )
+    assert alive_at_load == [is_audio]
+    assert not download_dir.exists()

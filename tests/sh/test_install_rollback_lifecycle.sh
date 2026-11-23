@@ -1,7 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Exercises install.sh's real rollback helpers without downloading the Unsloth stack.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -11,10 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 INSTALL_PS1="$SCRIPT_DIR/../../install.ps1"
 ROLLBACK_BLOCK=$(sed -n '/^_VENV_ROLLBACK_DIR=""/,/^trap '\''_on_install_signal 143'\'' TERM$/p' "$INSTALL_SH")
-# Both are defined above the block, with the rest of the cache selector, and both are
-# called from it. Splicing without them makes the cases exit 127 on a command the real
-# installer has, which satisfies any expectation about a marker that must not change.
-# printf, not $'\n': the workflow runs this file with `sh`, whatever the shebang says.
+# Splicing without these helpers makes cases exit 127, which satisfies any "marker unchanged"
+# expectation. printf, not $'\n': the workflow runs this file with `sh`.
 MARKER_HELPER=$(awk '
     /^(_restore_uv_cache_marker|_record_uv_cache_choice|_absolutize_uv_cache_dir)\(\) \{/ { grab = 1 }
     grab { print }
@@ -193,12 +190,10 @@ else
 fi
 
 echo "=== install.sh commits before the post-setup tail ==="
-# The environment is final once studio setup returns, so nothing in the wiring below it may
-# reach the exit trap that restores the previous environment.
+# Nothing after studio setup returns may reach the exit trap that restores the old environment.
 _commit_calls=$(grep -c '^[[:space:]]*_commit_studio_venv_replacement$' "$INSTALL_SH")
 _commit_at=$(grep -n '^[[:space:]]*_commit_studio_venv_replacement$' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _setup_gate_at=$(grep -n '^if \[ "\$_SETUP_EXIT" -eq 0 \]; then$' "$INSTALL_SH" | head -1 | cut -d: -f1)
-# The first thing install.sh mutates outside the venv once setup has returned.
 _shim_at=$(grep -n '^mkdir -p "\$_LOCAL_BIN"$' "$INSTALL_SH" | head -1 | cut -d: -f1)
 if [ "$_commit_calls" -eq 1 ] && [ -n "$_commit_at" ] && [ -n "$_setup_gate_at" ] && [ -n "$_shim_at" ] \
    && [ "$_setup_gate_at" -lt "$_commit_at" ] && [ "$_commit_at" -lt "$_shim_at" ]; then
@@ -206,7 +201,6 @@ if [ "$_commit_calls" -eq 1 ] && [ -n "$_commit_at" ] && [ -n "$_setup_gate_at" 
 else
     bad "the replacement is committed too late (gate=$_setup_gate_at commit=$_commit_at shim=$_shim_at calls=$_commit_calls)"
 fi
-# ...and first in that gate: anything added ahead of it is one more command inside the window.
 _gate_first=$(sed -n "$((_setup_gate_at + 1)),\$p" "$INSTALL_SH" \
     | grep -vE '^[[:space:]]*(#|$)' | head -1 | sed 's/^[[:space:]]*//')
 if [ "$_gate_first" = "_commit_studio_venv_replacement" ]; then
@@ -215,8 +209,7 @@ else
     bad "the setup-succeeded gate runs something before the commit ($_gate_first)"
 fi
 
-# install.sh's own tail, gate to gate, so the cases below run its real commit call site. Both
-# anchors are checked: without the closing one sed would run to EOF and carry unrelated code.
+# Both anchors are checked: without the closing one sed would run to EOF.
 _tail_ends=$(grep -c '^if \[ "\$_SETUP_EXIT" -ne 0 \]; then$' "$INSTALL_SH")
 TAIL_BLOCK=$(sed -n '/^if \[ "\$_SETUP_EXIT" -eq 0 \]; then$/,/^if \[ "\$_SETUP_EXIT" -ne 0 \]; then$/p' "$INSTALL_SH" \
     | sed '$d')
@@ -226,7 +219,6 @@ if [ "$_tail_ends" -ne 1 ] \
     exit 1
 fi
 
-# The state the tail inherits: a replacement in flight and a new environment on disk.
 write_tail_harness() {  # case dir, login shell, "no-exe" to leave the shim's target absent
     {
         printf '%s\n' 'set -e'
@@ -234,7 +226,6 @@ write_tail_harness() {  # case dir, login shell, "no-exe" to leave the shim's ta
         printf '%s\n' 'rollback_substep() { substep "$@"; }'
         printf '%s\n' 'step() { printf "%s\n" "$2" >> "$STUDIO_HOME/steps.log"; }'
         printf '%s\n' 'tauri_clear_install_error() { :; }'
-        # The tail ends with this call; writing a launcher is not what these cases are about.
         printf '%s\n' 'create_studio_shortcuts() { return 0; }'
         printf '%s\n' 'TAURI_MODE=false'
         printf '%s\n' 'OS=linux'
@@ -255,8 +246,7 @@ write_tail_harness() {  # case dir, login shell, "no-exe" to leave the shim's ta
         printf '%s\n' 'export HOME'
         printf "SHELL='%s'\n" "$2"
         printf '%s\n' 'export SHELL'
-        # The tail reads all four from the environment; an exported ZDOTDIR would send the
-        # fixture's write to the developer's own ~/.zshrc.
+        # An exported ZDOTDIR would send the fixture's write to the developer's own ~/.zshrc.
         printf '%s\n' 'unset ZDOTDIR ZSH_VERSION UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL'
         printf '%s\n' '_LOCAL_BIN="$HOME/.local/bin"'
         printf '%s\n' '_STUDIO_HOME_REDIRECT=default'
@@ -302,7 +292,6 @@ run_readonly_profile_case() {
     else
         bad "an unwritable $_case profile is silently skipped"
     fi
-    # One unwritable profile must not cost the other five the uv loop writes.
     if grep -q '/.local/uvbin' "$_case_home/.profile" 2>/dev/null; then
         ok "the profiles that can be written still get their PATH entry ($_case)"
     else
@@ -313,8 +302,7 @@ run_readonly_profile_case() {
 run_readonly_profile_case zsh /bin/zsh .zshrc
 run_readonly_profile_case fish /usr/bin/fish .config/fish/conf.d/unsloth.fish
 
-# The tail can still refuse outright: a real directory at the shim path is user data it will not
-# delete. That refusal must cost the shim, not the environment.
+# A real directory at the shim path is user data; refusing must cost the shim, not the env.
 REFUSE_DIR="$WORK/tail-refusal"
 mkdir -p "$REFUSE_DIR/unsloth_studio" "$REFUSE_DIR/home/.local/bin/unsloth"
 printf 'old\n' > "$REFUSE_DIR/unsloth_studio/generation"
@@ -339,13 +327,12 @@ else
     bad "a refused shim left a rollback copy"
 fi
 
-# An unwritable bin directory is only a failed install when what it holds is not this run's shim.
+# An unwritable bin dir only fails the install when its entry is not this run's shim.
 run_readonly_bin_case() {  # name, what the existing entry points at, expected status, [no-exe]
     _bin_dir="$WORK/readonly-bin-$1"
     _bin_home="$_bin_dir/home"
     mkdir -p "$_bin_dir/unsloth_studio" "$_bin_home/.local/bin"
     printf 'old\n' > "$_bin_dir/unsloth_studio/generation"
-    # The harness writes the executable; the entry already there either resolves to it or not.
     ln -sfn "$2" "$_bin_home/.local/bin/unsloth"
     chmod 555 "$_bin_home/.local/bin"
     if true 2>/dev/null > "$_bin_home/.local/bin/probe"; then
@@ -378,18 +365,14 @@ run_readonly_bin_case() {  # name, what the existing entry points at, expected s
     fi
 }
 
-# Absolute as install.sh writes it, relative as something else might: both resolve to it.
 run_readonly_bin_case absolute-shim "$WORK/readonly-bin-absolute-shim/unsloth_studio/bin/unsloth" 0
 run_readonly_bin_case relative-shim ../../../unsloth_studio/bin/unsloth 0
-# One resolving elsewhere, one naming the exact path install.sh writes but resolving nowhere.
 run_readonly_bin_case another-command /bin/false 1
 run_readonly_bin_case dangling-shim \
     "$WORK/readonly-bin-dangling-shim/unsloth_studio/bin/unsloth" 1 no-exe
 
 echo "=== install.ps1 rollback wiring ==="
-# The code view throughout: install.ps1 emits a launcher through a here-string,
-# and that launcher has nine `function X {` declarations and its own
-# `} finally {`. Matching those answers a question about the emitted script.
+# install.ps1 emits a launcher via a here-string with its own functions and `} finally {`.
 INSTALL_PS1_CODE=$(ps1_code "$INSTALL_PS1")
 if printf '%s\n' "$INSTALL_PS1_CODE" | grep -q '^    function Remove-StaleStudioVenvRollbacks {' \
    && printf '%s\n' "$INSTALL_PS1_CODE" | grep -q '^    Remove-StaleStudioVenvRollbacks$'; then
@@ -397,9 +380,6 @@ if printf '%s\n' "$INSTALL_PS1_CODE" | grep -q '^    function Remove-StaleStudio
 else
     bad "Windows installer does not wire stale rollback cleanup"
 fi
-# At least one of the installer's own `} finally {` blocks restores the rollback.
-# The emitted launcher has one too, so before the code view a match there could
-# have stood in for the installer's.
 _finally_hits=$(printf '%s\n' "$INSTALL_PS1_CODE" | grep -c '^    } finally {$' || true)
 _finally_guarded=$(printf '%s\n' "$INSTALL_PS1_CODE" |
     grep -A3 '^    } finally {$' | grep -c 'Restore-StudioVenvRollback' || true)
@@ -416,8 +396,7 @@ else
     bad "Windows rollback deletion still hides failures"
 fi
 
-# The marker must not outlive the attempt that wrote it, even when no venv replacement
-# was ever in flight: a first install has none, and the ownership guard can refuse early.
+# The marker must not outlive its attempt even when no venv replacement was in flight.
 marker_case() {  # label, pre-existing marker value or empty, expect, [commit]
     _label="$1"; _pre="$2"; _expect="$3"; _commit="${4:-}"
     _dir="$WORK/marker-$_label"
@@ -450,9 +429,7 @@ marker_case() {  # label, pre-existing marker value or empty, expect, [commit]
     fi
 }
 
-# A signal can land between any two statements, so the commit sets one flag that both
-# restores consult. With two flags, a signal mid-commit put the previous environment back
-# and kept the marker of the attempt that replaced it, or the reverse.
+# A signal can land between any two statements, so the commit sets one flag both restores consult.
 commit_flag_case() {
     _dir="$WORK/marker-commit-window"
     mkdir -p "$_dir/cache"
@@ -468,8 +445,6 @@ commit_flag_case() {
         printf '%s\n' "$ROLLBACK_BLOCK"
         printf '%s\n' 'UV_CACHE_DIR="/tmp/this-attempt-cache"'
         printf '%s\n' '_record_uv_cache_choice'
-        # The state a signal would find between the two flag assignments: committed, but
-        # with the venv rollback still armed.
         printf '%s\n' 'mkdir -p "$VENV_DIR" "$STUDIO_HOME/backup"'
         printf '%s\n' 'printf "new\n" > "$VENV_DIR/generation"'
         printf '%s\n' 'printf "old\n" > "$STUDIO_HOME/backup/generation"'
@@ -498,15 +473,13 @@ echo "=== uv cache marker survives only a successful install ==="
 marker_case "a failed install with no venv replacement restores the previous marker" \
     "/previous/install/cache" "/previous/install/cache"
 marker_case "a failed first install leaves no marker behind" "" "<gone>"
-# A first install takes no rollback branch and must still commit the marker: what follows
-# can fail, and the environment it installed stays.
+# A first install takes no rollback branch and must still commit the marker.
 marker_case "a committed first install keeps its marker when a later step fails" \
     "/previous/install/cache" "/tmp/this-attempt-cache" commit
 commit_flag_case
 
 echo "=== --no-rollback discards the old environment instead of keeping a copy (#11313) ==="
-# The rename still has to happen first -- uv creates only into a path that is absent or empty --
-# so what the flag changes is what survives the rename, not whether there is one.
+# uv creates only into an absent or empty path, so the rename always happens first.
 no_rollback_case() {  # label  flag_line  expect_copy(yes|no)
     _nr_label="$1"
     _nr_flag="$2"
@@ -544,7 +517,6 @@ no_rollback_case() {  # label  flag_line  expect_copy(yes|no)
     else
         bad "$_nr_label (rollback copy present: $_nr_got, expected $_nr_expect)"
     fi
-    # The old venv is gone from its original place either way: the rename is unconditional.
     if [ ! -e "$_nr_dir/unsloth_studio" ]; then
         ok "$_nr_label: the old environment was moved aside"
     else
@@ -569,8 +541,7 @@ no_rollback_case() {  # label  flag_line  expect_copy(yes|no)
 }
 no_rollback_case "default keeps the rollback copy" "_NO_ROLLBACK=false" yes
 no_rollback_case "flag drops the rollback copy" "_NO_ROLLBACK=true" no
-# Unset is the shape the extracted block sees when the flag parser is not spliced in; it must
-# read as "keep", never as an error under set -e.
+# Unset must read as "keep", never as an error under set -e.
 no_rollback_case "an unset flag still keeps the copy" "# no flag set" yes
 
 echo "=== --no-rollback clears the restore state, so a later signal cannot resurrect it ==="
@@ -601,8 +572,6 @@ if [ "$_nr_signal_status" -eq 143 ]; then
 else
     bad "a signal after --no-rollback exited $_nr_signal_status"
 fi
-# There is nothing to restore, and the half-built environment is what is left. The point is that
-# the restore path does not fail or put back a tree that was deleted.
 if [ ! -e "$NR_SIGNAL_DIR/unsloth_studio" ] \
    || [ "$(cat "$NR_SIGNAL_DIR/unsloth_studio/generation" 2>/dev/null)" != "old" ]; then
     ok "--no-rollback does not resurrect the discarded environment"
@@ -611,8 +580,7 @@ else
 fi
 
 echo "=== a discard that could not delete says so instead of reporting success (#11313) ==="
-# rm -rf exempts a missing path from its exit status, not a real unlink failure: an immutable
-# entry, a busy mount point, a sticky-bit parent. Shadowing rm is how that is reached portably.
+# rm -rf only exempts missing paths; shadowing rm reaches a real unlink failure portably.
 DISCARD_FAIL_DIR="$WORK/no-rollback-undeletable"
 mkdir -p "$DISCARD_FAIL_DIR/unsloth_studio"
 printf 'old\n' > "$DISCARD_FAIL_DIR/unsloth_studio/generation"
@@ -648,7 +616,6 @@ if printf '%s\n' "$DISCARD_FAIL_OUT" | grep -q 'discarded (--no-rollback)'; then
 else
     ok "a failed discard does not claim success"
 fi
-# Naming the leftover is the whole point: the user came here to reclaim space.
 if printf '%s\n' "$DISCARD_FAIL_OUT" | grep -q "$DISCARD_FAIL_DIR/unsloth_studio.rollback."; then
     ok "a failed discard names the path left on disk"
 else
@@ -656,8 +623,7 @@ else
 fi
 
 echo "=== a disk that fills before studio setup is still diagnosed (#11313) ==="
-# The venv and the torch install are the biggest writes and both exit long before the studio-setup
-# branch, so the diagnosis has to hang off the exit trap every failure passes through.
+# The venv and torch installs exit long before studio setup, so disk diagnosis hangs off the exit trap.
 DISK_DIR="$WORK/diskfull"
 mkdir -p "$DISK_DIR"
 DISK_OUT=$(
@@ -672,12 +638,9 @@ DISK_OUT=$(
         printf '%s\n' '_cleanup_install_temporaries() { :; }'
         printf "STUDIO_HOME='%s'\n" "$DISK_DIR"
         printf '%s\n' "$ROLLBACK_BLOCK"
-        # Stubbed after the extraction, so it shadows the real one: filling a disk is not
-        # something this suite can do, and df's own number is whatever the runner happens to have.
         printf '%s\n' '_free_space_kb() { echo 1024; }'
-        # install.sh defines tauri_log hundreds of lines above this block; the slice starts below it.
+        # install.sh defines tauri_log above the extracted slice.
         printf '%s\n' 'tauri_log() { echo "[TAURI:$1] $2"; }'
-        # Any failure at all, standing in for the venv or torch install exiting early.
         printf '%s\n' 'exit 3'
     } | dash 2>&1
 ) || true
@@ -691,7 +654,6 @@ if printf '%s\n' "$DISK_OUT" | grep -q "ERROR_DEFAULT"; then
 else
     bad "the diagnosis never reached the Tauri marker"
 fi
-# A healthy disk must stay silent: the trap runs on every non-zero exit there is.
 DISK_OK_OUT=$(
     {
         printf '%s\n' 'set -e'
@@ -716,9 +678,7 @@ else
 fi
 
 echo "=== a diagnostic write that fails must not cost the rollback (#11313) ==="
-# The trap runs under set -e, so a write to a closed --tauri stdout or a redirected stderr used to
-# abort it before the restore ran, leaving the previous environment moved aside and the install
-# gone. The restore has to happen first and the writes have to be best-effort.
+# The trap runs under set -e: the restore must happen first and writes must be best-effort.
 TRAP_DIR="$WORK/trapsafe"
 mkdir -p "$TRAP_DIR"
 TRAP_OUT=$(
@@ -730,13 +690,13 @@ TRAP_OUT=$(
         printf '%s\n' 'TAURI_MODE=true'
         printf "STUDIO_HOME='%s'\n" "$TRAP_DIR"
         printf '%s\n' "$ROLLBACK_BLOCK"
-        # After the extraction, so these shadow the real ones rather than being shadowed by them.
+        # After the extraction, so these shadow the real ones.
         printf "_restore_studio_venv_replacement() { : > '%s/restored'; }\n" "$TRAP_DIR"
         printf "_restore_uv_cache_marker() { : > '%s/marker'; }\n" "$TRAP_DIR"
         printf '%s\n' '_cleanup_install_temporaries() { :; }'
         printf '%s\n' '_free_space_kb() { echo 1024; }'
         printf '%s\n' 'tauri_log() { echo "[TAURI:$1] $2"; }'
-        # Both streams closed, so every diagnostic write below fails the way a closed Tauri pipe does.
+        # Both streams closed, so every diagnostic write fails like a closed Tauri pipe.
         printf '%s\n' 'exec 1>&- 2>&-'
         printf '%s\n' 'exit 3'
     } | dash 2>&1
@@ -753,9 +713,7 @@ else
 fi
 
 echo "=== the restore frees space, so the measurement has to precede it (#11313) ==="
-# The restore deletes the half-built replacement. On the failure this diagnosis exists for that
-# tree is gigabytes, so asking the filesystem afterwards reports a disk that is no longer full and
-# the failure it just caused goes back to being a bare exit code.
+# The restore frees the half-built tree, so free space must be measured before it.
 FREED_DIR="$WORK/freed"
 mkdir -p "$FREED_DIR"
 FREED_OUT=$(
@@ -767,8 +725,6 @@ FREED_OUT=$(
         printf '%s\n' 'TAURI_MODE=true'
         printf "STUDIO_HOME='%s'\n" "$FREED_DIR"
         printf '%s\n' "$ROLLBACK_BLOCK"
-        # Stubbed after the extraction so these shadow the real ones. The restore is what frees
-        # the space, exactly as deleting the partial venv does on a real failure.
         printf "_restore_studio_venv_replacement() { : > '%s/restored'; }\n" "$FREED_DIR"
         printf '%s\n' '_restore_uv_cache_marker() { :; }'
         printf '%s\n' '_cleanup_install_temporaries() { :; }'
@@ -784,9 +740,7 @@ else
 fi
 
 echo "=== the disk-full remedy describes what happened, not what was asked for (#11313) ==="
-# A discard that failed left a tree on disk, and deleting it is very likely what makes the retry
-# fit. Telling that user there is nothing left to reclaim points them away from the one thing that
-# would help, which is the worst of the four answers to give in the one case it is given.
+# A failed discard left a tree on disk; deleting it is likely what makes the retry fit.
 remedy_case() {  # label  state_lines  expected_grep  unexpected_grep
     _rc_label="$1"; _rc_state="$2"; _rc_want="$3"; _rc_not="$4"
     _rc_out=$(
