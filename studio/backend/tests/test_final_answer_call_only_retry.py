@@ -502,3 +502,23 @@ def test_inline_reasoning_then_call_final_answer_is_retried(monkeypatch):
     )
     assert len(payloads) == 3 and "tools" not in payloads[2]
     assert "LFM2.5 is a sparse MoE model." in _route_shown(events)
+
+
+def test_safetensors_notice_extends_the_streamed_prefix():
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    def _gen(_messages):
+        yield "\n\n"
+        yield "\n\n" + CALL
+
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "Research LFM2.5."}],
+            tools = [{"type": "function", "function": {"name": "web_fetch"}}],
+            execute_tool = lambda name, arguments, **_: "RESULT",
+            max_tool_iterations = 1,
+        )
+    )
+    shown = _route_shown(events)
+    assert "The model asked for another tool" in shown, repr(shown)

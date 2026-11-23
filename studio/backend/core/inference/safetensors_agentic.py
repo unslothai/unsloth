@@ -1324,9 +1324,17 @@ def run_safetensors_tool_loop(
             if tool_calls and not _reprompt_intent_text(
                 content_text, reasoning_prefilled = reasoning_prefilled, visible_only = True
             ):
-                content_text = (
-                    f"{content_text.rstrip()}\n\n{_FINAL_ANSWER_TOOL_LIMIT_MESSAGE}".lstrip()
-                )
+                # As for a truncated call: reset the cursor, send only what was not streamed, then the notice.
+                display = _strip_streaming_display(cumulative_display)
+                yield {"type": "status", "text": ""}
+                yield {
+                    "type": "content",
+                    "text": display[len(last_emitted) :]
+                    + ("\n\n" if display.strip() else "")
+                    + _FINAL_ANSWER_TOOL_LIMIT_MESSAGE,
+                }
+                yield {"type": "status", "text": ""}
+                return
             if content_text:
                 yield {"type": "content", "text": content_text}
             yield {"type": "status", "text": ""}
