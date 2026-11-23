@@ -95,6 +95,11 @@ def _multi_chunks(opt):
     return any(e - s > 1 for plan in plans.values() for s, e in plan["segments"])
 
 
+@pytest.fixture(autouse = True)
+def _opt_in(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_FLAT_ADAMW8BIT", "1")
+
+
 @pytest.mark.parametrize("cls_name", ["Adam", "AdamW", "AdamW8bit", "Adam8bit"])
 @pytest.mark.parametrize("chunk", [None, "4096", "65536"])
 def test_bitwise_equal_to_stock(monkeypatch, cls_name, chunk):
@@ -176,7 +181,7 @@ def test_fallbacks_match_stock(monkeypatch):
     assert flat.install_flat_adamw8bit(_make(pb)) is None
 
     # Paged and 32-bit optimizers are left alone.
-    monkeypatch.delenv("UNSLOTH_FLAT_ADAMW8BIT")
+    monkeypatch.setenv("UNSLOTH_FLAT_ADAMW8BIT", "1")
     assert flat.install_flat_adamw8bit(bnb.optim.PagedAdamW8bit(_params(_SHAPES), lr = 1e-4)) is None
     assert (
         flat.install_flat_adamw8bit(bnb.optim.AdamW(_params(_SHAPES), lr = 1e-4, optim_bits = 32))

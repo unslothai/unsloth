@@ -20,7 +20,7 @@ max_unorm, skip_zeros); no duplicate or storage-sharing parameters; contiguous p
 are multiples of 256; contiguous gradients for every parameter, none sharing a parameter's storage;
 complete on-device state with int step counters. Every buffer the fused step needs is allocated
 before the first parameter is updated, so an allocation failure runs that step stock instead of
-leaving it half applied. UNSLOTH_FLAT_ADAMW8BIT=0 turns it off.
+leaving it half applied. Opt-in: UNSLOTH_FLAT_ADAMW8BIT=1 turns it on.
 """
 
 import copyreg
@@ -53,7 +53,7 @@ _CLASSES = {}
 
 
 def flat_adamw8bit_enabled():
-    return os.environ.get(_ENV, "1").strip().lower() not in ("0", "false", "no", "off", "")
+    return os.environ.get(_ENV, "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _truthy(name):
@@ -440,7 +440,7 @@ def _announce(ready):
     updates = sum(len(plan["segments"]) for _, _, plan, _ in ready)
     print(
         f"Unsloth: 8-bit AdamW steps {tensors} tensors in {updates} fused updates "
-        f"({_ENV}=0 turns this off)."
+        f"({_ENV}=0 or unset turns this off)."
     )
 
 

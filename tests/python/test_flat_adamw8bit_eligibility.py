@@ -59,8 +59,8 @@ def cpu(monkeypatch):
     monkeypatch.setattr(flat, "_DEVICE_TYPE", "cpu")
     monkeypatch.setattr(flat, "_on_default_stream", lambda device: True)
     monkeypatch.setenv("UNSLOTH_FLAT_ADAMW8BIT_CHUNK", "12288")
-    for env in ("UNSLOTH_FLAT_ADAMW8BIT", "UNSLOTH_OFFLOAD_OPTIMIZER_STATE"):
-        monkeypatch.delenv(env, raising = False)
+    monkeypatch.setenv("UNSLOTH_FLAT_ADAMW8BIT", "1")
+    monkeypatch.delenv("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", raising = False)
     for env in ("ACCELERATE_USE_FSDP", "ACCELERATE_USE_DEEPSPEED"):
         monkeypatch.delenv(env, raising = False)
 
@@ -639,7 +639,7 @@ def test_install_refusals(cpu):
 
 
 def test_cuda_only_by_default(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_FLAT_ADAMW8BIT", raising = False)
+    monkeypatch.setenv("UNSLOTH_FLAT_ADAMW8BIT", "1")
     assert flat._DEVICE_TYPE == "cuda"
     assert flat._install_refusal(_make(_params())) == "parameters not on one CUDA device"
 
@@ -855,3 +855,11 @@ def test_real_trainer_installs_before_prepare(cpu, monkeypatch, tmp_path):
     assert getattr(type(inner), "_unsloth_flat_adamw8bit", False)
     assert seen and all(getattr(t, "_unsloth_flat_adamw8bit", False) for t in seen)
     assert _fused(inner) == 3
+
+
+def test_off_unless_opted_in(cpu, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_FLAT_ADAMW8BIT", raising = False)
+    assert not flat.flat_adamw8bit_enabled()
+    assert flat.install_flat_adamw8bit(_make(_params())) is None
+    monkeypatch.setenv("UNSLOTH_FLAT_ADAMW8BIT", "1")
+    assert flat.flat_adamw8bit_enabled()
