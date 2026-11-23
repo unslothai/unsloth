@@ -59,7 +59,6 @@ export function GlassLenses({
     const scan = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        // Menus, popovers and sheets are portaled to <body>, outside the workspace.
         const found = [
           ...(preview ? workspace : document).querySelectorAll<HTMLElement>(preview ? PREVIEW_HOSTS : LENS_HOSTS),
         ].filter((h) => drawsGlass(h) && (!clear || h.matches(LENS_CLEAR_HOSTS)));
