@@ -1321,9 +1321,8 @@ def run_safetensors_tool_loop(
 
         if final_attempt_done:
             # Only another call (reasoning aside), already without tools: an empty bubble is not actionable.
-            if (
-                tool_calls
-                and not re.sub(r"<think>.*?</think>", "", content_text, flags = re.DOTALL).strip()
+            if tool_calls and not _reprompt_intent_text(
+                content_text, reasoning_prefilled = reasoning_prefilled, visible_only = True
             ):
                 content_text = (
                     f"{content_text.rstrip()}\n\n{_FINAL_ANSWER_TOOL_LIMIT_MESSAGE}".lstrip()

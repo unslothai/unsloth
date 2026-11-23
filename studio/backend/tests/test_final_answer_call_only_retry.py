@@ -464,3 +464,41 @@ def test_a_marker_quoted_in_raw_reasoning_is_not_a_call(monkeypatch):
     )
     assert len(payloads) == 2
     assert "its tools ran out" not in _route_shown(events)
+
+
+def test_safetensors_loop_explains_a_call_after_prefilled_reasoning():
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    def _gen(_messages):
+        yield "Need more sources.</think>" + CALL
+
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "Research LFM2.5."}],
+            tools = [{"type": "function", "function": {"name": "web_fetch"}}],
+            execute_tool = lambda name, arguments, **_: "RESULT",
+            max_tool_iterations = 1,
+            reasoning_prefilled = True,
+        )
+    )
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert contents and contents[-1].endswith("if it hit that limit."), contents
+
+
+def test_inline_reasoning_then_call_final_answer_is_retried(monkeypatch):
+    inline = '<think>Need more sources.</think><tool_call>\n{"name": "web_search", "arguments": {"query": "x"}}\n</tool_call>'
+    streams = [
+        [_search_call(), _done()],
+        [_sse({"content": inline}), _done()],
+        [_sse({"content": "LFM2.5 is a sparse MoE model."}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "result")
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Research LFM2.5."}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+    )
+    assert len(payloads) == 3 and "tools" not in payloads[2]
+    assert "LFM2.5 is a sparse MoE model." in _route_shown(events)

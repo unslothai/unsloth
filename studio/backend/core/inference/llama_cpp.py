@@ -40135,9 +40135,9 @@ class LlamaCppBackend:
                 )
             ):
                 return False
-            kept = _strip_tool_markup(answer, final = True)
-            if _enabled_names_gate:
-                kept = strip_leading_bare_json_call(kept, _enabled_names_gate)
+            kept = _LEAD_RAW_THINK_RE.sub("", _strip_tool_markup(answer, final = True), count = 1)
+            if gate:
+                kept = strip_leading_bare_json_call(kept.lstrip(), gate)
             return not kept.strip()
 
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
