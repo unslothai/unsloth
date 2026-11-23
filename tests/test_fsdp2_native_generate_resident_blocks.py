@@ -200,6 +200,14 @@ def test_request_estimate_reads_the_generate_call():
     )
     assert more > got
     assert F._generate_request_bytes(model, (ids,), {}) is None
+    # generate(input_ids, generation_config) passes the config positionally.
+    positional = types.SimpleNamespace(
+        max_new_tokens = 8192, return_dict_in_generate = True, output_scores = True
+    )
+    assert F._generate_request_bytes(model, (ids, positional), {}) == F._generate_request_bytes(
+        model, (ids,), {"generation_config": positional}
+    )
+    assert F._generate_request_bytes(model, (ids, positional), {}) > 3 * 8192 * 1000 * 4
 
 
 def test_request_estimate_counts_retained_outputs_and_cached_history():

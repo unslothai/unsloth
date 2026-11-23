@@ -2659,7 +2659,11 @@ def _generate_request_bytes(model, args, kwargs):
                 or name in ("input_features", "input_values", "images", "videos")
             ):
                 return None
-        gen = kwargs.get("generation_config") or getattr(model, "generation_config", None)
+        gen = kwargs.get("generation_config")
+        if gen is None and len(args) > 1:  # generate(inputs, generation_config, ...)
+            gen = args[1]
+        if gen is None:
+            gen = getattr(model, "generation_config", None)
 
         def pick(name):
             value = kwargs.get(name)
