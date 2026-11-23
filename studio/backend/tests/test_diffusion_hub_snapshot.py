@@ -179,7 +179,8 @@ def _loader_env(
     cached,
     fail = (),
 ):
-    """load_flux3_pipeline with every component loader stubbed: records each read's local_files_only."""
+    """load_flux3_pipeline with every component loader stubbed: records each read's local_files_only. A loader class
+    the installed library lacks (diffusers before the FLUX.3 classes still meets the declared floor) gets a stand-in."""
     torch = pytest.importorskip("torch")
     diffusers = pytest.importorskip("diffusers")
     transformers = pytest.importorskip("transformers")
@@ -202,12 +203,16 @@ def _loader_env(
     monkeypatch.setattr(
         f3, "_read_index", lambda repo, token, local: reads.append(("index", local)) or {}
     )
-    for owner, name, value in (
-        (transformers.AutoProcessor, "processor", object()),
-        (diffusers.Flux3Transformer2DModel, "transformer", module),
-        (diffusers.AutoencoderKLFlux2, "vae", object()),
+    for owner, attr, name, value in (
+        (transformers, "AutoProcessor", "processor", object()),
+        (diffusers, "Flux3Transformer2DModel", "transformer", module),
+        (diffusers, "AutoencoderKLFlux2", "vae", object()),
     ):
-        monkeypatch.setattr(owner, "from_pretrained", stub(name, value).from_pretrained)
+        cls = getattr(owner, attr, None)
+        if cls is None:
+            monkeypatch.setattr(owner, attr, stub(name, value), raising = False)
+        else:
+            monkeypatch.setattr(cls, "from_pretrained", stub(name, value).from_pretrained)
     monkeypatch.setattr(f3, "transformer_load_storage", lambda *a: None)
     monkeypatch.setattr(f3, "_pin_compute_dtype", lambda *a: None)
     monkeypatch.setattr(f3, "flux3_blocks_class", lambda index, tr: "blocks")
