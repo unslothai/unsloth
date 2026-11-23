@@ -9,7 +9,8 @@ weight dtype) and marks each layer merged, so PEFT's forward runs the base layer
 on the card when it has ample room (a restore is then a device copy), else in host chunks (pinned on a discrete card,
 only while the host keeps its RAM reserve), and copied back
 before any change, so the weights-only fast path (``set_adapters``) runs on exactly the weights it would have seen
-unfused. Opt out with UNSLOTH_DIFFUSION_LORA_FUSE=0."""
+unfused. Opt out with UNSLOTH_DIFFUSION_LORA_FUSE=0; under group offload it folds only with
+UNSLOTH_DIFFUSION_LORA_FUSE=1."""
 
 from __future__ import annotations
 
@@ -52,13 +53,20 @@ def _on_card(module: Any) -> bool:
     return len(devices) == 1 and next(iter(devices)).type not in ("cpu", "meta")
 
 
+def group_fold_opted_in() -> bool:
+    """UNSLOTH_DIFFUSION_LORA_FUSE=1: also fold under group offload. Off by default: rounding the merged weight to
+    bf16 lands further from an fp32 reference than PEFT's unfolded branch on most prompts."""
+    return (os.environ.get(LORA_FUSE_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+
+
 def denoisers_resident(offload_policy: Any, memory_mode: Any, denoisers: list) -> bool:
-    """Folded weights must not move: group offload qualifies only if every denoiser is whole on the card, unhooked."""
+    """Folded weights must not move: group offload qualifies only if opted in and every denoiser is whole on the
+    card, unhooked."""
     from .diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE, keeps_denoiser_streamed
 
     if offload_policy == OFFLOAD_NONE:
         return True
-    if offload_policy != OFFLOAD_GROUP or not denoisers:
+    if offload_policy != OFFLOAD_GROUP or not denoisers or not group_fold_opted_in():
         return False
     if keeps_denoiser_streamed(memory_mode):
         return False
