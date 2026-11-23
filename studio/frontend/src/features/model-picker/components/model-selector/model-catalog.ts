@@ -39,8 +39,9 @@ export interface ModelArtifact {
   repoId: string;
   /** Vendor repo this unsloth mirror copies byte for byte; its id resolves here too. */
   upstreamRepoId?: string;
-  /** The open repo the backend downloads this vendor id from (diffusion_families._GATED_MIRROR_PAIRS),
-   *  so a gate on repoId never reaches the user. The network check judges this repo instead. */
+  /** The unsloth repo the backend downloads this vendor id's files from (diffusion_families mirror pairs), so a
+   *  gate on repoId never reaches the user and download labels name the repo actually fetched. The network check
+   *  judges this repo instead, so a row still marked `gated` keeps it unset. */
   fetchedFrom?: string;
   format: ArtifactFormat;
   loadKind: LoadKind;
@@ -331,6 +332,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
       bf16Pipeline("OpenMOSS-Team/MOSS-Image-SFT", 25.33, {
         totalParams: 5082308624,
         prequantRepo: "unsloth/MOSS-Image-SFT-FP8",
+        fetchedFrom: "unsloth/MOSS-Image-SFT-FP8",
         prequantSizeGb: { fp8: 5.04, int8: 5.04 },
       }),
       gguf("unsloth/MOSS-Image-SFT-GGUF"),
@@ -347,6 +349,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
       bf16Pipeline("OpenMOSS-Team/MOSS-Image-Base", 25.33, {
         totalParams: 5082308624,
         prequantRepo: "unsloth/MOSS-Image-Base-FP8",
+        fetchedFrom: "unsloth/MOSS-Image-Base-FP8",
         prequantSizeGb: { fp8: 5.04, int8: 5.04 },
       }),
       gguf("unsloth/MOSS-Image-Base-GGUF"),
@@ -385,6 +388,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
       bf16Pipeline("Qwen/Qwen-Image-2.1-Turbo", 33, {
         totalParams: 7115124736,
         prequantRepo: "unsloth/Qwen-Image-2.1-Turbo-FP8",
+        fetchedFrom: "unsloth/Qwen-Image-2.1-Turbo-FP8",
         prequantSizeGb: { fp8: 7.12, int8: 7.26 },
         autoQuantTextEncoderGb: QWEN_IMAGE_21_AUTO_TE,
       }),
@@ -612,6 +616,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     capabilities: { audio: true },
     artifacts: [
       bf16Pipeline("MiniMaxAI/MiniMax-H3", 145, {
+        fetchedFrom: "unsloth/MiniMax-H3",
         // Measured tiers in GiB (nvidia.py / main.py), while video.py estimators use decimal GB: never
         // copy figures across or the conversion applies twice and sends capable hosts to GGUF.
         offloadFitTiers: [
@@ -646,6 +651,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         "Lightricks/LTX-2.3",
         "ltx-2.3-22b-distilled.safetensors",
         90,
+        { fetchedFrom: "unsloth/LTX-2.3-FP8" },
       ),
       // No FP8 artifact: the LTX-2.3 loader refuses the official scaled-FP8 single file.
       gguf("unsloth/LTX-2.3-GGUF", { totalParams: 21_005_004_544 }),
@@ -687,21 +693,36 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     description: "Text-to-video with audio",
     scope: "video",
     capabilities: { audio: true },
-    artifacts: [bf16Pipeline("Lightricks/LTX-2", 90, { totalParams: 18876174592 })],
+    artifacts: [
+      bf16Pipeline("Lightricks/LTX-2", 90, {
+        totalParams: 18876174592,
+        fetchedFrom: "unsloth/LTX-2-FP8",
+      }),
+    ],
   },
   {
     canonicalId: "Wan-AI/Wan2.2-TI2V-5B",
     displayName: "Wan 2.2 TI2V 5B",
     description: "Text-to-video 720p",
     scope: "video",
-    artifacts: [bf16Pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", 30, { totalParams: 4999787712 })],
+    artifacts: [
+      bf16Pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", 30, {
+        totalParams: 4999787712,
+        fetchedFrom: "unsloth/Wan2.2-TI2V-5B-FP8",
+      }),
+    ],
   },
   {
     canonicalId: "Wan-AI/Wan2.2-T2V-A14B",
     displayName: "Wan 2.2 T2V A14B (MoE)",
     description: "Text-to-video, dual-expert",
     scope: "video",
-    artifacts: [bf16Pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 114, { totalParams: 14288491584 })],
+    artifacts: [
+      bf16Pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 114, {
+        totalParams: 14288491584,
+        fetchedFrom: "unsloth/Wan2.2-T2V-A14B-FP8",
+      }),
+    ],
   },
   {
     canonicalId: "Wan-AI/Wan2.1-T2V-1.3B",
@@ -1049,6 +1070,16 @@ export function artifactForRepoId(
   if (!artifact) return null;
   const group = index.byId.get(repoId.trim().toLowerCase());
   return group ? { group, artifact } : null;
+}
+
+/** The repo a pick of this id downloads from, for download labels: a vendor id's unsloth mirror, an unsloth
+ *  copy's own id for its upstream, else the id itself. Planning and loading keep the picked id. */
+export function downloadRepoIdFor(repoId: string, catalog: CatalogGroup[]): string {
+  const hit = artifactForRepoId(repoId, catalog);
+  if (!hit) return repoId;
+  if (hit.artifact.fetchedFrom) return hit.artifact.fetchedFrom;
+  const upstream = hit.artifact.upstreamRepoId?.toLowerCase();
+  return upstream && upstream === repoId.trim().toLowerCase() ? hit.artifact.repoId : repoId;
 }
 
 export function isMediaCatalogRepo(repoId: string): boolean {

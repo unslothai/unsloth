@@ -183,6 +183,7 @@ import {
 import {
   VIDEO_CATALOG,
   catalogToModelOptions,
+  downloadRepoIdFor,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import {
@@ -238,7 +239,11 @@ import {
   int8AttentionSelection,
   type Int8AttentionChoice,
 } from "@/lib/int8-attention";
-import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
+import {
+  diffusionPipelineLoadTarget,
+  diffusionStagingEntries,
+  stagedDownloadRepoId,
+} from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
   routedGgufLabel,
@@ -3260,7 +3265,8 @@ function VideoGenerator({
       if (!owns()) return true;
       const advanced = currentLoadAdvanced(opts.kind, familyOverrideRequired);
       if (source !== "hub") return handleLoadRef.current(repoId, opts, advanced);
-      const pickToastId = pickToast.show(opts.displayRepoId ?? repoId);
+      // Named for the repo the files come from (a vendor id downloads from its unsloth mirror), not the picked id.
+      const pickToastId = pickToast.show(downloadRepoIdFor(opts.displayRepoId ?? repoId, VIDEO_CATALOG));
       // Read before the await: a newer pick replaces quantRevert.
       const ownRevert = quantRevert.current;
       let incompatible: string | null = null;
@@ -3303,7 +3309,12 @@ function VideoGenerator({
           };
           stagedQuantRevert.current = ownRevert;
           const staged = stage(entries);
-          pickToast.setPhase(pickToastId, "downloading", staged);
+          pickToast.setPhase(
+            pickToastId,
+            "downloading",
+            staged,
+            stagedDownloadRepoId(entries, opts.displayRepoId ?? repoId),
+          );
           return true;
         }
       } catch {

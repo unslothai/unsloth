@@ -109,6 +109,7 @@ import {
   IMAGE_CATALOG,
   catalogToModelOptions,
   curatedArtifactTakesDenseQuant,
+  downloadRepoIdFor,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import {
@@ -238,7 +239,11 @@ import {
   int8AttentionSelection,
   type Int8AttentionChoice,
 } from "@/lib/int8-attention";
-import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
+import {
+  diffusionPipelineLoadTarget,
+  diffusionStagingEntries,
+  stagedDownloadRepoId,
+} from "@/lib/diffusion-pipeline-load-target";
 import {
   routedImageFilename,
   routedGgufLabel,
@@ -4540,7 +4545,10 @@ export function ImagesPage({
         advanced = { ...advanced, engine: engineFor(repoId, opts, advanced) ?? "auto" };
       }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
-      const pickToastId = downloadOnly ? undefined : pickToast.show(opts.displayRepoId ?? repoId);
+      // Named for the repo the files come from (a vendor id downloads from its unsloth mirror), not the picked id.
+      const pickToastId = downloadOnly
+        ? undefined
+        : pickToast.show(downloadRepoIdFor(opts.displayRepoId ?? repoId, IMAGE_CATALOG));
       // Read before the await: a pick made meanwhile replaces quantRevert. Download-only owns no slot.
       const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;
       // Acted on outside the try: a throwing refusal would otherwise fall through to the load.
@@ -4595,11 +4603,13 @@ export function ImagesPage({
           } else {
             pendingLoadEntries.current = entries;
             const pending = pendingStagedLoad.current;
+            // The plan names the repo actually downloaded, which the catalog may not know (a gated row's mirror).
+            const downloadName = stagedDownloadRepoId(entries, opts.displayRepoId ?? repoId);
             if (downloadOnlyPlans.current.length === 0 && pending) {
               stagedPlan.current = { token: pending.token };
-              pickToast.setPhase(pickToastId, "downloading", stage(entries));
+              pickToast.setPhase(pickToastId, "downloading", stage(entries), downloadName);
             } else {
-              pickToast.setPhase(pickToastId, "queued");
+              pickToast.setPhase(pickToastId, "queued", undefined, downloadName);
             }
           }
           return true;
