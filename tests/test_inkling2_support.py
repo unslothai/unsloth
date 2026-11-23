@@ -350,18 +350,18 @@ def test_fast_inference_switches_inkling2_to_unsloth_inference(loop):
 
 
 @pytest.mark.parametrize("loop", [True, False])
-def test_merged_exports_refuse_inkling2(loop):
-    # Colab A100, real Mini 4-bit + LoRA r 8: merged_16bit wrote the released checkpoint back bit for bit (0 of 1244
-    # tensors changed, reload KL to the base 0.0): its names (attn.wq_du, controllers.*) and NVFP4 experts never match
-    # the LoRA targets. Every merged / GGUF export must refuse; the adapter save must not.
+def test_inkling2_export_methods(loop):
+    # merged_16bit and GGUF go through save_inkling2_merged_16bit; the generic merges (merged_4bit) re-read the
+    # checkpoint under the wrong names and must still refuse. The adapter save is untouched.
     inkling2 = _inkling2()
     model = _tiny(loop)
-    for method in ("merged_16bit", "merged_4bit", "forced_merged_4bit", "gguf"):
+    for method in ("merged_4bit", "forced_merged_4bit", "mxfp4"):
         with pytest.raises(NotImplementedError, match = "Inkling 2"):
             inkling2.raise_if_merging_inkling2(model, method)
-    inkling2.raise_if_merging_inkling2(model, "lora")
+    for method in ("lora", "merged_16bit", "gguf"):
+        inkling2.raise_if_merging_inkling2(model, method)
     inkling2.raise_if_merging_inkling2(
-        SimpleNamespace(config = SimpleNamespace(model_type = "llama")), "merged_16bit"
+        SimpleNamespace(config = SimpleNamespace(model_type = "llama")), "merged_4bit"
     )
     # Each export entry point runs it right after the Mistral-format guard.
     source = (_ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
@@ -370,6 +370,52 @@ def test_merged_exports_refuse_inkling2(loop):
         source,
     )
     assert len(sites) == 4, sites
+    # Both merged_16bit entry points route Inkling 2 to its own writer before the generic merge.
+    assert source.count("save_inkling2_merged_16bit(") == 2
+
+
+@pytest.mark.parametrize("loop", [True, False])
+def test_merged_16bit_matches_the_adapter(loop, tmp_path):
+    # Colab A100, real Mini 4-bit + LoRA r 8: the generic merge wrote the released checkpoint back bit for bit
+    # (0 of 1244 tensors changed). The Inkling 2 writer must place every LoRA weight, attention and experts, keep the
+    # checkpoint's own names, and reload in transformers to the same logits as base + adapter.
+    peft = pytest.importorskip("peft")
+    from transformers import AutoModelForImageTextToText
+
+    inkling2 = _inkling2()
+    _tiny(loop).to(torch.bfloat16).save_pretrained(tmp_path / "base")
+    base = AutoModelForImageTextToText.from_pretrained(tmp_path / "base", dtype = torch.float32)
+    targets = inkling2.inkling2_lora_target_modules(base, None)
+    config = peft.LoraConfig(
+        r = 4,
+        lora_alpha = 8,
+        target_modules = targets,
+        target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"],
+    )
+    model = peft.get_peft_model(base, config)
+    torch.manual_seed(1)
+    for name, param in model.named_parameters():
+        if "lora_" in name:
+            param.data.normal_(0, 0.1)
+    ids = torch.randint(0, 250, (1, 12))
+    with torch.no_grad():
+        reference = model(input_ids = ids).logits
+        with model.disable_adapter():
+            original = model(input_ids = ids).logits
+    inkling2.save_inkling2_merged_16bit(model, None, str(tmp_path / "merged"))
+    merged = AutoModelForImageTextToText.from_pretrained(tmp_path / "merged", dtype = torch.float32)
+    with torch.no_grad():
+        logits = merged(input_ids = ids).logits
+    effect = (reference - original).abs().max()
+    assert effect > 0.1
+    assert (logits - reference).abs().max() < 0.05 * effect
+    import json
+
+    names = json.loads((tmp_path / "merged" / "model.safetensors.index.json").read_text())[
+        "weight_map"
+    ]
+    assert any(".attn.wq_du." in k for k in names) and not any("language_model" in k for k in names)
+    assert "quantization_config" not in (tmp_path / "merged" / "config.json").read_text()
 
 
 @pytest.mark.parametrize(

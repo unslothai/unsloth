@@ -25,6 +25,7 @@ __all__ = [
     "patch_inkling2_model",
     "inkling2_lora_target_modules",
     "raise_if_merging_inkling2",
+    "save_inkling2_merged_16bit",
 ]
 
 INKLING2_MODEL_TYPES = frozenset(
@@ -84,20 +85,299 @@ def is_inkling2_config(config) -> bool:
 
 
 def raise_if_merging_inkling2(model, save_method):
-    """Merged and GGUF exports re-read the base checkpoint and add the LoRA deltas to its tensors. The released Inkling 2
-    checkpoints name them in Inkling's own layout (``attn.wq_du``, ``controllers.*``; transformers renames them on
-    load) and pack the experts in NVFP4 / MXFP8, so the merge places no LoRA weight and writes the base unchanged."""
-    if str(save_method).strip().lower() == "lora":
+    """Only ``lora``, ``merged_16bit`` and GGUF exports are supported for Inkling 2: the merged 16-bit save is
+    ``save_inkling2_merged_16bit``, which rewrites the checkpoint in its own layout. ``merged_4bit`` and the other
+    merged formats re-read the base checkpoint through the generic merge, which cannot place Inkling's LoRA weights."""
+    method = str(save_method).strip().lower().replace("-", "_").replace(" ", "_")
+    if method in ("lora", "merged_16bit", "gguf"):
         return
     if not is_inkling2_config(getattr(model, "config", None)):
         return
     raise NotImplementedError(
-        f'Unsloth: `save_method = "{save_method}"` (merged and GGUF exports) does not support Inkling 2 yet: its '
-        "checkpoint stores the weights under Inkling's own names with the MoE experts packed in NVFP4 / MXFP8, so the "
-        "merge cannot place the LoRA weights and would write the base model unchanged.\n"
-        'Save the LoRA adapter instead (`model.save_pretrained(...)` or `save_method = "lora"`): it reloads with '
-        "Unsloth, and with transformers through `peft.PeftModel.from_pretrained`."
+        f'Unsloth: `save_method = "{save_method}"` does not support Inkling 2 yet. Use `save_method = "merged_16bit"` '
+        "(also what `save_pretrained_gguf` uses) or save the LoRA adapter with `model.save_pretrained(...)`."
     )
+
+
+_EXPERT_COMPANIONS = ("_scale", "_amax", "_outer_scale_denominator")
+_EXPERT_KEY = re.compile(r"\.experts\.w(?:13|2)_weight$")
+
+
+def _inkling2_lora_deltas(model):
+    """{transformers parameter name: callable(expert_slice or None) -> float32 CPU delta} for every active LoRA."""
+    import torch
+    from peft.tuners.lora import LoraLayer
+
+    try:
+        from peft.tuners.lora.layer import ParamWrapper
+    except ImportError:
+        ParamWrapper = ()
+    from peft.utils import ModulesToSaveWrapper
+
+    deltas = {}
+    for name, module in model.named_modules():
+        if isinstance(module, ModulesToSaveWrapper):
+            raise NotImplementedError(
+                "Unsloth: merged Inkling 2 exports do not support `modules_to_save` yet; save the LoRA adapter."
+            )
+        if not isinstance(module, LoraLayer):
+            continue
+        adapters = [a for a in getattr(module, "active_adapters", []) if a in module.lora_A]
+        if not adapters:
+            continue
+        if any(module.use_dora.get(a, False) for a in adapters) or any(
+            getattr(module, "lora_bias", {}).get(a, False) for a in adapters
+        ):
+            raise NotImplementedError(
+                "Unsloth: merged Inkling 2 exports do not support DoRA or LoRA bias."
+            )
+        path = re.sub(r"^base_model\.model\.", "", name).replace(".base_layer", "")
+        if ParamWrapper and isinstance(module, ParamWrapper):
+            key = f"{path}.{module.parameter_name}"
+
+            def expert_delta(
+                experts = None,
+                module = module,
+                adapters = adapters,
+            ):
+                total = None
+                for a in adapters:
+                    A = module.lora_A[a].weight.detach().float().cpu()
+                    B = module.lora_B[a].weight.detach().float().cpu()
+                    E = module.num_experts
+                    # Same contraction as peft's ParamWrapper.get_delta_weight, one expert slice at a time.
+                    A = A.reshape(E, -1, A.shape[-1])
+                    B = B.reshape(B.shape[0], -1, E)
+                    if experts is not None:
+                        A, B = A[experts], B[..., experts]
+                    pattern = (
+                        "o r e, e r i -> e o i"
+                        if module._did_swap_in_out_features
+                        else "o r e, e r i -> e i o"
+                    )
+                    d = torch.einsum(pattern, B, A) * module.scaling[a]
+                    total = d if total is None else total + d
+                return total
+
+            if key in deltas:
+                raise RuntimeError(f"Unsloth: two LoRA adapters target {key}.")
+            deltas[key] = expert_delta
+        else:
+            key = f"{path}.weight"
+
+            def linear_delta(
+                experts = None,
+                module = module,
+                adapters = adapters,
+            ):
+                total = None
+                for a in adapters:
+                    d = module.get_delta_weight(a).detach().float().cpu()
+                    total = d if total is None else total + d
+                return total
+
+            deltas[key] = linear_delta
+    return deltas
+
+
+def save_inkling2_merged_16bit(
+    model,
+    tokenizer,
+    save_directory,
+    push_to_hub = False,
+    token = None,
+    private = None,
+):
+    """Merge LoRA into Inkling 2 and write the checkpoint in its original layout (``model.llm.*``, ``attn.wq_du``,
+    ``controllers.*``) with the MoE experts dequantized to bfloat16, which transformers, vLLM's loader and llama.cpp's
+    converter all read. Every other tensor is copied unchanged; the LoRA deltas are added in float32."""
+    import gc
+    import json
+    import os
+    import shutil
+    import tempfile
+
+    import torch
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+    from transformers.core_model_loading import (
+        Inkling2LoopDequantizeExperts,
+        Interleave,
+        WeightConverter,
+        WeightRenaming,
+        rename_source_key,
+    )
+
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    conversions = getattr(base, "_weight_conversions", None)
+    if not conversions:
+        from transformers.conversion_mapping import get_model_conversion_mapping
+        conversions = get_model_conversion_mapping(base, add_legacy = False)
+    renamings = [c for c in conversions if isinstance(c, WeightRenaming)]
+    converters = [c for c in conversions if isinstance(c, WeightConverter)]
+    pattern_to_converter = {p: c for c in converters for p in c.source_patterns}
+
+    source = getattr(base.config, "_name_or_path", None)
+    if not source:
+        raise RuntimeError("Unsloth: cannot find the Inkling 2 base checkpoint to merge into.")
+    if not os.path.isdir(source):
+        from huggingface_hub import snapshot_download
+        source = snapshot_download(
+            source,
+            allow_patterns = ["*.safetensors", "*.json", "*.jinja"],
+            token = token,
+            revision = getattr(base.config, "_commit_hash", None),
+        )
+    index_path = os.path.join(source, "model.safetensors.index.json")
+    if os.path.exists(index_path):
+        with open(index_path) as f:
+            weight_map = json.load(f)["weight_map"]
+    else:
+        with safe_open(os.path.join(source, "model.safetensors"), "pt") as f:
+            weight_map = {k: "model.safetensors" for k in f.keys()}
+
+    deltas = _inkling2_lora_deltas(model)
+    used = set()
+    print(f"Unsloth: Merging {len(deltas)} LoRA weights into Inkling 2 ({source}).")
+
+    final_directory = save_directory
+    if push_to_hub:
+        save_directory = tempfile.mkdtemp(prefix = "unsloth_inkling2_merge_")
+    os.makedirs(save_directory, exist_ok = True)
+
+    handles = {}
+
+    def tensor(key):
+        filename = weight_map[key]
+        if filename not in handles:
+            handles[filename] = safe_open(os.path.join(source, filename), "pt", device = "cpu")
+        return handles[filename].get_tensor(key)
+
+    def hf_name(key):
+        renamed, pattern = rename_source_key(key, renamings, converters)
+        return renamed, pattern_to_converter.get(pattern)
+
+    dequant = Inkling2LoopDequantizeExperts()
+    patterns = ["weight", "weight_scale", "weight_amax", "weight_outer_scale_denominator"]
+
+    def merged_experts(key):
+        name, converter = hf_name(key)
+        found = {
+            p: tensor(key + p[len("weight") :])
+            for p in patterns
+            if key + p[len("weight") :] in weight_map
+        }
+        W = dequant.convert(found, patterns, ["out"], model = None)["out"].to(torch.bfloat16)
+        delta = deltas.get(name)
+        if delta is None:
+            return W
+        used.add(name)
+        interleaved = converter is not None and any(
+            isinstance(op, Interleave) for op in converter.operations
+        )
+        step = 8
+        for start in range(0, W.shape[0], step):
+            experts = slice(start, start + step)
+            d = delta(experts)
+            block = W[experts]
+            if (
+                interleaved
+            ):  # the checkpoint interleaves gate / up rows, transformers stores them halved
+                block = Interleave(dim = 1).convert({"x": block}, ["x"], ["x"])["x"]
+            if tuple(d.shape) != tuple(block.shape):
+                raise RuntimeError(
+                    f"Unsloth: LoRA delta {tuple(d.shape)} does not fit {name} {tuple(block.shape)}."
+                )
+            block = (block.float() + d).to(torch.bfloat16)
+            if interleaved:
+                block = Interleave(dim = 1, inverse = True).convert({"x": block}, ["x"], ["x"])["x"]
+            W[experts] = block
+        return W
+
+    companions = {
+        key + suffix
+        for key in weight_map
+        if _EXPERT_KEY.search(key)
+        for suffix in _EXPERT_COMPANIONS
+        if key + suffix in weight_map
+    }
+    shard_limit = 4 * 1024**3
+    shards, current, current_size = [], {}, 0
+
+    def flush():
+        nonlocal current, current_size
+        if not current:
+            return
+        filename = f"model-{len(shards) + 1:05d}.safetensors"
+        save_file(current, os.path.join(save_directory, filename), metadata = {"format": "pt"})
+        shards.append((filename, list(current)))
+        current, current_size = {}, 0
+        gc.collect()
+
+    for key in sorted(weight_map, key = lambda k: (weight_map[k], k)):
+        if key in companions:
+            continue
+        if _EXPERT_KEY.search(key):
+            W = merged_experts(key)
+        else:
+            W = tensor(key)
+            name, _ = hf_name(key)
+            delta = deltas.get(name)
+            if delta is not None:
+                d = delta()
+                if tuple(d.shape) != tuple(W.shape):
+                    raise RuntimeError(
+                        f"Unsloth: LoRA delta {tuple(d.shape)} does not fit {name} {tuple(W.shape)}."
+                    )
+                W = (W.float() + d).to(W.dtype)
+                used.add(name)
+        current[key] = W.contiguous()
+        current_size += W.numel() * W.element_size()
+        if current_size >= shard_limit:
+            flush()
+    flush()
+    handles.clear()
+
+    missing = sorted(set(deltas) - used)
+    if missing:
+        raise RuntimeError(
+            f"Unsloth: {len(missing)} LoRA weights have no tensor in the Inkling 2 checkpoint, e.g. {missing[:3]}."
+        )
+
+    total = len(shards)
+    new_map = {}
+    for i, (filename, keys) in enumerate(shards, start = 1):
+        final = f"model-{i:05d}-of-{total:05d}.safetensors"
+        os.replace(os.path.join(save_directory, filename), os.path.join(save_directory, final))
+        new_map.update({k: final for k in keys})
+    with open(os.path.join(save_directory, "model.safetensors.index.json"), "w") as f:
+        json.dump({"metadata": {}, "weight_map": new_map}, f, indent = 2)
+
+    with open(os.path.join(source, "config.json")) as f:
+        config = json.load(f)
+    for cfg in (config, config.get("text_config") or {}):
+        cfg.pop("quantization_config", None)
+    with open(os.path.join(save_directory, "config.json"), "w") as f:
+        json.dump(config, f, indent = 2)
+    for filename in os.listdir(source):
+        if filename in ("config.json", "hf_quant_config.json", "model.safetensors.index.json"):
+            continue
+        if filename.endswith((".json", ".jinja")):
+            shutil.copy(os.path.join(source, filename), os.path.join(save_directory, filename))
+    if tokenizer is not None:
+        tokenizer.save_pretrained(save_directory)
+    print(
+        f"Unsloth: Merged {len(used)} LoRA weights; saved Inkling 2 in 16-bit to '{save_directory}'."
+    )
+
+    if push_to_hub:
+        from huggingface_hub import HfApi
+
+        api = HfApi(token = token)
+        api.create_repo(final_directory, private = private, exist_ok = True)
+        api.upload_folder(folder_path = save_directory, repo_id = final_directory)
+        shutil.rmtree(save_directory, ignore_errors = True)
+        print(f"Unsloth: Uploaded the merged model to https://huggingface.co/{final_directory}")
 
 
 def inkling2_owns_modelopt_quantization(config) -> bool:

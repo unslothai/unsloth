@@ -81,7 +81,11 @@ from .models._utils import (
     lora_relative_to_original_base,
 )
 from .models.mistral_format import raise_if_merging_mistral_format_view
-from .models.inkling2 import raise_if_merging_inkling2
+from .models.inkling2 import (
+    is_inkling2_config,
+    raise_if_merging_inkling2,
+    save_inkling2_merged_16bit,
+)
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from .device_type import clean_gpu_cache
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
@@ -1709,6 +1713,10 @@ def unsloth_save_model(
 
     raise_if_merging_mistral_format_view(model, save_method)
     raise_if_merging_inkling2(model, save_method)
+    if save_method == "merged_16bit" and is_inkling2_config(getattr(model, "config", None)):
+        return save_inkling2_merged_16bit(
+            model, tokenizer, save_directory, push_to_hub = push_to_hub, token = token, private = private
+        )
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
             "Unsloth: You must select one of 3 options when saving models:\n"
@@ -7548,6 +7556,16 @@ def unsloth_generic_save(
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
+        )
+    elif save_method == "merged_16bit" and is_inkling2_config(getattr(model, "config", None)):
+        # The generic merge cannot place Inkling 2's LoRA weights (own key names, NVFP4 / MXFP8 experts).
+        save_inkling2_merged_16bit(
+            model,
+            tokenizer,
+            save_directory,
+            push_to_hub = push_to_hub,
+            token = token,
+            private = private,
         )
     else:
         raise_if_merging_mistral_format_view(model, save_method)
