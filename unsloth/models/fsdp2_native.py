@@ -2643,6 +2643,14 @@ def _generate_request_bytes(model, args, kwargs):
         if not isinstance(ids, torch.Tensor) or ids.dim() < 2:
             return None
         batch, prompt = int(ids.shape[0]), int(ids.shape[1])
+        # An uncached first step prefills from inputs_embeds even when shorter ids ride along.
+        embeds = kwargs.get("inputs_embeds")
+        if (
+            isinstance(embeds, torch.Tensor)
+            and embeds.dim() >= 2
+            and kwargs.get("past_key_values") is None
+        ):
+            prompt = max(prompt, int(embeds.shape[1]))
         # Media prompts run a vision / audio tower in prefill whose activations depend on the media
         # shape and the tower config: decline (no block stays resident) instead of under-counting.
         for name, value in kwargs.items():

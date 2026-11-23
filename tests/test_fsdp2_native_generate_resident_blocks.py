@@ -273,6 +273,31 @@ def test_request_estimate_max_length_ignores_cached_history():
     assert estimate(max_length = 2056) > estimate(max_new_tokens = 0)
 
 
+def test_request_estimate_sizes_prefill_from_inputs_embeds():
+    """An uncached first step prefills from inputs_embeds (llama _fast_prepare_inputs_for_generation),
+    so 8 tracking ids beside 4096 embedding rows must be sized as a 4096-token prompt."""
+    config = types.SimpleNamespace(
+        num_hidden_layers = 2, hidden_size = 64, num_attention_heads = 4, num_key_value_heads = 2,
+        head_dim = 16, intermediate_size = 128, vocab_size = 1000, torch_dtype = torch.bfloat16,
+    )  # fmt: skip
+    model = types.SimpleNamespace(config = config, generation_config = None)
+    embeds = torch.zeros(1, 4096, 64)
+    long_ids = torch.zeros(1, 4096, dtype = torch.long)
+    want = F._generate_request_bytes(model, (long_ids,), {"max_new_tokens": 16})
+    for ids in (torch.zeros(1, 8, dtype = torch.long), torch.zeros(1, 0, dtype = torch.long)):
+        got = F._generate_request_bytes(
+            model, (), {"input_ids": ids, "inputs_embeds": embeds, "max_new_tokens": 16}
+        )
+        assert got == want
+    # With a cache the forward consumes the ids, not the embeddings.
+    legacy = ((torch.zeros(1, 2, 100, 16), torch.zeros(1, 2, 100, 16)),)
+    short = torch.zeros(1, 8, dtype = torch.long)
+    kw = {"input_ids": short, "max_new_tokens": 16, "past_key_values": legacy}
+    assert F._generate_request_bytes(model, (), {**kw, "inputs_embeds": embeds}) == (
+        F._generate_request_bytes(model, (), kw)
+    )
+
+
 def _qwen_like(**extra):
     config = types.SimpleNamespace(
         num_hidden_layers = 28, hidden_size = 1536, num_attention_heads = 12, num_key_value_heads = 2,
