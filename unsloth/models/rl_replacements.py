@@ -4702,7 +4702,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     dtype_bytes,
                     self.args.unsloth_logit_chunk_multiplier,
                 )
-                B = total_rows // B
+                # Rows per forward -> split count; floor division would put more rows in one forward than fit.
+                B = max(1, -(-total_rows // B))
                 if _grpo_collective_forwards:
                     # Sized from this rank's sequence length: agree, or the forward counts differ.
                     from unsloth_zoo.rl_replacements import grpo_agree_mini_batch
@@ -4851,6 +4852,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     )
                     if _pg_unsafe is None:
                         _pg_unsafe = set()
+                    if (
+                        _pg_layout is not None
+                        and _pg_layout.flat_ids.shape[1] > batch_size * seq_len
+                    ):
+                        # Over one padded mini-batch's tokens: the chunked loop keeps the mini-batch cap.
+                        _pg_layout = None
                     if _pg_layout is not None and _pg_layout.signature not in _pg_unsafe:
                         _pg_sig = _pg_layout.signature
                         _pg_verified = getattr(
@@ -5263,6 +5270,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 zipped_inputs = []
             else:
                 _pk_hidden = _pk_sel = _pk_result = _pk_ref = None
+                # A declined PrefixGrouper layout (and the deferred forward bound to it) too.
+                _pg_layout = _pg_forward_fn = None
                 # Index buffers of a declined packed batch would otherwise live through the padded loop.
                 _pk_keep = _pk_len = _pk_flat = _pk_pos = _pk_cmask = None
                 _pk_nz_idx = _pk_within = _pk_cstart = _pk_ctgt = _pk_tgt = _pk_ids = _pk_cm = None
