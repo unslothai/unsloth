@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The model branches that force UNSLOTH_COMPILE_DISABLE=partial must not downgrade an
-explicit full disable (1/true/yes): readers that only check for "1" would silently
-re-enable their compile paths."""
+"""Branches forcing UNSLOTH_COMPILE_DISABLE=partial keep an explicit full disable full."""
 
 import ast
 import os
@@ -24,7 +22,8 @@ def _loader_tree():
 def test_explicit_full_disable_is_never_downgraded(monkeypatch, value):
     monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", value)
     loader_module._set_partial_compile_disable()
-    assert os.environ["UNSLOTH_COMPILE_DISABLE"] == value
+    # zoo's compiler reads only "1" / "partial" as off, so true / yes must land on "1".
+    assert os.environ["UNSLOTH_COMPILE_DISABLE"] == "1"
 
 
 @pytest.mark.parametrize("value", [None, "0", "partial", "no", "false"])
@@ -49,28 +48,23 @@ def test_partial_is_written_only_inside_the_helper():
     """A direct `os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"` anywhere else is the bug."""
     tree = _loader_tree()
     parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
-    writes = []
-    for node in ast.walk(tree):
-        if not (
-            isinstance(node, ast.Assign)
-            and isinstance(node.value, ast.Constant)
-            and node.value.value == "partial"
-        ):
-            continue
-        for target in node.targets:
-            if (
-                isinstance(target, ast.Subscript)
-                and (
-                    (isinstance(target.value, ast.Attribute) and target.value.attr == "environ")
-                    or (isinstance(target.value, ast.Name) and target.value.id == "environ")
-                )
-                and isinstance(target.slice, ast.Constant)
-                and target.slice.value == "UNSLOTH_COMPILE_DISABLE"
-            ):
-                writes.append(node)
-    assert len(writes) == 1, f"expected one guarded write, found {len(writes)}"
-    enclosing = _function_of(writes[0], parents)
-    assert enclosing is not None and enclosing.name == "_set_partial_compile_disable"
+    writes = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(c, ast.Constant) and c.value == "partial" for c in ast.walk(node.value))
+        and any(
+            isinstance(t, ast.Subscript)
+            and isinstance(t.slice, ast.Constant)
+            and t.slice.value == "UNSLOTH_COMPILE_DISABLE"
+            for t in node.targets
+        )
+    ]
+    assert writes, "no partial write found"
+    assert all(
+        getattr(_function_of(w, parents), "name", None) == "_set_partial_compile_disable"
+        for w in writes
+    )
 
 
 def test_all_five_model_branches_call_the_helper():

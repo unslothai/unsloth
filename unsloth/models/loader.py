@@ -924,10 +924,9 @@ DISABLE_COMPILE_MODEL_NAMES = [
 
 
 def _set_partial_compile_disable():
-    # UNSLOTH_COMPILE_DISABLE=1 (or true/yes) is a full disable the user or device_type chose;
-    # downgrading it to "partial" would re-enable compile paths that only check for "1".
-    if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0").lower() not in ("1", "true", "yes"):
-        os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+    # Keep a full disable full; true/yes become "1" since zoo only reads "1" / "partial" as off.
+    value = os.environ.get("UNSLOTH_COMPILE_DISABLE", "0").lower()
+    os.environ["UNSLOTH_COMPILE_DISABLE"] = "1" if value in ("1", "true", "yes") else "partial"
 
 
 # Architectures with gated-deltanet (linear attention) layers. Unsloth bundles the flash-linear-attention Triton kernels, so no install is needed; transformers falls back to the much slower pure PyTorch path only when they cannot be enabled.
