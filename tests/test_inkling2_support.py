@@ -520,3 +520,78 @@ def test_message_checkpoint_keeps_accelerate_offload_hook():
     assert m._weights_offloaded(message_input)
     # Not offloaded: the checkpoint path engages.
     assert not m._weights_offloaded(_tiny(loop = True).model.language_model.message_input)
+
+
+def _residual_grads(model, monkeypatch, enabled):
+    monkeypatch.setenv("UNSLOTH_INKLING2_MESSAGE_CHECKPOINT", "1" if enabled else "0")
+    owner = model.model.language_model
+    hidden = owner.config.hidden_size
+    gen = torch.Generator().manual_seed(1)
+    states = torch.randn(1, 2, 3, hidden, generator = gen, requires_grad = True)
+    partial = torch.randn(1, 2, hidden, generator = gen, requires_grad = True)
+    query = owner.message_input.query
+    out = owner.message_input(states, partial, 1)
+    grads = torch.autograd.grad(out.square().sum(), (states, partial, query))
+    return out.detach(), grads
+
+
+def test_message_checkpoint_calls_the_residuals_norm_module(monkeypatch):
+    # transformers calls `self.norm(stacked_states)`: a forward hook on that norm (or a replaced norm) must apply on the
+    # checkpointed path too, on the original forward and on the recomputation. An inline RMSNorm skipped it.
+    m = _inkling2()
+    model = _tiny(loop = True)
+    model.train()
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
+    owner = model.model.language_model
+    with torch.no_grad():
+        owner.message_input.query.normal_(generator = torch.Generator().manual_seed(2))
+    calls = []
+
+    def scale(_module, _args, output):
+        calls.append(1)
+        return output * 0.5
+
+    owner.message_input.norm.register_forward_hook(scale)
+    assert m.checkpoint_inkling2_message_inputs(model) == 1
+    want, want_grads = _residual_grads(model, monkeypatch, enabled = False)
+    assert len(calls) == 1
+    calls.clear()
+    recomputed = []
+    math = m._message_input_math
+    monkeypatch.setattr(m, "_message_input_math", lambda *a: recomputed.append(1) or math(*a))
+    got, got_grads = _residual_grads(model, monkeypatch, enabled = True)
+    assert recomputed == [1, 1]  # the checkpoint path ran (forward + recompute)
+    assert len(calls) == 2  # the norm hook fired on both
+    assert torch.equal(got, want)
+    for a, b in zip(got_grads, want_grads):
+        assert torch.equal(a, b)
+
+
+def test_message_checkpoint_follows_a_deepcopy_and_pickles(monkeypatch):
+    # The installed forward captured the original residual: a deepcopied model read the original's query.
+    import copy
+    import pickle
+    import sys
+
+    m = _inkling2()
+    monkeypatch.setitem(sys.modules, m.__name__, m)
+    model = _tiny(loop = True)
+    model.train()
+    assert m.checkpoint_inkling2_message_inputs(model) == 1
+    # Pickled before enabling gradient checkpointing: its input-grad hook is a local function that never pickles.
+    pickled = pickle.loads(pickle.dumps(model))
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
+    pickled.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
+    for clone in (copy.deepcopy(model), pickled):
+        owner = clone.model.language_model
+        assert owner.message_input.forward._module() is owner.message_input
+        assert owner.message_input.forward._owner() is owner
+        with torch.no_grad():
+            owner.message_input.query.normal_(generator = torch.Generator().manual_seed(3))
+        want, want_grads = _residual_grads(clone, monkeypatch, enabled = False)
+        got, got_grads = _residual_grads(clone, monkeypatch, enabled = True)
+        assert torch.equal(got, want)
+        for a, b in zip(got_grads, want_grads):
+            assert torch.equal(a, b)
+        original, _ = _residual_grads(model, monkeypatch, enabled = True)
+        assert not torch.equal(got, original)

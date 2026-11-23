@@ -314,15 +314,15 @@ def _unsloth_lora_target_modules(
     )
 
 
-def _message_input_math(query, eps, scaling, block_states, partial_block_states, loop_layer_idx):
+def _message_input_math(query, norm, scaling, block_states, partial_block_states, loop_layer_idx):
     """`Inkling2LoopMessageAttentionResidual.forward` (transformers 5.24) as plain tensor ops: the eager path the module
-    takes, op for op, so values and gradients are the module's bit for bit."""
+    takes, op for op, so values and gradients are the module's bit for bit. The normalization is a call of the
+    residual's own `norm` module, as in transformers, so its hooks, a replaced norm or a patched norm forward apply to
+    the original forward and to the recomputation alike."""
     import torch
 
     stacked = torch.cat([block_states, partial_block_states.unsqueeze(-2)], dim = -2).float()
-    stacked = stacked * torch.rsqrt(
-        stacked.square().mean(-1, keepdim = True) + eps
-    )  # unweighted RMSNorm, fp32
+    stacked = norm(stacked)
     query_states = query[loop_layer_idx].float().expand(*stacked.shape[:-2], -1, -1)
     attn_weights = torch.matmul(query_states, stacked.transpose(2, 3)) * scaling
     attn_weights = torch.nn.functional.softmax(attn_weights, dim = -1, dtype = torch.float32).to(
@@ -366,7 +366,12 @@ def _weights_offloaded(module):
     return False
 
 
-def _checkpointed_message_input(text_model, message_input, forward):
+def _weak_or_dead(obj):
+    import weakref
+    return (lambda: None) if obj is None else weakref.ref(obj)
+
+
+class _CheckpointedMessageInput:
     """Inkling-2-Mini's loop message residual runs in the text model's forward, between the checkpointed decoder
     layers, so everything its fp32 attention saves for backward stays on the GPU for the whole step: about 50 MB per
     call at 1024 tokens, 24 calls (12 loop layers x 2 later passes), so 1.2 GB. Under gradient checkpointing run it
@@ -378,21 +383,67 @@ def _checkpointed_message_input(text_model, message_input, forward):
     run-to-run different first-step gradients on a model split over two GPUs, where the engine runs each device's
     backward on its own thread. The checkpoint is reentrant or not as the model's layers are (``autograd.grad`` needs
     non-reentrant), and a module whose weights accelerate offloads keeps its hooked forward (the hook loads them).
-    UNSLOTH_INKLING2_MESSAGE_CHECKPOINT=0 keeps the stock residual."""
-    import os
-    import weakref
+    UNSLOTH_INKLING2_MESSAGE_CHECKPOINT=0 keeps the stock residual.
 
-    import torch
-    from torch.utils.checkpoint import checkpoint
+    Installed as the residual's instance ``forward``. ``copy.deepcopy`` of the residual (or the model) binds the copy to
+    the copied residual and owner, and the residual pickles: the residual and owner are weak references at run time,
+    remapped through the deepcopy memo and pickled as strong references."""
 
-    owner = weakref.ref(text_model)
-    module = weakref.ref(message_input)
+    _unsloth_checkpointed_message_input = True
 
-    def message_input_forward(*args, **kwargs):
-        tm, mi = owner(), module()
+    def __init__(self, text_model, message_input, forward):
+        from torch.utils.checkpoint import checkpoint
+
+        self._checkpoint = checkpoint  # bound at install, as the layers bind theirs at enable
+        self._owner = _weak_or_dead(text_model)
+        self._module = _weak_or_dead(message_input)
+        # The stock bound forward is kept as its importable function, anything else (accelerate's device hook) as is.
+        if getattr(forward, "__self__", None) is message_input and hasattr(forward, "__func__"):
+            self._function, self._forward = forward.__func__, None
+        else:
+            self._function, self._forward = None, forward
+
+    def _call_original(self, mi, *args, **kwargs):
+        if self._forward is not None:
+            return self._forward(*args, **kwargs)
+        return self._function(mi, *args, **kwargs)
+
+    def __deepcopy__(self, memo):
+        import copy
+
+        new = object.__new__(type(self))
+        memo[id(self)] = new
+        owner, module = self._owner(), self._module()
+        new._owner = _weak_or_dead(memo.get(id(owner), owner))
+        new._module = _weak_or_dead(memo.get(id(module), module))
+        new._function = self._function
+        new._checkpoint = self._checkpoint
+        new._forward = copy.deepcopy(self._forward, memo)
+        return new
+
+    def __getstate__(self):
+        state = dict(self.__dict__)
+        state["_owner"], state["_module"] = self._owner(), self._module()
+        return state
+
+    def __setstate__(self, state):
+        state = dict(state)
+        self._owner = _weak_or_dead(state.pop("_owner"))
+        self._module = _weak_or_dead(state.pop("_module"))
+        self.__dict__.update(state)
+
+    def __call__(self, *args, **kwargs):
+        import os
+
+        import torch
+
+        tm, mi = self._owner(), self._module()
+        if mi is None:
+            raise RuntimeError(
+                "Unsloth: the Inkling 2 message residual this forward belongs to was freed."
+            )
         if (
             tm is None
-            or mi is None
             or kwargs
             or len(args) != 3
             or not getattr(tm, "gradient_checkpointing", False)
@@ -403,17 +454,17 @@ def _checkpointed_message_input(text_model, message_input, forward):
             or os.environ.get("UNSLOTH_INKLING2_MESSAGE_CHECKPOINT", "1") == "0"
             or _weights_offloaded(mi)
         ):
-            return forward(*args, **kwargs)
+            return self._call_original(mi, *args, **kwargs)
         block_states, partial_block_states, loop_layer_idx = args
         device = mi.query.device
         # Where accelerate's hook would put the inputs (a split model); autograd follows the moves.
         block_states = block_states.to(device)
         partial_block_states = partial_block_states.to(device)
         scaling = block_states.shape[-1] ** -0.5
-        return checkpoint(
+        return self._checkpoint(
             _message_input_math,
             mi.query,
-            float(mi.norm.eps),
+            mi.norm,
             scaling,
             block_states,
             partial_block_states,
@@ -422,8 +473,10 @@ def _checkpointed_message_input(text_model, message_input, forward):
             preserve_rng_state = False,
         )
 
-    message_input_forward._unsloth_checkpointed_message_input = True
-    return message_input_forward
+
+def _checkpointed_message_input(text_model, message_input, forward):
+    """See _CheckpointedMessageInput."""
+    return _CheckpointedMessageInput(text_model, message_input, forward)
 
 
 def checkpoint_inkling2_message_inputs(model) -> int:
