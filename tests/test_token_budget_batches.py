@@ -754,6 +754,21 @@ def test_label_steps_keep_rows_and_even_out_step_labels():
         tb.balance_label_steps(indices[:20], counts, 16)
 
 
+def test_label_steps_are_never_less_even_than_the_order_given():
+    # The heuristic regroups these into steps of 11 and 7 labels; the order given has 8 and 10.
+    counts = [2, 3, 3, 9, 0, 1]
+    out = tb.balance_label_steps(list(range(6)), counts, 3)
+    sums = [sum(counts[i] for i in out[s : s + 3]) for s in (0, 3)]
+    assert max(sums) - min(sums) <= 2
+    rng = random.Random(0)
+    for _ in range(2000):
+        counts = [int(rng.lognormvariate(5, 1)) for _ in range(32)]
+        out = tb.balance_label_steps(list(range(32)), counts, 4)
+        after = [sum(counts[i] for i in out[s : s + 4]) for s in range(0, 32, 4)]
+        before = [sum(counts[s : s + 4]) for s in range(0, 32, 4)]
+        assert max(after) - min(after) <= max(before) - min(before)
+
+
 @pytest.mark.parametrize("n", [61, 64, 100, 131])
 @pytest.mark.parametrize("keep_first_window", [False, True])
 def test_label_sampler_keeps_the_multiset_and_regroups_only_inside_windows(n, keep_first_window):

@@ -129,7 +129,17 @@ def balance_label_steps(indices, label_counts, step_size):
         return list(indices)
     groups = karmarkar_karp([label_counts[i] for i in indices], steps, equal_size = True)
     groups.sort(key = lambda group: group[0])
-    return [indices[p] for group in groups for p in group]
+    out = [indices[p] for group in groups for p in group]
+
+    def spread(order):
+        sums = [
+            sum(label_counts[i] for i in order[s : s + step_size])
+            for s in range(0, len(order), step_size)
+        ]
+        return max(sums) - min(sums)
+
+    # Karmarkar-Karp is a heuristic: keep the sampler's order when that was already more even.
+    return out if spread(out) <= spread(indices) else list(indices)
 
 
 class TokenBalancedSampler(torch.utils.data.Sampler):
