@@ -137,6 +137,7 @@ import {
 import { type MemoryEstimate, type MlxOffloadablePart } from "../api/memory-estimate";
 import { fetchMlxDrafters } from "../api/mlx-drafters";
 import {
+  autoContextQuote,
   fixedLayerContextPin,
   resolveEstimateContext,
   resolveMlxServedWindow,
@@ -578,6 +579,7 @@ function GgufContextLengthSetting({
   max,
   nativeContextLength,
   activeLoadedContext,
+  refitsLoadedContext = null,
   inputRef,
   onChange,
   renderWarning,
@@ -589,6 +591,7 @@ function GgufContextLengthSetting({
   max: number;
   nativeContextLength: number | null;
   activeLoadedContext: number | null;
+  refitsLoadedContext?: number | null;
   inputRef?: Ref<NumericValueInputHandle>;
   onChange: (value: number) => void;
   renderWarning: (value: number) => ReactNode;
@@ -635,6 +638,9 @@ function GgufContextLengthSetting({
           {max.toLocaleString()} tokens; larger ones use more memory.
           {isAuto && activeLoadedContext != null
             ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
+            : ""}
+          {isAuto && refitsLoadedContext != null
+            ? ` The loaded ${refitsLoadedContext.toLocaleString()} tokens were fitted to other settings; Auto fits again on load.`
             : ""}
           {nativeContextLength != null
             ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
@@ -3596,6 +3602,7 @@ export function ModelConfigPage({
     customContextLength: loadableConfig.customContextLength,
     activeLoadedContext,
   });
+  const autoQuote = autoContextQuote({ atBaseline, activeLoadedContext, fixedLayerPin });
   const runtimeConfig =
     fixedLayerPin != null
       ? { ...loadableConfig, customContextLength: fixedLayerPin }
@@ -4566,7 +4573,8 @@ export function ModelConfigPage({
               min={minContext}
               max={maxContext}
               nativeContextLength={nativeContextLength}
-              activeLoadedContext={activeLoadedContext}
+              activeLoadedContext={autoQuote.loaded}
+              refitsLoadedContext={autoQuote.refits}
               inputRef={contextInputRef}
               onChange={(v) => update({ customContextLength: v === 0 ? null : v })}
               stacked={variant === "sidebar"}
