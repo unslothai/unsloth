@@ -3,9 +3,9 @@
 
 """Fused-CE label smoothing must keep the stock path when the fused CE cannot reproduce the output head.
 
-The fused CE passes no head bias, so a head bias would drop out of the loss. An unmerged LoRA adapter on lm_head stays
-fused only when unsloth_zoo folds it into the kernel inputs ([x, s * A(x)] @ [W, B]^T, as llama.py and the compiled
-forwards do); with an older zoo, or an adapter it cannot fold (DoRA), the stock path runs.
+The fused CE projects with lm_head.weight (as llama.py and the compiled forwards do) and passes no head bias, so a live
+adapter on lm_head (LoRA, DoRA) would get no gradient and a head bias would drop out of the loss: the stock path runs,
+with unsloth_zoo's live-adapter check or, on an older zoo, the module walk.
 """
 
 import importlib.util
@@ -39,7 +39,7 @@ class _Config:
 
 
 class LlamaForCausalLM(torch.nn.Module):
-    """With labels: fused CE with no bias, on lm_head.weight or the folded LoRA inputs, as unsloth/models/llama.py does."""
+    """With labels: fused CE on lm_head.weight and no bias, as unsloth/models/llama.py does."""
 
     def __init__(self, head):
         super().__init__()
@@ -77,8 +77,6 @@ class LlamaForCausalLM(torch.nn.Module):
         hidden = self.embed(input_ids)
         if labels is not None:
             weight = self.lm_head.weight
-            if fls.output_head_folds(self.lm_head):
-                hidden, weight = fls.output_head_fused_inputs(self.lm_head, hidden)
             loss = zoo_ce.unsloth_fused_ce_loss(
                 None,
                 hidden,
@@ -141,16 +139,14 @@ def _run(cls, head, tmp_path):
 @pytest.mark.parametrize("head", ["lora", "lora_older_zoo", "dora", "bias"])
 def test_head_adapter_and_bias_keep_stock_loss_and_grads(head, tmp_path, monkeypatch):
     if head == "lora_older_zoo":
-        # A zoo without the fold: the LoRA head must take the stock path.
+        # A zoo without lm_head_needs_module_forward: the module walk must catch the LoRA head.
         monkeypatch.setattr(fls, "_zoo_head_needs_module_forward", None)
         head = "lora"
     ref_loss, ref_grads = _run(Trainer, head, tmp_path)
     before = dict(fls.STATS)
     loss, grads = _run(_FusedTrainer, head, tmp_path)
-    # Only a LoRA head that unsloth_zoo folds into the kernel inputs stays fused; the rest take the stock path.
-    fused = head == "lora" and not fls.output_head_not_fusable(LlamaForCausalLM(head).lm_head)
-    assert fls.STATS["fused"] == before["fused"] + fused
-    assert fls.STATS.get("skip_head", 0) == before.get("skip_head", 0) + (not fused)
+    assert fls.STATS["fused"] == before["fused"]
+    assert fls.STATS.get("skip_head", 0) == before.get("skip_head", 0) + 1
     torch.testing.assert_close(loss, ref_loss)
     for name, ref in ref_grads.items():
         assert ref is not None

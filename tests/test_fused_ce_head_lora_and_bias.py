@@ -170,21 +170,20 @@ def _assert_exact_and_trained(stub, hidden, output, labels):
         assert grad is not None and grad.abs().sum() > 0, name
 
 
-@pytest.mark.parametrize("module_name", ["llama", "mistral"])
-def test_lora_head_follows_the_zoo_fold(monkeypatch, module_name):
-    # A zoo that folds the adapter in ([x, s * A(x)] @ [W, B]^T) keeps the loss fused; one that asks for the
-    # head's forward gets the logits branch. Exact either way.
-    if fls_module._zoo_head_needs_module_forward is None:
-        pytest.skip("this unsloth_zoo does not build fused CE inputs for an adapter head")
-    stub, hidden = _stub("lora")
-    folds = not fls_module._zoo_head_needs_module_forward(stub.lm_head)
-    output, labels = _loss(monkeypatch, module_name, stub)
-    assert (output.logits is EMPTY_LOGITS) is folds
-    _assert_exact_and_trained(stub, hidden, output, labels)
+@pytest.mark.parametrize("zoo_check", [True, False])
+def test_merged_then_disabled_head_is_not_fusable(monkeypatch, zoo_check):
+    # PEFT's disabled forward unmerges a merged adapter first, so the merged lm_head.weight is not what it computes.
+    if not zoo_check:
+        monkeypatch.setattr(fls_module, "_zoo_head_needs_module_forward", None)
+    head = _head("lora")
+    head.merge()
+    assert not fls_module.output_head_not_fusable(head)
+    head.enable_adapters(False)
+    assert fls_module.output_head_not_fusable(head)
 
 
 @pytest.mark.parametrize("module_name", ["llama", "mistral"])
-def test_lora_head_takes_the_logits_branch_on_an_older_zoo(monkeypatch, module_name):
+def test_lora_head_takes_the_logits_branch_with_the_module_walk(monkeypatch, module_name):
     monkeypatch.setattr(fls_module, "_zoo_head_needs_module_forward", None)
     stub, hidden = _stub("lora")
     output, labels = _loss(monkeypatch, module_name, stub)

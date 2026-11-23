@@ -22,11 +22,7 @@ from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
 from ._utils import _ignore_block_swap_params_for_ddp
 from ._frozen_prefix import install_frozen_prefix_skip
-from .fused_label_smoothing import (
-    output_head_folds,
-    output_head_fused_inputs,
-    output_head_not_fusable,
-)
+from .fused_label_smoothing import output_head_not_fusable
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
@@ -2215,8 +2211,8 @@ def CausalLM_fast_forward(fast_forward_inference):
                 # unsloth_fused_ce_loss calculates the best chunk size to reduce VRAM usage.
                 RETURN_LOGITS = False
 
-            # A head bias, or a head adapter unsloth_zoo cannot fold into the fused CE inputs (DoRA, other
-            # tuners, an older zoo), takes the logits branch. Checked only with labels: inference never pays.
+            # A head bias or a live adapter on the head (the fused CE reads lm_head.weight alone) takes the
+            # logits branch. Checked only with labels, so inference never pays for it.
             if (
                 not RETURN_LOGITS
                 and labels is not None
@@ -2231,13 +2227,9 @@ def CausalLM_fast_forward(fast_forward_inference):
                     resolve_logit_transforms(self.config)
                 )
 
-                if type(self.lm_head) is not torch.nn.Linear and output_head_folds(self.lm_head):
-                    # Live LoRA on the head: [x, s * A(x)] @ [W, B]^T keeps the loss fused and exact.
-                    hidden_states, lm_head = output_head_fused_inputs(self.lm_head, hidden_states)
-                else:
-                    hidden_states, lm_head = fake_quantize_lm_head_inputs(
-                        self.lm_head, hidden_states, lm_head
-                    )
+                hidden_states, lm_head = fake_quantize_lm_head_inputs(
+                    self.lm_head, hidden_states, lm_head
+                )
 
                 if self.config.model_type == "falcon_h1" and logit_scale_multiply:
                     # Via the resolver, so a nullable lm_head_multiplier reads as "off".

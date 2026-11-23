@@ -19,14 +19,13 @@ try:
 except Exception:
     _BaseTunerLayer = None
 try:
-    # unsloth_zoo with these folds a plain LoRA head into the fused CE inputs ([x, s * A(x)] @ [W, B]^T) and names
-    # the adapters it cannot fold. Older zoo has neither: such heads take the logits branch.
+    # The same live-adapter check the unsloth_zoo fused forwards use (also catches merged-then-disabled heads and
+    # PEFT's per-example adapter_names hook). Older zoo: the module walk below.
     from unsloth_zoo.fused_losses.forward_adapter import (
-        lm_head_fake_quantize as _zoo_head_inputs,
         lm_head_needs_module_forward as _zoo_head_needs_module_forward,
     )
 except Exception:
-    _zoo_head_inputs = _zoo_head_needs_module_forward = None
+    _zoo_head_needs_module_forward = None
 
 __all__ = ["fused_label_smoothing_compute_loss"]
 
@@ -93,9 +92,14 @@ def _head_has_live_adapter(head):
     if not head._modules or _BaseTunerLayer is None:
         return False
     for module in head.modules():
-        if not isinstance(module, _BaseTunerLayer) or getattr(module, "disable_adapters", False):
+        if not isinstance(module, _BaseTunerLayer):
             continue
         merged = set(getattr(module, "merged_adapters", None) or ())
+        if getattr(module, "disable_adapters", False):
+            # A disabled forward unmerges first, so a merged weight is not what it computes with.
+            if merged:
+                return True
+            continue
         held = set()
         for layer_name in getattr(module, "adapter_layer_names", None) or ():
             held.update(getattr(module, layer_name, None) or ())
@@ -106,34 +110,21 @@ def _head_has_live_adapter(head):
     return False
 
 
-def output_head_folds(head):
-    """True when unsloth_zoo builds the fused CE inputs for this PEFT tuner head (``output_head_fused_inputs``): it
-    folds a plain LoRA adapter in ([x, s * A(x)] @ [W, B]^T) and reads the base weight when no adapter is live. Only
-    asked once ``output_head_not_fusable`` said False, so zoo already judged the head foldable."""
-    return (
-        _zoo_head_needs_module_forward is not None
-        and _BaseTunerLayer is not None
-        and isinstance(head, _BaseTunerLayer)
-    )
-
-
-def output_head_fused_inputs(head, hidden_states):
-    """(hidden_states, weight) whose product is ``head(hidden_states)``, for a head ``output_head_folds`` accepted."""
-    return _zoo_head_inputs(head, hidden_states)
-
-
 def output_head_not_fusable(head):
-    # The fused CE projects with lm_head.weight (llama.py, the compiled forwards) and llama.py passes no bias, so an
-    # active unmerged adapter on the head (PEFT LoRA layer: .weight is the base weight) would get no gradient and a
-    # head bias would leave the loss: both need lm_head(hidden). A tuner head is judged by unsloth_zoo when it can
-    # build the fused inputs (lm_head_needs_module_forward: plain LoRA folds, DoRA / other tuners do not); an older
-    # zoo, or a tuner nested inside a wrapper, takes the logits branch whenever an adapter is live. Runs every
+    # The fused CE projects with lm_head.weight (llama.py, the compiled forwards) and llama.py passes no bias, so a
+    # live adapter on the head (PEFT LoRA layer: .weight is the base weight) would get no gradient and a head bias
+    # would leave the loss: both take lm_head(hidden). A tuner head asks unsloth_zoo's check when it has one, so both
+    # repos route the same heads; an older zoo, or a tuner nested inside a wrapper, uses the module walk. Runs every
     # labelled forward: a plain nn.Linear head (no children, so no tuner layer) returns before any walk.
     if getattr(head, "bias", None) is not None:
         return True
     if not head._modules:
         return False
-    if output_head_folds(head):
+    if (
+        _zoo_head_needs_module_forward is not None
+        and _BaseTunerLayer is not None
+        and isinstance(head, _BaseTunerLayer)
+    ):
         return bool(_zoo_head_needs_module_forward(head))
     return _head_has_live_adapter(head)
 
