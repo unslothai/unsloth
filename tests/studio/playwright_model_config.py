@@ -1225,10 +1225,23 @@ with sync_playwright() as p:
             page.keyboard.press("Escape")
             settings.first.wait_for(state = "hidden", timeout = 10_000)
             composer = page.locator('textarea[aria-label="Message input"]').first
-            composer.evaluate("el => el.focus()")
-            if composer.evaluate("el => el === document.activeElement"):
+
+            # Closing the picker can still move focus for a frame (back to its trigger), so retry for a
+            # moment rather than judge one attempt; a composer that never takes focus still fails.
+            def composer_focused() -> bool:
+                composer.evaluate("el => el.focus()")
+                return composer.evaluate("el => el === document.activeElement")
+
+            try:
+                wait_until(
+                    composer_focused,
+                    timeout_s = 5,
+                    what = "composer focus after the run settings close",
+                    interval_s = 0.25,
+                    page = page,
+                )
                 info("OK composer takes focus again after the run settings close")
-            else:
+            except TimeoutError:
                 fail("composer could not be focused after the Hub Run settings closed")
         else:
             fail(
