@@ -230,7 +230,6 @@ _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
         # LFM3-Audio config rewrite: no LFM3-Audio checkpoint in these fixtures.
         "_release_layout_for_merged_save",
         "_push_lfm3_audio_release_config",
-        # Tokenizer padding guard around the tokenizer write; the routing fixtures pass no tokenizer.
         "_left_padding_side",
         # Shard-wise cast: these fixtures hold no real tensors, so the eager cast runs.
         "_restamp_index_total_size",
