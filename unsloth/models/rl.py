@@ -5230,6 +5230,11 @@ def _packing_honored(
         alone = hidden(ids[:, first:], arange(second), [second])[0]
         crossed = hidden(ids, arange(first + second), [first + second])[0, first:]
     finally:
+        # Through train(), not only the flag: Int4PackedLinear syncs its quant_state there and
+        # PreTrainedModel re-kernelizes under use_kernels. modules() is parent-first, so the children's
+        # own calls undo each recursion; the flags then cover a child shared by two parents.
+        for module, mode in training:
+            module.train(mode)
         for module, mode in training:
             module.training = mode
         for module, attr, value in rates:
