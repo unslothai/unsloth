@@ -55,6 +55,7 @@ from utils.models.gguf_metadata import (
     mmproj_functional_match,
     pairing_score,
     read_gguf_general_metadata,
+    read_gguf_header_summary,
     read_gguf_nextn_predict_layers,
 )
 import structlog
@@ -2353,6 +2354,94 @@ def _local_gguf_load_path(path: Path) -> Path:
     return (first or path).absolute()
 
 
+def _parent_mmproj_identity(weight: Path, candidate: Path) -> Optional[str]:
+    """Positive evidence that a projector one folder up belongs to this weight, else None.
+
+    A parent folder can be a shared models directory, so a filename wildcard (``mmproj-F16.gguf``)
+    is not enough there: the projector must say in its own header that it serves this model.
+    """
+    weight_meta = read_gguf_general_metadata(str(weight))
+    cand_meta = read_gguf_general_metadata(str(candidate))
+    if is_mmproj_by_metadata(cand_meta) is not True:
+        return None
+    functional_match, _ = mmproj_functional_match(str(weight), str(candidate))
+    if functional_match is False:
+        return None
+    score = pairing_score(weight_meta, cand_meta)
+    if score == -1:
+        return None
+    if functional_match is True:
+        return "projector type and width"
+    if score >= 60:
+        return "general.* identity metadata"
+    # Many converters write only general.name on the projector; pair on it plus the width check llama-server applies.
+    w_name = ((weight_meta or {}).get("general.name") or "").strip().lower()
+    c_name = ((cand_meta or {}).get("general.name") or "").strip().lower()
+    if not w_name or w_name != c_name:
+        return None
+    weight_summary = read_gguf_header_summary(str(weight))
+    cand_summary = read_gguf_header_summary(str(candidate))
+    if not weight_summary or not cand_summary:
+        return None
+    arch = weight_summary[0].get("general.architecture")
+    n_embd = weight_summary[0].get(f"{arch}.embedding_length") if isinstance(arch, str) else None
+    projection_dim = cand_summary[0].get("clip.vision.projection_dim")
+    if not isinstance(n_embd, int) or n_embd != projection_dim:
+        return None
+    return f"general.name {w_name!r} and projection_dim {projection_dim}"
+
+
+def _parent_mmproj_file(
+    weight: Path,
+    scanned: set,
+    accept: Optional[Callable[[str], bool]] = None,
+) -> Optional[str]:
+    """The README layout and ``hf download --local-dir`` put the projector one folder above a quant
+    subfolder (``Mainline_Support/``, ``UD-Q4_K_XL/``). Used only after the usual folders found
+    nothing, and only for a projector whose own metadata names this model."""
+    try:
+        parent = weight.parent.resolve().parent
+    except OSError:
+        return None
+    if parent in scanned or parent.parent == parent or not parent.is_dir():
+        return None
+    matches: list[tuple[str, Path]] = []
+    try:
+        files = sorted(_iter_gguf_files(parent))
+    except OSError:
+        return None
+    for f in files:
+        if not _is_mmproj(f.name):
+            continue
+        if accept is not None and not accept(str(f)):
+            continue
+        try:
+            resolved = f.resolve()
+            if resolved.stat().st_size <= 0:
+                continue
+        except OSError:
+            continue
+        evidence = _parent_mmproj_identity(weight, resolved)
+        if evidence is None:
+            logger.info(
+                f"detect_mmproj_file: ignored {f} one folder up (metadata does not name {weight.name})"
+            )
+            continue
+        matches.append((evidence, resolved))
+    if not matches:
+        return None
+    order = mmproj_order(str(weight))
+    evidence, best = max(
+        matches,
+        key = lambda m: (
+            mmproj_order_rank(m[1].name, order) if order else 0,
+            -len(m[1].stem),
+        ),
+    )
+    logger.info(f"detect_mmproj_file: using {best} one folder up ({evidence})")
+    return str(best)
+
+
 def detect_mmproj_file(
     path: str,
     search_root: Optional[str] = None,
@@ -2443,7 +2532,8 @@ def detect_mmproj_file(
                 candidates.append(resolved)
 
     if not candidates:
-        return None
+        # Only a file has metadata to vouch for a projector one folder up.
+        return _parent_mmproj_file(p, seen, accept) if p.is_file() else None
 
     # Directory path: no model name to compare against; legacy behaviour.
     if not p.is_file():
@@ -2489,7 +2579,7 @@ def detect_mmproj_file(
         scored.append((meta_score, c))
 
     if not scored:
-        return None
+        return _parent_mmproj_file(p, seen, accept)
 
     # Score first, then longest shared prefix, then shorter stem. The prefix is read past
     # the ``mmproj-`` marker, or every projector in a shared pool ties at zero.
@@ -2516,8 +2606,12 @@ from utils.models.drafters import (  # noqa: E402
     _drafter_stem_rank,
     _drafter_total_size,
     detect_dflash_file,
+    dspark_drafter_incompatibility,
+    dspark_drafter_schema,
     dspark_precision_rank,
+    dspark_schema_rank,
     is_published_drafter_filename,
+    supported_dspark_schemas,
 )
 from utils.models.drafters import (  # noqa: E402
     dspark_preference_key as _drafters_dspark_preference_key,
@@ -2718,6 +2812,8 @@ def detect_dspark_file(
                 seen.add(resolved)
                 candidates.append(launch)
 
+    supported = supported_dspark_schemas() if candidates else None
+    usable: list[tuple[tuple, str]] = []
     for candidate in sorted(candidates, key = _rank):
         try:
             launch = _drafter_launch_path(candidate)
@@ -2725,9 +2821,23 @@ def detect_dspark_file(
             continue
         if accept is not None and not accept(launch):
             continue
-        logger.info("Detected DSpark drafter: %s", launch)
-        return launch
-    return None
+        # Header only: an Inkling 2 layout this llama-server rejects fails launches before the no-drafter fallback.
+        reason = dspark_drafter_incompatibility(
+            launch, str(p) if weight_name else None, supported = supported
+        )
+        if reason is not None:
+            logger.info("Skipping DSpark drafter %s: %s", launch, reason)
+            continue
+        # Family first, then the preferred Inkling 2 layout when a build loads both, then precision / size / name.
+        rank = _rank(candidate)
+        usable.append(
+            ((rank[0], dspark_schema_rank(dspark_drafter_schema(launch)), *rank[1:]), launch)
+        )
+    if not usable:
+        return None
+    launch = min(usable, key = lambda item: item[0])[1]
+    logger.info("Detected DSpark drafter: %s", launch)
+    return launch
 
 
 def _registered_custom_model_root(path: str) -> Optional[Path]:

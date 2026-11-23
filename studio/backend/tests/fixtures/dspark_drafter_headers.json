@@ -1,0 +1,1216 @@
+{
+ "_doc": "Header-only facts (scalar KVs, tensor names and ggml shapes) of published DSpark drafters, for tests/test_dspark_dual_schema.py. Generated with gguf.GGUFReader; tokenizer arrays dropped.",
+ "generic_minimax_m31_flash_q8_0": {
+  "kvs": {
+   "dflash.attention.head_count": 64,
+   "dflash.attention.head_count_kv": 4,
+   "dflash.attention.key_length": 128,
+   "dflash.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
+   "dflash.attention.sliding_window": 4096,
+   "dflash.attention.value_length": 128,
+   "dflash.block_count": 5,
+   "dflash.block_size": 7,
+   "dflash.context_length": 1048576,
+   "dflash.embedding_length": 6144,
+   "dflash.feed_forward_length": 12288,
+   "dflash.has_confidence_head": true,
+   "dflash.hidden_activation": "swigluoai",
+   "dflash.rope.dimension_count": 64,
+   "dflash.rope.freq_base": 10000000.0,
+   "dflash.sample_from_anchor": true,
+   "general.architecture": "dflash",
+   "general.basename": "MiniMax-M3.1-Flash-DSpark",
+   "general.file_type": 7,
+   "general.license.link": "LICENSE",
+   "general.license.name": "minimax-community",
+   "general.name": "MiniMax-M3.1-Flash-DSpark",
+   "general.quantization_version": 2,
+   "general.quantized_by": "Unsloth",
+   "general.repo_url": "https://huggingface.co/unsloth",
+   "general.size_label": "2.0B",
+   "general.type": "model"
+  },
+  "source_file": "dspark-MiniMax-M3.1-Flash-Q8_0.gguf",
+  "tensors": {
+   "blk.0.attn_k.weight": [
+    6144,
+    512
+   ],
+   "blk.0.attn_k_norm.weight": [
+    128
+   ],
+   "blk.0.attn_norm.weight": [
+    6144
+   ],
+   "blk.0.attn_output.weight": [
+    8192,
+    6144
+   ],
+   "blk.0.attn_q.weight": [
+    6144,
+    8192
+   ],
+   "blk.0.attn_q_norm.weight": [
+    128
+   ],
+   "blk.0.attn_v.weight": [
+    6144,
+    512
+   ],
+   "blk.0.ffn_down.weight": [
+    12288,
+    6144
+   ],
+   "blk.0.ffn_gate.weight": [
+    6144,
+    12288
+   ],
+   "blk.0.ffn_norm.weight": [
+    6144
+   ],
+   "blk.0.ffn_up.weight": [
+    6144,
+    12288
+   ],
+   "blk.1.attn_k.weight": [
+    6144,
+    512
+   ],
+   "blk.1.attn_k_norm.weight": [
+    128
+   ],
+   "blk.1.attn_norm.weight": [
+    6144
+   ],
+   "blk.1.attn_output.weight": [
+    8192,
+    6144
+   ],
+   "blk.1.attn_q.weight": [
+    6144,
+    8192
+   ],
+   "blk.1.attn_q_norm.weight": [
+    128
+   ],
+   "blk.1.attn_v.weight": [
+    6144,
+    512
+   ],
+   "blk.1.ffn_down.weight": [
+    12288,
+    6144
+   ],
+   "blk.1.ffn_gate.weight": [
+    6144,
+    12288
+   ],
+   "blk.1.ffn_norm.weight": [
+    6144
+   ],
+   "blk.1.ffn_up.weight": [
+    6144,
+    12288
+   ],
+   "blk.2.attn_k.weight": [
+    6144,
+    512
+   ],
+   "blk.2.attn_k_norm.weight": [
+    128
+   ],
+   "blk.2.attn_norm.weight": [
+    6144
+   ],
+   "blk.2.attn_output.weight": [
+    8192,
+    6144
+   ],
+   "blk.2.attn_q.weight": [
+    6144,
+    8192
+   ],
+   "blk.2.attn_q_norm.weight": [
+    128
+   ],
+   "blk.2.attn_v.weight": [
+    6144,
+    512
+   ],
+   "blk.2.ffn_down.weight": [
+    12288,
+    6144
+   ],
+   "blk.2.ffn_gate.weight": [
+    6144,
+    12288
+   ],
+   "blk.2.ffn_norm.weight": [
+    6144
+   ],
+   "blk.2.ffn_up.weight": [
+    6144,
+    12288
+   ],
+   "blk.3.attn_k.weight": [
+    6144,
+    512
+   ],
+   "blk.3.attn_k_norm.weight": [
+    128
+   ],
+   "blk.3.attn_norm.weight": [
+    6144
+   ],
+   "blk.3.attn_output.weight": [
+    8192,
+    6144
+   ],
+   "blk.3.attn_q.weight": [
+    6144,
+    8192
+   ],
+   "blk.3.attn_q_norm.weight": [
+    128
+   ],
+   "blk.3.attn_v.weight": [
+    6144,
+    512
+   ],
+   "blk.3.ffn_down.weight": [
+    12288,
+    6144
+   ],
+   "blk.3.ffn_gate.weight": [
+    6144,
+    12288
+   ],
+   "blk.3.ffn_norm.weight": [
+    6144
+   ],
+   "blk.3.ffn_up.weight": [
+    6144,
+    12288
+   ],
+   "blk.4.attn_k.weight": [
+    6144,
+    512
+   ],
+   "blk.4.attn_k_norm.weight": [
+    128
+   ],
+   "blk.4.attn_norm.weight": [
+    6144
+   ],
+   "blk.4.attn_output.weight": [
+    8192,
+    6144
+   ],
+   "blk.4.attn_q.weight": [
+    6144,
+    8192
+   ],
+   "blk.4.attn_q_norm.weight": [
+    128
+   ],
+   "blk.4.attn_v.weight": [
+    6144,
+    512
+   ],
+   "blk.4.ffn_down.weight": [
+    12288,
+    6144
+   ],
+   "blk.4.ffn_gate.weight": [
+    6144,
+    12288
+   ],
+   "blk.4.ffn_norm.weight": [
+    6144
+   ],
+   "blk.4.ffn_up.weight": [
+    6144,
+    12288
+   ],
+   "conf_proj.bias": [
+    1
+   ],
+   "conf_proj.weight": [
+    6400,
+    1
+   ],
+   "enc.output_norm.weight": [
+    6144
+   ],
+   "fc.weight": [
+    30720,
+    6144
+   ],
+   "markov_w1.weight": [
+    256,
+    200064
+   ],
+   "markov_w2.weight": [
+    256,
+    200064
+   ],
+   "output_norm.weight": [
+    6144
+   ]
+  }
+ },
+ "generic_qwen3_4b_bf16": {
+  "kvs": {
+   "dflash.attention.head_count": 32,
+   "dflash.attention.head_count_kv": 8,
+   "dflash.attention.key_length": 128,
+   "dflash.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
+   "dflash.attention.value_length": 128,
+   "dflash.block_count": 5,
+   "dflash.block_size": 7,
+   "dflash.context_length": 40960,
+   "dflash.embedding_length": 2560,
+   "dflash.feed_forward_length": 9728,
+   "dflash.has_confidence_head": true,
+   "dflash.rope.freq_base": 1000000.0,
+   "dflash.sample_from_anchor": true,
+   "general.architecture": "dflash",
+   "general.file_type": 32,
+   "general.name": "Dspark_Qwen3_4B_Block7",
+   "general.quantization_version": 2,
+   "general.size_label": "1.0B",
+   "general.type": "model"
+  },
+  "source_file": "Qwen3-4B-DSpark-BF16.gguf",
+  "tensors": {
+   "blk.0.attn_k.weight": [
+    2560,
+    1024
+   ],
+   "blk.0.attn_k_norm.weight": [
+    128
+   ],
+   "blk.0.attn_norm.weight": [
+    2560
+   ],
+   "blk.0.attn_output.weight": [
+    4096,
+    2560
+   ],
+   "blk.0.attn_q.weight": [
+    2560,
+    4096
+   ],
+   "blk.0.attn_q_norm.weight": [
+    128
+   ],
+   "blk.0.attn_v.weight": [
+    2560,
+    1024
+   ],
+   "blk.0.ffn_down.weight": [
+    9728,
+    2560
+   ],
+   "blk.0.ffn_gate.weight": [
+    2560,
+    9728
+   ],
+   "blk.0.ffn_norm.weight": [
+    2560
+   ],
+   "blk.0.ffn_up.weight": [
+    2560,
+    9728
+   ],
+   "blk.1.attn_k.weight": [
+    2560,
+    1024
+   ],
+   "blk.1.attn_k_norm.weight": [
+    128
+   ],
+   "blk.1.attn_norm.weight": [
+    2560
+   ],
+   "blk.1.attn_output.weight": [
+    4096,
+    2560
+   ],
+   "blk.1.attn_q.weight": [
+    2560,
+    4096
+   ],
+   "blk.1.attn_q_norm.weight": [
+    128
+   ],
+   "blk.1.attn_v.weight": [
+    2560,
+    1024
+   ],
+   "blk.1.ffn_down.weight": [
+    9728,
+    2560
+   ],
+   "blk.1.ffn_gate.weight": [
+    2560,
+    9728
+   ],
+   "blk.1.ffn_norm.weight": [
+    2560
+   ],
+   "blk.1.ffn_up.weight": [
+    2560,
+    9728
+   ],
+   "blk.2.attn_k.weight": [
+    2560,
+    1024
+   ],
+   "blk.2.attn_k_norm.weight": [
+    128
+   ],
+   "blk.2.attn_norm.weight": [
+    2560
+   ],
+   "blk.2.attn_output.weight": [
+    4096,
+    2560
+   ],
+   "blk.2.attn_q.weight": [
+    2560,
+    4096
+   ],
+   "blk.2.attn_q_norm.weight": [
+    128
+   ],
+   "blk.2.attn_v.weight": [
+    2560,
+    1024
+   ],
+   "blk.2.ffn_down.weight": [
+    9728,
+    2560
+   ],
+   "blk.2.ffn_gate.weight": [
+    2560,
+    9728
+   ],
+   "blk.2.ffn_norm.weight": [
+    2560
+   ],
+   "blk.2.ffn_up.weight": [
+    2560,
+    9728
+   ],
+   "blk.3.attn_k.weight": [
+    2560,
+    1024
+   ],
+   "blk.3.attn_k_norm.weight": [
+    128
+   ],
+   "blk.3.attn_norm.weight": [
+    2560
+   ],
+   "blk.3.attn_output.weight": [
+    4096,
+    2560
+   ],
+   "blk.3.attn_q.weight": [
+    2560,
+    4096
+   ],
+   "blk.3.attn_q_norm.weight": [
+    128
+   ],
+   "blk.3.attn_v.weight": [
+    2560,
+    1024
+   ],
+   "blk.3.ffn_down.weight": [
+    9728,
+    2560
+   ],
+   "blk.3.ffn_gate.weight": [
+    2560,
+    9728
+   ],
+   "blk.3.ffn_norm.weight": [
+    2560
+   ],
+   "blk.3.ffn_up.weight": [
+    2560,
+    9728
+   ],
+   "blk.4.attn_k.weight": [
+    2560,
+    1024
+   ],
+   "blk.4.attn_k_norm.weight": [
+    128
+   ],
+   "blk.4.attn_norm.weight": [
+    2560
+   ],
+   "blk.4.attn_output.weight": [
+    4096,
+    2560
+   ],
+   "blk.4.attn_q.weight": [
+    2560,
+    4096
+   ],
+   "blk.4.attn_q_norm.weight": [
+    128
+   ],
+   "blk.4.attn_v.weight": [
+    2560,
+    1024
+   ],
+   "blk.4.ffn_down.weight": [
+    9728,
+    2560
+   ],
+   "blk.4.ffn_gate.weight": [
+    2560,
+    9728
+   ],
+   "blk.4.ffn_norm.weight": [
+    2560
+   ],
+   "blk.4.ffn_up.weight": [
+    2560,
+    9728
+   ],
+   "conf_proj.bias": [
+    1
+   ],
+   "conf_proj.weight": [
+    2816,
+    1
+   ],
+   "enc.output_norm.weight": [
+    2560
+   ],
+   "fc.weight": [
+    12800,
+    2560
+   ],
+   "markov_w1.weight": [
+    256,
+    151936
+   ],
+   "markov_w2.weight": [
+    256,
+    151936
+   ],
+   "output_norm.weight": [
+    2560
+   ],
+   "token_embd.weight": [
+    2560,
+    151936
+   ]
+  }
+ },
+ "inkling2_fused_q8_0": {
+  "kvs": {
+   "dflash.attention.causal": false,
+   "dflash.attention.head_count": 24,
+   "dflash.attention.head_count_kv": 8,
+   "dflash.attention.key_length": 128,
+   "dflash.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
+   "dflash.attention.sliding_window": 1024,
+   "dflash.attention.value_length": 128,
+   "dflash.block_count": 3,
+   "dflash.block_size": 8,
+   "dflash.context_length": 1048576,
+   "dflash.dspark.markov_rank": 256,
+   "dflash.embedding_length": 2304,
+   "dflash.feed_forward_length": 9216,
+   "dflash.final_logit_softcapping": 30.0,
+   "dflash.has_confidence_head": false,
+   "dflash.rope.dimension_count": 128,
+   "dflash.rope.freq_base": 1000000.0,
+   "dflash.sample_from_anchor": false,
+   "dflash.vocab_size": 201024,
+   "dflash.vocab_size_unpadded": 200058,
+   "general.architecture": "dflash",
+   "general.basename": "Inkling-2-Mini",
+   "general.file_type": 7,
+   "general.name": "Inkling-2-Mini",
+   "general.quantization_version": 2,
+   "general.size_label": "318M",
+   "general.type": "model"
+  },
+  "source_file": "dspark-Inkling-2-Mini-Q8_0.gguf",
+  "tensors": {
+   "blk.0.attn_k.weight": [
+    2304,
+    1024
+   ],
+   "blk.0.attn_k_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.0.attn_k_ctx_norm.weight": [
+    128
+   ],
+   "blk.0.attn_k_norm.weight": [
+    128
+   ],
+   "blk.0.attn_norm.weight": [
+    2304
+   ],
+   "blk.0.attn_output.weight": [
+    3072,
+    2304
+   ],
+   "blk.0.attn_q.weight": [
+    2304,
+    3072
+   ],
+   "blk.0.attn_q_norm.weight": [
+    128
+   ],
+   "blk.0.attn_v.weight": [
+    2304,
+    1024
+   ],
+   "blk.0.attn_v_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.0.dflare_norm.weight": [
+    2304
+   ],
+   "blk.0.ffn_down.weight": [
+    9216,
+    2304
+   ],
+   "blk.0.ffn_gate.weight": [
+    2304,
+    9216
+   ],
+   "blk.0.ffn_norm.weight": [
+    2304
+   ],
+   "blk.0.ffn_up.weight": [
+    2304,
+    9216
+   ],
+   "blk.1.attn_k.weight": [
+    2304,
+    1024
+   ],
+   "blk.1.attn_k_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.1.attn_k_ctx_norm.weight": [
+    128
+   ],
+   "blk.1.attn_k_norm.weight": [
+    128
+   ],
+   "blk.1.attn_norm.weight": [
+    2304
+   ],
+   "blk.1.attn_output.weight": [
+    3072,
+    2304
+   ],
+   "blk.1.attn_q.weight": [
+    2304,
+    3072
+   ],
+   "blk.1.attn_q_norm.weight": [
+    128
+   ],
+   "blk.1.attn_v.weight": [
+    2304,
+    1024
+   ],
+   "blk.1.attn_v_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.1.dflare_norm.weight": [
+    2304
+   ],
+   "blk.1.ffn_down.weight": [
+    9216,
+    2304
+   ],
+   "blk.1.ffn_gate.weight": [
+    2304,
+    9216
+   ],
+   "blk.1.ffn_norm.weight": [
+    2304
+   ],
+   "blk.1.ffn_up.weight": [
+    2304,
+    9216
+   ],
+   "blk.2.attn_k.weight": [
+    2304,
+    1024
+   ],
+   "blk.2.attn_k_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.2.attn_k_ctx_norm.weight": [
+    128
+   ],
+   "blk.2.attn_k_norm.weight": [
+    128
+   ],
+   "blk.2.attn_norm.weight": [
+    2304
+   ],
+   "blk.2.attn_output.weight": [
+    3072,
+    2304
+   ],
+   "blk.2.attn_q.weight": [
+    2304,
+    3072
+   ],
+   "blk.2.attn_q_norm.weight": [
+    128
+   ],
+   "blk.2.attn_v.weight": [
+    2304,
+    1024
+   ],
+   "blk.2.attn_v_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.2.dflare_norm.weight": [
+    2304
+   ],
+   "blk.2.ffn_down.weight": [
+    9216,
+    2304
+   ],
+   "blk.2.ffn_gate.weight": [
+    2304,
+    9216
+   ],
+   "blk.2.ffn_norm.weight": [
+    2304
+   ],
+   "blk.2.ffn_up.weight": [
+    2304,
+    9216
+   ],
+   "dspark_fuse.weight": [
+    4,
+    4
+   ],
+   "dspark_hidden_out.bias": [
+    2304
+   ],
+   "dspark_hidden_out.weight": [
+    256,
+    2304
+   ],
+   "dspark_norm.weight": [
+    2304
+   ],
+   "joint_proj.bias": [
+    768
+   ],
+   "joint_proj.weight": [
+    5120,
+    768
+   ],
+   "markov_w1.weight": [
+    256,
+    201024
+   ],
+   "mask_embd.weight": [
+    2304
+   ],
+   "output_norm.weight": [
+    2304
+   ]
+  }
+ },
+ "inkling2_markov2_bf16": {
+  "kvs": {
+   "dflash.attention.head_count": 24,
+   "dflash.attention.head_count_kv": 8,
+   "dflash.attention.key_length": 128,
+   "dflash.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
+   "dflash.attention.sliding_window": 1025,
+   "dflash.attention.value_length": 128,
+   "dflash.block_count": 3,
+   "dflash.block_size": 8,
+   "dflash.context_length": 1048576,
+   "dflash.embedding_length": 2304,
+   "dflash.feed_forward_length": 9216,
+   "dflash.final_logit_softcapping": 30.0,
+   "dflash.has_confidence_head": false,
+   "dflash.has_markov_context": true,
+   "dflash.rope.dimension_count": 128,
+   "dflash.rope.freq_base": 1000000.0,
+   "dflash.sample_from_anchor": false,
+   "general.architecture": "dflash",
+   "general.file_type": 32,
+   "general.name": "Src_B35740",
+   "general.quantization_version": 2,
+   "general.sampling.temp": 1.0,
+   "general.size_label": "368M",
+   "general.type": "model"
+  },
+  "source_file": "dspark-Inkling-2-Mini-BF16-mainline.gguf_file",
+  "tensors": {
+   "blk.0.attn_k.weight": [
+    2304,
+    1024
+   ],
+   "blk.0.attn_k_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.0.attn_k_ctx_norm.weight": [
+    128
+   ],
+   "blk.0.attn_k_norm.weight": [
+    128
+   ],
+   "blk.0.attn_norm.weight": [
+    2304
+   ],
+   "blk.0.attn_output.weight": [
+    3072,
+    2304
+   ],
+   "blk.0.attn_q.weight": [
+    2304,
+    3072
+   ],
+   "blk.0.attn_q_norm.weight": [
+    128
+   ],
+   "blk.0.attn_v.weight": [
+    2304,
+    1024
+   ],
+   "blk.0.attn_v_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.0.ctx_mix.weight": [
+    4
+   ],
+   "blk.0.ctx_norm.weight": [
+    2304
+   ],
+   "blk.0.ffn_down.weight": [
+    9216,
+    2304
+   ],
+   "blk.0.ffn_gate.weight": [
+    2304,
+    9216
+   ],
+   "blk.0.ffn_norm.weight": [
+    2304
+   ],
+   "blk.0.ffn_up.weight": [
+    2304,
+    9216
+   ],
+   "blk.1.attn_k.weight": [
+    2304,
+    1024
+   ],
+   "blk.1.attn_k_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.1.attn_k_ctx_norm.weight": [
+    128
+   ],
+   "blk.1.attn_k_norm.weight": [
+    128
+   ],
+   "blk.1.attn_norm.weight": [
+    2304
+   ],
+   "blk.1.attn_output.weight": [
+    3072,
+    2304
+   ],
+   "blk.1.attn_q.weight": [
+    2304,
+    3072
+   ],
+   "blk.1.attn_q_norm.weight": [
+    128
+   ],
+   "blk.1.attn_v.weight": [
+    2304,
+    1024
+   ],
+   "blk.1.attn_v_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.1.ctx_mix.weight": [
+    4
+   ],
+   "blk.1.ctx_norm.weight": [
+    2304
+   ],
+   "blk.1.ffn_down.weight": [
+    9216,
+    2304
+   ],
+   "blk.1.ffn_gate.weight": [
+    2304,
+    9216
+   ],
+   "blk.1.ffn_norm.weight": [
+    2304
+   ],
+   "blk.1.ffn_up.weight": [
+    2304,
+    9216
+   ],
+   "blk.2.attn_k.weight": [
+    2304,
+    1024
+   ],
+   "blk.2.attn_k_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.2.attn_k_ctx_norm.weight": [
+    128
+   ],
+   "blk.2.attn_k_norm.weight": [
+    128
+   ],
+   "blk.2.attn_norm.weight": [
+    2304
+   ],
+   "blk.2.attn_output.weight": [
+    3072,
+    2304
+   ],
+   "blk.2.attn_q.weight": [
+    2304,
+    3072
+   ],
+   "blk.2.attn_q_norm.weight": [
+    128
+   ],
+   "blk.2.attn_v.weight": [
+    2304,
+    1024
+   ],
+   "blk.2.attn_v_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.2.ctx_mix.weight": [
+    4
+   ],
+   "blk.2.ctx_norm.weight": [
+    2304
+   ],
+   "blk.2.ffn_down.weight": [
+    9216,
+    2304
+   ],
+   "blk.2.ffn_gate.weight": [
+    2304,
+    9216
+   ],
+   "blk.2.ffn_norm.weight": [
+    2304
+   ],
+   "blk.2.ffn_up.weight": [
+    2304,
+    9216
+   ],
+   "joint_proj.bias": [
+    768
+   ],
+   "joint_proj.weight": [
+    5120,
+    768
+   ],
+   "markov_ctx_mix.weight": [
+    4
+   ],
+   "markov_ctx_norm.weight": [
+    2304
+   ],
+   "markov_w1.weight": [
+    256,
+    200058
+   ],
+   "markov_w2.bias": [
+    200058
+   ],
+   "markov_w2.weight": [
+    256,
+    200058
+   ],
+   "mask_embd.weight": [
+    2304,
+    7
+   ],
+   "output_norm.weight": [
+    2304
+   ],
+   "token_embd_norm.weight": [
+    2304
+   ]
+  }
+ },
+ "inkling2_markov2_q8_0": {
+  "kvs": {
+   "dflash.attention.head_count": 24,
+   "dflash.attention.head_count_kv": 8,
+   "dflash.attention.key_length": 128,
+   "dflash.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
+   "dflash.attention.sliding_window": 1025,
+   "dflash.attention.value_length": 128,
+   "dflash.block_count": 3,
+   "dflash.block_size": 8,
+   "dflash.context_length": 1048576,
+   "dflash.embedding_length": 2304,
+   "dflash.feed_forward_length": 9216,
+   "dflash.final_logit_softcapping": 30.0,
+   "dflash.has_confidence_head": false,
+   "dflash.has_markov_context": true,
+   "dflash.rope.dimension_count": 128,
+   "dflash.rope.freq_base": 1000000.0,
+   "dflash.sample_from_anchor": false,
+   "general.architecture": "dflash",
+   "general.file_type": 7,
+   "general.name": "Src_B35740",
+   "general.quantization_version": 2,
+   "general.sampling.temp": 1.0,
+   "general.size_label": "368M",
+   "general.type": "model"
+  },
+  "source_file": "dspark-Inkling-2-Mini-Q8_0.gguf_file",
+  "tensors": {
+   "blk.0.attn_k.weight": [
+    2304,
+    1024
+   ],
+   "blk.0.attn_k_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.0.attn_k_ctx_norm.weight": [
+    128
+   ],
+   "blk.0.attn_k_norm.weight": [
+    128
+   ],
+   "blk.0.attn_norm.weight": [
+    2304
+   ],
+   "blk.0.attn_output.weight": [
+    3072,
+    2304
+   ],
+   "blk.0.attn_q.weight": [
+    2304,
+    3072
+   ],
+   "blk.0.attn_q_norm.weight": [
+    128
+   ],
+   "blk.0.attn_v.weight": [
+    2304,
+    1024
+   ],
+   "blk.0.attn_v_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.0.ctx_mix.weight": [
+    4
+   ],
+   "blk.0.ctx_norm.weight": [
+    2304
+   ],
+   "blk.0.ffn_down.weight": [
+    9216,
+    2304
+   ],
+   "blk.0.ffn_gate.weight": [
+    2304,
+    9216
+   ],
+   "blk.0.ffn_norm.weight": [
+    2304
+   ],
+   "blk.0.ffn_up.weight": [
+    2304,
+    9216
+   ],
+   "blk.1.attn_k.weight": [
+    2304,
+    1024
+   ],
+   "blk.1.attn_k_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.1.attn_k_ctx_norm.weight": [
+    128
+   ],
+   "blk.1.attn_k_norm.weight": [
+    128
+   ],
+   "blk.1.attn_norm.weight": [
+    2304
+   ],
+   "blk.1.attn_output.weight": [
+    3072,
+    2304
+   ],
+   "blk.1.attn_q.weight": [
+    2304,
+    3072
+   ],
+   "blk.1.attn_q_norm.weight": [
+    128
+   ],
+   "blk.1.attn_v.weight": [
+    2304,
+    1024
+   ],
+   "blk.1.attn_v_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.1.ctx_mix.weight": [
+    4
+   ],
+   "blk.1.ctx_norm.weight": [
+    2304
+   ],
+   "blk.1.ffn_down.weight": [
+    9216,
+    2304
+   ],
+   "blk.1.ffn_gate.weight": [
+    2304,
+    9216
+   ],
+   "blk.1.ffn_norm.weight": [
+    2304
+   ],
+   "blk.1.ffn_up.weight": [
+    2304,
+    9216
+   ],
+   "blk.2.attn_k.weight": [
+    2304,
+    1024
+   ],
+   "blk.2.attn_k_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.2.attn_k_ctx_norm.weight": [
+    128
+   ],
+   "blk.2.attn_k_norm.weight": [
+    128
+   ],
+   "blk.2.attn_norm.weight": [
+    2304
+   ],
+   "blk.2.attn_output.weight": [
+    3072,
+    2304
+   ],
+   "blk.2.attn_q.weight": [
+    2304,
+    3072
+   ],
+   "blk.2.attn_q_norm.weight": [
+    128
+   ],
+   "blk.2.attn_v.weight": [
+    2304,
+    1024
+   ],
+   "blk.2.attn_v_ctx.weight": [
+    2304,
+    1024
+   ],
+   "blk.2.ctx_mix.weight": [
+    4
+   ],
+   "blk.2.ctx_norm.weight": [
+    2304
+   ],
+   "blk.2.ffn_down.weight": [
+    9216,
+    2304
+   ],
+   "blk.2.ffn_gate.weight": [
+    2304,
+    9216
+   ],
+   "blk.2.ffn_norm.weight": [
+    2304
+   ],
+   "blk.2.ffn_up.weight": [
+    2304,
+    9216
+   ],
+   "joint_proj.bias": [
+    768
+   ],
+   "joint_proj.weight": [
+    5120,
+    768
+   ],
+   "markov_ctx_mix.weight": [
+    4
+   ],
+   "markov_ctx_norm.weight": [
+    2304
+   ],
+   "markov_w1.weight": [
+    256,
+    200058
+   ],
+   "markov_w2.bias": [
+    200058
+   ],
+   "markov_w2.weight": [
+    256,
+    200058
+   ],
+   "mask_embd.weight": [
+    2304,
+    7
+   ],
+   "output_norm.weight": [
+    2304
+   ],
+   "token_embd_norm.weight": [
+    2304
+   ]
+  }
+ }
+}

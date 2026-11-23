@@ -26,6 +26,19 @@ from utils.models.drafters.dflash import (
     detect_dflash_file,
     is_dflash_architecture,
 )
+from utils.models.drafters.dspark_schema import (
+    DSPARK_SCHEMA_FUSED,
+    DSPARK_SCHEMA_GENERIC,
+    DSPARK_SCHEMA_MARKOV2,
+    INKLING_DSPARK_SCHEMAS,
+    binary_dspark_schemas,
+    dspark_drafter_incompatibility,
+    dspark_drafter_schema,
+    dspark_schema_rank,
+    remote_dspark_drafter_schema,
+    schema_incompatibility,
+    supported_dspark_schemas,
+)
 
 __all__ = [
     "_drafter_launch_path",
@@ -45,4 +58,15 @@ __all__ = [
     "dspark_precision_rank",
     "dspark_preference_key",
     "is_dflash_architecture",
+    "DSPARK_SCHEMA_FUSED",
+    "DSPARK_SCHEMA_GENERIC",
+    "DSPARK_SCHEMA_MARKOV2",
+    "INKLING_DSPARK_SCHEMAS",
+    "binary_dspark_schemas",
+    "dspark_drafter_incompatibility",
+    "dspark_drafter_schema",
+    "dspark_schema_rank",
+    "remote_dspark_drafter_schema",
+    "schema_incompatibility",
+    "supported_dspark_schemas",
 ]

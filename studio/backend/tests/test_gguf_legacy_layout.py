@@ -201,7 +201,9 @@ def test_a_drafter_cached_at_another_revision_and_still_published_is_reused(
     two_snapshots, monkeypatch
 ):
     monkeypatch.setattr(
-        llama_cpp, "_published_lfs_hashes", lambda repo, token: frozenset({NEW, DNEW, OLD, DOLD})
+        llama_cpp,
+        "_published_lfs_hashes",
+        lambda repo, token, **_kw: frozenset({NEW, DNEW, OLD, DOLD}),
     )
     found = _lookup(two_snapshots.weight)
     assert found is not None and found.endswith("dspark-Model-Q8_0.gguf")
@@ -211,7 +213,7 @@ def test_a_drafter_cached_at_another_revision_and_still_published_is_reused(
 
 def test_a_cached_drafter_the_repo_dropped_is_not_reused_online(two_snapshots, monkeypatch):
     monkeypatch.setattr(
-        llama_cpp, "_published_lfs_hashes", lambda repo, token: frozenset({NEW, DNEW})
+        llama_cpp, "_published_lfs_hashes", lambda repo, token, **_kw: frozenset({NEW, DNEW})
     )
     found = _lookup(two_snapshots.weight)
     assert two_snapshots.downloads == ["dspark-Model-Q8_0.gguf"]
@@ -221,7 +223,7 @@ def test_a_cached_drafter_the_repo_dropped_is_not_reused_online(two_snapshots, m
 def test_an_unanswered_published_listing_falls_back_to_the_existing_flow(
     two_snapshots, monkeypatch
 ):
-    monkeypatch.setattr(llama_cpp, "_published_lfs_hashes", lambda repo, token: None)
+    monkeypatch.setattr(llama_cpp, "_published_lfs_hashes", lambda repo, token, **_kw: None)
     _lookup(two_snapshots.weight)
     assert two_snapshots.downloads == ["dspark-Model-Q8_0.gguf"]
 

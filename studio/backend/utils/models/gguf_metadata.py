@@ -1461,3 +1461,110 @@ def is_gguf_embedding_model(
 
 
 # Deliberately not re-exported: importing anything from THIS package runs utils.models.__init__, which pulls in model_config and therefore PyYAML, while core.inference.llama_cpp needs the verdict at import time. Import it from utils.gguf_archs.
+
+
+# Header summary: scalar / short-array KVs plus every tensor's name and shape, no tensor data.
+_HEADER_SUMMARY_CACHE: Dict[
+    _CacheKey, Optional[Tuple[Dict[str, object], Dict[str, Tuple[int, ...]]]]
+] = {}
+_SUMMARY_MAX_ARRAY = 64
+_SCALAR_FORMATS: Dict[int, str] = {
+    0: "<B",
+    1: "<b",
+    2: "<H",
+    3: "<h",
+    4: "<I",
+    5: "<i",
+    6: "<f",
+    7: "<?",
+    10: "<Q",
+    11: "<q",
+    12: "<d",
+}
+
+
+def _read_summary_scalar(f, vtype: int):
+    fmt = _SCALAR_FORMATS[vtype]
+    size = struct.calcsize(fmt)
+    raw = f.read(size)
+    if len(raw) < size:
+        raise EOFError
+    return struct.unpack(fmt, raw)[0]
+
+
+def _parse_gguf_header_summary(
+    path: str,
+) -> Optional[Tuple[Dict[str, object], Dict[str, Tuple[int, ...]]]]:
+    kvs: Dict[str, object] = {}
+    tensors: Dict[str, Tuple[int, ...]] = {}
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, tensor_count, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC or tensor_count > 1 << 20 or kv_count > 1 << 20:
+                return None
+            for _ in range(kv_count):
+                klen = struct.unpack("<Q", f.read(8))[0]
+                if klen > 1 << 20:
+                    return None
+                key = f.read(klen).decode("utf-8", "replace")
+                vtype = struct.unpack("<I", f.read(4))[0]
+                if vtype in _SCALAR_FORMATS:
+                    kvs[key] = _read_summary_scalar(f, vtype)
+                elif vtype == 8:
+                    slen = struct.unpack("<Q", f.read(8))[0]
+                    if slen > 1 << 16:
+                        f.seek(slen, 1)
+                        continue
+                    kvs[key] = f.read(slen).decode("utf-8", "replace")
+                elif vtype == 9:
+                    atype, alen = struct.unpack("<IQ", f.read(12))
+                    if atype in _SCALAR_FORMATS and alen <= _SUMMARY_MAX_ARRAY:
+                        kvs[key] = [_read_summary_scalar(f, atype) for _ in range(alen)]
+                    else:
+                        f.seek(-12, 1)
+                        if not _skip_gguf_value(f, vtype):
+                            return None
+                elif not _skip_gguf_value(f, vtype):
+                    return None
+            for _ in range(tensor_count):
+                nlen = struct.unpack("<Q", f.read(8))[0]
+                if nlen > 1 << 20:
+                    return None
+                name = f.read(nlen).decode("utf-8", "replace")
+                n_dims = struct.unpack("<I", f.read(4))[0]
+                if n_dims > 16:
+                    return None
+                dims = struct.unpack(f"<{n_dims}Q", f.read(8 * n_dims))
+                f.seek(4 + 8, 1)  # ggml type (u32) and data offset (u64)
+                tensors[name] = tuple(int(d) for d in dims)
+    except OSError as e:
+        logger.debug(f"read_gguf_header_summary: cannot open {path}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"read_gguf_header_summary: parse failure on {path}: {e}")
+        return None
+    return kvs, tensors
+
+
+def read_gguf_header_summary(
+    path: str,
+) -> Optional[Tuple[Dict[str, object], Dict[str, Tuple[int, ...]]]]:
+    """``(kvs, tensors)`` from one GGUF header, or None if unreadable / not a GGUF. ``kvs`` holds scalars, short strings and arrays of at most 64 numbers (the vocabulary is skipped); ``tensors`` maps each name to its ggml shape (ne0 first). Reads no tensor data."""
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _HEADER_SUMMARY_CACHE:
+            return _HEADER_SUMMARY_CACHE[key]
+    result = _parse_gguf_header_summary(path)
+    with _CACHE_LOCK:
+        while len(_HEADER_SUMMARY_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _HEADER_SUMMARY_CACHE.pop(next(iter(_HEADER_SUMMARY_CACHE)))
+            except StopIteration:
+                break
+        _HEADER_SUMMARY_CACHE[key] = result
+    return result

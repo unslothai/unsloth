@@ -1142,6 +1142,7 @@ def _dspark_download_probe(
         label,
         cancel_event = None,
         near_path = None,
+        reuse_snapshot_sibling = True,
         outcome = None,
     ):
         reached["hit"] = True
@@ -1197,6 +1198,7 @@ def test_download_dspark_records_whether_the_repo_publishes_a_sidecar(monkeypatc
             label,
             cancel_event = None,
             near_path = None,
+            reuse_snapshot_sibling = True,
             outcome = None,
         ):
             if outcome is not None:

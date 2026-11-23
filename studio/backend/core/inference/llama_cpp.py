@@ -3888,6 +3888,20 @@ def _companion_snapshot_sibling(
     return str(candidate) if _drafter_split_is_complete(candidate) else None
 
 
+def _prefer_dspark_schema(usable: list) -> Optional[str]:
+    """The first of ``usable`` (already in preference order) after moving the preferred Inkling 2 layout ahead."""
+    if not usable:
+        return None
+    from utils.models.drafters import dspark_drafter_schema, dspark_schema_rank
+
+    return str(
+        min(
+            enumerate(usable),
+            key = lambda item: (dspark_schema_rank(dspark_drafter_schema(str(item[1]))), item[0]),
+        )[1]
+    )
+
+
 def _pick_dspark(candidates: list[str]) -> Optional[str]:
     """The DSpark drafter a listing offers, or None. Module level for the same reason
     ``_pick_mmproj`` is: both are handed a live repo listing as well as a snapshot."""
@@ -5875,10 +5889,27 @@ _LOOP_VISIT_ARCHS = frozenset({"inkling2"})
 _INKLING2_ARCHS = frozenset({"inkling2", "inkling2_loop"})
 
 
-def _dspark_default_draft_n_max(architecture: Optional[str]) -> int:
-    """DSpark draft depth when nothing names one. Inkling 2 drafts 2: on B200 it decodes 1.15-1.28x vs 1.04-1.13x
-    at 3 (both Studio sampling defaults, UD-Q4_K_XL and UD-IQ1_S), since the third token is rarely accepted."""
-    return 2 if architecture in _INKLING2_ARCHS else 3
+# Default DSpark depth per Inkling 2 drafter layout, from exclusive B200 timing of a build that loads both
+# (UD-Q4_K_XL, greedy and Inkling's temperature 1.0 defaults). fused (0a9105de4): 2 is 1.24x / 1.15x, since the third
+# token is rarely accepted. markov2 (e4b1cb531): 3 is its best at 1.16x / 1.03x; 5 is 1.04x / 0.97x (slower than no
+# drafter at temperature 1.0), because the drafter decodes its whole 8-token block every round.
+_INKLING2_DSPARK_DEPTH = {"fused": 2, "markov2": 3}
+
+
+def _dspark_default_draft_n_max(
+    architecture: Optional[str], drafter_path: Optional[str] = None
+) -> int:
+    """DSpark draft depth when nothing names one: per Inkling 2 drafter layout (fused 2 when unreadable), else 3."""
+    if architecture not in _INKLING2_ARCHS:
+        return 3
+    schema = None
+    if drafter_path:
+        try:
+            from utils.models.drafters import dspark_drafter_schema
+            schema = dspark_drafter_schema(drafter_path)
+        except Exception:
+            schema = None
+    return _INKLING2_DSPARK_DEPTH.get(schema or "fused", 2)
 
 
 # Nemotron-H also zeroes head_count_kv on its MLP/MoE layers; its SSM layers have no FFN.
@@ -8547,13 +8578,19 @@ _published_hashes_cache: dict[tuple, tuple[float, frozenset[str]]] = {}
 _published_hashes_lock = threading.Lock()
 
 
-def _published_lfs_hashes(hf_repo: str, hf_token: Optional[str]) -> Optional[frozenset[str]]:
-    """Every LFS sha256 the repo's current revision publishes (any path), or None if unlisted."""
+def _published_lfs_hashes(
+    hf_repo: str,
+    hf_token: Optional[str],
+    max_age_s: Optional[float] = None,
+) -> Optional[frozenset[str]]:
+    """Every LFS sha256 the repo's current revision publishes (any path), or None if unlisted.
+    ``max_age_s=0`` lists again: a kept answer can predate a repo update."""
     key = (hf_repo.lower(), hashlib.sha256((hf_token or "").encode()).hexdigest())
     now = time.monotonic()
+    ttl = _PUBLISHED_HASHES_TTL_S if max_age_s is None else max_age_s
     with _published_hashes_lock:
         hit = _published_hashes_cache.get(key)
-        if hit is not None and now - hit[0] < _PUBLISHED_HASHES_TTL_S:
+        if hit is not None and now - hit[0] < ttl:
             return hit[1]
     try:
         from huggingface_hub import HfApi
@@ -8605,7 +8642,7 @@ def _cached_published_companion(
         return None
     if not candidates:
         return None
-    published = _published_lfs_hashes(hf_repo, hf_token)
+    published = _published_still_listing(hf_repo, hf_token, [str(c) for c in candidates])
     if not published:
         return None
     for candidate in candidates:
@@ -8613,6 +8650,22 @@ def _cached_published_companion(
         if sha in published and candidate.is_file() and _drafter_split_is_complete(candidate):
             return str(candidate)
     return None
+
+
+def _published_still_listing(
+    hf_repo: str, hf_token: Optional[str], cached_paths: list[str]
+) -> Optional[frozenset[str]]:
+    """The published hashes, listed again when the kept answer names none of ``cached_paths``: it may be from
+    before the repo moved them (a minute-old listing would otherwise send a cached file back to the Hub)."""
+    from utils.gguf_legacy_layout import cached_blob_sha256
+
+    published = _published_lfs_hashes(hf_repo, hf_token)
+    if published is None:
+        return None
+    shas = {sha for path in cached_paths if (sha := cached_blob_sha256(path))}
+    if shas and not shas & published:
+        published = _published_lfs_hashes(hf_repo, hf_token, max_age_s = 0)
+    return published
 
 
 def _forget_companion_listings() -> None:
@@ -22053,12 +22106,18 @@ class LlamaCppBackend:
         hf_repo: str,
         *,
         cache_dir: Optional[str] = None,
+        near_path: Optional[str] = None,
+        supported: Optional[frozenset] = None,
+        published: Optional[frozenset] = None,
     ) -> Optional[str]:
         """The preferred already-cached DSpark sidecar for a repo, Q8_0 first
         (dspark_preference_key), so an offline reuse picks the same file the
-        online download would have fetched."""
+        online download would have fetched. A layout ``supported`` excludes is skipped.
+        ``published``: only a complete copy whose LFS sha256 the repo still publishes (online reuse)."""
         try:
+            from utils.gguf_legacy_layout import cached_blob_sha256
             from utils.models.model_config import (
+                _drafter_split_is_complete,
                 _iter_hf_cache_snapshots,
                 dspark_preference_key,
             )
@@ -22075,12 +22134,73 @@ class LlamaCppBackend:
                     for name in _gguf_snapshot_files(snap)
                     if _is_dspark_drafter_path(name)
                 )
-            for candidate in sorted(candidates, key = lambda p: dspark_preference_key(p.name)):
-                if candidate.is_file():
-                    return str(candidate)
+            usable = [
+                c
+                for c in sorted(candidates, key = lambda p: dspark_preference_key(p.name))
+                if c.is_file()
+                and (
+                    published is None
+                    or (cached_blob_sha256(str(c)) in published and _drafter_split_is_complete(c))
+                )
+                and self._dspark_candidate_loadable(str(c), near_path, supported)
+            ]
+            return _prefer_dspark_schema(usable)
         except Exception as exc:
             logger.debug("Cached DSpark drafter lookup failed for %s: %s", hf_repo, exc)
         return None
+
+    def _dspark_candidate_loadable(
+        self, drafter: str, near_path: Optional[str], supported: Optional[frozenset]
+    ) -> bool:
+        """False (logged) for a drafter whose Inkling 2 layout this llama-server rejects; fails open."""
+        from utils.models.drafters import dspark_drafter_incompatibility
+
+        try:
+            reason = dspark_drafter_incompatibility(drafter, near_path, supported = supported)
+        except Exception as exc:
+            logger.debug("DSpark drafter schema check failed for %s: %s", drafter, exc)
+            return True
+        if reason is None:
+            return True
+        logger.info("Skipping DSpark drafter %s: %s", drafter, reason)
+        return False
+
+    def _cached_snapshot_dspark(
+        self, near_path: Optional[str], supported: Optional[frozenset]
+    ) -> Optional[str]:
+        """A loadable DSpark sidecar in near_path's own snapshot (the copy downloaded with this target)."""
+        if not near_path:
+            return None
+        snap = _snapshot_dir_of(near_path)
+
+        def _pick_loadable_sibling(names: list[str]) -> Optional[str]:
+            from hub.utils.gguf import drop_shadowed_appledouble_names
+            from utils.models.model_config import _drafter_split_is_complete, dspark_preference_key
+
+            ordered = sorted(
+                (
+                    n
+                    for n in drop_shadowed_appledouble_names(list(names))
+                    if _is_dspark_drafter_path(n)
+                ),
+                key = dspark_preference_key,
+            )
+            if snap is None:
+                return ordered[0] if ordered else None
+            usable = []
+            for name in ordered:
+                candidate = snap / name
+                try:
+                    if not (candidate.is_file() and _drafter_split_is_complete(candidate)):
+                        continue
+                except OSError:
+                    continue
+                if self._dspark_candidate_loadable(str(candidate), near_path, supported):
+                    usable.append(candidate)
+            best = _prefer_dspark_schema(usable)
+            return Path(best).relative_to(snap).as_posix() if best else None
+
+        return _companion_snapshot_sibling(near_path, _pick_loadable_sibling)
 
     def _download_engram_table(
         self,
@@ -22143,7 +22263,8 @@ class LlamaCppBackend:
         binary: Optional[str] = None,
         caps_probe: Optional[Callable[[Optional[str]], dict]] = None,
     ) -> Optional[str]:
-        """Fetches the DSpark sidecar, skipped unless supports_dspark; a raised probe still fetches, caps_probe latches the guess, else a lapsed retry looks conclusive."""
+        """Fetches the DSpark sidecar, skipped unless supports_dspark; a raised probe still fetches, caps_probe latches the guess, else a lapsed retry looks conclusive.
+        A sidecar already on disk wins over a download; an Inkling 2 layout the binary cannot load is never chosen."""
         cancel_event = (
             cancel_event
             if cancel_event is not None
@@ -22153,13 +22274,42 @@ class LlamaCppBackend:
             return None
         if caps_probe is None:
             caps_probe = self.probe_server_capabilities
+        from utils.models.drafters import (
+            INKLING_DSPARK_SCHEMAS,
+            remote_dspark_drafter_schema,
+            schema_incompatibility,
+            supported_dspark_schemas,
+        )
 
-        cached = _companion_snapshot_sibling(near_path, _pick_dspark) if near_path else None
+        try:
+            supported = supported_dspark_schemas(binary) if binary else supported_dspark_schemas()
+        except Exception:
+            supported = None
+
+        cached = self._cached_snapshot_dspark(near_path, supported)
         if not cached and _hf_env_offline():
             cached = self._cached_repo_dspark_drafter(
                 hf_repo,
                 cache_dir = _hub_cache_dir_for_snapshot_path(near_path),
+                near_path = near_path,
+                supported = supported,
             )
+        elif not cached and near_path:
+            # Online, a loadable copy cached at another revision whose bytes the repo still publishes
+            # (e.g. moved into Unsloth_Layout/) wins over a download; judged on the local file, not the live name.
+            repo_cache = _hub_cache_dir_for_snapshot_path(near_path)
+            local = self._cached_repo_dspark_drafter(
+                hf_repo, cache_dir = repo_cache, near_path = near_path, supported = supported
+            )
+            published = _published_still_listing(hf_repo, hf_token, [local]) if local else None
+            if published:
+                cached = self._cached_repo_dspark_drafter(
+                    hf_repo,
+                    cache_dir = repo_cache,
+                    near_path = near_path,
+                    supported = supported,
+                    published = published,
+                )
         try:
             if not caps_probe(binary).get("supports_dspark"):
                 logger.warning(
@@ -22175,19 +22325,87 @@ class LlamaCppBackend:
         if cached:
             logger.info("Reusing cached DSpark drafter: %s", cached)
             return cached
+
+        # Only a build that loads one Inkling 2 layout needs the Hub copy's header before downloading it.
+        from utils.models.drafters import dspark_schema as _ds
+
+        # Hub copies are header-read before a download when the build loads one Inkling 2 layout (skip what it
+        # rejects) or both (fetch the preferred layout when the repo publishes one; markov2 only otherwise).
+        filter_remote = supported is not None and not INKLING_DSPARK_SCHEMAS <= supported
+        preferred = _ds.PREFERRED_INKLING_DSPARK_SCHEMA
+        prefer_remote = supported is not None and preferred in supported and not filter_remote
+        skipped: list[str] = []
+
+        def _pick_loadable(names: list[str]) -> Optional[str]:
+            ordered = [n for n in names if _is_dspark_drafter_path(n)]
+            if not (filter_remote or (prefer_remote and len(ordered) > 1)):
+                return _pick_dspark(names)
+            from hub.utils.gguf import drop_shadowed_appledouble_names
+            from utils.gguf_legacy_layout import is_legacy_layout_path
+            from utils.models.model_config import dspark_preference_key
+
+            # Same order as _pick_dspark: the current layout first, a previous-layout copy (Unsloth_Layout/) after it.
+            ordered = sorted(
+                drop_shadowed_appledouble_names(ordered),
+                key = lambda n: (dspark_preference_key(n), is_legacy_layout_path(n)),
+            )
+            fallback: Optional[str] = None
+            for name in ordered:
+                schema = remote_dspark_drafter_schema(hf_repo, name, hf_token)
+                reason = schema_incompatibility(schema, supported)
+                if reason is not None:
+                    if name not in skipped:
+                        skipped.append(name)
+                        logger.info("Skipping DSpark drafter %s/%s: %s", hf_repo, name, reason)
+                    continue
+                # An unreadable header or a generic (non Inkling 2) drafter keeps the repo's own order.
+                if schema in INKLING_DSPARK_SCHEMAS and schema != preferred:
+                    fallback = fallback or name
+                    continue
+                return name
+            return fallback
+
         outcome: dict = {}
         found = self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
-            pick = _pick_dspark,
+            pick = _pick_loadable,
             label = "DSpark drafter",
             cancel_event = cancel_event,
             near_path = near_path,
+            # Both reuse steps already ran above with a local loadability check; the generic ones would judge a
+            # cached file by the live listing's copy of its name, which a repo move can change.
+            reuse_snapshot_sibling = False,
             outcome = outcome,
         )
-        # Tells a repo with no sidecar apart from a fetch that may yet succeed.
+        # Tells a repo with no sidecar apart from a fetch that may yet succeed; one this build cannot load counts as none.
         self._dspark_sidecar_absent = outcome.get("listed") is False
+        if found and self._dspark_sidecar_unloadable(found, near_path, supported):
+            return None
         return found
+
+    def _dspark_sidecar_unloadable(
+        self,
+        drafter: str,
+        near_path: Optional[str],
+        supported: object = None,
+    ) -> bool:
+        """A sidecar in an Inkling 2 layout this llama-server rejects counts as absent: a refetch finds the same file."""
+        from utils.models.drafters import dspark_drafter_incompatibility
+
+        try:
+            if supported is None:
+                reason = dspark_drafter_incompatibility(drafter, near_path)
+            else:
+                reason = dspark_drafter_incompatibility(drafter, near_path, supported = supported)
+        except Exception as exc:
+            logger.debug("DSpark drafter schema check failed for %s: %s", drafter, exc)
+            return False
+        if reason is None:
+            return False
+        logger.info("Skipping DSpark drafter %s: %s", drafter, reason)
+        self._dspark_sidecar_absent = True
+        return True
 
     def _cached_repo_dflash_drafter(
         self,
@@ -26014,6 +26232,33 @@ class LlamaCppBackend:
                 _unloadable_mtp_draft_path = mtp_draft_path
                 mtp_draft_path = None
 
+            # An extras --model-draft is the user's choice and is kept; name why this build will reject it first.
+            _extras_draft = _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
+            if _extras_draft:
+                try:
+                    from utils.models.drafters import (
+                        dspark_drafter_incompatibility,
+                        supported_dspark_schemas,
+                    )
+                    _why = dspark_drafter_incompatibility(
+                        _extras_draft,
+                        model_path,
+                        supported = (
+                            supported_dspark_schemas(binary)
+                            if binary
+                            else supported_dspark_schemas()
+                        ),
+                    )
+                    if _why:
+                        logger.warning(
+                            "The --model-draft in extra args (%s) will not load: %s. "
+                            "Remove it or point it at a drafter this llama-server loads.",
+                            _extras_draft,
+                            _why,
+                        )
+                except Exception as exc:
+                    logger.debug("Extra-args drafter schema check failed: %s", exc)
+
             if _load_cancelled():
                 logger.info("Load cancelled after download phase")
                 return False
@@ -27057,7 +27302,9 @@ class LlamaCppBackend:
                     if _mtp_eff_n_max is None:
                         # _detected_gpus, not gpus: manual empties gpus but still uses the GPU draft depth.
                         _mtp_eff_n_max = (
-                            _dspark_default_draft_n_max(getattr(self, "_architecture", None))
+                            _dspark_default_draft_n_max(
+                                getattr(self, "_architecture", None), mtp_draft_path
+                            )
                             if _mtp_effective == "dspark"
                             else (2 if _detected_gpus else 3)
                         )
@@ -35762,8 +36009,11 @@ class LlamaCppBackend:
             _auto_mode and dflash_draft_path and caps.get("supports_dflash")
         ):
             self._spec_drafter_kind = "dflash"
-        else:
+        elif canonical_mode in ("mtp", "mtp+ngram") or is_mtp_model:
             self._spec_drafter_kind = "mtp"
+        else:
+            # No drafter at all (Auto on a plain model launches --spec-default): naming MTP would be false.
+            self._spec_drafter_kind = None
 
         def _resolved_draft_n_max() -> int:
             # Like DSpark, the sidecar borrows target token_embd/output, so llama.cpp cannot size its ~1.5 GB.
@@ -35789,7 +36039,9 @@ class LlamaCppBackend:
             draft_n_max = (
                 int(spec_draft_n_max)
                 if spec_draft_n_max is not None
-                else _dspark_default_draft_n_max(getattr(self, "_architecture", None))
+                else _dspark_default_draft_n_max(
+                    getattr(self, "_architecture", None), dspark_draft_path
+                )
             )
             if spec_draft_n_max is not None:
                 self._spec_draft_n_max = draft_n_max
