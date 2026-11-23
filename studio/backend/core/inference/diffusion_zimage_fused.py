@@ -186,7 +186,13 @@ def _make_call(stock: Any) -> Any:
 
 
 def _make_ff_forward(stock: Any) -> Any:
-    """``FeedForward.forward`` with w1 / w3 on one shared rotation + act quant; stock when they are not covered."""
+    """``FeedForward.forward`` with w1 / w3 on one shared rotation + act quant; stock when they are not covered.
+
+    The shared quant is the call each of w1 / w3 makes alone (same tensor, same ``exact`` flag, set per swap), so it
+    is bit-identical eager or traced. The fused SwiGLU runs only while tracing: it keeps ``silu(x1) * x3`` in fp32 like
+    Inductor does, while an eager denoiser (a failed ``compile_repeated_blocks``) rounds the product to bf16 first."""
+    import torch
+
     from . import diffusion_int8_gemm as gemm
 
     def forward(self, x):
@@ -195,7 +201,11 @@ def _make_ff_forward(stock: Any) -> Any:
             pair = gemm.shared_rotq_linears(x, (self.w1, self.w3))
         if pair is None:
             return stock(self, x)
-        if _SWIGLU_OK["on"] and "_forward_silu_gating" not in self.__dict__:
+        if (
+            _SWIGLU_OK["on"]
+            and torch.compiler.is_compiling()
+            and "_forward_silu_gating" not in self.__dict__
+        ):
             # w2 reads silu(x1) * x3 straight from x1 / x3 in its rotation + act quant (Inductor's rounding)
             y = gemm._swiglu_down(self.w2, pair[0], pair[1])
             if y is not None:
@@ -249,6 +259,37 @@ def _shared_count(root: Any, cls: Any) -> int:
         if all(p is not None and _swapped_rotated(p) for p in parts):
             n += 1
     return n
+
+
+def _ff_count(root: Any) -> int:
+    """FeedForward modules whose w1 / w3 share one rotation + act quant (both swapped rotated int8)."""
+    try:
+        import importlib
+        ff_cls = importlib.import_module(_MODULE).FeedForward
+    except Exception:  # noqa: BLE001
+        return 0
+    if not getattr(ff_cls.__dict__.get("forward"), _FF_MARK, False):
+        return 0
+    n = 0
+    for module in root.modules():
+        if type(module) is not ff_cls:
+            continue
+        parts = [getattr(module, name, None) for name in ("w1", "w3")]
+        if all(p is not None and _swapped_rotated(p) for p in parts):
+            n += 1
+    return n
+
+
+def _swiglu_state(cards: Any) -> str:
+    """``on`` / ``off (...)`` for the fused SwiGLU w2 quant: the gating fingerprint + switch and each card's probe."""
+    if not _SWIGLU_OK["on"]:
+        return "off (switch or FeedForward gating differs)"
+    try:
+        from .diffusion_int8_gemm import _swiglu_on
+        ok = bool(cards) and all(_swiglu_on(index) for index in cards)
+    except Exception:  # noqa: BLE001
+        ok = False
+    return "on (compiled path only)" if ok else "off (card probe)"
 
 
 def _stock_rope(x_in: Any, freqs_cis: Any) -> Any:
@@ -465,10 +506,13 @@ def install_modules(
     if logger is not None:
         logger.info(
             "diffusion.zimage_fused: real-arithmetic RoPE %s, fused QKV on %d attention module(s); %d share one "
-            "ConvRot rotation + act quant on the int8 GEMM swap",
+            "ConvRot rotation + act quant on the int8 GEMM swap; %d MLP(s) share the w1 / w3 act quant; "
+            "SwiGLU-fused w2 quant %s",
             "on" if result["real_rope"] else "off (card's complex multiply not a known fma form)",
             result["fused_qkv"],
             _shared_count(root, cls),
+            _ff_count(root),
+            _swiglu_state(cards),
         )
     return result
 

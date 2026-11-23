@@ -380,8 +380,9 @@ def test_shared_qkv_and_w1_w3_match_stock(monkeypatch, compiled):
         else:
             out = blk(x, mask, freqs, adaln)
     assert torch.equal(out, ref)
-    # traced: the attention processor and the MLP; eager: the MLP only (the processor runs stock eager)
-    assert sorted(map(str, calls)) == (["2", "3", "swiglu"] if compiled else ["2", "swiglu"])
+    # traced: the attention processor and the MLP; eager: the MLP's shared w1 / w3 quant only (the processor and the
+    # SwiGLU-fused w2 quant run stock eager)
+    assert sorted(map(str, calls)) == (["2", "3", "swiglu"] if compiled else ["2"])
     zf.uninstall()
     assert not getattr(zmod.FeedForward.__dict__["forward"], zf._FF_MARK, False)
 
@@ -420,8 +421,66 @@ def test_swiglu_kill_switch_keeps_the_separate_w2_quant(monkeypatch):
     with torch.no_grad():
         assert torch.equal(ff(x), ff.w2(torch.nn.functional.silu(ff.w1(x)) * ff.w3(x)))
     assert calls == [2]
+    monkeypatch.setattr(
+        torch.compiler, "is_compiling", lambda: True
+    )  # the fusion engages only while tracing
+    with torch.no_grad():
+        ff(x)
+    assert calls == [2, 2]
     monkeypatch.delenv(zf.ZIMAGE_SWIGLU_ENV)
     assert zf._patch_ff()  # a later load re-reads the switch
     with torch.no_grad():
         ff(x)
-    assert calls == [2, 2, "swiglu"]
+    assert calls == [2, 2, 2, "swiglu"]
+
+
+def test_swiglu_fusion_engages_only_while_compiling(monkeypatch):
+    """A failed compile leaves the patch on an eager denoiser: the fused SwiGLU (one rounding of silu * mul) must not
+    run there, stock eager rounds the product to bf16 first. Traced, the fusion stays (Inductor's single rounding)."""
+    calls: list = []
+    _shared_as_modules(monkeypatch, calls)
+    monkeypatch.delenv(zf.ZIMAGE_SWIGLU_ENV, raising = False)
+    assert zf._patch_ff() and zf._SWIGLU_OK["on"]
+    ff = zmod.FeedForward(16, 32)
+    x = torch.randn(3, 16)
+    ref = ff.w2(torch.nn.functional.silu(ff.w1(x)) * ff.w3(x))
+    with torch.no_grad():
+        assert torch.equal(ff(x), ref)
+    assert "swiglu" not in calls  # eager: stock silu * mul, then w2's own quant
+    calls.clear()
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    with torch.no_grad():
+        ff(x)
+    assert calls == [2, "swiglu"]
+    zf.uninstall()
+
+
+def test_load_log_reports_mlp_sharing_and_swiglu(monkeypatch):
+    from core.inference import diffusion_convrot_quant as cq
+    from core.inference import diffusion_int8_fused
+
+    blk = zmod.ZImageTransformerBlock(0, 64, 2, 2, 1e-5, True, modulation = True).eval()
+    monkeypatch.setattr(zf, "_swapped_rotated", lambda lin: True)
+    monkeypatch.setattr(diffusion_int8_fused, "resident_cuda_cards", lambda _root: [0])
+    monkeypatch.setitem(zf._FUSION, 0, None)
+    monkeypatch.delenv(zf.ZIMAGE_SWIGLU_ENV, raising = False)
+    lines: list = []
+
+    class Log:
+        def info(self, fmt, *args):
+            lines.append(fmt % args)
+
+    for probed, want in ((True, "on (compiled path only)"), (False, "off (card probe)")):
+        monkeypatch.setitem(cq._SWIGLU_DEVICE, 0, probed)
+        monkeypatch.setattr(cq, "rotquant_swiglu_enabled", lambda: True)
+        lines.clear()
+        zf.install_modules(blk, Log(), fuse_qkv = False)
+        assert (
+            "1 share one ConvRot" in lines[-1]
+            and "1 MLP(s) share the w1 / w3 act quant" in lines[-1]
+        )
+        assert lines[-1].endswith("SwiGLU-fused w2 quant " + want)
+    monkeypatch.setenv(zf.ZIMAGE_SWIGLU_ENV, "0")
+    zf.install_modules(blk, Log(), fuse_qkv = False)
+    assert lines[-1].endswith("SwiGLU-fused w2 quant off (switch or FeedForward gating differs)")
+    zf.uninstall()
