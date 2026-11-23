@@ -49,14 +49,8 @@ def test_split_reads_and_hands_on_the_host_lengths():
 
 
 def test_chunk_lengths_reach_the_forward_without_a_device_read():
-    try:
-        import unsloth  # noqa: F401
-        from unsloth.utils import packing
-    except ImportError:
-        import unsloth
-        if getattr(unsloth, "DEVICE_TYPE", None) != "mlx":
-            raise
-        pytest.skip("unsloth.utils.packing needs torch here")
+    from unsloth.utils import packing
+
     for chunk in tb.split_batch_by_token_budget(_packed_batch("meta"), 16):
         lengths = chunk["packed_seq_lengths"]
         packing._PACKED_INFO_CACHE.clear()
