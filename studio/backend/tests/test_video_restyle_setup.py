@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
 import threading
 from pathlib import Path
@@ -58,7 +59,6 @@ def clean_env(tmp_path, monkeypatch):
     monkeypatch.setenv(rs.DIR_ENV, str(tmp_path / "restyle"))
     # _FakeHub serves its files from tmp_path/hub, standing in for Studio's Hub cache entry of the repo.
     monkeypatch.setattr(rs, "_hub_repo_dir", lambda repo = rs.MODEL_ID: tmp_path / "hub")
-    monkeypatch.setattr(rs, "_was_cached", lambda repo, name, revision: False)
     # The fake VAE has 2 tensors, not the release's 196.
     monkeypatch.setattr(rs, "VAE_TENSORS", 2)
     return tmp_path / "restyle"
@@ -526,10 +526,40 @@ def test_setup_keeps_shards_that_were_cached_before_it_ran(tmp_path, clean_env, 
     hub = _FakeHub(tmp_path)
     first = "transformer/diffusion_pytorch_model-00001-of-00002.safetensors"
     second = "transformer/diffusion_pytorch_model-00002-of-00002.safetensors"
-    monkeypatch.setattr(rs, "_was_cached", lambda repo, name, revision: name == first)
+    # The Hub's record of an earlier download of `first`, in the cache holding the fake repo dir.
+    earlier = tmp_path / ("models--" + rs.MODEL_ID.replace("/", "--")) / "snapshots" / "rev" / first
+    earlier.parent.mkdir(parents = True)
+    earlier.write_bytes(b"x")
     assert _runner(hub).start(background = False)["phase"] == "done"
     # The user's own earlier download stays; only what setup fetched is dropped.
     assert hub.paths[first].exists() and not hub.paths[second].exists()
+
+
+def test_was_cached_looks_in_the_given_cache(tmp_path):
+    # Not the Hub's import-time cache, which Studio stops using after a cache-home change.
+    shard = tmp_path / "hub" / "models--o--r" / "snapshots" / "abc" / "s.safetensors"
+    shard.parent.mkdir(parents = True)
+    shard.write_bytes(b"x")
+    repo = tmp_path / "hub" / "models--o--r"
+    assert rs._was_cached("o/r", "s.safetensors", "abc", repo)
+    assert not rs._was_cached("o/r", "other.safetensors", "abc", repo)
+
+
+def test_setup_cleans_only_the_cache_it_checked(tmp_path, clean_env, monkeypatch):
+    hub = _FakeHub(tmp_path)
+    active = [tmp_path / "before"]
+    monkeypatch.setattr(rs, "_hub_repo_dir", lambda repo = rs.MODEL_ID: active[0])
+    fetch = hub.download
+
+    def download(repo, name, *args, **kwargs):
+        # The cache home changes mid-setup to where the files already were.
+        if name != rs.TRANSFORMER_INDEX:
+            active[0] = tmp_path / "hub"
+        return fetch(repo, name, *args, **kwargs)
+
+    hub.download = download
+    assert _runner(hub).start(background = False)["phase"] == "done"
+    assert all(p.exists() for p in hub.paths.values())
 
 
 def test_remove_cached_drops_only_this_repos_unshared_blobs(tmp_path):
@@ -572,6 +602,37 @@ def test_remove_cached_keeps_a_blob_another_revision_links_under_another_name(tm
     assert not new.is_symlink() and blob.exists() and old.read_bytes() == b"x"
     rs._remove_cached(str(old), repo)
     assert not blob.exists()
+
+
+def test_remove_cached_through_a_symlinked_cache_root(tmp_path):
+    # Studio's cache path has a symlinked ancestor; the Hub hands back the shard under the resolved one.
+    real = tmp_path / "disk" / "hub"
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "hub").symlink_to(real, target_is_directory = True)
+    shared, own = real / "models--x" / "blobs" / "abc", real / "models--x" / "blobs" / "def"
+    shared.parent.mkdir(parents = True)
+    shared.write_bytes(b"x")
+    own.write_bytes(b"y")
+    links = {}
+    for rev, name, blob in (("r1", "a", shared), ("r2", "a", shared), ("r1", "b", own)):
+        link = real / "models--x" / "snapshots" / rev / name
+        link.parent.mkdir(parents = True, exist_ok = True)
+        link.symlink_to(blob)
+        links[rev, name] = link
+    repo = tmp_path / "home" / "hub" / "models--x"
+    rs._remove_cached(str(links["r1", "a"]), repo)
+    assert not os.path.lexists(links["r1", "a"]) and shared.exists()  # r2 still links it
+    rs._remove_cached(str(links["r2", "a"]), repo)
+    assert not os.path.lexists(links["r2", "a"]) and not shared.exists()
+    # The unresolved spelling of the same cache is Studio's too.
+    rs._remove_cached(str(repo / "snapshots" / "r1" / "b"), repo)
+    assert not os.path.lexists(links["r1", "b"]) and not own.exists()
+    # Another cache with the same layout is not Studio's.
+    other = tmp_path / "other" / "models--x" / "snapshots" / "r1" / "c"
+    other.parent.mkdir(parents = True)
+    other.write_bytes(b"z")
+    rs._remove_cached(str(other), repo)
+    assert other.exists()
 
 
 def test_a_failure_after_the_merge_leaves_no_orphaned_outputs(tmp_path, clean_env):

@@ -44,6 +44,7 @@ from .llama import (
     _cache_as_legacy_tuple,
     _cached_prefill_defaults,
     _run_backbone,
+    _scoring_output_hidden_states,
     logits_to_keep_tensor,
     slice_hidden_to_keep,
     unsloth_fsdp_unshard,
@@ -305,7 +306,7 @@ def MistralForCausalLM_fast_forward(
     output_hidden_states = (
         output_hidden_states
         if output_hidden_states is not None
-        else self.config.output_hidden_states
+        else _scoring_output_hidden_states(self.config)
     )
     return_dict = return_dict if return_dict is not None else config_return_dict(self.config)
 
@@ -361,7 +362,7 @@ def MistralForCausalLM_fast_forward(
     if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
         num_logits_to_keep = 0
     else:
-        num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
+        num_logits_to_keep = max(num_logits_to_keep or 0, logits_to_keep or 0)
 
     # In GRPO mode, return raw hidden states.
     if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
@@ -372,9 +373,10 @@ def MistralForCausalLM_fast_forward(
         return CausalLMOutputWithPast(
             loss = None,
             logits = hidden_states,
-            past_key_values = outputs.past_key_values,
-            hidden_states = outputs.hidden_states,
-            attentions = outputs.attentions,
+            # return_dict = False hands back a tuple: the logits slot is all this branch promises.
+            past_key_values = getattr(outputs, "past_key_values", None),
+            hidden_states = getattr(outputs, "hidden_states", None),
+            attentions = getattr(outputs, "attentions", None),
         )
 
     if keep is not None:
@@ -484,6 +486,13 @@ def MistralForCausalLM_fast_forward(
         hidden_states = outputs.hidden_states,
         attentions = outputs.attentions,
     )
+
+
+# Honours UNSLOTH_RETURN_HIDDEN_STATES itself, so GRPO's hidden-state fallback wrapper must not wrap it. The marker
+# is the function itself, so a replacement that copied it with functools.wraps does not inherit the capability.
+MistralForCausalLM_fast_forward.__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__ = (
+    MistralForCausalLM_fast_forward
+)
 
 
 # Transformers had to update for Mistral Nemo 12b since Attention is (5120, 4096) now.

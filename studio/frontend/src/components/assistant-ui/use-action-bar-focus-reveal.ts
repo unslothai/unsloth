@@ -11,6 +11,8 @@ import {
 } from "react";
 import { isTouchClick } from "@/components/ui/touch-click";
 
+const TOOLTIP_CONTENT = '[data-slot="tooltip-content"]';
+
 /**
  * Mounts an autohidden action bar while focus is inside the message, via the same
  * `message.setIsHovering` flag the library's mouseenter/mouseleave writes. Two writers share one
@@ -23,6 +25,7 @@ export function useActionBarFocusReveal() {
   const focusWithinRef = useRef(false);
   const clearFrameRef = useRef<number | null>(null);
   const popupObserverRef = useRef<MutationObserver | null>(null);
+  const onCardRef = useRef(false);
 
   // The More menu is portaled outside the message, so focus in it counts as engaged. Scoped to the
   // action bar: open disclosures also carry aria-expanded and would hold the bar every frame.
@@ -93,7 +96,7 @@ export function useActionBarFocusReveal() {
           return;
         }
         focusWithinRef.current = false;
-        if (!el.matches(":hover")) {
+        if (!el.matches(":hover") && !onCardRef.current) {
           aui.message().setIsHovering(false);
         }
       };
@@ -130,14 +133,36 @@ export function useActionBarFocusReveal() {
     if (!el) return;
     // From an effect on purpose: it registers after the library's mouseleave, so both writes land in
     // one dispatch and React never renders the intermediate `false`.
-    const reassert = () => {
-      if (focusWithinRef.current && isEngaged()) {
-        aui.message().setIsHovering(true);
+    let release: ((event: PointerEvent) => void) | null = null;
+    const stopRelease = () => {
+      if (release) document.removeEventListener("pointermove", release, true);
+      release = null;
+      onCardRef.current = false;
+    };
+    const reassert = (event: MouseEvent) => {
+      // A hoverable tooltip card (the reply stats) is portaled out of the message: keep the bar
+      // mounted while the pointer is on it, then clear once the pointer lands outside both.
+      const into = event.relatedTarget as Element | null;
+      if (!into?.closest?.(TOOLTIP_CONTENT)) {
+        if (focusWithinRef.current && isEngaged()) aui.message().setIsHovering(true);
+        return;
       }
+      aui.message().setIsHovering(true);
+      stopRelease();
+      onCardRef.current = true;
+      release = (move) => {
+        const target = move.target as Element | null;
+        if (target?.closest?.(TOOLTIP_CONTENT)) return;
+        stopRelease();
+        if (target && el.contains(target)) return;
+        if (!(focusWithinRef.current && isEngaged())) aui.message().setIsHovering(false);
+      };
+      document.addEventListener("pointermove", release, true);
     };
     el.addEventListener("mouseleave", reassert);
     return () => {
       el.removeEventListener("mouseleave", reassert);
+      stopRelease();
       cancelPendingClear();
     };
   }, [aui, isEngaged, cancelPendingClear]);

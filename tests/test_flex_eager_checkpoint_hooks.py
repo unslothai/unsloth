@@ -76,10 +76,37 @@ def test_trace_runs_under_identity_hooks_only_when_hooks_are_active(monkeypatch)
     with torch.autograd.graph.saved_tensors_hooks(pack, unpack):
         assert wrapped() == "graphs"
         assert torch._C._autograd._top_saved_tensors_default_hooks(False)[0] is pack
-    inner_pack = seen[-1][0]
+    inner_pack, inner_unpack = seen[-1]
     assert inner_pack is not pack
-    probe = torch.ones(1)
-    assert inner_pack(probe) is probe
+    # Detaching pack (same storage, no grad history), identity unpack.
+    probe = torch.ones(1, requires_grad = True) * 2
+    packed = inner_pack(probe)
+    assert packed.data_ptr() == probe.data_ptr() and packed.grad_fn is None
+    assert not packed.requires_grad
+    assert inner_unpack(packed) is packed
+
+
+def test_trace_frees_the_example_score_mod_graph(monkeypatch):
+    # The example score_mod forward is never backpropagated; under an identity pack tanh saved its own
+    # output on its own node, a cycle gc cannot break, so every eager call inside a checkpoint leaked it.
+    import gc
+    import weakref
+
+    flex_hop = _apply_fix(monkeypatch)
+    saved = []
+
+    def softcap(score, b, h, q, k):
+        capped = torch.tanh(score / 50.0)
+        saved.append(weakref.ref(capped))
+        return 50.0 * capped
+
+    score = torch.randn((), requires_grad = True)
+    index = tuple(torch.zeros((), dtype = torch.int32) for _ in range(4))
+    with torch.autograd.graph.saved_tensors_hooks(lambda t: t, lambda t: t):
+        flex_hop.create_fw_bw_graph(softcap, (score, *index), ())
+    gc.collect()
+    assert saved, "score_mod was not traced"
+    assert all(ref() is None for ref in saved), "the example score_mod graph outlived the trace"
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "flex_attention has no CPU backward")

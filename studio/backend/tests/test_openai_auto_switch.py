@@ -3911,6 +3911,23 @@ def test_a_saved_gpu_pin_is_kept_only_while_this_machine_has_it(monkeypatch, pre
     assert filled.cache_type_kv == "q8_0"
 
 
+@pytest.mark.parametrize("extras", [["--device", "CUDA1"], ["-mg", "1"]])
+def test_a_sent_device_flag_beats_a_saved_gpu_pin(monkeypatch, extras):
+    _saved(
+        monkeypatch,
+        {"gpu_ids": [0, 1], "tensor_split": [2.0, 1.0], "kv_cache_dtype": "q8_0"},
+    )
+
+    async def _resolves(gpu_ids, kind = "physical"):
+        return True
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _resolves)
+    request = LoadRequest(model_path = "org/A-GGUF", llama_extra_args = extras, use_saved_settings = True)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert (filled.gpu_ids, filled.tensor_split) == (None, None)
+    assert filled.cache_type_kv == "q8_0"
+
+
 def test_the_load_route_applies_saved_settings_only_when_asked(monkeypatch):
     _saved(monkeypatch, {"kv_cache_dtype": "q8_0"})
     loaded = []

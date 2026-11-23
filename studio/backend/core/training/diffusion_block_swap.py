@@ -1,11 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in DiT block swap for LoRA training on a bf16 base that does not fit the card.
+"""Opt-in DiT block swap for LoRA training on a bf16, frozen fp8 or int8 W8A8 base that does not fit the card.
 
 Frozen weights of some repeated blocks live in pinned host RAM and stream to the GPU one block ahead on a side stream
 (unsloth_zoo.block_swap.BlockSwap: the host copy is authoritative, so nothing is ever copied back, and the
-checkpoint recompute prefetches in reverse). Every block must be checkpointed, so the checkpointing budget is off.
+checkpoint recompute prefetches in reverse). Swapped blocks are always checkpointed; the checkpointing budget plans
+the resident blocks into the room the swap freed.
+
+A frozen fp8 / W8A8 base (``diffusion_frozen_fp8`` / ``diffusion_frozen_int8``) swaps its 1-byte codes: the plan is
+sized from the converted bytes, each swapped block is quantized Linear by Linear on the card (the same kernels as a
+resident layer, so the codes are identical) and its codes go back to host RAM as frozen parameters, which is what
+the swapper streams. Their per-row scales stay on the card. UNSLOTH_DIT_BLOCK_SWAP_LOWP=0 keeps the bf16-only gate.
 """
 
 from __future__ import annotations
@@ -15,8 +21,17 @@ import os
 from typing import Any, Optional, Union
 
 BLOCK_SWAP_ENV = "UNSLOTH_DIT_BLOCK_SWAP"
+LOWP_SWAP_ENV = "UNSLOTH_DIT_BLOCK_SWAP_LOWP"
+# Mirrors diffusion_dit_trainer.INT8_TRAIN_ENV (that module imports this one).
+_INT8_TRAIN_ENV = "UNSLOTH_DIFFUSION_INT8_TRAIN"
 _OFF = ("", "0", "off", "none", "false", "no")
-# Fixed headroom kept free besides the activation estimate: CUDA context, cuBLAS / compile workspaces, fragmentation.
+# Bytes a frozen low-precision Linear keeps per weight element: 1-byte codes (the fp32 per-row scale stays resident).
+_LOWP_CODE_BYTES = 1
+# Marks a FrozenFp8Linear / FrozenInt8Linear whose codes stream through a ring slot (diffusion_frozen_fp8 reads it).
+SWAPPED_WEIGHT_ATTR = "_studio_swapped_weight"
+# Headroom kept free besides the activation estimate: CUDA context, cuBLAS / compile workspaces, fragmentation. The
+# fraction is of the VRAM this run can use (free at install), not of the card: another process's share of a 96 GB
+# card is not this run's fragmentation, and reserving 12% of it swapped 32 of 34 Z-Image blocks with 16 GB free.
 _RESERVE_MIN_BYTES = 3 << 30
 _RESERVE_FRACTION = 0.12
 # Bytes per (token x hidden) element kept per block under full checkpointing, plus the one block being recomputed.
@@ -45,6 +60,27 @@ def block_swap_request(cfg: Any) -> Optional[Union[int, str]]:
     return n if n > 0 else None
 
 
+def lowp_swap_enabled() -> bool:
+    """Block swap may stream a frozen fp8 / int8 W8A8 base; UNSLOTH_DIT_BLOCK_SWAP_LOWP=0 keeps it bf16 only."""
+    return os.environ.get(LOWP_SWAP_ENV, "1").strip().lower() not in _OFF
+
+
+def int8_w8a8_requested() -> bool:
+    """int8 trains on the frozen W8A8 base (not torchao weight-only, whose tensor subclass cannot stream)."""
+    return os.environ.get(_INT8_TRAIN_ENV, "").strip().lower() == "w8a8"
+
+
+def swap_lowp_mode(base_precision: str) -> Optional[str]:
+    """The frozen low-precision base block swap streams for this precision ("fp8" / "int8_w8a8"), or None."""
+    if not lowp_swap_enabled():
+        return None
+    if base_precision == "fp8":
+        return "fp8"
+    if base_precision == "int8" and int8_w8a8_requested():
+        return "int8_w8a8"
+    return None
+
+
 def block_swap_explicit_off(cfg: Any) -> bool:
     """cfg.block_swap says "off" or 0 outright (not unset): no swap at all, not even auto's int8-band swap."""
     raw = getattr(cfg, "block_swap", None)
@@ -63,10 +99,17 @@ def block_swap_error(
         return None
     if device != "cuda":
         return "block_swap needs a CUDA GPU."
-    if base_precision != "bf16":
+    if base_precision != "bf16" and swap_lowp_mode(base_precision) is None:
+        if base_precision == "int8" and lowp_swap_enabled():
+            return (
+                "block_swap streams int8 only as the frozen W8A8 base (UNSLOTH_DIFFUSION_INT8_TRAIN=w8a8); the "
+                "torchao weight-only int8 base cannot stream. Set it, use base_precision='bf16' or 'fp8', or turn "
+                "block_swap off."
+            )
+        allowed = "'bf16'" if not lowp_swap_enabled() else "'bf16', 'fp8' or int8 W8A8"
         return (
-            f"block_swap streams a dense bf16 base; base_precision={base_precision!r} already fits it on the card. "
-            "Use base_precision='bf16' with block_swap, or turn block_swap off."
+            f"block_swap streams a {allowed} base; base_precision={base_precision!r} cannot stream. "
+            f"Use base_precision={allowed} with block_swap, or turn block_swap off."
         )
     if not gradient_checkpointing:
         return "block_swap needs gradient_checkpointing: without it every swapped block stays on the card until backward."
@@ -139,12 +182,46 @@ def swap_block_lists(transformer) -> list:
     return out
 
 
-def _frozen_bytes(module) -> int:
-    return sum(
-        p.numel() * p.element_size()
-        for n, p in module.named_parameters()
-        if not p.requires_grad and "lora_" not in n
-    )
+def _lowp_weight_bytes(linear) -> int:
+    return linear.weight.numel() * _LOWP_CODE_BYTES
+
+
+def _lowp_scale_bytes(linear) -> int:
+    return int(linear.weight.shape[0]) * 4
+
+
+def _frozen_bytes(module, targets = frozenset()) -> int:
+    """Host bytes swapping ``module`` frees: its frozen parameters, plus the codes of an already converted frozen
+    fp8 / W8A8 Linear (a buffer until it is swapped). A Linear in ``targets`` (ids) counts as its converted codes."""
+    total = 0
+    for m in module.modules():
+        conv = id(m) in targets
+        for n, p in m._parameters.items():
+            if p is None or p.requires_grad or "lora_" in n:
+                continue
+            total += (
+                _lowp_weight_bytes(m) if conv and n == "weight" else p.numel() * p.element_size()
+            )
+        if getattr(m, "_studio_lowp", None) in ("fp8", "int8_w8a8"):
+            w = m._buffers.get("weight")
+            if w is not None:
+                total += w.numel() * w.element_size()
+    return total
+
+
+def _model_bytes(transformer, targets = frozenset()) -> int:
+    """Device bytes of the whole base once ``targets`` (Linear ids) are converted: codes plus resident scales."""
+    total = 0
+    for m in transformer.modules():
+        conv = id(m) in targets
+        for n, t in (*m._parameters.items(), *m._buffers.items()):
+            if t is None:
+                continue
+            if conv and n == "weight":
+                total += _lowp_weight_bytes(m) + _lowp_scale_bytes(m)
+            else:
+                total += t.numel() * t.element_size()
+    return total
 
 
 def _spread(total: int, n: int) -> list:
@@ -160,7 +237,8 @@ def activation_reserve_bytes(
     n_blocks: int,
     batch: int = 1,
 ) -> int:
-    """VRAM kept free for one fully checkpointed step: saved block inputs, one block's recompute, fixed headroom."""
+    """VRAM kept free for one fully checkpointed step: saved block inputs, one block's recompute, fixed headroom.
+    ``total_vram`` is the VRAM the run can use (install passes min(free, total))."""
     elems = max(1, tokens) * max(1, hidden) * max(1, batch)
     act = elems * (_SAVED_PER_BLOCK * max(1, n_blocks) + 2 * _RECOMPUTE_FACTOR)
     return int(max(_RESERVE_MIN_BYTES, _RESERVE_FRACTION * total_vram) + act)
@@ -172,9 +250,8 @@ def plan_swap(
     need_bytes: int = 0,
     depth: int = 2,
 ) -> list:
-    """Blocks to swap per list. block_bytes = [[bytes per block] per list]; request = N (spread over the lists by
-    length) or "auto" (the smallest equal fraction of every list whose freed bytes, net of the depth + 1 slot pool,
-    cover need_bytes). Returns [[indices] per list]."""
+    """Returns [[indices] per list]; N is spread by list length, auto takes the smallest equal
+    fraction of every list whose freed bytes, net of the depth + 1 slot pool, cover need_bytes."""
     lens = [len(b) for b in block_bytes]
     total = sum(lens)
     if not total:
@@ -211,9 +288,19 @@ def plan_swap(
     )
 
 
-def _place_rest(transformer, swapped, device) -> None:
-    """Everything except the swapped blocks' frozen weights to the card (their LoRA params BlockSwap moves)."""
+def _place_rest(
+    transformer,
+    swapped,
+    device,
+    move = None,
+) -> None:
+    """Everything except the swapped blocks' frozen weights to the card (their LoRA params BlockSwap moves). A frozen
+    fp8 / W8A8 block's codes are such weights once host_lowp_weight made them parameters; its scales are buffers and
+    go to the card. ``move(tensor, device)`` (tests) defaults to ``tensor.to(device)``."""
     import torch
+
+    if move is None:
+        move = lambda t, d: t.to(d)  # noqa: E731
 
     keep = {
         id(p)
@@ -225,10 +312,52 @@ def _place_rest(transformer, swapped, device) -> None:
         for module in transformer.modules():
             for name, p in module._parameters.items():
                 if p is not None and id(p) not in keep and p.device.type != "cuda":
-                    p.data = p.data.to(device)
+                    p.data = move(p.data, device)
             for name, b in module._buffers.items():
                 if b is not None and b.device.type != "cuda":
-                    module._buffers[name] = b.to(device)
+                    module._buffers[name] = move(b, device)
+
+
+def host_lowp_weight(module) -> bool:
+    """A converted FrozenFp8Linear / FrozenInt8Linear in a swapped block: its codes move to host RAM as a frozen
+    parameter (what the swapper streams; values unchanged) and the module stops using the data_ptr-keyed fp8
+    backward cache. The per-row scale buffer stays where it is. Returns whether it changed anything."""
+    import torch
+
+    w = module._buffers.get("weight")
+    if getattr(module, "_studio_lowp", None) not in ("fp8", "int8_w8a8") or w is None:
+        return False
+    del module._buffers["weight"]
+    module.weight = torch.nn.Parameter(w.to("cpu"), requires_grad = False)
+    if module.bias is not None and module.bias.device.type != "cpu":
+        module.bias.data = module.bias.data.to("cpu")
+    setattr(module, SWAPPED_WEIGHT_ATTR, True)
+    return True
+
+
+def _lowp_convert_blocks(transformer, lowp, swapped, dev) -> tuple[int, int]:
+    """Convert ``lowp["targets"]`` (fqns): resident ones streamed onto ``dev`` as before, swapped ones too (identical
+    codes) and then handed back to host RAM one Linear at a time, so the bf16 base is never whole on the card."""
+    swapped_ids = {id(b) for b in swapped}
+    in_swapped = set()
+    for fqn in lowp["targets"]:
+        parts = fqn.split(".")
+        for k in range(1, len(parts)):
+            if id(transformer.get_submodule(".".join(parts[:k]))) in swapped_ids:
+                in_swapped.add(fqn)
+                break
+    convert = lowp["convert"]
+    done = failed = 0
+    for fqn in sorted(in_swapped):
+        d, f = convert(transformer, {fqn}, dev)
+        done, failed = done + d, failed + f
+        parent_name, _, child = fqn.rpartition(".")
+        mod = getattr(transformer.get_submodule(parent_name) if parent_name else transformer, child)
+        host_lowp_weight(mod)
+    d, f = convert(transformer, set(lowp["targets"]) - in_swapped, dev)
+    if lowp.get("finish") is not None:
+        lowp["finish"](transformer)
+    return done + d, failed + f
 
 
 def install_dit_block_swap(
@@ -241,9 +370,12 @@ def install_dit_block_swap(
     free_bytes: Optional[int] = None,
     total_bytes: Optional[int] = None,
     prefetch_depth: Union[int, str] = "auto",
+    lowp: Optional[dict] = None,
 ) -> dict:
     """The host-loaded transformer (LoRA attached) goes to the card except the planned blocks, which BlockSwap streams.
-    Returns a summary; the swappers are kept in LAST_SWAPPERS and on transformer._unsloth_block_swaps."""
+    ``lowp`` = {"mode": "fp8" | "int8_w8a8", "targets": fqns, "convert": fn(model, names, device) -> (done, failed)}
+    converts the frozen base first (sized from the converted bytes, see host_lowp_weight). Returns a summary; the
+    swappers are kept in LAST_SWAPPERS and on transformer._unsloth_block_swaps."""
     import torch
 
     try:
@@ -262,7 +394,10 @@ def install_dit_block_swap(
         free, total = torch.cuda.mem_get_info(dev)
         free_bytes = free if free_bytes is None else free_bytes
         total_bytes = total if total_bytes is None else total_bytes
-    block_bytes = [[_frozen_bytes(b) for b in mod] for _, mod in lists]
+    targets = frozenset()
+    if lowp is not None:
+        targets = frozenset(id(transformer.get_submodule(n)) for n in lowp["targets"])
+    block_bytes = [[_frozen_bytes(b, targets) for b in mod] for _, mod in lists]
     n_blocks = sum(len(b) for b in block_bytes)
     hidden = (
         int(getattr(getattr(transformer, "config", None), "num_attention_heads", 0) or 0)
@@ -271,15 +406,40 @@ def install_dit_block_swap(
     )
     # Optimizer + grads (AdamW: fp32 param, grad, two moments) for every trainable param.
     trainable = sum(p.numel() * 16 for p in transformer.parameters() if p.requires_grad)
-    model_bytes = sum(p.numel() * p.element_size() for p in transformer.parameters()) + sum(
-        b.numel() * b.element_size() for b in transformer.buffers()
+    model_bytes = _model_bytes(transformer, targets)
+    reserve = activation_reserve_bytes(
+        min(total_bytes, free_bytes), tokens, hidden, n_blocks, batch
     )
-    reserve = activation_reserve_bytes(total_bytes, tokens, hidden, n_blocks, batch)
     need = model_bytes + trainable + reserve - free_bytes
     depth_plan = 2 if prefetch_depth == "auto" else int(prefetch_depth)
     plan = plan_swap(block_bytes, request, need, depth_plan)
     swapped = [mod[i] for (_, mod), idx in zip(lists, plan) for i in idx]
+    converted = failed = 0
+    if lowp is not None:
+        converted, failed = _lowp_convert_blocks(transformer, lowp, swapped, dev)
+        if not converted:
+            raise ValueError(f"block_swap: no eligible linear layer converted to {lowp['mode']}.")
+        if failed:
+            # A failed conversion stays bf16 (2 bytes/weight, not 1-byte codes): re-size and swap extra blocks.
+            block_bytes = [[_frozen_bytes(b) for b in mod] for _, mod in lists]
+            model_bytes = _model_bytes(transformer)
+            need = model_bytes + trainable + reserve - free_bytes
+            if request == "auto":
+                plan = [
+                    sorted(set(old) | set(new))
+                    for old, new in zip(plan, plan_swap(block_bytes, request, need, depth_plan))
+                ]
+                already = {id(b) for b in swapped}
+                swapped = [mod[i] for (_, mod), idx in zip(lists, plan) for i in idx]
+                for block in swapped:
+                    if id(block) not in already:
+                        for m in block.modules():
+                            host_lowp_weight(m)
     _place_rest(transformer, swapped, dev)
+    from core.training.diffusion_gc_budget import SWAPPED_ATTR
+
+    for block in swapped:
+        setattr(block, SWAPPED_ATTR, True)
     swappers = []
     try:
         for (_, mod), idx in zip(lists, plan):
@@ -292,6 +452,8 @@ def install_dit_block_swap(
     except Exception as exc:
         for s in swappers:
             s.remove()
+        for block in swapped:
+            block.__dict__.pop(SWAPPED_ATTR, None)
         raise ValueError(f"block_swap could not keep the blocks in host RAM: {exc}") from exc
     LAST_SWAPPERS[:] = swappers
     transformer._unsloth_block_swaps = swappers
@@ -305,6 +467,9 @@ def install_dit_block_swap(
         "pinned_gib": round(pinned / 2**30, 2),
         "need_gib": round(need / 2**30, 2),
         "reserve_gib": round(reserve / 2**30, 2),
+        "lowp": None if lowp is None else lowp["mode"],
+        "lowp_converted": converted,
+        "lowp_failed": failed,
     }
 
 
@@ -322,6 +487,19 @@ def compile_swapped_blocks(
         for block in mod:
             block.forward = torch.compile(block.forward, fullgraph = fullgraph, dynamic = dynamic)
             n += 1
+    return n
+
+
+def reset_block_swaps(transformer) -> int:
+    """After an out-of-memory error mid-step: give every slot back and arm the first blocks, so the rerun starts from
+    a clean pool (no block left resident or marked as held by the failed graph). Returns the swappers reset."""
+    n = 0
+    for s in getattr(transformer, "_unsloth_block_swaps", None) or ():
+        try:
+            s.reset()
+            n += 1
+        except Exception:  # noqa: BLE001 -- the next forward's steal path still recovers the slots
+            pass
     return n
 
 

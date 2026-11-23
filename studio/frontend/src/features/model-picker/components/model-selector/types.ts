@@ -24,6 +24,8 @@ export interface LoraModelOption extends ModelOption {
   source?: "training" | "exported" | "local";
 
   isDirectGguf?: boolean;
+  /** The scan's source for a local row ("omlx", "lmstudio", ...); an oMLX folder is MLX by it. */
+  localSource?: string;
   exportType?: "lora" | "merged" | "gguf";
   sizeBytes?: number | null;
   audioType?: string | null;

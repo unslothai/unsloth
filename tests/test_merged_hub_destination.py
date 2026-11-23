@@ -181,6 +181,7 @@ def saving(monkeypatch, tmp_path):
         _stitch_mtp_head = lambda model, directory: None,
         _mtp_head_tensor_names = lambda model: [],
         raise_if_merging_mistral_format_view = lambda model, save_method: None,
+        raise_if_merging_inkling2 = lambda model, save_method: None,
         lora_relative_to_original_base = lambda model: contextlib.nullcontext(),
         _unmerge_flags_on_error = lambda streamed: contextlib.nullcontext(),
         nullcontext = contextlib.nullcontext,
@@ -211,6 +212,11 @@ def saving(monkeypatch, tmp_path):
         "_push_lfm3_audio_release_config",
         # Real code: a private push into an existing public repo is refused before any upload.
         "_refuse_private_push_to_public_repo",
+        # Real code: a non-Gemma model leaves the merged config.json alone.
+        "_gemma_live_linear_rope",
+        "_gemma_rope_the_zoo_export_drops",
+        "_write_trained_gemma_rope",
+        "_is_main_rank",
     }
     nodes = []
     for node in tree.body:

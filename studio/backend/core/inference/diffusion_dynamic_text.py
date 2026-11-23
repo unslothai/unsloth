@@ -126,7 +126,8 @@ PROMPT_LENGTH_POLICY: dict[str, Any] = {
     "QwenImageTransformer2DModel": _QWEN_IMAGE_SOURCES,
     "QwenImage21Transformer2DModel": _QWEN_IMAGE_21_SOURCES,
     "ZImageTransformer2DModel": _ZIMAGE_SOURCES,
-    "Krea2Transformer2DModel": FIXED_LENGTH,  # padded to max_sequence_length 512
+    # padded to max_sequence_length 512; Studio keeps the valid rows in multiples of 128 (diffusion_krea2_text_trim)
+    "Krea2Transformer2DModel": FIXED_LENGTH,
     "ChromaTransformer2DModel": FIXED_LENGTH,  # T5 padded to max_sequence_length 512
     "CosmosTransformer3DModel": FIXED_LENGTH,  # Anima: the text conditioner pads to min_sequence_length 512
     "Lumina2Transformer2DModel": FIXED_LENGTH,  # Gemma padded to max_sequence_length 256

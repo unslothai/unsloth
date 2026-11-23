@@ -298,10 +298,9 @@ _TIGHT_FREE_MIB = 6144
 _TIGHT_FREE_FRACTION = 0.20
 _CACHE_ENTRIES = 128
 
-# "1": a generate's upsampler may start with only part of the model on the GPU (the old behaviour). By default a
-# generate skips the upsampler (prompt as typed, status "unavailable") when the image model leaves too little free
-# memory for the whole GGUF: the CPU layers decode so slowly that one caption took minutes (Qwen3.5-9B thinking for
-# MiniMax-H3-Image ran into the 600 s request timeout on an 8-16 GB card) for a ~7 s render.
+# UNSLOTH_PROMPT_UPSAMPLER_PARTIAL_OFFLOAD=1 lets a generate start with only part of the upsampler
+# on the GPU; by default it is skipped (status unavailable) when free memory is too low for the
+# whole GGUF, since CPU layers decode too slowly to be worth it for a short render.
 ENV_ALLOW_PARTIAL_OFFLOAD = "UNSLOTH_PROMPT_UPSAMPLER_PARTIAL_OFFLOAD"
 # Set by enhance_for_generation: the start (or reuse) has to hold every layer on the accelerator.
 _GENERATE_NEEDS_FULL_OFFLOAD: contextvars.ContextVar[bool] = contextvars.ContextVar(

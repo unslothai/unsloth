@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Rank handling for the PEFT merged and GGUF saves (unsloth/save.py), all faked: no process group.
-
-- `is_main_process = False` skips the merge and the GGUF pipeline on the non-main rank, exactly as
-  the non-PEFT and adapter branches already did.
-- Under plain DDP (replicated weights) a Hub upload of a merged model or a GGUF runs on rank 0
-  alone; the other ranks return None without waiting, as `push_to_hub` already does. A local
-  merged save still runs on every rank.
-- An FSDP2 save reaches the same code inside its gather, which already picked the writer rank:
-  the flag must not veto it (`fsdp2_gather_active`), and the DDP routing must not intercept it.
-"""
+"""Rank handling for the PEFT merged and GGUF saves (unsloth/save.py), with a faked process group:
+is_main_process gating, rank-0-only plain DDP Hub uploads, and no veto inside an FSDP2 gather."""
 
 import os
 

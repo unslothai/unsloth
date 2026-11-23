@@ -74,7 +74,11 @@ import {
   useOnlineStatus,
 } from "@/features/hub";
 import { useAvatarImageUrl } from "@/features/hub/catalog/owner-avatar";
-import { hasMlxCardTag, isMlxId } from "@/features/hub/lib/format-filters";
+import {
+  hasMlxCardTag,
+  isMlxId,
+  localRowIsMlx,
+} from "@/features/hub/lib/format-filters";
 import {
   hfCacheRepoId,
   isStandaloneGgufPath,
@@ -383,7 +387,8 @@ function loraFormat(lora: LoraModelOption): FormatTone {
   if (lora.source !== "local" && lora.exportType !== "merged") {
     return "adapter";
   }
-  return MLX_PATH_SEGMENT.test(lora.id) || isMlxId(lora.id)
+  return MLX_PATH_SEGMENT.test(lora.id) ||
+    localRowIsMlx({ id: lora.id, display_name: lora.name, source: lora.localSource })
     ? "mlx"
     : "checkpoint";
 }
@@ -3493,7 +3498,7 @@ export function ComposerModelPicker({
   const [openSide, setOpenSide] = useState(side);
   const [alignOffset, setAlignOffset] = useState(0);
   const [pickerZoomOutState, setPickerZoomOutState] = useState(1);
-  const [pickerMinBase, setPickerMinBase] = useState(420);
+  const [pickerMinBase, setPickerMinBase] = useState(440);
   const [panel, setPanel] = useState<HTMLDivElement | null>(null);
   const [dropOffset, setDropOffset] = useState(PICKER_GAP);
   const dropsDown = openSide === "bottom";

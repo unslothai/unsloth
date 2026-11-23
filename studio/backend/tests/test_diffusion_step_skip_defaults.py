@@ -97,6 +97,7 @@ MEASURED = {
     "hunyuanvideo-community/HunyuanImage-2.1-Diffusers": ("max",),
     "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v": ("max",),
     "MiniMaxAI/MiniMax-H3": ("max",),
+    "stabilityai/stable-diffusion-xl-base-1.0": ("max",),
 }
 
 
@@ -496,6 +497,7 @@ MEASURED_STEPS = {
     "hunyuanvideo-community/HunyuanImage-2.1-Diffusers": 50,
     "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v": 50,
     "MiniMaxAI/MiniMax-H3": 30,
+    "stabilityai/stable-diffusion-xl-base-1.0": 25,
 }
 
 

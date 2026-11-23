@@ -776,11 +776,13 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "black-forest-labs/flux.2-klein-base-4b",
         }
     ),
-    # Stock Qwen3-8B (= unsloth/Qwen3-8B): likewise for the 9B pair (compared 2026-10-16)
+    # Stock Qwen3-8B (= unsloth/Qwen3-8B): likewise for the 9B pair (compared 2026-10-16) and the 9B KV checkpoint
+    # (LFS sha256 of all four shards equal to the 9B's, 2026-11-21)
     frozenset(
         {
             "black-forest-labs/flux.2-klein-9b",
             "black-forest-labs/flux.2-klein-base-9b",
+            "black-forest-labs/flux.2-klein-9b-kv",
         }
     ),
     # MOSS-Image SFT and Base share identical text_encoder shards (LFS sha256).

@@ -85,7 +85,9 @@ def test_authenticated_demand_resolves_and_keeps_the_hardware_verdict(cold, monk
     monkeypatch.setattr(
         cold,
         "_hardware_snapshot",
-        lambda: (False, None, None) if cold._hw_module.DETECTION_COMPLETE.is_set() else None,
+        lambda: (
+            (False, None, None, False) if cold._hw_module.DETECTION_COMPLETE.is_set() else None
+        ),
     )
     app = FastAPI()
     app.add_api_route("/api/health", cold.health_check)
