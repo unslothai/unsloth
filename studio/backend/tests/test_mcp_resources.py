@@ -185,6 +185,38 @@ def test_slow_resource_listing_keeps_the_tools(monkeypatch):
     assert tools == [{"name": "ping"}] and tools.resources is None
 
 
+def test_a_failed_resource_listing_keeps_the_oauth_cool_off(monkeypatch):
+    import time
+
+    class _Tool:
+        def model_dump(self, **_):
+            return {"name": "ping"}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def list_tools(self):
+            return [_Tool()]
+
+        async def list_resources_mcp(self, cursor = None):
+            raise RuntimeError("resources/list failed")
+
+    monkeypatch.setattr(mcp_client, "_client", lambda *a, **k: _Client())
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    tools = asyncio.run(
+        mcp_client.list_tools_async("https://x.example/mcp", timeout = 5, use_oauth = True)
+    )
+    assert tools == [{"name": "ping"}] and not tools.complete
+    mcp_client.cache_tools("srv1", tools)
+    (until,) = mcp_client._probe_cooloff_until.values()
+    assert until - time.monotonic() > mcp_client.FAILED_PROBE_COOLOFF_SECONDS
+
+
 @pytest.mark.parametrize("failure", ["slow", "error"])
 def test_a_send_after_a_failed_resource_listing_retries_it(failure, tmp_path, monkeypatch):
     from types import SimpleNamespace

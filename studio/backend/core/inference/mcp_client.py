@@ -1722,6 +1722,7 @@ class McpToolList(list):
 
     resources: Optional[list[dict]] = None
     complete: bool = True
+    use_oauth: bool = False
 
 
 def _capabilities(client) -> Any:
@@ -1792,6 +1793,7 @@ async def list_tools_async(
                     raise
                 raw_tools = []
             tools = McpToolList(t.model_dump(exclude_none = True) for t in raw_tools)
+            tools.use_oauth = use_oauth
             listed.append(tools)
             try:
                 tools.resources = await _list_resources(client)
@@ -1856,7 +1858,7 @@ def cache_tools(server_id: str, tools: list[dict]) -> None:
     if getattr(tools, "complete", True):
         _probe_cooloff_until.pop(_account_key(server_id), None)
     else:
-        record_probe_failure(server_id)
+        record_probe_failure(server_id, tools.use_oauth)
 
 
 def record_probe_failure(server_id: str, use_oauth: bool = False) -> None:
