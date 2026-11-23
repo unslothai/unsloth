@@ -89,6 +89,14 @@ def _backend(monkeypatch, streams: list, payloads: list) -> LlamaCppBackend:
     return backend
 
 
+def _assert_budget(sent, requested):
+    # No requested budget: the window's own, which leaves the answer room (cut_thought.window_budget).
+    if requested is None:
+        assert isinstance(sent, int) and 0 < sent < 4096
+    else:
+        assert sent == requested
+
+
 @pytest.mark.parametrize("budget", [None, 128])
 def test_plain_generation_sends_the_budget(monkeypatch, budget):
     payloads: list[dict] = []
@@ -103,7 +111,7 @@ def test_plain_generation_sends_the_budget(monkeypatch, budget):
     )
 
     [payload] = payloads
-    assert payload.get("thinking_budget_tokens") == budget
+    _assert_budget(payload.get("thinking_budget_tokens"), budget)
     assert payload["chat_template_kwargs"] == {"enable_thinking": True}
 
 
@@ -131,7 +139,8 @@ def test_every_tool_loop_round_sends_the_budget(monkeypatch, budget):
     )
 
     assert len(payloads) == 2
-    assert [p.get("thinking_budget_tokens") for p in payloads] == [budget, budget]
+    for payload in payloads:
+        _assert_budget(payload.get("thinking_budget_tokens"), budget)
 
 
 @pytest.mark.parametrize("budget", [None, 128])
@@ -150,4 +159,4 @@ def test_tool_loop_final_pass_sends_the_budget(monkeypatch, budget):
     )
 
     [payload] = payloads
-    assert payload.get("thinking_budget_tokens") == budget
+    _assert_budget(payload.get("thinking_budget_tokens"), budget)
