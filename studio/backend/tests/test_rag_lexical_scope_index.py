@@ -116,3 +116,22 @@ def test_scope_without_rows_returns_nothing(rag_conn):
     assert store.search_lexical(rag_conn, "kb_b", "the", 10) == []
     assert store.search_lexical(rag_conn, "kb_none", "the", 10) == []
     assert store.search_lexical(rag_conn, ["kb_b", "kb_a"], "the of and to in is was", 10)
+
+
+def test_scope_probe_never_runs_below_the_joins(rag_conn):
+    rng = random.Random(2)
+    _add(rag_conn, rng, "convarchive_a", "a", 5, 0)
+    _add(rag_conn, rng, "kb_b", "b", 5)
+    rag_conn.commit()
+    for scope in ("convarchive_a", ["convarchive_a", "kb_b"]):
+        statements = []
+        rag_conn.set_trace_callback(statements.append)
+        store.search_lexical(rag_conn, scope, "the of", 5, oldest_first = True)
+        rag_conn.set_trace_callback(None)
+        sql = next(s for s in statements if "bm25" in s)
+        plan = [r[3] for r in rag_conn.execute("EXPLAIN QUERY PLAN " + sql)]
+        join = next(i for i, d in enumerate(plan) if d.startswith("SEARCH c "))
+        probes = [i for i, d in enumerate(plan) if rag_db.FTS_SCOPE_INDEX in d]
+        # SQLite places a multi-value IN probe below the joins, so every out-of-scope match pays them.
+        assert all(i < join for i in probes), plan
+        assert probes or not isinstance(scope, str), plan

@@ -789,10 +789,8 @@ def linked_folder_rows_exist(conn: sqlite3.Connection) -> bool:
 
 
 def _lexical_scope_filter(conn: sqlite3.Connection, scopes: list[str], placeholders: str):
-    """(SQL, params) for the scope test on chunks_fts; (None, None) when no scope has a row.
-    Equivalent to scope IN (...) on the same snapshot, so rows, order and bm25 are unchanged: the rowid
-    range only skips doclist entries outside every scope, and the probe reads the scope index, not
-    the content row each match would otherwise load."""
+    """(SQL, params) equivalent to scope IN (...) on this snapshot; (None, None) when no scope has a row.
+    The rowid range lets FTS5 skip doclist entries outside every scope."""
     if not rag_db.fts_scope_index_exists(conn):
         return f"chunks_fts.scope IN ({placeholders})", scopes
     lo = hi = None
@@ -807,10 +805,16 @@ def _lexical_scope_filter(conn: sqlite3.Connection, scopes: list[str], placehold
             hi = last if hi is None else max(hi, last)
     if lo is None:
         return None, None
+    if len(scopes) > 1:
+        # The index probe costs one seek per scope per match; past one scope the content read is cheaper.
+        return f"chunks_fts.rowid BETWEEN ? AND ? AND chunks_fts.scope IN ({placeholders})", [
+            lo,
+            hi,
+            *scopes,
+        ]
     return (
         f"chunks_fts.rowid BETWEEN ? AND ? AND EXISTS (SELECT 1 FROM chunks_fts_content x "
-        f"INDEXED BY {rag_db.FTS_SCOPE_INDEX} WHERE x.c2 IN ({placeholders}) "
-        f"AND x.id=chunks_fts.rowid)"
+        f"INDEXED BY {rag_db.FTS_SCOPE_INDEX} WHERE x.c2=? AND x.id=chunks_fts.rowid)"
     ), [lo, hi, *scopes]
 
 
