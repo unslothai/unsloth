@@ -48,6 +48,28 @@ def _thought_cut(completion_tokens: int = 3_000) -> list[str]:
     ]
 
 
+_TEMPLATE_CLOSE = "\n</think>\n\n"
+
+
+def _with_server_helpers(backend, monkeypatch):
+    """Words stand in for tokens; the template closes a thought with Qwen3's marker."""
+
+    def fake_post(path, body):
+        if path == "/tokenize":
+            return {"tokens": body["content"].split()}
+        if path == "/detokenize":
+            return {"content": " ".join(body["tokens"])}
+        if path == "/apply-template":
+            turn = body["messages"][-1]
+            return {
+                "prompt": f"<think>\n{turn['reasoning_content']}{_TEMPLATE_CLOSE}{turn['content']}"
+            }
+        return None
+
+    monkeypatch.setattr(backend, "_llama_post_json", fake_post)
+    return backend
+
+
 def _plain(backend, **kwargs) -> list:
     return list(
         backend.generate_chat_completion(
@@ -77,12 +99,16 @@ def test_the_cut_reply_ends_with_the_thought_closed_and_nothing_more(monkeypatch
     ] == ["length"]
 
 
-def test_the_cut_thought_is_held_for_the_threads_next_request(monkeypatch, persisted):
-    backend = _make_backend(monkeypatch, [_thought_cut()], [])
+def test_the_cut_thought_is_cut_back_and_held_for_the_threads_next_request(monkeypatch, persisted):
+    backend = _with_server_helpers(_make_backend(monkeypatch, [_thought_cut()], []), monkeypatch)
 
     _plain(backend)
 
-    assert cut_thought.take(THREAD) == _LONG_THOUGHT.strip()
+    cut = cut_thought.take(THREAD)
+    # The window can stop it mid-word, so the last few tokens go.
+    assert cut.thought == " ".join(_LONG_THOUGHT.split()[: -cut_thought.BACKTRACK_TOKENS])
+    # The model's own closing marker, read from its template.
+    assert cut.close_marker == _TEMPLATE_CLOSE
     # Once.
     assert cut_thought.take(THREAD) is None
 
@@ -154,7 +180,8 @@ def _continuation():
 
 
 @pytest.fixture
-def archived(monkeypatch):
+def archived(monkeypatch, tmp_path):
+    from core.inference import tools
     from state import tool_policy
 
     stored: list = []
@@ -164,34 +191,59 @@ def archived(monkeypatch):
         lambda thread_id, thought: stored.append((thread_id, thought)) or True,
     )
     monkeypatch.setattr(tool_policy, "conversation_recall_allowed", lambda: True)
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(tmp_path))
     return stored
 
 
-def test_the_next_request_compacts_instead_of_resuming_the_thought(persisted, archived):
+def _marked(thought = "Step 12 needs the ledger moved first", close = _TEMPLATE_CLOSE):
+    cut_thought.mark(THREAD, thought, close)
+    return thought
+
+
+def test_the_next_request_finishes_the_thought_instead_of_resuming_it(persisted, archived):
     from routes import inference as inference_route
 
-    cut_thought.mark(THREAD, _LONG_THOUGHT)
+    thought = _marked()
     payload = _continuation()
 
-    note, searchable = inference_route._recover_cut_thought(payload)
+    note, searchable, note_is_a_user_turn = inference_route._recover_cut_thought(payload)
 
-    # The cut thought is what could not fit, so it is not resent.
-    assert [m.role for m in payload.messages] == ["user"]
+    roles = [m.role for m in payload.messages]
+    assert roles == ["user", "assistant", "user"]
+    # Kept in the conversation as a finished thought: no answer, nothing left to resume.
+    finished = payload.messages[1]
+    assert finished.reasoning_content == thought and not finished.content
     assert payload.continue_final_message is False
+    # The note is the first user turn after the reset.
+    assert note_is_a_user_turn and payload.messages[-1].content == note
     # Forced, as /compact does.
     assert payload.compact_context is True
     assert payload.context_overflow == "truncate_oldest"
-    # Archived for search_conversation, which the note names.
-    assert archived == [(THREAD, _LONG_THOUGHT.strip())]
+    assert archived == [(THREAD, thought)]
     assert searchable is True
-    assert note == cut_thought.NOTE_SEARCHABLE
-    assert "search_conversation" in note
 
 
-def test_a_typed_next_message_is_kept(persisted, archived):
+def test_the_note_names_the_search_and_the_transcript(persisted, archived, tmp_path):
     from routes import inference as inference_route
 
-    cut_thought.mark(THREAD, _LONG_THOUGHT)
+    thought = _marked()
+    note, _, _ = inference_route._recover_cut_thought(_continuation())
+
+    path = tmp_path / f"transcript-{THREAD}.md"
+    assert note == (
+        f"The previous model stopped thinking, so re-check via search_conversation or read the "
+        f"transcript at {path} and continue work."
+    )
+    transcript = path.read_text()
+    assert "Plan the migration" in transcript
+    # The thought ends with the model's own closing marker.
+    assert (thought + _TEMPLATE_CLOSE) in transcript
+
+
+def test_a_typed_next_message_keeps_it_and_gets_the_note_in_the_system_prompt(persisted, archived):
+    from routes import inference as inference_route
+
+    thought = _marked()
     payload = _request(
         messages = [
             {"role": "user", "content": "Plan the migration"},
@@ -201,25 +253,28 @@ def test_a_typed_next_message_is_kept(persisted, archived):
         context_policy = "checkpoint",
     )
 
-    inference_route._recover_cut_thought(payload)
+    note, _, note_is_a_user_turn = inference_route._recover_cut_thought(payload)
 
+    assert not note_is_a_user_turn
     assert [m.content for m in payload.messages if m.role == "user"] == [
         "Plan the migration",
         "go on",
     ]
+    assert payload.messages[1].reasoning_content == thought
     assert payload.compact_context is True
 
 
-def test_without_search_the_note_does_not_name_it(persisted, monkeypatch):
+def test_without_search_or_a_transcript_the_note_names_neither(persisted, monkeypatch):
     from routes import inference as inference_route
 
     monkeypatch.setattr(cut_thought, "archive", lambda thread_id, thought: False)
-    cut_thought.mark(THREAD, _LONG_THOUGHT)
+    monkeypatch.setattr(cut_thought, "write_transcript", lambda *args: None)
+    _marked()
 
-    note, searchable = inference_route._recover_cut_thought(_continuation())
+    note, searchable, _ = inference_route._recover_cut_thought(_continuation())
 
     assert searchable is False
-    assert "search_conversation" not in note
+    assert "search_conversation" not in note and "transcript" not in note
 
 
 def test_a_request_with_no_cut_is_untouched(archived):
@@ -235,12 +290,56 @@ def test_a_request_with_no_cut_is_untouched(archived):
 def test_a_caller_that_asked_for_errors_keeps_them(persisted, archived):
     from routes import inference as inference_route
 
-    cut_thought.mark(THREAD, _LONG_THOUGHT)
+    _marked()
     payload = _continuation()
     payload.context_overflow = "error"
 
     assert inference_route._recover_cut_thought(payload) is None
     assert payload.compact_context is None
+
+
+# ── The closing marker, read from the template ──
+
+
+@pytest.mark.parametrize(
+    "template, close",
+    [
+        # Qwen3 / Qwen3.8
+        (
+            "{% for m in messages %}{% if m.role == 'assistant' %}<|im_start|>assistant\n<think>\n"
+            "{{ m.reasoning_content }}\n</think>\n\n{{ m.content }}<|im_end|>{% endif %}{% endfor %}",
+            "\n</think>\n\n",
+        ),
+        # Gemma 4
+        (
+            "{% for m in messages %}{% if m.role == 'assistant' %}<|turn>model\n<|channel>thought\n"
+            "{{ m.reasoning_content }}\n<channel|>{{ m.content }}<turn|>{% endif %}{% endfor %}",
+            "\n<channel|>",
+        ),
+        # Inkling 2
+        (
+            "{% for m in messages %}{% if m.role == 'assistant' %}<|message_model|><|content_thinking|>"
+            "{{ m.reasoning_content }}<|end_message|><|message_model|><|content_text|>{{ m.content }}"
+            "<|end_message|>{% endif %}{% endfor %}",
+            "<|end_message|><|message_model|><|content_text|>",
+        ),
+    ],
+)
+def test_the_closing_marker_is_read_from_the_template(template, close):
+    import jinja2
+    compiled = jinja2.Environment().from_string(template)
+
+    assert (
+        cut_thought.close_marker_from_template(lambda messages: compiled.render(messages = messages))
+        == close
+    )
+
+
+def test_a_template_that_drops_the_thought_gives_no_marker():
+    assert (
+        cut_thought.close_marker_from_template(lambda messages: "<|im_start|>assistant\nanswer")
+        == ""
+    )
 
 
 # ── search_conversation finds the thought ──

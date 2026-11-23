@@ -485,39 +485,61 @@ def _clamp_finish_reason(value) -> str:
     )
 
 
-def _recover_cut_thought(payload) -> Optional[tuple[str, bool]]:
-    """When this thread's previous reply ended in a thought the window cut, compact instead of
-    resuming it: drop the cut partial, force the reset /compact does, and archive the thought for
-    search_conversation. Returns (note for the system prompt, searchable), or None."""
+def _recover_cut_thought(payload) -> Optional[tuple[str, bool, bool]]:
+    """When this thread's previous reply ended in a thought the window cut, do not resume it (it
+    cannot fit): keep it, cut back a few tokens, as a finished thought (the template writes the
+    model's own closing marker), force the reset /compact does, archive it for search_conversation,
+    write a transcript, and add the note. Returns (note, searchable, note_is_a_user_turn), or None."""
     if getattr(payload, "context_overflow", None) in ("error", "truncate_middle"):
         return None
     from core.inference import cut_thought
+    from models.inference import ChatMessage
 
     thread_id = getattr(payload, "thread_id", None)
-    thought = cut_thought.take(thread_id)
-    if thought is None:
+    cut = cut_thought.take(thread_id)
+    if cut is None:
         return None
     messages = list(getattr(payload, "messages", None) or [])
-    if (
+    closed = ChatMessage(role = "assistant", content = "", reasoning_content = cut.thought)
+    resuming = bool(
         getattr(payload, "continue_final_message", None)
         and _continue_final_message(payload, thought = True)
         and not _continue_final_message(payload)
-    ):
-        # The automatic continuation resends the cut thought to be resumed; it is what cannot fit.
-        payload.messages = messages[:-1]
-        payload.continue_final_message = False
+    )
+    if resuming:
+        # The automatic continuation resends the cut thought to be resumed: finish it instead.
+        messages[-1] = closed
+    else:
+        # A typed next message: the cut reply before it gets its thought back, finished.
+        for index in range(len(messages) - 2, -1, -1):
+            message = messages[index]
+            if getattr(message, "role", None) != "assistant":
+                continue
+            if not getattr(message, "content", None) and not getattr(message, "tool_calls", None):
+                messages[index] = closed
+            break
+    payload.continue_final_message = False
     payload.compact_context = True
     payload.context_overflow = "truncate_oldest"
     from state.tool_policy import conversation_recall_allowed
 
     searchable = bool(
-        cut_thought.archive(thread_id, thought)
+        cut_thought.archive(thread_id, cut.thought)
         and conversation_recall_allowed()
         and _checkpoint_needs_search(payload)
     )
-    return (
-        cut_thought.NOTE_SEARCHABLE if searchable else cut_thought.NOTE_NOT_SEARCHABLE
-    ), searchable
+    transcript = cut_thought.write_transcript(
+        getattr(payload, "session_id", None),
+        thread_id,
+        [message.model_dump(exclude_none = True) for message in messages],
+        cut,
+    )
+    note = cut_thought.note(searchable, transcript)
+    if resuming:
+        # The first user turn after the reset: the turns before it are compacted away.
+        messages.append(ChatMessage(role = "user", content = note))
+    payload.messages = messages
+    return note, searchable, resuming
 
 
 def _continue_final_message(payload, *, thought: bool = False) -> bool:
@@ -34215,7 +34237,7 @@ async def produce_openai_chat_completions(
     if using_gguf and not _has_system_turn(payload.messages):
         # Ollama applies a Modelfile SYSTEM only when the request has no system turn of its own.
         system_prompt = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
-    if _cut_recovery is not None:
+    if _cut_recovery is not None and not _cut_recovery[2]:
         # This request only: the next one rebuilds its system prompt without it.
         system_prompt = f"{(system_prompt or '').rstrip()}\n\n{_cut_recovery[0]}".strip()
     # applied once so both backends inherit it, with or without tools, and never state it twice.

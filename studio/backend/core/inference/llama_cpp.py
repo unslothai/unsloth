@@ -39425,11 +39425,13 @@ class LlamaCppBackend:
                         and (max_tokens is None or _spent < max_tokens)
                     ):
                         from core.inference import cut_thought
-                        if cut_thought.mark(thread_id, resumed_reasoning + reasoning_text):
+                        _kept, _close = self._close_cut_thought(resumed_reasoning + reasoning_text)
+                        if cut_thought.mark(thread_id, _kept, _close):
                             logger.info(
-                                "Thought cut by the context window (%d chars); the thread's next "
-                                "request compacts",
-                                len(resumed_reasoning + reasoning_text),
+                                "Thought cut by the context window (%d chars); closed with %r and "
+                                "the thread's next request compacts",
+                                len(_kept),
+                                _close,
                             )
                     yield {
                         "type": "metadata",
@@ -39471,6 +39473,53 @@ class LlamaCppBackend:
             # Died mid-generation: recover MTP, re-raise unchanged for this request.
             self._maybe_recover_from_mtp_crash(e)
             raise
+
+    def _llama_post_json(self, path: str, body: dict) -> Optional[dict]:
+        """A small JSON call to llama-server; None on any failure."""
+        try:
+            with httpx.Client(
+                timeout = httpx.Timeout(30.0, connect = 10),
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client:
+                resp = client.post(f"{self.base_url}{path}", json = body)
+            return resp.json() if resp.status_code == 200 else None
+        except Exception:
+            return None
+
+    def _close_cut_thought(self, thought: str) -> tuple[str, str]:
+        """The cut thought minus its last few tokens, and this model's own thought-closing marker
+        read from its chat template (cached per load). Falls back to the whole thought and no marker."""
+        from core.inference import cut_thought
+
+        kept = thought.strip()
+        tokens = (
+            self._llama_post_json("/tokenize", {"content": kept, "add_special": False}) or {}
+        ).get("tokens")
+        if isinstance(tokens, list) and len(tokens) > cut_thought.BACKTRACK_TOKENS:
+            text = (
+                self._llama_post_json(
+                    "/detokenize", {"tokens": tokens[: -cut_thought.BACKTRACK_TOKENS]}
+                )
+                or {}
+            ).get("content")
+            if isinstance(text, str) and text.strip():
+                kept = text.strip()
+        cache_key = getattr(self, "_model_identifier", None) or self.base_url
+        cached = getattr(self, "_thought_close_marker", None)
+        if cached is not None and cached[0] == cache_key:
+            return kept, cached[1]
+        close = cut_thought.close_marker_from_template(
+            lambda messages: (
+                self._llama_post_json(
+                    "/apply-template", {"messages": messages, "add_generation_prompt": False}
+                )
+                or {}
+            ).get("prompt")
+        )
+        self._thought_close_marker = (cache_key, close)
+        return kept, close
 
     # ── Tool-calling agentic loop ──────────────────────────────
 
