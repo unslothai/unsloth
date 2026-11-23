@@ -4459,6 +4459,7 @@ _gpu_prebuilt_to_keep_over_cpu_build() {
         vulkan)
             [ "$_setup_amd_detected" = true ] || [ "$_setup_nvidia_physical" = true ] \
                 || _setup_has_intel_gpu || return 1 ;;
+        sycl) _setup_has_intel_gpu || return 1 ;;
         *) return 1 ;;
     esac
     _installed_prebuilt_runs "$install_dir" || return 1
@@ -4492,7 +4493,7 @@ if not isinstance(payload, dict):
 requested = sys.argv[2].strip()
 repo = sys.argv[3].strip()
 release_pin = sys.argv[4].strip() if len(sys.argv) > 4 else ""
-GPU_TOKENS = ("cuda", "rocm", "hip", "vulkan", "metal")
+GPU_TOKENS = ("cuda", "rocm", "hip", "vulkan", "sycl", "metal")
 # Fork bundles record only "platform"; install_llama_prebuilt.py also records "backend". Accept either.
 backend = str(payload.get("backend") or "").strip().lower()
 platform_kind = str(payload.get("platform") or payload.get("install_kind") or "").strip().lower()
