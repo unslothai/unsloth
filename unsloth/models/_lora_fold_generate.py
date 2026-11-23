@@ -56,6 +56,8 @@ def _refuse(reason):
 # Break-even on L4 1B LoRA: 5-16 tokens eager, 43-216 with decode CUDA graphs.
 _DEFAULT_MIN_TOKENS = 128
 _DEFAULT_MIN_TOKENS_GRAPHS = 512
+# RL rollouts (batched, every step) take the eager threshold: graphed decode still runs each LoRA GEMM on the
+# GPU per token (T4 Qwen3-0.6B GRPO, 8 x 256 tokens: 2.4 ms saved per token for 90 ms of fold + unfold).
 
 
 def _min_tokens():
@@ -65,7 +67,16 @@ def _min_tokens():
             return int(value)
         except ValueError:
             pass
+    if _rl_generating():
+        return _DEFAULT_MIN_TOKENS
     return _DEFAULT_MIN_TOKENS_GRAPHS if _graphs_enabled() else _DEFAULT_MIN_TOKENS
+
+
+def _rl_generating():
+    try:
+        return bool(_decode_graphs().rl_generating())
+    except Exception:
+        return False
 
 
 def _decode_graphs():

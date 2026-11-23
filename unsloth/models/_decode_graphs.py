@@ -45,6 +45,7 @@ __all__ = [
     "ENABLED",
     "enabled",
     "rl_generation",
+    "rl_generating",
     "studio_generation",
     "generate_scope",
     "eager_scope",
@@ -179,11 +180,21 @@ class rl_generation:
 
     def __enter__(self):
         _TLS.rl_depth = getattr(_TLS, "rl_depth", 0) + 1
+        if type(self) is rl_generation:
+            _TLS.rollout_depth = getattr(_TLS, "rollout_depth", 0) + 1
         return self
 
     def __exit__(self, *exc):
         _TLS.rl_depth -= 1
+        if type(self) is rl_generation:
+            _TLS.rollout_depth -= 1
         return False
+
+
+def rl_generating():
+    """Whether this thread is inside an RL trainer's generate() call (rl_generation itself, not the Studio /
+    plain generate() scopes built on it)."""
+    return getattr(_TLS, "rollout_depth", 0) > 0
 
 
 # Native Windows CUDA capture is unverified: Studio default off there (=1 still forces).

@@ -421,6 +421,21 @@ def test_threshold_follows_the_call_plan(monkeypatch):
     with G.plan_scope("graph"):
         assert fold._min_tokens() == 512
     assert fold._min_tokens() == 128
+    # RL rollouts keep the eager threshold under graphed decode too.
+    monkeypatch.setattr(G, "ENABLED", True)
+    with G.plan_scope("graph"), G.rl_generation():
+        assert fold._min_tokens() == 128
+        monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", "64")
+        assert fold._min_tokens() == 64
+        monkeypatch.delenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS")
+    with G.plan_scope("graph"):
+        assert fold._min_tokens() == 512
+    # Plain / Studio generate() scopes count as rl_depth for the graph default, not as rollouts.
+    with G.plan_scope("graph"), G.generate_scope(), G.studio_generation():
+        assert fold._min_tokens() == 512
+        with G.rl_generation():
+            assert fold._min_tokens() == 128
+        assert fold._min_tokens() == 512
 
 
 def test_other_threads_wait_for_restore(_clean):
