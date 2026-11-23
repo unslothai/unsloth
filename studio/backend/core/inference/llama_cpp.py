@@ -8969,8 +8969,9 @@ class LlamaCppBackend:
     ) -> "tuple[Optional[dict[int, float]], Optional[dict[int, float]]]":
         model: dict[int, float] = {}
         total: dict[int, float] = {}
-        # Every sched_reserve (warmup, a sampler or LoRA change) reprints the same compute buffer: keep the peak.
-        compute: dict[int, float] = {}
+        # Each reserve reprints its compute buffer: keep the peak per logging allocator
+        # (sched_reserve, mtmd_context) and GPU, so the projector's buffer adds to the model's.
+        compute: dict[tuple[str, int], float] = {}
         for line in list(self._stdout_lines):
             match = _GPU_BUFFER_RE.search(line)
             if match is None:
@@ -8982,12 +8983,13 @@ class LlamaCppBackend:
             kind = match.group(2).strip().lower()
             gb = float(match.group(3)) / 1024.0
             if kind == "compute":
-                compute[physical] = max(compute.get(physical, 0.0), gb)
+                key = ("".join(line[: match.start()].split()[-1:]), physical)
+                compute[key] = max(compute.get(key, 0.0), gb)
                 continue
             if kind == "model":
                 model[physical] = model.get(physical, 0.0) + gb
             total[physical] = total.get(physical, 0.0) + gb
-        for physical, gb in compute.items():
+        for (_, physical), gb in compute.items():
             total[physical] = total.get(physical, 0.0) + gb
         return model or None, total or None
 

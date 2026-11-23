@@ -156,6 +156,35 @@ def test_footprint_counts_recurrent_lora_and_device_output_buffers():
     assert backend.gpu_footprint_gb() == {2: 1036 / 1024}
 
 
+# Real llama-server --verbosity 4 output (Gemma 4 E2B + mmproj + MTP drafter, 32k ctx, L4).
+_GEMMA4_MMPROJ_MTP = [
+    "0.01.663.748 I load_tensors:   CPU_Mapped model buffer size =  1540.00 MiB",
+    "0.01.663.748 I load_tensors:        CUDA0 model buffer size =  1407.73 MiB",
+    "0.01.830.463 I llama_context: constructing llama_context",
+    "0.01.831.831 I llama_context:  CUDA_Host  output buffer size =     1.00 MiB",
+    "0.01.832.668 I llama_kv_cache:      CUDA0 KV buffer size =   192.00 MiB",
+    "0.01.832.668 I llama_kv_cache:      CUDA0 KV buffer size =    12.00 MiB",
+    "0.01.861.577 I sched_reserve:      CUDA0 compute buffer size =   109.78 MiB",
+    "0.01.861.602 I sched_reserve:  CUDA_Host compute buffer size =    62.79 MiB",
+    "0.02.100.000 I load_tensors:        CUDA0 model buffer size =    78.25 MiB",
+    "0.02.110.000 I sched_reserve:      CUDA0 compute buffer size =    51.00 MiB",
+    "0.02.900.000 I load_hparams: model size:         939.89 MiB",
+    "0.03.000.000 I mtmd_context:      CUDA0 compute buffer size =   143.65 MiB",
+    "0.03.000.001 I mtmd_context:        CPU compute buffer size =     6.77 MiB",
+    "0.03.100.000 I sched_reserve:      CUDA0 compute buffer size =    51.00 MiB",
+    "0.03.100.001 I sched_reserve:      CUDA0 compute buffer size =   109.78 MiB",
+]
+
+
+def test_resident_counts_kv_and_each_allocators_compute_peak():
+    backend = _backend(_Alive())
+    backend._child_gpu_physical_ids = (0,)
+    backend._healthy = True
+    backend._stdout_lines = list(_GEMMA4_MMPROJ_MTP)
+    assert backend.resident_memory_mib() == round(1407.73 + 192 + 12 + 78.25 + 109.78 + 143.65)
+    assert backend.reclaimable_gpu_memory_gb() == pytest.approx({0: (1407.73 + 78.25) / 1024})
+
+
 def test_footprint_without_gpu_model_buffers_is_none():
     backend = _backend(_Alive())
     backend._child_gpu_physical_ids = (0,)
