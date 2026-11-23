@@ -244,7 +244,7 @@ function Swatches() {
   const { palette, setPalette } = usePalette();
   const standard = t("settings.appearance.palette.standard");
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex flex-wrap items-center justify-end gap-1.5">
       {SWATCHES.map((id) => {
         const colors = COLOR_THEMES[id][resolved];
         return (
