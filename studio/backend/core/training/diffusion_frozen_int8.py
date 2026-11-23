@@ -16,9 +16,10 @@ That column-major weight is kept by ``BACKWARD_WEIGHTS`` while it fits the train
 (``Fp8BackwardWeights``), but keyed by the owning FrozenInt8Linear: an entry is served only while that module's
 weight is still the tensor it was copied from, and a replaced weight rebuilds the module's one entry. int32
 accumulation is exact, so grad_x is bit-identical either way; ``UNSLOTH_DIFFUSION_INT8_BWD_CACHE=0`` keeps the
-inline copy."""
+inline copy.
 
-from __future__ import annotations
+No ``from __future__ import annotations`` here: torch 2.4's custom_op schema inference rejects the postponed
+'torch.Tensor' strings, which silently left the backward cache off."""
 
 import sys
 import weakref

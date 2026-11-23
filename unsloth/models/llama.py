@@ -60,6 +60,7 @@ except ImportError:  # unsloth_zoo predating the helper (unsloth-zoo#1751)
 
 
 from .loader_utils import (
+    _resolved_revision,
     DEFAULT_DEVICE_MAP,
     set_deepspeed_fused_lora_leaf_modules,
     set_deepspeed_moe_leaf_modules,
@@ -625,11 +626,16 @@ def _gqa_decode_scores(Qn, Kn, out):
     bsz, n_heads, _, head_dim = Qn.shape
     _, n_kv_heads, cached_len, _ = Kn.shape
     n_groups = n_heads // n_kv_heads
-    torch_matmul(
-        Qn.view(bsz, n_kv_heads, n_groups, head_dim),
-        Kn.transpose(2, 3),
-        out = out.view(bsz, n_kv_heads, n_groups, cached_len),
-    )
+    Qg = Qn.view(bsz, n_kv_heads, n_groups, head_dim)
+    out_g = out.view(bsz, n_kv_heads, n_groups, cached_len)
+    if torch.compiler.is_compiling():
+        # Dynamo graph-breaks on out= into a strided view (the scratch is sliced to cached_len).
+        # out= is exempt from autocast and the functional matmul is not, so keep autocast off:
+        # an fp16 autocast over bf16 Q / K would overflow scores that eager keeps finite.
+        with torch.autocast(Qn.device.type, enabled = False):
+            out_g.copy_(torch_matmul(Qg, Kn.transpose(2, 3)))
+    else:
+        torch_matmul(Qg, Kn.transpose(2, 3), out = out_g)
     return out
 
 
@@ -644,12 +650,73 @@ def _gqa_decode_values(A, Vn, out):
     V = Vn.reshape(bsz * n_kv_heads, cached_len, head_dim)
     O = out.view(bsz * n_kv_heads, n_groups, head_dim)
     aligned = cached_len - cached_len % 8
-    if aligned == 0 or aligned == cached_len:
+    if torch.compiler.is_compiling():
+        # Autocast off for the same reason as _gqa_decode_scores: match the eager out= dtype.
+        with torch.autocast(A.device.type, enabled = False):
+            O.copy_(torch.bmm(A, V))
+    elif aligned == 0 or aligned == cached_len:
         torch.bmm(A, V, out = O)
     else:
         torch.bmm(A[:, :, :aligned], V[:, :aligned], out = O)
         O.baddbmm_(A[:, :, aligned:], V[:, aligned:])
     return out
+
+
+# Batched decode (bsz > 1) also reads the KV heads in place (the bsz == 1 route) once the batch's KV
+# cache is large enough to beat SDPA on this card. UNSLOTH_GROUPED_DECODE: "auto" (default) = the
+# measured per-card crossover below, "1" = every batch, "0" = batch 1 only (the old behaviour).
+GROUPED_DECODE = os.environ.get("UNSLOTH_GROUPED_DECODE", "auto")
+# Batched decode attention calls (one per layer per step) that took the grouped route, counted in
+# eager only: torch.compile'd calls are not counted, a captured CUDA graph counts once at capture.
+GROUPED_DECODE_CALLS = [0]
+# Per card: the smallest bsz * cached_len that takes the grouped route in place of (SDPA GQA without
+# a mask, SDPA GQA with a padding mask, K / V expanded per query head); None = never. Measured end to
+# end (HF generate, LoRA attached, CUDA-graph decode) on Qwen3-0.6B / Qwen3-4B / Llama-3.2-1B, batch
+# 2-16, prompts 128-2048: below these some model ran slower. Other cards keep SDPA. Unmasked SDPA GQA
+# (equal-length rows, e.g. one GRPO prompt per batch) is faster than the grouped route on L4 / A100;
+# on an A100 short caches lose too (the grouped route's extra launches are not hidden).
+_GROUPED_DECODE_MIN_TOKENS = {
+    "T4": (8192, 1024, 256),
+    "L4": (None, 2048, 1024),
+    "A100": (None, 16384, 8192),
+}
+_grouped_decode_rules = {}
+
+
+def _grouped_decode_rule(device):
+    rule = _grouped_decode_rules.get(device)
+    if rule is None:
+        rule = (None, None, None)
+        try:
+            if device.type == "cuda" and torch.version.hip is None:
+                name = torch.cuda.get_device_name(device)
+                for key, value in _GROUPED_DECODE_MIN_TOKENS.items():
+                    # Whole words: "L4" must not match an L40S.
+                    if re.search(rf"\b{key}\b", name):
+                        rule = value
+                        break
+        except Exception:
+            pass
+        _grouped_decode_rules[device] = rule
+    return rule
+
+
+def _grouped_decode_batched(bsz, cached_len, expand, masked, device):
+    """Whether a bsz > 1 one-token decode step takes the in-place grouped route instead of the route
+    it would take: K / V expanded per query head (expand: no SDPA GQA, or Qwen3's batched mask), else
+    SDPA GQA with or without a padding mask."""
+    mode = GROUPED_DECODE
+    if mode == "0":
+        return False
+    if mode != "1":
+        threshold = _grouped_decode_rule(device)[2 if expand else int(masked)]
+        if threshold is None or bsz * cached_len < threshold:
+            return False
+    # Count eager calls only: a traced `+= 1` on a module-level int becomes a Dynamo guard on its
+    # value, so every call would fail the guard and recompile the frame at the same shapes.
+    if not torch.compiler.is_compiling():
+        GROUPED_DECODE_CALLS[0] += 1
+    return True
 
 
 class _LazyDeviceScratch(list):
@@ -828,9 +895,16 @@ def LlamaAttention_fast_forward_inference(
         # Decode is more stable with boolean keep masks than additive bf16 masks.
         attention_mask = attention_mask.eq(0)
 
-    # Grouped query attention; bsz == 1 reads the KV heads in place below.
+    # Grouped query attention: bsz == 1, and bsz > 1 past the card's crossover, read the KV heads
+    # in place below.
     _, _, cached_len, _ = Knn.shape
-    if bsz != 1 and (not SDPA_HAS_GQA) and n_groups != 1:
+    grouped = bsz == 1 or (
+        n_groups != 1
+        and _grouped_decode_batched(
+            bsz, cached_len, not SDPA_HAS_GQA, attention_mask is not None, Qn.device
+        )
+    )
+    if not grouped and (not SDPA_HAS_GQA) and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -843,7 +917,7 @@ def LlamaAttention_fast_forward_inference(
         is_causal = True
     else:
         is_causal = False
-    if bsz == 1:
+    if grouped:
         Qn *= self.scalar
         # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805.
         A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
@@ -916,9 +990,16 @@ def _decode_attention_core(self, Qn, kv_seq_len, attention_mask, bsz, sdpa_gqa_w
         # Avoid SDPA GQA drift for batched masked decode.
         use_sdpa_gqa = False
 
-    # Grouped query attention; bsz == 1 reads the KV heads in place below.
+    # Grouped query attention: bsz == 1, and bsz > 1 past the card's crossover, read the KV heads
+    # in place below.
     _, _, cached_len, _ = Knn.shape
-    if bsz != 1 and (not use_sdpa_gqa) and n_groups != 1:
+    grouped = bsz == 1 or (
+        n_groups != 1
+        and _grouped_decode_batched(
+            bsz, cached_len, not use_sdpa_gqa, attention_mask is not None, Qn.device
+        )
+    )
+    if not grouped and (not use_sdpa_gqa) and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -931,7 +1012,7 @@ def _decode_attention_core(self, Qn, kv_seq_len, attention_mask, bsz, sdpa_gqa_w
         is_causal = True
     else:
         is_causal = False
-    if bsz == 1:
+    if grouped:
         Qn *= self.scalar
         # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805.
         A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
@@ -969,14 +1050,15 @@ def _decode_attention_span(self, Qn, static, bsz, sdpa_gqa_with_batch_mask):
     head_dim = self.head_dim
     Knn = self.paged_attention_K[:span].permute(1, 2, 0, 3)
     Vnn = self.paged_attention_V[:span].permute(1, 2, 0, 3)
-    if bsz == 1:
+    # The mask is always batched here: as the eager core, Qwen3 expands K / V instead of SDPA GQA.
+    expand = not (SDPA_HAS_GQA and sdpa_gqa_with_batch_mask)
+    if bsz == 1 or (n_groups != 1 and _grouped_decode_batched(bsz, span, expand, True, Qn.device)):
         Qn *= self.scalar
         A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :span])
         A.masked_fill_(drop, float("-inf"))
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
         return _gqa_decode_values(A, Vnn, Qn)
-    # The mask is always batched here: as the eager core, Qwen3 expands K / V instead of SDPA GQA.
-    if SDPA_HAS_GQA and sdpa_gqa_with_batch_mask:
+    if not expand:
         return scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = keep, enable_gqa = True)
     if n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, span, head_dim)
@@ -1220,6 +1302,7 @@ def LlamaDecoderLayer_fast_forward(
     padding_mask: Optional[torch.LongTensor] = None,
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args,
+    _unsloth_skip_down = False,
     **kwargs,
 ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
     """
@@ -1280,10 +1363,16 @@ def LlamaDecoderLayer_fast_forward(
             self.post_attention_layernorm, hidden_states, save_output = True, reuse_grad = True
         )
         # residual + mlp(x) is this layer's output, so a checkpoint replay of it can skip the down projection.
-        armed = arm_mlp_output_unread(self, self.mlp)
-        hidden_states = self.mlp(hidden_states)
-        if armed:
-            disarm_mlp_output_unread()
+        # A compiled block replay of exactly this layer passes _unsloth_skip_down (block_skip_down_eligible).
+        if _unsloth_skip_down:
+            hidden_states = self.mlp(hidden_states, _unsloth_skip_down = True)
+        else:
+            armed = arm_mlp_output_unread(self, self.mlp)
+            try:
+                hidden_states = self.mlp(hidden_states)
+            finally:
+                if armed:
+                    disarm_mlp_output_unread()
         hidden_states = residual + hidden_states
 
     outputs = (hidden_states,)
@@ -1617,6 +1706,7 @@ def LlamaModel_fast_forward(
                 self.GA_mask = create_flex_attention_causal_mask(self.max_seq_length)
             else:
                 n = self.max_seq_length
+                # On the embeddings' card: the current device is cuda:0 for a model placed on cuda:1.
                 # masked_fill makes things slower.
                 self.SWA_mask = (
                     Gemma2AttentionMaskConverter(
@@ -1628,7 +1718,7 @@ def LlamaModel_fast_forward(
                         n,
                         n,
                         dtype = inputs_embeds.dtype,
-                        device = DEVICE_TYPE_TORCH,
+                        device = inputs_embeds.device,
                     )
                     .squeeze(0)
                     .squeeze(0)
@@ -1643,7 +1733,7 @@ def LlamaModel_fast_forward(
                         n,
                         n,
                         dtype = inputs_embeds.dtype,
-                        device = DEVICE_TYPE_TORCH,
+                        device = inputs_embeds.device,
                     )
                     .squeeze(0)
                     .squeeze(0)
@@ -3870,6 +3960,8 @@ class FastLlamaModel:
         **kwargs,
     ):
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
+        # loader.py sends full finetuning to FastModel, so this load is always LoRA. Say so, or load-time readers (packed experts, MXFP4, expert quantization) inherit an earlier full finetuning load's "1".
+        os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
         if trust_remote_code:
             if fast_inference:
                 raise NotImplementedError(
@@ -4014,7 +4106,7 @@ class FastLlamaModel:
                     model_name,
                     token = token,
                     attn_implementation = "sdpa",
-                    revision = revision,
+                    revision = _resolved_revision(model_name, revision, token),
                 )
                 _checkpoint_quant = getattr(_checkpoint_config, "quantization_config", None)
                 if _checkpoint_quant is not None:
@@ -4024,7 +4116,7 @@ class FastLlamaModel:
                 model_name,
                 token = token,
                 attn_implementation = "sdpa",
-                revision = revision,
+                revision = _resolved_revision(model_name, revision, token),
             )
         model_config.model_name = model_name
         _fp8_backfilled = backfill_fp8_modules_to_convert(
@@ -4454,7 +4546,13 @@ class FastLlamaModel:
                             token = token,
                             trust_remote_code = trust_remote_code,
                             attn_implementation = preferred_attn_impl,
-                            revision = revision,
+                            revision = _resolved_revision(
+                                model_name,
+                                revision,
+                                token,
+                                kwargs.get("local_files_only", False),
+                                kwargs.get("cache_dir"),
+                            ),
                             **kwargs,
                         )
                 finally:
@@ -4540,7 +4638,13 @@ class FastLlamaModel:
                                 token = token,
                                 trust_remote_code = trust_remote_code,
                                 attn_implementation = preferred_attn_impl,
-                                revision = revision,
+                                revision = _resolved_revision(
+                                    model_name,
+                                    revision,
+                                    token,
+                                    kwargs.get("local_files_only", False),
+                                    kwargs.get("cache_dir"),
+                                ),
                                 **kwargs,
                             )
                     finally:
@@ -4555,7 +4659,13 @@ class FastLlamaModel:
                             max_position_embeddings = max_position_embeddings,
                             trust_remote_code = trust_remote_code,
                             attn_implementation = preferred_attn_impl,
-                            revision = revision,
+                            revision = _resolved_revision(
+                                model_name,
+                                revision,
+                                token,
+                                kwargs.get("local_files_only", False),
+                                kwargs.get("cache_dir"),
+                            ),
                             **kwargs,
                         )
                 warn_if_bitsandbytes_quantized_nothing(
@@ -5048,7 +5158,7 @@ class FastLlamaModel:
                 prefetch_depth = prefetch_depth,
                 **kwargs,
             )
-        if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
+        if _is_full_finetuning(model):
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache.
             _unsloth_install_pretrain_detector(model)

@@ -216,9 +216,8 @@ def _clean_module_globals():
 
 @pytest.fixture
 def side_stream_warmups(monkeypatch):
-    """The side-stream warm-ups (UNSLOTH_DIFFUSION_GRAPH_REAL_WARMUP=0): a key's first call runs WARMUP_ITERS discarded
-    forwards and records. The tests of what that first-call recording does pin it; the default (the first real steps
-    are the warm-ups, the next one records) has its own tests below."""
+    """Sets UNSLOTH_DIFFUSION_GRAPH_REAL_WARMUP=0, selecting side-stream warm-ups: a key's first
+    call runs WARMUP_ITERS discarded forwards, then records; the default has its own tests."""
     monkeypatch.setenv(cg.REAL_WARMUP_ENV, "0")
 
 
@@ -2265,8 +2264,7 @@ def test_real_warmup_warms_a_new_shape_before_its_second_graph(stub_torch):
 
 
 def test_real_warmup_capture_exception_poisons_and_returns_the_eager_result(stub_torch):
-    """A recording that raises after the real warm-ups poisons the wrapper and the step still returns its eager
-    output, as on the side-stream path."""
+    """A capture error after real warm-ups poisons the wrapper; the step returns eager output."""
     stub_torch._records["graph_error"] = RuntimeError("CUDA out of memory during capture")
     module = _FakeDiT()
     handle = _armed(module)
@@ -2348,8 +2346,7 @@ def test_a_failed_nvfp4_prewarm_before_the_real_warmup_runs_the_step_eager(stub_
 
 
 def test_real_warmup_leaves_unbaked_nvfp4_scales_to_the_capture_refusal(stub_torch, record_prewarm):
-    """Activation scales still calibrating: no real warm-up; the step goes to the capture, which refuses the load
-    (eager), exactly as on the side-stream path."""
+    """Uncalibrated NVFP4 scales skip real warm-up; the capture refuses the load (eager)."""
     module = _NVFP4DiT([("blocks.0.attention.to_q", _FakeNVFP4Linear(baked = False))])
     handle = _armed(module)
     cg.note_render_steps((handle,), 8)  # a render with the steps to finish its warm-ups

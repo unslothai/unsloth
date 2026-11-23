@@ -1926,9 +1926,8 @@ def _unsloth_grpo_packing_leaks(self, unwrapped):
             print(f"Unsloth: GRPO sequence packing leak probe could not run: {e!r}", flush = True)
         return None
     finally:
-        # Through each module's train(), not its flag: a module may sync state there (Int4PackedLinear sets its
-        # quant_state.training). modules() is parent-first, so each recursive call is then undone by the
-        # children's own, leaving every module in its saved mode.
+        # Restore via each module's train(), not its flag, since modules may sync state there
+        # (Int4PackedLinear); parent-first recursion is undone by children's own restores.
         for module, training in was_training or ():
             module.train(training)
         # modules() yields a child shared by two parents once, so a later parent's recursive train() can flip it
@@ -1950,26 +1949,49 @@ def _unsloth_grpo_enable_packed_varlen(self, unwrapped):
 
 
 def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
-    """Packed GRPO forwards off, once per model (policy and a separate ref_model), for models whose compressors /
-    recurrences mix packed rows (packing_boundary_blocker), or whose attention lets packed documents see each other
-    (_unsloth_grpo_packing_leaks). Their leak (~0.1 nats) passes the 0.7 packed self-verify. Zoo's grad
-    PrefixGrouper verifies only against the grad packed forward, so turning that off covers it."""
+    """Check packed document isolation once per model, including a separate reference policy."""
     try:
         unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
         if getattr(unwrapped, "_unsloth_packing_boundary_checked", False):
             return
-        unwrapped._unsloth_packing_boundary_checked = True
-        from unsloth.utils.packing import packing_boundary_blocker
+        from unsloth.utils.packing import (
+            _hybrid_varlen_dispatched,
+            _iter_stateful_mixers,
+            packing_boundary_blocker,
+            patch_hybrid_linear_attention_varlen,
+        )
 
         config = getattr(unwrapped, "config", None)
         blocker = packing_boundary_blocker(unwrapped, (getattr(config, "model_type", None),))
+        mixers = _iter_stateful_mixers(unwrapped) if blocker is None else ()
+        wrapped = getattr(unwrapped, "_unsloth_varlen_forward_wrapped", False)
+        packing_on = os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+        if mixers and not wrapped and packing_on:
+            # The same boundary shim SFT packing installs (kernel checks, exactness probe, fail closed): a stateful
+            # mixer carries conv / recurrent state across a packed reset without it.
+            try:
+                wrapped = bool(patch_hybrid_linear_attention_varlen(unwrapped))
+            except Exception:
+                wrapped = False
+        if mixers and not (
+            wrapped and all(getattr(m, "_unsloth_varlen_wrapped", False) for m, _ in mixers)
+        ):
+            blocker = "missing_mixer_boundaries"
+        unwrapped._unsloth_packing_boundary_checked = True
     except Exception:
         return
-    if blocker is None and _unsloth_grpo_packing_leaks(self, unwrapped) is True:
-        blocker = "packing_leak_probe"
     if blocker is None:
-        _unsloth_grpo_enable_packed_varlen(self, unwrapped)
-        return
+        leaks = _unsloth_grpo_packing_leaks(self, unwrapped)
+        if (not mixers and leaks is not True) or (
+            leaks is False and all(_hybrid_varlen_dispatched(m) for m, _ in mixers)
+        ):
+            _unsloth_grpo_enable_packed_varlen(self, unwrapped)
+            return
     unwrapped._unsloth_seq_packing_nograd_ok = False
     unwrapped._unsloth_seq_packing_grad_ok = False
     unwrapped._unsloth_prefix_grouper_nograd_disabled = True
@@ -3938,6 +3960,11 @@ def _unsloth_vllm_peft_merge_out_of_place(base, layers):
                 layer.merge()
         return {id(param): param.data for param in params}
     finally:
+        # Through train(), not only the flag: Int4PackedLinear syncs its quant_state there and
+        # PreTrainedModel re-kernelizes under use_kernels. modules() is parent-first, so the children's
+        # own calls undo each recursion; the flags then cover a child shared by two parents.
+        for module, training in modes:
+            module.train(training)
         for module, training in modes:
             module.training = training
         for param, data in zip(params, originals):
@@ -5382,8 +5409,9 @@ def _unsloth_grpo_returns_hidden_states(model, tensor, lm_head):
 
 def _unsloth_grpo_head_hooked(model):
     """True when GRPO must score real logits from the head's own call: hidden-states scorers read ``lm_head.weight``
-    and bypass its hooks / patched ``forward``. Unsloth, ZeRO-3, FSDP2 and accelerate ``_hf_hook`` hooks are already
-    handled. A square head keeps hidden states: the width dispatch could not tell them from logits."""
+    and bypass its hooks / patched ``forward``, and on a PEFT LoRA head ``.weight`` is the base weight alone. Unsloth,
+    ZeRO-3, FSDP2 and accelerate ``_hf_hook`` hooks are already handled. A square head keeps hidden states: the width
+    dispatch could not tell them from logits."""
     try:
         head = model.get_output_embeddings()
     except Exception:
@@ -5408,6 +5436,23 @@ def _unsloth_grpo_head_hooked(model):
         return True
     if "forward" in vars(head) and not hasattr(head, "_hf_hook"):
         return True
+    # An active unmerged adapter on the head (fused_label_smoothing._head_not_fusable): generate() samples with it.
+    # Under fast inference the head LoRA stays untrained, as get_peft_model warns: vLLM samples without it.
+    try:
+        from peft.tuners.tuners_utils import BaseTunerLayer as _TunerLayer
+    except Exception:
+        _TunerLayer = None
+    if _TunerLayer is not None and getattr(model, "vllm_engine", None) is None:
+        for _module in head.modules():
+            if not isinstance(_module, _TunerLayer) or getattr(_module, "disable_adapters", False):
+                continue
+            _merged = set(getattr(_module, "merged_adapters", None) or ())
+            _held = set()
+            for _layer_name in getattr(_module, "adapter_layer_names", None) or ():
+                _held.update(getattr(_module, _layer_name, None) or ())
+            for _adapter in getattr(_module, "active_adapters", None) or ():
+                if _adapter in _held and _adapter not in _merged:
+                    return True
     for _name in ("_forward_hooks", "_forward_pre_hooks", "_backward_hooks", "_backward_pre_hooks"):
         for _hook in (getattr(head, _name, None) or {}).values():
             _fn = getattr(_hook, "func", _hook)  # functools.partial

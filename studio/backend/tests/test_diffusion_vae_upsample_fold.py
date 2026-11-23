@@ -164,3 +164,93 @@ def test_fold_follows_a_data_swap_like_the_fp32_retry(monkeypatch):
     finally:
         upcast.restore_storage(token)
     assert st._upsample(up, x, False)[0].dtype == torch.bfloat16  # noqa: SLF001
+
+
+def test_rocm_folds_in_strips_and_cuda_keeps_the_whole_map(monkeypatch):
+    """ROCm: MIOpen's whole-map transposed conv doubled the 1024 px decode peak on gfx1151, so the fold runs per strip
+    there (the 2048 px shape, peak unchanged). CUDA and CPU keep the whole-map limit."""
+    fake = type("T", (), {"is_cuda": True, "device": torch.device("cuda", 1)})()
+    monkeypatch.setattr(st, "STRIP_ELEMS", 1 << 20)
+    monkeypatch.setattr(st, "is_rocm_torch", lambda _torch: True)
+    assert st._fold_full_max(fake) == 1 << 20  # noqa: SLF001
+    assert st._fold_full_max(torch.empty(1)) is None  # noqa: SLF001 - CPU tensor
+    monkeypatch.setattr(st, "is_rocm_torch", lambda _torch: False)
+    assert st._fold_full_max(fake) is None  # noqa: SLF001 - CUDA: FOLD_FULL_MAX_ELEMS
+
+    def boom(_torch):
+        raise RuntimeError("no torch answer")
+
+    monkeypatch.setattr(st, "is_rocm_torch", boom)
+    assert st._fold_full_max(fake) == 0  # noqa: SLF001 - unanswerable: strips, the bounded peak
+
+
+@pytest.mark.parametrize("full_max, calls", [(None, 1), (0, 5)])
+def test_upsample_passes_the_fold_limit(monkeypatch, full_max, calls):
+    """``_upsample`` hands ``_fold_full_max`` to the fold: a strip limit runs one transposed conv per strip, same map."""
+    monkeypatch.setenv(st.UPSAMPLE_FOLD_ENV, "1")
+    conv, x = _case(h = 10)
+    up = type("Upsample2D", (), {"conv": conv})()
+    monkeypatch.setattr(
+        st, "STRIP_ELEMS", conv.out_channels * 4 * 2 * x.shape[-1]
+    )  # 2 input rows per strip
+    monkeypatch.setattr(st, "_fold_full_max", lambda _x: full_max)
+    real, seen = F.conv_transpose2d, []
+
+    def counted(*a, **k):
+        seen.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(F, "conv_transpose2d", counted)
+    out, _ = st._upsample(up, x, False)  # noqa: SLF001
+    assert len(seen) == calls
+    assert (out - _chain(conv, x)).abs().max().item() < 1e-6
+
+
+def test_portable_decode_keeps_the_fold_and_the_failed_retry_drops_it(monkeypatch):
+    """ROCm and no-Triton hosts run every strip decode portable (torch ops), and the fold stays on there. Only the
+    retry of a decoder whose strip decode failed runs without it, so a failing fold is not run twice."""
+    monkeypatch.setenv(st.UPSAMPLE_FOLD_ENV, "1")
+    conv, x = _case(dtype = torch.float32)
+    up = type("Upsample2D", (), {"conv": conv})()
+    calls = st._FOLD_CALLS[0]  # noqa: SLF001
+    monkeypatch.setattr(st._LOCAL, "portable", True, raising = False)  # noqa: SLF001
+    st._upsample(up, x, False)  # noqa: SLF001
+    assert st._FOLD_CALLS[0] == calls + 1  # noqa: SLF001 - portable: still folded
+    monkeypatch.setattr(st._LOCAL, "fold", False, raising = False)  # noqa: SLF001
+    out, pend = st._upsample(up, x, False)  # noqa: SLF001
+    assert st._FOLD_CALLS[0] == calls + 1 and pend is None  # noqa: SLF001 - the failed retry: 2x path
+    assert (out - _chain(conv, x)).abs().max().item() < 1e-5
+
+
+def test_full_map_retry_runs_without_the_fold(monkeypatch):
+    """full_map_decode: a failing kernel run marks the decoder; the retry and every later decode of it drop the fold,
+    and a decoder that never failed (ROCm: portable from the start) keeps it."""
+    seen: list = []
+
+    def run(
+        decoder,
+        z,
+        portable,
+        fold = True,
+    ):
+        seen.append((portable, fold))
+        if not portable:
+            raise RuntimeError("strip kernel failed")
+        return z
+
+    decoder = type("D", (), {})()
+    decoder.conv_in = torch.nn.Conv2d(4, 4, 3)
+    vae = type("V", (), {})()
+    vae.decoder, vae.post_quant_conv = decoder, None
+    z = torch.zeros(1, 4, 4, 4)
+    monkeypatch.setattr(st, "_full_map_run", run)
+    monkeypatch.setattr(st, "_kernels_ok", lambda d, zz: False)
+    st.full_map_decode(vae, z)
+    assert seen == [(True, True)]  # portable host: the fold stays
+    seen.clear()
+    monkeypatch.setattr(st, "_kernels_ok", lambda d, zz: True)
+    st.full_map_decode(vae, z)
+    assert seen == [(False, True), (True, False)]  # kernels failed: the retry drops the fold
+    seen.clear()
+    st.full_map_decode(vae, z)
+    assert seen == [(True, False)]  # that decoder stays on the torch ops without the fold

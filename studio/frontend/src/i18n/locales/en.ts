@@ -77,7 +77,7 @@ export const en = {
     materialMenusDescription: "Dropdowns, menus and pickers use the glass too.",
     materialStrength: "Glass strength",
     lens: "Glass lens",
-    lensDescription: "Bends the image under the composer like real glass.",
+    lensDescription: "Bends the image under every glass surface like real glass.",
     lensOff: "Off",
     lensMagnify: "Magnify",
     lensShrink: "Shrink",
@@ -1369,6 +1369,7 @@ export const en = {
       voice: "Voice",
       connections: "Connections",
       data: "Data",
+      knowledge: "Knowledge",
       apiKeys: "API",
       remoteLan: "Remote & LAN",
       agents: "Agents",
@@ -4932,7 +4933,7 @@ export const en = {
     translate: "Translate",
     stop: "Stop",
     sourceLabel: "Text to translate",
-    sourcePlaceholder: "Type or paste text, or drop a document or image",
+    sourcePlaceholder: "Type or paste text, or drop a document, image or audio file",
     outputLabel: "Translation",
     outputEmpty: "The translation appears here.",
     // Under the empty translation pane until the model's file is on disk.
@@ -4943,7 +4944,7 @@ export const en = {
     downloadConfirm: "Download",
     clear: "Clear",
     paste: "Paste",
-    openFile: "Open a document or image",
+    openFile: "Open a document, image or audio file",
     dropFile: "Drop a file to translate its text",
     fileNotText: "This file has no text to translate.",
     truncated: "Only the first {max} characters were kept.",
@@ -4951,6 +4952,7 @@ export const en = {
     copied: "Copied",
     // Moves the translation into the text box, to translate it onward into another language.
     useAsSource: "Translate this text",
+    downloadSubtitles: "Download subtitles",
     stale: "The text or settings changed. Translate again to update.",
     stopped: "Stopped before the end. Translate again for the rest.",
     // Opens a new chat with the translation in the message box, to ask about it.

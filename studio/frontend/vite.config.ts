@@ -10,6 +10,7 @@ import { childSelectorOrder } from "./vite-plugin-child-selectors";
 import { groupStateKeys } from "./vite-plugin-group-state";
 import { hasAnchorOrder } from "./vite-plugin-has-anchor";
 import { katexWoff2Only } from "./vite-plugin-katex-woff2";
+import { localeCatalogPreload } from "./vite-plugin-locale-preload";
 import { preloadNonceInHead } from "./vite-plugin-preload-nonce";
 import { viewportMediaGate } from "./vite-plugin-viewport-media";
 import { previewRuntime } from "./vite-preview-runtime.ts";
@@ -62,7 +63,7 @@ export default defineConfig({
   cacheDir: process.env.VITE_TEST_CACHE_DIR || "node_modules/.vite",
   // Reasoning's highlighter loads only the grammar it needs in its module worker.
   worker: { format: "es" },
-  plugins: [react(), tailwindcss(), childSelectorOrder(), hasAnchorOrder(), viewportMediaGate(), groupStateKeys(), { ...assistantUiTapStandIn(), apply: "build", enforce: "pre" }, smokeModuleDelay(), previewRuntime(), chatPagePreload(), katexWoff2Only(), preloadNonceInHead()],
+  plugins: [react(), tailwindcss(), childSelectorOrder(), hasAnchorOrder(), viewportMediaGate(), groupStateKeys(), { ...assistantUiTapStandIn(), apply: "build", enforce: "pre" }, smokeModuleDelay(), previewRuntime(), chatPagePreload(), localeCatalogPreload(), katexWoff2Only(), preloadNonceInHead()],
   // prevent ancestor PostCSS configs from leaking into installs; Tailwind uses its Vite plugin.
   css: {
     postcss: {

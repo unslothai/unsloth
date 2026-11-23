@@ -44,7 +44,6 @@ class _Model(torch.nn.Module):
 
 def test_engages_only_on_cuda_auto_and_diffusers_models(monkeypatch):
     monkeypatch.delenv(gb.GC_MODE_ENV, raising = False)
-    monkeypatch.setattr(gb, "_is_rocm", lambda: False)
     model = _Model()
     budget = gb.enable_budgeted_checkpointing(model, "cuda")
     assert isinstance(budget, gb.BudgetedCheckpoint) and model.func is budget
@@ -56,7 +55,6 @@ def test_engages_only_on_cuda_auto_and_diffusers_models(monkeypatch):
 @pytest.mark.parametrize("mode", ["plain", "partial"])
 def test_kill_switch_keeps_the_old_path(mode, monkeypatch):
     monkeypatch.setenv(gb.GC_MODE_ENV, mode)
-    monkeypatch.setattr(gb, "_is_rocm", lambda: False)
     model = _Model()
     assert gb.enable_budgeted_checkpointing(model, "cuda") is None
     assert model.func is None
@@ -65,7 +63,7 @@ def test_kill_switch_keeps_the_old_path(mode, monkeypatch):
 def test_rocm_uses_the_budget_too(monkeypatch):
     # gfx1151 Linux + Windows: 1.40x / 2.18x bf16 klein LoRA steps, Linux losses bitwise equal to every block checkpointed
     monkeypatch.delenv(gb.GC_MODE_ENV, raising = False)
-    monkeypatch.setattr(gb, "_is_rocm", lambda: True)
+    monkeypatch.setattr(torch, "__version__", "2.11.0+rocm7.13.0")
     model = _Model()
     budget = gb.enable_budgeted_checkpointing(model, "cuda")
     assert isinstance(budget, gb.BudgetedCheckpoint) and model.func is budget
@@ -238,7 +236,6 @@ def _lora_grads(model):
 
 def test_every_state_matches_uncheckpointed_grads(monkeypatch):
     monkeypatch.delenv(gb.GC_MODE_ENV, raising = False)
-    monkeypatch.setattr(gb, "_is_rocm", lambda: False)
     # CPU stand-in for the CUDA allocator counter: grows by 1 MiB per read, so a measured block keeps ~1 MiB.
     counter = iter(range(0, 1 << 40, 1 << 20))
     monkeypatch.setattr(gb, "_memory_allocated", lambda: next(counter))

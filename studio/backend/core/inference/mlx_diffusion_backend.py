@@ -129,17 +129,32 @@ def text_encoder_bits(ram_bytes: Optional[int] = None) -> Optional[int]:
     return 4 if 0 < ram <= _LOW_RAM_BYTES else 8
 
 
-def dense_bits(ram_bytes: Optional[int] = None) -> int:
+def dense_bits(ram_bytes: Optional[int] = None, options: Optional[tuple[int, ...]] = None) -> int:
     forced = _env_int("UNSLOTH_DIFFUSION_MLX_DENSE_BITS", (0, 4, 8))
     if forced is not None:
         return forced
     ram = _total_ram_bytes() if ram_bytes is None else ram_bytes
-    return 4 if 0 < ram <= _LOW_RAM_BYTES else 0
+    pick = 4 if 0 < ram <= _LOW_RAM_BYTES else 0
+    if options and pick not in options:
+        return options[-1]
+    return pick
 
 
 # The 4-bit text encoder is the last rung, used only when nothing above it fits.
 _TE_BIT_OPTIONS = (8, 4)
 _DENSE_BIT_OPTIONS = (0, 8, 4)
+
+
+def dense_bit_options(
+    family: Optional[DiffusionFamily], model_config: Optional[str]
+) -> tuple[int, ...]:
+    """``_DENSE_BIT_OPTIONS`` without the rungs below the config's ``mlx_min_dense_bits`` (0 = bf16 stays)."""
+    floor = dict(getattr(family, "mlx_min_dense_bits", ()) or ()).get(model_config or "")
+    if not floor:
+        return _DENSE_BIT_OPTIONS
+    return tuple(b for b in _DENSE_BIT_OPTIONS if b == 0 or b >= floor)
+
+
 # Group-64 affine: one bf16 scale and one bf16 bias per 64 weights.
 _TE_GROUP_OVERHEAD_BITS = 2 * 16 / _TE_GROUP_SIZE
 # Live activations above the weights during a step, and the VAE decode at 1024x1024 when it is tiled (512 px tiles).
@@ -218,13 +233,15 @@ def plan_quantization(
     vae_bytes: int = 0,
     headroom_bytes: int = ACTIVATION_HEADROOM_BYTES,
     text_encoder_retained_bytes: int = 0,
+    dense_options: tuple[int, ...] = _DENSE_BIT_OPTIONS,
 ) -> QuantPlan:
     """The most accurate (text encoder bits, dense bits) whose resident set fits ``budget_bytes``; the smallest when
-    none does. ``UNSLOTH_DIFFUSION_MLX_TE_BITS`` / ``_DENSE_BITS`` pin their axis."""
+    none does. ``dense_options`` is the config's ladder (``dense_bit_options``). ``UNSLOTH_DIFFUSION_MLX_TE_BITS`` /
+    ``_DENSE_BITS`` pin their axis."""
     forced_te = _env_int("UNSLOTH_DIFFUSION_MLX_TE_BITS", (4, 8, 16))
     forced_dense = _env_int("UNSLOTH_DIFFUSION_MLX_DENSE_BITS", (0, 4, 8))
     te_options = (forced_te,) if forced_te is not None else _TE_BIT_OPTIONS
-    dense_options = (forced_dense,) if forced_dense is not None else _DENSE_BIT_OPTIONS
+    dense_options = (forced_dense,) if forced_dense is not None else tuple(dense_options)
     rungs = [
         (None if te == 16 else te, dense)
         for te in te_options
@@ -285,6 +302,7 @@ def plan_for_load(
     base_dir: str,
     *,
     headroom_bytes: int = ACTIVATION_HEADROOM_BYTES,
+    dense_options: tuple[int, ...] = _DENSE_BIT_OPTIONS,
 ) -> QuantPlan:
     """The load's plan: header sizes of the GGUF and the base repo's text encoder / VAE against the working set.
     Any unreadable input falls back to the RAM-size rule (``text_encoder_bits`` / ``dense_bits``)."""
@@ -307,10 +325,11 @@ def plan_for_load(
             vae_bytes = vae,
             headroom_bytes = headroom_bytes,
             text_encoder_retained_bytes = te_retained_bytes,
+            dense_options = dense_options,
         )
     except Exception as exc:  # noqa: BLE001 -- the size-free rule below still loads
         logger.info("mlx_diffusion.quant_plan_fallback: %s", exc)
-        return QuantPlan(text_encoder_bits(), dense_bits(), source = "ram_rule")
+        return QuantPlan(text_encoder_bits(), dense_bits(options = dense_options), source = "ram_rule")
 
 
 def _chip_name() -> str:
@@ -328,15 +347,28 @@ def _chip_name() -> str:
         return ""
 
 
-def compute_precision_name(chip: Optional[str] = None) -> str:
-    """M1 / M2 lack native bf16, so fp16 there."""
+def fp16_safe_on_mlx(family: Optional[DiffusionFamily], model_config: Optional[str]) -> bool:
+    """False for an ``fp16_incompatible`` family's config not listed in its ``mlx_fp16_configs``."""
+    if family is None or not getattr(family, "fp16_incompatible", False):
+        return True
+    return (model_config or "") in (getattr(family, "mlx_fp16_configs", ()) or ())
+
+
+def compute_precision_name(
+    chip: Optional[str] = None,
+    family: Optional[DiffusionFamily] = None,
+    model_config: Optional[str] = None,
+) -> str:
+    """M1 / M2 lack native bf16, so fp16 there, unless the family's config overflows fp16."""
     raw = os.environ.get("UNSLOTH_DIFFUSION_MLX_PRECISION", "auto").strip().lower()
     if raw in ("fp16", "float16", "half"):
         return "float16"
     if raw in ("bf16", "bfloat16"):
         return "bfloat16"
     name = (chip if chip is not None else _chip_name()).lower()
-    return "float16" if ("apple m1" in name or "apple m2" in name) else "bfloat16"
+    if not ("apple m1" in name or "apple m2" in name):
+        return "bfloat16"
+    return "float16" if fp16_safe_on_mlx(family, model_config) else "bfloat16"
 
 
 # Untiled VAE decode above weights ~0.44 GiB plus 6.35 KB per output pixel (mflux Z-Image VAE, bf16,
@@ -927,6 +959,12 @@ def _named_mlx_base(fam: DiffusionFamily, *names: Optional[str]) -> Optional[str
     return found
 
 
+def mlx_config_for_base(fam: DiffusionFamily, base: str) -> Optional[str]:
+    """The mflux config a load of ``base`` builds; a local base directory is named by its folder."""
+    named = _named_mlx_base(fam, base) if _is_local_path(base) else None
+    return mlx_model_config_for(fam, named or base)
+
+
 def _companion_mirror(base: str) -> Optional[str]:
     if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
         return None
@@ -1049,8 +1087,7 @@ class MlxDiffusionBackend:
                 f"LoRA adapters are not supported on the MLX engine for {fam.name} yet."
             )
         base = resolve_base_repo(fam, base_repo)
-        named = _named_mlx_base(fam, base) if _is_local_path(base) else None
-        model_config = mlx_model_config_for(fam, named or base)
+        model_config = mlx_config_for_base(fam, base)
         with self._lock:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
@@ -1151,7 +1188,10 @@ class MlxDiffusionBackend:
             if _cancel_event.is_set():
                 return
             plan = plan_for_load(
-                gguf_path, base_dir, headroom_bytes = decode_headroom_bytes(self._rt())
+                gguf_path,
+                base_dir,
+                headroom_bytes = decode_headroom_bytes(self._rt()),
+                dense_options = dense_bit_options(fam, model_config),
             )
             bits = plan.dense_bits
             timings["quant_plan"] = plan.as_dict()
@@ -1196,7 +1236,7 @@ class MlxDiffusionBackend:
             _link_base_components(Path(out_dir), base_dir)
             if _cancel_event.is_set():
                 return
-            precision = compute_precision_name()
+            precision = compute_precision_name(family = fam, model_config = model_config)
             te_bits = plan.te_bits
             t2 = time.perf_counter()
             runtime = self._rt()

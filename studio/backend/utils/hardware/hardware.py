@@ -2786,7 +2786,8 @@ def _context_free_cuda_memory_info(
         free_mib, total_mib = _cuda_instance_free_total_mib(idx)
         if free_mib is None or total_mib is None:
             return None
-        if abs(total_mib * 1024**2 - total_bytes) > max(total_bytes // 100, 16 * 1024**2):
+        # 10%: nvidia-smi totals include the driver-reserved framebuffer torch excludes (#18732).
+        if abs(total_mib * 1024**2 - total_bytes) > max(total_bytes // 10, 1024 * 1024**2):
             return None
         return _free_in_torch_scope(total_bytes, (total_mib - free_mib) / 1024)
 
@@ -2812,7 +2813,8 @@ def _context_free_cuda_memory_info(
             if used_gb is None or driver_total_gb is None:
                 break
             driver_total_bytes = round(driver_total_gb * (1024**3))
-            total_tolerance = max(total_bytes // 100, 16 * 1024**2)
+            # 10%: nvidia-smi totals include the driver-reserved framebuffer torch excludes (#18732); partitions differ by GiBs.
+            total_tolerance = max(total_bytes // 10, 1024 * 1024**2)
             if abs(driver_total_bytes - total_bytes) > total_tolerance:
                 logger.debug("Skipping whole-GPU VRAM telemetry for a partitioned GPU device")
                 break

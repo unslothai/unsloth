@@ -21,7 +21,7 @@ import {
 	visibilityKey,
 } from "./model";
 import { useAppliedMaterial } from "./material";
-import { ComposerGlassLenses } from "./lens";
+import { GlassLenses } from "./lens";
 import { WallpaperArtwork } from "./artwork";
 import { useWallpaperHostFlags } from "./host-flags";
 import { type ImageTone, glassReadability, measureTone } from "./tone";
@@ -220,6 +220,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 	const shownReady = Boolean(value && active && frames.current);
 	const glass = useAppliedMaterial() !== "solid";
 	const [appWallpaper, setAppWallpaper] = useState<HTMLDivElement | null>(null);
+	const [previewWallpaper, setPreviewWallpaper] = useState<HTMLDivElement | null>(null);
 	const [tone, setTone] = useState<ImageTone | null>(null);
 	const frameUrl = frames.current?.url;
 	useEffect(() => {
@@ -267,6 +268,10 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 		// Only the app's own wallpaper drives the titlebar; a settings preview never marks the root.
 		const parent = host.current?.parentElement;
 		if (!shownReady || !parent) return;
+		if (parent.classList.contains("wallpaper-preview")) {
+			setPreviewWallpaper(host.current);
+			return () => setPreviewWallpaper(null);
+		}
 		const workspace = parent.hasAttribute("data-wallpaper-workspace");
 		if (workspace || parent.hasAttribute("data-auth-wallpaper"))
 			setAppWallpaper(host.current);
@@ -325,7 +330,8 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 					</div>
 				);
 			})}
-			<ComposerGlassLenses wallpaper={appWallpaper} />
+			<GlassLenses wallpaper={appWallpaper} />
+			{previewWallpaper && <GlassLenses wallpaper={previewWallpaper} preview />}
 		</div>
 	);
 }

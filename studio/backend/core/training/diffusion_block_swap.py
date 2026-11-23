@@ -250,9 +250,8 @@ def plan_swap(
     need_bytes: int = 0,
     depth: int = 2,
 ) -> list:
-    """Blocks to swap per list. block_bytes = [[bytes per block] per list]; request = N (spread over the lists by
-    length) or "auto" (the smallest equal fraction of every list whose freed bytes, net of the depth + 1 slot pool,
-    cover need_bytes). Returns [[indices] per list]."""
+    """Returns [[indices] per list]; N is spread by list length, auto takes the smallest equal
+    fraction of every list whose freed bytes, net of the depth + 1 slot pool, cover need_bytes."""
     lens = [len(b) for b in block_bytes]
     total = sum(lens)
     if not total:
@@ -420,6 +419,22 @@ def install_dit_block_swap(
         converted, failed = _lowp_convert_blocks(transformer, lowp, swapped, dev)
         if not converted:
             raise ValueError(f"block_swap: no eligible linear layer converted to {lowp['mode']}.")
+        if failed:
+            # A failed conversion stays bf16 (2 bytes/weight, not 1-byte codes): re-size and swap extra blocks.
+            block_bytes = [[_frozen_bytes(b) for b in mod] for _, mod in lists]
+            model_bytes = _model_bytes(transformer)
+            need = model_bytes + trainable + reserve - free_bytes
+            if request == "auto":
+                plan = [
+                    sorted(set(old) | set(new))
+                    for old, new in zip(plan, plan_swap(block_bytes, request, need, depth_plan))
+                ]
+                already = {id(b) for b in swapped}
+                swapped = [mod[i] for (_, mod), idx in zip(lists, plan) for i in idx]
+                for block in swapped:
+                    if id(block) not in already:
+                        for m in block.modules():
+                            host_lowp_weight(m)
     _place_rest(transformer, swapped, dev)
     from core.training.diffusion_gc_budget import SWAPPED_ATTR
 

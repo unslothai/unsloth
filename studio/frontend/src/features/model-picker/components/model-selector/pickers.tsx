@@ -224,6 +224,7 @@ import {
   curatedSizeBytesFor,
   curatedTotalParamsFor,
   groupForRepoId,
+  videoRecommendedTierFor,
 } from "./model-catalog";
 import {
   curatedPickerFit,
@@ -4791,6 +4792,7 @@ export function HubModelPicker({
       pinnedTogether: catalog
         ?.filter((g) => g.pinToTop && g.pinRowsTogether)
         .map((g) => g.canonicalId.toLowerCase()),
+      tierOf: videoRecommendedTierFor(catalog, hostClass, denseQuantSchemes),
     });
     if (!communityRecommendedEnabled) return unslothRows;
     // Community rows append below everything unsloth publishes, with the same gates.
@@ -4832,6 +4834,8 @@ export function HubModelPicker({
     isLoadableCommunityRepo,
     runsCheckpointQuant,
     chatSupportedCheckpointQuant,
+    hostClass,
+    denseQuantSchemes,
   ]);
 
   const moreById = useMemo(

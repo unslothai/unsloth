@@ -107,8 +107,11 @@ def test_fp8_without_a_hosted_file_loads_on_the_host(monkeypatch):
         (11.5, (8, 6), "nf4"),
     ],
 )
-def test_pick_auto_precision_fp8_band(free, cap, expected):
-    assert dit._pick_auto_precision(False, "cuda", free, 12.3, cap, True, True) == expected
+def test_pick_auto_precision_fp8_band(monkeypatch, free, cap, expected):
+    monkeypatch.setattr(dit, "_AUTO_FP8_MEASURED", dit._AUTO_FP8_MEASURED | {"measured"})
+    assert (
+        dit._pick_auto_precision(False, "cuda", free, 12.3, cap, True, True, "measured") == expected
+    )
 
 
 def test_auto_fp8_kill_switch(monkeypatch):
@@ -154,8 +157,17 @@ def test_auto_fp8_respects_the_family_train_deny(monkeypatch, family, expected):
         ("wan2.2-ti2v-5b", 1.6, "bf16"),
         ("wan2.2-ti2v-5b", 1.3, "int8"),
         ("wan2.2-ti2v-5b", 1.0, "fp8"),
-        ("flux.1", 1.3, "fp8"),
-        (None, 1.3, "fp8"),
+        ("flux.2-klein", 1.3, "fp8"),
+        ("flux.2-klein", 1.0, "fp8"),
+        ("z-image", 1.3, "fp8"),
+        ("z-image", 1.0, "fp8"),
+        ("flux.1", 1.3, "int8"),
+        ("flux.1", 1.0, "nf4"),
+        ("flux.2-dev", 1.3, "int8"),
+        ("ltx-2", 1.0, "nf4"),
+        ("krea-2", 1.3, "int8"),
+        (None, 1.3, "int8"),
+        (None, 1.0, "nf4"),
         (None, 1.6, "bf16"),
     ],
 )
@@ -305,6 +317,49 @@ def test_a_failing_fp8_probe_keeps_auto_off_fp8(monkeypatch):
     assert calls == ["cuda:0"]  # cached per device
 
 
+@pytest.mark.parametrize(
+    "cap, compiles, probed, expected",
+    [
+        ((8, 0), True, False, "int8"),  # A100: no fp8 GEMM, int8 as before
+        ((8, 9), False, False, "int8"),  # eager run: fp8 never picked
+        ((8, 9), True, True, "fp8"),
+    ],
+)
+def test_auto_runs_the_fp8_probe_only_when_fp8_could_be_picked(
+    monkeypatch, cap, compiles, probed, expected
+):
+    """The probe allocates, runs a GEMM and syncs (and logs a failure warning on sm80); the policy drops fp8 below
+    sm89 and for an eager run, so those runs must not pay for it. The pick itself is unchanged."""
+
+    class _FakeCuda:
+        @staticmethod
+        def mem_get_info():
+            return (int(1.3 * dit._SPECS["z-image"].dense_bf16_gb * 1e9), int(80 * 1e9))
+
+        @staticmethod
+        def get_device_capability():
+            return cap
+
+    calls = []
+
+    def probe(device):
+        calls.append(device)
+        return True
+
+    monkeypatch.delenv("UNSLOTH_DIT_AUTO_FP8", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIT_BLOCK_SWAP", raising = False)
+    monkeypatch.setattr(torch, "cuda", _FakeCuda)
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+    monkeypatch.setattr(dit, "repo_is_prequantized", lambda repo: False)
+    monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: compiles)
+    monkeypatch.setattr(dit, "_auto_fp8_probe_ok", probe)
+    cfg = types.SimpleNamespace(
+        base_precision = "auto", base_model = "some/dense-base", mixed_precision = "bf16"
+    )
+    assert dit._resolve_base_precision(cfg, dit._SPECS["z-image"], "cuda") == expected
+    assert bool(calls) is probed
+
+
 def test_a_failed_conversion_that_cannot_fall_back_to_bf16_asks_for_nf4(monkeypatch):
     """Below the bf16 fit the fp8 base streams host-first; a failed conversion must not move the bf16 rest onto a
     card it never fit (main trained nf4 there), so the caller reloads nf4."""
@@ -341,3 +396,61 @@ def test_the_bf16_fallback_fit_counts_only_host_bytes(monkeypatch):
     _FakeCuda.free = need - (1 << 20)
     assert dit._bf16_fallback_fits(model, "cuda:0") is False
     assert dit._bf16_fallback_fits(model, "cpu") is True
+
+
+def _resolve_auto(monkeypatch, family, ratio, host_avail_gb):
+    """_resolve_base_precision for Auto with free VRAM at ``ratio`` x the family's dense size and ``host_avail_gb``
+    of available host RAM (None: unreadable)."""
+    import core.inference.diffusion_prequant_cache as pc
+
+    dense = dit._SPECS[family].dense_bf16_gb
+
+    class _FakeCuda:
+        @staticmethod
+        def mem_get_info():
+            return (int(ratio * dense * 1e9), int(80 * 1e9))
+
+        @staticmethod
+        def get_device_capability():
+            return (8, 9)
+
+    avail = None if host_avail_gb is None else int(host_avail_gb * (1 << 30))
+    monkeypatch.delenv("UNSLOTH_DIT_AUTO_FP8", raising = False)
+    monkeypatch.setattr(torch, "cuda", _FakeCuda)
+    monkeypatch.setattr(pc, "_host_memory_bytes", lambda: (avail, avail))
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+    monkeypatch.setattr(dit, "repo_is_prequantized", lambda repo: False)
+    monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
+    monkeypatch.setattr(dit, "_auto_fp8_probe_ok", lambda device: True)
+    cfg = types.SimpleNamespace(
+        base_precision = "auto", base_model = "some/dense-base", mixed_precision = "bf16"
+    )
+    return dit._resolve_base_precision(cfg, dit._SPECS[family], "cuda")
+
+
+@pytest.mark.parametrize("host_avail_gb", [8.0, None])
+def test_auto_fp8_below_1_15x_needs_host_ram_for_the_bf16_load(monkeypatch, host_avail_gb):
+    # The fp8 base loads the dense bf16 base on the host; the nf4 load it replaces streams to the card.
+    assert _resolve_auto(monkeypatch, "z-image", 1.0, host_avail_gb) == "nf4"
+
+
+def test_auto_fp8_below_1_15x_with_host_ram_still_picks_fp8(monkeypatch):
+    assert _resolve_auto(monkeypatch, "z-image", 1.0, 512.0) == "fp8"
+    # The 1.15x-1.5x band replaced int8, which already loaded host-first: no new host-RAM gate there.
+    assert _resolve_auto(monkeypatch, "z-image", 1.3, 8.0) == "fp8"
+
+
+def test_pick_auto_precision_fp8_host_ok_gates_only_the_low_band():
+    p = dit._pick_auto_precision
+    assert p(False, "cuda", 10.0, 10.0, (8, 9), True, True, "z-image", True, False) == "nf4"
+    assert p(False, "cuda", 10.0, 10.0, (8, 9), True, True, "z-image", True, True) == "fp8"
+    assert p(False, "cuda", 13.0, 10.0, (8, 9), True, True, "z-image", True, False) == "fp8"
+
+
+@pytest.mark.parametrize(
+    "family", ["flux.1", "flux.2-dev", "flux.3-klein-base", "krea-2", "ltx-2", "ltx-2.5"]
+)
+@pytest.mark.parametrize("ratio, previous", [(1.3, "int8"), (1.0, "nf4")])
+def test_auto_fp8_unmeasured_families_keep_the_previous_pick(monkeypatch, family, ratio, previous):
+    # Auto fp8 below 1.5x was measured only on Z-Image, FLUX.2 klein and Wan; other families keep int8 / nf4.
+    assert _resolve_auto(monkeypatch, family, ratio, 512.0) == previous

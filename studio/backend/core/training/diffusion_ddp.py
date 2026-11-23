@@ -1,18 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Data-parallel DiT LoRA training across the visible GPUs of one host: one process per GPU.
-
-The trainer child is rank 0; it starts ranks 1..N-1 as plain subprocesses (the child is a daemonic multiprocessing
-process, which may not have multiprocessing children). Every rank builds the same GLOBAL micro-batch from the same
-seeded streams (sampler order, crop / variant picks, noise, timesteps, caption dropout) and trains on its own slice,
-so a run on N GPUs at batch b is the run on one GPU at batch N*b, with the batch split across cards. After the
-micro-steps, one all-reduce averages the LoRA gradients (and the step loss) before clipping, so compile, the
-checkpointing budget, OOM reruns and fp16 loss scaling run per rank unchanged and the replicas stay identical.
-
-Rank 0 alone emits events, writes checkpoints, previews and the adapter. Ranks 1..N-1 wait until rank 0 has
-encoded the conditioning (so they read it warm from the on-disk cache) and loaded its transformer (so they load from
-page cache, one at a time), then join the first collective."""
+"""Rank 0 spawns 1..N-1 as subprocesses (daemonic processes cannot have children); ranks share the
+seeded global micro-batch (N GPUs at batch b = one at N*b) and all-reduce LoRA grads before
+clipping; only rank 0 writes outputs; ranks 1..N-1 wait for its cache, weights, then join the
+collective."""
 
 from __future__ import annotations
 
@@ -193,6 +185,32 @@ class DistContext:
         if len(set(picks)) == 1 or not known:
             return picks[0]
         return min(known, key = order.index)
+
+    # The base every rank actually trains once its conversions ran (their fallbacks are rank-local).
+    _EFFECTIVE_PRECISIONS = ("nf4", "int8", "int8_w8a8", "fp8", "mxfp8", "bf16")
+
+    def check_effective_precision(self, effective: str) -> None:
+        """Refuse on every rank when the ranks ended on different bases. agree_precision fixes the pick, but the fp8 /
+        W8A8 conversions fall back per rank (bf16, an nf4 reload, torchao weight-only int8); a mixed run would
+        all-reduce LoRA grads taken through different base numerics without any error. One int64 per rank."""
+        import torch
+        import torch.distributed as dist
+
+        names = self._EFFECTIVE_PRECISIONS
+        code = names.index(effective) if effective in names else len(names)
+        mine = torch.tensor([code], dtype = torch.int64, device = self._device())
+        out = [torch.empty_like(mine) for _ in range(self.world)]
+        dist.all_gather(out, mine)
+        codes = [int(t.item()) for t in out]
+        if len(set(codes)) > 1:
+            picks = ", ".join(
+                f"rank {r}: {names[c] if c < len(names) else 'unknown'}"
+                for r, c in enumerate(codes)
+            )
+            raise RuntimeError(
+                "Multi-GPU training stopped: the GPUs ended up training different base precisions after "
+                f"conversion ({picks}). Set base_precision to one of them explicitly, or train on one GPU."
+            )
 
     def params_checksum(self, params) -> float:
         import torch
@@ -408,8 +426,7 @@ def launch(
     try:
         dist.init_process_group("nccl", store = store, rank = 0, world_size = world, timeout = _timeout())
     except BaseException:
-        # The caller never gets ctx, so stop the started ranks and the watcher (which would os._exit this process
-        # once they die) here.
+        # Caller never gets ctx: stop ranks and the watcher here, else the watcher os._exit()s.
         ctx.close(failed = True)
         raise
     _CURRENT = ctx

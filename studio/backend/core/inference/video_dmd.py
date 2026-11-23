@@ -22,8 +22,7 @@ from typing import Any, Iterator, Optional
 DMD_TRAINING_SHIFT = 8.0
 DMD_TRAIN_TIMESTEPS = 1000
 
-# (last-path-segment regex on the normalised name, trained timesteps); every other FastWan release stays refused
-# by video_families.
+# Rows: regex on normalised last path segment, trained timesteps; other FastWan refused.
 _DMD_RECIPES: tuple[tuple[str, tuple[int, ...]], ...] = (
     (r"(?<![a-z0-9])fastwan-?2-2-ti2v-5b-fullattn(?![a-z0-9])", (1000, 757, 522)),
     # Distilled with sparse attention; sampled dense it matches the 30-step base on CLIP-T / PickScore (L4, 8 prompts).
@@ -96,9 +95,8 @@ def make_dmd_scheduler(
     *,
     device: Any = None,
 ) -> Any:
-    """A diffusers-compatible scheduler running the DMD update over ``timesteps``, noise from a CPU generator
-    seeded with :func:`renoise_seed` of ``seed`` (identical across CUDA, ROCm, MPS and CPU, independent of the
-    initial latent noise)."""
+    """Diffusers scheduler for the DMD update over timesteps; re-noise on a CPU generator seeded by
+    renoise_seed(seed), identical on CUDA, ROCm, MPS and CPU, separate from initial noise."""
     import torch
 
     base = _scheduler_base()
