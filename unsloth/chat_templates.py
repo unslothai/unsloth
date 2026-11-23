@@ -2578,15 +2578,90 @@ DEFAULT_SYSTEM_MESSAGE["qwen3-thinking"] = None
 
 # =========================================== Liquid-LFM2
 liquid_lfm2_template = \
+r'''{{- bos_token -}}
+{%- macro format_arg_value(arg_value) -%}
+	{%- if arg_value is string -%}
+		{{- "'" + (arg_value | replace("\\", "\\\\") | replace("'", "\\'") | replace("\n", "\\n") | replace("\r", "\\r")) + "'" -}}
+	{%- elif arg_value is mapping or arg_value is iterable -%}
+		{{- arg_value | tojson -}}
+	{%- else -%}
+		{{- arg_value | string -}}
+	{%- endif -%}
+{%- endmacro -%}
+{%- macro render_tool_calls(tool_calls) -%}
+	{%- set tool_calls_ns = namespace(tool_calls=[]) -%}
+	{%- for tool_call in tool_calls -%}
+		{%- set func = tool_call["function"] if "function" in tool_call else tool_call -%}
+		{%- set func_name = func["name"] -%}
+		{%- set func_args = func.get("arguments") -%}
+		{%- set args_ns = namespace(arg_strings=[]) -%}
+		{%- if func_args is mapping -%}
+			{%- for arg_name, arg_value in func_args.items() -%}
+				{%- set args_ns.arg_strings = args_ns.arg_strings + [arg_name + "=" + format_arg_value(arg_value)] -%}
+			{%- endfor -%}
+		{%- elif func_args is string and (func_args | trim) not in ["", "{}", "null"] -%}
+			{{- raise_exception("Tool call arguments must be a mapping, got a JSON-encoded string: parse arguments with json.loads() before applying the chat template") -}}
+		{%- endif -%}
+		{%- set tool_calls_ns.tool_calls = tool_calls_ns.tool_calls + [func_name + "(" + (args_ns.arg_strings | join(", ")) + ")"] -%}
+	{%- endfor -%}
+	{{- "<|tool_call_start|>[" + (tool_calls_ns.tool_calls | join(", ")) + "]<|tool_call_end|>" -}}
+{%- endmacro -%}
+{%- set ns = namespace(system_prompt="") -%}
+{%- if messages[0]["role"] == "system" -%}
+	{%- set ns.system_prompt = messages[0]["content"] -%}
+	{%- set messages = messages[1:] -%}
+{%- endif -%}
+{%- if tools -%}
+	{%- set ns.system_prompt = ns.system_prompt + ("\n" if ns.system_prompt else "") + "List of tools: <|tool_list_start|>[" -%}
+	{%- for tool in tools -%}
+		{%- if tool is not string -%}
+            {%- set tool = tool | tojson -%}
+		{%- endif -%}
+		{%- set ns.system_prompt = ns.system_prompt + tool -%}
+        {%- if not loop.last -%}
+            {%- set ns.system_prompt = ns.system_prompt + ", " -%}
+        {%- endif -%}
+	{%- endfor -%}
+	{%- set ns.system_prompt = ns.system_prompt + "]<|tool_list_end|>" -%}
+{%- endif -%}
+{%- if ns.system_prompt -%}
+	{{- "<|im_start|>system\n" + ns.system_prompt + "<|im_end|>\n" -}}
+{%- endif -%}
+{%- for message in messages -%}
+	{{- "<|im_start|>" + message["role"] + "\n" -}}
+	{%- set content = message.get("content") -%}
+	{%- if content is not string -%}
+		{%- set content = content | tojson -%}
+	{%- endif -%}
+	{%- if message["role"] == "tool" -%}
+		{%- set content = "<|tool_response_start|>" + content + "<|tool_response_end|>" -%}
+	{%- endif -%}
+	{%- if message["role"] == "assistant" and message.get("tool_calls") -%}
+		{%- if content and content != "null" -%}
+			{{- content -}}
+		{%- endif -%}
+		{{- render_tool_calls(message["tool_calls"]) -}}
+		{{- "<|im_end|>\n" -}}
+	{%- else -%}
+		{{- content + "<|im_end|>\n" -}}
+	{%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+	{{- "<|im_start|>assistant\n" -}}
+{%- endif -%}
+'''
+
+liquid_lfm2_template_eos_token = "<|im_end|>"
+CHAT_TEMPLATES["lfm-2"] = (liquid_lfm2_template, liquid_lfm2_template_eos_token, False, None)
+DEFAULT_SYSTEM_MESSAGE["lfm-2"] = None
+# LFM2.5 ships its own official template without the LFM2 tool markers; keep its render unchanged.
+liquid_lfm25_template = \
 '''{{bos_token}}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
 ' + message['content'] + '<|im_end|>' + '
 '}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
 ' }}{% endif %}'''
 
-liquid_lfm2_template_eos_token = "<|im_end|>"
-CHAT_TEMPLATES["lfm-2"] = (liquid_lfm2_template, liquid_lfm2_template_eos_token, False, None)
-DEFAULT_SYSTEM_MESSAGE["lfm-2"] = None
-CHAT_TEMPLATES["lfm-2.5"] = (liquid_lfm2_template, liquid_lfm2_template_eos_token, False, None)
+CHAT_TEMPLATES["lfm-2.5"] = (liquid_lfm25_template, liquid_lfm2_template_eos_token, False, None)
 DEFAULT_SYSTEM_MESSAGE["lfm-2.5"] = None
 
 
