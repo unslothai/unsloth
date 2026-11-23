@@ -673,3 +673,37 @@ def test_merged_export_replaces_an_earlier_save(tmp_path):
     assert reloaded.keys() == expected.keys()
     assert any(v.abs().max() > 0 for v in expected.values())
     assert all(torch.equal(reloaded[k], expected[k]) for k in expected)
+
+
+def test_merged_export_removes_an_earlier_lora_save(tmp_path):
+    # transformers auto-loads adapter_config.json found next to the weights, so a LoRA save left in
+    # the directory would be applied a second time on top of the merged export.
+    from transformers import AutoModelForImageTextToText
+
+    model = _export_setup(tmp_path, target_parameters = ["mlp.experts.gate_up_proj"])
+    torch.manual_seed(6)
+    for name, param in model.named_parameters():
+        if "lora_" in name:
+            param.data.normal_(0, 0.1)
+    ink = _inkling2()
+    ink.save_inkling2_merged_16bit(model, None, str(tmp_path / "clean"))
+
+    stale = tmp_path / "stale"
+    model.save_pretrained(str(stale))
+    assert (stale / "adapter_config.json").exists()
+    assert (stale / "adapter_model.safetensors").exists()
+    torch.save({}, stale / "adapter_model.bin")
+    ink.save_inkling2_merged_16bit(model, None, str(stale))
+
+    assert not (stale / "adapter_config.json").exists()
+    assert not (stale / "adapter_model.safetensors").exists()
+    assert not (stale / "adapter_model.bin").exists()
+    loaded = AutoModelForImageTextToText.from_pretrained(stale)
+    assert not getattr(loaded, "_hf_peft_config_loaded", False)
+    assert not any("lora_" in n for n, _ in loaded.named_parameters())
+    reloaded = dict(loaded.named_parameters())
+    expected = dict(
+        AutoModelForImageTextToText.from_pretrained(tmp_path / "clean").named_parameters()
+    )
+    assert reloaded.keys() == expected.keys()
+    assert all(torch.equal(reloaded[k], expected[k]) for k in expected)

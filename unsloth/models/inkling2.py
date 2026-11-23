@@ -264,6 +264,7 @@ def _inkling2_trainable_tokens(model):
 _STALE_WEIGHT_FILE = re.compile(
     r"(?:model\.safetensors|pytorch_model\.bin|(?:model|pytorch_model)-\d{5}(?:-of-\d{5})?\.(?:safetensors|bin))"
     r"|pytorch_model\.bin\.index\.json"
+    r"|adapter_config\.json|adapter_model\.(?:safetensors|bin)"
 )
 
 
@@ -271,7 +272,9 @@ def _remove_stale_inkling2_weights(save_directory, kept):
     """Drop weight files an earlier save left that the new index does not list.
 
     transformers loads model.safetensors ahead of an index, so a leftover unsharded file would
-    silently shadow the merged shards. Runs only after the new shards and index are in place.
+    silently shadow the merged shards, and a leftover LoRA adapter (adapter_config.json plus its
+    weights) would be loaded onto the merged model, applying it twice. Runs only after the new
+    shards and index are in place.
     """
     import os
     for filename in os.listdir(save_directory):
