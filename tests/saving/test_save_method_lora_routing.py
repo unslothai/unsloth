@@ -215,6 +215,7 @@ _GENERIC_SAVE_REAL_HELPERS = (
 _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
     {
         "patch_saving_functions",
+        "_defer_to_main_process",
         "_push_merged_to_hub_revision",
         "_prewarm_base_model_hub_cache",
         "_is_qwen3_5_vlm",
@@ -236,6 +237,9 @@ _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
         "_restamp_index_total_size",
         # Decorator factory; _load strips decorators.
         "_model_parallel_refuses_save",
+        # Separately trained lm_head: these fixtures train no vocab layers.
+        "_untied_trained_vocab",
+        "_untie_merged_checkpoint",
     }
 )
 
@@ -263,6 +267,7 @@ def _routing_environment(monkeypatch, model, **overrides):
         PreTrainedTokenizerBase = type("Tokenizer", (), {}),
         ProcessorMixin = type("Processor", (), {}),
         patch_saving_functions = lambda tokenizer: tokenizer,
+        _defer_to_main_process = lambda is_main_process, model = None: not is_main_process,
         get_token = lambda: "fixture-token",
         get_model_name = lambda name: name,
         _push_merged_to_hub_revision = lambda kwargs: calls.setdefault("revision", []).append(kwargs),
@@ -276,6 +281,8 @@ def _routing_environment(monkeypatch, model, **overrides):
         _internal_mtp_save = contextlib.nullcontext,
         _stitch_mtp_head = lambda model, directory: None,
         _mtp_head_tensor_names = lambda model: [],
+        _untied_trained_vocab = lambda model: None,
+        _untie_merged_checkpoint = _not_reached,
         _release_layout_for_merged_save = lambda model, directory, method: False,
         _push_lfm3_audio_release_config = lambda model, save_directory, token = None: False,
         _left_padding_side = lambda tokenizer: contextlib.nullcontext(),
@@ -464,6 +471,7 @@ def test_the_fsdp2_gather_placement_reads_the_canonical_method(spelling, canonic
 def test_a_respelled_in_place_merge_is_refused_under_tensor_parallel(spelling):
     refuse = _load(
         "_refuse_tp_in_place_merge",
+        "_is_in_place_merge",
         _TP_IN_PLACE_MERGES = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit"),
     )["_refuse_tp_in_place_merge"]
 
@@ -656,6 +664,7 @@ def _adapter_save_environment(monkeypatch):
         PreTrainedTokenizerBase = type("Tokenizer", (), {}),
         ProcessorMixin = type("Processor", (), {}),
         patch_saving_functions = lambda tokenizer: tokenizer,
+        _defer_to_main_process = lambda is_main_process, model = None: not is_main_process,
         get_token = lambda: "fixture-token",
         upload_to_huggingface = upload_to_huggingface,
         logger = types.SimpleNamespace(warning_once = lambda *a, **k: None),

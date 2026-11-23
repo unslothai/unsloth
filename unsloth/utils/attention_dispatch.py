@@ -1832,20 +1832,19 @@ _graph_break_is_fatal = _constant_probe(_graph_break_is_fatal_now)
 
 
 def _explicit_saves_attention() -> bool:
-    # UNSLOTH_GC_SAVE_ATTENTION=1 / offload. ROCm: zoo makes a frame only for a checkpoint on a device
-    # whose SDPA keeps an attention kernel, so a call outside a frame stays in the caller's graph instead
-    # of crossing compiler.disable (Unsupported under fullgraph=True). Dynamo guards on the frame read.
+    # UNSLOTH_GC_SAVE_ATTENTION=1 / offload. zoo makes a frame only for a checkpoint on a device whose
+    # SDPA keeps an attention kernel, so a call outside a frame stays in the caller's graph instead of
+    # crossing compiler.disable (Unsupported under fullgraph=True). Dynamo guards on the frame read.
     # Inside a frame, a fullgraph=True compile stays in the graph (nothing kept for that call).
-    if not _ROCM_SDPA_GUARD:
-        return True
-    if not _saved_attention_active():
-        return False
     # The in-graph route must fill / take its call's entry so both passes line up whichever route each takes.
-    # A zoo without that slot keeps nothing on ROCm, so no pass can consume another call's entry.
     skip_slot = getattr(
         sys.modules.get("unsloth_zoo.saved_attention"), "saved_attention_skip_slot", None
     )
     if skip_slot is None:
+        # An older zoo: ROCm keeps nothing, so no pass can consume another call's entry; other builds
+        # route every call as before.
+        return not _ROCM_SDPA_GUARD
+    if not _saved_attention_active():
         return False
     if _may_cross_into_saved_attention():
         return True
