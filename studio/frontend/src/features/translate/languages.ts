@@ -51,6 +51,14 @@ export const TRANSLATE_LANGUAGES: readonly TranslateLanguage[] = [
   { code: "mn", name: "Mongolian" },
   { code: "ug", name: "Uyghur" },
   { code: "hmn", name: "Hmong", chatOnly: true },
+  { code: "am", name: "Amharic", chatOnly: true },
+  { code: "sw", name: "Swahili", chatOnly: true },
+  { code: "ha", name: "Hausa", chatOnly: true },
+  { code: "yo", name: "Yoruba", chatOnly: true },
+  { code: "ig", name: "Igbo", chatOnly: true },
+  { code: "zu", name: "Zulu", chatOnly: true },
+  { code: "af", name: "Afrikaans", chatOnly: true },
+  { code: "so", name: "Somali", chatOnly: true },
 ];
 
 export const DEFAULT_TARGET_LANGUAGE = "en";

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { TRANSLATE_LANGUAGES } from "./languages.ts";
+
 const SAMPLE_CHARS = 2000;
 
 // Scripts that only one of the Translate languages uses.
@@ -15,6 +17,8 @@ const SINGLE_SCRIPT: readonly [RegExp, string][] = [
   [/\p{Script=Tamil}/gu, "ta"],
   [/\p{Script=Telugu}/gu, "te"],
   [/\p{Script=Gujarati}/gu, "gu"],
+  // Letters only: Ethiopic digits and punctuation also turn up beside other scripts.
+  [/(?=\p{L})\p{Script=Ethiopic}/gu, "am"],
 ];
 
 const count = (text: string, pattern: RegExp) =>
@@ -25,7 +29,8 @@ const tokensOf = (text: string) =>
   text.split(/[^\p{L}\p{M}]+/u).filter(Boolean);
 const hits = (tokens: readonly string[], known: ReadonlySet<string>) =>
   tokens.filter((token) => known.has(token)).length;
-const words = (list: string): ReadonlySet<string> => new Set(list.split(" "));
+const words = (list: string): ReadonlySet<string> =>
+  new Set(list.normalize("NFC").split(" "));
 
 /** The best code, or null when it does not clearly beat the runner-up. */
 function clearWinner(
@@ -93,8 +98,8 @@ function devanagari(text: string): string | null {
   return marathi > hindi ? "mr" : "hi";
 }
 
-// Common function words, then letters only that language uses among these.
-const LATIN: Record<string, [ReadonlySet<string>, string]> = {
+// Common function words, letters only that language uses among these, then a word shape for languages that glue words together.
+const LATIN: Record<string, [ReadonlySet<string>, string, RegExp?]> = {
   en: [
     words(
       "the and is are of to in it you that this for was with have not what my your be do can will at on we they he she a an from by or as which their has had were but hello thanks please",
@@ -179,20 +184,115 @@ const LATIN: Record<string, [ReadonlySet<string>, string]> = {
     ),
     "",
   ],
+  sw: [
+    words(
+      "na ya wa kwa ni za katika kuwa cha vya hii hiyo huo hizo pia lakini kama au ili kwamba sana tu bado kila wote yote zote mimi wewe yeye sisi ninyi wao yangu yako yake yetu yenu yao wangu wako wake zao langu lako lake nini gani wapi lini vipi nani je hapa kutoka hadi mpaka baada kabla kuna hakuna ndiyo hapana habari asante karibu sasa leo kesho jana mtu watu siku zaidi bila pamoja juu chini ndani nje kati hivyo yoyote",
+    ),
+    "",
+    // Subject then tense prefixes.
+    /^(?:ni|tu|wa|m|ki|vi)(?:na|li|ta|me)[a-z]{2,}a$/,
+  ],
+  ha: [
+    words(
+      "da kuma cikin daga wannan waɗannan amma domin saboda shi ita mu ku sun za ne ce duk kowa yi ko ga wani wata wasu akwai babu haka kamar sai tun har bayan kafin yanzu gobe jiya yau mutane mutum abin inda lokacin zuwa game kan wajen sannu nagode godiya barka lafiya yaya suna yana tana muna kuna sosai kawai dai ba ya na a ta ina zai aka ake yan kowane kowace",
+    ),
+    "ɓɗƙƴ",
+  ],
+  yo: [
+    words(
+      "ni ti si àti ó wọ́n mo kí ní láti fún pẹ̀lú gbogbo ṣùgbọ́n nítorí tàbí jẹ́ kò yìí náà rẹ̀ mi wa wọn sì bí ń yóò máa kan ọ̀kan ènìyàn ẹni lórí sí inú èyí kankan ẹ dupẹ pupọ ọjọ",
+    ),
+    "ẹṣ",
+  ],
+  ig: [
+    words(
+      "na nke ya ka ha m ị ọ anyị unu ndị niile nile bụ dị nwere maka site ma mana ebe mgbe gị onye ihe bụla ga ike ikike ụfọdụ ahụ kwa nwee",
+    ),
+    "ịụṅ",
+  ],
+  zu: [
+    words(
+      "futhi ukuthi kodwa ngoba uma noma kakhulu lapho khona kanye yonke wonke bonke zonke konke lokho lokhu leli lesi labo lezi kule kulo kuze ngakho nje kahle manje namuhla yebo mina wena yena thina nina bona yini kanjani unjani ngubani sawubona ngiyabonga abantu umuntu izinto ukuba ngokuthi ngaphandle phakathi ngaphansi ngaphezu ukuze kwa akukho lami lakho lakhe wami yami sami bami zami",
+    ),
+    "",
+    // Noun-class and verb prefixes.
+    /^(?:ngi|nge|ngo|uku|oku|kwe|ezi|isi|izi|umu|ubu)[a-z]{3,}$/,
+  ],
+  af: [
+    // The shared words also on the Dutch list, then its own.
+    words(
+      "het en van is dat op te met wat maar ook hoe die om of aan uit dit tot nie ek jy hy sy hulle julle vir baie sal mekaar hul sê hoekom mense dankie asseblief hom sodat elkeen kry dis hierdie daardie moenie gewees geword",
+    ),
+    "",
+  ],
+  so: [
+    words(
+      "iyo ee ka ku u la ay waa oo ah ayaa wax waxaa waxay wuxuu kale kasta ama haddii laakiin sida markii inuu inay inaan aan uu loo lagu laga si dad dadka qof qofka kuwa mid hal aad badan wanaagsan maanta berri halkan halkaas sidee maxaa xagee haa maya nabad iska isku ugu dhammaan ahaan leh jira mahadsanid waxaan waxaad ayuu ayay ayaan iyada isaga anigu adiga waan",
+    ),
+    "",
+    // Long a with x, q or dh.
+    /^(?=[a-z]*aa)[a-z]*(?:x|q|dh)[a-z]*$/,
+  ],
 };
 
-const MALAY = new Set(["id", "ms"]);
+// Scored only beside ẹ ị ọ ụ, for Vietnamese whose marked letters are all ones Yoruba and Igbo share.
+const VIETNAMESE = words(
+  "tôi bạn anh chị em mẹ bố họ chúng ta mình nó bị gọi có không là và của các những một được này đó cho với để đã sẽ đang rất ngày hôm nay mai đi về làm biết muốn thì mà nhưng nhà người",
+);
+
+// Words on the chat-only lists that Hy-MT2 languages also write, though not on their lists.
+const ELSEWHERE = words(
+  "tau ua pom lub cov zoo cas tom ces na ya ni za cha au tu je da shi mu ku sun ne ce yi ko ga har bayan game kan dai ba a ta aka ti si mo mi ka ha m maka site ma mana uma ee u la ay ah uu mid hal badan",
+);
+
+// A chat-only language needs a word only it writes, or its letters or word shape.
+const CHAT_ONLY = new Set(
+  TRANSLATE_LANGUAGES.filter((language) => language.chatOnly).map(
+    (language) => language.code,
+  ),
+);
+const HY_MT2_WORDS = new Set(
+  Object.entries(LATIN)
+    .filter(([code]) => !CHAT_ONLY.has(code))
+    .flatMap(([, [known]]) => [...known]),
+);
+
+const CLOSE = [new Set(["id", "ms"]), new Set(["nl", "af"])];
 
 function latin(text: string): string | null {
-  if (count(text, /[ơưđăạ-ỹ]/gu) >= 2) return "vi";
+  // Yoruba and Igbo write ẹ ị ọ ụ too, but none of Vietnamese's other letters nor its closed syllables;
+  // â ê ô count only beside those vowels, as Portuguese and French write them too.
+  const dotBelow = countOf(text, "ẹịọụ");
+  const vietnamese =
+    count(text, /(?![ẹịọụ])[ơưđăạ-ỹ]/gu) +
+    count(text, /[ẹịọụ](?:ch|c|ng|nh|p|t)(?![\p{L}\p{M}])/gu) +
+    (dotBelow > 0 ? countOf(text, "âêô") : 0);
+  if (vietnamese > 0 && vietnamese + dotBelow >= 2) return "vi";
   // Elisions split too: French "l'homme" counts "l".
   const tokens = tokensOf(text);
+  const viWords = dotBelow > 0 ? hits(tokens, VIETNAMESE) : 0;
   return clearWinner(
-    Object.entries(LATIN).map(([code, [known, letters]]) => [
-      code,
-      hits(tokens, known) + (letters ? countOf(text, letters) : 0),
-    ]),
-    (a, b) => MALAY.has(a) && MALAY.has(b),
+    [
+      ...Object.entries(LATIN).map(
+        ([code, [known, letters, shape]]): [string, number] => {
+          const marks =
+            (letters ? countOf(text, letters) : 0) +
+            (shape ? tokens.filter((token) => shape.test(token)).length : 0);
+          const own =
+            !CHAT_ONLY.has(code) ||
+            marks > 0 ||
+            tokens.some(
+              (token) =>
+                known.has(token) &&
+                !HY_MT2_WORDS.has(token) &&
+                !ELSEWHERE.has(token),
+            );
+          return [code, own ? hits(tokens, known) + marks : 0];
+        },
+      ),
+      ["vi", viWords > 0 ? viWords + dotBelow : 0],
+    ],
+    (a, b) => CLOSE.some((pair) => pair.has(a) && pair.has(b)),
   );
 }
 
