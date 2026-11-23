@@ -103,8 +103,17 @@ _EXPERT_COMPANIONS = ("_scale", "_amax", "_outer_scale_denominator")
 _EXPERT_KEY = re.compile(r"\.experts\.w(?:13|2)_weight$")
 
 
+def _peft_name(name):
+    return re.sub(r"^base_model\.model\.", "", name).replace(".base_layer", "")
+
+
 def _inkling2_lora_deltas(model):
-    """{transformers parameter name: callable(expert_slice or None) -> float32 CPU delta} for every active LoRA."""
+    """{transformers parameter name: callable(expert_slice or None) -> float32 CPU delta} for every active LoRA.
+
+    Linear and embedding deltas come from PEFT's ``get_delta_weight`` and must be evaluated inside
+    ``lora_relative_to_original_base``, so residual inits (PiSSA, OLoRA, ...) are measured against the checkpoint
+    the writer rereads rather than the residual base they were trained on. Expert deltas subtract the snapshot
+    themselves."""
     import torch
     from peft.tuners.lora import LoraLayer
 
@@ -122,7 +131,9 @@ def _inkling2_lora_deltas(model):
             )
         if not isinstance(module, LoraLayer):
             continue
-        adapters = [a for a in getattr(module, "active_adapters", []) if a in module.lora_A]
+        # Embedding LoRA keeps its factors in lora_embedding_A / lora_embedding_B, not lora_A / lora_B.
+        factors = set(module.lora_A) | set(getattr(module, "lora_embedding_A", {}))
+        adapters = [a for a in getattr(module, "active_adapters", []) if a in factors]
         if not adapters:
             continue
         if any(module.use_dora.get(a, False) for a in adapters) or any(
@@ -131,31 +142,38 @@ def _inkling2_lora_deltas(model):
             raise NotImplementedError(
                 "Unsloth: merged Inkling 2 exports do not support DoRA or LoRA bias."
             )
-        path = re.sub(r"^base_model\.model\.", "", name).replace(".base_layer", "")
+        initial = getattr(module, "_unsloth_initial_lora", None) or {}
+        path = _peft_name(name)
         if ParamWrapper and isinstance(module, ParamWrapper):
             key = f"{path}.{module.parameter_name}"
+            # Bound now: lora_relative_to_original_base swaps these factors while the writer runs.
+            terms = []
+            for a in adapters:
+                terms.append((module.lora_A[a].weight, module.lora_B[a].weight, module.scaling[a]))
+                if a in initial and initial[a][2]:
+                    A0, B0, scaling0 = initial[a]
+                    terms.append((A0, B0, -scaling0))
 
             def expert_delta(
                 experts = None,
                 module = module,
-                adapters = adapters,
+                terms = terms,
             ):
                 total = None
-                for a in adapters:
-                    A = module.lora_A[a].weight.detach().float().cpu()
-                    B = module.lora_B[a].weight.detach().float().cpu()
-                    E = module.num_experts
-                    # Same contraction as peft's ParamWrapper.get_delta_weight, one expert slice at a time.
-                    A = A.reshape(E, -1, A.shape[-1])
+                E = module.num_experts
+                # Same contraction as peft's ParamWrapper.get_delta_weight, one expert slice at a time.
+                pattern = (
+                    "o r e, e r i -> e o i"
+                    if module._did_swap_in_out_features
+                    else "o r e, e r i -> e i o"
+                )
+                for A, B, scaling in terms:
+                    A = A.detach().float().cpu().reshape(E, -1, A.shape[-1])
+                    B = B.detach().float().cpu()
                     B = B.reshape(B.shape[0], -1, E)
                     if experts is not None:
                         A, B = A[experts], B[..., experts]
-                    pattern = (
-                        "o r e, e r i -> e o i"
-                        if module._did_swap_in_out_features
-                        else "o r e, e r i -> e i o"
-                    )
-                    d = torch.einsum(pattern, B, A) * module.scaling[a]
+                    d = torch.einsum(pattern, B, A) * scaling
                     total = d if total is None else total + d
                 return total
 
@@ -163,6 +181,13 @@ def _inkling2_lora_deltas(model):
                 raise RuntimeError(f"Unsloth: two LoRA adapters target {key}.")
             deltas[key] = expert_delta
         else:
+            if initial and not isinstance(
+                module.get_base_layer(), (torch.nn.Linear, torch.nn.Embedding)
+            ):
+                raise NotImplementedError(
+                    "Unsloth: merged Inkling 2 exports support residual LoRA inits (PiSSA, OLoRA, ...) only on "
+                    "Linear and Embedding layers; save the LoRA adapter."
+                )
             key = f"{path}.weight"
 
             def linear_delta(
@@ -178,6 +203,32 @@ def _inkling2_lora_deltas(model):
 
             deltas[key] = linear_delta
     return deltas
+
+
+def _inkling2_trained_biases(model):
+    """{transformers parameter name: live tensor} for the biases a LoRA config trains (``bias = "all"`` or
+    ``"lora_only"``), which the writer must take from the model instead of the checkpoint."""
+    from peft.tuners.lora import LoraLayer
+
+    configs = getattr(model, "peft_config", None) or {}
+    active = getattr(model, "active_adapters", None) or list(configs)
+    if callable(active):
+        active = active()
+    modes = {str(getattr(configs[a], "bias", "none")) for a in active if a in configs}
+    lora_only = set()
+    if "lora_only" in modes:
+        for name, module in model.named_modules():
+            if isinstance(module, LoraLayer):
+                bias = getattr(module.get_base_layer(), "bias", None)
+                if bias is not None:
+                    lora_only.add(id(bias))
+    biases = {}
+    for name, param in model.named_parameters():
+        if "lora_" in name or not name.endswith(".bias"):
+            continue
+        if "all" in modes or id(param) in lora_only or param.requires_grad:
+            biases[_peft_name(name)] = param
+    return biases
 
 
 def save_inkling2_merged_16bit(
@@ -237,6 +288,7 @@ def save_inkling2_merged_16bit(
             weight_map = {k: "model.safetensors" for k in f.keys()}
 
     deltas = _inkling2_lora_deltas(model)
+    biases = _inkling2_trained_biases(model)
     used = set()
     print(f"Unsloth: Merging {len(deltas)} LoRA weights into Inkling 2 ({source}).")
 
@@ -314,34 +366,47 @@ def save_inkling2_merged_16bit(
         current, current_size = {}, 0
         gc.collect()
 
-    for key in sorted(weight_map, key = lambda k: (weight_map[k], k)):
-        if key in companions:
-            continue
-        if _EXPERT_KEY.search(key):
-            W = merged_experts(key)
-        else:
-            W = tensor(key)
-            name, _ = hf_name(key)
-            delta = deltas.get(name)
-            if delta is not None:
-                d = delta()
-                if tuple(d.shape) != tuple(W.shape):
-                    raise RuntimeError(
-                        f"Unsloth: LoRA delta {tuple(d.shape)} does not fit {name} {tuple(W.shape)}."
-                    )
-                W = (W.float() + d).to(W.dtype)
-                used.add(name)
-        current[key] = W.contiguous()
-        current_size += W.numel() * W.element_size()
-        if current_size >= shard_limit:
-            flush()
+    from unsloth.models._utils import lora_relative_to_original_base
+
+    # Residual LoRA inits trained on a base with their initial adapter subtracted; the writer rereads the
+    # original checkpoint, so measure every delta against it.
+    with lora_relative_to_original_base(model):
+        for key in sorted(weight_map, key = lambda k: (weight_map[k], k)):
+            if key in companions:
+                continue
+            if _EXPERT_KEY.search(key):
+                W = merged_experts(key)
+            else:
+                W = tensor(key)
+                name, _ = hf_name(key)
+                if name in biases:
+                    live = biases[name].detach().cpu()
+                    if tuple(live.shape) != tuple(W.shape):
+                        raise RuntimeError(
+                            f"Unsloth: trained bias {tuple(live.shape)} does not fit {name} {tuple(W.shape)}."
+                        )
+                    W = live.to(W.dtype)
+                    used.add(name)
+                delta = deltas.get(name)
+                if delta is not None:
+                    d = delta()
+                    if tuple(d.shape) != tuple(W.shape):
+                        raise RuntimeError(
+                            f"Unsloth: LoRA delta {tuple(d.shape)} does not fit {name} {tuple(W.shape)}."
+                        )
+                    W = (W.float() + d).to(W.dtype)
+                    used.add(name)
+            current[key] = W.contiguous()
+            current_size += W.numel() * W.element_size()
+            if current_size >= shard_limit:
+                flush()
     flush()
     handles.clear()
 
-    missing = sorted(set(deltas) - used)
+    missing = sorted((set(deltas) | set(biases)) - used)
     if missing:
         raise RuntimeError(
-            f"Unsloth: {len(missing)} LoRA weights have no tensor in the Inkling 2 checkpoint, e.g. {missing[:3]}."
+            f"Unsloth: {len(missing)} trained weights have no tensor in the Inkling 2 checkpoint, e.g. {missing[:3]}."
         )
 
     total = len(shards)

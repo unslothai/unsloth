@@ -451,3 +451,105 @@ def test_vision_only_training_maps_the_vision_tower(monkeypatch, targets):
     if len(targets) > 1:
         assert {"fc1", "fc2"} <= leaves
     assert not list(out.peft_config["default"].target_parameters or [])
+
+
+def _export_setup(
+    tmp_path,
+    loop = True,
+    **lora,
+):
+    peft = pytest.importorskip("peft")
+    from transformers import AutoModelForImageTextToText
+
+    _tiny(loop).to(torch.bfloat16).save_pretrained(tmp_path / "base")
+    base = AutoModelForImageTextToText.from_pretrained(tmp_path / "base", dtype = torch.float32)
+    lora.setdefault("target_modules", _inkling2().inkling2_lora_target_modules(base, None))
+    model = peft.get_peft_model(base, peft.LoraConfig(r = 4, lora_alpha = 8, **lora))
+    return model
+
+
+def _checkpoint(path):
+    from safetensors.torch import load_file
+
+    out = {}
+    for f in sorted(path.glob("*.safetensors")):
+        out.update(load_file(f))
+    return out
+
+
+@pytest.mark.parametrize("init", ["pissa", "olora"])
+def test_residual_init_export_before_training_is_the_checkpoint(tmp_path, init):
+    # PiSSA / OLoRA subtract the initial adapter from the live base. The writer rereads the original checkpoint, so
+    # it must add the delta relative to it (zero before training), not the adapter's full contribution.
+    import unsloth  # noqa: F401
+    from unsloth.models._utils import snapshot_residual_lora_init
+
+    model = _export_setup(tmp_path, init_lora_weights = init)
+    snapshot_residual_lora_init(model, init)
+    _inkling2().save_inkling2_merged_16bit(model, None, str(tmp_path / "merged"))
+    original, merged = _checkpoint(tmp_path / "base"), _checkpoint(tmp_path / "merged")
+    assert original.keys() == merged.keys()
+    worst = max((merged[k].float() - original[k].float()).abs().max().item() for k in original)
+    assert worst == 0.0, worst
+    # The live factors are restored after the export.
+    assert all(
+        m.lora_A["default"].weight.shape[0] == 4
+        for m in model.modules()
+        if getattr(m, "_unsloth_initial_lora", None) and "default" in getattr(m, "lora_A", {})
+    )
+
+
+def test_embedding_lora_is_merged(tmp_path):
+    import copy
+
+    from transformers import AutoModelForImageTextToText
+
+    model = _export_setup(tmp_path, target_modules = ["embed_tokens"])
+    torch.manual_seed(1)
+    for name, param in model.named_parameters():
+        if "lora_embedding" in name:
+            param.data.normal_(0, 0.1)
+    _inkling2().save_inkling2_merged_16bit(model, None, str(tmp_path / "merged"))
+    reference = copy.deepcopy(model).merge_and_unload().get_input_embeddings().weight.detach()
+    merged = AutoModelForImageTextToText.from_pretrained(tmp_path / "merged", dtype = torch.float32)
+    original = model.get_base_model().get_input_embeddings().base_layer.weight.detach()
+    got = merged.get_input_embeddings().weight.detach()
+    assert (reference - original).abs().max() > 0.01
+    assert torch.allclose(got, reference.to(torch.bfloat16).float(), atol = 1e-2, rtol = 0)
+    assert (got - reference).abs().max() < 0.05 * (reference - original).abs().max()
+
+
+@pytest.mark.parametrize("bias", ["all", "lora_only"])
+def test_trained_biases_are_written(tmp_path, bias):
+    from transformers import AutoModelForImageTextToText
+
+    model = _export_setup(
+        tmp_path,
+        target_modules = r".*vision_tower\.layers\.\d+\.self_attn\.q_proj",
+        bias = bias,
+    )
+    torch.manual_seed(2)
+    trained = {}
+    for name, param in model.named_parameters():
+        if name.endswith(".bias") and param.requires_grad:
+            param.data.normal_(0, 1.0)
+            trained[name] = param.detach().clone()
+    assert trained and (bias == "all") == (len(trained) > 1)
+    _inkling2().save_inkling2_merged_16bit(model, None, str(tmp_path / "merged"))
+    merged = dict(
+        AutoModelForImageTextToText.from_pretrained(
+            tmp_path / "merged", dtype = torch.float32
+        ).named_parameters()
+    )
+    for name, value in trained.items():
+        key = re.sub(r"^base_model\.model\.", "", name).replace(".base_layer", "")
+        assert torch.equal(merged[key], value.to(torch.bfloat16).float()), key
+
+
+def test_unsupported_lora_exports_still_refuse(tmp_path):
+    model = _export_setup(tmp_path, use_dora = True)
+    with pytest.raises(NotImplementedError, match = "DoRA"):
+        _inkling2().save_inkling2_merged_16bit(model, None, str(tmp_path / "merged"))
+    model = _export_setup(tmp_path / "b", modules_to_save = ["lm_head"])
+    with pytest.raises(NotImplementedError, match = "modules_to_save"):
+        _inkling2().save_inkling2_merged_16bit(model, None, str(tmp_path / "merged_b"))
