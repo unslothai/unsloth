@@ -1518,7 +1518,7 @@ def mlx_serves_chat_only() -> bool:
 
 
 def chat_only_mac_install() -> bool:
-    """An Apple Silicon --no-torch (Chat only) install, which never trains whatever the state of its MLX stack."""
+    """Apple Silicon --no-torch (Chat only) install: never trains, whatever its MLX state."""
     return is_apple_silicon() and _installed_without_torch()
 
 
@@ -1868,7 +1868,7 @@ def _detect_hardware_locked() -> DeviceType:
             or (not _mlx_distribution_installed() and _no_torch_mac_without_mlx_wheels())
         )
     ):
-        # Train/Export off by request. A Mac that can install MLX stays mlx_unavailable until the self-heal ran (Chat only serves MLX too).
+        # A Mac that can install MLX stays mlx_unavailable until the self-heal ran.
         CHAT_ONLY_REASON = "no_torch"
         _MLX_BLOCKERS_MEASURED = None
         logger.info(

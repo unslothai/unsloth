@@ -454,7 +454,7 @@ def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
 
 
 def _settle_a_chat_only_install(hw) -> None:
-    """A Chat only install whose repair failed keeps no_torch as its reason, so the UI offers the full install instead of polling for a repair that is over. Recorded before settling, so whichever of this worker and a later lifespan's start_mlx_autorepair_if_needed runs last settles that lifespan."""
+    """A failed Chat only repair settles to no_torch so the UI stops polling. Recorded first, so whichever of this worker and a later lifespan runs last settles it."""
     global _chat_only_repair_failed
     if not _installed_without_torch():
         return
@@ -482,7 +482,7 @@ def start_mlx_autorepair_if_needed() -> bool:
         return False
     from utils.hardware import hardware as _hw
 
-    # Opting out declines a reinstall, not a correct verdict, so the overturn still runs, but only when one waits on it. A Chat only install is repaired only when the verdict blames the MLX stack.
+    # Opting out declines a reinstall, not a correct verdict, so the overturn still runs when one waits on it.
     no_torch = _installed_without_torch()
     opted_out = os.environ.get(DISABLE_ENV_VAR) == "1"
     if (opted_out or no_torch) and not _hw.verdict_blames_the_mlx_stack():
@@ -507,7 +507,7 @@ def start_mlx_autorepair_if_needed() -> bool:
         return False
 
     if _chat_only_repair_failed:
-        # Once per process: a lifespan that detects after the worker's own settle is settled here.
+        # A lifespan that detects after the worker's own settle is settled here.
         _hw.settle_the_no_torch_verdict(epoch)
         return False
     with _attempted_lock:

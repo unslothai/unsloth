@@ -44,7 +44,6 @@ def apple_silicon(monkeypatch):
     monkeypatch.setattr(mlx_repair, "_repair_started_at", None, raising = False)
     # The real check imports mlx_vlm, which is not installed here.
     monkeypatch.setattr(mlx_repair, "mlx_stack_available", lambda: False)
-    # Pin the install mode instead of inheriting the venv's.
     monkeypatch.setattr(mlx_repair, "_installed_without_torch", lambda: False)
     # The pre-start hold is stamped on first use; reset so earlier tests cannot leak in.
     import main as main_mod

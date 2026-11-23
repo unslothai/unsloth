@@ -6222,7 +6222,7 @@ export function HubModelPicker({
         .filter(
           (id) =>
             !chatOnly ||
-            // Task pickers (Transcribe) keep the Mac rule: Whisper runs without MLX. An unmeasured Chat only guess narrows nothing.
+            // Task pickers keep the Mac rule (Whisper runs without MLX); an unmeasured Chat only guess narrows nothing.
             isRecommendableFormat(
               id,
               isKnownGgufRepo(id),
