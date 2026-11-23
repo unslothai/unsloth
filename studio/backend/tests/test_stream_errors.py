@@ -381,3 +381,74 @@ class TestARefusalBeforeTheReplyStartsKeepsItsCause:
             'llama-server returned 500: {"error":{"code":500,"message":"/srv/secret crashed"}}'
         )
         assert routes._friendly_error(failure) == "An internal error occurred"
+
+
+class TestAnImageTheServerCouldNotProcessNamesTheCause:
+    """llama-server answers an image it cannot fit or encode with "failed to process mtmd chunk": bare
+    mid-stream, redacted to "An internal error occurred" when it came back as a 500 before the first token."""
+
+    MTMD = "failed to process mtmd chunk"
+    # The wording a llama-server that tells a full KV cache apart sends for the same failure.
+    MTMD_NO_KV = "failed to process mtmd chunk: Context size has been exceeded."
+    CLIENT_CONTEXT_LIMIT_MARKERS = (
+        TestTheStarvationTextDoesNotReadAsAContextLimitOnTheClient.CLIENT_CONTEXT_LIMIT_MARKERS
+    )
+
+    @staticmethod
+    def _routes():
+        import routes.inference as routes_inference
+        return routes_inference
+
+    @staticmethod
+    def _http_500(message):
+        return RuntimeError(
+            'llama-server returned 500: {"error":{"code":500,"message":"%s","type":"server_error"}}'
+            % message
+        )
+
+    def test_the_media_failure_is_recognised(self):
+        from core.inference.stream_errors import is_media_failure
+
+        assert is_media_failure(self.MTMD)
+        assert is_media_failure("Failed to load image or audio file")
+        assert not is_media_failure("tokenizer failed")
+        assert not is_media_failure(None)
+
+    def test_mid_stream_it_names_the_image_and_keeps_the_server_text(self):
+        routes = self._routes()
+        described = routes._friendly_error(
+            stream_error_from_chunk({"error": {"message": self.MTMD}})
+        )
+        assert "attached image" in described
+        assert self.MTMD in described
+
+    def test_before_the_first_token_it_is_no_longer_an_internal_error(self):
+        routes = self._routes()
+        described = routes._friendly_error(self._http_500(self.MTMD))
+        assert described != "An internal error occurred"
+        assert "attached image" in described
+        chunk = routes._openai_stream_error_chunk(self._http_500(self.MTMD))
+        assert chunk["error"]["message"] == described
+
+    def test_a_full_kv_cache_on_an_image_reads_as_starvation(self):
+        routes = self._routes()
+        assert routes._friendly_error(self._http_500(self.MTMD_NO_KV)) == KV_STARVATION_MESSAGE
+        mid = stream_error_from_chunk({"error": {"message": self.MTMD_NO_KV}})
+        assert mid.kv_starvation
+        assert routes._friendly_error(mid) == KV_STARVATION_MESSAGE
+        # Starvation is retried by the client, not compacted.
+        assert routes._classify_llama_generation_error(mid) is None
+        assert routes._classify_llama_generation_error(self._http_500(self.MTMD_NO_KV)) is None
+
+    def test_the_media_message_does_not_read_as_a_context_limit_on_the_client(self):
+        lowered = describe_stream_error(self.MTMD).lower()
+        assert [m for m in self.CLIENT_CONTEXT_LIMIT_MARKERS if m in lowered] == []
+
+    def test_other_server_failures_stay_redacted(self):
+        routes = self._routes()
+        assert routes._friendly_error(self._http_500("/srv/secret crashed")) == (
+            "An internal error occurred"
+        )
+        assert routes._friendly_error(RuntimeError("llama-server returned 500: not json")) == (
+            "An internal error occurred"
+        )

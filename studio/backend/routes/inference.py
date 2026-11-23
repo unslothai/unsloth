@@ -153,8 +153,10 @@ from core.inference.memory_contract import (
 from core.inference.stream_errors import (
     KV_STARVATION_MESSAGE,
     LlamaStreamError,
+    describe_stream_error,
     error_message_from_chunk,
     is_kv_starvation,
+    is_media_failure,
 )
 from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
@@ -359,6 +361,7 @@ _OVERSIZE_TOKENS_RE = _re.compile(
 )
 # 501 is llama-server's not_supported_error (e.g. chat on a decision-only model).
 _LLAMA_CLIENT_ERROR_RE = _re.compile(r"llama-server returned (?:4\d\d|501): (.*)", _re.DOTALL)
+_LLAMA_SERVER_ERROR_RE = _re.compile(r"llama-server returned 5\d\d: (.*)", _re.DOTALL)
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -406,6 +409,16 @@ def _friendly_error(exc: Exception) -> str:
         except ValueError:
             pass
         return _friendly_upstream_error(body[:500])
+    # Other 5xx stay redacted, except the media and KV failures llama-server reports before the first
+    # token (an image that cannot be decoded), which are fixed strings that name no path.
+    server_error = _LLAMA_SERVER_ERROR_RE.match(msg)
+    if server_error:
+        try:
+            body = error_message_from_chunk(json.loads(server_error.group(1)))
+        except ValueError:
+            body = None
+        if body and (is_media_failure(body) or is_kv_starvation(body)):
+            return describe_stream_error(body[:500])
     return "An internal error occurred"
 
 

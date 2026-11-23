@@ -34,6 +34,20 @@ _TOOL_PARSE_REJECTIONS = (
     "failed to parse tool call arguments as json",
 )
 
+# llama-server failing on an attached image or audio clip. The bare text says nothing a user can act on,
+# and a pre-stream 500 carrying it was redacted to "An internal error occurred".
+_MEDIA_FAILURE_MARKERS = (
+    "failed to process mtmd chunk",
+    "failed to load image or audio file",
+)
+
+# Same constraint as KV_STARVATION_MESSAGE: none of isContextLimitError's substrings.
+_MEDIA_FAILURE_HINT = (
+    "The model server could not process an attached image or audio clip. This usually means "
+    "there was not enough free GPU memory or KV cache for it while other chats were generating. "
+    "Try again, attach a smaller image, or lower the Context Length or GPU layers in Model settings."
+)
+
 _OVERSIZE_HINT = "Raise the Context Length in Model settings, or shorten the request."
 
 _GENERIC_MESSAGE = "The model stopped generating early."
@@ -117,6 +131,14 @@ def is_context_oversize(message: Optional[str]) -> bool:
     return any(marker in lowered for marker in _OVERSIZE_MARKERS)
 
 
+def is_media_failure(message: Optional[str]) -> bool:
+    """Whether llama-server failed on the request's image or audio rather than on its text."""
+    if not message:
+        return False
+    lowered = message.lower()
+    return any(marker in lowered for marker in _MEDIA_FAILURE_MARKERS)
+
+
 def is_tool_parse_rejection(chunk: Any) -> bool:
     message = error_message_from_chunk(chunk)
     return bool(message) and message.lower().startswith(_TOOL_PARSE_REJECTIONS)
@@ -128,6 +150,9 @@ def describe_stream_error(message: Optional[str], *, prefix: str = "") -> str:
         body = KV_STARVATION_MESSAGE
     elif is_context_oversize(message):
         body = f"{message.rstrip('. ')}. {_OVERSIZE_HINT}"
+    elif is_media_failure(message):
+        # Server text kept for bug reports, after the remedy.
+        body = f"{_MEDIA_FAILURE_HINT} (llama-server: {message.rstrip('. ')})"
     elif message:
         body = message
     else:
