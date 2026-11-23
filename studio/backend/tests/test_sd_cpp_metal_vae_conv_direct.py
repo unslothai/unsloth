@@ -293,3 +293,28 @@ def test_status_reports_the_resolved_metal_vae_state(tmp_path, monkeypatch):
     assert backend._metal_vae_conv_status(state)["metal_vae_conv_direct"]["enabled"] is True
     state.native_speed = "off"
     assert backend._metal_vae_conv_status(state)["metal_vae_conv_direct"]["enabled"] is False
+
+
+def test_status_follows_the_effective_conv_direct_policy(tmp_path, monkeypatch):
+    # Status must agree with the argv: the global kill switch and a user flag both win over the opt-in.
+    from types import SimpleNamespace
+
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend
+
+    backend = SdCppDiffusionBackend.__new__(SdCppDiffusionBackend)
+    backend._engine = None
+    binary = _binary(tmp_path, GEMM_TAG, "sd-server")
+    state = SimpleNamespace(
+        offload_flags = (), server = SimpleNamespace(binary = binary), native_speed = "default"
+    )
+    _metal(monkeypatch)
+    monkeypatch.setenv(_ENV, "1")
+    assert backend._metal_vae_conv_status(state)["metal_vae_conv_direct"]["enabled"] is True
+    monkeypatch.setenv("UNSLOTH_SD_CPP_CONV_DIRECT", "0")
+    got = backend._metal_vae_conv_status(state)["metal_vae_conv_direct"]
+    assert got["enabled"] is False and "UNSLOTH_SD_CPP_CONV_DIRECT" in got["reason"]
+    assert native_speed_flags("default", [], "metal", binary)[-1] == "off"
+    monkeypatch.delenv("UNSLOTH_SD_CPP_CONV_DIRECT")
+    state.offload_flags = ("--conv-direct", "off")
+    got = backend._metal_vae_conv_status(state)["metal_vae_conv_direct"]
+    assert got == {"enabled": False, "reason": "user --conv-direct off"}

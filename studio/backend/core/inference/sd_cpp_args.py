@@ -329,6 +329,9 @@ def metal_vae_conv_direct_decision(
     a build carrying the implicit GEMM kernel (or ``force``)."""
     import os
 
+    forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
+    if forced in ("0", "off", "false", "no"):
+        return False, "off: UNSLOTH_SD_CPP_CONV_DIRECT=0"
     opt = (os.environ.get(METAL_VAE_CONV_DIRECT_ENV) or "").strip().lower()
     if opt not in ("1", "on", "true", "yes", "force"):
         return False, f"off by default (set {METAL_VAE_CONV_DIRECT_ENV}=1 to opt in)"

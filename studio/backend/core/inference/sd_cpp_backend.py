@@ -6148,6 +6148,13 @@ class SdCppDiffusionBackend:
         if not sd_cpp_args._runs_on_apple_metal(offload):
             return {}
         binary = getattr(state.server, "binary", None) or getattr(self._engine, "binary", None)
+        if "--conv-direct" in offload[:-1]:
+            # A user flag wins over the native speed flags (``native_speed_flags`` drops its own).
+            value = str(offload[offload.index("--conv-direct") + 1]).strip().lower()
+            on = value in ("on", "vae=on") or "vae=on" in value.split(",")
+            return {
+                "metal_vae_conv_direct": {"enabled": on, "reason": f"user --conv-direct {value}"}
+            }
         if state.native_speed == "off":
             return {"metal_vae_conv_direct": {"enabled": False, "reason": "off: speed mode off"}}
         on, reason = sd_cpp_args.metal_vae_conv_direct_decision(offload, binary)
