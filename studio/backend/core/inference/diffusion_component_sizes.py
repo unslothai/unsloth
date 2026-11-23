@@ -770,9 +770,8 @@ def component_sizes(
     required: Any = None,
     token: Any = None,
 ) -> Optional[ComponentSizes]:
-    """Local headers, then Hub. ``required``: the folders a complete local answer must hold, or a callable of the
-    local sizes returning them (so the snapshot's own manifest can add loaded roles); others never send a cached
-    model to the Hub."""
+    """Local headers, then Hub; required is the folders a complete local answer must hold (or a
+    callable of local sizes returning them), and others never send a cached model to the Hub."""
     if repo_or_dir is None:
         return None
     path = Path(str(repo_or_dir)).expanduser()

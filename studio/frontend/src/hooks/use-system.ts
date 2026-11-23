@@ -28,7 +28,7 @@ export interface GpuDevice {
   unified_memory?: boolean;
   /** Host-backed part of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
-  /** Apple MLX only: Metal's recommendedMaxWorkingSetSize. Absent elsewhere and on older backends. */
+  /** Apple only (MLX, or the "metal" GGUF inventory): Metal's recommendedMaxWorkingSetSize. Absent elsewhere and on older backends. */
   metal_working_set_gb?: number | null;
   /** Live readings from the same probe as vram_used_gb; absent where the backend has none. */
   gpu_utilization_pct?: number | null;
@@ -106,6 +106,8 @@ export interface SystemInfoResponse {
   gpu: SystemGpuInfo;
   /** Differs from `gpu` when llama.cpp uses Vulkan. */
   inference_gpu?: SystemGpuInfo;
+  /** null where no counter reports the NPU (Linux, no supported NPU). */
+  npu_load_percent?: number | null;
   ml_packages: {
     torch?: string;
     transformers?: string;

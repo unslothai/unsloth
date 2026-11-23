@@ -32,7 +32,7 @@ def test_curated_catalog_becomes_rows_without_a_request():
     # The recommendable gate now runs in `keep`, over seeds and listing rows alike.
     # A capable FP8 / NVFP4 checkpoint is also recommendable (runsCheckpointQuant).
     assert re.search(
-        r"isRecommendable:\s*isRecommendableFormat\(r\.id, r\.isGguf, isMac\)( \|\|\s*runsCheckpointQuant\(r\))?,",
+        r"isRecommendable:\s*isRecommendableFormat\(r\.id, r\.isGguf, isMac(, r\.quantMethod)?\)( \|\|\s*runsCheckpointQuant\(r\))?,",
         source,
     )
     # Device fit reads the catalog size, not an id "<n>B" guess.

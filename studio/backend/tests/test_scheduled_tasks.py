@@ -392,6 +392,32 @@ def test_a_task_keeps_its_chat_options_and_refuses_a_missing_project(client):
     assert create(client).json()["archiveSuccessful"] is False
 
 
+def test_web_search_is_off_unless_the_task_turns_it_on(client):
+    assert create(client).json()["webSearch"] is False
+    task = create(client, webSearch = True).json()
+    assert task["webSearch"] is True
+    renamed = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"title": "Renamed"})
+    assert renamed.json()["webSearch"] is True
+    off = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"webSearch": False})
+    assert off.json()["webSearch"] is False
+
+
+def test_an_older_database_gains_the_web_search_column_once(tmp_path):
+    conn = sqlite3.connect(tmp_path / "old.db")
+    conn.execute(
+        "CREATE TABLE scheduled_tasks (id TEXT NOT NULL PRIMARY KEY, owner_subject TEXT NOT NULL,"
+        " title TEXT NOT NULL, prompt TEXT NOT NULL, schedule_json TEXT NOT NULL,"
+        " timezone TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, next_run_at INTEGER,"
+        " created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO scheduled_tasks VALUES ('t', 'unsloth', 'T', 'P', '{}', 'UTC', 1, NULL, 1, 1)"
+    )
+    studio_db._ensure_schema(conn)
+    studio_db._ensure_schema(conn)
+    assert conn.execute("SELECT web_search FROM scheduled_tasks").fetchall() == [(0,)]
+
+
 def test_create_list_and_read(client, monkeypatch):
     monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T12:00:00+00:00"))
     response = create(client, title = "  Morning brief  ")
@@ -1038,6 +1064,34 @@ def generate(
     return asyncio.run(generate_answer(app, task, run, cancel_event or threading.Event()))
 
 
+def test_a_web_search_task_may_search_and_run_nothing_else(monkeypatch):
+    producer = FakeProducer(completion("Today's headlines."))
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+
+    answer = generate(monkeypatch, producer, task = make_task(webSearch = True))
+
+    assert answer.content == "Today's headlines."
+    payload = producer.payload
+    assert payload.enable_tools is True and payload.enabled_tools == ["web_search"]
+    assert payload.tool_choice != "none"
+    # Nobody can answer an approval prompt, and a non-streaming request with a confirm gate is refused.
+    assert payload.permission_mode == "off" and payload.confirm_tool_calls is False
+    assert not inference_routes._confirm_gate_needs_stream(payload)
+    assert payload.bypass_permissions is False
+    assert payload.run_tools_locally is True
+
+
+def test_disable_tools_keeps_a_web_search_task_text_only(monkeypatch):
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "get_tool_policy", lambda: False)
+    producer = FakeProducer(completion("Text only."))
+
+    generate(monkeypatch, producer, task = make_task(webSearch = True))
+
+    assert producer.payload.tool_choice == "none" and producer.payload.enabled_tools == []
+
+
 def test_a_run_asks_the_loaded_model_for_text_only(monkeypatch):
     producer = FakeProducer(completion("Dawn light.", reasoning = "Short."))
     monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
@@ -1423,6 +1477,45 @@ def test_a_run_with_no_model_loaded_says_so(monkeypatch):
     with pytest.raises(RunFailed) as failure:
         generate(monkeypatch, producer)
     assert failure.value.code == "no_model"
+
+
+def test_a_run_on_the_loaded_model_never_answers_with_translates_model(monkeypatch):
+    producer = FakeProducer(completion("Bonjour."))
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: "unsloth/Hy-MT2-1.8B-GGUF")
+    with pytest.raises(RunFailed) as failure:
+        generate(monkeypatch, producer)
+    assert failure.value.code == "no_model"
+    assert producer.payload is None
+
+
+def test_translation_only_repos_match_the_frontend():
+    import re
+
+    source = (
+        Path(__file__).resolve().parents[2] / "frontend/src/lib/translation-models.ts"
+    ).read_text(encoding = "utf-8")
+    block = re.search(r"TRANSLATION_ONLY_REPOS = \[(.*?)\]", source, re.S).group(1)
+    assert {repo.lower() for repo in re.findall(r'"([^"]+)"', block)} == (
+        scheduler_module._TRANSLATION_ONLY_REPOS
+    )
+
+
+def test_a_run_skips_translates_model_for_the_text_model_kept_alongside(monkeypatch):
+    from core.inference import model_slots
+
+    def slot(name):
+        return SimpleNamespace(
+            llama = SimpleNamespace(is_loaded = True, model_identifier = name),
+            orchestrator = SimpleNamespace(active_model_name = None),
+        )
+
+    monkeypatch.setattr(
+        model_slots, "visible", lambda: [slot("unsloth/Hy-MT2-7B-GGUF"), slot("text/model")]
+    )
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: "unsloth/Hy-MT2-1.8B-GGUF")
+    producer = FakeProducer(completion("Dawn light."))
+    generate(monkeypatch, producer)
+    assert producer.payload.model == "text/model"
 
 
 def test_a_refusal_from_a_loaded_model_keeps_its_reason(monkeypatch):
@@ -2696,3 +2789,294 @@ def test_switching_back_unloads_a_non_gguf_task_model_first(monkeypatch):
     )
     assert world.unloaded == [SwapWorld.TASK_MODEL]
     assert world.loaded == SwapWorld.EARLIER
+
+
+def make_chat(thread_id = "chat-1", title = "Sheet export"):
+    studio_db.upsert_chat_thread(
+        {"id": thread_id, "title": title, "modelType": "base", "modelId": "m", "createdAt": 1}
+    )
+    studio_db.sync_chat_messages(
+        thread_id,
+        [
+            {
+                "id": f"{thread_id}-q",
+                "threadId": thread_id,
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "Export the sheet."}],
+                "createdAt": 10,
+            },
+            {
+                "id": f"{thread_id}-a",
+                "threadId": thread_id,
+                "parentId": f"{thread_id}-q",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Exported as CSV."}],
+                "createdAt": 20,
+            },
+        ],
+    )
+    return thread_id
+
+
+def test_a_task_can_post_into_an_existing_chat(client):
+    make_chat()
+    task = create(client, threadId = "chat-1").json()
+    assert task["threadId"] == "chat-1"
+    assert create(client, threadId = "nowhere").status_code == 400
+    cleared = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"threadId": None}).json()
+    assert cleared["threadId"] is None
+
+
+def test_a_run_answers_in_its_chat_after_the_last_message(monkeypatch):
+    make_chat()
+    task, run = claim_manual_run(threadId = "chat-1", archiveSuccessful = True)
+    answer = Answer(content = "Still exported.", reasoning = "", model = "gemma-3")
+
+    run_scheduler(task, run, answer = answer, monkeypatch = monkeypatch)
+
+    last_run = db.get_task(task["id"])["lastRun"]
+    assert (last_run["status"], last_run["threadId"]) == ("succeeded", "chat-1")
+    assert [thread["id"] for thread in studio_db.list_chat_threads()] == ["chat-1"]
+    thread = studio_db.get_chat_thread("chat-1")
+    assert (thread["title"], thread["archived"]) == ("Sheet export", False)
+    *_, prompt, reply = studio_db.list_chat_messages("chat-1")
+    assert prompt["parentId"] == "chat-1-a" and reply["parentId"] == prompt["id"]
+    assert reply["content"] == [{"type": "text", "text": "Still exported."}]
+
+
+def test_a_run_reads_its_chat_before_the_prompt(monkeypatch):
+    make_chat()
+    producer = FakeProducer(completion("Done."))
+    task = make_task(threadId = "chat-1")
+
+    generate(monkeypatch, producer, task = task)
+
+    roles = [(m.role, m.content) for m in producer.payload.messages[1:]]
+    assert roles == [
+        ("user", "Export the sheet."),
+        ("assistant", "Exported as CSV."),
+        ("user", "Write a haiku about mornings."),
+    ]
+    assert producer.payload.context_overflow == "truncate_oldest"
+    assert producer.payload.context_policy == "rolling"
+
+
+@pytest.mark.usefixtures("projects_home")
+def test_a_run_in_a_chat_keeps_that_chats_system_prompt(monkeypatch):
+    make_chat()
+    _project_with("Be brief.")
+    studio_db.upsert_chat_thread(
+        {
+            "id": "chat-1",
+            "title": "Sheet export",
+            "modelType": "base",
+            "modelId": "m",
+            "createdAt": 1,
+            "settings": {"systemPrompt": "  Always answer in French.  "},
+        }
+    )
+    studio_db.upsert_chat_thread(
+        {
+            "id": "chat-2",
+            "title": "Other",
+            "modelType": "base",
+            "modelId": "m",
+            "createdAt": 100,
+            "settings": {"systemPrompt": "Always answer in German."},
+        }
+    )
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    note = scheduler_module.system_prompt({"timezone": "UTC"}, db.now_ms())
+    producer = FakeProducer(completion("Fait."))
+
+    generate(monkeypatch, producer, task = make_task(threadId = "chat-1", projectId = "proj-1"))
+
+    assert producer.payload.messages[0].content == (
+        "<project_instructions>\nBe brief.\n</project_instructions>\n\n"
+        "Always answer in French.\n\n" + note
+    )
+
+
+def test_a_run_in_a_chat_fills_its_system_prompt_variables(monkeypatch):
+    make_chat()
+    studio_db.upsert_chat_thread(
+        {
+            "id": "chat-1",
+            "title": "Sheet export",
+            "modelType": "base",
+            "modelId": "m",
+            "createdAt": 1,
+            "settings": {
+                "systemPrompt": (
+                    "Today is {{ $date }} {{$time}} ({{$now}}). "
+                    "Team {{team.name}} of {{team.size}}, {{missing}}."
+                ),
+                "systemVariables": '{"team": {"name": "Ops", "size": 3}}',
+            },
+        }
+    )
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T20:00:00+00:00"))
+    note = scheduler_module.system_prompt({"timezone": "Asia/Tokyo"}, db.now_ms())
+    producer = FakeProducer(completion("Done."))
+
+    generate(monkeypatch, producer, task = make_task(threadId = "chat-1", timezone = "Asia/Tokyo"))
+
+    assert producer.payload.messages[0].content == (
+        "Today is 2026-10-15 05:00:00 (2026-10-15T05:00:00+09:00). Team Ops of 3, {{missing}}.\n\n"
+        + note
+    )
+
+
+@pytest.mark.parametrize("settings", [{"systemPrompt": ["Always answer in French."]}, ["legacy"]])
+def test_a_run_in_a_chat_ignores_a_system_prompt_chat_cannot_read(monkeypatch, settings):
+    make_chat()
+    studio_db.upsert_chat_thread(
+        {
+            "id": "chat-1",
+            "title": "Sheet export",
+            "modelType": "base",
+            "modelId": "m",
+            "createdAt": 1,
+            "settings": settings,
+        }
+    )
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    note = scheduler_module.system_prompt({"timezone": "UTC"}, db.now_ms())
+    producer = FakeProducer(completion("Done."))
+
+    generate(monkeypatch, producer, task = make_task(threadId = "chat-1"))
+
+    assert producer.payload.messages[0].content == note
+
+
+def test_system_prompt_variables_with_nan_are_unreadable_as_in_chat():
+    resolve = scheduler_module._resolve_prompt_variables
+    assert resolve("{{a}}", '{"a": "x", "b": NaN}', {"timezone": "UTC"}, 0) == "{{a}}"
+
+
+def test_a_run_without_a_chat_keeps_the_default_overflow(monkeypatch):
+    producer = FakeProducer(completion("Done."))
+    generate(monkeypatch, producer)
+    assert producer.payload.context_overflow is None
+
+
+def test_a_failed_run_takes_back_only_its_own_messages(monkeypatch):
+    make_chat()
+    task, run = claim_manual_run(threadId = "chat-1")
+    answer = Answer(content = "Written, then failed.", reasoning = "", model = "gemma-3")
+    scheduler_module.save_chat(task, run, answer, 1_000, 2_000)
+    assert len(studio_db.list_chat_messages("chat-1")) == 4
+
+    assert db.finish_run(run["id"], "worker-under-test", status = "failed", discard_chat = True)
+
+    assert [m["id"] for m in studio_db.list_chat_messages("chat-1")] == ["chat-1-q", "chat-1-a"]
+
+
+def test_the_sweep_and_task_delete_leave_the_chat_itself(monkeypatch):
+    make_chat()
+    task, run = claim_manual_run(threadId = "chat-1")
+    answer = Answer(content = "Written, never settled.", reasoning = "", model = "gemma-3")
+    scheduler_module.save_chat(task, run, answer, 1_000, 2_000)
+
+    sweep(db.now_ms() + scheduler_module._STALE_RUN_MS + 1)
+
+    assert [m["id"] for m in studio_db.list_chat_messages("chat-1")] == ["chat-1-q", "chat-1-a"]
+    assert db.delete_task(task["id"])
+    assert studio_db.get_chat_thread("chat-1") is not None
+
+
+def test_a_run_whose_chat_was_deleted_gets_a_chat_of_its_own(monkeypatch):
+    make_chat()
+    task, run = claim_manual_run(threadId = "chat-1")
+    studio_db.delete_chat_threads(["chat-1"])
+
+    run_scheduler(
+        task, run, answer = Answer(content = "Hi.", reasoning = "", model = "m"), monkeypatch = monkeypatch
+    )
+
+    thread_id = db.get_task(task["id"])["lastRun"]["threadId"]
+    assert thread_id not in (None, "chat-1")
+    assert studio_db.get_chat_thread(thread_id)["title"] == "Morning brief"
+
+
+def _chat_with(thread_id, messages):
+    studio_db.upsert_chat_thread(
+        {"id": thread_id, "title": "Chat", "modelType": "base", "modelId": "m", "createdAt": 1}
+    )
+    studio_db.sync_chat_messages(
+        thread_id,
+        [
+            {
+                "id": message_id,
+                "threadId": thread_id,
+                "parentId": parent,
+                "role": role,
+                "content": [{"type": "text", "text": text}],
+                "createdAt": created,
+            }
+            for message_id, parent, role, text, created in messages
+        ],
+    )
+
+
+def test_a_legacy_chat_without_parents_is_read_in_order(monkeypatch):
+    _chat_with(
+        "legacy",
+        [
+            ("l1", None, "user", "First question.", 10),
+            ("l2", None, "assistant", "First answer.", 20),
+            ("l3", None, "user", "Second question.", 30),
+            ("l4", None, "assistant", "Second answer.", 40),
+        ],
+    )
+    producer = FakeProducer(completion("Done."))
+
+    generate(monkeypatch, producer, task = make_task(threadId = "legacy"))
+
+    assert [m.content for m in producer.payload.messages[1:-1]] == [
+        "First question.",
+        "First answer.",
+        "Second question.",
+        "Second answer.",
+    ]
+
+
+def test_an_edited_turn_newer_than_its_reply_still_ends_on_the_reply(monkeypatch):
+    _chat_with(
+        "edited",
+        [
+            ("e1", None, "user", "Edited question.", 50),
+            ("e2", "e1", "assistant", "Answer to the edit.", 40),
+        ],
+    )
+    producer = FakeProducer(completion("Done."))
+    task = make_task(threadId = "edited")
+
+    generate(monkeypatch, producer, task = task)
+
+    assert [m.content for m in producer.payload.messages[1:-1]] == [
+        "Edited question.",
+        "Answer to the edit.",
+    ]
+    db.request_run(task["id"])
+    _task, run = claim()
+    answer = Answer(content = "Later.", reasoning = "", model = "m")
+    scheduler_module.save_chat(task, run, answer, 1_000, 2_000)
+    prompt_id, _ = db.message_ids_for_run(run["id"])
+    assert studio_db.get_chat_message("edited", prompt_id)["parentId"] == "e2"
+
+
+def test_an_answer_stays_under_the_turns_it_read_when_the_chat_moves_on(monkeypatch):
+    make_chat()
+    task = make_task(threadId = "chat-1")
+    answer = generate(monkeypatch, FakeProducer(completion("Summary.")), task = task)
+    assert answer.chat_parent_id == "chat-1-a"
+    _chat_with("chat-1", [("chat-1-q2", "chat-1-a", "user", "Sent while it answered.", 30)])
+    db.request_run(task["id"])
+    _task, run = claim()
+
+    scheduler_module.save_chat(task, run, answer, 1_000, 2_000)
+
+    prompt_id, _ = db.message_ids_for_run(run["id"])
+    assert studio_db.get_chat_message("chat-1", prompt_id)["parentId"] == "chat-1-a"

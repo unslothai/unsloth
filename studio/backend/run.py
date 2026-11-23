@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import NoReturn, Optional, Sequence, Tuple
+from typing import Callable, NoReturn, Optional, Sequence, Tuple
 
 
 def _normalize_standard_streams():
@@ -262,8 +262,7 @@ def _local_port_open(
 
 
 def _working_local_url(port: int) -> "str | None":
-    """A working loopback URL on this machine, or None if neither 127.0.0.1 nor
-    ::1 responds. Fallback when external reachability fails."""
+    """A working loopback URL (127.0.0.1 or ::1) on this machine; None if neither responds."""
     if _local_port_open("127.0.0.1", port):
         return f"{_url_scheme}://127.0.0.1:{port}"
     if _local_port_open("::1", port):
@@ -507,6 +506,48 @@ def _display_host_for_bind(host: str) -> str:
         if addresses:
             return addresses[0]
     return ipv4_display_host or "::"
+
+
+def _start_display_host_resolution(host: str) -> Callable[[], str]:
+    """Runs _display_host_for_bind off the main thread so its network lookups overlap the app import.
+
+    Returns a getter that joins and yields the same value, or raises the same exception, as a direct
+    call. A non-wildcard bind needs no lookup: no thread, the host itself."""
+    if not wildcard_ip_versions(host):
+        return lambda: host
+
+    # Imported here, not in the thread, so it never waits on the import lock held by `from main import app`.
+    import socket  # noqa: F401
+    import ssl  # noqa: F401
+    import urllib.request  # noqa: F401
+    from threading import Thread
+
+    # main.py installs these before its first connection; the worker connects before main.py runs,
+    # so install them here (both idempotent) to keep the OS trust store and the RFC 8305 connector.
+    from utils.native_tls import activate_native_tls
+    from utils.happy_eyeballs import activate_happy_eyeballs
+
+    activate_native_tls()
+    activate_happy_eyeballs()
+
+    outcome: dict = {}
+
+    def _resolve() -> None:
+        try:
+            outcome["host"] = _display_host_for_bind(host)
+        except BaseException as exc:  # noqa: BLE001
+            outcome["error"] = exc
+
+    worker = Thread(target = _resolve, name = "studio-display-host", daemon = True)
+    worker.start()
+
+    def _result() -> str:
+        worker.join()
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["host"]
+
+    return _result
 
 
 def _network_share_host_for_bind(host: str) -> str:
@@ -790,8 +831,7 @@ def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
 
 
 def _bind_addresses(host: str, port: int) -> "set[str]":
-    """Every address *host* resolves to. `localhost` is both 127.0.0.1 and ::1, and
-    recording only the first lets a later launch on the other one miss us."""
+    """Every address host resolves to; localhost gives both 127.0.0.1 and ::1, so record all of them."""
     import socket
 
     try:
@@ -802,9 +842,7 @@ def _bind_addresses(host: str, port: int) -> "set[str]":
 
 
 def _addresses_collide(recorded: "str | None", host: str, port: int) -> bool:
-    """Would a server bound to *recorded* block a bind to *host*? *recorded* may list several addresses;
-    unknown or wildcard on either side collides, since refusing with a clear message beats silently
-    starting a duplicate."""
+    """Would recorded addresses block a bind to host; unknown or wildcard on either side collides."""
     if not recorded or is_wildcard_host(host):
         return True
     listed = {a.strip() for a in recorded.split(",") if a.strip()}
@@ -1002,9 +1040,7 @@ def _pid_is_studio_backend(pid: int, created_times: "Sequence[RecordedStart]" = 
 
 
 def _own_studio_on_port(port: int, host: str) -> "int | None":
-    """PID of one of our own servers already bound to *port* for *host*. Reads our own records rather than
-    enumerating listeners: psutil is optional, and without it a listener scan finds nothing and we silently
-    start a duplicate."""
+    """PID of our own server on port for host, read from our PID records since psutil may be absent."""
     try:
         paths = list(_studio_root().glob(f"studio-{port}-*.pid"))
     except OSError:
@@ -1057,9 +1093,7 @@ def _pid_record_version(path: Path) -> tuple[int, int, int, int, int]:
 
 
 def _prune_dead_pid_records() -> None:
-    """Requires the cache lock. Epoch drift is not proof of death; per-port records
-    can be replaced without this lock, so recheck the file and PID before unlinking.
-    """
+    """Needs the cache lock; epoch drift is not proof of death, so recheck file and PID before unlinking."""
     me = os.getpid()
     for pattern in (STARTUP_MARKER_GLOB, PID_FILE_GLOB):
         try:
@@ -1209,9 +1243,7 @@ def _legacy_record() -> "tuple[tuple[int, RecordedStart, str | None], float] | N
 
 
 def _sibling_is_running(pid: int) -> bool:
-    """Alive, and not an exited process nobody waited on. A zombie answers kill(0) and keeps its start time,
-    and under a non-reaping parent (PID 1 in some containers) it can stay that way indefinitely, so a
-    record pointing at one would pin the compiled cache on every later startup."""
+    """Not a zombie: zombies answer kill(0) and can persist under a non-reaping PID 1, pinning the cache."""
     if not _pid_alive(pid):
         return False
     try:
@@ -1688,8 +1720,7 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
 
 
 def _resolve_frontend_path(frontend_path: Path) -> tuple[Optional[Path], list[Path]]:
-    """Pick a frontend dir that contains `index.html`. Returns (chosen, attempted); `chosen` is None if
-    nothing servable was found."""
+    """Returns (chosen, attempted); chosen is a frontend dir containing index.html, else None."""
     attempted: list[Path] = []
     seen: set[Path] = set()
 
@@ -1985,9 +2016,7 @@ _CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
 
 
 def _consume_cloudflare_intent(cloudflare: "Optional[bool]", secure: bool) -> str:
-    """Resolve user intent without confusing a compatibility flag with opt-out. An explicit choice on THIS
-    invocation wins: letting the inherited marker override it would let a stale export, Docker ENV or
-    systemd Environment= re-enable a tunnel the user opted out of."""
+    """An explicit choice this run wins over the inherited marker, so a stale export cannot re-enable it."""
     inherited = os.environ.pop(_CLOUDFLARE_INTENT_ENV, None)
     if secure or cloudflare is True:
         return "enabled"
@@ -2455,6 +2484,10 @@ def run_server(
 
     import_started = time.perf_counter()
 
+    # For the banner and the reachability probe; started now so its network round trips overlap the
+    # import below. The startup log line resolves its own, LAN-only, answer.
+    display_host_result = _start_display_host_resolution(host)
+
     # Before the import, to shrink the window where two launches think they are alone. The cache env
     # must be seeded first: UNSLOTH_COMPILE_LOCATION is part of the coordination key.
     try:
@@ -2578,8 +2611,7 @@ def run_server(
                 "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
             )
 
-    # For the banner and the reachability probe; the startup log line resolves its own, LAN-only, answer.
-    display_host = _display_host_for_bind(host)
+    display_host = display_host_result()
     _install_uvicorn_startup_log_rewrite(host)
     # LoggingMiddleware already logs these with tracebacks; avoid duplicates in tauri.log.
     install_uvicorn_duplicate_exception_filter()
@@ -2649,7 +2681,11 @@ def run_server(
     from utils.forwarded_headers import uvicorn_forwarded_kwargs, wrap_direct_server
 
     config_kwargs.update(uvicorn_forwarded_kwargs(is_colab = _IS_COLAB))
-    served_app = app if config_kwargs["proxy_headers"] else wrap_direct_server(app, app.state)
+    served_app = (
+        app
+        if config_kwargs["proxy_headers"]
+        else wrap_direct_server(app, app.state, is_colab = _IS_COLAB)
+    )
     if tls is not None:
         from utils.studio_tls import StudioTLSConfig
         config = StudioTLSConfig(served_app, tls = tls, **config_kwargs)

@@ -164,8 +164,7 @@ _last_llama_update_step = -1
 
 
 def _log_llama_update_progress(job: LlamaUpdateJob) -> None:
-    """One llama_update_progress line per 10% step so a prebuilt update reports
-    progress without a line per poll. Resyncs when a new update starts."""
+    """Log one llama_update_progress line per 10% step, not per poll; resets when a new update starts."""
     global _last_llama_update_step
     if job.state != "running" or job.progress is None:
         return

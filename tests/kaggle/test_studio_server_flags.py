@@ -94,17 +94,15 @@ def test_the_cache_rules_append_a_failure_on_both_paths():
 
 
 def test_the_context_pin_is_checked_against_the_requested_value():
-    """llama-server admits a prompt on n_ctx alone, so a server at the model
-    default behaves differently from one at 2048 and the difference does not
-    show in a chat response."""
+    """llama-server admits prompts on n_ctx alone, so a server at the model default differs from one
+    at 2048 without showing in a chat response."""
     body = _body()
     assert "int(ctx) > self.args.studio_ctx" in body
 
 
 def test_gpu_residency_is_confirmed_after_the_split():
-    """A tensor_split that fell back to CPU reports a healthy server and proves
-    nothing about either card. Checked structurally: the threshold comparison
-    must exist, not merely the message about it."""
+    """A tensor_split that fell back to CPU still reports a healthy server and proves nothing about
+    either card, so the threshold comparison itself must exist."""
     tree = ast.parse(_body())
     compares = [ast.unparse(node) for node in ast.walk(tree) if isinstance(node, ast.Compare)]
     assert any(
@@ -135,9 +133,8 @@ def test_it_is_skipped_rather_than_passed_when_the_model_is_not_on_the_gpu():
 
 
 def test_it_runs_between_gpu_inference_and_training():
-    """It reloads the chat model with different flags. Earlier would change the
-    model the inference checks measured; later would put a reload between the
-    adapter and the export."""
+    """Server flags reload the chat model: earlier would change the model that inference measured,
+    later would put a reload between the adapter and export."""
     infer_at = SRC.index("gpu_ok = self.assert_gpu_inference()")
     flags_at = SRC.index("self.assert_server_flags()")
     train_at = SRC.index("trained = self.assert_training()")
@@ -197,9 +194,8 @@ def test_a_pinned_payload_does_not_see_both_cards(monkeypatch):
 
 
 def test_an_unpinned_payload_still_sees_every_card(monkeypatch):
-    """The other direction, and it is the one the two-card claim depends on: a
-    leg that is deliberately NOT pinned must still report both cards, or real
-    multi-GPU coverage would be reported as single-card."""
+    """An unpinned leg must still report every GPU, or real multi-GPU coverage would be reported as
+    single-card; the two-card claim depends on it."""
     module = _payload_module()
     _with_smi(module, monkeypatch, TWO_ROWS, None)
     assert len(module.gpu_inventory()) == 2

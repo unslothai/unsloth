@@ -176,9 +176,8 @@ def _scale_filter(max_pixels: int) -> str:
 
 
 def _rate_ceiling(sampled_fps: Optional[float]) -> float:
-    """The highest rate worth encoding. A user asking for more than MAX_FRAME_RATE
-    raises it: the server samples AFTER this transcode and can only duplicate what
-    was dropped here."""
+    """The highest frame rate worth encoding; a user asking for more than MAX_FRAME_RATE raises it,
+    since the server samples after this transcode and can only duplicate frames dropped here."""
     if sampled_fps is not None and sampled_fps > MAX_FRAME_RATE:
         return float(sampled_fps)
     return float(MAX_FRAME_RATE)
@@ -211,11 +210,9 @@ def shrink_video_for_llama(
     ffmpeg_dir: Optional[str] = None,
     env: Optional[Mapping[str, str]] = None,
 ) -> str:
-    """Make a clip cheap and safe for llama-server to sample, as bare base64.
-
-    ``sampled_fps`` raises the rate ceiling. Keeps only video and the timing of every
-    real frame. Missing tools, failures and an over-``max_bytes`` result pass through.
-    """
+    """Make a clip cheap and safe for llama-server to sample, as bare base64; sampled_fps raises the
+    rate ceiling; keeps only video and the timing of every real frame; missing tools, failures or
+    an over-max_bytes result pass through."""
     from utils.media_playlist import refuse_playlist
 
     try:
@@ -237,12 +234,15 @@ def shrink_video_for_llama(
                 return video_b64
             oversized = area > max_pixels
             too_short = duration is not None and 0 < duration < MIN_SAMPLED_SECONDS
-            if not oversized and not too_short:
-                return video_b64
-            # Keeping the decoded copy alive just to log its length costs 64 MiB.
             raw_bytes = len(raw)
+            if not oversized and not too_short and raw_bytes <= max_bytes:
+                return video_b64
+            # Keeping the decoded copy alive just to log its length costs up to the upload cap.
             del raw
             shrunk = Path(tmp) / "shrunk.mkv"
+            # A size-only re-encode has no filter, and ffmpeg refuses an empty -vf.
+            chain = _filter_chain(max_pixels, rate, duration, oversized, sampled_fps)
+            filters = ["-vf", chain] if chain else []
             result = _run(
                 [
                     ffmpeg,
@@ -259,8 +259,7 @@ def shrink_video_for_llama(
                     "-an",
                     "-sn",
                     "-dn",
-                    "-vf",
-                    _filter_chain(max_pixels, rate, duration, oversized, sampled_fps),
+                    *filters,
                     "-c:v",
                     "mpeg4",
                     # mpeg4 is widely supported but can outgrow low-bitrate sources; -fs caps output at the upload limit.

@@ -98,9 +98,9 @@ async def datasets(
     "check_format" (``name``: a Hub repo id or a listed dataset's id): the detected format, columns and a suggested column mapping.
     "download" (``repo_id``): start downloading a Hub dataset; "status" (``repo_id``): how that download is going.
     "upload": save a .csv, .json, .jsonl or .parquet file sent as ``data_base64`` with its ``filename``, or ``rows`` as JSONL.
-    Put a listed or uploaded dataset's ``ref`` in start_training's config.local_datasets.
+    <<start_training: Put a listed or uploaded dataset's ``ref`` in start_training's config.local_datasets.>>
     "upload_images" (``name``, ``images``, optional ``captions``): add captioned images to the image dataset ``name``, creating it if needed.
-    Pass that ``name`` as config.data_dir to start_training kind "diffusion".
+    <<start_training: Pass that ``name`` as config.data_dir to start_training kind "diffusion".>>
     A ref lasts until Unsloth Studio restarts; after a restart, list or upload again for a new one.
     ``hf_token`` is for gated datasets."""
     caller = current_caller()

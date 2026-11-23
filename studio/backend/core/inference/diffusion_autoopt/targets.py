@@ -116,10 +116,7 @@ def _components(pipe: Any) -> dict:
 
 
 def denoisers(pipe: Any, family: Any = None) -> list:
-    """Denoiser modules of ``pipe`` resolved by type, primary first.
-
-    Order: ``family.denoiser_attr`` (``unet`` for SDXL), the standard DiT attributes, named partitions, then any other
-    ``ModelMixin`` component that declares repeated blocks and is not a VAE / encoder / ControlNet."""
+    """Denoisers by type, primary first; the fallback scan skips VAEs, encoders and ControlNets."""
     found: list = []
     attr = getattr(family, "denoiser_attr", None)
     if isinstance(attr, str) and attr:

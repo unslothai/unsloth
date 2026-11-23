@@ -75,9 +75,8 @@ def test_a_root_only_st_model_is_not(modules_json):
 
 
 def test_a_repo_without_modules_json_is_not(modules_json):
-    """The overwhelming majority. A plain causal LM must keep the old
-    behaviour exactly, so a fix for one notebook does not enlarge 400 other
-    downloads."""
+    """Plain causal LMs, the overwhelming majority, must keep the old behaviour exactly so a fix for
+    one notebook does not enlarge other downloads."""
     modules_json(None)
     assert U._repo_has_weighted_st_subfolders("unsloth/Qwen3-0.6B") is False
 
@@ -182,9 +181,8 @@ def test_only_the_subdir_weight_patterns_differ(modules_json, monkeypatch):
 
 
 def test_the_patterns_still_exist(modules_json):
-    """They are correct for the case they were written for -- an fp16/ or
-    experimental/ directory a root load never reads. This fix narrows where
-    they apply, it does not retire them."""
+    """The subdir weight ignore patterns are correct for fp16/ or experimental/ directories a root
+    load never reads; this fix narrows where they apply and does not retire them."""
     assert "*/*.safetensors" in U._SUBDIR_WEIGHT_IGNORE_PATTERNS
     assert "*/*.bin" in U._SUBDIR_WEIGHT_IGNORE_PATTERNS
 

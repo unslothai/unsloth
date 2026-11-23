@@ -123,7 +123,15 @@ def test_each_distinct_prompt_is_decoded_once_and_repeated_per_generation(zoo_wi
         [1, 2, 2],
         [1, 2, 4],
     ]
-    owners = out["pixel_values_videos"][:, 0].tolist()
+    zoo = pytest.importorskip("unsloth_zoo.rl_replacements")
+    if hasattr(zoo, "grpo_video_bank_supported"):
+        # One copy per distinct prompt; every per-sample video indexes into it.
+        assert out["pixel_values_videos"][:, 0].tolist() == [1.0] * 4 + [2.0] * 12
+        assert out["video_bank_rows"].tolist() == [[0, 4], [0, 4], [4, 8], [8, 16], [4, 8], [8, 16]]
+        owners = zoo.grpo_vision_chunks(out, 4, 4)[0]["pixel_values_videos"][:, 0].tolist()
+    else:
+        assert "video_bank_rows" not in out
+        owners = out["pixel_values_videos"][:, 0].tolist()
     assert owners == [1.0] * 8 + [2.0] * 12 + [2.0] * 12
     assert out["second_per_grid_ts"].tolist() == pytest.approx([1.0, 1.0, 2.0, 2.1, 2.0, 2.1])
 

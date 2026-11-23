@@ -64,6 +64,11 @@ def _claiming_shards(path: str, shards: dict) -> list:
     """Which shards would collect `path`, by pytest's own root-and-ignore rules."""
     claiming = []
     for name, (roots, ignores) in shards.items():
+        # A file root (the shell expands tests/test_x*.py into file arguments) is collected even when an
+        # --ignore / --ignore-glob matches it: pytest applies those only while recursing into directories.
+        if any(root.endswith(".py") and _covers(root, path) for root in roots):
+            claiming.append(name)
+            continue
         if any(_covers(ignore, path) for ignore in ignores):
             continue
         if any(_covers(root, path) for root in roots):
@@ -128,9 +133,8 @@ class TestEveryTestFileLandsInExactlyOneShard:
 
 class TestEveryGlobRootMatchesAFile:
     def test_no_shard_hands_pytest_an_unexpanded_pattern(self):
-        """bash passes a glob that matches nothing through as the literal pattern, and pytest
-        then fails the whole shard on a path that does not exist. A split that moved the last
-        file out of one of its globs would break that shard rather than drop the file."""
+        """bash passes an unmatched glob through literally and pytest then fails the whole shard on
+        the missing path, so a split must not empty any glob."""
         files = _test_files()
         empty = [
             (name, root)

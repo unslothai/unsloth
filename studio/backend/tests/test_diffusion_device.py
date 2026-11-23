@@ -414,8 +414,7 @@ def test_force_float32_rope_tolerates_non_module_components():
 
 
 def test_the_video_loader_demotes_rope():
-    # Guards that the call site exists and is unconditional (the helper no-ops on float64 devices);
-    # checked via AST so `and` / ternary guards are caught too.
+    # Call must be unconditional (helper no-ops on float64); AST catches and/ternary guards.
     import ast
     from pathlib import Path
 
@@ -495,6 +494,66 @@ def test_frame_pad_fix_is_metal_only():
     assert shortcut.padded == [1]
 
 
+def _wan_conv_pipe(kernel, padding):
+    torch = pytest.importorskip("torch")
+    wan = pytest.importorskip("diffusers.models.autoencoders.autoencoder_kl_wan")
+    torch.manual_seed(0)
+    conv = wan.WanCausalConv3d(4, 6, kernel, padding = padding)
+    return torch, conv, _Pipe(vae = torch.nn.Sequential(conv), scheduler = object())
+
+
+@pytest.mark.parametrize(
+    "kernel, padding",
+    [((3, 3, 3), 1), ((1, 1, 1), 0), ((3, 1, 1), (1, 0, 0)), ((3, 3, 3), (1, 0, 1))],
+)
+@pytest.mark.parametrize("cache_frames", [None, 1, 2])
+def test_wan_causal_conv_pads_into_a_zero_buffer_bit_exactly(kernel, padding, cache_frames):
+    torch, conv, pipe = _wan_conv_pipe(kernel, padding)
+    x = torch.randn(1, 4, 3, 9, 7)
+    cache = None if cache_frames is None else torch.randn(1, 4, cache_frames, 9, 7)
+    expected = conv(x, cache)
+    pads = []
+    real_pad = torch.nn.functional.pad
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 1
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 0
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            torch.nn.functional, "pad", lambda *a, **k: pads.append(a[1]) or real_pad(*a, **k)
+        )
+        got = conv(x, cache)
+    assert torch.equal(got, expected)
+    assert pads == []
+
+
+def test_wan_causal_conv_keeps_its_stock_forward_off_metal_and_under_another_wrapper():
+    torch, conv, pipe = _wan_conv_pipe((3, 3, 3), 1)
+    assert dd.install_frame_pad_fix(pipe, _cuda_target()) == 0
+    assert "forward" not in conv.__dict__
+    hooked = conv.forward
+    conv.forward = hooked
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 0
+    assert conv.forward is hooked
+
+
+def test_wan_causal_conv_falls_back_to_stock_for_a_mismatched_cache():
+    torch, conv, pipe = _wan_conv_pipe((3, 3, 3), 1)
+    dd.install_frame_pad_fix(pipe, _mps_target())
+    x = torch.randn(1, 4, 2, 5, 5)
+    cache = torch.randn(1, 4, 2, 5, 5, dtype = torch.float64)
+    with pytest.raises(RuntimeError):
+        type(conv).forward(conv, x, cache)
+    with pytest.raises(RuntimeError):
+        conv(x, cache)
+
+
+def test_the_video_loader_installs_the_frame_pad_fix():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "core/inference/video.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "install_frame_pad_fix(pipe, target, logger = logger)" in src
+
+
 def test_the_image_loader_installs_the_frame_pad_fix():
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent / "core/inference/diffusion.py").read_text(
@@ -561,11 +620,20 @@ def _pipe_with(decoder, encoder = None) -> types.SimpleNamespace:
 def _mps_torch() -> types.ModuleType:
     torch = types.ModuleType("torch")
     torch.syncs = 0
+    torch.unqueued_syncs = 0
 
     def _bump():
         torch.syncs += 1
 
-    torch.mps = types.SimpleNamespace(synchronize = _bump)
+    def _unqueued():
+        torch.unqueued_syncs += 1
+
+    def _zeros(*_shape, device):
+        assert device == "mps"
+        return types.SimpleNamespace(cpu = _bump)
+
+    torch.zeros = _zeros
+    torch.mps = types.SimpleNamespace(synchronize = _unqueued)
     return torch
 
 
@@ -585,6 +653,7 @@ def test_vae_sync_runs_after_every_decoder_call_and_keeps_its_output(monkeypatch
     assert dd.install_vae_sync(_pipe_with(decoder), _target("mps")) is True
     assert decoder.decode(3) == ["out0", "out1", "out2"]
     assert torch.syncs == 3
+    assert torch.unqueued_syncs == 0
 
 
 def test_vae_sync_runs_after_every_encoder_call_too(monkeypatch):
@@ -614,11 +683,52 @@ def test_vae_sync_survives_a_synchronize_that_raises(monkeypatch):
     def _boom():
         raise RuntimeError("Torch not compiled with MPS enabled")
 
-    torch.mps.synchronize = _boom
+    torch.zeros = lambda *_shape, device: _boom()
     monkeypatch.setitem(sys.modules, "torch", torch)
     decoder = _FakeDecoder()
     assert dd.install_vae_sync(_pipe_with(decoder), _target("mps")) is True
     assert decoder.decode(2) == ["out0", "out1"]
+
+
+def test_vae_sync_survives_another_thread_copying_off_the_device():
+    import subprocess
+    from pathlib import Path
+
+    torch = pytest.importorskip("torch")
+    if not torch.backends.mps.is_available():
+        pytest.skip(reason = "the race needs a real Apple MPS device")
+    script = """
+import threading, time, types, torch
+from core.inference import diffusion_device as dd
+
+held = torch.randn(64, 1024, 1024, device = "mps")
+stop = threading.Event()
+
+def copy_off():
+    while not stop.is_set():
+        held.to("cpu")
+
+decoder = torch.nn.Conv2d(8, 8, 3, padding = 1).to("mps")
+pipe = types.SimpleNamespace(vae = types.SimpleNamespace(decoder = decoder, encoder = None))
+assert dd.install_vae_sync(pipe, dd.diffusion_device_target_from_torch_device("mps", torch.float32))
+latents = torch.randn(1, 8, 256, 256, device = "mps")
+writer = threading.Thread(target = copy_off, daemon = True)
+writer.start()
+until = time.monotonic() + 5
+with torch.no_grad():
+    while time.monotonic() < until:
+        decoder(latents)
+stop.set()
+writer.join()
+"""
+    done = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd = Path(__file__).resolve().parents[1],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert done.returncode == 0, done.stderr[-400:]
 
 
 def _mask(
@@ -749,8 +859,7 @@ def test_the_capability_probe_asks_about_the_selected_card(monkeypatch):
     assert dd.resolve_diffusion_device_target(ordinal = 1).dtype == BF16
     assert seen == [1]
 
-    # No selection probes with NO argument: a stub or older build that takes none would
-    # otherwise raise into the fp16 fallback.
+    # Never probe with no argument: a stub or older build would raise into the fp16 fallback.
     seen.clear()
     assert dd.resolve_diffusion_device_target().dtype == FP16
     assert seen == [_NOTHING]
@@ -1003,3 +1112,87 @@ def test_mps_cap_failure_keeps_target(monkeypatch):
     _install(monkeypatch, _mps_cap_torch([], fraction_raises = True), studio_device = "mlx")
     t = dd.resolve_diffusion_device_target()
     assert t.device == "mps" and t.dtype == BF16
+
+
+_PROBE_ENV = "UNSLOTH_DIFFUSION_XPU_FP64_PROBE"
+
+
+def _fake_xpu_torch(has_fp64 = None, raises = False):
+    import torch
+
+    def props(index):
+        if raises:
+            raise RuntimeError("no device properties")
+        return (
+            types.SimpleNamespace()
+            if has_fp64 is None
+            else types.SimpleNamespace(has_fp64 = has_fp64)
+        )
+
+    xpu = types.SimpleNamespace(
+        is_bf16_supported = lambda: True,
+        current_device = lambda: 0,
+        get_device_properties = props,
+    )
+    return types.SimpleNamespace(xpu = xpu, bfloat16 = torch.bfloat16, float16 = torch.float16)
+
+
+@pytest.mark.parametrize(
+    "has_fp64, raises, env, want",
+    [
+        (False, False, None, False),  # Arc A-series
+        (True, False, None, True),
+        (None, False, None, True),
+        (False, True, None, True),
+        (False, False, "0", True),
+    ],
+)
+def test_xpu_target_reports_the_devices_float64(monkeypatch, has_fp64, raises, env, want):
+    if env is None:
+        monkeypatch.delenv(_PROBE_ENV, raising = False)
+    else:
+        monkeypatch.setenv(_PROBE_ENV, env)
+    target = dd._xpu_target(_fake_xpu_torch(has_fp64, raises))
+    assert target.device == "xpu"
+    assert target.supports_float64 is want
+
+
+def test_fp64_less_xpu_demotes_ltx2_rope_to_float32(monkeypatch):
+    torch = pytest.importorskip("torch")
+    ltx2 = pytest.importorskip("diffusers.models.transformers.transformer_ltx2")
+    monkeypatch.delenv(_PROBE_ENV, raising = False)
+    rope = ltx2.LTX2AudioVideoRotaryPosEmbed(dim = 96, num_attention_heads = 2)
+    assert rope.double_precision
+    pipe = types.SimpleNamespace(components = {"transformer": torch.nn.Sequential(rope)})
+    coords = rope.prepare_video_coords(1, 4, 8, 8, device = "cpu")
+    oracle = rope(coords, device = "cpu")
+    assert dd.force_float32_rope(pipe, dd._xpu_target(_fake_xpu_torch(True))) == 0
+    assert rope.double_precision
+    assert dd.force_float32_rope(pipe, dd._xpu_target(_fake_xpu_torch(False))) == 1
+    assert not rope.double_precision
+    got = rope(coords, device = "cpu")
+    for a, b in zip(got, oracle):
+        assert a.dtype == b.dtype == torch.float32
+        assert 0 < float((a - b).abs().max()) < 1e-2
+    assert dd.float64_device("cpu") == "cpu"
+
+
+def test_float64_device_probes_the_operands_xpu(monkeypatch):
+    """``float64_device`` must probe the operand's own XPU index, not the current card."""
+    import torch
+
+    asked = []
+
+    def props(index):
+        asked.append(index)
+        return types.SimpleNamespace(has_fp64 = index != 1)
+
+    xpu = types.SimpleNamespace(current_device = lambda: 1, get_device_properties = props)
+    monkeypatch.setattr(torch, "xpu", xpu, raising = False)
+    monkeypatch.delenv(_PROBE_ENV, raising = False)
+    assert dd.float64_device("xpu:1") == "cpu"
+    assert dd.float64_device("xpu:0") == "xpu:0"
+    assert dd.float64_device("xpu") == "cpu"
+    assert asked == [1, 0, 1]
+    monkeypatch.setenv(_PROBE_ENV, "0")
+    assert dd.float64_device("xpu:1") == "xpu:1"

@@ -16,8 +16,7 @@ from .test_rag_native_drop_upload import SECRET, _sign
 BLOCK_SECONDS = 0.6
 PAYLOAD = b"alpha bravo charlie delta\n" * 320_000
 POLL_INTERVAL = 0.005
-# Count poller turns, not wall clock (blocked ~2, free ~100), so this can run under -n 4.
-# The floor is 10x the blocked count and a fifth of the free one.
+# Counts poller turns, not wall clock, so it runs under -n 4; floor is 10x blocked, 1/5 free.
 SERVED_FLOOR = 20
 
 

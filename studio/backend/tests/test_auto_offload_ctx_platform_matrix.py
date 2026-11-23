@@ -46,8 +46,7 @@ GIB = 1024**3
 MIB = 1024**2
 
 
-# Line tracer over load_model tells which placement arm actually ran.
-# Anchors are found by source search and asserted unique, so renames fail loudly.
+# Line tracer shows which arm ran; anchors are asserted unique so renames fail loudly.
 
 _LOAD_MODEL = inspect.unwrap(LlamaCppBackend.load_model)
 _SOURCE_LINES, _SOURCE_FIRST = inspect.getsourcelines(_LOAD_MODEL)
@@ -261,8 +260,7 @@ def test_an_overflowing_model_reaches_the_expected_arm_and_pins_nothing(
 
 @pytest.mark.parametrize("platform,accelerator", MATRIX)
 def test_a_model_that_fits_never_reaches_either_site(tmp_path, monkeypatch, platform, accelerator):
-    """G1. The far more common shape: the subset loop awards, so the constant is
-    never read. Pinned devices and ``--fit off`` are the evidence the loop won."""
+    """Common case: subset loop awards, so the constant is never read; --fit off shows it won."""
     outcome = run_cell(tmp_path, monkeypatch, platform, accelerator, model_fraction = FITS)
 
     assert outcome.site is None
@@ -275,8 +273,7 @@ def test_a_model_that_fits_never_reaches_either_site(tmp_path, monkeypatch, plat
 
 @pytest.mark.parametrize("accelerator", ACCELERATORS, ids = [a.label for a in ACCELERATORS])
 def test_wsl_is_indistinguishable_from_native_linux(tmp_path, monkeypatch, accelerator):
-    """G5. The only WSL detector on this path is a loader-path decision, so the
-    context math must not be able to tell the two apart on any accelerator."""
+    """WSL is only a loader-path decision, so context math must treat WSL2 like native Linux."""
     linux = next(p for p in PLATFORMS if p[0] == "linux")
     wsl2 = next(p for p in PLATFORMS if p[0] == "wsl2")
 
@@ -302,9 +299,8 @@ def test_wsl_is_indistinguishable_from_native_linux(tmp_path, monkeypatch, accel
 def test_the_file_size_only_arm_relabels_the_context_without_moving_a_device(
     tmp_path, monkeypatch, platform
 ):
-    """Site B. Reached only without KV metadata, and inert with respect to
-    placement by construction: ``_select_gpus`` has already returned above it and
-    nothing below re-runs it. Only the number the UI is told changes."""
+    """Site B is reached only without KV metadata and cannot move placement: _select_gpus already
+    returned above it; only the number the UI is told changes."""
     accelerator = next(a for a in ACCELERATORS if a.label == "nvidia-single")
     outcome = run_cell(tmp_path, monkeypatch, platform, accelerator, estimate_kv = False)
 
@@ -335,8 +331,7 @@ def test_metal_auto_still_floors_at_the_fit_minimum(tmp_path, monkeypatch, platf
 def test_manual_memory_mode_bypasses_both_sites_on_a_gpu_box(
     tmp_path, monkeypatch, platform, gpu_layers
 ):
-    """G7. Two sites clear ``gpus`` before the chain, so a manual load takes no arm
-    at all even with cards enumerated, and neither site can be reached."""
+    """Both sites clear gpus first, so a manual load takes no arm even with GPUs enumerated."""
     accelerator = next(a for a in ACCELERATORS if a.label == "nvidia-multi")
     outcome = run_cell(
         tmp_path,
@@ -353,9 +348,8 @@ def test_manual_memory_mode_bypasses_both_sites_on_a_gpu_box(
 
 @pytest.mark.parametrize("platform", PLATFORMS, ids = [p[0] for p in PLATFORMS])
 def test_the_rocm_arch_gate_drops_an_amd_host_onto_the_cpu_path(tmp_path, monkeypatch, platform):
-    """G8. Every present device gated out (#7624) empties ``_gpu_mem``, so an AMD
-    box with real cards takes the same no-arm path a CPU-only box takes and never
-    reaches either site."""
+    """Every present device gated out (ref 7624) empties _gpu_mem, so an AMD box takes the same
+    no-arm path as a CPU-only box."""
     accelerator = next(a for a in ACCELERATORS if a.label == "amd-rocm")
     _apply_platform(monkeypatch, platform)
     monkeypatch.setattr(_hw, "IS_ROCM", True, raising = False)

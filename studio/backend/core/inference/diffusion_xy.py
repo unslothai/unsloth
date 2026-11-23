@@ -143,9 +143,10 @@ def expand(request: Any, rng: Optional[random.Random] = None) -> XYPlan:
                 raise ValueError(f"xy cell ({label}): {where}: {err.get('msg')}") from None
             if cell.loras:
                 # Weight 0 drops the adapter, as the Images page sends it; read after validation parsed "0".
+                # All dropped stays [] (none): an omitted list means the load's adapters.
                 active = [l for l in cell.loras if l.weight != 0]
                 if len(active) != len(cell.loras):
-                    cell = cell.model_copy(update = {"loras": active or None})
+                    cell = cell.model_copy(update = {"loras": active})
             cells.append(XYCell(ix, iy, label, cell))
     # Adapter-free cells last: Speed Auto may compile on an adapter-free run, and a compiled load refuses LoRA after.
     order = sorted(range(len(cells)), key = lambda i: not cells[i].request.loras)

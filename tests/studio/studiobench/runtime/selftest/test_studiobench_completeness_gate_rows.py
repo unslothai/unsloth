@@ -77,9 +77,8 @@ def test_a_cell_that_lost_messages_is_excluded_as_itself_and_not_as_the_run(tmp_
 
 
 def test_coverage_that_does_not_apply_does_not_fail_the_cell(tmp_path):
-    """A fully mounted arm publishes no `aria-posinset` anywhere, so there are no ordinals to
-    cover and none missing. The question does not arise, and failing a cell on a question that was
-    never asked of it would fail the shipped build's own completeness gate on every cell."""
+    """Fully mounted arms publish no aria-posinset, so coverage does not apply and must not fail the
+    cell."""
     rows, passed = _rows(
         tmp_path,
         {

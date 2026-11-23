@@ -167,3 +167,31 @@ test("the guard removes its listeners and is installed once for the app", () => 
   assert.equal(f.count(), 0);
   assert.match(readSrc("app/provider.tsx"), INSTALL_ONCE);
 });
+
+test("a press with no floating wrapper skips the descendant menu query that walks a long chat", () => {
+  const queried: string[] = [];
+  let wrapper = false;
+  const listeners = new Map<string, Listener[]>();
+  const doc = {
+    addEventListener: (type: string, fn: Listener) =>
+      listeners.set(type, [...(listeners.get(type) ?? []), fn]),
+    removeEventListener: () => {},
+    querySelector: (selector: string) => {
+      queried.push(selector);
+      if (selector === "[data-radix-popper-content-wrapper]") return wrapper ? {} : null;
+      return wrapper ? {} : null;
+    },
+  } as unknown as Document;
+  installDismissClickStreakGuard(doc, () => null);
+  const press = () => {
+    for (const fn of listeners.get("pointerdown") ?? [])
+      fn({ target: { closest: () => null }, button: 0 } as unknown as Event);
+  };
+  press();
+  assert.deepEqual(queried, ["[data-radix-popper-content-wrapper]"]);
+  queried.length = 0;
+  wrapper = true;
+  press();
+  assert.equal(queried.length, 2, "with a wrapper present the open-menu check still runs");
+  assert.match(queried[1], /^\[data-radix-popper-content-wrapper\] :is\(\[role="menu"\]/);
+});

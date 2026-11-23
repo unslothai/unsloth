@@ -8,7 +8,8 @@ import pytest
 
 def test_unmapped_lora_base_skips_the_remote_mapper(monkeypatch):
     # Not importorskip("unsloth"): an earlier file in the worker may have stubbed it as a plain module.
-    loader_utils = pytest.importorskip("unsloth.models.loader_utils")
+    # exc_type: the real package raises a plain ImportError when unsloth_zoo is missing.
+    loader_utils = pytest.importorskip("unsloth.models.loader_utils", exc_type = ImportError)
     from core.inference import worker
 
     fetches = []
@@ -39,7 +40,7 @@ def test_unmapped_lora_base_skips_the_remote_mapper(monkeypatch):
 
     name = next(iter(loader_utils.FLOAT_TO_INT_MAPPER))
     mapped = SimpleNamespace(identifier = "owner/adapter", base_model = name)
-    loader = pytest.importorskip("unsloth.models.loader")
+    loader = pytest.importorskip("unsloth.models.loader", exc_type = ImportError)
 
     expected = loader_utils.get_model_name(name, load_in_4bit = loader.ALLOW_BITSANDBYTES)
     if not loader.ALLOW_PREQUANTIZED_MODELS:
@@ -51,8 +52,8 @@ def test_unmapped_lora_base_skips_the_remote_mapper(monkeypatch):
 
 
 def test_unmapped_prequantized_base_still_lists_the_stripped_repo(monkeypatch):
-    loader = pytest.importorskip("unsloth.models.loader")
-    loader_utils = pytest.importorskip("unsloth.models.loader_utils")
+    loader = pytest.importorskip("unsloth.models.loader", exc_type = ImportError)
+    loader_utils = pytest.importorskip("unsloth.models.loader_utils", exc_type = ImportError)
     from core.inference import worker
 
     monkeypatch.setattr(loader_utils, "_get_new_mapper", lambda: ({}, {}, {}, {}, {}))

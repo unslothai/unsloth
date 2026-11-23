@@ -104,9 +104,7 @@ _untagged_warned = False
 
 
 def _warn_once_on_untagged(conn: sqlite3.Connection) -> None:
-    """Say once that some documents predate embedder identities, so their vectors are
-    served as if current. We cannot tell which backend wrote them, and re-embedding a
-    corpus unasked is not obviously kinder than leaving it, so we report instead."""
+    """Warns once that untagged documents are served as current; reports rather than re-embeds unasked."""
     global _untagged_warned
     if _untagged_warned:
         return

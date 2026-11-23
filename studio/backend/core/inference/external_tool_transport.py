@@ -12,6 +12,7 @@ import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+from core.inference.cloud_compaction import fit_steps as _fit_steps, stream_with_overflow_retry
 from core.inference.external_provider import ExternalProviderClient, _is_kimi_k3
 
 
@@ -45,26 +46,40 @@ class OAICompatTransport:
         model: str,
         continue_final_message: bool | None = None,
         message_fitter: Callable[
-            [list[dict[str, Any]]],
+            [list[dict[str, Any]], list[dict[str, Any]] | None],
             Awaitable[tuple[list[dict[str, Any]], int | None, str | None]],
         ]
         | None = None,
+        overflow_refitter: Callable[..., Any] | None = None,
+        first_turn_overrides: dict[str, Any] | None = None,
+        reply_limit: Callable[[list[dict[str, Any]], list[dict[str, Any]] | None], int]
+        | None = None,
         **request_kwargs: Any,
     ) -> None:
+        """message_fitter may be coroutine or async generator yielding progress lines then
+        (messages, max_tokens, line); overflow_refitter same shape, runs once per request when
+        provider refuses as too long before output; first_turn_overrides replace kwargs on turn 1
+        only; reply_limit (only when the caller set no max_tokens) sizes each round's max_tokens from
+        what its fitted prompt leaves of the window"""
         self._client = client
         self._model = model
         self._continue_final_message = continue_final_message
         self._message_fitter = message_fitter
+        self._overflow_refitter = overflow_refitter
+        self._first_turn_overrides = dict(first_turn_overrides or {})
+        self._reply_limit = reply_limit
         self._request_kwargs = request_kwargs
         # Anthropic can leave a hosted call pending beside a client call; its continuation accepts only tool results.
         self.tool_result_only_continuation = client.provider_type == "anthropic"
         self._initial_message_count: int | None = None
+        self.sent_messages: list[dict[str, Any]] | None = None
         self._last_tools: list[dict[str, Any]] | None = None
         # Always, as the local GGUF loop does: preserve_thinking hides earlier turns, never this turn's tool rounds.
         self.preserves_reasoning = client.provider_type in (
             "llama_cpp",
             "vllm",
             "minimax",
+            "deepseek",
         ) or _is_kimi_k3(client.provider_type, model)
 
     def stream(
@@ -110,25 +125,71 @@ class OAICompatTransport:
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, tool_choice: Any
     ) -> AsyncIterator[str]:
         request_kwargs = dict(self._request_kwargs)
+        unfitted = messages
+        if self._first_turn_overrides:
+            request_kwargs.update(self._first_turn_overrides)
+            self._first_turn_overrides = {}
         if self._message_fitter is not None:
-            messages, max_tokens, truncation_line = await self._message_fitter(messages)
+            fit = None
+            async for step in _fit_steps(self._message_fitter(messages, tools)):
+                if isinstance(step, str):
+                    yield step
+                else:
+                    fit = step
+            messages, max_tokens, truncation_line = fit
             request_kwargs["max_tokens"] = max_tokens
             if truncation_line:
                 yield truncation_line
+        if self._reply_limit is not None:
+            # Sized from this round's fitted prompt: a replayed summary shrinks it, tool results grow it.
+            request_kwargs["max_tokens"] = self._reply_limit(messages, tools)
+        self.sent_messages = messages
 
-        # Re-derived each turn: a tool or user message at the end must not be resumed as an
-        # assistant turn.
-        continue_final_message = bool(self._continue_final_message) and bool(
-            messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant"
-        )
-        upstream = self._client.stream_chat_completion(
-            messages = messages,
-            model = self._model,
-            tools = tools,
-            tool_choice = tool_choice,
-            continue_final_message = continue_final_message,
-            **request_kwargs,
-        )
+        def _send(messages: list[dict[str, Any]], request_kwargs: dict[str, Any]):
+            # Re-derived each turn: a tool or user message at the end must not be resumed as an
+            # assistant turn.
+            continue_final_message = bool(self._continue_final_message) and bool(
+                messages
+                and isinstance(messages[-1], dict)
+                and messages[-1].get("role") == "assistant"
+            )
+            return self._client.stream_chat_completion(
+                messages = messages,
+                model = self._model,
+                tools = tools,
+                tool_choice = tool_choice,
+                continue_final_message = continue_final_message,
+                **request_kwargs,
+            )
+
+        async def _recover():
+            refitter, self._overflow_refitter = self._overflow_refitter, None
+            fit = None
+            async for step in _fit_steps(refitter(unfitted, tools)):
+                if not isinstance(step, str):
+                    fit = step
+            if fit is None or fit[0] is None:
+                return None
+            refit_messages, max_tokens, truncation_line = fit
+            if self._reply_limit is not None:
+                # The refit sizes the reply from the request's window, not the smaller one served.
+                max_tokens = self._reply_limit(refit_messages, tools)
+            self.sent_messages = refit_messages
+
+            async def _resend():
+                if truncation_line:
+                    yield truncation_line
+                async for line in _send(
+                    refit_messages, {**request_kwargs, "max_tokens": max_tokens}
+                ):
+                    yield line
+
+            return _resend
+
+        if self._overflow_refitter is not None:
+            upstream = stream_with_overflow_retry(lambda: _send(messages, request_kwargs), _recover)
+        else:
+            upstream = _send(messages, request_kwargs)
         try:
             async for line in upstream:
                 yield line

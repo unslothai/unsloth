@@ -85,6 +85,9 @@ def _plain(value: Any) -> Any:
     image = _image_fingerprint(value)
     if image is not None:
         return image
+    array = _array_fingerprint(value)
+    if array is not None:
+        return array
     raise TypeError(type(value).__name__)
 
 
@@ -97,6 +100,25 @@ def _image_fingerprint(value: Any) -> Optional[list]:
         return None
     digest = hashlib.sha256(value.tobytes()).hexdigest()
     return ["PIL.Image", str(value.mode), list(value.size), digest]
+
+
+def _array_fingerprint(value: Any) -> Optional[list]:
+    """Float reference pictures (NumPy arrays) key by dtype, shape and their exact bytes, so precision is kept."""
+    module = type(value).__module__ or ""
+    if not (hasattr(value, "dtype") and hasattr(value, "shape") and hasattr(value, "tobytes")):
+        return None
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    if not isinstance(value, np.ndarray) or value.dtype.kind not in "biuf":
+        return None
+    digest = getattr(value, "digest", None) if not module.startswith("numpy") else None
+    if not isinstance(digest, str):
+        digest = hashlib.blake2b(
+            np.ascontiguousarray(value).reshape(-1).view(np.uint8), digest_size = 16
+        ).hexdigest()
+    return ["ndarray", value.dtype.str, list(value.shape), digest]
 
 
 def _is_tensor(obj: Any) -> bool:
@@ -226,6 +248,18 @@ _DENOISER_ATTRS = (
 # Reading these off a denoiser runs none of its layers.
 _INERT_MODULE_ATTRS = frozenset({"dtype", "device", "config"})
 _MAX_FOLLOWED_METHODS = 64
+# Marks an instance wrapper that only forwards to the same-named class method and runs no denoiser
+TRANSPARENT_WRAPPER_ATTR = "_unsloth_prompt_cache_transparent"
+
+
+def mark_transparent_wrapper(fn: Any) -> Any:
+    """Self-reference, so a ``functools.wraps`` copy on an outer wrapper is not trusted."""
+    setattr(fn, TRANSPARENT_WRAPPER_ATTR, fn)
+    return fn
+
+
+def is_transparent_wrapper(fn: Any) -> bool:
+    return fn is not None and getattr(fn, TRANSPARENT_WRAPPER_ATTR, None) is fn
 
 
 def _scoped_lora_key() -> bool:
@@ -252,7 +286,12 @@ def _encode_skips_denoisers(
     import ast
     import textwrap
 
-    own = getattr(instance, "__dict__", None) or {}
+    own = {
+        attr: value
+        for attr, value in (getattr(instance, "__dict__", None) or {}).items()
+        if not _transparent_wrapper(cls, attr, value, instance)
+    }
+    denoisers = [own.get(attr) for attr in _DENOISER_ATTRS if own.get(attr) is not None]
     seen: set = set()
     todo = [name]
     while todo:
@@ -320,7 +359,7 @@ def _encode_skips_denoisers(
                 ):
                     return False
             elif node.attr in own:
-                if _bound_code(own[node.attr]):
+                if _bound_code(own[node.attr]) or _opaque_callable(own[node.attr], denoisers):
                     return False
             elif _followable(inspect.getattr_static(cls, node.attr, None)):
                 todo.append(node.attr)
@@ -331,6 +370,60 @@ def _bound_code(value: Any) -> bool:
     import functools
     import types
     return isinstance(value, (types.FunctionType, types.MethodType, functools.partial))
+
+
+def _transparent_wrapper(cls: Any, attr: str, value: Any, instance: Any) -> bool:
+    """``value`` is a ``TRANSPARENT_WRAPPER_ATTR`` wrapper of ``instance``'s own ``cls.<attr>``."""
+    if not callable(value):
+        return False
+    for _ in range(8):
+        if not is_transparent_wrapper(value):
+            break
+        value = getattr(value, "__wrapped__", None)
+    else:
+        return False
+    if value is getattr(instance, "__dict__", {}).get(attr):
+        return False
+    target = inspect.getattr_static(cls, attr, None)
+    return (
+        getattr(value, "__self__", None) is instance
+        and target is not None
+        and getattr(value, "__func__", None) is target
+    )
+
+
+def _opaque_callable(value: Any, denoisers: list) -> bool:
+    """Callable the walk cannot read; tokenizers/processors and denoiser-free modules are exempt."""
+    import types
+
+    if (
+        not callable(value)
+        or isinstance(value, type)
+        or isinstance(value, types.BuiltinFunctionType)
+    ):
+        return False
+    try:
+        import torch
+        if isinstance(value, torch.nn.Module):
+            ids = {id(m) for d in denoisers if isinstance(d, torch.nn.Module) for m in d.modules()}
+            return any(id(m) in ids for m in value.modules()) or any(
+                v is d for v in vars(value).values() for d in denoisers
+            )
+    except Exception:  # noqa: BLE001 - unclassifiable
+        return True
+    try:
+        from transformers import PreTrainedTokenizerBase, ProcessorMixin
+        from transformers.image_processing_utils import ImageProcessingMixin
+        from transformers.feature_extraction_utils import FeatureExtractionMixin
+
+        if isinstance(
+            value,
+            (PreTrainedTokenizerBase, ProcessorMixin, ImageProcessingMixin, FeatureExtractionMixin),
+        ):
+            return False
+    except Exception:  # noqa: BLE001 - no transformers: nothing to exempt
+        pass
+    return True
 
 
 def _followable(value: Any) -> bool:

@@ -201,8 +201,7 @@ def _case_load(
     placeholders = _placeholders(model)
     model = _peft(model, **peft)
     peft_bytes = _storage_bytes(model)
-    # Weight-reading inits (PiSSA, OLoRA, MiCA, ...) leave every placeholder storage-free: same tensors, still
-    # zero-stride, none replaced.
+    # Weight-reading inits (PiSSA, OLoRA, MiCA, ...) leave placeholders storage-free and unreplaced.
     after = _placeholders(model)
     placeholders_kept = (
         len(placeholders) > 0
@@ -465,7 +464,7 @@ def test_sharded_loading_refusals_leave_the_model_uncut():
         ), r
         assert r["other_split:uncut"]
         assert "another split" in (r["other_layers_per_stage"] or ""), r
-        assert "16-bit safetensors checkpoints only" in (r["quantized"] or ""), r
+        assert "safetensors checkpoints only" in (r["quantized"] or ""), r
         assert "pipeline schedule must be one of" in (r["unknown_schedule"] or ""), r
 
 

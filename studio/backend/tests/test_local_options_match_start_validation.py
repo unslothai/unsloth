@@ -10,8 +10,7 @@ from models.training import TrainingStartRequest
 
 
 def _accepted_by(field: str, value: str) -> bool:
-    """Run the real TrainingStartRequest validator for *field*, so the test cannot drift
-    from the model by restating its regex here."""
+    """Runs the real TrainingStartRequest validator, so the test cannot drift from the model."""
     for validator in TrainingStartRequest.__pydantic_decorators__.field_validators.values():
         if field in validator.info.fields:
             try:

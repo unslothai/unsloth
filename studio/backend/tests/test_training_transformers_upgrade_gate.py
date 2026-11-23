@@ -147,8 +147,7 @@ def test_a_merely_offered_upgrade_keeps_4bit_when_custom_code_can_load_it(monkey
 
 
 def test_an_active_sidecar_forces_16bit_even_with_custom_code(monkeypatch):
-    # No install to decline: the sidecar already routes this model, and it trains 16-bit
-    # whatever the repo ships.
+    # An active sidecar already routes the model and trains 16-bit, whatever the repo ships.
     inf_mod = _stub(monkeypatch, upgrade = UPGRADE, trust_remote_code = True, latest_tier = True)
     assert _call(inf_mod).forces_16bit is True
 
@@ -208,8 +207,7 @@ def test_a_pinned_snapshot_is_what_gets_inspected(monkeypatch, tmp_path):
 
 
 def test_a_selected_cache_directory_resolves_to_its_snapshot(monkeypatch, tmp_path):
-    # prefer_local_cache without an exact pin, the second branch of the scan route's
-    # precedence: the selected cache directory resolves to the snapshot inside it.
+    # With prefer_local_cache and no exact pin, a cache directory resolves to its snapshot.
     inspected: list = []
     inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
     snapshot = _cached_snapshot(monkeypatch, tmp_path)
@@ -288,8 +286,7 @@ def test_an_unresolvable_pin_falls_back_to_the_identifier(monkeypatch, tmp_path)
 
 
 def test_an_exact_4bit_resume_is_flagged_before_the_install_is_offered(monkeypatch):
-    # The sidecar is a persistent overlay; installing on the way into a resume strands the
-    # checkpoint, so the caller must know before the dialog.
+    # A sidecar install on resume strands the checkpoint, so flag it before the dialog.
     inf_mod = _stub(monkeypatch, upgrade = UPGRADE, trust_remote_code = True)
     monkeypatch.setattr(
         "storage.studio_db.get_run",
@@ -365,8 +362,7 @@ def test_a_minimal_response_reads_as_the_pre_gate_behaviour():
 def test_forces_16bit_over_every_combination(
     monkeypatch, latest_tier, installable, custom_code, expected
 ):
-    # The preview draws its VRAM claim from this field, so a wrong cell is a wrong
-    # number in front of the user. Exhaustive rather than sampled.
+    # The preview's VRAM figure reads this field, so every combination is tested exhaustively.
     upgrade = None
     if installable or custom_code:
         upgrade = {

@@ -314,12 +314,9 @@ def _probe_lines(stdout: str) -> list[str]:
 )
 @requires_pwsh
 def test_a_real_profile_reproduces_the_same_state(tmp_path):
-    """Anchor for the simulation: a profile pwsh actually loads leaves the same state.
-
-    If these ever diverge, every test below is measuring something the installer never meets.
-    Only the probe lines are compared, so a system-wide profile that prints a banner does not
-    turn this into a flake.
-    """
+    """Anchor for the simulation: a profile pwsh really loads must leave the same state, or every
+    test below measures what the installer never meets; only probe lines are compared, so a
+    banner from a system-wide profile cannot flake it."""
     env = _hostile_env(tmp_path)
     paths = _profile_paths(env)
     # Machine-wide profiles load only in the real leg and cannot be redirected, so skip if present.
@@ -506,11 +503,9 @@ def test_uv_probe_finds_the_real_uv_behind_a_profile_alias(tmp_path):
 
 @requires_pwsh
 def test_uv_probe_rejects_a_too_old_uv_and_leaves_the_reset_value(tmp_path):
-    """The version gate still has to fail closed, or a stale uv would be pinned and used.
-
-    PATH is REPLACED, not prepended to: since the gate now walks every candidate, a real uv on
-    the machine running this would legitimately rescue the run and hide the branch under test.
-    """
+    """The version gate must fail closed, or a stale uv would be pinned and used; PATH is replaced,
+    not prepended, since the gate walks every candidate and a real uv on the host would hide the
+    branch under test."""
     fake = _fake_uv(tmp_path / "bin", version = "0.7.0")
     res = _run_with_profile(tmp_path, _uv_probe_body(), path_override = fake.parent)
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
@@ -551,11 +546,8 @@ def test_a_convincing_uv_function_is_not_accepted_as_uv(tmp_path):
 
 @requires_pwsh
 def test_an_alias_to_a_real_uv_is_followed_to_the_executable(tmp_path):
-    """The legitimate wrapper shape still has to work, and resolve to a PATH, not the alias.
-
-    People do alias uv at a specific build. Refusing that outright would install a second uv
-    over a working machine, which is the failure this whole function was written to avoid.
-    """
+    """An alias to a real uv build must still resolve to that executable path, not the alias itself;
+    refusing it would install a second uv over a working machine."""
     fake = _fake_uv(tmp_path / "aliased", version = "0.12.4")
     profile = f"Set-Alias uv {_ps_literal(fake)}\n"
     body = _uv_probe_body('    "RESOLVED:$(Resolve-UvExecutable)"')
@@ -570,12 +562,9 @@ def test_an_alias_to_a_real_uv_is_followed_to_the_executable(tmp_path):
 
 
 def test_no_bare_winget_token_survives_at_a_call_site():
-    """winget installs uv, so an alias on it owns the same ground.
-
-    Detection used a bare Get-Command and every invocation was a bare token, so the fix applied
-    to uv left the winget half of the bootstrap exposed to the identical wrapper. (Python itself
-    no longer comes from winget: the Studio environment is always on a uv-managed Python.)
-    """
+    """winget installs uv, so an alias on it owns the same ground; winget detection must skip
+    aliases and functions as uv detection does; Python no longer comes from winget, as Studio is
+    always on a uv-managed Python."""
     src = _install_ps1()
     assert (
         "Get-Command winget -CommandType Application -All" in src
@@ -599,12 +588,8 @@ def test_module_autoloading_is_restored():
 @requires_pwsh
 @pytest.mark.parametrize("script", [INSTALL_PS1, SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
 def test_the_powershell_entrypoints_parse(script):
-    """A syntax error here is a total install failure, and neither file is imported by anything.
-
-    setup.ps1 is here for the same reason install.ps1 is, and because the tests that read it
-    extract single functions: an extraction still parses when the file around it does not, so
-    nothing else in the suite would notice a broken brace at file scope.
-    """
+    """A syntax error here is a total install failure and neither file is imported; setup.ps1 is
+    checked too, since function-level extraction tests would miss a broken brace at file scope."""
     res = run_pwsh(
         [
             shutil.which("pwsh") or "pwsh",
@@ -808,9 +793,8 @@ def test_a_standalone_update_reconstructs_the_proxy_for_itself():
 
 @requires_pwsh
 def test_the_probe_reads_a_hostile_profile_without_carrying_anything_else(tmp_path):
-    """Executable, against a profile pwsh genuinely loads: strict mode on, module autoloading
-    off, a lowercase key and a [uri] value. The probe has to survive all of it and return only
-    the proxy entries."""
+    """The probe must survive a profile pwsh genuinely loads (strict mode on, module autoloading
+    off, a lowercase key, a [uri] value) and return only the proxy entries."""
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
     # From the markers: the frame must survive a profile that prints.
     start = _locate(src, "_PROXY_PROBE_BEGIN = ", "the probe framing")

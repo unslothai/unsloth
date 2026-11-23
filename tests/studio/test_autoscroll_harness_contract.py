@@ -234,9 +234,8 @@ def test_thread_weight_records_the_four_actions() -> None:
 
 
 def test_thread_weight_row_shapes_stay_distinct() -> None:
-    """TABLE_ROWS is (label, pick) and GROWTH_AXES is (label, pick, floored). They read almost
-    identically, so a bulk edit to one lands in the other and print_table dies at the end of a
-    forty-minute run, after every measurement is taken and before any of it is shown."""
+    """TABLE_ROWS is (label, pick) and GROWTH_AXES is (label, pick, floored); a bulk edit that lands
+    in the wrong one makes print_table die after a forty-minute run, before anything is shown."""
     import importlib
     import sys
 

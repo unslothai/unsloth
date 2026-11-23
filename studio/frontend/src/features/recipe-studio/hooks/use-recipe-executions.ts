@@ -347,7 +347,12 @@ async function loadLocalModelSelection(
         requestedContextLength ??
         unpinnedLoadContext(
           isGguf,
-          isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
+          isServedByMlx(
+            isGguf,
+            platform.deviceType,
+            platform.chatOnlyReason,
+            platform.mlxInference,
+          ),
           DEFAULT_MAX_SEQ_LENGTH,
         ),
       // biome-ignore lint/style/useNamingConvention: api schema

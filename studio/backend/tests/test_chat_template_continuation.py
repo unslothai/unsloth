@@ -465,8 +465,7 @@ def test_the_boundary_renderer_is_shared_by_the_manual_fallback():
     ],
 )
 def test_the_manual_formatters_resume_instead_of_opening_a_new_turn(format_type, opener):
-    """Every manual formatter closes the turn, so continuing has to splice. These run
-    when the tokenizer template raises or a base model has none."""
+    """Manual formatters close turns, so continuation must splice, not open a new turn."""
     InferenceBackend = _inference_backend()
 
     class _RaisingTokenizer:
@@ -569,9 +568,42 @@ def test_native_fallback_keeps_participant_names():
     assert seen["messages"] == conversation
 
 
+def _templateless_backend():
+    InferenceBackend = _inference_backend()
+
+    class _Tokenizer:
+        chat_template = None
+
+        def apply_chat_template(self, *_args, **_kwargs):
+            raise ValueError("tokenizer.chat_template is not set")
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "m"
+    backend.models = {"m": {"tokenizer": _Tokenizer(), "chat_template_info": {}}}
+    return backend
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Why does std::vector<int> fail?", "Is a < b when b > c?", "Fix <div>hi</div>"],
+)
+def test_fallback_keeps_angle_bracket_text_in_user_turns(text):
+    prompt = _templateless_backend().format_chat_prompt([{"role": "user", "content": text}])
+    assert prompt == f"User: {text}\nAssistant: "
+
+
+def test_fallback_keeps_a_markup_only_final_user_turn():
+    conversation = [
+        {"role": "user", "content": "What is 2+2?"},
+        {"role": "assistant", "content": "4"},
+        {"role": "user", "content": "<div><span>"},
+    ]
+    prompt = _templateless_backend().format_chat_prompt(conversation)
+    assert prompt.endswith("Assistant: 4\nUser: <div><span>\nAssistant: ")
+
+
 def test_a_text_part_partial_merges_rather_than_doubling_the_turn():
-    """Text-part partials must merge into one assistant turn, or strict templates reject the doubled
-    turn."""
+    """Text partials merge into one assistant turn; strict templates reject a doubled turn."""
     conversation = [
         {"role": "user", "content": "q"},
         {"role": "assistant", "content": [{"type": "text", "text": "Looking that "}]},

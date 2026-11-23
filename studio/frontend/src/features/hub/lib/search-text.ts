@@ -12,6 +12,20 @@ export function tokenizeQuery(query: string): string[] {
     .filter((token) => token.length > 0);
 }
 
+export interface OwnerSearchQuery {
+  owner: string;
+  query: string;
+}
+
+const OWNER_SEARCH_RE = /^([^/\s]+)\/([^/\s]*)$/;
+
+/** Split an exact Hugging Face owner search, including the useful `owner/` form. */
+export function parseOwnerSearchQuery(value: string): OwnerSearchQuery | null {
+  const match = OWNER_SEARCH_RE.exec(value.trim());
+  if (!match) return null;
+  return { owner: match[1], query: match[2] };
+}
+
 export function matchTokens(haystack: string, tokens: readonly string[]): boolean {
   if (tokens.length === 0) return true;
   const normalized = normalizeForSearch(haystack);

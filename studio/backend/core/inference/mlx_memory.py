@@ -201,7 +201,7 @@ def _checkpoint_tensors(model_dir: str, config: Optional[dict], dtype):
             if name == "__metadata__":
                 continue
             stored = getattr(mx, _SAFETENSORS_DTYPES.get(meta["dtype"], "float32"))
-            if stored in (mx.float32, mx.float16, mx.bfloat16):
+            if dtype is not None and stored in (mx.float32, mx.float16, mx.bfloat16):
                 stored = dtype
             tensors[name] = mx.zeros(tuple(meta["shape"]), dtype = stored)
     return tensors
@@ -265,6 +265,7 @@ def _resident_bytes(model_dir: str, config: dict, quantize: bool) -> int:
             f"{len(orphaned)} parameters this checkpoint does not supply, "
             f"beginning {orphaned[0]}"
         )
+    _unread_vision(model)
     if quantize:
         with contextlib.redirect_stdout(io.StringIO()):
             model, _ = _apply_mlx_quantization(
@@ -290,7 +291,7 @@ def mlx_weight_bytes(
     if not config:
         return shards
     if config.get("quantization") or config.get("quantization_config"):
-        return shards - _mapped_bytes(model_dir, config)
+        return shards - _mapped_bytes(model_dir, config) - _unread_vision_bytes(model_dir, config)
     try:
         return _resident_bytes(model_dir, config, quantize = load_in_4bit)
     except Exception as exc:
@@ -303,8 +304,7 @@ def _mapped(
     config: dict,
     quantize: bool = False,
 ) -> bool:
-    """A table mlx-vlm reads row by row from the checkpoint rather than holding it: DeepSeek
-    V4.1's Engram, unless the load quantizes it."""
+    """DeepSeek V4.1 Engram table is read row by row from the checkpoint unless quantized."""
     return not quantize and _maps_engram(config) and ".engram.embed." in name
 
 
@@ -390,6 +390,72 @@ def _on_route(vision: Optional[bool]):
         yield
     finally:
         _ROUTE_VISION.reset(token)
+
+
+# Set where the load passes unsloth_zoo's drop_vision_weights, which never reads the vision modules.
+_DROPS_VISION: contextvars.ContextVar = contextvars.ContextVar("mlx_drops_vision", default = False)
+
+
+@contextlib.contextmanager
+def mlx_dropping_vision(config, disable_vision: bool):
+    """Price loads inside as Vision off leaves them: vision weights unread, unless it takes audio."""
+    from utils.audio_tokens import is_audio_input_type
+
+    drops = (
+        disable_vision
+        and getattr(config, "is_vision", False)
+        and not getattr(config, "is_lora", False)
+        and not is_audio_input_type(getattr(config, "audio_type", None))
+    )
+    token = _DROPS_VISION.set(bool(drops))
+    try:
+        yield
+    finally:
+        _DROPS_VISION.reset(token)
+
+
+# The prompt cache, in MiB, the load was asked for; None leaves the default share of memory.
+_PROMPT_CACHE_MIB: contextvars.ContextVar = contextvars.ContextVar(
+    "mlx_prompt_cache_mib", default = None
+)
+
+
+@contextlib.contextmanager
+def mlx_prompt_cache_chosen(mib: Optional[int]):
+    token = _PROMPT_CACHE_MIB.set(mib if mib is not None and mib >= 0 else None)
+    try:
+        yield
+    finally:
+        _PROMPT_CACHE_MIB.reset(token)
+
+
+def _unread_vision(model) -> set:
+    """Detach and name the modules a vision-dropping load never reads; none on an older unsloth_zoo."""
+    if not _DROPS_VISION.get():
+        return set()
+    try:
+        from unsloth_zoo.mlx.loader import _detach_vision_modules
+    except ImportError:
+        return set()
+    return set(_detach_vision_modules(model))
+
+
+def _unread_vision_bytes(model_dir: str, config: dict) -> int:
+    """Stored bytes of a pre-quantized checkpoint's tensors a vision-dropping load never reads."""
+    if not (_DROPS_VISION.get() and _builds_on_mlx_vlm(config)):
+        return 0
+    try:
+        model = _whole_model(config, _runtime_dtype())
+        unread = _unread_vision(model)
+        if not unread:
+            return 0
+        tensors = _checkpoint_tensors(model_dir, config, None)
+        if hasattr(model, "sanitize"):
+            tensors = model.sanitize(tensors)
+    except Exception as exc:
+        logger.debug("MLX estimate keeps the vision weights of %s: %s", model_dir, exc)
+        return 0
+    return sum(value.nbytes for name, value in tensors.items() if name.split(".", 1)[0] in unread)
 
 
 def _builds_on_mlx_vlm(config: dict) -> bool:
@@ -743,9 +809,7 @@ def _deferrable(evaluate):
 
 @contextlib.contextmanager
 def weightless_forward():
-    """Defer ``mx.eval`` / ``mx.async_eval`` on this thread while a weightless tower runs. Model code
-    evaluates mid-forward (mlx-vlm's per-layer ``async_eval``), which on random weights materializes
-    the whole model; the probes read only shapes, which need no evaluation."""
+    """Defers mx.eval and async_eval during weightless towers, which would materialize random weights."""
     import mlx.core as mx
 
     with _DEFERRABLE_LOCK:
@@ -1116,9 +1180,8 @@ _TAIL_MAX = 1 << 24
 
 @functools.lru_cache(maxsize = 64)
 def _unfused_tails(route, widths, dtype_size: int, later: int):
-    """Unfused tails of up to 8 queries, and the first longer one that fuses.
-
-    Past 8 queries mlx's kernels only switch on as queries grow, so one boundary splits the two."""
+    """Unfused tails of up to 8 queries, plus the first longer one that fuses; past 8, mlx's kernels
+    only switch on as queries grow, so one boundary splits the two."""
 
     def unfused(r):
         return not _attention_fuses(route, widths, dtype_size, r, r + later)
@@ -1285,7 +1348,9 @@ def _refused_by_its_own_tensors(model_dir: str, config: dict) -> Optional[str]:
         return None
 
     unhoused = sorted(
-        name for name in set(tensors) - built if not name.endswith((".scales", ".biases"))
+        name
+        for name in set(tensors) - built
+        if not name.endswith((".scales", ".biases", ".weight_scale_2"))
     )
     if unhoused:
         refusal = _extra_tensors_refused(model, config, unhoused)
@@ -1307,8 +1372,7 @@ def _refused_by_its_own_tensors(model_dir: str, config: dict) -> Optional[str]:
 
 @functools.lru_cache(maxsize = 1)
 def mlx_offload_planner():
-    """unsloth_zoo's offload planner, or None when the installed unsloth_zoo cannot offload as
-    Studio prices it."""
+    """unsloth_zoo's offload planner, or None if it cannot offload as Studio prices it."""
     import inspect
 
     try:
@@ -1376,6 +1440,10 @@ def _install_oq_renames(config: dict) -> None:
     )
     if install is not None:
         install(config.get("model_type"))
+    # Mixed-mode and NVFP4-scaled-embedding checkpoints (Ollama's MLX tags), on a zoo that reads them.
+    install_quantization = getattr(loader, "_ensure_vlm_checkpoint_quantization", None)
+    if install_quantization is not None:
+        install_quantization()
 
 
 @functools.lru_cache(maxsize = 4)
@@ -1484,6 +1552,8 @@ def _size_load(
             drafter,
             drafter and _checkpoint_fingerprint(drafter[0]),
             offload,
+            _DROPS_VISION.get(),
+            _PROMPT_CACHE_MIB.get(),
         )
     except Exception:
         return _size_load_uncached(
@@ -1773,6 +1843,5 @@ def mlx_offload_plan(
 
 
 def mlx_fit_context(model_dir: str, **kwargs) -> Optional[int]:
-    """Largest context whose estimated footprint stays inside ``budget_bytes``; None when the ceiling
-    already fits or nothing can be said."""
+    """Largest context whose footprint fits budget_bytes; None when the ceiling already fits."""
     return mlx_fit_outcome(model_dir, **kwargs)[1]

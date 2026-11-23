@@ -161,8 +161,7 @@ def test_the_cache_stays_within_its_cap(monkeypatch, tiny):
 
 
 def test_http_and_stdio_sessions_share_one_cap(monkeypatch, tiny):
-    """Worth pinning: the cap used to bound stdio subprocesses only, so a chat
-    that talks to HTTP servers can now evict a stateful stdio session."""
+    """The cap covers HTTP too, so HTTP traffic can evict a stateful stdio session."""
     monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 2)
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat-1")
     for i in range(5):
@@ -198,8 +197,7 @@ def test_idle_sessions_are_reaped(monkeypatch, tiny):
 
 
 def test_shutdown_of_a_full_cache_is_bounded(monkeypatch, tiny):
-    """close_mcp_sessions() runs on the request thread during a server edit, so a
-    cache full of sessions must not stall it for minutes."""
+    """Shutdown of a full session cache must stay bounded; it runs on the request thread."""
     monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 16)
     for i in range(16):
         call_tool_sync(HTTP_URL, None, "t", {}, scope = f"chat-{i}")

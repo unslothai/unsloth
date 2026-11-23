@@ -270,8 +270,7 @@ def _own_yields(node: ast.AST):
 
 
 def _probes_availability(node: ast.Try) -> bool:
-    """A try that imports the module and returns when it succeeds; the stub below it is skipped on
-    purpose."""
+    """A try that imports and returns on success; the stub below it is skipped on purpose."""
     if any(_reraises(handler) for handler in node.handlers):
         return False
     return any(

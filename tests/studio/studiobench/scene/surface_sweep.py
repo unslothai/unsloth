@@ -23,8 +23,7 @@ def _log_noop(_msg: str) -> None:
 
 
 class _Driver:
-    """The step interpreter. One place that touches the browser, so the registry stays declarative
-    and the unit tests can read it with no browser installed."""
+    """Step interpreter, the only browser-touching code, so the registry stays declarative."""
 
     def __init__(self, page: Any, base_url: str, log: Callable[[str], None]) -> None:
         self.page = page

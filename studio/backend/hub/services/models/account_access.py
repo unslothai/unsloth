@@ -22,7 +22,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
-from huggingface_hub import HfApi, constants as hf_constants
+from huggingface_hub import constants as hf_constants
 
 from auth import policy
 from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
@@ -39,6 +39,20 @@ from utils.account_context import (
     current_account_id,
     is_owner_context,
 )
+
+
+def __getattr__(name):
+    # Lazy (~0.2 s at boot); from the submodule so a patched huggingface_hub.HfApi is never cached.
+    if name == "HfApi":
+        from huggingface_hub.hf_api import HfApi
+        globals()["HfApi"] = HfApi
+        return HfApi
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _hf_api(*args, **kwargs):
+    return (globals().get("HfApi") or __getattr__("HfApi"))(*args, **kwargs)
+
 
 _ACCOUNT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -572,7 +586,7 @@ def _hub_public_answer(
 ) -> bool | None:
     """True when the Hub says public, False for private/gated/missing, None when unaskable."""
     try:
-        info = HfApi(endpoint = endpoint).repo_info(
+        info = _hf_api(endpoint = endpoint).repo_info(
             repo_id, repo_type = repo_type, token = False, timeout = 5.0
         )
     except Exception as exc:  # noqa: BLE001 - classified below, never trusted as public
@@ -822,13 +836,14 @@ def connection_model_allowed(model_id: str) -> bool:
 
 
 def shared_connection_view(row: dict) -> dict | None:
+    from core.inference.providers import get_provider_info, provider_default_models
+
     view = {**row, "shared": True, "shared_by_owner": True}
     models = row.get("models") or []
-    if not models:
-        from core.inference.providers import get_provider_info
-        models = list(
-            (get_provider_info(row.get("provider_type") or "") or {}).get("default_models") or []
-        )
+    provider_type = row.get("provider_type") or ""
+    if not models and get_provider_info(provider_type) is not None:
+        from routes.providers import cached_catalog_models
+        models = list(provider_default_models(provider_type, cached_catalog_models()))
     view["models"] = [model for model in models if connection_model_allowed(model)]
     view["available_models"] = [
         model for model in row.get("available_models") or [] if model in view["models"]
@@ -994,17 +1009,44 @@ def require_model_access(
     repo_type: str = "model",
     *,
     offline: bool = False,
+    hf_token = None,
 ) -> None:
     access_options = {"offline": True} if offline else {}
     if not model_visible(reference, repo_type = repo_type, **access_options):
         from utils.paths.path_utils import is_network_or_device_path
 
         # The allowlist check below resolves the reference on disk: not for a share path.
-        if repo_type == "model" and not (
-            isinstance(reference, str) and is_network_or_device_path(reference)
-        ):
+        if isinstance(reference, str) and is_network_or_device_path(reference):
+            raise HTTPException(status_code = 404, detail = "Model not found")
+        if repo_type == "model":
             require_model_allowed(reference)
+        if not offline and _grant_with_token(reference, repo_type, hf_token):
+            return
         raise HTTPException(status_code = 404, detail = "Model not found")
+
+
+def _grant_with_token(reference, repo_type: str, hf_token) -> bool:
+    token = account_hf_token(hf_token)
+    if not isinstance(reference, str) or not token:
+        return False
+    repo_id = _reference_repo_id(reference.strip())
+    if repo_id is None or not _source_speaks_for_the_cache():
+        return False
+    if repo_type == "model" and not model_allowed(repo_id):
+        return False
+    from hub.utils.hf_tokens import _explicit_token_reaches_repo
+
+    # HfApi.auth_check has no timeout; this probe is bounded.
+    if _explicit_token_reaches_repo(repo_id, token, repo_type) is not True:
+        return False
+    record_model_grant(repo_id, repo_type)
+    return model_visible(reference, repo_type = repo_type)
+
+
+def require_media_model_access(request) -> None:
+    require_model_access(request.model_path, hf_token = request.hf_token)
+    if request.base_repo:
+        require_model_access(request.base_repo, hf_token = request.hf_token)
 
 
 def require_model_allowed(reference) -> None:
@@ -1076,7 +1118,7 @@ def authorize_download(repo_id: str, repo_type: str, hf_token) -> None:
             detail = "Only the installation owner can download while ModelScope is the model source",
         )
     try:
-        api = HfApi()
+        api = _hf_api()
         token = account_hf_token(hf_token)
         info = api.repo_info(repo_id, repo_type = repo_type, token = token, timeout = 5.0)
         if getattr(info, "gated", False):

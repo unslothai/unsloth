@@ -227,13 +227,8 @@ def test_an_unreadable_directory_is_reported_and_not_just_skipped(tmp_path: path
     reason = "POSIX permissions only; see the walk control above.",
 )
 def test_a_directory_that_vanished_is_not_reported_as_unread(tmp_path: pathlib.Path) -> None:
-    """A path that is gone is not a hole in the measurement, and must not void a run.
-
-    This is the transient case the whole change exists for. A directory that no longer
-    exists cannot contribute a file to a later listing of itself, so there is nothing for
-    the caller to withhold and nothing to declare void. Only a directory that is still
-    there and still unreadable is a real gap.
-    """
+    """A vanished directory is not a gap in the measurement and must not void a run; only a
+    directory that is still present but unreadable counts as unread."""
     scan = _scan(tmp_path / "never-existed")
     assert scan["files"] == [], scan
     assert scan["unread"] == [], (
@@ -329,7 +324,11 @@ def _shipped_coverage_check() -> str:
     raise_start = body.index("    $incomplete = @()")
     raise_end = body.index("This run cannot say whether a compiler ran.", raise_start)
     raise_end = body.index("\n    }\n", raise_end) + len("\n    }\n")
-    return body[loop_start:loop_end] + body[raise_start:raise_end]
+    # The verdict also reads what both detectors saw and which attempt this is: one clean attempt.
+    single_attempt = (
+        "$compilers = @()\n$newLibraries = @()\n$Name = 'probe'\n$Attempt = 1\n$Attempts = 1\n"
+    )
+    return single_attempt + body[loop_start:loop_end] + body[raise_start:raise_end]
 
 
 def test_an_unreadable_root_with_a_watcher_on_it_does_not_void_the_run() -> None:

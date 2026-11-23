@@ -265,12 +265,10 @@ def plan_layer_split(
     budgets_mib: Mapping[Any, int],
     strategy: str = "fill",
 ) -> LayerSplitPlan:
-    """Contiguous block ranges over ``cards`` (primary first; added if missing), in forward order.
-
-    ``budgets_mib``: denoiser weights each card may take (keys: ordinal or device string); the primary's budget also
-    pays for the non-block modules. ``fill`` packs each card up to its budget before the next (fewest cards, one
-    crossing per used card); ``balance`` spreads the blocks in proportion to the budgets. Raises
-    :class:`LayerSplitError` when the blocks do not fit."""
+    """Contiguous block ranges in forward order over cards, primary first; budgets_mib (ordinal or
+    device keys) caps each card's denoiser weights, primary also paying non-block modules; fill
+    packs cards to budget in turn, balance splits by budget; raises LayerSplitError if blocks do
+    not fit."""
     primary_dev = _cuda(primary)
     order = [primary_dev]
     for c in cards:
@@ -729,10 +727,9 @@ def place_layer_split(
     assignment: Optional[Mapping[str, Any]] = None,
     logger: Any = None,
 ) -> dict[str, Any]:
-    """Split ``pipe.<attr>`` across ``cards`` (see :func:`plan_layer_split`), or by an explicit block -> card
-    ``assignment`` (see :func:`assigned_plan`), and place it. Other components are left where they are. Returns the placement summary also shown by ``placement_status``. Raises :class:`LayerSplitError`
-    (nothing moved) when the split is refused or does not fit; on a failure while moving, the boundary is removed and
-    the error re-raised, and the caller re-places the pipeline."""
+    """Split pipe.<attr> across cards or an explicit assignment, leaving other components put, and
+    return the placement summary; raises LayerSplitError with nothing moved if refused; a failure
+    mid-move removes the boundary and re-raises for the caller to re-place."""
     torch = _torch()
     from . import diffusion_multigpu as mg
 

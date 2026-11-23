@@ -81,8 +81,7 @@ class TestDarwin:
         assert _env_for(binary)["LD_LIBRARY_PATH"] == "/opt/sentinel"
 
     def test_a_wrapper_entrypoint_resolves_to_the_real_bin_dir(self, monkeypatch, tmp_path):
-        # Dylibs sit next to the wrapper's target; SIP purges DYLD_* under /bin/sh,
-        # so the env dict alone is not enough on macOS.
+        # Dylibs sit beside the binary; SIP purges DYLD_* under /bin/sh, so env alone fails.
         real_dir = tmp_path / "llama.cpp" / "build" / "bin"
         real_dir.mkdir(parents = True)
         (real_dir / "llama-server-real").write_text("")
@@ -234,9 +233,8 @@ class TestWindowsUnchanged:
 
 
 class TestDarwinSpawnsTheResolvedBinary:
-    """macOS SIP purges DYLD_* while starting the protected /bin/sh that a
-    wrapper entrypoint runs under, so the loader path we build would not
-    survive the wrapper's own exec. load_model resolves the entrypoint first."""
+    """macOS SIP purges DYLD_* while starting the protected /bin/sh that a wrapper entrypoint runs
+    under, so load_model resolves the entrypoint first."""
 
     def test_resolve_llama_binary_follows_the_wrapper(self, tmp_path):
         real_dir = tmp_path / "build" / "bin"
@@ -353,9 +351,8 @@ class TestBinaryRevisionPathSpace:
 
 
 class TestLocalLinkInstalls:
-    """--with-llama-cpp-dir points the canonical llama.cpp dir at the user's own
-    checkout. The updater refuses to write through that link, so the install is
-    theirs: no updater advice, and no resolving past their entrypoint."""
+    """--with-llama-cpp-dir links the user's own checkout, which the updater refuses to write
+    through, so it is theirs: no updater advice and no resolving past their entrypoint."""
 
     def _local_link_tree(self, tmp_path, monkeypatch):
         external = tmp_path / "my-llama-checkout"

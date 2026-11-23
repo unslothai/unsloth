@@ -143,36 +143,22 @@ def test_auto_never_picks_fp8_but_an_explicit_fp8_is_allowed(family):
     assert "fp8" in tq._auto_scheme_order("qwen-image-2.1", "cuda", (10, 0))
 
 
-def test_auto_keeps_the_5b_dit_bf16_while_it_fits():
-    """Small-DiT rule (as FLUX.2 / FLUX.3-klein, Z-Image): bf16 while a resident plan fits, INT8-ConvRot once bf16
-    would offload, an explicit precision honoured (the rule reads only AUTO)."""
+def test_auto_takes_int8_on_a_card_that_holds_bf16():
+    """AUTO takes INT8-ConvRot even where bf16 fits; explicit precisions are untouched."""
     from types import SimpleNamespace
 
     from core.inference.diffusion import _auto_keeps_bf16_reason, _auto_quant_eager_reason
-    from core.inference.diffusion_families import (
-        SMALL_DIT_BF16_WHEN_RESIDENT,
-        small_dit_rule_excludes,
-    )
     from core.inference.diffusion_transformer_quant import auto_bf16_when_resident_reason
 
     fam = _fam()
-    assert auto_bf16_when_resident_reason("moss-image") == SMALL_DIT_BF16_WHEN_RESIDENT
-    # Both 5B bases sit inside the rule; only FLUX.2 klein 9B variants are carved out.
-    for base in ("OpenMOSS-Team/MOSS-Image-SFT", "OpenMOSS-Team/MOSS-Image-Base"):
-        assert not small_dit_rule_excludes(base)
-        assert _auto_keeps_bf16_reason(fam, "pipeline", base) is not None
-    assert _auto_keeps_bf16_reason(fam, "pipeline") is not None
-    assert _auto_keeps_bf16_reason(fam, "gguf") is None
-
-    def plan(policy, required, budget):
-        return SimpleNamespace(
-            offload_policy = policy,
-            estimates = {"resident_required_mib": required, "safe_device_budget_mib": budget},
-        )
-
-    assert _auto_quant_eager_reason(fam, plan("none", 36060, 156376)) is not None
-    assert _auto_quant_eager_reason(fam, plan("none", 36060, 20000)) is None
-    assert _auto_quant_eager_reason(fam, plan("group", 36060, 20000)) is None
+    assert auto_bf16_when_resident_reason("moss-image") is None
+    for base in ("OpenMOSS-Team/MOSS-Image-SFT", "OpenMOSS-Team/MOSS-Image-Base", None):
+        assert _auto_keeps_bf16_reason(fam, "pipeline", base) is None
+    fits = SimpleNamespace(
+        offload_policy = "none",
+        estimates = {"resident_required_mib": 36060, "safe_device_budget_mib": 156376},
+    )
+    assert _auto_quant_eager_reason(fam, fits) is None
 
 
 def test_text_encoder_file_and_equivalence():

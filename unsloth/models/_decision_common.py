@@ -97,6 +97,23 @@ def _laya():
     return module
 
 
+def _refuse_private_push_to_public_repo(repo_id, private, api) -> None:
+    # Torch-free twin of save._refuse_private_push_to_public_repo for the MLX pushes, which cannot import save.py.
+    if not private:
+        return
+    try:
+        is_private = getattr(api.repo_info(repo_id = repo_id, repo_type = "model"), "private", None)
+    except Exception as exc:
+        print(f"Unsloth: Could not confirm the visibility of {repo_id} ({exc}); continuing.")
+        return
+    if is_private is False:
+        raise RuntimeError(
+            f"Unsloth: private=True was requested but the Hugging Face repo {repo_id!r} already exists and is "
+            "public. Refusing to upload so private weights are not published. Make the repo private on the Hub, "
+            "push to a new repo id, or pass private=False."
+        )
+
+
 def is_decision_checkpoint(folder) -> bool:
     folder = Path(folder)
     return is_clef_checkpoint(folder) or (
@@ -500,9 +517,8 @@ HEAD_TEMPERATURE_RANGE = (0.05, 20.0)
 
 
 def _calibrate_clef(config: dict, logits, items) -> dict:
-    # Calibrated against being right (the gold label), not the soft gold distribution: Clef's
-    # confidence is read as the chance the answer is correct, and soft gold targets left a tuned
-    # model underconfident (confidence 0.61 at accuracy 0.78 on typed-decisions).
+    # Hard gold: Clef's confidence is the chance an answer is right; soft targets made it
+    # underconfident.
     common = _laya().common
     hard = [
         {**item, "target": [float(j == item["label"]) for j in range(len(z))]}

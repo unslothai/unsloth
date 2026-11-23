@@ -53,7 +53,7 @@ export function MethodPicker({
               <div className="flex flex-col gap-1">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">{m.title}</span>
-                  <Tooltip>
+                  <Tooltip disableHoverableContent={false}>
                     <TooltipTrigger asChild={true}>
                       <button
                         type="button"

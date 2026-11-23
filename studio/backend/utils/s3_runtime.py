@@ -84,11 +84,9 @@ def _import_sdk():
 
 
 def ensure_boto3():
-    """Reuse an installed SDK, or install it without upgrading shared packages.
-
-    Call from a worker thread when used by an async route. The installer runs in
-    a subprocess targeting this interpreter; importing the result stays in-process.
-    """
+    """Reuses an installed boto3 or installs it without upgrading shared packages; call from a
+    worker thread when used by an async route, as the installer runs in a subprocess targeting
+    this interpreter."""
     sdk = _import_sdk()
     if sdk is not None:
         return sdk
@@ -147,8 +145,7 @@ def ensure_boto3():
                     "https://pypi.org/simple",
                     "boto3>=1.34.0",
                 ]
-                # Installer children need TLS/proxy settings, not AWS/HF credentials
-                # or package-source/target overrides from the running Studio process.
+                # Installer: TLS/proxy vars only, not AWS/HF credentials or package overrides.
                 env = {key: value for key, value in os.environ.items() if key in _INSTALL_ENV_KEYS}
                 env["PIP_CONFIG_FILE"] = os.devnull
                 remaining = deadline - time.monotonic()

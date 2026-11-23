@@ -186,9 +186,7 @@ def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_pa
 
 
 def test_a_stalled_xet_worker_respawns_over_xet_keeping_its_claim(monkeypatch, tmp_path):
-    """End-to-end through the real reclaim: the recovery worker spawns with use_xet=True, the job
-    keeps the XET transport (so the UI and the .transport marker stay truthful), and the blob
-    metadata survives the re-claim."""
+    """A stalled Xet worker respawns over Xet, keeping the .transport marker and blob metadata."""
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
 
@@ -318,9 +316,7 @@ def test_an_unspawnable_xet_retry_falls_through_to_http(monkeypatch, tmp_path):
 
 
 def test_a_verdict_carried_onto_the_http_rung_is_still_charged(monkeypatch, tmp_path):
-    """That fallthrough is the one path that hands a held stall to an HTTP worker. HTTP completing
-    says nothing about Xet, so clearing the verdict there would lose the only evidence a repeatedly
-    stalling machine ever produces."""
+    """A held Xet stall handed to an HTTP worker stays charged; HTTP completing says nothing about Xet."""
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
     verdict = "Download appears stalled (xet transport) -- no progress for 30s"
@@ -464,9 +460,7 @@ def test_a_real_xet_transfer_does_clear_the_failure_streak(monkeypatch, tmp_path
 
 
 def test_a_sibling_variants_bytes_do_not_count_as_this_jobs_progress(monkeypatch, tmp_path):
-    """Two same-transport GGUF variants of one repo may run concurrently over one blobs/ dir, and a
-    repo-wide measure credited a cached no-op worker with its sibling's bytes, clearing a legitimate
-    stall streak and flipping an already demoted verdict back to Xet."""
+    """Progress is measured per job: a sibling variant's bytes in the shared blobs/ dir must not count."""
     seen = []
 
     def _fake_completed(
@@ -589,8 +583,7 @@ def _trip_xet_worker(
 
 
 def test_a_data_phase_stall_is_recorded_against_the_machine(monkeypatch, tmp_path):
-    """A frozen partial with bytes already flowing is genuinely Xet misbehaving -- charged once the
-    Xet phase is out of attempts."""
+    """Frozen partial with bytes flowing is real Xet fault; charged once Xet attempts run out."""
     monkeypatch.setattr(
         download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
     )
@@ -603,9 +596,7 @@ def test_a_data_phase_stall_is_recorded_against_the_machine(monkeypatch, tmp_pat
 
 
 def test_a_first_stall_buys_another_xet_worker_and_records_nothing(monkeypatch, tmp_path):
-    """A wedged Xet transfer usually clears on a fresh process, so the first data-phase stall
-    respawns over XET. Nothing is recorded yet: if the retry succeeds the stall was noise, and
-    charging both attempts would let ONE download hit the two-failure demotion threshold."""
+    """First data-phase stall respawns over Xet unrecorded; one download must not reach demotion alone."""
     retries = _shared_setup_2(monkeypatch)
     verdict = "Download appears stalled (xet transport) -- no progress for 30s"
     assert (
@@ -629,8 +620,7 @@ def test_the_last_xet_stall_falls_back_to_http_and_charges_once(monkeypatch, tmp
 
 
 def test_a_pre_byte_trip_never_buys_another_xet_worker(monkeypatch, tmp_path):
-    """Retrying "did not start" would buy a second full 600s connect window before HTTP ever
-    starts, and that trip is as likely slow metadata as a broken Xet."""
+    """A pre-byte trip never buys a retry: it may be slow metadata, not a broken Xet."""
     retries = _shared_setup_2(monkeypatch)
     _trip_xet_worker(
         monkeypatch,
@@ -688,9 +678,7 @@ def test_a_post_byte_hang_between_files_is_recorded(monkeypatch, tmp_path):
 
 
 def test_the_xet_baseline_is_sampled_before_the_worker_spawns(monkeypatch, tmp_path):
-    """A fast child can finalize its blobs while we are still registering the process, so a later
-    baseline shows no growth for a real transfer: the streak is never cleared and two stalls either
-    side of it read as consecutive, demoting Auto for 24h."""
+    """Sample the Xet baseline before spawning, or a fast child's finished blobs hide real growth."""
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", lambda *a, **k: None)
@@ -731,9 +719,7 @@ def test_the_xet_baseline_is_sampled_before_the_worker_spawns(monkeypatch, tmp_p
 
 
 def test_a_stall_verdict_racing_a_completed_worker_is_not_recorded(monkeypatch, tmp_path):
-    """The watchdog appends its verdict BEFORE the kill lands, so a worker that completed in that
-    instant would be charged a failure it did not earn, and on the completed path that also skips
-    the success-clearing: two streak steps the wrong way from one race."""
+    """A verdict recorded before the kill lands must not charge a worker that completed in that instant."""
     monkeypatch.setattr(
         download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
     )

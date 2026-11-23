@@ -88,8 +88,7 @@ def _clear_mirror_caches():
 
 @pytest.fixture(autouse = True)
 def _torch_trainer(monkeypatch):
-    # On Apple Silicon UnslothTrainer.__new__ returns _MLXTrainerAdapter; these tests target
-    # the Torch path.
+    # Apple Silicon makes UnslothTrainer.__new__ return _MLXTrainerAdapter; these pin Torch.
     import core.training.training as training_mod
 
     # Patch the definition AND trainer.py's copy; a single patch leaves one on the real answer.
@@ -234,8 +233,7 @@ def test_pre_detect_reads_the_repo_the_loader_fetches(
     monkeypatch.setattr(trainer_mod, "detect_audio_type_checked", probe)
     monkeypatch.setattr(trainer_mod, "is_vision_model", vision)
     monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
-    # The 4-bit row reads the 4-bit table only where bitsandbytes is usable; with unsloth
-    # importable on a CPU host it is not. The fallback has its own test below.
+    # Stub bitsandbytes usable: the 4-bit row reads the 4-bit table, which a CPU host cannot.
     monkeypatch.setattr(trainer_mod, "_bitsandbytes_allows_4bit", lambda: True)
 
     trainer = trainer_mod.UnslothTrainer()
@@ -400,8 +398,7 @@ def test_a_4bit_public_copy_admits_a_gated_upstream(mapper, monkeypatch):
 
 
 def test_a_mirror_in_either_load_mode_admits_the_model(mapper, monkeypatch):
-    # Mapping exists in only one mode; this process cannot tell which mode the worker uses,
-    # so either mapping admits.
+    # Either mode admits a mirror: this process cannot tell which mode the worker uses.
     session = _Session(_http_error(401))
     _route(monkeypatch, gated = "manual", session = session)
 
@@ -453,8 +450,7 @@ def test_the_start_route_does_not_pass_a_guessed_load_mode(mapper, monkeypatch):
 
 
 def test_a_full_finetune_of_a_gated_unmirrored_model_is_still_refused(mapper, monkeypatch):
-    # The route cannot derive the 16-bit flips without torch; a model with no mirror in
-    # EITHER mode is refused regardless.
+    # Without torch the 16-bit flips can't be derived; unmirrored in either mode means refused.
     session = _Session(_http_error(401))
     _route(monkeypatch, gated = "manual", session = session)
     monkeypatch.setattr(tr, "hf_env_offline", lambda: False)
@@ -763,8 +759,7 @@ def test_the_scan_does_not_expand_mirrors_off_the_torch_path(mapper, monkeypatch
 
 
 def test_a_configured_16bit_load_does_not_scan_the_4bit_mirror(mapper, monkeypatch):
-    # The mode fallbacks only run downwards, so a configured 16-bit load cannot become 4-bit
-    # and the 4-bit mirror is a repo it will never fetch.
+    # Mode fallbacks only run downwards, so a 16-bit load never fetches the 4-bit mirror repo.
     import core.training.worker as worker_mod
     import utils.security as security_mod
 

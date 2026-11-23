@@ -76,8 +76,7 @@ def _read_bounded_text(path: Path, limit: int) -> Optional[str]:
 
 
 def _leaf_inside_allowlist(path: Path, allow_roots: Optional[list[Path]]) -> bool:
-    # Blocks symlinked children escaping the validated directory (realpath-checked).
-    # None = trusted caller (HF cache / remote download).
+    # Blocks symlinked children escaping the validated directory; None means a trusted caller.
     return allow_roots is None or _is_path_inside_allowlist(path, allow_roots)
 
 
@@ -253,8 +252,7 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
 def _variant_matches(relative_path: str, needle: str) -> bool:
     from hub.utils.gguf import gguf_variant_family, gguf_variant_key
 
-    # The variant's own key first: in a repo holding several checkpoints at one quant
-    # the bare label names every one of them, so it cannot pick between them.
+    # Own key first: a bare quant label names every checkpoint at one quant and cannot pick.
     if gguf_variant_key(relative_path).lower() == needle or relative_path.lower() == needle:
         return True
     # custom folders key a second same-quant build by its file family (#13926)

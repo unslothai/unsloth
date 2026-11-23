@@ -20,6 +20,7 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     click_and_wait_for_response,
     evaluate_fetch,
+    expand_collapsed_model_picker,
     install_view_transition_killer,
     install_wall_clock_watchdog,
     is_benign_console_error,
@@ -56,8 +57,7 @@ PERMISSION_ONLY = os.environ.get("STUDIO_UI_PERMISSION_ONLY", "0") == "1"
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
-# Emulates 4 vCPU user boxes; the rapid-submit bug only reproduces at 4x/8x.
-# Off unless set, Chromium only.
+# Emulates 4 vCPU boxes (rapid-submit bug needs 4x/8x); off unless set, Chromium only.
 CPU_THROTTLE = float(os.environ.get("STUDIO_UI_CPU_THROTTLE", "0") or 0)
 
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
@@ -225,15 +225,9 @@ def wait_for_settled_shell(
     fallback_budget_s = 30.0,
     missing_pill_s = 5.0,
 ):
-    """Return once the composer and its permission pill have stayed up together for settle_s.
-
-    The textarea showing once is not the shell settling. On the Windows lane the shell has been seen to drop to the
-    full-page route fallback right after the composer painted, while the backend stalled ~5 s warming torch, and stay
-    there past the next step's 5 s expect. The pill and the textarea render in the same commit, so seeing both once
-    proves nothing either: they have to stay up. A fallback is waited out for up to fallback_budget_s and then raised
-    as a boot failure (the caller re-navigates once). A booted shell, composer up and no fallback, that goes
-    missing_pill_s without the pill raises ShellMissingControl, which the caller must not retry.
-    """
+    """Waits for the composer and pill to stay up together for settle_s; a route fallback is waited
+    out up to fallback_budget_s, then raises a boot failure; a booted shell missing the pill for
+    missing_pill_s raises ShellMissingControl, which callers must not retry."""
     pill = page.locator(PERMISSION_PILL).first
     fallback = page.get_by_text(ROUTE_FALLBACK_TEXT, exact = True)
     deadline = time.monotonic() + fallback_budget_s
@@ -266,6 +260,48 @@ def wait_for_settled_shell(
                 f"route_fallback={in_fallback}; page.url={page.url}"
             )
         page.wait_for_timeout(100)
+
+
+def check_skills_command_draft(page, draft_key):
+    composer = page.get_by_label("Message input", exact = True)
+    dialog = page.get_by_role("dialog", name = "Skills", exact = True)
+    user_messages = page.locator('[data-role="user"]')
+    expect(composer).to_be_visible()
+    expect(user_messages).to_have_count(0)
+    composer.fill("/skills")
+    wait_until(
+        lambda: page.evaluate("(key) => localStorage.getItem(key)", draft_key) == "/skills",
+        timeout_s = 10,
+        what = "the command to autosave before submission",
+        page = page,
+    )
+
+    # Read at dialog mount so a slow browser can't let the next autosave hide a stale draft.
+    page.evaluate(
+        """(key) => {
+            window.draftAtSkillsOpen = new Promise(resolve => {
+                const observer = new MutationObserver(() => {
+                    if (!document.querySelector('[role="dialog"]')) return;
+                    observer.disconnect();
+                    resolve(localStorage.getItem(key));
+                });
+                observer.observe(document.body, {childList: true, subtree: true});
+            });
+        }""",
+        draft_key,
+    )
+    composer.press("Enter")
+    expect(dialog).to_be_visible()
+    expect(composer).to_have_value("")
+    expect(user_messages).to_have_count(0)
+    saved_at_open = page.evaluate("window.draftAtSkillsOpen")
+    page.reload(wait_until = "domcontentloaded")
+    expect(composer).to_be_visible()
+    assert (
+        saved_at_open is None
+    ), f"{draft_key} still contained {saved_at_open!r} when Skills opened"
+    expect(composer).to_have_value("")
+    expect(user_messages).to_have_count(0)
 
 
 def exercise_permission_mode_controls(page, shoot):
@@ -369,8 +405,7 @@ def exercise_permission_mode_controls(page, shoot):
         else:
             route.continue_()
 
-    # Wait for the pill, not networkidle: with this page.route networkidle can hang past the watchdog.
-    # One extra reload only when the app shell never booted.
+    # Wait for the pill, not networkidle (it hangs); reload once only if the shell never boots.
     def _boot_state():
         try:
             return page.evaluate(
@@ -663,8 +698,7 @@ def open_recent_thread_with_our_prompts(
         )
 
     def landed(thread_id, before, before_thread):
-        """Returns ours, other or None; turns identical to before are stale unless the row was
-        already open."""
+        """Ours, other or None; a turn identical to before is stale unless its row was open."""
         try:
             handle = page.wait_for_function(
                 """([threadId, wanted, before, beforeThread]) => {
@@ -826,8 +860,7 @@ def exercise_floating_monitor_geometry(page):
             and box["y"] + box["height"] <= surface["height"] - inset + tolerance
         )
 
-    # Wait for /api/system: until then the panel shows a zero-filled DEFAULT_SYSTEM with no GPU, and
-    # the VRAM row later adds ~59px, breaking the height baseline.
+    # Wait for /api/system; before it, zero-filled defaults, and VRAM later adds ~59px.
     try:
         page.wait_for_function(
             r"""() => {
@@ -988,8 +1021,7 @@ def exercise_floating_monitor_geometry(page):
     wait_for_settled(monitor)
     wait_for_box("viewport restore", lambda box: is_inside(box, viewport))
 
-    # Width is the one user-set size: the text stays its size and the height follows the content,
-    # so a corner drag never adds empty space below it.
+    # Only width is user-set; height follows the content, so a corner drag adds no space.
     resize_start = drag_monitor_to(0, 0)
     _, resized_box = resize_monitor_by(40, 40)
     expect_close(resized_box["width"], resize_start["width"] + 40, "resize width")
@@ -1251,6 +1283,22 @@ with sync_playwright() as p:
         browser.close()
         sys.exit(0)
 
+    step("consumed /skills draft stays empty after reload")
+    for shared in (False, True):
+        with browser.new_context(storage_state = ctx.storage_state()) as draft_ctx:
+            draft_ctx.add_init_script(
+                """const key = "unsloth_chat_preferences";
+                const prefs = JSON.parse(localStorage.getItem(key)) ?? {state: {}, version: 1};
+                prefs.state.shareComposerDraft = %s;
+                localStorage.setItem(key, JSON.stringify(prefs));"""
+                % json.dumps(shared)
+            )
+            draft_page = new_throttled_page(draft_ctx)
+            draft_page.goto(f"{BASE}/chat", wait_until = "domcontentloaded")
+            check_skills_command_draft(
+                draft_page, "chat-draft:latest" if shared else "chat-draft:__new__"
+            )
+
     # The frontend stores the bearer under "unsloth_auth_token" (auth/session.ts).
     token = robust_evaluate(
         page,
@@ -1369,9 +1417,25 @@ with sync_playwright() as p:
     if picker_btn.count() == 0:
         soft_fail("model picker button not found")
     else:
+        # Open only once the selector names the loaded model: opened before the reload's residency check
+        # lands, the picker shows its search, then collapses under the typing and fill() times out.
+        try:
+            wait_until(
+                lambda: "select model" not in (picker_btn.inner_text() or "select model").lower(),
+                timeout_s = 30,
+                what = "the model selector to name the loaded model",
+                interval_s = 0.25,
+                page = page,
+            )
+        except TimeoutError as exc:
+            info(f"WARN {exc}")
         picker_btn.click()
+        # The model loaded above opens the picker collapsed to its own row.
+        if expand_collapsed_model_picker(page):
+            info("model picker opened collapsed; expanded it")
+        # Visible only: an attached but hidden search field takes the fill below to its 60 s timeout.
         search = wait_for_first(
-            page.get_by_placeholder(re.compile(r"Search.*models?", re.I)),
+            page.get_by_placeholder(re.compile(r"Search.*models?", re.I)).locator("visible=true"),
             timeout_ms = 10_000,
         )
         shoot("03c-model-picker-open")
@@ -1771,8 +1835,7 @@ with sync_playwright() as p:
     info(f"this run's chat: {our_thread_id or 'no thread id on the page'}")
 
     # ─────────────────────────────────────────────────────
-    # 7. Composer toggle buttons. Each aria-label flips between
-    # "Disable X" / "Enable X" with state (shared-composer.tsx).
+    # Toggle aria-labels flip Disable X / Enable X with state (shared-composer.tsx).
     # ─────────────────────────────────────────────────────
     step("composer toggle buttons (Thinking / Web search / Tools)")
     for feature in ("thinking", "web search", "tools"):
@@ -2417,16 +2480,9 @@ with sync_playwright() as p:
 
     # 17. Persisted monitor auth boundary, then shutdown. Own step: page.evaluate has no timeout here.
     step("persisted monitor: reset the browser session and open a fresh page")
-    # Start fresh after the CLI rotation invalidates this browser session.
-    # Stay in the SAME context: it keeps the init script and costs nothing to reuse.
-    #
-    # Nothing here runs script in the OLD page. It is CPU-throttled and its auth was
-    # just revoked, so the app can be busy retrying, and page.evaluate waits for its
-    # event loop with no timeout of its own: this step wedged for its whole budget on
-    # Windows and on the Kaggle T4 runner with no line printed. Closing a page and
-    # clearing cookies are browser-side calls, and the storage writes go through the
-    # fresh page parked on a same-origin JSON endpoint where no app code runs. Each call
-    # announces itself first, so a wedge that remains names the call it sits in.
+    # Fresh page after CLI rotation, in the SAME context (keeps the init script); nothing runs in
+    # the stale page, whose evaluate can wedge with no timeout; storage writes go via a parked
+    # same-origin page; each call announces itself first
     stale_pages.add(page)
     info("closing the stale page")
     try:

@@ -152,9 +152,8 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
-      # Node 24 ships npm 11, which meets setup.sh's floor (Node ^20.19 || >=22.12 with
-      # npm >= 11): this job takes the system-Node path, the developer one. Node 22
-      # ships npm 10 and would take the bundled path, which the other two jobs cover.
+      # Node 24 ships npm 11, which meets setup.sh's floor (Node ^20.19 or >=22.12, with npm >= 11),
+      # so this job takes the system-Node path; Node 22 ships npm 10 and takes the bundled path.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '24'

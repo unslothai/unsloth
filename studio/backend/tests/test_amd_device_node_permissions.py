@@ -211,8 +211,7 @@ def test_which_nodes_are_reported_closed(monkeypatch, case):
 
 
 def test_the_vendor_is_read_from_sysfs(monkeypatch):
-    """The reader the cases above stub. sysfs is world-readable, so ownership is answerable
-    without the access being tested for."""
+    """The reader the cases stub: sysfs is world-readable, so it needs no access under test."""
     real_open = builtins.open
 
     def _fake(path, *a, **k):
@@ -251,9 +250,7 @@ _USERMOD = "usermod -a -G render,video ada"
 
 
 def _asserts(text: str, says, does_not_say):
-    """Every ``says`` is in ``text`` and every ``does_not_say`` is not. Both directions run:
-    a family that asserted only the positive half would pass on a message that also said the
-    thing it is meant to have stopped saying."""
+    """Both directions: a positive-only check would pass a message that still says the forbidden thing."""
     for _wanted in says:
         assert _wanted in text
     for _unwanted in does_not_say:
@@ -570,16 +567,14 @@ def test_the_empty_probe_reason_for_an_install(monkeypatch, linux, case):
     pytest.param(_ONLY_KFD_SHUT, id = "the_vulkan_reason_survives_a_closed_kfd_node"),
 ])
 def test_a_vulkan_host_whose_own_node_opens_keeps_its_own_reason(monkeypatch, linux, layout):
-    """The control for the family above: a Vulkan host that can open what Vulkan uses keeps
-    its own reason, whole and unqualified."""
+    """Control: a Vulkan host whose node opens keeps its own reason, whole and unqualified."""
     _nodes(monkeypatch, **layout)
     _ggml(monkeypatch, {"vulkan"})
     assert _empty_probe() == "the Vulkan probe reported no device"
 
 
 def test_no_mask_leaves_the_hint_alone(monkeypatch, linux):
-    """The control: the sentence must not grow a trailing clause on a host with no mask set,
-    which is every host the #10466 wording was written for."""
+    """Control: with no GPU mask set, the hint must not grow a trailing clause."""
     _nodes(monkeypatch, **_BOTH_SHUT)
     for var in _GPU_MASK_VARS:
         monkeypatch.delenv(var, raising = False)
@@ -736,8 +731,7 @@ def _kfd_node_the_case_owns(script: str, tmp_path, *, present: bool) -> str:
 
 
 def _install_sh_if_above(lines: "list[str]", i: int) -> int:
-    """Finds the if opening a multi-line condition, so a miss raises rather than testing a shorter
-    script."""
+    """Finds the if opening a multi-line condition; a miss raises rather than testing less."""
     while not lines[i].lstrip().startswith("if "):
         i -= 1
     return i
@@ -793,9 +787,7 @@ def _install_sh_env(
     backend: "str | None",
     torch_index: str = "https://download.pytorch.org/whl/rocm6.4",
 ) -> dict:
-    """The environment install.sh reads: the closed set, the account, the request, and the
-    torch index, which the run-scope predicates read to tell a CPU wheel from a ROCm one.
-    Defaulted to a ROCm index so every existing case keeps the run it was written for."""
+    """Environment install.sh reads (closed set, account, request, torch index), defaulting to ROCm."""
     env = {
         **os.environ,
         "_closed_amd_nodes": closed_nodes,
@@ -938,8 +930,7 @@ def test_the_installer_names_the_group_the_node_actually_has(tmp_path):
 
 
 def test_the_installer_falls_back_when_the_node_is_gone(tmp_path):
-    """The control: a path that cannot be stat'd still has to produce advice, and an empty -G
-    argument would be worse than the hard-coded pair it replaced."""
+    """Control: a node that cannot be stat'd still gets advice, not an empty -G argument."""
     out = _install_sh_hint(str(tmp_path / "renderD128"))
     assert "usermod -a -G render,video ada" in out
 
@@ -965,8 +956,7 @@ def _reason_with_mask(monkeypatch, var: str, value: str, backends: set) -> str:
     # -1 names no device; an empty HIP mask is not a filter to clr.
     pytest.param(("HIP_VISIBLE_DEVICES", "-1", {"hip"}, (_USERMOD, "HIP_VISIBLE_DEVICES='-1'"), ()),
                  id = "a_mask_that_hides_everything_is_still_reported"),
-    # CUDA and HIP parse the list left to right and stop at the first entry that names no
-    # device, so -1 leading the list leaves nothing enumerated.
+    # CUDA and HIP stop at the first entry naming no device, so a leading -1 hides all.
     pytest.param(("CUDA_VISIBLE_DEVICES", "-1", {"hip"},
                   ("CUDA_VISIBLE_DEVICES='-1'", "visibility mask is also in force"), ()),
                  id = "a_negative_first_entry_hides_everything"),
@@ -1191,9 +1181,7 @@ def test_the_node_diagnoses_run_on_the_routes_the_case_reports(index_url, routed
 
 
 def test_the_installer_makes_the_same_owner_versus_external_distinction(tmp_path):
-    """Read off install.sh, since the two halves must agree: the awk owner branch printed
-    owner: for every node this account owns, so a node whose OWNER digit already grants rw got
-    the mode advice there too. Lifted rather than restated, so a revert fails here."""
+    """Reads install.sh's owner branch, which printed mode advice for owned nodes already granting rw."""
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
 
@@ -1201,8 +1189,7 @@ def test_the_installer_makes_the_same_owner_versus_external_distinction(tmp_path
     out = _install_sh_hint(str(node), self_uid = str(os.getuid()), repairs = None)
     assert "granted read and write by the" in out
     assert "is owned by this account and its owner bits" not in out
-    # The installer wraps one sentence over several substep lines, so match a fragment
-    # that cannot straddle the break.
+    # Installer sentences wrap across lines, so match fragments that cannot straddle a break.
     assert "device cgroup or an LSM" in out
     assert "fix the mode" not in out
 
@@ -1218,8 +1205,7 @@ def test_the_installer_makes_the_same_owner_versus_external_distinction(tmp_path
     pytest.param(0o060, "owned", id = "a_node_this_account_owns_is_not_answered_with_a_group"),
 ])
 def test_how_a_node_this_account_owns_is_classified(monkeypatch, tmp_path, mode, bucket):
-    """Which bucket an owned node lands in, by owner bits. Every other bucket must stay empty:
-    a group named here is a repair that cannot work."""
+    """Owned nodes land in one bucket by owner bits; no other bucket may name a group."""
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
     node.chmod(mode)
@@ -1241,9 +1227,7 @@ def test_how_a_node_this_account_owns_is_classified(monkeypatch, tmp_path, mode,
 def test_how_a_node_this_account_neither_owns_nor_shares_a_group_with_is_classified(
     monkeypatch, tmp_path, mode, in_the_group, bucket
 ):
-    """Which bucket the third permission class lands in. The two halves of this rule were
-    already written for the owner class and for a group this account holds; this is the same
-    question for the one class that was left reading its neighbour's bits."""
+    """Which bucket the other-permission class lands in; the owner and group halves were already covered."""
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
     node.chmod(mode)
@@ -1270,9 +1254,7 @@ def test_how_a_node_this_account_neither_owns_nor_shares_a_group_with_is_classif
 
 
 def test_the_installer_makes_the_same_other_class_distinction(tmp_path):
-    """The shell half of the rule above, read off install.sh so the two cannot drift: the awk
-    classifier reached its group digit for a node in the other class too, so mode 0666 printed
-    a group to join. A revert fails here as well as in the Python case."""
+    """Shell half of the other-class rule, read from install.sh: mode 0666 printed a group to join."""
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
     _not_us = str(os.getuid() + 1)
@@ -1288,9 +1270,7 @@ def test_the_installer_makes_the_same_other_class_distinction(tmp_path):
 
 
 def test_a_node_carrying_an_acl_is_not_answered_with_usermod(monkeypatch, tmp_path):
-    """acl(5): once an access ACL is present, the group-class bits in st_mode are the ACL MASK
-    rather than the owning group's grant, so a node whose mask reads rw can still deny its
-    group. Prescribing membership from the mode there is a promise the stat cannot support."""
+    """With an ACL, st_mode's group bits are only the ACL mask, so the mode cannot prescribe membership."""
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
     node.chmod(0o660)
@@ -1309,9 +1289,8 @@ def test_a_node_carrying_an_acl_is_not_answered_with_usermod(monkeypatch, tmp_pa
     pytest.param(0o060, id = "the_same_node_owned_by_someone_else_is_still_a_group"),
 ])
 def test_an_ordinary_node_owned_elsewhere_is_still_prescribed_for(monkeypatch, tmp_path, mode):
-    """The control for both suppressions above: the ordinary node, whose mode bits ARE the
-    group's grant and whose owner is somebody else, so the owner class does not apply. Without
-    it the rule could decline to prescribe anywhere, which removes the repair #10466 needs."""
+    """Control: an ordinary node owned by someone else still gets a group prescription; without it
+    the rule could decline everywhere, removing the repair issue 10466 needs."""
     node, _group = _a_node_a_membership_would_open(tmp_path, mode = mode)
     _not_my_group = os.getgid() + 1
     monkeypatch.setattr(amd.os, "getgid", lambda: _not_my_group)
@@ -1344,8 +1323,7 @@ def test_the_installer_reports_an_acl_rather_than_prescribing_membership(tmp_pat
 
 
 def test_the_installer_says_the_missing_render_node_with_nothing_closed():
-    """The installer's half of the container case: nothing closed, no render node, and an AMD
-    GPU in the KFD topology."""
+    """Installer half of the container case: no render node, nothing closed, an AMD GPU in KFD."""
     out = _install_sh_hint("", render_present = False, amd_present = True)
     assert "no AMD render node" in out
     assert "--device /dev/dri" in out
@@ -1487,8 +1465,7 @@ def _cases(*rows):
 
 
 def test_the_installer_stops_at_the_owner_class_too(tmp_path):
-    """The shell half of the owner-precedence item: with the caller as the owner, the
-    installer must not print a usermod line for a node no membership opens."""
+    """As owner, the installer prints no usermod line for a node no membership opens."""
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
     node.chmod(0o060)
@@ -1684,9 +1661,8 @@ def test_the_guard_actually_holds_when_those_tools_are_missing(helper, tools):
 
 
 def test_the_installer_denies_the_same_groups_the_runtime_does():
-    """The two lists are maintained by hand in two languages, so drift is the failure mode.
-    Read install.sh's alternation and compare it to the constant rather than restating
-    either: a group added to one half alone fails here."""
+    """The privileged-group list is kept by hand in Python and install.sh, so a group added to only
+    one half fails here."""
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     text = install_sh.read_text(encoding = "utf-8")
     match = re.search(r"gname ~ /\^\(([a-z|]+)\)\$/", text)
@@ -1801,8 +1777,7 @@ _GID_994_PAIR = "sudo groupadd -g 994 amdgpu994 && sudo usermod -a -G amdgpu994 
 ))
 # fmt: on
 def test_the_unnamed_gid_hint(monkeypatch, linux, gids, contains, absent):
-    """Each GID needs groupadd and usermod, since groupadd does not add the account; <name> is a
-    redirect."""
+    """Each GID needs groupadd and usermod, since groupadd does not add the account."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.setattr(amd, "_has_an_access_acl", lambda path: False)
     _owning(monkeypatch, unnamed = gids)
@@ -2053,8 +2028,7 @@ def test_the_installers_device_pair_follows_the_run(tmp_path, kwargs, contains, 
 def test_an_unreadable_render_node_vendor_reads_as_present(
     monkeypatch, linux, present, openable, vendor_readable, exists, hint_says
 ):
-    """An unknown render-node vendor counts as present; only a glob that finds no node reports it
-    missing."""
+    """Unreadable vendor counts as present; only a glob finding no node reports it missing."""
     _nodes(monkeypatch, present = present, openable = openable, vendor_readable = vendor_readable)
     assert amd._amd_render_node_exists() is exists
     if hint_says is None:
@@ -2120,9 +2094,8 @@ def test_whether_another_vendors_open_node_is_a_path_for_this_build(
 
 
 def test_the_repair_names_the_account_the_access_tests_answered_for(monkeypatch, linux):
-    """USER is inherited, so a container that changes its numeric user without resetting it
-    names somebody else and the command modifies the wrong account, leaving the running one
-    still unable to open the node."""
+    """USER is inherited, so a container that changes its numeric user without resetting USER makes
+    the repair name the wrong account, leaving the node shut."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.setenv("USER", "root")
     hint = amd.amd_node_permission_hint()
@@ -2139,9 +2112,8 @@ def test_the_installer_names_the_account_id_reports(tmp_path):
 
 
 def test_the_installer_unnamed_gid_repair_is_runnable_too(tmp_path):
-    """The shell twin, checked the same way and then actually parsed: `bash -n` on the two
-    emitted lines is the assertion that a placeholder would fail. Without the parse this
-    would only be testing that a string changed."""
+    """The shell repair lines are parsed with bash -n, so a placeholder would fail; without the
+    parse the test only checks that a string changed."""
     out = _install_sh_hint("/dev/dri/renderD128", repairs = "gid:993")
     # Rejoin `&& \` continuations: bash 3.2 rejects a trailing backslash at EOF.
     _cmds: "list[str]" = []
@@ -2535,8 +2507,7 @@ def _vulkan_reason_under_icd_list(
 
 
 def test_the_loader_filter_rule_matches_the_installers(tmp_path):
-    """Both halves implement the loader's four globs, and a host where they disagree gets
-    one answer from the Vulkan route and another from this diagnosis."""
+    """Both halves implement the loader's four globs, so a disagreeing host gets two answers."""
     import install_llama_prebuilt
 
     cases = [
@@ -2731,9 +2702,8 @@ def test_a_search_that_enumerates_nothing_answers_nothing(monkeypatch, linux, tm
 
 
 def test_the_search_dirs_follow_the_xdg_variables(monkeypatch):
-    """The loader falls back to its defaults only when a variable is unset, so reading the
-    defaults regardless both misses a custom layout's only manifest and counts stale ones the
-    loader would never read. The test below holds this list and the installer's together."""
+    """The loader uses its defaults only when an XDG variable is unset; reading them regardless
+    misses custom manifests and counts stale ones."""
     monkeypatch.setenv("XDG_DATA_DIRS", "/opt/one:/opt/two")
     monkeypatch.setenv("XDG_CONFIG_DIRS", "/opt/conf")
     dirs = amd._vulkan_icd_search_dirs()
@@ -2746,8 +2716,7 @@ def test_the_search_dirs_follow_the_xdg_variables(monkeypatch):
 
 
 def test_the_search_dirs_match_the_installers(monkeypatch):
-    """One loader, one question, so the two lists are one list: a copy that drifts sends the
-    two halves of this diagnosis to different drivers."""
+    """A drifting copy of the search dirs would send the two halves to different drivers."""
     import install_llama_prebuilt
 
     monkeypatch.setenv("XDG_DATA_DIRS", "/opt/one:/opt/two")
@@ -3050,8 +3019,7 @@ def test_which_bucket_an_owning_group_lands_in(monkeypatch, linux, case):
 
 
 def test_the_hint_for_a_group_already_held_names_the_cgroup_instead(monkeypatch, linux):
-    """The sentence a user actually reads, since the buckets above only decide it: no usermod,
-    and a statement of what is left to look at."""
+    """For an already-held group the sentence omits usermod and says what is left to check."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     _owning(monkeypatch, already = ["render"])
     hint = amd.amd_node_permission_hint()
@@ -3170,8 +3138,7 @@ def test_the_installer_chains_the_groupadd_pair(tmp_path):
 
 
 def test_the_python_half_chains_the_groupadd_pair_too(monkeypatch, linux):
-    """Its twin, which already chained: asserted so that the two halves cannot drift apart the
-    way they just did."""
+    """The Python half already chains groupadd; asserted so the halves cannot drift apart."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     _owning(monkeypatch, unnamed = [993])
     hint = amd.amd_node_permission_hint()
@@ -3179,8 +3146,7 @@ def test_the_python_half_chains_the_groupadd_pair_too(monkeypatch, linux):
 
 
 def test_the_named_group_repair_is_still_one_command(tmp_path):
-    """The control: a node whose owning group HAS a name needs no groupadd, so the repair is a
-    single usermod and must not have grown a chain."""
+    """A named group needs no groupadd, so the repair stays one usermod with no chain."""
     out = _install_sh_hint("/dev/dri/renderD128", repairs = "join:render")
     assert "groupadd" not in out
     _line = next(l for l in out.splitlines() if "usermod" in l)
@@ -3297,9 +3263,8 @@ def test_what_decides_an_icd_manifests_bitness(monkeypatch, linux, tmp_path, cas
 
 
 def test_a_declared_32_bit_manifest_reaches_the_empty_probe_reason(monkeypatch, linux, tmp_path):
-    """What the classification decides: with the only other registration 32-bit, that vendor's
-    open render node is not a path this binary has, so the closed AMD node stays the answer
-    rather than being demoted."""
+    """With the only other registration 32-bit, that vendor's open render node is not a path this
+    binary has, so the closed AMD node stays the answer."""
     _theirs = _icd_manifest_with(tmp_path, "nvidia_icd.json", library = "libGLX_nvidia.so", arch = "32")
     _ours = _icd_manifest(tmp_path, "radeon_icd.x86_64.json")
     _assert_amd_only_loader(
@@ -3317,14 +3282,10 @@ def test_a_declared_32_bit_manifest_reaches_the_empty_probe_reason(monkeypatch, 
 ])
 # fmt: on
 def test_the_pasted_command_quotes_the_names_that_need_it(monkeypatch, linux, case):
-    """These are commands to paste. NSS names are not identifiers -- winbind hands back
-    DOMAIN\\user -- so an unquoted one is de-escaped by the shell and usermod then names an
-    account that does not exist, leaving the node shut; a group name carrying a space is the
-    other half of the same command, and the one that would silently split into two arguments
-    rather than failing outright. shlex.quote rather than unconditional quoting, so the
-    command a user sees on a normal host does not grow quotes it does not need.
-
-    Fails before the fix, which interpolated the name raw."""
+    """Pasted commands need quoting for NSS names (winbind returns DOMAIN-prefixed names the shell
+    de-escapes, leaving usermod an absent account) and for spaced group names, which would
+    silently split; shlex.quote quotes only when needed; fails before the fix that interpolated
+    names raw."""
     account, group, command, unquoted = case
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.setattr(amd, "_repair_account", lambda: account)
@@ -3344,9 +3305,8 @@ def test_the_installer_quotes_the_account_the_same_way(tmp_path):
 
 
 def test_the_two_quoting_rules_are_the_same_rule(tmp_path):
-    """Both halves print the same command, so a value one quotes and the other does not is a
-    host where the two disagree about what the user should paste. Run against the real shell
-    function rather than a restatement of it."""
+    """Both halves print the same command, so a value quoted by one and not the other would make
+    them disagree; run the real shell function."""
     lines = _install_sh_lines()
     helper = _shell_fn(lines, "_shell_quote")
     _values = ("ada", "render", "DOMAIN\\ada", "gpu users", "ada;reboot", "a'b", "user@host", "")
@@ -3703,9 +3663,8 @@ def test_the_two_topology_readers_agree_on_this_host():
 
 
 def test_the_two_confirmed_render_node_readers_agree_on_this_host():
-    """Its companion, and the other half of the fallback: the shell one has to be as strict as
-    the Python one, or an NVIDIA-only host claims an AMD node in the installer and not in the
-    backend."""
+    """The shell reader must be as strict as the Python one, or an NVIDIA-only host claims an AMD
+    node in the installer but not the backend."""
     lines = _install_sh_lines()
     script = "\n".join(
         [

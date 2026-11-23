@@ -38,16 +38,25 @@ def _tiling_names(tree):
     }
 
 
-def _loader_utils_functions(tree, path, method):
-    """Real definitions of the .loader_utils functions loader.py imports and `method` calls."""
+# Sibling modules whose plain functions from_pretrained calls are run for real, not stubbed.
+_LIFTED_MODULES = ("loader_utils", "mapper")
+
+
+def _loader_utils_functions(
+    tree,
+    path,
+    method,
+    module = "loader_utils",
+):
+    """Real definitions of the .<module> functions loader.py imports and `method` calls."""
     imported = {
         alias.asname or alias.name: alias.name
         for node in tree.body
-        if isinstance(node, ast.ImportFrom) and node.module == "loader_utils"
+        if isinstance(node, ast.ImportFrom) and node.module == module
         for alias in node.names
     }
     used = {n.id for n in ast.walk(method) if isinstance(n, ast.Name)}
-    source = ast.parse((path.parent / "loader_utils.py").read_text(encoding = "utf-8"))
+    source = ast.parse((path.parent / f"{module}.py").read_text(encoding = "utf-8"))
     defs = {n.name: n for n in source.body if isinstance(n, ast.FunctionDef)}
     return [
         defs[imported[name]] for name in sorted(used & imported.keys()) if imported[name] in defs
@@ -149,10 +158,12 @@ def loader():
         env.setdefault(name, lambda *args, **kwargs: None)
     # Real loader_utils helpers (e.g. the fp8 dequantize check from #14516) where no stub is given.
     env.setdefault("inspect", inspect)
-    real = [n for n in _loader_utils_functions(tree, path, method) if n.name not in env]
     flags = __future__.annotations.compiler_flag  # annotations such as Union stay unevaluated
-    source = str(path.parent / "loader_utils.py")
-    exec(compile(ast.Module(body = real, type_ignores = []), source, "exec", flags = flags), env)
+    # .mapper too: from_pretrained calls mapper.bf16_repo_loads_16bit since #18061.
+    for module in _LIFTED_MODULES:
+        real = [n for n in _loader_utils_functions(tree, path, method, module) if n.name not in env]
+        source = str(path.parent / f"{module}.py")
+        exec(compile(ast.Module(body = real, type_ignores = []), source, "exec", flags = flags), env)
     # Every loader.py helper from_pretrained reaches and no stub above replaces, new ones included
     # (a fixed list missed _agree_fast_inference_across_ranks from #15390).
     defined = {name: node for name, node in _module_definitions(tree).items() if name not in env}
@@ -295,6 +306,25 @@ def test_modelscope_conflicts_do_not_download_weights(
     assert "adapter_config.json" in downloaded
     assert "configuration_custom.py" in downloaded
     assert len(calls) == 1
+
+
+def test_modelscope_adapter_with_network_share_base_is_refused(
+    loader, modelscope_snapshot, monkeypatch
+):
+    env, captured = loader
+    cache, _, _ = modelscope_snapshot
+    env["USE_MODELSCOPE"] = True
+    use_modelscope_adapter(env, cache, r"\\evil.example\share\model")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "unsloth_zoo.vision_utils",
+        SimpleNamespace(_is_network_share = lambda path: path.startswith("\\\\")),
+    )
+
+    with pytest.raises(ValueError, match = "network share"):
+        env["from_pretrained"](model_name = "owner/model", load_in_4bit = False)
+    assert "dispatch" not in captured
 
 
 @pytest.mark.parametrize(

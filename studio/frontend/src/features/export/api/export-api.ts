@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { openStreamResponse } from "@/lib/open-stream-response";
+import { takeSseFrame } from "@/lib/sse-framing";
 
 const readError = (r: Response): Promise<string> => readFastApiError(r);
 
@@ -216,6 +217,7 @@ export async function loadCheckpoint(params: {
   trust_remote_code?: boolean;
   approved_remote_code_fingerprint?: string | null;
   hf_token?: string | null;
+  op_id?: string;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/load-checkpoint", {
     method: "POST",
@@ -236,6 +238,7 @@ export async function exportMerged(params: {
   private?: boolean;
   install_missing_dependencies?: boolean;
   reap?: ReapOptions | null;
+  op_id?: string;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/merged", {
     method: "POST",
@@ -274,6 +277,7 @@ export async function exportGGUF(params: {
   /** Also convert a Q4_0/Q4_1/Q4_K_M GGUF to Q4NX for the AMD NPU, into <save_directory>/npu-q4nx. */
   npu_q4nx?: boolean;
   reap?: ReapOptions | null;
+  op_id?: string;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/gguf", {
     method: "POST",
@@ -322,6 +326,7 @@ export async function exportLoRA(params: {
   gguf?: boolean;
   gguf_outtype?: string;
   adapter_format?: "mlx" | "peft";
+  op_id?: string;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/lora", {
     method: "POST",
@@ -337,8 +342,18 @@ export async function cleanupExport(): Promise<ExportOperationResponse> {
 }
 
 /** Terminates the export worker only; always resolves so callers need no guard. */
-export async function cancelExport(): Promise<ExportOperationResponse> {
-  const response = await authFetch("/api/export/cancel", { method: "POST" });
+export async function cancelExport(
+  expectedOpId?: string | null,
+): Promise<ExportOperationResponse> {
+  const response = await authFetch("/api/export/cancel", {
+    method: "POST",
+    ...(expectedOpId
+      ? {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expected_op_id: expectedOpId }),
+        }
+      : {}),
+  });
   return parseJson<ExportOperationResponse>(response);
 }
 
@@ -483,20 +498,20 @@ export async function streamExportLogs(options: {
 
       buffer += decoder.decode(value, { stream: true });
 
-      let separatorIndex = buffer.search(/\r?\n\r?\n/);
-      while (separatorIndex >= 0) {
-        const rawEvent = buffer.slice(0, separatorIndex);
-        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-        buffer = buffer.slice(separatorIndex + separatorLength);
+      for (
+        let frame = takeSseFrame(buffer);
+        frame;
+        frame = takeSseFrame(buffer)
+      ) {
+        const rawEvent = frame.event;
+        buffer = frame.remainder;
 
         if (rawEvent.startsWith("retry:") || rawEvent.startsWith(":")) {
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
 
         const parsed = parseSseMessage(rawEvent);
         if (!parsed) {
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
 
@@ -538,8 +553,6 @@ export async function streamExportLogs(options: {
         } catch (err) {
           if (isAbortError(err)) return;
         }
-
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
       }
     }
   } catch (err) {

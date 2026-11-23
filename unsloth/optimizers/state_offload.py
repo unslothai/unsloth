@@ -160,8 +160,7 @@ class _StateOffloader:
         params = None,
         device_of = None,
     ):
-        # device_of(param, key, tensor) names the device of state that is already on the host
-        # (a checkpoint just loaded there), None to leave it host-only.
+        # device_of returns the device for host-resident state, or None to leave it host-only.
         devices = set()
         for param, state in self._states(params):
             for key, value in list(state.items()):
@@ -383,8 +382,7 @@ def offload_optimizer_state(
     optimizer = _innermost(optimizer)
     if not isinstance(optimizer, torch.optim.Optimizer):
         return None
-    # transformers' LayerWiseDummyOptimizer (galore/apollo *_layerwise): the real per-parameter
-    # optimizers live in optimizer_dict and step from gradient hooks.
+    # LayerWiseDummyOptimizer keeps real optimizers in optimizer_dict, stepped by grad hooks.
     layerwise = getattr(optimizer, "optimizer_dict", None)
     if isinstance(layerwise, dict):
         unique = {id(o): o for o in layerwise.values()}.values()
@@ -401,8 +399,7 @@ def offload_optimizer_state(
         return None
 
     offloader = _StateOffloader(optimizer, pin_memory = pin_memory, chunk_bytes = chunk_bytes)
-    # Hooks, not an optimizer.step override: accelerate swaps the instance's step attribute on
-    # every fp16 step, and hooks run whichever bound step a caller kept.
+    # Step hooks, not a step override: accelerate swaps the instance's step on each fp16 step.
     optimizer.register_step_pre_hook(offloader._pre_step)
     optimizer.register_step_post_hook(offloader._post_step)
 

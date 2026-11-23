@@ -244,6 +244,7 @@ export function useTranscription({
         language: string;
         timestamps: boolean;
         speakers: boolean;
+        speakerAccent?: string;
         connection?: { providerId: string; modelId: string } | null;
       },
       onSourceExpired?: () => void,

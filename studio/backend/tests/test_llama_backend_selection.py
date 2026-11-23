@@ -737,8 +737,7 @@ def test_an_update_refuses_to_replace_an_unknown_recorded_choice(monkeypatch, tm
     with pytest.raises(SystemExit) as raised:
         ilp.install_prebuilt(tmp_path, "latest", FORK, "")
 
-    # EXIT_ERROR, not the source fallback: a source build would pick its own
-    # backend, which is the outcome refusing this update exists to prevent.
+    # EXIT_ERROR, not a source fallback: a source build would choose its own backend.
     assert raised.value.code == ilp.EXIT_ERROR
     assert seen == []
     marker = json.loads((marker_path / "UNSLOTH_PREBUILT_INFO.json").read_text())

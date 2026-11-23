@@ -102,6 +102,25 @@ def test_sub_ulp_update_moves_correct_fraction_and_preserves_rng(api):
     assert 0.3 < float((mask != (p != 1)).float().mean()) < 0.45
 
 
+def test_cpu_parameters_never_share_a_rounding_stream(api, monkeypatch):
+    draws = []
+    randint = torch.randint
+
+    def record(*args, **kwargs):
+        draws.append(randint(*args, **kwargs))
+        return draws[-1]
+
+    monkeypatch.setattr(api.torch, "randint", record)
+    params = [torch.nn.Parameter(torch.zeros(256, dtype = torch.bfloat16)) for _ in range(4)]
+    optimizer = api.AdamWBF16(params, seed = 5)
+    for _ in range(8):
+        for p in params:
+            p.grad = torch.ones_like(p)
+        optimizer.step()
+    streams = {tuple(d.tolist()) for d in draws}
+    assert len(streams) == len(draws) == 32
+
+
 def test_checkpoint_restores_fp32_moments_and_next_random_update(api):
     p = torch.nn.Parameter(torch.linspace(0.5, 1.5, 4096, dtype = torch.bfloat16))
     optimizer = api.AdamWBF16([p], lr = 0.0009, weight_decay = 0.01, seed = 81)
@@ -355,3 +374,77 @@ def test_batched_updates_match_separate_groups_and_new_gradients(api):
                 continue
             for key in ("step", "exp_avg", "exp_avg_sq"):
                 assert torch.equal(optimizer.state[p][key], control.state[q][key])
+
+
+@pytest.mark.parametrize("bad", ["short_moment", "wide_step", "empty_seed"])
+def test_load_state_dict_rejects_state_the_kernel_would_overrun(api, bad):
+    # The CUDA kernel masks moment reads / writes by the parameter's size and loads step / seed as scalars.
+    p = torch.nn.Parameter(torch.ones(8, 4, dtype = torch.bfloat16))
+    opt = api.AdamWBF16([p], lr = 1e-3)
+    p.grad = torch.ones_like(p)
+    opt.step()
+    state = opt.state_dict()
+    entry = state["state"][0]
+    if bad == "short_moment":
+        entry["exp_avg"] = torch.zeros(3)
+    elif bad == "wide_step":
+        entry["step"] = torch.zeros(4, dtype = torch.int64)
+    else:
+        entry["sr_seed"] = torch.zeros(0, dtype = torch.int64)
+    fresh = torch.nn.Parameter(torch.ones(8, 4, dtype = torch.bfloat16))
+    with pytest.raises(ValueError):
+        api.AdamWBF16([fresh], lr = 1e-3).load_state_dict(state)
+
+
+def test_load_state_dict_round_trip_still_loads(api):
+    p = torch.nn.Parameter(torch.ones(8, 4, dtype = torch.bfloat16))
+    opt = api.AdamWBF16([p], lr = 1e-3)
+    p.grad = torch.ones_like(p)
+    opt.step()
+    fresh = torch.nn.Parameter(torch.ones(8, 4, dtype = torch.bfloat16))
+    other = api.AdamWBF16([fresh], lr = 1e-3)
+    other.load_state_dict(opt.state_dict())
+    assert torch.equal(other.state[fresh]["exp_avg"], opt.state[p]["exp_avg"])
+
+
+def test_load_state_dict_makes_no_discarded_bf16_moment_copy(api, monkeypatch):
+    # torch's loader casts each floating state tensor to the parameter dtype; the FP32 moments are rebuilt
+    # from the checkpoint afterwards, so a BF16 copy of them would only be a transient (4 bytes per
+    # parameter) that sets the resume's memory peak.
+    p = torch.nn.Parameter(torch.linspace(-1, 1, 96, dtype = torch.bfloat16).view(8, 12))
+    opt = api.AdamWBF16([p], lr = 1e-3, seed = 5)
+    for step in range(2):
+        p.grad = (torch.arange(p.numel()).float().cos() + step).view_as(p).bfloat16()
+        opt.step()
+    state = copy.deepcopy(opt.state_dict())
+    keys_before = {k: set(v) for k, v in state["state"].items()}
+    policy = vars(torch.optim.Optimizer)["_process_value_according_to_param_policy"].__func__
+    cast = []
+
+    def spy(
+        param,
+        value,
+        param_id,
+        param_groups,
+        key = None,
+    ):
+        out = policy(param, value, param_id, param_groups, key)
+        if torch.is_tensor(value) and out.dtype != value.dtype:
+            cast.append(key)
+        return out
+
+    monkeypatch.setattr(
+        torch.optim.Optimizer, "_process_value_according_to_param_policy", staticmethod(spy)
+    )
+    fresh = torch.nn.Parameter(p.detach().clone())
+    restored = api.AdamWBF16([fresh], lr = 1e-3, seed = 77)
+    restored.load_state_dict(state)
+    assert "exp_avg" not in cast and "exp_avg_sq" not in cast
+    assert {k: set(v) for k, v in state["state"].items()} == keys_before  # caller's dict untouched
+    for key in ("exp_avg", "exp_avg_sq"):
+        assert restored.state[fresh][key].dtype == torch.float32
+        assert torch.equal(restored.state[fresh][key], opt.state[p][key])
+    for key in ("step", "sr_seed"):
+        assert restored.state[fresh][key].dtype == torch.int64
+        assert torch.equal(restored.state[fresh][key], opt.state[p][key])
+    assert restored.param_groups[0]["seed"] == 5

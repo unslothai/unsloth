@@ -435,15 +435,19 @@ def _delete_gguf_variant_from_repos(
 
         companion_matches: list[tuple[Path, Optional[Path], str]] = []
         if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
+            from core.inference.engram_tables import engram_table_precision
             companion_matches = _repo_file_matches(
                 target_repo,
-                # no main GGUF remains, so its companions cannot be launched.
-                lambda name: _is_gguf_filename(name)
-                and (
-                    _is_mmproj_filename(name)
-                    or _is_reclaimable_drafter_path(name)
-                    or _is_imatrix_filename(name)
-                ),
+                # no main GGUF remains, so its companions and Engram tables cannot be launched.
+                lambda name: (
+                    _is_gguf_filename(name)
+                    and (
+                        _is_mmproj_filename(name)
+                        or _is_reclaimable_drafter_path(name)
+                        or _is_imatrix_filename(name)
+                    )
+                )
+                or engram_table_precision(name) is not None,
             )
             for snap, _blob, name in companion_matches:
                 try:
@@ -514,11 +518,18 @@ def _delete_gguf_variant_from_repos(
     if cleanup_variant is None:
         incomplete_result = gguf_variants.VariantIncompleteDeleteResult(deleted = 0, unresolved = False)
     else:
+        # A --ple download's partial standalone table: its hash is in the job's manifest only.
+        from core.inference.engram_tables import engram_table_precision
+        table_hashes = {
+            expected.sha256
+            for expected in (manifest.expected_files if manifest is not None else ())
+            if expected.sha256 and engram_table_precision(expected.path) and not sibling_active
+        }
         incomplete_result = gguf_variants.delete_variant_incomplete_blobs_result(
             repo_id,
             cleanup_variant,
             hf_token,
-            extra_hashes = frozenset(completed_hashes),
+            extra_hashes = frozenset(completed_hashes | table_hashes),
             companions = not sibling_active,
             root = root,
         )
@@ -576,6 +587,35 @@ def _delete_gguf_variant_from_repos(
     return {"status": "deleted", "repo_id": repo_id, "variant": variant}
 
 
+def _has_unprotected_snapshot(
+    hub_cache: Path, repo_id: str, protected_revisions: frozenset[str]
+) -> bool:
+    """True unless every model dir for *repo_id* (any case) in *hub_cache* holds only protected snapshots. Errors answer True so the caller keeps its full scan."""
+    wanted = repo_id.lower()
+    try:
+        entries = list(hub_cache.iterdir())
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    for entry in entries:
+        # mirror scan_cache_dir's repo id derivation from the folder name.
+        repo_type, sep, name = entry.name.partition("--")
+        if not sep or repo_type[:-1] != "model" or name.replace("--", "/").lower() != wanted:
+            continue
+        try:
+            if not entry.is_dir():
+                continue
+            snapshots = entry / "snapshots"
+            if not snapshots.exists():
+                continue
+            if any(snap.name not in protected_revisions for snap in snapshots.iterdir()):
+                return True
+        except OSError:
+            return True
+    return False
+
+
 def reclaim_replaced_gguf_variant(
     repo_id: str,
     variant: str,
@@ -610,6 +650,28 @@ def reclaim_replaced_gguf_variant(
             "reason": "invalid_target",
         }
 
+    if hub_cache is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        hub_cache = get_hf_cache_paths().hub_cache
+    try:
+        target_hub_cache = Path(hub_cache).expanduser().resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        target_hub_cache = Path(hub_cache).expanduser()
+
+    # every mutation below is confined to unprotected snapshot dirs, so skip the all-roots scan when none exist.
+    if not _has_unprotected_snapshot(target_hub_cache, repo_id, protected_revisions):
+        logger.debug(
+            "Skipping stale GGUF reclaim for %s [%s]: no unprotected snapshots",
+            repo_id,
+            variant,
+        )
+        return {
+            "status": "skipped",
+            "repo_id": repo_id,
+            "variant": variant,
+            "reason": "nothing_to_reclaim",
+        }
+
     failures: list[str] = []
     removed_snapshots = 0
     deleted_blobs = 0
@@ -631,14 +693,6 @@ def reclaim_replaced_gguf_variant(
             "variant": variant,
             "reason": "scan_failed",
         }
-
-    if hub_cache is None:
-        from utils.hf_cache_settings import get_hf_cache_paths
-        hub_cache = get_hf_cache_paths().hub_cache
-    try:
-        target_hub_cache = Path(hub_cache).expanduser().resolve(strict = False)
-    except (OSError, RuntimeError, ValueError):
-        target_hub_cache = Path(hub_cache).expanduser()
 
     candidate_repos = [
         repo_info

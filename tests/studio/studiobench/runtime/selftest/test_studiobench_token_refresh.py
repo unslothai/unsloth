@@ -187,9 +187,8 @@ def test_the_token_is_replaced_before_it_expires_not_after_it_fails(studio, monk
 
 
 def test_a_401_that_arrives_anyway_is_recovered(studio):
-    """The reactive half. A token this process believes is fresh can still be refused: a clock
-    offset against the server, or an Unsloth restarted underneath the run. One retry, then the
-    refusal is real and is raised."""
+    """Reactive half: a token believed fresh can still be refused (clock offset, or Unsloth
+    restarted under the run); one retry, then the refusal is real and raised."""
     base_url, state = studio
     auth = authenticate(base_url, "bench", PASSWORD, new_password = PASSWORD)
     auth.expires_at = time.time() + 10_000
@@ -243,9 +242,8 @@ def test_a_clock_that_makes_every_token_look_stale_stops_the_proactive_half(stud
 
 
 def test_a_failing_rotation_hook_does_not_fail_the_request(studio):
-    """`on_rotate` re-seeds a Playwright context, which can throw for reasons that have nothing to
-    do with authentication -- a closed context, a page that crashed. The token has already been
-    replaced by then and the request has to go out."""
+    """`on_rotate` re-seeds a Playwright context and can throw for reasons unrelated to
+    authentication; the token is already replaced, so the request must go out."""
     monkeypatch_error = RuntimeError("Target page, context or browser has been closed")
     base_url, _state = studio
     auth = authenticate(base_url, "bench", PASSWORD, new_password = PASSWORD)

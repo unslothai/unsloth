@@ -37,6 +37,8 @@ export interface AudioCppModel {
   /** uses eSpeak-ng phonemization, absent from upstream runtime bundles. */
   needsEspeak?: boolean;
   stems?: readonly string[];
+  /** Extra picker search terms for a capability the name does not show. */
+  keywords?: readonly string[];
 }
 
 /** the `audio_cpp_runtime` block of `/api/inference/audio/stt/status`. */
@@ -168,7 +170,11 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("Maya1-GGUF"), task: "tts" },
   { id: folder("NeuTTS-2E-GGUF"), task: "tts" },
   { id: folder("OmniVoice-GGUF"), task: "tts", workflows: ["speak", "clone"] },
-  { id: folder("VibeVoice-1.5B-GGUF"), task: "tts" },
+  {
+    id: folder("VibeVoice-1.5B-GGUF"),
+    task: "tts",
+    keywords: ["multi-speaker", "multiple speakers", "dialogue", "conversation", "podcast"],
+  },
   { id: folder("VoxCPM1-GGUF"), task: "tts", workflows: ["speak", "clone"] },
   { id: folder("Voxtral-4B-TTS-2603-GGUF"), task: "tts" },
   { id: folder("Fish-Audio-S2-Pro-GGUF"), task: "tts", workflows: ["speak", "clone"] },
@@ -374,6 +380,20 @@ export function audioCppDisplayName(id: string): string {
     return trimmed.slice(AUDIO_CPP_REPO.length + 1).split("/")[0] || trimmed;
   }
   return trimmed.split("/").pop() || trimmed;
+}
+
+// A trailing quant tag on a GGUF file stem: `-q8_0`, `-Q4_K_M`, `-f16`.
+const FILE_STEM_QUANT = /[-_.](?:i?q\d\w*|bf16|f16|f32)$/i;
+
+/** An older clip's model label (a GGUF file stem such as `kokoro-82m-q8_0`) as its catalog folder name. */
+export function audioCppNameForFileStem(stem: string): string | null {
+  const base = stem.trim().toLowerCase().replace(FILE_STEM_QUANT, "");
+  if (!base || base === stem.trim().toLowerCase()) return null;
+  for (const model of AUDIO_CPP_MODELS) {
+    const name = audioCppDisplayName(model.id);
+    if (name.toLowerCase().replace(/-gguf$/, "") === base) return name;
+  }
+  return null;
 }
 
 /** Hub path of an umbrella folder (`<repo>/tree/main/<Folder>`); null for any other id. */

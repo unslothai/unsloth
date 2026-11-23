@@ -45,8 +45,7 @@ _INFERENCE_SCHEMES: frozenset[str] = (
     | frozenset(TE_QUANT_MODES)
 ) - _SENTINELS
 
-# Derived so new inference-only schemes are covered; nvfp4 is pinned below so it
-# cannot silently empty out.
+# Derived so new inference-only schemes are covered; nvfp4 is pinned below so it cannot vanish.
 _INFERENCE_ONLY: frozenset[str] = _INFERENCE_SCHEMES - _TRAIN_PRECISIONS
 
 _CAPABILITIES = ((7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0))
@@ -70,8 +69,7 @@ def _probe(
 
 
 def _every_advertisable_mode(monkeypatch) -> frozenset[str]:
-    """The union of everything the probe can EVER put in front of a user, over the whole
-    GPU x torchao matrix. The UI can only ever render a subset of this."""
+    """Union of every mode the probe can show over the GPU x torchao matrix; UI shows a subset."""
     seen: set[str] = set()
     for capability in _CAPABILITIES:
         for torchao in (True, False):

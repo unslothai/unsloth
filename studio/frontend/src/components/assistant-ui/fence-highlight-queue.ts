@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Highlighting swaps only a fence's own line nodes, so only a selection ending inside a fence
-// needs holding.
+// Highlight swaps only a fence's own lines, so only a selection ending in one needs holding.
 export const selectionInFence = (
   selection: Pick<Selection, "anchorNode" | "focusNode"> | null,
 ): boolean => {
@@ -24,6 +23,8 @@ export type FenceHighlightQueueOptions = {
   schedule: (callback: () => void, duringScroll: boolean) => () => void;
   blocked: (duringScroll: boolean) => boolean;
   commit: (callback: () => void) => void;
+  budgetMs?: number;
+  now?: () => number;
 };
 
 export function createFenceHighlightQueue(options: FenceHighlightQueueOptions): {
@@ -59,23 +60,42 @@ export function createFenceHighlightQueue(options: FenceHighlightQueueOptions): 
     }
   };
 
+  const budgetMs = options.budgetMs ?? 0;
+  const now = options.now ?? (() => performance.now());
+
   const run = (): void => {
     running = true;
     let entry: HighlightEntry | undefined;
-    try {
-      for (const candidate of entries) {
-        if (!options.blocked(candidate.duringScroll)) {
-          entry = candidate;
-          break;
-        }
+    const started = budgetMs > 0 ? now() : 0;
+    const taken = new Set<HighlightEntry>();
+    const verdicts = new Map<boolean, boolean>();
+    const blocked = (duringScroll: boolean): boolean => {
+      let verdict = verdicts.get(duringScroll);
+      if (verdict === undefined) {
+        verdict = options.blocked(duringScroll);
+        verdicts.set(duringScroll, verdict);
       }
-      if (!entry) return;
-      const current = entry;
-      let complete = false;
-      options.commit(() => {
-        if (entries.has(current)) complete = current.step();
-      });
-      if (entries.delete(current) && !complete) entries.add(current);
+      return verdict;
+    };
+    try {
+      for (;;) {
+        entry = undefined;
+        for (const candidate of entries) {
+          if (!taken.has(candidate) && !blocked(candidate.duringScroll)) {
+            entry = candidate;
+            break;
+          }
+        }
+        if (!entry) return;
+        const current = entry;
+        taken.add(current);
+        let complete = false;
+        options.commit(() => {
+          if (entries.has(current)) complete = current.step();
+        });
+        if (entries.delete(current) && !complete) entries.add(current);
+        if (budgetMs <= 0 || flushing || now() - started >= budgetMs) return;
+      }
     } catch (error) {
       if (entry) entries.delete(entry);
       else entries.clear();

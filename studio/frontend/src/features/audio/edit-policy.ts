@@ -20,6 +20,7 @@ export const EDIT_COPY = {
   transcriptHint:
     "Fix any word the recognizer got wrong, so it matches the audio.",
   changesLabel: "2. Make your changes",
+  changesPlaceholder: "The transcript appears here for you to change…",
   changesHint: "Change, add or remove words. Each change is marked below.",
   resetLabel: "Reset to transcript",
   wordsTab: "Words",
@@ -33,7 +34,7 @@ export const EDIT_COPY = {
   vevo2SwitchNote:
     "Vevo2 reloads for editing when it was last used on Clone, about 1–9 s.",
   emptyText:
-    "Edited speech lands here. Add a recording, fix its transcript, change the words, and press Generate.",
+    "Add a recording, fix its transcript, change the words, and press Generate.",
 } as const;
 
 export const EDIT_NO_SOURCE = "Add a recording to edit.";

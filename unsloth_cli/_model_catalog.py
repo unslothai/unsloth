@@ -151,11 +151,8 @@ def exported_entries() -> List[ModelEntry]:
 
 
 def _pinned_snapshot(repo_path: Path, load_id: Optional[str]) -> Optional[Path]:
-    """The snapshot a pinned row will open, when ``load_id`` names one inside this repo.
-
-    A pin beats ``refs/main``, because the inventory pins exactly when the ref would resolve
-    somewhere worse, so the ref names a revision this row never loads.
-    """
+    """Snapshot a pinned row opens when load_id names one in this repo; a pin beats refs/main, which
+    would resolve to a revision this row never loads."""
     if not load_id:
         return None
     try:
@@ -170,13 +167,9 @@ def _pinned_snapshot(repo_path: Path, load_id: Optional[str]) -> Optional[Path]:
 
 
 def _reachable_snapshots(repo_path: Path, load_id: Optional[str] = None) -> List[Path]:
-    """The snapshots a load through this row could actually open.
-
-    The pinned one when the row carries a pin, else ``refs/main`` alone when it names one,
-    since that is what a bare repo id resolves to and another revision's quants are files the
-    selection cannot reach. A commit- or tag-pinned fetch leaves no ``refs/main``, and those
-    rows are pinned rather than dropped, so they describe every snapshot instead.
-    """
+    """Snapshots a load through this row can open: the pinned one if pinned, else refs/main alone,
+    since other revisions' quants are unreachable; commit- or tag-pinned rows with no refs/main
+    describe every snapshot."""
     snapshots = repo_path / "snapshots"
     try:
         available = sorted(path for path in snapshots.iterdir() if path.is_dir())
@@ -342,12 +335,9 @@ def _is_loose_gguf_companion(path: str) -> bool:
 
 
 def _gguf_file_as_the_loader_opens_it(path: str) -> str:
-    """*path*, collapsed to shard 1 when the LOADER reads it as a complete split family.
-
-    Asked of _local_gguf_load_path, not restated: the scan's _GGUF_SPLIT_RE takes three or more
-    digits and the loader's _GGUF_SPLIT_FILE_RE exactly five, so a local rule would rewrite
-    model-002-of-003.gguf onto a sibling detect_gguf_model still opens as its own model.
-    """
+    """Shard 1 for a split family as the loader reads it, not restated: the loader's
+    _GGUF_SPLIT_FILE_RE takes exactly five digits, the scan's _GGUF_SPLIT_RE three or more; a
+    local rule would rewrite model-002-of-003.gguf onto a sibling."""
     try:
         from utils.models.model_config import _local_gguf_load_path
     except ImportError:
@@ -360,15 +350,9 @@ def _gguf_file_as_the_loader_opens_it(path: str) -> str:
 
 
 def _gguf_load_target(target: str) -> str:
-    """The GGUF a picker row should load.
-
-    A row naming a .gguf loads that file: resolving it through the folder returned the best quant
-    across every unrelated GGUF beside it (#10352). Shards are the exception, collapsed to the
-    one the loader opens anyway so _dedup_key offers a split family once.
-
-    A FOLDER still resolves: detect_gguf_model takes the largest complete file, commonly the F16,
-    where cached and exported rows take a Q4-class quant. An OOM by source alone, not a taste.
-    """
+    """A .gguf row loads its own file, not a folder's best quant across unrelated GGUFs (issue
+    10352); shards collapse to the file the loader opens; a folder takes the largest, often an
+    F16 that risks OOM."""
     if _is_gguf_file(target):
         return _gguf_file_as_the_loader_opens_it(target)
     return _preferred_complete_gguf(target) or target
@@ -395,15 +379,9 @@ def _preferred_complete_gguf(path: str) -> Optional[str]:
 
 
 def _cached_gguf_load_id(row: dict) -> str:
-    """A concrete local GGUF for a cached row, falling back to the identifier it came with.
-
-    An inactive-cache row already carries a snapshot path, so this resolves the quant inside it.
-    An ACTIVE-cache row carries the bare repo id, which is right for the inventory and wrong
-    for a picker: from_identifier() sends a non-path through detect_gguf_model_remote(), whose
-    GatedRepoError branch is permanent and returns None without the offline local-cache
-    fallback, so a fully downloaded gated GGUF reads as non-GGUF and hits the Transformers
-    loader. Resolving the on-disk file keeps the pick on the weights the row was listed for.
-    """
+    """Concrete local GGUF for a cached row, else the identifier it came with; an active-cache bare
+    repo id reaches detect_gguf_model_remote, whose permanent GatedRepoError returns None without
+    the local-cache fallback, so a downloaded gated GGUF reads as non-GGUF."""
     load_id = row.get("load_id") or row["repo_id"]
     resolved = _preferred_complete_gguf(load_id)
     if resolved:
@@ -546,12 +524,8 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
 
 
 def _local_is_a_diffusers_pipeline(model) -> bool:
-    """Whether a local row is a diffusers pipeline, which never answers a chat turn.
-
-    An unrecognised pipeline gets no task and no root config for can_chat to read, so both
-    gates pass it while the payload check accepts its pipeline index. The cached path says
-    this with the row's ``diffusers`` flag; this is the local twin.
-    """
+    """Diffusers pipelines never answer chat; an unrecognised one passes both can_chat gates with no
+    task or root config, so the local check mirrors the cached diffusers flag."""
     from hub.services.models.catalog_classification import _local_is_diffusers
     return bool(_local_is_diffusers(model))
 

@@ -16,8 +16,7 @@ _REPO_STUDIO_DIR = _RUN_PY.parent.parent
 
 
 def _load_helpers_only():
-    """Import just the resolver helpers from run.py, skipping server-side
-    imports (uvicorn, structlog, etc.)."""
+    """Load only the resolver helpers from run.py, skipping uvicorn and structlog imports."""
     source = _RUN_PY.read_text(encoding = "utf-8")
     tree = ast.parse(source)
     keep = []
@@ -96,8 +95,7 @@ def test_resolver_falls_back_to_studio_home_site_packages(tmp_path, monkeypatch)
 
 
 def test_resolver_falls_back_via_editable_pth(tmp_path, monkeypatch):
-    """Simulates a `--local` install: dedicated venv with an editable .pth
-    pointing at a cloned repo owning the built dist."""
+    """Simulates --local: a venv whose editable .pth points at a clone owning the built dist."""
     studio_home = tmp_path / "studio_home"
     sp = studio_home / "unsloth_studio" / "lib" / "python3.13" / "site-packages"
     sp.mkdir(parents = True)
@@ -147,9 +145,8 @@ def test_resolver_falls_back_to_windows_layout_site_packages(tmp_path, monkeypat
 
 
 def test_resolver_does_not_crash_on_non_dict_mapping_literal(tmp_path, monkeypatch):
-    """A finder whose MAPPING value is a set/list/non-dict literal (possible
-    if the regex matched a brace-delimited literal ast.literal_eval can parse)
-    must not AttributeError. The resolver should skip it and keep probing."""
+    """A non-dict MAPPING literal (a set or list parsed by literal_eval) must not raise
+    AttributeError; the resolver skips it and keeps probing."""
     studio_home = tmp_path / "studio_home"
     sp = studio_home / "unsloth_studio" / "lib" / "python3.13" / "site-packages"
     sp.mkdir(parents = True)
@@ -175,8 +172,7 @@ def test_resolver_does_not_crash_on_non_dict_mapping_literal(tmp_path, monkeypat
 
 
 def test_resolver_handles_multiline_mapping_dict(tmp_path, monkeypatch):
-    """A future setuptools/black reformat wrapping the MAPPING dict across
-    multiple lines must still parse and resolve. Locks in `[^}]*` + re.DOTALL."""
+    """Multi-line MAPPING dicts must parse, since the regex uses [^}]* with re.DOTALL."""
     studio_home = tmp_path / "studio_home"
     sp = studio_home / "unsloth_studio" / "lib" / "python3.13" / "site-packages"
     sp.mkdir(parents = True)
@@ -203,9 +199,8 @@ def test_resolver_handles_multiline_mapping_dict(tmp_path, monkeypatch):
 
 
 def test_systemexit_message_contains_actionable_fixes(tmp_path, monkeypatch):
-    """The user-facing recovery message is a contract: it must surface the
-    attempted paths and every concrete fix. Pin its structure so a refactor
-    doesn't drop one."""
+    """The user-facing recovery message is a contract: it must list the attempted paths and every
+    concrete fix, so refactors cannot drop one."""
     import os
     import sys
 

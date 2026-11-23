@@ -681,9 +681,12 @@ def _multi_lora_experts_available() -> bool:
 
 def _batchable(request: TrainingStartRequest) -> bool:
     from core.training.eval_dataset import evaluation_enabled
+    from core.training.multi_lora_trainer import embedding_targets
     from core.training.training import should_use_mlx_training_backend
+
     return (
         not should_use_mlx_training_backend()
+        and not embedding_targets(request.target_modules)
         and request.training_type == "LoRA/QLoRA"
         and request.use_lora
         and bool(request.local_datasets)
@@ -861,6 +864,11 @@ def _finish(
         _ALIASES.pop(old.alias, None)
 
 
+def _account_still_active(account: AccountContext) -> bool:
+    from core.training.account_jobs import job_accounts
+    return account.is_owner or any(live.account_id == account.account_id for live in job_accounts())
+
+
 async def _start_queued(entry: _Queued) -> bool:
     from routes import training as training_routes
 
@@ -870,6 +878,13 @@ async def _start_queued(entry: _Queued) -> bool:
         if _training_busy():
             return False
         group = _batch_for(entry)
+        # A queued start outlives its request: an account disabled or deleted since then starts nothing.
+        for member in group:
+            if not await asyncio.to_thread(_account_still_active, member.account):
+                _finish(member, "cancelled")
+        group = [member for member in group if member.status == "queued"]
+        if entry.status != "queued":
+            return True
         if len(group) > 1 and await arun_as(entry.account, _trains_alone(entry.request)):
             group = [entry]
         # A cancel that landed while the model probe ran has already returned "cancelled": never start it.
@@ -1162,10 +1177,9 @@ def _run_created(run: dict[str, Any]) -> int:
 def _ordered_jobs(
     pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
 ) -> Iterator[tuple[dict[str, Any], bool]]:
-    # Newest created first, same-second ties by the persisted ns stamp, then public id: a job
-    # keeps its place from queue to history and across restarts. History is newest start first
-    # and no job starts before it is created, so a buffered row created after the current row's
-    # start is final.
+    # Newest created first, ties by persisted ns stamp then public id, so places hold across
+    # restarts; history is newest start first and no job starts before it is created, so a buffered
+    # row created after the current start is final.
     def item(created_at: int, public_id: str, seq: int, row: dict[str, Any], is_run: bool):
         return (-created_at, -_ALIAS_CREATED_NS.get(public_id, 0), public_id, seq), row, is_run
 

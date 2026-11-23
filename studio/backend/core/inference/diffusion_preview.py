@@ -54,14 +54,38 @@ def preview_wanted(requested: Optional[bool]) -> bool:
 
 
 def preview_available(family: Optional[str], device: Any) -> bool:
-    """Mirrors ``LatentPreviewer.create``: kill switch off, a fitted map, and CUDA (no event to poll elsewhere)."""
-    if not env_enabled() or factors_for(family) is None:
+    """Mirrors ``LatentPreviewer.create``: kill switch off, a fitted map or a tiny decoder, and CUDA (no event to
+    poll elsewhere)."""
+    if not env_enabled() or (factors_for(family) is None and not _tiny_family(family)):
         return False
     try:
         import torch
         return torch.device(device).type == "cuda" and torch.cuda.is_available()
     except Exception:  # noqa: BLE001 - a status read must never fail on this
         return False
+
+
+def _tiny_family(family: Optional[str]) -> bool:
+    try:
+        from . import video_tiny_vae
+        return video_tiny_vae.enabled() and video_tiny_vae.family_supported(family)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _tiny_decoder(family: Optional[str], device: Any) -> Any:
+    """The tiny Wan decoder for previews when its weights are cached (a missing one starts a background fetch and
+    this render keeps the linear map), else None."""
+    if not _tiny_family(family):
+        return None
+    try:
+        from . import video_tiny_vae
+        return video_tiny_vae.get_decoder(
+            family, video_tiny_vae.family_latent_channels(family), device
+        )
+    except Exception as exc:  # noqa: BLE001 - previews are optional
+        logger.debug("diffusion.preview: tiny decoder unavailable (%s)", exc)
+        return None
 
 
 @functools.lru_cache(maxsize = 64)
@@ -217,7 +241,7 @@ class LatentPreviewer:
 
     def __init__(
         self,
-        spec: LatentRGB,
+        spec: Optional[LatentRGB],
         *,
         height: int,
         width: int,
@@ -228,10 +252,14 @@ class LatentPreviewer:
         min_interval_s: float = MIN_INTERVAL_S,
         max_snapshots: int = MAX_SNAPSHOTS,
         clock: Callable[[], float] = time.monotonic,
+        tiny: Any = None,
     ) -> None:
         import torch
 
         self.spec = spec
+        # A tiny VAE decoder (Wan): decodes the x0 estimate of the first latent frame instead of the linear map.
+        self.tiny = tiny
+        self.tiny_decodes = 0
         self.height, self.width = int(height), int(width)
         self._alloc_size = (self.height, self.width)
         self.device = torch.device(device)
@@ -239,10 +267,13 @@ class LatentPreviewer:
         self.min_interval_s = float(min_interval_s)
         self._clock = clock
         self._publish = publish
-        self._weight, self._bias = _device_map(spec, self.device)
+        self._weight, self._bias = _device_map(spec, self.device) if tiny is None else (None, None)
         # Pre-sized (with a margin for pipelines that round the size up): nothing is allocated in the loop.
-        side_h = (self.height // spec.down + 2) * spec.patch
-        side_w = (self.width // spec.down + 2) * spec.patch
+        if tiny is None:
+            side_h = (self.height // spec.down + 2) * spec.patch
+            side_w = (self.width // spec.down + 2) * spec.patch
+        else:
+            side_h, side_w = self.height + 32, self.width + 32
         # to_uint8 output never exceeds the input or max_side on either side, whatever divisor it picks.
         cap = min(side_h, self.max_side) * min(side_w, self.max_side) * 3
         total = max(1, int(total_steps or 1))
@@ -291,7 +322,7 @@ class LatentPreviewer:
         if not preview_wanted(requested):
             return None
         spec = factors_for(family)
-        if spec is None or not height or not width:
+        if (spec is None and not _tiny_family(family)) or not height or not width:
             return None
         try:
             import torch
@@ -300,10 +331,21 @@ class LatentPreviewer:
             if dev.type != "cuda" or not torch.cuda.is_available():
                 # No event to poll off CUDA, so a preview would block.
                 return None
+            tiny = _tiny_decoder(family, dev)
+            if spec is None and tiny is None:
+                return None
             with _hold_off() as clear:
                 if not clear:
                     return None
-                return cls(spec, height = height, width = width, device = dev, publish = publish, **kwargs)
+                return cls(
+                    spec,
+                    height = height,
+                    width = width,
+                    device = dev,
+                    publish = publish,
+                    tiny = tiny,
+                    **kwargs,
+                )
         except Exception as exc:  # noqa: BLE001 - previews are optional
             logger.debug("diffusion.preview: disabled for this render (%s)", exc)
             return None
@@ -345,12 +387,22 @@ class LatentPreviewer:
                 self.skipped_capture += 1
                 self._prev = None
                 return
-            grid = latent_grid(latents, self.spec, self.height, self.width)
-            if grid is None:
-                self.failed = True
-                return
+            if self.tiny is not None:
+                if latents.ndim != 5 or latents.shape[1] != self.tiny.latent_channels:
+                    self.failed = True
+                    return
+                grid = None
+            else:
+                grid = latent_grid(latents, self.spec, self.height, self.width)
+                if grid is None:
+                    self.failed = True
+                    return
             with torch.no_grad():
-                cur = project(grid, self._weight, self._bias, self.spec.patch)
+                if grid is None:
+                    # First latent frame, copied: the x0 estimate is linear in it, the decode is not.
+                    cur = latents[:1, :, :1].to(torch.float32, copy = True)
+                else:
+                    cur = project(grid, self._weight, self._bias, self.spec.patch)
                 index = getattr(scheduler, "_step_index", None)
                 prev, prev_index = self._prev, self._prev_index
                 self._prev, self._prev_index = cur, index
@@ -367,7 +419,11 @@ class LatentPreviewer:
                     return
                 pair = _sigma_pair(scheduler) if prev is not None else None
                 shown = x0_estimate(prev, cur, pair)
-                if self.spec.patch > 1:
+                if self.tiny is not None:
+                    p = next(self.tiny.parameters())
+                    shown = self.tiny.decode(shown.to(p.dtype))[0, :, 0].permute(1, 2, 0).float()
+                    self.tiny_decodes += 1
+                elif self.spec.patch > 1:
                     shown = smooth_patch_grid(shown)
                 img = to_uint8(shown, self.max_side)
                 n = img.numel()

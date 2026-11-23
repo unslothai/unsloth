@@ -488,9 +488,7 @@ def test_diffusers_stream_path_synchronizes_per_group(monkeypatch):
 
 
 def test_slow_gpu_keeps_memory_in_the_window_and_reads_the_right_weights(monkeypatch):
-    """Host far ahead of the GPU: every later copy is queued before the block that frees its memory has run. The copy
-    stream's wait on the offload event keeps those copies out of blocks still being read (outputs bit-identical) and
-    the allocator never grows past the window."""
+    """The copy stream waits on the offload event, so queued copies never overwrite blocks still read."""
     _cuda()
     monkeypatch.setenv(op.PREFETCH_DEPTH_ENV, "1")
     torch.manual_seed(0)
@@ -705,8 +703,12 @@ def test_streamed_onload_of_a_compiled_wrapper_weight_does_not_swap(monkeypatch)
     w = lin.weight.detach().clone()
     lin.weight = torch.nn.Parameter(two.TwoTensor(w, w.clone()), requires_grad = False)
     torch._dynamo.reset()
+    compiled = torch.compile(lin, backend = "eager")
+    x = torch.randn(2, 8)
     with torch.no_grad():
-        torch.compile(lin, backend = "eager")(torch.randn(2, 8))
+        compiled(x)
+    # compile's own weakref is gone by torch 2.12; hold one so swap_tensors would refuse, as in a render.
+    held = weakref.ref(lin.weight)
     assert weakref.getweakrefs(lin.weight)
     host = two.TwoTensor(w + 1, w + 2)
     monkeypatch.setattr(type(host), "is_pinned", lambda self: True, raising = False)
@@ -725,4 +727,8 @@ def test_streamed_onload_of_a_compiled_wrapper_weight_does_not_swap(monkeypatch)
     pf._issue(group)
     assert lin.weight is param
     assert torch.equal(param.a, w + 1) and torch.equal(param.b, w + 2)
+    assert held() is param
+    with torch.no_grad():
+        got = compiled(x)
+    assert torch.equal(got, torch.nn.functional.linear(x, two.TwoTensor(w + 1, w + 2), lin.bias))
     torch._dynamo.reset()

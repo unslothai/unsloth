@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Axis value syntax of AUTOMATIC1111's X/Y/Z plot (scripts/xyz_grid.py, process_axis):
- *  - a comma (or newline) separated list, CSV quoting allowed: `euler, "a, b", dpmpp_2m`
- *  - an integer or decimal range `1-5`, with a step `1-9 (+2)` or `10-1 (-3)`
- *  - a range with a count `1-10 [4]`, evenly spaced (numpy.linspace), truncated for integer axes
- *  Two deliberate differences: a descending range keeps its end (`5-1 (-1)` is 5..1, A1111 stops at 3), and a
- *  decimal step may omit its sign (`0-1 (0.25)`). */
+/**
+ * A1111 X/Y/Z axis syntax: comma or newline lists with CSV quoting, ranges like 1-5, steps like 1-9
+ * (+2), counts like 1-10 [4] (evenly spaced, truncated for ints); a descending range keeps its end
+ * (5-1 (-1) is 5..1, A1111 stops at 3) and a decimal step may omit its sign.
+ */
 
 export type AxisValueType = "int" | "float" | "str";
 

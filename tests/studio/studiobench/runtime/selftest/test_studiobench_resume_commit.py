@@ -182,8 +182,7 @@ def test_a_resume_after_the_treatment_moved_is_refused(studio):
 
 
 def test_the_same_commit_still_resumes(studio):
-    """The control that matters: a resume of the build the payload was recorded on is the whole
-    point of `--resume` and must still skip its cells and exit 0."""
+    """Resuming the same build must still skip its cells and exit 0 with --resume."""
 
     assert sb.run(_args(studio, "--branch", "main")) == 0
     assert sb.run(_args(studio, "--branch", "main", "--resume")) == 0
@@ -207,8 +206,7 @@ def test_a_payload_recorded_before_commits_were_written_still_resumes(studio):
 
 
 def test_an_attached_resume_is_not_refused_for_having_no_commit(studio):
-    """The other control: attaching cannot start failing against its own payload just because
-    this run has no commit to offer either."""
+    """An attached resume is not refused for having no commit to offer; it still returns 0."""
 
     assert sb.run(_args(studio, "--attach", "http://127.0.0.1:5310")) == 0
     assert sb.run(_args(studio, "--attach", "http://127.0.0.1:5310", "--resume")) == 0

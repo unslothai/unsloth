@@ -115,7 +115,8 @@ def fill_fsdp2_mixed_precision(accelerator):
         return policy
     if (
         policy.param_dtype != compute
-        # torch 2.6 stores reduce_dtype None when it equals param_dtype; both reduce in compute.
+        # torch 2.6 stores reduce_dtype None when it equals param_dtype. None reduces in param_dtype up to
+        # torch 2.14 and in the parameter's own dtype from 2.15; both get the explicit float32 below.
         or policy.reduce_dtype not in (None, compute)
         or getattr(policy, "output_dtype", None) not in (None, compute)
     ):
@@ -267,6 +268,23 @@ def _decoder_blocks(model):
     return [m for m in model.modules() if any(c.__name__ in names for c in type(m).__mro__)]
 
 
+def _block_units(model, parents, FSDPModule):
+    """Each decoder block's FSDP unit: the block itself, or the activation checkpoint wrapper around it
+    (accelerate >= 1.16 shards the wrapper, so the block inside is no FSDPModule)."""
+    units = []
+    for block in _decoder_blocks(model):
+        if isinstance(block, FSDPModule):
+            units.append(block)
+            continue
+        parent = parents.get(id(block))
+        if (
+            isinstance(parent, FSDPModule)
+            and getattr(parent, "_checkpoint_wrapped_module", None) is block
+        ):
+            units.append(parent)
+    return units
+
+
 def _all_ranks_agree(value, device):
     """True only when every rank says True, so every rank takes the same branch."""
     try:
@@ -391,7 +409,7 @@ def after_fsdp2_wrap(accelerator, model):
         return
     model._unsloth_fsdp2_prepared = True
     parents = _parents(model)
-    blocks = [b for b in _decoder_blocks(model) if isinstance(b, FSDPModule)]
+    blocks = _block_units(model, parents, FSDPModule)
     plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
     if (
         blocks
@@ -432,8 +450,7 @@ def install_fsdp2_prepare_hook():
     def fsdp2_prepare_model(accelerator, model, *args, **kwargs):
         from .fsdp2_qlora import fsdp2_qlora_wrap
 
-        # The 4-bit fallback to uint8 storage first: float-packed weights would count as frozen
-        # 16-bit weights in the dtype unification.
+        # uint8 storage first: float-packed 4-bit weights would count as frozen 16-bit weights.
         with fsdp2_qlora_wrap(model, original) as qlora:
             fill_fsdp2_mixed_precision(accelerator)
             unify_trainable_dtypes(accelerator, model)
@@ -601,8 +618,12 @@ def install_fsdp2_peft_full_state_dict():
     ):
         if _full_peft(model, adapter_only, sd_options):
             from torch.distributed.checkpoint.state_dict import get_model_state_dict
+
+            from .fsdp2_native import frozen_tables_hidden
+
             options = dataclasses.replace(sd_options, ignore_frozen_params = True)
-            return get_model_state_dict(model, options = options)
+            with frozen_tables_hidden(model):  # a frozen lookup table is no adapter weight
+                return get_model_state_dict(model, options = options)
         return original_get(model, adapter_only = adapter_only, sd_options = sd_options)
 
     @functools.wraps(original_set)

@@ -200,3 +200,103 @@ def test_delete_cost_does_not_scale_with_chunks_times_corpus(rag_conn):
         conn.execute("SELECT count(*) FROM chunks_vec WHERE chunk_id LIKE 'large:%'").fetchone()[0]
         == 0
     )
+
+
+def _scope_fixture(conn, rng):
+    conn.execute(
+        "INSERT INTO linked_folders(id, scope_type, scope_id, scope, path, name, delete_remove_index, "
+        "status, created_at, updated_at) VALUES('F1','kb','keep','kb:keep','/tmp/x','x',1,'idle',?,?)",
+        ("2026-01-01T00:00:00", "2026-01-01T00:00:00"),
+    )
+    for d in range(12):
+        _add(conn, rng, "kb:gone", f"gone{d}", [f"alpha gone {d} {i}" for i in range(d % 4 * 3)])
+        _add(conn, rng, "kb:keep", f"keep{d}", [f"alpha keep {d} {i}" for i in range(3)])
+        _add(
+            conn, rng, "kb:keep", f"linked{d}", [f"alpha linked {d} {i}" for i in range(d % 3 + 1)]
+        )
+        conn.execute(
+            "INSERT INTO linked_folder_files(folder_id, relative_path, size_bytes, mtime_ns, "
+            "document_id, synced_at) VALUES('F1', ?, 1, 1, ?, '2026-01-01T00:00:00')",
+            (f"r{d}.txt", f"linked{d}"),
+        )
+    conn.execute(
+        "INSERT INTO linked_folder_retired_scopes(scope, retired_at) "
+        "VALUES('kb:gone', '2026-01-01T00:00:00')"
+    )
+    conn.commit()
+
+
+def _full_dump(conn):
+    return _dump(conn) + [
+        [tuple(r) for r in conn.execute(sql)]
+        for sql in (
+            "SELECT * FROM rag_vec_epoch ORDER BY scope",
+            "SELECT * FROM linked_folder_files ORDER BY folder_id, relative_path",
+            "SELECT id FROM linked_folders ORDER BY id",
+        )
+    ]
+
+
+@pytest.mark.parametrize("op", ["scope", "folder"])
+def test_retired_scope_and_folder_deletes_scan_indexes_once(rag_conn, monkeypatch, op):
+    from core.rag import folder_sync
+
+    conn = rag_conn
+    _scope_fixture(conn, random.Random(3))
+    reference = _copy(conn)
+    statements = []
+    real_connection = rag_db.get_connection
+
+    def traced_connection():
+        traced = real_connection()
+        traced.set_trace_callback(statements.append)
+        return traced
+
+    monkeypatch.setattr(folder_sync.rag_db, "get_connection", traced_connection)
+    try:
+        if op == "scope":
+            assert folder_sync.delete_retired_scope("kb:gone") is True
+            gone = [
+                r[0] for r in reference.execute("SELECT id FROM documents WHERE scope='kb:gone'")
+            ]
+        else:
+            assert folder_sync._delete_retired_folder("F1") is True
+            gone = [r[0] for r in reference.execute("SELECT document_id FROM linked_folder_files")]
+        assert len(gone) == 12
+        if op == "folder":
+            reference.execute("DELETE FROM linked_folder_files WHERE folder_id='F1'")
+            reference.execute("DELETE FROM linked_folders WHERE id='F1'")
+        for doc_id in gone:
+            store.delete_document(reference, doc_id, commit = False)
+        reference.commit()
+
+        conn.rollback()
+        assert _full_dump(conn) == _full_dump(reference)
+        for table in ("chunks_fts", "chunks_vec"):
+            scans = [s for s in statements if s.startswith(f"DELETE FROM {table} ")]
+            assert len(scans) == 1, (table, scans)
+        conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('integrity-check')")
+        assert store.search_lexical(conn, "kb:keep", "alpha", 50) == store.search_lexical(
+            reference, "kb:keep", "alpha", 50
+        )
+        assert store.search_lexical(conn, "kb:gone", "alpha", 50) == []
+    finally:
+        reference.close()
+
+
+def test_delete_documents_batches_past_the_variable_limit(rag_conn, monkeypatch):
+    conn = rag_conn
+    rng = random.Random(4)
+    for d in range(7):
+        _add(conn, rng, "kb:a", f"b{d}", [f"alpha {d} {i}" for i in range(d % 3)])
+    _add(conn, rng, "kb:a", "stay", ["alpha stay"])
+    reference = _copy(conn)
+    try:
+        monkeypatch.setattr(rag_db, "_DOC_ID_BATCH", 2)
+        ids = [f"b{d}" for d in range(7)] + ["b0", "missing"]
+        store.delete_documents(conn, ids)
+        for doc_id in ids:
+            store.delete_document(reference, doc_id)
+        assert _full_dump(conn) == _full_dump(reference)
+    finally:
+        reference.close()

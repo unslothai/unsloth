@@ -10,6 +10,7 @@ import json
 import os
 import re
 import struct
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -17,7 +18,10 @@ from typing import Any, Callable, Optional
 import numpy as np
 
 CONVERTER_VERSION = "1"
-MFLUX_VERSION = "0.22.0"
+# mflux 0.24 requires Python 3.11.
+MFLUX_VERSION = "0.24.0" if sys.version_info >= (3, 11) else "0.22.0"
+# Both share the Z-Image weight layout, so a converted GGUF serves either.
+MFLUX_COMPATIBLE_VERSIONS = frozenset({"0.22.0", "0.24.0"})
 GROUP_SIZE = 32
 OUTPUT_FILENAME = "0.safetensors"
 MARKER_FILENAME = "unsloth_mlx_convert.json"
@@ -67,7 +71,6 @@ _BLOCK_BITS = {
     "Q6_K": 8,
 }
 _QK_K = 256
-_DENSE_TYPES = frozenset({"BF16", "F16", "F32"})
 _PAD_TOKENS = ("cap_pad_token", "x_pad_token")
 _QKV_PARTS = ("to_q", "to_k", "to_v")
 

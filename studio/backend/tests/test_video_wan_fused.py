@@ -531,9 +531,8 @@ def test_attention_processor_matches_the_fingerprint():
 
 
 def test_regional_compile_traces_the_stock_block_without_recompiles(monkeypatch):
-    """Under torch.compile the installed forward must trace the stock block and leave the module counters alone:
-    dynamo guards on the globals a traced frame reads, so a bumped counter recompiles the block on every call (it hit
-    the recompile limit and dropped the Wan regional compile to eager)."""
+    """Under torch.compile the installed forward must trace the stock block and leave module
+    counters alone; a bumped counter makes dynamo recompile every call."""
     import torch._dynamo as dynamo
 
     _fake_kernels(monkeypatch)

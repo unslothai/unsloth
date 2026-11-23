@@ -107,8 +107,7 @@ def test_a_deleted_patch_target_is_not_written_off_as_environmental():
 
 
 def test_no_guarded_function_is_driven_by_a_sentinel():
-    """Every guarded function has to be actually called, or its golden digest pins
-    nothing and an arbitrary rewrite of it passes."""
+    """Each guarded function must be really called, or its golden digest pins nothing."""
     # The whole corpus: some functions only vary once rarer serializations appear.
     corpus = refactor_guard.build_corpus()
     undrivable = sorted(

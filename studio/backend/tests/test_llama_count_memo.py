@@ -89,6 +89,19 @@ def test_anything_the_render_sees_misses(monkeypatch, change):
     assert paths.count("/tokenize") == before + 1
 
 
+def test_a_new_day_renders_again(monkeypatch):
+    from core.inference import llama_cpp
+
+    backend, paths = _setup(monkeypatch)
+    day = ["2026-03-31"]
+    monkeypatch.setattr(llama_cpp.time, "strftime", lambda fmt, *a: day[0])
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True)
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True)
+    day[0] = "2026-04-01"
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True)
+    assert paths == ["/apply-template", "/tokenize"] * 2
+
+
 def test_a_failed_render_is_not_remembered(monkeypatch):
     backend, paths = _setup(monkeypatch, status = 503)
     with pytest.raises(RuntimeError):
@@ -105,6 +118,20 @@ def test_admission_counts_are_not_memoised(monkeypatch):
     for _ in range(2):
         backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, prefer_native = True)
     assert paths.count("/v1/chat/completions/input_tokens") == 2
+
+
+def test_a_caller_wanting_the_prompt_gets_a_render(monkeypatch):
+    # /context's breakdown follows the header ring's identical plain count and shows the prompt it priced.
+    backend, paths = _setup(monkeypatch)
+    count = backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True)
+    for _ in range(2):
+        seen = []
+        assert (
+            backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, on_prompt = seen.append)
+            == count
+        )
+        assert len(seen) == 1 and "hello" in seen[0]
+    assert paths.count("/apply-template") == 3
 
 
 def test_memo_stays_bounded(monkeypatch):

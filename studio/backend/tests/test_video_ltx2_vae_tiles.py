@@ -140,8 +140,13 @@ def test_temb_and_causal_reach_every_tile(free):
             "[enforce fail at alloc_cpu.cpp:117] data. DefaultCPUAllocator: not enough memory: "
             "you tried to allocate 123 bytes."
         ),
+        # Linux / macOS: posix_memalign's ENOMEM
+        lambda: RuntimeError(
+            "[enforce fail at alloc_cpu.cpp:127] err == 0. DefaultCPUAllocator: can't allocate memory: "
+            "you tried to allocate 123 bytes. Error code 12 (Cannot allocate memory)"
+        ),
     ],
-    ids = ["cuda", "cpu_allocator"],
+    ids = ["cuda", "cpu_allocator", "posix_allocator"],
 )
 def test_oom_retries_in_stock_size_tiles(free, monkeypatch, error):
     vae = _ltx_vae()

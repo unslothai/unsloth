@@ -57,11 +57,9 @@ def _gather_seq(
     group,
     dim = 1,
 ):
-    """All-gather sequence shards along ``dim``; backward reduce-scatters the summed gradient.
-
-    torch.distributed.nn.all_gather's gloo backward scatters from group ranks as if they were global
-    ranks, so it fails on every CP group but the first under DP x CP.
-    """
+    """All-gather sequence shards along dim; backward reduce-scatters the summed gradient, since
+    torch.distributed.nn.all_gather's gloo backward treats group ranks as global, failing on
+    every CP group but the first under DP x CP."""
     from ..context_parallel import _GatherSequence
 
     out = _GatherSequence.apply(
@@ -77,11 +75,9 @@ def _attn_chunk() -> int:
 def _sink_attention_chunk(
     q, kv, block_bias, sinks, q_start, full_seq, window, scaling, dropout_p, training
 ):
-    """Sink-softmax attention for the query rows ``[q_start, q_start + q.shape[2])``.
-
-    q: [B, H, rows, D]; kv: [B, 1, full_seq + n_blocks, D] (K == V); block_bias: [B, 1, rows, n_blocks].
-    Returns [B, rows, H, D].
-    """
+    """Sink-softmax attention for query rows [q_start, q_start + q.shape[2]): q [B, H, rows, D], kv
+    [B, 1, full_seq + n_blocks, D] (K == V), block_bias [B, 1, rows, n_blocks]; returns [B, rows,
+    H, D]."""
     batch, _, rows, _ = q.shape
     dtype = q.dtype
     q_idx = torch.arange(q_start, q_start + rows, device = q.device)
@@ -116,11 +112,9 @@ def _refuse_dropout(dropout_p, training):
 
 
 def _recompute_rows(chunk, full_seq, run, grad_out, row_inputs, full_inputs, needs):
-    """Backward of a query-chunked op: recompute each chunk and accumulate its input gradients.
-
-    run(start, end, *rows, *full) -> [B, rows, H, D]; row_inputs are sliced on dim 2, full_inputs are
-    not; needs is ctx.needs_input_grad for row_inputs + full_inputs, in that order.
-    """
+    """Backward of a query-chunked op: recomputes each chunk and accumulates input grads; run(start,
+    end, *rows, *full) -> [B, rows, H, D]; row_inputs sliced on dim 2, full_inputs not; needs is
+    ctx.needs_input_grad for row_inputs + full_inputs."""
     row_need, full_need = needs[: len(row_inputs)], needs[len(row_inputs) :]
     row_grads = [torch.zeros_like(t) if n else None for t, n in zip(row_inputs, row_need)]
     full_grads = [
@@ -204,11 +198,9 @@ class _ChunkedSinkAttention(torch.autograd.Function):
 
 
 def _sink_attention(q, kv, block_bias, sinks, window, scaling, dropout_p, training):
-    """Query-chunked sink attention so the score matrix is [H/cp, chunk, S] rather than [H/cp, S, S].
-
-    With grad, chunks are recomputed in backward (_ChunkedSinkAttention), so peak memory is
-    O(chunk * S) per layer.
-    """
+    """Query-chunked sink attention so the score matrix is [H/cp, chunk, S] rather than [H/cp, S,
+    S]; with grad, chunks are recomputed in backward (_ChunkedSinkAttention), keeping peak memory
+    O(chunk * S) per layer."""
     _refuse_dropout(dropout_p, training)
     full_seq = q.shape[2]
     chunk = _attn_chunk()
@@ -270,8 +262,7 @@ def ulysses_deepseek_v4_forward(
 
     # Scatter query heads across cp ranks and gather full sequence [B, H/cp, S_full, D].
     q = _AllToAll.apply(q, 1, 2, group)
-    # Gather single-head KV across sequence [B, 1, S_full, D]; backward sums the gradients
-    # of all head-partitioned ranks back to each rank's token shard.
+    # Gather single-head KV [B, 1, S_full, D]; backward sums head-rank grads per token shard.
     kv = _gather_seq(kv, group, dim = 2)
 
     local_heads = q.shape[1]
@@ -517,9 +508,8 @@ def wrap_deepseek_attention_forward(module, get_cp_manager) -> None:
             raise NotImplementedError(
                 f"Unsloth: Ulysses context parallelism does not support packing for {name}."
             )
-        # Looked up per call (tests substitute it). Eager even inside Unsloth's per-layer compiled
-        # region: traced, the list all_gather / sequence gather / no_grad indexer top-k crashed the
-        # first CP step (SIGSEGV on L4, torch 2.8 and 2.14).
+        # Looked up per call (tests substitute it); eager even in the compiled region: traced
+        # all_gather, sequence gather or indexer top-k crashed CP (SIGSEGV on L4, torch 2.8, 2.14).
         ulysses_forward = ulysses_deepseek_v4_forward if v4 else ulysses_deepseek_v32_forward
         return _run_eager(ulysses_forward, module, *args, group = manager.group, **kwargs)
 

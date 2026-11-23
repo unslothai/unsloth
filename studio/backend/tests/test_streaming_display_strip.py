@@ -36,6 +36,7 @@ _TRANSCRIPTS = [
     + '<minimax:tool_call>\n<invoke name="python">\n<parameter name="code">print(6)</parameter>\n</invoke>\n'
     + "</minimax:tool_call>"
     + _PROSE,
+    _PROSE + "<|tool_call_start|>[python(code='print(7)')]<|tool_call_end|>" + _PROSE,
 ]
 
 

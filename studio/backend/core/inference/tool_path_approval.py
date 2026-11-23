@@ -10,6 +10,7 @@ import os
 import re
 import shlex
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -141,8 +142,7 @@ _USER_STORAGE_MOUNTS = tuple(
 )
 
 
-# Pseudo-devices a command legitimately writes to (`2> /dev/null`); the rest of /dev is read-silent but not
-# write-silent.
+# Pseudo-devices commands write to (`2> /dev/null`); the rest of /dev is read-silent only.
 _WRITE_SILENT_DEVICE_NODES = (
     "/dev/null",
     "/dev/zero",
@@ -213,9 +213,7 @@ def _excluding_ancestors_of_studio_home(roots) -> "tuple[str, ...]":
 
 
 def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
-    """(read-silent, write-silent) roots. Write-silent is the narrower set: where tool output
-    ordinarily lands. Read-silent adds installed software and the model libraries the user pointed
-    Studio at, which a tool reads all the time and which carry no user documents."""
+    """Write-silent roots are where tool output lands; read-silent adds software and model libraries."""
     from utils.paths.storage_roots import (
         cache_root,
         project_workspaces_root,
@@ -258,6 +256,8 @@ def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
                 # Model folders and LM Studio/Ollama dirs hold weights, not documents; reading them is the point.
                 _scan_folder_roots,
                 well_known_model_dirs,
+                # Read and run only: a write there still asks, so a call cannot plant code it then runs silently.
+                _trusted_tool_folder_roots,
             )
         )
     )
@@ -333,6 +333,24 @@ def _scan_folder_roots() -> "tuple[str, ...]":
     return tuple(str(row.get("path") or "") for row in list_scan_folders())
 
 
+def _trusted_tool_folder_roots() -> "tuple[str, ...]":
+    """Skipped without studio.db for the same reason as the scan folders."""
+    if not _studio_db_exists():
+        return ()
+    from . import os_sandbox
+
+    _trusted_roots_built.roots = os_sandbox.trusted_tool_folder_roots()
+    return _trusted_roots_built.roots
+
+
+# Trusted roots of the allowlist this thread builds (a swap for a link must not wait out the TTL); per thread so a concurrent build cannot overwrite it.
+_trusted_roots_built = threading.local()
+
+
+def _trusted_roots_moved(roots) -> bool:
+    return any(os.path.realpath(root) != root for root in roots)
+
+
 # Env vars that relocate a root are part of the cache key so a repoint takes effect at once.
 _SILENT_ROOT_ENV_KEYS = (
     "UNSLOTH_STUDIO_HOME",
@@ -354,27 +372,36 @@ def _silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
     global _silent_roots_cache
     try:
         account = current_account_id() or ""
+        from utils.account_context import via_api_key_context
+
+        # Trusted tool folders apply to the owner's chats, not to an API key bound to the owner.
+        api_key = via_api_key_context()
     except Exception:  # noqa: BLE001
-        account = ""
+        account, api_key = "", True
     # The db mtime too: scan folders and the cache root live in it.
-    identity = (account, tuple(os.environ.get(k) for k in _SILENT_ROOT_ENV_KEYS))
+    identity = (account, api_key, tuple(os.environ.get(k) for k in _SILENT_ROOT_ENV_KEYS))
     account = identity + (_studio_db_revision(identity),)
     now = time.monotonic()
     cached = _silent_roots_cache
-    if cached is not None and cached[1] == account and now - cached[0] < _SILENT_ROOT_TTL_S:
+    if (
+        cached is not None
+        and cached[1] == account
+        and now - cached[0] < _SILENT_ROOT_TTL_S
+        and not _trusted_roots_moved(cached[4])
+    ):
         return cached[2], cached[3]
+    _trusted_roots_built.roots = ()
     try:
         read_roots, write_roots = _build_silent_roots()
     except Exception:  # noqa: BLE001 - no allowlist is the fail-closed direction (more prompts)
         read_roots, write_roots = (), ()
-    _silent_roots_cache = (now, account, read_roots, write_roots)
+    _silent_roots_cache = (now, account, read_roots, write_roots, _trusted_roots_built.roots)
     return read_roots, write_roots
 
 
 def _looks_absolute(text: str) -> bool:
-    """True for a path that reaches the real filesystem rather than the session workdir: POSIX
-    absolute, `~`-rooted, a Windows drive path, or a UNC share. Windows spellings count on every
-    platform, since misjudging one only costs a prompt."""
+    """True for a path reaching the real filesystem: POSIX absolute, tilde-rooted, Windows drive or
+    UNC share; Windows spellings count on every platform, as a misjudgment only costs a prompt"""
     if not text:
         return False
     if text[0] == "/":
@@ -422,9 +449,8 @@ def _uncovered_runtime_subtree(path: str, roots) -> bool:
 
 
 def _follows_its_own_root_link(candidate: str, resolved: str, roots) -> bool:
-    """*candidate* sits under a root that is itself a link INTO a runtime subtree (`/dev/stdout` ->
-    `/dev/fd/1`), and *resolved* stays inside that link's target. A root linking to a broad directory
-    (`/var/run` -> `/run`) exempts nothing, or it would cover every runtime subtree under it."""
+    """A root linking INTO a runtime subtree exempts only candidates under it that resolve inside
+    that target; a broad root (/var/run -> /run) exempts nothing"""
     for root in roots:
         if not _contained_in(candidate, (root,)):
             continue
@@ -760,8 +786,7 @@ _TEST_FILE_BINARY_OPS = frozenset({"-nt", "-ot", "-ef"})
 
 
 def _test_command_operands(args) -> "list[str]":
-    """The tokens `test`/`[` actually stat: the operand of a unary file test and both sides of
-    `-nt`/`-ot`/`-ef`."""
+    """Operands `test`/`[` stat: a unary file test's operand and both sides of -nt/-ot/-ef."""
     paths: "list[str]" = []
     for index, arg in enumerate(args):
         if arg in _TEST_FILE_UNARY_FLAGS:
@@ -1224,11 +1249,8 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     and a flag value that is not a path (``head -n 5``) cannot look absolute. Redirection targets
     are included whichever command owns them, since ``> /abs/file`` truncates that file regardless.
     """
-    # Every operand this can report is absolute in some spelling, and each of those spellings needs
-    # one of these characters: a POSIX root or tilde, a UNC or Windows separator, or the colon of a
-    # drive letter. A redirection keeps its target in the same token (`>/abs/x`), so the character
-    # is present there too. No such character anywhere means no operand, and the segment machinery
-    # can be skipped outright -- which is the case for almost every ordinary command.
+    # Absolute operands need a root, tilde, backslash or drive colon; with none, skip the segment
+    # scan.
     if not any(_PATH_HINT_RE.search(t) for t in tokens):
         return []
     # shlex does not split on < and >, so `echo X>/media/x` is one token.
@@ -2541,8 +2563,7 @@ _REBOUND_PATHS_KEY = "\x00__rebound__"
 _MAX_REBOUND_ALTERNATES = 8
 
 
-# Rebound names substituted into one compound expression, bounding the work on a snippet that
-# assembles a path from many variables each bound several times.
+# Caps how many rebound names are substituted into one expression, bounding the work.
 _MAX_REBOUND_NAMES = 3
 
 

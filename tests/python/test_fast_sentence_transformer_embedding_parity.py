@@ -11,9 +11,8 @@ import pytest
 
 
 def test_transformer_load_signature_supports_unsloth_kwargs():
-    """Forwards-compat tripwire: a Hub-capable Transformer.load must accept the kwargs
-    the #6881 fix passes. Legacy ST 3.x/4.x expose load(input_path); the code falls back
-    to Transformer(...) there, so mirror that gate and skip."""
+    """Tripwire: a Hub-capable Transformer.load must accept the kwargs the issue 6881 fix passes;
+    legacy ST 3.x/4.x load(input_path) falls back to Transformer(...), so the test skips there."""
     models = pytest.importorskip("sentence_transformers.models")
     load = getattr(models.Transformer, "load", None)
     assert callable(load), (

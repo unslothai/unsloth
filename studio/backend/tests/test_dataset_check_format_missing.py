@@ -75,8 +75,7 @@ def test_missing_upload_reports_404(no_hub):
     ],
 )
 def test_every_spelling_of_a_missing_upload_reports_404(spelling, no_hub):
-    """resolve_dataset_path strips before testing absoluteness, so a guard on the
-    raw string disagrees here and ships the local path to the Hub as a repo id."""
+    """resolve_dataset_path strips first, so a raw-string guard ships a local path to the Hub."""
     from utils.paths import dataset_uploads_root
 
     missing = dataset_uploads_root() / "deleted-upload-test-fixture.jsonl"
@@ -124,8 +123,7 @@ def test_hub_repo_id_never_reports_a_deleted_file(no_hub):
     ],
 )
 def test_rejected_paths_are_client_errors(dataset_name, expected, isolated_studio_home, no_hub):
-    """A path resolve_dataset_path refuses is the caller's mistake, not a server
-    fault, and must never reach the Hub. Matches the hub check-format twin."""
+    """Paths resolve_dataset_path refuses are client errors and must never reach the Hub."""
     from utils.paths import dataset_uploads_root
 
     # Anchor on the studio home: a hardcoded "/etc/x" is relative on Windows and misses the branch.

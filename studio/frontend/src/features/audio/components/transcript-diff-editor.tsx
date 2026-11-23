@@ -40,7 +40,7 @@ export function TranscriptDiffEditor({
   const diffId = `${id}-diff`;
 
   return (
-    <div className="grid gap-1.5" data-tour={dataTour}>
+    <div className="grid gap-2" data-tour={dataTour}>
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <FieldLabel
           htmlFor={id}
@@ -74,6 +74,7 @@ export function TranscriptDiffEditor({
         disabled={disabled}
         aria-describedby={`${hintId} ${diffId}`}
         onChange={(event) => onChange(event.target.value)}
+        placeholder={disabled && !transcript.trim() ? EDIT_COPY.changesPlaceholder : undefined}
         className="min-h-16"
       />
       {segments && changes ? (
@@ -109,7 +110,7 @@ export function TranscriptDiffEditor({
       )}
       <p
         id={hintId}
-        className="min-w-0 text-ui-11p5 leading-snug text-muted-foreground"
+        className="min-w-0 text-ui-12 leading-normal text-muted-foreground"
       >
         {changes === null
           ? `Diff shown for up to ${EDIT_DIFF_MAX_WORDS} words.`

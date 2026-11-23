@@ -274,9 +274,8 @@ def test_dpo_trains_on_cpu(tmp_path):
 
     from trl.trainer import dpo_trainer
 
-    # TRL 1.15 scores DPO through its fused LM head, a Triton kernel with no CPU path, so
-    # plain TRL cannot train DPO on a CPU either. Only skip when that is what the installed
-    # TRL does, so an older TRL still has to train here.
+    # TRL 1.15 scores DPO through a fused LM head (a Triton kernel with no CPU path); skip only when
+    # the installed TRL does this, so older TRL still trains here.
     if "fused_lm_head=True" in inspect.getsource(dpo_trainer):
         pytest.skip("this TRL computes DPO log-probs with a Triton GPU kernel only")
     model, tok = _load_plain()
@@ -488,3 +487,190 @@ def test_sft_applies_trl_router_aux_loss_coef(tmp_path):
     assert (
         abs(applied - 0.05) < 1e-4
     ), f"applied aux coefficient {applied}, expected SFTConfig's 0.05"
+
+
+@pytest.mark.parametrize(
+    "repo",
+    [
+        "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink",
+        "trl-internal-testing/tiny-Gemma3ForConditionalGeneration",
+    ],
+)
+def test_gkd_trains_text_only_with_a_multimodal_processor(tmp_path, repo):
+    """Multimodal checkpoints (Qwen3.5 / 3.6, Gemma 3) load with a processor; GKD is text only and takes its tokenizer."""
+    from datasets import Dataset
+    from transformers import AutoModelForCausalLM, AutoProcessor
+
+    try:
+        from trl.experimental.gkd import GKDConfig, GKDTrainer
+    except ImportError:
+        from trl import GKDConfig, GKDTrainer
+    assert GKDTrainer.__name__ == "UnslothGKDTrainer", "GKD patch did not apply"
+    try:
+        processor = AutoProcessor.from_pretrained(repo)
+        torch.manual_seed(0)
+        model = AutoModelForCausalLM.from_pretrained(repo).to(torch.float32)
+        teacher = AutoModelForCausalLM.from_pretrained(repo).to(torch.float32)
+    except (OSError, ValueError, KeyError) as e:
+        pytest.skip(f"{repo} not loadable here: {str(e)[:150]}")
+    assert not hasattr(processor, "pad_token_id")
+    model.for_training = lambda *a, **k: model.train()
+    messages = [
+        [
+            {"role": "user", "content": "Hi there"},
+            {"role": "assistant", "content": "Hello friend."},
+        ],
+        [{"role": "user", "content": "2 + 2?"}, {"role": "assistant", "content": "It is 4."}],
+    ]
+    ds = Dataset.from_list([{"messages": m} for m in messages])
+    cfg = GKDConfig(
+        output_dir = str(tmp_path / "ci_gkd"),
+        per_device_train_batch_size = 2,
+        max_steps = 1,
+        max_length = 64,
+        lmbda = 0.0,
+        report_to = "none",
+        save_strategy = "no",
+        use_cpu = True,
+        fp16 = False,
+        bf16 = False,
+        optim = "adamw_torch",
+    )
+    trainer = GKDTrainer(
+        model = model, teacher_model = teacher, args = cfg, train_dataset = ds, processing_class = processor
+    )
+    assert trainer.processing_class is processor.tokenizer
+    assert trainer.generation_config.pad_token_id == processor.tokenizer.pad_token_id
+    assert torch.isfinite(torch.tensor(trainer.train().training_loss))
+
+
+def test_sft_eval_reaches_the_unsloth_prediction_step(tmp_path):
+    """TRL >= 1.15 SFTTrainer.prediction_step skips super(), so eval bypassed Unsloth's prediction_step."""
+    from datasets import Dataset
+    from trl import SFTConfig, SFTTrainer
+
+    from unsloth.models._utils import EMPTY_LOGITS
+    from unsloth.models.rl import _sft_prediction_step_skips_unsloth
+
+    # Fails on the next TRL that shadows Trainer.prediction_step in a way the source edit misses.
+    assert _sft_prediction_step_skips_unsloth(SFTTrainer) is None
+    model, tok = _load_plain()
+
+    # Unsloth's fused CE: labels without UNSLOTH_RETURN_LOGITS=1 give EMPTY_LOGITS. zoo's requires_grad_post_hook
+    # also marks output.loss when it lands on the module that returns it (trl#8246).
+    def fused_ce(module, args, kwargs, output):
+        if kwargs.get("labels") is not None and os.environ.get("UNSLOTH_RETURN_LOGITS", "0") != "1":
+            output.logits = EMPTY_LOGITS
+        if getattr(output, "loss", None) is not None:
+            output.loss.requires_grad_(True)
+        return output
+
+    model.register_forward_hook(fused_ce, with_kwargs = True)
+    ds = Dataset.from_list([{"text": "The quick brown fox jumps over the lazy dog."}] * 4)
+    cfg = SFTConfig(
+        output_dir = str(tmp_path / "ci_sft_eval"),
+        per_device_eval_batch_size = 2,
+        report_to = "none",
+        use_cpu = True,
+        max_length = None,
+        padding_free = False,
+        dataset_text_field = "text",
+        fp16 = False,
+        bf16 = False,
+    )
+
+    def make(compute_metrics = None):
+        return SFTTrainer(
+            model = model,
+            processing_class = tok,
+            args = cfg,
+            train_dataset = ds,
+            eval_dataset = ds,
+            compute_metrics = compute_metrics,
+        )
+
+    metrics = make(lambda p: {"vocab": p.predictions.shape[-1]}).evaluate()
+    assert metrics["eval_vocab"] == model.config.vocab_size
+    trainer = make()
+    assert trainer.predict(trainer.eval_dataset).predictions.shape[0] == 4
+    assert "eval_loss" in make().evaluate()
+
+
+def test_sft_predict_returns_only_the_logits_of_an_moe_output(tmp_path):
+    """TRL >= 1.15 returned outputs.logits alone; Unsloth's step must not add aux_loss / router_logits."""
+    import trl
+    from datasets import Dataset
+    from packaging.version import Version
+    from transformers.modeling_outputs import MoeCausalLMOutputWithPast
+    from trl import SFTConfig, SFTTrainer
+
+    if Version(trl.__version__).release < (1, 15):
+        pytest.skip(
+            "before TRL 1.15 SFTTrainer used Trainer.prediction_step, which keeps every field"
+        )
+    model, tok = _load_plain()
+
+    # An MoE-shaped output: loss, aux_loss, logits, router_logits, all non-ignored fields.
+    def moe_output(module, args, kwargs, output):
+        logits = output.logits
+        return MoeCausalLMOutputWithPast(
+            loss = output.loss,
+            aux_loss = torch.tensor(0.5),
+            logits = logits,
+            router_logits = (torch.zeros(logits.shape[0] * logits.shape[1], 4),),
+        )
+
+    model.register_forward_hook(moe_output, with_kwargs = True)
+    ds = Dataset.from_list([{"text": "The quick brown fox jumps over the lazy dog."}] * 4)
+    cfg = SFTConfig(
+        output_dir = str(tmp_path / "ci_sft_moe_predict"),
+        per_device_eval_batch_size = 2,
+        report_to = "none",
+        use_cpu = True,
+        max_length = None,
+        padding_free = False,
+        dataset_text_field = "text",
+        fp16 = False,
+        bf16 = False,
+    )
+    trainer = SFTTrainer(
+        model = model, processing_class = tok, args = cfg, train_dataset = ds, eval_dataset = ds
+    )
+    predictions = trainer.predict(trainer.eval_dataset).predictions
+    assert not isinstance(predictions, tuple), [getattr(p, "shape", p) for p in predictions]
+    assert predictions.shape[0] == 4 and predictions.shape[-1] == model.config.vocab_size
+
+
+def test_sft_eval_with_empty_label_names(tmp_path):
+    """TRL >= 1.15 evaluated a collated SFT batch whatever label_names said; label_names = [] must still work."""
+    import trl
+    from datasets import Dataset
+    from packaging.version import Version
+    from trl import SFTConfig, SFTTrainer
+
+    if Version(trl.__version__).release < (1, 15):
+        pytest.skip(
+            "before TRL 1.15 SFTTrainer used Trainer.prediction_step, which needs label_names"
+        )
+    model, tok = _load_plain()
+    ds = Dataset.from_list([{"text": "The quick brown fox jumps over the lazy dog."}] * 4)
+    cfg = SFTConfig(
+        output_dir = str(tmp_path / "ci_sft_empty_label_names"),
+        per_device_eval_batch_size = 2,
+        report_to = "none",
+        use_cpu = True,
+        max_length = None,
+        padding_free = False,
+        dataset_text_field = "text",
+        label_names = [],
+        fp16 = False,
+        bf16 = False,
+    )
+    trainer = SFTTrainer(
+        model = model, processing_class = tok, args = cfg, train_dataset = ds, eval_dataset = ds
+    )
+    assert trainer.label_names == [] and not trainer.can_return_loss
+    assert "eval_loss" in trainer.evaluate()
+    out = trainer.predict(trainer.eval_dataset)
+    assert out.predictions.shape[-1] == model.config.vocab_size
+    assert out.label_ids is not None and out.label_ids.shape[0] == 4

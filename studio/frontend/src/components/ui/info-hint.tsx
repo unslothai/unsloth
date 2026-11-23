@@ -11,9 +11,7 @@ import {
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-// index.css reveals the "i" when the row one or two levels up holds keyboard focus. That used to be
-// `ROW:has(:focus-visible) > [data-slot=info-hint]`, a style after a :has(), which WebKit re-checks
-// over the whole document on every keystroke, so the hint marks itself instead.
+// WebKit re-checks a :has() style over the whole document per keystroke, so the hint marks itself.
 const FIELD_ROW = ":is(.diffusion-surface, .hint-on-hover) *";
 
 function useNearFocus(hint: RefObject<HTMLElement | null>): void {

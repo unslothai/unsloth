@@ -186,6 +186,8 @@ interface ExportRuntimeState {
   quantIndex: number;
   stage: string | null;
   logLines: ExportLogEntry[];
+  /** Lines trimmed off the head of `logLines` this run, so `logBase + i` is a stable row key. */
+  logBase: number;
   lastSeq: number | null;
   connected: boolean;
   /** POST response lost to a tunnel timeout; settling via /api/export/status. */
@@ -201,6 +203,7 @@ interface ExportRuntimeState {
   } | null;
   error: string | null;
   cancelRequested: boolean;
+  opId: string | null;
   hasHydrated: boolean;
   backendActive: boolean;
   runId: number;
@@ -210,6 +213,7 @@ interface ExportRuntimeActions {
   runExport: (params: RunExportParams) => Promise<void>;
   requestCancel: () => Promise<void>;
   appendLog: (entry: ExportLogEntry, seq?: number) => void;
+  appendLogBatch: (items: ExportLogStreamItem[]) => void;
   appendLogs: (entries: ExportLogPollEntry[]) => void;
   setConnected: (value: boolean) => void;
   applyBackendStatus: (status: ExportStatus) => void;
@@ -217,6 +221,42 @@ interface ExportRuntimeActions {
 }
 
 export type ExportRuntimeStore = ExportRuntimeState & ExportRuntimeActions;
+
+export interface ExportLogStreamItem {
+  entry: ExportLogEntry;
+  seq?: number;
+}
+
+function applyStreamItems(
+  state: ExportRuntimeState,
+  items: readonly ExportLogStreamItem[],
+): Partial<ExportRuntimeState> | null {
+  let lastSeq = state.lastSeq;
+  let stage = state.stage;
+  const fresh: ExportLogEntry[] = [];
+  for (const { entry, seq } of items) {
+    if (typeof seq === "number" && lastSeq !== null && seq <= lastSeq) {
+      continue;
+    }
+    fresh.push(entry);
+    if (typeof seq === "number") lastSeq = seq;
+    if (entry.stream === "status") stage = entry.line;
+  }
+  if (fresh.length === 0) return null;
+  return { ...trimLogLines(state, fresh), lastSeq, stage };
+}
+
+function trimLogLines(
+  state: ExportRuntimeState,
+  fresh: ExportLogEntry[],
+): Pick<ExportRuntimeState, "logLines" | "logBase"> {
+  const merged = state.logLines.concat(fresh);
+  const drop = Math.max(0, merged.length - MAX_LOG_LINES);
+  return {
+    logLines: drop > 0 ? merged.slice(drop) : merged,
+    logBase: state.logBase + drop,
+  };
+}
 
 const initialState: ExportRuntimeState = {
   phase: "idle",
@@ -228,6 +268,7 @@ const initialState: ExportRuntimeState = {
   quantIndex: 0,
   stage: null,
   logLines: [],
+  logBase: 0,
   lastSeq: null,
   connected: false,
   reconnecting: false,
@@ -235,6 +276,7 @@ const initialState: ExportRuntimeState = {
   result: null,
   error: null,
   cancelRequested: false,
+  opId: null,
   hasHydrated: false,
   backendActive: false,
   runId: 0,
@@ -245,27 +287,12 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
 
   setConnected: (value) => set({ connected: value }),
 
+  // SSE and the poll fallback both feed logs, so dedupe by seq.
   appendLog: (entry, seq) =>
-    set((state) => {
-      // SSE and the poll fallback both feed logs, so dedupe by seq.
-      if (
-        typeof seq === "number" &&
-        state.lastSeq !== null &&
-        seq <= state.lastSeq
-      ) {
-        return state;
-      }
-      const next =
-        state.logLines.length >= MAX_LOG_LINES
-          ? state.logLines.slice(state.logLines.length - MAX_LOG_LINES + 1)
-          : state.logLines.slice();
-      next.push(entry);
-      return {
-        logLines: next,
-        lastSeq: typeof seq === "number" ? seq : state.lastSeq,
-        stage: entry.stream === "status" ? entry.line : state.stage,
-      };
-    }),
+    set((state) => applyStreamItems(state, [{ entry, seq }]) ?? state),
+
+  appendLogBatch: (items) =>
+    set((state) => applyStreamItems(state, items) ?? state),
 
   appendLogs: (entries) =>
     set((state) => {
@@ -275,20 +302,17 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           : entries.filter((e) => e.seq > (state.lastSeq as number));
       if (fresh.length === 0) return state;
 
-      const merged = state.logLines.concat(
+      const trimmed = trimLogLines(
+        state,
         fresh.map((e) => ({ stream: e.stream, line: e.line, ts: e.ts })),
       );
-      const next =
-        merged.length > MAX_LOG_LINES
-          ? merged.slice(merged.length - MAX_LOG_LINES)
-          : merged;
 
       let stage = state.stage;
       for (const e of fresh) {
         if (e.stream === "status") stage = e.line;
       }
       return {
-        logLines: next,
+        ...trimmed,
         lastSeq: fresh[fresh.length - 1].seq,
         stage,
       };
@@ -356,7 +380,8 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
     if (!get().isExporting) return;
     set({ cancelRequested: true });
     try {
-      await cancelExport();
+      // A run attached from another tab has no id of ours: stop whatever is running.
+      await cancelExport(get().ownsRun ? get().opId : null);
     } catch {
       // The in-flight POST still rejects when the worker dies, giving the canceled phase.
     }
@@ -382,6 +407,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       quantIndex: 0,
       stage: null,
       logLines: [],
+      logBase: 0,
       lastSeq: null,
       connected: false,
       reconnecting: false,
@@ -389,6 +415,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       result: null,
       error: null,
       cancelRequested: false,
+      opId: null,
     });
 
     const isCurrent = () => get().runId === runId;
@@ -396,19 +423,24 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
 
     // Survive a Cloudflare 524 by settling a recoverable failure through status polls.
     const runRecoverableOp = async (
-      post: () => Promise<ExportOperationResponse>,
+      post: (opId: string) => Promise<ExportOperationResponse>,
     ): Promise<{
       outputPath: string | null;
       details?: ExportOperationResponse["details"];
     }> => {
+      // Set before the preflight: the backend refuses an op whose id was cancelled before it began.
+      const opId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      set({ opId });
       let baseline: number | null = null;
       try {
         baseline = (await getExportStatus()).last_op_seq ?? 0;
       } catch {
         baseline = null;
       }
+      if (!isCurrent()) throw new Error("Export run superseded");
+      if (get().cancelRequested) throw new ExportCanceledError();
       try {
-        const resp = await post();
+        const resp = await post(opId);
         return {
           outputPath: resp.details?.output_path ?? null,
           details: resp.details,
@@ -430,8 +462,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           throw new Error("No checkpoint selected");
         }
         const checkpointPath = params.checkpointPath;
-        await runRecoverableOp(() =>
+        await runRecoverableOp((op_id) =>
           loadCheckpoint({
+            op_id,
             checkpoint_path: checkpointPath,
             trust_remote_code: params.trustRemoteCode,
             approved_remote_code_fingerprint:
@@ -442,8 +475,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           }),
         );
       } else {
-        await runRecoverableOp(() =>
+        await runRecoverableOp((op_id) =>
           loadCheckpoint({
+            op_id,
             checkpoint_path: params.source,
             load_in_4bit: false,
             trust_remote_code:
@@ -469,8 +503,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           if (!isCurrent()) return;
           set({ quantIndex: i });
           const sel = selections[i];
-          const { outputPath, details: mergedDetails } = await runRecoverableOp(() =>
+          const { outputPath, details: mergedDetails } = await runRecoverableOp((op_id) =>
             exportMerged({
+              op_id,
               save_directory: params.saveDirectory,
               format_type: sel.formatType,
               compressed_method: sel.compressedMethod,
@@ -492,8 +527,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       } else if (params.exportMethod === "gguf") {
         // Send the whole quant list in ONE call: the model is merged once and every GGUF comes
         // from that single merge (unsloth save_to_gguf loops internally).
-        const { outputPath, details } = await runRecoverableOp(() =>
+        const { outputPath, details } = await runRecoverableOp((op_id) =>
           exportGGUF({
+            op_id,
             save_directory: params.saveDirectory,
             quantization_method: params.quantLevels,
             push_to_hub: pushToHub,
@@ -527,8 +563,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         if (!isCurrent()) return;
         set({ quantIndex: get().quantTotal });
       } else if (params.exportMethod === "lora") {
-        const { outputPath, details: loraDetails } = await runRecoverableOp(() =>
+        const { outputPath, details: loraDetails } = await runRecoverableOp((op_id) =>
           exportLoRA({
+            op_id,
             save_directory: params.saveDirectory,
             push_to_hub: pushToHub,
             repo_id: params.repoId,

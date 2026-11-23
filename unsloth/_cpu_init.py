@@ -27,12 +27,45 @@ from ._gc_kwargs import patch_gradient_checkpointing_enable_kwargs
 
 patch_gradient_checkpointing_enable_kwargs()
 
+# The CPU route skips _gpu_init: a compressed-tensors checkpoint still loads through transformers' quantizer here.
+from .import_fixes import fix_transformers_quantizer_unquantized_converters
+
+fix_transformers_quantizer_unquantized_converters()
+del fix_transformers_quantizer_unquantized_converters
+
 print(
     f"Unsloth {__version__}: no GPU found, training on CPU ({__import__('platform').machine()}, "
     f"{torch.get_num_threads()} threads, bfloat16 = {cpu_bf16_supported()}). CPU training is much "
     f"slower than GPU training; supported: text LoRA / full finetuning with SFTTrainer. "
     f"Set UNSLOTH_DISABLE_CPU_FALLBACK=1 to raise instead."
 )
+
+
+def _cpu_run_report():
+    # By file: unsloth.utils/__init__ imports the GPU model stack.
+    import sys
+    import importlib.util
+    from pathlib import Path
+
+    name = f"{__name__.rsplit('.', 1)[0]}._cpu_run_report"
+    module = sys.modules.get(name)
+    if module is None:
+        path = Path(__file__).resolve().parent / "utils" / "run_report.py"
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules[name] = module
+    return module
+
+
+def _report_cpu_memory(stage, owner):
+    # UNSLOTH_MEMORY_REPORT=1: host RAM (RSS, peak, available) at the same stages the GPU route reports.
+    if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") == "0":
+        return
+    try:
+        _cpu_run_report().report_memory(stage, owner, cpu = True)
+    except Exception:
+        pass
 
 
 class FastLanguageModel(FastCPUModel):
@@ -48,6 +81,7 @@ class FastLanguageModel(FastCPUModel):
         check_tiling_available(unsloth_tiled_mlp)
         model, tokenizer = FastCPUModel.from_pretrained(*args, **kwargs)
         loader_tile_mlp(model, unsloth_tiled_mlp)
+        _report_cpu_memory("load", model)
         return model, tokenizer
 
 
@@ -280,6 +314,11 @@ def _install_cpu_context_parallel():
             # context_parallel_size = 1 / None opts out, but stock TRL still rejects the keyword.
             init = cp_fields_into_config if any(key in kwargs for key in cp_keys) else original_init
         init(self, *args, **kwargs)
+        if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
+            try:
+                _cpu_run_report().install_memory_report(self, cpu = True)
+            except Exception:
+                pass
         # A config TRL rebuilt from to_dict() loses CP attributes set on it.
         if (
             requested

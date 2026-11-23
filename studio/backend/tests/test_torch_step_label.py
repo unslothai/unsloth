@@ -210,9 +210,7 @@ def test_the_label_never_runs_the_torch_probe(monkeypatch, platform_name, hardwa
 
 
 def test_the_label_leaves_the_probe_memo_cold(monkeypatch):
-    """The discriminating case: pre-fix the label probed here, and pip_install then
-    invalidated the memo three statements later, so the 90s was not even amortised.
-    """
+    """Pre-fix, the label's probe was wasted: pip_install invalidated the memo right after it."""
     mod, probe_calls = _prepare(monkeypatch, platform_name = "windows", hardware_name = "amd_bundled")
     assert mod._TORCH_RUNTIME_PROBE is None
     assert mod._torch_step_label("check") == "torch check (rocm)"

@@ -92,9 +92,10 @@ def _batch(view = None):
     payload = {"threadIds": ["t1", "missing"]}
     if view is not None:
         payload["view"] = view
-    return chat_history.batch_thread_messages(
+    response = chat_history.batch_thread_messages(
         chat_history.ChatMessagesBatchRequest(**payload), current_subject = "test-user"
-    ).model_dump(mode = "json")["messagesByThreadId"]
+    )
+    return json.loads(response.body)["messagesByThreadId"]
 
 
 def test_batch_without_a_view_still_returns_full_messages(history):
@@ -125,6 +126,28 @@ def test_search_view_keeps_what_the_index_reads_and_drops_the_rest(history):
     view_bytes = len(json.dumps(view))
     assert full_bytes > 150_000
     assert view_bytes < 5_000
+
+
+def test_search_view_never_decodes_metadata(history, monkeypatch):
+    """Provider metadata (reasoning ledgers) is large and the search view drops it: skip the decode."""
+    full = _batch()
+    expected = {
+        tid: [
+            chat_history.ChatMessage(**chat_history._search_view_message(m)).model_dump(mode = "json")
+            for m in messages
+        ]
+        for tid, messages in full.items()
+    }
+    decode = studio_db._json_loads
+
+    def guarded(value, fallback):
+        assert value is None or "predicted_n" not in value, "search view decoded metadata_json"
+        return decode(value, fallback)
+
+    monkeypatch.setattr(studio_db, "_json_loads", guarded)
+    assert _batch("search") == expected
+    with pytest.raises(AssertionError, match = "decoded metadata_json"):
+        _batch("full")
 
 
 @pytest.mark.parametrize(

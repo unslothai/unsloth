@@ -176,10 +176,13 @@ def _spawn_download_worker(
     cache_env: Optional[dict[str, str]] = None,
     files: Optional[Sequence[str]] = None,
     allow_ambient_token: bool = True,
+    engram_precision: Optional[str] = None,
 ) -> subprocess.Popen:
     args = ["--repo-id", repo_id]
     if variant:
         args.extend(["--variant", variant])
+    if variant and engram_precision:
+        args.extend(["--engram", engram_precision])
     return download_lifecycle.spawn_worker(
         args,
         hf_token,
@@ -339,6 +342,12 @@ async def download_model_response(
         )
     # A scoped job fetches only `files` and keys itself apart from the repo's full snapshot.
     scoped_files = [f for f in (body.files or []) if f and f.strip()]
+    engram_precision = (body.engram_precision or "").strip() or None
+    if engram_precision and (variant is None or body.scope_id):
+        raise HTTPException(
+            status_code = 400,
+            detail = "engram_precision needs a gguf_variant and no scope_id.",
+        )
     scope_variant = _scope_variant(body.scope_id)
     if scope_variant is not None:
         if variant is not None:
@@ -366,6 +375,8 @@ async def download_model_response(
         files = scoped_files if scope_variant is not None else None,
         hf_token = hf_token,
         allow_ambient_token = allow_ambient_token,
+        # The table this job fetches, which can be the largest file and decide the transport.
+        engram_precision = engram_precision,
     )
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,
@@ -400,7 +411,26 @@ async def download_model_response(
                     ),
                 )
                 variant_progress_blob_hashes = variant_blob_hashes
-            else:
+            elif engram_precision:
+                # The worker fetches the swapped plan, so progress counts the table, not the shard.
+                requirement = await asyncio.to_thread(
+                    gguf_variants.gguf_variant_requirements, repo_id, variant, hf_token
+                )
+                if requirement is not None and requirement.engram_table(engram_precision) is None:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = f"{repo_id} publishes no {engram_precision} Engram table.",
+                    )
+                if requirement is not None and (requirement.engram_precision or "").upper() == (
+                    engram_precision.upper()
+                ):
+                    # The quant's own table: the same job as naming none, so it dedupes like one.
+                    engram_precision = None
+                elif requirement is not None:
+                    swapped = requirement.with_engram(engram_precision)
+                    variant_blob_hashes = swapped.main_hashes
+                    variant_progress_blob_hashes = swapped.required_hashes
+            if scope_variant is None and not engram_precision:
                 variant_blob_hashes = await asyncio.to_thread(
                     gguf_variants.gguf_variant_blob_hashes,
                     repo_id,
@@ -415,6 +445,8 @@ async def download_model_response(
                     hf_token,
                     include_companions = True,
                 )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.warning(
                 "GGUF hash pre-resolution failed for %s [%s]; continuing without "
@@ -457,12 +489,21 @@ async def download_model_response(
             hub_cache = str(cache_paths.hub_cache),
             xet_cache = str(cache_paths.xet_cache),
             scoped_files = scoped_files if scope_variant is not None else None,
+            engram_precision = engram_precision if variant and scope_variant is None else None,
         )
         generation = _registry.current_generation(key)
         if not claimed:
             download_lifecycle.require_download_account(_registry, key)
             if claim_state == "admission_blocked":
                 raise _load_in_flight_error(repo_id)
+            if claim_state == "engram_mismatch":
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"A download of '{repo_id}' [{variant}] is already fetching a different "
+                        "Engram table. Wait for it to finish (or cancel it), then start this one."
+                    ),
+                )
             if claim_state == "scope_file_mismatch":
                 raise HTTPException(
                     status_code = 409,
@@ -512,6 +553,7 @@ async def download_model_response(
                 cache_env = cache_env,
                 files = scoped_files if scope_variant is not None else None,
                 allow_ambient_token = allow_ambient_token,
+                engram_precision = engram_precision,
             ),
             hf_token = hf_token,
             allow_ambient_token = allow_ambient_token,
@@ -806,8 +848,10 @@ async def get_gguf_download_progress_response(
     variant: str = "",
     expected_bytes: int = 0,
     hf_token: Optional[str] = None,
+    engram_precision: str = "",
 ) -> dict:
-    """Return download progress for a specific GGUF variant."""
+    """Return download progress for a specific GGUF variant; ``engram_precision`` measures a load
+    that fetches that standalone Engram table in place of the quant's own table shard."""
     from hub.services import training_downloads
 
     if training_downloads.is_training_variant(variant):
@@ -844,6 +888,8 @@ async def get_gguf_download_progress_response(
             token,
         )
         if requirement is not None:
+            if engram_precision:
+                requirement = requirement.with_engram(engram_precision)
             return requirement.download_size_bytes, requirement.required_hashes
         job_key = _download_job_key(resolved_repo_id, progress_variant)
         job = _registry.get_job(job_key)

@@ -182,8 +182,7 @@ def options_by_workflow(model: AudioCppModel, primary: str) -> Optional[dict[str
 
 
 def _reread_after_download(model: AudioCppModel, hf_token: Optional[str]) -> AudioCppModel:
-    """``model`` re-resolved from the served file: quants can embed different specs (MagpieTTS
-    ``orig`` says ``speaker``, its Q8_0 ``voice_id``)."""
+    """Model re-resolved from the served file, since quants can embed different specs."""
     forget(model.id)
     fresh = resolve(model.id, model.variant.key, hf_token, network = False)
     if fresh is None or fresh.unsupported or fresh.variant.key != model.variant.key:
@@ -194,8 +193,7 @@ def _reread_after_download(model: AudioCppModel, hf_token: Optional[str]) -> Aud
 # Families that read the request's top-level language, not an option (audio.cpp extract_request_language:
 # VoxCPM1 keeps Cantonese text Traditional with zh-HK; Supertonic generation_options_from_request).
 _READS_TOP_LEVEL_LANGUAGE = frozenset({"voxcpm1", "audio8_tts", "supertonic"})
-# Families that read a voice description only as a leading "(description)" on the text
-# (audio.cpp voxcpm2 split_leading_voice_tag); they read no instruct option.
+# voxcpm2 reads voice only as a leading (description) on the text; it takes no instruct option.
 _DESCRIPTION_IN_TEXT = frozenset({"voxcpm2"})
 # Supertonic's tokenizer refuses anything but a bare ISO code (src/models/supertonic/tokenizer_text.cpp).
 _LANGUAGE_CODE_FAMILIES = frozenset({"supertonic"})
@@ -1227,8 +1225,7 @@ class AudioCppBackend:
             return 1
 
     def _server_for_batch(self, model: AudioCppModel, batch: int, cancel_event) -> AudioCppServer:
-        """The running server, restarted once with max_batch raised to the cap, so later batches
-        never reload."""
+        """Restarted once with max_batch raised to the cap, so later batches never reload."""
         with self._server_lock:
             if batch <= self._max_batch():
                 return self._running_server(model, cancel_event)
@@ -1262,8 +1259,7 @@ class AudioCppBackend:
         output_dir: Optional[str],
         cancel_event,
     ) -> Tuple[bytes, int]:
-        """Every output goes to ``output_dir`` with an ``outputs.json`` manifest; the first is
-        returned."""
+        """Outputs go to output_dir with an outputs.json manifest; the first is returned."""
         if model.task != "music" or model.music is None:
             raise RuntimeError(f"{model.display_name} does not make music in the Music studio.")
         mode_id = str(music.get("mode") or "song")

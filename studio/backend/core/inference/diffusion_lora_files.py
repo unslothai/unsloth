@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LoRA and LyCORIS LoKR files on Anima, Krea 2 and MOSS-Image. LoKR runs as ``KronLinear`` slots sharing PEFT's
-adapter names: :func:`set_adapter_weights` / :func:`unload_adapters` replace diffusers' adapter calls."""
+"""LoRA and LyCORIS LoKR files on Anima, Krea 2 and MOSS-Image, plus Ideogram 4's key layouts. LoKR runs as
+``KronLinear`` slots sharing PEFT's adapter names: :func:`set_adapter_weights` / :func:`unload_adapters` replace
+diffusers' adapter calls."""
 
 from __future__ import annotations
 
 import os
 import re
+import weakref
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -17,6 +19,11 @@ logger = get_logger(__name__)
 KRON_ATTR = "_unsloth_kron_adapters"
 # Adapter names whose file held LoKR modules only: diffusers has no PEFT adapter of that name to set.
 KRON_ONLY_ATTR = "_unsloth_kron_only"
+# ``(weakref to parameter, requires_grad)`` of every LoRA-loadable component, taken before the first adapter of a set.
+# PEFT freezes the base weights it injects into and unloading leaves them frozen, while torch.matmul picks its kernel
+# from requires_grad even under no_grad (a non-contiguous 3-D input folds into mm, else runs bmm: other bits on CUDA).
+# Weak, so a quantize after a load-time bake still frees the dense weights it replaced.
+REQUIRES_GRAD_ATTR = "_unsloth_lora_requires_grad"
 _PREFIXES = ("diffusion_model.", "model.diffusion_model.", "transformer.")
 # Kohya / SimpleTuner keys: the reference layer path with its dots written as underscores.
 _KOHYA_PREFIXES = ("lora_unet_", "lycoris_")
@@ -30,6 +37,25 @@ _LOKR_SUFFIXES = (
     "lokr_t2",
 )
 NORMALIZED_FAMILIES = ("anima", "krea-2", "moss-image")
+IDEOGRAM4_FAMILY = "ideogram-4"
+# Ideogram 4's checkpoint module names, which diffusers' converter reads under ``diffusion_model.`` only. The fused
+# ``attention.qkv`` / ``attention.o`` mark the layout: diffusers' own names share ``feed_forward`` / ``adaln_modulation``.
+_IDEOGRAM4_NATIVE = re.compile(
+    r"(layers\.\d+\.(?:attention\.(?:qkv|o)|feed_forward\.w[123]|adaln_modulation))\.(.+)"
+)
+_IDEOGRAM4_FUSED = re.compile(r"layers\.\d+\.attention\.(?:qkv|o)\..+")
+# musubi-tuner's kohya spelling: the same path with underscores, under ``lora_unet_``.
+_IDEOGRAM4_KOHYA = re.compile(
+    r"lora_unet_layers_(\d+)_(attention_qkv|attention_o|feed_forward_w[123]|adaln_modulation)\.(.+)"
+)
+_IDEOGRAM4_KOHYA_PATHS = {
+    "attention_qkv": "attention.qkv",
+    "attention_o": "attention.o",
+    "feed_forward_w1": "feed_forward.w1",
+    "feed_forward_w2": "feed_forward.w2",
+    "feed_forward_w3": "feed_forward.w3",
+    "adaln_modulation": "adaln_modulation",
+}
 
 
 def read_lora_file(path: str) -> dict:
@@ -306,6 +332,21 @@ class KronAdapter:
             setattr(parent, attr, wrapper.base_layer)
 
 
+# A Kronecker factor is never larger than the layer it builds (16384 x 16384), so a low-rank pair whose product is
+# bigger is malformed: refuse it before multiplying, as a ~400 KB pair can otherwise ask for tens of GB.
+_MAX_KRON_FACTOR_ELEMENTS = 1 << 28
+
+
+def _low_rank_product(a: Any, b: Any, stem: str) -> Any:
+    if a.dim() != 2 or b.dim() != 2 or a.shape[1] != b.shape[0]:
+        raise ValueError(f"LoKR factors {stem}_a / {stem}_b do not multiply")
+    if int(a.shape[0]) * int(b.shape[1]) > _MAX_KRON_FACTOR_ELEMENTS:
+        raise ValueError(
+            f"LoKR factor {stem} is {int(a.shape[0])} x {int(b.shape[1])}, larger than any layer"
+        )
+    return a.float() @ b.float()
+
+
 def _kron_factors(parts: dict) -> tuple[Any, Any, float]:
     """``(w1, w2, alpha_scale)`` like the reference runtime: a factor stored as a low-rank pair is its product, and
     ``alpha / rank`` applies only when one is (rank = that pair's inner size)."""
@@ -314,13 +355,13 @@ def _kron_factors(parts: dict) -> tuple[Any, Any, float]:
     dim = None
     w1 = parts.get("lokr_w1")
     if w1 is None:
-        w1 = parts["lokr_w1_a"].float() @ parts["lokr_w1_b"].float()
+        w1 = _low_rank_product(parts["lokr_w1_a"], parts["lokr_w1_b"], "lokr_w1")
         dim = int(parts["lokr_w1_b"].shape[0])
     w2 = parts.get("lokr_w2")
     if w2 is None:
         if "lokr_t2" in parts:
             raise ValueError("a LoKR convolution (lokr_t2) cannot apply to a Linear layer")
-        w2 = parts["lokr_w2_a"].float() @ parts["lokr_w2_b"].float()
+        w2 = _low_rank_product(parts["lokr_w2_a"], parts["lokr_w2_b"], "lokr_w2")
         dim = int(parts["lokr_w2_b"].shape[0])
     if w1.dim() != 2 or w2.dim() != 2:
         raise ValueError("only Linear LoKR modules are supported")
@@ -419,16 +460,60 @@ def _attach_lokr(pipe: Any, name: str, lokr: dict, family: Optional[str]) -> int
     return len(adapters)
 
 
-def _resolve_kohya_stem(pipe: Any, stem: str, family: Optional[str]) -> str:
+def _anima_unreachable(pipe: Any, paths: list, names: dict) -> set:
+    """Splits whose Anima rename names no registered submodule: ``_lokr_targets`` would raise for each.
+    One batched rename; an output collision returns nothing ruled out (every split is then tried)."""
+    import torch
+
+    try:
+        from diffusers.loaders.lora_conversion_utils import (
+            _convert_non_diffusers_anima_lora_to_diffusers,
+        )
+    except ImportError:
+        return set()
+
+    keys = ["diffusion_model." + _strip(path) + ".x" for path in paths]
+    renamed = list(_convert_non_diffusers_anima_lora_to_diffusers(dict.fromkeys(keys)))
+    if len(renamed) != len(keys):
+        return set()
+    out = set()
+    for path, name in zip(paths, renamed):
+        component, _, sub = name[: -len(".x")].partition(".")
+        if component not in names:
+            root = getattr(pipe, component, None)
+            names[component] = (
+                {n for n, _ in root.named_modules(remove_duplicate = False)}
+                if isinstance(root, torch.nn.Module)
+                else None
+            )
+        known = names[component]
+        if known is not None and sub not in known:
+            out.add(path)
+    return out
+
+
+def _resolve_kohya_stem(
+    pipe: Any,
+    stem: str,
+    family: Optional[str],
+    names: Optional[dict] = None,
+) -> str:
     """The one dotted path, of every way to re-split ``stem``'s underscores, that names a layer of this model."""
     tokens = stem.split("_")
     if len(tokens) > 16:
         raise ValueError(f"LoRA key {stem} names no layer of this model")
+    paths = [
+        tokens[0]
+        + "".join(("." if mask >> i & 1 else "_") + token for i, token in enumerate(tokens[1:]))
+        for mask in range(1 << (len(tokens) - 1))
+    ]
+    skip = (
+        _anima_unreachable(pipe, paths, {} if names is None else names) if family == "anima" else ()
+    )
     found = []
-    for mask in range(1 << (len(tokens) - 1)):
-        path = tokens[0] + "".join(
-            ("." if mask >> i & 1 else "_") + token for i, token in enumerate(tokens[1:])
-        )
+    for path in paths:
+        if path in skip:
+            continue
         try:
             _lokr_targets(pipe, path, family)
         except Exception:  # noqa: BLE001 -- this split names no layer
@@ -442,6 +527,7 @@ def _resolve_kohya_stem(pipe: Any, stem: str, family: Optional[str]) -> str:
 def _dotted_kohya_keys(pipe: Any, state: dict, family: Optional[str]) -> dict:
     out: dict = {}
     paths: dict = {}
+    names: dict = {}
     for key, value in state.items():
         prefix = next((p for p in _KOHYA_PREFIXES if key.startswith(p)), None)
         if prefix is None:
@@ -449,7 +535,7 @@ def _dotted_kohya_keys(pipe: Any, state: dict, family: Optional[str]) -> dict:
             continue
         stem, _, suffix = key[len(prefix) :].partition(".")
         if stem not in paths:
-            paths[stem] = _resolve_kohya_stem(pipe, stem, family)
+            paths[stem] = _resolve_kohya_stem(pipe, stem, family, names)
         out[f"diffusion_model.{paths[stem]}.{suffix}"] = value
     return out
 
@@ -458,8 +544,95 @@ def _adapter_loaded(pipe: Any, name: str) -> bool:
     return any(name in names for names in (pipe.get_list_adapters() or {}).values())
 
 
+def _ideogram4_renames(keys: list) -> dict:
+    """``key -> diffusion_model. key`` for an Ideogram 4 file naming the checkpoint modules another way: musubi-tuner's
+    ``lora_unet_layers_0_attention_qkv.lora_down.weight``, or a ``transformer.`` prefix on the fused names (its
+    convert_lora.py with ``--diffusers_prefix transformer``). Empty when nothing needs renaming."""
+    fused = any(
+        k.startswith("transformer.") and _IDEOGRAM4_FUSED.fullmatch(k[len("transformer.") :])
+        for k in keys
+    )
+    out: dict = {}
+    for key in keys:
+        kohya = _IDEOGRAM4_KOHYA.fullmatch(key)
+        if kohya is not None:
+            index, module, suffix = kohya.groups()
+            out[key] = f"diffusion_model.layers.{index}.{_IDEOGRAM4_KOHYA_PATHS[module]}.{suffix}"
+        elif fused and key.startswith("transformer."):
+            native = _IDEOGRAM4_NATIVE.fullmatch(key[len("transformer.") :])
+            if native is not None:
+                out[key] = "diffusion_model." + native.group(0)
+    return out
+
+
+def ideogram4_native_lora(state: dict, metadata: Optional[dict] = None) -> Optional[dict]:
+    """The ``diffusion_model.`` layout diffusers' Ideogram 4 converter splits into ``to_q`` / ``to_k`` / ``to_v``, with
+    ``.alpha`` (else ``metadata``'s scale) folded into ``lora_B``; None when no key needs renaming."""
+    renames = _ideogram4_renames(list(state))
+    if not renames:
+        return None
+    return normalize_lora(
+        {renames.get(k, k): v for k, v in state.items()}, IDEOGRAM4_FAMILY, metadata
+    )
+
+
+def _lora_keys(path: str) -> list:
+    from safetensors import safe_open
+    with safe_open(str(path), framework = "pt") as handle:
+        return list(handle.keys())
+
+
+def _load_ideogram4(pipe: Any, path: str, name: str) -> None:
+    """diffusers converts only the ``diffusion_model.`` spelling of the checkpoint names: it raises on the
+    ``transformer.`` one and loads none of the kohya one, so both are renamed first."""
+    source: Any = path
+    if _ideogram4_renames(_lora_keys(path)):
+        metadata = None
+        if (os.environ.get(REWRITE_METADATA_ENV) or "").strip().lower() not in (
+            "0",
+            "off",
+            "false",
+            "no",
+        ):
+            metadata = read_lora_metadata(path)
+        source = ideogram4_native_lora(read_lora_file(path), metadata)
+    pipe.load_lora_weights(source, adapter_name = name)
+    # diffusers drops keys outside the components it loads into without an error.
+    if not _adapter_loaded(pipe, name):
+        raise ValueError(f"{name}: none of its LoRA keys name a layer of this model")
+
+
+def _lora_components(pipe: Any) -> list:
+    import torch
+
+    names = getattr(pipe, "_lora_loadable_modules", None) or ("transformer", "unet")
+    roots = [getattr(pipe, name, None) for name in names]
+    return list({id(m): m for m in roots if isinstance(m, torch.nn.Module)}.values())
+
+
+def _remember_requires_grad(pipe: Any) -> None:
+    if REQUIRES_GRAD_ATTR in pipe.__dict__:
+        return  # an adapter of this set is already loaded: the flags were taken before the first one
+    pipe.__dict__[REQUIRES_GRAD_ATTR] = [
+        (weakref.ref(param), param.requires_grad)
+        for root in _lora_components(pipe)
+        for param in root.parameters()
+    ]
+
+
+def _restore_requires_grad(pipe: Any) -> None:
+    for ref, flag in pipe.__dict__.pop(REQUIRES_GRAD_ATTR, ()):
+        param = ref()
+        if param is not None and param.requires_grad != flag and param.is_leaf:
+            param.requires_grad_(flag)
+
+
 def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None:
     """One file under ``name``: plain LoRA via ``pipe.load_lora_weights``, LoKR modules as ``KronLinear`` slots."""
+    _remember_requires_grad(pipe)
+    if family == IDEOGRAM4_FAMILY:
+        _load_ideogram4(pipe, path, name)
+        return
     if family not in NORMALIZED_FAMILIES:
         pipe.load_lora_weights(path, adapter_name = name)
         return
@@ -574,5 +747,9 @@ def unload_adapters(pipe: Any) -> None:
         for adapter in adapters:
             adapter.remove()
     pipe.__dict__.pop(KRON_ONLY_ATTR, None)
-    pipe.unload_lora_weights()
+    try:
+        pipe.unload_lora_weights()
+    finally:
+        # Without this an attach + detach does not reproduce the render before it (HiDream-I1's to_out).
+        _restore_requires_grad(pipe)
     _refresh_group_offload(roots)

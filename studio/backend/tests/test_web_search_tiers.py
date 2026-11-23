@@ -97,6 +97,29 @@ def test_tier_two_runs_only_after_tier_one_finds_nothing(engine_calls):
     assert "URL: https://" in result
 
 
+def test_a_lone_wikipedia_hit_still_reaches_tier_two(monkeypatch, engine_calls):
+    _require_two_tiers()
+    engine_calls.install(lambda name: "empty" if name in TIER1 else "results")
+
+    def wikipedia(engine, query, **kwargs):
+        engine_calls.calls.append(("wikipedia", query))
+        return [
+            TextResult(
+                title = "The Bitcoin President",
+                href = "https://en.wikipedia.org/wiki/The_Bitcoin_President",
+                body = "A 2021 documentary film.",
+            )
+        ]
+
+    monkeypatch.setattr(ENGINES["text"]["wikipedia"], "search", wikipedia)
+
+    result = tools.execute_tool("web_search", {"query": "Bitcoin price"})
+
+    assert set(_names(engine_calls)) & set(TIER2), "tier 2 was never reached"
+    assert "https://en.wikipedia.org/wiki/The_Bitcoin_President" in result
+    assert any(f"https://{name}.example/source" in result for name in TIER2)
+
+
 def test_a_tier_one_refusal_falls_through_to_tier_two(engine_calls):
     _require_two_tiers()
     engine_calls.install(lambda name: "raise" if name in TIER1 else "results")

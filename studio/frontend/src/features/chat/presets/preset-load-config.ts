@@ -235,7 +235,12 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     checkpoint: store.params.checkpoint,
   });
   const platform = usePlatformStore.getState();
-  const isMlx = isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason);
+  const isMlx = isServedByMlx(
+    isGguf,
+    platform.deviceType,
+    platform.chatOnlyReason,
+    platform.mlxInference,
+  );
   const effectiveContextLength = requestableContextLength(
     capturedContextLength({
       isGguf,
@@ -336,6 +341,8 @@ export function applyPresetLoadConfig(config?: PresetLoadConfig | null): void {
       mlxFastVerify: store.mlxFastVerify,
       mlxPleOffload: store.mlxPleOffload,
       mlxExpertOffload: store.mlxExpertOffload,
+      // Model specific, so a preset keeps the current table.
+      engramPrecision: store.engramPrecision,
       gpuMemoryMode: config.gpuMemoryMode,
       gpuLayers: config.gpuLayers,
       nCpuMoe: config.nCpuMoe,

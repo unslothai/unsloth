@@ -28,6 +28,9 @@ def _frontend_rows(relative: str) -> dict[str, tuple[int, float]]:
         ("OpenMOSS-Team/MOSS-Image-SFT", (25, 2.5)),
         ("OpenMOSS-Team/MOSS-Image-Base", (25, 2.5)),
         ("unsloth/MOSS-Image-SFT-FP8", (25, 2.5)),
+        ("lodestones/Kromoss", (25, 2.5)),
+        ("molbal/Kromoss-GGUF", (25, 2.5)),
+        ("kromoss-Q8_0.gguf", (25, 2.5)),
         ("stabilityai/sdxl-turbo", (1, 0.0)),
         ("unsloth/sdxl-turbo", (1, 0.0)),
         # Unchanged: already the reference values (Z-Image's diffusers g is the reference cfg minus 1).
@@ -64,6 +67,7 @@ def test_images_page_table_matches_backend():
         "moss-image",
         "moss_image",
         "mossimage",
+        "kromoss",
         "sdxl-turbo",
         "sdxl",
         "z-image",

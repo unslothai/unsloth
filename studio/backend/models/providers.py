@@ -12,6 +12,7 @@ from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 
 ProviderApiType = Literal["chat_completions", "responses", "systemone"]
+ProviderCompactionMode = Literal["summary", "rolling", "checkpoint"]
 
 
 class ProviderReasoningConfig(BaseModel):
@@ -102,6 +103,65 @@ def normalize_provider_extra_headers(value) -> dict[str, str]:
     return headers
 
 
+AUTO_COMPACT_TOKENS_MIN = 1_000
+AUTO_COMPACT_TOKENS_MAX = 1_200_000
+AUTO_COMPACT_PERCENT_MIN = 10
+AUTO_COMPACT_PERCENT_MAX = 100
+_MAX_AUTO_COMPACT_MODELS = 500
+
+
+def normalize_auto_compact_percent_by_model(value) -> dict[str, int]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("auto_compact_percent_by_model must be an object of model ID to percent.")
+    if len(value) > _MAX_AUTO_COMPACT_MODELS:
+        raise ValueError(f"At most {_MAX_AUTO_COMPACT_MODELS} per-model limits are allowed.")
+    limits: dict[str, int] = {}
+    for raw_model, percent in value.items():
+        model = raw_model.strip() if isinstance(raw_model, str) else ""
+        if not model or len(model) > 512:
+            raise ValueError(f"Invalid model ID: {raw_model!r}.")
+        if (
+            not isinstance(percent, int)
+            or isinstance(percent, bool)
+            or not AUTO_COMPACT_PERCENT_MIN <= percent <= AUTO_COMPACT_PERCENT_MAX
+        ):
+            raise ValueError(
+                f"The auto-compact percent for {model!r} must be a whole number between "
+                f"{AUTO_COMPACT_PERCENT_MIN} and {AUTO_COMPACT_PERCENT_MAX}."
+            )
+        limits[model] = percent
+    return limits
+
+
+class AutoCompactPercentMixin(BaseModel):
+    auto_compact_percent: Optional[int] = Field(
+        None,
+        strict = True,
+        ge = AUTO_COMPACT_PERCENT_MIN,
+        le = AUTO_COMPACT_PERCENT_MAX,
+        description = (
+            "Optional share of the model's context window, in percent, after which chats on "
+            "this connection compact; replaces auto_compact_tokens and the 75% default"
+        ),
+    )
+    auto_compact_percent_by_model: Optional[dict[str, int]] = Field(
+        default = None,
+        description = (
+            "Optional per-model auto_compact_percent, keyed by model ID; a model without one "
+            "uses the connection's"
+        ),
+    )
+
+    @field_validator("auto_compact_percent_by_model", mode = "before")
+    @classmethod
+    def _validate_auto_compact_percent_by_model(cls, value):
+        if value is None:
+            return None
+        return normalize_auto_compact_percent_by_model(value)
+
+
 def render_provider_extra_headers(
     headers: dict[str, str] | None, variables: dict[str, str] | None = None
 ) -> dict[str, str]:
@@ -150,6 +210,9 @@ class ProviderRegistryEntry(BaseModel):
     )
 
     auth_kind: Literal["api_key", "chatgpt_oauth"] = "api_key"
+    api_key_url: Optional[str] = Field(
+        None, description = "Provider console page where an API key is created"
+    )
     base_url_editable: bool = True
     model_ids_editable: bool = True
     model_list_mode: Literal["remote", "curated"] = Field(
@@ -172,7 +235,7 @@ class ExtraHeadersMixin(BaseModel):
         return normalize_provider_extra_headers(value)
 
 
-class ProviderCreate(ExtraHeadersMixin):
+class ProviderCreate(ExtraHeadersMixin, AutoCompactPercentMixin):
     """Request to create a saved provider configuration."""
 
     api_type: ProviderApiType = "chat_completions"
@@ -199,6 +262,26 @@ class ProviderCreate(ExtraHeadersMixin):
         le = MAX_JSON_SAFE_INTEGER,
         description = "Optional maximum Max Tokens cap for this connection",
     )
+    auto_compact_tokens: Optional[int] = Field(
+        None,
+        strict = True,
+        ge = 1_000,
+        le = AUTO_COMPACT_TOKENS_MAX,
+        description = (
+            "Optional token count after which chats on this connection compact, "
+            "instead of the default three quarters of the model's context window"
+        ),
+    )
+    compaction_mode: Optional[ProviderCompactionMode] = Field(
+        None,
+        description = (
+            "What chats on this connection do once they pass the auto-compact trigger: "
+            "'summary' (the default) asks the same model to summarise the older turns; "
+            "'rolling' drops just enough whole oldest turns on each request; 'checkpoint' "
+            "resets to the latest turn. Neither makes a summary call, and dropped turns go "
+            "to the thread's archive, where search_conversation finds them"
+        ),
+    )
 
     encrypted_api_key: Optional[str] = Field(
         None,
@@ -210,7 +293,7 @@ class ProviderCreate(ExtraHeadersMixin):
     )
 
 
-class ProviderUpdate(ExtraHeadersMixin):
+class ProviderUpdate(ExtraHeadersMixin, AutoCompactPercentMixin):
     """Request to update a saved provider configuration."""
 
     api_type: Optional[ProviderApiType] = None
@@ -230,6 +313,26 @@ class ProviderUpdate(ExtraHeadersMixin):
         ge = 64,
         le = MAX_JSON_SAFE_INTEGER,
         description = "Optional maximum Max Tokens cap for this connection",
+    )
+    auto_compact_tokens: Optional[int] = Field(
+        None,
+        strict = True,
+        ge = 1_000,
+        le = AUTO_COMPACT_TOKENS_MAX,
+        description = (
+            "Optional token count after which chats on this connection compact, "
+            "instead of the default three quarters of the model's context window"
+        ),
+    )
+    compaction_mode: Optional[ProviderCompactionMode] = Field(
+        None,
+        description = (
+            "What chats on this connection do once they pass the auto-compact trigger: "
+            "'summary' (the default) asks the same model to summarise the older turns; "
+            "'rolling' drops just enough whole oldest turns on each request; 'checkpoint' "
+            "resets to the latest turn. Neither makes a summary call, and dropped turns go "
+            "to the thread's archive, where search_conversation finds them"
+        ),
     )
 
     encrypted_api_key: Optional[str] = Field(
@@ -283,6 +386,22 @@ class ProviderResponse(BaseModel):
     max_output_tokens: Optional[int] = Field(
         None,
         description = "Configured maximum Max Tokens cap for this connection",
+    )
+    auto_compact_tokens: Optional[int] = Field(
+        None,
+        description = "Configured auto-compact trigger for this connection, in tokens",
+    )
+    auto_compact_percent: Optional[int] = Field(
+        None,
+        description = "Configured auto-compact share of the model's window, in percent",
+    )
+    auto_compact_percent_by_model: dict[str, int] = Field(
+        default_factory = dict,
+        description = "Configured per-model auto-compact percent, keyed by model ID",
+    )
+    compaction_mode: Optional[ProviderCompactionMode] = Field(
+        None,
+        description = "Configured compaction mode for this connection; null is 'summary'",
     )
     extra_headers: dict[str, str] = Field(
         default_factory = dict,
@@ -379,3 +498,15 @@ class ProviderTestResult(BaseModel):
     models_count: Optional[int] = Field(
         None, description = "Number of models found (if test succeeded)"
     )
+    error_kind: Optional[
+        Literal[
+            "auth",
+            "billing",
+            "rate_limit",
+            "not_found",
+            "unreachable",
+            "timeout",
+            "invalid_url",
+            "other",
+        ]
+    ] = Field(None, description = "Why a failed test failed, for the UI to point at the fix")

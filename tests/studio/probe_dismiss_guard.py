@@ -246,8 +246,7 @@ async def one_case(
 ) -> dict:
     """Open the menu, attack the Copy button one way, report whether the click reached it."""
     await hover_last_assistant(page)
-    # Positive control: a direct click with no menu open must be counted, or a zero below would
-    # mean only that the counter cannot see clicks.
+    # Control: a click with no menu open must register, else zero means a blind counter.
     control = await page.evaluate(FACTS_JS)
     if not control["targetRect"]:
         return {"case": case, "error": "no Copy button"}
@@ -349,10 +348,8 @@ async def one_case(
         before_space = await page.evaluate(FOCUS_FACTS_JS)
         await page.keyboard.press("Space")
     elif case == "dismiss_on_composer":
-        # Dismissing into the composer must preserve its caret. The click has to land on the
-        # composer itself: since #13615 the shorter More menu can open over the composer's middle,
-        # and a click there is a click IN the menu, which rightly does not dismiss it. So the spot
-        # is the first point across the composer's midline that hit-tests to the composer.
+        # Dismissing into the composer must preserve its caret; the click must land on the composer,
+        # not the menu, since PR/issue 13615 the menu can open over its middle.
         spot = await page.evaluate(
             """() => {
               const c = window.__heavyThread.composer();
@@ -554,10 +551,8 @@ async def one_case(
     else:
         return {"case": case, "error": f"unknown case {case}"}
 
-    # Wait for the menu's exit rather than a flat 1500 ms: same bound, but it returns as soon as
-    # the menu is gone. A case that leaves it open on purpose (Space reopening it) still waits the
-    # whole bound. Then a short observation window, because the verdict is mostly "no click
-    # reached Copy", and a click a touch gesture synthesizes can land after the menu has closed.
+    # Wait for the menu to close (1500 ms bound), then 300 ms: a touch click can land after it
+    # closes.
     await until(page, MENU_CLOSED, 1500)
     await page.wait_for_timeout(300)
     after = await page.evaluate(FACTS_JS)

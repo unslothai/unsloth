@@ -24,8 +24,7 @@ class Scene:
         return max((s.t_start_ms + s.budget_ms for s in self.slots), default = 0)
 
     def scaled(self, factor: float) -> "Scene":
-        """Stretches the same film over a longer duration, keeping action order and spacing, for big
-        rungs."""
+        """Stretches the film over a longer duration for big rungs, keeping order and spacing."""
         return Scene(
             name = self.name,
             slots = [
@@ -52,8 +51,7 @@ def _slots(spec: list[tuple[str, int, Optional[int]]]) -> list[Slot]:
     ]
 
 
-# Ordered: during-generation actions first, then settled-reply ones, destructive last.
-# Timings are offsets from the send button press.
+# During-generation first, settled-reply next, destructive last; offsets from the send press.
 STANDARD = Scene(
     name = "standard",
     slots = _slots(
@@ -87,8 +85,7 @@ QUICK = Scene(
     name = "quick",
     slots = _slots(
         [
-            # Budgets are ~2.5x measured action cost at 100K. The 12s to 20s gap is the stream drain
-            # constraint, not slack.
+            # Budgets ~2.5x action cost at 100K; 12s to 20s gap is stream drain, not slack.
             ("scroll_during_generation", 1_500, 2_500),
             ("keystroke", 5_000, 3_000),
             ("scroll_during_generation", 9_500, 2_500),
@@ -197,8 +194,7 @@ class SceneRunner:
             return {"visible_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
 
     def _parity(self) -> dict:
-        """Taken with the census at the window's close, so digest and occupancy come from one DOM
-        reading."""
+        """Taken with the census at window close, so digest and occupancy share one DOM read."""
         want_raw = bool(self.base_args.get("parity_raw"))
         try:
             return self.page.evaluate("(raw) => window.__sb.parity.capture({ raw })", want_raw)

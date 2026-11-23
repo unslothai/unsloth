@@ -72,8 +72,7 @@ def chunk_jobs(jobs: list[tuple[str, int]], batch_size: int) -> list[list[tuple[
 def split_chunk(
     chunk: list[tuple[str, int]],
 ) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
-    """Halve a chunk for OOM backoff (first half never smaller than the second,
-    so repeated splits terminate at singletons). Raises on an unsplittable chunk."""
+    """Halve a chunk for OOM backoff (first half never smaller, down to singletons); raises under 2 jobs"""
     if len(chunk) < 2:
         raise ValueError("cannot split a chunk of fewer than 2 jobs")
     mid = (len(chunk) + 1) // 2

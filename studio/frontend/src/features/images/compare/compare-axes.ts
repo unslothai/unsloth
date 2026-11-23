@@ -475,7 +475,8 @@ export function buildCellRequest(
     const loras: LoraSpecInput[] = ctx.loras
       .map((l, i) => ({ id: l.id.trim(), weight: cell.loraWeights[i] ?? l.weight }))
       .filter((l) => l.id && l.weight > 0);
-    req.loras = loras.length ? loras : undefined;
+    // [] (not omitted) when every weight is 0: the server reads an omitted list as the load's adapters.
+    req.loras = loras;
   }
   if (cell.replacements.length > 0) {
     let prompt = req.prompt;
