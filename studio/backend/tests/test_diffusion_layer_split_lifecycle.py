@@ -101,6 +101,42 @@ def test_block_card_guard_scales_only_the_working_set_not_the_fixed_reserve(monk
         D._guard_layer_cards(pipe, object(), _kw(1024))
 
 
+@pytest.mark.parametrize("held_mib, released", [(6000, True), (100, False)])
+def test_block_card_guard_releases_idle_graphs_on_that_card(monkeypatch, held_mib, released):
+    """A block card short only by its own idle graph pool drops the graphs and re-reads, like the primary guard;
+    the pool read is the block card's, not the primary's."""
+    monkeypatch.delenv(dm.GUARD_RELEASE_GRAPHS_ENV, raising = False)
+    pipe = _placed(_split())
+    reads, resets = [], []
+    monkeypatch.setattr(
+        D.cuda_graph,
+        "releasable_pool_bytes",
+        lambda h, device = None: reads.append(device) or held_mib * 1024 * 1024,
+    )
+    monkeypatch.setattr(
+        D.cuda_graph, "reset_all", lambda h: resets.append(tuple(h)) or _free(monkeypatch, 10000)
+    )
+    _free(monkeypatch, 4000)
+    if released:
+        assert D._guard_layer_cards(pipe, object(), _kw(1536), ("g",)) == 1
+        assert resets == [("g",)]
+    else:
+        with pytest.raises(ValueError, match = "cuda:1"):
+            D._guard_layer_cards(pipe, object(), _kw(1536), ("g",))
+        assert resets == []
+    assert reads == [1]
+    # Kill switch and no graphs: the refusal stands, nothing dropped.
+    _free(monkeypatch, 4000)
+    resets.clear()
+    monkeypatch.setenv(dm.GUARD_RELEASE_GRAPHS_ENV, "0")
+    with pytest.raises(ValueError, match = "cuda:1"):
+        D._guard_layer_cards(pipe, object(), _kw(1536), ("g",))
+    monkeypatch.delenv(dm.GUARD_RELEASE_GRAPHS_ENV)
+    with pytest.raises(ValueError, match = "cuda:1"):
+        D._guard_layer_cards(pipe, object(), _kw(1536))
+    assert resets == []
+
+
 def test_block_card_guard_is_a_no_op_without_a_layer_split(monkeypatch):
     _free(monkeypatch, 10)
     assert D._guard_layer_cards(_Pipe(), object(), _kw(2048)) == 0
@@ -117,7 +153,7 @@ def test_image_generate_guards_the_loaded_pipe_for_a_workflow_pipeline(
         lambda **kw: types.SimpleNamespace(action = dm.ACTIVATION_RUN, overridden = False),
     )
     monkeypatch.setattr(
-        D, "_guard_layer_cards", lambda pipe, target, kwargs: seen.append(pipe) or 0
+        D, "_guard_layer_cards", lambda pipe, target, kwargs, *handles: seen.append(pipe) or 0
     )
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = _loaded_backend(tmp_path)
