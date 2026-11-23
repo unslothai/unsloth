@@ -200,6 +200,7 @@ def apply_save_strategy(config, save_steps_val):
     if save_steps_val and save_steps_val > 0:
         config["save_steps"] = save_steps_val
         config["save_strategy"] = "steps"
+        config["save_total_limit"] = 2
     else:
         config["save_strategy"] = "no"
     return config

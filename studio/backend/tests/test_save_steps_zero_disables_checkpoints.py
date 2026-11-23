@@ -141,6 +141,16 @@ def test_apply_save_strategy(save_steps, strategy, steps):
     assert kwargs.get("save_steps") == steps
 
 
+def test_step_checkpoints_keep_only_the_newest():
+    transformers = pytest.importorskip("transformers")
+    from core.training.training import apply_save_strategy
+
+    kwargs = apply_save_strategy({"output_dir": "out", "use_cpu": True, "report_to": []}, 30)
+    args = transformers.TrainingArguments(**kwargs)
+    assert args.save_strategy == "steps"
+    assert args.save_total_limit == 2
+
+
 def test_embedding_training_uses_shared_save_strategy():
     text = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
     body = text[text.index("def _run_embedding_training") :]
