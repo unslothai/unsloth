@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The status poller can reapply the same terminal payload; each pass must not push
-// finishedAt later and stretch the rendered duration. Server timestamps arrive in
-// seconds and must land on the record in milliseconds.
+// Re-polled terminal snapshots must not move finishedAt; server timestamps are seconds.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
