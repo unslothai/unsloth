@@ -13665,6 +13665,7 @@ class VideoBackend:
                 pass
             from . import diffusion_int8_attention as int8_attention
             from .diffusion_attention import _auto_request
+            from .video_minimax_h3_attn import cuda_capability, h3_int8_auto_off_reason
 
             h3_policy = int8_attention.resolve_policy(int8_policy)
             int8_mode = h3_policy.mode
@@ -13682,6 +13683,12 @@ class VideoBackend:
                 and not baked_loras
                 and not lora_specs
             )
+            # ... and not on the arches where it moved the audio past the noise floor (H3_INT8_AUTO_OFF_ARCHS)
+            h3_int8_arch_off = h3_int8_auto_off_reason(
+                cuda_capability(str(getattr(umem_target, "torch_device", None) or device))
+            )
+            int8_auto_config = int8_auto
+            int8_auto = int8_auto_config and h3_int8_arch_off is None
             h3_torch_device = str(getattr(umem_target, "torch_device", None) or device)
             # Install after the strided processors exist, else the dispatch route takes it and loses fused q/k norm + RoPE
             h3_probe_target = types.SimpleNamespace(device = device, dtype = dtype)
@@ -13776,6 +13783,8 @@ class VideoBackend:
                     if int8_forced
                     else f"attention_backend={attention_backend!r} was picked explicitly; Auto keeps it"
                     if not _auto_request(attention_backend)
+                    else h3_int8_arch_off
+                    if int8_auto_config and h3_int8_arch_off is not None
                     else "Auto engages it on MiniMax-H3 video only over Studio's hosted INT8 denoiser "
                     "without adapters"
                     if not int8_auto

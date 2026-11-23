@@ -26,6 +26,12 @@ STRIDED_SAGE_ENV = "UNSLOTH_H3_STRIDED_SAGE"
 # Measured at H3's shape (torch 2.11): flash beats cuDNN on sm80 / sm89, ties or loses on sm120; unmeasured keep cuDNN.
 H3_FLASH_FASTER_ARCHS = frozenset({(8, 0), (8, 9)})
 
+# Where H3 video's Auto keeps INT8 attention off. L4 (sm89), 12 rows at Studio defaults: the soundtrack moved past the
+# bf16 noise floor (log-mel L1 vs off 0.48 vs 0.33, 11/12 rows worse), also with the text + audio query rows kept off
+# the kernel. A100 (sm80) and RTX PRO 6000 (sm120) measured inside the floor. sm86 is unmeasured and kept off as the
+# nearest consumer arch. int8_attention="on" still engages the kernel there.
+H3_INT8_AUTO_OFF_ARCHS = frozenset({(8, 6), (8, 9)})
+
 _CUDNN = "_native_cudnn"
 _FLASH = "_native_flash"
 # Studio's guarded SageAttention backends (pip SageAttention 2, kernels-hub build): both take the NHD layout the
@@ -53,6 +59,26 @@ def _capability(device: Any = None) -> Optional[tuple[int, int]]:
         return tuple(torch.cuda.get_device_capability(device))  # type: ignore[return-value]
     except Exception:  # noqa: BLE001
         return None
+
+
+def cuda_capability(device: Any = None) -> Optional[tuple[int, int]]:
+    """The CUDA capability of ``device``; None off CUDA, on ROCm or on error."""
+    return _capability(device)
+
+
+def h3_int8_auto_off_reason(capability: Optional[tuple]) -> Optional[str]:
+    """Why H3 video's Auto keeps INT8 attention off on a card of ``capability``, or None where Auto may race it."""
+    if capability is None or tuple(capability) not in H3_INT8_AUTO_OFF_ARCHS:
+        return None
+    arch = f"sm{capability[0]}{capability[1]}"
+    why = (
+        "it moved the audio past the bf16 noise floor on L4"
+        if tuple(capability) == (8, 9)
+        else "unmeasured there, kept off like sm89, where it moved the audio past the bf16 noise floor"
+    )
+    return (
+        f"Auto keeps it off for MiniMax-H3 video on {arch} ({why}); int8_attention='on' engages it"
+    )
 
 
 def _flash_sdpa_ready(target: Any = None) -> bool:
