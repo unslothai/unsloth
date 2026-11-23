@@ -189,7 +189,11 @@ def test_a_same_size_mtime_preserving_font_replacement_stops_answering_304(tmp_p
     font.write_bytes(bytes(b ^ 1 for b in body[:1]) + body[1:])
     os.utime(font, ns = (before.st_atime_ns, before.st_mtime_ns))
     again = client.get(
-        "/fonts/Hellix-Regular.woff2", headers = {"If-None-Match": first.headers["etag"]}
+        "/fonts/Hellix-Regular.woff2",
+        headers = {
+            "If-None-Match": first.headers["etag"],
+            "If-Modified-Since": first.headers["last-modified"],
+        },
     )
     assert again.status_code == 200
     assert again.content != first.content
@@ -241,7 +245,7 @@ def test_paths_outside_the_build_stay_forbidden(tmp_path, main_module):
     try:
         (dist / "leak.txt").symlink_to(secret)
     except OSError:
-        pytest.skip("symlinks unavailable")
+        pytest.skip("creating symlinks needs Developer Mode or admin rights on Windows")
     client = _client(main_module, dist)
     response = client.get("/leak.txt")
     assert response.status_code == 403

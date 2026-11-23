@@ -390,6 +390,7 @@ import shutil
 import stat as _stat
 import warnings
 from contextlib import asynccontextmanager
+from email.utils import parsedate
 from importlib.metadata import PackageNotFoundError, version as package_version
 from urllib.parse import urlparse
 
@@ -3622,12 +3623,7 @@ def _root_file_version(stat_result: os.stat_result) -> str:
 
 
 @functools.lru_cache(maxsize = 256)
-def _root_file_version_of(
-    size: int,
-    mtime_ns: int,
-    ino: int = 0,
-    ctime_ns: int = 0,
-) -> str:
+def _root_file_version_of(size: int, mtime_ns: int, ino: int, ctime_ns: int) -> str:
     return hashlib.blake2b(
         f"{size}:{mtime_ns}:{ino}:{ctime_ns}".encode(), digest_size = 6
     ).hexdigest()
@@ -3639,6 +3635,20 @@ def _root_file_cache_control(file_path: Path, stat_result: os.stat_result, versi
     if file_path.suffix.lower() in _ROOT_CODE_SUFFIXES:
         return _ROOT_SCRIPT_CACHE_CONTROL
     return _ROOT_RESOURCE_CACHE_CONTROL
+
+
+def _root_file_not_modified(response_headers, request_headers) -> bool:
+    # RFC 9110 13.1.3: If-None-Match, when sent, decides alone. Starlette < 1.0 also fell back to
+    # If-Modified-Since, so a same-size, mtime-preserving swap kept answering 304.
+    if_none_match = request_headers.get("if-none-match")
+    if if_none_match:
+        if if_none_match.strip() == "*":
+            return True
+        etag = response_headers["etag"]
+        return etag in (tag.strip().removeprefix("W/") for tag in if_none_match.split(","))
+    since = parsedate(request_headers.get("if-modified-since") or "")
+    last_modified = parsedate(response_headers.get("last-modified") or "")
+    return since is not None and last_modified is not None and since >= last_modified
 
 
 def _root_script_locator(build_path: Path):
@@ -3791,7 +3801,6 @@ def setup_frontend(
         app.mount("/assets", assets_app, name = "assets")
         _match_assets_before_api_routes(app)
 
-    root_files = StaticFiles(directory = build_path, check_dir = False)  # conditional GET (304) only
     locate_root_script = _root_script_locator(build_path)
 
     def _frontend_request_allowed(request: Request) -> bool:
@@ -3847,7 +3856,7 @@ def setup_frontend(
             # Starlette's ETag is size + mtime only; use the identity digest so a same-size, mtime-preserving
             # replacement (cp -p, rsync -a) stops matching the old validator instead of answering 304 forever.
             response.headers["etag"] = f'"{_root_file_version(stat_result)}"'
-            if root_files.is_not_modified(response.headers, request.headers):
+            if _root_file_not_modified(response.headers, request.headers):
                 response = NotModifiedResponse(response.headers)
             response.headers["Cache-Control"] = _root_file_cache_control(
                 file_path, stat_result, request.query_params.get("v")
