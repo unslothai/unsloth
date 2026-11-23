@@ -134,9 +134,8 @@ def hardware_plan(
     devices: Any = "probe",
     working_set: Any = "probe",
 ) -> dict[str, Any]:
-    """{weights: "bf16" | "q8_0" | None, refusal: str | None, vram_gib}. ``devices`` is
-    utils.hardware.nvidia.get_cuda_device_info()'s answer: [] no CUDA device, None unknown (not refused).
-    On a Mac, ``working_set`` is Metal's recommended working set in bytes, None without Apple Silicon."""
+    """Returns {weights: bf16 | q8_0 | None, refusal, vram_gib}; devices from get_cuda_device_info()
+    ([] no CUDA; None unknown, not refused); working_set is Metal's bytes, else None."""
     platform = sys.platform if platform is None else platform
     if platform == "darwin":
         if working_set == "probe":
@@ -394,11 +393,19 @@ def _hub_repo_dir(repo_id: str = MODEL_ID) -> Optional[Path]:
     return blobs.parent if blobs is not None else None
 
 
-def _was_cached(repo_id: str, filename: str, revision: Optional[str]) -> bool:
-    """Whether a file was already in any Hub cache before setup ran (the user's own download is not ours to drop)."""
+def _was_cached(
+    repo_id: str, filename: str, revision: Optional[str], repo_dir: Optional[Path]
+) -> bool:
+    """Whether a file was already in the Hub cache holding ``repo_dir`` before setup ran (the user's own download is
+    not ours to drop)."""
+    if repo_dir is None:
+        return True
     try:
         from huggingface_hub import try_to_load_from_cache
-        return isinstance(try_to_load_from_cache(repo_id, filename, revision = revision), str)
+        hit = try_to_load_from_cache(
+            repo_id, filename, cache_dir = repo_dir.parent, revision = revision
+        )
+        return isinstance(hit, str)
     except Exception:  # noqa: BLE001 -- unknown counts as cached, so nothing is removed
         return True
 
@@ -411,16 +418,18 @@ def _remove_cached(path: str, repo_dir: Optional[Path] = None) -> None:
     if repo_dir is None:
         return
     p = Path(path)
-    snapshots = repo_dir / "snapshots"
-    try:
-        p.relative_to(snapshots)
-    except ValueError:
+    # hf_hub_download resolves its cache_dir, so its paths may name the repo under the resolved cache root.
+    for root in (repo_dir, repo_dir.parent.resolve() / repo_dir.name):
+        snapshots = root / "snapshots"
+        if p.is_relative_to(snapshots):
+            break
+    else:
         logger.info("restyle setup: %s is outside Studio's cache for that repo; kept", path)
         return
     try:
         target = p.resolve() if p.is_symlink() else None
         p.unlink(missing_ok = True)
-        if target is None or not target.is_relative_to(repo_dir / "blobs"):
+        if target is None or not target.is_relative_to(repo_dir.resolve() / "blobs"):
             return
         for other in snapshots.rglob("*"):
             if other.is_symlink() and other.resolve() == target:
@@ -580,8 +589,12 @@ class RestyleSetup:
         if weights == "q8_0":
             out_bytes += int(transformer_bytes * _Q8_RATIO)
         self._check_disk(blobs, total - cached, root, out_bytes)
+        # Read the cache once: a cache-home change mid-setup must not make the new cache's files count as ours.
+        repo_dirs = {repo: _hub_repo_dir(repo) for repo, _, _ in wanted}
         ours = {
-            (repo, f["name"]) for repo, rev, f in wanted if not _was_cached(repo, f["name"], rev)
+            (repo, f["name"])
+            for repo, rev, f in wanted
+            if not _was_cached(repo, f["name"], rev, repo_dirs[repo])
         }
         self._update(bytes_total = total, bytes_done = cached)
         local: dict[str, Path] = {}
@@ -627,7 +640,7 @@ class RestyleSetup:
         # The outputs are verified, so the sources this run downloaded (about 33 GB) are no longer needed.
         for repo, _, entry in wanted:
             if (repo, entry["name"]) in ours:
-                _remove_cached(str(local[entry["name"]]), _hub_repo_dir(repo))
+                _remove_cached(str(local[entry["name"]]), repo_dirs[repo])
 
     def _write_outputs(
         self,

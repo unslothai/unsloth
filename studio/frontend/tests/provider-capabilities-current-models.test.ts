@@ -32,6 +32,28 @@ test("Gemini Lite image output stays within its published limit", () => {
   assert.equal(getExternalMaxOutputTokens("gemini", "gemini-3.1-flash-lite-image"), 4096);
 });
 
+test("Gemini 4 and 3.7/3.8 Flash omit presencePenalty and clamp reasoning to low..high", () => {
+  for (const model of [
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+    "gemini-4-argon",
+    "gemini-4-carbon",
+    "gemini-4-neon",
+    "gemini-4-hydrogen",
+  ]) {
+    const caps = getProviderCapabilities("gemini", undefined, model);
+    assert.equal(caps?.presencePenalty, false, model);
+    assert.equal(caps?.temperature, true, model);
+    const reasoning = getExternalReasoningCapabilities("gemini", model);
+    assert.equal(reasoning.supportsReasoning, true, model);
+    assert.equal(reasoning.supportsReasoningOff, false, model);
+    assert.deepEqual([...reasoning.reasoningEffortLevels], ["low", "medium", "high"], model);
+    assert.equal(getExternalMaxOutputTokens("gemini", model), 65536, model);
+  }
+  assert.equal(getProviderCapabilities("gemini", undefined, "gemini-2.5-flash")?.presencePenalty, true);
+  assert.equal(getProviderCapabilities("gemini", undefined, "gemini-3.5-flash")?.presencePenalty, true);
+});
+
 test("Gemini Nano Banana 2.1 supports Search grounding", () => {
   assert.equal(providerSupportsBuiltinWebSearch("gemini", "gemini-nano-banana-2.1"), true);
   assert.equal(providerSupportsBuiltinWebSearch("gemini", "gemini-2.5-flash-image"), false);

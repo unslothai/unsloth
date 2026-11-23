@@ -376,7 +376,7 @@ export function ChatBackgroundControls() {
 									</p>
 								)}
 								<div className="wallpaper-preview-composer rounded-xl p-3">
-									{t("chatBackground.prompt")}
+									<span>{t("chatBackground.prompt")}</span>
 								</div>
 							</div>
 						</div>

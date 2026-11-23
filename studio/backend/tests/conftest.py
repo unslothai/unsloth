@@ -97,6 +97,43 @@ def _skills_home_root(tmp_path_factory):
 _skills_home_counter = itertools.count()
 
 
+@pytest.fixture(scope = "session", autouse = True)
+def _plain_structlog_tracebacks():
+    """Without setup_logging, structlog's default rich formatter lexes each frame's file from line 1:
+    seconds per logged exception in the 2 MB llama_cpp.py, which the tool-loop tests log constantly."""
+    try:
+        import structlog
+        from structlog import _config as structlog_config
+    except ImportError:
+        yield
+        return
+    renderer_cls = structlog.dev.ConsoleRenderer
+    plain = structlog.dev.plain_traceback
+    # The builtin list too: reset_defaults() copies it shallowly, so its renderer comes back.
+    candidates = [
+        *getattr(structlog_config, "_BUILTIN_DEFAULT_PROCESSORS", ()),
+        *structlog.get_config()["processors"],
+    ]
+    renderers = list({id(p): p for p in candidates if isinstance(p, renderer_cls)}.values())
+    # structlog 25.5 added the public property; 24.1 to 25.4 keep the formatter in _exception_formatter.
+    attr = (
+        "exception_formatter"
+        if isinstance(getattr(renderer_cls, "exception_formatter", None), property)
+        else "_exception_formatter"
+    )
+    previous = [
+        (renderer, getattr(renderer, attr)) for renderer in renderers if hasattr(renderer, attr)
+    ]
+    for renderer, _ in previous:
+        setattr(renderer, attr, plain)
+
+    try:
+        yield
+    finally:
+        for renderer, formatter in previous:
+            setattr(renderer, attr, formatter)
+
+
 @pytest.fixture(autouse = True)
 def _no_vae_structural_verdict_cache(monkeypatch):
     """Structural VAE fusion verdicts persist under Studio's cache root; tests must not read or write the real one

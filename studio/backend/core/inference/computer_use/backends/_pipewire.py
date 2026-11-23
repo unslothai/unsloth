@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Frames of portal ScreenCast streams, read from PipeWire through ctypes.
-
-libpipewire runs in a helper process (this file run as a script, stdlib only), so a fault in
-it can never take the Studio server down. The helper holds each stream's newest buffer and
-copies it out only when asked: a screen that does not change sends no new buffers.
-"""
+"""Portal ScreenCast frames read from PipeWire via ctypes in a stdlib-only helper process, so a
+fault cannot kill the Studio server; the helper copies a stream's newest buffer only when asked,
+so an unchanged screen sends no new buffers."""
 
 from __future__ import annotations
 

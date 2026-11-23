@@ -10,6 +10,8 @@ import {
   updateExternalActivity,
   finishExternalJob,
 } from "@/features/hub/download-manager/external-jobs";
+import { startVisibilityPoll } from "@/features/hub/download-manager/visibility-poll";
+import { enginePollDelayMs } from "./engine-poll-delay";
 
 export function useEngines(enabled = true, background = false) {
   const [engines, setEngines] = useState<EngineStatus[]>([]);
@@ -17,14 +19,8 @@ export function useEngines(enabled = true, background = false) {
   useEffect(() => {
     if (!enabled) return;
     let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
-    let fetching = false;
     let installing = false;
     const refresh = async () => {
-      if (fetching || disposed) {
-        return;
-      }
-      fetching = true;
       try {
         const result = await listEngines();
         if (!disposed) {
@@ -70,31 +66,21 @@ export function useEngines(enabled = true, background = false) {
               : "Could not read inference engines",
           );
         }
-      } finally {
-        fetching = false;
-        if (!disposed) {
-          timer = setTimeout(
-            refresh,
-            document.hidden
-              ? 30000
-              : installing
-                ? 1000
-                : background
-                  ? 30000
-                  : 3000,
-          );
-        }
       }
+      return !disposed;
     };
-    const changed = () => {
-      clearTimeout(timer);
-      void refresh();
-    };
-    void refresh();
+    // Pickers keep their timer-only cadence; only the parked background poll wakes on show.
+    const poller = startVisibilityPoll(
+      refresh,
+      (hidden) => enginePollDelayMs(hidden, installing, background),
+      { wakeOnVisible: background },
+    );
+    const changed = () => poller.refresh();
+    poller.restart();
     window.addEventListener("studio-engines-changed", changed);
     return () => {
       disposed = true;
-      clearTimeout(timer);
+      poller.stop();
       window.removeEventListener("studio-engines-changed", changed);
     };
   }, [enabled, background]);

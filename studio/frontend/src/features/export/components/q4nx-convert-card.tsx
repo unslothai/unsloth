@@ -61,6 +61,7 @@ import {
   q4nxArchFit,
   q4nxBaseModel,
   q4nxIsExpanded,
+  q4nxIsFirstChoice,
   q4nxConvertibleFiles,
   q4nxHasSplitFiles,
   q4nxIsSplitFile,
@@ -224,6 +225,8 @@ export function Q4nxConvertCard({
   const windowGb = npuStatus?.memory_window_gb ?? null;
   const [open, setOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Models whose re-quantized and refused files are shown too.
+  const [allFilesOf, setAllFilesOf] = useState<readonly string[]>([]);
   const [source, setSource] = useState<Source>("hub");
   const [hubQuery, setHubQuery] = useState("");
   const [repoId, setRepoId] = useState("");
@@ -684,53 +687,79 @@ export function Q4nxConvertCard({
         </p>
       );
     }
-    return files.map((v) => {
-      const picked = row.id === selectedId && v.filename === filename;
-      const memory = q4nxNpuMemory(weightsOf(row, v), windowGb);
-      return (
-        <div key={v.filename}>
-          <button
-            type="button"
-            data-testid="q4nx-source-file"
-            aria-pressed={picked}
-            onClick={() => {
-              pick(row.id, v.filename);
-              setSettingsOpen(true);
-            }}
-            className={cn(
-              "flex w-full min-w-0 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              picked && "bg-sidebar-accent",
-            )}
-          >
-            <span className="min-w-0 flex-1 truncate font-mono text-xs">
-              {fileName(v.filename)}
-              {packingTag(v.quant, row.architecture, row.id)}
-            </span>
-            <span className="flex shrink-0 items-center gap-1.5 font-mono text-ui-10 text-muted-foreground tabular-nums">
-              {memory && (
-                <span
-                  data-testid="q4nx-source-memory"
-                  className={cn(
-                    memory.fits === false &&
-                      "text-amber-600 dark:text-amber-500",
-                  )}
-                >
-                  {memory.label}
-                </span>
-              )}
-              <span>{formatFootprintBytes(v.size_bytes)}</span>
-            </span>
-          </button>
-          {picked && (
-            <NpuMemoryBar
-              memory={memory}
-              windowGb={windowGb}
-              className="mb-1 px-2"
-            />
+    const short = files.filter((v) =>
+      q4nxIsFirstChoice(q4nxPacking(v.quant, row.architecture, row.id)),
+    );
+    const showAll =
+      short.length === 0 ||
+      allFilesOf.includes(row.id) ||
+      // A picked file outside the short list stays visible.
+      (row.id === selectedId &&
+        !!filename &&
+        !short.some((v) => v.filename === filename));
+    const more = files.length - short.length;
+    return [
+      ...(showAll ? files : short).map((v) => renderFile(row, v)),
+      showAll || more === 0 ? null : (
+        <button
+          key="q4nx-more-files"
+          type="button"
+          data-testid="q4nx-more-files"
+          onClick={() => setAllFilesOf((ids) => [...ids, row.id])}
+          className="w-full rounded-full py-1 pl-2 text-left text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          {more} more {more === 1 ? "file" : "files"}, re-quantized or not readable by this model
+        </button>
+      ),
+    ];
+  };
+
+  const renderFile = (row: SourceRow, v: GgufVariantDetail) => {
+    const picked = row.id === selectedId && v.filename === filename;
+    const memory = q4nxNpuMemory(weightsOf(row, v), windowGb);
+    return (
+      <div key={v.filename}>
+        <button
+          type="button"
+          data-testid="q4nx-source-file"
+          aria-pressed={picked}
+          onClick={() => {
+            pick(row.id, v.filename);
+            setSettingsOpen(true);
+          }}
+          className={cn(
+            "flex w-full min-w-0 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            picked && "bg-sidebar-accent",
           )}
-        </div>
-      );
-    });
+        >
+          <span className="min-w-0 flex-1 truncate font-mono text-xs">
+            {fileName(v.filename)}
+            {packingTag(v.quant, row.architecture, row.id)}
+          </span>
+          <span className="flex shrink-0 items-center gap-1.5 font-mono text-ui-10 text-muted-foreground tabular-nums">
+            {memory && (
+              <span
+                data-testid="q4nx-source-memory"
+                className={cn(
+                  memory.fits === false &&
+                    "text-amber-600 dark:text-amber-500",
+                )}
+              >
+                {memory.label}
+              </span>
+            )}
+            <span>{formatFootprintBytes(v.size_bytes)}</span>
+          </span>
+        </button>
+        {picked && (
+          <NpuMemoryBar
+            memory={memory}
+            windowGb={windowGb}
+            className="mb-1 px-2"
+          />
+        )}
+      </div>
+    );
   };
 
   const listPage = (

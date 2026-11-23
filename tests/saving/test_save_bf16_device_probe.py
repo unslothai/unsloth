@@ -221,6 +221,8 @@ def test_a_merged_16bit_save_casts_by_the_device_probe(device, bf16, tmp_path, m
         "unsloth_zoo.saving_utils",
         types.ModuleType("unsloth_zoo.saving_utils"),
     )
+    # The per-shard cast reads real tensors; the eager cast takes the same _target_dtype.
+    monkeypatch.setenv("UNSLOTH_SAVE_EAGER_CAST", "1")
     cast_dtypes = []
     namespace = _generic_save_namespace(bf16, cast_dtypes)
     model = _FullModel()

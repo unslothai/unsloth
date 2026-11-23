@@ -136,6 +136,14 @@ def test_preformatted_text_keeps_its_layout(ebooks):
     assert ebooks._html_text(data) == "Intro text\n\ndef f():\n    return 1"
 
 
+def test_soft_hyphens_and_zero_width_characters_do_not_split_words(ebooks):
+    html = (
+        "<html><body><p>Donau&shy;dampf&#173;schiff \u200b fahrt\u2060en \ufeffgehen.</p>"
+        "<pre>co\u00adop\n  run</pre></body></html>"
+    )
+    assert ebooks._html_text(html.encode()) == "Donaudampfschiff fahrten gehen.\n\ncoop\n  run"
+
+
 def test_definition_lists_and_figures_do_not_merge_words(ebooks):
     data = (
         b"<html><body><dl><dt>Term</dt><dd>Definition</dd></dl>"
@@ -160,6 +168,37 @@ def test_definition_lists_and_figures_do_not_merge_words(ebooks):
 def test_ruby_readings_are_not_inlined_into_the_text(ebooks, ruby):
     data = f"<html><body><p>{ruby}に行く。</p></body></html>".encode("utf-8")
     assert ebooks._html_text(data) == "東京に行く。"
+
+
+@pytest.mark.parametrize(
+    "markup",
+    [
+        "<template><p>Card title placeholder</p></template>",
+        '<audio src="a.mp3" controls="controls">Your reader does not support audio.</audio>',
+        '<video src="a.mp4"><p>Your reader does not support video.</p><track kind="captions"/></video>',
+    ],
+)
+def test_content_a_reader_does_not_display_is_not_training_text(ebooks, markup):
+    html = f"<html><body><p>Before.</p>{markup}<p>After.</p></body></html>"
+    assert ebooks._html_text(html.encode()) == "Before.\n\nAfter."
+
+
+def test_canvas_fallback_is_kept_for_readers_without_scripting(ebooks):
+    html = (
+        '<html><body><p>Before.</p><canvas id="chart"><p>Sales rose 4%.</p></canvas></body></html>'
+    )
+    assert ebooks._html_text(html.encode()) == "Before.\n\nSales rose 4%."
+
+
+def test_mathml_annotation_is_not_appended_to_the_formula(ebooks):
+    html = (
+        '<html><body><p>Area <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics>'
+        "<mrow><mi>x</mi><mo>+</mo><mn>2</mn></mrow>"
+        '<annotation encoding="application/x-tex">x + 2</annotation>'
+        '<annotation-xml encoding="MathML-Content"><apply><plus/><ci>x</ci><cn>2</cn></apply>'
+        "</annotation-xml></semantics></math> units.</p></body></html>"
+    )
+    assert ebooks._html_text(html.encode()) == "Area x+2 units."
 
 
 def test_bom_is_dropped_when_xml_declares_utf8(ebooks):

@@ -156,6 +156,38 @@ def test_image_load_beside_a_resident_chat_model_policy_matrix(cores, policy, ne
     assert arb._media_needs.get(arb.DIFFUSION) == (need if policy != "off" else None)
 
 
+# spare_chat loads beside the chat model or is refused with nothing unloaded.
+@pytest.mark.parametrize(
+    "policy, need, short, refused",
+    [
+        ("off", {0: 4096}, False, True),  # Off always swaps, so it refuses
+        ("fit", {0: 4096}, False, False),  # fits: both stay
+        ("fit", {0: 4096}, True, True),  # short: never frees the chat model
+        ("fit", None, False, True),  # unpriced: would evict first, so it refuses
+    ],
+)
+def test_spare_chat_loads_beside_chat_or_refuses_without_evicting(
+    cores, policy, need, short, refused
+):
+    cores.fits(*([arb.CHAT] if short else []))
+    arb.acquire_for(arb.CHAT, gpu_ids = [0])
+    evicted: list = []
+    with pytest.raises(arb.GpuOwnerBusyError) if refused else nullcontext() as caught:
+        arb.acquire_for(
+            arb.DIFFUSION,
+            lambda: None,
+            policy = policy,
+            need_mib = need,
+            evicted = evicted,
+            spare_chat = True,
+        )
+    assert cores.calls == [] and evicted == []
+    assert arb.CHAT in arb.residents()
+    assert (arb.DIFFUSION in arb.residents()) is not refused
+    if refused:
+        assert caught.value.owner == arb.CHAT
+
+
 @pytest.mark.parametrize(
     "policy, growth, outcome",
     [("always", 512, "join"), ("fit", None, "evict"), ("always", None, "refuse")],
