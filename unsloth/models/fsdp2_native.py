@@ -2673,7 +2673,9 @@ def _generate_request_bytes(model, args, kwargs):
             max_length = pick("max_length")
             if max_length is None:
                 return None
-            new = max(0, int(max_length) - prompt - cached)
+            # generate bounds the output by max_length minus the ids it was given; cached history
+            # counts toward the cache rows below, not toward this subtraction (requested_new_tokens).
+            new = max(0, int(max_length) - prompt)
         # Outputs generate keeps for the whole call: scores / logits are one fp32 batch x vocab tensor per
         # generated token; attentions and hidden states per step cannot be sized here, so decline.
         retained_per_token = 0

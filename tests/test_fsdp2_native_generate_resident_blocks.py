@@ -252,6 +252,27 @@ def test_request_estimate_counts_retained_outputs_and_cached_history():
     )
 
 
+def test_request_estimate_max_length_ignores_cached_history():
+    """generate bounds a suffix-only call by max_length - len(input_ids), so 4096 cached tokens must not
+    eat the max_length budget: an 8-token suffix with max_length = 2056 decodes 2048 new tokens."""
+    config = types.SimpleNamespace(
+        num_hidden_layers = 2, hidden_size = 64, num_attention_heads = 4, num_key_value_heads = 2,
+        head_dim = 16, intermediate_size = 128, vocab_size = 1000, torch_dtype = torch.bfloat16,
+    )  # fmt: skip
+    model = types.SimpleNamespace(config = config, generation_config = None)
+    ids = torch.zeros(1, 8, dtype = torch.long)
+
+    class Cache:
+        def get_seq_length(self):
+            return 4096
+
+    def estimate(**kw):
+        return F._generate_request_bytes(model, (ids,), {"past_key_values": Cache(), **kw})
+
+    assert estimate(max_length = 2056) == estimate(max_new_tokens = 2048)
+    assert estimate(max_length = 2056) > estimate(max_new_tokens = 0)
+
+
 def _qwen_like(**extra):
     config = types.SimpleNamespace(
         num_hidden_layers = 28, hidden_size = 1536, num_attention_heads = 12, num_key_value_heads = 2,
