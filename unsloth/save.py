@@ -2656,8 +2656,9 @@ def _convert_into_gguf_directory(
     print_output,
     gguf_directory,
     conversion_staging,
+    intermediate_is_transient = False,
 ):
-    """Convert to GGUF and place the files in `gguf_directory`; without a staging folder the converter writes to the CWD."""
+    """Convert to GGUF and place the files in `gguf_directory`; without a staging folder the converter writes to the CWD. `intermediate_is_transient` says the text GGUF is only the quantizer's input and is deleted afterwards, so it must not replace a file already at its name (a prior BF16 / F16 export)."""
     print("Unsloth: Preparing converter script...")
     with use_local_gguf():
         converter_path, supported_text_archs, supported_vision_archs = (
@@ -2703,12 +2704,36 @@ def _convert_into_gguf_directory(
                 )
 
     os.makedirs(gguf_directory, exist_ok = True)
+    destinations = {
+        fpath: os.path.join(gguf_directory, os.path.basename(fpath)) for fpath in initial_files
+    }
+    if intermediate_is_transient:
+        text_files = [f for f in initial_files if "-mmproj" not in os.path.basename(f).lower()]
+        if any(os.path.lexists(destinations[f]) for f in text_files):
+            destinations.update(_transient_gguf_names(text_files, gguf_directory))
     moved_files = []
     for fpath in initial_files:
-        dst = os.path.join(gguf_directory, os.path.basename(fpath))
+        dst = destinations[fpath]
         _place_gguf_output(fpath, dst)
         moved_files.append(dst)
     return moved_files, is_vlm_update
+
+
+def _transient_gguf_names(text_files, gguf_directory):
+    """Unused names in `gguf_directory` for a throwaway intermediate whose own name is taken. One
+    marker for every shard, ahead of the `-0000k-of-0000n` suffix llama-quantize finds the rest by."""
+    import uuid
+    while True:
+        marker = f".unsloth-intermediate-{uuid.uuid4().hex[:8]}"
+        names = {}
+        for fpath in text_files:
+            match = re.match(r"^(.*?)(-\d{5}-of-\d{5})?\.gguf$", os.path.basename(fpath))
+            stem, split = (
+                (match.group(1), match.group(2) or "") if match else (os.path.basename(fpath), "")
+            )
+            names[fpath] = os.path.join(gguf_directory, f"{stem}{marker}{split}.gguf")
+        if not any(os.path.lexists(dst) for dst in names.values()):
+            return names
 
 
 def _gguf_conversion_staging(gguf_directory):
@@ -3053,6 +3078,9 @@ def save_to_gguf(
             print_output = print_output,
             gguf_directory = gguf_directory,
             conversion_staging = conversion_staging,
+            # Deleted after quantizing (want_full_precision below), so it must never take a prior export's name.
+            intermediate_is_transient = not is_gpt_oss
+            and first_conversion not in quantization_method,
         )
     except BaseException:
         if conversion_staging is not None:
