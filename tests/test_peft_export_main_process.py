@@ -61,6 +61,42 @@ def _fake_ddp(
     monkeypatch.setattr(dist, "get_world_size", lambda: world)
 
 
+def _fake_gguf_push(monkeypatch, tmp_path):
+    """unsloth_save_pretrained_gguf and HfApi -> call recorders."""
+    calls = {"save": 0, "hub": []}
+    gguf_file = tmp_path / "model.Q8_0.gguf"
+    gguf_file.write_bytes(b"gguf")
+
+    def fake_save_gguf(self, save_directory, **kwargs):
+        calls["save"] += 1
+        return {
+            "save_directory": save_directory,
+            "gguf_directory": save_directory,
+            "gguf_files": [str(gguf_file)],
+            "modelfile_location": None,
+            "want_full_precision": False,
+            "is_vlm": False,
+            "fix_bos_token": False,
+        }
+
+    class FakeHub:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __getattr__(self, name):
+            def record(*args, **kwargs):
+                calls["hub"].append(name)
+                return {"name": "user"} if name == "whoami" else None
+
+            return record
+
+    monkeypatch.setattr(unsloth_save, "unsloth_save_pretrained_gguf", fake_save_gguf)
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", FakeHub)
+    return calls
+
+
 def _generic_save(model, directory, **kwargs):
     return unsloth_save.unsloth_generic_save(
         model = model,
@@ -109,12 +145,10 @@ def test_save_pretrained_merged_under_ddp_pushes_from_rank0_only(monkeypatch, tm
     calls = _counted_merge(monkeypatch)
     _fake_ddp(monkeypatch, rank)
     model = _tiny_peft_model()
-    # A local merged save still runs on every rank (identical weights), like save_pretrained.
     unsloth_save.unsloth_generic_save_pretrained_merged(
         model, str(tmp_path / "local"), None, save_method = "merged_16bit"
     )
     assert len(calls) == 1 and calls[0]["push_to_hub"] is False
-    # Its push_to_hub flavour uploads from rank 0 alone.
     out = unsloth_save.unsloth_generic_save_pretrained_merged(
         model,
         "user/repo",
@@ -131,37 +165,7 @@ def test_save_pretrained_merged_under_ddp_pushes_from_rank0_only(monkeypatch, tm
 
 @pytest.mark.parametrize("rank", [0, 1])
 def test_push_to_hub_gguf_uploads_from_rank0_only(monkeypatch, tmp_path, rank):
-    calls = {"save": 0, "hub": []}
-    gguf_file = tmp_path / "model.Q8_0.gguf"
-    gguf_file.write_bytes(b"gguf")
-
-    def fake_save_gguf(self, save_directory, **kwargs):
-        calls["save"] += 1
-        return {
-            "save_directory": save_directory,
-            "gguf_directory": save_directory,
-            "gguf_files": [str(gguf_file)],
-            "modelfile_location": None,
-            "want_full_precision": False,
-            "is_vlm": False,
-            "fix_bos_token": False,
-        }
-
-    class FakeHub:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __getattr__(self, name):
-            def record(*args, **kwargs):
-                calls["hub"].append(name)
-                return {"name": "user"} if name == "whoami" else None
-
-            return record
-
-    monkeypatch.setattr(unsloth_save, "unsloth_save_pretrained_gguf", fake_save_gguf)
-    import huggingface_hub
-
-    monkeypatch.setattr(huggingface_hub, "HfApi", FakeHub)
+    calls = _fake_gguf_push(monkeypatch, tmp_path)
     _fake_ddp(monkeypatch, rank)
     out = unsloth_save.unsloth_push_to_hub_gguf(
         _tiny_peft_model(), "user/repo", object(), token = "hf_x"
@@ -216,37 +220,7 @@ def test_save_pretrained_gguf_inside_fsdp2_gather_ignores_the_flag(monkeypatch, 
 def test_push_to_hub_gguf_inside_fsdp2_gather_ignores_the_flag(monkeypatch, tmp_path):
     """An FSDP2 sub-mesh writer with is_main_process=False must still run push_to_hub_gguf."""
     monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: True)
-    calls = {"save": 0, "hub": []}
-    gguf_file = tmp_path / "model.Q8_0.gguf"
-    gguf_file.write_bytes(b"gguf")
-
-    def fake_save_gguf(self, save_directory, **kwargs):
-        calls["save"] += 1
-        return {
-            "save_directory": save_directory,
-            "gguf_directory": save_directory,
-            "gguf_files": [str(gguf_file)],
-            "modelfile_location": None,
-            "want_full_precision": False,
-            "is_vlm": False,
-            "fix_bos_token": False,
-        }
-
-    class FakeHub:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __getattr__(self, name):
-            def record(*args, **kwargs):
-                calls["hub"].append(name)
-                return {"name": "user"} if name == "whoami" else None
-
-            return record
-
-    monkeypatch.setattr(unsloth_save, "unsloth_save_pretrained_gguf", fake_save_gguf)
-    import huggingface_hub
-
-    monkeypatch.setattr(huggingface_hub, "HfApi", FakeHub)
+    calls = _fake_gguf_push(monkeypatch, tmp_path)
     unsloth_save.unsloth_push_to_hub_gguf(
         _tiny_peft_model(), "user/repo", object(), token = "hf_x", is_main_process = False
     )
