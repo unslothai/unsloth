@@ -136,6 +136,14 @@ def test_preformatted_text_keeps_its_layout(ebooks):
     assert ebooks._html_text(data) == "Intro text\n\ndef f():\n    return 1"
 
 
+def test_soft_hyphens_and_zero_width_characters_do_not_split_words(ebooks):
+    html = (
+        "<html><body><p>Donau&shy;dampf&#173;schiff \u200b fahrt\u2060en \ufeffgehen.</p>"
+        "<pre>co\u00adop\n  run</pre></body></html>"
+    )
+    assert ebooks._html_text(html.encode()) == "Donaudampfschiff fahrten gehen.\n\ncoop\n  run"
+
+
 def test_definition_lists_and_figures_do_not_merge_words(ebooks):
     data = (
         b"<html><body><dl><dt>Term</dt><dd>Definition</dd></dl>"
