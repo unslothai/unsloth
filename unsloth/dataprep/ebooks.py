@@ -100,11 +100,12 @@ class _BookTextParser(HTMLParser):
                 charset = re.search(r"charset\s*=\s*[\"']?([\w-]+)", attrs.get("content", ""), re.I)
                 if charset:
                     self.encoding = charset[1]
+        parent = self.stack[-1][1] if self.stack else False
         hidden = (
-            (self.stack[-1][1] if self.stack else False)
-            or tag in _IGNORE
+            tag in _IGNORE
             or "hidden" in attrs
             or attrs.get("aria-hidden", "").lower() == "true"
+            or parent
         )
         # Print page numbers are not prose, but their block breaks and edge whitespace still separate words.
         page_number = (
@@ -136,10 +137,12 @@ class _BookTextParser(HTMLParser):
             self.parts.append("\n\n")
 
     def handle_data(self, data):
-        if self.stack and self.stack[-1][1] == "page":
-            if data[:1].isspace() or data[-1:].isspace():
-                self.parts.append(" ")
-        elif not self.stack or not self.stack[-1][1]:
+        state = self.stack[-1][1] if self.stack else False
+        if state == "page":
+            if not data.isspace():
+                data = data[: len(data) - len(data.lstrip())] + data[len(data.rstrip()) :]
+            state = not data
+        if not state:
             if any(tag == "pre" for tag, _ in self.stack):
                 self.parts.append(f"\ue000{len(self.preformatted)}\ue001")
                 self.preformatted.append(data)

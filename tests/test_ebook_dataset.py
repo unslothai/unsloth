@@ -168,6 +168,8 @@ def test_print_page_numbers_are_not_inlined_into_the_text(ebooks, marker):
         (b'<p>quick<span epub:type="pagebreak"> 12 </span>brown</p>', "quick brown"),
         (b'<p>quick<span role="doc-pagebreak"><b>12</b> </span>brown</p>', "quick brown"),
         (b'<p>exam<span epub:type="pagebreak">12</span>ple</p>', "example"),
+        (b'<p>exam<span role="doc-pagebreak"><span hidden>12 </span></span>ple</p>', "example"),
+        (b'<pre>x=1<span role="doc-pagebreak">\n</span>y=2</pre>', "x=1\ny=2"),
     ],
 )
 def test_page_break_markers_keep_word_separators(ebooks, html, expected):
