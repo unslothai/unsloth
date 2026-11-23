@@ -170,7 +170,6 @@ def test_no_torch_install_starts_no_repair_unless_the_verdict_blames_mlx(monkeyp
 
 
 def test_no_torch_install_repairs_a_stack_the_verdict_blames(monkeypatch):
-    """Chat only serves MLX models, and the repair installs only mlx, mlx-lm and mlx-vlm."""
     _apple_silicon_without_mlx(monkeypatch)
     _hardware(monkeypatch, blames_mlx = True)
     monkeypatch.setattr(mr, "_installed_without_torch", lambda: True)
