@@ -188,7 +188,8 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
         "Ubuntu-ARM64.deb",
         "Ubuntu-ARM64.deb.sig",
         "Windows.exe",
-        "Windows.exe.sig",
+        "Windows-x64.exe",
+        "Windows-x64.exe.sig",
         "Windows-ARM64.exe",
         "Windows-ARM64.exe.sig",
     }

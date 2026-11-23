@@ -2361,12 +2361,16 @@ export const ja = {
         label: "インストールの種類",
         description:
           "チャット専用 (GGUF)。フルインストールでは、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が追加されます。",
+        descriptionMlx:
+          "チャット専用 (GGUF/MLX)。フルインストールでは、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が追加されます。",
         descriptionCpu:
           "チャット専用 (GGUF)。対応 GPU が見つからないため、フルインストールでは CPU でのトレーニングが追加されます。",
         action: "フルインストールにアップグレード",
         confirmTitle: "フルインストールにアップグレードしますか？",
         confirmDescription:
           "このチャット専用インストールは GGUF モデルを実行します。フルインストールでは、このマシンの GPU 向けの PyTorch が追加され、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が使えるようになります。数 GB（5 GB 以上のディスク容量）をダウンロードしてサーバーを再起動します。チャット、モデル、設定は保持されます。数分かかる場合があります。",
+        confirmDescriptionMlx:
+          "このチャット専用インストールは GGUF/MLX モデルを実行します。フルインストールでは、このマシンの GPU 向けの PyTorch が追加され、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が使えるようになります。数 GB（5 GB 以上のディスク容量）をダウンロードしてサーバーを再起動します。チャット、モデル、設定は保持されます。数分かかる場合があります。",
         confirmDescriptionCpu:
           "このチャット専用インストールは GGUF モデルを実行します。このマシンには対応 GPU が見つからないため、フルインストールでは CPU 向けの PyTorch が追加され、CPU でのトレーニングが使えるようになります。CPU でのトレーニングは GPU よりも大幅に遅くなります。5 GB 以上のディスク容量が必要で、サーバーを再起動します。チャット、モデル、設定は保持されます。数分かかる場合があります。",
         confirmAction: "アップグレード",
@@ -3175,7 +3179,7 @@ export const ja = {
       projectAttachmentsHint: "各チャットの添付メニューで個別に変更できます。",
       rememberParamsPerModelHint:
         "オフの場合、すべてのモデルで同じ設定を使います。",
-      autoCompactHint: "ローカルの GGUF と MLX チャット：文脈から外れたターンは索引化され、モデルが検索して取り出せます。リセットでは、収まる範囲の継続的な指示がそのままの文言で引き継がれ、途中のものより最も古いものと最も新しいものが優先されます。アーカイブには保存済みのチャットとベクトル索引が必要で、それらがない場合、古いターンは破棄されます。空きVRAMではなく、設定したコンテキスト長を基準にします。API モデル：対応していればプロバイダーが古いターンを要約し、そうでなければチャットがモデルの公開コンテキスト長に近づいたときに最も古いターンが破棄されます。",
+      autoCompactHint: "ローカルの GGUF と MLX チャット：文脈から外れたターンは索引化され、モデルが検索して取り出せます。リセットでは、収まる範囲の継続的な指示がそのままの文言で引き継がれ、途中のものより最も古いものと最も新しいものが優先されます。アーカイブには保存済みのチャットとベクトル索引が必要で、それらがない場合、古いターンは破棄されます。空きVRAMではなく、設定したコンテキスト長を基準にします。API モデル：対応していればプロバイダーが古いターンを要約し、そうでなければチャットがモデルの公開コンテキスト長に近づいたときに最も古いターンが文脈から外され、同じように索引化されます。",
       pastedTextShortDescription:
         "{count}文字以上の貼り付けテキストは .txt 添付ファイルになります。",
       pastedTextOffDescription:
@@ -4884,6 +4888,14 @@ export const ja = {
     copied: "コピーしました",
     useAsSource: "このテキストを翻訳",
     downloadSubtitles: "字幕をダウンロード",
+    imageOverlay: {
+      show: "画像に表示",
+      title: "画像上の翻訳",
+      description: "翻訳したテキストを、元のテキストがあった位置に画像の上から描画します。",
+      working: "画像のテキストを翻訳しています…",
+      download: "画像をダウンロード",
+      failed: "翻訳を画像に描画できませんでした。",
+    },
     stale: "テキストまたは設定が変更されました。更新するにはもう一度翻訳してください。",
     stopped: "途中で停止しました。残りを訳すにはもう一度翻訳してください。",
     chat: "翻訳したテキストでチャット",
@@ -5981,5 +5993,77 @@ export const ja = {
       inVram: "VRAM に {amount}",
       inRam: "RAM に {amount}",
     },
+  },
+  onboarding: {
+    dialogTitle: "Unsloth のセットアップ",
+    close: "閉じる",
+    back: "戻る",
+    continue: "続ける",
+    skipSetup: "セットアップをスキップ",
+    getStarted: "はじめる",
+    progress: "ステップ {current}/{total}",
+    welcome: {
+      title: "Unsloth へようこそ",
+      titleName: "ようこそ、{name} さん",
+      body: "オープンモデルを、お使いのコンピューターで実行・学習できます。",
+    },
+    profile: {
+      label: "お名前",
+      placeholder: "何とお呼びしましょうか？",
+      initials: "イニシャル",
+      sloth: "ナマケモノ",
+      upload: "アップロード",
+      uploading: "アップロード中…",
+      yours: "あなたの写真",
+      uploadError: "この画像は使用できませんでした。JPEG、PNG、WebP、GIF をお試しください。",
+    },
+    look: {
+      title: "自分好みに",
+      body: "あとから設定でいつでも変更できます。",
+      theme: "テーマ",
+    },
+    scene: {
+      wallpaper: "壁紙",
+      none: "なし",
+      upload: "アップロード",
+      error: "この画像は使用できませんでした。JPEG、PNG、WebP をお試しください。",
+      solid: "ソリッド",
+      glassOn: "ガラス",
+    },
+    device: {
+      checking: "このコンピューターを確認しています…",
+      error: "このコンピューターを確認できませんでした。チャットはそのまま始められます。",
+      cpuOnly: "GPU が見つかりません。CPU で実行します",
+      appleSilicon: "Apple Silicon（Metal で高速化）",
+      moreGpus: "他 {count} 台",
+      vram: "VRAM {size} GB",
+      unified: "ユニファイドメモリ {size} GB",
+      ram: "RAM {size} GB",
+      chat: "チャット",
+      train: "学習",
+      image: "画像生成",
+      video: "動画生成",
+    },
+    done: {
+      title: "準備ができました",
+      titleName: "準備ができました、{name} さん",
+      startChat: "次に、ダウンロードするモデルを選んでチャットを始めましょう。",
+      tour: "使い方を見る",
+      tourBody: "チャットの短いガイドツアー。",
+      open: "チャットを始める",
+    },
+    connect: {
+      title: "自分のアカウントを使う",
+      body: "任意。ローカルモデルと並べてチャットで使えます。",
+      chatgpt: "ChatGPT",
+      chatgptBody: "ChatGPT のプランでサインイン。",
+      claude: "Claude",
+      claudeBody: "Anthropic の API キーを追加。",
+      connect: "接続",
+      connected: "接続済み",
+    },
+    settingsLabel: "ようこそガイド",
+    settingsDescription: "初回セットアップをもう一度確認します。",
+    settingsOpen: "開く",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

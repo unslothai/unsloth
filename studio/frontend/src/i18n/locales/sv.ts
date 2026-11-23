@@ -2521,12 +2521,16 @@ export const sv = {
         label: "Installationstyp",
         description:
           "Endast chatt (GGUF). Den fullständiga installationen lägger till träning, export, video, safetensors-modeller och fler funktioner för bildgenerering.",
+        descriptionMlx:
+          "Endast chatt (GGUF/MLX). Den fullständiga installationen lägger till träning, export, video, safetensors-modeller och fler funktioner för bildgenerering.",
         descriptionCpu:
           "Endast chatt (GGUF). Ingen GPU som stöds hittades, så den fullständiga installationen lägger till träning på CPU:n.",
         action: "Uppgradera till fullständig installation",
         confirmTitle: "Uppgradera till den fullständiga installationen?",
         confirmDescription:
           "Den här installationen med endast chatt kör GGUF-modeller. Den fullständiga installationen lägger till PyTorch för den här datorns GPU, vilket aktiverar träning, export, video, safetensors-modeller och fler funktioner för bildgenerering. Den laddar ner flera gigabyte (minst 5 GB diskutrymme) och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
+        confirmDescriptionMlx:
+          "Den här installationen med endast chatt kör GGUF/MLX-modeller. Den fullständiga installationen lägger till PyTorch för den här datorns GPU, vilket aktiverar träning, export, video, safetensors-modeller och fler funktioner för bildgenerering. Den laddar ner flera gigabyte (minst 5 GB diskutrymme) och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
         confirmDescriptionCpu:
           "Den här installationen med endast chatt kör GGUF-modeller. Ingen GPU som stöds hittades på den här datorn, så den fullständiga installationen lägger till PyTorch för CPU:n, vilket aktiverar träning på CPU:n. Träning på CPU är mycket långsammare än på GPU. Den kräver minst 5 GB diskutrymme och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
         confirmAction: "Uppgradera",
@@ -3352,7 +3356,7 @@ export const sv = {
       rememberParamsPerModelHint:
         "När det är av används samma inställningar för alla modeller.",
       autoCompactHint:
-        "Endast lokala GGUF- och MLX-chattar. Borttagna turer indexeras så att modellen kan söka fram dem igen, och en återställning citerar de stående instruktioner som får plats ordagrant, där de äldsta och nyaste prioriteras före mitten. Arkivering kräver en sparad chatt och vektorindexet; utan dem tas äldre turer bort. Använder den kontextlängd du har angett, inte tillgängligt VRAM.",
+        "Lokala GGUF- och MLX-chattar: borttagna turer indexeras så att modellen kan söka fram dem igen, och en återställning citerar de stående instruktioner som får plats ordagrant, där de äldsta och nyaste prioriteras före mitten. Arkivering kräver en sparad chatt och vektorindexet; utan dem tas äldre turer bort. Använder den kontextlängd du har angett, inte tillgängligt VRAM. API-modeller: leverantören sammanfattar äldre turer där den kan, annars tas de äldsta turerna bort ur kontexten när chatten närmar sig modellens publicerade kontextfönster och indexeras på samma sätt.",
       pastedTextShortDescription:
         "Inklistringar på {count} tecken eller fler blir .txt-bilagor.",
       pastedTextOffDescription:
@@ -5150,6 +5154,14 @@ export const sv = {
     copied: "Kopierat",
     useAsSource: "Översätt den här texten",
     downloadSubtitles: "Ladda ned undertexter",
+    imageOverlay: {
+      show: "Visa på bilden",
+      title: "Översättning på bilden",
+      description: "Den översatta texten ritas över bilden där originaltexten fanns.",
+      working: "Översätter texten på bilden…",
+      download: "Ladda ned bilden",
+      failed: "Det gick inte att rita översättningen på bilden.",
+    },
     stale: "Texten eller inställningarna har ändrats. Översätt igen för att uppdatera.",
     stopped: "Stoppades före slutet. Översätt igen för resten.",
     chat: "Chatta med översatt text",
@@ -6275,5 +6287,77 @@ export const sv = {
       inVram: "{amount} i VRAM",
       inRam: "{amount} i RAM",
     },
+  },
+  onboarding: {
+    dialogTitle: "Konfigurera Unsloth",
+    close: "Stäng",
+    back: "Tillbaka",
+    continue: "Fortsätt",
+    skipSetup: "Hoppa över konfigurering",
+    getStarted: "Kom igång",
+    progress: "Steg {current} av {total}",
+    welcome: {
+      title: "Välkommen till Unsloth",
+      titleName: "Välkommen, {name}",
+      body: "Kör och träna öppna modeller, direkt på din dator.",
+    },
+    profile: {
+      label: "Ditt namn",
+      placeholder: "Vad ska vi kalla dig?",
+      initials: "Initialer",
+      sloth: "Sengångare",
+      upload: "Ladda upp",
+      uploading: "Laddar upp…",
+      yours: "Ditt foto",
+      uploadError: "Bilden kunde inte användas. Prova JPEG, PNG, WebP eller GIF.",
+    },
+    look: {
+      title: "Gör den till din",
+      body: "Du kan ändra allt senare i Inställningar.",
+      theme: "Tema",
+    },
+    scene: {
+      wallpaper: "Bakgrundsbild",
+      none: "Ingen",
+      upload: "Ladda upp",
+      error: "Bilden kunde inte användas. Prova JPEG, PNG eller WebP.",
+      solid: "Heltäckande",
+      glassOn: "Glas",
+    },
+    device: {
+      checking: "Undersöker den här datorn…",
+      error: "Kunde inte undersöka den här datorn. Du kan ändå börja chatta.",
+      cpuOnly: "Ingen GPU hittades, körs på processorn",
+      appleSilicon: "Apple Silicon, accelererad med Metal",
+      moreGpus: "+{count} till",
+      vram: "{size} GB VRAM",
+      unified: "{size} GB delat minne",
+      ram: "{size} GB RAM",
+      chat: "Chatt",
+      train: "Träning",
+      image: "Bilder",
+      video: "Video",
+    },
+    done: {
+      title: "Allt är klart",
+      titleName: "Allt är klart, {name}",
+      startChat: "Välj nu en modell att ladda ned och börja chatta.",
+      tour: "Visa mig runt",
+      tourBody: "En kort guidad tur i chatten.",
+      open: "Börja chatta",
+    },
+    connect: {
+      title: "Använd egna konton",
+      body: "Valfritt. Använd dem i chatten bredvid dina lokala modeller.",
+      chatgpt: "ChatGPT",
+      chatgptBody: "Logga in med din ChatGPT-plan.",
+      claude: "Claude",
+      claudeBody: "Lägg till en API-nyckel från Anthropic.",
+      connect: "Anslut",
+      connected: "Ansluten",
+    },
+    settingsLabel: "Välkomstguide",
+    settingsDescription: "Gå igenom den första konfigureringen igen.",
+    settingsOpen: "Öppna",
   },
 } as const;

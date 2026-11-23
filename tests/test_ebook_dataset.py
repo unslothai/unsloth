@@ -153,6 +153,81 @@ def test_definition_lists_and_figures_do_not_merge_words(ebooks):
 
 
 @pytest.mark.parametrize(
+    "marker",
+    [
+        '<span epub:type="pagebreak" id="p12">12</span>',
+        '<span role="doc-pagebreak" id="p12">12</span>',
+        '<a epub:type="pagebreak" role="doc-pagebreak" id="p12" title="12"/>',
+    ],
+)
+def test_print_page_numbers_are_not_inlined_into_the_text(ebooks, marker):
+    html = (
+        '<html xmlns:epub="http://www.idpf.org/2007/ops"><body><p>The quick '
+        + marker
+        + 'brown fox.</p><div epub:type="pagebreak">13</div><p>Next.</p></body></html>'
+    )
+    assert ebooks._html_text(html.encode()) == "The quick brown fox.\n\nNext."
+
+
+@pytest.mark.parametrize(
+    "html, expected",
+    [
+        (b'<p>quick<span epub:type="pagebreak"> </span>brown</p>', "quick brown"),
+        (b'<p>quick<span epub:type="pagebreak"> 12 </span>brown</p>', "quick brown"),
+        (b'<p>quick<span role="doc-pagebreak"><b>12</b> </span>brown</p>', "quick brown"),
+        (b'<p>exam<span epub:type="pagebreak">12</span>ple</p>', "example"),
+        (b'<p>exam<span role="doc-pagebreak"><span hidden>12 </span></span>ple</p>', "example"),
+        (b'<pre>x=1<span role="doc-pagebreak">\n</span>y=2</pre>', "x=1\ny=2"),
+        (
+            b'<pre>return<span role="doc-pagebreak"> 12<span aria-hidden="true"><img src="x"/></span></span>None</pre>',
+            "return None",
+        ),
+        (b'<p>quick<span epub:type="pagebreak"><br/></span>brown</p>', "quick\nbrown"),
+        (b'<p>exam<span epub:type="pagebreak">Page <b>12</b></span>ple</p>', "example"),
+        (
+            b'<p>a <span epub:type="pagebreak"><span epub:type="pagebreak">1</span>2</span> b</p>',
+            "a b",
+        ),
+        (
+            b'<p>exam<span role="doc-pagebreak">Page <span role="doc-pagebreak">12</span></span>ple</p>',
+            "example",
+        ),
+    ],
+)
+def test_page_break_markers_keep_word_separators(ebooks, html, expected):
+    assert ebooks._html_text(html) == expected
+
+
+@pytest.mark.parametrize(
+    "html, expected",
+    [
+        (
+            b'<body><p role="doc-pagebreak">12<p>Actual chapter text</body>',
+            "12\n\nActual chapter text",
+        ),
+        (
+            b'<body><p role="doc-pagebreak">12<hr>Actual chapter text</body>',
+            "12\n\nActual chapter text",
+        ),
+        (b'<table><tr><td epub:type="pagebreak">12<td>Cell</table>', "12 Cell"),
+        (b'<p>The <span epub:type="pagebreak">12 quick brown fox</p>', "The 12 quick brown fox"),
+        (
+            "<ruby><rb role='doc-pagebreak'>12<rb>東京</rb></ruby>に行く。".encode(),
+            "12東京に行く。",
+        ),
+        (b'<p role="doc-pagebreak">12<hr>Actual chapter text</p>', "12\n\nActual chapter text"),
+    ],
+)
+def test_unclosed_page_break_markers_keep_their_text(ebooks, html, expected):
+    assert ebooks._html_text(html) == expected
+
+
+def test_block_page_break_markers_still_separate_text(ebooks):
+    html = b'<body>end<hr epub:type="pagebreak" title="5"/>start<div role="doc-pagebreak">6</div>more</body>'
+    assert ebooks._html_text(html) == "end\n\nstart\n\nmore"
+
+
+@pytest.mark.parametrize(
     "ruby",
     [
         "<ruby>東<rt>とう</rt>京<rt>きょう</rt></ruby>",
@@ -213,6 +288,24 @@ def test_declared_html_charset_is_honored(ebooks):
         )
     )
     assert ebooks._html_text(data) == "café"
+
+
+@pytest.mark.parametrize(
+    "markup",
+    [
+        "<p aria-hidden>Shown.</p>",
+        "<head><meta http-equiv content></head><body><p>Shown.</p></body>",
+        '<head><meta http-equiv="Content-Type" content></head><body><p>Shown.</p></body>',
+    ],
+)
+def test_valueless_attributes_do_not_abort_the_book(ebooks, markup):
+    assert ebooks._html_text(f"<html>{markup}</html>".encode()) == "Shown."
+    assert ebooks._html_text(b"<html><p hidden>Gone.</p><p>Shown.</p></html>") == "Shown."
+
+
+def test_valueless_meta_charset_defers_to_a_later_declaration(ebooks):
+    data = '<html><head><meta charset><meta charset="windows-1252"></head><p>café</p></html>'
+    assert ebooks._html_text(data.encode("cp1252")) == "café"
 
 
 def test_html_body_closes_implicit_head(ebooks):

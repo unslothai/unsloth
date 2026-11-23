@@ -533,7 +533,19 @@ class AdamWBF16(torch.optim.Optimizer):
 
     def load_state_dict(self, state_dict):
         saved = state_dict
-        super().load_state_dict(state_dict)
+        # torch casts every floating state tensor to its parameter's dtype (BF16 here) on its device. The FP32
+        # moments are rebuilt below from the saved values, so torch gets the state without them: no discarded
+        # BF16 copy of every moment (4 bytes per parameter at once, the resume's peak on a full-state load).
+        light = dict(state_dict)
+        light["state"] = {
+            key: (
+                {name: v for name, v in value.items() if name not in ("exp_avg", "exp_avg_sq")}
+                if isinstance(value, dict)
+                else value
+            )
+            for key, value in state_dict["state"].items()
+        }
+        super().load_state_dict(light)
         for group, original_group in zip(self.param_groups, saved["param_groups"]):
             for p, old_id in zip(group["params"], original_group["params"]):
                 original = saved["state"].get(old_id)

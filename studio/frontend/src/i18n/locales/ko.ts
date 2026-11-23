@@ -2368,12 +2368,16 @@ export const ko = {
         label: "설치 유형",
         description:
           "채팅 전용(GGUF). 전체 설치에는 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능이 추가됩니다.",
+        descriptionMlx:
+          "채팅 전용(GGUF/MLX). 전체 설치에는 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능이 추가됩니다.",
         descriptionCpu:
           "채팅 전용(GGUF). 지원되는 GPU가 없어 전체 설치에는 CPU 학습이 추가됩니다.",
         action: "전체 설치로 업그레이드",
         confirmTitle: "전체 설치로 업그레이드할까요?",
         confirmDescription:
           "이 채팅 전용 설치는 GGUF 모델을 실행합니다. 전체 설치는 이 컴퓨터의 GPU에 맞는 PyTorch를 추가하여 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능을 사용할 수 있게 합니다. 수 GB(디스크 공간 5GB 이상)를 다운로드하고 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmDescriptionMlx:
+          "이 채팅 전용 설치는 GGUF/MLX 모델을 실행합니다. 전체 설치는 이 컴퓨터의 GPU에 맞는 PyTorch를 추가하여 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능을 사용할 수 있게 합니다. 수 GB(디스크 공간 5GB 이상)를 다운로드하고 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
         confirmDescriptionCpu:
           "이 채팅 전용 설치는 GGUF 모델을 실행합니다. 이 컴퓨터에서 지원되는 GPU를 찾지 못했으므로 전체 설치는 CPU용 PyTorch를 추가하여 CPU에서 학습할 수 있게 합니다. CPU 학습은 GPU 학습보다 훨씬 느립니다. 디스크 공간이 5GB 이상 필요하며 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
         confirmAction: "업그레이드",
@@ -3182,7 +3186,7 @@ export const ko = {
       projectAttachmentsHint:
         "각 채팅의 첨부 메뉴에서 이 설정을 개별적으로 변경할 수 있습니다.",
       rememberParamsPerModelHint: "끄면 모든 모델에 같은 설정을 사용합니다.",
-      autoCompactHint: "로컬 GGUF 및 MLX 채팅: 밀려난 턴은 색인되어 모델이 다시 검색할 수 있고, 초기화 시에는 들어갈 수 있는 만큼의 계속 적용되는 지침이 원문 그대로 이어지며, 중간 것보다 가장 오래된 것과 가장 최근 것이 우선됩니다. 보관하려면 저장된 채팅과 벡터 색인이 필요하며, 없으면 오래된 턴은 그냥 삭제됩니다. 남은 VRAM이 아닌 설정한 컨텍스트 길이를 기준으로 합니다. API 모델: 제공자가 지원하면 오래된 턴을 요약하고, 그렇지 않으면 채팅이 모델의 공개된 컨텍스트 창에 가까워질 때 가장 오래된 턴이 삭제됩니다.",
+      autoCompactHint: "로컬 GGUF 및 MLX 채팅: 밀려난 턴은 색인되어 모델이 다시 검색할 수 있고, 초기화 시에는 들어갈 수 있는 만큼의 계속 적용되는 지침이 원문 그대로 이어지며, 중간 것보다 가장 오래된 것과 가장 최근 것이 우선됩니다. 보관하려면 저장된 채팅과 벡터 색인이 필요하며, 없으면 오래된 턴은 그냥 삭제됩니다. 남은 VRAM이 아닌 설정한 컨텍스트 길이를 기준으로 합니다. API 모델: 제공자가 지원하면 오래된 턴을 요약하고, 그렇지 않으면 채팅이 모델의 공개된 컨텍스트 창에 가까워질 때 가장 오래된 턴이 컨텍스트에서 빠지고 같은 방식으로 색인됩니다.",
       pastedTextShortDescription:
         "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일이 됩니다.",
       pastedTextOffDescription:
@@ -4924,6 +4928,14 @@ export const ko = {
     copied: "복사됨",
     useAsSource: "이 텍스트 번역",
     downloadSubtitles: "자막 다운로드",
+    imageOverlay: {
+      show: "이미지에 표시",
+      title: "이미지 위 번역",
+      description: "번역된 텍스트를 원래 텍스트가 있던 자리에 이미지 위로 그립니다.",
+      working: "이미지의 텍스트를 번역하는 중…",
+      download: "이미지 다운로드",
+      failed: "번역을 이미지에 그리지 못했습니다.",
+    },
     stale: "텍스트 또는 설정이 변경되었습니다. 다시 번역하여 업데이트하세요.",
     stopped: "끝나기 전에 중지되었습니다. 나머지를 보려면 다시 번역하세요.",
     chat: "번역된 텍스트로 채팅",
@@ -6021,5 +6033,77 @@ export const ko = {
       inVram: "VRAM에 {amount}",
       inRam: "RAM에 {amount}",
     },
+  },
+  onboarding: {
+    dialogTitle: "Unsloth 설정",
+    close: "닫기",
+    back: "뒤로",
+    continue: "계속",
+    skipSetup: "설정 건너뛰기",
+    getStarted: "시작하기",
+    progress: "{total}단계 중 {current}단계",
+    welcome: {
+      title: "Unsloth에 오신 것을 환영합니다",
+      titleName: "환영합니다, {name}님",
+      body: "오픈 모델을 내 컴퓨터에서 바로 실행하고 학습하세요.",
+    },
+    profile: {
+      label: "이름",
+      placeholder: "어떻게 불러 드릴까요?",
+      initials: "이니셜",
+      sloth: "나무늘보",
+      upload: "업로드",
+      uploading: "업로드 중…",
+      yours: "내 사진",
+      uploadError: "이 이미지를 사용할 수 없습니다. JPEG, PNG, WebP 또는 GIF를 사용해 보세요.",
+    },
+    look: {
+      title: "나만의 스타일로",
+      body: "나중에 설정에서 모두 바꿀 수 있습니다.",
+      theme: "테마",
+    },
+    scene: {
+      wallpaper: "배경화면",
+      none: "없음",
+      upload: "업로드",
+      error: "이 이미지를 사용할 수 없습니다. JPEG, PNG 또는 WebP를 사용해 보세요.",
+      solid: "불투명",
+      glassOn: "유리",
+    },
+    device: {
+      checking: "이 컴퓨터를 확인하는 중…",
+      error: "이 컴퓨터를 확인하지 못했습니다. 그래도 채팅을 시작할 수 있습니다.",
+      cpuOnly: "GPU를 찾을 수 없어 CPU에서 실행 중",
+      appleSilicon: "Apple Silicon, Metal 가속",
+      moreGpus: "외 {count}개",
+      vram: "VRAM {size}GB",
+      unified: "통합 메모리 {size}GB",
+      ram: "RAM {size}GB",
+      chat: "채팅",
+      train: "학습",
+      image: "이미지 생성",
+      video: "동영상 생성",
+    },
+    done: {
+      title: "모든 준비가 끝났습니다",
+      titleName: "모든 준비가 끝났습니다, {name}님",
+      startChat: "이제 다운로드할 모델을 고르고 채팅을 시작하세요.",
+      tour: "둘러보기",
+      tourBody: "채팅을 짧게 안내해 드립니다.",
+      open: "채팅 시작",
+    },
+    connect: {
+      title: "내 계정 연결",
+      body: "선택 사항입니다. 채팅에서 로컬 모델과 함께 사용하세요.",
+      chatgpt: "ChatGPT",
+      chatgptBody: "ChatGPT 요금제로 로그인합니다.",
+      claude: "Claude",
+      claudeBody: "Anthropic API 키를 추가합니다.",
+      connect: "연결",
+      connected: "연결됨",
+    },
+    settingsLabel: "환영 가이드",
+    settingsDescription: "처음 설정을 다시 진행합니다.",
+    settingsOpen: "열기",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

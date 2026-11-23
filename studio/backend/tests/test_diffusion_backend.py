@@ -1103,7 +1103,8 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
         requested = None,
         speed_active = True,
         speed_unset_only = False,
-        int8_policy = None: backend,
+        int8_policy = None,
+        fallback = None: backend,
     )
     monkeypatch.setattr(
         dmod,
@@ -1405,7 +1406,8 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
         requested = None,
         speed_active = True,
         speed_unset_only = False,
-        int8_policy = None: backend,
+        int8_policy = None,
+        fallback = None: backend,
     )
 
     def fake_select(

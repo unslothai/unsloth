@@ -2586,12 +2586,16 @@ export const id = {
         label: "Jenis instalasi",
         description:
           "Hanya chat (GGUF). Instalasi lengkap menambahkan pelatihan, ekspor, video, model safetensors, dan fitur pembuatan gambar tambahan.",
+        descriptionMlx:
+          "Hanya chat (GGUF/MLX). Instalasi lengkap menambahkan pelatihan, ekspor, video, model safetensors, dan fitur pembuatan gambar tambahan.",
         descriptionCpu:
           "Hanya chat (GGUF). Tidak ditemukan GPU yang didukung, jadi instalasi lengkap menambahkan pelatihan di CPU.",
         action: "Tingkatkan ke instalasi lengkap",
         confirmTitle: "Tingkatkan ke instalasi lengkap?",
         confirmDescription:
           "Instalasi Hanya chat ini menjalankan model GGUF. Instalasi lengkap menambahkan PyTorch untuk GPU mesin ini, yang mengaktifkan pelatihan, ekspor, video, model safetensors, dan fitur pembuatan gambar tambahan. Proses ini mengunduh beberapa gigabyte (minimal 5 GB ruang disk) dan memulai ulang server. Chat, model, dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
+        confirmDescriptionMlx:
+          "Instalasi Hanya chat ini menjalankan model GGUF/MLX. Instalasi lengkap menambahkan PyTorch untuk GPU mesin ini, yang mengaktifkan pelatihan, ekspor, video, model safetensors, dan fitur pembuatan gambar tambahan. Proses ini mengunduh beberapa gigabyte (minimal 5 GB ruang disk) dan memulai ulang server. Chat, model, dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
         confirmDescriptionCpu:
           "Instalasi Hanya chat ini menjalankan model GGUF. Tidak ditemukan GPU yang didukung di mesin ini, jadi instalasi lengkap menambahkan PyTorch untuk CPU, yang mengaktifkan pelatihan di CPU. Pelatihan di CPU jauh lebih lambat daripada di GPU. Proses ini memerlukan ruang disk minimal 5 GB dan memulai ulang server. Chat, model, dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
         confirmAction: "Tingkatkan",
@@ -3437,7 +3441,7 @@ export const id = {
       rememberParamsPerModelHint:
         "Jika nonaktif, gunakan pengaturan yang sama untuk setiap model.",
       autoCompactHint:
-        "Chat GGUF dan MLX lokal: giliran yang dikeluarkan diindeks agar model dapat mencarinya kembali, dan saat reset, instruksi tetap yang muat dikutip kembali kata demi kata, dengan mempertahankan yang terlama dan terbaru dibanding bagian tengah. Pengarsipan memerlukan chat yang tersimpan dan indeks vektor; tanpanya giliran lama akan dibuang. Menggunakan panjang konteks yang Anda atur, bukan VRAM yang tersedia. Model API: penyedia merangkum giliran lama jika memungkinkan, jika tidak giliran terlama dibuang saat chat mendekati jendela konteks yang dipublikasikan model.",
+        "Chat GGUF dan MLX lokal: giliran yang dikeluarkan diindeks agar model dapat mencarinya kembali, dan saat reset, instruksi tetap yang muat dikutip kembali kata demi kata, dengan mempertahankan yang terlama dan terbaru dibanding bagian tengah. Pengarsipan memerlukan chat yang tersimpan dan indeks vektor; tanpanya giliran lama akan dibuang. Menggunakan panjang konteks yang Anda atur, bukan VRAM yang tersedia. Model API: penyedia merangkum giliran lama jika memungkinkan, jika tidak giliran terlama dikeluarkan dari konteks saat chat mendekati jendela konteks yang dipublikasikan model dan diindeks dengan cara yang sama.",
       pastedTextShortDescription:
         "Tempelan sebanyak {count} karakter atau lebih menjadi lampiran .txt.",
       pastedTextOffDescription:
@@ -5278,6 +5282,14 @@ export const id = {
     copied: "Disalin",
     useAsSource: "Terjemahkan teks ini",
     downloadSubtitles: "Unduh subtitle",
+    imageOverlay: {
+      show: "Tampilkan di gambar",
+      title: "Terjemahan di gambar",
+      description: "Teks terjemahan digambar di atas gambar, di tempat teks aslinya.",
+      working: "Menerjemahkan teks di gambar…",
+      download: "Unduh gambar",
+      failed: "Terjemahan tidak dapat digambar di atas gambar.",
+    },
     stale: "Teks atau pengaturan berubah. Terjemahkan lagi untuk memperbarui.",
     stopped: "Dihentikan sebelum selesai. Terjemahkan lagi untuk sisanya.",
     chat: "Chat dengan teks terjemahan",
@@ -6441,5 +6453,77 @@ export const id = {
       inVram: "{amount} di VRAM",
       inRam: "{amount} di RAM",
     },
+  },
+  onboarding: {
+    dialogTitle: "Siapkan Unsloth",
+    close: "Tutup",
+    back: "Kembali",
+    continue: "Lanjutkan",
+    skipSetup: "Lewati penyiapan",
+    getStarted: "Mulai",
+    progress: "Langkah {current} dari {total}",
+    welcome: {
+      title: "Selamat datang di Unsloth",
+      titleName: "Selamat datang, {name}",
+      body: "Jalankan dan latih model terbuka, langsung di komputer Anda.",
+    },
+    profile: {
+      label: "Nama Anda",
+      placeholder: "Kami harus memanggil Anda apa?",
+      initials: "Inisial",
+      sloth: "Kungkang",
+      upload: "Unggah",
+      uploading: "Mengunggah…",
+      yours: "Foto Anda",
+      uploadError: "Gambar itu tidak dapat digunakan. Coba JPEG, PNG, WebP, atau GIF.",
+    },
+    look: {
+      title: "Sesuaikan tampilannya",
+      body: "Anda dapat mengubah semuanya nanti di Pengaturan.",
+      theme: "Tema",
+    },
+    scene: {
+      wallpaper: "Wallpaper",
+      none: "Tidak ada",
+      upload: "Unggah",
+      error: "Gambar itu tidak dapat digunakan. Coba JPEG, PNG, atau WebP.",
+      solid: "Solid",
+      glassOn: "Kaca",
+    },
+    device: {
+      checking: "Memeriksa komputer ini…",
+      error: "Tidak dapat memeriksa komputer ini. Anda tetap bisa mulai mengobrol.",
+      cpuOnly: "GPU tidak ditemukan, berjalan di CPU",
+      appleSilicon: "Apple Silicon, dipercepat dengan Metal",
+      moreGpus: "+{count} lainnya",
+      vram: "VRAM {size} GB",
+      unified: "Memori terpadu {size} GB",
+      ram: "RAM {size} GB",
+      chat: "Obrolan",
+      train: "Pelatihan",
+      image: "Gambar",
+      video: "Video",
+    },
+    done: {
+      title: "Semua siap",
+      titleName: "Semua siap, {name}",
+      startChat: "Selanjutnya, pilih model untuk diunduh dan mulai mengobrol.",
+      tour: "Ajak saya berkeliling",
+      tourBody: "Tur singkat Obrolan.",
+      open: "Mulai mengobrol",
+    },
+    connect: {
+      title: "Gunakan akun Anda sendiri",
+      body: "Opsional. Gunakan di obrolan bersama model lokal Anda.",
+      chatgpt: "ChatGPT",
+      chatgptBody: "Masuk dengan paket ChatGPT Anda.",
+      claude: "Claude",
+      claudeBody: "Tambahkan kunci API Anthropic.",
+      connect: "Hubungkan",
+      connected: "Terhubung",
+    },
+    settingsLabel: "Panduan selamat datang",
+    settingsDescription: "Ulangi penyiapan awal.",
+    settingsOpen: "Buka",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

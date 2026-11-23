@@ -2619,12 +2619,16 @@ export const pl = {
         label: "Typ instalacji",
         description:
           "Tylko czat (GGUF). Pełna instalacja dodaje trenowanie, eksport, wideo, modele safetensors i dodatkowe funkcje generowania obrazów.",
+        descriptionMlx:
+          "Tylko czat (GGUF/MLX). Pełna instalacja dodaje trenowanie, eksport, wideo, modele safetensors i dodatkowe funkcje generowania obrazów.",
         descriptionCpu:
           "Tylko czat (GGUF). Nie znaleziono obsługiwanego GPU, więc pełna instalacja dodaje trenowanie na CPU.",
         action: "Uaktualnij do pełnej instalacji",
         confirmTitle: "Uaktualnić do pełnej instalacji?",
         confirmDescription:
           "Ta instalacja Tylko czat uruchamia modele GGUF. Pełna instalacja dodaje PyTorch dla GPU tego komputera, co umożliwia trenowanie, eksport, wideo, modele safetensors i dodatkowe funkcje generowania obrazów. Pobiera kilka gigabajtów (co najmniej 5 GB miejsca na dysku) i uruchamia ponownie serwer. Czaty, modele i ustawienia zostaną zachowane. Może to potrwać kilka minut.",
+        confirmDescriptionMlx:
+          "Ta instalacja Tylko czat uruchamia modele GGUF/MLX. Pełna instalacja dodaje PyTorch dla GPU tego komputera, co umożliwia trenowanie, eksport, wideo, modele safetensors i dodatkowe funkcje generowania obrazów. Pobiera kilka gigabajtów (co najmniej 5 GB miejsca na dysku) i uruchamia ponownie serwer. Czaty, modele i ustawienia zostaną zachowane. Może to potrwać kilka minut.",
         confirmDescriptionCpu:
           "Ta instalacja Tylko czat uruchamia modele GGUF. Na tym komputerze nie znaleziono obsługiwanego GPU, więc pełna instalacja dodaje PyTorch dla CPU, co umożliwia trenowanie na CPU. Trenowanie na CPU jest znacznie wolniejsze niż na GPU. Wymaga co najmniej 5 GB miejsca na dysku i uruchamia ponownie serwer. Czaty, modele i ustawienia zostaną zachowane. Może to potrwać kilka minut.",
         confirmAction: "Uaktualnij",
@@ -3473,7 +3477,7 @@ export const pl = {
       rememberParamsPerModelHint:
         "Po wyłączeniu wszystkie modele używają tych samych ustawień.",
       autoCompactHint:
-        "Lokalne czaty GGUF i MLX: usunięte tury są indeksowane, aby model mógł je wyszukać i przywrócić, a reset cytuje dosłownie mieszczące się stałe instrukcje, zachowując najstarsze i najnowsze kosztem środkowych. Archiwizacja wymaga zapisanego czatu i indeksu wektorowego; bez nich starsze tury są odrzucane. Używa ustawionej długości kontekstu, a nie dostępnej VRAM. Modele API: dostawca streszcza starsze tury, gdy to możliwe, w przeciwnym razie najstarsze tury są odrzucane, gdy czat zbliża się do opublikowanego okna kontekstu modelu.",
+        "Lokalne czaty GGUF i MLX: usunięte tury są indeksowane, aby model mógł je wyszukać i przywrócić, a reset cytuje dosłownie mieszczące się stałe instrukcje, zachowując najstarsze i najnowsze kosztem środkowych. Archiwizacja wymaga zapisanego czatu i indeksu wektorowego; bez nich starsze tury są odrzucane. Używa ustawionej długości kontekstu, a nie dostępnej VRAM. Modele API: dostawca streszcza starsze tury, gdy to możliwe, w przeciwnym razie najstarsze tury wypadają z kontekstu, gdy czat zbliża się do opublikowanego okna kontekstu modelu, i są indeksowane w ten sam sposób.",
       pastedTextShortDescription:
         "Wklejony tekst o długości co najmniej {count} znaków staje się załącznikiem .txt.",
       pastedTextOffDescription:
@@ -5326,6 +5330,14 @@ export const pl = {
     copied: "Skopiowano",
     useAsSource: "Przetłumacz ten tekst",
     downloadSubtitles: "Pobierz napisy",
+    imageOverlay: {
+      show: "Pokaż na obrazie",
+      title: "Tłumaczenie na obrazie",
+      description: "Przetłumaczony tekst jest rysowany na obrazie w miejscu oryginalnego tekstu.",
+      working: "Tłumaczenie tekstu z obrazu…",
+      download: "Pobierz obraz",
+      failed: "Nie udało się narysować tłumaczenia na obrazie.",
+    },
     stale: "Tekst lub ustawienia uległy zmianie. Przetłumacz ponownie, aby zaktualizować.",
     stopped: "Zatrzymano przed końcem. Przetłumacz ponownie, aby uzyskać resztę.",
     chat: "Czat z przetłumaczonym tekstem",
@@ -6492,5 +6504,77 @@ export const pl = {
       inVram: "{amount} w VRAM",
       inRam: "{amount} w RAM",
     },
+  },
+  onboarding: {
+    dialogTitle: "Skonfiguruj Unsloth",
+    close: "Zamknij",
+    back: "Wstecz",
+    continue: "Dalej",
+    skipSetup: "Pomiń konfigurację",
+    getStarted: "Zaczynajmy",
+    progress: "Krok {current} z {total}",
+    welcome: {
+      title: "Witaj w Unsloth",
+      titleName: "Witaj, {name}",
+      body: "Uruchamiaj i trenuj otwarte modele na własnym komputerze.",
+    },
+    profile: {
+      label: "Twoje imię",
+      placeholder: "Jak mamy się do Ciebie zwracać?",
+      initials: "Inicjały",
+      sloth: "Leniwiec",
+      upload: "Prześlij",
+      uploading: "Przesyłanie…",
+      yours: "Twoje zdjęcie",
+      uploadError: "Nie można użyć tego obrazu. Spróbuj JPEG, PNG, WebP lub GIF.",
+    },
+    look: {
+      title: "Dostosuj wygląd",
+      body: "Wszystko możesz zmienić później w Ustawieniach.",
+      theme: "Motyw",
+    },
+    scene: {
+      wallpaper: "Tapeta",
+      none: "Brak",
+      upload: "Prześlij",
+      error: "Nie można użyć tego obrazu. Spróbuj JPEG, PNG lub WebP.",
+      solid: "Pełny",
+      glassOn: "Szkło",
+    },
+    device: {
+      checking: "Sprawdzanie tego komputera…",
+      error: "Nie udało się sprawdzić tego komputera. Nadal możesz zacząć czat.",
+      cpuOnly: "Nie znaleziono GPU, działa na CPU",
+      appleSilicon: "Apple Silicon, akceleracja Metal",
+      moreGpus: "+{count} więcej",
+      vram: "{size} GB VRAM",
+      unified: "{size} GB pamięci zunifikowanej",
+      ram: "{size} GB RAM",
+      chat: "Czat",
+      train: "Trening",
+      image: "Obrazy",
+      video: "Wideo",
+    },
+    done: {
+      title: "Wszystko gotowe",
+      titleName: "Wszystko gotowe, {name}",
+      startChat: "Teraz wybierz model do pobrania i zacznij czat.",
+      tour: "Oprowadź mnie",
+      tourBody: "Krótka wycieczka po czacie.",
+      open: "Zacznij czat",
+    },
+    connect: {
+      title: "Użyj własnych kont",
+      body: "Opcjonalnie. Używaj ich w czacie obok modeli lokalnych.",
+      chatgpt: "ChatGPT",
+      chatgptBody: "Zaloguj się planem ChatGPT.",
+      claude: "Claude",
+      claudeBody: "Dodaj klucz API Anthropic.",
+      connect: "Połącz",
+      connected: "Połączono",
+    },
+    settingsLabel: "Przewodnik powitalny",
+    settingsDescription: "Przejdź ponownie przez pierwszą konfigurację.",
+    settingsOpen: "Otwórz",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

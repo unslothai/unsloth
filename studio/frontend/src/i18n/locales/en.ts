@@ -2415,12 +2415,16 @@ export const en = {
         label: "Install type",
         description:
           "Chat only (GGUF). The full install adds training, export, video, safetensors models and additional image generation features.",
+        descriptionMlx:
+          "Chat only (GGUF and MLX). The full install adds training, export, video, safetensors models and additional image generation features.",
         descriptionCpu:
           "Chat only (GGUF). No supported GPU was found, so the full install adds training on the CPU.",
         action: "Upgrade to full install",
         confirmTitle: "Upgrade to the full install?",
         confirmDescription:
           "This Chat only install runs GGUF models. The full install adds PyTorch for this machine's GPU, which enables training, export, video, safetensors models and additional image generation features. It downloads several gigabytes (at least 5 GB of disk space) and restarts the server. Chats, models and settings are kept. This can take several minutes.",
+        confirmDescriptionMlx:
+          "This Chat only install runs GGUF and MLX models. The full install adds PyTorch for this machine's GPU, which enables training, export, video, safetensors models and additional image generation features. It downloads several gigabytes (at least 5 GB of disk space) and restarts the server. Chats, models and settings are kept. This can take several minutes.",
         confirmDescriptionCpu:
           "This Chat only install runs GGUF models. No supported GPU was found on this machine, so the full install adds PyTorch for the CPU, which enables training on the CPU. CPU training is much slower than GPU training. It needs at least 5 GB of disk space and restarts the server. Chats, models and settings are kept. This can take several minutes.",
         confirmAction: "Upgrade",
@@ -3212,7 +3216,7 @@ export const en = {
         "Override this setting from each chat's attachment menu.",
       rememberParamsPerModelHint:
         "When off, use the same settings for every model.",
-      autoCompactHint: "Local GGUF and MLX chats: evicted turns are indexed so the model can search them back in, and a reset quotes back the standing instructions that fit, word for word, keeping the oldest and newest over the middle. Archiving needs a saved chat and the vector index; without them older turns are dropped. Uses the context window you set, not available VRAM. API models: the provider summarizes older turns where it can, otherwise the oldest turns are dropped as the chat nears the model's published context window.",
+      autoCompactHint: "Local GGUF and MLX chats: evicted turns are indexed so the model can search them back in, and a reset quotes back the standing instructions that fit, word for word, keeping the oldest and newest over the middle. Archiving needs a saved chat and the vector index; without them older turns are dropped. Uses the context window you set, not available VRAM. API models: the provider summarizes older turns where it can, otherwise the oldest turns are evicted as the chat nears the model's published context window and indexed the same way.",
       pastedTextShortDescription:
         "Pastes of {count} characters or more become .txt attachments.",
       pastedTextOffDescription: "Pasted text always stays in the message box.",
@@ -4954,6 +4958,14 @@ export const en = {
     // Moves the translation into the text box, to translate it onward into another language.
     useAsSource: "Translate this text",
     downloadSubtitles: "Download subtitles",
+    imageOverlay: {
+      show: "Show on image",
+      title: "Translation on the image",
+      description: "The translated text is drawn over the image where the original text was.",
+      working: "Translating the text on the image…",
+      download: "Download image",
+      failed: "Could not draw the translation on the image.",
+    },
     stale: "The text or settings changed. Translate again to update.",
     stopped: "Stopped before the end. Translate again for the rest.",
     // Opens a new chat with the translation in the message box, to ask about it.
@@ -5860,6 +5872,78 @@ export const en = {
     next: "Next",
     tip: "Tip: `Esc` skips. Tour blocks clicks so you can read.",
     readMore: "Read more",
+  },
+  onboarding: {
+    dialogTitle: "Set up Unsloth",
+    close: "Close",
+    back: "Back",
+    continue: "Continue",
+    skipSetup: "Skip setup",
+    getStarted: "Get started",
+    progress: "Step {current} of {total}",
+    welcome: {
+      title: "Welcome to Unsloth",
+      titleName: "Welcome, {name}",
+      body: "Run and train open models, right on your computer.",
+    },
+    profile: {
+      label: "Your name",
+      placeholder: "What should we call you?",
+      initials: "Initials",
+      sloth: "Sloth",
+      upload: "Upload",
+      uploading: "Uploading…",
+      yours: "Your photo",
+      uploadError: "That image couldn’t be used. Try a JPEG, PNG, WebP or GIF.",
+    },
+    look: {
+      title: "Make it yours",
+      body: "Change any of it later in Settings.",
+      theme: "Theme",
+    },
+    scene: {
+      wallpaper: "Wallpaper",
+      none: "None",
+      upload: "Upload",
+      error: "That image couldn’t be used. Try a JPEG, PNG or WebP.",
+      solid: "Solid",
+      glassOn: "Glass",
+    },
+    device: {
+      checking: "Looking at this computer…",
+      error: "Couldn’t check this computer. You can still start chatting.",
+      cpuOnly: "No GPU found, running on the CPU",
+      appleSilicon: "Apple Silicon, accelerated with Metal",
+      moreGpus: "+{count} more",
+      vram: "{size} GB VRAM",
+      unified: "{size} GB unified memory",
+      ram: "{size} GB RAM",
+      chat: "Chat",
+      train: "Training",
+      image: "Image gen",
+      video: "Video gen",
+    },
+    done: {
+      title: "You’re all set",
+      titleName: "You’re all set, {name}",
+      startChat: "Next, pick a model to download and start chatting.",
+      tour: "Show me around",
+      tourBody: "A short guided tour of Chat.",
+      open: "Start chatting",
+    },
+    connect: {
+      title: "Bring your own accounts",
+      body: "Optional. Use them in chat next to your local models.",
+      chatgpt: "ChatGPT",
+      chatgptBody: "Sign in with your ChatGPT plan.",
+      claude: "Claude",
+      claudeBody: "Add an Anthropic API key.",
+      connect: "Connect",
+      connected: "Connected",
+    },
+    settingsLabel: "Welcome guide",
+    settingsDescription: "Walk through the first-run setup again.",
+    settingsOpen: "Open",
   },
   updateNotes: {
     openRelease: "Open release",

@@ -665,6 +665,7 @@ export {
   sttEngineFor,
   sttEngineStatusFor,
   transcribeAudioBlob,
+  type TranscriptSegment,
   unloadSttModel,
   validateSttModel,
   type SttDownloadStatus,

@@ -155,7 +155,7 @@ test("Images, Video and chat raise the refusal under its title, with the owner's
       [
         "isMultiModelRefusal(null, refusalHeadersOf(err), message);",
         "const title = refusal ? MULTI_MODEL_REFUSAL_TITLE : summary;",
-        "const action = refusal ? modelMemorySettingsAction() : logsAction;",
+        "? modelMemorySettingsAction()\n              : (engineSettingsAction(message) ?? logsAction);",
       ],
     ],
   ];
@@ -176,4 +176,18 @@ test("the wording matched here is the backend's", (t) => {
     return t.skip("the backend exports no refusal markers yet");
   for (const marker of refusal.MULTI_MODEL_REFUSAL_MARKERS)
     assert.ok(source.includes(marker), marker);
+});
+
+test("the NVFP4 refusal's settings button keys on the backend's wording", () => {
+  const backend = readFileSync(
+    new URL("../../backend/routes/inference.py", import.meta.url),
+    "utf8",
+  );
+  const action = readSrc("features/settings/lib/model-memory-action.ts");
+  const marker = /ENGINE_SETTINGS_MARKER = "([^"]+)"/.exec(action)?.[1];
+  assert.ok(marker);
+  const engineMessage = /_GPU_QUANT_ENGINE_MESSAGE = \(([\s\S]*?)\n\)/.exec(backend)?.[1] ?? "";
+  const text = [...engineMessage.matchAll(/"([^"]*)"/g)].map((m) => m[1]).join("");
+  assert.ok(text.includes(marker), text);
+  assert.match(action, /openDialog\("resources", \{ scrollTarget: "resources-engines" \}\)/);
 });

@@ -2403,12 +2403,16 @@ export const fr = {
         label: "Type d'installation",
         description:
           "Chat uniquement (GGUF). L'installation complète ajoute l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images.",
+        descriptionMlx:
+          "Chat uniquement (GGUF/MLX). L'installation complète ajoute l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images.",
         descriptionCpu:
           "Chat uniquement (GGUF). Aucun GPU compatible n'a été trouvé, l'installation complète ajoute donc l'entraînement sur le CPU.",
         action: "Passer à l'installation complète",
         confirmTitle: "Passer à l'installation complète ?",
         confirmDescription:
           "Cette installation Chat uniquement exécute des modèles GGUF. L'installation complète ajoute PyTorch pour le GPU de cette machine, ce qui active l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images. Elle télécharge plusieurs gigaoctets (au moins 5 Go d'espace disque) et redémarre le serveur. Les discussions, les modèles et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
+        confirmDescriptionMlx:
+          "Cette installation Chat uniquement exécute des modèles GGUF/MLX. L'installation complète ajoute PyTorch pour le GPU de cette machine, ce qui active l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images. Elle télécharge plusieurs gigaoctets (au moins 5 Go d'espace disque) et redémarre le serveur. Les discussions, les modèles et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
         confirmDescriptionCpu:
           "Cette installation Chat uniquement exécute des modèles GGUF. Aucun GPU compatible n'a été trouvé sur cette machine, l'installation complète ajoute donc PyTorch pour le CPU, ce qui active l'entraînement sur le CPU. L'entraînement sur CPU est beaucoup plus lent que sur GPU. Elle nécessite au moins 5 Go d'espace disque et redémarre le serveur. Les discussions, les modèles et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
         confirmAction: "Mettre à niveau",
@@ -3228,7 +3232,7 @@ export const fr = {
       rememberParamsPerModelHint:
         "Lorsque cette option est désactivée, tous les modèles utilisent les mêmes réglages.",
       autoCompactHint:
-        "Chats GGUF et MLX locaux : Les échanges évincés sont indexés pour que le modèle puisse les retrouver, et une réinitialisation cite mot pour mot les instructions permanentes qui tiennent, en gardant les plus anciennes et les plus récentes plutôt que celles du milieu. L’archivage nécessite un chat enregistré et l’index vectoriel ; sans eux, les anciens échanges sont supprimés. Utilise la longueur de contexte définie, pas la VRAM disponible. Modèles d’API : le fournisseur résume les anciens échanges quand il le permet ; sinon, les plus anciens sont supprimés lorsque le chat approche de la fenêtre de contexte publiée du modèle.",
+        "Chats GGUF et MLX locaux : Les échanges évincés sont indexés pour que le modèle puisse les retrouver, et une réinitialisation cite mot pour mot les instructions permanentes qui tiennent, en gardant les plus anciennes et les plus récentes plutôt que celles du milieu. L’archivage nécessite un chat enregistré et l’index vectoriel ; sans eux, les anciens échanges sont supprimés. Utilise la longueur de contexte définie, pas la VRAM disponible. Modèles d’API : le fournisseur résume les anciens échanges quand il le permet ; sinon, les plus anciens sortent du contexte lorsque le chat approche de la fenêtre de contexte publiée du modèle et sont indexés de la même façon.",
       pastedTextShortDescription:
         "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt.",
       pastedTextOffDescription:
@@ -5019,6 +5023,14 @@ export const fr = {
     copied: "Copié",
     useAsSource: "Traduire ce texte",
     downloadSubtitles: "Télécharger les sous-titres",
+    imageOverlay: {
+      show: "Afficher sur l'image",
+      title: "Traduction sur l'image",
+      description: "Le texte traduit est dessiné sur l'image, à la place du texte d'origine.",
+      working: "Traduction du texte de l'image…",
+      download: "Télécharger l'image",
+      failed: "Impossible de dessiner la traduction sur l'image.",
+    },
     stale: "Le texte ou les réglages ont changé. Traduisez à nouveau pour mettre à jour.",
     stopped: "Arrêté avant la fin. Traduisez à nouveau pour obtenir la suite.",
     chat: "Discuter avec le texte traduit",
@@ -6116,5 +6128,77 @@ export const fr = {
       inVram: "{amount} en VRAM",
       inRam: "{amount} en RAM",
     },
+  },
+  onboarding: {
+    dialogTitle: "Configurer Unsloth",
+    close: "Fermer",
+    back: "Retour",
+    continue: "Continuer",
+    skipSetup: "Passer la configuration",
+    getStarted: "Commencer",
+    progress: "Étape {current} sur {total}",
+    welcome: {
+      title: "Bienvenue dans Unsloth",
+      titleName: "Bienvenue, {name}",
+      body: "Exécutez et entraînez des modèles ouverts, directement sur votre ordinateur.",
+    },
+    profile: {
+      label: "Votre nom",
+      placeholder: "Comment devons-nous vous appeler ?",
+      initials: "Initiales",
+      sloth: "Paresseux",
+      upload: "Importer",
+      uploading: "Importation…",
+      yours: "Votre photo",
+      uploadError: "Cette image n’a pas pu être utilisée. Essayez JPEG, PNG, WebP ou GIF.",
+    },
+    look: {
+      title: "Personnalisez",
+      body: "Vous pourrez tout modifier plus tard dans les Paramètres.",
+      theme: "Thème",
+    },
+    scene: {
+      wallpaper: "Fond d’écran",
+      none: "Aucun",
+      upload: "Importer",
+      error: "Cette image n’a pas pu être utilisée. Essayez JPEG, PNG ou WebP.",
+      solid: "Opaque",
+      glassOn: "Verre",
+    },
+    device: {
+      checking: "Analyse de cet ordinateur…",
+      error: "Impossible d’analyser cet ordinateur. Vous pouvez quand même discuter.",
+      cpuOnly: "Aucun GPU trouvé, exécution sur le CPU",
+      appleSilicon: "Apple Silicon, accéléré par Metal",
+      moreGpus: "+{count} de plus",
+      vram: "{size} Go de VRAM",
+      unified: "{size} Go de mémoire unifiée",
+      ram: "{size} Go de RAM",
+      chat: "Chat",
+      train: "Entraînement",
+      image: "Images",
+      video: "Vidéos",
+    },
+    done: {
+      title: "Tout est prêt",
+      titleName: "Tout est prêt, {name}",
+      startChat: "Choisissez ensuite un modèle à télécharger et commencez à discuter.",
+      tour: "Faites-moi visiter",
+      tourBody: "Une courte visite guidée du chat.",
+      open: "Commencer à discuter",
+    },
+    connect: {
+      title: "Utilisez vos propres comptes",
+      body: "Facultatif. Utilisez-les dans le chat à côté de vos modèles locaux.",
+      chatgpt: "ChatGPT",
+      chatgptBody: "Connectez-vous avec votre abonnement ChatGPT.",
+      claude: "Claude",
+      claudeBody: "Ajoutez une clé API Anthropic.",
+      connect: "Connecter",
+      connected: "Connecté",
+    },
+    settingsLabel: "Guide de bienvenue",
+    settingsDescription: "Refaire la configuration initiale.",
+    settingsOpen: "Ouvrir",
   },
 } satisfies DeepPartialMessageTree<typeof en>;
