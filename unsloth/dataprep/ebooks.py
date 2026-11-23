@@ -178,7 +178,7 @@ class _BookTextParser(HTMLParser):
         if text.strip():
             text = text[: len(text) - len(text.lstrip())] + text[len(text.rstrip()) :]
         if text and any(tag == "pre" for tag, _ in self.stack):
-            self.parts.append(f"{len(self.preformatted)}")
+            self.parts.append(f"\ue000{len(self.preformatted)}\ue001")
             self.preformatted.append(text)
         elif text:
             self.parts.append(text)
