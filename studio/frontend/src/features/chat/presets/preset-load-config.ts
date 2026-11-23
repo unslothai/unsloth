@@ -334,7 +334,6 @@ export function applyPresetLoadConfig(config?: PresetLoadConfig | null): void {
       reasoningBudgetMessage: config.reasoningBudgetMessage ?? "",
       tensorParallel: config.tensorParallel ?? false,
       disableVision: config.disableVision ?? false,
-      chatTemplateOverride: null,
       // Not carried by presets: enabling it always goes through its confirmation.
       mlxInt8Prefill: store.mlxInt8Prefill,
       mlxAnePrefill: store.mlxAnePrefill,
@@ -343,6 +342,7 @@ export function applyPresetLoadConfig(config?: PresetLoadConfig | null): void {
       mlxExpertOffload: store.mlxExpertOffload,
       // Model specific, so a preset keeps the current table.
       engramPrecision: store.engramPrecision,
+      chatTemplateOverride: store.chatTemplateOverride,
       gpuMemoryMode: config.gpuMemoryMode,
       gpuLayers: config.gpuLayers,
       nCpuMoe: config.nCpuMoe,
