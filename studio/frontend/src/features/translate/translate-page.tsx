@@ -1450,10 +1450,12 @@ export function TranslatePage() {
     audioAbort.current = controller;
     setReadingFile(file.name);
     const before = useTranslateStore.getState().source;
+    // A video's transcript becomes subtitles when the model times its segments.
+    const video = !isAudioAttachmentFile(file);
     try {
-      const text = await transcribeAudioFile(file, controller.signal, t);
+      const text = await transcribeAudioFile(file, controller.signal, t, video);
       if (text && useTranslateStore.getState().source === before) {
-        loadText(text);
+        loadText(text, video ? file.name : null);
       }
     } finally {
       if (audioAbort.current === controller) audioAbort.current = null;
