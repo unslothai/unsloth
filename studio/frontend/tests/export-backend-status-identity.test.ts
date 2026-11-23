@@ -243,7 +243,8 @@ test("a cancel during an op targets that op's id", async () => {
     load.resolve({ success: true, message: "ok", details: null });
     await run;
 
-    const sent = stub.calls.find((c) => c.name === "loadCheckpoint")!.args[0];
+    const sent = stub.calls.find((c) => c.name === "loadCheckpoint")!
+      .args[0] as { op_id?: string };
     const cancel = stub.calls.find((c) => c.name === "cancelExport")!;
     assert.ok(sent.op_id);
     assert.equal(cancel.args[0], sent.op_id);
@@ -263,7 +264,7 @@ test("each op of a run carries its own id", async () => {
     await store.runExport(params());
     const ids = stub.calls
       .filter((c) => ["loadCheckpoint", "exportGGUF"].includes(c.name))
-      .map((c) => c.args[0].op_id);
+      .map((c) => (c.args[0] as { op_id?: string }).op_id);
     assert.equal(ids.length, 2);
     assert.ok(ids[0] && ids[1] && ids[0] !== ids[1]);
   } finally {
