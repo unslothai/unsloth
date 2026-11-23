@@ -298,6 +298,25 @@ def test_request_estimate_sizes_prefill_from_inputs_embeds():
     )
 
 
+def test_request_estimate_declines_uncached_generation():
+    """use_cache=False re-forwards the growing sequence each step, so no estimate is given."""
+    config = types.SimpleNamespace(
+        num_hidden_layers = 2, hidden_size = 64, num_attention_heads = 4, num_key_value_heads = 2,
+        head_dim = 16, intermediate_size = 128, vocab_size = 1000, torch_dtype = torch.bfloat16,
+    )  # fmt: skip
+    ids = torch.zeros(1, 8, dtype = torch.long)
+    model = types.SimpleNamespace(config = config, generation_config = None)
+    assert F._generate_request_bytes(model, (ids,), {"max_new_tokens": 16}) is not None
+    assert F._generate_request_bytes(model, (ids,), {"max_new_tokens": 16, "use_cache": True})
+    assert (
+        F._generate_request_bytes(model, (ids,), {"max_new_tokens": 16, "use_cache": False}) is None
+    )
+    off = types.SimpleNamespace(use_cache = False, max_new_tokens = 16)
+    assert F._generate_request_bytes(model, (ids,), {"generation_config": off}) is None
+    model.generation_config = off
+    assert F._generate_request_bytes(model, (ids,), {}) is None
+
+
 def _qwen_like(**extra):
     config = types.SimpleNamespace(
         num_hidden_layers = 28, hidden_size = 1536, num_attention_heads = 12, num_key_value_heads = 2,

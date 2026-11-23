@@ -2665,6 +2665,9 @@ def _generate_request_bytes(model, args, kwargs):
             value = kwargs.get(name)
             return value if value is not None else getattr(gen, name, None)
 
+        # Without a cache every step forwards the whole growing sequence: decline instead of under-counting.
+        if pick("use_cache") is False:
+            return None
         # A supplied cache holds history the suffix-only ids do not show; the decode allocator sizes its
         # new paged cache from the whole length, so count it (or decline when it cannot be read).
         cached = 0
