@@ -7500,6 +7500,11 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-
 html[data-glass="macos"] [data-slot="chat-settings-panel"] .bg-panel-surface {
   background-color: transparent;
 }
+/* Narrow-window sheet: its inner panel carries the glass. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-chat-settings-sheet],
+html[data-glass="macos"] [data-chat-settings-sheet] {
+  background-color: transparent;
+}
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
   background-image: var(--glass-sheen);
   box-shadow: inset 1px 0 0 color-mix(in srgb, var(--foreground) 9%, transparent);
