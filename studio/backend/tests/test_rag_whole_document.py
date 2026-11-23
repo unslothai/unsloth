@@ -448,13 +448,13 @@ def test_build_rag_autoinject_large_model_auto_falls_back_over_budget(rag_conn, 
 
     sentinel = (
         "TOPK_LARGE_MODEL_FALLBACK",
-        [{"citationId": 1, "filename": "big.pdf", "text": "x"}],
+        [{"citationId": 1, "filename": "big.pdf", "text": "TOPK_LARGE_MODEL_FALLBACK"}],
     )
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: sentinel)
 
     result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "autoinject": False})
     assert result is not None
-    assert _injected_text(result) == "TOPK_LARGE_MODEL_FALLBACK"
+    assert "TOPK_LARGE_MODEL_FALLBACK" in _injected_text(result)
 
 
 def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, monkeypatch):
@@ -670,6 +670,41 @@ def test_build_rag_autoinject_on_grounds_attachment_beside_project_hits(rag_conn
     )
     injected = _injected_text(result)
     assert injected.index("OVER_BUDGET_PASSAGE") < injected.index("PROJECT_PASSAGE")
+
+
+@pytest.mark.parametrize("autoinject", [True, False])
+def test_build_rag_autoinject_summary_of_long_attachment_leads_with_its_opening(
+    rag_conn, monkeypatch, autoinject
+):
+    from core.rag import embeddings
+
+    scope = store.thread_scope("t1")
+    texts = [
+        "Orbital Mechanics Handbook, by A. Author",
+        "Abstract: how satellites keep their orbits.",
+    ]
+    texts += [f"Table {i}: summarize this document row {i}" for i in range(8)]
+    chunks = [
+        _chunk(t, i, source_page = i, tokens = 60 if i == 0 else 1000) for i, t in enumerate(texts)
+    ]
+    vectors = [[0.0, 0.0, 1.0, 0.0]] * 2 + [[0.6, 0.8, 0.0, 0.0]] * 8
+    store.create_document(rag_conn, scope = scope, filename = "big.pdf", sha256 = "h1", document_id = "d1")
+    store.add_chunks(rag_conn, scope, "d1", chunks, vectors)
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = len(texts))
+    monkeypatch.setattr(
+        embeddings,
+        "encode",
+        lambda texts, *, model_name = None, normalize = True: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(_VEC))
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"), {"thread_id": "t1", "autoinject": autoinject}
+    )
+    injected = _injected_text(result)
+    assert injected.index("Orbital Mechanics Handbook") < injected.index("Abstract:")
+    assert injected.index("Abstract:") < injected.index("Table ")
+    assert injected.count("Table ") == inf_tools._autoinject_top_k()
 
 
 def test_build_rag_autoinject_on_attachment_beside_project_keeps_lean_top_k(rag_conn, monkeypatch):

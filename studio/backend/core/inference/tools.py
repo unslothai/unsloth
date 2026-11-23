@@ -16092,7 +16092,12 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
     thread_id = rag_scope.get("thread_id")
     query = _last_user_text(conversation)
     try:
-        from core.rag.tool import render_sources, search_for_autoinject, whole_document_context
+        from core.rag.tool import (
+            document_opening,
+            render_sources,
+            search_for_autoinject,
+            whole_document_context,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG auto-inject unavailable: %s", exc)
         return None
@@ -16179,17 +16184,16 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
         if thread_docs is not None and not thread_docs:
             return None
         scope_kwargs = _scope_retrieval_kwargs(rag_scope)
-        found = retrieve(
-            max_tokens = max_tokens, scope_thread_id = thread_id, min_dense_score = None, **scope_kwargs
-        )
+        found = retrieve(scope_thread_id = thread_id, min_dense_score = None, **scope_kwargs)
         if not found and scope_kwargs["mode"] == "lexical":
-            found = retrieve(
-                max_tokens = max_tokens,
-                scope_thread_id = thread_id,
-                min_dense_score = None,
-                mode = "hybrid",
-            )
-        return found
+            found = retrieve(scope_thread_id = thread_id, min_dense_score = None, mode = "hybrid")
+        if not found:
+            return None
+        # A generic request ("summarize this") ranks mid-document scraps, so the file's opening leads.
+        opening = document_opening(scope_thread_id = thread_id)
+        seen = {s["chunkId"] for s in opening}
+        merged = opening + [s for s in found[1] if s.get("chunkId") not in seen]
+        return _trim(render_sources(merged), merged, max_tokens)
 
     # With auto-injection off, search the oversized attachment alone, unfloored; budget binds only here, so a small context cannot silently switch RAG off.
     if text is None and (enabled or whole_doc_requested):
