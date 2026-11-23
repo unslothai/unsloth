@@ -30,10 +30,13 @@ def _trainer(
     aux = True,
     model_type = "qwen3_moe",
     gradient_checkpointing = True,
+    zero_stage = None,
 ):
     args = types.SimpleNamespace(
         gradient_checkpointing = gradient_checkpointing, gradient_checkpointing_kwargs = gc_kwargs
     )
+    if zero_stage is not None:
+        args.deepspeed_plugin = types.SimpleNamespace(zero_stage = zero_stage)
     _config_post()(args)
     self = types.SimpleNamespace(
         aux_loss_enabled = aux,
@@ -77,6 +80,42 @@ def test_gemma_keeps_reentrant():
     for model_type in ("gemma3n", "gemma4", "gemma4_text"):
         args = _trainer(None, model_type = model_type)
         assert args.gradient_checkpointing_kwargs == {"use_reentrant": True}, model_type
+
+
+def _fake_deepspeed(monkeypatch, ds_version):
+    import importlib.metadata as md
+
+    real = md.version
+
+    def fake(name):
+        if name == "deepspeed":
+            if ds_version is None:
+                raise md.PackageNotFoundError(name)
+            return ds_version
+        return real(name)
+
+    monkeypatch.setattr(md, "version", fake)
+
+
+def test_zero3_on_old_deepspeed_keeps_trls_reentrant(monkeypatch):
+    # TRL forces use_reentrant = True for PEFT + ZeRO-3 on DeepSpeed < 0.19.3 (deepspeedai/DeepSpeed#8148).
+    _fake_deepspeed(monkeypatch, "0.19.2")
+    assert _trainer(None, zero_stage = 3).gradient_checkpointing_kwargs == {"use_reentrant": True}
+
+
+def test_zero3_with_unknown_deepspeed_keeps_reentrant(monkeypatch):
+    _fake_deepspeed(monkeypatch, None)
+    assert _trainer(None, zero_stage = 3).gradient_checkpointing_kwargs == {"use_reentrant": True}
+
+
+def test_zero3_on_fixed_deepspeed_switches(monkeypatch):
+    _fake_deepspeed(monkeypatch, "0.19.3")
+    assert _trainer(None, zero_stage = 3).gradient_checkpointing_kwargs == {"use_reentrant": False}
+
+
+def test_zero2_switches(monkeypatch):
+    _fake_deepspeed(monkeypatch, "0.18.0")
+    assert _trainer(None, zero_stage = 2).gradient_checkpointing_kwargs == {"use_reentrant": False}
 
 
 def test_no_checkpointing_is_untouched():

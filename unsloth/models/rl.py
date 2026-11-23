@@ -1570,7 +1570,27 @@ _DENSE_ROUTER_AUX_LOSS_OFF = (
 # records there carry no graph: the aux loss is logged but adds no gradient. FastModel MoE loads already
 # checkpoint non-reentrantly (vision.py, _router_aux_loss_on); a model from a plain from_pretrained still gets
 # the config's use_reentrant pin, so undo it when the aux loss is on. Gemma 3n / 4 keep reentrant, as in vision.py.
+# TRL (SFT / DPO / GRPO / KTO / RLOO / reward / distillation) forces reentrant under DeepSpeed ZeRO-3 on DeepSpeed
+# < 0.19.3 for correct training (deepspeedai/DeepSpeed#8148), so that case keeps it too. ZeRO-3 is read as TRL
+# reads it (args.deepspeed_plugin.zero_stage), falling back to transformers' is_deepspeed_zero3_enabled().
 _ROUTER_AUX_LOSS_NON_REENTRANT_GC = (
+    "def _unsloth_zero3_needs_reentrant(args):\n"
+    "    _ds_plugin = getattr(args, 'deepspeed_plugin', None)\n"
+    "    _zero3 = _ds_plugin is not None and getattr(_ds_plugin, 'zero_stage', None) == 3\n"
+    "    if not _zero3:\n"
+    "        try:\n"
+    "            from transformers.integrations import is_deepspeed_zero3_enabled as _is_z3\n"
+    "            _zero3 = bool(_is_z3())\n"
+    "        except Exception:\n"
+    "            _zero3 = False\n"
+    "    if not _zero3:\n"
+    "        return False\n"
+    "    try:\n"
+    "        from importlib.metadata import version as _ds_version\n"
+    "        from packaging.version import Version as _V\n"
+    "        return _V(_ds_version('deepspeed')) < _V('0.19.3')\n"
+    "    except Exception:\n"
+    "        return True\n"
     "if getattr(self, 'aux_loss_enabled', False) and getattr(getattr(self, 'args', None), 'gradient_checkpointing', False):\n"
     "    _gc_kwargs = getattr(self.args, 'gradient_checkpointing_kwargs', None)\n"
     "    _gc_type = str(getattr(getattr(getattr(self, 'model', None), 'config', None), 'model_type', '') or '').lower()\n"
@@ -1578,6 +1598,7 @@ _ROUTER_AUX_LOSS_NON_REENTRANT_GC = (
     "        isinstance(_gc_kwargs, dict) and _gc_kwargs.get('use_reentrant') is True\n"
     "        and getattr(self.args, '_unsloth_pinned_reentrant', False)\n"
     "        and not _gc_type.startswith(('gemma3n', 'gemma4'))\n"
+    "        and not _unsloth_zero3_needs_reentrant(self.args)\n"
     "    ):\n"
     "        _gc_kwargs['use_reentrant'] = False\n"
     "        if isinstance(getattr(self.args, 'activation_checkpointing_kwargs', None), dict):\n"
