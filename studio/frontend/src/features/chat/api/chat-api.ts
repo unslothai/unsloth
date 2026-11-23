@@ -1696,7 +1696,7 @@ export async function syncChatMessages(
     echo?: boolean;
   } = {},
 ): Promise<MessageRecord[]> {
-  // echo: false skips the server's re-read of the thread and resolves to the sent records; deletes always echo.
+  // Deletes always echo: publishForkBoundary reads the stored rows back.
   const skipEcho =
     options.echo === false &&
     options.pruneMissing !== true &&

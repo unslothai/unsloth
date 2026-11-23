@@ -2155,7 +2155,6 @@ def save_thread_message(
 def replace_thread_messages(
     thread_id: str,
     payload: ChatMessageSyncRequest,
-    # echoMessages=false: the caller discards the echo, so skip re-reading the thread and answer `{"messages": []}`.
     echo_messages: Annotated[bool, Query(alias = "echoMessages")] = True,
     current_subject: str = Depends(get_current_subject),
     response: Response = None,

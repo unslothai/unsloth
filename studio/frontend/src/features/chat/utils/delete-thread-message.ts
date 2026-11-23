@@ -142,7 +142,6 @@ export async function syncExportedRepositoryToBackend(
     {
       pruneMissing: options.pruneMissing,
       deletedMessageIds: options.deletedMessageIds,
-      // The autosave discards the stored rows; only the delete path reads them back.
       echo:
         options.pruneMissing === true ||
         (options.deletedMessageIds?.length ?? 0) > 0,
