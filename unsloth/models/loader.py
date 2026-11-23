@@ -3036,6 +3036,8 @@ class FastModel(FastBaseModel):
                 )
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
         elif "inkling2" in model_types_all:
+            from .inkling2 import raise_if_inkling2_parallel_unsupported
+            raise_if_inkling2_parallel_unsupported(model_config, model_types)
             # Inkling 2 (Mini and Small): compiled, every new sequence length recompiles the layers (A100, Mini QLoRA at
             # 1024 tokens: 85-840 s per step, eager 4.4 s), and the compiled block attention residual has wrong grads.
             if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "0":

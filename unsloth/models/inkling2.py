@@ -23,8 +23,13 @@ __all__ = [
     "drop_inkling2_quantization_config",
     "register_inkling2_expert_dequantization",
     "patch_inkling2_model",
+    "checkpoint_inkling2_message_inputs",
     "inkling2_lora_target_modules",
     "raise_if_merging_inkling2",
+    "raise_if_inkling2_parallel_unsupported",
+    "INKLING2_TP_REASON",
+    "INKLING2_PP_REASON",
+    "INKLING2_PARALLEL_ALTERNATIVE",
 ]
 
 INKLING2_MODEL_TYPES = frozenset(
@@ -97,6 +102,59 @@ def raise_if_merging_inkling2(model, save_method):
         "merge cannot place the LoRA weights and would write the base model unchanged.\n"
         'Save the LoRA adapter instead (`model.save_pretrained(...)` or `save_method = "lora"`): it reloads with '
         "Unsloth, and with transformers through `peft.PeftModel.from_pretrained`."
+    )
+
+
+INKLING2_TP_REASON = (
+    "its attention projections are wrapper modules (q / k / v / o hold the Linear beside scaled L2 clips, short "
+    "convolutions over the key / value channels and a sigmoid output gate), next to per-head attention sink and "
+    "hidden-state-conditioned relative position bias projections, and tensor parallel has no sharding rule for them"
+)
+INKLING2_PP_REASON = (
+    "its decoder carries a stack of block states (block attention residuals: every layer and the final norm read "
+    "learned queries over the block outputs) beside hidden_states, and Inkling-2-Mini also runs layers 6-17 three "
+    "times per forward with message gates feeding pass k-1 into pass k, so a pipeline stage boundary would cut "
+    "state the pipeline does not carry"
+)
+INKLING2_PARALLEL_ALTERNATIVE = (
+    'train data parallel instead: UNSLOTH_PARALLEL="dp=N" (DDP, the whole model on every GPU) or '
+    'UNSLOTH_PARALLEL="fsdp=1" (native FSDP2) under torchrun, or split the model over the GPUs of one process '
+    'with device_map = "balanced"'
+)
+
+
+def raise_if_inkling2_parallel_unsupported(config, model_types = ()) -> None:
+    """Tensor / pipeline parallel (UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE, which UNSLOTH_PARALLEL tp= / pp= and
+    unsloth.parallelize set) on Inkling 2, refused from the config before any weight loads. Left alone, tensor
+    parallel stops at the first wrapper projection and pipeline parallel at the residual modules, both after a full
+    load on every rank when quantizing on load (the Mini checkpoint is 14.4 GB in 4-bit)."""
+    types = {str(t).lower() for t in (model_types or ())}
+    if not (is_inkling2_config(config) or types & INKLING2_MODEL_TYPES):
+        return
+    import os
+
+    def size(name):
+        try:
+            return int(str(os.environ.get(name) or "1").strip())
+        except ValueError:
+            return 1  # parallel_env reports the malformed value itself
+
+    tp, pp = size("UNSLOTH_TP_SIZE"), size("UNSLOTH_PP_SIZE")
+    asked = [
+        (f"tensor parallel (UNSLOTH_TP_SIZE={tp})", INKLING2_TP_REASON) if tp > 1 else None,
+        (f"pipeline parallel (UNSLOTH_PP_SIZE={pp})", INKLING2_PP_REASON) if pp > 1 else None,
+    ]
+    asked = [x for x in asked if x is not None]
+    if not asked:
+        return
+    raise NotImplementedError(
+        "Unsloth: "
+        + "; ".join(f"{what} does not support Inkling 2 yet: {why}" for what, why in asked)
+        + ". Expert parallel is not supported either. Unset "
+        + " / ".join(what.split("(")[1].split("=")[0] for what, _ in asked)
+        + " (or drop tp / pp from UNSLOTH_PARALLEL) and "
+        + INKLING2_PARALLEL_ALTERNATIVE
+        + "."
     )
 
 
@@ -256,6 +314,219 @@ def _unsloth_lora_target_modules(
     )
 
 
+def _message_input_math(query, norm, scaling, block_states, partial_block_states, loop_layer_idx):
+    """`Inkling2LoopMessageAttentionResidual.forward` (transformers 5.24) as plain tensor ops: the eager path the module
+    takes, op for op, so values and gradients are the module's bit for bit. ``norm`` is the stock unweighted RMSNorm's
+    eps (inlined, no module call in the recompute), or the residual's own `norm` module when it has hooks or a forward
+    other than the stock one (see _message_norm), so those apply to the original forward and the recomputation alike."""
+    import torch
+
+    stacked = torch.cat([block_states, partial_block_states.unsqueeze(-2)], dim = -2).float()
+    if isinstance(norm, float):
+        stacked = stacked * torch.rsqrt(
+            stacked.square().mean(-1, keepdim = True) + norm
+        )  # unweighted RMSNorm, fp32
+    else:
+        stacked = norm(stacked)
+    query_states = query[loop_layer_idx].float().expand(*stacked.shape[:-2], -1, -1)
+    attn_weights = torch.matmul(query_states, stacked.transpose(2, 3)) * scaling
+    attn_weights = torch.nn.functional.softmax(attn_weights, dim = -1, dtype = torch.float32).to(
+        query_states.dtype
+    )
+    attn_output = torch.matmul(attn_weights, stacked).transpose(1, 2).contiguous()
+    return attn_output.transpose(1, 2)
+
+
+def _checkpoint_use_reentrant(text_model):
+    """The ``use_reentrant`` the text model's layers checkpoint with (transformers keeps it on the partial it installs
+    as ``_gradient_checkpointing_func``; 5.24 defaults to False). Unknown: torch's default, True."""
+    import functools
+
+    function = getattr(text_model, "_gradient_checkpointing_func", None)
+    while isinstance(function, functools.partial):
+        if "use_reentrant" in function.keywords:
+            return bool(function.keywords["use_reentrant"])
+        function = function.func
+    return True
+
+
+def _weights_offloaded(module):
+    """True when accelerate keeps the module's weights elsewhere until its hook runs (CPU / disk offload: the
+    parameter sits on ``meta``) or the hook executes on another device than the parameter's."""
+    query = getattr(module, "query", None)
+    if query is None or query.device.type == "meta":
+        return True
+    hook = getattr(module, "_hf_hook", None)
+    for h in getattr(hook, "hooks", None) or ([hook] if hook is not None else []):
+        if getattr(h, "offload", False):
+            return True
+        execution_device = getattr(h, "execution_device", None)
+        if execution_device is not None:
+            try:
+                import torch
+                if torch.device(execution_device) != query.device:
+                    return True
+            except Exception:
+                return True
+    return False
+
+
+def _message_norm(norm):
+    """What _message_input_math normalizes with: the stock unweighted RMSNorm (no hooks, no instance or class forward
+    override, no parameters) as its eps, inlined so the recompute stays plain tensor ops; anything else as the module,
+    called like transformers does so its hooks and forward apply."""
+    from torch.nn.modules import module as torch_module
+
+    stock = type(norm).__name__ in (
+        "Inkling2LoopUnweightedRMSNorm",
+        "Inkling2UnweightedRMSNorm",
+    ) and getattr(type(norm).forward, "__module__", "").startswith("transformers.")
+    if (
+        stock
+        and "forward" not in norm.__dict__
+        and not norm._forward_hooks
+        and not norm._forward_pre_hooks
+        and not torch_module._global_forward_hooks
+        and not torch_module._global_forward_pre_hooks
+        and not any(True for _ in norm.parameters())
+        and isinstance(getattr(norm, "eps", None), (int, float))
+    ):
+        return float(norm.eps)
+    return norm
+
+
+def _weak_or_dead(obj):
+    import weakref
+    return (lambda: None) if obj is None else weakref.ref(obj)
+
+
+class _CheckpointedMessageInput:
+    """Inkling-2-Mini's loop message residual runs in the text model's forward, between the checkpointed decoder
+    layers, so everything its fp32 attention saves for backward stays on the GPU for the whole step: about 50 MB per
+    call at 1024 tokens, 24 calls (12 loop layers x 2 later passes), so 1.2 GB. Under gradient checkpointing run it
+    checkpointed: only its inputs (block states the layers keep anyway) are held and backward recomputes the small
+    attention, with the same values and gradients.
+
+    The recompute is the module's math as plain tensor ops (_message_input_math), not a module call: recomputing
+    through the module (its accelerate device hook and compiled-module wrapper) from the autograd engine gave
+    run-to-run different first-step gradients on a model split over two GPUs, where the engine runs each device's
+    backward on its own thread. The checkpoint is reentrant or not as the model's layers are (``autograd.grad`` needs
+    non-reentrant), and a module whose weights accelerate offloads keeps its hooked forward (the hook loads them).
+    UNSLOTH_INKLING2_MESSAGE_CHECKPOINT=0 keeps the stock residual.
+
+    Installed as the residual's instance ``forward``. ``copy.deepcopy`` of the residual (or the model) binds the copy to
+    the copied residual and owner, and the residual pickles: the residual and owner are weak references at run time,
+    remapped through the deepcopy memo and pickled as strong references."""
+
+    _unsloth_checkpointed_message_input = True
+
+    def __init__(self, text_model, message_input, forward):
+        from torch.utils.checkpoint import checkpoint
+
+        self._checkpoint = checkpoint  # bound at install, as the layers bind theirs at enable
+        self._owner = _weak_or_dead(text_model)
+        self._module = _weak_or_dead(message_input)
+        # The stock bound forward is kept as its importable function, anything else (accelerate's device hook) as is.
+        if getattr(forward, "__self__", None) is message_input and hasattr(forward, "__func__"):
+            self._function, self._forward = forward.__func__, None
+        else:
+            self._function, self._forward = None, forward
+
+    def _call_original(self, mi, *args, **kwargs):
+        if self._forward is not None:
+            return self._forward(*args, **kwargs)
+        return self._function(mi, *args, **kwargs)
+
+    def __deepcopy__(self, memo):
+        import copy
+
+        new = object.__new__(type(self))
+        memo[id(self)] = new
+        owner, module = self._owner(), self._module()
+        new._owner = _weak_or_dead(memo.get(id(owner), owner))
+        new._module = _weak_or_dead(memo.get(id(module), module))
+        new._function = self._function
+        new._checkpoint = self._checkpoint
+        new._forward = copy.deepcopy(self._forward, memo)
+        return new
+
+    def __getstate__(self):
+        state = dict(self.__dict__)
+        state["_owner"], state["_module"] = self._owner(), self._module()
+        return state
+
+    def __setstate__(self, state):
+        state = dict(state)
+        self._owner = _weak_or_dead(state.pop("_owner"))
+        self._module = _weak_or_dead(state.pop("_module"))
+        self.__dict__.update(state)
+
+    def __call__(self, *args, **kwargs):
+        import os
+
+        import torch
+
+        tm, mi = self._owner(), self._module()
+        if mi is None:
+            raise RuntimeError(
+                "Unsloth: the Inkling 2 message residual this forward belongs to was freed."
+            )
+        if (
+            tm is None
+            or kwargs
+            or len(args) != 3
+            or not getattr(tm, "gradient_checkpointing", False)
+            or not tm.training
+            or not torch.is_grad_enabled()
+            or torch.compiler.is_compiling()
+            or getattr(getattr(mi, "config", None), "_attn_implementation", "eager") != "eager"
+            or os.environ.get("UNSLOTH_INKLING2_MESSAGE_CHECKPOINT", "1") == "0"
+            or _weights_offloaded(mi)
+        ):
+            return self._call_original(mi, *args, **kwargs)
+        block_states, partial_block_states, loop_layer_idx = args
+        device = mi.query.device
+        # Where accelerate's hook would put the inputs (a split model); autograd follows the moves.
+        block_states = block_states.to(device)
+        partial_block_states = partial_block_states.to(device)
+        scaling = block_states.shape[-1] ** -0.5
+        return self._checkpoint(
+            _message_input_math,
+            mi.query,
+            _message_norm(mi.norm),
+            scaling,
+            block_states,
+            partial_block_states,
+            int(loop_layer_idx),
+            use_reentrant = _checkpoint_use_reentrant(tm),
+            preserve_rng_state = False,
+        )
+
+
+def _checkpointed_message_input(text_model, message_input, forward):
+    """See _CheckpointedMessageInput."""
+    return _CheckpointedMessageInput(text_model, message_input, forward)
+
+
+def checkpoint_inkling2_message_inputs(model) -> int:
+    """Wrap every loop text model's `message_input` call (see _checkpointed_message_input). Returns the count."""
+    n = 0
+    for module in model.modules():
+        message_input = getattr(module, "message_input", None)
+        if message_input is None or not type(message_input).__name__.endswith(
+            "LoopMessageAttentionResidual"
+        ):
+            continue
+        if getattr(message_input.forward, "_unsloth_checkpointed_message_input", False):
+            continue
+        # The instance forward (accelerate's device hook when the model is split) stays inside the checkpoint.
+        message_input.forward = _checkpointed_message_input(
+            module, message_input, message_input.forward
+        )
+        n += 1
+    return n
+
+
 def patch_inkling2_model(model) -> bool:
     """Give a loaded Inkling 2 model Unsloth's LoRA target mapping. Returns True when the model is Inkling 2."""
     config = getattr(model, "config", None)
@@ -264,4 +535,5 @@ def patch_inkling2_model(model) -> bool:
     cls = type(model)
     if getattr(cls, "unsloth_lora_target_modules", None) is not _unsloth_lora_target_modules:
         cls.unsloth_lora_target_modules = _unsloth_lora_target_modules
+    checkpoint_inkling2_message_inputs(model)
     return True
