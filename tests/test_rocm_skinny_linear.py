@@ -665,7 +665,7 @@ def test_row_count_is_not_specialized():
         / "kernels"
         / "rocm_skinny_linear.py"
     )
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
     found = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name in (
