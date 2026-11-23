@@ -695,7 +695,44 @@ _PACKED_ULYSSES = (
     "[gemma3-eager-True|qwen3-sdpa-True]"
 )
 _PACKED_COMPILED = _GLOO + "test_block_compile_packed_rows_under_cp_match_one_process"
+# Inkling 2 (Mini: inkling2_loop, Small: inkling2): sliding / full attention with relative bias and sinks after the
+# Ulysses exchange, short convolutions with a halo from the previous shard (utils/ulysses_inkling2.py).
+_INKLING2_CP = "tests/test_ulysses_inkling2_gloo.py::test_inkling2_ulysses_matches_one_process"
 CELLS = (
+    Cell(
+        "Inkling 2 (attention + short convolutions, MoE) x Ulysses cp (DDP), eager",
+        {
+            "trainer": ("sft",),
+            "family": ("inkling2", "inkling2_loop"),
+            "hybrid": (True,),
+            "multimodal": (False, True),
+            "windowed": (True,),
+            "mode": ("lora", "qlora", "full"),
+            "packing": (False,),
+            "cp_backend": ("ulysses",),
+            "dp": (1,),
+            "cp": (2,),
+            "tp": (1,),
+            "pp": (1,),
+            "fsdp2": (False,),
+            "attention": ("sdpa", "eager"),
+            "compile": ("eager",),
+            "memory": ("none", "gc", "unsloth_offload"),
+            "kernels": (False,),
+            "loss": ("standard",),
+            "vllm": (False,),
+            "moe": (True,),
+            "router_aux_loss": (False,),
+            "block_swap": (False,),
+        },
+        parity = _INKLING2_CP,
+        engagement = _INKLING2_CP
+        + " (one Ulysses attention per layer and pass over the whole sequence, four halo convolutions per layer; "
+        "test_inkling2_ulysses_without_halo_misses_one_process)",
+        compile = "eager: Inkling 2 trains eager (UNSLOTH_COMPILE_DISABLE=partial), the exchange runs outside compile",
+        note = "QLoRA and Unsloth's offloaded checkpoint: SFTTrainer on a tiny Inkling-2-Mini fake, 2x T4 "
+        "(outputs of the PR); FSDP2 x cp, dp > 1 and packing are not measured for this family",
+    ),
     Cell(
         "cp x native FSDP2 (dp_shard x cp), eager",
         {**_CP_DP, "fsdp2": (True,), "compile": ("eager",), "dp": (1, 2), "cp": (2,)},
