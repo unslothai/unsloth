@@ -34,8 +34,25 @@ _ALIASES: dict[str, str] = {
     "aiter": "aiter",
     # Studio's INT8 attention kernel: the automatic native pick, with the strided processors routed to the kernel
     "unsloth_int8": "unsloth_int8",
+    # torch SDPA pinned to its flash kernel (no flash_attn package needed)
+    "flash_sdpa": "_native_flash",
 }
 ATTN_ALIASES = (ATTN_AUTO,) + tuple(dict.fromkeys(_ALIASES))
+_DISPATCHER_NAMES: dict[str, str] = {
+    "_native_flash": "flash_sdpa",
+    "_native_cudnn": "cudnn",
+    "_flash_3_hub": "flash3",
+    "flash_4_hub": "flash4",
+    "sage_hub": "sage",
+}
+
+
+def canonical_attention_request(value: Any) -> Any:
+    """A request lowered and stripped, with a diffusers dispatcher name folded onto Studio's alias; others unchanged."""
+    if not isinstance(value, str):
+        return value
+    folded = value.strip().lower()
+    return _DISPATCHER_NAMES.get(folded, folded)
 
 
 def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
@@ -43,7 +60,7 @@ def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
     unsupported alias so a bad request is rejected cheaply."""
     if value is None:
         return ATTN_AUTO
-    normalized = str(value).strip().lower()
+    normalized = canonical_attention_request(str(value))
     if not normalized:
         return ATTN_AUTO
     if normalized not in ATTN_ALIASES:
@@ -4109,6 +4126,37 @@ def _auto_request(requested: Any) -> bool:
         return False
 
 
+_FLASH_FAMILY = frozenset({"flash", "_flash_3_hub", "flash_4_hub"})
+
+
+def explicit_pick_fallback(
+    target: Any,
+    requested: Any,
+    *,
+    speed_active: bool,
+    family: Any = None,
+) -> Optional[str]:
+    """Closest kernel for an explicit pick that cannot run, keeping strided processors / fused QK-RoPE.
+
+    Flash family -> SDPA's flash kernel (same algorithm, no flash_attn package); others -> the automatic cuDNN pick.
+    None unless NVIDIA with speed on (speed off must stay bit-identical)."""
+    try:
+        alias = normalize_attention_backend(requested)
+    except ValueError:
+        return None
+    if alias in (ATTN_AUTO, INT8_ATTENTION_BACKEND) or _ALIASES[alias] == ATTN_NATIVE:
+        return None
+    if not speed_active or not _is_cuda_nvidia(target):
+        return None
+    if _ALIASES[alias] in _FLASH_FAMILY:
+        return "_native_flash"
+    try:
+        pick = select_attention_backend(target, None, speed_active = speed_active, family = family)
+    except Exception:  # noqa: BLE001
+        return None
+    return pick if isinstance(pick, _AutoCudnn) else None
+
+
 def apply_attention_backend(
     pipe: Any,
     backend: Optional[str],
@@ -4119,6 +4167,7 @@ def apply_attention_backend(
     speed_active: bool = True,
     speed_unset_only: bool = False,
     int8_policy: Any = None,
+    fallback: Any = None,
 ) -> Optional[str]:
     """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak).
 
@@ -4132,8 +4181,22 @@ def apply_attention_backend(
     ``int8_policy`` is the load's ``diffusion_int8_attention.Int8Policy`` (or its ``int8_attention`` request): ``on``
     forces the kernel like the name, ``off`` keeps it off every route, ``auto`` / None leave the env switch in charge.
     An explicit attention pick (native, sage, cuDNN, flash) is never raced over automatically: only a forced kernel
-    (``on``, the name, the env switch ``1``) layers INT8 on top of it."""
+    (``on``, the name, the env switch ``1``) layers INT8 on top of it.
+
+    ``fallback`` (``explicit_pick_fallback``): what runs when ``backend`` ends on native SDPA, i.e. an explicit kernel
+    that could not engage; the decline record keeps the kernel that was asked for and names what runs instead."""
     engaged = _apply_attention_backend(pipe, backend, logger = logger, target = target)
+    if fallback is not None and _status_name(engaged) == ATTN_NATIVE:
+        first = attention_decline(pipe)
+        engaged = _apply_attention_backend(pipe, fallback, logger = logger, target = target)
+        if isinstance(first, dict):
+            _stamp_decline(pipe, {**first, "engaged": _status_name(engaged)})
+        if logger is not None:
+            logger.info(
+                "diffusion.attention: %s could not run here; falling back to %s",
+                "the requested backend" if backend is None else _backend_label(backend),
+                _backend_label(engaged),
+            )
     try:
         from .diffusion_int8_attention import mode as int8_mode
         from .diffusion_int8_attention import requested as int8_requested
