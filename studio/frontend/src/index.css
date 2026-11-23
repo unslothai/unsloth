@@ -7036,7 +7036,6 @@ html[data-glass] { --wallpaper-composer-drop: 0 0 #0000; }
 html[data-composer-outline="on"] :is(.unsloth-composer-surface, .wallpaper-preview-composer) {
   --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) var(--composer-outline), transparent) !important;
 }
-/* Over a solid wallpaper the outline sits on top of the drop shadow rather than replacing it. */
 html[data-composer-outline="on"] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .unsloth-composer-surface,
 html[data-composer-outline="on"] .wallpaper-preview-composer.wallpaper-preview-composer {
   --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) var(--composer-outline), transparent), var(--wallpaper-composer-drop) !important;

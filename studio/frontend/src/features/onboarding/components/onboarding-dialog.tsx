@@ -132,7 +132,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
     }
   }, [close, navigate, page, pages, record, tour]);
 
-  // The outgoing step stays clickable while it fades out; one move per swap, or a double click skips a step.
+  // The exiting step stays clickable: one move per swap, or a double click skips a step.
   const swapping = useRef(false);
   const move = useCallback(
     (target: number) => {
@@ -190,7 +190,6 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
         ref={cardRef}
         data-onboarding=""
         showCloseButton={false}
-        // Connect opens Settings over the guide; clicks and Esc there must not dismiss it.
         onInteractOutside={(e) => {
           if (useSettingsDialogStore.getState().open) e.preventDefault();
         }}

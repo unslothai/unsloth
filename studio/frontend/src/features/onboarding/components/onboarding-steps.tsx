@@ -62,7 +62,6 @@ function AvatarChoice({
       title={label}
       onClick={onPick}
       className={cn(
-        // No transition, as in the Profile picker: an animated ring makes the old selection linger.
         "bg-muted ring-border hover:ring-ring focus-visible:ring-ring relative flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-full ring-1 focus-visible:outline-none",
         active && "ring-ring-strong hover:ring-ring-strong ring-2",
       )}

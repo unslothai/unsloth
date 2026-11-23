@@ -18,7 +18,6 @@ export type OnboardingRecord = {
 
 export type OnboardingDecision =
   | { kind: "show"; pages: OnboardingPageId[] }
-  // An account that chatted before onboarding existed: record it as done without showing it.
   | { kind: "adopt" }
   | { kind: "none" };
 
