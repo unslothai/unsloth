@@ -19263,11 +19263,10 @@ class LlamaCppBackend:
         self._n_weight_layers = n_phys
 
     def _count_loop_weight_layers(self) -> None:
-        """A visit-indexed looped GGUF: block_count is the cache slots, the physical layers are fewer.
-
-        llama.cpp counts -ngl, -ts and --n-cpu-moe in physical layers (llama_model_n_layer_weights), so the
-        offload unit drops the (count - 1) repeat passes over the core [start, end); KV keeps the slots.
-        """
+        """Visit-indexed looped GGUF: block_count is the cache slots, physical layers are fewer;
+        llama.cpp counts -ngl, -ts and --n-cpu-moe in physical layers
+        (llama_model_n_layer_weights), so the offload unit drops the (count - 1) repeat passes
+        over the core [start, end); KV keeps the slots."""
         start, end, count = self._loop_start, self._loop_end, self._loop_count
         n_slots = self._n_layers
         if not (n_slots and count and count > 1 and start is not None and end and 0 <= start < end):
@@ -26651,9 +26650,8 @@ class LlamaCppBackend:
                                 for _idx, _free, _total in _gpu_mem
                             }
 
-                    # Auto keeps llama.cpp's 1024 MiB fitter margin, more than the budget
-                    # reserve on a small card: trim it to that reserve. Discrete cards only,
-                    # and not where WDDM spills an overrun to host RAM instead of failing.
+                    # Auto trims llama.cpp's 1024 MiB fitter margin to the budget reserve on a small
+                    # discrete card, not where WDDM spills overruns to host RAM.
                     if (
                         gpus
                         and not (gpu_memory_mode == "manual" and gpu_layers < 0)
@@ -29491,12 +29489,10 @@ class LlamaCppBackend:
                                 100 * (_share_after or 0.0),
                             )
 
-                    # Inkling 2 with every expert on the GPU: raise the micro-batch to 1024 for
-                    # prompt processing (see _INKLING_RESIDENT_N_UBATCH). After the spill raise,
-                    # which wins when experts sit in host RAM. Only a pinned all-GPU placement
-                    # (--fit off) counts as resident; the raise is repriced on the chosen cards
-                    # as the placement priced the default micro-batch, and kept only when the
-                    # launch stays under the occupancy cap with 256 MiB still free.
+                    # Inkling 2 fully on GPU raises micro-batch to 1024 (_INKLING_RESIDENT_N_UBATCH)
+                    # after the spill raise (wins when experts sit in host RAM); only pinned --fit
+                    # off counts; repriced on chosen cards as the placement priced it; kept only if
+                    # under the occupancy cap with 256 MiB free.
                     _inkling_ub_switch = _moe_switch(_INKLING_UBATCH_ENV)
                     _inkling_resident = bool(
                         gpus
@@ -38403,14 +38399,10 @@ class LlamaCppBackend:
         gpu_indices: Iterable[int],
         planner_integrated: Iterable[int] = (),
     ) -> bool:
-        """Whether the Auto fit-margin trim must stay off because a card may be host RAM.
-
-        The discrete-first planner only classifies integrated devices on unpinned
-        multi-GPU loads, so a lone Jetson, an AMD APU or an explicitly picked iGPU
-        is checked here directly. Any integrated device on the host counts, since
-        its ids may not line up with the probed rows: a missed trim only keeps
-        today's margin.
-        """
+        """Whether Auto's fit-margin trim must stay off as a card may be host RAM: the planner only
+        classifies iGPUs on unpinned multi-GPU loads, so a lone Jetson, AMD APU or picked iGPU is
+        checked here; any integrated device counts, since its ids may not match the probed rows
+        (a miss only keeps the margin)."""
         if any(True for _ in planner_integrated):
             return True
         try:

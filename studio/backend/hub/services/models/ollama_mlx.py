@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ollama tags in its MLX format (one safetensors blob per tensor) as standard MLX checkpoints.
-
-A load materializes a directory beside the tag's other links: tensor blobs are APFS clones, with
-the safetensors header renamed in place where Ollama names the quantization companions, and the
-smallest tensors are packed into one real shard, because mlx-lm sets a 2048 open-file soft limit
-and MLX keeps every safetensors file open. Each build is keyed by the manifest;
-the tag is identified by a stable path through an ``mlx`` link switched to the current build."""
+"""Ollama MLX-format tags (one safetensors blob per tensor) load as standard MLX checkpoints via
+APFS-cloned blobs, with the smallest tensors packed into one shard for mlx-lm's 2048 open-file
+limit; builds are keyed by manifest; a stable mlx link points at the current build."""
 
 from __future__ import annotations
 
@@ -315,8 +311,7 @@ def _write_tensors(
     layers: list,
     strip: str = "",
 ) -> dict:
-    """*layers*' tensors as MLX shards and an index in *directory*, names without *strip*; returns
-    each packed module's (quant_type, group_size)."""
+    """Returns each packed module's (quant_type, group_size); writes MLX shards and an index."""
     tensors = []
     for layer in layers:
         blob = blob_path(blobs_dir, layer.get("digest"))

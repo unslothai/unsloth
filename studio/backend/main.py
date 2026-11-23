@@ -1815,8 +1815,7 @@ async def _send_411(send) -> None:
 
 
 async def _send_401(send) -> None:
-    # The status and detail the route's own auth check gives an expired or missing token, so the
-    # frontend refreshes its session exactly as it would have.
+    # Same 401 and detail as the route's own auth check, so the frontend refreshes its session.
     payload = _json_for_413.dumps({"detail": "Invalid or expired token"}).encode("utf-8")
     await send(
         {

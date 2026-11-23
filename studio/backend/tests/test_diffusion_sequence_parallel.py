@@ -272,8 +272,7 @@ def test_neither_card_records_or_replays_a_graph_during_a_split(monkeypatch):
 
 
 def test_a_denoiser_with_per_call_activation_scaling_is_not_split_by_tokens():
-    # A dynamic NVFP4 linear takes its global scale from the whole call's activation amax: a token half would take
-    # its own, which is not the one-card computation.
+    # Dynamic NVFP4 linears scale by the whole call's amax, so split tokens would not match.
     class ComfyNVFP4DynamicLinear(torch.nn.Linear):
         pass
 

@@ -2653,9 +2653,8 @@ def _zoo_builds_text_on_mlx_vlm(model_name, hf_token = None) -> bool:
 
 
 def _text_load_drops_the_tower(model_name, hf_token = None) -> bool:
-    """Whether a text-only load builds mlx-lm's text model without the vision weights. unsloth-zoo keeps a
-    family whose mlx-lm build strips the tower only in sanitize on mlx-vlm, tower attached, so that one
-    keeps its vision load and only stops reading images."""
+    """Text-only load drops the tower, except families mlx-lm strips only in sanitize on mlx-vlm:
+    those keep the vision load and just stop reading images."""
     try:
         from utils.models.model_config import _read_raw_config_json
         from unsloth_zoo.mlx.loader import _prefer_vlm_loader_for_text
@@ -6565,8 +6564,7 @@ class MLXInferenceBackend:
         markers,
         constraint = None,
     ):
-        """The load's reasoning budget for one templated reply; a raw prompt has no reasoning block,
-        and a document-only grammar allows none."""
+        """Reasoning budget, templated replies only; document-only grammars allow none."""
         if not isinstance(prompt, str) or not self._budgets_reasoning():
             return None
         if constraint is not None and not constraint.allows_reasoning:
