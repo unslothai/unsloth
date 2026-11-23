@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
 
-"""The bf16-or-f16 decisions in unsloth/save.py ask the device-aware
-`is_bfloat16_supported()` probe, not `torch.cuda.is_bf16_supported()`: CUDA keeps its
-per-device answer while XPU and NPU hosts stop being silently rewritten to
-f16/float16, and hosts with no accelerator still get f16. Device mocks only —
-no real XPU or NPU hardware was exercised.
-"""
+"""save.py's bf16-or-f16 choices ask is_bfloat16_supported(), not torch.cuda (False on XPU / NPU)."""
 
 from __future__ import annotations
 
@@ -30,9 +25,7 @@ _BF16_CHECKED_FUNCTIONS = (
     "_preflight_gguf_disk",
 )
 
-# (label for the mocked host, the device-aware probe's answer there). The torch.cuda
-# probe is held at False in every fixture, so pre-fix code — which asked torch.cuda
-# only — always lands on f16 and the bf16 cases fail until the probe is swapped.
+# torch.cuda is held at False, so code still asking it fails the bf16 cases.
 DEVICE_PROBES = (
     ("cuda-ampere", True),
     ("cuda-pre-ampere", False),

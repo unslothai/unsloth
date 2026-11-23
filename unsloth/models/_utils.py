@@ -5805,8 +5805,7 @@ def config_return_dict(config):
 
 
 def is_bfloat16_supported():
-    # MLX: unsloth replaces torch.cuda.is_bf16_supported with the Apple GPU family answer,
-    # which is the device-aware probe there.
+    # MLX: torch.cuda.is_bf16_supported is replaced with the Apple GPU family answer.
     if DEVICE_TYPE == "mlx":
         return torch.cuda.is_bf16_supported()
     # XPU: ask again, so a torch.xpu.set_device after import is seen, as the trainer's live
