@@ -170,7 +170,9 @@ def _gemma4_prompt_tokens(
 ) -> int:
     from jinja2.sandbox import ImmutableSandboxedEnvironment
 
-    template = (Path(_BACKEND_DIR) / "assets" / "chat_templates" / "gemma-4.jinja").read_text()
+    template = (Path(_BACKEND_DIR) / "assets" / "chat_templates" / "gemma-4.jinja").read_text(
+        encoding = "utf-8"
+    )
     env = ImmutableSandboxedEnvironment(
         trim_blocks = True, lstrip_blocks = True, extensions = ["jinja2.ext.loopcontrols"]
     )
