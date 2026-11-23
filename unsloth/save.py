@@ -1531,9 +1531,7 @@ def _restore_tied_weights_keys(originals):
 _TP_IN_PLACE_MERGES = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit")
 
 
-def _refuse_tp_in_place_merge(fn, method, args, kwargs):
-    """merged_4bit merges the LoRA weights into the loaded 4-bit base (merge_and_unload): under tensor parallel
-    only rank 0 would hold that merged model. Refused on every rank (every rank makes the same call)."""
+def _is_in_place_merge(fn, args, kwargs):
     import inspect
 
     try:
@@ -1546,6 +1544,15 @@ def _refuse_tp_in_place_merge(fn, method, args, kwargs):
         isinstance(save_method, str)
         and save_method.lower().strip().replace("-", "_").replace(" ", "_") in _TP_IN_PLACE_MERGES
     ):
+        return save_method
+    return None
+
+
+def _refuse_tp_in_place_merge(fn, method, args, kwargs):
+    """merged_4bit merges the LoRA weights into the loaded 4-bit base (merge_and_unload): under tensor parallel
+    only rank 0 would hold that merged model. Refused on every rank (every rank makes the same call)."""
+    save_method = _is_in_place_merge(fn, args, kwargs)
+    if save_method is not None:
         raise RuntimeError(
             f'Unsloth: `{method}(save_method = "{save_method}")` merges the LoRA weights into the 4-bit base in '
             "place (merge_and_unload). On a tensor parallel model only rank 0 would end up with that merged "
@@ -5981,7 +5988,11 @@ def _ddp_push_on_rank0(method):
     def decorate(fn):
         @functools.wraps(fn)
         def wrapper(self, *args, **kwargs):
-            if _plain_data_parallel_push(self, method, fn, args, kwargs):
+            # merged_4bit merges into the live model: every replica runs it, as before.
+            if (
+                _plain_data_parallel_push(self, method, fn, args, kwargs)
+                and _is_in_place_merge(fn, (self, *args), kwargs) is None
+            ):
                 from .models.tp_replica import tp_world_push
                 return tp_world_push(method, lambda: fn(self, *args, **kwargs))
             return fn(self, *args, **kwargs)
@@ -7588,7 +7599,9 @@ def unsloth_generic_save(
     else:
         raise_if_merging_mistral_format_view(model, save_method)
         raise_if_merging_inkling2(model, save_method)
-        if _defer_to_main_process(is_main_process):
+        # merged_4bit merges into the live model (no conversion), so every replica must run it.
+        in_place = save_method in ("merged_4bit", "forced_merged_4bit")
+        if not in_place and _defer_to_main_process(is_main_process):
             return
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
@@ -7611,8 +7624,6 @@ def unsloth_generic_save(
             )
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
 
-        # merged_4bit merges into the loaded (already residual) weights, so it needs no conversion.
-        in_place = save_method in ("merged_4bit", "forced_merged_4bit")
         # Under FSDP2 the gathered packed 4-bit base waits on the CPU: merge it one layer at a time on
         # its GPU first, so the merge below only unloads those layers.
         streamed = []

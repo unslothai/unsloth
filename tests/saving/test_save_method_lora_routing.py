@@ -413,6 +413,7 @@ def test_the_fsdp2_gather_placement_reads_the_canonical_method(spelling, canonic
 def test_a_respelled_in_place_merge_is_refused_under_tensor_parallel(spelling):
     refuse = _load(
         "_refuse_tp_in_place_merge",
+        "_is_in_place_merge",
         _TP_IN_PLACE_MERGES = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit"),
     )["_refuse_tp_in_place_merge"]
 

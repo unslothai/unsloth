@@ -290,3 +290,23 @@ def test_staged_hub_save_runs_as_the_writer(monkeypatch):
             )
         )
     assert seen == [True]
+
+
+def test_in_place_merges_still_run_on_every_rank(monkeypatch, tmp_path):
+    """merged_4bit merges into the live model: a replica that skipped it would diverge from rank 0."""
+    calls = _counted_merge(monkeypatch)
+    _fake_ddp(monkeypatch, 1)
+    model = _tiny_peft_model()
+    unsloth_save.unsloth_generic_push_to_hub_merged(
+        model, "user/repo", None, save_method = "merged_4bit_forced", token = "hf_x"
+    )
+    assert len(calls) == 1
+    _generic_save(model, str(tmp_path / "local"), is_main_process = False)
+    unsloth_save.unsloth_generic_save(
+        model = model,
+        tokenizer = None,
+        save_directory = str(tmp_path / "inplace"),
+        save_method = "merged_4bit_forced",
+        is_main_process = False,
+    )
+    assert len(calls) == 2
