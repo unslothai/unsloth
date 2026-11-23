@@ -216,6 +216,33 @@ def test_reasoning_and_content_are_both_counted(browser):
     assert got == 5
 
 
+def test_chat_run_events_are_counted_like_plain_chunks(browser):
+    """Connected-model chats stream through chat runs, whose SSE frames wrap the OpenAI chunk as
+    {seq, type: "chunk", payload}; their non-chunk events carry no delta and add nothing."""
+    page, _ = _page(browser, WINDOWED_ELEMENTS)
+    try:
+        got = page.evaluate("""
+          () => {
+            const enc = new TextEncoder();
+            const dec = new TextDecoder();
+            const before = window.__sb.streamcost.wireStats();
+            const event = (type, payload) => 'data: ' + JSON.stringify(
+              { seq: 1, type, payload, createdAt: 0 }) + "\\n\\n";
+            dec.decode(enc.encode(
+              event("chunk", { choices: [{ index: 0, delta: { content: "abcdefg" } }] })
+              + event("status", { status: "running" })
+            ));
+            const after = window.__sb.streamcost.wireStats();
+            return { chars: after.wire_chars - before.wire_chars,
+                     frames: after.wire_frames - before.wire_frames,
+                     failures: after.wire_parse_failures - before.wire_parse_failures };
+          }
+        """)
+    finally:
+        page.close()
+    assert got == {"chars": 7, "frames": 1, "failures": 0}
+
+
 def test_a_malformed_frame_is_counted_as_a_failure_not_silently_dropped(browser):
     """A denominator that is short by an unknown amount inflates every cost above it."""
     page, _ = _page(browser, WINDOWED_ELEMENTS)

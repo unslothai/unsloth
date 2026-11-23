@@ -129,7 +129,13 @@
       if (body === "" || body === "[DONE]") continue;
       try {
         const frame = JSON.parse(body);
-        const choices = frame && frame.choices;
+        // A chat run (/api/inference/chat-runs/{id}/events) wraps each OpenAI chunk as {seq, type: "chunk", payload};
+        // its other event types (status, done, ...) carry no delta and are skipped like any frame without choices.
+        const chunk =
+          frame && frame.type === "chunk" && frame.payload && typeof frame.payload === "object"
+            ? frame.payload
+            : frame;
+        const choices = chunk && chunk.choices;
         if (!choices || !choices.length) continue;
         const delta = choices[0].delta || {};
         // Reasoning arrives as reasoning_content beside empty content, so summing is not double counting.
