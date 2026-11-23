@@ -15,6 +15,7 @@ import threading
 import time
 from typing import Any, AsyncIterator, Iterator
 
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 
 from core.inference.llama_keepwarm import InferenceActivityReservation
@@ -101,6 +102,18 @@ def _chunk_finish_reason(chunk: dict[str, Any]) -> str | None:
         if isinstance(choice, dict) and choice.get("finish_reason") is not None:
             return str(choice["finish_reason"])
     return None
+
+
+def _exception_text(exc: BaseException) -> str:
+    """A refusal raised before streaming, as the live stream shows it rather than ``400: {...}``."""
+    if not isinstance(exc, HTTPException):
+        return str(exc)
+    detail = exc.detail
+    if isinstance(detail, dict):
+        nested = detail.get("error")
+        detail = nested if isinstance(nested, dict) else detail
+        detail = detail.get("message") or detail.get("detail") or detail
+    return detail if isinstance(detail, str) else json.dumps(detail, default = str)
 
 
 def _chunk_error(chunk: dict[str, Any]) -> str | None:
@@ -903,7 +916,7 @@ class ChatGenerationSupervisor:
                         if cancelled
                         else "Unsloth shut down during generation"
                         if shutting_down
-                        else str(exc)[:1000]
+                        else _exception_text(exc)[:1000]
                     ),
                     pending_events = pending,
                 )

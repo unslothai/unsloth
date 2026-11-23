@@ -30784,7 +30784,7 @@ async def _proxy_to_external_provider(
             request,
             include_api_key = bool(studio_tool_payloads),
         )
-        cancel_event = _chat_cancel_event(request)
+        cancel_event = _external_cancel_event(request)
         cancel_keys = tuple(
             _account_cancel_key(key) for key in (payload.cancel_id, payload.session_id) if key
         )
@@ -31536,7 +31536,7 @@ async def _proxy_to_external_provider(
             except context_refusal.ContextBudgetExceeded as exc:
                 raise _context_budget_http_error(exc)
 
-    cancel_event = _chat_cancel_event(request)
+    cancel_event = _external_cancel_event(request)
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
     async def _watch_disconnect() -> None:
@@ -32718,6 +32718,13 @@ def _chat_cancel_event(request: Request) -> threading.Event:
     """Reuse a durable run's event across auto-load and generation registration."""
     event = getattr(getattr(request, "state", None), "generation_cancel_event", None)
     return event if event is not None else threading.Event()
+
+
+def _external_cancel_event(request: Request) -> threading.Event:
+    """A durable chat run's event, so its Stop reaches the provider stream. Any other caller (a scheduled
+    task) keeps a private one: the proxy sets it in teardown, which would read to that caller as a cancel."""
+    event = _chat_cancel_event(request)
+    return event if getattr(event, "durable", False) else threading.Event()
 
 
 # UI control frames lack `choices` and break strict OpenAI clients; Studio opts in via header.

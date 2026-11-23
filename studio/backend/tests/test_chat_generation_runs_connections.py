@@ -321,3 +321,58 @@ def test_an_agent_key_cannot_spend_a_chatgpt_subscription(
     with pytest.raises(HTTPException) as exc_info:
         run_routes._sanitize_request(_payload(), request)
     assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_before_streaming_reads_as_its_message(thread, monkeypatch):
+    from routes import inference
+    from utils.api_errors import openai_error_body
+
+    async def fake(_payload, _request, _subject, *, cancel_on_disconnect):
+        # What the proxy raises when the conversation no longer fits the provider's window.
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "This conversation is too long for the model.",
+                status = 400,
+                code = "context_length_exceeded",
+                param = "messages",
+            ),
+        )
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    _connection()
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    await _create(supervisor)
+    await asyncio.wait_for(supervisor._tasks["run-1"], 10)
+    run = runs_db.get_run("run-1", "alice")
+    assert (run["status"], run["error"]) == (
+        "failed",
+        "This conversation is too long for the model.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_caller_with_its_own_cancel_event_does_not_see_it_set(thread):
+    """Scheduled tasks pass their event this way; the proxy's teardown must not read to them as a cancel."""
+    from models.inference import ChatCompletionRequest
+    from routes import inference
+
+    with _Server(chunks = 2) as upstream:
+        _connection(f"http://127.0.0.1:{upstream.server_address[1]}/v1")
+        event = threading.Event()
+        request = _background_request(None, "task-run", event, external = True)
+        payload = ChatCompletionRequest(
+            model = MODEL,
+            messages = [{"role": "user", "content": "Hello"}],
+            stream = True,
+            provider_id = "conn-1",
+            external_model = MODEL,
+        )
+        response = await inference.produce_openai_chat_completions(
+            payload, request, "alice", cancel_on_disconnect = False
+        )
+        chunks = [chunk async for chunk in response.body_iterator]
+    body = "".join(c if isinstance(c, str) else c.decode() for c in chunks)
+    assert "w1 " in body and "[DONE]" in body
+    assert not event.is_set()
