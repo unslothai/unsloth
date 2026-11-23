@@ -65,6 +65,44 @@ AUTO_QUANTIZED_ONLY = frozenset({"MOSSImageTransformer"})
 AUTO_SINGLE_EXPERT_ONLY = frozenset({"WanTransformer3DModel"})
 
 
+# AUTO_DITS members the unset switch leaves alone for one load base (the upstream repo id the load resolved, lowercased,
+# compared whole): Qwen-Image-2.1 at its 25 steps renders further from a bf16-DiT reference with the kernel than with
+# it off (mean LPIPS A100-40 0.035 vs 0.026, L4 0.017 vs 0.012; bit-identical fresh-process repeats), while 8-step
+# Qwen-Image-2.1-Turbo renders closer with it and keeps its race. The kernel is ~2% of a 2.1 render on L4.
+AUTO_SKIP_BASES: dict = {
+    "QwenImage21Transformer2DModel": {
+        "qwen/qwen-image-2.1": "Auto skips Qwen-Image-2.1: its 25-step renders drift further from bf16 with INT8 "
+        "attention than without it (Qwen-Image-2.1-Turbo keeps it); int8_attention=on forces it",
+    },
+}
+# Set by the load on the pipeline: the resolved base repo id (AUTO_SKIP_BASES) and why Auto skipped (the status).
+BASE_REPO_ATTR = "_unsloth_base_repo"
+AUTO_SKIP_ATTR = "_unsloth_int8_auto_skip"
+
+
+def auto_skip_reason(pipe: Any, dit: Any) -> Optional[str]:
+    """Why the unset switch leaves ``dit`` alone for this load's base (``AUTO_SKIP_BASES``), or None."""
+    table = AUTO_SKIP_BASES.get(type(dit).__name__)
+    base = getattr(pipe, BASE_REPO_ATTR, None)
+    if not table or not isinstance(base, str):
+        return None
+    return table.get(base.strip().lower())
+
+
+def note_auto_skip(
+    pipe: Any,
+    reason: Optional[str],
+    logger: Any = None,
+) -> None:
+    """Records (or clears, with None) why Auto skipped this pipeline's DiT; never raises."""
+    try:
+        setattr(pipe, AUTO_SKIP_ATTR, reason)
+    except Exception:  # noqa: BLE001 -- a slotted pipeline: the status keeps its generic reason
+        pass
+    if reason and logger is not None:
+        logger.info("diffusion.int8_attention: %s", reason)
+
+
 def two_expert_pipeline(pipe: Any) -> bool:
     """Whether ``pipe`` denoises with a second expert (Wan 2.2 A14B's ``transformer_2``)."""
     return getattr(pipe, "transformer_2", None) is not None
@@ -785,6 +823,7 @@ def _install(
     from . import diffusion_int8_attention as I8
 
     remove(pipe)
+    note_auto_skip(pipe, None)
     setting = I8.mode(policy)
     if setting == "off" or not enabled():
         return 0
@@ -818,6 +857,10 @@ def _install(
             or (type(dit).__name__ in AUTO_QUANTIZED_ONLY and not quantized_weights(dit))
             or (type(dit).__name__ in AUTO_SINGLE_EXPERT_ONLY and two_expert_pipeline(pipe))
         ):
+            continue
+        skip = None if forced else auto_skip_reason(pipe, dit)
+        if skip:
+            note_auto_skip(pipe, skip, logger)
             continue
         native = set() if forced else native_block_modules(dit)
         mods = [

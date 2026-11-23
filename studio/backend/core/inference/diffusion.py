@@ -11833,6 +11833,14 @@ class DiffusionBackend:
                     )
                     # Speed optims run before placement: snapshot the global backend flags for unload restore.
                     backend_flags_before = snapshot_backend_flags()
+                    try:
+                        from .diffusion_int8_attention_dispatch import BASE_REPO_ATTR
+
+                        # the resolved base keys the INT8 attention route's per-base Auto exclusions (AUTO_SKIP_BASES);
+                        # kept on the pipeline so the deferred re-apply at the 3rd image reads the same base
+                        setattr(pipe, BASE_REPO_ATTR, canonical_base(str(base or repo_id)))
+                    except Exception:  # noqa: BLE001 - a slotted pipeline: no per-base exclusion
+                        pass
                     # Pick the attention kernel BEFORE compile: auto upgrades to cuDNN fused attention on NVIDIA (~1.18x)
                     attention_engaged = apply_attention_backend(
                         pipe,

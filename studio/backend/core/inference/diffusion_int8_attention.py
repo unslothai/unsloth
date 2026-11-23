@@ -2315,6 +2315,7 @@ def install_auto(
         from . import diffusion_int8_attention_dispatch as dispatch
     except Exception:  # noqa: BLE001
         return 0
+    dispatch.note_auto_skip(pipe, None)
     if not dispatch.enabled():
         return 0
     if speed_unset_only and type(transformer).__name__ not in dispatch.SPEED_UNSET_DITS:
@@ -2331,6 +2332,11 @@ def install_auto(
     if type(
         transformer
     ).__name__ in dispatch.AUTO_SINGLE_EXPERT_ONLY and dispatch.two_expert_pipeline(pipe):
+        return 0
+    skip = dispatch.auto_skip_reason(pipe, transformer)
+    if skip:
+        # the dispatch route (next in apply_attention_backend) logs the reason
+        dispatch.note_auto_skip(pipe, skip)
         return 0
     dtype = getattr(target, "dtype", None)
     if str(dtype) not in ("torch.float16", "torch.bfloat16"):
@@ -2492,7 +2498,10 @@ def resolved_entry(
         elif p.mode == "force":
             reason = "requested, but the kernel did not pass its accuracy check on this card or cannot run here"
         else:
-            reason = "not measured faster and accurate for this model and GPU; the selected attention runs"
+            reason = (
+                getattr(pipe, "_unsloth_int8_auto_skip", None)
+                or "not measured faster and accurate for this model and GPU; the selected attention runs"
+            )
     status_value = None
     if explicit == "on" and not count:
         status_value = "unsupported" if not supported else "fell_back"
