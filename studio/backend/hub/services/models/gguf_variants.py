@@ -252,7 +252,7 @@ def _all_shards_cached(repo_id: str, filename: Optional[str], pinned_to: Optiona
 def _with_remembered_engram(
     repo_id: str,
     response: GgufVariantsResponse,
-    answered_from: Optional[str] = None,
+    pinned_to: Optional[str] = None,
 ) -> GgufVariantsResponse:
     """A cache-only answer (offline, or the Hub unreachable) names no Engram tables, which hid the
     Engram Table row; the last Hub answer fills them in, with ``downloaded`` read from disk."""
