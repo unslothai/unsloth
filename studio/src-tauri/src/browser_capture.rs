@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-//! Print and screenshot for the browser panel. A page in a native view prints and captures
-//! through its own engine; everything else in the panel (proxied frames, files, internal pages)
-//! is captured from the app's webview, cropped to the page area. Native snapshots need no
-//! screen-share prompt, which the web build has to ask for.
+//! Print and screenshot for the browser panel. Native views use their own engine; everything else
+//! is captured from the app's webview, cropped to the page area.
 
-use crate::browser_webview::{require_main, view, ViewBounds};
+use crate::browser_webview::{
+    end_capture, require_main, show_for_capture, view, BrowserViews, ViewBounds,
+};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::ipc::Response;
 use tauri::{Manager, Runtime, Webview};
 
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
+const SHOW_FOR_CAPTURE_PAINT: Duration = Duration::from_millis(150);
 /// Larger than any screen's worth of pixels; a bigger answer is not a screenshot.
 const MAX_PNG_BYTES: usize = 64 * 1024 * 1024;
 
@@ -28,7 +29,6 @@ struct Clip {
 
 type Done = Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>;
 
-/// A PNG of a tab's native view (`tab_id`), or of the caller's own content inside `bounds`.
 #[tauri::command]
 pub async fn browser_capture<R: Runtime>(
     webview: Webview<R>,
@@ -36,6 +36,8 @@ pub async fn browser_capture<R: Runtime>(
     bounds: Option<ViewBounds>,
 ) -> Result<Response, String> {
     require_main(&webview)?;
+    let app = webview.app_handle().clone();
+    let tab = tab_id.clone();
     let (target, clip) = match (tab_id, bounds) {
         (Some(tab_id), _) => (view(webview.app_handle(), &tab_id)?, None),
         (None, Some(bounds)) => {
@@ -61,10 +63,26 @@ pub async fn browser_capture<R: Runtime>(
             let _ = sender.send(result);
         }
     });
-    target
+    let views = app.state::<BrowserViews>();
+    let shown_for_shot = match tab.as_deref() {
+        Some(tab) => show_for_capture(&views, &target, tab).await,
+        None => false,
+    };
+    if shown_for_shot {
+        // A frame for the page to paint where it now sits.
+        tokio::time::sleep(SHOW_FOR_CAPTURE_PAINT).await;
+    }
+    let captured = target
         .with_webview(move |platform| platform_capture(platform, clip, done))
-        .map_err(|error| error.to_string())?;
-    let png = match tokio::time::timeout(CAPTURE_TIMEOUT, receiver).await {
+        .map_err(|error| error.to_string());
+    let png = match captured {
+        Ok(()) => tokio::time::timeout(CAPTURE_TIMEOUT, receiver).await,
+        Err(error) => Ok(Ok(Err(error))),
+    };
+    if let (true, Some(tab)) = (shown_for_shot, tab.as_deref()) {
+        end_capture(&views, &target, tab).await;
+    }
+    let png = match png {
         Ok(Ok(result)) => result?,
         _ => return Err("The screenshot didn't finish".into()),
     };
@@ -74,8 +92,7 @@ pub async fn browser_capture<R: Runtime>(
     Ok(Response::new(png))
 }
 
-/// The engine's own print dialog for a tab's native view. Async: `with_webview` runs on the main
-/// thread, which a sync command would be holding.
+/// Async: `with_webview` runs on the main thread, which a sync command would be holding.
 #[tauri::command]
 pub async fn browser_view_print<R: Runtime>(
     webview: Webview<R>,
@@ -88,7 +105,7 @@ pub async fn browser_view_print<R: Runtime>(
         let _ = sender.send(platform_print(platform));
     })
     .map_err(|error| error.to_string())?;
-    // Only until the dialog is up: it stays open as long as the reader wants.
+    // Only until the dialog is up.
     match tokio::time::timeout(Duration::from_secs(5), receiver).await {
         Ok(Ok(result)) => result,
         _ => Err("The print dialog didn't open".into()),
@@ -124,7 +141,6 @@ fn platform_capture(platform: tauri::webview::PlatformWebview, clip: Option<Clip
             let Some(done) = done.lock().unwrap().take() else {
                 return;
             };
-            // The TIFF keeps the snapshot's backing pixels, so a Retina screen gives a 2x PNG.
             let png = image
                 .as_ref()
                 .and_then(|image| image.TIFFRepresentation())
@@ -142,7 +158,6 @@ fn platform_capture(platform: tauri::webview::PlatformWebview, clip: Option<Clip
     }
 }
 
-/// Chromium's own capture through the DevTools protocol, cropped by `clip` (in CSS pixels).
 #[cfg(windows)]
 fn platform_capture(platform: tauri::webview::PlatformWebview, clip: Option<Clip>, done: Done) {
     use base64::Engine;
@@ -203,19 +218,16 @@ fn platform_capture(platform: tauri::webview::PlatformWebview, clip: Option<Clip
     }
 }
 
-/// WebKitGTK only shows the panel's frames (no native views on Linux): crop the app's snapshot.
+/// Capture the native page, or crop the app's snapshot for non-native panel content.
 #[cfg(target_os = "linux")]
 fn platform_capture(platform: tauri::webview::PlatformWebview, clip: Option<Clip>, done: Done) {
     use webkit2gtk::{SnapshotOptions, SnapshotRegion, WebViewExt};
 
-    let Some(clip) = clip else {
-        return done(Err("No native pages on Linux".into()));
-    };
     let view = platform.inner();
     let scale = {
         use gtk::prelude::WidgetExt;
         let width = f64::from(view.allocated_width());
-        if width > 0.0 { width / clip.viewport_width } else { 1.0 }
+        clip.filter(|_| width > 0.0).map_or(1.0, |clip| width / clip.viewport_width)
     };
     view.snapshot(
         SnapshotRegion::Visible,
@@ -225,7 +237,14 @@ fn platform_capture(platform: tauri::webview::PlatformWebview, clip: Option<Clip
             done(
                 result
                     .map_err(|error| error.to_string())
-                    .and_then(|surface| crop_png(&surface, clip, scale)),
+                    .and_then(|surface| match clip {
+                        Some(clip) => crop_png(&surface, clip, scale),
+                        None => {
+                            let mut png = Vec::new();
+                            surface.write_to_png(&mut png).map_err(|error| error.to_string())?;
+                            Ok(png)
+                        }
+                    }),
             )
         },
     );
@@ -235,7 +254,6 @@ fn platform_capture(platform: tauri::webview::PlatformWebview, clip: Option<Clip
 fn crop_png(source: &gtk::cairo::Surface, clip: Clip, scale: f64) -> Result<Vec<u8>, String> {
     use gtk::cairo::{Context, Format, ImageSurface};
 
-    // The snapshot carries the screen's scale; keep its pixels rather than the logical size.
     let (device_x, _) = source.device_scale();
     let device = if device_x > 0.0 { device_x } else { 1.0 };
     let (x, y) = (clip.x * scale, clip.y * scale);
@@ -265,8 +283,7 @@ fn platform_capture(_platform: tauri::webview::PlatformWebview, _clip: Option<Cl
     done(Err("Screenshots aren't supported here".into()));
 }
 
-/// WebKit's print sheet, titled after the page. Not wry's `print()`, which zeroes the margins on
-/// the app's shared print info: pages print to the paper's edge, and so does everything after.
+/// Not wry's `print()`, which zeroes margins on the app's shared print info.
 #[cfg(target_os = "macos")]
 fn platform_print(platform: tauri::webview::PlatformWebview) -> Result<(), String> {
     use objc2::MainThreadMarker;
@@ -297,7 +314,7 @@ fn platform_print(platform: tauri::webview::PlatformWebview) -> Result<(), Strin
     Ok(())
 }
 
-/// Edge's print preview. Not `window.print()`, which the page can replace.
+/// Not `window.print()`, which the page can replace.
 #[cfg(windows)]
 fn platform_print(platform: tauri::webview::PlatformWebview) -> Result<(), String> {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -314,7 +331,20 @@ fn platform_print(platform: tauri::webview::PlatformWebview) -> Result<(), Strin
     }
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+fn platform_print(platform: tauri::webview::PlatformWebview) -> Result<(), String> {
+    use gtk::prelude::*;
+    use webkit2gtk::{PrintOperation, PrintOperationExt};
+    let view = platform.inner();
+    let parent = view.toplevel().and_then(|widget| widget.downcast::<gtk::Window>().ok());
+    // The GTK dialog blocks until dismissed; acknowledge before entering its nested loop.
+    glib::idle_add_local_once(move || {
+        PrintOperation::new(&view).run_dialog(parent.as_ref());
+    });
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn platform_print(_platform: tauri::webview::PlatformWebview) -> Result<(), String> {
     Err("No native pages here".into())
 }
@@ -325,7 +355,7 @@ mod tests {
 
     #[test]
     fn capture_bounds_match_the_panel() {
-        // The shape capture.ts sends: the page area's rect and the viewport's width, in CSS pixels.
+        // Matches the bounds capture.ts sends: the page area rect and viewport width, in CSS pixels.
         let bounds: ViewBounds = serde_json::from_value(serde_json::json!({
             "x": 640.5, "y": 96, "width": 579, "height": 799, "viewportWidth": 1440
         }))

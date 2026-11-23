@@ -19,8 +19,7 @@ from storage.studio_db import get_connection, is_sqlite_busy_error
 from utils.account_context import AccountContext, current_account, run_as
 
 
-# Kept aligned with the API monitor's defensive upper bound; the storage layer validates
-# independently because callers can invoke it directly.
+# Aligned with the API monitor's bound; validated here too since callers can invoke directly.
 MAX_TOKEN_COUNT = 1 << 40
 MAX_RECEIPT_ID_CHARS = 128
 MAX_SUBJECT_CHARS = 256
@@ -139,9 +138,8 @@ def _insert_api_usage(receipt: ApiUsageReceipt) -> bool:
 
 
 def record_api_usage(receipt: ApiUsageReceipt) -> bool:
-    """Insert one external request receipt, returning whether a row was added. The monitor id is the
-    idempotency key, so repeated completion notification cannot inflate profile totals. Invalid or
-    zero-usage receipts are ignored."""
+    """Keyed by monitor id so repeated completions cannot double-count; invalid or zero-usage
+    receipts are ignored"""
     if receipt.kind != "request" or receipt.via_api_key is not True:
         return False
     counts = (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens)
@@ -162,8 +160,7 @@ def record_api_usage(receipt: ApiUsageReceipt) -> bool:
         except sqlite3.OperationalError as exc:
             if not _is_busy_error(exc) or attempt + 1 == _WRITE_RETRIES:
                 raise
-            # The worker is the only production writer of these receipts, so a short bounded backoff lets
-            # unrelated transactions finish without holding up the streaming caller.
+            # Worker is the only receipt writer, so a short bounded backoff lets others finish without stalling.
             _sleep_after_busy(min(0.01 * (2**attempt), _WORKER_BUSY_RETRY_SECONDS))
 
     if inserted:
@@ -206,15 +203,13 @@ class ApiUsageWriter:
             return True
 
     def stop(self, timeout: float = _WORKER_DRAIN_TIMEOUT_SECONDS) -> bool:
-        """Stop accepting receipts and wait boundedly for the queue to drain. Returns ``True`` once the
-        daemon consumed the stop sentinel. On timeout, the daemon keeps retrying the already
-        accepted head receipt and exits after it succeeds and drains the remaining queue."""
+        """Stops intake; True once the daemon reads the stop sentinel; on timeout the daemon keeps
+        retrying the accepted head receipt, then drains the rest of the queue and exits"""
         with self._state_lock:
             if not self._stopped:
                 self._stopped = True
                 self._queue.put_nowait(_STOP)
-        # Production calls this through asyncio.to_thread so even the bounded wait cannot pause inference or the event
-        # loop.
+        # Callers use asyncio.to_thread so even this bounded wait cannot block the loop.
         self._thread.join(timeout = max(0.0, timeout))
         drained = not self._thread.is_alive()
         if not drained:
@@ -241,9 +236,7 @@ class ApiUsageWriter:
                         if not _is_busy_error(exc):
                             logger.warning("api usage receipt persistence failed", exc_info = True)
                             break
-                        # record_api_usage already made its bounded fast retries: retain this accepted item at the head of
-                        # the single writer until a long transaction releases SQLite, with the stop sentinel behind it so
-                        # final shutdown drains rather than silently dropping usage.
+                        # Keep the item at the head with the stop sentinel behind it so shutdown drains, not drops.
                         busy_failures += 1
                         if busy_failures == 1 or busy_failures % 20 == 0:
                             logger.warning(
@@ -284,9 +277,8 @@ def enqueue_api_usage(receipt: ApiUsageReceipt) -> None:
 
 
 def release_api_usage_writer(lease: str) -> None:
-    """Release one lifespan and boundedly drain after the last owner exits. A timed-out daemon retains its
-    accepted queue, but the global gate is always cleared so a successor lifespan can start a fresh writer.
-    """
+    """Drains boundedly after the last owner exits; the gate is always cleared so a successor
+    lifespan gets a fresh writer, and a timed-out daemon keeps its accepted queue"""
     global _writer, _writer_stopping
     writer = None
     with _writer_condition:

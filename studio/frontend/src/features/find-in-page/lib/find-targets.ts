@@ -1,17 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Something besides the chat the find bar can search (the browser's page), doing its own matching.
-
-/** A target's answer for the current query. `count` is null when it can only step, not count. */
 export type FindTargetResult = { count: number | null; active: number };
 
 export type FindTarget = {
   id: string;
   available: () => boolean;
-  /** Whether `node` is inside it, so the chord opens the bar searching it from there. */
   contains: (node: Node) => boolean;
-  /** Searches for `query`; an empty one clears its highlights. Results arrive through `notify`. */
   search: (query: string) => void;
   step: (delta: -1 | 1) => void;
   result: () => FindTargetResult;

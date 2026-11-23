@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The permission step's reload must settle on the pill, never on "networkidle".
-
-The step reloads with a page.route on /api/chat/settings in place. Once /api reads went out as
-Cache-Control: no-store (#12148), Playwright's `wait_for_load_state("networkidle", timeout = 30_000)`
-after that reload stopped returning at all: the 30 s timeout never fired and the step hung until
-the 180 s watchdog ended the job, 3 runs out of 3 locally and on main at 1dddc1437. The same step
-passes 3 out of 3 with the header in place once the reload settles on the pill instead, so this
-pins the helper to the bounded wait.
-"""
+"""The reload must settle on the pill, never networkidle, which hangs after Cache-Control: no-store."""
 
 from __future__ import annotations
 
@@ -43,7 +35,6 @@ def _calls(fn: ast.FunctionDef, name: str) -> list[ast.Call]:
 
 def test_the_permission_reload_never_waits_for_networkidle():
     helper = _helper()
-    # Positional or `state = "networkidle"`: both are the same wait.
     idle = [
         call
         for call in _calls(helper, "wait_for_load_state")

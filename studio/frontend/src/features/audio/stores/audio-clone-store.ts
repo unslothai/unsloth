@@ -56,8 +56,7 @@ export const useAudioCloneStore = create<AudioCloneState>()(
           };
         }),
       setReferenceText: (referenceText) => set({ referenceText }),
-      // Kept on the source too, so a new pick replaces it like the clip's own; a result for a clip
-      // no longer picked is dropped.
+      // Kept on the source so a new pick replaces it; results for unpicked clips are dropped.
       applyTranscript: (source, text) =>
         set((state) =>
           state.reference?.kind === source.kind &&

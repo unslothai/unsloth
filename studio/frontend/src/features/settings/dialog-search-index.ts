@@ -7,7 +7,6 @@ import { createSettingsSearchIndex } from "./settings-search";
 
 const clientPlatform = getClientPlatform();
 
-/** What the Settings dialog searches on this build; the command palette matches tabs on it too. */
 export const DIALOG_SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
   desktop: isTauri,
   closeToTray:
@@ -15,4 +14,5 @@ export const DIALOG_SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
     (clientPlatform.startsWith("win") ||
       clientPlatform.includes("windows") ||
       clientPlatform.includes("linux")),
+  menuBarIcon: isTauri && clientPlatform.includes("mac"),
 });

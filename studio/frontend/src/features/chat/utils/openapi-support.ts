@@ -3,9 +3,7 @@
 
 const GUARD_FIELDS = ["expectedTitle", "expectedOpeningMessageId"] as const;
 
-/** Whether the served schema declares the guard fields. The desktop app ships its own frontend
- *  against a separately installed backend, and an older one drops these and writes unguarded.
- *  Anything unrecognised is unsupported. */
+/** The desktop frontend may run against an older backend that drops these fields. */
 export function schemaDeclaresRepairGuards(document: unknown): boolean {
   if (typeof document !== "object" || document === null) return false;
   const components = (document as { components?: unknown }).components;
@@ -22,12 +20,26 @@ export function schemaDeclaresRepairGuards(document: unknown): boolean {
 
 export interface GuardProbe {
   supported: boolean;
-  /** Only a schema that arrived and parsed settles it. A 401 while the token warms up or a 503 at
-   *  startup is a moment, not an answer, and caching one would park the migration for the session. */
+  /** Only a parsed schema settles it; a transient 401 or 503 must not be cached. */
   settled: boolean;
 }
 
 export function readGuardProbe(ok: boolean, document: unknown): GuardProbe {
   if (!ok) return { supported: false, settled: false };
   return { supported: schemaDeclaresRepairGuards(document), settled: true };
+}
+
+/** threadPatchGuards from a thread-list response; null when the backend predates the flag. */
+export function readAdvertisedPatchGuards(data: unknown): boolean | null {
+  if (typeof data !== "object" || data === null) return null;
+  const value = (data as { threadPatchGuards?: unknown }).threadPatchGuards;
+  return typeof value === "boolean" ? value : null;
+}
+
+export async function resolveGuardProbe(
+  advertised: boolean | null,
+  probeSchema: () => Promise<GuardProbe>,
+): Promise<GuardProbe> {
+  if (advertised !== null) return { supported: advertised, settled: true };
+  return probeSchema();
 }

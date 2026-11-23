@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronLeftIcon, ChevronRightIcon, UploadIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   AlertDialog,
@@ -47,6 +48,7 @@ import { type KnowledgeBase, isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
 import { RAG_SOURCE_UPLOAD_ACCEPT } from "./source-drop-policy";
+import { embeddedSummary } from "./source-folder-copy";
 import { type RagUploadItem, useRagDocuments } from "./use-rag-documents";
 import { useSourceDrop } from "./use-source-drop";
 import { useUploadQueue } from "./use-upload-queue";
@@ -76,10 +78,44 @@ export function KnowledgeBaseDialog({
   focus = null,
   onCloseAutoFocus,
 }: KnowledgeBaseDialogProps) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <KnowledgeBaseManager
+        open={open}
+        focus={focus}
+        frame={(content) => (
+          <DialogContent className="max-w-2xl" onCloseAutoFocus={onCloseAutoFocus}>
+            {content}
+          </DialogContent>
+        )}
+        renderHeader={(title, description) => (
+          <DialogHeader>
+            <DialogTitle>{title}</DialogTitle>
+            <DialogDescription>{description}</DialogDescription>
+          </DialogHeader>
+        )}
+      />
+    </Dialog>
+  );
+}
+
+export interface KnowledgeBaseManagerProps {
+  open: boolean;
+  focus?: KnowledgeBaseFocus | null;
+  renderHeader: (title: string, description: string, inKnowledgeBase: boolean) => ReactNode;
+  /** Wraps everything but the delete confirmation; the dialog passes DialogContent. */
+  frame?: (content: ReactNode) => ReactNode;
+}
+
+export function KnowledgeBaseManager({
+  open,
+  focus = null,
+  renderHeader,
+  frame = (content) => content,
+}: KnowledgeBaseManagerProps) {
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<View>({ kind: "list" });
-  // Handed-over files not yet uploading; nothing else holds them.
   const handoffRef = useRef<RagUploadItem[]>([]);
   const handedFocusRef = useRef<KnowledgeBaseFocus | null>(null);
   const [name, setName] = useState("");
@@ -88,8 +124,6 @@ export function KnowledgeBaseDialog({
   const [confirmingDelete, setConfirmingDelete] = useState<KnowledgeBase | null>(
     null,
   );
-  // Measured only: while the answer is unknown this stays false and the dialog renders
-  // exactly as it always has. See api/rag-availability.
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const ragUnavailableReason = useRagAvailabilityStore((s) =>
     s.unavailableReason(),
@@ -98,21 +132,38 @@ export function KnowledgeBaseDialog({
     ? (ragUnavailableReason ?? undefined)
     : undefined;
 
-  const refresh = useCallback(async (): Promise<KnowledgeBase[] | null> => {
-    setLoading(true);
+  const refreshSeq = useRef(0);
+  const refresh = useCallback(async (quiet = false): Promise<KnowledgeBase[] | null> => {
+    // Only the newest answer is shown: an older one could still list a base deleted since.
+    const requestId = ++refreshSeq.current;
+    if (!quiet) setLoading(true);
     try {
       const rows = await listKnowledgeBases();
-      setKbs(rows);
+      if (requestId === refreshSeq.current) setKbs(rows);
       return rows;
     } catch (err) {
-      toast.error("Failed to load knowledge bases", {
-        description: err instanceof Error ? err.message : String(err),
-      });
+      if (!quiet) {
+        toast.error("Failed to load knowledge bases", {
+          description: err instanceof Error ? err.message : String(err),
+        });
+      }
       return null;
     } finally {
-      setLoading(false);
+      if (requestId === refreshSeq.current) setLoading(false);
     }
   }, []);
+
+  const embedding =
+    open && view.kind === "list" && kbs.some((kb) => (kb.indexingCount ?? 0) > 0);
+  // Re-armed by each poll's end, not by new rows, so a failed poll still schedules the next.
+  const [pollRound, setPollRound] = useState(0);
+  useEffect(() => {
+    if (!embedding) return;
+    const timer = window.setTimeout(() => {
+      void refresh(true).finally(() => setPollRound((n) => n + 1));
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [embedding, pollRound, refresh]);
 
   const wasOpenRef = useRef(false);
   useEffect(() => {
@@ -124,15 +175,14 @@ export function KnowledgeBaseDialog({
     }
     const wasOpen = wasOpenRef.current;
     wasOpenRef.current = true;
-    // Once per handoff, though StrictMode runs this twice for the same one.
+    // StrictMode runs this twice for the same handoff.
     if (focus !== handedFocusRef.current) {
       handedFocusRef.current = focus;
       handoffRef.current = [...handoffRef.current, ...(focus?.uploads ?? [])];
     }
     const uploads = handoffRef.current;
     let cancelled = false;
-    // A handoff into the KB already on screen keeps its view mounted: unmounting it
-    // abandons the rest of a batch still uploading there.
+    // Unmounting the KB view would abandon the rest of a batch still uploading there.
     setView((current) =>
       wasOpen &&
       focus &&
@@ -149,7 +199,6 @@ export function KnowledgeBaseDialog({
       if (cancelled || !focus) return;
       const kb = rows?.find((row) => row.id === focus.kbId);
       if (!kb) {
-        // A failed load already said so.
         if (uploads.length && rows) {
           toast.error("Knowledge base not found", {
             description: "Open or create one below and the files go there.",
@@ -182,6 +231,8 @@ export function KnowledgeBaseDialog({
 
   function backToList() {
     setView({ kind: "list" });
+    // Counts move while documents index in the view just left.
+    void refresh(true);
   }
 
   function openDocuments(kb: KnowledgeBase) {
@@ -193,7 +244,6 @@ export function KnowledgeBaseDialog({
     });
   }
 
-  // The view outlives a close, so the files leave it as soon as they start.
   const takeUploads = useCallback(() => {
     handoffRef.current = [];
     setView((current) =>
@@ -204,8 +254,7 @@ export function KnowledgeBaseDialog({
   }, []);
 
   async function submitForm() {
-    // The button is disabled for this, but the form is also reachable by keyboard and
-    // the verdict can land while it is open. A 503 toast is not an explanation.
+    // The form is reachable by keyboard and the verdict can land while it is open.
     if (ragUnavailable) {
       toast.error("Knowledge bases are unavailable", {
         description: ragUnavailableReason ?? undefined,
@@ -261,138 +310,140 @@ export function KnowledgeBaseDialog({
   const showForm = view.kind === "create" || view.kind === "edit";
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl" onCloseAutoFocus={onCloseAutoFocus}>
-        <DialogHeader>
-          <DialogTitle>
-            {view.kind === "documents" ? view.kb.name : "Knowledge bases"}
-          </DialogTitle>
-          <DialogDescription>
-            {view.kind === "documents"
+    <>
+      {frame(
+        <>
+          {renderHeader(
+            view.kind === "documents" ? view.kb.name : "Knowledge bases",
+            view.kind === "documents"
               ? "Upload documents to index for retrieval in chat."
-              : "Group documents into a reusable knowledge base for chat retrieval."}
-          </DialogDescription>
-        </DialogHeader>
+              : "Group documents into a reusable knowledge base for chat retrieval.",
+            view.kind === "documents",
+          )}
 
-        {view.kind === "documents" ? (
-          <KnowledgeBaseDocuments
-            kb={view.kb}
-            uploads={view.uploads}
-            onUploadsStarted={takeUploads}
-            onBack={backToList}
-          />
-        ) : showForm ? (
-          <div className="flex flex-col gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="kb-name">Name</Label>
-              <Input
-                id="kb-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Product docs"
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="kb-description">Description</Label>
-              <Textarea
-                id="kb-description"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Optional. What this knowledge base contains."
-                rows={3}
-              />
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <Button variant="ghost" onClick={backToList} disabled={saving}>
-                Cancel
-              </Button>
-              <Button onClick={submitForm} disabled={saving || ragUnavailable}>
-                {saving ? <Spinner /> : null}
-                {view.kind === "edit" ? "Save changes" : "Create"}
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex min-w-0 flex-col gap-3">
-            <div className="flex justify-end">
-              <Button
-                size="sm"
-                onClick={startCreate}
-                disabled={ragUnavailable}
-                title={ragUnavailableHint}
-              >
-                <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
-                New knowledge base
-              </Button>
-            </div>
-            {loading ? (
-              <div className="flex justify-center py-6">
-                <Spinner />
+          {view.kind === "documents" ? (
+            <KnowledgeBaseDocuments
+              kb={view.kb}
+              uploads={view.uploads}
+              onUploadsStarted={takeUploads}
+              onBack={backToList}
+            />
+          ) : showForm ? (
+            <div className="flex flex-col gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="kb-name">Name</Label>
+                <Input
+                  id="kb-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. Product docs"
+                />
               </div>
-            ) : ragUnavailable ? (
-              // An empty list on this host is not an empty store, so say which one it is.
-              <div className="rounded-md border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
-                {ragUnavailableReason ?? "Knowledge bases are unavailable."}
+              <div className="grid gap-2">
+                <Label htmlFor="kb-description">Description</Label>
+                <Textarea
+                  id="kb-description"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Optional. What this knowledge base contains."
+                  rows={3}
+                />
               </div>
-            ) : kbs.length === 0 ? (
-              <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
-                No knowledge bases yet.
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="ghost" onClick={backToList} disabled={saving}>
+                  Cancel
+                </Button>
+                <Button onClick={submitForm} disabled={saving || ragUnavailable}>
+                  {saving ? <Spinner /> : null}
+                  {view.kind === "edit" ? "Save changes" : "Create"}
+                </Button>
               </div>
-            ) : (
-              <ul className="flex max-h-[60dvh] flex-col divide-y overflow-y-auto scroll-rounded rounded-md border">
-                {kbs.map((kb) => (
-                  <li
-                    key={kb.id}
-                    className="flex items-center justify-between gap-3 px-3 py-2"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => openDocuments(kb)}
-                      title="Open to add or remove documents"
-                      className="-my-1 -ml-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            </div>
+          ) : (
+            <div className="flex min-w-0 flex-col gap-3">
+              <div className="flex justify-end">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={startCreate}
+                  disabled={ragUnavailable}
+                  title={ragUnavailableHint}
+                >
+                  <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
+                  New knowledge base
+                </Button>
+              </div>
+              {loading ? (
+                <div className="flex justify-center py-6">
+                  <Spinner />
+                </div>
+              ) : ragUnavailable ? (
+                // An empty list on this host is not an empty store, so say which one it is.
+                <div className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
+                  {ragUnavailableReason ?? "Knowledge bases are unavailable."}
+                </div>
+              ) : kbs.length === 0 ? (
+                <div className="rounded-xl border border-dashed py-6 text-center text-sm text-muted-foreground">
+                  No knowledge bases yet.
+                </div>
+              ) : (
+                <ul className="flex max-h-[60dvh] flex-col divide-y overflow-y-auto scroll-rounded rounded-xl border">
+                  {kbs.map((kb) => (
+                    <li
+                      key={kb.id}
+                      className="flex items-center justify-between gap-3 px-3 py-2"
                     >
-                      <span className="block min-w-0 flex-1">
-                        <span className="block truncate font-medium">
-                          {kb.name}
-                        </span>
-                        <span className="block truncate text-xs text-muted-foreground">
-                          {kb.documentCount ?? 0} document
-                          {(kb.documentCount ?? 0) === 1 ? "" : "s"}
-                          {kb.description ? ` · ${kb.description}` : ""}
-                        </span>
-                      </span>
-                      <ChevronRightIcon
-                        strokeWidth={1.5}
-                        className="size-3.5 shrink-0 text-muted-foreground"
-                      />
-                    </button>
-                    <div className="flex items-center gap-1">
-                      <Button
+                      <button
                         type="button"
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => startEdit(kb)}
-                        aria-label="Rename knowledge base"
+                        onClick={() => openDocuments(kb)}
+                        title="Open to add or remove documents"
+                        className="-my-1 -ml-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       >
-                        <HugeiconsIcon icon={Edit03Icon} className="size-3.5" />
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setConfirmingDelete(kb)}
-                        aria-label="Delete knowledge base"
-                      >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-                      </Button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-      </DialogContent>
+                        <span className="block min-w-0 flex-1">
+                          <span className="block truncate font-medium">
+                            {kb.name}
+                          </span>
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {kb.documentCount ?? 0} document
+                            {(kb.documentCount ?? 0) === 1 ? "" : "s"}
+                            {embeddedSummary(kb)}
+                            {kb.description ? ` · ${kb.description}` : ""}
+                          </span>
+                        </span>
+                        <HugeiconsIcon
+                          icon={ChevronRightStandardIcon}
+                          strokeWidth={1.5}
+                          className="size-3.5 shrink-0 text-muted-foreground"
+                        />
+                      </button>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => startEdit(kb)}
+                          aria-label="Rename knowledge base"
+                        >
+                          <HugeiconsIcon icon={Edit03Icon} className="size-3.5" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setConfirmingDelete(kb)}
+                          aria-label="Delete knowledge base"
+                        >
+                          <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
+                        </Button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </>,
+      )}
       <AlertDialog
         open={confirmingDelete !== null}
         onOpenChange={(next) => {
@@ -425,7 +476,7 @@ export function KnowledgeBaseDialog({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </Dialog>
+    </>
   );
 }
 
@@ -456,9 +507,7 @@ function KnowledgeBaseDocuments({
     onItems: enqueue,
   });
 
-  // Deferred a tick: the hook's unmount cleanup aborts an upload started on StrictMode's
-  // first mount. Taking the files off the view, not the deps, stops a rerun.
-  // A batch already uploading here goes first: upload() tracks one run at a time.
+  // Deferred a tick: the hook's unmount cleanup aborts an upload started on StrictMode's first mount.
   useEffect(() => {
     if (!uploads?.length || uploading) return;
     const timer = window.setTimeout(() => {
@@ -476,11 +525,11 @@ function KnowledgeBaseDocuments({
     >
       <div className="flex items-center justify-between">
         <Button variant="ghost" size="sm" onClick={onBack}>
-          <ChevronLeftIcon className="size-4" />
+          <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4" />
           All knowledge bases
         </Button>
         <Button size="sm" onClick={() => fileInputRef.current?.click()}>
-          {uploading ? <Spinner /> : <UploadIcon className="size-3.5" />}
+          {uploading ? <Spinner /> : <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />}
           Upload
         </Button>
         <input
@@ -503,8 +552,9 @@ function KnowledgeBaseDocuments({
       ) : documents.length === 0 ? (
         <div
           className={cn(
-            "rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground transition-colors",
-            dragging && "border-primary/60 bg-primary/5 text-foreground",
+            "rounded-xl border border-dashed py-6 text-center text-sm text-muted-foreground transition-colors",
+            dragging &&
+              "border-wash-30 bg-wash-3 dark:border-wash-60 dark:bg-wash-5 text-foreground",
           )}
         >
           No documents yet. Upload or drop documents, spreadsheets, slides,
@@ -513,8 +563,9 @@ function KnowledgeBaseDocuments({
       ) : (
         <div
           className={cn(
-            "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto scroll-rounded rounded-md pr-0.5 transition-colors",
-            dragging && "bg-primary/5 ring-1 ring-primary/60",
+            "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto scroll-rounded rounded-xl pr-0.5 transition-colors",
+            dragging &&
+              "bg-wash-3 ring-1 ring-wash-30 dark:bg-wash-5 dark:ring-wash-60",
           )}
         >
           {documents.map((doc) => (

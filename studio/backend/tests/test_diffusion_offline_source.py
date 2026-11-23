@@ -130,7 +130,7 @@ def test_modular_tokenizer_and_processor_specs_are_pointed_at_the_snapshot(tmp_p
         _component_specs = {
             "processor": _spec(_Processor, "processor"),
             "tokenizer": _spec(_Tokenizer, "tokenizer"),
-            # Models carry their own config.json and load offline by repo id already.
+            # Models carry their own config.json and already load offline by repo id.
             "text_encoder": _spec(_Encoder, "text_encoder"),
             "guider": SimpleNamespace(type_hint = _Tokenizer, default_creation_method = "from_config"),
         }
@@ -161,7 +161,8 @@ def test_the_h3_modular_build_hands_the_offline_sources_to_load_components():
                 call
                 for call in ast.walk(node)
                 if isinstance(call, ast.Call)
-                and getattr(call.func, "attr", None) == "load_components"
+                # Through the strict wrapper, which forwards every keyword to pipe.load_components.
+                and getattr(call.func, "id", None) == "load_components_strict"
             ]
             assert calls, "no load_components call"
             sources = ast.unparse(node)
@@ -241,3 +242,17 @@ def test_a_downloaded_krea_tokenizer_really_loads_offline(monkeypatch, tmp_path,
     _live_cache(monkeypatch, tmp_path)
     tokenizer = diffusion_krea2.load_krea2_tokenizer(REPO, local_files_only = True)
     assert tokenizer("hello world")["input_ids"] == [1, 2]
+
+
+def test_the_anima_tokenizers_really_load_offline(monkeypatch, tmp_path, online):
+    pytest.importorskip("transformers")
+    from transformers import AutoTokenizer
+
+    from core.inference import diffusion_anima
+
+    snapshot = _fake_cache(tmp_path, subfolders = ("tokenizer", "t5_tokenizer"))
+    common = {"local_files_only": True, "cache_dir": str(tmp_path)}
+    for subfolder in ("tokenizer", "t5_tokenizer"):
+        _write_real_tokenizer(snapshot / subfolder)
+        tokenizer = diffusion_anima._load_tokenizer(AutoTokenizer, REPO, subfolder, common)
+        assert tokenizer("hello world")["input_ids"] == [1, 2]

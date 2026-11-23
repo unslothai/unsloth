@@ -18,7 +18,6 @@ test("project grouping is set from the sidebar, not Chat settings", () => {
   );
   assert.doesNotMatch(SEARCH, /settings\.chat\.projectsSection/);
   assert.equal("projectsSection" in en.settings.chat, false);
-  // The sidebar's organize menu still offers By project and In one list.
   assert.match(
     SIDEBAR,
     /\{ value: "project", key: "shell\.organize\.byProject"/,

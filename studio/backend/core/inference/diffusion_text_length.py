@@ -105,10 +105,7 @@ def flux_t5_sequence_length(
 def flux_t5_kwarg(
     family_name: str, pipe: Any, call_params: Any, chunk_kwargs: dict
 ) -> Optional[int]:
-    """The ``max_sequence_length`` to pass for this chunk, or None to leave the kwarg alone.
-
-    Only FLUX.1 families, only when the pipeline accepts the kwarg, and never over a value the
-    caller already set. The negative prompt counts only when true CFG actually encodes it."""
+    """Never overrides a caller-set value; the negative prompt counts only when true CFG encodes it."""
     if family_name not in FLUX_T5_FAMILIES:
         return None
     if "max_sequence_length" not in call_params or "max_sequence_length" in chunk_kwargs:

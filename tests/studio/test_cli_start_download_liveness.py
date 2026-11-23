@@ -21,8 +21,7 @@ ADAPTER_BYTES = 20 * 1024**2
 KEY_LINE = f"{start_cli._START_API_KEY_PREFIX}sk-unsloth-test\n"
 EXPECTED_BYTES = 500 * 1024**3
 STEP_S = 120.0
-# A loop that keeps resetting its deadline never returns, so stop it and say so rather
-# than hanging the suite. At STEP_S this is ~7 days of fake wall clock.
+# A loop that keeps resetting its deadline never returns; ~7 days of fake clock at STEP_S.
 MAX_ITERATIONS = 5000
 
 
@@ -163,8 +162,6 @@ class Harness:
                 self.failures += 1
                 raise TimeoutError("the server took too long to answer")
             if self.rebound:
-                # Two roots, one intermittently unreadable and nothing downloading: the
-                # partial scan sees less than the complete one, over and over.
                 if self.polls % 2 == 0:
                     return {
                         "downloaded_bytes": 12 * 1024**3,
@@ -180,8 +177,7 @@ class Harness:
                     "cache_measured": False,
                 }
             if self.vanish_every and self.polls % self.vanish_every == 0:
-                # A cache mount that disappears cleanly is a MEASURED absence -- no scan
-                # error -- so the count drops to zero and returns on the next remount.
+                # A cleanly vanished mount is a MEASURED zero: the count drops, then returns.
                 self.vanished += 1
                 return {
                     "downloaded_bytes": 0,
@@ -190,9 +186,7 @@ class Harness:
                     "cache_measured": True,
                 }
             if self.unmeasured_every and self.polls % self.unmeasured_every == 0:
-                # A scan the server could not finish: 200, cache_measured false. Zero bytes
-                # is the unreadable-root case; a growing count is the readable-root one,
-                # which `snapshot_progress.py` documents as a real lower bound.
+                # Unfinished scan: 200, cache_measured false; a growing count is a lower bound.
                 self.unmeasured += 1
                 if self.unmeasured_grows:
                     self.downloaded_bytes += self.chunk_bytes
@@ -216,7 +210,6 @@ class Harness:
         path,
         lines = 20,
     ):
-        # The real file the child writes to, so `_ServerLogProgress` reads it for real.
         self.log_path = path
         return self.tail
 
@@ -254,7 +247,6 @@ def test_a_live_download_survives_past_the_idle_cap(monkeypatch):
     assert server is harness.server
     assert harness.shutdowns == []
     assert harness.polls >= 40
-    # The transfer outlives the cap in wall clock: the case that used to be killed.
     assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
 
 
@@ -295,8 +287,7 @@ def test_a_server_that_never_downloads_still_times_out(monkeypatch, capsys):
     ],
 )
 def test_a_wedged_server_that_keeps_writing_still_times_out(monkeypatch, capsys, chatter):
-    # Every one of these keeps the log growing on a timer while nothing loads, so log
-    # growth cannot stand in for progress: only fresh download bytes may move the deadline.
+    # The log grows on a timer while nothing loads; only fresh download bytes move the deadline.
     harness = Harness(
         monkeypatch,
         downloaded_bytes = EXPECTED_BYTES,
@@ -313,8 +304,6 @@ def test_a_wedged_server_that_keeps_writing_still_times_out(monkeypatch, capsys,
 
 
 def test_a_transient_progress_error_does_not_blind_the_loop(monkeypatch):
-    # One slow reading used to disable the reader for good, which would now leave a live
-    # download with no signal at all and kill it at the cap.
     harness = Harness(
         monkeypatch,
         chunk_bytes = 1024**3,
@@ -331,9 +320,8 @@ def test_a_transient_progress_error_does_not_blind_the_loop(monkeypatch):
 
 
 def test_an_unmeasured_reading_is_not_progress(monkeypatch, capsys):
-    # `snapshot_progress_response` answers 200 with zero bytes when it cannot finish the
-    # cache scan. Believing it would drop the count to zero, so the next real reading of
-    # the same cached bytes would read as fresh growth and renew the deadline forever.
+    # An unfinished scan answers 200 with zero bytes; believing it makes the next reading
+    # look like fresh growth and renews the deadline forever.
     harness = Harness(
         monkeypatch,
         downloaded_bytes = 12 * 1024**3,
@@ -351,10 +339,7 @@ def test_an_unmeasured_reading_is_not_progress(monkeypatch, capsys):
 
 
 def test_polling_keeps_probing_after_a_long_burst_of_errors(monkeypatch):
-    # Bytes are the only thing separating a live transfer from a wedged server, so a run
-    # of failures may back the reader off but must never retire it: the download it would
-    # abandon is the one this whole path exists to keep alive. Six in a row is past the
-    # point where the reader used to disable itself for the rest of the startup.
+    # A run of failures may back the reader off but must never retire it.
     harness = Harness(
         monkeypatch,
         chunk_bytes = 1024**3,
@@ -367,14 +352,12 @@ def test_polling_keeps_probing_after_a_long_burst_of_errors(monkeypatch):
     assert server is harness.server
     assert harness.shutdowns == []
     assert harness.failures >= 6
-    assert harness.downloaded_bytes > 0  # it recovered and saw the transfer again
+    assert harness.downloaded_bytes > 0
     assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
 
 
 def test_a_growing_unmeasured_reading_still_counts(monkeypatch):
-    # One cache root unreadable while the download lands in another: the backend answers
-    # `cache_measured: false` with the readable root's real, growing byte count. That is a
-    # lower bound, not an unknown, so rejecting it would kill a live transfer at the cap.
+    # `cache_measured: false` with a growing count is a lower bound, not an unknown.
     harness = Harness(
         monkeypatch,
         chunk_bytes = 1024**3,
@@ -387,14 +370,12 @@ def test_a_growing_unmeasured_reading_still_counts(monkeypatch):
 
     assert server is harness.server
     assert harness.shutdowns == []
-    assert harness.unmeasured >= 40  # every reading came back unmeasured
+    assert harness.unmeasured >= 40
     assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
 
 
 def test_a_partial_scan_rebound_is_not_progress(monkeypatch, capsys):
-    # Nothing is downloading; one cache root simply comes and goes. Letting the partial
-    # scan lower the baseline would turn the next complete scan of the very same bytes
-    # into growth, and a wedged server would be renewed for as long as the mount flaps.
+    # A partial scan must not lower the baseline, or a flapping mount reads as growth.
     harness = Harness(monkeypatch, rebound = True)
 
     with pytest.raises(typer.Exit):
@@ -407,9 +388,7 @@ def test_a_partial_scan_rebound_is_not_progress(monkeypatch, capsys):
 
 
 def test_a_vanished_cache_mount_is_not_progress(monkeypatch, capsys):
-    # Nothing is downloading; a cache mount just comes and goes. Its absence is reported
-    # as a MEASURED zero, so a baseline that followed readings down would read every
-    # remount as fresh growth and keep a wedged server waiting for as long as it flaps.
+    # A vanished mount is a MEASURED zero; following it down makes each remount read as growth.
     harness = Harness(
         monkeypatch,
         downloaded_bytes = 12 * 1024**3,

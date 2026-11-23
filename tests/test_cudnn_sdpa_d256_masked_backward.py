@@ -152,3 +152,18 @@ def test_opt_out_env_leaves_torch_dispatch_alone():
             [sys.executable, "-c", code], capture_output = True, text = True, env = e, timeout = 600
         )
         assert f"WRAPPED {want}" in r.stdout, (env, r.stdout[-2000:], r.stderr[-2000:])
+
+
+@pytest.mark.parametrize(
+    "major, guarded", [(7, False), (8, False), (9, True), (10, True), (12, False)]
+)
+def test_guarded_devices_include_hopper_and_blackwell_datacenter(monkeypatch, major, guarded):
+    from unsloth import import_fixes
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda i = 0: (major, 0))
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    assert import_fixes._sdpa_cudnn_d256_sm100_devices() == (
+        frozenset({0}) if guarded else frozenset()
+    )

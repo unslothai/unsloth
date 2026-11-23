@@ -488,7 +488,6 @@ test("editing one LoRA field does not freeze the other two on a model switch", a
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
   const state = useTrainingConfigStore.getState();
-  // The rank edit is protected; the two untouched fields follow the new model.
   assert.equal(state.loraRank, 8);
   assert.equal(state.loraAlpha, 128);
   assert.equal(state.loraVariant, "dora");
@@ -589,12 +588,10 @@ test("leaving CPT does not report untouched adapter params as modified", async (
       }),
     ),
   );
-  // Chosen inside CPT, so the baseline freezes there: the regressing case.
   useTrainingConfigStore.getState().setTrainingMethod("cpt");
   useTrainingConfigStore.getState().selectTrainingModel("old/llama", "text");
   await waitForModelDefaults("old/llama");
 
-  // Inside CPT the summary reads CPT's own values, so nothing is modified there.
   const inCpt = useTrainingConfigStore.getState();
   assert.equal(
     countNonDefaultAdvancedSettings(inCpt, inCpt.advancedSettingsBaseline),
@@ -611,10 +608,8 @@ test("leaving CPT does not report untouched adapter params as modified", async (
   );
 });
 
-// load_model_defaults returns {} when its YAML read raises or default.yaml is gone,
-// so the patch carries no target modules and cptTargetModules falls back to live state.
-// The baseline has to follow that fallback or the summary compares the all-linear set
-// the UI is showing against the generic CPT list and reports a phantom edit.
+// load_model_defaults returns {} on a YAML failure, so cptTargetModules falls back to live
+// state; the baseline must follow or the summary reports a phantom edit.
 test("an empty model config does not invent a modified target-modules setting", async () => {
   useTrainingConfigStore.getState().reset();
   useTrainingConfigStore
@@ -637,7 +632,9 @@ test("an empty model config does not invent a modified target-modules setting", 
       }),
     ),
   );
-  useTrainingConfigStore.getState().selectTrainingModel("org/no-defaults", "text");
+  useTrainingConfigStore
+    .getState()
+    .selectTrainingModel("org/no-defaults", "text");
   await waitForModelDefaults("org/no-defaults");
 
   const inCpt = useTrainingConfigStore.getState();
@@ -750,7 +747,6 @@ test("a cache-reference restart does not forget an edit made before it", async (
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
   const state = useTrainingConfigStore.getState();
-  // The edit predates the restart, so its guard has to survive the new request.
   assert.equal(state.loraRank, 8);
   assert.equal(state.loraAlpha, 128);
   assert.equal(state.loraVariant, "dora");
@@ -783,7 +779,6 @@ test("a reload inside CPT keeps the pre-CPT LoRA params the session saved", asyn
     );
   });
 
-  // The shape a rehydrate leaves: CPT active, pre-CPT values persisted, defaults applied.
   useTrainingConfigStore.setState({
     selectedModel: "org/reload-model",
     modelDefaultsAppliedFor: "org/reload-model",
@@ -827,7 +822,7 @@ test("a reload inside CPT keeps the pre-CPT LoRA params the session saved", asyn
   assert.equal(state.loraVariant, "dora");
 });
 
-test("leaving CPT after a model switch does not restore the old model's train on completions", async () => {
+test("a new model recipe opt-out does not override the assistant-only default on CPT exit", async () => {
   useTrainingConfigStore.getState().reset();
   const defaultsWith = (id: string, trainOnCompletions: boolean) => () =>
     Promise.resolve(
@@ -855,7 +850,7 @@ test("leaving CPT after a model switch does not restore the old model's train on
   await waitForModelDefaults("new/model");
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
-  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
 });
 
 test("leaving CPT after switching to a model whose default is on turns train on completions back on", async () => {
@@ -916,7 +911,7 @@ test("leaving CPT while the new model's defaults are loading does not restore th
   assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
 });
 
-test("an image dataset picked inside CPT keeps train on completions off for a vision model", async () => {
+test("an image dataset picked inside CPT restores assistant-only training for a vision model", async () => {
   useTrainingConfigStore.getState().reset();
   setAuthFetchHandler((input, init) => {
     if (input === "/api/hub/datasets/check-format") {
@@ -961,7 +956,7 @@ test("an image dataset picked inside CPT keeps train on completions off for a vi
   assert.equal(useTrainingConfigStore.getState().isDatasetImage, true);
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
-  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
 });
 
 const completionDefaults = (id: string, isAudio: boolean) =>
@@ -1084,7 +1079,6 @@ test("a cache refetch inside CPT keeps the train on completions the user turned 
   useTrainingConfigStore.getState().selectTrainingModel("org/chat", "text");
   await waitForModelDefaults("org/chat");
   useTrainingConfigStore.getState().setTrainOnCompletions(false);
-  // A dataset pick clears the manual-toggle flag.
   useTrainingConfigStore.getState().setDataset("org/text");
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (!useTrainingConfigStore.getState().isCheckingDataset) break;
@@ -1160,7 +1154,7 @@ async function settleStore(): Promise<void> {
   throw new Error("store did not settle");
 }
 
-test("a model found to be vision inside CPT keeps completions off for an image dataset", async () => {
+test("a model found to be vision inside CPT restores completions for an image dataset", async () => {
   useTrainingConfigStore.getState().reset();
   let isVision = false;
   setAuthFetchHandler((input) =>
@@ -1186,7 +1180,7 @@ test("a model found to be vision inside CPT keeps completions off for an image d
   assert.equal(useTrainingConfigStore.getState().isVisionModel, true);
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
-  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
 });
 
 test("an opt-out made while defaults load survives a CPT round trip", async () => {
@@ -1211,7 +1205,7 @@ test("an opt-out made while defaults load survives a CPT round trip", async () =
   assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
 });
 
-test("an image split picked inside CPT keeps completions off after manual toggles", async () => {
+test("an image split picked inside CPT preserves the assistant-only choice after manual toggles", async () => {
   useTrainingConfigStore.getState().reset();
   setAuthFetchHandler((input, init) =>
     input === "/api/hub/datasets/check-format"
@@ -1231,7 +1225,7 @@ test("an image split picked inside CPT keeps completions off after manual toggle
   assert.equal(useTrainingConfigStore.getState().isDatasetImage, true);
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
-  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
 });
 
 test("a manual toggle on the previous model does not decide the next model's CPT restore", async () => {
@@ -1268,7 +1262,7 @@ test("a manual toggle on the previous model does not decide the next model's CPT
   await settleStore();
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
-  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
 });
 
 test("a config imported while defaults load survives entering and leaving CPT", async () => {
@@ -1290,4 +1284,117 @@ test("a config imported while defaults load survives entering and leaving CPT", 
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
   assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+});
+
+test("image and audio VLM datasets keep assistant-only defaults for arbitrary model families", async () => {
+  for (const modality of ["image", "audio"] as const) {
+    for (const datasetFirst of [true, false]) {
+      useTrainingConfigStore.getState().reset();
+      setAuthFetchHandler((input) =>
+        input === "/api/hub/datasets/check-format"
+          ? Response.json({
+              columns: ["messages"],
+              detected_format: "chatml",
+              is_audio: modality === "audio",
+              is_image: modality === "image",
+              requires_manual_mapping: false,
+            })
+          : Response.json({
+              id: "custom/new-architecture",
+              config: { training: { train_on_completions: true } },
+              is_vision: true,
+              is_audio: modality === "audio",
+              audio_type_known: true,
+              model_type: "vision",
+            }),
+      );
+      if (datasetFirst) {
+        useTrainingConfigStore.getState().setDataset("custom/conversations");
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          if (!useTrainingConfigStore.getState().isCheckingDataset) break;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+      }
+      useTrainingConfigStore
+        .getState()
+        .selectTrainingModel("custom/new-architecture", "vision");
+      await settleStore();
+      if (!datasetFirst) {
+        useTrainingConfigStore.getState().setDataset("custom/conversations");
+        await settleStore();
+      }
+      assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+
+      // Explicit choices win over modality detection and repeated model probes.
+      useTrainingConfigStore.getState().setTrainOnCompletions(false);
+      useTrainingConfigStore
+        .getState()
+        .setDataset("custom/other-conversations");
+      await settleStore();
+      assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+      useTrainingConfigStore.getState().applyConfigPatch({
+        training: { train_on_completions: false },
+      });
+      useTrainingConfigStore
+        .getState()
+        .setDataset("custom/imported-conversations");
+      await settleStore();
+      assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+    }
+  }
+});
+
+
+test("fresh and recommended defaults enable packing and assistant-only training for any chat model", async () => {
+  useTrainingConfigStore.getState().reset();
+  assert.equal(useTrainingConfigStore.getState().packing, true);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+  setAuthFetchHandler(() => Response.json({
+    id: "new-organization/unlisted-chat-architecture",
+    config: { training: { packing: false, train_on_completions: false } },
+    is_vision: false, is_embedding: false, is_audio: false, audio_type_known: true,
+    is_lora: false, model_type: "text", model_size_bytes: null,
+  }));
+  useTrainingConfigStore.getState().selectTrainingModel("new-organization/unlisted-chat-architecture", "text");
+  await waitForModelDefaults("new-organization/unlisted-chat-architecture");
+  assert.equal(useTrainingConfigStore.getState().packing, true);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+  assert.deepEqual(useTrainingConfigStore.getState().trainingToggleChoices, {});
+});
+
+test("user opt-outs survive capability refresh and reset returns to enabled defaults", async () => {
+  useTrainingConfigStore.getState().reset();
+  setAuthFetchHandler(() => completionModel("example/chat", false));
+  useTrainingConfigStore.getState().selectTrainingModel("example/chat", "text");
+  await waitForModelDefaults("example/chat");
+  useTrainingConfigStore.getState().setPacking(false);
+  useTrainingConfigStore.getState().setTrainOnCompletions(false);
+  useTrainingConfigStore.getState().setSelectedModelCacheReference("example/chat", { modelFormat: null, localPath: "/cache/model" });
+  await settleStore();
+  assert.equal(useTrainingConfigStore.getState().packing, false);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  useTrainingConfigStore.getState().resetToModelDefaults();
+  await waitForModelDefaults("example/chat");
+  assert.equal(useTrainingConfigStore.getState().packing, true);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+});
+
+test("YAML opt-outs survive a raw-text or streaming round trip", async () => {
+  useTrainingConfigStore.getState().reset();
+  useTrainingConfigStore.getState().applyConfigPatch({ training: { packing: false, train_on_completions: false } });
+  useTrainingConfigStore.getState().setDatasetFormat("raw");
+  useTrainingConfigStore.getState().setDatasetFormat("chatml");
+  useTrainingConfigStore.getState().setDatasetStreaming(true);
+  useTrainingConfigStore.getState().setDatasetStreaming(false);
+  assert.equal(useTrainingConfigStore.getState().packing, false);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  assert.deepEqual(useTrainingConfigStore.getState().trainingToggleChoices, { packing: false, trainOnCompletions: false });
+});
+
+test("an unanswered assistant-only default returns when leaving raw text", () => {
+  useTrainingConfigStore.getState().reset();
+  useTrainingConfigStore.getState().setDatasetFormat("raw");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  useTrainingConfigStore.getState().setDatasetFormat("chatml");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
 });

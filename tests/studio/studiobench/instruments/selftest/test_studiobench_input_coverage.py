@@ -1,30 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The keystroke metric must not drop the keystroke it exists to catch.
-
-`collect()` used to be called after a FIXED 200 ms wait, so a keystroke whose paint had not
-resolved by that moment was simply absent from the samples. The keystroke that has not painted yet
-is the SLOWEST one, so the reading systematically omitted its own worst case: measured against the
-real `input.js`, a 500 ms keystroke vanished from a reading whose max was 20 ms. The action still
-reported success, because the only thing it checked was that the composer's value had grown by the
-number of characters typed.
-
-That inverts under the condition the metric exists to detect -- a build that makes typing worse has
-more unpainted keystrokes at the drain, so it drops more of its slowest samples and reads FASTER --
-and `keystroke_p95_ms` is the highest-weight metric in the scoring table. It also feeds the
-null-treatment control, so an artificially tight reading there tightens the noise floor that every
-later comparison on that machine is judged against.
-
-The remedy is not a bigger constant, which has the same defect on a slower machine or a heavier
-rung. The wait ends when the WORK ends: the driver polls `settled()` until nothing is in flight,
-bounded only so a wedged renderer cannot eat the slot, and the reading then has to account for
-every keystroke the instrument saw before it may be quoted.
-
-Two levels. The JS half runs the shipped `input.js` under node over a controlled clock, so the
-paint that is still in flight really is in flight. The Python half drives the shipped `keystroke`
-action and asserts what a reader ends up with.
-"""
+"""Keystroke sampling waits until input settles, since a fixed delay drops the slowest keystrokes."""
 
 from __future__ import annotations
 
@@ -44,9 +21,7 @@ from studiobench.scene.actions import keystroke  # noqa: E402
 
 INPUT_JS = Path(__file__).resolve().parents[1] / "input.js"
 
-#: A DOM small enough to run the instrument and explicit enough to hold a paint open. Paints resolve
-#: only when this driver says so, which makes "still in flight at the drain" a state the test can
-#: create rather than race for.
+# Paints resolve only when the driver says so, so in-flight-at-drain is deterministic.
 DRIVER = """
 import fs from "node:fs";
 let now = 0;
@@ -135,7 +110,6 @@ def test_a_fixed_wait_loses_the_slowest_keystroke(tmp_path):
 
     assert got["samples"] == 11
     assert got["max_ms"] == 20
-    # The instrument knows it is losing one, which is what makes the reading refusable.
     assert got["pending_at_collect"] is True
     assert got["inputs_seen"] == 12
 
@@ -149,9 +123,6 @@ def test_settling_on_the_work_keeps_it(tmp_path):
     assert got["p95_ms"] == 500
     assert got["pending_at_collect"] is False
     assert got["inputs_seen"] == 12
-
-
-# ── what the action does with it ─────────────────────────────────────────────────────────────
 
 
 class _Page:
@@ -246,9 +217,7 @@ def test_a_healthy_reading_still_passes():
 
 
 def test_a_jammed_page_that_coalesced_most_of_its_keystrokes_still_passes():
-    """A LOW SAMPLE COUNT IS NOT A FAULT, it is the finding. On a jammed page most keystrokes
-    arrive behind a paint that has not finished, and the slow paint that swallowed them IS
-    measured. What matters is that every input is accounted for."""
+    """A low sample count is the finding, not a fault: every input must still be accounted for."""
 
     result = _run_keystroke(_Instrument(_reading(samples = 3, coalesced = 9, p95_ms = 480.0)))
 
@@ -267,8 +236,7 @@ def test_a_reading_with_a_keystroke_still_unpainted_is_not_quotable():
 
 
 def test_a_keystroke_that_never_reached_the_instrument_is_not_quotable():
-    """`grew_by` is satisfied by a textarea whose value is right; it says nothing about which
-    keystrokes were measured on the way in."""
+    """`grew_by` is met by the textarea value alone; keystrokes must reach the instrument."""
 
     result = _run_keystroke(_Instrument(_reading(samples = 8, inputs_seen = 8, coalesced = 0)))
 
@@ -291,7 +259,6 @@ def test_the_drain_polls_until_the_page_settles_rather_than_waiting_a_constant()
 
     _run_keystroke(inst)
 
-    # It kept asking, and stopped at its bound rather than at a fixed interval.
     assert inst.polls > 1
 
 

@@ -26,7 +26,7 @@ except Exception:
 if rl.distillation_chunked_jsd is None:
     pytest.skip("installed unsloth_zoo predates distillation_chunked_jsd", allow_module_level = True)
 
-# The two compute_loss layouts TRL shipped between 0.22.2 and 1.14.0, trimmed to the non-Liger branch.
+# The two compute_loss layouts TRL shipped between 0.22.2 and 1.14.0, non-Liger branch only.
 PROMPT_LAYOUT = """
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         student_outputs = model(
@@ -85,7 +85,7 @@ def test_installed_trl_layout_is_recognised():
             if isinstance(n, ast.FunctionDef) and n.name == "compute_loss"
         ]
         if not nodes:
-            continue  # a deprecation shim
+            continue
         source = ast.get_source_segment(text, nodes[0], padded = True)
         assert rl._unsloth_gkd_layout(source) is not None, f"{name}.compute_loss is not recognised"
         return
@@ -336,7 +336,7 @@ def test_forward_without_hidden_states_finishes_on_trl_math(monkeypatch):
     """A teacher that ignores the flag returns real logits; the call must still match TRL, densely."""
     vocab = 97
     student, teacher = _TinyLM(vocab, 16, 0.0, 1), _TinyLM(vocab, 24, 5.0, 2)
-    type(teacher)  # same class, so give this instance a forward that never returns hidden states
+    type(teacher)
     real_forward = teacher.forward
 
     def logits_only(input_ids, attention_mask):
@@ -365,6 +365,8 @@ def test_generated_items_are_self_contained():
     for name in (
         "_unsloth_gkd_chunked_loss",
         "_unsloth_gkd_dense_head",
+        "_unsloth_gkd_head_hooks",
+        "_unsloth_global_module_hooks",
         "_unsloth_gkd_logit_transforms",
         "_unsloth_gkd_project",
         "_unsloth_gkd_canonical",
@@ -372,6 +374,7 @@ def test_generated_items_are_self_contained():
         "_unsloth_gkd_note_fallback",
         "_unsloth_gkd_chunk_size",
         "_unsloth_grpo_returns_hidden_states",
+        "_unsloth_forward_returns_hidden_states",
         "_unsloth_grpo_hidden_states_signal",
         "_unsloth_get_model_config",
     ):
@@ -517,7 +520,7 @@ def test_ddp_find_unused_with_trainable_head_falls_back():
     )
     torch.nn.Module.__init__(ddp)
     ddp.module, ddp.find_unused_parameters = student, True
-    ddp.forward = student.forward  # the stub has no process group
+    ddp.forward = student.forward
     trainer = _trainer(0.5, student, teacher)
     trainer.accelerator = types.SimpleNamespace(unwrap_model = lambda m: getattr(m, "module", m))
     layout = {"shift": "shift", "num_items_in_batch": False}
@@ -598,7 +601,6 @@ def test_left_padded_rows_score_as_if_unpadded(shift, monkeypatch):
     vocab, pad = 97, 0
     student, teacher = _MaskBlindLM(vocab, 16, 0.0, 1), _MaskBlindLM(vocab, 24, 0.0, 2)
     g = torch.Generator().manual_seed(0)
-    # (prompt, completion) lengths; row 2's completion starts before the padded prompt width.
     rows = [(5, 7), (3, 4), (2, 9)]
     width, prompt_width = max(p + c for p, c in rows), max(p for p, _ in rows)
     input_ids = torch.full((3, width), pad)
@@ -618,7 +620,6 @@ def test_left_padded_rows_score_as_if_unpadded(shift, monkeypatch):
     if shift == "prompt":
         scored[:, :prompt_width] = -100
 
-    # Reference: each row alone, pads stripped, TRL's own per-token JSD summed then averaged.
     monkeypatch.setenv("UNSLOTH_RETURN_HIDDEN_STATES", "0")
     total, count = 0.0, 0
     for i in range(3):
@@ -633,7 +634,6 @@ def test_left_padded_rows_score_as_if_unpadded(shift, monkeypatch):
         count += int((lab[:, 1:] != -100).sum())
     want = total / count
 
-    # Through the generated compute_loss: the chunked path, then TRL's own body as every fallback runs it.
     namespace = dict(vars(rl), GKDTrainer = GKDTrainer, empty_cache = lambda: None)
     source = PROMPT_LAYOUT if shift == "prompt" else SHIFT_LAYOUT
     exec(
@@ -697,6 +697,8 @@ def test_fp16_grad_scaler_reaches_the_chunked_jsd(enabled, accepts_scaler, monke
     scaler = None if enabled is None else _Scaler(enabled)
     trainer.accelerator = types.SimpleNamespace(unwrap_model = lambda m: m, scaler = scaler)
     calls = []
+    # The legacy zoo route (a zoo without fused_linear_jsd); the fused route has its own scaler test.
+    monkeypatch.setattr(rl, "_unsloth_fused_linear_jsd", None)
     monkeypatch.setattr(rl, "distillation_chunked_jsd", _spy_jsd(calls, accepts_scaler))
     forwards = []
     student.register_forward_hook(lambda *a: forwards.append(1))
@@ -712,3 +714,79 @@ def test_fp16_grad_scaler_reaches_the_chunked_jsd(enabled, accepts_scaler, monke
         assert calls[0]["scaler"] is scaler
     else:
         assert calls[0].get("scaler") is None
+
+
+_GLOBAL_HOOKS = {
+    "forward": "register_module_forward_hook",
+    "forward_pre": "register_module_forward_pre_hook",
+    "full_backward": "register_module_full_backward_hook",
+    "full_backward_pre": "register_module_full_backward_pre_hook",
+}
+
+
+@pytest.mark.parametrize("hook", list(_GLOBAL_HOOKS))
+def test_global_module_hooks_fall_back(hook):
+    """The chunked JSD reads the head weights directly, so a torch global module hook would never see the heads."""
+    from torch.nn.modules import module as module_hooks
+
+    student, teacher = _TinyLM(97, 16, 0.0, 1), _TinyLM(97, 24, 0.0, 2)
+    layout = {"shift": "shift", "num_items_in_batch": False}
+    trainer = _trainer(0.5, student, teacher)
+    assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is not None
+    handle = getattr(module_hooks, _GLOBAL_HOOKS[hook])(lambda *a: None)
+    try:
+        trainer = _trainer(0.5, student, teacher)
+        assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is None
+    finally:
+        handle.remove()
+    assert any("hooks" in reason for reason in trainer._unsloth_gkd_chunked_fallbacks)
+    trainer = _trainer(0.5, student, teacher)
+    assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is not None
+
+
+@pytest.mark.parametrize("which", ["student", "teacher"])
+@pytest.mark.parametrize(
+    "register",
+    [
+        "register_forward_hook",
+        "register_forward_pre_hook",
+        "register_full_backward_hook",
+        "register_full_backward_pre_hook",
+    ],
+)
+def test_hooked_heads_fall_back(which, register):
+    """A forward / backward hook on either head (a probe, a logit filter) only runs when the head is called."""
+    student, teacher = _TinyLM(97, 16, 0.0, 1), _TinyLM(97, 24, 0.0, 2)
+    layout = {"shift": "shift", "num_items_in_batch": False}
+    head = (student if which == "student" else teacher).lm_head
+    handle = getattr(head, register)(lambda *a: None)
+    trainer = _trainer(0.5, student, teacher)
+    assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is None
+    assert any("hooks" in reason for reason in trainer._unsloth_gkd_chunked_fallbacks)
+    handle.remove()
+    trainer = _trainer(0.5, student, teacher)
+    assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is not None
+
+
+def test_trl_activation_offloading_head_hooks_keep_the_chunked_jsd():
+    """TRL's activation_offloading pair on lm_head only pauses offloading, so it must not force the dense path."""
+    student, teacher = _TinyLM(97, 16, 0.0, 1), _TinyLM(97, 24, 0.0, 2)
+    layout = {"shift": "shift", "num_items_in_batch": False}
+    pre, post = (lambda *a: None), (lambda *a: None)
+    for hook in (pre, post):
+        hook.__module__ = "trl.models.activation_offloading"
+    head = student.lm_head
+    handles = [
+        head.register_forward_pre_hook(pre),
+        head.register_forward_hook(post, always_call = True),
+    ]
+    try:
+        trainer = _trainer(0.5, student, teacher)
+        assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is not None
+        other = head.register_forward_hook(lambda *a: None)
+        trainer = _trainer(0.5, student, teacher)
+        assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is None
+        other.remove()
+    finally:
+        for handle in handles:
+            handle.remove()

@@ -8,7 +8,6 @@ import { useEffect } from "react";
 import { claimHubSourceNotice } from "../api/hub-settings";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-/** Tell the owner, once per install, that the model source was set to ModelScope for them. */
 export function useHubSourceNotice(): void {
   const t = useT();
   const isOwner = useIsAccountOwner();
@@ -16,7 +15,7 @@ export function useHubSourceNotice(): void {
 
   useEffect(() => {
     if (!isOwner) return;
-    // Not cancelled on cleanup: the grant is spent once claimed, so dropping it would lose the notice.
+    // Not cancelled on cleanup: the grant is spent once claimed.
     void claimHubSourceNotice().then((granted) => {
       if (!granted) return;
       toast.info(t("settings.general.hub.autoSourceTitle"), {

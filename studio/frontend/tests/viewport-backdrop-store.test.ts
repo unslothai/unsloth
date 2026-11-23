@@ -57,7 +57,7 @@ Object.assign(globalThis, {
   MutationObserver: FakeMutationObserver,
 });
 
-const { getViewportBackdropOpen, subscribeViewportBackdrop } = await import(
+const { getViewportBackdropOpen, getViewportBackdropTone, subscribeViewportBackdrop } = await import(
   "../src/components/tauri/viewport-backdrop.ts"
 );
 
@@ -198,12 +198,52 @@ test("only the body's own children are watched, never a subtree", (t) => {
   for (const { init } of stateObserver().targets) {
     assert.deepEqual(init, {
       attributes: true,
-      attributeFilter: ["data-state", "data-viewport-backdrop"],
+      attributeFilter: [
+        "data-state",
+        "data-viewport-backdrop",
+        "data-viewport-backdrop-tone",
+      ],
     });
   }
   for (const entry of connected()) {
     for (const { init } of entry.targets) assert.notEqual(init.subtree, true);
   }
+});
+
+test("an open backdrop reports its tone, and a plain one none", (t) => {
+  reset();
+  const strong = new FakeElement({
+    "data-slot": "dialog-overlay",
+    "data-viewport-backdrop": "true",
+    "data-viewport-backdrop-tone": "strong",
+    "data-state": "open",
+  });
+  children.push(strong);
+  const unsubscribe = subscribeViewportBackdrop(() => undefined);
+  assert.equal(getViewportBackdropOpen(), true);
+  assert.equal(getViewportBackdropTone(), "strong");
+  unsubscribe();
+  assert.equal(getViewportBackdropTone(), null);
+  reset();
+  children.push(viewportBackdrop("open"));
+  t.after(subscribeViewportBackdrop(() => undefined));
+  assert.equal(getViewportBackdropTone(), null);
+});
+
+test("a strong backdrop stacked over a plain one still reports its tone", (t) => {
+  reset();
+  children.push(
+    viewportBackdrop("open"),
+    new FakeElement({
+      "data-slot": "dialog-overlay",
+      "data-viewport-backdrop": "true",
+      "data-viewport-backdrop-tone": "strong",
+      "data-state": "open",
+    }),
+  );
+  t.after(subscribeViewportBackdrop(() => undefined));
+  assert.equal(getViewportBackdropOpen(), true);
+  assert.equal(getViewportBackdropTone(), "strong");
 });
 
 test("both observers go when the last listener goes", (t) => {

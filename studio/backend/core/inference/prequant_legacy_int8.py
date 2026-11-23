@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read hosted INT8 ``.pt`` pre-quants on torchao >= 0.18, which deleted the v1 int8 classes they pickle.
-
-Still ``weights_only = True``: inert stand-ins (dispatch raises) are registered under the deleted names
-only for that load, and each weight is validated as symmetric per-row int8, then rebuilt bit-identical
-as the installed torchao's ``Int8Tensor``. A torchao that still ships the classes loads as before.
-"""
+"""Loads INT8 .pt on torchao >= 0.18 via inert stand-ins for deleted classes; weights_only kept on."""
 
 from __future__ import annotations
 
@@ -253,9 +248,7 @@ def _rebuild_standins(ckpt: Any, standins: dict, api: tuple) -> Any:
 
 
 def convert_legacy_int8_weights(module: Any) -> int:
-    """Rebuild a loaded module's v1 int8 weights as pinnable ``Int8Tensor`` in place (torchao <= 0.17).
-
-    All or nothing: any weight failing validation leaves the module unchanged and returns 0."""
+    """Rebuilds v1 int8 weights as pinnable Int8Tensor in place (torchao <= 0.17); all or nothing."""
     import torch
 
     api = _int8_tensor_api()

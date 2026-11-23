@@ -8,6 +8,15 @@ import {
 
 export type AudioSttEngine = "transformers" | "gguf" | "mtmd" | "audiocpp";
 
+export function isAudioSttEngine(value: unknown): value is AudioSttEngine {
+  return (
+    value === "transformers" ||
+    value === "gguf" ||
+    value === "mtmd" ||
+    value === "audiocpp"
+  );
+}
+
 const TRANSFORMERS_REPO_BY_KEY: Record<string, string> = {
   tiny: "unsloth/whisper-tiny",
   base: "unsloth/whisper-base",
@@ -29,8 +38,7 @@ const GGUF_REPO_BY_KEY: Record<string, string> = {
   "large-v3": "unslothai/whisper-large-v3-GGUF",
 };
 
-// The audiocpp engine takes any GGUF ASR repo or package folder id as its key. Dictation keys
-// saved before that are distinct from every other engine's and resolve to their folder id.
+// Older dictation keys are engine-distinct and resolve to their audiocpp folder id.
 const AUDIOCPP_REPO_BY_KEY: Record<string, string> = Object.fromEntries(
   AUDIO_CPP_DICTATION_MODELS.map((model) => [model.key, model.id]),
 );
@@ -70,7 +78,6 @@ export function sttRepoIdForSidecarKey(
   engine: AudioSttEngine = "transformers",
 ): string {
   const normalized = sidecarKey.trim().toLowerCase();
-  // A saved audiocpp dictation key names one folder whatever engine the caller assumed.
   if (engine === "audiocpp" || Object.hasOwn(AUDIOCPP_REPO_BY_KEY, normalized))
     return AUDIOCPP_REPO_BY_KEY[normalized] ?? sidecarKey;
   if (engine === "gguf") return GGUF_REPO_BY_KEY[normalized] ?? sidecarKey;
@@ -78,9 +85,7 @@ export function sttRepoIdForSidecarKey(
   return TRANSFORMERS_REPO_BY_KEY[normalized] ?? sidecarKey;
 }
 
-/** Resolve from the picker artifact, not the shared short sidecar key. The curated Whisper and
- *  Qwen3-ASR GGUFs have engines of their own; every other GGUF ASR repo is the audio runtime's,
- *  and a safetensors repo runs on Transformers. */
+/** Resolve from the picker artifact, not the shared short sidecar key. */
 export function sttEngineForRepoId(
   repoId: string,
   isGguf?: boolean | null,

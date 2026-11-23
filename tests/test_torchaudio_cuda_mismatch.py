@@ -1,28 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A text model should not die on an audio library it never asked for.
-
-`torchaudio._extension.utils._check_cuda_version` compares the CUDA version
-torchaudio was BUILT against with torch's, and raises on any difference:
-
-    RuntimeError: Detected that PyTorch and TorchAudio were compiled with
-    different CUDA versions.
-
-That runs at extension init, so it takes the whole import with it. Measured on
-a Kaggle 2xT4 session running `Kaggle-Muse_Glimmer_(30B)-GRPO` -- a text model
--- which died at cell 4 having never reached anything audio-shaped.
-
-The repair is the one `disable_torchcodec_if_broken` already makes for the same
-structural reason: the package resolves, `find_spec` says so, and the failure is
-at native init, so every downstream `except ImportError` handler is bypassed.
-Seating the absence sentinel gives them their chance back.
-
-What it must NOT do is patch out `_check_cuda_version`. That check is correct --
-torchaudio's CUDA ops really are unusable against a different runtime -- and
-silencing it in place would leave those ops reachable and wrong. The last test
-here is the one that pins that distinction.
-"""
+"""Torchaudio is absent on a CUDA mismatch rather than patched, because its CUDA ops are unusable."""
 
 from __future__ import annotations
 
@@ -31,9 +10,7 @@ import sys
 import pytest
 
 
-# The repair flips availability state on the REAL transformers and datasets modules, not on copies.
-# Restoring only sys.modules would leave `is_torchaudio_available` bound to `lambda: False` for every later test in the
-# process, so the fixture snapshots these too.
+# The repair mutates the real transformers/datasets modules, so snapshot them too.
 _PATCH_SITES = (
     ("transformers.utils.import_utils", "_torchaudio_available"),
     ("transformers.utils.import_utils", "is_torchaudio_available"),
@@ -116,20 +93,12 @@ def test_a_mismatched_torchaudio_is_made_absent(monkeypatch, fresh):
 
 
 def test_the_speech_backend_goes_down_with_torchaudio(monkeypatch, fresh):
-    """`speech` is torchaudio wearing a different name, so it has to follow.
-
-    On transformers 5 `is_speech_available` is separately `@lru_cache`d, so a
-    `speech` answer computed before the repair survives it. Callers gated on
-    `requires_backends(..., "speech")` are then waved into a torchaudio that is
-    now a None sentinel, which is the crash this whole file exists to prevent.
-    """
+    """The speech backend is torchaudio renamed, so its cached availability must be cleared with it."""
     from functools import lru_cache
 
     tf_iu = pytest.importorskip("transformers.utils.import_utils")
 
-    # Stand up the 5.x shape explicitly rather than asking whichever
-    # transformers happens to be installed: on 4.x both readers share one
-    # module global, so the 4.x version of this test cannot fail.
+    # Build the 5.x shape explicitly; on 4.x both readers share one global, so it cannot fail.
     monkeypatch.delattr(tf_iu, "_torchaudio_available", raising = False)
     monkeypatch.setattr(tf_iu, "is_torchaudio_available", lru_cache(lambda: True))
     monkeypatch.setattr(
@@ -137,7 +106,7 @@ def test_the_speech_backend_goes_down_with_torchaudio(monkeypatch, fresh):
     )
 
     _stage(monkeypatch, fresh, MISMATCH)
-    assert tf_iu.is_speech_available() is True  # warmed, as a live process would be
+    assert tf_iu.is_speech_available() is True
     with pytest.warns(UserWarning, match = "torchaudio cannot initialise"):
         fresh.disable_torchaudio_if_cuda_mismatched()
     assert tf_iu.is_torchaudio_available() is False
@@ -180,12 +149,7 @@ def test_warning_filters_promoted_to_errors_do_not_abort_the_repair(monkeypatch,
 
 
 def test_the_check_itself_is_never_patched_out():
-    """The distinction the docstring turns on, asserted rather than trusted.
-
-    Monkeypatching `_check_cuda_version` to return would leave torchaudio's
-    CUDA ops importable and broken. Making the package absent is the honest
-    repair; a future edit that reaches for the shortcut fails here.
-    """
+    """Patching _check_cuda_version would leave broken CUDA ops importable; the package must go absent."""
     import ast
     import inspect
     import textwrap
@@ -194,8 +158,7 @@ def test_the_check_itself_is_never_patched_out():
 
     func = import_fixes.disable_torchaudio_if_cuda_mismatched
     tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
-    # The docstring names it, deliberately, to say why it is NOT touched, so strip it by AST rather than by string
-    # surgery. Only the body is a claim.
+    # The docstring names it on purpose; strip it via AST, only the body is a claim.
     body = tree.body[0].body
     if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
         body = body[1:]
@@ -204,17 +167,7 @@ def test_the_check_itself_is_never_patched_out():
 
 
 def test_it_runs_before_the_torchcodec_repair_because_it_has_to():
-    """This assertion used to run the other way round, and was wrong.
-
-    Both repairs seat sentinels, and the audio decoder path touches both, so
-    ordering them torchcodec-first looked natural. But torchcodec is only
-    reached lazily, while torchaudio is imported eagerly by
-    transformers.audio_utils as soon as unsloth_zoo is imported -- which
-    happens ~95 lines BEFORE the late fix block where torchcodec is repaired.
-    Ordering by tidiness rather than by when each package actually gets
-    imported is what let Kaggle-Muse_Glimmer_(30B)-GRPO keep dying at cell 4
-    with the guard present and shipped.
-    """
+    """Torchaudio is imported eagerly, long before the torchcodec repair, so its guard must run first."""
     from pathlib import Path
 
     init = (Path(import_fixes_dir()) / "_gpu_init.py").read_text()
@@ -230,17 +183,7 @@ def import_fixes_dir():
 
 
 def test_the_guard_runs_before_anything_can_import_torchaudio():
-    """Defined is not the same as run in time.
-
-    The guard shipped invoked at line 250 of _gpu_init, and `import
-    unsloth_zoo` sits at line 155. unsloth_zoo's temporary_patches reach
-    transformers.processing_utils -> transformers.audio_utils -> torchaudio,
-    so a torchaudio that raises at extension init took the whole unsloth
-    import down 95 lines before the repair would have run. Measured:
-    Kaggle-Muse_Glimmer_(30B)-GRPO still died at cell 4 with the fix present.
-
-    Ordering is the property that matters, so assert on it directly.
-    """
+    """The torchaudio guard must run before the unsloth_zoo import, which itself reaches torchaudio."""
     from pathlib import Path
 
     src = (

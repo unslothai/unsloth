@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Edge-case tests for Anthropic ``citations_delta`` handling.
-
-Complements ``test_anthropic_citations.py``. Covers malformed payloads,
-unusual orderings, mixed citation types, and the ``citations:
-{enabled: true}`` opt-in attached to translated ``input_document``
-blocks. See
-https://platform.claude.com/docs/en/build-with-claude/citations and
-https://platform.claude.com/docs/en/build-with-claude/search-results.
-"""
+"""Edge cases for citations_delta: malformed payloads, odd orderings, mixed types, citations opt-in."""
 
 import asyncio
 import json
@@ -18,9 +10,6 @@ import httpx
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
-
-
-# ── shared SSE harness ───────────────────────────────────────
 
 
 def _drive(coro):
@@ -50,10 +39,7 @@ def _capture(
     messages: list[dict] | None = None,
     captured_body: dict | None = None,
 ) -> list[str]:
-    """Drive ``stream_chat_completion`` against a mocked Anthropic response
-    and return the SSE lines. Pass ``captured_body`` to also capture the
-    outgoing request body for assertions on the translated Anthropic shape.
-    """
+    """Returns the SSE lines from stream_chat_completion; captured_body records the outgoing request."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         if captured_body is not None:
@@ -162,9 +148,6 @@ def _citation_payload(body: str) -> dict:
     raise AssertionError("document_citations event not parsed out of SSE body")
 
 
-# ── edge cases ───────────────────────────────────────────────
-
-
 def _citation(**overrides):
     """One Anthropic citation payload, with per-test overrides."""
     return {
@@ -225,8 +208,7 @@ def test_citations_delta_with_non_dict_citation_is_ignored(monkeypatch):
 
 
 def test_citations_delta_with_missing_citation_field_is_ignored(monkeypatch):
-    """Missing ``citation`` field is treated like a non-dict citation: skip
-    without crashing."""
+    """Missing citation field is treated like a non-dict citation: skipped without crashing."""
     lines = _capture(
         monkeypatch,
         [
@@ -330,8 +312,7 @@ def test_content_block_location_with_non_int_block_index_does_not_crash(monkeypa
 
 
 def test_unknown_citation_type_falls_back_to_stringified_key(monkeypatch):
-    """Unknown citation ``type`` (forward-compat) still dedupes: identical
-    ones collapse, differing ones get distinct numbers."""
+    """Unknown citation types dedupe: identical ones collapse, differing ones stay separate."""
     cit_a = {
         "type": "future_shape_location",
         "anchor": "abc",
@@ -359,7 +340,6 @@ def test_unknown_citation_type_falls_back_to_stringified_key(monkeypatch):
         ],
     )
     body = _joined(lines)
-    # cit_a dedupes onto [1], cit_b gets [2].
     assert body.count("[1]") == 2, body
     assert body.count("[2]") == 1, body
     payload = _citation_payload(body)
@@ -404,9 +384,8 @@ def test_mixed_citation_types_same_document_get_distinct_keys(monkeypatch):
 
 
 def test_cited_text_is_preserved_in_synthetic_event(monkeypatch):
-    """``cited_text`` must survive into the synthetic event so the Sources
-    panel can render it as a tooltip. Anthropic does not bill cited_text
-    against output tokens, so preserving it is free."""
+    """cited_text must survive into the synthetic event for the Sources tooltip; Anthropic does not
+    bill it against output tokens, so keeping it is free."""
     cit = _citation(
         document_title = "Trustworthy Doc",
         end_char_index = 20,
@@ -430,8 +409,7 @@ def test_cited_text_is_preserved_in_synthetic_event(monkeypatch):
 
 
 def test_internal_key_field_never_leaks_to_client(monkeypatch):
-    """The internal ``_key`` dedup sentinel must be stripped before the
-    synthetic event is forwarded; it is not an Anthropic field."""
+    """_key is an internal sentinel stripped before forwarding; it is not an Anthropic field."""
     cit = _citation(cited_text = "..")
     lines = _capture(
         monkeypatch,
@@ -453,8 +431,7 @@ def test_internal_key_field_never_leaks_to_client(monkeypatch):
 
 
 def test_citation_across_multiple_content_blocks_numbers_continue(monkeypatch):
-    """Footnote numbering is per-message, not per-content-block: citations
-    across separate blocks emit [1] then [2]."""
+    """Footnote numbering is per message, not per block: separate blocks emit [1] then [2]."""
     cit_a = {
         "type": "char_location",
         "document_index": 0,
@@ -608,12 +585,8 @@ def test_input_document_translation_enables_citations(monkeypatch):
     assert doc_block.get("citations") == {"enabled": True}, doc_block
 
 
-# ── cited_text truncation + safe-url citation conversion ────────
-
-
 def test_cited_text_truncated_in_synthetic_event(monkeypatch):
-    """``cited_text`` is capped server-side so multi-KB spans don't balloon
-    the SSE payload."""
+    """cited_text is capped server-side so multi-KB spans do not balloon the SSE payload."""
     from core.inference.external_provider import _CITED_TEXT_MAX_LEN
 
     long_quote = "x" * (_CITED_TEXT_MAX_LEN + 4000)

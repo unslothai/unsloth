@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Hub fetch: the adapter and relays take the Unsloth session; a relay forwards the HF token in `X-HF-Authorization`. */
+/** The adapter and relays take the Unsloth session; a relay forwards the HF token in
+ * `X-HF-Authorization`. */
 
 import {
   getHfDatasetsServerBase,
@@ -18,7 +19,7 @@ import {
   noteHfTokenRejected,
 } from "@/lib/hf-token-rejection";
 
-// Set by the relay on the endpoint's own answers, whose 401 is about the Hugging Face token.
+// Set by the relay on the endpoint's own answers, whose 401 is about the HF token.
 const UPSTREAM_HEADER = "X-Hub-Upstream";
 
 function requestUrl(input: Parameters<typeof fetch>[0]): string {
@@ -29,7 +30,7 @@ function requestUrl(input: Parameters<typeof fetch>[0]): string {
       : input.url;
 }
 
-/** The headers this call sends: as fetch does, `init.headers` replaces a Request input's own. */
+/** As fetch does, `init.headers` replaces a Request input's own. */
 function requestHeaders(input: Parameters<typeof fetch>[0], init: RequestInit): Headers {
   if (init.headers !== undefined) return new Headers(init.headers);
   return new Headers(
@@ -61,8 +62,7 @@ function withHubAuth(
   return { ...init, headers };
 }
 
-/** The Hugging Face token this request would send the Hub, or null. ModelScope is excluded:
- * its relay takes the Unsloth session and drops the HF token. */
+/** ModelScope's relay drops the HF token, so it is excluded. */
 function sentHfToken(
   input: Parameters<typeof fetch>[0],
   init: RequestInit,
@@ -74,7 +74,7 @@ function sentHfToken(
   return token || null;
 }
 
-/** Explicit headers, so a Request input's own Authorization cannot come back later. */
+/** Explicit headers, so a Request input's Authorization cannot come back later. */
 function withoutHfToken(input: Parameters<typeof fetch>[0], init: RequestInit): RequestInit {
   const headers = requestHeaders(input, init);
   headers.delete("Authorization");
@@ -105,26 +105,23 @@ async function fetchWithSession(
   return response;
 }
 
-/** A 401 that came from the Hub itself: direct, or the relay passing on the endpoint's answer. */
 function isHubRefusal(response: Response, url: string): boolean {
   if (response.status !== 401) return false;
   return isProxiedHubUrl(url) ? response.headers.has(UPSTREAM_HEADER) : !takesSession(url);
 }
 
-/** The Hub read the token and answered: a success, or a 403/404 for the resource (a token the
- * Hub refuses gets 401). Through the relay only the endpoint's own answer counts. */
+/** A 403/404 still means the token was read; a refused token gets 401. */
 function tokenAccepted(response: Response, url: string): boolean {
   if (isProxiedHubUrl(url) && !response.headers.has(UPSTREAM_HEADER) && !response.ok) return false;
   return response.ok || response.status === 403 || response.status === 404;
 }
 
-/** Which Hub a token refusal belongs to: the endpoint or datasets server the request went to
- * (its origin for any other URL), so a refusal by one never skips the token on another. */
+/** Per endpoint or datasets server, so one Hub's refusal never skips the token on another. */
 export function hubRejectionScope(url?: string): string {
   const endpoint = getHfEndpoint();
   let target = endpoint;
   if (url !== undefined) {
-    // The most specific base first: a datasets server can live under the model endpoint.
+    // Most specific first: a datasets server can live under the model endpoint.
     target =
       [endpoint, getHfDatasetsServerBase()]
         .sort((a, b) => b.length - a.length)
@@ -142,8 +139,7 @@ function urlOrigin(url: string): string {
   }
 }
 
-/** A second, optional attempt: a network error or timeout there must not replace the answer
- * the first request already got. */
+/** Optional: its network error must not replace the first answer. */
 async function probe(
   input: Parameters<typeof fetch>[0],
   init: RequestInit,
@@ -152,7 +148,7 @@ async function probe(
   try {
     return await fetchWithSession(input, init, url);
   } catch (error) {
-    // The caller's abort or timeout is the answer, not a probe that happened to fail.
+    // The caller's abort or timeout is the answer, not a failed probe.
     const signal = init.signal ?? (input instanceof Request ? input.signal : undefined);
     if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
       throw error;
@@ -161,32 +157,120 @@ async function probe(
   }
 }
 
+// Asking a rate-limited Hub again only extends the limit: until its window ends, a 429 answers
+// every request to that origin's bucket (API, /resolve/ downloads, pages) without a network call.
+const RATE_LIMIT_DEFAULT_MS = 60_000;
+const RATE_LIMIT_MAX_MS = 10 * 60_000;
+const rateLimitedUntil = new Map<string, number>();
+
+function credentialMark(token: string | null): string {
+  if (!token) return "anonymous";
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < token.length; i++) {
+    hash = Math.imul(hash ^ token.charCodeAt(i), 0x01000193) >>> 0;
+  }
+  return hash.toString(16);
+}
+
+/** Per upstream service (a relay counts as its upstream), bucket and credential: a new token is a new limit. */
+function rateLimitBucket(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
+  url: string,
+): string | null {
+  try {
+    const here = globalThis.location?.href ?? "http://localhost/";
+    const parsed = new URL(url, here);
+    let scope = parsed.origin;
+    let path = parsed.pathname;
+    for (const configured of [getHfEndpoint(), getHfDatasetsServerBase()]) {
+      if (!configured) continue;
+      const base = new URL(configured, here);
+      const prefix = base.pathname.replace(/\/+$/, "");
+      if (base.origin === parsed.origin && prefix && (path === prefix || path.startsWith(`${prefix}/`))) {
+        scope = `${base.origin}${prefix}`;
+        path = path.slice(prefix.length) || "/";
+        break;
+      }
+    }
+    const kind = path.includes("/resolve/") ? "resolve" : path.startsWith("/api/") ? "api" : "pages";
+    return `${scope}|${kind}|${credentialMark(sentHfToken(input, init, url))}`;
+  } catch {
+    return null;
+  }
+}
+
+function rateLimitWindowMs(response: Response): number {
+  const retryAfter = response.headers.get("Retry-After")?.trim();
+  let ms = Number.NaN;
+  if (retryAfter) {
+    ms = /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now();
+  } else {
+    // HF's RateLimit header: "api";r=0;t=<seconds until reset>
+    const reset = response.headers.get("RateLimit")?.match(/;\s*t=(\d+)/);
+    if (reset) ms = Number(reset[1]) * 1000;
+  }
+  if (!Number.isFinite(ms) || ms <= 0) ms = RATE_LIMIT_DEFAULT_MS;
+  return Math.min(Math.max(ms, 1000), RATE_LIMIT_MAX_MS);
+}
+
+/** Test hook: forget every rate-limit window. */
+export function resetHubRateLimits(): void {
+  rateLimitedUntil.clear();
+}
+
 export async function fetchHub(
   input: Parameters<typeof fetch>[0],
   init: RequestInit = {},
 ): Promise<Response> {
+  const bucket = rateLimitBucket(input, init, requestUrl(input));
+  const until = bucket === null ? undefined : rateLimitedUntil.get(bucket);
+  if (until !== undefined) {
+    const left = until - Date.now();
+    if (left > 0) {
+      const local = new Response(null, {
+        status: 429,
+        statusText: "Too Many Requests",
+        headers: { "Retry-After": String(Math.ceil(left / 1000)) },
+      });
+      // Errors built from response.url read as the Hub's own 429.
+      Object.defineProperty(local, "url", { value: requestUrl(input) });
+      return local;
+    }
+    rateLimitedUntil.delete(bucket as string);
+  }
+  const response = await fetchHubOnce(input, init);
+  if (response.status === 429 && bucket !== null) {
+    rateLimitedUntil.set(bucket, Date.now() + rateLimitWindowMs(response));
+  }
+  return response;
+}
+
+async function fetchHubOnce(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
+): Promise<Response> {
   const url = requestUrl(input);
   const hfToken = sentHfToken(input, init, url);
   const retryable = hfToken !== null && isRetryableRead(input, init);
-  // Already refused this session: every read with it would 401 again, so ask anonymously.
+  // Already refused this session, so ask anonymously.
   const scope = hubRejectionScope(url);
   const skipToken = retryable && isHfTokenRejected(hfToken, scope);
   const started = hfTokenRejectionMark();
   let response = await fetchWithSession(input, skipToken ? withoutHfToken(input, init) : init, url);
   if (skipToken && !response.ok && [401, 403, 404].includes(response.status)) {
-    // Anonymous could not read it: try the token again in case the refusal was transient.
+    // Retry the token in case the refusal was transient.
     const withToken = await probe(input, init, url);
     if (withToken) {
-      // Keep the token's answer: an anonymous 404 would be cached as the repo being missing.
+      // Keep the token's answer: an anonymous 404 would be cached as a missing repo.
       void response.body?.cancel().catch(() => undefined);
       if (tokenAccepted(withToken, url)) clearHfTokenRejected(scope);
       response = withToken;
     }
   } else if (retryable && !skipToken && tokenAccepted(response, url)) {
-    // Past the recheck window the token was accepted again.
     clearHfTokenRejected(scope);
   } else if (retryable && !skipToken && isHubRefusal(response, url)) {
-    // A valid token gets 404 for a repo it cannot see, so this 401 is the token being refused.
+    // A valid token gets 404 for a hidden repo, so this 401 is a refused token.
     const anonymous = await probe(input, withoutHfToken(input, init), url);
     if (anonymous?.ok) {
       void response.body?.cancel().catch(() => undefined);
@@ -196,7 +280,7 @@ export async function fetchHub(
       void anonymous?.body?.cancel().catch(() => undefined);
     }
   }
-  // The relay's own 502 means it could not reach the endpoint: fail as a direct fetch would.
+  // The relay's own 502 means it could not reach the endpoint.
   if (response.status === 502 && !response.headers.has(UPSTREAM_HEADER) && isProxiedHubUrl(url)) {
     throw new TypeError("The Hub endpoint could not be reached.");
   }

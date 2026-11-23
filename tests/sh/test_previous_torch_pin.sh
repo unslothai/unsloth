@@ -1,19 +1,13 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Unit tests for install.sh's _previous_torch_pin, which keeps the previous
-# venv's torch RELEASE on a re-run instead of moving the user to a newer one.
-# The release is kept regardless of the old build's flavor tag (PyPI bare,
-# +cuXXX, +rocm, +cpu): the pin installs from the freshly chosen index, so the
-# flavor follows the machine while the release follows the user. Per-leaf
-# windows still win (rocm7.2 / Strix floors, out-of-window manual installs).
-# Helpers are extracted from install.sh and sourced.
+# _previous_torch_pin keeps the previous torch RELEASE on a re-run regardless of flavor tag:
+# the pin installs from the freshly chosen index. Per-leaf windows still win.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="${1:-$SCRIPT_DIR/../../install.sh}"
-# Extract _previous_torch_pin and its dependency _torch_release_in_window.
 _FUNC_FILE=$(mktemp)
 {
     sed -n '/^_torch_release_in_window()/,/^}/p' "$INSTALL_SH"
@@ -37,8 +31,7 @@ assert_eq "Intel xpu wheel"              "torch==2.9.0"  "$(_previous_torch_pin 
 assert_eq "local suffix stripped"        "torch==2.9.1"  "$(_previous_torch_pin '2.9.1+cu128' 'torch>=2.4,<2.12.0')"
 
 echo "=== _previous_torch_pin: raised floors reject older releases ==="
-# rocm7.2 / Strix gfx leaves raise TORCH_CONSTRAINT to >=2.11.0 BEFORE the pin
-# is evaluated, so an old 2.10 is out of window there and the floor wins.
+# rocm7.2 / Strix leaves raise TORCH_CONSTRAINT before the pin is evaluated.
 assert_eq "old 2.10 vs rocm7.2 floor"    "" "$(_previous_torch_pin '2.10.0+rocm7.1' 'torch>=2.11.0,<2.12.0')"
 assert_eq "2.11 passes the rocm7.2 floor" "torch==2.11.0" "$(_previous_torch_pin '2.11.0+rocm7.2' 'torch>=2.11.0,<2.12.0')"
 
@@ -48,8 +41,7 @@ assert_eq "garbage version"              "" "$(_previous_torch_pin 'not-a-versio
 assert_eq "traceback fragment"           "" "$(_previous_torch_pin "ModuleNotFoundError: No module named 'torch'" 'torch>=2.4,<2.12.0')"
 
 echo "=== _previous_torch_pin: nightly / dev / source builds never pin ==="
-# No stable index carries these, so pinning would print "keeping it" and then
-# burn a doomed resolve before the range fallback rescues the install.
+# No stable index carries nightlies, so pinning one would burn a doomed resolve.
 assert_eq "nightly dev build"            "" "$(_previous_torch_pin '2.11.0.dev20250704+cu128' 'torch>=2.4,<2.12.0')"
 assert_eq "source build a0 tag"          "" "$(_previous_torch_pin '2.9.0a0+gitabc1234' 'torch>=2.4,<2.12.0')"
 assert_eq "release candidate"            "" "$(_previous_torch_pin '2.11.0rc1+cu130' 'torch>=2.4,<2.12.0')"
@@ -79,10 +71,9 @@ assert_eq "upgrade env set"    "" "$(UNSLOTH_TORCH_UPGRADE=1 _previous_torch_pin
 assert_eq "upgrade env 0"      "torch==2.10.0" "$(UNSLOTH_TORCH_UPGRADE=0 _previous_torch_pin '2.10.0+cu126' 'torch>=2.4,<2.12.0')"
 
 echo "=== the preservation probe reads off disk, not through the interpreter ==="
-# `import torch` can block forever on a wedged Intel driver, and this probe runs before
-# setup.sh's bounded ones. Executed, not grepped: the stub interpreter records being called.
+# `import torch` can block forever on a wedged Intel driver. Executed, not grepped: the
+# stub interpreter records being called.
 _PREVBLK=$(mktemp)
-# The interpreter fallback is wrapped in _run_bounded, so the helper has to come along too.
 {
     sed -n '/^_run_bounded()/,/^}/p' "$INSTALL_SH"
     awk '/^    _PREV_TORCH_VER=""$/{on=1} on{print} on && /tail -n 1 \|\| true\)$/{exit}' \
@@ -107,7 +98,6 @@ _prev_probe() {  # $1 = torch label to put on disk ("" for no version.py)
 assert_eq "xpu wheel read off disk"      "2.9.1+xpu|not-called"      "$(_prev_probe '2.9.1+xpu')"
 assert_eq "cuda wheel read off disk"     "2.9.1+cu128|not-called"    "$(_prev_probe '2.9.1+cu128')"
 assert_eq "untagged wheel read off disk" "2.9.1|not-called"          "$(_prev_probe '2.9.1')"
-# No version.py means no torch, so the interpreter fallback is free to run and fails fast.
 assert_eq "falls back with no version.py" "9.9.9+fromimport|called"  "$(_prev_probe '')"
 rm -f "$_PREVBLK"
 
@@ -117,34 +107,24 @@ _probe_line=$(grep -n '_PREV_TORCH_VER=\$(' "$INSTALL_SH" | head -1 | cut -d: -f
 _move_line=$(grep -n '_start_studio_venv_replacement "\$VENV_DIR"' "$INSTALL_SH" | head -1 | cut -d: -f1)
 assert_eq "probe exists"                  "yes" "$([ -n "$_probe_line" ] && echo yes)"
 assert_eq "probe before venv replacement" "yes" "$([ -n "$_probe_line" ] && [ -n "$_move_line" ] && [ "$_probe_line" -lt "$_move_line" ] && echo yes)"
-# The pin must be evaluated AFTER the last index/constraint decision (the Strix
-# reroute raises the floor), so a raised floor rejects an older kept release.
+# The pin must be evaluated after the last index/constraint decision (Strix raises the floor).
 _pin_line=$(grep -n '_prev_pin=\$(_previous_torch_pin' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _strix_line=$(grep -n 'Strix Halo / Strix Point:' "$INSTALL_SH" | head -1 | cut -d: -f1)
 assert_eq "pin evaluated after the Strix reroute" "yes" "$([ -n "$_pin_line" ] && [ -n "$_strix_line" ] && [ "$_pin_line" -gt "$_strix_line" ] && echo yes)"
-# A kept release that vanished from the index must fall back to the supported range.
 assert_eq "resolve-failure fallback wired" "yes" "$(grep -q 'TORCH_CONSTRAINT="\$_PREV_FALLBACK_CONSTRAINT"' "$INSTALL_SH" && echo yes)"
 assert_eq "pin gated on SKIP_TORCH"        "yes" "$(grep -q 'if \[ "\$SKIP_TORCH" = false \]; then' "$INSTALL_SH" && echo yes)"
-# Every --default-index torch install path must go through the kept-release
-# helper (definition + default path + three ROCm-index fallbacks + two ROCm
-# repairs + the flavor repair), so a pinned release missing from the index
-# never aborts a rerun.
+# Every --default-index torch install must go through the kept-release helper, so a pinned
+# release missing from the index never aborts a rerun.
 _helper_uses=$(grep -c '_install_torch_default_index' "$INSTALL_SH")
 assert_eq "kept-release helper used by all default-index paths" "yes" "$([ "$_helper_uses" -ge 8 ] && echo yes)"
 _repair_uses=$(grep -c '_install_torch_default_index --force-reinstall' "$INSTALL_SH")
 assert_eq "ROCm repairs routed through the kept-release helper" "yes" "$([ "$_repair_uses" -ge 2 ] && echo yes)"
-# The wrong-flavor repair must use the helper too (it runs under set -e, so a
-# direct uv call with an unresolvable pin would abort the whole installer).
+# The flavor repair runs under set -e, so a direct uv call with a bad pin would abort.
 assert_eq "flavor repair routed through the kept-release helper" "yes" "$(grep -q '_install_torch_default_index \\' "$INSTALL_SH" && grep -q -- '--reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio' "$INSTALL_SH" && echo yes)"
-# The kept-release install must pair the companions with the kept minor:
-# torchaudio no longer exact-pins torch, so unconstrained it resolves a newer
-# mismatched build (verified: torch==2.9.0 pulled torchaudio 2.11.0 on cu130).
+# torchaudio no longer exact-pins torch, so unconstrained it resolves a mismatched build.
 assert_eq "kept-release install pairs torchvision/torchaudio to the kept minor" "yes" "$(grep -q '_itdi_ta=\$(_torchaudio_for_torch_minor "\$_itdi_minor")' "$INSTALL_SH" && grep -q 'torchvision==0.\$((_itdi_minor + 15)).\*' "$INSTALL_SH" && echo yes)"
-# The Radeon direct-wheel path must also honor the pin: an exact-first kept-trio
-# attempt (exact patch, else the kept minor's newest patch, with paired
-# vision/audio) runs BEFORE the newest-trio search, and the newest-trio search
-# only runs when that attempt did not produce a match, so a kept release can
-# neither drift to another patch/minor nor be undercut by the gap search.
+# Radeon direct wheels: the exact-first kept-trio attempt runs before the newest-trio search,
+# which only runs when that attempt found nothing.
 _radeon_kept_line=$(grep -n '_kept_torch=\$(_pick_radeon_wheel "torch" *"\${_prev_kept_base}"' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _radeon_loop_line=$(grep -n 'Loop downwards to find the first complete matching trio' "$INSTALL_SH" | head -1 | cut -d: -f1)
 assert_eq "Radeon kept-trio attempt before the newest-trio search" "yes" "$([ -n "$_radeon_kept_line" ] && [ -n "$_radeon_loop_line" ] && [ "$_radeon_kept_line" -lt "$_radeon_loop_line" ] && echo yes)"

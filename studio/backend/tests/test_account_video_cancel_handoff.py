@@ -3,14 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A cancel authorized against one account's job must not cancel the successor's render.
-
-The cancel route reads the backend's reservation several times (the visibility check, the
-foreign-work check, and the expected_account it hands back). ``begin_generate`` runs in a worker
-thread (asyncio.to_thread), so another account can take the reservation between two of those reads
-with no await in between. The backend then rechecks against the account it was GIVEN, so a stale
-read makes the recheck a no-op and the requester cancels a render it never owned.
-"""
+"""Cancel must recheck the account it was authorized for, as begin_generate can hand off mid-read."""
 
 from __future__ import annotations
 
@@ -32,15 +25,7 @@ BOB = AccountContext("b" * 32, "bob")
 
 
 class HandoffVideoBackend:
-    """ALICE's job is current when the route authorizes; BOB reserves right after that read.
-
-    The handoff fires once, immediately after the FIRST read of the reservation, which is the
-    earliest interleaving a worker-thread begin_generate can produce: ALICE's clip finished and
-    BOB's reservation committed while the cancel request was still on the loop.
-
-    ``cancel_generate`` is the real backend's recheck (core/inference/video.py): it compares
-    ``expected_account`` with the reservation it holds NOW and sets the cancel event on a match.
-    """
+    """Hand the reservation to BOB right after its first read, the earliest race a worker thread allows."""
 
     def __init__(self, hand_off: bool = True):
         self._hand_off = hand_off
@@ -77,7 +62,7 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
     monkeypatch.setattr(video, "_generation_account", None, raising = False)
     monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.VIDEO)
-    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda: ALICE.account_id)
+    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda *_a, **_k: ALICE.account_id)
     monkeypatch.setattr(account_access, "repo_is_public", lambda *args, **kwargs: True)
     yield
 

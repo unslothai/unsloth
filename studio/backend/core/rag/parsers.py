@@ -1,27 +1,37 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Document parsing -> list[Page], one dispatch with lazy optional deps.
-
-PDFs keep per-page boundaries (``page_number``); txt/md/docx/html return a single
-page. ``parse(path, want_images=True)`` also returns embedded images. Heavy imports
-are lazy, so importing this module never fails on a missing dep.
-"""
+"""Document parsing to list[Page]; PDFs keep per-page page_number, txt/md/docx/html give one page;
+deps are lazy so importing never fails on a missing one."""
 
 from __future__ import annotations
 
 import codecs
+import functools
 import logging
 import os
 import re
 import secrets
 import struct
+import threading
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
 from . import config
 
 logger = logging.getLogger(__name__)
+
+# PyMuPDF shares one MuPDF context between threads, so two calls at once can crash the process.
+MUPDF_LOCK = threading.RLock()
+
+
+def mupdf_serialized(fn):
+    @functools.wraps(fn)
+    def locked(*args, **kwargs):
+        with MUPDF_LOCK:
+            return fn(*args, **kwargs)
+
+    return locked
 
 
 @dataclass(frozen = True)
@@ -61,7 +71,62 @@ _HTML_PRE_TAGS = frozenset(("listing", "plaintext", "pre", "textarea", "xmp"))
 # atomic inline boxes separate neighbouring text without breaking the line
 _HTML_BOX_TAGS = frozenset(("button", "img", "input", "select"))
 _HTML_ROW_GROUPS = frozenset(("thead", "tbody", "tfoot"))
+_HTML_RAW_TEXT = frozenset("iframe noembed noframes textarea title xmp".split())
+_HTML_LIST_TAGS = frozenset(("dir", "menu", "ol", "ul"))
+_HTML_LIST_FORMATS = {
+    "1": "decimal",
+    "a": "lowerAlpha",
+    "A": "upperAlpha",
+    "i": "lowerRoman",
+    "I": "upperRoman",
+}
 _HTML_TABLE_DEPTH = 32
+_HTML_VOID_TAGS = frozenset(
+    "area base br col embed hr img input link meta param source track wbr".split()
+)
+# includes the SVG / MathML integration points, whose HTML children keep their own scope
+_HTML_P_SCOPE = frozenset(
+    "annotation-xml applet button caption desc foreignobject html marquee mi mn mo ms mtext"
+    " object select table td template th title".split()
+)
+_HTML_TABLE_SCOPE = frozenset(("table", "template"))
+_HTML_CELL_CLOSERS = frozenset(("td", "th", "tr")) | _HTML_ROW_GROUPS
+# optional end tags: open element -> (start tags that end it, ancestors that stop the search)
+_HTML_IMPLIED_END = {
+    "p": (
+        frozenset(
+            "address article aside blockquote center dd details dialog dir div dl dt fieldset"
+            " figcaption figure footer form h1 h2 h3 h4 h5 h6 header hgroup hr li listing main"
+            " menu nav ol p pre search section summary table ul".split()
+        ),
+        _HTML_P_SCOPE,
+    ),
+    "li": (frozenset(("li",)), _HTML_LIST_TAGS | _HTML_P_SCOPE),
+    "dt": (frozenset(("dt", "dd")), frozenset(("dl",)) | _HTML_P_SCOPE),
+    "dd": (frozenset(("dt", "dd")), frozenset(("dl",)) | _HTML_P_SCOPE),
+    "tr": (frozenset(("tr",)) | _HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "td": (_HTML_CELL_CLOSERS, _HTML_TABLE_SCOPE),
+    "th": (_HTML_CELL_CLOSERS, _HTML_TABLE_SCOPE),
+    "thead": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "tbody": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "tfoot": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "caption": (
+        frozenset(("caption", "col", "colgroup", "td", "th", "tr")) | _HTML_ROW_GROUPS,
+        _HTML_TABLE_SCOPE,
+    ),
+    "option": (
+        frozenset(("option", "optgroup", "hr")),
+        frozenset(("select", "datalist", "template")),
+    ),
+}
+_HTML_IMPLIED_BY = {
+    tag: tuple(
+        (name, scope) for name, (closers, scope) in _HTML_IMPLIED_END.items() if tag in closers
+    )
+    for tag in frozenset().union(*(closers for closers, _ in _HTML_IMPLIED_END.values()))
+}
+# other optional-end elements have no tracked end, so a hidden one would swallow the rest
+_HTML_HIDDEN_IGNORED = frozenset("body colgroup head html optgroup rb rp rt rtc".split())
 
 
 class _HtmlPre(str):
@@ -80,6 +145,11 @@ class _HtmlTable:
         self.spans: list[int] = []
 
 
+def _html_int(value) -> int | None:
+    match = re.match(r"\s*([+-]?\d{1,18})(?!\d)", value or "")
+    return int(match.group(1)) if match else None
+
+
 def _html_span(attrs, name: str, limit: int) -> int:
     try:
         value = int(dict(attrs).get(name) or 1)
@@ -89,12 +159,27 @@ def _html_span(attrs, name: str, limit: int) -> int:
     return limit if value == 0 and name == "rowspan" else min(max(value, 1), limit)
 
 
+def _html_hidden(tag: str, attrs) -> bool:
+    # any value but until-found (still searchable) hides the subtree; CSS is not evaluated
+    for name, value in attrs:
+        if name == "hidden":
+            return (
+                (value or "").lower() != "until-found"
+                and tag not in _HTML_HIDDEN_IGNORED
+                and "tabpanel" not in (dict(attrs).get("role") or "").lower().split()
+            )
+    return False
+
+
 class _Stripper(HTMLParser):
     """collect visible text, one line per block element."""
 
     def __init__(self, span_budget: int = 0) -> None:
         super().__init__()
         self._skip = 0
+        self._hidden_at: int | None = None
+        self._open_tags: list[str] = []
+        self._tag_positions: dict[str, list[int]] = {}
         self._pre = 0
         self._templates: list[bool] = []
         self._line: list[str] = []
@@ -102,11 +187,20 @@ class _Stripper(HTMLParser):
         self._tables: list[_HtmlTable] = []
         self._span_budget = span_budget
         self._deep = 0
+        self._lists: list[tuple[str, dict | None, list]] = []
+        self._open_lists: dict[str, int] = {}
+        self.labels: list[str] = []
+        self.nonce = secrets.token_hex(4)
+        self._label: str | None = None
+        self._sups: list[list] = []
+        self._anchor: tuple[int, list[str], int] | None = None
 
     def _in_table(self) -> bool:
         return bool(self._tables) and not self._skip and not self._deep
 
     def _end_cell(self) -> None:
+        if self.out is not self._tables[-1].sink:
+            self._emit_label()
         self._flush()
         self.out = self._tables[-1].sink
 
@@ -182,6 +276,29 @@ class _Stripper(HTMLParser):
             row.append(None if i else cell)
         self.out = cell
 
+    def _end_list(self) -> str:
+        tag, attrs, items = self._lists.pop()
+        self._open_lists[tag] -= 1
+        if attrs is not None:
+            backwards = "reversed" in attrs
+            number = _html_int(attrs.get("start"))
+            if number is None:
+                number = len(items) if backwards else 1
+            kind = _HTML_LIST_FORMATS.get(attrs.get("type") or "")
+            for index, value, item_kind in items:
+                number = number if value is None else value
+                item_format = _HTML_LIST_FORMATS.get(item_kind or "", kind)
+                self.labels[index] = _list_number(number, item_format) + "."
+                number += -1 if backwards else 1
+        return tag
+
+    def _emit_label(self) -> None:
+        if self._label:
+            self._flush()
+            self._line.append(self._label)
+            self._label = None
+            self._flush()
+
     def _flush(self) -> None:
         text = "".join(self._line)
         self._line = []
@@ -190,7 +307,50 @@ class _Stripper(HTMLParser):
         if text.strip():
             self.out.append(_HtmlPre(text) if self._pre else text)
 
+    def _pop_tags(self, index: int) -> None:
+        while len(self._open_tags) > index:
+            self._tag_positions[self._open_tags.pop()].pop()
+        if self._hidden_at is not None and self._hidden_at >= index:
+            self._hidden_at = None
+
+    def _close_implied(self, tag: str, preserve_boundary: bool) -> None:
+        implied = _HTML_IMPLIED_BY.get(tag)
+        if not implied:
+            return
+        index = len(self._open_tags)
+        for name, barriers in implied:
+            positions = self._tag_positions.get(name)
+            if positions and positions[-1] < index:
+                barrier = max(
+                    (self._tag_positions[b][-1] for b in barriers if self._tag_positions.get(b)),
+                    default = -1,
+                )
+                if positions[-1] > barrier:
+                    index = positions[-1]
+        if index == len(self._open_tags):
+            return
+        if preserve_boundary and (self._hidden_at is None or index < self._hidden_at):
+            self.handle_endtag(self._open_tags[index])
+        else:
+            self._pop_tags(index)
+
     def handle_starttag(self, tag, attrs):
+        # markup inside raw text is literal text, even where older HTMLParsers parse it
+        hidden = _html_hidden(tag, attrs) and not any(
+            self._tag_positions.get(raw) for raw in _HTML_RAW_TEXT
+        )
+        self._close_implied(tag, self._hidden_at is not None or hidden)
+        if tag not in _HTML_VOID_TAGS:
+            index = len(self._open_tags)
+            self._tag_positions.setdefault(tag, []).append(index)
+            self._open_tags.append(tag)
+            if hidden and self._hidden_at is None:
+                self._hidden_at = index
+        if self._hidden_at is not None or hidden:
+            if tag in _HTML_RAW_TEXT:
+                # older HTMLParser versions parse these as markup, so hidden tags inside could end the scope
+                self.set_cdata_mode(tag)
+            return
         if tag == "template":
             # declarative shadow roots render; other templates are inert
             inert = (dict(attrs).get("shadowrootmode") or "").lower() not in ("open", "closed")
@@ -219,13 +379,64 @@ class _Stripper(HTMLParser):
                 self._tables.append(_HtmlTable(self.out, nested))
             if tag in _HTML_PRE_TAGS:
                 self._pre += 1
+            if tag in _HTML_LIST_TAGS or tag == "li":
+                self._emit_label()
+            if tag in _HTML_LIST_TAGS:
+                self._lists.append((tag, dict(attrs) if tag == "ol" else None, []))
+                self._open_lists[tag] = self._open_lists.get(tag, 0) + 1
+            elif tag == "li" and self._lists and self._lists[-1][1] is not None:
+                attrs = dict(attrs)
+                item = (len(self.labels), _html_int(attrs.get("value")), attrs.get("type"))
+                self._lists[-1][2].append(item)
+                self._label = f"\ue000{self.nonce}.{len(self.labels)}\ue001 "
+                self.labels.append("")
+        elif tag == "input" and (dict(attrs).get("type") or "").lower() in ("checkbox", "radio"):
+            self.handle_data(" ☒ " if "checked" in dict(attrs) else " ☐ ")
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
             self._line.append(" ")
         elif tag == "tspan" and not self._skip and any(k in ("x", "y") for k, _ in attrs):
             # absolute x/y coordinates start a separate SVG text label or line
             self._flush()
+        elif tag == "sup" and not self._skip:
+            from ..inference._html_to_md import _MAX_SUP_DEPTH, _note_reference
+
+            while self._sups and self._sups[-1][0] >= index:
+                self._sups.pop()
+            # a footnote link around or inside the sup (Pandoc, Python-Markdown, GitHub) is a reference
+            anchor = self._anchor
+            linked = (
+                anchor is not None
+                and anchor[0] in self._tag_positions.get("a", ())
+                and anchor[1] is self._line
+                and anchor[2] == len(self._line)
+            )
+            if len(self._sups) < _MAX_SUP_DEPTH and not linked and not _note_reference(dict(attrs)):
+                self._sups.append([index, self._line, len(self._line), False])
+        elif tag == "a" and not self._skip:
+            self._anchor = (index, self._line, len(self._line))
+            for sup in self._sups:
+                sup[3] = True
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag in _HTML_RAW_TEXT:
+            self.clear_cdata_mode()
+        # no synthesized </br> or </input> end for a hidden void element
+        if tag not in _HTML_VOID_TAGS or not _html_hidden(tag, attrs):
+            self.handle_endtag(tag)
 
     def handle_endtag(self, tag):
+        positions = self._tag_positions.get(tag)
+        if positions:
+            index = positions[-1]
+            muted = self._hidden_at is not None and index >= self._hidden_at
+            self._pop_tags(index)
+            if muted:
+                return
+            if tag == "sup":
+                self._end_sup(index)
+        elif self._hidden_at is not None:
+            return
         if tag == "template":
             if self._templates and self._templates.pop() and self._skip:
                 self._skip -= 1
@@ -250,11 +461,27 @@ class _Stripper(HTMLParser):
                 self._deep -= 1
             if tag in _HTML_PRE_TAGS and self._pre:
                 self._pre -= 1
+            if self._open_lists.get(tag):
+                self._emit_label()
+                while self._end_list() != tag:
+                    pass
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
             self._line.append(" ")
 
+    def _end_sup(self, index: int) -> None:
+        from ..inference._html_to_md import _raise_superscript
+        while self._sups and self._sups[-1][0] > index:
+            self._sups.pop()
+        if self._sups and self._sups[-1][0] == index:
+            _, line, start, linked = self._sups.pop()
+            if line is self._line and not linked:
+                _raise_superscript(line, start)
+
     def handle_data(self, data):
-        if not self._skip:
+        if not self._skip and self._hidden_at is None:
+            if self._label and data.strip():
+                self._line.append(self._label)
+                self._label = None
             self._line.append(data)
 
     def close(self):
@@ -264,14 +491,19 @@ class _Stripper(HTMLParser):
             table = self._tables.pop()
             if table.nested:
                 self.out.append(None)
+        self._emit_label()
         self._flush()
+        while self._lists:
+            self._end_list()
 
 
 def _html(raw: str) -> list[Page]:
     parser = _Stripper(len(raw))
     parser.feed(raw)
     parser.close()
-    return [_page("\n".join(parser.out), 1)]
+    label = re.compile(f"\ue000{parser.nonce}\\.(\\d+)\ue001")
+    text = label.sub(lambda match: parser.labels[int(match.group(1))], "\n".join(parser.out))
+    return [_page(text, 1)]
 
 
 # pymupdf4llm can corrupt positioned RTL and Indic glyphs; use logical-order
@@ -284,9 +516,8 @@ _PDF_INCOMPLETE_MIN_LETTERS = 200
 
 
 def _markdown_corrupted(text: str) -> bool:
-    """True when pymupdf4llm's glyph reconstruction mangled the text: shaped RTL
-    Presentation Forms or U+FFFD replacements above a small floor/ratio (so a lone
-    legitimate shaped glyph does not force the fallback)."""
+    """True when pymupdf4llm mangled glyphs: shaped RTL forms or U+FFFD above a small floor and
+    ratio, so a lone legitimate shaped glyph does not force the fallback."""
     if not text:
         return False
     threshold = max(_PDF_FALLBACK_MIN_BAD_GLYPHS, _PDF_FALLBACK_BAD_GLYPH_RATIO * len(text))
@@ -309,10 +540,7 @@ _SCAN_IMAGE_MIN_PIXELS = 1_000_000
 
 
 def _image_covers_a_corner(doc, number: int) -> bool:
-    """True when a scan-sized raster image overlaps one of the 10pt page corners pymupdf4llm
-    renders to guess the background colour. That render decodes the whole image in one C call
-    holding the GIL (~2 s per JPEG2000 scan page), starving the server's event loop until the
-    desktop watchdog kills it (#13094)."""
+    """True when a scan-sized image covers a corner pymupdf4llm samples, since that render holds the GIL."""
     try:
         import fitz
 
@@ -335,10 +563,161 @@ def _image_covers_a_corner(doc, number: int) -> bool:
     return any(box.intersects(corner) for box in boxes for corner in corners)
 
 
+# PyMuPDF releases whose lines_strict table finder _no_lined_table_possible was checked against.
+_TABLE_GUARD_PYMUPDF = ("1.27.2.3", "1.28.2")
+_TABLE_SNAP = 3  # pymupdf.table.DEFAULT_SNAP_TOLERANCE
+_TABLE_GUARD_MAX_RECTS = 1000
+
+
+def _table_guard_enabled(pymupdf4llm) -> bool:
+    """Legacy pymupdf4llm on a checked PyMuPDF, no layout analyzer."""
+    try:
+        import inspect
+
+        import fitz
+
+        to_markdown = pymupdf4llm.to_markdown
+        params = inspect.signature(to_markdown).parameters
+        return (
+            to_markdown.__module__ == "pymupdf4llm.helpers.pymupdf_rag"
+            and params["table_strategy"].default == "lines_strict"
+            and "hdr_info" in params
+            and fitz.__version__ in _TABLE_GUARD_PYMUPDF
+            and getattr(fitz, "_get_layout", None) is None
+        )
+    except Exception:
+        return False
+
+
+def _graphics_bboxes(rects: list) -> list:
+    """make_edges' clean_graphics clusters (before its has-text check), copied verbatim."""
+    import fitz
+
+    snap_x = snap_y = _TABLE_SNAP
+
+    def are_neighbors(r1, r2):
+        if (
+            r2.x0 - snap_x <= r1.x0 <= r2.x1 + snap_x or r2.x0 - snap_x <= r1.x1 <= r2.x1 + snap_x
+        ) and (
+            r2.y0 - snap_y <= r1.y0 <= r2.y1 + snap_y or r2.y0 - snap_y <= r1.y1 <= r2.y1 + snap_y
+        ):
+            return True
+        if (
+            r1.x0 - snap_x <= r2.x0 <= r1.x1 + snap_x or r1.x0 - snap_x <= r2.x1 <= r1.x1 + snap_x
+        ) and (
+            r1.y0 - snap_y <= r2.y0 <= r1.y1 + snap_y or r1.y0 - snap_y <= r2.y1 <= r1.y1 + snap_y
+        ):
+            return True
+        return False
+
+    prects = sorted(set(fitz.Rect(r) for r in rects), key = lambda r: (r.y1, r.x0))
+    boxes = []
+    while prects:
+        prect0 = prects[0]
+        repeat = True
+        while repeat:
+            repeat = False
+            for i in range(len(prects) - 1, 0, -1):
+                if are_neighbors(prect0, prects[i]):
+                    prect0 |= prects[i].tl
+                    prect0 |= prects[i].br
+                    del prects[i]
+                    repeat = True
+        boxes.append(prect0)
+        del prects[0]
+    return boxes
+
+
+def _no_lined_table_possible(page) -> bool:
+    """True when find_tables(strategy="lines_strict") provably keeps no 2x2+ table: that needs
+    3+ vertical and 3+ horizontal base edges (length >= 1) from l/re/qu items of non-large-fill
+    paths plus cluster borders; this counts an upper bound of each."""
+    if page.rotation != 0:
+        return False
+    v = h = 0
+
+    def line(a, b):
+        nonlocal v, h
+        if abs(b[1] - a[1]) >= 1:
+            v += 1
+        if abs(b[0] - a[0]) >= 1:
+            h += 1
+
+    rects = []
+    for path in page.get_cdrawings():
+        x0, y0, x1, y1 = path["rect"]
+        if path["type"] == "f" and x1 - x0 > _TABLE_SNAP and y1 - y0 > _TABLE_SNAP:
+            continue
+        rects.append(path["rect"])
+        items = path["items"]
+        for item in items:
+            if item[0] == "l":
+                line(item[1], item[2])
+            elif item[0] == "re":
+                rx0, ry0, rx1, ry1 = item[1]
+                if abs(ry1 - ry0) >= 1:
+                    v += 2
+                if abs(rx1 - rx0) >= 1:
+                    h += 2
+            elif item[0] == "qu":
+                ul, ur, ll, lr = item[1]
+                for a, b in ((ul, ll), (ll, lr), (lr, ur), (ur, ul)):
+                    line(a, b)
+        if path.get("closePath", True) and items and items[0][0] == "l" and items[-1][0] == "l":
+            line(items[-1][2], items[0][1])
+        if v >= 3 and h >= 3:
+            return False
+    if len(rects) > _TABLE_GUARD_MAX_RECTS:
+        return False
+    for box in _graphics_bboxes(rects):
+        if box.y1 - box.y0 >= 1:
+            v += 2
+        if box.x1 - box.x0 >= 1:
+            h += 2
+    return v < 3 or h < 3
+
+
+def _skips_table_search(doc, number: int) -> bool:
+    try:
+        return _no_lined_table_possible(doc[number])
+    except Exception:  # noqa: BLE001 - an unreadable page keeps the full table search
+        return False
+
+
+def _pdf_markdown_skipping_tables(pymupdf4llm, doc, indices, calls, kwargs) -> list | None:
+    """The plain path's to_markdown calls, each split into table-search and no-search pages."""
+    # Bake as to_markdown would, so the guard sees the same page.
+    if doc.is_form_pdf or (doc.is_pdf and doc.has_annots()):
+        doc.bake()
+    by_page = {}
+    for group, detect in calls:
+        if not group:
+            continue
+        headers = pymupdf4llm.IdentifyHeaders(doc)
+        skip = {i for i in group if _skips_table_search(doc, i)}
+        for part_pages, extra in (
+            ([i for i in group if i not in skip], {}),
+            ([i for i in group if i in skip], {"table_strategy": None}),
+        ):
+            if not part_pages:
+                continue
+            part = pymupdf4llm.to_markdown(
+                doc,
+                pages = part_pages,
+                hdr_info = headers,
+                detect_bg_color = detect,
+                **extra,
+                **kwargs,
+            )
+            if not isinstance(part, list) or len(part) != len(part_pages):
+                return None
+            by_page.update(zip(part_pages, part))
+    return [by_page[i] for i in indices]
+
+
 def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
-    """Per-page layout-aware Markdown (tables, headings, lists) via pymupdf4llm; index
-    i maps to page i+1. Returns None when the lib is missing, extraction fails, or the
-    page count does not line up, so the caller falls back to plain PyMuPDF text."""
+    """Per-page Markdown via pymupdf4llm (index i is page i+1); None when unavailable or misaligned,
+    so the caller falls back to plain PyMuPDF text."""
     try:
         import pymupdf4llm
     except Exception:
@@ -347,7 +726,17 @@ def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
         kwargs = {"page_chunks": True, "show_progress": False, "ignore_images": True}
         indices = list(range(doc.page_count) if pages is None else pages)
         scans = {i for i in indices if _image_covers_a_corner(doc, i)}
-        if not scans:
+        if _table_guard_enabled(pymupdf4llm):
+            calls = [(indices, True)]
+            if scans:
+                calls = [
+                    ([i for i in indices if i not in scans], True),
+                    ([i for i in indices if i in scans], False),
+                ]
+            chunks = _pdf_markdown_skipping_tables(pymupdf4llm, doc, indices, calls, kwargs)
+            if chunks is None:
+                return None
+        elif not scans:
             if pages is not None:
                 kwargs["pages"] = indices
             chunks = pymupdf4llm.to_markdown(doc, **kwargs)
@@ -375,6 +764,52 @@ def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
     return [str(c.get("text") or "") for c in chunks]
 
 
+def _pdf_form_field_lines(page) -> list[str]:
+    import fitz
+
+    try:
+        widgets = list(page.widgets())
+    except Exception as exc:  # noqa: BLE001 - a malformed field must not fail the whole PDF
+        logger.warning("skipping form fields on PDF page %d: %s", page.number + 1, exc)
+        return []
+    tooltip_owners: dict[str, set[str]] = {}
+    for widget in widgets:
+        tooltip = " ".join((widget.field_label or "").split())
+        tooltip_owners.setdefault(tooltip, set()).add(widget.field_name)
+    fields = {}
+    for widget in widgets:
+        shown = dict(c for c in widget.choice_values or [] if isinstance(c, (list, tuple)))
+        value = widget.field_value
+        value = ", ".join(
+            shown.get(part, part)
+            for part in (value if isinstance(value, list) else [value])
+            if isinstance(part, str)
+        )
+        radio = widget.field_type == fitz.PDF_WIDGET_TYPE_RADIOBUTTON
+        # Kids of one field share its /V; the widget's own /AS says which kid is ticked.
+        unchecked = (radio or widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX) and (
+            value == "Off" or page.parent.xref_get_key(widget.xref, "AS") == ("name", "/Off")
+        )
+        password = (
+            widget.field_type == fitz.PDF_WIDGET_TYPE_TEXT
+            and widget.field_flags & fitz.PDF_TX_FIELD_IS_PASSWORD
+        )
+        _, flags = page.parent.xref_get_key(widget.xref, "F")
+        hidden = widget.field_display in (1, 3) or (
+            flags.isdigit() and int(flags) & fitz.PDF_ANNOT_IS_INVISIBLE
+        )
+        if not widget.field_name or not value.strip() or unchecked or password or hidden:
+            continue
+        # A radio widget's /TU tooltip names one option, not the group's selected value.
+        tooltip = "" if radio else " ".join((widget.field_label or "").split())
+        label = tooltip or widget.field_name
+        if tooltip and len(tooltip_owners[tooltip]) > 1:
+            label = f"{tooltip} ({widget.field_name})"
+        fields[widget.field_name] = f"{label}: {value}"
+    return list(fields.values())
+
+
+@mupdf_serialized
 def _pdf(
     source: str | bytes,
     want_images: bool,
@@ -392,6 +827,10 @@ def _pdf(
             raise ValueError("encrypted PDF requires a password")
         total_pages = doc.page_count
         page_numbers = range(total_pages if max_pages is None else min(total_pages, max_pages))
+        # Read before pymupdf4llm, which bakes the widgets into page content.
+        form_fields = (
+            {n: _pdf_form_field_lines(doc[n]) for n in page_numbers} if doc.is_form_pdf else {}
+        )
         if not config.PDF_MARKDOWN:
             md = None
         elif max_pages is None:
@@ -402,9 +841,7 @@ def _pdf(
             page = doc[page_number]
             plain = page.get_text("text") or ""
             candidate = md[i] if md else ""
-            # Prefer layout-aware Markdown (keeps tables/headings legible for retrieval), but drop to PyMuPDF's
-            # logical-order text when Markdown is off/empty or when pymupdf4llm mangled it (RTL/Indic) or
-            # dropped most of the page.
+            # Prefer Markdown; use PyMuPDF text if Markdown is empty, mangles RTL/Indic, or loses most text.
             if (
                 candidate
                 and not _markdown_corrupted(candidate)
@@ -413,8 +850,7 @@ def _pdf(
                 text = candidate
             else:
                 text = plain
-            # Markdown may contain image placeholders even when there is no text layer.
-            # Record scanned pages from the PDF itself; blank separator pages need no OCR.
+            # Scan detection uses the PDF, not Markdown: Markdown placeholders appear even without a text layer.
             images_on_page = page.get_image_info()
             needs_ocr = bool(images_on_page) and not plain.strip()
             for info in images_on_page:
@@ -433,6 +869,7 @@ def _pdf(
                     break
             if needs_ocr:
                 text = plain
+            text = "\n".join(filter(None, [text, *form_fields.get(page_number, [])]))
             pages.append(Page(text, page_number + 1, len(text), needs_ocr = needs_ocr))
             if want_images:
                 for img in page.get_images(full = True):
@@ -457,12 +894,26 @@ def _pdf(
 
 
 def parse_pdf_bytes(data: bytes, *, max_pages: int | None = None) -> tuple[list[Page], int]:
-    """Extract PDF pages from an in-memory download using the ingestion parser.
-
-    Returns the (capped) pages plus the document's full page count, so a caller
-    that set ``max_pages`` can tell a fully-read short PDF from a truncated one."""
+    """Returns capped pages plus the full page count, so a max_pages cut differs from a short PDF."""
     pages, _images, total_pages = _pdf(data, want_images = False, max_pages = max_pages)
     return pages, total_pages
+
+
+@mupdf_serialized
+def mupdf_document_text(path: str) -> str:
+    """Paragraph text of a reflowable e-book only MuPDF reads (.mobi, .fb2)."""
+    import pymupdf
+
+    with pymupdf.open(path) as doc:
+        # A tall page keeps paragraphs from splitting at page breaks.
+        doc.layout(width = 1000, height = 100000, fontsize = 11)
+        paragraphs = [
+            " ".join(block[4].split())
+            for page in doc
+            for block in page.get_text("blocks")
+            if block[6] == 0
+        ]
+    return "\n\n".join(p for p in paragraphs if p)
 
 
 def _merge_rects(boxes: list) -> list:
@@ -515,6 +966,7 @@ def _figure_boxes(
     return keep
 
 
+@mupdf_serialized
 def pages_with_figures(
     path: str,
     *,
@@ -523,10 +975,7 @@ def pages_with_figures(
     min_side: float = 40.0,
     exclude_pages: set[int] | None = None,
 ) -> list[int]:
-    """1-based page numbers with a qualifying figure region, capped at ``max_pages``;
-    drives figure tiling. ``exclude_pages`` (1-based) are skipped: those are the pages
-    OCR already transcribed whole, so tiling them would duplicate the vision work. Any
-    failure yields []."""
+    """1-based pages with a figure region, for tiling; exclude_pages, already OCR'd whole, are skipped."""
     exclude = exclude_pages or set()
     try:
         import pymupdf
@@ -550,6 +999,7 @@ def pages_with_figures(
         doc.close()
 
 
+@mupdf_serialized
 def render_pdf_figure_tiles(
     path: str,
     page_numbers,
@@ -561,9 +1011,8 @@ def render_pdf_figure_tiles(
     fullpage: bool = True,
     max_tiles: int = 24,
 ) -> list[ParsedImage]:
-    """Render figure-bearing pages as overlapping high-DPI tiles (plus an optional full
-    page), each a ``ParsedImage`` keyed by page number. Tiling keeps small labels legible
-    and covers every sub-figure without exact region detection. Any failure yields []."""
+    """Renders figure pages as overlapping high-DPI tiles (plus an optional full page), each a
+    ParsedImage keyed by page number; any failure yields []."""
     wanted = [int(n) for n in page_numbers]
     if not wanted:
         return []
@@ -620,16 +1069,14 @@ def render_pdf_figure_tiles(
         doc.close()
 
 
+@mupdf_serialized
 def render_pdf_pages(
     path: str,
     page_numbers,
     *,
     dpi: int = 150,
 ) -> dict[int, bytes]:
-    """Render whole PDF pages (given as 1-based numbers) to PNG bytes, keyed by
-    page number. Backs scanned-page OCR. Any failure yields ``{}`` (or skips that
-    page), never an exception.
-    """
+    """Renders whole 1-based pages to PNG for scanned-page OCR; failures skip the page, never raise."""
     wanted = {int(n) for n in page_numbers}
     if not wanted:
         return {}
@@ -643,12 +1090,10 @@ def render_pdf_pages(
         return {}
     out: dict[int, bytes] = {}
     try:
-        for i, page in enumerate(doc):
-            num = i + 1
-            if num not in wanted:
-                continue
+        # Loads only the wanted pages: Translate renders one page per call.
+        for num in sorted(n for n in wanted if 1 <= n <= doc.page_count):
             try:
-                pix = page.get_pixmap(dpi = dpi)
+                pix = doc[num - 1].get_pixmap(dpi = dpi)
                 out[num] = pix.tobytes("png")
             except Exception:
                 continue
@@ -671,6 +1116,54 @@ _DOCX_MATH_ROWS = {
     "eqArr": ("e", "\n"),
     "m": ("mr", " \\\\ "),
     "mr": ("e", " & "),
+}
+# Symbol-font characters from 0x20, as mammoth (the + attachment reader) maps them.
+_DOCX_SYMBOL_FONTS = {
+    "symbol": (
+        " !∀#∃%&∍()*+,−./0123456789:;<=>?"
+        "≅ΑΒΧΔΕΦΓΗΙϑΚΛΜΝΟΠΘΡΣΤΥςΩΞΨΖ[∴]⊥_"
+        "‾αβχδεφγηιϕκλμνοπθρστυϖωξψζ{|}~\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "€ϒ′≤⁄∞ƒ♣♦♥♠↔←↑→↓°±″≥×∝∂•÷≠≡≈…⏐⎯↵"
+        "ℵℑℜ℘⊗⊕∅∩∪⊃⊇⊄⊂⊆∈∉∠∇®©™∏√⋅¬∧∨⇔⇐⇑⇒⇓"
+        "◊〈®©™∑⎛⎜⎝⎡⎢⎣⎧⎨⎩⎪\0〉∫⌠⎮⌡⎞⎟⎠⎤⎥⎦⎫⎬⎭"
+    ),
+    "wingdings": (
+        " 🖉✂✁👓🕭🕮🕯🕿✆🖂🖃📪📫📬📭🗀🗁🗎🗏🗐🗄⌛🖮🖰🖲🖳🖴🖫🖬✇✍"
+        "🖎✌🖏👍👎☜☞☝☟🖐☺😐☹💣🕱🏳🏱✈☼🌢❄🕆✞🕈✠✡☪☯🕉☸♈♉"
+        "♊♋♌♍♎♏♐♑♒♓🙰🙵⚫🔾◼🞏🞐❑❒🞟⧫◆❖⬩⌧⮹⌘🏵🏶🙶🙷▯"
+        "🄋➀➁➂➃➄➅➆➇➈➉🄌➊➋➌➍➎➏➐➑➒➓🙢🙠🙡🙣🙞🙜🙝🙟∙•"
+        "⬝⭘🞆🞈🞊🞋🔿▪🞎🟁🟅★🟋🟏🟓🟑⯐⌖⯎⯏⯑✪✰🕐🕑🕒🕓🕔🕕🕖🕗🕘"
+        "🕙🕚🕛⮰⮱⮲⮳⮴⮵⮶⮷🙪🙫🙕🙔🙗🙖🙐🙑🙒🙓⌫⌦⮘⮚⮙⮛⮈⮊⮉⮋🡨"
+        "🡪🡩🡫🡬🡭🡯🡮🡸🡺🡹🡻🡼🡽🡿🡾⇦⇨⇧⇩⬄⇳⬁⬀⬃⬂🢬🢭🗶✓🗷🗹"
+    ),
+    "wingdings 2": (
+        " 🖊🖋🖌🖍✄✀🕾🕽🗅🗆🗇🗈🗉🗊🗋🗌🗍📋🗑🗔🖵🖶🖷🖸🖭🖯🖱🖒🖓🖘🖙"
+        "🖚🖛👈👉🖜🖝🖞🖟🖠🖡👆👇🖢🖣🖑🗴🗸🗵☑⮽☒⮾⮿🛇⦸🙱🙴🙲🙳‽🙹🙺"
+        "🙻🙦🙤🙥🙧🙚🙘🙙🙛⓪①②③④⑤⑥⑦⑧⑨⑩⓿❶❷❸❹❺❻❼❽❾❿\0"
+        "☉🌕☽☾⸿✝🕇🕜🕝🕞🕟🕠🕡🕢🕣🕤🕥🕦🕧🙨🙩⋅🞄⦁●○🞅🞇🞉⊙⦿🞌"
+        "🞍◾■□🞑🞒🞓🞔▣🞕🞖🞗🞘⬩⬥◇🞚◈🞛🞜🞝🞞⬪⬧◊🞠◖◗⯊⯋⯀⯁"
+        "⬟⯂⬣⬢⯃⯄🞡🞢🞣🞤🞥🞦🞧🞨🞩🞪🞫🞬🞭🞮🞯🞰🞱🞲🞳🞴🞵🞶🞷🞸🞹🞺"
+        "🞻🞼🞽🞾🞿🟀🟂🟄🟆🟉🟊✶🟌🟎🟐🟒✹🟃🟇✯🟍🟔⯌⯍※⁂"
+    ),
+    "wingdings 3": (
+        " ⭠⭢⭡⭣⭦⭧⭩⭨⭰⭲⭱⭳⭶⭸⭻⭽⭤⭥⭪⭬⭫⭭⭍⮠⮡⮢⮣⮤⮥⮦⮧"
+        "⮐⮑⮒⮓⮀⮃⭾⭿⮄⮆⮅⮇⮏⮍⮎⮌⭮⭯⎋⌤⌃⌥␣⍽⇪⮸🢠🢡🢢🢣🢤🢥"
+        "🢦🢧🢨🢩🢪🢫🡐🡒🡑🡓🡔🡕🡗🡖🡘🡙▲▼△▽◀▶◁▷◣◢◤◥🞀🞂🞁\0"
+        "🞃⯅⯆⯇⯈⮜⮞⮝⮟🠐🠒🠑🠓🠔🠖🠕🠗🠘🠚🠙🠛🠜🠞🠝🠟🠀🠂🠁🠃🠄🠆🠅"
+        "🠇🠈🠊🠉🠋🠠🠢🠤🠦🠨🠪🠬🢜🢝🢞🢟🠮🠰🠲🠴🠶🠸🠺🠹🠻🢘🢚🢙🢛🠼🠾🠽"
+        "🠿🡀🡂🡁🡃🡄🡆🡅🡇⮨⮩⮪⮫⮬⮭⮮⮯🡠🡢🡡🡣🡤🡥🡧🡦🡰🡲🡱🡳🡴🡵🡷"
+        "🡶🢀🢂🢁🢃🢄🢅🢇🢆🢐🢒🢑🢓🢔🢖🢕🢗"
+    ),
+    "webdings": (
+        " 🕷🕸🕲🕶🏆🎖🖇🗨🗩🗰🗱🌶🎗🙾🙼🗕🗖🗗⏴⏵⏶⏷⏪⏩⏮⏭⏸⏹⏺🗚🗳"
+        "🛠🏗🏘🏙🏚🏜🏭🏛🏠🏖🏝🛣🔍🏔👁👂🏞🏕🛤🏟🛳🕬🕫🕨🔈🎔🎕🗬🙽🗭🗪🗫"
+        "⮔✔🚲⬜🛡📦🛱⬛🚑🛈🛩🛰🟈🕴⬤🛥🚔🗘🗙❓🛲🚇🚍⛳⦸⊖🚭🗮⏐🗯🗲\0"
+        "🚹🚺🛉🛊🚼👽🏋⛷🏂🏌🏊🏄🏍🏎🚘🗠🛢💰🏷💳👪🗡🗢🗣✯🖄🖅🖃🖆🖹🖺🖻"
+        "🕵🕰🖽🖾📋🗒🗓🕮📚🗞🗟🗃🗂🖼🎭🎜🎘🎙🎧💿🎞📷🎟🎬📽📹📾📻🎚🎛📺💻"
+        "🖥🖦🖧🕹🎮🕻🕼📟🖁🖀🖨🖩🖿🖪🗜🔒🔓🗝📥📤🕳🌣🌤🌥🌦☁🌨🌧🌩🌪🌬🌫"
+        "🌜🌡🛋🛏🍽🍸🛎🛍Ⓟ♿🛆🖈🎓🗤🗥🗦🗧🛪🐿🐦🐟🐕🐈🙬🙮🙭🙯🗺🌍🌏🌎🕊"
+    ),
 }
 
 
@@ -737,7 +1230,9 @@ def _docx_math_text(element) -> str:
     if tag in _DOCX_SKIP_RUNS_UNDER or _docx_placeholder(element):
         return ""
     if tag == _W + "r":
-        return element.text
+        return _docx_run_text(element)
+    if tag == _W + "sym":
+        return _docx_symbol(element)
     if tag == _M + "t":
         return element.text or ""
     name = tag[len(_M) :] if tag.startswith(_M) else ""
@@ -798,38 +1293,375 @@ def _docx_math_text(element) -> str:
     return "".join(_docx_math_text(child) for child in element.iterchildren("*"))
 
 
-def _docx_paragraph_text(paragraph) -> str:
-    """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag, and equations."""
-    p = paragraph._p
+def _docx_checkbox(field) -> str:
+    box = field.find(f"{_W}ffData/{_W}checkBox")
+    if box is None:
+        return ""
+    flag = box.find(_W + "checked")
+    if flag is None:
+        flag = box.find(_W + "default")
+    ticked = flag is not None and flag.get(_W + "val", "true") not in ("0", "false", "off")
+    return "☒" if ticked else "☐"
+
+
+def _docx_symbol(sym) -> str:
+    try:
+        code = int(sym.get(_W + "char") or "", 16)
+    except ValueError:
+        return ""
+    table = _DOCX_SYMBOL_FONTS.get((sym.get(_W + "font") or "").lower())
+    if table is not None and code >> 8 in (0, 0xF0):
+        index = (code & 0xFF) - 0x20
+        code = ord(table[index]) if 0 <= index < len(table) else 0
+    return chr(code) if 0 <= code <= 0x10FFFF and chr(code).isprintable() else ""
+
+
+_docx_xpath = threading.local()
+
+
+def _docx_run_text(run) -> str:
+    # Per thread: run.xpath() recompiles per call; lxml locks an evaluator shared across threads.
+    parts = getattr(_docx_xpath, "run_parts", None)
+    if parts is None:
+        from lxml import etree
+        parts = _docx_xpath.run_parts = etree.XPath(
+            "w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab | w:fldChar | w:sym",
+            namespaces = {"w": _W[1:-1]},
+        )
     return "".join(
-        _docx_math_text(node) if node.tag in _DOCX_MATH else node.text
-        for node in p.iter(_W + "r", *_DOCX_MATH)
-        if not _docx_inside(node, p, _DOCX_SKIP_RUNS_OR_MATH)
+        _docx_checkbox(e)
+        if e.tag == _W + "fldChar"
+        else _docx_symbol(e)
+        if e.tag == _W + "sym"
+        else str(e)
+        for e in parts(run)
     )
 
 
+_DOCX_LEADING_SPACE = re.compile(r"\s")
+
+
+def _docx_superscripts(p) -> list:
+    find = getattr(_docx_xpath, "superscripts", None)
+    if find is None:
+        from lxml import etree
+        find = _docx_xpath.superscripts = etree.XPath(
+            ".//w:r[w:rPr/w:vertAlign/@w:val = 'superscript']"
+            "[not(w:footnoteReference | w:endnoteReference)]",
+            namespaces = {"w": _W[1:-1]},
+        )
+    return find(p)
+
+
+def _docx_paragraph_text(paragraph) -> str:
+    """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag, and equations."""
+    p = paragraph._p
+    nodes = (
+        node
+        for node in p.iter(_W + "r", *_DOCX_MATH)
+        if not _docx_inside(node, p, _DOCX_SKIP_RUNS_OR_MATH)
+    )
+    superscripts = _docx_superscripts(p)
+    if not superscripts:
+        return "".join(
+            _docx_math_text(node) if node.tag in _DOCX_MATH else _docx_run_text(node)
+            for node in nodes
+        )
+    from ..inference._html_to_md import _raise_superscript
+
+    superscripts = set(superscripts)
+    parts: list[str] = []
+    raised = None
+
+    def raise_from(start: int) -> None:
+        # Word whitespace is content, not layout: a group opening with a space, tab or break is no exponent
+        if not _DOCX_LEADING_SPACE.match("".join(parts[start:])):
+            _raise_superscript(parts, start)
+
+    for node in nodes:
+        text = _docx_math_text(node) if node.tag in _DOCX_MATH else _docx_run_text(node)
+        if not text:
+            continue
+        superscript = node in superscripts
+        if raised is not None and not superscript:
+            raise_from(raised)
+            raised = None
+        elif raised is None and superscript:
+            raised = len(parts)
+        parts.append(text)
+    if raised is not None:
+        raise_from(raised)
+    return "".join(parts)
+
+
+def _docx_int(value) -> int:
+    try:
+        return max(-(10**18), min(int(value or 0), 10**18))
+    except ValueError:
+        return 0
+
+
+def _docx_number_lists(document) -> None:
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.oxml import OxmlElement, parse_xml
+
+    def related(reltype):
+        part = next(
+            (
+                r.target_part
+                for r in document.part.rels.values()
+                if r.reltype == reltype and not r.is_external
+            ),
+            None,
+        )
+        if part is None:
+            return None
+        return part.element if hasattr(part, "element") else parse_xml(part.blob)
+
+    def val(node, name):
+        child = None if node is None else node.find(_W + name)
+        return None if child is None else child.get(_W + "val") or None
+
+    def first_by_level(nodes):
+        by_level = {}
+        for node in nodes:
+            by_level.setdefault(node.get(_W + "ilvl"), node)
+        return by_level
+
+    numbering = related(RT.NUMBERING)
+    if numbering is None:
+        return
+    styles = related(RT.STYLES)
+    style_by_id = {
+        style.get(_W + "styleId"): style
+        for style in (() if styles is None else styles.iterchildren(_W + "style"))
+    }
+    default_style = next(
+        (
+            style_id
+            for style_id, style in style_by_id.items()
+            if style.get(_W + "type") == "paragraph"
+            and style.get(_W + "default") in ("1", "true", "on")
+        ),
+        None,
+    )
+    abstracts = {a.get(_W + "abstractNumId"): a for a in numbering.iterchildren(_W + "abstractNum")}
+    nums = {n.get(_W + "numId"): n for n in numbering.iterchildren(_W + "num")}
+
+    style_nums = {}
+
+    # numId and ilvl inherit through basedOn independently, like any other paragraph property.
+    def style_num(
+        style_id,
+        name,
+        depth = 0,
+    ):
+        if depth == 0 and (style_id, name) in style_nums:
+            return style_nums[style_id, name]
+        style = style_by_id.get(style_id)
+        if style is None or depth > 20:
+            value = None
+        else:
+            value = val(style.find(f"{_W}pPr/{_W}numPr"), name)
+            if value is None:
+                value = style_num(val(style, "basedOn"), name, depth + 1)
+        if depth == 0:
+            style_nums[style_id, name] = value
+        return value
+
+    def linked(abstract_id, depth = 0):
+        num_id = style_num(val(abstracts.get(abstract_id), "numStyleLink"), "numId")
+        target = val(nums.get(num_id), "abstractNumId")
+        if target in (None, abstract_id) or depth > 5:
+            return abstract_id
+        return linked(target, depth + 1)
+
+    instances = {}
+
+    def instance(num_id):
+        if num_id in instances:
+            return instances[num_id]
+        num = nums.get(num_id)
+        abstract_id = linked(val(num, "abstractNumId"))
+        abstract = abstracts.get(abstract_id)
+        instances[num_id] = None
+        if num is None or abstract is None:
+            return None
+        overrides = first_by_level(num.iterchildren(_W + "lvlOverride"))
+        defined = first_by_level(abstract.iterchildren(_W + "lvl"))
+        levels = []
+        for index in range(9):
+            override = overrides.get(str(index))
+            lvl = None if override is None else override.find(_W + "lvl")
+            lvl = defined.get(str(index)) if lvl is None else lvl
+            legal = lvl is not None and any(
+                node.get(_W + "val", "true") not in ("0", "false", "off")
+                for node in lvl.iterchildren(_W + "isLgl")
+            )
+            start = _docx_int(val(override, "startOverride") or val(lvl, "start"))
+            fmt, restart, text = (val(lvl, key) for key in ("numFmt", "lvlRestart", "lvlText"))
+            levels.append((lvl, start, fmt, restart, legal, text or ""))
+        restarts = [
+            int(at)
+            for at, node in overrides.items()
+            if at in tuple("012345678") and node.find(_W + "startOverride") is not None
+        ]
+        by_style = {}
+        for index, (lvl, *_) in enumerate(levels):
+            by_style.setdefault(val(lvl, "pStyle"), index)
+        instances[num_id] = (abstract_id, levels, restarts, by_style)
+        return instances[num_id]
+
+    w15 = "{http://schemas.microsoft.com/office/word/2012/wordml}"
+    restart_after_break = {
+        linked(abstract_id)
+        for abstract_id, abstract in abstracts.items()
+        if abstract.get(w15 + "restartNumberingAfterBreak") in ("1", "true", "on")
+    }
+    counters: dict[str, list] = {}
+    started: set[str] = set()
+    restartable: set[str] = set()
+
+    def label(p_pr):
+        mark = None if p_pr is None else p_pr.find(_W + "rPr")
+        if mark is not None and (
+            mark.find(_W + "del") is not None or mark.find(_W + "moveFrom") is not None
+        ):
+            return None
+        direct = None if p_pr is None else p_pr.find(_W + "numPr")
+        style = style_id = val(p_pr, "pStyle") or default_style
+        num_id = val(direct, "numId") or style_num(style, "numId")
+        found = None if num_id is None else instance(num_id)
+        if found is None:
+            return None
+        abstract_id, levels, restarts, by_style = found
+        # A heading style's numPr often names only the list, not the level.
+        linked_level = None
+        for _ in range(21):
+            if style is None or linked_level is not None:
+                break
+            linked_level = by_style.get(style)
+            style = val(style_by_id.get(style), "basedOn")
+        ilvl = val(direct, "ilvl") or style_num(style_id, "ilvl") or linked_level
+        ilvl = min(8, max(0, _docx_int(ilvl)))
+        lvl, _, fmt, _, legal, text = levels[ilvl]
+        if lvl is None:
+            return None
+        # Word shares counters across instances of one abstract; a startOverride restarts them once.
+        counts = counters.setdefault(abstract_id, [None] * 9)
+        if abstract_id in restart_after_break:
+            restartable.add(abstract_id)
+        if num_id not in started:
+            started.add(num_id)
+            for at in restarts:
+                counts[at:] = [None] * (9 - at)
+        for i in range(ilvl):
+            if counts[i] is None:
+                counts[i] = levels[i][1]
+        counts[ilvl] = levels[ilvl][1] if counts[ilvl] is None else counts[ilvl] + 1
+        for i in range(ilvl + 1, 9):
+            restart = levels[i][3]
+            if restart is None or ilvl < _docx_int(restart):
+                counts[i] = None
+        if fmt == "bullet" or len(text) > 256:
+            return None
+        value = ""
+        for index, piece in enumerate(re.split("%([1-9])", text)):
+            if index % 2 == 0:
+                value += piece
+            else:
+                _, start, piece_fmt, *_ = levels[int(piece) - 1]
+                if legal and piece_fmt != "none" and not (piece_fmt or "").startswith("decimal"):
+                    piece_fmt = "decimal"
+                count = counts[int(piece) - 1]
+                value += _list_number(start if count is None else count, piece_fmt)
+            if len(value) > 256:
+                return None
+        return value if value.strip() else None
+
+    body = document.element.body
+    hidden = _DOCX_SKIP_RUNS_UNDER - {_W + "txbxContent"}
+    labels = []
+    budget = 1 << 20
+    for p in body.iter(_W + "p"):
+        if _docx_inside(p, body, hidden):
+            # Word still counts a numbered paragraph that only holds placeholder text.
+            if not any(node.tag in hidden for node in p.iterancestors()):
+                label(p.find(_W + "pPr"))
+            continue
+        p_pr = p.find(_W + "pPr")
+        value = label(p_pr)
+        if value is not None:
+            labels.append((p, p_pr, value))
+            budget -= len(value)
+            if budget < 0:
+                return
+        if p_pr is not None and restartable and p_pr.find(_W + "sectPr") is not None:
+            for abstract_id in restartable:
+                counters.pop(abstract_id, None)
+            restartable.clear()
+    for p, p_pr, value in labels:
+        text = OxmlElement("w:t")
+        text.text = f"{value} "
+        run = OxmlElement("w:r")
+        run.append(text)
+        if p_pr is None:
+            p.insert(0, run)
+        else:
+            p_pr.addnext(run)
+
+
+# Word allows 63 columns; a declared span past this is never real layout, only a memory bomb.
+_DOCX_GRID_MAX = 1000
+_DOCX_GRID_TAGS = (_W + "gridSpan", _W + "gridBefore", _W + "gridAfter")
+
+
+def _docx_row_grid_elements(tr):
+    """This row's own gridBefore / gridAfter / gridSpan, not those of rows in nested tables."""
+    for child in tr:
+        if child.tag == _W + "trPr":
+            yield from (el for el in child if el.tag in _DOCX_GRID_TAGS)
+        elif child.tag == _W + "tc":
+            for tc_pr in child:
+                if tc_pr.tag == _W + "tcPr":
+                    yield from (el for el in tc_pr if el.tag in _DOCX_GRID_TAGS)
+
+
+def _docx_clamp_grid(tbl) -> None:
+    """Clamp declared grid widths in place, so a few bytes of XML cannot expand into a giant row."""
+    # iter() still reaches nested tables' rows, but each row only spends its own declarations.
+    for tr in tbl.iter(_W + "tr"):
+        budget = _DOCX_GRID_MAX
+        for el in _docx_row_grid_elements(tr):
+            try:
+                value = int(el.get(_W + "val"))
+            except (TypeError, ValueError):
+                continue
+            floor = 1 if el.tag == _W + "gridSpan" else 0
+            clamped = min(value, max(budget, floor))
+            if clamped != value:
+                el.set(_W + "val", str(clamped))
+            budget = max(0, budget - max(clamped, 0))
+
+
 def _docx_table_rows(table) -> list[str]:
-    """Each row as pipe-joined cell text (the locator splits anchors on pipes).
-    Columns stay aligned to the layout grid (merged cells fill their spanned slots,
-    skipped leading/trailing grid columns become empty fields). Cells are walked in
-    document order so a nested table, and any text after it, flattens in place."""
+    """Cells joined by pipes, aligned to the layout grid; the locator splits anchors on pipes."""
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
+    _docx_clamp_grid(table._tbl)
     rows: list[str] = []
     seen: set = set()
     for row in table.rows:
         cells: list[str] = [""] * getattr(row, "grid_cols_before", 0)
         trailing: list[str] = []
         for cell in row.cells:
-            # A merged cell shares one <w:tc> across its span: emit its text once, then placeholders, so columns
-            # and rows stay aligned.
+            # Merged cells share one <w:tc>: emit text once, then placeholders to keep alignment.
             if cell._tc in seen:
                 cells.append("")
                 continue
             seen.add(cell._tc)
-            # Paragraph text before the first nested table is the aligned field; the nested table and anything
-            # after it flatten below the row.
+            # Text before a nested table is the aligned field; the table and anything after it flatten below.
             field: list[str] = []
             after_table = False
             for item in _docx_blocks(cell._tc, cell):
@@ -881,6 +1713,10 @@ def _docx(path: str) -> list[Page]:
     document = _open_word(path)
     lines: list[str] = []
     _docx_unwrap_table_controls(document.element.body)
+    try:
+        _docx_number_lists(document)
+    except Exception as exc:
+        logger.warning("Could not number lists in %s: %s", os.path.basename(path), exc)
     label_notes = _docx_mark_notes(document)
     # Walk body content in document order: paragraphs alone drop tables entirely.
     for block in _docx_blocks(document.element.body, document):
@@ -902,6 +1738,30 @@ def _roman(n: int) -> str:
         count, n = divmod(n, value)
         out += digits * count
     return out
+
+
+def _list_number(n: int, fmt: str | None) -> str:
+    fmt = fmt or ""
+    if fmt == "none":
+        return ""
+    if fmt == "ordinal" and n >= 1:
+        suffix = "th" if 11 <= n % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+        return f"{n}{suffix}"
+    lower = fmt.startswith("lower")
+    limit = 3999 if fmt.endswith("Roman") else 26 * 256 if fmt.endswith("Letter") else n
+    if not (lower or fmt.startswith("upper")) or not 1 <= n <= limit:
+        return f"0{n}" if fmt == "decimalZero" and 0 <= n < 10 else str(n)
+    if fmt.endswith("Roman"):
+        text = _roman(n)
+    elif fmt.endswith("Alpha"):
+        # CSS lower-alpha is bijective (z, aa, ab); Word's lowerLetter repeats (z, aa, bb).
+        text = ""
+        while n > 0:
+            n, rest = divmod(n - 1, 26)
+            text = chr(97 + rest) + text
+    else:
+        text = chr(97 + (n - 1) % 26) * ((n + 25) // 26)
+    return text if lower else text.upper()
 
 
 def _docx_mark_notes(document):
@@ -989,6 +1849,7 @@ def _docx_mark_notes(document):
 _HIGH_BYTES = bytes(range(0x80, 0x100))
 _ASCII_LETTERS = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 _HIGH_RUN = re.compile(rb"[\x80-\xff]+")
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0e-\x1f\x7f-\x9f]")
 
 
 def _declared_charset(data: bytes) -> str | None:
@@ -1008,6 +1869,27 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
     ):
         if data.startswith(bom):
             return data.decode(codec, errors = "replace")
+    # No BOM: NULs dominating one side of the byte pairs mean ASCII-heavy UTF-16.
+    if len(data) >= 8:
+        pairs = even_nulls = odd_nulls = 0
+        for i in range(0, min(len(data), 1024) - 1, 2):
+            if data[i : i + 2] == b"\0\0":
+                break
+            pairs += 1
+            if data[i] == 0:
+                even_nulls += 1
+            elif data[i + 1] == 0:
+                odd_nulls += 1
+        codec = None
+        if even_nulls >= 4 and odd_nulls * 10 <= even_nulls and 2 * even_nulls > pairs:
+            codec = "utf-16-be"
+        elif odd_nulls >= 4 and even_nulls * 10 <= odd_nulls and 2 * odd_nulls > pairs:
+            codec = "utf-16-le"
+        if codec is not None:
+            decoded = data.decode(codec, errors = "replace")
+            # Real text has no C0/C1 controls; NUL-shaped binaries fall through to the binary guard.
+            if _CONTROL_CHARS.search(decoded) is None:
+                return decoded
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
@@ -1047,9 +1929,7 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
         match = results.best()
         if match is not None:
             guess = str(match)
-            # A tie is ambiguous ("ÜÖÄ" is also Cyrillic); a single-byte page decodes anything, so it needs
-            # language evidence and high-byte words, not lone accents ("À É È"); a CJK guess that paired
-            # no bytes is half-width katakana ("° ± µ").
+            # Ties are ambiguous; need high-byte words, not lone accents; unpaired CJK bytes mean katakana.
             tied = any(
                 other is not match
                 and (other.chaos, other.coherence) == (match.chaos, match.coherence)
@@ -1094,8 +1974,7 @@ def parse(path: str, *, want_images: bool = False):
         is_html = ext in (".html", ".htm")
         with open(path, "rb") as f:
             raw = _decode_text(f.read(), html = is_html)
-        # NUL never occurs in source text; a binary under a source extension (Fortran .mod, binary .plist) would
-        # otherwise embed as mojibake.
+        # NUL never appears in source text; catches binaries under source extensions.
         if ext in config.SOURCE_TEXT_EXTS and "\x00" in raw:
             raise ValueError(f"unsupported binary content in text file: {os.path.basename(path)}")
         # Universal newlines, as text-mode open() gave: the chunker splits on "\n\n".

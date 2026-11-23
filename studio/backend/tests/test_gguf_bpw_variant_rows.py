@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A base quant published at several bit widths is several variants.
-
-``byteshape/Llama-3.1-8B-Instruct-GGUF`` ships 18 GGUFs at four base quants, telling
-them apart with a bits-per-weight modifier the loader's label has always kept and the
-hub's dropped (``Llama-3.1-8B-Instruct-IQ3_S-2.54bpw.gguf`` through ``-3.31bpw``).
-Every file sits in the repo root, so there is no directory to qualify the key by, and
-keying on the bare token folded 18 checkpoints into 4 rows: 14 of them unselectable,
-each row advertising one file's size while the download plan fetched a different one.
-
-The modifier therefore belongs to the key. Repos without one must key exactly as
-before, and a genuinely split GGUF must still collapse its shards into one row, so
-both are pinned here alongside.
-"""
+"""The bpw modifier must be part of the key, so same-quant files at different widths stay separate."""
 
 from __future__ import annotations
 
@@ -39,14 +27,13 @@ from utils.models.model_config import (
     _gguf_variant_key,
 )
 
-# Live listing of byteshape/Llama-3.1-8B-Instruct-GGUF, one base quant's worth.
+# Live listing of byteshape/Llama-3.1-8B-Instruct-GGUF, one base quant.
 BPW_FILES = [
     ("Llama-3.1-8B-Instruct-IQ4_XS-3.57bpw.gguf", 3_587_540_000),
     ("Llama-3.1-8B-Instruct-IQ4_XS-3.94bpw.gguf", 3_958_211_616),
     ("Llama-3.1-8B-Instruct-IQ4_XS-4.05bpw.gguf", 4_069_393_440),
 ]
 
-# One bpw variant, split across shards, which must stay one row.
 BPW_SHARDED_FILES = [
     ("IQ4_XS-3.57bpw/model-IQ4_XS-3.57bpw-00001-of-00002.gguf", 40),
     ("IQ4_XS-3.57bpw/model-IQ4_XS-3.57bpw-00002-of-00002.gguf", 25),
@@ -69,28 +56,17 @@ def _materialize(root, files):
     return root
 
 
-# --------------------------------------------------------------------------------------
-# The key itself
-# --------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "path,expected",
     [
-        # The modifier trailing the quant token is part of the token.
         ("Llama-3.1-8B-Instruct-IQ3_S-2.54bpw.gguf", "IQ3_S-2.54bpw"),
         ("Llama-3.1-8B-Instruct-IQ3_S-3.31bpw.gguf", "IQ3_S-3.31bpw"),
         ("Qwen-Image-2512-Q6_K-6.61bpw.gguf", "Q6_K-6.61bpw"),
-        # Integer widths and an uppercase spelling both occur on the Hub.
         ("Step-3.5-Flash-IQ3_S-3BPW.gguf", "IQ3_S-3BPW"),
-        # Shard suffix is stripped first, so every shard keys alike.
         ("model-IQ4_XS-3.57bpw-00001-of-00002.gguf", "IQ4_XS-3.57bpw"),
-        # The modifier can live on the directory instead, when the basename has no quant.
         ("IQ4_XS-3.53bpw/model.gguf", "IQ4_XS-3.53bpw"),
-        # A modifier that does not trail the token is not part of it: it belongs to
-        # something else in the name and cannot be relied on to identify the file.
+        # A non-trailing modifier belongs to something else and is not part of the key.
         ("flux1-dev-Q8_0-fp32-08.577bpw.gguf", "Q8_0"),
-        # No modifier at all: the historical key, unchanged.
         ("Wan2.2-TI2V-5B-Q8_0.gguf", "Q8_0"),
         ("BF16/DeepSeek-R1-BF16-00001-of-00003.gguf", "BF16"),
     ],
@@ -100,8 +76,7 @@ def test_bpw_variant_key(path, expected):
 
 
 def test_key_is_unchanged_where_there_is_no_modifier():
-    """The persisted variant identity must not churn for the repos that have no bpw
-    modifier, which is all but a handful on the whole Hub."""
+    """Persisted variant identity must not churn for repos that carry no bpw modifier."""
     for path in (
         "Wan2.2-TI2V-5B-Q4_K_M.gguf",
         "Qwen3-8B-UD-Q8_K_XL.gguf",
@@ -114,9 +89,7 @@ def test_key_is_unchanged_where_there_is_no_modifier():
 
 
 def test_a_bare_bpw_name_is_not_truncated_at_its_decimal_point():
-    """Folder names and stored variant strings arrive without a ``.gguf`` extension, and
-    cutting at the last dot would leave ``IQ4_XS-3``, silently dropping the modifier and
-    keying the folder as the bare quant again."""
+    """Stored names lack the .gguf suffix, so cutting at the last dot leaves IQ4_XS-3 and drops the bpw."""
     assert quant_token_with_bpw("IQ4_XS-3.53bpw") == "IQ4_XS-3.53bpw"
     assert quant_token_with_bpw("Llama-3.1-8B-Instruct-IQ4_XS-3.57bpw") == "IQ4_XS-3.57bpw"
     assert quant_token_with_bpw("Q6_K") == "Q6_K"
@@ -154,7 +127,6 @@ def test_loader_mirror_agrees_on_bpw_labels():
         "Reflection-70b-PreciseQuant-6bpw.gguf",
         "Wan2.2-TI2V-5B-Q8_0.gguf",
         "distilled/ltx-2.3-22b-distilled-Q6_K.gguf",
-        # Bare names, as a <quant>/ folder and a stored variant string arrive.
         "IQ4_XS-3.53bpw",
         "Llama-3.1-8B-Instruct-IQ4_XS-3.57bpw",
         "Q6_K",
@@ -162,11 +134,6 @@ def test_loader_mirror_agrees_on_bpw_labels():
     assert [_gguf_variant_key(p) for p in corpus] == [gguf_variant_key(p) for p in corpus]
     for path, _ in BPW_FILES:
         assert _extract_quant_label(path) == gguf_variant_key(path)
-
-
-# --------------------------------------------------------------------------------------
-# Rows
-# --------------------------------------------------------------------------------------
 
 
 def test_each_bit_width_gets_its_own_row_at_its_own_size():
@@ -203,11 +170,6 @@ def test_a_bpw_row_reads_as_its_own_quant_and_needs_no_scope_suffix():
     ]
     _apply_gguf_display_labels(variants)
     assert {v.display_label for v in variants} == {None}
-
-
-# --------------------------------------------------------------------------------------
-# The row must be downloadable, loadable and complete-able under its own key
-# --------------------------------------------------------------------------------------
 
 
 def test_every_row_key_matches_exactly_its_own_file():
@@ -277,7 +239,6 @@ def test_empty_folder_cleanup_takes_only_the_variants_own_folder(tmp_path):
     class _Repo:
         repo_path = str(tmp_path / "repo")
 
-    # Both spellings of this variant's own folder go, as they do for a bare quant.
     removed, failures = _remove_empty_variant_dirs([_Repo()], "IQ4_XS-3.57bpw")
     assert (removed, failures) == (2, [])
     assert not (snapshot / "IQ4_XS-3.57bpw").exists()
@@ -287,8 +248,7 @@ def test_empty_folder_cleanup_takes_only_the_variants_own_folder(tmp_path):
 
 
 def test_empty_folder_cleanup_still_takes_a_bare_quant_folder(tmp_path):
-    """The unqualified path is unchanged: a plain ``Q6_K`` variant still clears
-    ``Q6_K/`` and the ``<model>-Q6_K/`` spelling of the same quant."""
+    """A bare Q6_K variant must still clear the Q6_K/ folder and the <model>-Q6_K/ spelling."""
     from hub.services.models.deletion import _remove_empty_variant_dirs
 
     snapshot = tmp_path / "repo" / "snapshots" / "rev"

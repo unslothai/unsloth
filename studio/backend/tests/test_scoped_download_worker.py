@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The scoped download worker must never report success without the files.
-
-``snapshot_download`` returns an existing snapshot folder -- having fetched nothing -- when
-its own ``repo_info`` call fails, and with HF metadata unavailable no manifest is written,
-so the usual verification is a no-op. A repo already on disk from a full snapshot job (which
-ignores ``*.gguf``) would otherwise flip a scoped job to complete with no weights, and the
-Images page auto-loads as soon as the job completes.
-"""
+"""A scoped job must not complete with no weights when snapshot_download returns an existing folder."""
 
 from __future__ import annotations
 
@@ -27,11 +20,12 @@ from hub.workers import hf_download
 
 
 FILES = ["model_index.json", "transformer/diffusion_pytorch_model.safetensors"]
+REPO = "black-forest-labs/FLUX.1-dev"
+COMMIT = "c" * 40
 
 
-@pytest.fixture()
-def offline(monkeypatch, tmp_path):
-    """A worker whose metadata lookups all fail, pointed at a snapshot dir we control."""
+def _offline_worker(monkeypatch, tmp_path):
+    """Metadata lookups all fail and the Hub cache is a tmp dir."""
     monkeypatch.setattr(
         hf_download,
         "_model_info_with_retry",
@@ -44,8 +38,22 @@ def offline(monkeypatch, tmp_path):
 
     monkeypatch.setattr(registry_mod, "prepare_cache_for_transport", lambda *a, **k: 0)
 
-    snapshot = tmp_path / "snapshot"
-    snapshot.mkdir()
+    from huggingface_hub import constants
+
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path / "hub"))
+    from hub.utils.snapshot_reuse import repo_cache_dir
+
+    return repo_cache_dir("model", REPO)
+
+
+@pytest.fixture()
+def offline(monkeypatch, tmp_path):
+    """An earlier download left refs/main and its snapshot: offline, the worker pins that commit (#16422)."""
+    repo_dir = _offline_worker(monkeypatch, tmp_path)
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text(COMMIT, encoding = "utf-8")
+    snapshot = repo_dir / "snapshots" / COMMIT
+    snapshot.mkdir(parents = True)
 
     import huggingface_hub
 
@@ -54,13 +62,24 @@ def offline(monkeypatch, tmp_path):
 
 
 def _run(scope = "diffusion"):
-    hf_download._download_scoped_snapshot(
-        "black-forest-labs/FLUX.1-dev", scope, list(FILES), None, "http"
-    )
+    hf_download._download_scoped_snapshot(REPO, scope, list(FILES), None, "http")
+
+
+def test_offline_with_no_cached_revision_refuses_before_downloading(monkeypatch, tmp_path):
+    """No metadata and no refs/main: there is no immutable revision to pin, so nothing is fetched."""
+    _offline_worker(monkeypatch, tmp_path)
+    calls = []
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda **k: calls.append(k))
+    with pytest.raises(OSError, match = "immutable revision"):
+        _run()
+    assert calls == []
 
 
 def test_offline_scoped_download_fails_when_the_files_are_not_on_disk(offline, capsys):
-    (offline / "model_index.json").write_text("{}", encoding = "utf-8")  # the cheap file only
+    (offline / "model_index.json").write_text("{}", encoding = "utf-8")
 
     with pytest.raises(SystemExit) as exit_info:
         _run()
@@ -76,7 +95,7 @@ def test_offline_scoped_download_passes_when_every_file_is_present(offline):
         path.parent.mkdir(parents = True, exist_ok = True)
         path.write_text("weights", encoding = "utf-8")
 
-    _run()  # no SystemExit: everything the job asked for is on disk
+    _run()
 
 
 def test_a_dangling_symlink_does_not_count_as_present(offline, capsys):

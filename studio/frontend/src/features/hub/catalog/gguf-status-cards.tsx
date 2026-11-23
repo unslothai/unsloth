@@ -78,11 +78,7 @@ export function GgufDownloadStatusCard({
   );
 }
 
-/**
- * Shown when a download is in flight but the variant list isn't loaded. Keeps the
- * live job as source of truth so progress + cancel survive a remount instead of
- * being replaced by the variant-status card.
- */
+/** Keeps the live job as source of truth so progress and cancel survive a remount. */
 export function GgufDownloadingFallbackCard({
   job,
   progress,

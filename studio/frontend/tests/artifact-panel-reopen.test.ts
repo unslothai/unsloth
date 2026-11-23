@@ -25,11 +25,11 @@ test("a card opens its page in a browser tab keyed by the artifact, so reopening
   assert.match(card, /key: artifact\.id,/);
 });
 
-test("a panel dragged shut closes the browser, not left at no width", () => {
+test("a panel dragged shut closes the browser (or floats it while the model works in it), not left at no width", () => {
   const page = read("../src/features/chat/chat-page.tsx");
   const remember = page.indexOf("const rememberArtifactPanelWidth");
   assert.ok(remember > 0);
-  const closeAt = page.indexOf("closeBrowser();", remember);
+  const closeAt = page.indexOf("closeOrFloatBrowser();", remember);
   const widthAt = page.indexOf("artifactPanelWidthRef.current = `", remember);
   assert.ok(closeAt > 0 && closeAt < widthAt, "a shut panel still records a width");
 });
@@ -87,6 +87,37 @@ test("a project has no side pane, so a browser opened from it shows over it, not
   assert.match(page, /\(view\.mode === "project" &&\s*projectBrowserBaseline !== null &&\s*browserOpenSequence > projectBrowserBaseline\)/);
 });
 
+test("a project hosts the browser like a chat, so Browser use and the header toggle work (#15046)", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const landing = page.slice(page.indexOf("function ProjectLanding"));
+  assert.match(page, /function useBrowserChatHost\(active: boolean, overlay = false\): void \{/);
+  assert.match(page, /Project landing never mounts SingleContent/);
+  assert.match(landing, /useBrowserChatHost\(active, true\);/);
+  assert.match(page, /useBrowserChatHost\(chatActive\);/);
+  assert.match(
+    page,
+    /\(view\.mode === "single" \|\| view\.mode === "project"\) && !isMobile \? \(\s*<BrowserToggleButton\s*active=\{active\}\s*hideWhenOpen=\{view\.mode === "single" \|\| showBrowserOverlay\}/,
+  );
+  const toggle = read("../src/features/browser/browser-toggle.tsx");
+  assert.match(toggle, /hideWhenOpen = true,/);
+  assert.match(toggle, /if \(hideWhenOpen && open\) return null;/);
+  assert.match(toggle, /\{ enabled: active && !\(hideWhenOpen && panelOpen\) \}/);
+});
+
+test("a project's modal overlay closes before Request edits or Attach hand off to its composer", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const host = page.slice(page.indexOf("function useBrowserChatHost"), page.indexOf("// Compare keeps the base view"));
+  assert.match(host, /stageFixPrompt\(prompt\);\s*if \(overlay\) useBrowserStore\.getState\(\)\.closePanel\(\);/);
+  assert.match(host, /sendAnnotations: overlay \? null : /);
+  assert.match(host, /if \(overlay\) \{\s*useBrowserStore\.getState\(\)\.closePanel\(\);[^}]*window\.setTimeout\(focusComposer, 0\);/);
+  assert.match(host, /\[active, overlay, isMobile, aui\]/);
+});
+
+test("a browser-use question re-opens the panel even when it is already open, so a project overlay shows it", () => {
+  const executor = read("../src/features/browser/agent/executor.ts");
+  assert.match(executor, /if \(tabId\) store\.revealIn\(context\.session\.chat, tabId\);\s*(\/\/[^\n]*\n\s*)?if \(chatOnScreen\(context\)\) store\.openPanel\(\);/);
+});
+
 test("opening the browser closes Research, which would otherwise hide it in the side pane", () => {
   const page = read("../src/features/chat/chat-page.tsx");
   assert.match(page, /if \(handledBrowserOpenRef\.current === browserOpenSequence\) return;/);
@@ -105,6 +136,7 @@ test("Request edits stays in overlays, staging the prompt for the visible compos
 test("a project's browser overlay stages Request edits in the project composer", () => {
   const page = read("../src/features/chat/chat-page.tsx");
   const landing = page.slice(page.indexOf("function ProjectLanding"));
+  assert.match(landing, /useBrowserChatHost\(active, true\);/);
   assert.match(landing, /useStagedFixPrompt\(\s*useChatArtifactsStore\(\(state\) => state\.pendingFixPrompt\),\s*active,\s*\);/);
   assert.match(page, /useStagedFixPrompt\(pendingFixPrompt, chatActive\);/);
 });

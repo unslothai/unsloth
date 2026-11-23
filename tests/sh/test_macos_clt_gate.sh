@@ -1,25 +1,13 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# Guards the macOS system-dependency gate in install.sh.
-#
-# History: the gate was inline top-level code running
-#   xcode-select -p || { xcode-select --install; exit 1; }
-# so a brand-new Mac could not install at all, and being inline rather than a function
-# it was out of reach of the tests/sh sed-extraction convention that would have caught
-# it.
-#
-# The contract now: a consumer install must SUCCEED with no Xcode Command Line Tools
-# (uv, CPython, llama.cpp/whisper.cpp/Node are all prebuilt, triton is skipped on
-# macOS), while `--local` must still fail loudly: unsloth-zoo comes from a git+https
-# URL.
+# A consumer install must succeed with no Xcode Command Line Tools, while `--local` must still
+# fail loudly: unsloth-zoo comes from a git+https URL.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-# ── Extract the functions under test ──
 _FN_FILE=$(mktemp)
 sed -n '/^_has_working_git()/,/^}/p'   "$INSTALL_SH" >  "$_FN_FILE"
 sed -n '/^_check_macos_deps()/,/^}/p'  "$INSTALL_SH" >> "$_FN_FILE"
@@ -30,7 +18,6 @@ if ! grep -q '_check_macos_deps()' "$_FN_FILE"; then
     exit 1
 fi
 
-# Minimal harness: the output helpers install.sh would otherwise provide.
 _HARNESS=$(mktemp)
 cat > "$_HARNESS" <<'HARNESS'
 C_WARN=''; C_ERR=''; C_OK=''; C_DIM=''; C_RST=''
@@ -41,12 +28,10 @@ HARNESS
 
 _BIN=$(mktemp -d)
 
-# Each tool is absent, a working stub, or a broken stub mimicking the Xcode CLT shim
-# (exists, exits non-zero).
+# Each tool is absent, a working stub, or a broken stub like the CLT shim (exists, exits non-zero).
 _mk() { printf '#!/bin/sh\n%s\n' "$2" > "$_BIN/$1"; chmod +x "$_BIN/$1"; }
 
-# PATH is the sandbox and ONLY the sandbox, so unstocked tools are genuinely absent and
-# the host's /usr/bin/git cannot leak in. bash must therefore be invoked absolutely.
+# PATH is ONLY the sandbox so host /usr/bin/git cannot leak in; bash is invoked absolutely.
 _SH="${BASH:-/bin/bash}"
 
 _run_gate() {
@@ -63,8 +48,7 @@ assert_contains "says CLT are not required"          "$_out" "not required"
 assert_not_contains "never claims CLT are required"  "$_out" "are required"
 
 echo "=== clean Mac: CLT stubs present but non-functional (the real virgin-Mac shape) ==="
-# With no CLT, /usr/bin/git EXISTS and fails when run, so `command -v git` succeeds.
-# The gate must not be fooled by that.
+# With no CLT, /usr/bin/git exists and fails when run, so `command -v git` succeeds.
 rm -f "$_BIN"/*
 _mk xcode-select 'exit 1'
 _mk git 'echo "xcrun: error: invalid active developer path" >&2; exit 1'
@@ -105,7 +89,7 @@ assert_contains "uses prebuilt llama.cpp"            "$_out" "using prebuilt lla
 assert_contains "rc 0"                               "$_out" "RC=0"
 
 echo "=== the gate never fires the GUI installer on the consumer path ==="
-# The dialog needs a GUI session a curl-piped or Tauri-spawned install does not have.
+# The dialog needs a GUI session a piped or Tauri-spawned install lacks.
 rm -f "$_BIN"/*
 _mk xcode-select 'if [ "$1" = "--install" ]; then echo "GUI-DIALOG-FIRED"; fi; exit 1'
 _out="$(_run_gate false)"
@@ -123,9 +107,8 @@ rm -f "$_BIN"/git
 _r="$(PATH="$_BIN" "$_SH" -c ". '$_FN_FILE'; _has_working_git && echo yes || echo no")"
 assert_eq "absent git -> no" "no" "$_r"
 
-# On macOS the probe must ANSWER FROM THE PATH, never execute /usr/bin/git: running the
-# CLT shim is what raises the "install the command line developer tools" GUI dialog. The
-# git stub here records execution, so an empty marker file is the proof it stayed unrun.
+# On macOS the probe must never execute /usr/bin/git: the CLT shim raises a GUI dialog.
+# The stub records execution, so an empty marker file proves it stayed unrun.
 echo "=== macOS: the CLT git shim is never executed ==="
 rm -f "$_BIN"/*
 _RAN="$(mktemp -u)"
@@ -141,9 +124,7 @@ else
     assert_eq "shim git was NOT executed (no GUI dialog)" "not-executed" "not-executed"
 fi
 
-# Intel hosted runners can have a real working /usr/bin/git even with no selected CLT.
-# MAC_INTEL is established from hardware detection before this helper runs, so probe
-# the same path on real Intel while still refusing it on Apple Silicon.
+# Intel runners can have a real /usr/bin/git without CLT selected, so real Intel probes it.
 rm -f "$_RAN"
 _mk git "echo ran >> '$_RAN'; exit 0"
 _r="$(PATH="$_BIN" OS=macos MAC_INTEL=true _CLT_GIT_SHIM="$_BIN/git" "$_SH" -c \
@@ -155,9 +136,7 @@ else
     assert_eq "Intel system git WAS executed" "executed" "not-executed"
 fi
 
-# An x86_64 shell under Rosetta also sets MAC_INTEL, but the machine is Apple Silicon and
-# /usr/bin/git is still its dialog shim, so the Intel exception above must not apply: the
-# hardware answer (_MAC_ROSETTA) wins over the shell's reported architecture.
+# Under Rosetta MAC_INTEL is set but /usr/bin/git is still the shim: _MAC_ROSETTA wins.
 rm -f "$_RAN"
 _mk git "echo ran >> '$_RAN'; exit 1"
 _r="$(PATH="$_BIN" OS=macos MAC_INTEL=true _MAC_ROSETTA=true _CLT_GIT_SHIM="$_BIN/git" "$_SH" -c \
@@ -169,14 +148,11 @@ else
     assert_eq "Rosetta shim git was NOT executed (no GUI dialog)" "not-executed" "not-executed"
 fi
 
-# The architecture block is what sets _MAC_ROSETTA, so pin it here too: a rename or a
-# dropped assignment would leave the guard above reading an unset variable and silently
-# fall back to executing the shim.
+# Pin the _MAC_ROSETTA assignment: a rename would silently fall back to executing the shim.
 assert_contains "install.sh sets _MAC_ROSETTA when sysctl reports arm64 hardware" \
     "$(sed -n '/^MAC_INTEL=false$/,/^fi$/p' "$INSTALL_SH")" "_MAC_ROSETTA=true"
 
-# A real git elsewhere on PATH (Homebrew) must still be probed by executing it, so a Mac
-# with a working git but no CLT selected keeps working exactly as before.
+# A real git elsewhere on PATH (Homebrew) is still probed by executing it.
 rm -f "$_RAN"
 _mk git "echo ran >> '$_RAN'; exit 1"
 _r="$(PATH="$_BIN" OS=macos _CLT_GIT_SHIM=/usr/bin/git "$_SH" -c \

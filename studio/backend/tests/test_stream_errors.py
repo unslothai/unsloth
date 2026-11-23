@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A mid-stream llama-server error must reach the user with its cause intact.
-
-The two failures these cover were both observed live against a model loaded at a 2048
-token context:
-
-- Two chats generating at once starved the shared unified KV cache. llama.cpp killed both
-  tasks with "Context size has been exceeded". The chat loop ignored the error chunk (it
-  carries no ``choices``) and the reply ended mid-code with no finish_reason, so no
-  continue bar rendered and auto-continue never fired.
-- Deep Research sent a 2358 token request into that 2048 token window. The server said so
-  precisely, naming both counts, and ``research_runs`` replaced it with "Local model
-  stream failed".
-"""
+"""A mid-stream llama-server error must reach the user with its cause intact."""
 
 import pytest
 
@@ -44,8 +32,7 @@ class TestErrorMessageFromChunk:
         assert error_message_from_chunk({"error": "boom"}) == "boom"
 
     def test_an_unrecognised_error_shape_is_still_an_error(self):
-        # Empty string, not None: the caller must still fail the stream. Returning None
-        # here would restore the silent truncation this module exists to remove.
+        # Empty string, not None: None would restore silent truncation.
         assert error_message_from_chunk({"error": {"code": 500}}) == ""
 
 
@@ -77,8 +64,7 @@ class TestDescribeStreamError:
     def test_starvation_explains_concurrency_rather_than_repeating_the_server(self):
         described = describe_stream_error("Context size has been exceeded.")
         assert described == KV_STARVATION_MESSAGE
-        # The server's own wording sends the user off to shorten a conversation that was
-        # never too long, so it must not be what they read.
+        # Server's wording urges shortening a conversation never too long; it must not be shown.
         assert "Context size has been exceeded" not in described
         assert "at the same time" in described
 
@@ -101,23 +87,12 @@ class TestDescribeStreamError:
         assert described == "Deep Research: tokenizer failed"
 
     def test_no_outcome_is_the_old_fixed_string(self):
-        # The regression guard: whatever the input, the user must never be handed a
-        # message that discards the cause.
         for text in ("Context size has been exceeded.", "tokenizer failed", ""):
             assert "Local model stream failed" not in describe_stream_error(text)
 
 
 class TestSurvivesTheRouteLayer:
-    """Raising the right message is not enough: `routes/inference.py` rewrites it.
-
-    Both defects here were live. `_friendly_error` ends with a catch-all that
-    replaced any unrecognised exception with "An internal error occurred", so the
-    cause survived the stream loop and then died one layer up. And
-    `_classify_llama_generation_error` flags an overflow by finding "context" beside
-    "window", which the starvation text says while explaining that the window is
-    SHARED, so it was labelled `context_length_exceeded` and set the client
-    compacting a conversation that was never too long.
-    """
+    """The route's catch-all hid the cause, and context beside window misread starvation as overflow."""
 
     @staticmethod
     def _routes():
@@ -134,9 +109,7 @@ class TestSurvivesTheRouteLayer:
         assert "An internal error occurred" not in described
 
     def test_starvation_is_not_classified_as_a_context_overflow(self):
-        # True would set the client compacting. False would emit a 400 and tell the
-        # client its own request was at fault, discouraging the retry that is the right
-        # response to server capacity exhaustion. None keeps it a 500.
+        # None keeps it a 500: True would compact, False would blame the client's request.
         routes = self._routes()
         assert (
             routes._classify_llama_generation_error(self._error("Context size has been exceeded."))
@@ -155,7 +128,6 @@ class TestSurvivesTheRouteLayer:
         described = routes._friendly_error(error)
         assert described.startswith("Message too long: 2358 tokens")
         assert "2048-token context window" in described
-        # An overflow genuinely is one, so the client should compact here.
         assert routes._classify_llama_generation_error(error) is True
 
     def test_a_pre_generation_context_refusal_is_a_client_error_not_a_server_failure(self):
@@ -308,16 +280,13 @@ class TestSurvivesTheRouteLayer:
             self._error("request (2358 tokens) exceeds the available context size (2048 tokens)")
         )
         assert "2358" in oversize and "Context Length in Model settings" in oversize
-        # A plain exception still reads from str().
         assert _safe_error(RuntimeError("plain")) == "plain"
 
     def test_str_of_the_error_stays_the_server_text(self):
-        # What lets the existing token-count regex in _friendly_error still match.
         error = self._error("request (10 tokens) exceeds the available context size (5 tokens)")
         assert str(error).startswith("request (10 tokens)")
 
     def test_the_typed_error_is_a_runtimeerror(self):
-        # Callers that already catch RuntimeError around the stream keep working.
         assert isinstance(self._error("boom"), RuntimeError)
         assert isinstance(self._error("boom"), LlamaStreamError)
 
@@ -326,14 +295,7 @@ class TestSurvivesTheRouteLayer:
 
 
 class TestTheNonStreamingPathAlsoReportsTheCause:
-    """`stream=false` routes the same exception through `safe_error_detail`.
-
-    That helper exists to stop raw `str(error)` leaking paths, so it returns a fixed
-    fallback for anything it does not recognise. A curated `friendly` is written to be
-    shown, so it is exempt: without that, streaming clients got the cause and
-    non-streaming clients got "An internal error occurred", which is the same defect
-    this PR fixes, one layer further out.
-    """
+    """Non-streaming errors keep curated messages; safe_error_detail's fixed fallback hides the cause."""
 
     def _error(self, message):
         return stream_error_from_chunk({"error": {"message": message}})
@@ -364,20 +326,7 @@ class TestTheNonStreamingPathAlsoReportsTheCause:
 
 
 class TestTheStarvationTextDoesNotReadAsAContextLimitOnTheClient:
-    """The chat client re-classifies by substring, so the wording is load bearing.
-
-    `studio/frontend/src/features/chat/api/chat-adapter.ts::isContextLimitError` decides
-    which toast a failed generation gets from the error message alone: the backend's
-    `code` never reaches it, because `chat-api.ts` turns an in-band error chunk into
-    `new Error(parsed.error.message)` and throws only the text. Any of the substrings
-    below wins the "Context limit reached" toast, whose advice is "The conversation has
-    filled the model's context window ... or start a new chat".
-
-    That is the wrong remedy for starvation, and it is the exact claim this message was
-    written to deny: nothing about the conversation was too long, so starting a new chat
-    fails identically while the other generation is still running. Asserted here rather
-    than in the frontend because the message lives here and the wording is what breaks.
-    """
+    """The chat client's isContextLimitError matches substrings, so starvation text must avoid them."""
 
     # Mirrors isContextLimitError. Keep in step with chat-adapter.ts.
     CLIENT_CONTEXT_LIMIT_MARKERS = (
@@ -403,3 +352,101 @@ class TestTheStarvationTextDoesNotReadAsAContextLimitOnTheClient:
         raw = "Context size has been exceeded."
         assert any(m in raw.lower() for m in self.CLIENT_CONTEXT_LIMIT_MARKERS)
         assert describe_stream_error(raw) == KV_STARVATION_MESSAGE
+
+
+class TestARefusalBeforeTheReplyStartsKeepsItsCause:
+    REFUSAL = RuntimeError(
+        'llama-server returned 400: {"error":{"code":400,"message":"Cannot have 2 or more '
+        'assistant messages at the end of the list.","type":"invalid_request_error"}}'
+    )
+
+    @staticmethod
+    def _routes():
+        import routes.inference as routes_inference
+        return routes_inference
+
+    def test_the_server_message_reaches_the_client(self):
+        routes = self._routes()
+        expected = (
+            "llama-server error: Cannot have 2 or more assistant messages at the end of the list."
+        )
+        assert routes._friendly_error(self.REFUSAL) == expected
+        chunk = routes._openai_stream_error_chunk(self.REFUSAL)
+        assert chunk["error"]["message"] == expected
+        assert chunk["error"]["type"] == "invalid_request_error"
+
+    def test_a_server_failure_stays_generic(self):
+        routes = self._routes()
+        failure = RuntimeError(
+            'llama-server returned 500: {"error":{"code":500,"message":"/srv/secret crashed"}}'
+        )
+        assert routes._friendly_error(failure) == "An internal error occurred"
+
+
+class TestAnImageTheServerCouldNotProcessNamesTheCause:
+    """An image the server cannot fit or encode yields a bare "failed to process mtmd chunk"."""
+
+    MTMD = "failed to process mtmd chunk"
+    MTMD_NO_KV = "failed to process mtmd chunk: Context size has been exceeded."
+    CLIENT_CONTEXT_LIMIT_MARKERS = (
+        TestTheStarvationTextDoesNotReadAsAContextLimitOnTheClient.CLIENT_CONTEXT_LIMIT_MARKERS
+    )
+
+    @staticmethod
+    def _routes():
+        import routes.inference as routes_inference
+        return routes_inference
+
+    @staticmethod
+    def _http_500(message):
+        return RuntimeError(
+            'llama-server returned 500: {"error":{"code":500,"message":"%s","type":"server_error"}}'
+            % message
+        )
+
+    def test_the_media_failure_is_recognised(self):
+        from core.inference.stream_errors import is_media_failure
+
+        assert is_media_failure(self.MTMD)
+        assert is_media_failure("Failed to load image or audio file")
+        assert not is_media_failure("tokenizer failed")
+        assert not is_media_failure(None)
+
+    def test_mid_stream_it_names_the_image_and_keeps_the_server_text(self):
+        routes = self._routes()
+        described = routes._friendly_error(
+            stream_error_from_chunk({"error": {"message": self.MTMD}})
+        )
+        assert "attached image" in described
+        assert self.MTMD in described
+
+    def test_before_the_first_token_it_is_no_longer_an_internal_error(self):
+        routes = self._routes()
+        described = routes._friendly_error(self._http_500(self.MTMD))
+        assert described != "An internal error occurred"
+        assert "attached image" in described
+        chunk = routes._openai_stream_error_chunk(self._http_500(self.MTMD))
+        assert chunk["error"]["message"] == described
+
+    def test_a_full_kv_cache_on_an_image_reads_as_starvation(self):
+        routes = self._routes()
+        assert routes._friendly_error(self._http_500(self.MTMD_NO_KV)) == KV_STARVATION_MESSAGE
+        mid = stream_error_from_chunk({"error": {"message": self.MTMD_NO_KV}})
+        assert mid.kv_starvation
+        assert routes._friendly_error(mid) == KV_STARVATION_MESSAGE
+        # Starvation is retried by the client, not compacted.
+        assert routes._classify_llama_generation_error(mid) is None
+        assert routes._classify_llama_generation_error(self._http_500(self.MTMD_NO_KV)) is None
+
+    def test_the_media_message_does_not_read_as_a_context_limit_on_the_client(self):
+        lowered = describe_stream_error(self.MTMD).lower()
+        assert [m for m in self.CLIENT_CONTEXT_LIMIT_MARKERS if m in lowered] == []
+
+    def test_other_server_failures_stay_redacted(self):
+        routes = self._routes()
+        assert routes._friendly_error(self._http_500("/srv/secret crashed")) == (
+            "An internal error occurred"
+        )
+        assert routes._friendly_error(RuntimeError("llama-server returned 500: not json")) == (
+            "An internal error occurred"
+        )

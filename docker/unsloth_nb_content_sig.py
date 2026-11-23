@@ -187,9 +187,7 @@ def _normalize_install(text):
         body = " ".join(line.split())
         if not body:
             continue
-        # Keep the INDENTATION: the cell is an `if "COLAB_" not in ...:` block, so a
-        # line's indent decides which runtime it runs on. Only the spacing WITHIN a
-        # line churns, and tabs expand so a tab/space rewrite stays cosmetic.
+        # Keep the indentation: it decides which runtime branch a line is in.
         indent = line[: len(line) - len(line.lstrip())]
         lines.append(" " * len(indent.expandtabs(4)) + body)
     return "\n".join(lines)

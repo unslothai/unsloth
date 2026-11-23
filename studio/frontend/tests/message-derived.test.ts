@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  compactionDividerRows,
   compactionNoticeMessageIds,
   memoOnArray,
   memoOnArrayByKey,
@@ -194,6 +195,47 @@ test("compaction notice ids match the per-message walk", () => {
   assert.equal(ids.has("missing"), false);
   assert.equal(compactionNoticeMessageIds(messages), ids);
   assert.notEqual(compactionNoticeMessageIds([...messages]), ids);
+});
+
+test("each compaction draws one divider, above the prompt whose request compacted", () => {
+  const compacted = (boundary: number) => ({
+    custom: {
+      contextTruncation: {
+        dropped_messages: boundary,
+        boundary_messages: boundary,
+        fits: true,
+      },
+    },
+  });
+  const messages = [
+    // A reply with no prompt above it draws the divider above itself.
+    { id: "a0", role: "assistant", metadata: compacted(1) },
+    { id: "u1", role: "user" },
+    { id: "a1", role: "assistant", metadata: compacted(2) },
+    { id: "u2", role: "user" },
+    // A replayed boundary is not a new compaction: no divider.
+    { id: "a2", role: "assistant", metadata: compacted(2) },
+    { id: "u3", role: "user" },
+    { id: "a3", role: "assistant" },
+    // A reply that follows another reply (a continuation round) marks itself.
+    { id: "a4", role: "assistant", metadata: compacted(5) },
+  ];
+  const rows = compactionDividerRows(messages);
+  assert.deepEqual([...rows.keys()], ["a0", "u1", "a4"]);
+  assert.equal(
+    rows.get("u1"),
+    (messages[2].metadata as { custom: { contextTruncation: unknown } }).custom
+      .contextTruncation,
+  );
+  // One divider per compaction, so the meter's count is the number of dividers on screen.
+  assert.equal(compactionNoticeMessageIds(messages).size, rows.size);
+  assert.equal(compactionDividerRows(messages), rows);
+  // A thread that never compacted shares one empty result rather than building one per token.
+  const plain = [
+    { id: "u", role: "user" },
+    { id: "a", role: "assistant" },
+  ];
+  assert.equal(compactionDividerRows(plain), compactionDividerRows([...plain]));
 });
 
 test("memoOnArrayByKey caches per array and per key", () => {

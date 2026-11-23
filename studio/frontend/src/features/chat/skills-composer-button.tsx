@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Scroll01Icon } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { Scroll01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDownIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -24,8 +24,19 @@ import {
   useSkillsCatalog,
 } from "./api/skills-api";
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
+import { skillsSwitchedOn, useSkillsSwitchStore } from "./stores/skills-switch-store";
 
-/** Composer pill for the enabled skills, shown once any is on. Toggles them in place. */
+export function useSkillsSwitch(): [boolean, (on: boolean) => void] {
+  const { skills } = useSkillsCatalog();
+  const on = useSkillsSwitchStore((s) => s.on);
+  const setOn = useSkillsSwitchStore((s) => s.setOn);
+  const enabledCount = skills.filter(
+    (skill) => skill.valid && !skill.shadowed && skill.enabled,
+  ).length;
+  return [skillsSwitchedOn(on, enabledCount), setOn];
+}
+
+/** Composer pill for skills, shown while the Skills switch is on. Toggles them in place. */
 export function SkillsComposerButton({
   side = "bottom",
 }: {
@@ -36,8 +47,8 @@ export function SkillsComposerButton({
   const [menuOpen, setMenuOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
+  const [skillsOn, setSkillsOn] = useSkillsSwitch();
 
-  // Runnable skills only: shadowed or invalid ones stay in Manage skills.
   const usable = skills.filter((skill) => skill.valid && !skill.shadowed);
   const enabledCount = usable.filter((skill) => skill.enabled).length;
 
@@ -61,8 +72,8 @@ export function SkillsComposerButton({
 
   return (
     <>
-      {/* Stays while open, so turning off the last skill does not close it. */}
-      {enabledCount > 0 || menuOpen ? (
+      {/* Stays with every skill unticked: only its X or the + menu turns Skills off. */}
+      {skillsOn || menuOpen ? (
         <DropdownMenu
           open={menuOpen}
           onOpenChange={(open) => {
@@ -78,15 +89,36 @@ export function SkillsComposerButton({
               data-active={enabledCount > 0 ? "true" : "false"}
               aria-label={t("skills.title")}
             >
-              <span className="composer-pill-glyph">
+              {/* Outside compact mode, the hover X turns Skills off without opening the menu. */}
+              <span
+                role="button"
+                aria-label={t("skills.turnOff")}
+                tabIndex={-1}
+                onPointerDown={(e) => {
+                  if (e.currentTarget.closest('[data-pill-compact="true"]')) {
+                    return;
+                  }
+                  e.stopPropagation();
+                }}
+                onClick={(e) => {
+                  if (e.currentTarget.closest('[data-pill-compact="true"]')) {
+                    return;
+                  }
+                  e.stopPropagation();
+                  setSkillsOn(false);
+                }}
+                className="composer-pill-glyph cursor-pointer"
+              >
                 <HugeiconsIcon
                   icon={Scroll01Icon}
                   className="size-[calc(15px*var(--ui-space-scale,1))]"
                   strokeWidth={2}
                 />
+                <HugeiconsIcon icon={Cancel01Icon} className="composer-pill-x" />
               </span>
               <span>{t("skills.title")}</span>
-              <ChevronDownIcon
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
                 strokeWidth={1.5}
                 className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]"
               />
@@ -105,7 +137,6 @@ export function SkillsComposerButton({
                 <DropdownMenuItem
                   key={`${skill.source}:${skill.name}`}
                   disabled={pending.has(skill.name)}
-                  // Stays open to toggle several.
                   onSelect={(event) => {
                     event.preventDefault();
                     void toggle(skill.name, !skill.enabled);

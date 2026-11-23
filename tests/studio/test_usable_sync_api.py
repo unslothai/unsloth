@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""`usable_sync_api` tells the real `playwright.sync_api` from what else answers to that name.
-
-A browser test that skips on `importorskip` alone errors in the CPU job once another test has
-put a stub in `sys.modules`, and whether that has happened depends on collection order.
-"""
+"""Tells the real playwright.sync_api from a stub in sys.modules, which importorskip alone cannot."""
 
 from __future__ import annotations
 
@@ -20,9 +16,8 @@ from _playwright_robust import usable_sync_api  # noqa: E402
 
 
 def _sync_api_stub() -> types.ModuleType:
-    """The shape test_heavy_thread_measurement_integrity.py installs: every name answers with a
-    callable that raises, dunders do not. Rebuilt here rather than imported, since importing
-    that module installs its stub and loads its harness as a side effect."""
+    """Rebuilds the stub test_heavy_thread_measurement_integrity.py installs, where non-dunder names
+    are raising callables; importing that module has side effects."""
     module = types.ModuleType("playwright.sync_api")
 
     def __getattr__(name):

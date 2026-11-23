@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Run a first-frame render by swapping the loaded pipeline's class to its image-to-video class.
-
-Not ``from_pipe``: it casts every shared module to float32 (undoing fp32-VAE / bf16-DiT, GGUF,
-torchao, offload hooks) and builds a second object lacking what Studio set on the loaded one.
-"""
+"""First-frame render swaps the loaded pipeline's class in place; from_pipe would recast to float32."""
 
 from __future__ import annotations
 
@@ -46,19 +42,21 @@ def i2v_pipeline_available(name: Optional[str]) -> bool:
         import diffusers
     except Exception:  # noqa: BLE001
         return False
-    key = (id(diffusers), name)
-    cached = _AVAILABLE.get(key)
-    if cached is None:
-        try:
-            resolve_i2v_pipeline_class(name)
-            cached = True
-        except Exception:  # noqa: BLE001 -- an absent or unimportable class is simply unavailable
-            cached = False
-        _AVAILABLE[key] = cached
-    return cached
+    # Keyed by name, checked by module identity: a collected module's id() can be reused by a new
+    # one.
+    entry = _AVAILABLE.get(name)
+    if entry is not None and entry[0] is diffusers:
+        return entry[1]
+    try:
+        resolve_i2v_pipeline_class(name)
+        available = True
+    except Exception:  # noqa: BLE001 -- an absent or unimportable class is simply unavailable
+        available = False
+    _AVAILABLE[name] = (diffusers, available)
+    return available
 
 
-_AVAILABLE: dict[tuple[int, str], bool] = {}
+_AVAILABLE: dict[str, tuple[Any, bool]] = {}
 
 
 def _init_kwargs(pipe: Any, cls: type, config_overrides: dict[str, Any]) -> dict[str, Any]:
@@ -121,7 +119,7 @@ def first_frame_pipeline(
             _restore(pipe, saved)
             raise
         try:
-            with _offload_vae_after_encode(pipe):
+            with offload_vae_after_encode(pipe):
                 yield pipe
         finally:
             pipe.__class__ = original_cls
@@ -130,7 +128,7 @@ def first_frame_pipeline(
 
 
 @contextlib.contextmanager
-def _offload_vae_after_encode(pipe: Any) -> Iterator[None]:
+def offload_vae_after_encode(pipe: Any) -> Iterator[None]:
     """Model offload chains vae after the transformer (the t2v order), so the first-frame encode would leave the VAE
     resident through denoising; send it back once the encode returns."""
     vae = getattr(pipe, "vae", None)

@@ -1,10 +1,8 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Behavioural test for the NVIDIA driver-library inventory in install.ps1 and studio/setup.ps1:
-# the torch family and compute capability come from NVML / the CUDA driver API when nvidia-smi
-# cannot answer, an unknown driver version no longer means cu126, and a prebuilt update that
-# fails keeps a working GPU prebuilt instead of building for the CPU (#9255).
+# NVIDIA driver-library inventory in install.ps1 and studio/setup.ps1: NVML answers when
+# nvidia-smi cannot, and a failed prebuilt update keeps a working GPU build.
 # Run: pwsh -NoProfile -File tests/studio/test_nvidia_library_inventory.ps1
 
 $ErrorActionPreference = "Stop"
@@ -31,7 +29,6 @@ function Get-HelperSources($path, $names) {
     return $out
 }
 
-# Printer stubs, so the file does not depend on the ANSI helpers.
 function substep { param([string]$Message, [string]$Color = "DarkGray") $script:Substeps += $Message }
 function step { param([string]$Component, [string]$Message, [string]$Color = "") $script:Steps += $Message }
 function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
@@ -42,7 +39,6 @@ function Test-CudaFamilyLeaf { param([string]$Leaf) return ($Leaf -match '^cu\d+
 $script:FakeIntelAdapters = @()
 function Get-IntelRegistryAdapterNames { return $script:FakeIntelAdapters }
 
-# nvidia-smi stand-in: $script:FakeSmiStdout answers every probe, $script:FakeSmiRc is its exit code.
 # $script:FakeSmiTimeouts calls time out first (exit 124); every bound asked for is recorded.
 $script:FakeSmiTimeouts = 0
 $script:FakeSmiBounds = @()
@@ -79,7 +75,7 @@ if ($probeAt -ge 0) {
     if ($bodyEnd -gt $bodyStart) { $probeBody = $viaPythonBlock.Substring($bodyStart, $bodyEnd - $bodyStart) }
 }
 Check "the embedded probe was found" ($probeBody.Length -gt 200)
-# install.ps1 nests its helpers one level deeper; compare the two copies without indentation.
+# install.ps1 nests its helpers one level deeper; compare without indentation.
 $strip = { param($text) ($text -split "`n" | ForEach-Object { $_.TrimStart() }) -join "`n" }
 for ($k = 0; $k -lt $blockNames.Count; $k++) {
     Check "install.ps1 and setup.ps1 carry the same $($blockNames[$k])" ((& $strip $installParts[$k]) -eq (& $strip $setupParts[$k]))
@@ -115,7 +111,7 @@ Check "a failed driver-version read is not an inventory" (
     $probeBody -match 'nvmlSystemGetCudaDriverVersion_v2\(ctypes\.byref\(packed\)\) != 0' -and
     $probeBody -match 'cuDriverGetVersion\(ctypes\.byref\(packed\)\) != 0')
 
-# The real libraries, in a child so the fake type below can own this session.
+# In a child so the fake type below can own this session.
 $helperFile = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-inventory-" + [System.IO.Path]::GetRandomFileName() + ".ps1")
 $pythonStub = 'function Get-NvidiaProbePythonExe { $c = Get-Command python3 -ErrorAction SilentlyContinue; if (-not $c) { $c = Get-Command python -ErrorAction SilentlyContinue }; if ($c) { return $c.Source } return "" }'
 $helperBody = (@($pythonStub) + $setupParts) -join "`n"
@@ -135,7 +131,6 @@ if ("$realJson" -ne "null" -and "$realJson" -match '^\{') {
     Write-Host "  (no NVIDIA driver library on this host; the real-inventory checks are skipped)"
 }
 
-# The parser, over a stand-in for the library reader.
 Invoke-Expression $setupBlock
 $script:FakeRaw = ""
 function Read-NvidiaLibraryRaw { param([int]$TimeoutMs = 10000) return $script:FakeRaw }
@@ -191,7 +186,6 @@ $detect = $installText.IndexOf("Detect GPU (robust", $sharedEnd)
 Check "install.ps1 resets the cache before each invocation's detection" (
     $installText.Substring($sharedEnd, $detect - $sharedEnd) -match 'NvidiaLibraryInventoryProbed = \$false')
 
-# From here on the inventory is a stub the cases control.
 function Get-NvidiaLibraryInventory { param([int]$TimeoutSec = 10) return $script:FakeInventory }
 
 Write-Host ""
@@ -228,8 +222,7 @@ $script:FakeInventory = $null
 Check "nothing answering means unknown, not cu126" ((Get-PytorchCudaTag) -eq "")
 Check "an unknown capability stays null" ($null -eq (Get-CudaComputeCapability))
 
-# Detection rejected nvidia-smi (absent or unusable) and the library answered: the consumers
-# do not rediscover it, so a wedged or stale banner never overrides the inventory.
+# The consumers do not rediscover nvidia-smi, so a stale banner never overrides the inventory.
 $script:NvidiaSmiRejected = $true
 $script:FakeSmiStdout = "Driver Version: 560.00  CUDA Version: 12.6"; $script:FakeSmiRc = 0
 $script:FakeInventory = @{ Source = "nvml"; CudaMajor = 13; CudaMinor = 1; ComputeCaps = @("8.9"); Count = 1 }
@@ -243,7 +236,6 @@ Check "a 429 reads as a rate limit" ((Get-LlamaUpdateFailReason "HTTP Error 429:
 Check "a DNS failure reads as a network error" ((Get-LlamaUpdateFailReason "temporary failure in name resolution") -eq "network error")
 Check "anything else is a download failure" ((Get-LlamaUpdateFailReason "sha256 mismatch") -eq "download failed")
 
-# The keep guard: marker backend, GPU presence, this run's requests, and the installed tree running.
 $install = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-keep-" + [System.IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $install -Force | Out-Null
 Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"backend": "cuda", "release_tag": "v1"}'
@@ -293,7 +285,7 @@ Check "a Vulkan prebuilt with no GPU at all is not kept" ((Get-GpuPrebuiltToKeep
 $script:NvidiaDriverLibraryOnly = $true
 Check "a Vulkan prebuilt is kept for an NVIDIA GPU only the driver library found" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "vulkan")
 $script:NvidiaDriverLibraryOnly = $false
-# Read on every keep, so each run resets it: Set-StrictMode, and a rerun in the same session.
+# Each run resets it: Set-StrictMode, and a rerun in the same session.
 Check "setup.ps1 resets the driver-library-only flag with the other per-run state" (
     (Get-Content -LiteralPath $setupPs1 -Raw) -match '(?m)^\$script:NvidiaSmiRejected = \$false\r?\n\$script:NvidiaDriverLibraryOnly = \$false')
 $script:FakeIntelAdapters = @("Intel(R) UHD Graphics 770")
@@ -301,7 +293,6 @@ Check "a Vulkan prebuilt is kept for an Intel adapter that is not an XPU part" (
 $script:FakeIntelAdapters = @()
 Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"backend": "cpu"}'
 Check "a CPU prebuilt has nothing to keep" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
-# Markers from before the backend field, read as setup.sh reads them.
 $HasNvidiaSmi = $true
 $HasNvidiaDriverEvidence = $true
 Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"llama_backend": "cuda"}'
@@ -339,7 +330,6 @@ $script:FakeInventory = $null
 $script:Substeps = @()
 Check "an unreadable banner with no inventory keeps the cu126 default" ((Get-TorchIndexUrl) -eq "https://download.pytorch.org/whl/cu126")
 Check "the cu126 default names the override" (@($script:Substeps | Where-Object { $_ -match 'UNSLOTH_TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128' }).Count -eq 1)
-# A congested driver: nvidia-smi times out once, and the longer retry reads the banner.
 $script:FakeSmiStdout = "| CUDA Version: 13.1 |"
 $script:FakeSmiTimeouts = 1
 $script:FakeSmiBounds = @()
@@ -349,7 +339,7 @@ $script:FakeSmiTimeouts = 0
 $script:FakeSmiStdout = "| CUDA Version: 12.6 |"
 Check "a readable banner is still authoritative" ((Get-TorchIndexUrl) -eq "https://download.pytorch.org/whl/cu126")
 
-# The promotion runs as written in each file: a driver below CUDA 11 must not claim the host from Intel/AMD.
+# A driver below CUDA 11 must not claim the host from Intel/AMD.
 function Get-PromotionBlock([string]$Text) {
     $at = $Text.IndexOf('if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {')
     $ast = [System.Management.Automation.Language.Parser]::ParseInput($Text.Substring($at), [ref]$null, [ref]$null)
@@ -371,7 +361,7 @@ foreach ($file in @($installPs1, $setupPs1)) {
     }
 }
 
-# The update's kind guard runs before the keeper and deleted the bundle the keeper would have kept.
+# The update's kind guard must not delete the bundle the keeper would keep.
 $setupText = Get-Content -LiteralPath $setupPs1 -Raw
 $from = $setupText.IndexOf('$_nvidiaKinds = if (Test-WinArm64Venv) {')
 $to = $setupText.IndexOf('if ($existingKind -and ($existingKind -notin $expectedKinds))', $from)

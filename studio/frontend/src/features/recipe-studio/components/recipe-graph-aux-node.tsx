@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -132,7 +134,7 @@ function AuxNodeBase({
     const hasInvalidRefs =
       findInvalidJinjaReferences(value, availableRefs).length > 0;
     return (
-      <BaseNode className="corner-squircle w-full min-w-0 rounded-4xl border-border/60 bg-card shadow-sm">
+      <BaseNode className="corner-squircle w-full min-w-0 rounded-xl border-border/60 bg-card shadow-sm">
         <BaseNodeHeader className="border-b border-border/50 px-3 py-2">
           <BaseNodeHeaderTitle className="text-xs">{data.title}</BaseNodeHeaderTitle>
         </BaseNodeHeader>
@@ -195,7 +197,7 @@ function AuxNodeBase({
   };
 
   return (
-    <BaseNode className="corner-squircle w-full min-w-0 rounded-4xl border-border/60 bg-card shadow-sm">
+    <BaseNode className="corner-squircle w-full min-w-0 rounded-xl border-border/60 bg-card shadow-sm">
       <BaseNodeHeader className="border-b border-border/50 px-3 py-2">
         <BaseNodeHeaderTitle className="text-xs">
           {score.name.trim() || `Scorer ${data.scoreIndex + 1}`}
@@ -269,6 +271,7 @@ function AuxNodeBase({
             disabled={executionLocked}
             onClick={addOption}
           >
+            <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
             Add option
           </Button>
         </div>

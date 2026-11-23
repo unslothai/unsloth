@@ -1,11 +1,7 @@
-# Model defaults for unsloth/Qwen3-VL-8B-Instruct
-# Based on Qwen3_VL_(8B)-Vision.ipynb
 # Also applies to: Qwen/Qwen3-VL-8B-Instruct-FP8, unsloth/Qwen3-VL-8B-Instruct-FP8, unsloth/Qwen3-VL-8B-Instruct, Qwen/Qwen3-VL-8B-Instruct, unsloth/Qwen3-VL-8B-Instruct-bnb-4bit
-# added inference parameters from unsloth guides
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

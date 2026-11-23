@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Completion-only masking policy shared by the CUDA and MLX training paths.
-
-Decides how train_on_responses_only is applied for a model: explicit dataset
-markers when requested, otherwise chat template auto-detection with manual
-TEMPLATE_TO_RESPONSES_MAPPER markers as the fallback. gpt-oss included: its
-quantized checkpoints ship a different chat template, so only detection from
-the actual template is reliable.
-"""
+"""Completion-only masking for CUDA and MLX: explicit dataset markers if requested, else template
+detection with manual markers as fallback; gpt-oss must use detection, not markers"""
 
 from .iterable import is_streaming_dataset
 from .model_mappings import (
@@ -27,6 +21,43 @@ def lookup_manual_markers(model_name):
     if markers:
         return template, markers["instruction"], markers["response"]
     return template, None, None
+
+
+def count_truncated_drops(rows, kept_rows, max_length):
+    """Rows masking dropped (rows minus kept_rows) that had been truncated at max_length."""
+    from collections import Counter
+
+    kept = Counter(map(tuple, kept_rows))
+    cut = 0
+    for row in rows:
+        key = tuple(row)
+        if kept[key]:
+            kept[key] -= 1
+        elif len(row) >= max_length:
+            cut += 1
+    return cut
+
+
+def truncated_drop_cause(cut, dropped, max_length):
+    """Error text when dropped rows reached the context length, or None when none did."""
+    if not cut:
+        return None
+    # Reaching the cap suggests truncation but does not prove it, so the template advice stays as the fallback.
+    cause = (
+        f"{cut} of them reach the context length ({max_length} tokens), so truncation most likely "
+        f"cut off their response: raise the context length or shorten those rows."
+    )
+    if dropped > cut:
+        cause += (
+            f" For the other {dropped - cut}, this model's response template was not found, so "
+            f"'Train on completions' should be turned off for this dataset."
+        )
+    else:
+        cause += (
+            " If they are not that long, this model's response template was not found, so "
+            "'Train on completions' should be turned off for this dataset."
+        )
+    return cause
 
 
 def _mask_tool_responses(trainer, start_id, end_id, turn_id):
@@ -68,33 +99,7 @@ def apply_completion_masking(
     detect_fn = None,
     dataset_template = None,
 ):
-    """Apply completion-only masking with an explicit dataset template or
-    auto-detection followed by the manual model-template fallback.
-
-    Args:
-        trainer: The platform trainer (SFTTrainer or MLXTrainer).
-        model_name: Model repo id used for table lookup and the gpt-oss
-            renamed-checkpoint fallback.
-        train_fn: The platform train_on_responses_only callable.
-        num_proc: Forwarded to train_fn when not None (CUDA path only).
-        notify: Optional callback notify(level, message) with level "info" or
-            "warning" for user-visible progress and warnings.
-        detect_fn: Marker detector (tokenizer/processor) -> (instruction_part,
-            response_part). Defaults to unsloth_zoo's get_chat_template_parts,
-            which raises loudly when the template cannot be parsed. Test seam.
-        dataset_template: Explicit template-table key for already-rendered
-            dataset text. Bypasses tokenizer marker detection when provided.
-
-    Returns:
-        (trainer, applied): the possibly wrapped trainer and whether masking
-        was applied. When applied is False the trainer is unchanged and
-        training runs on full sequences.
-
-    Only marker DETECTION failures trigger the table fallback. Exceptions
-    raised while applying the masking (dataset map, tokenization) propagate
-    to the caller in both the auto and manual paths, so a real failure stops
-    the run instead of silently changing the training objective.
-    """
+    """Only marker detection failures use the table fallback; masking errors propagate so a real failure stops the run instead of silently changing the objective."""
     if notify is None:
         notify = lambda level, message: None
     kwargs = {}
@@ -151,8 +156,7 @@ def apply_completion_masking(
 
     template, instruction_part, response_part = lookup_manual_markers(model_name)
 
-    # gpt-oss goes auto-first: quantized/BF16 checkpoints ship a channel-less template, so the manual markers match
-    # nothing and zero tokens are trained.
+    # gpt-oss goes auto-first: some checkpoints ship a channel-less template, so manual markers match nothing and zero tokens train.
     if is_gpt_oss_model_name(model_name) and not (instruction_part and response_part):
         markers = TEMPLATE_TO_RESPONSES_MAPPER.get("gpt-oss")
         if markers:
@@ -170,8 +174,7 @@ def apply_completion_masking(
     auto_instruction = auto_response = None
     try:
         if detect_fn is None:
-            # Torch-backed import is fine: the MLX train_fn itself requires
-            # unsloth_zoo.dataset_utils, so a torch-free host cannot mask either way.
+            # MLX train_fn needs unsloth_zoo.dataset_utils anyway, so torch import is fine.
             from unsloth_zoo.dataset_utils import get_chat_template_parts as detect_fn
         auto_instruction, auto_response = detect_fn(processor)
     except Exception as e:

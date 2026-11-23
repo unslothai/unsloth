@@ -192,3 +192,42 @@ def test_wsl_notice_follows_its_state(wsl, expected):
 
 def test_linux_has_no_wsl_notice():
     assert studio_mod._engine_install_notice("vllm", {"host": "local"}) is None
+
+
+def test_parallelism_and_gpu_options_are_registered_on_run():
+    sig = inspect.signature(studio_mod.run)
+    assert set(sig.parameters["engine_parallelism"].default.param_decls) == {"--engine-parallelism"}
+    assert sig.parameters["engine_parallelism"].default.default == "tensor"
+    assert set(sig.parameters["gpus"].default.param_decls) == {"--gpus"}
+    assert sig.parameters["gpus"].default.default is None
+
+
+def test_engine_parallelism_and_gpus_reach_the_load_payload(monkeypatch):
+    payload = _capture_payload(
+        monkeypatch, engine = "vllm", engine_parallelism = "data", gpu_ids = [0, 2]
+    )
+    assert payload["engine_parallelism"] == "data" and payload["gpu_ids"] == [0, 2]
+
+
+def test_gpus_reach_a_gguf_load_payload(monkeypatch):
+    payload = _capture_payload(monkeypatch, gpu_ids = [1])
+    assert payload["gpu_ids"] == [1] and "engine_parallelism" not in payload
+
+
+def test_default_tensor_parallelism_is_not_sent(monkeypatch):
+    payload = _capture_payload(monkeypatch, engine = "vllm")
+    assert "engine_parallelism" not in payload and "gpu_ids" not in payload
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, None), ("", None), ("0", [0]), ("0,1, 3", [0, 1, 3]), ("2,", [2])],
+)
+def test_parse_gpu_ids(value, expected):
+    assert studio_mod._parse_gpu_ids(value) == expected
+
+
+@pytest.mark.parametrize("value", ["a", "0,0", "-1", "0;1"])
+def test_parse_gpu_ids_rejects_bad_values(value):
+    with pytest.raises(ValueError, match = "--gpus"):
+        studio_mod._parse_gpu_ids(value)

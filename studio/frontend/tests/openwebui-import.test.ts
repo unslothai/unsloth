@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Covers branch restoration, old and new tool-call formats, and damaged graphs.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -28,7 +26,6 @@ function chatRecord(chat: Record<string, unknown>, outer: Record<string, unknown
   return { id: "rec", user_id: "u", title: "t", chat, created_at: 1_700_000_000, ...outer };
 }
 
-/** One history graph with the branch `currentId` open, the shape most cases use. */
 function recordOf(
   messages: Record<string, unknown>[],
   currentId: string | null,
@@ -45,7 +42,6 @@ function historyOf(messages: Record<string, unknown>[], currentId: string | null
 
 test("detection separates an Open WebUI record from the OpenAI and ShareGPT lines we already import", () => {
   assert.equal(isOpenWebUIRecord(recordOf([], null)), true);
-  // Legacy bare chat: the record IS the chat blob.
   assert.equal(
     isOpenWebUIRecord({
       id: "c",
@@ -54,7 +50,6 @@ test("detection separates an Open WebUI record from the OpenAI and ShareGPT line
     }),
     true,
   );
-  // Plain OpenAI/ShareGPT JSONL lines must not be mistaken for one.
   assert.equal(
     isOpenWebUIRecord({ messages: [{ role: "user", content: "hi" }] }),
     false,
@@ -67,7 +62,6 @@ test("detection separates an Open WebUI record from the OpenAI and ShareGPT line
 });
 
 test("the branch the user had open is imported last, so the thread reopens where they left it", () => {
-  // one user turn, three assistant replies; currentId points at the middle one.
   const record = recordOf(
     [
       { id: "u1", parentId: null, childrenIds: ["a1", "a2", "a3"], role: "user", content: "q", timestamp: 100 },
@@ -83,7 +77,6 @@ test("the branch the user had open is imported last, so the thread reopens where
   assert.ok(conversation);
   assert.equal(conversation.messages.length, 4);
   assert.equal(text(conversation, 3), "kept");
-  // Every sibling is kept as a branch off the same user turn, not flattened away.
   const userId = conversation.messages[0].id;
   assert.deepEqual(
     conversation.messages.slice(1).map((message) => message.parentId),
@@ -93,9 +86,7 @@ test("the branch the user had open is imported last, so the thread reopens where
   const stamps = conversation.messages.map((message) => message.createdAt);
   assert.deepEqual([...stamps].sort((a, b) => a - b), stamps);
   assert.equal(new Set(stamps).size, stamps.length);
-  // The selected sibling was imported after a later sibling, so preserving
-  // traversal order moved its timestamp. Do not present that synthetic value
-  // as the original send time.
+  // Order-preserving timestamps are synthetic, so mark them estimated.
   assert.equal(conversation.messages[3].metadata?.createdAtEstimated, true);
 });
 
@@ -138,7 +129,6 @@ test("a turn that renders to nothing is dropped and its children relink to the s
   const record = recordOf(
     [
       { id: "u1", parentId: null, childrenIds: ["err"], role: "user", content: "q", timestamp: 1 },
-      // A failed turn: Open WebUI keeps the row with empty content and an error blob.
       { id: "err", parentId: "u1", childrenIds: ["u2"], role: "assistant", content: "", error: { content: "boom" }, timestamp: 2 },
       { id: "u2", parentId: "err", childrenIds: [], role: "user", content: "retry", timestamp: 3 },
     ],
@@ -173,8 +163,6 @@ test("older assistant turns keep their inlined tool call and reasoning as real p
 });
 
 test("a tool result that contains a code fence is still lifted into a tool-call part", () => {
-  // The newer details format puts the result in the block body, and a result is
-  // usually JSON, so the fence sits between the opening and closing tags.
   const content =
     "Here is what the tool said.\n" +
     '<details type="tool_calls" done="true" id="call_7" name="run_python">\n' +
@@ -195,7 +183,6 @@ test("a tool result that contains a code fence is still lifted into a tool-call 
   assert.equal(toolCall.toolName, "run_python");
   assert.ok(String(toolCall.result).includes('{"rows": 3}'));
   assert.deepEqual(after, { type: "text", text: "So there are three rows." });
-  // The markup must not survive as text alongside the part it became.
   assert.ok(!text(conversation, 0).includes("<details"));
 });
 
@@ -234,6 +221,7 @@ test("modern assistant turns rebuild their tool call from the output items, resu
             call_id: "call_9",
             output: [
               { type: "input_text", text: "sunny, 21C" },
+              { type: "input_text", text: "windy" },
               { type: "input_image", image_url: "data:image/png;base64,AAAA" },
             ],
           },
@@ -250,7 +238,7 @@ test("modern assistant turns rebuild their tool call from the output items, resu
   assert.equal(reasoning.type, "reasoning");
   assert.equal(toolCall.type, "tool-call");
   assert.deepEqual(toolCall.args, { query: "lisbon" });
-  assert.equal(toolCall.result, "sunny, 21C");
+  assert.equal(toolCall.result, "sunny, 21C\nwindy");
   assert.deepEqual(image, { type: "image", image: "data:image/png;base64,AAAA" });
   assert.deepEqual(body, { type: "text", text: "Lisbon is sunny." });
   // `content` mirrors the final output message, so it must not be appended twice.
@@ -269,7 +257,6 @@ test("an inline image survives; a document keeps its name but not the text Open 
         timestamp: 1,
         files: [
           { type: "image", url: "data:image/png;base64,IMG" },
-          // A file url is a dead Open WebUI route once exported, so the bytes are gone either way.
           { type: "image", url: "/api/v1/files/abc" },
           {
             type: "file",
@@ -348,8 +335,7 @@ test("epoch seconds on the record and milliseconds on the blob both land in the 
 });
 
 test("a tool result stored as a plain string is kept, not flattened to nothing", () => {
-  // The Responses API documents `output` as a string OR a content array, and a
-  // string is what a tool returning text produces.
+  // The Responses API allows `output` as a string or a content array.
   const record = recordOf(
     [
       {
@@ -375,7 +361,6 @@ test("a tool result stored as a plain string is kept, not flattened to nothing",
   assert.ok(toolCall);
   assert.equal(toolCall.result, '{"temp":"21C"}');
 
-  // An orphan string output, with no call to attach it to, still shows as text.
   const orphan = openWebUIRecordToConversation(
     recordOf(
       [
@@ -396,8 +381,7 @@ test("a tool result stored as a plain string is kept, not flattened to nothing",
 });
 
 test("a user turn that uploaded a file without typing survives, and keeps its descendants", () => {
-  // Open WebUI sends an empty prompt with a file attached, so real exports
-  // contain turns whose only content is the upload.
+  // Open WebUI sends an empty prompt with an upload, so upload-only turns are real.
   const record = recordOf(
     [
       {
@@ -420,10 +404,8 @@ test("a user turn that uploaded a file without typing survives, and keeps its de
   const attachments = conversation.messages[0]
     .attachments as unknown as Array<Record<string, unknown>>;
   assert.equal(attachments[0].name, "spec.pdf");
-  // The reply hangs off the upload, not off the root.
   assert.equal(conversation.messages[1].parentId, conversation.messages[0].id);
 
-  // A turn that renders nothing at all is still dropped.
   const failed = openWebUIRecordToConversation(
     chatRecord({
       history: historyOf([{ id: "u", parentId: null, role: "user", content: "", timestamp: 1 }], "u"),
@@ -434,8 +416,7 @@ test("a user turn that uploaded a file without typing survives, and keeps its de
 });
 
 test("a chat thousands of messages deep converts instead of exhausting the call stack", () => {
-  // A long-running chat is one long parent chain, and a recursive walk of it
-  // throws RangeError, which would abort the whole export mid-stream.
+  // A long chain would overflow a recursive walk and abort the export.
   const messages = Array.from({ length: 20_000 }, (_, index) => ({
     id: `m${index}`,
     parentId: index === 0 ? null : `m${index - 1}`,
@@ -468,7 +449,6 @@ test("details markup a user typed stays text rather than becoming reasoning", ()
   );
   assert.ok(conversation);
   assert.deepEqual(parts(conversation, 0), [{ type: "text", text: typed }]);
-  // The same markup written by Open WebUI's own assistant output still converts.
   assert.equal(parts(conversation, 1).some((part) => part.type === "reasoning"), true);
 });
 
@@ -527,7 +507,6 @@ test("the assistant answer survives next to a tool result no call in this turn m
         role: "assistant",
         timestamp: 1,
         content: "It is sunny in Lisbon.",
-        // The call itself was recorded on the previous turn.
         output: [{ type: "function_call_output", call_id: "call_earlier", output: "sunny, 21C" }],
       },
     ],
@@ -568,19 +547,30 @@ test("a timestamped OpenAI conversation is not mistaken for an Open WebUI chat",
     ],
   };
   assert.equal(isOpenWebUIRecord(oaiToolConversation), false);
-  // Even when the exporter gave every message an id of its own.
   assert.equal(
     isOpenWebUIRecord({
       messages: oaiToolConversation.messages.map((message, index) => ({ ...message, id: `m${index}` })),
     }),
     false,
   );
-  // Open WebUI's own fields still identify a flat legacy chat.
   assert.equal(
     isOpenWebUIRecord({
       messages: [{ role: "user", content: "hi", parentId: null, childrenIds: [], timestamp: 1 }],
     }),
     true,
+  );
+});
+
+test("a timestamped legacy function-call conversation is not mistaken for an Open WebUI chat", () => {
+  assert.equal(
+    isOpenWebUIRecord({
+      messages: [
+        { role: "user", content: "weather?", timestamp: 1 },
+        { role: "assistant", content: "", function_call: { name: "w", arguments: "{}" }, timestamp: 2 },
+        { role: "function", name: "w", content: "21C", timestamp: 3 },
+      ],
+    }),
+    false,
   );
 });
 
@@ -674,14 +664,107 @@ test("built-in Responses tools import as tool parts rather than disappearing", (
     calls.map((call) => call.toolName),
     ["web_search", "code_execution"],
   );
-  assert.deepEqual(calls[0].args, { type: "search", query: "lisbon weather" });
-  assert.deepEqual(calls[1].args, { type: "exec", commands: ["ls -la"] });
+  assert.deepEqual(calls[0].args, { type: "search", query: "lisbon weather", _server_tool: true });
+  assert.deepEqual(calls[1].args, { kind: "bash", command: "ls -la", _server_tool: true });
   assert.equal(calls[1].result, "total 0");
 });
 
+test("non-function call items keep their name, arguments and result", () => {
+  const record = recordOf(
+    [
+      {
+        id: "a",
+        parentId: null,
+        role: "assistant",
+        timestamp: 1,
+        content: "done",
+        output: [
+          {
+            type: "mcp_call",
+            id: "mcp_1",
+            name: "read_file",
+            server_label: "filesystem",
+            arguments: '{"path":"/tmp/notes.txt"}',
+            output: "file contents",
+            status: "completed",
+          },
+          {
+            type: "code_interpreter_call",
+            id: "ci_1",
+            code: "print(2 + 2)",
+            container_id: "cnt_1",
+            status: "completed",
+          },
+          { type: "message", id: "msg_1", role: "assistant", content: [{ type: "output_text", text: "done" }] },
+        ],
+      },
+    ],
+    "a",
+  );
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const calls = parts(conversation, 0).filter((part) => part.type === "tool-call");
+  assert.equal(calls[0].toolName, "filesystem__read_file");
+  assert.deepEqual(calls[0].args, { path: "/tmp/notes.txt", _server_tool: true });
+  assert.equal(calls[0].result, "file contents");
+  assert.equal(calls[1].toolName, "code_execution");
+  assert.deepEqual(calls[1].args, { command: "print(2 + 2)", _server_tool: true });
+});
+
+test("builtin calls keep inline outputs and results arrays", () => {
+  const record = recordOf(
+    [
+      {
+        id: "a",
+        parentId: null,
+        role: "assistant",
+        timestamp: 1,
+        content: "done",
+        output: [
+          {
+            type: "code_interpreter_call",
+            id: "ci_1",
+            code: "print(2 + 2)",
+            outputs: [{ type: "logs", logs: "4" }],
+            status: "completed",
+          },
+          {
+            type: "file_search_call",
+            id: "fs_1",
+            queries: ["revenue"],
+            results: [{ file_id: "f1", filename: "q3.pdf", score: 0.9, text: "rev" }],
+            status: "completed",
+          },
+          {
+            type: "local_shell_call",
+            id: "ls_1",
+            action: { type: "exec", command: ["ls", "-la"] },
+            status: "in_progress",
+          },
+          { type: "web_search_call", id: "ws_1", action: { type: "search", query: "cats" } },
+        ],
+      },
+    ],
+    "a",
+  );
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const calls = parts(conversation, 0).filter((part) => part.type === "tool-call");
+  assert.deepEqual(calls[0].result, [{ type: "logs", logs: "4" }]);
+  assert.deepEqual(calls[1].result, [
+    { file_id: "f1", filename: "q3.pdf", score: 0.9, text: "rev" },
+  ]);
+  // Client-run calls keep no status-based result and no hosted marker; hosted calls default to completed.
+  assert.equal(calls[2].result, undefined);
+  assert.equal((calls[2].args as Record<string, unknown>)._server_tool, undefined);
+  assert.equal(calls[3].result, "completed");
+  assert.equal((calls[3].args as Record<string, unknown>)._server_tool, true);
+});
+
 test("a multimodal turn keeps its text and image when detection routes it here", () => {
-  // Chat Completions records that carry a per-message id and timestamp satisfy
-  // isOpenWebUIRecord, and reading only string content dropped the whole turn.
+  // Chat Completions records with id and timestamp also match isOpenWebUIRecord.
   const record = {
     title: "vision",
     messages: [
@@ -712,8 +795,7 @@ test("a multimodal turn keeps its text and image when detection routes it here",
 });
 
 test("hex and decimal character references in details attributes are decoded", () => {
-  // Open WebUI decodes these with a full html-entities pass, so an apostrophe
-  // arrives as &#x27; as readily as &#39; and both have to survive.
+  // Open WebUI decodes with full html-entities, so &#x27; and &#39; both appear.
   const record = recordOf(
     [
       {
@@ -763,8 +845,7 @@ test("a doubly escaped ampersand survives one decoding pass as literal text", ()
 });
 
 test("an out of range timestamp is discarded rather than freezing the clock", () => {
-  // Past 2^53 `previousTs + 1` stops advancing, so every later message would
-  // land on one createdAt and the depth-first order would not survive a reload.
+  // Past 2^53 `previousTs + 1` stops advancing, breaking order.
   for (const stamp of [1e16, 1.7e18, Number.MAX_VALUE]) {
     const record = recordOf(
       [
@@ -790,7 +871,6 @@ test("an out of range timestamp is discarded rather than freezing the clock", ()
     );
   }
 
-  // A stamp inside the range is still honoured.
   const ok = recordOf(
     [{ id: "u", parentId: null, role: "user", content: "q", timestamp: 1_700_000_000 }],
     "u",
@@ -909,8 +989,7 @@ test("a tool result keeps its text under any of the three part names, and portab
   const conversation = openWebUIRecordToConversation(record, "fallback");
   assert.ok(conversation);
   const [call] = parts(conversation, 0).filter((part) => part.type === "tool-call");
-  assert.equal(call.result, "first second third");
-  // The absolute url resolves anywhere; the Open WebUI route does not.
+  assert.equal(call.result, "first\n second\n third");
   assert.deepEqual(
     parts(conversation, 0).filter((part) => part.type === "image"),
     [{ type: "image", image: "https://example.com/chart.png" }],
@@ -918,7 +997,6 @@ test("a tool result keeps its text under any of the three part names, and portab
 });
 
 test("details markup inside a fence that was never closed stays code", () => {
-  // An answer interrupted mid-block still quotes the markup, it does not use it.
   const cut =
     'Like this:\n```markdown\n<details type="reasoning" done="true">\n<summary>Thought</summary>\n> not mine\n</details>\n';
   const conversation = openWebUIRecordToConversation(
@@ -938,7 +1016,6 @@ test("a disconnected cycle does not displace the branch the user had open", () =
     [
       { id: "u", parentId: null, role: "user", content: "question", timestamp: 1 },
       { id: "a", parentId: "u", role: "assistant", content: "the answer", timestamp: 2 },
-      // A component reachable only through its own cycle.
       { id: "c1", parentId: "c2", role: "user", content: "orphaned one", timestamp: 3 },
       { id: "c2", parentId: "c1", role: "assistant", content: "orphaned two", timestamp: 4 },
     ],
@@ -953,9 +1030,7 @@ test("a disconnected cycle does not displace the branch the user had open", () =
 });
 
 test("a stray inline fence does not swallow the tool calls after it", () => {
-  // Markdown opens a block fence only at the start of a line. Treating any
-  // unclosed ``` as one made a single mid-sentence backtick run quote the rest
-  // of the message, so every tool call after it was lost as literal markup.
+  // Fences open only at line start; a mid-line ``` must not swallow the message.
   const record = recordOf(
     [
       {
@@ -1017,7 +1092,6 @@ test("reasoning survives an empty summary next to populated content", () => {
         role: "assistant",
         timestamp: 1,
         output: [
-          // Summaries off: the array is present but empty.
           { type: "reasoning", id: "rs_1", summary: [], content: [{ type: "reasoning_text", text: "weighed it up" }] },
           { type: "message", id: "msg_1", role: "assistant", content: [{ type: "output_text", text: "Done." }] },
         ],
@@ -1032,7 +1106,6 @@ test("reasoning survives an empty summary next to populated content", () => {
     parts(conversation, 0).filter((part) => part.type === "reasoning"),
     [{ type: "reasoning", text: "weighed it up" }],
   );
-  // A populated summary still wins over content.
   const both = openWebUIRecordToConversation(
     recordOf(
       [
@@ -1062,4 +1135,36 @@ test("missing send times are distinguished from real Open WebUI timestamps", () 
   assert.ok(conversation);
   assert.equal(conversation.messages[0].metadata?.createdAtEstimated, true);
   assert.notEqual(conversation.messages[1].metadata?.createdAtEstimated, true);
+});
+
+test("hosted calls replay cannot strip get no made-up result", () => {
+  const record = recordOf(
+    [
+      {
+        id: "a",
+        parentId: null,
+        role: "assistant",
+        timestamp: 1,
+        content: "done",
+        output: [
+          { type: "file_search_call", id: "fs_1", queries: ["revenue"], status: "completed" },
+          { type: "mcp_call", id: "mcp_1", name: "read_file", server_label: "fs", arguments: "{}", status: "completed" },
+          { type: "web_search_call", id: "ws_1", action: { type: "search", query: "cats" }, status: "completed" },
+        ],
+      },
+    ],
+    "a",
+  );
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const calls = parts(conversation, 0).filter((part) => part.type === "tool-call");
+  assert.deepEqual(
+    calls.map((call) => [call.toolName, call.result]),
+    [
+      ["file_search", undefined],
+      ["fs__read_file", undefined],
+      ["web_search", "completed"],
+    ],
+  );
 });

@@ -26,10 +26,13 @@ const DEFAULT_FIELDS: CachedAdditionalField[] = [
   "config",
   "createdAt",
   "downloadsAllTime",
+  // The API and SDK support gguf; the SDK's expandable-field type omits it.
+  "gguf" as CachedAdditionalField,
 ];
 
 export type CachedResult = ModelEntry & {
   safetensors?: { total?: number; parameters?: Record<string, number> };
+  gguf?: { total?: number; architecture?: string };
   tags?: string[];
   library_name?: string;
   config?: { quantization_config?: { quant_method?: string } };
@@ -71,7 +74,7 @@ function isStale(key: string): boolean {
   return !hit || Date.now() - hit.ts >= CACHE_TTL_MS;
 }
 
-// Endpoint in the key: the same repo id names a different repo on a mirror, so a repo-and-token key would serve the old host's answer for the rest of the TTL.
+// Endpoint in the key: the same repo id names a different repo on a mirror.
 function cacheKey(
   name: string,
   token: string | undefined,

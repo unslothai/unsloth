@@ -34,7 +34,6 @@ export function pageBytes(page: BrowserPage): number {
 
 type Cached = { page: BrowserPage; bytes: number };
 
-/** Loaded pages by history entry, least recently used first, within a byte budget. */
 export class PageCache<Key extends object> {
   private readonly pages = new Map<Key, Cached>();
   private total = 0;

@@ -23,7 +23,6 @@ import { readSrcAsync } from "./helpers/kit.ts";
 const ids = (rows: Array<{ id: string }>) => rows.map((row) => row.id);
 
 test("a dragged row lands on the edge the insertion line was drawn on", () => {
-  // Above the target, dragging either way.
   assert.deepEqual(insertIdAt(["a", "b", "c", "d"], "d", "b", "top"), [
     "a",
     "d",
@@ -36,7 +35,6 @@ test("a dragged row lands on the edge the insertion line was drawn on", () => {
     "c",
     "d",
   ]);
-  // And below it, which the index-derived edge could never express on its own.
   assert.deepEqual(insertIdAt(["a", "b", "c", "d"], "d", "b", "bottom"), [
     "a",
     "b",
@@ -53,8 +51,7 @@ test("a dragged row lands on the edge the insertion line was drawn on", () => {
 
 test("a drop that changes nothing leaves the order alone", () => {
   const ids = ["a", "b", "c"];
-  // Same row, rows the list no longer holds, and a landing that is where the row already was:
-  // each returns the input array itself, which is what tells the caller not to persist it.
+  // Returning the input array itself tells the caller not to persist.
   assert.equal(insertIdAt(ids, "b", "b", "top"), ids);
   assert.equal(insertIdAt(ids, "gone", "b", "top"), ids);
   assert.equal(insertIdAt(ids, "b", "gone", "top"), ids);
@@ -63,10 +60,8 @@ test("a drop that changes nothing leaves the order alone", () => {
 });
 
 test("a project chat shows in Recents only when the folders are off", () => {
-  // With folders on it would be listed twice, once in each place.
   assert.equal(showsInRecents("p1", "project"), false);
   assert.equal(showsInRecents("p1", "list"), true);
-  // A chat in no project is in Recents either way, or it has nowhere to go.
   for (const mode of ["project", "list"] as const) {
     assert.equal(showsInRecents(null, mode), true);
     assert.equal(showsInRecents(undefined, mode), true);
@@ -74,15 +69,13 @@ test("a project chat shows in Recents only when the folders are off", () => {
 });
 
 test("the drop indicator names the edge the row actually lands on", () => {
-  // Painting the cue on the wrong edge is a lie about where the drop goes, so check every pair
-  // against what insertIdAt really does with the edge the pointer picked.
   const rows = ["a", "b", "c", "d"];
   for (const dragged of rows) {
     for (const target of rows) {
       if (dragged === target) continue;
       for (const edge of ["top", "bottom"] as const) {
         const next = insertIdAt(rows, dragged, target, edge);
-        if (next === rows) continue; // The row was already on that side.
+        if (next === rows) continue;
         const landed = next.indexOf(dragged);
         const targetAt = next.indexOf(target);
         assert.equal(
@@ -95,14 +88,9 @@ test("the drop indicator names the edge the row actually lands on", () => {
   }
 });
 
-// Pinned draws each folder followed by the chats inside it, so two folder rows can be a whole
-// block apart. With only the folder rows answering, the drag reads as doing nothing: most of the
-// distance between them refuses the drop, and the near edge of the other folder is the one that
-// moves nothing. The chats answer for the folder they belong to instead.
+// Chats answer for their folder so far-apart folder rows still accept the drop.
 test("a folder dragged over another folder's chats lands against that folder", () => {
   const folderIds = ["a", "b"];
-  // Folder b holds a single chat, so that one row has to answer both ends of the block: the
-  // lower half of it puts a after b.
   assert.deepEqual(
     folderDropTarget({
       draggedId: "a",
@@ -114,7 +102,6 @@ test("a folder dragged over another folder's chats lands against that folder", (
     }),
     { edge: "bottom", next: ["b", "a"] },
   );
-  // Its upper half means above b, which is where a already is.
   assert.equal(
     folderDropTarget({
       draggedId: "a",
@@ -126,8 +113,6 @@ test("a folder dragged over another folder's chats lands against that folder", (
     }),
     null,
   );
-  // Folder a holds four. The top of the block puts b above a; the bottom would put it back
-  // where it already is, which is not a drop at all.
   assert.deepEqual(
     folderDropTarget({
       draggedId: "b",
@@ -150,7 +135,6 @@ test("a folder dragged over another folder's chats lands against that folder", (
     }),
     null,
   );
-  // A folder's own chats are not a target: it cannot land against itself.
   assert.equal(
     folderDropTarget({
       draggedId: "a",
@@ -164,8 +148,7 @@ test("a folder dragged over another folder's chats lands against that folder", (
   );
 });
 
-// The edge is the row's place in the block, not the pointer's place in the row: reading it off
-// the cursor would flip the line from one end of the folder to the other at every chat.
+// The edge is the row's place in the block, not the cursor's place in the row.
 test("the edge holds for every row in the same half of a block", () => {
   const folderIds = ["a", "b", "c"];
   const edgeAt = (rowIndex: number, pointerEdge: "top" | "bottom" = "top") =>
@@ -182,13 +165,11 @@ test("the edge holds for every row in the same half of a block", () => {
     [3, 4, 5].map((at) => edgeAt(at)),
     ["bottom", "bottom", "bottom"],
   );
-  // The one row the answer changes inside is the middle of the block, not every row.
   assert.equal(edgeAt(2, "bottom"), "bottom");
   assert.equal(edgeAt(3, "top"), "bottom");
 });
 
-// The edge follows the cursor, not the two rows' index order: dragging a row down and letting go
-// over the top half of a row has to insert above it, or the line moves and the row does not.
+// The edge follows the cursor, not index order.
 test("the pointer's half of a row is the edge it drops on", () => {
   const rect = { top: 100, height: 30 };
   assert.equal(dropEdgeAt(rect, 101), "top");
@@ -197,12 +178,9 @@ test("the pointer's half of a row is the edge it drops on", () => {
   assert.equal(dropEdgeAt(rect, 129), "bottom");
 });
 
-// Alt + arrow is what a keyboard has instead of a drag, now that the row menu no longer carries
-// Move up and Move down.
 test("a row moves one slot at a time and stops at the ends", () => {
   assert.deepEqual(moveIdBy(["a", "b", "c"], "a", 1), ["b", "a", "c"]);
   assert.deepEqual(moveIdBy(["a", "b", "c"], "c", -1), ["a", "c", "b"]);
-  // Past either end, or a row the list lost, is a no-op.
   const ids = ["a", "b", "c"];
   assert.equal(moveIdBy(ids, "a", -1), ids);
   assert.equal(moveIdBy(ids, "c", 1), ids);
@@ -220,10 +198,8 @@ test("a saved order applies, and undragged rows stay on top in list order", () =
   const rows = [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "new" }];
   assert.deepEqual(
     ids(applyManualOrder(rows, ["c", "a", "b"], (row) => row.id)),
-    // "new" was never dragged, so it keeps the spot the list gave it.
     ["new", "c", "a", "b"],
   );
-  // No saved order returns the input untouched, not a copy.
   assert.equal(applyManualOrder(rows, undefined, (row) => row.id), rows);
   assert.equal(applyManualOrder(rows, [], (row) => row.id), rows);
 });
@@ -249,13 +225,10 @@ test("each list keeps its own manual order", () => {
 });
 
 test("the sidebar starts grouped by project, sorted by last updated", () => {
-  // Defaults are what an install without saved preferences renders, so they are
-  // part of the layout, not an implementation detail.
   const fresh = useSidebarOrganizationStore.getInitialState();
   assert.equal(fresh.organizeBy, "project");
   assert.equal(fresh.chatSort, "updated");
-  // Pinned defaults to manual because pin order already is one: re-sorting the
-  // chat lists must not silently rearrange the rows the user pinned by hand.
+  // Pinned defaults to manual so re-sorting does not rearrange hand-pinned rows.
   assert.equal(fresh.pinnedSort, "manual");
 });
 
@@ -280,8 +253,7 @@ test("Projects sort on their own, keeping the drag order by default", () => {
   store.setProjectSort("manual");
 });
 
-// Reset-all is the only in-app way back to the shipped sidebar layout, and it
-// only removes the keys it lists, so an unlisted one survives the reload.
+// Reset-all only removes keys it lists.
 test("Reset all local preferences clears this key", async () => {
   const source = await readSrcAsync("features/settings/tabs/general-tab.tsx");
   const keys = source.slice(

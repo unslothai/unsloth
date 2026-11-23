@@ -81,8 +81,7 @@ def _write_gguf(
 
 
 def _snac_vocab():
-    """Orpheus's shape: the codes start where the base vocabulary ends, so the two ids
-    the serving detector detokenizes land on codes."""
+    """Orpheus codes start where the base vocabulary ends, so the probe ids land on codes."""
     base = [f"t{i}" for i in range(SNAC_PROBE_TOKEN_IDS[0])]
     return [*base, *(f"<custom_token_{i}>" for i in range(10_002))]
 

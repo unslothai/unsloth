@@ -25,6 +25,7 @@ import os
 import sys
 import types
 import warnings
+import weakref
 
 import pytest
 import torch
@@ -35,18 +36,26 @@ NAMES = (
     "_without_instance_bound_methods",
     "_packed_seq_lengths_from_position_ids",
     "_is_unsloth_fast_backbone",
+    "_async_grpo_tree_segment_parents",
+    "_forward_tree_unrolled",
     "_unsloth_async_grpo_lm_head",
     "_fast_inference_engine",
     "_async_grpo_uses_fast_inference",
     "_dataset_has_images",
     "_start_async_grpo_vllm_server",
     "_check_async_grpo_fast_inference",
+    "_async_grpo_replays_sampling_masks",
+    "_pin_async_grpo_server_url",
     "_text_prepended_position_ids",
     "_packing_honored",
     "_align_vlm_text_config",
     "_hold_peft_requires_grad",
     "_allow_moe_parameter_lora",
     "_check_async_grpo_adapter_servable",
+    "_async_grpo_tensor_save",
+    "_async_grpo_tensor_sync_scope",
+    "_async_grpo_masked_compute_loss",
+    "_import_trl_async_grpo_module",
     "patch_trl_async_grpo",
 )
 
@@ -60,18 +69,24 @@ def _load(fast_backbone_types = ()):
     src = open(RL_SOURCE_PATH, encoding = "utf-8").read()
     ns = {
         "copy": __import__("copy"),
+        "inspect": __import__("inspect"),
+        "textwrap": __import__("textwrap"),
         "types": types,
         "torch": torch,
         "functools": functools,
         "importlib": importlib,
         "warnings": warnings,
         "weakref": __import__("weakref"),
+        "contextvars": __import__("contextvars"),
         "logger": _Logger(),
         "Version": __import__("packaging.version", fromlist = ["Version"]).Version,
         "importlib_version": __import__("importlib.metadata", fromlist = ["version"]).version,
     }
     for node in ast.parse(src).body:
-        if isinstance(node, ast.FunctionDef) and node.name in NAMES:
+        is_constant = isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id.startswith("_ASYNC_GRPO_") for t in node.targets
+        )
+        if is_constant or (isinstance(node, ast.FunctionDef) and node.name in NAMES):
             exec(compile(ast.Module([node], []), RL_SOURCE_PATH, "exec"), ns)
     assert all(n in ns for n in NAMES)
     ns["_is_unsloth_fast_backbone"] = lambda b: isinstance(b, fast_backbone_types)
@@ -156,7 +171,9 @@ def fake_trl(monkeypatch):
     mod.add_fused_lm_head = add_fused_lm_head
     mod.AsyncGRPOConfig = AsyncGRPOConfig
     mod.AsyncGRPOTrainer = AsyncGRPOTrainer
-    for name in ("trl", "trl.experimental", "trl.experimental.async_grpo"):
+    # An empty trl.trainer too, so the real TRL >= 1.18 trl.trainer.async_grpo_trainer is not found first.
+    monkeypatch.delitem(sys.modules, "trl.trainer.async_grpo_trainer", raising = False)
+    for name in ("trl", "trl.trainer", "trl.experimental", "trl.experimental.async_grpo"):
         pkg = types.ModuleType(name)
         pkg.__path__ = []
         pkg.__spec__ = importlib.machinery.ModuleSpec(name, None, is_package = True)
@@ -348,8 +365,9 @@ class _FakeServer:
     started = []
 
     def __init__(self, model):
-        self.url = "http://127.0.0.1:1"
+        self.url = f"http://127.0.0.1:{len(_FakeServer.started) + 1}/secret"
         self.max_num_seqs = 96
+        self.discarded = 0
         self.stopped = 0
         self.aborted = 0
         _FakeServer.started.append(self)
@@ -359,6 +377,13 @@ class _FakeServer:
 
     def abort_all(self):
         self.aborted += 1
+
+    def stage_adapter(self, model, adapter_name, dest_dir):
+        self.staged = (model, adapter_name, dest_dir)
+        return getattr(self, "stage_result", True)
+
+    def discard_staged(self, model):
+        self.discarded += 1
 
 
 def _fast_inference_peft(lm):
@@ -375,6 +400,8 @@ def _fast_inference_peft(lm):
 def fast_inference_trl(fake_trl):
     mod, calls = fake_trl
     mod.select_adapter_sync = lambda *a, **k: True
+    calls["save"] = []
+    mod.save_lora_adapter = lambda *a, **k: calls["save"].append(a)
 
     class AsyncGRPOConfig:
         def __init__(
@@ -389,6 +416,7 @@ def fast_inference_trl(fake_trl):
 
     class AsyncGRPOTrainer:
         lora_sync = True
+        reshard = False
 
         def __init__(
             self,
@@ -400,12 +428,28 @@ def fast_inference_trl(fake_trl):
         ):
             calls["init"].append((model, args))
             self.url_seen = args.vllm_server_base_url
+            if AsyncGRPOTrainer.reshard:
+                # What native FSDP2 does inside Trainer.__init__: a new parameter object under the same name.
+                model.lora = torch.nn.Parameter(model.lora.detach().clone())
             # What TRL does for a VLM: unfreeze the text model.
             model.frozen.requires_grad_(True)
             self._lora_sync = AsyncGRPOTrainer.lora_sync
+            # What TRL builds in __init__ from the URL the config holds then.
+            self.vllm_client = types.SimpleNamespace(
+                server_url = str(args.vllm_server_base_url).rstrip("/")
+            )
+            self.model = model
+            self.accelerator = types.SimpleNamespace(num_processes = 1)
+            self.model_version = 1
 
         def train(self):
             return "trained"
+
+        def _sync_weight_lora(self, t0):
+            # TRL's sync calls the module-level save, then loads the directory on its server.
+            version = self.model_version + 1
+            mod.save_lora_adapter(self.model, self.accelerator, "default", f"/o/policy-v{version}")
+            self.model_version = version
 
     mod.AsyncGRPOConfig = AsyncGRPOConfig
     mod.AsyncGRPOTrainer = AsyncGRPOTrainer
@@ -438,6 +482,20 @@ def test_fast_inference_model_gets_the_in_process_server(fast_inference_trl):
     assert calls_args(mod).max_inflight_tasks == 8
     assert not peft.frozen.requires_grad and peft.lora.requires_grad
     assert trainer.train() == "trained" and server.aborted == 1
+
+
+def test_adapter_stays_trainable_when_init_replaces_its_parameters(fast_inference_trl, monkeypatch):
+    # Native FSDP2 shards inside Trainer.__init__: the LoRA parameters come back as new objects.
+    mod, _ = fast_inference_trl
+    monkeypatch.setattr(mod.AsyncGRPOTrainer, "reshard", True)
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    old_lora = peft.lora
+    mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    assert peft.lora is not old_lora
+    assert (
+        peft.lora.requires_grad
+    ), "the re-created adapter parameter was frozen: nothing would train"
+    assert not peft.frozen.requires_grad
 
 
 def test_explicit_server_url_keeps_the_external_server(fast_inference_trl):
@@ -626,6 +684,142 @@ def test_a_reused_config_keeps_its_own_server_url(fast_inference_trl):
     assert _FakeServer.started[1].stopped == 1
 
 
+class _Trl118Config:
+    # TRL 1.18 renamed max_inflight_tasks to max_concurrent_rollouts, a plain count (default 512).
+    def __init__(
+        self,
+        output_dir,
+        vllm_server_base_url = "http://localhost:8000",
+        max_concurrent_rollouts = 512,
+        top_k = 0,
+        top_p = 1.0,
+    ):
+        self.output_dir = output_dir
+        self.vllm_server_base_url = vllm_server_base_url
+        self.max_concurrent_rollouts = max_concurrent_rollouts
+        self.top_k = top_k
+        self.top_p = top_p
+
+
+def test_trl_118_config_without_max_inflight_tasks(fast_inference_trl):
+    mod, _ = fast_inference_trl
+    config = _Trl118Config("o")
+    trainer = mod.AsyncGRPOTrainer(
+        _fast_inference_peft(CausalLM(FastBackbone())),
+        None,
+        args = config,
+        train_dataset = [{"prompt": "hi"}],
+    )
+    assert trainer.url_seen == _FakeServer.started[0].url
+    # TRL sizes this cap from the server's /metrics itself; the old field is not invented.
+    assert config.max_concurrent_rollouts == 512 and not hasattr(config, "max_inflight_tasks")
+    assert config.vllm_server_base_url == "http://localhost:8000"
+    mod.AsyncGRPOTrainer.lora_sync = False
+    try:
+        config = _Trl118Config("o")
+        with pytest.raises(ValueError, match = "plain LoRA adapter"):
+            mod.AsyncGRPOTrainer(_fast_inference_peft(CausalLM(FastBackbone())), None, args = config)
+    finally:
+        mod.AsyncGRPOTrainer.lora_sync = True
+    assert not hasattr(config, "max_inflight_tasks")
+    assert _FakeServer.started[1].stopped == 1
+
+
+def test_trl_118_rollout_worker_keeps_the_in_process_server_url(fake_trl):
+    # TRL 1.18 pickles the config after the user's URL is restored.
+    mod, _ = fake_trl
+    mod.select_adapter_sync = lambda *a, **k: True
+    mod.AsyncGRPOConfig = _Trl118Config
+
+    class AsyncRolloutWorker:
+        def __init__(
+            self,
+            config,
+            loop_cls = None,
+            **kwargs,
+        ):
+            self.config = config
+
+    class AsyncGRPOTrainer:
+        def __init__(
+            self,
+            model,
+            reward_funcs = None,
+            args = None,
+            train_dataset = None,
+            **kw,
+        ):
+            self._lora_sync = True
+            self.rollout_worker = (
+                mod.AsyncRolloutWorker(args, loop_cls = None)
+                if kw.get("keyword") is None
+                else mod.AsyncRolloutWorker(config = args)
+            )
+
+    mod.AsyncRolloutWorker = AsyncRolloutWorker
+    mod.AsyncGRPOTrainer = AsyncGRPOTrainer
+    _FakeServer.started = []
+    ns = _load(fast_backbone_types = (FastBackbone,))
+    ns["_start_async_grpo_vllm_server"] = _FakeServer
+    ns["patch_trl_async_grpo"]()
+    for keyword in (None, True):
+        config = _Trl118Config("o")
+        trainer = mod.AsyncGRPOTrainer(
+            _fast_inference_peft(CausalLM(FastBackbone())),
+            None,
+            args = config,
+            train_dataset = [{"prompt": "hi"}],
+            keyword = keyword,
+        )
+        server = _FakeServer.started[-1]
+        assert config.vllm_server_base_url == "http://localhost:8000"
+        assert trainer.rollout_worker.config.vllm_server_base_url == server.url
+        assert trainer.rollout_worker.config.max_concurrent_rollouts == 512
+    external = _Trl118Config("o", vllm_server_base_url = "http://gpu-box:8000")
+    trainer = mod.AsyncGRPOTrainer(
+        _fast_inference_peft(CausalLM(FastBackbone())), None, args = external
+    )
+    assert trainer.rollout_worker.config is external
+
+
+def test_top_k_and_top_p_refused_when_trl_replays_sampling_masks(fast_inference_trl):
+    mod, _ = fast_inference_trl
+
+    class AsyncRolloutLoop:
+        async def _check_sampling_replay(self):
+            pass
+
+    mod.AsyncRolloutLoop = AsyncRolloutLoop
+    for kwargs in ({"top_k": 20}, {"top_k": 50, "top_p": 0.9}):
+        with pytest.raises(ValueError, match = "return-sampling-mask"):
+            mod.AsyncGRPOTrainer(
+                _fast_inference_peft(CausalLM(FastBackbone())),
+                None,
+                args = _Trl118Config("o", **kwargs),
+            )
+    assert _FakeServer.started == []
+    mod.AsyncGRPOTrainer(
+        _fast_inference_peft(CausalLM(FastBackbone())), None, args = _Trl118Config("o")
+    )
+    # TRL 1.17 keeps the check on the worker's private loop class.
+    del mod.AsyncRolloutLoop
+
+    class AsyncRolloutWorker:
+        _loop_cls = AsyncRolloutLoop
+
+    mod.AsyncRolloutWorker = AsyncRolloutWorker
+    with pytest.raises(ValueError, match = "return-sampling-mask"):
+        mod.AsyncGRPOTrainer(
+            _fast_inference_peft(CausalLM(FastBackbone())), None, args = _Trl118Config("o", top_k = 20)
+        )
+    # TRL <= 1.16 normalizes over the full vocabulary and never asks for the candidate set.
+    del mod.AsyncRolloutWorker
+    mod.AsyncGRPOTrainer(
+        _fast_inference_peft(CausalLM(FastBackbone())), None, args = _Trl118Config("o", top_k = 20)
+    )
+    assert len(_FakeServer.started) == 2
+
+
 def test_servable_check_reads_only_a_lone_default_adapter():
     ns = _load()
     calls = []
@@ -659,3 +853,200 @@ def test_image_check_does_not_consume_an_iterable_dataset():
     assert next(data) == {"prompt": "a"}
     assert ns["_dataset_has_images"]([{"image": object()}]) is True
     assert ns["_dataset_has_images"]([{"prompt": "hi"}]) is False
+
+
+def _ppo_compute_loss(
+    self,
+    model,
+    inputs,
+    return_outputs = False,
+    num_items_in_batch = None,
+):
+    # The policy-loss lines of TRL 1.13 to 1.15 AsyncGRPOTrainer.compute_loss, verbatim.
+    log_probs = model(inputs)
+    advantages = inputs["advantages"]
+    log_ratio = log_probs - inputs["old_log_probs"]
+    coef_1 = torch.exp(log_ratio)
+    coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
+    per_token_loss1 = coef_1 * advantages
+    per_token_loss2 = coef_2 * advantages
+    per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+    with torch.no_grad():
+        is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages < 0)
+        is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages > 0)
+        self.clipped = (is_low_clipped | is_high_clipped).tolist()
+    return per_token_loss.sum()
+
+
+def _loss_grad(trainer, ratio, advantages):
+    log_probs = torch.zeros(len(ratio), dtype = torch.float64, requires_grad = True)
+    inputs = {
+        "old_log_probs": -torch.tensor(ratio, dtype = torch.float64).log(),
+        "advantages": torch.tensor(advantages, dtype = torch.float64),
+    }
+    trainer.compute_loss(lambda _: log_probs, inputs).backward()
+    return log_probs.grad.tolist()
+
+
+def test_importance_sampling_mask_gives_the_sao_gradient(fake_trl):
+    mod, _ = fake_trl
+    mod.AsyncGRPOTrainer.compute_loss = _ppo_compute_loss
+    _load(fast_backbone_types = (FastBackbone,))["patch_trl_async_grpo"]()
+    ratio = [0.5, 0.7, 0.75, 1.0, 1.3, 5.9, 6.0, 9.0, 9.0, 0.5]
+    advantages = [1.0, 1.0, -2.0, 0.5, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0]
+    masked = mod.AsyncGRPOTrainer(
+        Peft(CausalLM(FastBackbone())), None, importance_sampling_mask = True
+    )
+    masked.epsilon_low, masked.epsilon_high = 0.3, 5.0
+    # SAO Eq. 1-3: d/dlog pi of -f(r) A log pi, f(r) = r inside the open window (0.7, 6.0), else 0.
+    expected = [-(r * a if 0.7 < r < 6.0 else 0.0) for r, a in zip(ratio, advantages)]
+    assert _loss_grad(masked, ratio, advantages) == pytest.approx(expected)
+    assert masked.clipped == [True, True, False, False, False, False, True, True, True, True]
+    # Default stays TRL's PPO loss, on TRL's own method: a negative advantage at r = 9 still gets a gradient.
+    plain = mod.AsyncGRPOTrainer(Peft(CausalLM(FastBackbone())), None)
+    plain.epsilon_low, plain.epsilon_high = 0.3, 5.0
+    assert "compute_loss" not in vars(plain)
+    assert _loss_grad(plain, ratio, advantages)[8] == pytest.approx(9.0)
+    assert plain.clipped[8] is False
+
+
+def test_importance_sampling_mask_refuses_an_unknown_loss(fast_inference_trl):
+    mod, _ = fast_inference_trl
+
+    def compute_loss(
+        self,
+        model,
+        inputs,
+        return_outputs = False,
+        num_items_in_batch = None,
+    ):
+        return model(inputs).sum()
+
+    mod.AsyncGRPOTrainer.compute_loss = compute_loss
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    with pytest.raises(ValueError, match = "cannot be masked"):
+        mod.AsyncGRPOTrainer(
+            peft, None, args = mod.AsyncGRPOConfig("o"), importance_sampling_mask = True
+        )
+    # Refused before the in-process server starts or TRL's init runs.
+    assert _FakeServer.started == [] and mod._calls["init"] == []
+
+
+def test_importance_sampling_mask_rewrites_the_installed_trl_loss():
+    AsyncGRPOTrainer = None
+    for name in (
+        "trl.trainer.async_grpo_trainer",
+        "trl.experimental.async_grpo.async_grpo_trainer",
+    ):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                AsyncGRPOTrainer = importlib.import_module(name).AsyncGRPOTrainer
+            break
+        except Exception as e:
+            error = e
+    if AsyncGRPOTrainer is None:
+        pytest.skip(reason = f"needs TRL >= 1.13, which ships AsyncGRPOTrainer: {error}")
+    ns = _load()
+    masked = ns["_async_grpo_masked_compute_loss"](AsyncGRPOTrainer.compute_loss)
+    code = masked.__code__
+    assert masked is ns["_async_grpo_masked_compute_loss"](AsyncGRPOTrainer.compute_loss)
+    assert code is not AsyncGRPOTrainer.compute_loss.__code__
+    # No torch.min left (TRL 1.18's compute_loss also calls coef_1.min() for metrics).
+    loads = [i.argval for i in __import__("dis").get_instructions(code)]
+    assert "where" in code.co_names
+    assert not any(a == "torch" and b == "min" for a, b in zip(loads, loads[1:]))
+    assert masked.__globals__ is AsyncGRPOTrainer.compute_loss.__globals__
+
+
+def _accelerator(processes = 1):
+    return types.SimpleNamespace(num_processes = processes)
+
+
+def test_weight_sync_hands_the_adapter_to_the_in_process_server(fast_inference_trl):
+    mod, ns = fast_inference_trl
+    assert mod.save_lora_adapter._unsloth_tensor_sync
+    assert mod.AsyncGRPOTrainer._sync_weight_lora._unsloth_tensor_sync
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    trainer = mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    (server,) = _FakeServer.started
+    trainer._sync_weight_lora(0.0)
+    assert server.staged == (peft, "default", "/o/policy-v2")
+    assert (
+        mod._calls["save"] == []
+    ), "TRL's safetensors save ran although the server took the tensors"
+    assert ns["_ASYNC_GRPO_SYNC_SERVER"].get() is None, "the sync left its server in scope"
+
+
+def test_weight_sync_falls_back_to_trl_files(fast_inference_trl):
+    mod, ns = fast_inference_trl
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    trainer = mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    (server,) = _FakeServer.started
+    mod.save_lora_adapter(peft, _accelerator(), "default", "/d1")  # outside a sync: a direct save
+    trainer.accelerator = _accelerator(2)  # every rank gathers; files as TRL writes them
+    trainer._sync_weight_lora(0.0)
+    trainer.accelerator = _accelerator()
+    server.stage_result = False  # the server declined
+    trainer._sync_weight_lora(0.0)
+    assert [call[-1] for call in mod._calls["save"]] == ["/d1", "/o/policy-v2", "/o/policy-v3"]
+    assert server.discarded == 2, "a file save left an older snapshot pending"
+
+
+def test_save_hook_routes_each_sync_to_its_own_trainers_server(fast_inference_trl):
+    # One model shared by an in-process trainer, a trainer on an external vLLM server and a second in-process
+    # trainer: each sync goes to the server its own client talks to, never one looked up by model.
+    mod, ns = fast_inference_trl
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    first = mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    external = mod.AsyncGRPOTrainer(
+        peft, None, args = mod.AsyncGRPOConfig("o", vllm_server_base_url = "http://10.0.0.2:8000")
+    )
+    second = mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    server1, server2 = _FakeServer.started
+    assert not hasattr(external, "_unsloth_vllm_server")
+    external._sync_weight_lora(0.0)
+    assert [call[-1] for call in mod._calls["save"]] == [
+        "/o/policy-v2"
+    ], "the external trainer's sync skipped the files its vLLM server reads"
+    first._sync_weight_lora(0.0)
+    assert server1.staged[-1] == "/o/policy-v2" and not hasattr(server2, "staged")
+    second._sync_weight_lora(0.0)
+    assert server2.staged[-1] == "/o/policy-v2"
+    # A trainer whose client was pointed elsewhere after init does not hand its sync to the in-process server.
+    first.vllm_client.server_url = "http://10.0.0.2:8000"
+    first.model_version = 7
+    first._sync_weight_lora(0.0)
+    assert mod._calls["save"][-1][-1] == "/o/policy-v8"
+
+
+class _ModelHoldingServer(_FakeServer):
+    # Like the real server, whose engine's `load_lora` is a partial bound to the model.
+    def __init__(self, model):
+        super().__init__(model)
+        self.load_lora = functools.partial(lambda m, *a: None, model)
+
+
+def test_a_discarded_trainer_does_not_keep_its_model_alive(fast_inference_trl):
+    import gc
+
+    mod, ns = fast_inference_trl
+    ns["_start_async_grpo_vllm_server"] = _ModelHoldingServer
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    trainer = mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    trainer._sync_weight_lora(0.0)
+    model_ref = weakref.ref(peft)
+    del trainer, peft
+    _FakeServer.started.clear()
+    mod._calls["init"].clear()  # the fake TRL trainer records its arguments
+    gc.collect()
+    assert model_ref() is None, "the tensor sync kept a discarded model (and its GPU memory) alive"
+
+
+def test_tensor_save_wraps_once():
+    ns = _load()
+    calls = []
+    wrapped = ns["_async_grpo_tensor_save"](lambda *a: calls.append(a))
+    assert wrapped._unsloth_tensor_sync
+    wrapped(torch.nn.Linear(1, 1), _accelerator(), "default", "/d")
+    assert len(calls) == 1

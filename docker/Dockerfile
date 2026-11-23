@@ -80,7 +80,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Isolated prefix; never touch the system Python (PEP 668 externally-managed).
 # The venv bootstraps pip via ensurepip and gets uv a few lines below.
 ENV VENV=/opt/unsloth-venv
-RUN python -m venv ${VENV} && ${VENV}/bin/pip install -U pip wheel setuptools
+RUN python -m venv ${VENV} && ${VENV}/bin/pip install -U "pip>=26.2.2" wheel setuptools "certifi>=2026.10.19"
 
 # Unified install: torch + triton + bitsandbytes + unsloth + unsloth_zoo in a
 # SINGLE uv pass. Mandatory -- splitting it lets bnb's transitive `cuda-toolkit`
@@ -109,7 +109,7 @@ RUN set -eux \
         *)     echo "ERROR: unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac \
  && echo ">> TARGETARCH=${TARGETARCH:-amd64}, unsloth extra=[${UNSLOTH_EXTRA}], xformers=[${XFORMERS_PIN}]" \
- && ${VENV}/bin/pip install uv \
+ && ${VENV}/bin/pip install "uv>=0.13.4" \
  && ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
         --index-strategy unsafe-best-match \

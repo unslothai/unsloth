@@ -11,15 +11,9 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Loading a compressed-tensors packed INT4 / INT8 checkpoint straight into bitsandbytes 4-bit.
+"""Packed INT4/INT8 checkpoints load into bnb 4-bit; GPU tests match a bf16 decompress bit for bit."""
 
-Offline tests cover the checkpoint classifier, the storage-dtype plan for the packed tensors,
-the config stripping (root and sub-configs) and the loader hand-off. The GPU tests build a
-tiny packed Llama with compressed-tensors' own compressor, load it through
-`FastLanguageModel.from_pretrained(load_in_4bit = True)` and compare every Linear4bit bit for
-bit against the same checkpoint decompressed to bf16 on disk first.
-"""
-
+import inspect
 import json
 import os
 import shutil
@@ -31,7 +25,6 @@ from llama_patch_isolation import restore_llama_patches  # noqa: F401
 from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
-# Import unsloth first to set UNSLOTH_IS_PRESENT env var.
 import unsloth  # noqa: F401
 from unsloth.models.compressed_tensors_bnb import (
     UNSLOTH_COMPRESSED_TENSORS_ATTR,
@@ -49,7 +42,7 @@ try:
     from compressed_tensors.quantization.lifecycle.forward import dequantize as _ct_dequantize
 
     HAS_CT = True
-    # compressed-tensors 0.19 dropped GPTQ activation ordering (#840): its compressor ignores weight_g_idx.
+    # compressed-tensors 0.19 dropped GPTQ activation ordering: its compressor ignores weight_g_idx.
     CT_HONOURS_G_IDX = "g_idx" in inspect.signature(_ct_dequantize).parameters
 except Exception:
     HAS_CT = CT_HONOURS_G_IDX = False
@@ -58,6 +51,14 @@ except Exception:
 from unsloth.models.compressed_tensors_bnb import _transformers_supports_weight_converters
 
 HAS_CONVERTERS = _transformers_supports_weight_converters()
+
+
+def _update_conversions(quantizer, conversions, model):
+    # transformers 5.21+ passes the model to the hook.
+    from transformers.quantizers.base import HfQuantizer
+    if "model" in inspect.signature(HfQuantizer.update_weight_conversions).parameters:
+        return quantizer.update_weight_conversions(conversions, model)
+    return quantizer.update_weight_conversions(conversions)
 
 
 def _w4a16(**overrides):
@@ -291,11 +292,7 @@ def test_prepared_config_is_the_armed_config_and_nothing_else():
 
 
 def test_planner_gets_the_prepared_config_instead_of_rebuilding_it(monkeypatch):
-    """The planner rebuilds the repo's config from the model name. For a re-quantized packed
-    checkpoint that config still carries compressed-tensors, and `merge_quantization_configs`
-    then refuses the bitsandbytes flags, so Kimi-K2.7-Code lost its plan and fell back to
-    `sequential`, which spilled to CPU and bitsandbytes refused the load. The armed config
-    object is what the planner has to size; the loaders hand it over as `planner_config`."""
+    """Planner must size the armed config, not one rebuilt from the name, which keeps compressed-tensors."""
     import sys
     import types
     from unsloth.models import loader_utils
@@ -489,10 +486,8 @@ def test_arm_declines_a_plan_the_installed_compressed_tensors_cannot_parse(monke
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
 def test_the_planner_pass_does_not_consume_the_plan():
-    """The device-map planner preprocesses a meta model built from the very config object the
-    load uses. The plan used to be taken off the config by the first pass, so on a multi-GPU
-    load the real quantizer found none, added no converters, and every packed expert was
-    reported missing and quantized from its random initialisation."""
+    """The device-map planner's pass must not consume the plan on the shared config; otherwise
+    multi-GPU loads add no converters and quantize packed experts from random init."""
     from transformers import LlamaConfig, LlamaForCausalLM
     from transformers.quantizers import AutoHfQuantizer
     from transformers.utils.quantization_config import BitsAndBytesConfig
@@ -526,7 +521,7 @@ def test_the_planner_pass_does_not_consume_the_plan():
     assert getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is plan
     second, model = preprocess()  # the real load
     assert second._unsloth_ct_config is not None
-    conversions = second.update_weight_conversions([])
+    conversions = _update_conversions(second, [], model)
     assert any(
         getattr(c, "source_patterns", None) and "weight_packed$" in c.source_patterns
         for c in conversions
@@ -554,8 +549,8 @@ def test_armed_conversions_still_run_a_composed_subclass_hook(monkeypatch):
     marker = object()
 
     class MarkerBnb4BitHfQuantizer(Bnb4BitHfQuantizer):
-        def update_weight_conversions(self, weight_conversions):
-            return super().update_weight_conversions(weight_conversions) + [marker]
+        def update_weight_conversions(self, weight_conversions, *args, **kwargs):
+            return super().update_weight_conversions(weight_conversions, *args, **kwargs) + [marker]
 
     monkeypatch.setitem(
         quantizers_auto.AUTO_QUANTIZER_MAPPING, "bitsandbytes_4bit", MarkerBnb4BitHfQuantizer
@@ -586,7 +581,7 @@ def test_armed_conversions_still_run_a_composed_subclass_hook(monkeypatch):
         model, dtype = torch.bfloat16, device_map = None, checkpoint_files = []
     )
     assert quantizer._unsloth_ct_config is not None
-    conversions = quantizer.update_weight_conversions([])
+    conversions = _update_conversions(quantizer, [], model)
     assert marker in conversions
     assert any(
         getattr(c, "source_patterns", None) and "weight_packed$" in c.source_patterns
@@ -891,10 +886,8 @@ def test_classification_load_under_fast_inference_still_requantizes():
 
 @pytest.mark.skipif(not HAS_CONVERTERS, reason = "needs the transformers 5 loader")
 def test_wrapped_many_to_many_op_still_passes_the_converter_type_check():
-    """transformers' WeightConverter allows a many-to-many mapping only when `operations`
-    holds an instance of its internal Ernie ops. The adapter that feeds such an op its
-    original source contract must remain an instance of the op's class, or building the
-    replacement converter raises before any weight loads."""
+    """transformers WeightConverter allows many-to-many only when operations holds an Ernie op
+    instance, so the adapter feeding it must stay that class or building the converter raises."""
     from transformers.core_model_loading import ErnieFuseAndSplitTextVisionExperts, WeightConverter
     from unsloth.models.compressed_tensors_bnb import _WithOriginalSources, _with_original_sources
 
@@ -923,9 +916,8 @@ def test_a_pickled_shard_is_refused_rather_than_read_in_the_model_dtype():
 
 
 def test_load_only_converters_are_dropped_before_save():
-    """transformers reverses every converter on model._weight_conversions in save_pretrained;
-    the decompression converters must not be there, or a bitsandbytes model is saved under
-    the packed names."""
+    """transformers reverses every converter in model._weight_conversions on save_pretrained, so
+    decompression converters must be dropped or the model saves under the packed names."""
     from unsloth.models.compressed_tensors_bnb import (
         _DecompressPackedWeights,
         drop_load_only_conversions,
@@ -1042,7 +1034,7 @@ def test_only_an_explicit_bnb_4bit_config_keeps_the_callers_flags():
             if isinstance(node, ast.If)
             and any("_checked_4bit" in ast.unparse(stmt) for stmt in node.body)
         ]
-        # ... and only while the check kept 4-bit (an unarmed pre-quantized checkpoint must not reach vLLM as bnb).
+        # An unarmed pre-quantized checkpoint must not reach vLLM as bnb.
         assert guards == ["not (_explicit_bnb_4bit and _checked_4bit)"], (module.__name__, guards)
 
 
@@ -1068,7 +1060,7 @@ def test_an_explicit_bnb_4bit_config_is_not_replaced_by_the_default_nf4_one():
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
 def test_both_loaders_treat_an_explicit_bnb_4bit_config_as_the_4bit_request():
-    # The loader passes load_in_4bit = False with an explicit config; a bnb 4-bit config must still arm the plan.
+    # With an explicit config the loader passes load_in_4bit = False; bnb 4-bit must still arm.
     import ast, inspect
     from transformers import BitsAndBytesConfig
     from unsloth.models import llama, vision
@@ -1121,7 +1113,7 @@ def test_the_flag_only_dict_shorthand_is_a_bnb_4bit_request():
     [(8, True, (False, True)), (4, True, (True, False)), (8, False, (True, False))],
 )
 def test_the_planner_sizes_a_packed_int8_checkpoint_at_8_bits(bits, route, want, monkeypatch):
-    # Kept packed, INT8 weights stay 8-bit: planning them as bnb 4-bit halves their budget and OOMs the load.
+    # Packed INT8 weights stay 8-bit: planning them as bnb 4-bit halves their budget and OOMs.
     import unsloth.models.compressed_tensors_int4 as ct_int4
     from unsloth.models.loader_utils import compressed_tensors_planner_bits
 
@@ -1131,7 +1123,7 @@ def test_the_planner_sizes_a_packed_int8_checkpoint_at_8_bits(bits, route, want,
     assert compressed_tensors_planner_bits(config, True, False) == want
     assert compressed_tensors_planner_bits(_Config(), True, False) == (True, False)
     assert compressed_tensors_planner_bits(config, False, False) == (False, False)
-    # An explicit bnb 4-bit config would override the 8-bit flags in the planner: it must be dropped too.
+    # An explicit bnb 4-bit config would override the 8-bit flags in the planner.
     from transformers import BitsAndBytesConfig
     from unsloth.models.loader_utils import compressed_tensors_planner_quantization
 

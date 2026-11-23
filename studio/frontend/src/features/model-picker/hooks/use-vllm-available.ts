@@ -6,14 +6,17 @@ import { listEngines, vllmHostSupported } from "../api/engines";
 
 // One read shared by every hub row; "Checking..." (GPU probe, up to a minute) and failed reads are retried.
 let available = false;
+// The engine's GPU platform ("cuda" / "rocm"), read with `available`: ROCm vLLM refuses some formats.
+let platform: string | null = null;
 let started = false;
 let retries = 0;
 let latest = 0;
 const listeners = new Set<() => void>();
 
-function publish(next: boolean) {
-  if (next === available) return;
+function publish(next: boolean, nextPlatform: string | null) {
+  if (next === available && nextPlatform === platform) return;
   available = next;
+  platform = nextPlatform;
   for (const listener of listeners) listener();
 }
 
@@ -28,8 +31,8 @@ async function refresh() {
   try {
     const engines = await listEngines();
     if (request !== latest) return;
-    publish(vllmHostSupported(engines));
     const vllm = engines.find((engine) => engine.engine === "vllm");
+    publish(vllmHostSupported(engines), vllm?.platform ?? null);
     if (vllm?.unsupported_reason?.startsWith("Checking")) retry();
   } catch {
     if (request === latest) retry();
@@ -61,5 +64,14 @@ export function useVllmAvailable(): boolean {
     subscribe,
     () => available,
     () => false,
+  );
+}
+
+/** The vLLM engine's GPU platform once the host can run it, else null. */
+export function useVllmPlatform(): string | null {
+  return useSyncExternalStore(
+    subscribe,
+    () => (available ? platform : null),
+    () => null,
   );
 }

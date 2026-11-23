@@ -38,3 +38,7 @@ test("a new preview re-renders even when nothing else moved", () => {
   assert.equal(sameGenerateProgress(a, { ...a, preview_seq: 2 }), false);
   assert.equal(sameGenerateProgress({ step: 1, phase: "encode" }, { step: 1, phase: "denoise" }), false);
 });
+
+test("the FLUX.3 enhance phase is labelled as such, not as denoising", () => {
+  assert.equal(generatePhaseLabel({ phase: "enhance", step: 0, total: 16 }), "Enhancing prompt…");
+});

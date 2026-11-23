@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""llama.cpp server flags: a quantized KV cache, a two-card split, a pinned ctx.
-
-The vacuity here is specific and easy to write by accident: **asserting that
-the load succeeded**. llama-server starts happily when a flag it does not like
-is dropped, so a load that ignored `cache_type_kv` entirely, fell back to one
-card, and ran at the model's default context is indistinguishable from a
-correct one by return code alone.
-
-Studio's status separates the request from what is in force, which is what
-makes a real check possible. So the rules are about the APPLIED values, and a
-downgrade is allowed only when Studio says why -- a model whose cache layout
-cannot be quantized is entitled to refuse, and silence is not.
-"""
+"""Check the applied values, since llama-server starts even when a flag it dislikes is dropped."""
 
 from __future__ import annotations
 
@@ -43,30 +31,18 @@ def _body() -> str:
 def test_the_load_requests_all_three_flags():
     body = _body()
     assert '"cache_type_kv": "q8_0"' in body
-    # Sized to the VISIBLE cards rather than hardcoded to two.
-    # --studio-concurrent pins this half to one card so it can share with a
-    # training leg, and [1.0, 1.0] against a one-card server asks llama.cpp to
-    # split across a device that is not there: what comes back is a failure
-    # about the load rather than about the flag.
+    # Sized to visible cards: --studio-concurrent pins this half to one card.
     assert '"tensor_split": [1.0] * max(1, len(cards))' in body
     assert "cards = gpu_inventory()" in body
     assert '"max_seq_length": self.args.studio_ctx' in body
 
 
 def test_a_one_card_run_says_the_two_card_split_was_not_exercised():
-    """The coverage this shares away must be STATED, not silently dropped.
-
-    Under --studio-concurrent the split is over one device, which is not the
-    flag the brief asks about. A check that keeps its name while testing less
-    is the failure this directory keeps being caught by, so the report carries
-    `tensor_split_over_two_cards` and a note naming what was and was not
-    covered.
-    """
+    """A one-card run records that the two-card split was not exercised, rather than keeping the name."""
     body = _body()
     assert 'detail["tensor_split_over_two_cards"] = len(cards) >= 2' in body
     assert "was NOT exercised" in body
-    # And it is a RECORD, not a failure: sharing is a scheduling decision, so a
-    # one-card run is not a defect and must not go red for being one.
+    # A record, not a failure: a one-card run is a scheduling decision.
     func = _func("assert_server_flags")
     for node in ast.walk(func):
         if isinstance(node, ast.If) and "cards" in ast.unparse(node.test):
@@ -93,17 +69,7 @@ def test_the_check_reads_the_applied_values_not_the_request():
 
 
 def test_no_branch_in_the_check_is_wired_to_a_constant():
-    """The guard that caught five vacuous guards, including four of my own.
-
-    Every rule in this file was first written as "the failure message appears
-    in the source". That is satisfied by `if False:` above an untouched
-    message, so disabling a rule outright left the test green -- the exact
-    "assertion satisfied by its own surrounding text" failure this repo has
-    recorded before.
-
-    A constant test means a branch that can never be taken (or always is), and
-    no rule here has any business being either.
-    """
+    """A branch whose test is a constant is never taken or always taken, so no rule here may be one."""
     tree = ast.parse(_body())
     constants = [
         ast.unparse(node.test)
@@ -128,17 +94,15 @@ def test_the_cache_rules_append_a_failure_on_both_paths():
 
 
 def test_the_context_pin_is_checked_against_the_requested_value():
-    """llama-server admits a prompt on n_ctx alone, so a server at the model
-    default behaves differently from one at 2048 and the difference does not
-    show in a chat response."""
+    """llama-server admits prompts on n_ctx alone, so a server at the model default differs from one
+    at 2048 without showing in a chat response."""
     body = _body()
     assert "int(ctx) > self.args.studio_ctx" in body
 
 
 def test_gpu_residency_is_confirmed_after_the_split():
-    """A tensor_split that fell back to CPU reports a healthy server and proves
-    nothing about either card. Checked structurally: the threshold comparison
-    must exist, not merely the message about it."""
+    """A tensor_split that fell back to CPU still reports a healthy server and proves nothing about
+    either card, so the threshold comparison itself must exist."""
     tree = ast.parse(_body())
     compares = [ast.unparse(node) for node in ast.walk(tree) if isinstance(node, ast.Compare)]
     assert any(
@@ -169,16 +133,14 @@ def test_it_is_skipped_rather_than_passed_when_the_model_is_not_on_the_gpu():
 
 
 def test_it_runs_between_gpu_inference_and_training():
-    """It reloads the chat model with different flags. Earlier would change the
-    model the inference checks measured; later would put a reload between the
-    adapter and the export."""
+    """Server flags reload the chat model: earlier would change the model that inference measured,
+    later would put a reload between the adapter and export."""
     infer_at = SRC.index("gpu_ok = self.assert_gpu_inference()")
     flags_at = SRC.index("self.assert_server_flags()")
     train_at = SRC.index("trained = self.assert_training()")
     assert infer_at < flags_at < train_at
 
-    # And it is guarded by gpu_ok rather than by a constant, or the call sits
-    # in the right place and never runs.
+    # Guarded by gpu_ok, not a constant, or the call never runs.
     tree = ast.parse(SRC)
     calls = [
         node
@@ -200,13 +162,7 @@ def test_the_context_default_is_the_one_the_brief_asks_for():
 
 
 def _payload_module():
-    """The real payload, imported by path so the rules DRIVE it.
-
-    Every rule above this point reads the source with `ast`, which is the right
-    instrument for "does the branch exist" and the wrong one for "does it answer
-    correctly". The bug below was invisible to all of them: the code was
-    exactly as written and the value it produced was false.
-    """
+    """Imports the real payload by path: AST rules see that a branch exists, not that it answers right."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("_studio_payload_flags", PAYLOAD)
@@ -231,23 +187,15 @@ TWO_ROWS = "Tesla T4, 15360 MiB, 7.5\nTesla T4, 15360 MiB, 7.5\n"
 
 
 def test_a_pinned_payload_does_not_see_both_cards(monkeypatch):
-    """The exact reading from unsloth-probe-full-concurrent-417238.
-
-    nvidia-smi lists two T4s. build_kernel.py:835 pinned this payload to card 0
-    with CUDA_VISIBLE_DEVICES. The report recorded `cards_visible: 2` and
-    `tensor_split_over_two_cards: True` and sent `tensor_split: [1.0, 1.0]` to a
-    one-card server, which loaded anyway -- so the assertion passed green while
-    asking llama.cpp to split across a device that was not there.
-    """
+    """A payload pinned to card 0 must see one GPU, or tensor_split reaches a device that is not there."""
     module = _payload_module()
     _with_smi(module, monkeypatch, TWO_ROWS, "0")
     assert len(module.gpu_inventory()) == 1
 
 
 def test_an_unpinned_payload_still_sees_every_card(monkeypatch):
-    """The other direction, and it is the one the two-card claim depends on: a
-    leg that is deliberately NOT pinned must still report both cards, or real
-    multi-GPU coverage would be reported as single-card."""
+    """An unpinned leg must still report every GPU, or real multi-GPU coverage would be reported as
+    single-card; the two-card claim depends on it."""
     module = _payload_module()
     _with_smi(module, monkeypatch, TWO_ROWS, None)
     assert len(module.gpu_inventory()) == 2

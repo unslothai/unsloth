@@ -31,7 +31,7 @@ _HAS_MUL_RN = torch.version.hip is None and os.environ.get("TRITON_INTERPRET", "
 
 
 @triton.jit
-def _mul(a, b, USE_MUL_RN: tl.constexpr):
+def _mul(a, b, USE_MUL_RN: tl.constexpr):  # libdevice mul_rn available (CUDA)
     if USE_MUL_RN:
         return libdevice.mul_rn(a, b)
     else:
@@ -56,7 +56,7 @@ else:
 
 
 @triton.jit
-def _nf4_lut(lut_ptr, n, LUT_MODE: tl.constexpr):
+def _nf4_lut(lut_ptr, n, LUT_MODE: tl.constexpr):  # lookup strategy, per GPU config
     # n: int32 nibbles. Every mode returns the same fp32 table entry, so the choice is speed only.
     if LUT_MODE == 0:
         # A 64-byte table gather stays in L1.
@@ -100,10 +100,10 @@ def _nf4_dequant_kernel(
     n_bytes,
     n_blocks,
     HALF: tl.constexpr,  # packed bytes per absmax block (blocksize // 2)
-    BLOCKSIZE2_SHIFT: tl.constexpr,
-    NESTED: tl.constexpr,
-    USE_MUL_RN: tl.constexpr,
-    ROWS: tl.constexpr,  # absmax blocks per program
+    BLOCKSIZE2_SHIFT: tl.constexpr,  # log2 of the nested absmax block, per weight
+    NESTED: tl.constexpr,  # double quantized state
+    USE_MUL_RN: tl.constexpr,  # libdevice mul_rn available (CUDA)
+    ROWS: tl.constexpr,  # absmax blocks per program, bucketed from the weight size
     WORDS: tl.constexpr,  # load the packed bytes as int32 words (needs n_bytes % 4 == 0)
     EVICT: tl.constexpr,  # "evict_first" streams the weight and the output past L2, else ""
     LUT_MODE: tl.constexpr,  # see _nf4_lut
@@ -262,11 +262,8 @@ def _launch(
         LUT_MODE = lut_mode,
     )
     grid = (-(-n_blocks // rows),)
-    options = (
-        {"num_warps": num_warps}
-        if fp_fusion
-        else {"num_warps": num_warps, "enable_fp_fusion": False}
-    )
+    # Explicit both ways: Triton 3.9 defaults enable_fp_fusion to False.
+    options = {"num_warps": num_warps, "enable_fp_fusion": bool(fp_fusion)}
     if kernel is _nf4_dequant_kernel:
         entry = launch(kernel, grid, args, 7, constexprs, W.device.index, **options)
         if plan:
@@ -389,11 +386,9 @@ def dequantize_nf4(
     dtype: torch.dtype,
     out: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Dequantize a bitsandbytes NF4 weight into ``out`` (allocated when None).
-
-    ``code`` is the quant state's fp32 [16] NF4 codebook. ``code2``, ``absmax2`` and the device
-    tensor ``offset`` are None when the absmax is not double quantized (it is then fp32).
-    """
+    """Dequantize a bitsandbytes NF4 weight into out (allocated when None); code is the fp32 [16]
+    NF4 codebook, and code2, absmax2 and offset are None when the absmax is not double quantized
+    (it is then fp32)."""
     if dtype not in (torch.float16, torch.bfloat16, torch.float32):
         raise TypeError(f"Unsloth: dequantize_nf4 does not support dtype {dtype}")
     if not _is_pow2(blocksize) or blocksize < 2 or (code2 is not None and not _is_pow2(blocksize2)):

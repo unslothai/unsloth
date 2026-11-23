@@ -11,7 +11,7 @@ import {
   newBridgeToken,
 } from "../src/features/chat/mcp-apps/mcp-ui.ts";
 
-// The shim and resize fallback run in a browser in tests/studio/playwright_mcp_app_bridge_smoke.py.
+// Shim and resize fallback run in tests/studio/playwright_mcp_app_bridge_smoke.py.
 const frame = readFileSync(
   new URL("../src/features/chat/mcp-apps/mcp-app-frame.tsx", import.meta.url),
   "utf8",
@@ -22,7 +22,6 @@ test("the frame is sandboxed without same-origin and talks only through the port
   assert.doesNotMatch(frame, /allow-same-origin"/);
   assert.match(frame, /data\?\.__unslothMcpApp !== frame\.token/);
   assert.match(frame, /port\.onmessage = handler;/);
-  // Exactly one window listener: the handshake. Protocol traffic is never read off the window.
   assert.equal(frame.match(/addEventListener\("message"/g)?.length, 1);
 });
 

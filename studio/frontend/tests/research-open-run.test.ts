@@ -99,7 +99,6 @@ for (const status of [
     useResearchRunStore.getState().setPlanReviewOpen(run.id, false);
     ingestResearchUpdate({ ...run, status, updatedAt: 2 });
     const before = useResearchRunStore.getState();
-    // Stale message metadata must not replace the current session or reopen its old review.
     openResearchRun(run);
     const after = useResearchRunStore.getState();
     assert.equal(after.sessions, before.sessions);

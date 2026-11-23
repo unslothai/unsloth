@@ -94,8 +94,7 @@ function TabStrip({
   function onPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     const current = drag.current;
     if (!current || current.id !== event.pointerId) return;
-    // Released off the strip before a drag captured the pointer: the strip never saw the release,
-    // and a hover must not scroll it.
+    // The strip never saw a release that happened before capture, so hover must not scroll.
     if ((event.buttons & 1) === 0) {
       drag.current = null;
       return;
@@ -115,7 +114,6 @@ function TabStrip({
     drag.current = null;
   }
 
-  // The click that ends a drag must not also switch tab.
   function onClickCapture(event: ReactMouseEvent) {
     if (!dragged.current) return;
     dragged.current = false;
@@ -133,7 +131,7 @@ function TabStrip({
       onPointerCancel={onPointerEnd}
       onLostPointerCapture={onPointerEnd}
       onClickCapture={onClickCapture}
-      // Important: index.css's unlayered `* { scrollbar-width: thin }` outranks any utility.
+      // index.css's unlayered `* { scrollbar-width: thin }` outranks any utility, hence `!`.
       className="-mx-2 -mb-3 -mt-1 overflow-x-auto px-2 pb-3 pt-1 [scrollbar-width:none]! [&::-webkit-scrollbar]:hidden!"
       style={{ marginRight: reserve || undefined, maskImage: mask, WebkitMaskImage: mask }}
     >
@@ -166,26 +164,43 @@ export function LibraryHeader({
   controls: ReactNode;
   tabs: { items: HeaderTab[]; active: string; onChange: (key: string) => void } | null;
 }) {
+  const barRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const [controlsWidth, setControlsWidth] = useState(0);
   const [covered, setCovered] = useState(false);
   const [stuck, setStuck] = useState(false);
+  const [stacked, setStacked] = useState(false);
 
   useEffect(() => {
+    const bar = barRef.current;
     const controlsNode = controlsRef.current;
     const row = rowRef.current;
     const titleNode = titleRef.current;
-    if (!controlsNode || !row || !titleNode) return;
+    if (!bar || !controlsNode || !row || !titleNode) return;
     let frame = 0;
     const update = () => {
       frame = 0;
       setControlsWidth(controlsNode.getBoundingClientRect().width);
+      // Unwrapped width from the tools themselves, so wrapping once stacked cannot flip it back.
+      const tools = [...(controlsNode.firstElementChild?.children ?? [])] as HTMLElement[];
+      const toolGap = controlsNode.firstElementChild
+        ? Number.parseFloat(getComputedStyle(controlsNode.firstElementChild).columnGap) || 0
+        : 0;
+      const needed =
+        tools.reduce((sum, tool) => sum + tool.offsetWidth, 0) +
+        toolGap * Math.max(0, tools.length - 1);
+      // ~6em of title; a longer name truncates instead of stacking.
+      const heading = titleNode.firstElementChild as HTMLElement | null;
+      const titleRoom = heading
+        ? Math.min(heading.scrollWidth, 6 * Number.parseFloat(getComputedStyle(heading).fontSize))
+        : 0;
+      setStacked(needed + GAP_PX + titleRoom > bar.clientWidth);
       const top = row.getBoundingClientRect().top;
       setCovered(top < controlsNode.getBoundingClientRect().bottom);
-      // Stuck once the title scrolls on past the row's margin.
-      const gap = top - titleNode.getBoundingClientRect().bottom;
+      const above = (row.previousElementSibling as HTMLElement | null) ?? titleNode;
+      const gap = top - above.getBoundingClientRect().bottom;
       setStuck(gap > Number.parseFloat(getComputedStyle(row).marginTop) + 1);
     };
     const schedule = () => {
@@ -193,6 +208,7 @@ export function LibraryHeader({
     };
     const observer = new ResizeObserver(schedule);
     observer.observe(controlsNode);
+    observer.observe(bar);
     document.addEventListener("scroll", schedule, { capture: true, passive: true });
     window.addEventListener("resize", schedule);
     schedule();
@@ -204,22 +220,40 @@ export function LibraryHeader({
     };
   }, []);
 
+  // Keyed: stacking moves the toolbar instead of remounting its search box.
+  const bar = (
+    <div
+      key="bar"
+      ref={barRef}
+      className={cn(
+        "@container flex",
+        stacked
+          ? "mt-3"
+          : "pointer-events-none sticky top-4 z-30 h-0 justify-end",
+      )}
+    >
+      <div
+        ref={controlsRef}
+        className={cn("pointer-events-auto", stacked && "max-w-full [&>*]:flex-wrap [&>*]:gap-y-2")}
+      >
+        {controls}
+      </div>
+    </div>
+  );
+  const heading = (
+    <div
+      key="title"
+      ref={titleRef}
+      className="flex h-9 min-w-0 items-center"
+      style={{ paddingRight: stacked ? undefined : controlsWidth + GAP_PX }}
+    >
+      {title}
+    </div>
+  );
+
   return (
     <>
-      {/* No height of its own: the controls hang from it over the title row, then stick level with
-          the tabs, whose row is as tall as they are plus its padding. */}
-      <div className="@container pointer-events-none sticky top-4 z-30 flex h-0 justify-end">
-        <div ref={controlsRef} className="pointer-events-auto">
-          {controls}
-        </div>
-      </div>
-      <div
-        ref={titleRef}
-        className="flex h-9 min-w-0 items-center"
-        style={{ paddingRight: controlsWidth + GAP_PX }}
-      >
-        {title}
-      </div>
+      {stacked ? [heading, bar] : [bar, heading]}
       <div
         ref={rowRef}
         data-stuck={stuck || undefined}
@@ -231,7 +265,7 @@ export function LibraryHeader({
               tabs={tabs.items}
               active={tabs.active}
               onChange={tabs.onChange}
-              reserve={covered ? controlsWidth + GAP_PX : 0}
+              reserve={covered && !stacked ? controlsWidth + GAP_PX : 0}
             />
           </div>
         ) : (

@@ -15,7 +15,7 @@ def warm(monkeypatch):
     from utils import torch_warmup
 
     monkeypatch.delenv(torch_warmup.EARLY_PROBE_ENV_VAR, raising = False)
-    # _warm() publishes into the module-level status; keep that out of later tests.
+    # _warm() publishes into module-level status; keep that out of later tests
     monkeypatch.setattr(
         torch_warmup, "_status", {"started": False, "finished": False, "stages": {}}
     )
@@ -58,7 +58,7 @@ def test_kick_runs_the_existing_prewarm_on_a_daemon_thread_only_for_diffusers_in
     calls.clear()
     monkeypatch.setattr(warm, "_a_local_model_would_load_through_diffusers", lambda: False)
     warm._kick_early_quant_probe().join(10)
-    assert calls == []  # chat-only / training-only installs pay nothing
+    assert calls == []
 
     def broken() -> bool:
         raise RuntimeError("index unreadable")

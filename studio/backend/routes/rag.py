@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HTTP API for the RAG engine: KB CRUD, uploads, SSE ingestion, search. Single-tenant: the subject gates
-access, not data.
-
-Without a working sqlite-vec the router still mounts, and one contract covers every endpoint. The KB list is
-polled, so it answers 200 with an empty list carrying an availability marker, which is what lets a client tell
-an empty store from a machine where RAG cannot run. Every other endpoint but /extract-text, which only parses,
-answers 503 stating the same reason.
-Nothing logs a traceback for it: the condition is fixed for the session and rag_db warns about it exactly once.
-"""
+"""No sqlite-vec: KB list gives empty 200 with availability marker; other routes 503 except
+/extract-text (parse only); single-tenant, subject gates access, not data"""
 
 from __future__ import annotations
 
@@ -33,7 +26,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject, request_admitted_without_credential
-from core.rag import config, folder_sync, ingestion, retrieval, store
+from core.rag import config, folder_sync, ingestion, reembed, retrieval, store
 from storage import rag_db
 from utils.account_context import (
     OWNER,
@@ -53,21 +46,14 @@ _UNAVAILABLE_DETAIL = "RAG is unavailable: the sqlite-vec extension could not be
 
 
 def _require_rag() -> None:
-    """Gate an endpoint on RAG being runnable here. Covers both halves of unavailable: sqlite-vec never
-    imported, and it imported but its native library will not load. 503 with a stated reason rather
-    than the 500 plus traceback a raising connection would produce, and rag_db's warn-once keeps the
-    log quiet however often this fires."""
+    """Returns 503 with a stated reason, not the 500 and traceback a raising connection would produce."""
     if not rag_db.rag_available():
         raise HTTPException(status_code = 503, detail = _UNAVAILABLE_DETAIL)
 
 
 @contextmanager
 def _rag_unavailable_as_503(cleanup_path: str | None = None) -> Iterator[None]:
-    """Report RagExtensionUnavailable as the same 503, wherever it is raised. _require_rag() has
-    normally answered for the session already; this closes the window where the very first request
-    is the one that discovers the missing library, and it reaches the connections ingestion opens
-    for itself. ``cleanup_path`` removes an upload that was saved before the failure, so nothing is
-    orphaned in the uploads root. Real database errors are left alone."""
+    """Maps RagExtensionUnavailable to 503 anywhere, removing the upload that cleanup_path names."""
     try:
         yield
     except rag_db.RagExtensionUnavailable as exc:
@@ -82,10 +68,7 @@ def _rag_connection() -> sqlite3.Connection:
 
 
 def _availability(available: bool) -> dict:
-    """Availability marker carried by the KB list, the one response that degrades rather than erroring.
-    Additive: a client that only reads the list is unaffected, one that reads this can say "RAG cannot run here"
-    instead of showing an empty page that looks ready to use and offering a Create that can only 503.
-    """
+    """Marks the KB list as degraded rather than erroring, so the UI can say RAG cannot run here."""
     return {
         "ragAvailable": available,
         "ragUnavailableReason": None if available else _UNAVAILABLE_DETAIL,
@@ -104,37 +87,37 @@ def _document_label(name: str) -> str:
     base = re.sub(r" +", " ", base).strip() or "document"
     if len(base) <= 200:
         return base
-    # Trim the stem, not the extension: _save_upload gates on the extension, so
-    # a plain truncation would reject a long-named .txt as "unsupported".
+    # Trim the stem: _save_upload gates on the extension.
     stem, ext = os.path.splitext(base)
     if not ext or len(ext) > 32:
         return base[:200]
     return stem[: 200 - len(ext)] + ext
 
 
-# Names treated as Windows paths. Each is also a legal POSIX filename; the list stays
-# narrow because splitting a real name loses part of it. One leading backslash counts as
-# UNC because multipart parsing unescapes "\\" to "\".
+# Kept narrow: splitting a real name loses part of it.
+# One leading backslash counts as UNC because multipart parsing unescapes "\\" to "\".
 _LOOKS_LIKE_WINDOWS_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\?|\.{1,2}\\)")
 
 
 def _sanitize_filename(name: str) -> str:
     """Label a browser upload, whose client-supplied name may carry a path."""
-    # Not ntpath.basename: it reads "P:L statement.pdf", how macOS stores a Finder "/",
-    # as drive "P:". Classify first: splitting on "/" would strip the drive from "C:/a\b".
+    # Not ntpath.basename: macOS names like "P:L x.pdf" would read as drive "P:".
+    # Classify first: splitting on "/" would strip the drive from "C:/a\b".
     raw = name or ""
     parts = re.split(r"[\\/]", raw) if _LOOKS_LIKE_WINDOWS_PATH.match(raw) else raw.split("/")
     return _document_label(parts[-1])
 
 
-def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple[str, str, str]:
-    """Copy a validated document stream into the managed uploads root.
-
-    Returns ``(stored_path, filename, content_hash)``; the digest spares ingestion a
-    second full read of the file.
-    """
+def _persist_upload_stream(
+    source,
+    filename: str,
+    *,
+    empty_detail: str,
+    extra_exts: frozenset[str] = frozenset(),
+) -> tuple[str, str, str]:
+    """Returns the content hash so ingestion does not need a second full read of the file."""
     ext = os.path.splitext(filename)[1].lower()
-    if ext not in config.UPLOAD_EXTS:
+    if ext not in config.UPLOAD_EXTS and ext not in extra_exts:
         raise HTTPException(
             status_code = 400,
             detail = f"Unsupported file type '{ext}'. Allowed: {sorted(config.UPLOAD_EXTS)}",
@@ -170,22 +153,21 @@ def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple
     return stored_path, filename, digest.hexdigest()
 
 
-def _save_upload(file: UploadFile) -> tuple[str, str, str]:
+def _save_upload(
+    file: UploadFile, extra_exts: frozenset[str] = frozenset()
+) -> tuple[str, str, str]:
     """Persist a browser upload; returns (stored_path, filename, content_hash)."""
     filename = _sanitize_filename(file.filename or "document")
     return _persist_upload_stream(
         file.file,
         filename,
         empty_detail = "Uploaded file is empty.",
+        extra_exts = extra_exts,
     )
 
 
 def _save_native_path_upload(lease: str) -> tuple[str, str, str]:
-    """Persist a desktop drop; returns (stored_path, filename, content_hash).
-
-    The webview never gets to name a path directly: Rust signs the path it saw and we
-    re-verify + re-stat that grant here before reading a byte.
-    """
+    """The webview names no path; the Rust-signed lease is re-verified before a single byte is read."""
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
     try:
@@ -366,9 +348,7 @@ def _require_scope_owner(
     scope_id: str,
     conn: sqlite3.Connection | None = None,
 ) -> None:
-    """404 unless the scope's owner still exists. ``conn`` reuses a connection the caller already holds:
-    sqlite-vec loads per connection, so opening a second one to read a single row pays that twice.
-    """
+    """404 unless the scope owner exists; pass conn to reuse one since sqlite-vec loads per connection."""
     if scope_type == "knowledge_base":
         if conn is not None:
             exists = store.get_kb(conn, scope_id) is not None
@@ -431,11 +411,7 @@ def list_knowledge_bases(subject: str = Depends(get_current_subject)) -> dict:
     try:
         conn = rag_db.get_connection()
     except rag_db.RagExtensionUnavailable:
-        # RAG_AVAILABLE only covers the import; the native library can still fail to load per connection (a missing
-        # vec0 binary in the venv). The UI polls this list, so 500ing costs a traceback every few seconds for a
-        # condition that never changes in a session, and rag_db has warned once. The marker is the difference between
-        # "no knowledge bases yet" and "RAG cannot run here". Only the unavailable case degrades: a locked or corrupt
-        # database still raises.
+        # Degrade only when the vec0 native lib is unavailable; locked or corrupt DBs must still raise.
         return {"knowledgeBases": [], **_availability(False)}
     try:
         kbs = store.list_kbs(conn)
@@ -449,6 +425,15 @@ def list_knowledge_bases(subject: str = Depends(get_current_subject)) -> dict:
                     "description": kb.get("description"),
                     "createdAt": kb.get("created_at"),
                     "documentCount": len(docs),
+                    # A completed row without chunks is a legacy empty index the next upload redoes.
+                    "indexedCount": sum(
+                        1
+                        for doc in docs
+                        if doc.get("status") == "completed" and doc.get("num_chunks")
+                    ),
+                    "indexingCount": sum(
+                        1 for doc in docs if doc.get("status") in ("pending", "running")
+                    ),
                 }
             )
         return {"knowledgeBases": out, **_availability(True)}
@@ -520,8 +505,7 @@ def _raise_if_scope_retired(scope: str, detail: str = "Knowledge base is being d
         raise HTTPException(status_code = 409, detail = detail)
 
 
-# The three upload routes stay sync so FastAPI runs them in the threadpool; their
-# copy + start_ingestion work would stall every other request on the event loop.
+# Upload routes stay sync so their blocking work runs in the threadpool.
 @router.post("/knowledge-bases/{kb_id}/documents")
 def upload_kb_document(
     kb_id: str,
@@ -629,9 +613,7 @@ def _discard_document(document_id: str) -> None:
         store.delete_document(conn, document_id)
     finally:
         conn.close()
-    # Same uploads-root confinement as every other cleanup path, and best-effort for the same reason: on Windows
-    # commonpath raises across drives and os.remove raises while the ingestion worker still holds the file, neither
-    # of which should turn this into a 500.
+    # Best-effort: on Windows commonpath and os.remove can raise; must not 500.
     _remove_stored_upload(document.get("stored_path"))
 
 
@@ -672,8 +654,7 @@ def upload_project_document(
     except Exception:
         _remove_stored_upload(stored_path)
         raise
-    # the project delete runs in the threadpool and can commit after the check above, once its own
-    # RAG cleanup has already listed the project's documents
+    # The threadpool project delete can commit after the check above.
     if get_chat_project(project_id) is None:
         _discard_document(document_id)
         raise HTTPException(status_code = 404, detail = "Project not found")
@@ -848,6 +829,52 @@ def delete_document(document_id: str, subject: str = Depends(get_current_subject
         conn.close()
 
 
+def _reembed_view(job: dict | None) -> dict | None:
+    if job is None:
+        return None
+    return {
+        "id": job["id"],
+        "status": job["status"],
+        "done": job["done"],
+        "failed": job["failed"],
+        "remaining": job["remaining"],
+        "clippedChunks": job["clipped_chunks"],
+        "progress": job["progress"],
+        "error": job["error"],
+    }
+
+
+@router.get("/reembed")
+def reembed_status(subject: str = Depends(get_current_subject)) -> dict:
+    """Documents indexed under another embedder than the current one, and the re-embed job."""
+    _require_rag()
+    # Job first: one ending between the reads still says running, so the client polls for the counts.
+    job = _reembed_view(reembed.status())
+    with _rag_unavailable_as_503():
+        stale = reembed.stale_counts()
+    return {
+        "staleDocuments": stale["documents"],
+        "staleArchived": stale["archived"],
+        "job": job,
+    }
+
+
+@router.post("/reembed")
+def start_reembed(subject: str = Depends(get_current_subject)) -> dict:
+    _require_rag()
+    with _rag_unavailable_as_503():
+        return {"job": _reembed_view(reembed.start())}
+
+
+@router.post("/reembed/cancel")
+def cancel_reembed(subject: str = Depends(get_current_subject)) -> dict:
+    _require_rag()
+    job = reembed.cancel()
+    if job is None:
+        raise HTTPException(status_code = 404, detail = "No re-embed job")
+    return {"job": _reembed_view(job)}
+
+
 @router.get("/jobs/{job_id}")
 def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
@@ -907,6 +934,8 @@ def _folder_job_view(row: dict) -> dict:
         "removedFiles": row.get("deleted") or 0,
         "renamedFiles": row.get("renamed") or 0,
         "failedFiles": row.get("failed") or 0,
+        # Folder-wide, out of discoveredFiles; processedFiles counts only this pass's changes.
+        "syncedFiles": (row.get("up_to_date") or 0) + (row.get("checked") or 0),
         "error": row.get("error"),
         "createdAt": row.get("created_at"),
         "completedAt": row.get("completed_at"),
@@ -959,14 +988,223 @@ def folder_job_events(
 _EXTRACT_TEXT_MAX_BYTES = 20 * 1024 * 1024
 
 
+_IMAGE_TEXT_EXTS = frozenset(".png .jpg .jpeg .webp .gif .bmp .tif .tiff".split())
+# A letter page at OCR_DPI, as PDF OCR sends.
+_IMAGE_MAX_PIXELS = int(8.5 * 11 * config.OCR_DPI**2)
+_IMAGE_DECODE_MAX_PIXELS = 50_000_000
+
+
+def _image_png(opened) -> bytes:
+    """Native pixels, never rescaled by the file's DPI tag (PyMuPDF does, and cannot open WebP)."""
+    import io
+
+    from PIL import Image, ImageOps
+
+    width, height = opened.size
+    if width * height > _IMAGE_DECODE_MAX_PIXELS:
+        raise ValueError(f"the image is too large ({width} x {height} pixels)")
+    scale = min(1.0, (_IMAGE_MAX_PIXELS / (width * height)) ** 0.5)
+    size = (max(1, int(width * scale)), max(1, int(height * scale)))
+    opened.thumbnail(size, Image.Resampling.LANCZOS)
+    rgba = ImageOps.exif_transpose(opened).convert("RGBA")
+    # On white like PyMuPDF, or dark text on a transparent PNG turns black on black.
+    image = Image.new("RGB", rgba.size, "white")
+    image.paste(rgba, mask = rgba.getchannel("A"))
+    out = io.BytesIO()
+    # Tagged at OCR_DPI so Tesseract renders it 1:1.
+    image.save(out, "PNG", dpi = (config.OCR_DPI, config.OCR_DPI))
+    return out.getvalue()
+
+
+def _image_text(path: str, filename: str) -> tuple[str, str | None]:
+    """The loaded vision model reads each page, else local Tesseract; returns the text and any warning."""
+    import tempfile
+
+    from PIL import Image
+
+    from core.rag import captioner, pdf_ocr
+
+    pngs: dict[int, bytes] = {}
+    failed: dict[int, Exception] = {}
+    more = False
+    # A handle, not the path: Pillow memory-maps a path's raw strips and scrambles a rotated uncompressed TIFF.
+    with open(path, "rb") as upload, Image.open(upload) as opened:
+        # TIFF frames are pages; GIF and WebP frames are animation.
+        multipage = opened.format == "TIFF" and opened.is_animated
+        if not multipage:
+            pngs[1] = _image_png(opened)
+        else:
+            # Not n_frames: Pillow's walk over every page is quadratic, and a small TIFF can hold millions.
+            for number in range(1, config.OCR_MAX_PAGES + 1):
+                try:
+                    opened.seek(number - 1)
+                    pngs[number] = _image_png(opened)
+                except EOFError:
+                    break
+                except Exception as exc:
+                    # Pillow can still reach the pages after one it fails to set up.
+                    failed[number] = exc
+            else:
+                more = True
+                try:
+                    opened.seek(config.OCR_MAX_PAGES)
+                except EOFError:
+                    more = False
+                except Exception:
+                    pass  # a page Pillow cannot set up is still a page
+    if not pngs and failed:
+        raise next(iter(failed.values()))
+    texts = captioner.ocr_pages(pngs)
+    if rest := sorted(pngs.keys() - texts.keys()):
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                normalized = os.path.join(tmp, "image.png")
+                for number in rest:
+                    with open(normalized, "wb") as handle:
+                        handle.write(pngs[number])
+                    text = pdf_ocr.ocr_pages(normalized, [1]).get(1, "")
+                    if text:
+                        texts[number] = text
+        except OSError:
+            # A full disk costs only the pages left for Tesseract.
+            if not texts:
+                raise
+    text = "\n\n".join(texts[number] for number in sorted(texts))
+    if not multipage:
+        return text, None
+    notes = []
+    if failed:
+        first, error = next(iter(failed.items()))
+        cause = f"; page {first}: {error}" if len(failed) > 1 else f": {error}"
+        notes.append(
+            f"Could not read page{'s' if len(failed) > 1 else ''} {', '.join(map(str, failed))} "
+            f"of {filename}{cause}."
+        )
+    unread = sorted(pngs.keys() - texts.keys())
+    if unread:
+        notes.append(_unread_pages_warning(filename, unread))
+    if more:
+        notes.append(f"Only the first {config.OCR_MAX_PAGES} pages of {filename} were read.")
+    return text, " ".join(notes) or None
+
+
+def _page_text(
+    page,
+    scanned_text: dict[int, str],
+    *,
+    raw: bool = False,
+) -> str:
+    # raw: leading whitespace is content (an empty TSV cell, a code block).
+    original = page.text if raw else page.text.strip()
+    scanned = scanned_text.get(page.page_number, "")
+    return scanned if original in scanned else "\n\n".join(filter(None, [original, scanned]))
+
+
+def _length_before(pages: list, texts: dict[int, str], page_number: int) -> int:
+    """Characters of the joined text ahead of *page_number*; OCR only ever adds to it."""
+    length = 0
+    for page in pages:
+        if page.page_number == page_number:
+            break
+        text = _page_text(page, texts)
+        if text:
+            length += len(text) + (2 if length else 0)
+    return length
+
+
+def _scanned_page_text(
+    path: str,
+    pages: list,
+    max_chars: int | None = None,
+) -> tuple[dict[int, str], list[int], int]:
+    """OCR text by page, unread scanned pages, and pages kept; pages past *max_chars* are never OCR'd."""
+    from core.rag import captioner, parsers, pdf_ocr
+
+    scanned = [page.page_number for page in pages if page.needs_ocr]
+    # pdf_ocr.ocr_pages takes MUPDF_LOCK even for no pages, stalling text-only reads behind ingestion OCR.
+    if not scanned:
+        return {}, [], len(pages)
+    wanted = scanned[: config.OCR_MAX_PAGES]
+    texts: dict[int, str] = {}
+    if max_chars is None:
+        if captioner.vision_endpoint() is not None:
+            texts = captioner.ocr_pages(parsers.render_pdf_pages(path, wanted, dpi = config.OCR_DPI))
+        rest = [number for number in wanted if number not in texts]
+        if rest:
+            texts.update(pdf_ocr.ocr_pages(path, rest))
+        return texts, [number for number in scanned if number not in texts], len(pages)
+
+    # Counted in code points, never more than the UTF-16 units the page measures, so its cut still lands.
+    def past_cap(number: int, extra: dict[int, str] | None = None) -> bool:
+        return _length_before(pages, {**texts, **extra} if extra else texts, number) > max_chars
+
+    if captioner.vision_endpoint() is not None:
+        for number in wanted:
+            if past_cap(number):
+                break
+            texts.update(
+                captioner.ocr_pages(parsers.render_pdf_pages(path, [number], dpi = config.OCR_DPI))
+            )
+    rest = [number for number in wanted if number not in texts and not past_cap(number)]
+    if rest:
+        texts.update(pdf_ocr.ocr_pages(path, rest, until = past_cap))
+    kept, length = len(pages), 0
+    for index, page in enumerate(pages):
+        if length > max_chars:
+            kept = index
+            break
+        text = _page_text(page, texts)
+        if text:
+            length += len(text) + (2 if length else 0)
+    kept_numbers = {page.page_number for page in pages[:kept]}
+    return texts, [n for n in scanned if n in kept_numbers and n not in texts], kept
+
+
+def _unread_pages_warning(filename: str, unread: list[int]) -> str:
+    pages_label = ", ".join(map(str, unread[:20]))
+    if len(unread) > 20:
+        pages_label += f" and {len(unread) - 20} more"
+    return (
+        f"Could not read scanned page{'s' if len(unread) > 1 else ''} {pages_label} of "
+        f"{filename}. Reading scanned pages needs a vision model loaded in Chat, or Tesseract OCR "
+        f"installed, and covers at most {config.OCR_MAX_PAGES} pages."
+    )
+
+
 # Not gated on sqlite-vec: the composer inlines the text of files its browser readers cannot open.
 @router.post("/extract-text")
-def extract_text(file: UploadFile = File(...), subject: str = Depends(get_current_subject)) -> dict:
+def extract_text(
+    file: UploadFile = File(...),
+    # Translate keeps only its first max_chars characters; scanned pages past them are not OCR'd.
+    max_chars: Annotated[int | None, Form(ge = 1)] = None,
+    subject: str = Depends(get_current_subject),
+) -> dict:
     from core.rag import parsers
 
-    stored_path, filename, _digest = _save_upload(file)
+    stored_path, filename, _digest = _save_upload(file, _IMAGE_TEXT_EXTS)
+    if os.path.splitext(filename)[1].lower() in _IMAGE_TEXT_EXTS:
+        try:
+            text, warning = _image_text(stored_path, filename)
+        except Exception as exc:
+            raise HTTPException(
+                status_code = 422, detail = f"{filename} could not be read: {exc}"
+            ) from exc
+        finally:
+            _remove_stored_upload(stored_path)
+        if not text.strip():
+            raise HTTPException(
+                status_code = 422,
+                detail = warning
+                or f"No text could be read from {filename}. Reading images needs a vision "
+                "model loaded in Chat, or Tesseract OCR installed.",
+            )
+        result = {"filename": filename, "text": text, "truncated": False}
+        if warning:
+            result["warning"] = warning
+        return result
     try:
         pages = parsers.parse(stored_path)
+        scanned_text, unread, kept = _scanned_page_text(stored_path, pages, max_chars)
     except ImportError as exc:
         raise HTTPException(status_code = 503, detail = f"{filename} could not be read: {exc}") from exc
     # Not only ValueError: python-docx raises its own errors for a damaged .docm/.dotx.
@@ -974,12 +1212,15 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
         raise HTTPException(status_code = 422, detail = f"{filename} could not be read: {exc}") from exc
     finally:
         _remove_stored_upload(stored_path)
+    warning = _unread_pages_warning(filename, unread) if unread else None
     # Capped page by page: joining everything first would hold a huge extraction several times over.
     parts: list[bytes] = []
     room = _EXTRACT_TEXT_MAX_BYTES
-    truncated = False
-    for page in pages:
-        chunk = page.text.strip().encode("utf-8")
+    truncated = kept < len(pages)
+    ext = os.path.splitext(filename)[1].lower()
+    raw = ext in (".txt", ".md", ".markdown") or ext in config.SOURCE_TEXT_EXTS
+    for page in pages[:kept]:
+        chunk = _page_text(page, scanned_text, raw = raw).encode("utf-8")
         if not chunk:
             continue
         if parts:
@@ -991,7 +1232,13 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
         parts.append(chunk)
         room -= len(chunk)
     text = b"".join(parts).decode("utf-8", errors = "ignore")
-    return {"filename": filename, "text": text, "truncated": truncated}
+    # Refused only when the unread scans were all there was; otherwise the text loads with the warning.
+    if warning and not text.strip():
+        raise HTTPException(status_code = 422, detail = warning)
+    result = {"filename": filename, "text": text, "truncated": truncated}
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 @router.post("/search")
@@ -1044,8 +1291,7 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
         conn.close()
 
 
-# Per-process secret so pdf.js range requests fetch the file without a bearer
-# header; tokens only work on this server instance.
+# Per-process secret so pdf.js range requests work without a bearer header.
 _PREVIEW_SECRET = secrets.token_bytes(32)
 _PREVIEW_TTL = 600
 
@@ -1054,8 +1300,7 @@ _CONTENT_TYPES = {
     ".txt": "text/plain; charset=utf-8",
     ".md": "text/markdown; charset=utf-8",
     ".markdown": "text/markdown; charset=utf-8",
-    # Served as plain text, never text/html: an uploaded HTML document rendered same-origin would
-    # execute its scripts with access to the app's storage.
+    # Never text/html: uploaded HTML would run scripts same-origin.
     ".html": "text/plain; charset=utf-8",
     ".htm": "text/plain; charset=utf-8",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1101,48 +1346,6 @@ def _verify_document_token(document_id: str, token: str) -> AccountContext | Non
     return None if account is None or account.is_owner else account
 
 
-@router.get("/documents/{document_id}/preview-target")
-def preview_target(
-    document_id: str,
-    chunk_id: str | None = Query(default = None),
-    subject: str = Depends(get_current_subject),
-) -> dict:
-    """Resolve a citation to filename, page, and highlight regions."""
-    _require_rag()
-    conn = _rag_connection()
-    try:
-        doc = store.get_visible_document(conn, document_id)
-        if doc is None:
-            raise HTTPException(status_code = 404, detail = "Document not found")
-        _require_document_owner(conn, doc)
-        ext = os.path.splitext(doc["filename"])[1].lower()
-        out = {
-            "documentId": document_id,
-            "filename": doc["filename"],
-            "mediaKind": "pdf" if ext == ".pdf" else "text",
-            "targetPage": None,
-            "pdfRegions": [],
-            "text": None,
-        }
-        if chunk_id:
-            row = conn.execute(
-                "SELECT text, page_number, pdf_regions_json FROM chunks "
-                "WHERE id=? AND document_id=?",
-                (chunk_id, document_id),
-            ).fetchone()
-            if row is not None:
-                out["text"] = row["text"]
-                out["targetPage"] = row["page_number"]
-                if row["pdf_regions_json"]:
-                    try:
-                        out["pdfRegions"] = json.loads(row["pdf_regions_json"])
-                    except Exception:
-                        out["pdfRegions"] = []
-        return out
-    finally:
-        conn.close()
-
-
 @router.get("/documents/{document_id}/file-url")
 def document_file_url(
     document_id: str,
@@ -1172,8 +1375,7 @@ def document_file_url(
 def document_file_signed(document_id: str, token: str = Query(...)) -> FileResponse:
     """Serve the source file gated by the HMAC token (no bearer) so pdf.js range
     requests work."""
-    # Token first: this is the one endpoint with no bearer, and _require_rag() now opens
-    # a connection on its first call, which is not work an unverified token should buy.
+    # Verify the token first: this endpoint has no bearer auth.
     account = _verify_document_token(document_id, token)
     if account is None:
         raise HTTPException(status_code = 401, detail = "Invalid or expired token")

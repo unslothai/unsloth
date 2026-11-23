@@ -1,11 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Unit tests for install.sh's _redact_install_output helper. uv/pip failure text embeds the
-# failing --index-url verbatim, so a captured install log dumped on error can leak a
-# user:token@ or ?token= secret. The helper redacts both before printing. Mirrors
-# _redact_install_output (install_python_stack.py) / Redact-InstallOutput (install.ps1 /
-# setup.ps1).
+# uv/pip failure text embeds the --index-url verbatim, so _redact_install_output strips
+# user:token@ and ?token= secrets. Mirrors install_python_stack.py and the ps1 copies.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -17,7 +14,6 @@ sed -n '/^_redact_install_output()/,/^}/p' "$INSTALL_SH" > "$_FUNC_FILE"
 . "$_FUNC_FILE"
 rm -f "$_FUNC_FILE"
 
-# Redact from a file (the actual call site passes a captured-log tempfile).
 redact_str() {
     _rs_tmp=$(mktemp)
     printf '%s\n' "$1" > "$_rs_tmp"
@@ -55,7 +51,6 @@ assert_eq "query and fragment both redacted" \
     "https://host/whl/cu128?token=<redacted>#<redacted> done" \
     "$(redact_str 'https://host/whl/cu128?token=abc#sig=xyz done')"
 
-# Non-secret text is untouched (no false positives on ordinary log lines).
 assert_eq "plain line untouched" \
     "Resolved 42 packages in 1.2s" \
     "$(redact_str 'Resolved 42 packages in 1.2s')"
@@ -66,7 +61,6 @@ assert_eq "bare hash comment untouched" \
     "# retrying with --no-cache-dir" \
     "$(redact_str '# retrying with --no-cache-dir')"
 
-# Regression guard: no secret substring survives.
 _leak=$(redact_str 'https://alice:s3cr3t@host/whl/cu128?token=SUPERSECRET#frag=ALSOSECRET')
 case "$_leak" in
     *s3cr3t*|*SUPERSECRET*|*ALSOSECRET*) assert_eq "no secret leak" "clean" "leaked:$_leak" ;;

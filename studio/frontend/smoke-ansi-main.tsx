@@ -2,11 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { createRoot } from "react-dom/client";
-// The app mounts every one of these components inside the provider tree in app/provider.tsx.
-// This page mounts them bare, so any context they depend on has to be supplied here too, and
-// a missing one is not a small thing: `Tooltip` throws outside its provider, which takes the
-// whole React root down and leaves every section below empty. #11425 gave the code cell an
-// icon button with a tooltip, and CodeExecutionResultOutput renders it.
+// Mounted bare, so supply providers here: `Tooltip` throws outside its provider.
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToolResultOutput } from "@/components/assistant-ui/tool-result-output";
 import { ToolFallbackResult } from "@/components/assistant-ui/tool-fallback";

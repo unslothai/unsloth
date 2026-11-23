@@ -78,9 +78,10 @@ brew install --cask unsloth
 ```
 
 #### Winget (Windows):
-```bash
+```powershell
 winget install --id UnslothAI.Unsloth -e
 ```
+If endpoint protection blocks `irm ... | iex` on a managed PC, use winget.
 
 #### Community:
 
@@ -94,6 +95,8 @@ Unsloth works on **Windows, Linux, WSL** and **macOS**. We support **Multi GPU s
 ### Run & Build with AI
 * Run and train LLMs, MLX, GGUF, diffusion, decision, embedding, audio models: [Qwen3.8](https://unsloth.ai/docs/models/qwen3.8), [GLM-5.3-Flash](https://unsloth.ai/docs/models/glm-5.3-flash), [Kimi K3](https://unsloth.ai/docs/models/kimi-k3), [Qwen-Image-2.1](https://unsloth.ai/docs/models/qwen-image-2.1), MiniMax-H3, [DeepSeek-V4](https://unsloth.ai/docs/models/deepseek-v4), [Gemma 4](https://unsloth.ai/docs/models/gemma-4).
 * **Agents & Tools:** Use local models with [Claude Code](https://unsloth.ai/docs/basics/claude-code), [Codex](https://unsloth.ai/docs/basics/codex), and [MCP](https://unsloth.ai/docs/basics/mcp), including tool calling and code execution.
+* **Browser use:** [Browse sites](https://unsloth.ai/docs/basics/browser-use), fill out forms, read PDFs, and edit files alongside a local-model chat.
+* **Sandboxing:** [Limit file access](https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth) for commands your model runs.
 * **Search & RAG:** Use private and unlimited web search, deep research, auto-compaction (rolling context window) and RAG.
 * **Image and video:** Run and train [image](https://unsloth.ai/docs/basics/diffusion-image) and video diffusion or multimodal models
 * **Remote & LAN:** Access your local models from any device on [LAN](https://unsloth.ai/docs/basics/lan) or remotely through secure [Cloudflare](https://unsloth.ai/docs/basics/how-to-serve-local-llms-anywhere-secure-remote-access-with-cloudflare-and-unsloth) HTTPS.
@@ -118,11 +121,13 @@ unsloth start claude --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL
 | --- | --- |
 | Claude Code | `unsloth start claude` |
 | OpenAI Codex | `unsloth start codex` |
+| Visual Studio Code | `unsloth start vscode` |
 | DeepSeek Harness | `unsloth start dsh` |
 | OpenCode | `unsloth start opencode` |
 | Hermes Agent | `unsloth start hermes` |
 | Pi | `unsloth start pi` |
 | OpenClaw | `unsloth start openclaw` |
+| Mistral Vibe | `unsloth start vibe` |
 
 ## 📥 Install
 Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/download)**, the desktop app; **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI; or **Unsloth Core**, the code based version.
@@ -160,6 +165,8 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
   </tr>
 </table>
 
+For Desktop's local HTTP port, set `UNSLOTH_DESKTOP_PORT=9000` in its launch environment and fully restart the app. Unset or empty uses `8888`. Choose `1024–65515`. If the port is busy, Desktop tries the next 20. It rejects ranges with browser-restricted ports. This covers backend restarts after updates. `unsloth studio -p` and LAN use separate ports.
+
 ### Unsloth Studio (web UI)
 
 #### macOS, Linux, WSL:
@@ -190,6 +197,7 @@ For Windows instructions and more information, read our [Unsloth Docker Guide](h
 docker run -d --name unsloth --gpus all --ipc=host \
   -p 8000:8000 -p 8888:8888 \
   -v "$PWD":/workspace/host \
+  -v unsloth-workspace:/workspace \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth && docker logs -f unsloth
@@ -221,6 +229,21 @@ unsloth studio --secure
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 **LAN Access (home network)**: `Settings > API keys > LAN access`
+
+For a **reverse proxy or custom domain**, run the proxy on the same machine as Desktop (e.g., Cloudflare Named Tunnel, nginx, or Caddy). Set a comma-separated list of allowed hostnames, then quit and reopen Desktop.
+```bash
+export UNSLOTH_STUDIO_PROXY_HOSTS=studio.example.com            # Linux: start Unsloth Desktop from this shell
+launchctl setenv UNSLOTH_STUDIO_PROXY_HOSTS studio.example.com  # macOS
+setx UNSLOTH_STUDIO_PROXY_HOSTS studio.example.com              # Windows
+```
+Forward the allowed hostname in `Host` or `X-Forwarded-Host`. In cloudflared, leave the HTTP Host Header override unset. Sign in with the password under `Settings > Remote access > Remote password`.
+
+For HTTPS with your own certificate, set both variables before `unsloth studio` (Docker or systemd). Either `--ssl-certfile` or `--ssl-keyfile` overrides both.
+```bash
+UNSLOTH_STUDIO_SSL_CERTFILE=/path/to/full-chain.pem \
+UNSLOTH_STUDIO_SSL_KEYFILE=/path/to/private-key.pem \
+unsloth studio
+```
 
 #### Password management & headless starts
 Exposing Unsloth (`--secure`, `--cloudflare`, or a non-loopback `-H`) asks once at the terminal for a new admin password. Ctrl+C there aborts the launch rather than exposing the auto-generated one; set a password non-interactively instead, or use `-H 127.0.0.1` to stay off the network.
@@ -268,6 +291,7 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 | Model | Free Notebooks | Performance | Memory use |
 |-----------|---------|--------|----------|
 | **Unsloth Studio**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/unsloth/blob/main/studio/Unsloth_Studio_Colab.ipynb)               |  |  |
+| **Decision model (Qwen3.5-4B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_5_(4B)-Decision.ipynb)               | 1.5x faster | 60% less |
 | **Gemma 4 (E2B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Gemma4_(E2B)-Vision.ipynb)               | 1.5x faster | 50% less |
 | **Qwen3.5 (4B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_5_(4B)_Vision.ipynb)               | 1.5x faster | 60% less |
 | **gpt-oss (20B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-Fine-tuning.ipynb)               | 2x faster | 70% less |
@@ -282,31 +306,6 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 - See all our notebooks for: [Kaggle](https://github.com/unslothai/notebooks?tab=readme-ov-file#-kaggle-notebooks), [GRPO](https://unsloth.ai/docs/get-started/unsloth-notebooks#grpo-reasoning-rl-notebooks), [TTS](https://unsloth.ai/docs/get-started/unsloth-notebooks#text-to-speech-tts-notebooks), [embedding](https://unsloth.ai/docs/new/embedding-finetuning) & [Vision](https://unsloth.ai/docs/get-started/unsloth-notebooks#vision-multimodal-notebooks)
 - See [all our models](https://unsloth.ai/docs/get-started/unsloth-model-catalog) and [all our notebooks](https://unsloth.ai/docs/get-started/unsloth-notebooks)
 - See detailed documentation for Unsloth [here](https://unsloth.ai/docs)
-
-## 🦥 Unsloth News
-- **AMD training**: Train, run RL, chat and deploy on AMD GPUs across Windows, WSL and Linux. [Guide](https://unsloth.ai/docs/basics/amd)
-- **Local models for any agent**: Use `unsloth start` with Claude Code, Codex, Hermes, OpenCode, OpenClaw, DeepSeek Harness and more through Unsloth's OpenAI- and Anthropic-compatible APIs. [Guide](https://unsloth.ai/docs/basics/api)
-- **GLM-5.2**: Run Z.ai's 744B-parameter, 1M-context open model locally with Unsloth Dynamic GGUFs. [Guide](https://unsloth.ai/docs/models/glm-5.2)
-- **DeepSeek-V4**: Run DeepSeek-V4-Flash locally with corrected multi-turn and tool-calling behavior. [Guide](https://unsloth.ai/docs/models/deepseek-v4)
-- **Gemma 4**: Run and train Gemma 4 text, image and audio models with QAT, MTP, GGUF and MLX support. [Guide](https://unsloth.ai/docs/models/gemma-4)
-- **MCP servers**: Connect local models to files, apps, databases and external tools through Model Context Protocol. [Guide](https://unsloth.ai/docs/basics/mcp)
-- **New models**: [Qwen-AgentWorld](https://huggingface.co/unsloth/Qwen-AgentWorld-35B-A3B-GGUF), [Ornith](https://huggingface.co/unsloth/models?search=ornith), [Kimi K2.7 Code](https://unsloth.ai/docs/models/kimi-k2.7-code) and [MiniMax M3](https://unsloth.ai/docs/models/minimax-m3)
-
-<details>
-  <summary>More News</summary>
-
-  - **Connections**: Mix local models with API providers (OpenAI, Anthropic) or servers (vLLM, Ollama) in the same interface. [Guide](https://unsloth.ai/docs/integrations/connections)
-  - **Introducing Unsloth Studio**: our new web UI for running and training LLMs. [Blog](https://unsloth.ai/docs/new/studio)
-  - **DiffusionGemma**: Run and fine-tune Google's diffusion language model with 1.8x faster inference in Unsloth Studio. [Guide](https://unsloth.ai/docs/models/diffusiongemma)
-  - **Qwen3.6**: Run and train Qwen3.6 with MTP for 1.4-2.2x faster inference and NVFP4 quants for supported GPUs. [Guide](https://unsloth.ai/docs/models/qwen3.6)
-  - Train **MoE LLMs 12x faster** with 35% less VRAM - DeepSeek, GLM, Qwen and gpt-oss. [Blog](https://unsloth.ai/docs/new/faster-moe)
-  - **Embedding models**: Unsloth now supports ~1.8-3.3x faster embedding fine-tuning. [Blog](https://unsloth.ai/docs/new/embedding-finetuning) • [Notebooks](https://unsloth.ai/docs/get-started/unsloth-notebooks#embedding-models)
-  - New **7x longer context RL** vs. all other setups, via our new batching algorithms. [Blog](https://unsloth.ai/docs/new/grpo-long-context)
-  - New RoPE & MLP **Triton Kernels** & **Padding Free + Packing**: 3x faster training & 30% less VRAM. [Blog](https://unsloth.ai/docs/new/3x-faster-training-packing)
-  - **500K Context**: Training a 20B model with >500K context is now possible on an 80GB GPU. [Blog](https://unsloth.ai/docs/blog/500k-context-length-fine-tuning)
-  - **FP8 & Vision RL**: You can now do FP8 & VLM GRPO on consumer GPUs. [FP8 Blog](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) • [Vision RL](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/vision-reinforcement-learning-vlm-rl)
-
-</details>
 
 ## 📥 Advanced Installation
 The below advanced instructions are for Unsloth Studio. For Unsloth Core advanced installation, [view our docs](https://unsloth.ai/docs/get-started/install/pip-install#advanced-pip-installation).
@@ -354,7 +353,7 @@ unsloth studio -p 8888
 
 #### Advanced launch options
 
-Skip PyTorch (GGUF-only mode):
+Skip PyTorch (Chat only mode: GGUF models, plus MLX models on Apple Silicon):
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
 ```
@@ -428,7 +427,7 @@ Cap Unsloth's native CPU thread pools on high-core hosts: `UNSLOTH_CPU_THREADS=8
 
 #### Vulkan, custom llama.cpp backends:
 
-You can force the backend during installation: 
+Choose the `llama.cpp` build for GGUF chat at install time. The installer chooses PyTorch separately based on your GPU.
 ```bash
 export UNSLOTH_LLAMA_CPP_BACKEND=vulkan   # or cpu, cuda, rocm, auto
 curl -fsSL https://unsloth.ai/install.sh | sh
@@ -436,6 +435,15 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 ```powershell
 $env:UNSLOTH_LLAMA_CPP_BACKEND="vulkan"   # or cpu, cuda, rocm, auto
 irm https://unsloth.ai/install.ps1 | iex
+```
+
+Set the PyTorch index family.
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_TORCH_INDEX_FAMILY=cpu sh   # or a family like rocm7.2
+```
+For chat only (GGUF models, plus MLX models on Apple Silicon), skip PyTorch.
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
 ```
 
 #### audio.cpp audio engine:

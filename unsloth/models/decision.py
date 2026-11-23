@@ -8,6 +8,7 @@ __all__ = [
 
 import contextlib
 import copy
+import dataclasses
 import json
 import math
 import os
@@ -28,12 +29,15 @@ from ._utils import (
     is_bfloat16_supported,
 )
 from .loader_utils import is_distributed
+from ..device_type import xpu_keeps_explicit_bf16
 from ._decision_fast import compiled_encoder, pad_length
+from ._lean_lora import apply_lean_lora as _lean_lora, lean_lora_forward as _lean_lora_forward
 from ._decision_common import *  # noqa: F401,F403
 
 HEAD_LEARNING_RATE = 1e-4
 # DecisionTrainer defaults for Clef; every key is also a DecisionTrainer argument.
 CLEF_RECIPE = {}
+_PIXEL_KEYS = ("pixel_values", "pixel_values_videos")
 _DECISION_CONFIG = "unsloth_decision_config.json"
 # Copied byte for byte from the checkpoint a Clef fine-tune started from: Cloudflare's loader and
 # license, and the tokenizer / processor files, which transformers would otherwise rewrite (a
@@ -90,9 +94,9 @@ def _pin_device_map(kwargs) -> None:
 
 
 def _amp_dtype(device):
-    if device.type == "cuda":
+    if device.type in ("cuda", "xpu"):
         return torch.bfloat16 if is_bfloat16_supported() else torch.float16
-    return torch.bfloat16 if device.type == "xpu" else None
+    return None
 
 
 def _no_cudnn_attention():
@@ -119,45 +123,6 @@ def _gradient_checkpointing(model, use_gradient_checkpointing) -> None:
             model.encoder.enable_input_require_grads()
     else:
         model.encoder.gradient_checkpointing_disable()
-
-
-def _lean_lora_forward(self, x, *args, **kwargs):
-    adapter = self._unsloth_adapter
-    if (
-        self.disable_adapters
-        or self.merged
-        or args
-        or kwargs
-        or (
-            not torch.is_autocast_enabled(x.device.type)
-            and x.dtype != self.lora_A[adapter].weight.dtype
-        )
-    ):
-        return self._unsloth_peft_forward(x, *args, **kwargs)
-    # PEFT's maths without its per-call checks, its round trip of x through the fp32 adapter
-    # dtype, and the multiply when scaling is 1.
-    lora = self.lora_B[adapter](self.lora_A[adapter](x))
-    scaling = self.scaling[adapter]
-    return self.base_layer(x) + (lora if scaling == 1 else lora * scaling)
-
-
-def _lean_lora(encoder) -> None:
-    # Plain LoRA (one adapter, no dropout, DoRA or other variant) skips PEFT's per-call checks and casts.
-    from peft.tuners.lora.layer import Linear
-
-    # Unsloth's compiler (a FastModel load earlier in this process) already gave PEFT a compiled forward.
-    if Linear.forward.__name__ == "unsloth_forward":
-        return
-    for module in encoder.modules():
-        if type(module) is not Linear or len(module.lora_A) != 1 or module.lora_variant:
-            continue
-        adapter = next(iter(module.lora_A))
-        if not isinstance(module.lora_dropout[adapter], torch.nn.Identity):
-            continue
-        # Bound methods, so the deepcopy that merges for saving rebinds them to the copy.
-        module._unsloth_adapter = adapter
-        module._unsloth_peft_forward = module.forward
-        module.forward = types.MethodType(_lean_lora_forward, module)
 
 
 def _soft_cross_entropy(logits, target, mask):
@@ -234,6 +199,7 @@ class ClefDataCollator:
         seed = 3407,
     ):
         self.pad_token_id = pad_token_id
+        self.processor = tokenizer if hasattr(tokenizer, "tokenizer") else None
         self.tokenizer, self.max_len = getattr(tokenizer, "tokenizer", tokenizer), max_len
         self.permute_fields = permute_fields and tokenizer is not None
         self.random = random.Random(seed)
@@ -248,8 +214,9 @@ class ClefDataCollator:
         try:
             record = encode_record(
                 self.tokenizer,
-                {"state": item["source"]["state"], "questions": questions},
+                {**item["source"], "questions": questions},
                 max_length = self.max_len,
+                processor = self.processor,
             )
         except ValueError:
             return item
@@ -261,18 +228,30 @@ class ClefDataCollator:
             "targets": [item["targets"][i] for i in order],
         }
 
+    def _with_pixels(self, item) -> dict:
+        from .._vendor.clef.joint_schema_model import _encode_media
+
+        record = item["record"]
+        if not record.media or any(key in record.media for key in _PIXEL_KEYS):
+            return item
+        _, media = _encode_media(self.processor, item["source"])
+        pixels = {key: media[key] for key in _PIXEL_KEYS if key in media}
+        return {**item, "record": dataclasses.replace(record, media = {**record.media, **pixels})}
+
     def __call__(self, items: list) -> dict:
-        from .clef import QUESTION_TYPES as CLEF_TYPES
+        from .clef import QUESTION_TYPES as CLEF_TYPES, collate_records
 
         if self.permute_fields:
             items = [self._permuted(item) if "source" in item else item for item in items]
-        rows, length = len(items), max(len(item["input_ids"]) for item in items)
+        items = [self._with_pixels(item) for item in items]
+        inputs = collate_records(
+            [item["record"] for item in items], self.pad_token_id, torch.device("cpu")
+        )
         targets = [target for item in items for target in item["targets"]]
         options = max(len(target) for target in targets)
         batch = {
-            "input_ids": torch.full((rows, length), self.pad_token_id, dtype = torch.long),
-            "attention_mask": torch.zeros((rows, length), dtype = torch.long),
-            "records": [item["record"] for item in items],
+            **{key: value for key, value in inputs.items() if key != "media"},
+            **inputs["media"],
             "marker_mask": torch.zeros((len(targets), options), dtype = torch.bool),
             "target": torch.zeros((len(targets), options), dtype = torch.float32),
             "ordinal": torch.tensor(
@@ -280,9 +259,6 @@ class ClefDataCollator:
                 dtype = torch.bool,
             ),
         }
-        for i, item in enumerate(items):
-            batch["input_ids"][i, : len(item["input_ids"])] = torch.tensor(item["input_ids"])
-            batch["attention_mask"][i, : len(item["input_ids"])] = 1
         for i, target in enumerate(targets):
             batch["marker_mask"][i, : len(target)] = True
             batch["target"][i, : len(target)] = torch.tensor(target)
@@ -313,16 +289,25 @@ class ClefDecisionModel(torch.nn.Module):
         head = None,
         **kwargs,
     ):
+        from .._vendor.clef.joint_schema_model import MEDIA_BATCH_KEYS, MEDIA_TOKEN_KEYS
+
         head = self.head if head is None else head
         backbone = self._backbone()
         # GPT-2 style models keep their decoder under base_model_prefix (.transformer), not .model.
         text_model = getattr(backbone, "model", None) or backbone.base_model
-        text_model = getattr(text_model, "language_model", text_model)
+        media = {
+            k: kwargs[k]
+            for k in (*MEDIA_BATCH_KEYS, *MEDIA_TOKEN_KEYS)
+            if kwargs.get(k) is not None
+        }
+        if not media:
+            text_model = getattr(text_model, "language_model", text_model)
         hidden = text_model(
             input_ids = input_ids,
             attention_mask = attention_mask,
             use_cache = False,
             return_dict = True,
+            **media,
         ).last_hidden_state
         logits = head(
             hidden,
@@ -342,10 +327,49 @@ class ClefDecisionModel(torch.nn.Module):
         return padded, None
 
 
+class _TokenIds:
+    __slots__ = ("input_ids",)
+
+    def __init__(self, input_ids):
+        self.input_ids = input_ids
+
+
+class _MemoTokenizer:
+    """encode_record tokenizes ~70 short, mostly repeated strings per row one call at a time.
+    Shared token ints stop every stored id from holding its own int object."""
+
+    MAX_CACHED_CHARS = 512
+    MAX_ENTRIES = 16384
+
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        self.cache, self.ints = {}, {}
+
+    def __call__(
+        self,
+        text,
+        add_special_tokens = True,
+        **kwargs,
+    ):
+        if add_special_tokens or kwargs or not isinstance(text, str):
+            return self.tokenizer(text, add_special_tokens = add_special_tokens, **kwargs)
+        ids = self.cache.get(text)
+        if ids is None:
+            raw = self.tokenizer(text, add_special_tokens = False).input_ids
+            ids = tuple(map(self.ints.setdefault, raw, raw))
+            if len(text) <= self.MAX_CACHED_CHARS:
+                if len(self.cache) >= self.MAX_ENTRIES:
+                    self.cache.clear()
+                self.cache[text] = ids
+        # A fresh list every call: encode_record extends the first one it gets.
+        return _TokenIds(list(ids))
+
+
 def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
     from .clef import QUESTION_TYPES as CLEF_TYPES, encode_record, question_options
 
-    tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    processor = tokenizer if hasattr(tokenizer, "tokenizer") else None
+    tokenizer = _MemoTokenizer(getattr(tokenizer, "tokenizer", tokenizer))
     items = []
     for index, row in enumerate(rows):
         row = row if isinstance(row, dict) else {}
@@ -374,14 +398,20 @@ def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
             kept[str(name)], targets, labels = clef_question, targets + [target], labels + [label]
         if not kept:
             continue
+        source = {"state": state, "questions": kept}
         try:
-            record = encode_record(
-                tokenizer, {"state": state, "questions": kept}, max_length = max_len
-            )
-        except (TypeError, ValueError) as exc:
+            images = _row_images(row)
+            if images:
+                source.update(images = images, media_kwargs = row.get("media_kwargs"))
+            record = encode_record(tokenizer, source, max_length = max_len, processor = processor)
+        except (TypeError, ValueError, OSError) as exc:
             for name in kept:
                 skip(index, f"does not fit: {exc}", name)
             continue
+        if record.media:
+            # ClefDataCollator makes the pixels again per batch: kept here they cost 24 MiB per 1024x1024 image.
+            media = {k: v for k, v in record.media.items() if k not in _PIXEL_KEYS}
+            record = dataclasses.replace(record, media = media)
         items.append(
             {
                 "input_ids": list(record.input_ids),
@@ -390,7 +420,7 @@ def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
                 "targets": targets,
                 "labels": labels,
                 "row": index,
-                "source": {"state": state, "questions": kept},
+                "source": source,
             }
         )
     return items
@@ -402,13 +432,16 @@ def _clef_logits(
     items: list,
     pad_token_id: int,
     batch_size: int = 4,
+    processor = None,
 ) -> tuple:
     # Per question logits plus one Laya-shaped item per question for the shared metrics.
     from .clef import QUESTION_TYPES as CLEF_TYPES
 
     device = next(model.parameters()).device
     amp_dtype = _clef_amp_dtype(model, device)
-    collate = ClefDataCollator(pad_token_id)
+    if not hasattr(processor, "tokenizer"):
+        processor = getattr(model, "_saved_temp_tokenizer", None)
+    collate = ClefDataCollator(pad_token_id, tokenizer = processor)
     # Clef numbers question types noul, choice, score; Laya's metrics use choice, score, noul.
     laya_type = {CLEF_TYPES[kind]: QUESTION_TYPES.index(kind) for kind in QUESTION_TYPES}
     was_training = model.training
@@ -445,7 +478,7 @@ def _decision_logits(
     pad_token_id = getattr(tokenizer, "tokenizer", tokenizer).pad_token_id
     if getattr(model, "is_clef", False):
         # A run that lowered its batch to fit a 9B / 27B backbone scores in that batch too.
-        return _clef_logits(model, items, pad_token_id, batch_size or 4)
+        return _clef_logits(model, items, pad_token_id, batch_size or 4, tokenizer)
     return _logits(model, items, pad_token_id), items
 
 
@@ -457,23 +490,33 @@ def _clef_decide(
     questions: dict,
     max_length = None,
     predicted = False,
+    images = None,
 ) -> dict:
     # One Decision API request over every question in one prefill, at served temperatures.
-    from .clef import encode_record, systemone_answer
+    from .clef import collate_records, encode_record, systemone_answer
 
+    processor = tokenizer if hasattr(tokenizer, "tokenizer") else None
     tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
     max_length = int(max_length or model.decision_config.get("max_len", CLEF_MAX_LEN))
     encoded = encode_record(
-        tokenizer, {"state": state, "questions": questions}, max_length = max_length
+        tokenizer,
+        {"state": state, "questions": questions, "images": images},
+        max_length = max_length,
+        processor = processor,
     )
     device = next(model.parameters()).device
     amp_dtype = _clef_amp_dtype(model, device)
-    ids = torch.tensor([encoded.input_ids], device = device)
+    batch = collate_records([encoded], tokenizer.pad_token_id, device)
     was_training = model.training
     model.eval()
     try:
         with torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None):
-            logits, _ = model(input_ids = ids, attention_mask = torch.ones_like(ids), records = [encoded])
+            logits, _ = model(
+                input_ids = batch["input_ids"],
+                attention_mask = batch["attention_mask"],
+                records = batch["records"],
+                **batch["media"],
+            )
     finally:
         model.train(was_training)
     rows = [
@@ -499,18 +542,35 @@ def _clef_decide(
     return {
         "answers": answers,
         "input_tokens": len(encoded.input_ids),
-        "truncated": _clef_truncated(tokenizer, state, questions, encoded, max_length),
+        "truncated": _clef_truncated(
+            tokenizer, state, questions, encoded, max_length, images = images, processor = processor
+        ),
     }
 
 
-def _clef_truncated(tokenizer, state, questions, encoded, max_length) -> bool:
+def _clef_truncated(
+    tokenizer,
+    state,
+    questions,
+    encoded,
+    max_length,
+    images = None,
+    processor = None,
+) -> bool:
     # One spare token tells a cut state from one that fits exactly.
     if len(encoded.input_ids) < max_length:
         return False
     from .clef import encode_record
 
-    record = {"state": state, "questions": questions}
-    return len(encode_record(tokenizer, record, max_length = max_length + 1).input_ids) > max_length
+    record = {"state": state, "questions": questions, "images": images}
+    return (
+        len(
+            encode_record(
+                tokenizer, record, max_length = max_length + 1, processor = processor
+            ).input_ids
+        )
+        > max_length
+    )
 
 
 def _laya_decide(
@@ -527,7 +587,7 @@ def _laya_decide(
     max_len = int(config.get("max_len", 512))
     items, keys = [], []
     for name, question in questions.items():
-        internal = _internal(question)
+        internal = _internal(question, name)
         ids, markers = common.build_sequence(
             tokenizer, _parsed(state), internal, max_len, int(config.get("head_max_len", 192))
         )
@@ -571,7 +631,9 @@ def _clef_bnb_config(dtype):
     from transformers import BitsAndBytesConfig
     from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 
-    float16 = dtype == torch.float16 or not is_bfloat16_supported()
+    # XPU keeps an explicit bf16 request in bf16 (emulated if need be), as the loaders do.
+    keep_bf16 = dtype == torch.bfloat16 and _device().type == "xpu" and xpu_keeps_explicit_bf16()
+    float16 = dtype == torch.float16 or (not is_bfloat16_supported() and not keep_bf16)
     return BitsAndBytesConfig(
         load_in_4bit = True,
         bnb_4bit_use_double_quant = True,
@@ -587,8 +649,18 @@ def _clef_forced_float32(model) -> bool:
 
 def _clef_amp_dtype(model, device):
     # As _clef_mixed_precision trains (serving uses it too): the float32 path runs as loaded (Qwen3.5's
-    # gated delta net overflows in fp16); anything else autocasts, fp16 on a T4.
-    return None if _clef_forced_float32(model) else _amp_dtype(device)
+    # gated delta net overflows in fp16); anything else autocasts, fp16 on a T4. XPU keeps an
+    # explicit bf16 load in bf16, so its autocast follows the weights.
+    if _clef_forced_float32(model):
+        return None
+    if device.type == "xpu":
+        backbone = model._backbone() if hasattr(model, "_backbone") else model
+        dtype = getattr(backbone, "dtype", None)
+        if dtype is None:
+            dtype = next((p.dtype for p in backbone.parameters() if p.is_floating_point()), None)
+        if dtype == torch.bfloat16:
+            return torch.bfloat16
+    return _amp_dtype(device)
 
 
 def _load_clef(
@@ -642,9 +714,8 @@ def _load_clef(
         if load_in_4bit and not full_finetuning and kwargs.get("quantization_config") is None:
             kwargs["quantization_config"] = _clef_bnb_config(dtype)
         _pin_device_map(kwargs)
-        # A float16 request (or a GPU without bfloat16) puts Qwen3.5 on Unsloth's float32 path:
-        # float16 linear weights, float32 activations, no autocast (the gated delta net NaNs in pure float16).
-        # An adapter folder loads its base and the adapters through Unsloth's own PEFT path.
+        # float16 or no bfloat16 sends Qwen3.5 to a float32 path (float16 linear weights, float32
+        # activations, no autocast): pure float16 NaNs in its gated delta net
         backbone, processor = FastModel.from_pretrained(
             str(folder),
             max_seq_length = max_len,
@@ -776,8 +847,7 @@ def _staging(output: Path):
 
 
 def _fold_temperature(state: dict, temperature: float) -> bool:
-    # logits / T == prior / T + gate * (joint_scale / T * cosine + residual / T): exact while the
-    # rescaled log-scales stay under the head's clamp(max = log 100).
+    # Folding T is exact while the rescaled log scales stay under the clamp at log 100.
     cap = math.log(100.0)
     scales = {}
     for name in ("prior_logit_scale", "joint_logit_scale"):
@@ -824,8 +894,7 @@ def _clef_head_weights(self, exact = False) -> tuple:
             config["head_temperature"] = temperature
     weights = {}
     for name, value in state.items():
-        # The logit scales stay float32: a folded temperature moves them, and bfloat16's 8 bit
-        # mantissa would turn that into a few percent on every logit.
+        # Logit scales stay float32: bfloat16 would blur a folded temperature in every logit.
         value = value.to(torch.float32 if value.dim() == 0 else torch.bfloat16).contiguous()
         if not torch.isfinite(value).all():
             raise ValueError(
@@ -989,6 +1058,9 @@ def push_to_hub_clef(
 
     api = HfApi(token = token)
     repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    from ..save import _refuse_private_push_to_public_repo
+
+    _refuse_private_push_to_public_repo(repo_id, private, api = api)
     with tempfile.TemporaryDirectory() as folder:
         self.save_pretrained(folder, tokenizer)
         api.upload_folder(folder_path = folder, repo_id = repo_id)
@@ -1007,6 +1079,46 @@ def _attach_gguf_saving(model) -> None:
     from .decision_gguf import push_to_hub_gguf, save_pretrained_gguf
     model.save_pretrained_gguf = types.MethodType(save_pretrained_gguf, model)
     model.push_to_hub_gguf = types.MethodType(push_to_hub_gguf, model)
+
+
+def _install_clef_loss_scaler(accelerator, scaler, get_optimizer):
+    accelerator.scaler = scaler
+    # Accelerate unscales before clipping only when it runs native fp16 itself (a prior fp16 Trainer in
+    # this process can leave that state); unscaling twice raises in GradScaler.
+    if getattr(accelerator, "native_amp", False) and accelerator.mixed_precision == "fp16":
+        return
+    clip = accelerator.clip_grad_norm_
+
+    def _clip_grad_norm(
+        parameters,
+        max_norm,
+        norm_type = 2,
+    ):
+        scaler.unscale_(get_optimizer())
+        return clip(parameters, max_norm, norm_type)
+
+    accelerator.clip_grad_norm_ = _clip_grad_norm
+
+
+def _clef_loss_scaler(model, args):
+    """A GradScaler for the float32 path, whose float16 backward loses Gemma 3's gradients unscaled
+    (#14439); not fp16 = True, which also means autocast, Apex and DeepSpeed / FSDP fp16 engines."""
+    from .loader_utils import deepspeed_zero_stage, fsdp_version_requested
+
+    device = next(model.parameters()).device
+    if (
+        not _clef_forced_float32(model)
+        or device.type not in ("cuda", "xpu")
+        or getattr(args, "deepspeed", None)
+        or getattr(args, "fsdp", None)
+        or deepspeed_zero_stage() is not None
+        or fsdp_version_requested()
+    ):
+        return None
+    if hasattr(torch.amp, "GradScaler"):
+        return torch.amp.GradScaler(device.type)
+    # torch < 2.3 has only the CUDA scaler.
+    return torch.cuda.amp.GradScaler() if device.type == "cuda" else None
 
 
 def _clef_mixed_precision(model, args) -> None:
@@ -1117,6 +1229,8 @@ class DecisionTrainer(Trainer):
             # Trainer would call model.gradient_checkpointing_enable, which only the encoder has.
             # Clef's backbone already got Unsloth's checkpointing when it loaded.
             args.gradient_checkpointing = False
+            if hasattr(args, "activation_checkpointing"):
+                args.activation_checkpointing = False
             if not clef and not model.encoder.is_gradient_checkpointing:
                 _gradient_checkpointing(model, True)
         if kwargs.get("processing_class") is None:
@@ -1153,6 +1267,13 @@ class DecisionTrainer(Trainer):
                 return backward(loss, **backward_kwargs)
 
         self.accelerator.backward = _backward
+        scaler = _clef_loss_scaler(model, self.args) if clef else None
+        if scaler is not None:
+            _install_clef_loss_scaler(
+                self.accelerator,
+                scaler,
+                lambda: getattr(self.optimizer, "optimizer", self.optimizer),
+            )
 
     @contextlib.contextmanager
     def _dataset_field_order(self):
@@ -1383,6 +1504,9 @@ def push_to_hub_merged(
 
     api = HfApi(token = token)
     repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    from ..save import _refuse_private_push_to_public_repo
+
+    _refuse_private_push_to_public_repo(repo_id, private, api = api)
     with tempfile.TemporaryDirectory() as folder:
         self.save_pretrained_merged(folder, tokenizer, save_method)
         api.upload_folder(folder_path = folder, repo_id = repo_id)
@@ -1638,7 +1762,7 @@ class FastDecisionModel:
                 try:
                     if validate is not None:
                         validate(name, question)
-                    internal = _internal(question)
+                    internal = _internal(question, name)
                     target, label = _target(internal, _parsed(gold[name]))
                     ids, markers = common.build_sequence(
                         tokenizer, state, internal, max_len, head_max_len
@@ -1675,6 +1799,8 @@ class FastDecisionModel:
             )
         return items, report
 
+    rows_problem = staticmethod(_rows_problem)
+
     @staticmethod
     def split_holdout(
         items: list,
@@ -1701,11 +1827,19 @@ class FastDecisionModel:
         )
 
     @staticmethod
-    def predict(model, tokenizer, state, questions: dict) -> dict:
+    def predict(
+        model,
+        tokenizer,
+        state,
+        questions: dict,
+        *,
+        images = None,
+    ) -> dict:
         """Answers one Decision API request: {name: answer} at the calibrated temperatures.
         Each answer is the Decision API's (choice / confidence, score / legend, or noul) plus
         "answer" (the option, True / False for noul, the level number for score) and
-        "probabilities" over every option. Works for Laya, Clef and converted language models."""
+        "probabilities" over every option. Works for Laya, Clef and converted language models.
+        A Clef also reads ordered `images` when tokenizer is the processor from from_pretrained."""
         if not isinstance(questions, dict) or not questions:
             raise DecisionDataError("questions must be a non-empty dict of name to question")
         state = _parsed(state)
@@ -1716,9 +1850,17 @@ class FastDecisionModel:
                 int(model.decision_config.get("max_len", CLEF_MAX_LEN)), CLEF_SERVE_MAX_LEN
             )
             return _clef_decide(
-                model, tokenizer, state, questions, max_length = max_length, predicted = True
+                model,
+                tokenizer,
+                state,
+                questions,
+                max_length = max_length,
+                predicted = True,
+                images = _row_images({"images": images}),
             )["answers"]
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+        if images:
+            raise DecisionDataError("images require a Clef multimodal model and processor")
         return _laya_decide(model, tokenizer, state, questions, predicted = True)["answers"]
 
     @staticmethod

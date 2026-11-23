@@ -174,9 +174,9 @@ def scopes(monkeypatch):
 def test_first_shape_stays_eager_then_compiles_on_repeat(scopes):
     model = _FakeGenerating()
     assert _generate(model, scopes, 1, 200) == (False, 0)
-    assert _generate(model, scopes, 1, 300) == (True, 1)  # same 1024 bucket
-    assert _generate(model, scopes, 3, 300) == (False, 1)  # new batch size
-    assert _generate(model, scopes, 1, 1500) == (False, 1)  # new 2048 bucket
+    assert _generate(model, scopes, 1, 300) == (True, 1)
+    assert _generate(model, scopes, 3, 300) == (False, 1)
+    assert _generate(model, scopes, 1, 1500) == (False, 1)
     assert _generate(model, scopes, 3, 90, positional = True) == (True, 2)
     assert model.allocated == [1024, 1024, 1024, 2048, 1024]
 
@@ -185,12 +185,12 @@ def test_batch_dynamic_graph_skips_eager_warm_up(scopes):
     model = _FakeGenerating()
     _generate(model, scopes, 1, 100)
     _generate(model, scopes, 2, 100)
-    assert _generate(model, scopes, 4, 100) == (False, 0)  # one compiled batch: still static
+    assert _generate(model, scopes, 4, 100) == (False, 0)
     _generate(model, scopes, 1, 100)
     _generate(model, scopes, 2, 100)
     assert len(scopes) == 2
-    assert _generate(model, scopes, 3, 100) == (True, 3)  # batch now dynamic: no warm-up
-    assert _generate(model, scopes, 5, 1500) == (False, 3)  # other length: its own graphs
+    assert _generate(model, scopes, 3, 100) == (True, 3)
+    assert _generate(model, scopes, 5, 1500) == (False, 3)
     assert _generate(model, scopes, 1, 100) == (True, 4)
     assert _generate(model, scopes, 6, 100) == (True, 5)
 
@@ -263,7 +263,7 @@ def test_only_one_token_steps_run_in_eager_decode(eager_scope):
             "logits_to_keep",
         ]
         assert model.forward(input_ids = torch.zeros(2, 7, dtype = torch.long)) == "out"
-        assert eager_scope == []  # prefill keeps its compiled regions
+        assert eager_scope == []
         model.forward(input_ids = torch.zeros(2, 1, dtype = torch.long))
         model.forward(inputs_embeds = torch.zeros(3, 1, 8))
         assert len(eager_scope) == 2
@@ -276,7 +276,7 @@ def test_cached_compiled_call_is_dropped_when_the_mode_changes():
     _match_compiled_call(model, False)
     model._compiled_call, model._last_compile_config = "disabled", "cfg"
     _match_compiled_call(model, False)
-    assert model._compiled_call == "disabled"  # same mode: transformers' cache stands
+    assert model._compiled_call == "disabled"
     _match_compiled_call(model, True)
     assert not hasattr(model, "_compiled_call") and not hasattr(model, "_last_compile_config")
     model._compiled_call = "compiled"

@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Every Studio tab's backing endpoint, checked against the routes that exist.
-
-The rest of this payload touches inference, training and export. A tab whose
-router raised on import is invisible to all of it: the route is simply never
-mounted, and the tab renders an error the moment a user opens it.
-
-This is a smoke and says so. What makes it more than a list of strings is the
-rule below that every path in `TAB_ENDPOINTS` resolves to a route actually
-declared in `studio/backend/routes`. A typo'd path 404s exactly like a missing
-router, so without that rule the payload could go red for the wrong reason --
-or, worse, a path could be quietly "fixed" to something that always answers.
-
-One endpoint choice is load-bearing: `/api/data-recipe/jobs/current` 404s by
-design when no job is running, so using it would be red on correct behaviour.
-"""
+"""Each TAB_ENDPOINTS path must resolve to a declared route, since a typo 404s like a missing router."""
 
 from __future__ import annotations
 
@@ -77,9 +63,8 @@ def test_the_assertion_exists_and_is_driven_from_the_run():
 
 
 def test_every_endpoint_resolves_to_a_route_that_exists():
-    """The rule that turns a list of strings into a check. A typo'd path 404s
-    exactly like a missing router, so the payload would go red naming a tab
-    that is perfectly fine."""
+    """Each endpoint must resolve to a declared route, since a typo'd path 404s just like a missing
+    router and would wrongly fail a healthy tab."""
     prefixes = _mounted_prefixes()
     declared = _declared_get_paths()
     unresolved = []

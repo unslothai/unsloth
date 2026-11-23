@@ -38,6 +38,30 @@ test("a pick raises its toast at once, before any plan or download", () => {
   );
 });
 
+test("each pick keeps its model name through phase and progress updates", () => {
+  calls.length = 0;
+  const pick = createPickToast({
+    describe: (phase, progress, modelName) => ({ phase, progress, modelName }),
+  });
+  const id = pick.show("unsloth/flux-3-image-klein-FP8");
+  pick.setPhase(id, "downloading", 1);
+  pick.progress({ downloadedBytes: 10, totalBytes: 17, plan: 1 });
+  pick.setPhase(id, "waiting");
+  for (const call of shown()) {
+    assert.equal(
+      (call.options?.description as { modelName: string }).modelName,
+      "unsloth/flux-3-image-klein-FP8",
+    );
+  }
+  const next = pick.show("another/model");
+  calls.length = 0;
+  pick.setPhase(id, "ready");
+  pick.setPhase(next, "downloading", 2);
+  assert.deepEqual(shown().map((c) => c.options?.description), [
+    { phase: "downloading", progress: null, modelName: "another/model" },
+  ]);
+});
+
 test("a newer pick replaces the older toast, and the stale pick cannot touch it", () => {
   const pick = make();
   const older = pick.show();
@@ -46,7 +70,6 @@ test("a newer pick replaces the older toast, and the stale pick cannot touch it"
   assert.deepEqual(shown()[1], { kind: "dismiss", id: older });
 
   calls.length = 0;
-  // The superseded pick's plan resolves late and cleans up after itself.
   pick.dismiss(older);
   pick.setPhase(older, "downloading", 1);
   assert.deepEqual(shown(), []);
@@ -71,7 +94,6 @@ test("progress shows only while downloading, and each phase starts from its own 
 });
 
 test("a download-only plan staged after the pick's own never shows in its toast", () => {
-  // A queued download-only plan uses the same progress hook after the pick finishes.
   const pick = make();
   const id = pick.show();
   pick.setPhase(id, "downloading", 3);
@@ -87,7 +109,6 @@ test("a download-only plan staged after the pick's own never shows in its toast"
 });
 
 test("the Images and Video toasts never share an id", () => {
-  // Both pages stay mounted and share Sonner's store.
   const images = make();
   const video = createPickToast({ describe: (phase) => phase });
   const imagesId = images.show();
@@ -125,7 +146,6 @@ test("a toast the user closed is not raised again by the next tick", () => {
   calls.length = 0;
   pick.progress({ downloadedBytes: 3, totalBytes: 10, plan: 1 });
   assert.deepEqual(shown(), []);
-  // The load then raises its own toast rather than reusing the closed id.
   assert.equal(pick.take(id), undefined);
 });
 
@@ -145,7 +165,6 @@ test("a cancelled or retired pick drops its toast", () => {
 });
 
 test("every cancelled pick drops its toast on both pages", () => {
-  // A cancelled pick can no longer load, so a toast left up would promise a load that never comes.
   for (const page of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
     const lines = readSrc(page).split("\n");
     const cancels = lines.flatMap((line, i) => (line.includes("pickGuard.cancel();") ? [i] : []));

@@ -44,6 +44,7 @@ from .engine_adapters import (
     memory_reserve_mib,
     RESERVE_SHARE,
     launch_arguments,
+    reasoning_parser_for_template,
     tool_parser_for_template,
 )
 
@@ -55,6 +56,51 @@ def _offline(env) -> bool:
     )
 
 
+def _mig_rows(gpu_ids: list[int]):
+    """R570+ MIG rows for these ids, or None (untranslatable: keep the physical-id behaviour)."""
+    try:
+        from utils.hardware import mig
+
+        from .engine_install import gpu_platform
+
+        if gpu_platform() == "rocm":
+            return None
+        rows = mig.rows_for(gpu_ids)
+        if rows is None or mig.mask_for(gpu_ids) is None:
+            return None
+        return rows
+    except Exception:
+        return None
+
+
+_CA_BUNDLE_VARIABLES = ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+
+
+def _point_tls_at_studio_ca_bundle(child_env: dict[str, str]) -> None:
+    """Engines verify TLS with Studio's current certifi unless the user chose a bundle: their
+    hash-pinned venvs keep an old certifi (2026.7.22 still trusts the revoked emSign roots)."""
+    if any(child_env.get(name) for name in _CA_BUNDLE_VARIABLES):
+        return
+    try:
+        import certifi
+        bundle = certifi.where()
+    except Exception:
+        return
+    if os.path.isfile(bundle):
+        child_env["SSL_CERT_FILE"] = bundle
+        child_env["REQUESTS_CA_BUNDLE"] = bundle
+
+
+def _child_cuda_mask(gpu_ids: list[int]) -> str:
+    """Instance UUIDs on an R570+ MIG host (numeric ids would name the whole host), else the numeric mask."""
+    try:
+        from utils.hardware import mig
+        pinned = mig.mask_for(gpu_ids)
+    except Exception:
+        pinned = None
+    return pinned or ",".join(str(i) for i in gpu_ids)
+
+
 def validate_load(engine: str, request) -> list[int]:
     """Returns the physical GPU ids to launch on, all inside the GPUs Studio may use."""
     profile(engine)
@@ -64,7 +110,7 @@ def validate_load(engine: str, request) -> list[int]:
     # The engine's CUDA_VISIBLE_DEVICES replaces Studio's, so an omitted selection is the first GPU Studio sees.
     gpu_ids = resolve_requested_gpu_ids(gpu_ids) if gpu_ids else resolve_requested_gpu_ids(None)[:1]
     if not gpu_ids:
-        raise ValueError("Studio has no GPU it can assign to this engine.")
+        raise ValueError("Unsloth has no GPU it can assign to this engine.")
     from . import wsl_host
 
     if len(gpu_ids) > 1 and wsl_host.active() and profile(engine)["platform"] == "rocm":
@@ -84,11 +130,13 @@ def validate_load(engine: str, request) -> list[int]:
             mask = None
         if mask:
             raise ValueError(
-                f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Studio runs with {mask}. "
+                f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Unsloth runs with {mask}. "
                 "Use only HIP_VISIBLE_DEVICES or only ROCR_VISIBLE_DEVICES instead."
             )
-    for gpu_id in gpu_ids:
-        reason = support_reason(engine, gpu_id)
+    mig_rows = _mig_rows(gpu_ids)
+    for position, gpu_id in enumerate(gpu_ids):
+        checked = int(mig_rows[position]["physical_index"]) if mig_rows else gpu_id
+        reason = support_reason(engine, checked)
         if reason:
             raise ValueError(f"GPU {gpu_id}: {reason}")
     info = installed(engine)
@@ -98,7 +146,7 @@ def validate_load(engine: str, request) -> list[int]:
         )
     if stale(info):
         raise ValueError(
-            f"Studio's packages changed since {ENGINE_NAMES[engine]} was installed. Repair it in Settings > System > Inference engines."
+            f"Unsloth's packages changed since {ENGINE_NAMES[engine]} was installed. Repair it in Settings > System > Inference engines."
         )
     if info.get("profile_digest") != profile_digest(engine) and not (
         info.get("restored") and built_for_this_gpu(engine, info)
@@ -176,6 +224,9 @@ def validate_model(
     engine = "vllm",
     precision = "auto",
     parallelism = "tensor",
+    kv_cache_dtype = "auto",
+    seed = None,
+    gpu_memory_utilization = None,
 ) -> dict:
     """Check plain metadata before releasing the previous resident model."""
     if config.is_local:
@@ -221,8 +272,10 @@ def validate_model(
             "SGLang cannot load prequantized BitsAndBytes checkpoints across pipeline stages. "
             "Select one GPU, use Replicas, or load an unquantized checkpoint with 4-bit precision."
         )
+    template = _model_chat_template(config, hf_token)
+    reasoning_parser = reasoning_parser_for_template(template, engine)
     options = {
-        "tool_parser": tool_parser_for_template(_model_chat_template(config, hf_token), engine),
+        "tool_parser": tool_parser_for_template(template, engine),
         "precision": precision,
         "parallelism": parallelism,
         "is_vision": bool(metadata.get("vision_config") or getattr(config, "is_vision", False)),
@@ -236,9 +289,29 @@ def validate_model(
         or (engine == "vllm" and precision == "int4" and parallelism != "pipeline")
         else "auto",
     }
-    if precision == "fp8" and profile(engine)["platform"] == "cuda":
-        # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
+    # Unset options stay out of the dict, so a default load keeps today's argv and cache key.
+    if kv_cache_dtype != "auto":
+        options["kv_cache_dtype"] = kv_cache_dtype
+    if seed is not None:
+        options["seed"] = seed
+    if gpu_memory_utilization is not None:
+        options["gpu_memory_utilization"] = gpu_memory_utilization
+    if engine == "sglang" and generation_prompt_opens_thought(template):
+        options["opens_thought"] = True
+    if reasoning_parser:
+        from .llama_cpp import detect_reasoning_flags
+        options["reasoning_parser"] = reasoning_parser
+        options["reasoning_flags"] = detect_reasoning_flags(
+            template,
+            # The detector reads DeepSeek's `thinking` toggle off the id; a renamed local directory loses it.
+            f"deepseek {config.identifier}"
+            if reasoning_parser in ("deepseek_v3", "deepseek-v3")
+            else config.identifier,
+            log_source = "managed engine",
+        )
+    if (precision == "fp8" or kv_cache_dtype == "fp8") and profile(engine)["platform"] == "cuda":
         from utils.hardware.nvidia import _nvidia_smi_executable
+
         result = subprocess.run(
             [
                 _nvidia_smi_executable(),
@@ -255,8 +328,23 @@ def validate_model(
             timeout = 60,
             check = True,
         )
-        options["disable_cuda_graph"] = any(float(cap) < 8.9 for cap in result.stdout.splitlines())
+        caps = [float(cap) for cap in result.stdout.splitlines() if cap.strip()]
+        if precision == "fp8":
+            # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
+            options["disable_cuda_graph"] = any(cap < 8.9 for cap in caps)
+        if kv_cache_dtype == "fp8" and any(cap < 8.0 for cap in caps):
+            # vLLM 0.30 refuses it at startup on Turing ("native FP8 requires SM89+"); Ampere runs it.
+            raise ValueError(
+                "An FP8 KV cache needs an Ampere or newer NVIDIA GPU. "
+                "Choose Model default for KV cache on this GPU."
+            )
     metadata = metadata.get("text_config") or metadata
+    if engine == "sglang" and kv_cache_dtype == "fp8" and metadata.get("kv_lora_rank"):
+        # Studio pins SGLang to the Triton attention backend, whose MLA path has no FP8 KV cache.
+        raise ValueError(
+            "SGLang cannot use an FP8 KV cache with this model's attention. "
+            "Choose Model default for KV cache, or use vLLM."
+        )
     size = len(gpu_ids or [0])
     if size > 1 and parallelism == "tensor":
         for field in ("num_attention_heads", "hidden_size", "intermediate_size"):
@@ -309,12 +397,9 @@ def _memory_line(output: str) -> list:
 
 
 def _wsl_amd_usable_mib(gpu_ids) -> list[tuple[float, bool]] | None:
-    """(MiB, is an APU) for what each selected AMD GPU can allocate through WSL, or None when
-    Windows cannot say.
-
-    Through DXG the pool HIP reports is the dedicated memory plus a share of the host's RAM, and an
-    allocation past what the host can back hangs instead of failing. So a discrete card keeps its
-    dedicated memory, and an APU adds 80% of the host RAM Windows reports available now."""
+    """Returns (MiB, is an APU) per selected AMD GPU for what it can allocate through WSL, or None
+    when Windows cannot say; a discrete card keeps its dedicated memory, but an APU adds 80% of
+    host RAM available now, since DXG allocations past host capacity hang rather than fail."""
     try:
         import psutil
         import torch
@@ -407,6 +492,8 @@ def _rocm_visibility(env: dict, gpu_ids) -> dict:
 
 # SGLang raises when its derived gRPC port (HTTP + 10000) exceeds 65535.
 _PORT_LIMIT = 55535
+# Launch options that change no compiled artifact, so they share the compile cache.
+_UNCACHED_OPTIONS = frozenset(("seed", "gpu_memory_utilization", "opens_thought"))
 
 
 def _free_port(limit: int | None = _PORT_LIMIT) -> int:
@@ -427,9 +514,7 @@ def _free_port(limit: int | None = _PORT_LIMIT) -> int:
     raise RuntimeError("Could not allocate an inference server port.")
 
 
-# Engine silence, not total startup time: an uncached Hub model downloads inside the engine, and
-# a first load can compile (torch.compile, Triton kernels) for tens of minutes without a line,
-# as a block-FP8 27B did on gfx1151 for over 17 minutes.
+# Measures engine silence, not total startup: a first load can compile unlogged for tens of minutes.
 STARTUP_STALL_S = 3600
 STARTUP_LIMIT_S = 4 * 3600
 
@@ -447,6 +532,10 @@ class _MambaSeqLimit(RuntimeError):
     def __init__(self, message: str, blocks: int):
         super().__init__(message)
         self.blocks = blocks
+
+
+class _EngineExited(RuntimeError):
+    """The engine process exited during startup (not a stop, cancel or timeout)."""
 
 
 def _token_file_token(env) -> str | None:
@@ -469,6 +558,57 @@ def _token_file_token(env) -> str | None:
     return token or None
 
 
+CONTINUATION_FIELDS = {"continue_final_message": True, "add_generation_prompt": False}
+
+
+def generation_prompt_opens_thought(template) -> bool:
+    """R1 distills, QwQ and Qwen3 Thinking-2507 end the generation prompt inside ``<think>``."""
+    if not isinstance(template, str) or "<think>" not in template:
+        return False
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    def raise_exception(message):
+        raise ValueError(message)
+
+    try:
+        environment = ImmutableSandboxedEnvironment(
+            extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"]
+        )
+        environment.globals["raise_exception"] = raise_exception
+        prompt = environment.from_string(template).render(
+            messages = [{"role": "user", "content": "Hi"}],
+            add_generation_prompt = True,
+            bos_token = "",
+            eos_token = "",
+        )
+    except Exception:
+        return False
+    return prompt.rstrip().endswith("<think>")
+
+
+def sglang_prefill(message: dict, opens_thought: bool) -> dict:
+    """SGLang drops the trailing assistant turn, renders a fresh generation prompt and appends only
+    its string content, so a separately sent thought must travel in that content. Without one the
+    content goes as is: where the prompt opens <think>, SGLang's raw text already holds any close."""
+    content = message.get("content")
+    if isinstance(content, list):
+        content = "".join(part.get("text") or "" for part in content if isinstance(part, dict))
+    thought = (message.get("reasoning_content") or message.get("reasoning") or "").strip()
+    if thought:
+        opener = "" if opens_thought else "<think>\n"
+        content = f"{opener}{thought}\n</think>\n\n{content or ''}"
+    rest = {k: v for k, v in message.items() if k not in ("reasoning", "reasoning_content")}
+    return {**rest, "content": content}
+
+
+# The prompt closed the thought, but a forcing parser (deepseek_r1) files the rest as one.
+def fold_reasoning_into_answer(part: dict) -> None:
+    reasoning = part.pop("reasoning", None)
+    reasoning = part.pop("reasoning_content", None) or reasoning
+    if reasoning:
+        part["content"] = reasoning + (part.get("content") or "")
+
+
 class ManagedEngine:
     def __init__(self, engine: str):
         self.engine = engine
@@ -485,6 +625,8 @@ class ManagedEngine:
         self._mamba_blocks = None
         self._last_output = time.monotonic()
         self.base_url = ""
+        self.reasoning_parser = None
+        self.opens_thought = False
         self._guest_environment = None
         # A URL-safe token can start with '-', which CLI parsers read as an option.
         self.key = "studio-" + secrets.token_urlsafe(32)
@@ -504,8 +646,49 @@ class ManagedEngine:
         model_path = None,
     ):
         """``model`` is the served name; ``model_path`` is what the engine loads when they differ."""
-        args = (model, context, gpu_ids, env, cancel_event)
         options = dict(options or {})
+        try:
+            return self._start_seq_limited(
+                model, context, gpu_ids, env, cancel_event, options, trust_remote_code, model_path
+            )
+        except _EngineExited as exc:
+            if not self._drafter_retry(model, model_path, options):
+                raise
+            if cancel_event is not None and cancel_event.is_set():
+                self.stop()
+                raise RuntimeError("Model load cancelled") from exc
+            # A drafter trained with the fine-tune must not keep the model itself from loading.
+            from loggers import get_logger
+
+            get_logger(__name__).warning(
+                "vLLM did not start with the trained drafter (%s); retrying without it.", exc
+            )
+            self._tail.clear()
+            self._mamba_blocks = None
+            self.phase = "starting"
+            return self._start_seq_limited(
+                model,
+                context,
+                gpu_ids,
+                env,
+                cancel_event,
+                {**options, "no_speculative_config": True},
+                trust_remote_code,
+                model_path,
+            )
+
+    def _drafter_retry(self, model, model_path, options) -> bool:
+        """A failed vLLM start that passed a drafter's --speculative-config is retried without it."""
+        if self.engine != "vllm" or (options or {}).get("no_speculative_config"):
+            return False
+        from core.inference.engine_adapters import vllm_speculative_args
+
+        return bool(vllm_speculative_args(model_path or model))
+
+    def _start_seq_limited(
+        self, model, context, gpu_ids, env, cancel_event, options, trust_remote_code, model_path
+    ):
+        args = (model, context, gpu_ids, env, cancel_event)
         key = (
             self.engine,
             model_path or model,
@@ -565,6 +748,8 @@ class ManagedEngine:
                 port = _free_port(_PORT_LIMIT if self.engine == "sglang" else None)
                 self.base_url = f"http://127.0.0.1:{port}"
                 self.model, self.context = model, context or 4096
+                self.reasoning_parser = (options or {}).get("reasoning_parser")
+                self.opens_thought = bool((options or {}).get("opens_thought"))
                 stdin = None
                 if info.get("host") == "wsl":
                     command, child_env = self._wsl_command(
@@ -594,11 +779,12 @@ class ManagedEngine:
                             child_env.get("PATH", os.defpath),
                         ]
                     )
-                    child_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in (gpu_ids or [0]))
+                    child_env["CUDA_VISIBLE_DEVICES"] = _child_cuda_mask(gpu_ids or [0])
                     rocm = info.get("platform") == "rocm"
                     if rocm:
                         child_env.update(_rocm_visibility(child_env, gpu_ids or [0]))
                     child_env["PYTHONNOUSERSITE"] = "1"
+                    _point_tls_at_studio_ca_bundle(child_env)
                     from .engine_install import engine_root
 
                     cache = (
@@ -668,7 +854,7 @@ class ManagedEngine:
                 )
                 adopt_pid(self.process.pid)
                 if is_process_shutting_down():
-                    raise RuntimeError("Studio is shutting down")
+                    raise RuntimeError("Unsloth is shutting down")
                 self._reader = threading.Thread(
                     target = self._drain, args = (self.process,), daemon = True
                 )
@@ -693,7 +879,7 @@ class ManagedEngine:
                         message = "Engine failed to start. " + "\n".join(self._tail)
                         if self._mamba_blocks:
                             raise _MambaSeqLimit(message, self._mamba_blocks)
-                        raise RuntimeError(message)
+                        raise _EngineExited(message)
                     try:
                         response = client.get(self.base_url + "/health", headers = self.headers)
                         if response.status_code == 200:
@@ -710,6 +896,12 @@ class ManagedEngine:
             # Not a stop request: an external stop() meanwhile must still cancel the relaunch.
             self._teardown()
             raise
+        except _EngineExited:
+            if self._drafter_retry(model, model_path, options):
+                self._teardown()
+            else:
+                self.stop()
+            raise
         except Exception:
             self.stop()
             raise
@@ -721,7 +913,15 @@ class ManagedEngine:
         return hashlib.sha256(
             policy
             + json.dumps(
-                [info.get("profile_digest"), model, self.context, gpu_ids, options],
+                [
+                    info.get("profile_digest"),
+                    model,
+                    self.context,
+                    gpu_ids,
+                    {k: v for k, v in options.items() if k not in _UNCACHED_OPTIONS}
+                    if options
+                    else options,
+                ],
                 sort_keys = True,
             ).encode()
         ).hexdigest()[:16]
@@ -876,31 +1076,127 @@ class ManagedEngine:
                 self._lease = None
         return True
 
+    def reasoning_fields(
+        self,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
+    ) -> dict:
+        """Request fields for the template's thinking controls; without a parser thinking stays off."""
+        if not self.reasoning_parser:
+            return {"chat_template_kwargs": {"enable_thinking": False}}
+        kwargs = {}
+        if enable_thinking is not None:
+            kwargs["enable_thinking"] = bool(enable_thinking)
+        elif reasoning_effort is None:
+            kwargs["enable_thinking"] = False
+        if "enable_thinking" in kwargs:
+            # DeepSeek V3.1+ templates read `thinking`; vLLM drops whichever one a template never names.
+            kwargs["thinking"] = kwargs["enable_thinking"]
+        if preserve_thinking is not None:
+            kwargs["preserve_thinking"] = bool(preserve_thinking)
+        fields = {"chat_template_kwargs": kwargs}
+        if reasoning_effort is not None:
+            # vLLM hands it to the template, which owns the accepted levels.
+            fields["reasoning_effort"] = reasoning_effort
+        return fields
+
+    def continue_final_message(self, body: dict) -> None:
+        """Resume the trailing assistant turn of ``body["messages"]`` in place."""
+        body.update(CONTINUATION_FIELDS)
+        if self.engine == "sglang" and body.get("messages"):
+            *head, last = body["messages"]
+            body["messages"] = [*head, sglang_prefill(last, self.opens_thought)]
+
+    def replay_reasoning(
+        self,
+        messages,
+        preserve_thinking = None,
+    ):
+        """vLLM reads a past turn's thinking from ``reasoning``; SGLang and Studio keep ``reasoning_content``."""
+        if self.engine != "vllm" or not (self.reasoning_parser and preserve_thinking):
+            return messages
+        # Moved, not copied: the context fit prices the whole message, so a copy charges the thought twice.
+        return [
+            {k: v for k, v in message.items() if k != "reasoning_content"}
+            | {"reasoning": message["reasoning_content"]}
+            if isinstance(message, dict)
+            and message.get("role") == "assistant"
+            and isinstance(message.get("reasoning_content"), str)
+            and "reasoning" not in message
+            else message
+            for message in messages
+        ]
+
+    def _reply_cap_in_window(
+        self,
+        messages,
+        system_prompt,
+        limit,
+        params,
+        tools = None,
+    ):
+        """vLLM and SGLang refuse prompt + max_tokens past the window, where llama-server stops at it."""
+        try:
+            prompt = self.count_tokens(
+                messages,
+                system_prompt,
+                tools = tools,
+                enable_thinking = params.get("enable_thinking"),
+                reasoning_effort = params.get("reasoning_effort"),
+                preserve_thinking = params.get("preserve_thinking"),
+            )[0]
+        except Exception:
+            # An estimate would cut a fitting reply short; the engine judges the cap itself.
+            return limit
+        return max(1, min(limit, self.context - prompt))
+
+    def _completion_cap_in_window(self, prompt, limit):
+        try:
+            return max(1, min(limit, self.context - self._tokenize({"prompt": prompt})))
+        except Exception:
+            return limit
+
+    def _tokenize(self, body):
+        with httpx.Client(trust_env = False, timeout = 30) as client:
+            response = client.post(
+                self.base_url + "/tokenize",
+                headers = self.headers,
+                json = {"model": self.model, **body},
+            )
+            response.raise_for_status()
+            return int(response.json()["count"])
+
     def count_tokens(
         self,
         messages,
         system_prompt = "",
         **kwargs,
     ):
-        if kwargs.get("tools"):
-            raise ValueError("Tools are unavailable for this optional engine profile.")
         if not self.adapter.exact_token_count:
             raise RuntimeError("Exact prompt token counting is unavailable for this engine.")
         if system_prompt:
             messages = [{"role": "system", "content": system_prompt}, *messages]
-        with httpx.Client(trust_env = False, timeout = 30) as client:
-            response = client.post(
-                self.base_url + "/tokenize",
-                headers = self.headers,
-                json = {
-                    "model": self.model,
-                    "messages": messages,
-                    "add_generation_prompt": True,
-                    "chat_template_kwargs": {"enable_thinking": False},
-                },
-            )
-            response.raise_for_status()
-            return int(response.json()["count"]), self.model
+        fields = self.reasoning_fields(
+            kwargs.get("enable_thinking"),
+            kwargs.get("reasoning_effort"),
+            kwargs.get("preserve_thinking"),
+        )
+        # /tokenize takes template controls only in chat_template_kwargs; /chat/completions moves the
+        # top-level effort there itself, and turns thinking on for it unless told otherwise.
+        effort = fields.pop("reasoning_effort", None)
+        if effort is not None:
+            template_kwargs = fields["chat_template_kwargs"]
+            template_kwargs["reasoning_effort"] = effort
+            template_kwargs.setdefault("enable_thinking", effort != "none")
+        body = {
+            "messages": self.replay_reasoning(messages, kwargs.get("preserve_thinking")),
+            "add_generation_prompt": True,
+            **fields,
+        }
+        if kwargs.get("tools"):
+            body["tools"] = kwargs["tools"]
+        return self._tokenize(body), self.model
 
     def generate(
         self,
@@ -915,9 +1211,9 @@ class ManagedEngine:
             raise ValueError(
                 "Tools and adapter comparisons are not supported by this optional engine profile."
             )
-        if params.get("video"):
+        if params.get("videos"):
             raise ValueError(
-                "Video input is not yet supported by the Studio managed engine transport."
+                "Video input is not yet supported by the Unsloth managed engine transport."
             )
         from .orchestrator import _encoded_images, InferenceOrchestrator
 
@@ -965,17 +1261,13 @@ class ManagedEngine:
                         )
                         message["content"] = parts
                         break
-        if (
-            params.get("continue_final_message")
-            or params.get("enable_thinking")
-            or params.get("preserve_thinking")
+        if not self.reasoning_parser and (
+            params.get("enable_thinking") or params.get("preserve_thinking")
         ):
-            raise ValueError(
-                "Continuation and reasoning controls are unavailable for this engine profile."
-            )
+            raise ValueError("Reasoning controls are unavailable for this engine profile.")
         from .engine_transport import engine_messages
 
-        messages = engine_messages(messages)
+        messages = self.replay_reasoning(engine_messages(messages), params.get("preserve_thinking"))
         payload = {
             "model": self.model,
             "messages": messages,
@@ -995,27 +1287,58 @@ class ManagedEngine:
             "seed",
             "stop",
             "logit_bias",
+            "response_format",
         ):
             if params.get(key) is not None:
                 payload[key] = params[key]
         # -1 or full context leaves no room for the prompt; let the engine budget it.
         limit = params.get("max_new_tokens") or 0
         if limit > 0 and (not self.context or limit < self.context):
-            payload["max_tokens"] = limit
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
+            payload["max_tokens"] = (
+                self._reply_cap_in_window(messages, system_prompt, limit, params)
+                if self.context and not request_images
+                else limit
+            )
+        payload.update(
+            self.reasoning_fields(
+                params.get("enable_thinking"),
+                params.get("reasoning_effort"),
+                params.get("preserve_thinking"),
+            )
+        )
+        continuing = bool(params.get("continue_final_message"))
+        if continuing:
+            self.continue_final_message(payload)
         from .engine_transport import stream_chat_events
 
         def cancelled():
             return self._cancel.is_set() or (cancel_event is not None and cancel_event.is_set())
 
+        thinking = False
         for event in stream_chat_events(self.base_url, self.headers, payload, cancelled):
             if event.get("usage") and stats_holder is not None:
                 stats_holder.setdefault("stats", {})["usage"] = event["usage"]
             if event.get("error"):
+                error = event["error"] if isinstance(event["error"], dict) else {}
+                constrained = payload.get("response_format", {"type": "text"}) != {"type": "text"}
+                # vLLM: "Grammar error: ...", SGLang: "Failed to compile json grammar: ...".
+                rejected = re.search(r"grammar|schema", str(error.get("message")), re.IGNORECASE)
+                if constrained and rejected and str(error.get("code")).startswith("4"):
+                    from .grammar_constraint import ResponseFormatError
+                    raise ResponseFormatError(error.get("message") or "Invalid response_format.")
                 raise RuntimeError("Engine generation failed.")
             for choice in event.get("choices", []):
                 if choice.get("finish_reason") and stats_holder is not None:
                     stats_holder.setdefault("stats", {})["finish_reason"] = choice["finish_reason"]
-                content = choice.get("delta", {}).get("content")
+                delta = choice.get("delta", {})
+                if continuing:
+                    fold_reasoning_into_answer(delta)
+                # The parser splits thinking out; <think> markup is what the route's extractor reads.
+                reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+                if reasoning:
+                    yield reasoning if thinking else "<think>" + reasoning
+                    thinking = True
+                content = delta.get("content")
                 if content:
-                    yield content
+                    yield "</think>" + content.lstrip("\n") if thinking else content
+                    thinking = False

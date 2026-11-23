@@ -220,6 +220,9 @@ def test_a_policy_resolves_for_the_bases_it_was_solved_on_and_no_others():
     assert resolve_policy("qwen-image", "unsloth/Qwen-Image-2512") is QWEN2512_M120_ATTN8
     assert resolve_policy("qwen-image-2.1", "Qwen/Qwen-Image-2.1") is QWEN21_R020
     assert resolve_policy("qwen-image-2.1", "unsloth/Qwen-Image-2.1") is QWEN21_R020
+    assert resolve_policy("qwen-image-2.1", "Qwen/Qwen-Image-2.1-Turbo") is QWEN21_R020
+    assert resolve_policy("qwen-image-2.1", "unsloth/Qwen-Image-2.1-Turbo-FP8") is QWEN21_R020
+    assert resolve_policy("qwen-image", "Qwen/Qwen-Image-2.1-Turbo") is None
     assert resolve_policy("qwen-image", "Qwen/Qwen-Image-2.1") is None
     assert resolve_policy("qwen-image-2.1", "Qwen/Qwen-Image-2512") is None
     assert resolve_policy("z-image", "unsloth/Z-Image-Turbo") is ZIMG_RG76
@@ -525,7 +528,7 @@ def test_the_metadata_block_records_the_set_that_was_built():
     assert block["counts"] == {BF16: 5, FP8: 195, NVFP4: 76}
     assert len(block["nvfp4_fqns"]) == 76
     assert block["nvfp4_fqns"] == sorted(block["nvfp4_fqns"])
-    assert block["activation_scales_baked"] is False and block["gptq"] is False
+    assert block["activation_scales_baked"] is False and block["refined"] is False
     assert declares_policy({"scheme": "nvfp4", **fragment})
     assert policy_metadata_error({"scheme": "nvfp4", **fragment}) is None
     assert policy_metadata(ZIMG_RG76, assign_precisions(_zimage(), ZIMG_RG76)) == fragment

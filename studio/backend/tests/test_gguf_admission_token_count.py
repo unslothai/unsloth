@@ -14,7 +14,7 @@ import routes.inference as inference
 
 
 def _llama_httpx():
-    # Patch the module llama_cpp resolves: another test can swap sys.modules["httpx"].
+    # Patch the module llama_cpp resolves; another test may swap sys.modules['httpx'].
     from core.inference import llama_cpp
     return llama_cpp.httpx
 
@@ -37,6 +37,56 @@ def _payload():
         reasoning_effort = None,
         preserve_thinking = None,
     )
+
+
+def test_prepared_legacy_image_is_charged_only_once():
+    import base64
+    import io
+    from PIL import Image
+    from models.inference import ChatCompletionRequest
+
+    image = io.BytesIO()
+    Image.new("RGB", (1, 1)).save(image, format = "PNG")
+    backend = _backend(42)
+    backend.is_vision = True
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "Describe this image"}],
+        image_base64 = base64.b64encode(image.getvalue()).decode(),
+    )
+    messages = inference._openai_messages_for_passthrough(payload, vision = True)
+    body = {"messages": messages}
+    tokens = inference._count_gguf_admission_prompt(backend, payload, messages, prepared_body = body)
+    assert tokens == 42 + inference._openai_llama_admission_image_tokens(backend)
+
+
+def test_passthrough_prices_the_prepared_prompt_before_upstream_dispatch(monkeypatch):
+    async def scenario():
+        backend = _backend(600)
+        backend.context_length = 1024
+        backend.effective_parallel_slots = 5
+        payload = _payload()
+        payload.max_tokens = 64
+        body = {"messages": payload.messages, "max_tokens": 64, "chat_template_kwargs": {}}
+
+        async def build(*args, **kwargs):
+            return body
+
+        async def upstream(*args, **kwargs):
+            assert backend.count_chat_tokens.call_count == 1
+            assert queue.snapshot().committed == 664
+            assert kwargs["prepared_body"] is body
+            return {"ok": True}
+
+        queue = LlamaAdmissionQueue("passthrough-dispatch")
+        monkeypatch.setattr(inference, "get_llama_admission_queue", lambda _: queue)
+        monkeypatch.setattr(inference, "_build_openai_passthrough_body_async", build)
+        monkeypatch.setattr(inference, "_openai_passthrough_non_streaming_upstream", upstream)
+        assert await inference._openai_passthrough_non_streaming(
+            backend, payload, "test-model"
+        ) == {"ok": True}
+        assert queue.snapshot().active == 0
+
+    asyncio.run(scenario())
 
 
 def test_numeric_prompts_wait_for_room_but_short_prompts_still_overlap(monkeypatch):
@@ -111,6 +161,83 @@ def test_tokenizer_failure_reserves_the_entire_pool():
     backend.count_chat_tokens.side_effect = RuntimeError("tokenizer unavailable")
     payload = _payload()
     assert inference._count_gguf_admission_prompt(backend, payload, payload.messages) == 30000
+
+
+def test_passthrough_tool_prompt_queues_using_its_rendered_count(monkeypatch):
+    async def scenario():
+        queue = LlamaAdmissionQueue("passthrough-counted")
+        monkeypatch.setattr(inference, "get_llama_admission_queue", lambda _: queue)
+        backend = _backend(600)
+        backend.context_length = 1024
+        backend.effective_parallel_slots = 5
+        payload = _payload()
+        payload.max_tokens = 64
+        body = {
+            "messages": [{"role": "user", "content": "Count numbers."}],
+            "tools": [{"type": "function", "function": {"name": "unused", "parameters": {}}}],
+            "tool_choice": "none",
+            "chat_template_kwargs": {"enable_thinking": False},
+            "max_tokens": 64,
+        }
+        reservations = []
+        for _ in range(3):
+            reservation, _, prepared = await inference._reserve_counted_gguf_passthrough(
+                request = None, llama_backend = backend, payload = payload, body = body
+            )
+            assert prepared is body
+            reservations.append(reservation)
+        assert queue.snapshot().active == 1
+        assert queue.snapshot().queued == 2
+        assert queue.snapshot().committed == 664
+        args, kwargs = backend.count_chat_tokens.call_args
+        assert args[0] == body["messages"]
+        assert kwargs["tools"] == body["tools"]
+        assert kwargs["template_options"] is body
+        assert kwargs["chat_template_kwargs"] == body["chat_template_kwargs"]
+        reservations[0].lease_nowait().release()
+        await asyncio.sleep(0)
+        assert reservations[1].lease_nowait() is not None
+        reservations[1].lease_nowait().release()
+        reservations[2].cancel()
+        assert queue.snapshot().active == 0
+        assert queue.snapshot().queued == 0
+
+    asyncio.run(scenario())
+
+
+def test_prompt_counter_forwards_passthrough_template_options(monkeypatch):
+    from types import MethodType
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    httpx = _llama_httpx()
+    captured = []
+
+    def respond(request):
+        import json
+
+        captured.append(json.loads(request.content))
+        assert request.url.path == "/v1/chat/completions/input_tokens"
+        return httpx.Response(200, json = {"input_tokens": 42})
+
+    client_type = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: client_type(transport = httpx.MockTransport(respond), **kw)
+    )
+    backend = _backend(42)
+    backend.base_url = "http://llama.test"
+    backend.is_loaded = True
+    backend.markup_profile = None
+    backend._auth_headers = None
+    backend.count_chat_tokens = MethodType(LlamaCppBackend.count_chat_tokens, backend)
+    options = {"tool_choice": "none", "parallel_tool_calls": False, "messages": "ignored"}
+    messages = [{"role": "user", "content": "Hello"}]
+    assert (
+        backend.count_chat_tokens(
+            messages, strict = True, prefer_native = True, template_options = options
+        )
+        == 42
+    )
+    assert captured == [{"messages": messages, "tool_choice": "none", "parallel_tool_calls": False}]
 
 
 def test_tool_recost_keeps_the_model_count(monkeypatch):
@@ -204,7 +331,13 @@ def test_exact_count_endpoint_failover_preserves_short_chat_concurrency(monkeypa
                     reservation.cancel()
 
     asyncio.run(scenario())
-    assert calls.count("/v1/chat/completions/input_tokens") == 3
+    native_calls = calls.count("/v1/chat/completions/input_tokens")
+    if failed_path == "legacy":
+        # A native answer is kept per llama-server process, so identical chats racing here may share it.
+        assert 1 <= native_calls <= 3
+    else:
+        # A failed native count is never kept: every reservation asks the endpoint again.
+        assert native_calls == 3
     assert calls.count("/apply-template") == (0 if failed_path == "legacy" else 3)
 
 
@@ -294,7 +427,7 @@ def test_media_is_charged_by_allowance_and_not_sent_to_the_count():
     count = inference._count_gguf_admission_prompt(backend, payload, payload.messages)
     assert count == 20 + inference._openai_llama_admission_image_tokens(backend)
     assert backend.count_chat_tokens.call_args.kwargs["prefer_native"] is False
-    # llama-server rejects the "[image]" placeholder, and a failed count reserves the whole pool.
+    # llama-server rejects the '[image]' placeholder, and a failed count reserves the whole pool.
     sent = backend.count_chat_tokens.call_args.args[0]
     assert [part["type"] for part in sent[0]["content"]] == ["text"]
 
@@ -608,3 +741,54 @@ def test_cancel_during_stream_admission_exits_tracker(monkeypatch):
             await asyncio.gather(task, return_exceptions = True)
 
     asyncio.run(scenario())
+
+
+def _screenshot_history(calls: int) -> list[dict]:
+    import base64
+    import io
+    import json as _json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    history = [{"role": "user", "content": "go"}]
+    for index in range(calls):
+        buffer = io.BytesIO()
+        Image.new("RGB", (16 + index, 16)).save(buffer, format = "PNG")
+        image = {"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}
+        history += [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"c{index}",
+                        "type": "function",
+                        "function": {"name": "computer", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": f"c{index}",
+                "content": "ok\n" + mcp_images.SENTINEL + _json.dumps([image]),
+            },
+        ]
+    return history
+
+
+def test_a_compacting_chat_prices_and_replays_every_tool_picture():
+    """#18231: a compacting GGUF chat keeps every tool picture, so admission must charge them all
+    and the replay must restore them all; a non-compacting one keeps the cap."""
+    history = _screenshot_history(12)
+    compacting = SimpleNamespace(context_overflow = "truncate_oldest")
+    strict = SimpleNamespace(context_overflow = "error")
+
+    assert inference._mcp_replay_uncapped(compacting) is True
+    assert inference._mcp_replay_uncapped(strict) is False
+    _messages, uncapped = inference._openai_llama_admission_messages_for_estimate(
+        history, uncapped = True
+    )
+    _messages, capped = inference._openai_llama_admission_messages_for_estimate(history)
+    assert (uncapped, capped) == (12, inference._MCP_MAX_TOTAL_MODEL_IMAGES)

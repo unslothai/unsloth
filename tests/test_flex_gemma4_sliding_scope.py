@@ -41,7 +41,6 @@ def test_gemma4_is_not_routed_to_flex():
 
 
 def test_gemma4_text_only_is_not_routed_either():
-    # A text-only load presents gemma4_text at the top.
     text_only = _Cfg(
         model_type = "gemma4_text",
         head_dim = 256,

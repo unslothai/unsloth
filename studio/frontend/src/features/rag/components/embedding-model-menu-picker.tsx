@@ -29,6 +29,7 @@ import { MenuTickIcon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { embeddingMenuModels } from "../lib/embedding-menu-models";
+import { toastEmbeddingModelSaved } from "./reembed-store";
 
 const HEADING_LINK_CLASS =
   "my-0! shrink-0 cursor-pointer rounded-sm font-normal text-muted-foreground underline decoration-muted-foreground/50 underline-offset-[3px] outline-hidden transition-colors hover:text-foreground hover:decoration-foreground/60 data-[highlighted]:text-foreground data-[highlighted]:decoration-foreground/60";
@@ -149,9 +150,7 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
           },
         });
       } else if (result.status === "saved") {
-        toast.success(t("settings.general.rag.switched", { model: name }), {
-          description: t("settings.general.rag.reindexWarning"),
-        });
+        void toastEmbeddingModelSaved(t("settings.general.rag.switched", { model: name }));
       }
       if (mountedRef.current) onBack();
     } finally {
@@ -239,7 +238,7 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
           const pinLabel = t(isPinned ? "settings.general.rag.unpin" : "settings.general.rag.pin");
           return (
             // The pin is its own menu item, so arrow keys reach it; it is laid over the row's spacer.
-            <div key={model} className="menu-row-with-action group/row relative">
+            <div key={model} className="menu-row-with-action group/row has-[[data-highlighted]]:[--row-pin-opacity:1] relative">
               <DropdownMenuItem
                 disabled={switching !== null && switching !== model}
                 onSelect={(event) => {
@@ -289,7 +288,7 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
                         if (neighbour) requestAnimationFrame(() => neighbour.focus());
                       }}
                       // As on Recents: grey, unpin glyph once pinned. Shown on row hover or focus, always on touch.
-                      className="pointer-events-auto flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 outline-hidden transition-colors group-hover/row:opacity-100 group-has-[[data-highlighted]]/row:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] data-[highlighted]:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[highlighted]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                      className="pointer-events-auto flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-[var(--row-pin-opacity,0)] outline-hidden transition-colors group-hover/row:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] data-[highlighted]:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[highlighted]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                     >
                       <HugeiconsIcon
                         icon={isPinned ? PinOffIcon : PinIcon}

@@ -6,7 +6,7 @@ import { isTauri } from "./api-base.ts";
 let clearing = false;
 const closedListeners = new Set<() => void>();
 
-/** True while a clear runs: a page shown meanwhile could write the cleared data back. */
+/** A page shown during a clear could write the cleared data back. */
 export function nativeClearing(): boolean {
   return clearing;
 }
@@ -15,7 +15,7 @@ export function onNativeViewsClosed(listener: () => void): void {
   closedListeners.add(listener);
 }
 
-/** Clear native pages' cookies, storage and cache. Clear data and account switches both come here, so neither races a page reopening. */
+/** Clear data and account switches both come here, so neither races a page reopening. */
 export async function clearNativeBrowsingData(): Promise<void> {
   if (!isTauri) return;
   const { invoke } = await import("@tauri-apps/api/core");

@@ -1,45 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every third-party action must be referenced by commit SHA, never by a tag.
+"""Third-party actions must be pinned by commit SHA: a moved tag would run new code with our secrets."""
 
-A tag is a pointer the upstream owner can move whenever they like. `uses: foo/bar@v3` is
-therefore not a dependency on reviewed code, it is an agreement to run whatever that
-repository contains on the day CI happens to run, decided by someone outside this
-project. The decision is theirs, the credentials are ours: the action runs inside our
-job, with whatever secrets and token permissions that job holds. `tj-actions/changed-files`
-(GHSA-mrrh-fwg8-l2gq, March 2025) is the case everybody cites, where retagging one action
-exfiltrated secrets out of tens of thousands of repositories, and it needed nothing more
-exotic than a moved tag.
-
-This repository already got this right nearly everywhere, which is exactly why a guard is
-worth having: 53 of ~400 `uses:` references had drifted onto mutable tags, all of them in
-the `docker-*` and `woa-wheelhouse` family, while every other workflow pinned properly.
-That is the shape a convention with no test develops. Nothing asserted it before this
-module -- `scripts/lint_workflow_triggers.py` checks triggers and cache keys, and no test
-under `tests/` mentioned SHA pinning at all.
-
-The 53 were pinned at the SHAs their tags already resolved to, which changed no versions.
-Worth recording how that was confirmed, because it is the reassuring part: the resolved
-SHAs were byte-identical to what the same actions were already pinned to elsewhere in this
-repo, e.g. `actions/checkout` at 3d3c42e5 and `actions/upload-artifact` at 043fb46d. So
-the docker family had simply been written in a different style, not held at a different
-version.
-
-Scope, and why it is drawn here. First-party `uses: ./...` references are exempt: they
-resolve inside this checkout at the commit under test, so there is no third party and no
-mutable pointer. Everything else is in, including `actions/*` and `docker/*`. Those are
-reputable publishers, but reputable is not the property that matters. The property that
-matters is whether the bytes can change without a commit here, and for a tag they can. A
-compromised upstream account moves the tag either way.
-
-Docker image references in `container:` and `services:` are deliberately NOT covered.
-They are a real instance of the same problem, and pinning them by digest is worth doing,
-but a `:tag` image reference and a `uses:` action reference have different syntax and
-different failure modes, and a guard that tried to cover both would assert neither
-clearly. Recorded here so the gap is known rather than mistaken for coverage.
-"""
-
+import fnmatch
 import re
 from pathlib import Path
 
@@ -51,36 +15,20 @@ GITHUB = REPO / ".github"
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
-# A pinned-by-SHA reference whose upstream repository is gone or renamed cannot be
-# reviewed, but it also cannot change, so it is not this module's problem.
+# A SHA-pinned reference to a gone or renamed repo cannot change, so it is out of scope.
 DELIBERATELY_UNPINNED = {
-    # Each entry needs the reason written here. Empty is the goal, and it growing needs
-    # an argument rather than a deadline: there is no version of "we will pin it later"
-    # that is safer than pinning it now, because the pin is a one-line change.
+    # Each entry needs its reason here; the goal is empty.
 }
 
 
-# Actions deliberately held at two different commits, keyed on `owner/repo`, with the
-# reason. The failure below used to tell people to "say so in a comment at each site",
-# which nothing read, so the documented remedy could not make CI pass and the only way
-# out was editing this file. This is the mechanism that advice implied.
+# Actions deliberately held at two commits, keyed on `owner/repo`, with the reason.
 DELIBERATELY_SPLIT: dict[str, str] = {
-    # Empty, and a split is nearly always a half-finished upgrade rather than a decision.
-    # An entry here needs the reason a single commit will not do, not a note that two
-    # exist.
+    # A split is nearly always a half-finished upgrade; an entry needs a real reason.
 }
 
 
 def _owner_repo(ref_repo: str) -> str:
-    """`actions/cache/save` and `actions/cache` are one repository, pinned once.
-
-    A sub-action lives in its parent repository and a `uses:` SHA names a commit of that
-    repository, so `actions/cache@<a>`, `actions/cache/restore@<b>` and
-    `actions/cache/save@<c>` are three different commits of ONE action. Grouping by the
-    full path put each under its own key, every group held a single SHA, and the
-    one-commit rule passed while three versions of `actions/cache` ran side by side --
-    exactly the half-finished upgrade it exists to catch.
-    """
+    """Sub-actions share their parent repository's SHA, so group by owner and repo, not the full path."""
     parts = ref_repo.split("/")
     return "/".join(parts[:2]) if len(parts) > 2 else ref_repo
 
@@ -91,12 +39,7 @@ def _sources():
         yield path, path.read_text(encoding = "utf-8", errors = "ignore")
 
 
-# Split on the LAST `@` rather than enumerating what a ref may contain. Git ref names
-# accept characters the first version left out -- `+` among them, and
-# `git check-ref-format refs/tags/v1+build` agrees -- so `owner/action@v1+build` produced
-# no match and was omitted from every pinning check while still being a mutable tag. A
-# guard that silently skips what it cannot parse is worse than one that over-collects,
-# because the `_SHA` test below decides the verdict anyway.
+# Split on the last `@`: git refs may contain `+` and other characters, and the SHA test decides.
 _REPO_PART = re.compile(r"""^[A-Za-z0-9][\w.-]*/[\w.-]+(?:/[\w.\-/]+)?$""")
 
 
@@ -124,15 +67,7 @@ def _split_ref(value: str):
 
 
 def _uses_values(node):
-    """Every `uses` value anywhere in a parsed document, at any depth.
-
-    Walking the parsed structure rather than the source text, because enumerating
-    spellings of the key does not converge. The lexical scan started on `uses:`, then
-    needed `"uses":` and `uses :`, and flow style `- {uses: actions/checkout@v4}` is
-    another valid step mapping again -- each one a reference the guard simply could not
-    see, in a module whose entire job is to refuse mutable tags. PyYAML resolves all of
-    them to the same mapping key, so asking it ends the sequence instead of extending it.
-    """
+    """Walks the parsed document, since enumerating spellings of the `uses` key does not converge."""
     if isinstance(node, dict):
         for key, value in node.items():
             if str(key).strip() == "uses" and isinstance(value, str):
@@ -152,17 +87,13 @@ def _references():
         except yaml.YAMLError:
             continue
         for ref in _uses_values(doc):
-            # `uses: ./.github/actions/x` resolves inside this checkout, and
-            # `docker://` is an image rather than an action; neither is a mutable
-            # third-party pointer.
+            # Local `./` actions and `docker://` images are not mutable third-party pointers.
             if ref.startswith(".") or ref.startswith("docker://"):
                 continue
             parts = _split_ref(ref)
             if parts is None:
                 continue
-            # The parser discards positions, so recover the line from the source for the
-            # failure message. Only ever cosmetic: a reference that cannot be located is
-            # still reported, at line 0.
+            # Line lookup is cosmetic; an unlocatable reference is still reported, at line 0.
             index = text.find(ref)
             lineno = text.count("\n", 0, index) + 1 if index >= 0 else 0
             yield path, lineno, ref, parts[0], parts[1]
@@ -199,15 +130,7 @@ def test_the_sha_predicate_reads_the_revision():
 
 
 def test_the_scan_reads_every_spelling_of_a_step_mapping():
-    """A guard that recognises one spelling of its own key is a guard with a keyhole.
-
-    The scan began as a regex on `uses:`, which missed `"uses":` and `uses :`, and then
-    missed flow style `- {uses: actions/checkout@v4}` after those were added. Each miss
-    was a reference absent from the scan entirely, so a mutable tag written that way
-    passed a test whose whole purpose is to refuse mutable tags, and the cost of the
-    bypass was a pair of quotes or a pair of braces. Enumerating spellings does not
-    converge; the parser resolves all of them to the same mapping key.
-    """
+    """Each spelling of a step's `uses` key must be read; enumerating spellings does not converge."""
     spellings = [
         "steps:\n  - uses: actions/checkout@v4\n",
         'steps:\n  - "uses": actions/checkout@v4\n',
@@ -216,15 +139,12 @@ def test_the_scan_reads_every_spelling_of_a_step_mapping():
         "steps:\n  - {uses: actions/checkout@v4}\n",
         "steps: [{uses: actions/checkout@v4}]\n",
         'steps:\n  - uses: "actions/checkout@v4"\n',
-        # Nested inside a composite action, which is the other place `uses` appears.
         "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n",
     ]
     for source in spellings:
         found = list(_uses_values(yaml.safe_load(source)))
         assert found == ["actions/checkout@v4"], f"{source!r} produced {found!r}"
 
-    # A `uses` value that is not a reference, and a key that merely contains the word,
-    # must not be picked up as third-party references.
     assert list(_uses_values(yaml.safe_load("steps:\n  - uses: ./.github/actions/x\n"))) == [
         "./.github/actions/x"
     ]
@@ -239,8 +159,8 @@ def test_the_reference_predicate_reads_owner_repo_at_ref():
         ("owner/repo@0123456789abcdef0123456789abcdef01234567", True),
         ("./.github/actions/x", False),
         ("docker://alpine:3", False),
-        ("actions/checkout", False),  # no ref at all
-        ("notapath@v4", False),  # no owner
+        ("actions/checkout", False),
+        ("notapath@v4", False),
         ("", False),
     ]
     for ref, expected in cases:
@@ -286,11 +206,7 @@ def test_every_exemption_still_exists_and_still_needs_one():
     sorted({_owner_repo(r) for _, _, _, r, _ in _references()}),
 )
 def test_an_action_is_pinned_to_one_sha_everywhere_it_is_used(repo):
-    """Two SHAs for one action means two versions of it run, which is nearly always a slip.
-
-    Not a security property on its own, but it is how a half-finished upgrade shows up,
-    and a stale copy is the one that keeps an already-fixed bug alive.
-    """
+    """Two SHAs for one action means two versions run, usually a half-finished upgrade, so it is flagged."""
     revs = {rev for _, _, _, r, rev in _references() if _owner_repo(r) == repo and _SHA.match(rev)}
     if len(revs) <= 1:
         return
@@ -334,9 +250,7 @@ def test_the_reference_predicate_accepts_valid_git_ref_punctuation():
     produced no match and was omitted from every pinning check while still being a
     mutable tag.
     """
-    # `v@1` included: `git check-ref-format refs/tags/v@1` succeeds, so it is a valid
-    # mutable tag, and a revision pattern spelled `[^@\s]+` forbade the very character
-    # the split is named for -- dropping it from every pinning check.
+    # `v@1` is a valid tag (`git check-ref-format` accepts it), so `@` must be allowed in the ref.
     for ref in (
         "owner/action@v1+build",
         "owner/action@release~1",
@@ -348,27 +262,81 @@ def test_the_reference_predicate_accepts_valid_git_ref_punctuation():
         assert parts[0] == "owner/action", ref
         assert not _SHA.match(parts[1]), f"{ref} is not a pin"
 
-    # Still not references, so over-collecting does not turn into over-reporting.
     for ref in ("./.github/actions/x", "docker://alpine:3", "actions/checkout", ""):
         assert _split_ref(ref) is None, ref
 
 
 def test_a_sub_action_is_pinned_with_its_repository():
-    """`actions/cache/save` is a path inside `actions/cache`, not a separate repository.
-
-    A `uses:` SHA names a commit of the repository the action lives in, so
-    `actions/cache@<a>`, `actions/cache/restore@<b>` and `actions/cache/save@<c>` are
-    three commits of ONE action. Grouping by the full path gave each its own group,
-    every group held exactly one SHA, and the one-commit rule passed while three
-    versions of `actions/cache` ran side by side -- the precise half-finished upgrade it
-    exists to report.
-    """
+    """A sub-action path such as actions/cache/save is pinned with its parent repository, not on its own."""
     assert _owner_repo("actions/cache/save") == "actions/cache"
     assert _owner_repo("actions/cache/restore") == "actions/cache"
     assert _owner_repo("actions/cache") == "actions/cache"
     assert _owner_repo("actions/checkout") == "actions/checkout"
-    # A deep path still resolves to the repository that holds it.
     assert _owner_repo("owner/repo/a/b/c") == "owner/repo"
-    # The grouping has to be what the rule is parametrized over, or it changes nothing.
+    # The rule must be parametrized over this grouping.
     groups = {_owner_repo(r) for _, _, _, r, _ in _references()}
     assert "actions/cache/save" not in groups
+
+
+def _version_group(name: str, groups: dict):
+    """The Dependabot version-update group `name` lands in: the first whose patterns match."""
+    for group_name, group in groups.items():
+        if group.get("applies-to", "version-updates") != "version-updates":
+            continue
+        if any(fnmatch.fnmatchcase(name, p) for p in group.get("exclude-patterns", [])):
+            continue
+        if any(fnmatch.fnmatchcase(name, p) for p in group.get("patterns", [])):
+            return group_name, group
+    return None, {}
+
+
+def _groups_that_split_an_action(names, groups: dict) -> list[str]:
+    """Actions whose sub-paths Dependabot would bump in separate PRs.
+
+    Dependabot names `owner/repo/init` and `owner/repo/analyze` as two dependencies, so a group
+    with `group-by: dependency-name`, or two groups, opens one PR per sub-path, and each PR fails
+    the one-SHA test above on its own."""
+    by_repo: dict[str, set[str]] = {}
+    for name in names:
+        by_repo.setdefault(_owner_repo(name), set()).add(name)
+    bad = []
+    for repo, subs in sorted(by_repo.items()):
+        if len(subs) < 2:
+            continue
+        placed = {n: _version_group(n, groups) for n in sorted(subs)}
+        landed = {group_name for group_name, _ in placed.values()}
+        per_name = any(g.get("group-by") == "dependency-name" for _, g in placed.values())
+        if len(landed) != 1 or None in landed or per_name:
+            bad.append(f"{repo}: {', '.join(f'{n} -> {g[0]}' for n, g in placed.items())}")
+    return bad
+
+
+def _actions_groups() -> dict:
+    config = yaml.safe_load((GITHUB / "dependabot.yml").read_text(encoding = "utf-8"))
+    for update in config["updates"]:
+        if update.get("package-ecosystem") == "github-actions":
+            return update.get("groups") or {}
+    raise AssertionError("no github-actions entry in .github/dependabot.yml")
+
+
+def test_the_split_check_reads_groups_in_order():
+    names = ["github/codeql-action/init", "github/codeql-action/analyze", "actions/checkout"]
+    per_name = {"actions": {"patterns": ["*"], "group-by": "dependency-name"}}
+    assert _groups_that_split_an_action(names, per_name) == [
+        "github/codeql-action: github/codeql-action/analyze -> actions, "
+        "github/codeql-action/init -> actions"
+    ]
+    grouped = {"codeql": {"patterns": ["github/codeql-action*"]}, **per_name}
+    assert _groups_that_split_an_action(names, grouped) == []
+    security_only = {
+        "codeql": {"patterns": ["github/codeql-action*"], "applies-to": "security-updates"},
+        **per_name,
+    }
+    assert _groups_that_split_an_action(names, security_only)
+
+
+def test_dependabot_bumps_every_sub_path_action_in_one_pr():
+    """Every sub-path of one action repository lands in one version-update group."""
+    names = {repo for _, _, _, repo, _ in _references()}
+    assert any(len(n.split("/")) > 2 for n in names), "no sub-path action found; the scan broke"
+    assert _groups_that_split_an_action(names, _actions_groups()) == []

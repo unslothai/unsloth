@@ -20,6 +20,10 @@ from core.inference import diffusion_nvfp4_install as inst
 from core.inference import diffusion_nvfp4_ops as ops
 
 _INFERENCE_DIR = pathlib.Path(inst.__file__).resolve().parent
+# The default fake host (CUDA 13.0 torch, sm_100, no cutlass-dsl) takes the newest release and its sm100a provider.
+V = inst.FLASHINFER_VERSION
+FALLBACK = inst.FLASHINFER_RELEASES[-1].version
+PROVIDER = "flashinfer-jit-cache-sm100a"
 
 _BASE_DISTS = {
     "torch": "2.12.1+cu130",
@@ -29,7 +33,7 @@ _BASE_DISTS = {
     "packaging": "25.0",
 }
 _ADDED_BY_INSTALL = {
-    "flashinfer-python": "0.6.6",
+    "flashinfer-python": V,
     "apache-tvm-ffi": "0.1.9",
     "nvidia-cutlass-dsl": "4.4.2",
 }
@@ -79,7 +83,11 @@ class _FakeEnv:
             self.commands.append(cmd)
         if cmd[1:3] == ["-c", cmd[2]] and "import flashinfer" in cmd[2]:
             good = self.importable and not self.fail_verify
-            return _Result(0 if good else 1, "0.6.6" if good else "ImportError")
+            providers = ",".join(
+                sorted(n for n in self.dists if n.startswith("flashinfer-jit-cache-"))
+            )
+            got = f"providers={providers}\n{self.dists.get('flashinfer-python', V)}"
+            return _Result(0 if good else 1, got if good else "ImportError")
         if "uninstall" in cmd:
             for name in cmd[cmd.index("uninstall") + 1 :]:
                 self.dists.pop(name, None)
@@ -93,28 +101,40 @@ class _FakeEnv:
             if self.install_delay:
                 time.sleep(self.install_delay)
             self.dists.update(self.concurrent_add)
-            if self.fail_install and any(a.startswith("flashinfer-jit-cache==") for a in cmd):
+            if self.fail_install and any(a.startswith("flashinfer-jit-cache") for a in cmd):
                 return _Result(1, "ERROR: no matching distribution")
             if any(a.startswith("flashinfer-python==") for a in cmd):
                 self.dists.update(_ADDED_BY_INSTALL)
+                spec = next(a for a in cmd if a.startswith("flashinfer-python=="))
+                self.dists["flashinfer-python"] = spec.split("==", 1)[1]
                 for name, version in self.install_moves.items():
                     self.dists[name] = version
                     if name == "torch":
                         self.torch_version = version
                 self.importable = not self.install_moves
-                # uv reports an upgrade or downgrade as `- name==old` then `+ name==new`, like an addition.
+                # uv reports an upgrade or downgrade as `- name==old` then `+ name==new`.
                 return _Result(
                     0,
                     f"Installed {len(_ADDED_BY_INSTALL)} packages in 1.2s\n"
                     + "\n".join(
                         f" + {n}=={v}"
-                        for n, v in {**_ADDED_BY_INSTALL, **self.install_moves}.items()
+                        for n, v in {
+                            **_ADDED_BY_INSTALL,
+                            "flashinfer-python": self.dists["flashinfer-python"],
+                            **self.install_moves,
+                        }.items()
                     ),
                 )
-            elif any(a.startswith("flashinfer-jit-cache==") for a in cmd):
-                spec = next(a for a in cmd if a.startswith("flashinfer-jit-cache=="))
-                self.dists["flashinfer-jit-cache"] = spec.split("==", 1)[1]
-                return _Result(0, f"Installed 1 package in 3.1s\n + {spec}")
+            elif any(a.startswith("flashinfer-jit-cache") and "==" in a for a in cmd):
+                specs = [a for a in cmd if a.startswith("flashinfer-jit-cache") and "==" in a]
+                for spec in specs:
+                    name, version = spec.split("==", 1)
+                    self.dists[name] = version
+                return _Result(
+                    0,
+                    f"Installed {len(specs)} package(s) in 3.1s\n"
+                    + "\n".join(f" + {spec}" for spec in specs),
+                )
             else:
                 for spec in cmd:
                     if "==" in spec:
@@ -167,7 +187,9 @@ def env(monkeypatch):
     monkeypatch.setattr(
         inst,
         "_import_flashinfer",
-        lambda: (True, "0.6.6") if fake.importable else (False, "ModuleNotFoundError: flashinfer"),
+        lambda: (True, fake.dists.get("flashinfer-python", V))
+        if fake.importable
+        else (False, "ModuleNotFoundError: flashinfer"),
     )
     monkeypatch.setattr(inst, "_dist_version", lambda name: fake.dists.get(name))
     monkeypatch.setattr(inst, "installed_distributions", lambda: dict(fake.dists))
@@ -183,7 +205,7 @@ def env(monkeypatch):
 
 def _steps(installs):
     """``(main, jit)`` by content, whichever order the transaction runs them in."""
-    main = next(c for c in installs if "flashinfer-python==0.6.6" in c)
+    main = next(c for c in installs if any(a.startswith("flashinfer-python==") for a in c))
     jit = next(c for c in installs if any(a.startswith("flashinfer-jit-cache==") for a in c))
     return main, jit
 
@@ -198,12 +220,12 @@ def test_installs_pinned_flashinfer_and_matching_jit_cache_when_missing(env):
     installs = env.installs()
     assert len(installs) == 2
     main, jit = _steps(installs)
-    assert "flashinfer-python==0.6.6" in main and "--only-binary" in main
+    assert f"flashinfer-python=={V}" in main and "--only-binary" in main
     assert "--no-deps" not in main  # tvm-ffi and friends are real import deps
-    assert "flashinfer-jit-cache==0.6.6+cu130" in jit and "--no-deps" in jit
+    assert f"flashinfer-jit-cache=={V}+cu130" in jit and "--no-deps" in jit
     assert jit[jit.index("--index-url") + 1] == "https://flashinfer.ai/whl/cu130"
     assert jit[jit.index("--index") + 1] == "https://flashinfer.ai/whl/cu130"
-    assert env.dists["flashinfer-jit-cache"] == "0.6.6+cu130"
+    assert env.dists["flashinfer-jit-cache"] == f"{V}+cu130"
     pins = env.constraints_seen[0].splitlines()
     for name, version in _BASE_DISTS.items():
         assert f"{name}=={version}" in pins
@@ -389,7 +411,7 @@ def test_another_process_holding_the_env_lock_blocks_the_install(env, monkeypatc
     monkeypatch.setattr(inst, "ENV_LOCK_TIMEOUT_S", 0.05)
     real = inst._env_install_lock
     monkeypatch.setattr(inst, "_env_install_lock", lambda timeout = 0.05: real(timeout))
-    # A second FileLock on its own file handle, held from a thread, stands in for another process.
+    # A second FileLock on its own handle, held from a thread, stands in for another process.
     other = filelock.FileLock(inst._env_lock_path(), thread_local = False)
     import threading
 
@@ -452,7 +474,7 @@ def test_concurrent_loads_install_once(env):
     for t in threads:
         t.join(10)
     assert len(results) == 4 and all(ok for ok, _ in results)
-    assert sum(1 for c in env.installs() if "flashinfer-python==0.6.6" in c) == 1
+    assert sum(1 for c in env.installs() if f"flashinfer-python=={V}" in c) == 1
 
 
 def test_a_failed_install_is_attempted_once_per_process(env):
@@ -494,7 +516,7 @@ def test_success_forgets_the_dispatch_availability_memo(env, monkeypatch):
 @pytest.mark.parametrize(
     "cuda, tag",
     [
-        ("12.8", "cu128"),
+        ("12.8", None),  # the newest release has no cu128 jit-cache; select_release falls back
         ("12.9", "cu129"),
         ("13.0", "cu130"),
         ("13.2", "cu130"),
@@ -705,7 +727,7 @@ def test_a_configured_mirror_skips_the_pypi_probe_but_not_the_jit_cache_one(env,
     monkeypatch.setattr(inst, "_reachable", lambda url: probed.append(url) or True)
     monkeypatch.setenv("UV_INDEX_URL", "https://mirror.example/simple")
     assert _ensure(env)[0]
-    assert probed == ["https://flashinfer.ai/whl/cu130/flashinfer-jit-cache/"]
+    assert probed == [f"https://flashinfer.ai/whl/cu130/{PROVIDER}/"]
 
 
 def test_a_pip_only_mirror_is_handed_to_uv(env, monkeypatch):
@@ -816,8 +838,8 @@ def test_status_callback_sees_the_install_and_its_outcome(env):
     seen = []
     ok, _ = inst.ensure_flashinfer_for_nvfp4(0, status_cb = seen.append, run = env.run)
     assert ok
-    assert seen[0].startswith("installing flashinfer-python 0.6.6") and "cu130" in seen[0]
-    assert seen[-1] == "installed flashinfer 0.6.6 for NVFP4"
+    assert seen[0].startswith(f"installing flashinfer-python {V}") and "cu130" in seen[0]
+    assert seen[-1] == f"installed flashinfer {V} for NVFP4"
 
 
 def test_local_only_load_never_installs(env):
@@ -866,7 +888,6 @@ def test_status_preflight_reason_is_the_loaded_device_only(monkeypatch):
 
 
 def test_image_loader_skips_the_install_when_the_plan_declined_the_seed():
-    # A declined seed loads the released denoiser, and the Hub probe alone would still buy the install.
     body = _load_pipeline_body(_INFERENCE_DIR / "diffusion.py")
     gate = body[: body.index("ensure_flashinfer_for_nvfp4(")].rsplit("if (", 1)[-1]
     declined = gate.index("_pipeline_prequant_planned != PIPELINE_SEED_DECLINED")
@@ -967,7 +988,7 @@ def test_jit_cache_step_drops_extra_index_sources_from_the_environment(env, monk
         if "install" in cmd and "uninstall" not in cmd
     }
     for name, value in extra.items():
-        assert envs["main"].get(name) == value  # the user's mirrors still serve the main step
+        assert envs["main"].get(name) == value
         assert name not in envs["jit"]
 
 
@@ -1005,7 +1026,7 @@ def test_pip_jit_cache_step_reads_no_pip_conf_but_keeps_its_transport(env, monke
     assert jit_env["PIP_PROXY"] == "http://proxy.corp.example:3128"
     assert jit_env["PIP_CERT"] == "/etc/ssl/corp.pem"
     assert jit_env["PIP_TRUSTED_HOST"].split() == ["a.corp.example", "b.corp.example"]
-    assert jit_env["PIP_TIMEOUT"] == "30"  # the caller's own environment still wins
+    assert jit_env["PIP_TIMEOUT"] == "30"
     assert not any(k in jit_env for k in ("PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS"))
 
 
@@ -1084,7 +1105,6 @@ def test_a_complete_install_still_holding_the_lock_is_waited_for_in_case_it_roll
             env.dists.pop("flashinfer-python")
             env.dists.pop("flashinfer-jit-cache")
             env.importable = False
-            # Imports seen before the rollback: ordering by count, not by clock.
             rolled_back.append(len(stamps))
 
     t = threading.Thread(target = _hold)
@@ -1143,9 +1163,9 @@ def test_a_uv_index_skips_the_pypi_probe_only_when_uv_installs(env, monkeypatch,
 @pytest.mark.parametrize(
     "cuda, cache, nvcc",
     [
-        ("13.0", "0.6.6+cu128", False),  # left over from a cu128 torch
-        ("13.0", "0.6.6", False),  # no local tag: the CUDA it was built for cannot be told
-        ("14.0", "0.6.6+cu130", True),  # no published build fits, yet a cache is present
+        ("13.0", f"{V}+cu129", False),  # left over from a cu129 torch
+        ("13.0", V, False),  # no local tag: the CUDA it was built for cannot be told
+        ("14.0", f"{V}+cu130", True),
     ],
 )
 def test_a_jit_cache_built_for_another_cuda_refuses(env, monkeypatch, cuda, cache, nvcc):
@@ -1158,7 +1178,7 @@ def test_a_jit_cache_built_for_another_cuda_refuses(env, monkeypatch, cuda, cach
 
 
 def test_a_jit_cache_of_the_running_cuda_is_kept(env):
-    env.dists["flashinfer-jit-cache"] = "0.6.6+cu130"
+    env.dists["flashinfer-jit-cache"] = f"{V}+cu130"
     ok, reason = _ensure(env)
     assert ok, reason
 
@@ -1182,7 +1202,7 @@ def test_a_load_that_declined_installs_does_not_wait_on_another_install(env, mon
         t.join()
     assert elapsed < 1.0
     assert not ok and "another process is still installing" in reason
-    assert stamps == []  # never imported mid-transaction
+    assert stamps == []
     assert env.commands == []
 
 
@@ -1215,7 +1235,7 @@ def test_a_pip_conf_mirror_skips_the_pypi_probe_for_the_pip_fallback(env, monkey
     run = _pip_config(env, ["global.index-url='https://corp.example/simple'"])
     ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = run)
     assert ok, reason
-    assert probed == ["https://flashinfer.ai/whl/cu130/flashinfer-jit-cache/"]
+    assert probed == [f"https://flashinfer.ai/whl/cu130/{PROVIDER}/"]
 
 
 @pytest.mark.parametrize(
@@ -1255,9 +1275,7 @@ def test_a_pip_conf_mirror_is_not_overridden_by_a_uv_one(env, monkeypatch):
 def test_pip_config_is_only_read_when_pip_installs(env):
     run = _pip_config(env, [":env:.no-index='1'"])
     assert inst.ensure_flashinfer_for_nvfp4(0, run = run)[0]
-    assert (
-        run.calls == []
-    )  # uv ignores pip's settings, and the installed path never pays for the subprocess
+    assert run.calls == []  # uv ignores pip's settings
 
 
 @pytest.mark.parametrize(
@@ -1346,7 +1364,7 @@ def test_pip_section_overrides_the_top_level_in_uv_config(env, monkeypatch, tmp_
         'index-url = "https://corp.example/simple"\n',
         '[[index]]\nurl = "https://corp.example/simple"\n',
         '[pip]\nextra-index-url = ["https://corp.example/simple"]\n',
-        "this is not toml = = \n",  # unreadable here: the installer decides, not pypi.org
+        "this is not toml = = \n",
     ],
 )
 def test_a_uv_config_mirror_skips_the_pypi_probe(env, monkeypatch, tmp_path, text):
@@ -1354,7 +1372,7 @@ def test_a_uv_config_mirror_skips_the_pypi_probe(env, monkeypatch, tmp_path, tex
     monkeypatch.setattr(inst, "_reachable", lambda url: probed.append(url) or True)
     _uv_toml(monkeypatch, tmp_path, text)
     assert _ensure(env)[0]
-    assert probed == ["https://flashinfer.ai/whl/cu130/flashinfer-jit-cache/"]
+    assert probed == [f"https://flashinfer.ai/whl/cu130/{PROVIDER}/"]
 
 
 def test_uv_config_discovery_finds_the_project_file_and_honors_no_config(
@@ -1422,7 +1440,7 @@ def test_reachability_counts_a_tls_failure_as_a_route(monkeypatch):
 
 
 def test_an_install_killed_between_its_steps_completes_on_the_next_load(env):
-    # Killed between steps: the next load must finish the install, not treat jit-cache-less flashinfer as done.
+    # Killed between steps: the next load must finish, not treat jit-cache-less flashinfer as done.
     real_run = env.run
     calls = {"n": 0}
 
@@ -1439,13 +1457,13 @@ def test_an_install_killed_between_its_steps_completes_on_the_next_load(env):
     env.importable = "flashinfer-python" in env.dists
     ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = env.run)
     assert ok, reason
-    assert env.dists.get("flashinfer-python") == "0.6.6"
-    assert env.dists.get("flashinfer-jit-cache") == "0.6.6+cu130", reason
+    assert env.dists.get("flashinfer-python") == V
+    assert env.dists.get("flashinfer-jit-cache") == f"{V}+cu130", reason
+    assert env.dists.get(PROVIDER) == f"{V}+cu130", reason
 
 
 @pytest.mark.parametrize("model", ["DiffusionStatusResponse", "VideoStatusResponse"])
 def test_the_status_reason_hides_host_paths_from_api_key_callers(model):
-    # Host paths must stay redacted for API-key callers.
     from hub.utils.host_paths import redact_host_paths
     from models import inference as models
 
@@ -1505,7 +1523,6 @@ def test_a_failed_install_does_not_quote_index_credentials(env):
 
 
 def test_an_unreported_failure_does_not_revert_a_concurrent_upgrade(env):
-    # No report: constraints held everything, so a concurrent terminal upgrade stays.
     env.concurrent_add = {"packaging": "26.0"}
     real_run = env.run
 
@@ -1526,16 +1543,176 @@ def test_an_unreported_failure_does_not_revert_a_concurrent_upgrade(env):
     assert not [c for c in env.commands if "packaging==25.0" in c]
 
 
-def test_cutlass_dsl_is_held_to_the_flash4_range_when_absent(env):
-    # An unconstrained resolve lands cutlass-dsl 4.8.0, which the hub FA4 build cannot load.
+def test_cutlass_dsl_is_held_to_the_flash4_range_when_absent_on_the_fallback(env):
+    # An unconstrained resolve lands cutlass-dsl 4.8.0, which the hub FA4 build cannot load. Only the fallback
+    # release accepts the FA4 range; a cu128 torch has no newer prebuilt jit-cache, so it takes the fallback.
+    env.cuda = "12.8"
     ok, reason = _ensure(env)
     assert ok, reason
     assert "nvidia-cutlass-dsl>=4.4,<4.6" in env.constraints_seen[0].splitlines()
+    assert env.dists["flashinfer-python"] == FALLBACK
+
+
+def test_the_newest_release_does_not_hold_cutlass_dsl(env):
+    # Its own floor (>= 4.8) is above the FA4 range, so a hold there would make every fresh install unresolvable.
+    ok, reason = _ensure(env)
+    assert ok, reason
+    assert env.dists["flashinfer-python"] == V
+    assert not any("nvidia-cutlass-dsl" in line for line in env.constraints_seen[0].splitlines())
 
 
 def test_an_installed_cutlass_dsl_is_pinned_not_ranged(env):
+    # 4.4.2 is below the newest release's floor and is never moved, so the fallback is installed beside it.
     env.dists["nvidia-cutlass-dsl"] = "4.4.2"
     ok, reason = _ensure(env)
     assert ok, reason
     pins = env.constraints_seen[0].splitlines()
     assert "nvidia-cutlass-dsl==4.4.2" in pins and "nvidia-cutlass-dsl>=4.4,<4.6" not in pins
+    assert env.dists["flashinfer-python"] == FALLBACK
+    assert PROVIDER not in env.dists
+
+
+@pytest.mark.parametrize(
+    "cuda, capability, dists, version, tag",
+    [
+        ("13.0", (10, 0), {}, V, "cu130"),
+        ("12.9", (12, 0), {}, V, "cu129"),
+        ("13.2", (10, 3), {}, V, "cu130"),
+        ("12.8", (10, 0), {}, FALLBACK, "cu128"),
+        ("13.0", (10, 0), {"nvidia-cutlass-dsl": "4.5.0"}, FALLBACK, "cu130"),
+        ("13.0", (10, 0), {"nvidia-cutlass-dsl": "4.6.2a0"}, FALLBACK, "cu130"),
+        ("13.0", (10, 0), {"apache-tvm-ffi": "0.1.9"}, FALLBACK, "cu130"),
+        ("13.0", (10, 0), {"nvidia-cudnn-frontend": "1.20.0"}, FALLBACK, "cu130"),
+        (
+            "13.0",
+            (10, 0),
+            {"nvidia-cutlass-dsl": "4.8.1", "apache-tvm-ffi": "0.1.15.post2"},
+            V,
+            "cu130",
+        ),
+        # No prebuilt anywhere: the newest that fits, JIT-compiled (the caller needs nvcc).
+        ("12.6", (10, 0), {}, V, None),
+        ("14.0", (10, 0), {}, V, None),
+    ],
+)
+def test_select_release(cuda, capability, dists, version, tag):
+    release, got_tag, _ = inst.select_release(cuda, capability, dists)
+    assert (release.version, got_tag) == (version, tag)
+
+
+def test_select_release_names_the_held_dependency_when_nothing_fits(monkeypatch):
+    newest = inst.FLASHINFER_RELEASES[0]
+    monkeypatch.setattr(inst, "FLASHINFER_RELEASES", (newest,))
+    release, tag, why = inst.select_release("13.0", (10, 0), {"nvidia-cutlass-dsl": "4.4.2"})
+    assert release is None and tag is None
+    assert "nvidia-cutlass-dsl>=4.8 (installed 4.4.2)" in why
+
+
+@pytest.mark.parametrize(
+    "capability, provider",
+    [
+        ((10, 0), "flashinfer-jit-cache-sm100a"),
+        ((10, 3), "flashinfer-jit-cache-sm103a"),
+        ((12, 0), "flashinfer-jit-cache-sm120f"),
+    ],
+)
+def test_every_nvfp4_capability_has_a_jit_cache_provider(capability, provider):
+    assert tuple(capability) in ops.NVFP4_FLASHINFER_CAPS
+    assert inst.jit_cache_provider(inst.FLASHINFER_RELEASES[0], capability) == provider
+    assert set(inst.FLASHINFER_JIT_CACHE_ARCH) == set(ops.NVFP4_FLASHINFER_CAPS)
+
+
+def test_the_newest_release_installs_the_shim_and_this_devices_provider_only(env):
+    ok, reason = _ensure(env)
+    assert ok, reason
+    jit = next(c for c in env.installs() if any(a.startswith("flashinfer-jit-cache") for a in c))
+    specs = [a for a in jit if a.startswith("flashinfer-")]
+    assert specs == [f"{PROVIDER}=={V}+cu130", f"flashinfer-jit-cache=={V}+cu130"]
+    assert "--no-deps" in jit  # the shim requires every arch's provider
+
+
+def test_a_split_release_whose_provider_is_not_loaded_rolls_back(env, monkeypatch):
+    real_run = env.run
+
+    def no_providers(cmd, **kwargs):
+        res = real_run(cmd, **kwargs)
+        if "-c" in cmd and "import flashinfer" in str(cmd[-1]) and res.returncode == 0:
+            res.stdout = f"providers=\n{V}"
+        return res
+
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = no_providers)
+    assert (
+        not ok
+        and "rolled back" in reason
+        and f"did not load the {PROVIDER} prebuilt kernels" in reason
+    )
+    assert PROVIDER not in env.dists and "flashinfer-python" not in env.dists
+
+
+def test_a_stray_provider_of_another_version_refuses(env):
+    env.dists[PROVIDER] = "0.7.2+cu130"
+    ok, reason = _ensure(env)
+    assert not ok and f"{PROVIDER} 0.7.2+cu130" in reason
+    assert env.installs() == []
+
+
+def test_the_fallback_installs_the_single_jit_cache(env):
+    env.cuda = "12.8"
+    ok, reason = _ensure(env)
+    assert ok, reason
+    jit = next(c for c in env.installs() if any(a.startswith("flashinfer-jit-cache") for a in c))
+    assert [a for a in jit if a.startswith("flashinfer-")] == [
+        f"flashinfer-jit-cache=={FALLBACK}+cu128"
+    ]
+
+
+def test_an_installed_fallback_is_kept_not_upgraded(env):
+    env.dists.update({"flashinfer-python": FALLBACK, "flashinfer-jit-cache": f"{FALLBACK}+cu130"})
+    env.importable = True
+    ok, reason = _ensure(env)
+    assert ok and FALLBACK in reason
+    assert env.installs() == []
+
+
+def test_the_verify_child_runs_the_shipped_snippet():
+    import ast
+    ast.parse(inst._VERIFY_CODE)
+    assert inst._VERIFY_CODE.rstrip().endswith("'unknown')))")
+
+
+def _two_arch_host(monkeypatch, caps):
+    torch = sys.modules["torch"]
+    torch.cuda = types.SimpleNamespace(device_count = lambda: len(caps))
+    monkeypatch.setattr(
+        ops,
+        "_device_capability",
+        lambda device = None: caps[device if isinstance(device, int) else 0],
+    )
+
+
+def test_a_mixed_arch_host_installs_every_visible_nvfp4_provider(env, monkeypatch):
+    # A later load on the other card finds flashinfer importable and never installs again, so both go in now.
+    _two_arch_host(monkeypatch, [(10, 0), (8, 0), (12, 0)])
+    ok, reason = _ensure(env)
+    assert ok, reason
+    jit = next(c for c in env.installs() if any(a.startswith("flashinfer-jit-cache") for a in c))
+    assert [a for a in jit if a.startswith("flashinfer-")] == [
+        f"{PROVIDER}=={V}+cu130",
+        f"flashinfer-jit-cache-sm120f=={V}+cu130",
+        f"flashinfer-jit-cache=={V}+cu130",
+    ]
+
+
+def test_a_mixed_arch_install_missing_one_provider_rolls_back(env, monkeypatch):
+    _two_arch_host(monkeypatch, [(12, 0), (10, 0)])
+    real_run = env.run
+
+    def one_provider(cmd, **kwargs):
+        res = real_run(cmd, **kwargs)
+        if "-c" in cmd and "import flashinfer" in str(cmd[-1]) and res.returncode == 0:
+            res.stdout = f"providers=flashinfer-jit-cache-sm120f\n{V}"
+        return res
+
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(1, run = one_provider)
+    assert not ok and f"did not load the {PROVIDER} prebuilt kernels" in reason
+    assert "flashinfer-jit-cache-sm120f" not in env.dists and PROVIDER not in env.dists

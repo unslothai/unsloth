@@ -53,13 +53,13 @@ test("a failed worker is never rebuilt and every waiting caller hears about it o
 test("a fence too long for the main thread stays plain without the worker", () => {
   const hook = MARKDOWN.slice(MARKDOWN.indexOf("function useFenceTokens("), MARKDOWN.indexOf("function StreamingFenceBlock("));
   assert.match(hook, /const failover = !tokenizesOffThread\(body, streaming\);/, "only a fence short enough for the main thread may fail over to it");
-  assert.match(hook, /cancel = requestFullHighlight\(\s*body,\s*languageToken,\s*\(result\) => \{\s*if \(result === null\) \{\s*if \(failover && wanted\.current === body\) \{\s*setTokens\(highlight\(body, late\)\);\s*\}\s*return;\s*\}/, "a failed whole-fence reply for a long fence is never failed over to the main thread");
-  assert.match(hook, /setTokens\(result\);\s*\},\s*false,\s*!failover,\s*\);/, "only a fence too long for the main thread waits out a late or silent worker");
+  assert.match(hook, /cancel = requestFullHighlight\(\s*body,\s*languageToken,\s*\(result\) => \{\s*if \(!current\(\)\) return;\s*if \(result === null\) \{\s*if \(failover\) publish\(\(\) => show\(highlight\(body, late\)\)\);\s*return;\s*\}/, "a failed whole-fence reply for a long fence is never failed over to the main thread");
+  assert.match(hook, /show\(result\);\s*\}\);\s*\},\s*false,\s*!failover,\s*\);/, "only a fence too long for the main thread waits out a late or silent worker");
   assert.match(hook, /if \(cancel === null && failover\) \{\s*settled = highlight\(body, late\);\s*\} else \{\s*highlight\("", \(\) => \{\}\);\s*settled = code\.cover\(options\)\.result;\s*\}\s*release = awaitWorker\(body\.length, \(\) => \{/, "with or without a worker, an uncached long fence waits for one or for a print, showing whatever the main thread already coloured");
   assert.equal((hook.match(/highlight\(body, late\)/g) ?? []).length, 3, "a short fence is tokenized on the main thread only without the worker's help");
   assert.ok(hook.lastIndexOf("highlight(body, late)") > hook.lastIndexOf("} else {"));
   assert.equal((hook.match(/code\.highlight\(/g) ?? []).length, 1);
-  assert.match(hook, /const result = code\.highlightExact\(\s*fenceHighlightOptions\(body, languageToken\),\s*late,\s*\);/, "a print tokenizes the whole fence now, never the throttled approximation with a plain tail");
+  assert.match(hook, /const result = code\.highlightExact\(options, late\);/, "a print tokenizes the whole fence now, never the throttled approximation with a plain tail");
   assert.match(WORKER, /const result = request\.full\s*\? highlighter\.highlightExact\(options, publish\)\s*: highlighter\.highlight\(options, publish\);/, "a whole-fence reply is exact, since the main thread seeds it as a permanent cache entry");
   assert.match(WORKER, /if \(request\.full && result !== null\) forget\(\);/, "a finished whole-fence request leaves nothing behind in the worker");
   assert.match(WORKER, /if \(request\.full && result === null && current\(\)\) \{\s*guard = setTimeout\(\(\) => \{\s*guard = null;\s*if \(!current\(\)\) return;\s*self\.postMessage\(\s*reasoningHighlightFailure\(request\.client, request\.revision\),\s*\);\s*forget\(\);\s*\}, FULL_REPLY_GUARD_MS\);/, "a whole-fence request whose grammar never loads is answered with a failure, so the speculator's slot is freed and the worker can idle");

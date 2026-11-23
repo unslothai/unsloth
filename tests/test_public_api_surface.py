@@ -11,20 +11,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Lesser General Public License for more details.
 
-"""Drift detectors for unsloth's OWN public surface (top symbols/classmethods the
-unslothai/notebooks tree calls), so a rename or dropped kwarg fires DRIFT DETECTED here.
-
-Call-site counts measured against unslothai/notebooks @ main:
-  FastLanguageModel.from_pretrained   506
-  FastLanguageModel.for_inference     370
-  FastLanguageModel.get_peft_model    304
-  FastVisionModel.for_inference       183
-  FastVisionModel.from_pretrained     176
-  FastVisionModel.get_peft_model       99
-  FastVisionModel.for_training         60
-  FastModel.from_pretrained           103
-  FastModel.get_peft_model             67
-"""
+"""Drift detectors for the public API the notebooks call, so a rename or dropped kwarg fails."""
 
 from __future__ import annotations
 
@@ -55,7 +42,6 @@ def _accepts(callable_obj, kwargs: set[str]) -> tuple[bool, set[str]]:
     return (not missing), missing
 
 
-# FastLanguageModel: headline class.
 def test_fast_language_model_class_present():
     unsloth = pytest.importorskip("unsloth")
     if not hasattr(unsloth, "FastLanguageModel"):
@@ -140,7 +126,6 @@ def test_fast_vision_model_get_peft_model_vision_kwargs():
         )
 
 
-# FastModel: modern unified entry point.
 def test_fast_model_class_and_methods():
     unsloth = pytest.importorskip("unsloth")
     if not hasattr(unsloth, "FastModel"):
@@ -168,7 +153,6 @@ def test_fast_model_from_pretrained_kwargs():
         )
 
 
-# Bf16 helper alias (renamed once already; keep both accepted).
 def test_is_bf16_supported_or_alias_callable():
     """is_bf16_supported or the legacy is_bfloat16_supported alias must remain importable."""
     unsloth = pytest.importorskip("unsloth")

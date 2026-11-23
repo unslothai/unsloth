@@ -51,7 +51,7 @@ def main() -> None:
         base = materialize_revision(args.base_ref, scratch / "baseline")
         series = {"base": [], "head": []}
         for iteration in range(args.rounds):
-            # Alternate order to reduce a monotonic machine-load or temperature bias.
+            # Alternate order to cancel monotonic machine-load or thermal bias.
             for label in ("base", "head") if iteration % 2 == 0 else ("head", "base"):
                 print(f"Round {iteration + 1}/{args.rounds}: {label}", flush = True)
                 series[label].append(

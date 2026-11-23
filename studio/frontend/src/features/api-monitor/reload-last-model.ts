@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Reads the durable last-local-load record, not the monitor ring buffer: that one is bounded,
-// clearable and can be disabled.
+// Reads the durable last-local-load record, not the bounded, clearable monitor ring buffer.
 
 export type LastLoadRecord = {
   id: string;
@@ -32,9 +31,8 @@ export function resolveReloadTarget<C>(
   if (!(lastLoad && id)) {
     return null;
   }
-  // A null variant on a GGUF record is a direct .gguf file path, which the loader accepts as is.
-  const ggufVariant =
-    lastLoad.kind === "gguf" ? lastLoad.ggufVariant?.trim() || null : null;
+  // A GGUF record's null variant is a direct .gguf path; a model record's is an MLX precision folder.
+  const ggufVariant = lastLoad.ggufVariant?.trim() || null;
   return {
     id,
     kind: lastLoad.kind,

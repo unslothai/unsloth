@@ -20,7 +20,7 @@ export type SandboxToolStatus = {
 
 export type TerminalShell = "bash" | "cmd_isolated" | "cmd_fallback";
 
-// "arch": not x64 Windows; "build": older than Windows 11 build 26100. MXC cannot run on either.
+// MXC needs x64 or ARM64 Windows 11 build 26100 or newer.
 export type RuntimeUnsupported = "arch" | "build";
 
 export type WindowsSandboxStatus = {
@@ -37,6 +37,9 @@ export type WindowsSandboxStatus = {
   prepareRepeatsAfterRestart: boolean;
   // true: MXC runs in Windows' built-in container; false: this Windows has none; null: unknown.
   builtinContainer: boolean | null;
+  // Set only when a Windows update adds the built-in container: this PC's build and the first with it.
+  windowsBuild: string | null;
+  builtinContainerBuild: string | null;
 };
 
 export type SandboxSetupPlan = {
@@ -47,12 +50,14 @@ export type SandboxSetupPlan = {
   canRun: boolean;
 };
 
-// null off Linux and on backends without the setting.
+// null on backends without the setting.
 export type SandboxMemoryStatus = {
   // null: no cap.
   limitGb: number | null;
   savedGb: number;
   defaultGb: number;
+  // true: follows half of this computer's RAM (defaultGb). null: a backend without the choice.
+  auto: boolean | null;
   minGb: number;
   maxGb: number;
   lockedByEnvironment: boolean;
@@ -74,6 +79,7 @@ export type SandboxSettingsUpdate = {
   allowDaclFallback?: boolean;
   persistentReadGrants?: boolean;
   memoryLimitGb?: number;
+  memoryLimitAuto?: true;
 };
 
 export type HostPrepState =
@@ -136,6 +142,10 @@ type ApiWindowsStatus = {
   prepare_repeats_after_restart?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   builtin_container?: boolean | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  windows_build?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  builtin_container_build?: string | null;
 };
 
 type ApiMemoryStatus = {
@@ -145,6 +155,7 @@ type ApiMemoryStatus = {
   saved_gb?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   default_gb?: number;
+  auto?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   min_gb?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -231,6 +242,8 @@ function windowsFromApi(
         : windows.host_prep_missing,
     prepareRepeatsAfterRestart: windows.prepare_repeats_after_restart ?? true,
     builtinContainer: windows.builtin_container ?? null,
+    windowsBuild: windows.windows_build ?? null,
+    builtinContainerBuild: windows.builtin_container_build ?? null,
   };
 }
 
@@ -242,6 +255,7 @@ function memoryFromApi(
     limitGb: memory.limit_gb ?? null,
     savedGb: memory.saved_gb,
     defaultGb: memory.default_gb ?? 8,
+    auto: memory.auto ?? null,
     minGb: memory.min_gb ?? 1,
     maxGb: memory.max_gb ?? 4096,
     lockedByEnvironment: memory.locked_by_environment ?? false,
@@ -275,7 +289,7 @@ export function jobFromApi(job: ApiHostPrepJob): HostPrepJob {
   };
 }
 
-// Older backends lack these routes: reported apart from a failure so the tab can say so.
+// Older backends lack these routes; report that apart from a failure.
 async function checked(
   res: Response,
   route: string,
@@ -312,6 +326,9 @@ export async function updateSandboxSettings(
   }
   if (update.memoryLimitGb !== undefined) {
     body.memory_limit_gb = update.memoryLimitGb;
+  }
+  if (update.memoryLimitAuto) {
+    body.memory_limit_auto = true;
   }
   const res = await authFetch(ROUTE, {
     method: "PUT",

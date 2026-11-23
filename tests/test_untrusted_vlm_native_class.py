@@ -51,7 +51,6 @@ def _tiny_step3p7(path, auto_map):
     model = step3p7.Step3p7ForConditionalGeneration(config).to(torch.bfloat16)
     model.save_pretrained(path)
     cfg = json.loads((path / "config.json").read_text(encoding = "utf-8"))
-    # Module never shipped: building the repo class fails loudly.
     cfg["auto_map"] = {
         name: "modeling_step3p7.Step3p7ForConditionalGeneration" for name in auto_map
     }

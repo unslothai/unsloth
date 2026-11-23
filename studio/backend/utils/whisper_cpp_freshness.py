@@ -49,10 +49,6 @@ def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
     return marker
 
 
-def _load_disk_cache(repo: str) -> Optional[tuple[float, Optional[str]]]:
-    return _flow.load_disk_cache(repo, _cache_dir())
-
-
 def _save_disk_cache(repo: str, latest_tag: Optional[str]) -> None:
     _flow.save_disk_cache(
         repo, latest_tag, _cache_dir(), log_message = "whisper freshness cache write failed"
@@ -183,8 +179,7 @@ def check_prebuilt_freshness(
     threshold_days: int = STALENESS_THRESHOLD_DAYS,
     now: Optional[datetime] = None,
 ) -> dict:
-    """Returns {has_marker, stale, behind, installed_tag, latest_tag, installed_at_utc, age_days, published_repo, threshold_days}. behind = installed genuinely older than latest (see is_behind), stale = behind AND age >= threshold. Fails open on missing data (behind/stale stay False)."""
-    # The whisper marker records a single ``release_tag`` (e.g. v1.9.1-unsloth.2); both display and comparison use it directly.
+    """Marker records one release_tag (e.g. v1.9.1-unsloth.2) that both display and version comparison use directly."""
     return _flow.check_freshness(
         binary_path,
         threshold_days = threshold_days,

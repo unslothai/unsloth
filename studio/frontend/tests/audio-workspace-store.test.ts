@@ -67,3 +67,17 @@ test("any committed switch settles a pending request, so it never fires later", 
   assert.equal(ws.getState().requestedWorkflow, null);
   ws.getState().commitWorkflow("speak");
 });
+
+test("forgetting a deleted model clears it from every page, whatever its casing", () => {
+  const state = useAudioWorkspaceStore.getState();
+  state.rememberModel("speak", "unsloth/orpheus-3b-0.1-ft");
+  state.rememberModel("clone", "unsloth/Orpheus-3B-0.1-ft");
+  state.rememberModel("transcribe", "moonshine/tiny");
+  useAudioWorkspaceStore.getState().forgetModel("unsloth/orpheus-3b-0.1-FT");
+  assert.deepEqual(useAudioWorkspaceStore.getState().lastModelByWorkflow, {
+    transcribe: "moonshine/tiny",
+  });
+  const before = useAudioWorkspaceStore.getState().lastModelByWorkflow;
+  useAudioWorkspaceStore.getState().forgetModel("not/remembered");
+  assert.equal(useAudioWorkspaceStore.getState().lastModelByWorkflow, before);
+});

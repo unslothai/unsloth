@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Isolated message/footer rendering; no backend or model required.
-
 // biome-ignore lint/correctness/noNodejsModules: Vite configs execute in Node.
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
@@ -25,8 +23,7 @@ export default defineConfig({
     fs: { allow: [frontendRoot, sourceFrontend] },
   },
   resolve: {
-    // Source files live in a second worktree during the negative control. Keep
-    // one React runtime even when that checkout has its own dependency tree.
+    // Source may live in a second worktree; keep one React runtime even if it has its own deps.
     dedupe: ["react", "react-dom"],
     alias: {
       "@": path.resolve(sourceFrontend, "src"),

@@ -1,20 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""A helper must be declared before the statement that reaches it.
-
-All of install.ps1 is one function, so its nested `function` statements are ordinary statements
-that run in order. A helper declared further down the file does not exist yet when an earlier
-statement calls it, and the call raises CommandNotFoundException.
-
-That is not a loud failure here. Every rung in these ladders is wrapped in try/catch precisely so
-a rung that cannot run on this host is read as "declined" and the one below it is used, so a
-helper placed below its own caller degrades the whole rung silently on every host: the batched
-path resolver falls back to one interpreter per path, and the cmdlet launcher that exists for
-Constrained Language Mode rejects every interpreter it is given. Observed exactly that way.
-
-Declaration order is invisible in a diff and there is no runtime signal for it, which is why it is
-checked statically here.
-"""
+"""A helper must be declared before any statement that reaches it, or its try/catch hides the failure."""
 
 from __future__ import annotations
 
@@ -41,12 +27,8 @@ SOURCE = INSTALL_PS1.read_text(encoding = "utf-8")
 
 
 def _blank_here_strings(text: str) -> str:
-    """Blank out @' ... '@ and @" ... "@ bodies, keeping every offset where it was.
-
-    Those bodies are Python, and Python has braces of its own. Counted as PowerShell braces they
-    swallow the rest of the file, and the containment tests below then read almost everything as
-    being inside some helper. Found here as exactly that: 26 KB of 608 KB looked top-level.
-    """
+    """Blank here-string bodies, keeping offsets, so embedded Python braces are not counted as
+    PowerShell."""
     out, inside = [], False
     for line in text.split("\n"):
         if inside:
@@ -64,12 +46,7 @@ def _blank_here_strings(text: str) -> str:
 
 
 def _strip_comments(text: str) -> str:
-    """Blank out comment text, keeping every offset where it was.
-
-    The comments in this file NAME these helpers while explaining them, and a name read out of a
-    comment would make a declaration look reachable from a statement that does not call it.
-    Replacing rather than deleting keeps the offsets comparable with the raw source.
-    """
+    """Blank comment text in place, so helper names quoted in comments cannot look like calls."""
     out = []
     for line in text.split("\n"):
         hash_at = line.find("#")
@@ -84,11 +61,7 @@ CODE = _strip_comments(_blank_here_strings(SOURCE))
 
 
 def _nested_functions(code: str) -> dict[str, tuple[int, int]]:
-    """Every `function NAME {` nested one level inside Install-UnslothStudio, with its extent.
-
-    Brace matching rather than a scan to the next `function` keyword, which overshoots into the
-    following helper and makes every containment test below wrong in the permissive direction.
-    """
+    """Match braces to find each nested function's end; scanning to the next `function` overshoots."""
     found: dict[str, tuple[int, int]] = {}
     for match in re.finditer(r"(?m)^    function ([A-Za-z0-9\-]+) \{", code):
         start = match.start()
@@ -134,11 +107,7 @@ GUARDED = {name: _guarded_within(start, end) for name, (start, end) in FUNCTIONS
 
 
 def _top_level_spans() -> list[tuple[int, int]]:
-    """Everything in the file that is not inside one of those nested declarations.
-
-    These are the statements that run in order, so the offset of the first one that can reach a
-    helper is the deadline that helper's declaration has to beat.
-    """
+    """Source outside nested declarations, which runs in order and sets each helper's deadline."""
     holes = sorted(FUNCTIONS.values())
     spans, cursor = [], 0
     for start, end in holes:
@@ -154,10 +123,7 @@ def _reaches(
     at: int = len(CODE),
     seen: frozenset[str] = frozenset(),
 ) -> set[str]:
-    """Every helper that calling `name` from offset `at` can end up in, including itself.
-
-    A guarded call runs only once its target is declared, so it is no edge before that.
-    """
+    """Helpers reachable by calling `name` at `at`; a call before a helper is declared adds no edge."""
     if name in seen:
         return set()
     out = {name}
@@ -190,11 +156,8 @@ def test_the_helper_is_declared_before_anything_that_reaches_it(name: str):
 
 
 def test_the_rule_is_not_vacuous():
-    """The scan really does find declarations and really does find top-level callers.
-
-    Without this, a regex that matched nothing would leave every row above passing on an empty
-    set, which is the failure mode this whole file exists to prevent.
-    """
+    """Guards against the scan finding nothing, which would let every ordering check pass on an
+    empty set."""
     assert len(FUNCTIONS) > 50, f"only {len(FUNCTIONS)} nested functions found"
     reached = set()
     for start, end in _top_level_spans():

@@ -69,7 +69,7 @@ def spawn(
     if fallback["allowDaclMutation"] and not mxc_policy.dacl_fallback_enabled():
         raise MxcAdapterError("MXC DACL fallback is not enabled on this host", stage = "policy")
     if config.get("ui", {}).get("disable") is not False:
-        raise MxcAdapterError("the Studio MXC UI policy is not enabled", stage = "policy")
+        raise MxcAdapterError("the Unsloth MXC UI policy is not enabled", stage = "policy")
 
     encoded = base64.b64encode(encoded_config).decode("ascii")
     if len(encoded) > MAX_CONFIG_BASE64:
@@ -109,8 +109,7 @@ def spawn(
                 stage = "spawn",
             ) from exc
 
-        # From this point WXC may have created the workload. No caller may replay
-        # the original command on the host.
+        # WXC may have created the workload from here: never replay the command on the host
         proc._mxc_dispatched = True
         proc._mxc_backend_tier = "unknown"
         proc._mxc_policy_hash = request["policyHash"]
@@ -150,7 +149,7 @@ def completion_result(proc) -> dict:
     reason = getattr(proc, "_unsloth_completion_reason", None)
     if reason not in {"finished", "timed_out", "cancelled"}:
         raise MxcAdapterError(
-            "wxc-exec.exe exited without a trusted Studio completion state",
+            "wxc-exec.exe exited without a trusted Unsloth completion state",
             stage = "completion",
             may_have_started = True,
         )

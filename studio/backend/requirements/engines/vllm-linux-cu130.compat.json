@@ -1,5 +1,5 @@
 {
- "lock_sha256": "648332a77c94c8cd8ae0ee77c1afa705fa8f95fa6baa236b146d34d3ec29742e",
+ "lock_sha256": "bc4b7ff5d27d5a18c8ca15b97f583880aa29f4ad3c02b8a9eb346c457c38ab1f",
  "requires": {
   "agent-detector": [
    ">=1.1.0"
@@ -628,7 +628,7 @@
   "blake3": 383615,
   "cachetools": 16830,
   "cbor2": 460420,
-  "certifi": 136983,
+  "certifi": 136464,
   "cffi": 221824,
   "charset-normalizer": 223149,
   "click": 125251,

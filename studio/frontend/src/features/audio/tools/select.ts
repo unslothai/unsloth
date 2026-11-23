@@ -29,8 +29,7 @@ export function instructionsKindFor(
     : nativeAudioInstructionsKind(ctx.audioType);
 }
 
-/** The Music studio has its own description field, preview included; only a loaded music model
- *  without studio modes (native MiniMax) keeps the old one. */
+/** Only a loaded music model without studio modes (native MiniMax) keeps the old description. */
 export function legacyMusicDescription(ctx: AudioModelContext): boolean {
   return ctx.audioMusic !== true && isMusicGenerationModel(null, ctx.audioType);
 }
@@ -64,9 +63,11 @@ export function audioModelContextFor(
     audio_family?: string | null;
     audio_workflows?: readonly string[] | null;
     audio_required_inputs?: readonly string[] | null;
+    audio_request_inputs?: readonly string[] | null;
     audio_reference_text?: string | null;
     audio_convert?: AudioConvertCaps | null;
     audio_music?: unknown;
+    audio_clone?: unknown;
   } | null,
   page: {
     musicGeneration: boolean;
@@ -75,6 +76,7 @@ export function audioModelContextFor(
   },
 ): AudioModelContext {
   const referenceText = status?.audio_reference_text;
+  const clone = status?.audio_clone;
   return {
     audioType: status?.audio_type ?? null,
     audioFamily: status?.audio_family ?? null,
@@ -92,9 +94,24 @@ export function audioModelContextFor(
       REFERENCE_TEXT_MODES.has(referenceText)
         ? (referenceText as AudioReferenceTextMode)
         : null,
+    requestInputs: Array.isArray(status?.audio_request_inputs)
+      ? status.audio_request_inputs
+      : null,
     audioMusic: parseMusicCapabilities(status?.audio_music) !== null,
     convert: convertCapsOf(status?.audio_convert),
+    cloneDescription: isPlainObject(clone) && clone.description === true,
   };
+}
+
+/** Whether the model reads one of these request inputs; unknown (null) counts as yes. */
+export function readsRequestInput(
+  ctx: Pick<AudioModelContext, "requestInputs">,
+  ...names: string[]
+): boolean {
+  return (
+    ctx.requestInputs == null ||
+    names.some((name) => ctx.requestInputs?.includes(name))
+  );
 }
 
 function convertCapsOf(value: unknown): AudioConvertCaps | null {

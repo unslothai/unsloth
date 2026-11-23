@@ -19,6 +19,7 @@ import type {
   TrainingConfigStore,
   TrainingMethodProvenance,
 } from "../types/config";
+import { drafterStateFrom } from "../lib/drafter-config";
 import {
   createHfBrowseDatasetSelection,
   createUploadBrowseDatasetSelection,
@@ -26,7 +27,7 @@ import {
 } from "./training-config-policy";
 
 export const TRAINING_CONFIG_PERSISTENCE_NAME = "unsloth_training_config_v1";
-export const TRAINING_CONFIG_PERSISTENCE_VERSION = 22;
+export const TRAINING_CONFIG_PERSISTENCE_VERSION = 24;
 
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
   new Set([
@@ -45,6 +46,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
     "decisionLayout",
     "s3Config",
     "wandbToken",
+    "drafterCapability",
   ]);
 
 export function partializeTrainingConfig(
@@ -136,7 +138,7 @@ function migrateThroughVersion12(
     if (legacyToken) {
       stageLegacyHfTokenForMigration(legacyToken);
     }
-    // Keep the legacy value persisted until authenticated migration confirms the backend write.
+    // Keep the legacy value until authenticated migration confirms the backend write.
   }
 }
 
@@ -240,8 +242,7 @@ function migrateThroughVersion21(
   version: number,
 ): void {
   if (version < 21) {
-    // currentStep belonged to the onboarding wizard and was persisted, so without
-    // this it survives every rehydrate and partialize writes it straight back.
+    // currentStep belonged to the removed onboarding wizard and would otherwise persist forever.
     Reflect.deleteProperty(state, "currentStep");
   }
 }
@@ -289,6 +290,27 @@ function migrateThroughVersion22(
       ? loraVariant
       : null;
   }
+}
+
+// Drafter training arrived in 23: older state has no drafter keys, and a hand-edited or
+// partially written one must never turn the phase on.
+function migrateThroughVersion23(
+  state: PersistedTrainingConfig,
+  version: number,
+): void {
+  if (version >= 23) return;
+  Object.assign(
+    state,
+    drafterStateFrom({
+      enabled: state.drafterEnabled,
+      strategy: state.drafterStrategy,
+      data_source: state.drafterDataSource,
+      max_examples: state.drafterMaxExamples,
+      epochs: state.drafterEpochs,
+      learning_rate: state.drafterLearningRate,
+      draft_steps: state.drafterDraftSteps,
+    }),
+  );
 }
 
 function isDatasetFormat(value: unknown): value is DatasetFormat {
@@ -391,6 +413,7 @@ export function migrateTrainingConfig(
   migrateThroughVersion19(state, version);
   migrateThroughVersion21(state, version);
   migrateThroughVersion22(state, version);
+  migrateThroughVersion23(state, version);
   return state as unknown as TrainingConfigStore;
 }
 
@@ -427,11 +450,22 @@ export function mergeTrainingConfig(
     baselineTrainOnCompletions === undefined
       ? modelDefaultsAppliedFor
       : null;
+  const choices = persistedState.trainingToggleChoices;
+  const trainingToggleChoices: TrainingConfigState["trainingToggleChoices"] = {};
+  for (const key of ["packing", "trainOnCompletions"] as const) {
+    const explicit = choices?.[key];
+    if (typeof explicit === "boolean") trainingToggleChoices[key] = explicit;
+    // Older drafts did not record provenance. Preserve saved booleans instead of guessing away an opt-out.
+    else if (choices === undefined && typeof persistedState[key] === "boolean") {
+      trainingToggleChoices[key] = persistedState[key];
+    }
+  }
   const merged: TrainingConfigStore = {
     ...current,
     ...persistedState,
     wandbToken: current.wandbToken,
     trainOnCompletions,
+    trainingToggleChoices,
     modelDefaultsAppliedFor,
     advancedSettingsBaseline,
     trainOnCompletionsDefaultPendingFor,

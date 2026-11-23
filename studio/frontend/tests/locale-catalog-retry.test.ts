@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Chrome, Edge and Firefox before 155 keep a failed module in the module map
-// keyed by URL, so importing the same catalog again resolves to the stored
-// failure without a request. Dropping our own in-flight promise only makes the
-// store willing to ask again; the ask has to reach the network to be a retry.
+// Chrome, Edge and Firefox before 155 cache a failed module by URL, so a retry needs a new URL.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -22,7 +19,6 @@ const CHUNK_URL = "https://studio.example/assets/de-a1b2c3.js";
 
 type ImporterCall = { locale: string; retryUrl: string | null };
 
-/** Runs a load to completion, reporting whether it failed. */
 async function attempt(load: Promise<void> | undefined): Promise<string> {
   const [outcome] = await Promise.allSettled([load]);
   return outcome.status;
@@ -50,8 +46,7 @@ test("a failed catalog is retried from a different URL", async () => {
   assert.equal(calls.length, 2);
   assert.equal(first, "rejected");
   assert.equal(second, "fulfilled");
-  // The first load is a plain import, so the happy path keeps the normal
-  // caching of its hashed file, and only the retry carries a one-off query.
+  // Only the retry carries a query, keeping normal caching for the hashed file.
   assert.equal(calls[0]?.retryUrl, null);
   assert.notEqual(calls[1]?.retryUrl, null);
   assert.notEqual(calls[1]?.retryUrl, CHUNK_URL);
@@ -108,7 +103,6 @@ test("a retry that fails again gets a fresh URL rather than the failed one", asy
   assert.equal(calls.length, 3);
   assert.equal(calls[0]?.retryUrl, null);
   assert.notEqual(calls[1]?.retryUrl, calls[2]?.retryUrl);
-  // One query, so a repeated failure cannot grow the URL.
   assert.equal(
     [...new URL(calls[2]?.retryUrl ?? "").searchParams.keys()].length,
     1,

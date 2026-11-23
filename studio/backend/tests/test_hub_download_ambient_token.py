@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The backend's own HF_TOKEN is the operator's credential, not a shared service credential.
-
-The Unsloth UI sends the user's saved token in ``X-Unsloth-HF-Token`` on every hub download, so
-only a caller that has none reaches the ambient fallback. A UI session is the installation's
-owner and keeps it (Settings hands that session the saved token anyway). An sk-unsloth API key
-is the lesser credential -- Settings refuses it the saved token -- so it must not reach private
-repos by naming one in a download request instead.
-"""
+"""Ambient HF_TOKEN belongs to the operator, so an sk-unsloth key may not borrow it for private repos."""
 
 import asyncio
 import io
@@ -232,8 +225,7 @@ def _spawn_env(monkeypatch, hf_token, **kwargs):
 
 
 def test_an_api_caller_does_not_borrow_the_backend_hf_token(monkeypatch):
-    """A caller the route marked as not allowed the ambient token gets an anonymous worker, even
-    though the backend process has an HF_TOKEN of its own."""
+    """Denied ambient token, an API caller gets anonymous, never the backend's HF_TOKEN."""
     monkeypatch.setenv("HF_TOKEN", "operator-secret-token")
 
     env = _spawn_env(monkeypatch, None, allow_ambient_token = False)
@@ -441,8 +433,7 @@ class _HttpxLike(Exception):
     """Stands in for httpx.ConnectError, which is not an OSError either."""
 
 
-# Everything hub's resolver can raise that is NOT an unreadable-file OSError/UnicodeError. The OIDC
-# rungs reach all of these whenever HF_OIDC_RESOURCE is set in the backend's environment.
+# Resolver failures other than unreadable-file errors; reachable when HF_OIDC_RESOURCE is set.
 _RESOLVER_FAILURES = [
     _OIDCLike("no OIDC id token is available"),
     _HttpxLike("all connection attempts failed"),
@@ -499,8 +490,7 @@ def test_a_failed_ambient_lookup_does_not_strand_the_xet_reservation(monkeypatch
 def test_a_failed_ambient_lookup_reports_the_cause_without_the_credential(
     monkeypatch, caplog, cached_hf_login
 ):
-    """The warning has to name the failure to be diagnosable, and a resolver that quoted a token back
-    is exactly the case the existing scrubber exists for."""
+    """The warning names the cause, and a token a resolver quotes back is scrubbed."""
     import huggingface_hub.utils
 
     leaked = "hf_" + "A" * 34

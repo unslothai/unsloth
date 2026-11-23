@@ -46,7 +46,14 @@ sys.path.insert(0, str(STUDIO_DIR))
 sys.path.insert(0, str(STUDIO_DIR / "backend"))
 
 import install_python_stack as ips
+import pytest
 from utils import wheel_utils
+
+
+@pytest.fixture(autouse = True)
+def _an_sm80_gpu(monkeypatch):
+    # The host's real GPU must not decide these tests; the capability cases below override it.
+    monkeypatch.setattr(ips, "_flash_attn_gpu_below_floor", lambda: False)
 
 
 class TestPrebuiltWheelTorchMapping:
@@ -57,18 +64,15 @@ class TestPrebuiltWheelTorchMapping:
         assert wheel_utils.prebuilt_wheel_torch_mm("2.12") == "2.10"
 
     def test_other_versions_pass_through(self):
-        # 2.13 stays unmapped on purpose: a torch minor only joins the reuse table once its wheels have actually been
-        # measured.
+        # 2.13 stays unmapped until its wheels have been measured.
         for torch_mm in ("2.9", "2.10", "2.13"):
             assert wheel_utils.prebuilt_wheel_torch_mm(torch_mm) == torch_mm
 
     def test_reuse_never_targets_a_pre_210_wheel(self):
-        # torch broke extension ABI between 2.9 and 2.10, so the torch2.9 .so raises "undefined symbol" on 2.10+.
+        # torch broke extension ABI between 2.9 and 2.10.
         assert set(wheel_utils._PREBUILT_WHEEL_TORCH_MM.values()) == {"2.10"}
 
     def test_direct_wheel_url_reuses_torch210_on_211(self):
-        # causal-conv1d / mamba go through direct_wheel_url; torch 2.11 reuses the torch2.10 wheel filename just like
-        # flash-attn does.
         url = wheel_utils.direct_wheel_url(
             filename_prefix = "causal_conv1d",
             package_version = "1.6.1",
@@ -77,13 +81,14 @@ class TestPrebuiltWheelTorchMapping:
             env = {
                 "python_tag": "cp313",
                 "torch_mm": "2.11",
-                "cuda_major": "13",
+                # cu12: cu13 cp311-cp313 resolves to our own build instead.
+                "cuda_major": "12",
                 "cxx11abi": "TRUE",
                 "platform_tag": "linux_x86_64",
             },
         )
         assert url is not None
-        assert "causal_conv1d-1.6.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" in url
+        assert "causal_conv1d-1.6.1+cu12torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" in url
 
     def test_direct_wheel_url_reuses_torch210_on_212(self):
         url = wheel_utils.direct_wheel_url(
@@ -94,24 +99,22 @@ class TestPrebuiltWheelTorchMapping:
             env = {
                 "python_tag": "cp312",
                 "torch_mm": "2.12",
-                "cuda_major": "13",
+                # cu12: cu13 cp311-cp313 resolves to our own build instead.
+                "cuda_major": "12",
                 "cxx11abi": "TRUE",
                 "platform_tag": "linux_x86_64",
             },
         )
         assert url is not None
-        assert "mamba_ssm-2.3.1+cu13torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl" in url
+        assert "mamba_ssm-2.3.1+cu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl" in url
 
 
 class TestFlashAttnWheelSelection:
     def test_torch_210_maps_to_v281(self):
-        # v2.8.1 is the newest release still publishing the full torch2.10 asset matrix (cu12 + cu13, cp312 + cp313,
-        # x86_64 + aarch64).
         assert ips._select_flash_attn_version("2.10") == "2.8.1"
 
     def test_selected_version_is_never_a_post_release(self):
-        # The v2.8.3.post1 respin dropped every torch2.10 asset and stops at torch2.9, whose .so will not load on
-        # torch 2.10+. A future "just take the newest release" bump must fail here instead of shipping that.
+        # v2.8.3.post1 dropped torch2.10 assets; a naive newest-release bump must fail here.
         for torch_mm in ("2.4", "2.7", "2.9", "2.10"):
             version = ips._select_flash_attn_version(torch_mm)
             assert version is not None
@@ -121,8 +124,6 @@ class TestFlashAttnWheelSelection:
         assert ips._select_flash_attn_version("2.9") == "2.8.3"
 
     def test_torch_211_has_no_native_version_entry(self):
-        # The raw version table has no torch2.11-tagged wheel;
-        # the URL builder reuses the torch2.10 wheel instead (see test_torch_211_reuses_torch210_wheel).
         assert ips._select_flash_attn_version("2.11") is None
 
     def test_torch_211_reuses_torch210_wheel(self):
@@ -298,11 +299,8 @@ class TestEnsureFlashAttn:
         assert kwargs["uv_needs_system"] is True
 
     def test_wheel_that_does_not_import_is_not_trusted(self):
-        """pip exits 0 on a wrong-arch/ABI wheel; the import is what decides.
-
-        The #5420 / #6961 Blackwell shape: setup must report that rather than claim
-        flash-attn is ready.
-        """
+        """pip exits 0 on a wrong-arch or ABI wheel, so only a successful import shows flash-attn is
+        ready."""
         step_messages: list[tuple[str, str]] = []
 
         with (
@@ -333,7 +331,6 @@ class TestEnsureFlashAttn:
                     (label, value)
                 ),
             ),
-            # Import never succeeds, before or after the install; the removal does.
             mock.patch("subprocess.run", side_effect = self._import_fails_removal_works),
         ):
             ips._ensure_flash_attn()
@@ -345,11 +342,7 @@ class TestEnsureFlashAttn:
         assert ("warning", "Continuing without flash-attn") in step_messages
 
     def test_rejected_wheel_is_uninstalled(self):
-        """Leaving it installed is not "continuing without flash-attn".
-
-        unsloth/models/_utils.py finds it by metadata (_package_available) and then imports
-        the native module in process, so a wheel that killed the probe kills training too.
-        """
+        """Rejected wheels must be uninstalled: _package_available trusts metadata and imports natively."""
         step_messages: list[tuple[str, str]] = []
         removals: list[list[str]] = []
 
@@ -424,7 +417,6 @@ class TestEnsureFlashAttn:
         import_calls: list[int] = []
 
         def fake_run(cmd, **kwargs):
-            # First call is the pre-install check (missing), the second verifies the install.
             import_calls.append(1)
             return self._import_check(1 if len(import_calls) == 1 else 0)
 
@@ -830,3 +822,78 @@ class TestInstallPythonStackFlashAttnIntegration:
             )
             == 2
         )
+
+
+class TestWarningColor:
+    def test_optional_install_warning_uses_shell_installer_warn_color(self, capsys):
+        import re
+
+        install_sh = (STUDIO_DIR.parent / "install.sh").read_text(encoding = "utf-8")
+        code = re.search(r'C_WARN="\$\{_ESC\}\[([0-9;]+)m"', install_sh).group(1)
+        result = subprocess.CompletedProcess(["uv"], 1, "", "")
+        with mock.patch.object(ips, "_HAS_COLOR", True):
+            ips._print_optional_install_failure("flash-attn install", result)
+        out = capsys.readouterr().out
+        assert f"\033[{code}mflash-attn install failed (exit code 1)\033[0m" in out
+        assert "\033[96m" not in out
+
+
+class TestFlashAttnCapabilityFloor:
+    """Unsloth only enables FlashAttention 2 from sm80: below it the wheel is never downloaded."""
+
+    def _run(self, monkeypatch, capability):
+        from utils import kernel_install
+
+        monkeypatch.setattr(
+            ips,
+            "_flash_attn_gpu_below_floor",
+            lambda: kernel_install.gpu_below_flash_attn_floor(lambda *a, **k: None),
+        )
+        monkeypatch.setattr(kernel_install, "_gpu_capability", lambda run: capability)
+        calls = {"head": 0, "install": 0}
+        notes = []
+        with (
+            mock.patch.object(ips, "NO_TORCH", False),
+            mock.patch.object(ips, "IS_WINDOWS", True),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(ips, "_flash_attn_importable", return_value = False),
+            mock.patch.object(ips, "_installed_distribution_version", return_value = None),
+            mock.patch.object(
+                ips,
+                "probe_torch_wheel_env",
+                return_value = {
+                    "python_tag": "cp313",
+                    "abi_tag": "cp313",
+                    "torch_mm": "2.13",
+                    "cuda_major": "13",
+                    "cxx11abi": "TRUE",
+                    "platform_tag": "win_amd64",
+                    "hip_version": "",
+                },
+            ),
+            mock.patch.object(
+                ips,
+                "url_exists",
+                side_effect = lambda url: calls.__setitem__("head", calls["head"] + 1) or True,
+            ),
+            mock.patch.object(
+                ips,
+                "install_prebuilt",
+                side_effect = lambda *a, **k: calls.__setitem__("install", calls["install"] + 1)
+                or "installed",
+            ),
+            mock.patch.object(ips, "_note", side_effect = notes.append),
+            mock.patch.object(ips, "_count_install_action"),
+        ):
+            ips._ensure_flash_attn()
+        return calls, notes
+
+    def test_a_t4_does_not_download_flash_attn(self, monkeypatch):
+        calls, notes = self._run(monkeypatch, (7, 5))
+        assert calls == {"head": 0, "install": 0}
+        assert any("sm80" in note for note in notes)
+
+    @pytest.mark.parametrize("capability", [(8, 0), (12, 0), None])
+    def test_sm80_and_newer_or_no_visible_gpu_still_install(self, monkeypatch, capability):
+        calls, _ = self._run(monkeypatch, capability)
+        assert calls == {"head": 1, "install": 1}

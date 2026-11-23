@@ -18,7 +18,7 @@ from ._utils import (
     USE_MODELSCOPE,
     get_transformers_model_type,
     hf_login,
-    # Single source of truth is _utils.py; re-exported so callers importing it from here keep working and so _is_sdpa_excluded can honor it without a loader -> _utils cycle.
+    # `_utils.py` owns this value; re-exporting preserves imports here and avoids a loader-to-`_utils` cycle.
     DISABLE_SDPA_MODEL_NAMES,
 )
 from ._custom_dtype import register_custom_dtype
@@ -28,12 +28,20 @@ from .mistral import FastMistralModel
 from .qwen2 import FastQwen2Model
 from .qwen3 import FastQwen3Model
 from .qwen3_moe import FastQwen3MoeModel
+from .reap import reap_prune as _reap_prune, raise_if_unsaved_reap
 from .cohere import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
 from .fp8_to_nf4 import track_explicit_4bit_request
+from .fsdp2_load import sharded_load_env as fsdp2_sharded_load_env
+from .float8_training import (
+    convert_model_to_float8_training,
+    mark_fp8_lora,
+    resolve_float8_training,
+    resolve_fp8_lora,
+)
 from .mistral_format import (
     MistralFormatRedirect,
     is_mistral_format_view,
@@ -43,26 +51,40 @@ from .mistral_format import (
 )
 from .lora_init import adapter_used_fast_pissa, fast_lora_init, record_fast_pissa
 from ..tokenizers_v1 import tokenizers_v1_on_return
+from .mapper import bf16_repo_loads_16bit
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
+    deepspeed_zero3_device_map,
     OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
+    _fp8_load_as_is,
+    _fp8_dequantize_quantization_config,
+    _drop_fp8_dequantize_conversions,
+    _loaded_quant_method,
+    _fp8_needs_offline_quantize,
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
+    gpt_oss_checkpoint_has_fused_experts,
+    GptOssUnknownExpertLayoutError,
+    quantization_config_is_bnb_4bit,
+    refuse_gpt_oss_fused_4bit_float16,
     _prefer_legacy_lowercase_cache,
     is_distributed,
     is_automatic_device_map,
     prepare_device_map,
     requested_device_map,
     _offline_aware_load,
+    _load_probe_memo_scope,
+    _memo_config_probe,
     _restore_load_scoped_env,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
     raise_if_fast_inference_under_fsdp2,
 )
-import os, contextlib, sys
+import os, contextlib, functools, sys
+from .tp_env import tensor_parallel_env_load, tensor_parallel_env_peft
 
 try:
     from huggingface_hub import get_token
@@ -73,6 +95,8 @@ except:
         from huggingface_hub.utils._token import get_token
 import importlib.util
 from ..device_type import (
+    xpu_keeps_explicit_bf16,
+    xpu_vllm_refuses_bf16,
     is_hip,
     get_device_type,
     DEVICE_TYPE,
@@ -84,8 +108,7 @@ from ..device_type import (
 
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
-from unsloth_zoo.tiled_mlp import patch_tiled_mlp
-from ._tiled_mlp_ddp import patch_tiled_mlp_for_ddp
+from ..tiling import check_tiling_available, loader_tile_mlp
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
@@ -101,7 +124,54 @@ SUPPORTS_GEMMA3N = transformers_version >= Version("4.53.0")
 SUPPORTS_GPTOSS = transformers_version >= Version("4.55.0")
 SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
 # unsloth_zoo cannot share these models' vLLM weights with the training model.
-VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss",)
+# Inkling 2 (Mini = inkling2_loop, Small = inkling2): no vLLM release registers it (0.34.0 has only Inkling v1
+# and needs transformers < 5.23, Inkling 2 needs 5.24), and the zoo has no weight layout for its looped layers.
+VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss", "inkling2", "inkling2_loop")
+# model_type -> unsloth_zoo.empty_model symbol that rebuilds it from vLLM; an older zoo falls back.
+_VLLM_NEEDS_ZOO_SYMBOL = {"nemotron_h": "extract_nemotron_h_mixer"}
+# vLLM 0.31 has no attention backend for these below sm80: TRITON_ATTN needs 96 KB shared memory
+# for Gemma 4's 512-wide global heads (T4 has 64 KB), FlexAttention rejects its KV sharing.
+VLLM_NEEDS_SM80_MODEL_TYPES = ("gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text")
+
+
+def _vllm_unsupported_model_types(model_types):
+    unsupported = [t for t in model_types if t in VLLM_UNSUPPORTED_MODEL_TYPES]
+    for model_type, symbol in _VLLM_NEEDS_ZOO_SYMBOL.items():
+        if model_type in model_types:
+            import unsloth_zoo.empty_model as zoo_empty_model
+            if not hasattr(zoo_empty_model, symbol):
+                unsupported.append(model_type)
+    return unsupported
+
+
+def _vllm_engine_device():
+    """The card fast_inference's vLLM engine runs on: unsloth_zoo's target device (cuda:0), not the current one."""
+    import torch
+    try:
+        from unsloth_zoo.vllm_utils import get_target_device
+        return get_target_device()
+    except Exception:
+        return torch.device("cuda", 0)
+
+
+def _vllm_needs_newer_gpu(model_types):
+    """First model type vLLM cannot run on the engine's CUDA GPU (compute capability < 8), else None."""
+    if DEVICE_TYPE != "cuda":
+        return None
+    model_type = next((t for t in model_types if t in VLLM_NEEDS_SM80_MODEL_TYPES), None)
+    if model_type is None:
+        return None
+    import torch
+
+    try:
+        # Mixed hosts: the current card may differ from the engine's (vLLM's UniProcExecutor takes cuda:0).
+        if torch.cuda.get_device_capability(_vllm_engine_device())[0] >= 8:
+            return None
+    except Exception:
+        return None
+    return model_type
+
+
 # Transformers v5 meta-device loading corrupts non-persistent buffers (inv_freq); see _fix_rope_inv_freq() below.
 _NEEDS_ROPE_FIX = transformers_version >= Version("5.0.0")
 if SUPPORTS_GEMMA:
@@ -123,7 +193,9 @@ from ._utils import (
     _requested_float32,
     _mark_requested_float32,
     _mark_forced_float32,
+    _drop_float16_overflowing_attention_dropout,
     _ignore_block_swap_params_for_ddp,
+    block_swap_shaped,
     _mark_full_finetuning,
     _get_text_only_config,
     resolve_model_class,
@@ -132,6 +204,7 @@ from ._utils import (
     _apply_text_only_key_mapping,
     _get_remote_composite_text_only,
     _merge_key_mapping,
+    _convert_qwen3_asr_package_config,
     _rebase_user_quantization_config,
     _drop_text_only_key_mapping,
     _adapter_fits_text_model,
@@ -162,6 +235,20 @@ for _mt in _FORCE_FLOAT32_FALLBACK:
 
 global DISABLE_COMPILE_MODEL_NAMES
 # Must be alphabetically sorted for each entry.
+
+
+def _fold_rope_parameters(rope_scaling, kwargs):
+    """transformers v5 and TRL's model_init_kwargs spell the RoPE override `rope_parameters`.
+    Read it as `rope_scaling`, else FastLanguageModel ignores it (and its auto linear scaling
+    replaces a YaRN request) and FastModel passes it to the model constructor, which fails."""
+    rope_parameters = kwargs.pop("rope_parameters", None)
+    if rope_parameters is None:
+        return rope_scaling
+    if rope_scaling is not None and dict(rope_scaling) != dict(rope_parameters):
+        raise ValueError(
+            "Unsloth: `rope_scaling` and `rope_parameters` were both given and differ; pass one."
+        )
+    return rope_parameters
 
 
 def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
@@ -289,8 +376,7 @@ def _config_uses_remote_code(config):
             for k in auto_map
         )
 
-    # Sub-configs go beyond text/vision/audio (Qwen-Omni thinker_config, nested llm_config) and nest;
-    # a remote child read as native puts the compiler on untraceable code, so walk every level.
+    # Sub-configs nest: walk every level, since a remote child read as native breaks the compiler
     try:
         from transformers import PretrainedConfig as _config_class
     except Exception:
@@ -416,10 +502,7 @@ def _has_sequence_classification_architecture(config):
     return any(str(arch).endswith("ForSequenceClassification") for arch in architectures)
 
 
-# Most to least specific, so a config mapped under several gets its own family's
-# class. Every name must also be in vision.py's _multimodal_auto_classes(), since
-# the class picked here decides processor selection (asserted by
-# test_every_class_the_resolver_can_return_takes_a_processor).
+# Each name must also be in vision.py _multimodal_auto_classes(), since it picks the processor
 _OMNI_AUTO_CLASS_NAMES = (
     "AutoModelForImageTextToText",
     "AutoModelForTextToWaveform",
@@ -428,11 +511,40 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
+def _refuse_network_share_adapter_base(model_name, peft_config):
+    """On Windows a Hub adapter's UNC base would probe a host the repo chose (SMB, NTLM leak).
+    Local adapter folders are the user's own and are left alone."""
+    base = getattr(peft_config, "base_model_name_or_path", None)
+    if not isinstance(base, str) or not base or os.path.isdir(model_name):
+        return
+    try:
+        from unsloth_zoo.vision_utils import _is_network_share
+    except ImportError:  # an older unsloth_zoo: plain UNC paths only
+
+        def _is_network_share(path):
+            p = path.replace("\\", "/")
+            host = p[2:].split("/", 1)[0].lower()
+            return (
+                os.name == "nt"
+                and p.startswith("//")
+                and host not in ("", ".", "?", "localhost", "127.0.0.1", "wsl$", "wsl.localhost")
+            )
+
+    if _is_network_share(base):
+        raise ValueError(
+            f"Unsloth: The adapter {model_name} names a base model on a network share ({base!r}). "
+            "Refusing to load it: download the base model and load the adapter from a local folder instead."
+        )
+
+
 def _adapter_file_shapes(path):
     if path.endswith(".safetensors"):
         from safetensors import safe_open
         with safe_open(path, framework = "pt") as handle:
             return {key: tuple(handle.get_slice(key).get_shape()) for key in handle.keys()}
+    from unsloth.import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    refuse_pickle_checkpoint_on_old_torch(path)
     state_dict = torch.load(path, map_location = "meta", weights_only = True)
     return {key: tuple(value.shape) for key, value in state_dict.items()}
 
@@ -642,6 +754,27 @@ def _compiled_auto_model(auto_model):
     return auto_model
 
 
+def _sync_registered_auto_classes(auto_model):
+    """Point registered Auto classes at their module's current class: register() stores the class object, so the
+    compiler's module swap would otherwise be missed."""
+    extra = getattr(getattr(auto_model, "_model_mapping", None), "_extra_content", None)
+    if not isinstance(extra, dict):
+        return
+    for config_class, model_class in list(extra.items()):
+        if not isinstance(model_class, type):
+            continue
+        module = sys.modules.get(getattr(model_class, "__module__", None) or "")
+        current = getattr(module, model_class.__name__, None) if module is not None else None
+        if (
+            isinstance(current, type)
+            and current is not model_class
+            and current.__name__ == model_class.__name__
+            and callable(getattr(current, "from_pretrained", None))
+            and (_built_by_unsloth_compiler(current) or _built_by_unsloth_compiler(model_class))
+        ):
+            extra[config_class] = current
+
+
 def _built_by_unsloth_compiler(cls):
     """True when `cls` is exported by a module the compiler generated (unsloth_compiled_module_*).
 
@@ -692,8 +825,7 @@ def _resolve_omni_auto_model(
                 return auto_class
         except Exception:
             continue
-    # Falling back to the concrete class the checkpoint names is WRONG: it is in no
-    # auto mapping, so it leaves the processor set and downgrades to AutoTokenizer.
+    # Never fall back to the concrete class: no auto mapping holds it, so it downgrades to AutoTokenizer
     return None
 
 
@@ -714,6 +846,83 @@ def _resolve_speech_seq2seq_auto_model(
     except Exception:
         pass
     return None
+
+
+def _resolve_audio_lm_auto_model(
+    model_config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
+    """The causal or seq2seq LM auto class that builds this audio config's full model
+    (AudioFlamingo3 registers only as a seq2seq LM on transformers 5.17), else None."""
+    import transformers
+
+    for name in ("AutoModelForCausalLM", "AutoModelForSeq2SeqLM"):
+        auto_class = getattr(transformers, name, None)
+        try:
+            if _audio_lm_class(
+                auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+            ):
+                return auto_class
+        except Exception:
+            continue
+    return None
+
+
+_AUDIO_HEAD_AUTO_CLASS_NAMES = (
+    "AutoModelForCTC",
+    "AutoModelForTDT",
+    "AutoModelForAudioClassification",
+    "AutoModelForAudioFrameClassification",
+    "AutoModelForAudioXVector",
+    "AutoModel",
+)
+
+
+def _resolve_audio_auto_model(
+    model_config,
+    include_bare = True,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
+    """The auto class whose mapped class is the checkpoint's own architecture (Wav2Vec2ForCTC,
+    ASTForAudioClassification, a bare WavLMModel), else None."""
+    import transformers
+
+    architectures = getattr(model_config, "architectures", None) or ()
+    if not architectures:
+        return None
+    for name in _AUDIO_HEAD_AUTO_CLASS_NAMES:
+        if name == "AutoModel" and not include_bare:
+            continue
+        auto_class = getattr(transformers, name, None)
+        try:
+            model_class = auto_class and resolve_model_class(
+                auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+            )
+        except Exception:
+            model_class = None
+        if model_class is not None and getattr(model_class, "__name__", None) == architectures[0]:
+            return auto_class
+    return None
+
+
+def _resolve_non_vlm_auto_model(model_config, **_probe_hub_kwargs):
+    """CTC / audio classification / bare audio encoders load their own head. A causal-LM mapping
+    (WhisperConfig -> WhisperForCausalLM) yields only to an audio head the checkpoint names."""
+    causal_maps = (
+        resolve_model_class(AutoModelForCausalLM, model_config, **_probe_hub_kwargs) is not None
+    )
+    return (
+        _resolve_audio_auto_model(model_config, include_bare = not causal_maps, **_probe_hub_kwargs)
+        # moonshine-streaming's repo config names no architectures; only its speech seq2seq class builds it.
+        or (
+            None
+            if causal_maps
+            else _resolve_speech_seq2seq_auto_model(model_config, **_probe_hub_kwargs)
+        )
+        or AutoModelForCausalLM
+    )
 
 
 def _get_user_task_config_attrs(user_config):
@@ -907,6 +1116,14 @@ def _fix_rope_inv_freq(model):
                     ).float()
                     freqs = torch.outer(t, module.short_inv_freq)
                     emb = torch.cat((freqs, freqs), dim = -1)
+                    if hasattr(module, "_unsloth_short_cos_cpu"):
+                        # Devices not built yet copy the short cache from these on first use.
+                        module._unsloth_short_cos_cpu = (emb.cos() * module.scaling_factor).to(
+                            dtype = dtype
+                        )
+                        module._unsloth_short_sin_cpu = (emb.sin() * module.scaling_factor).to(
+                            dtype = dtype
+                        )
                     for device_idx in range(len(module.multi_gpu_short_cos_cached)):
                         if module.multi_gpu_short_cos_cached[device_idx] is not None:
                             device_obj = torch.device(device_idx)
@@ -957,23 +1174,189 @@ def _vllm_unavailable_error():
     )
 
 
+def _reattach_saved_mtp_head(
+    model,
+    adapter_dir,
+    token = None,
+    revision = None,
+    cache_dir = None,
+    local_files_only = False,
+):
+    """A LoRA folder (local or on the Hub) saved with a trained MTP head gets it back, so a later
+    merge keeps it."""
+    if not isinstance(adapter_dir, str):
+        return
+    if not os.path.isfile(os.path.join(adapter_dir, "mtp_head.safetensors")):
+        if os.path.isdir(adapter_dir):
+            return
+        try:
+            from huggingface_hub import hf_hub_download
+            path = hf_hub_download(
+                adapter_dir,
+                "mtp_head.safetensors",
+                token = token,
+                revision = revision,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+            )
+        except Exception as error:
+            from huggingface_hub import try_to_load_from_cache
+            from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
+            absent = isinstance(error, EntryNotFoundError) and not isinstance(
+                error, LocalEntryNotFoundError
+            )
+            try:
+                # Offline, a 404 the Hub already saw is cached as a non-str `.no_exist` sentinel.
+                cached = try_to_load_from_cache(
+                    adapter_dir,
+                    "mtp_head.safetensors",
+                    cache_dir = cache_dir,
+                    revision = revision,
+                )
+                absent = absent or (cached is not None and not isinstance(cached, str))
+                if not absent:
+                    from unsloth_zoo.speculative import mtp_family_name
+                    absent = mtp_family_name(getattr(model, "config", None)) is None
+            except Exception:
+                absent = True
+            if not absent:
+                print(
+                    f"Unsloth: Could not check '{adapter_dir}' for a trained MTP head "
+                    f"({type(error).__name__}); if it has one, merges and re-saves keep the stock head."
+                )
+            return
+        adapter_dir = os.path.dirname(path)
+    try:
+        from .speculative import attach_saved_mtp_head
+        attach_saved_mtp_head(model, adapter_dir)
+        print(f"Unsloth: Re-attached the trained MTP head saved in '{adapter_dir}'.")
+    except Exception as error:
+        print(
+            f"Unsloth: Could not re-attach the MTP head in '{adapter_dir}' ({error}); merges will keep the stock head."
+        )
+
+
+def _diffusion_peft_kwargs(
+    model,
+    args,
+    kwargs,
+    signature_of = None,
+):
+    """The caller's get_peft_model arguments, bound against its own signature (FastLanguageModel's by default)
+    so positional ones keep their meaning, for FastDiffusionModel.get_peft_model. Omitted ones stay omitted
+    (profile defaults apply)."""
+    import inspect
+
+    bound = inspect.signature(signature_of or FastLlamaModel.get_peft_model).bind(
+        model, *args, **kwargs
+    )
+    arguments = dict(bound.arguments)
+    arguments.pop("model", None)
+    arguments.update(arguments.pop("kwargs", {}))
+    return arguments
+
+
+# load_vllm-only kwargs; transformers' from_pretrained rejects them.
+_VLLM_ENGINE_KWARGS = (
+    "max_loras",
+    "use_async",
+    "use_engine",
+    "enforce_eager",
+    "enable_prefix_caching",
+    "compilation_config",
+    "conservativeness",
+    "max_logprobs",
+    "max_num_seqs",
+    "max_num_batched_tokens",
+    "return_args",
+    "training",
+    "speculative_config",
+)
+
+
+def _drop_vllm_engine_kwargs(kwargs):
+    dropped = [k for k in _VLLM_ENGINE_KWARGS if kwargs.pop(k, None) is not None]
+    if dropped:
+        print(f"Unsloth: Ignoring vLLM-only arguments {dropped} since vLLM is not used.")
+
+
+def _agree_fast_inference_across_ranks(requested, fast_inference, kwargs):
+    """Under torchrun keep vLLM only if every rank kept it, so one rank never waits alone in vLLM's collectives.
+
+    The capability gates read each rank's own card: on a mixed host (an A100 and a T4) one rank would build an external_launcher engine while the other loads HF and starts training. Outside torchrun, or with an older unsloth_zoo, the local answer stands."""
+    if not requested:
+        return fast_inference
+    try:
+        from unsloth_zoo.vllm_utils import torchrun_ranks_agree
+    except Exception:
+        return fast_inference
+    # Every rank that asked for vLLM takes part, including the ones that already dropped it.
+    if torchrun_ranks_agree(fast_inference) or not fast_inference:
+        return fast_inference
+    print(
+        "Unsloth: fast_inference (vLLM) is off on another torchrun rank (such as an older GPU) - "
+        "every rank will switch to Unsloth inference!"
+    )
+    _drop_vllm_engine_kwargs(kwargs)
+    return False
+
+
 class FastLanguageModel(FastLlamaModel):
+    reap_prune = staticmethod(_reap_prune)
+
+    # Text-diffusion models load through FastModel's slow path; these route them there for the PEFT / mode helpers.
     @staticmethod
+    @tensor_parallel_env_peft
+    @functools.wraps(FastLlamaModel.get_peft_model)
+    def get_peft_model(model, *args, **kwargs):
+        raise_if_unsaved_reap(model)
+        if getattr(model, "_unsloth_slow_diffusion", False):
+            return FastDiffusionModel.get_peft_model(
+                model, **_diffusion_peft_kwargs(model, args, kwargs)
+            )
+        return FastLlamaModel.get_peft_model(model, *args, **kwargs)
+
+    @staticmethod
+    @functools.wraps(FastLlamaModel.for_inference)
+    def for_inference(model):
+        if getattr(model, "_unsloth_slow_diffusion", False):
+            return FastDiffusionModel.for_inference(model)
+        return FastLlamaModel.for_inference(model)
+
+    @staticmethod
+    @functools.wraps(FastLlamaModel.for_training)
+    def for_training(model, use_gradient_checkpointing = None):
+        if getattr(model, "_unsloth_slow_diffusion", False):
+            if use_gradient_checkpointing is None:
+                use_gradient_checkpointing = getattr(model, "_unsloth_gradient_checkpointing", True)
+            return FastDiffusionModel.for_training(model, use_gradient_checkpointing)
+        return FastLlamaModel.for_training(model, use_gradient_checkpointing)
+
+    @staticmethod
+    def get_mtp_head(model, *args, **kwargs):
+        from .speculative import get_mtp_head
+        return get_mtp_head(model, *args, **kwargs)
+
+    @staticmethod
+    @tensor_parallel_env_load
+    @fsdp2_sharded_load_env
     @tokenizers_v1_on_return
     @_offline_aware_load
     @mistral_format_redirect
     @track_explicit_4bit_request
+    @_load_probe_memo_scope
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length = 2048,
         dtype = None,
-        load_in_4bit = True,  # 4bit QLoRA
-        load_in_8bit = False,  # 8bit  LoRA
-        load_in_16bit = False,  # 16bit LoRA
+        load_in_4bit = True,  # 4-bit QLoRA
+        load_in_8bit = False,  # 8-bit LoRA
+        load_in_16bit = False,  # 16-bit LoRA
         full_finetuning = False,
         token = None,
         device_map = DEFAULT_DEVICE_MAP,
-        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        # planner options apply only when device_map = "unsloth".
         device_map_planner_kwargs = None,
         rope_scaling = None,
         fix_tokenizer = True,
@@ -998,6 +1381,7 @@ class FastLanguageModel(FastLlamaModel):
         on_model_resolved = None,
         **kwargs,
     ):
+        rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
             if isinstance(quantization_config, dict):
@@ -1013,6 +1397,8 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_8bit = True
                 load_in_4bit = False
 
+        # Fail before any weights load.
+        check_tiling_available(unsloth_tiled_mlp)
         # Login to allow private models. Before normalization: dtype is also derived below from a 4bit config's compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
         token = hf_login(token)
@@ -1031,7 +1417,7 @@ class FastLanguageModel(FastLlamaModel):
                 dtype = bnb_compute_dtype
 
         # Distributed-safe placement: under torchrun / accelerate launch each rank must load on its own device. Quantized weights make it mandatory, since Accelerate raises device relocation errors on them, but a 16-bit load needs it just as much: an unchosen placement ends up dispatching to cuda:0, so all the ranks land on card 0 and contend for it while the rest of the cards stay empty (#3459). A device the caller named is left alone.
-        device_map = requested_device_map(device_map)
+        device_map = deepspeed_zero3_device_map(requested_device_map(device_map))
         if is_automatic_device_map(device_map):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
@@ -1039,6 +1425,24 @@ class FastLanguageModel(FastLlamaModel):
                 device_map = distributed_device_map
 
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
+        fp8_lora = None
+        fp8_request = kwargs.get("float8_training", None)
+        if kwargs.get("float8_training", None) not in (None, False) and not full_finetuning:
+            fp8_lora = resolve_fp8_lora(
+                kwargs.pop("float8_training"),
+                dtype = dtype,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                load_in_fp8 = load_in_fp8,
+                qat_scheme = qat_scheme,
+            )
+        if kwargs.get("float8_training", None) not in (None, False) and qat_scheme is not None:
+            raise ValueError(
+                "Unsloth: `float8_training` and `qat_scheme` cannot be combined. QAT swaps the Linear "
+                "layers for fake-quantized ones first, so float8 training would convert nothing. Pick one."
+            )
+        if not full_finetuning:
+            kwargs.pop("float8_training", None)
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             delegated, tokenizer = FastModel.from_pretrained(
                 on_model_resolved = on_model_resolved,
@@ -1052,7 +1456,7 @@ class FastLanguageModel(FastLlamaModel):
                 token = token,
                 device_map = device_map,
                 device_map_planner_kwargs = device_map_planner_kwargs,
-                rope_scaling = rope_scaling,  # [TODO] No effect
+                rope_scaling = rope_scaling,
                 fix_tokenizer = fix_tokenizer,
                 trust_remote_code = trust_remote_code,
                 use_gradient_checkpointing = use_gradient_checkpointing,
@@ -1078,7 +1482,7 @@ class FastLanguageModel(FastLlamaModel):
             )
             return _mark_requested_float32(delegated, user_float32), tokenizer
 
-        if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
+        if isinstance(dtype, str) and dtype in ["float16", "bfloat16", "float32"]:
             dtype = getattr(torch, dtype)
         assert (
             dtype is None
@@ -1087,10 +1491,12 @@ class FastLanguageModel(FastLlamaModel):
             or dtype == torch.float32
         )
 
+        fast_inference_requested = fast_inference
         # Same fallback as FastModel, before requiring vLLM: it cannot run below compute capability 7.
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
             print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
             fast_inference = False
+            _drop_vllm_engine_kwargs(kwargs)
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise _vllm_unavailable_error()
@@ -1102,7 +1508,11 @@ class FastLanguageModel(FastLlamaModel):
                             "Defaulting to native Unsloth inference."
                         )
                         fast_inference = False
+                        _drop_vllm_engine_kwargs(kwargs)
                         break
+        fast_inference = _agree_fast_inference_across_ranks(
+            fast_inference_requested, fast_inference, kwargs
+        )
         raise_if_fast_inference_under_fsdp2(fast_inference)
 
         # bitsandbytes unusable (absent, or unstable on some AMD stacks). A capability check, so not gated on use_exact_model_name, which only suppresses repo-name remapping.
@@ -1149,25 +1559,40 @@ class FastLanguageModel(FastLlamaModel):
                 cache_dir = kwargs.get("cache_dir", None),
                 revision = revision,
             )
-            if new_model_name is None and load_in_fp8 != False:
-                fp8_mode = _get_fp8_mode_and_check_settings(
-                    load_in_fp8,
-                    fast_inference,
-                    full_finetuning,
-                    load_in_4bit,
-                    load_in_8bit,
-                    load_in_16bit,
-                )
-                # Still the caller's repo here, so their ref is the one to quantize from.
-                model_name = _offline_quantize_to_fp8(
-                    model_name, fp8_mode, text_only = text_only, revision = revision
-                )
-            else:
-                assert new_model_name is not None
-                model_name = new_model_name
-                # If the mapper resolved to a pre-quantized FP8 model, disable on-the-fly quantization to avoid quantizing twice.
-                if load_in_fp8 != False and new_model_name != old_model_name:
-                    load_in_fp8 = False
+        else:
+            new_model_name = model_name
+        # Unmapped names come back unchanged, not None; conflicting flags are left to the precision check below.
+        if (
+            load_in_fp8 != False
+            and not _precision_flags_conflict(
+                load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
+            )
+            and _fp8_needs_offline_quantize(new_model_name, old_model_name, fast_inference)
+            and not _fp8_load_as_is(model_name, revision, token, trust_remote_code)
+        ):
+            fp8_mode = _get_fp8_mode_and_check_settings(
+                load_in_fp8,
+                fast_inference,
+                full_finetuning,
+                load_in_4bit,
+                load_in_8bit,
+                load_in_16bit,
+            )
+            # Still the caller's repo here, so their ref is the one to quantize from.
+            model_name = _offline_quantize_to_fp8(
+                model_name,
+                fp8_mode,
+                text_only = text_only,
+                revision = revision,
+                token = token,
+                trust_remote_code = trust_remote_code,
+            )
+        elif not use_exact_model_name:
+            assert new_model_name is not None
+            model_name = new_model_name
+            # If the mapper resolved to a pre-quantized FP8 model, disable on-the-fly quantization to avoid quantizing twice.
+            if load_in_fp8 != False and new_model_name != old_model_name:
+                load_in_fp8 = False
         # Only this block honours use_exact_model_name; the transforms below do not.
         mapper_moved_name = model_name != old_model_name
 
@@ -1184,9 +1609,7 @@ class FastLanguageModel(FastLlamaModel):
         if on_model_resolved is not None:
             on_model_resolved(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM whose message never mentions quantization.
-        if model_name.lower().endswith("-bf16") and (
-            load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
-        ):
+        if bf16_repo_loads_16bit(model_name, load_in_16bit):
             # A user quantization_config stays in **kwargs and still quantizes. load_in_4bit defaults to True, so a set flag is no proof of a request; an explicit load_in_16bit is.
             if (
                 not load_in_16bit
@@ -1260,7 +1683,8 @@ class FastLanguageModel(FastLlamaModel):
         local_files_only = kwargs.get("local_files_only", False)
 
         try:
-            model_config = AutoConfig.from_pretrained(
+            model_config = _memo_config_probe(
+                AutoConfig.from_pretrained,
                 model_name,
                 token = token,
                 revision = base_revision,
@@ -1287,7 +1711,8 @@ class FastLanguageModel(FastLlamaModel):
                 )
             is_model = False
         try:
-            peft_config = PeftConfig.from_pretrained(
+            peft_config = _memo_config_probe(
+                PeftConfig.from_pretrained,
                 model_name,
                 token = token,
                 revision = adapter_revision,
@@ -1355,8 +1780,21 @@ class FastLanguageModel(FastLlamaModel):
             )
             raise RuntimeError(combined_error) from _cause
 
+        if peft_config is not None:
+            # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
+            _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
+        _model_type_config = peft_config if peft_config is not None else model_config
+        if peft_config is not None and isinstance(token, str) and token:
+            _model_type_config = _memo_config_probe(
+                AutoConfig.from_pretrained,
+                peft_config.base_model_name_or_path,
+                token = token,
+                trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
         model_types = get_transformers_model_type(
-            peft_config if peft_config is not None else model_config,
+            _model_type_config,
             trust_remote_code = trust_remote_code,
         )
         _raise_if_modeling_ignores_config(model_config, model_types)
@@ -1400,9 +1838,7 @@ class FastLanguageModel(FastLlamaModel):
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
-            if model_name.lower().endswith("-bf16") and (
-                load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
-            ):
+            if bf16_repo_loads_16bit(model_name, load_in_16bit):
                 # A user quantization_config stays in **kwargs and still quantizes. load_in_4bit defaults to True, so a set flag is no proof of a request; an explicit load_in_16bit is.
                 if (
                     not load_in_16bit
@@ -1451,11 +1887,13 @@ class FastLanguageModel(FastLlamaModel):
                     or model_name
                 )
 
-            model_config = AutoConfig.from_pretrained(
+            model_config = _memo_config_probe(
+                AutoConfig.from_pretrained,
                 model_name,
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
             )
             _raise_if_modeling_ignores_config(model_config, model_types)
 
@@ -1555,7 +1993,7 @@ class FastLanguageModel(FastLlamaModel):
                 token = token,
                 device_map = device_map,
                 device_map_planner_kwargs = device_map_planner_kwargs,
-                rope_scaling = rope_scaling,  # [TODO] No effect
+                rope_scaling = rope_scaling,
                 fix_tokenizer = fix_tokenizer,
                 trust_remote_code = trust_remote_code,
                 use_gradient_checkpointing = use_gradient_checkpointing,
@@ -1577,6 +2015,7 @@ class FastLanguageModel(FastLlamaModel):
                 unsloth_tiled_mlp = unsloth_tiled_mlp,
                 text_only = text_only,
                 *args,
+                **({"float8_training": fp8_request} if fp8_lora is not None else {}),
                 **kwargs,
             )
             return _mark_requested_float32(delegated, user_float32), tokenizer
@@ -1604,6 +2043,18 @@ class FastLanguageModel(FastLlamaModel):
         if quantization_config is not None and not fast_inference:
             load_in_4bit_kwargs = False
             load_in_8bit_kwargs = False
+        # Mirror FastModel: an explicit 16bit load dequantizes a fine-grained fp8 checkpoint.
+        _fp8_dequantize_config = None
+        if (
+            load_in_16bit
+            and not load_in_4bit
+            and not load_in_8bit
+            and not fast_inference
+            and kwargs.get("quantization_config", None) is None
+        ):
+            _fp8_dequantize_config = _fp8_dequantize_quantization_config(model_config)
+            if _fp8_dequantize_config is not None:
+                kwargs["quantization_config"] = _fp8_dequantize_config
 
         # Mirror FastModel: bitsandbytes < 0.46.0 needs dynamo disabled. Best effort, never crash the load (an old zoo without the #710 fix raises NameError here on Python 3.13).
         try:
@@ -1645,6 +2096,9 @@ class FastLanguageModel(FastLlamaModel):
             **kwargs,
         )
         _record_modelscope_repo_id(model, modelscope_repo_id, modelscope_dir)
+        # Also a caller's FineGrainedFP8Config(dequantize = True) and transformers' own pre-sm89 / CPU
+        # dequantize; a no-op unless the load kept Fp8Dequantize conversions.
+        _drop_fp8_dequantize_conversions(model)
 
         if resize_model_vocab is not None:
             _resize_vocab(model, resize_model_vocab)
@@ -1668,7 +2122,12 @@ class FastLanguageModel(FastLlamaModel):
                 # load_in_4bit is the requested flag, not the effective one: a non-bnb checkpoint (MXFP4/gptq/awq) had bnb disabled by check_and_disable, so a synthetic bnb config would corrupt its real one.
                 try:
                     from unsloth_zoo.utils import get_quant_type
-                    _stamp_bnb = get_quant_type(model.config) in (None, "bitsandbytes")
+
+                    # get_quant_type skips config objects (kept FineGrainedFP8Config); a dequantized fp8 load is 16bit.
+                    _quant = get_quant_type(model.config) or _loaded_quant_method(model.config)
+                    _stamp_bnb = _quant in (None, "bitsandbytes") and not getattr(
+                        model, "_unsloth_fp8_dequantized", False
+                    )
                 except Exception:
                     _stamp_bnb = True
                 if _stamp_bnb:
@@ -1687,7 +2146,8 @@ class FastLanguageModel(FastLlamaModel):
                         "quant_method": "bitsandbytes",
                     }
                     model.config.update({"quantization_config": quantization_config})
-            else:
+            elif not getattr(model, "_unsloth_fp8_dequantized", False):
+                # Weights are 16bit after fp8 dequantize: restoring the config would save them as fp8.
                 if hasattr(quantization_config, "to_dict"):
                     model.config.update({"quantization_config": quantization_config.to_dict()})
                 elif isinstance(quantization_config, dict):
@@ -1743,7 +2203,16 @@ class FastLanguageModel(FastLlamaModel):
                 local_files_only = local_files_only,
                 cache_dir = kwargs.get("cache_dir"),
             )
-            with fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext():
+            load_config = peft_load_kwargs.get("config", peft_config)
+            with (
+                fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext(),
+                block_swap_shaped(
+                    model,
+                    getattr(load_config, "init_lora_weights", True),
+                    lora_config = load_config,
+                    loading_adapter = True,
+                ),
+            ):
                 model = PeftModel.from_pretrained(
                     model,
                     old_model_name,
@@ -1756,6 +2225,14 @@ class FastLanguageModel(FastLlamaModel):
                 )
             if fast_pissa:
                 record_fast_pissa(model)
+            _reattach_saved_mtp_head(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+            )
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
@@ -1771,14 +2248,7 @@ class FastLanguageModel(FastLlamaModel):
             except Exception:
                 pass  # optional speedup; never block model loading
 
-        # Patch Tiled MLP; enable by setting UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}".
-        patch_tiled_mlp_choice = os.environ.get(
-            "UNSLOTH_TILED_MLP", "arctic" if unsloth_tiled_mlp else "0"
-        )
-        if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
-            patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
-            if is_distributed():
-                patch_tiled_mlp_for_ddp()
+        loader_tile_mlp(model, unsloth_tiled_mlp)
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
@@ -1788,6 +2258,7 @@ class FastLanguageModel(FastLlamaModel):
         model = _mark_forced_float32(model, False)
         # Full finetuning delegates to FastModel above, so this path is always LoRA.
         model = _mark_full_finetuning(model, False)
+        model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 
 
@@ -1795,7 +2266,7 @@ from ..kernels import (
     patch_loss_functions,
     post_patch_loss_function,
 )
-from .vision import FastBaseModel, _is_text_seq2seq_config
+from .vision import FastBaseModel, _is_text_seq2seq_config, _audio_lm_class
 from .diffusion import FastDiffusionModel, is_diffusion_model_type
 from .diffusion_profiles import resolve_diffusion_profile
 from transformers import (
@@ -1810,16 +2281,28 @@ except:
 
 
 class FastModel(FastBaseModel):
+    reap_prune = staticmethod(_reap_prune)
+
+    @staticmethod
+    def get_mtp_head(model, *args, **kwargs):
+        from .speculative import get_mtp_head
+        return get_mtp_head(model, *args, **kwargs)
+
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
         model = _prepare_model_for_qat(model, qat_scheme)
         return model
 
     @staticmethod
+    @tensor_parallel_env_peft
     def get_peft_model(model, *args, **kwargs):
+        raise_if_unsaved_reap(model)
         # Route text-diffusion models (slow path) to the transformers-only PEFT helper.
         if getattr(model, "_unsloth_slow_diffusion", False):
-            return FastDiffusionModel.get_peft_model(model, *args, **kwargs)
+            return FastDiffusionModel.get_peft_model(
+                model,
+                **_diffusion_peft_kwargs(model, args, kwargs, FastBaseModel.get_peft_model),
+            )
         return FastBaseModel.get_peft_model(model, *args, **kwargs)
 
     @staticmethod
@@ -1837,24 +2320,27 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
+    @tensor_parallel_env_load
+    @fsdp2_sharded_load_env
     @tokenizers_v1_on_return
     @_restore_load_scoped_env
     @_offline_aware_load
     @mistral_format_redirect
     @track_explicit_4bit_request
+    @_load_probe_memo_scope
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
         max_seq_length = 2048,
         dtype = None,
-        load_in_4bit = True,  # 4bit QLoRA
-        load_in_8bit = False,  # 8bit  LoRA
-        load_in_16bit = False,  # 16bit LoRA
+        load_in_4bit = True,  # 4-bit QLoRA
+        load_in_8bit = False,  # 8-bit LoRA
+        load_in_16bit = False,  # 16-bit LoRA
         full_finetuning = False,
         token = None,
         device_map = DEFAULT_DEVICE_MAP,
-        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        # planner options apply only when device_map = "unsloth".
         device_map_planner_kwargs = None,
-        rope_scaling = None,  # [TODO] No effect
+        rope_scaling = None,
         fix_tokenizer = True,
         trust_remote_code = False,
         use_gradient_checkpointing = "unsloth",
@@ -1884,7 +2370,24 @@ class FastModel(FastBaseModel):
         on_model_resolved = None,
         **kwargs,
     ):
+        rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         user_config = kwargs.pop("config", None)
+        fp8_lora = None
+        if not full_finetuning and kwargs.get("float8_training", None) not in (None, False):
+            fp8_lora = resolve_fp8_lora(
+                kwargs.pop("float8_training"),
+                dtype = dtype,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                load_in_fp8 = load_in_fp8,
+                qat_scheme = qat_scheme,
+            )
+        float8_training = resolve_float8_training(kwargs.pop("float8_training", None), dtype = dtype)
+        if float8_training is not None and qat_scheme is not None:
+            raise ValueError(
+                "Unsloth: `float8_training` and `qat_scheme` cannot be combined. QAT swaps the Linear "
+                "layers for fake-quantized ones first, so float8 training would convert nothing. Pick one."
+            )
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
             if isinstance(quantization_config, dict):
@@ -1900,8 +2403,12 @@ class FastModel(FastBaseModel):
                 load_in_8bit = True
                 load_in_4bit = False
 
+        # Fail before any weights load.
+        check_tiling_available(unsloth_tiled_mlp)
         # Login to allow private models. Before normalization: dtype is also derived below from a 4bit config's compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
+        if isinstance(dtype, str) and dtype in ["float16", "bfloat16", "float32"]:
+            dtype = getattr(torch, dtype)
         token = hf_login(token)
         if whisper_language is not None:
             assert type(whisper_language) is str
@@ -1923,7 +2430,8 @@ class FastModel(FastBaseModel):
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
-        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+        # XPU runs an explicit bf16 request (emulated if need be), as before the native-bf16 probe.
+        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and not xpu_keeps_explicit_bf16():
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
@@ -1994,17 +2502,19 @@ class FastModel(FastBaseModel):
             qat_scheme = "int8-int4"
 
         # Distributed-safe placement: under torchrun / accelerate launch each rank must load on its own device. Quantized weights make it mandatory, since Accelerate raises device relocation errors on them, but a 16-bit load needs it just as much: an unchosen placement ends up dispatching to cuda:0, so all the ranks land on card 0 and contend for it while the rest of the cards stay empty (#3459). A device the caller named is left alone.
-        device_map = requested_device_map(device_map)
+        device_map = deepspeed_zero3_device_map(requested_device_map(device_map))
         if is_automatic_device_map(device_map):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
                 # One whole model per rank; sharding one across the ranks' GPUs too would have every rank fighting for the same cards.
                 device_map = distributed_device_map
 
+        fast_inference_requested = fast_inference
         # Same fallback as FastLanguageModel, before requiring vLLM: zoo's vLLM loader raises on compute capability < 7.
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
             print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
             fast_inference = False
+            _drop_vllm_engine_kwargs(kwargs)
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise _vllm_unavailable_error()
@@ -2016,6 +2526,7 @@ class FastModel(FastBaseModel):
                             "Defaulting to native Unsloth inference."
                         )
                         fast_inference = False
+                        _drop_vllm_engine_kwargs(kwargs)
                         break
         raise_if_fast_inference_under_fsdp2(fast_inference)
 
@@ -2030,25 +2541,40 @@ class FastModel(FastBaseModel):
                 cache_dir = kwargs.get("cache_dir", None),
                 revision = revision,
             )
-            if new_model_name is None and load_in_fp8 != False:
-                fp8_mode = _get_fp8_mode_and_check_settings(
-                    load_in_fp8,
-                    fast_inference,
-                    full_finetuning,
-                    load_in_4bit,
-                    load_in_8bit,
-                    load_in_16bit,
-                )
-                # Still the caller's repo here, so their ref is the one to quantize from.
-                model_name = _offline_quantize_to_fp8(
-                    model_name, fp8_mode, text_only = text_only, revision = revision
-                )
-            else:
-                assert new_model_name is not None
-                model_name = new_model_name
-                # If the mapper resolved to a pre-quantized FP8 model, disable on-the-fly quantization to avoid quantizing twice.
-                if load_in_fp8 != False and new_model_name != old_model_name:
-                    load_in_fp8 = False
+        else:
+            new_model_name = model_name
+        # Unmapped names come back unchanged, not None; conflicting flags are left to the precision check below.
+        if (
+            load_in_fp8 != False
+            and not _precision_flags_conflict(
+                load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
+            )
+            and _fp8_needs_offline_quantize(new_model_name, old_model_name, fast_inference)
+            and not _fp8_load_as_is(model_name, revision, token, trust_remote_code)
+        ):
+            fp8_mode = _get_fp8_mode_and_check_settings(
+                load_in_fp8,
+                fast_inference,
+                full_finetuning,
+                load_in_4bit,
+                load_in_8bit,
+                load_in_16bit,
+            )
+            # Still the caller's repo here, so their ref is the one to quantize from.
+            model_name = _offline_quantize_to_fp8(
+                model_name,
+                fp8_mode,
+                text_only = text_only,
+                revision = revision,
+                token = token,
+                trust_remote_code = trust_remote_code,
+            )
+        elif not use_exact_model_name:
+            assert new_model_name is not None
+            model_name = new_model_name
+            # If the mapper resolved to a pre-quantized FP8 model, disable on-the-fly quantization to avoid quantizing twice.
+            if load_in_fp8 != False and new_model_name != old_model_name:
+                load_in_fp8 = False
         # Only this block honours use_exact_model_name; the transforms below do not.
         mapper_moved_name = model_name != old_model_name
 
@@ -2064,9 +2590,7 @@ class FastModel(FastBaseModel):
         if on_model_resolved is not None:
             on_model_resolved(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
-        if model_name.lower().endswith("-bf16") and (
-            load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
-        ):
+        if bf16_repo_loads_16bit(model_name, load_in_16bit):
             # A user quantization_config stays in **kwargs and still quantizes. load_in_4bit defaults to True, so a set flag is no proof of a request; an explicit load_in_16bit is.
             if (
                 not load_in_16bit
@@ -2128,6 +2652,12 @@ class FastModel(FastBaseModel):
 
         # Text-diffusion slow-path dispatch, factored so the normal route and the legacy-config fallback share one call site.
         def _dispatch_diffusion():
+            if fp8_lora is not None:
+                raise NotImplementedError(
+                    f"Unsloth: float8_training = {fp8_lora!r} (fp8 LoRA) is not supported for text-diffusion "
+                    "models yet. Instead: drop float8_training for LoRA, or float8_training with "
+                    "full_finetuning = True."
+                )
             model, tokenizer = FastDiffusionModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,
@@ -2144,6 +2674,9 @@ class FastModel(FastBaseModel):
                 **({"config": user_config} if user_config is not None else {}),
                 **kwargs,
             )
+            if float8_training is not None:
+                converted = convert_model_to_float8_training(model, float8_training)
+                print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
             # Returns before the FORCE_FLOAT32 scan and no diffusion type is on that list, so False. Stamped, not left unset, or the trainer reads whatever an earlier load wrote.
             model = _mark_forced_float32(model, False)
             model = _mark_full_finetuning(model, full_finetuning)
@@ -2155,7 +2688,8 @@ class FastModel(FastBaseModel):
         try:
             model_config = user_config
             if model_config is None:
-                model_config = AutoConfig.from_pretrained(
+                model_config = _memo_config_probe(
+                    AutoConfig.from_pretrained,
                     model_name,
                     token = token,
                     revision = base_revision,
@@ -2185,7 +2719,8 @@ class FastModel(FastBaseModel):
                 )
             is_model = False
         try:
-            peft_config = PeftConfig.from_pretrained(
+            peft_config = _memo_config_probe(
+                PeftConfig.from_pretrained,
                 model_name,
                 token = token,
                 revision = adapter_revision,
@@ -2251,27 +2786,54 @@ class FastModel(FastBaseModel):
             )
             raise RuntimeError(combined_error) from _cause
 
+        if peft_config is not None:
+            # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
+            _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
+        _model_type_config = peft_config if peft_config is not None else model_config
+        if peft_config is not None and isinstance(token, str) and token:
+            _model_type_config = _memo_config_probe(
+                AutoConfig.from_pretrained,
+                peft_config.base_model_name_or_path,
+                token = token,
+                trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
         model_types = get_transformers_model_type(
-            peft_config if peft_config is not None else model_config,
+            _model_type_config,
             trust_remote_code = trust_remote_code,
         )
         model_types_all = ",".join(model_types) + ","
         _maybe_advise_fla_install(model_types)
         _raise_if_modeling_ignores_config(model_config, model_types)
-        _vllm_unsupported = [t for t in model_types if t in VLLM_UNSUPPORTED_MODEL_TYPES]
+        _vllm_unsupported = _vllm_unsupported_model_types(model_types) if fast_inference else []
         if fast_inference and _vllm_unsupported:
             # Without this, vLLM loads the whole model first and weight sharing then crashes (unslothai/unsloth#4541).
             print(
                 f"Unsloth: fast_inference (vLLM) does not support {_vllm_unsupported[0]} yet - will switch to Unsloth inference!"
             )
             fast_inference = False
+            _drop_vllm_engine_kwargs(kwargs)
+        _vllm_old_gpu = _vllm_needs_newer_gpu(model_types) if fast_inference else None
+        if _vllm_old_gpu is not None:
+            print(
+                f"Unsloth: fast_inference (vLLM) cannot run {_vllm_old_gpu} on GPUs older than compute capability 8.0 "
+                "(such as T4) - will switch to Unsloth inference!"
+            )
+            fast_inference = False
+            _drop_vllm_engine_kwargs(kwargs)
+        # After the last per-card gate: under torchrun every rank takes the same vLLM-or-HF path.
+        fast_inference = _agree_fast_inference_across_ranks(
+            fast_inference_requested, fast_inference, kwargs
+        )
 
         # Text-diffusion models (DiffusionGemma) take a transformers-only slow path: a custom block-diffusion generate over a novel backbone, so Unsloth's autoregressive kernel/compile patching is skipped and the unmodified HF model is loaded, keeping 4bit/8bit and PEFT LoRA.
         # Remote-code checkpoints can report their backbone's type (Nemotron-Labs-Diffusion says "nemotron"), so also match the raw config.
         diffusion_config = model_config
         if diffusion_config is None and peft_config is not None:
             try:
-                diffusion_config = AutoConfig.from_pretrained(
+                diffusion_config = _memo_config_probe(
+                    AutoConfig.from_pretrained,
                     peft_config.base_model_name_or_path,
                     token = token,
                     trust_remote_code = trust_remote_code,
@@ -2293,8 +2855,47 @@ class FastModel(FastBaseModel):
         except Exception:
             _bnb_compatible_quant = True
         string = model_types_all
-        if load_in_4bit and _bnb_compatible_quant:
+        # zoo's bnb split-expert classes load random experts on a fused gpt-oss checkpoint.
+        _gpt_oss_bnb_4bit = (
+            (load_in_4bit and _bnb_compatible_quant)
+            or quantization_config_is_bnb_4bit(getattr(model_config, "quantization_config", None))
+            or quantization_config_is_bnb_4bit(quantization_config)
+        )
+        _gpt_oss_fused = False
+        if "gpt_oss" in model_types_all:
+            try:
+                _gpt_oss_fused = bool(
+                    gpt_oss_checkpoint_has_fused_experts(
+                        model_config,
+                        model_name,
+                        token = token,
+                        revision = base_revision,
+                        subfolder = kwargs.get("subfolder"),
+                        cache_dir = kwargs.get("cache_dir"),
+                        local_files_only = local_files_only,
+                        variant = kwargs.get("variant"),
+                        use_safetensors = kwargs.get("use_safetensors"),
+                    )
+                )
+            except GptOssUnknownExpertLayoutError:
+                # Only fatal where the layout decides the expert classes or the float16 refusal.
+                if (load_in_4bit and _bnb_compatible_quant) or (
+                    _gpt_oss_bnb_4bit
+                    and (
+                        dtype == torch.float16 or (not SUPPORTS_BFLOAT16 and dtype == torch.float32)
+                    )
+                ):
+                    raise
+        if _gpt_oss_fused and _gpt_oss_bnb_4bit:
+            refuse_gpt_oss_fused_4bit_float16(dtype, SUPPORTS_BFLOAT16)
+        if load_in_4bit and _bnb_compatible_quant and not _gpt_oss_fused:
             string += "_load_in_4bit_"
+        elif load_in_4bit and _bnb_compatible_quant:
+            print(
+                "Unsloth: this gpt-oss checkpoint stores fused experts, so it loads with its own "
+                "fused expert layout. A pre-quantized checkpoint such as "
+                "unsloth/gpt-oss-20b-unsloth-bnb-4bit loads faster and uses less memory."
+            )
         if load_in_8bit and _bnb_compatible_quant:
             string += "_load_in_8bit_"
         if load_in_16bit:
@@ -2347,6 +2948,14 @@ class FastModel(FastBaseModel):
             raise RuntimeError(
                 "Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY
             )
+        elif "deepseek_v41," in model_types_all or "deepseek_v41_text," in model_types_all:
+            # Non-reentrant checkpointing needs prepare_compiled_checkpoint (newer unsloth_zoo); else keep compile off.
+            try:
+                from unsloth_zoo.temporary_patches.deepseek_v41 import prepare_compiled_checkpoint
+            except ImportError:
+                prepare_compiled_checkpoint = None
+            if prepare_compiled_checkpoint is None or not prepare_compiled_checkpoint():
+                os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
         elif "csm" in model_types_all:
             os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"  # Inference is too slow
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"  # Sesame fails
@@ -2383,7 +2992,24 @@ class FastModel(FastBaseModel):
         elif "gpt_oss" in model_types_all:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             # Use the EFFECTIVE bnb state, not the raw flag: a native MXFP4 checkpoint loaded with the default load_in_4bit=True has bnb disabled later, so the raw flag picks the wrong dtype path.
-            if not (load_in_4bit and _bnb_compatible_quant):
+            if not (load_in_4bit and _bnb_compatible_quant) and transformers_version < Version(
+                "5.0.0"
+            ):
+                # Only upcast MoE biases for MXFP4, not BnB, nor experts transformers 4.x dequantized (dense forward).
+                register_custom_dtype(
+                    "all;None;None;"
+                    "x = 'gate_up_proj_bias'\n"
+                    "dense = type(getattr(module, 'gate_up_proj', None)) is torch.nn.Parameter and module.gate_up_proj.is_floating_point()\n"
+                    "if hasattr(module, x) and not dense: "
+                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"
+                    ""
+                    "x = 'down_proj_bias'\n"
+                    "if hasattr(module, x) and not dense: "
+                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"
+                    ""
+                    ";"
+                )
+            elif not (load_in_4bit and _bnb_compatible_quant):
                 # Only upcast MoE biases for MXFP4, not BnB.
                 register_custom_dtype(
                     "all;None;None;"
@@ -2409,6 +3035,11 @@ class FastModel(FastBaseModel):
                     ";"
                 )
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+        elif "inkling2" in model_types_all:
+            # Inkling 2 (Mini and Small): compiled, every new sequence length recompiles the layers (A100, Mini QLoRA at
+            # 1024 tokens: 85-840 s per step, eager 4.4 s), and the compiled block attention residual has wrong grads.
+            if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "0":
+                os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
@@ -2464,9 +3095,7 @@ class FastModel(FastBaseModel):
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
-            if model_name.lower().endswith("-bf16") and (
-                load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
-            ):
+            if bf16_repo_loads_16bit(model_name, load_in_16bit):
                 # A user quantization_config stays in **kwargs and still quantizes. load_in_4bit defaults to True, so a set flag is no proof of a request; an explicit load_in_16bit is.
                 if (
                     not load_in_16bit
@@ -2509,7 +3138,8 @@ class FastModel(FastBaseModel):
             if user_config is not None:
                 model_config = user_config
             else:
-                model_config = AutoConfig.from_pretrained(
+                model_config = _memo_config_probe(
+                    AutoConfig.from_pretrained,
                     model_name,
                     token = token,
                     trust_remote_code = trust_remote_code,
@@ -2538,13 +3168,43 @@ class FastModel(FastBaseModel):
         for disable_name in FORCE_FLOAT32:
             # Add a comma to model_types_all so an exact match at the end still matches.
             if (
-                disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "")
-                or disable_name.lower() in model_types_all
-            ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
+                (
+                    disable_name.lower()
+                    == model_type_arch.lower().replace("-", "").replace("_", "")
+                    or disable_name.lower() in model_types_all
+                )
+                and (
+                    # An explicit bf16 load kept on XPU stays bf16, not the fp16 + float32 path.
+                    dtype == torch.float16 or (not SUPPORTS_BFLOAT16 and dtype != torch.bfloat16)
+                )
+                and not (
+                    # An explicit float32 16-bit load stays float32 without bf16 (else bf16-loaded fp16 weights).
+                    user_float32
+                    and not (load_in_4bit or load_in_8bit or quantization_config is not None)
+                )
+            ):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 do_forced_float32 = True
                 dtype = torch.bfloat16  # Change to bfloat16 loading
                 break
+        # A bf16 load of this family would otherwise drop to fp16 when vLLM refuses bf16 (forced float32 is caught in FastBaseModel).
+        if (
+            not do_forced_float32
+            and fast_inference
+            and DEVICE_TYPE == "xpu"
+            and (dtype == torch.bfloat16 or (dtype is None and SUPPORTS_BFLOAT16))
+            and any(
+                name.lower() == model_type_arch.lower().replace("-", "").replace("_", "")
+                or name.lower() in model_types_all
+                for name in FORCE_FLOAT32
+            )
+            and is_vLLM_available()
+            and xpu_vllm_refuses_bf16()
+        ):
+            raise RuntimeError(
+                "Unsloth: vLLM does not accept bfloat16 on this Intel GPU, and this model cannot "
+                "run in float16. Load it with fast_inference = False."
+            )
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
             use_gradient_checkpointing, max_seq_length, dtype
         )
@@ -2601,6 +3261,16 @@ class FastModel(FastBaseModel):
             old_model_name, kwargs, require_processor = _ckpt_is_vlm
         )
 
+        _qwen3_asr_key_mapping = None
+        # vLLM reads the package layout (thinker_config) itself, so fast_inference keeps the repo config.
+        if user_config is None and not fast_inference:
+            model_config, _qwen3_asr_key_mapping = _convert_qwen3_asr_package_config(model_config)
+            if _qwen3_asr_key_mapping:
+                _merge_key_mapping(kwargs, _qwen3_asr_key_mapping)
+                print(
+                    f"Unsloth: {old_model_name} uses the qwen-asr package layout; "
+                    "converting it to transformers' Qwen3-ASR format while loading."
+                )
         # Capture task intent before text_only can replace a parent VLM config with its nested text config.
         task_config_attrs = _get_user_task_config_attrs(user_config)
         for _cfg_key in ("num_labels", "id2label", "label2id", "problem_type"):
@@ -2747,6 +3417,14 @@ class FastModel(FastBaseModel):
             if _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification
                 auto_model = AutoModelForSequenceClassification
+                # Audio classifiers (AST, wav2vec2) map only under the audio classification auto class.
+                if resolve_model_class(auto_model, model_config, **_probe_hub_kwargs) is None:
+                    import transformers as _transformers
+                    _audio_cls = getattr(_transformers, "AutoModelForAudioClassification", None)
+                    if _audio_cls is not None and resolve_model_class(
+                        _audio_cls, model_config, **_probe_hub_kwargs
+                    ):
+                        auto_model = _audio_cls
             elif _is_text_seq2seq_config(model_config) or (
                 # SeamlessM4T: Seq2SeqLM-mapped (text-to-text) beside its speech classes, no causal-LM class.
                 not is_vlm
@@ -2799,16 +3477,31 @@ class FastModel(FastBaseModel):
                     auto_model = AutoModel
                 else:
                     auto_model = AutoModelForVision2Seq
-                    # Only when the image-text class has no mapping, so anything that
-                    # resolves today keeps the class it resolves to now.
+                    # Only when the image-text class has no mapping, so anything that resolves today keeps the class it resolves to now.
                     if resolve_model_class(auto_model, model_config, **_probe_hub_kwargs) is None:
                         auto_model = (
                             _resolve_omni_auto_model(model_config, **_probe_hub_kwargs)
                             or _resolve_speech_seq2seq_auto_model(model_config, **_probe_hub_kwargs)
+                            or _resolve_audio_lm_auto_model(model_config, **_probe_hub_kwargs)
+                            or _resolve_audio_auto_model(model_config, **_probe_hub_kwargs)
                             or auto_model
                         )
+                        # A vision_config with only a causal-LM class mapped (the DeepSeek-V4.1 port builds no vision
+                        # tower yet): the image-text auto class would raise "Unrecognized configuration class".
+                        if (
+                            auto_model is AutoModelForVision2Seq
+                            and resolve_model_class(auto_model, model_config, **_probe_hub_kwargs)
+                            is None
+                            and resolve_model_class(
+                                AutoModelForCausalLM, model_config, **_probe_hub_kwargs
+                            )
+                            is not None
+                        ):
+                            auto_model = AutoModelForCausalLM
+                            is_vlm = False
             else:
-                auto_model = AutoModelForCausalLM
+                auto_model = _resolve_non_vlm_auto_model(model_config, **_probe_hub_kwargs)
+        _sync_registered_auto_classes(auto_model)
 
         load_in_4bit_kwargs = load_in_4bit
         load_in_8bit_kwargs = load_in_8bit
@@ -2850,6 +3543,7 @@ class FastModel(FastBaseModel):
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
+            rope_scaling = rope_scaling,
             dtype = _get_dtype(dtype),
             load_in_4bit = load_in_4bit_kwargs,
             load_in_8bit = load_in_8bit_kwargs,
@@ -2895,6 +3589,8 @@ class FastModel(FastBaseModel):
             **kwargs,
         )
         _drop_text_only_key_mapping(model, _text_key_mapping)
+        # Saves write the native layout, matching the converted config.
+        _drop_text_only_key_mapping(model, _qwen3_asr_key_mapping)
         _record_modelscope_repo_id(model, modelscope_repo_id, modelscope_dir)
 
         if resize_model_vocab is not None:
@@ -2919,7 +3615,12 @@ class FastModel(FastBaseModel):
                 # load_in_4bit is the requested flag, not the effective one: a non-bnb checkpoint had bnb disabled by check_and_disable, so a synthetic bnb config would corrupt its real one.
                 try:
                     from unsloth_zoo.utils import get_quant_type
-                    _stamp_bnb = get_quant_type(model.config) in (None, "bitsandbytes")
+
+                    # get_quant_type skips config objects (kept FineGrainedFP8Config); a dequantized fp8 load is 16bit.
+                    _quant = get_quant_type(model.config) or _loaded_quant_method(model.config)
+                    _stamp_bnb = _quant in (None, "bitsandbytes") and not getattr(
+                        model, "_unsloth_fp8_dequantized", False
+                    )
                 except Exception:
                     _stamp_bnb = True
                 if _stamp_bnb:
@@ -2938,7 +3639,8 @@ class FastModel(FastBaseModel):
                         "quant_method": "bitsandbytes",
                     }
                     model.config.update({"quantization_config": quantization_config})
-            else:
+            elif not getattr(model, "_unsloth_fp8_dequantized", False):
+                # Weights are 16bit after fp8 dequantize: restoring the config would save them as fp8.
                 if hasattr(quantization_config, "to_dict"):
                     model.config.update({"quantization_config": quantization_config.to_dict()})
                 elif isinstance(quantization_config, dict):
@@ -3042,7 +3744,16 @@ class FastModel(FastBaseModel):
                 cache_dir = kwargs.get("cache_dir"),
             )
             try:
-                with fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext():
+                load_config = peft_load_kwargs.get("config", peft_config)
+                with (
+                    fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext(),
+                    block_swap_shaped(
+                        model,
+                        getattr(load_config, "init_lora_weights", True),
+                        lora_config = load_config,
+                        loading_adapter = True,
+                    ),
+                ):
                     model = PeftModel.from_pretrained(
                         model,
                         old_model_name,
@@ -3063,6 +3774,14 @@ class FastModel(FastBaseModel):
             )
             if fast_pissa:
                 record_fast_pissa(model)
+            _reattach_saved_mtp_head(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+            )
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
                 _lift_endpoint_hooks_onto_adapters(model)
@@ -3081,21 +3800,19 @@ class FastModel(FastBaseModel):
             print("Unsloth: Applying QAT to mitigate quantization degradation")
             model = FastModel._prepare_for_qat(model, qat_scheme)
 
-        # Patch Tiled MLP; enable by setting UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}".
-        patch_tiled_mlp_choice = os.environ.get(
-            "UNSLOTH_TILED_MLP", "arctic" if unsloth_tiled_mlp else "0"
-        )
-        if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
-            patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
-            if is_distributed():
-                patch_tiled_mlp_for_ddp()
+        loader_tile_mlp(model, unsloth_tiled_mlp)
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
+        model = _drop_float16_overflowing_attention_dropout(model, dtype)
         # Loaded adapters skip get_peft_model.
         _ignore_block_swap_params_for_ddp(model)
+        if float8_training is not None:
+            converted = convert_model_to_float8_training(model, float8_training)
+            print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 
 

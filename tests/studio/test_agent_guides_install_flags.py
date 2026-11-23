@@ -1,17 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""
-agent-guides-install.sh must not go red because a vendor dropped an option we
-only passed to save time.
-
-The curl|bash installers track the vendor's main branch and exit on any option
-they do not know. On 2026-09-24 hermes-agent rewrote its argument parser without
---no-skills, and every PR's `connection (hermes, stable)` job failed three times
-over with `unknown option: --no-skills` before the agent was ever launched.
-
-These run the script's own curl_bash against a local installer shaped like the
-vendor's, so they need bash and curl but no network.
-"""
+"""Vendor installers exit on unknown options, so a dropped speed-only flag must not turn CI red."""
 
 from __future__ import annotations
 
@@ -80,7 +69,7 @@ def _installer(
 
 def _curl_bash(tmp_path: Path, installer: Path, args: list[str]) -> subprocess.CompletedProcess:
     helpers = tmp_path / "helpers.sh"
-    # sleep is the retry backoff: three rejected attempts would otherwise cost a minute.
+    # sleep is the retry backoff; stub it or three rejected attempts cost a minute.
     helpers.write_text(
         "sleep() { :; }\n" + _function("installer_args") + _function("curl_bash"),
         encoding = "utf-8",
@@ -99,7 +88,6 @@ def _received(tmp_path: Path) -> list[str]:
 
 
 def test_the_hermes_recipe_installs_once_the_vendor_drops_no_skills(tmp_path: Path) -> None:
-    # The parser hermes-agent shipped on 2026-09-24.
     installer = _installer(
         tmp_path,
         ["--non-interactive", "--skip-setup", "--skip-browser|--no-playwright|-SkipBrowser"],

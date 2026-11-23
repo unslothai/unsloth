@@ -3,6 +3,7 @@
 
 import { isTauri } from "@/lib/api-base";
 import { MAX_AUDIO_SIZE } from "@/lib/audio-utils";
+import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import {
   browserClipboardFiles,
   clipboardAdvertisesFiles,
@@ -12,12 +13,9 @@ import {
 const MAX_NATIVE_IMAGE_DIMENSION = 8192;
 const MAX_NATIVE_IMAGE_RGBA_BYTES = 64 * 1024 * 1024;
 const MAX_CLIPBOARD_NON_AUDIO_BYTES = 20 * 1024 * 1024;
-// Mirrors MAX_CLIPBOARD_VIDEO_BYTES in native_clipboard.rs. The native reader
-// takes a pasted clip up to this, so refusing it here threw away a file it had
-// already read and encoded, and dropped the rest of the paste with it.
+// Mirrors MAX_CLIPBOARD_VIDEO_BYTES in native_clipboard.rs.
 const MAX_CLIPBOARD_VIDEO_BYTES = 75_497_280;
-// The largest a single file may be, so the total never refuses one that the
-// per-file limits allow on its own. Matches MAX_CLIPBOARD_TOTAL_BYTES.
+// Matches MAX_CLIPBOARD_TOTAL_BYTES so the total never refuses a file the per-file limits allow.
 const MAX_CLIPBOARD_BYTES = MAX_CLIPBOARD_VIDEO_BYTES;
 const MAX_CLIPBOARD_FILES = 8;
 
@@ -69,8 +67,6 @@ async function readNativeClipboardFiles(): Promise<File[]> {
     ) {
       return [];
     }
-    // Per kind, as the native reader does: what it hands over, this accepts,
-    // and the composer's own gates give the user the reason for anything else.
     const maxFileBytes = file.mimeType.startsWith("audio/")
       ? MAX_AUDIO_SIZE
       : file.mimeType.startsWith("video/")
@@ -79,11 +75,7 @@ async function readNativeClipboardFiles(): Promise<File[]> {
     if (file.base64.length > Math.ceil((maxFileBytes * 4) / 3) + 4) {
       return [];
     }
-    const binary = globalThis.atob(file.base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
-    }
+    const bytes = decodeBase64Bytes(file.base64);
     if (bytes.byteLength > maxFileBytes) return [];
     totalBytes += bytes.byteLength;
     if (totalBytes > MAX_CLIPBOARD_BYTES) return [];

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An update must finish with the installer it installs, not the one it started with.
-
-The core-packages step upgrades the package that ships install_python_stack.py. Before this, the
-old process completed its own step list, so every step a release added (the pinned Diffusers main
-build in 2026.9.8) was skipped by the update that installed it.
-"""
+"""An update must finish with the installer it installs, or new steps in that release get skipped."""
 
 from __future__ import annotations
 

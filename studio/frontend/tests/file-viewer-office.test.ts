@@ -8,6 +8,9 @@ import { DOMParser } from "@xmldom/xmldom";
 import { strToU8, zipSync } from "fflate";
 
 import { formatNumber, readDelimited, readPptx, readXlsx } from "../src/components/file-viewer/office.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
 
 {
   const proto = Object.getPrototypeOf(new DOMParser().parseFromString("<a/>", "application/xml").documentElement);
@@ -86,6 +89,26 @@ test("number formats", () => {
   for (const [value, format, expected] of cases) assert.equal(formatNumber(value, format), expected, format);
 });
 
+test("number formats round a written half up, as Excel does", () => {
+  const cases: [number, string, string][] = [
+    [1.005, "0.00", "1.01"],
+    [2.675, "#,##0.00", "2.68"],
+    [-2.675, "#,##0.00;(#,##0.00)", "(2.68)"],
+    [1.45, "0.0", "1.5"],
+    [0.615, '"$"0.00', "$0.62"],
+    [1234.5675, "#,##0.000", "1,234.568"],
+    [2.674, "0.00", "2.67"],
+    [9.995, "0.00", "10.00"],
+    [1.005, "0.00E+00", "1.01E+00"],
+    [9.995, "0.00E+00", "1.00E+01"],
+    [70865000000, "##0.00E+00", "70.87E+09"],
+    [0.00012, "##0.0E+0", "120.0E-6"],
+    [1000000000000001, "0", "1000000000000001"],
+    [1000000000000001, "#,##0.00", "1,000,000,000,000,001.00"],
+  ];
+  for (const [value, format, expected] of cases) assert.equal(formatNumber(value, format), expected, `${value} ${format}`);
+});
+
 test("xlsx: reads only the parts and rows it keeps", () => {
   let rows = "";
   for (let r = 1; r <= 5200; r++) {
@@ -111,6 +134,39 @@ test("xlsx: sheet XML read as text", () => {
     sheet?.rows.map((row) => row.map((cell) => cell?.text)),
     [["a & B<c></row>"], ["7"], ["=SUM(B3,C:C,3:3)*2+$C$1+'A1'!A2+T[[#This Row],[Q1]]"]],
   );
+});
+
+test("xlsx: decodes escaped text in shared, inline and cached formula strings", () => {
+  for (const [encoded, expected] of [
+    ["First_x000D_\nSecond_x0009_End", "First\r\nSecond\tEnd"],
+    ["_xD83D__xDE00_", "\u{1f600}"],
+    ["_x005F_x000D_", "_x000D_"],
+    ["_x005F_x005F_x000D_", "_x005F_x000D_"],
+    ["&amp;_x0041_ _xZZZZ_", "&A _xZZZZ_"],
+    ["_X0041_ _X000D_ _x004a_", "_X0041_ _X000D_ J"],
+  ]) {
+    const [sheet] = readXlsx(workbook(
+      `<worksheet xmlns="${MAIN}"><sheetData><row r="1">
+        <c r="A1" t="s"><v>0</v></c>
+        <c r="B1" t="inlineStr"><is><t>${encoded}</t></is></c>
+        <c r="C1" t="str"><f>A1</f><v>${encoded}</v></c>
+      </row></sheetData></worksheet>`,
+      { "xl/sharedStrings.xml": strToU8(`<sst xmlns="${MAIN}"><si><t>${encoded}</t></si></sst>`) },
+    ));
+    assert.deepEqual(sheet?.rows[0]?.map((cell) => cell?.text), [expected, expected, expected], encoded);
+  }
+});
+
+test("xlsx: decodes rich text runs independently", () => {
+  const rich = "<r><t>_x00</t></r><r><t>0D_</t></r><r><t>_x000A_end</t></r>";
+  const [sheet] = readXlsx(workbook(
+    `<worksheet xmlns="${MAIN}"><sheetData><row r="1">
+      <c r="A1" t="s"><v>0</v></c>
+      <c r="B1" t="inlineStr"><is>${rich}</is></c>
+    </row></sheetData></worksheet>`,
+    { "xl/sharedStrings.xml": strToU8(`<sst xmlns="${MAIN}"><si>${rich}</si></sst>`) },
+  ));
+  assert.deepEqual(sheet?.rows[0]?.map((cell) => cell?.text), ["_x000D_\nend", "_x000D_\nend"]);
 });
 
 test("xlsx: lowercase cell references land in their columns", () => {
@@ -215,6 +271,59 @@ test("xlsx: out-of-range date values do not prevent reading the workbook", () =>
   assert.deepEqual(sheet?.rows[0]?.map((cell) => cell?.text), ["1700000000", "Mar-23", "42"]);
 });
 
+test("xlsx: a chat attachment keeps the rows, columns and sheets the viewer hides", async () => {
+  const { extractOfficeAttachmentText } = await import("../src/features/chat/attachment-content.ts");
+  const zip = zipSync({
+    "xl/workbook.xml": strToU8(
+      `<workbook xmlns="${MAIN}" xmlns:r="${REL}"><sheets><sheet name="Sales" sheetId="1" r:id="rId1"/><sheet name="Notes" sheetId="2" state="hidden" r:id="rId2"/></sheets></workbook>`,
+    ),
+    "xl/_rels/workbook.xml.rels": rels(
+      `<Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${REL}/worksheet" Target="worksheets/sheet2.xml"/>`,
+    ),
+    "xl/worksheets/sheet1.xml": strToU8(`<worksheet xmlns="${MAIN}"><cols><col min="3" max="3" hidden="1"/></cols><sheetData>
+<row r="1"><c r="A1" t="inlineStr"><is><t>Region</t></is></c><c r="B1" t="inlineStr"><is><t>Q3</t></is></c><c r="C1" t="inlineStr"><is><t>Owner</t></is></c></row>
+<row r="2"><c r="A2" t="inlineStr"><is><t>North</t></is></c><c r="B2"><v>100</v></c><c r="C2" t="inlineStr"><is><t>Ann</t></is></c></row>
+<row r="3" hidden="1"><c r="A3" t="inlineStr"><is><t>West</t></is></c><c r="B3"><v>300</v></c><c r="C3" t="inlineStr"><is><t>Bo</t></is></c></row>
+</sheetData></worksheet>`),
+    "xl/worksheets/sheet2.xml": strToU8(
+      `<worksheet xmlns="${MAIN}"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>adjust</t></is></c></row></sheetData></worksheet>`,
+    ),
+  });
+
+  const viewer = readXlsx(zip);
+  assert.deepEqual(viewer.map((sheet) => sheet.name), ["Sales"]);
+  assert.deepEqual(viewer[0]!.rows.filter(Boolean).map((row) => row.map((cell) => cell?.text)), [
+    ["Region", "Q3"],
+    ["North", "100"],
+  ]);
+
+  const file = new File([zip], "q3.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  assert.equal(
+    await extractOfficeAttachmentText(file, "XLSX"),
+    "Sheet: Sales\nRegion\tQ3\tOwner\nNorth\t100\tAnn\nWest\t300\tBo\n\nSheet: Notes\nadjust",
+  );
+});
+
+test("xlsx: kept hidden sheets come after visible ones so they cannot use up the sheet budget", () => {
+  const zip = zipSync({
+    "xl/workbook.xml": strToU8(
+      `<workbook xmlns="${MAIN}" xmlns:r="${REL}"><sheets><sheet name="Lookup" sheetId="1" state="veryHidden" r:id="rId1"/><sheet name="Sales" sheetId="2" r:id="rId2"/></sheets></workbook>`,
+    ),
+    "xl/_rels/workbook.xml.rels": rels(
+      `<Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${REL}/worksheet" Target="worksheets/sheet2.xml"/>`,
+    ),
+    "xl/worksheets/sheet1.xml": strToU8(
+      `<worksheet xmlns="${MAIN}"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>code</t></is></c></row></sheetData></worksheet>`,
+    ),
+    "xl/worksheets/sheet2.xml": strToU8(
+      `<worksheet xmlns="${MAIN}"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>North</t></is></c></row></sheetData></worksheet>`,
+    ),
+  });
+  const limits = { sheets: 1, rows: 10, columns: 10 };
+  assert.deepEqual(readXlsx(zip, limits, { keepHidden: true }).map((sheet) => sheet.name), ["Sales"]);
+  assert.deepEqual(readXlsx(zip, undefined, { keepHidden: true }).map((sheet) => sheet.name), ["Sales", "Lookup"]);
+});
+
 test("pptx: maxSlides stops reading after that many slides", () => {
   const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
   const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -234,6 +343,68 @@ test("pptx: maxSlides stops reading after that many slides", () => {
   assert.equal(first.slides.length, 1);
   assert.equal(first.truncated, true);
   assert.equal(first.slides[0]!.boxes[0]?.paragraphs?.[0]?.text, "one");
+});
+
+test("pptx attachments keep speaker notes without the slide number", async () => {
+  const { extractOfficeAttachmentText } = await import("../src/features/chat/attachment-content.ts");
+  const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const sp = (ph: string, body: string) =>
+    `<p:sp><p:nvSpPr><p:nvPr><p:ph type="${ph}"/></p:nvPr></p:nvSpPr><p:txBody>${body}</p:txBody></p:sp>`;
+  const zip = zipSync({
+    "ppt/presentation.xml": strToU8(
+      `<p:presentation xmlns:p="${P}" xmlns:r="${REL}"><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>`,
+    ),
+    "ppt/_rels/presentation.xml.rels": rels(`<Relationship Id="rId1" Type="${REL}/slide" Target="slides/slide1.xml"/>`),
+    "ppt/slides/slide1.xml": strToU8(
+      `<p:sld xmlns:p="${P}" xmlns:a="${A}"><p:cSld><p:spTree>${sp("title", "<a:p><a:r><a:t>Quarterly plan</a:t></a:r></a:p>")}</p:spTree></p:cSld></p:sld>`,
+    ),
+    "ppt/slides/_rels/slide1.xml.rels": rels(
+      `<Relationship Id="rId2" Type="${REL}/notesSlide" Target="../notesSlides/notesSlide1.xml"/>`,
+    ),
+    "ppt/notesSlides/notesSlide1.xml": strToU8(
+      `<p:notes xmlns:p="${P}" xmlns:a="${A}"><p:cSld><p:spTree>` +
+        sp("sldImg", "") +
+        sp("body", "<a:p><a:r><a:t>Budget is 42 dollars</a:t></a:r></a:p><a:p><a:r><a:t>Ask about Q3</a:t></a:r></a:p>") +
+        sp("sldNum", '<a:p><a:fld type="slidenum"><a:t>1</a:t></a:fld></a:p>') +
+        `</p:spTree></p:cSld></p:notes>`,
+    ),
+  });
+  const file = new File([zip], "deck.pptx");
+  assert.equal(
+    await extractOfficeAttachmentText(file, "PPTX"),
+    "Slide 1\nQuarterly plan\nNotes:\nBudget is 42 dollars\nAsk about Q3",
+  );
+  assert.deepEqual(
+    readPptx(zip).slides[0]?.boxes.flatMap((box) => box.paragraphs?.map((p) => p.text) ?? []),
+    ["Quarterly plan"],
+  );
+});
+
+test("pptx attachments keep hidden slides and the deck's slide numbers", async () => {
+  const { extractOfficeAttachmentText } = await import("../src/features/chat/attachment-content.ts");
+  const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const ids = [1, 2, 3].map((n) => `<p:sldId id="${255 + n}" r:id="rId${n}"/>`).join("");
+  const links = [1, 2, 3].map((n) => `<Relationship Id="rId${n}" Type="${REL}/slide" Target="slides/slide${n}.xml"/>`).join("");
+  const slide = (t: string, attrs = "") =>
+    strToU8(`<p:sld xmlns:p="${P}" xmlns:a="${A}"${attrs}><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>${t}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`);
+  const zip = zipSync({
+    "ppt/presentation.xml": strToU8(`<p:presentation xmlns:p="${P}" xmlns:r="${REL}"><p:sldIdLst>${ids}</p:sldIdLst></p:presentation>`),
+    "ppt/_rels/presentation.xml.rels": rels(links),
+    "ppt/slides/slide1.xml": slide("Q3 revenue 4.2M"),
+    "ppt/slides/slide2.xml": slide("Appendix: churn rose to 9 percent", ' show="0"'),
+    "ppt/slides/slide3.xml": slide("Next steps"),
+  });
+  const file = new File([zip], "deck.pptx");
+  assert.equal(
+    await extractOfficeAttachmentText(file, "PPTX"),
+    "Slide 1\nQ3 revenue 4.2M\n\nSlide 2\nAppendix: churn rose to 9 percent\n\nSlide 3\nNext steps",
+  );
+  assert.deepEqual(
+    readPptx(zip).slides.map((s) => s.boxes[0]?.paragraphs?.[0]?.text),
+    ["Q3 revenue 4.2M", "Next steps"],
+  );
 });
 
 test("sheet limits cap rows, columns and parsed sheets", () => {

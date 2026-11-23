@@ -78,7 +78,7 @@ def check(device_map, device):
         if not n.startswith(table):
             assert covered(device_map, n), n
     assert set(device_map.values()) == {device}
-    # No entry is a prefix of another (accelerate needs a disjoint map).
+    # accelerate needs a disjoint map: no entry may prefix another.
     keys = list(device_map)
     assert not any(a != b and b.startswith(a + ".") for a in keys for b in keys)
 
@@ -190,7 +190,7 @@ def test_split_ancestors_get_input_hooks():
     assert not hasattr(table.ngram_embedding, "_hf_hook")
     out = table(ids)
     assert out.device == torch.device("cuda:1")
-    assert _hook_no_placement_ancestors(model) == 0  # idempotent
+    assert _hook_no_placement_ancestors(model) == 0
 
 
 def test_unindexed_torch_device_uses_current_device(monkeypatch):

@@ -25,7 +25,7 @@ Parameter defaults, class-body annotations, `self.<attr>` assignments and
 `max(1, ...)` / `getattr(..., 1)` floors are structurally distinct and pass.
 
 A genuine capability or resource limit is allowed with a trailing
-`# allow-slot-clamp: <reason>` comment on the assignment line.
+`# allow-slot-clamp: <reason>` comment on the assignment (any line it spans).
 
 Exit codes: 0 = clean, 1 = findings, 2 = usage error.
 Run from repo root: python3 scripts/lint_no_parallel_clamp.py
@@ -41,8 +41,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCAN_DIR = REPO_ROOT / "studio" / "backend"
 
-# Aliases the same count travels under: the route resolves a request into `_n_parallel`, and a request that names no
-# count resolves to `llama_parallel_slots`, so a clamp on either reduces the user's slots under a different name.
+# The same slot count travels under these names, so a clamp on any of them reduces user slots.
 SLOT_NAMES = frozenset({"n_parallel", "_n_parallel", "llama_parallel_slots"})
 ALLOW_MARKER = "# allow-slot-clamp:"
 SKIP_PARTS = frozenset({"tests", ".venv", "venv", "build", "dist", "node_modules", "__pycache__"})
@@ -114,7 +113,10 @@ def _findings_for_tree(
                     what = "pinned to a single slot by an expression"
                 else:
                     continue
-                if ALLOW_MARKER in lines[node.lineno - 1]:
+                # The formatter moves a trailing comment inside the parentheses when it wraps a long
+                # assignment, so the marker counts on any line the statement spans.
+                span = lines[node.lineno - 1 : (node.end_lineno or node.lineno)]
+                if any(ALLOW_MARKER in line for line in span):
                     continue
                 found.append((filename, node.lineno, what))
     return found
@@ -152,6 +154,11 @@ _SELF_TEST_CASES: tuple[tuple[str, int], ...] = (
     ("def load():\n    n_parallel: int = 1  # allow-slot-clamp: ok\n", 0),
     ("def load(x):\n    n_parallel: int = x\n", 0),
     ("def load():\n    n_parallel = 1  # allow-slot-clamp: no --kv-unified\n", 0),
+    (
+        "def load():\n    n_parallel = (\n        1  # allow-slot-clamp: wrapped by the formatter\n    )\n",
+        0,
+    ),
+    ("def load():\n    n_parallel = (\n        1\n    )\n", 1),
     ("def load():\n    n_parallel = _mtp_clamped_slots\n", 1),
     ("def load(n):\n    n_parallel = min(n, 1)\n", 1),
     ("def load(n, mtp):\n    n_parallel = 1 if mtp else n\n", 1),

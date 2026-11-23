@@ -3,11 +3,14 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
 
-// Adjustable items in the composer "+" menu. The core items and the "More" overflow itself are
-// always shown and are intentionally NOT represented here.
+// Core items and the "More" overflow are always shown and intentionally not listed here.
 export type PlusMenuItemId =
+  | "deepResearch"
   | "chatWithFiles"
+  | "browserUse"
+  | "computerUse"
   | "mcp"
   | "skills"
   | "savedPrompts"
@@ -15,10 +18,12 @@ export type PlusMenuItemId =
   | "exportChat"
   | "projects";
 
-// Canonical order used both for the pinned items at the top level and for the items that fall
-// into the "More" overflow submenu.
+// Default order; Settings > Chat lets the user reorder it.
 export const PLUS_MENU_ORDER: PlusMenuItemId[] = [
+  "deepResearch",
   "chatWithFiles",
+  "browserUse",
+  "computerUse",
   "mcp",
   "skills",
   "savedPrompts",
@@ -30,7 +35,10 @@ export const PLUS_MENU_ORDER: PlusMenuItemId[] = [
 // Chat with files and Skills sit at the top level; everything else, MCP included, lives under
 // "More". Projects is a workspace the user opts into, not a per-message attachment.
 const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
+  deepResearch: true,
   chatWithFiles: true,
+  browserUse: true,
+  computerUse: true,
   mcp: false,
   skills: true,
   projects: false,
@@ -39,12 +47,70 @@ const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
   exportChat: false,
 };
 
+export function plusMenuAtDefaults(
+  pins: Record<PlusMenuItemId, boolean>,
+  order: readonly PlusMenuItemId[],
+): boolean {
+  return (
+    order.length === PLUS_MENU_ORDER.length &&
+    order.every((id, index) => id === PLUS_MENU_ORDER[index]) &&
+    PLUS_MENU_ORDER.every((id) => pins[id] === DEFAULT_PINS[id])
+  );
+}
+
 export const PLUS_MENU_PINS_STORAGE_KEY = "unsloth_plus_menu_pins";
+
+/** A saved order with unknown ids dropped and missing ones (added in a later release) placed
+ *  after their default predecessor, so an older order still names every item once. */
+export function normalizePlusMenuOrder(saved: unknown): PlusMenuItemId[] {
+  const known = new Set<string>(PLUS_MENU_ORDER);
+  const order: PlusMenuItemId[] = [];
+  if (Array.isArray(saved)) {
+    for (const id of saved) {
+      if (typeof id === "string" && known.has(id) && !order.includes(id as PlusMenuItemId)) {
+        order.push(id as PlusMenuItemId);
+      }
+    }
+  }
+  PLUS_MENU_ORDER.forEach((id, index) => {
+    if (order.includes(id)) return;
+    const before = PLUS_MENU_ORDER.slice(0, index).reverse().find((prev) => order.includes(prev));
+    order.splice(before ? order.indexOf(before) + 1 : 0, 0, id);
+  });
+  return order;
+}
+
+/** `ids` with `fixed` put back at its index in `saved`: an item the list doesn't move (Deep research)
+ *  still orders the More submenu when switched off, so a move of another item must not shift it. */
+export function keepSavedSlot(
+  ids: readonly PlusMenuItemId[],
+  saved: readonly PlusMenuItemId[],
+  fixed: PlusMenuItemId,
+): PlusMenuItemId[] {
+  const rest = ids.filter((id) => id !== fixed);
+  const at = saved.indexOf(fixed);
+  const index = at < 0 ? 0 : Math.min(at, rest.length);
+  return [...rest.slice(0, index), fixed, ...rest.slice(index)];
+}
+
+export function splitPlusMenuItems(
+  order: readonly PlusMenuItemId[],
+  pins: Record<PlusMenuItemId, boolean>,
+): { pinned: PlusMenuItemId[]; overflow: PlusMenuItemId[] } {
+  return {
+    pinned: order.filter((id) => pins[id]),
+    overflow: order.filter((id) => !pins[id]),
+  };
+}
 
 export interface PlusMenuPrefsState {
   pins: Record<PlusMenuItemId, boolean>;
   setPin: (id: PlusMenuItemId, value: boolean) => void;
   togglePin: (id: PlusMenuItemId) => void;
+  order: PlusMenuItemId[];
+  setOrder: (order: PlusMenuItemId[]) => void;
+  /** Default order and pins; saved prompt and list pins are kept. */
+  resetMenu: () => void;
   // Ids of saved prompts the user pinned into the "Saved prompts" submenu. Kept client-side like
   // the menu pins above, since prompts are addressed by their stable server id.
   pinnedPromptIds: string[];
@@ -61,6 +127,9 @@ export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
         set((state) => ({ pins: { ...state.pins, [id]: value } })),
       togglePin: (id) =>
         set((state) => ({ pins: { ...state.pins, [id]: !state.pins[id] } })),
+      order: [...PLUS_MENU_ORDER],
+      setOrder: (order) => set({ order: normalizePlusMenuOrder(order) }),
+      resetMenu: () => set({ pins: { ...DEFAULT_PINS }, order: [...PLUS_MENU_ORDER] }),
       pinnedPromptIds: [],
       togglePinnedPrompt: (id) =>
         set((state) => ({
@@ -94,6 +163,7 @@ export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
         return {
           ...current,
           pins: { ...DEFAULT_PINS, ...(saved?.pins ?? {}) },
+          order: normalizePlusMenuOrder(saved?.order),
           pinnedPromptIds: saved?.pinnedPromptIds ?? [],
           pinnedListIds: saved?.pinnedListIds ?? [],
         };
@@ -101,3 +171,5 @@ export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
     },
   ),
 );
+
+syncAcrossWindows(usePlusMenuPrefsStore);

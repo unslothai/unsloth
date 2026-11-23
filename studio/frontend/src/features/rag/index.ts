@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { KnowledgeBaseComposerButton } from "./components/knowledge-base-composer-button";
-export { KnowledgeBaseDialog } from "./components/knowledge-base-dialog";
+export {
+  KnowledgeBaseDialog,
+  KnowledgeBaseManager,
+} from "./components/knowledge-base-dialog";
 export { LinkedFoldersManager } from "./components/linked-folders-manager";
 export { RetrievalSettingsSection } from "./components/retrieval-settings-section";
 export { ThreadDocumentsBar } from "./components/thread-documents-bar";
@@ -13,6 +16,11 @@ export {
   listKnowledgeBases,
 } from "./api/rag-api";
 export { saveMarkdownAsProjectSource } from "./api/save-markdown-source";
+export {
+  staleDescription,
+  toastEmbeddingModelSaved,
+  useReembedStore,
+} from "./components/reembed-store";
 export { useRagAvailabilityStore } from "./api/rag-availability";
 export { isLinkedFolderManaged } from "./types/rag";
 export type { KnowledgeBase, RagDocument, UploadedDocument } from "./types/rag";
@@ -21,3 +29,4 @@ export {
   type StagedFolder,
 } from "./components/link-staged-folders";
 export { ProjectFolderPicker } from "./components/project-folder-picker";
+export { RagDocumentTrigger } from "./components/rag-document-trigger";

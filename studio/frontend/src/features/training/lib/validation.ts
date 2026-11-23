@@ -14,7 +14,6 @@ import { isLocalTrainingModelSelection } from "./model-selection";
 import { isUntrainableModelFormat } from "./model-support";
 import {
   isTrainingLoraVariantSupportedOnDevice,
-  isTrainingMethodSupportedOnDevice,
   isTrainingModelTypeSupportedOnDevice,
 } from "./training-methods";
 
@@ -26,9 +25,6 @@ function isTrainingConfigSupportedOnDevice(
   config: TrainingConfigState,
   deviceType?: string,
 ): boolean {
-  if (!isTrainingMethodSupportedOnDevice(config.trainingMethod, deviceType)) {
-    return false;
-  }
   if (!isTrainingModelTypeSupportedOnDevice(config.modelType, deviceType)) {
     return false;
   }
@@ -44,21 +40,37 @@ function isTrainingConfigSupportedOnDevice(
   if (deviceType !== "mac") {
     return true;
   }
-  return !(config.isEmbeddingModel || config.isDatasetAudio === true);
+  // MLX trains audio only as input to an audio-capable vision-language model (Gemma 3n/4).
+  const audioVlm = config.isVisionModel && config.isAudioModel;
+  return !(
+    config.isEmbeddingModel ||
+    (hasChatAudioRows(config, deviceType) && !audioVlm)
+  );
+}
+
+/** A Mac Clef (or Clef-head LLM) trainer reads its own audio rows; elsewhere, and for Laya, they train as text. */
+function hasChatAudioRows(
+  config: TrainingConfigState,
+  deviceType?: string,
+): boolean {
+  const trainerReadsRows =
+    deviceType === "mac" &&
+    config.modelType === "decision" &&
+    (config.decisionLayout === "clef" || config.decisionLayout === "llm");
+  return config.isDatasetAudio === true && !trainerReadsRows;
 }
 
 export function hasIncompatibleTrainingModalities(
   config: TrainingConfigState,
+  deviceType?: string,
 ): boolean {
   return (
     (!config.isVisionModel && config.isDatasetImage === true) ||
-    // audioCapabilityUnknown means the repo's tokenizer_config.json was unreadable
-    // (gated, offline, upstream error), not that the model lacks audio. Blocking there
-    // reports a token problem as a capability one; let the run start and fail on the
-    // real download error, which is what a gated text model already does.
+    // Unknown means tokenizer_config.json was unreadable (gated, offline), not that audio is
+    // missing; let the run fail on the real download error.
     (!config.audioCapabilityUnknown &&
       !config.isAudioModel &&
-      config.isDatasetAudio === true)
+      hasChatAudioRows(config, deviceType))
   );
 }
 
@@ -184,7 +196,7 @@ export function validateTrainingConfig(
       return { ok: false, errorKey: "studio.modelPicker.reasonGguf" };
     }
     // Adapter format is valid when continuing LoRA / CPT from a saved adapter (#13140).
-    // Decision, embedding and Apple Silicon runs build a fresh adapter, so they need a base.
+    // Decision and embedding runs build a fresh adapter, so they need a base.
     // Only a saved local adapter folder is continued; a Hub adapter repo is not yet.
     if (
       !isAdapterMethod(config.trainingMethod) ||
@@ -194,8 +206,7 @@ export function validateTrainingConfig(
         localPath: config.modelLocalPath,
       }) ||
       config.modelType === "decision" ||
-      config.isEmbeddingModel ||
-      deviceType === "mac"
+      config.isEmbeddingModel
     ) {
       return { ok: false, errorKey: "studio.modelPicker.reasonAdapter" };
     }

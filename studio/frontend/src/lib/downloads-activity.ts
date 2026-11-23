@@ -3,7 +3,7 @@
 
 import { isTauri } from "@/lib/api-base";
 
-// One combined flag for Rust's quit warning: two sources writing it directly would overwrite each other.
+// One combined flag for Rust's quit warning: two writers would overwrite each other.
 type DownloadSource = "hub" | "npu";
 
 const activeSources = new Set<DownloadSource>();

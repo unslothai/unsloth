@@ -185,6 +185,10 @@ fn looks_like_credential(value: &str) -> bool {
 
 fn replace_known_paths(input: &str, report: &mut RedactionReport) -> String {
     let mut out = input.to_string();
+    // The chosen root whether or not it exists yet: installer errors name it before it does.
+    if let Some(chosen) = crate::studio_home::chosen_root() {
+        out = replace_path_literal(&out, &chosen, "<studio_home>", report);
+    }
     let studio = studio_dir();
     out = replace_path_literal(&out, &studio, "<studio_home>", report);
     if let Some(home) = dirs::home_dir() {
@@ -423,11 +427,7 @@ mod tests {
 
     #[test]
     fn windows_home_redaction_keeps_the_line_and_column_suffix() {
-        // A colon cannot appear inside a Windows path segment, but the Windows classes used to
-        // allow one, so a single-segment path swallowed whatever followed it. uv reports a bad
-        // requirements path as `<path>:<line>:<col>`, and issue #11012 arrived with the position
-        // and the file name already eaten, which is most of what made it expensive to diagnose.
-        // The Unix rules never had this because their class is [A-Za-z0-9._-].
+        // A colon cannot appear in a Windows path segment; uv reports `<path>:<line>:<col>`.
         let mut report = RedactionReport::default();
         let redacted = redact_text(
             "error: Unexpected '[' at C:\\Users\\Alex:1:1\n",
@@ -442,7 +442,6 @@ mod tests {
             "line and column were redacted away: {redacted}"
         );
 
-        // A deeper path was never affected, and must stay that way.
         let mut report = RedactionReport::default();
         let deep = redact_text(
             "at C:\\Users\\Alex\\AppData\\Local\\Temp\\tmp1.tmp:1:1\n",

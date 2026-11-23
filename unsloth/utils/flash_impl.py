@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Run torch's flash kernels as FA4 / FA3 while a packed / padding-free trainer trains.
-
-torch (2.11+) swaps the flash impl process-wide, and FA4 raises (not falls back) on dropout and missing
-head dims and costs ~0.2 ms per launch, so it is on only inside ``trainer.train()``, with no dropout,
-supported head dims, and a probe matching torch's bundled flash.
-UNSLOTH_FLASH_ATTENTION_IMPL = auto (default: FA4 on sm100, FA3 then FA4 on sm90) | fa4 | fa3 | off.
-"""
+"""FA4/FA3 flash only inside trainer.train(), with no dropout, supported head dims and a probe
+matching torch flash (FA4 raises, not falls back); UNSLOTH_FLASH_ATTENTION_IMPL selects."""
 
 import contextlib
 import functools
@@ -21,6 +16,7 @@ __all__ = [
     "deactivate_flash_attention_impl",
     "scope_flash_attention_impl_to_train",
     "flash_impl_allows",
+    "active_flash_impl",
     "FLASH_IMPL_STATE",
 ]
 
@@ -33,9 +29,25 @@ _DROPOUT_KEYS = (
     "attention_probs_dropout_prob",
     "attention_dropout_prob",
 )
-_SUBCONFIG_KEYS = ("text_config", "vision_config", "audio_config", "encoder", "decoder")
+# llm_config / language_config: InternVL / Nemotron-style wrappers expose the decoder only there.
+_SUBCONFIG_KEYS = (
+    "text_config",
+    "vision_config",
+    "audio_config",
+    "encoder",
+    "decoder",
+    "llm_config",
+    "language_config",
+)
 FLASH_IMPL_STATE = {"active": None, "reason": None, "verdicts": {}, "logged": set()}
+# H100: FA3 / FA4 kernels are faster but cost ~60 / ~110 us more host time per forward; at 8K tokens / step
+# hidden 1024 trains 2 to 7% slower on FA3, hidden 2048 to 4096 0.3 to 1.8% faster.
+_HOPPER_AUTO_MIN_HIDDEN = 2048
 _logger = logging.getLogger(__name__)
+
+# B200/FA4: ~0.1 ms extra host time per call makes short-document packed SFT 8-11% slower than bundled flash.
+# 1024 matches attention_dispatch._VARLEN_CUDNN_MAX_MEAN_LEN.
+_BLACKWELL_AUTO_MIN_MEAN_DOC_LEN = 1024
 
 
 def _requested():
@@ -55,6 +67,14 @@ def _log_once(message, level = logging.INFO):
     if message not in FLASH_IMPL_STATE["logged"]:
         FLASH_IMPL_STATE["logged"].add(message)
         _logger.log(level, message)
+
+
+def _warn_explicit(requested):
+    if requested not in (None, "auto"):
+        _log_once(
+            f"Unsloth: {_ENV}={requested.lower()} not used: {FLASH_IMPL_STATE['reason']}",
+            logging.WARNING,
+        )
 
 
 def _registry():
@@ -95,7 +115,7 @@ def _device_majors():
 
 
 def _candidates(requested, majors):
-    """auto: FA4 on sm100; FA3 (the mature Hopper kernel) then FA4 on sm90."""
+    """auto: FA4 on sm100; FA3 (the mature Hopper kernel) then FA4 on sm90, for wide models only."""
     if not majors or len(majors) != 1:
         return []
     major = next(iter(majors))
@@ -147,6 +167,13 @@ except Exception:
     _TORCH_FLASH_REGISTRY = None
 
 
+def active_flash_impl():
+    """ "FA4" / "FA3" while one is swapped in behind torch's flash op, else None. A plain attribute read:
+    traced code guards on the name, so activating or restoring an impl retraces instead of reusing a graph."""
+    active = getattr(_TORCH_FLASH_REGISTRY, "_FLASH_ATTENTION_ACTIVE", None)
+    return None if active is None else active[0]
+
+
 def flash_impl_allows(head_dim, window, device) -> bool:
     """False when the active impl lacks this shape. Plain attribute reads so compiled callers do not graph break."""
     active = getattr(_TORCH_FLASH_REGISTRY, "_FLASH_ATTENTION_ACTIVE", None)
@@ -167,10 +194,20 @@ def _configs(model):
         out.append(cfg)
         for key in _SUBCONFIG_KEYS:
             stack.append(getattr(cfg, key, None))
+        try:
+            stack.append(cfg.get_text_config())
+        except Exception:
+            pass
         sub = getattr(cfg, "sub_configs", None)
         if isinstance(sub, dict):
             stack.extend(getattr(cfg, key, None) for key in sub)
     return out
+
+
+def _hidden_size(model):
+    sizes = [getattr(cfg, "hidden_size", None) for cfg in _configs(model)]
+    sizes = [s for s in sizes if isinstance(s, int) and not isinstance(s, bool) and s > 0]
+    return max(sizes) if sizes else None
 
 
 def _ceil8(value):
@@ -293,7 +330,11 @@ def _run_case(case, device):
         gqa, k_in, v_in = {"enable_gqa": True}, k, v
     else:
         gqa, k_in, v_in = {}, k.repeat_interleave(ratio, dim = 1), v.repeat_interleave(ratio, dim = 1)
-    with torch.enable_grad():
+    # torch 2.15's varlen_attn takes cuDNN first wherever it is eligible (sm90 / sm100), and no impl
+    # replaces cuDNN: pin flash so the probe runs the op FA4 / FA3 take over (and the bundled reference).
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    with torch.enable_grad(), sdpa_kernel(SDPBackend.FLASH_ATTENTION):
         out = varlen_attn(
             q,
             k_in,
@@ -373,14 +414,16 @@ def _probe_error(impl, cases, activate, restore):
     return None
 
 
-def maybe_activate_flash_attention_impl(model = None):
-    """Returns the active impl or None. Never call while a backward is pending."""
+def maybe_activate_flash_attention_impl(model = None, mean_document_length = None):
+    """Returns the active impl or None. Never call while a backward is pending.
+    mean_document_length: float, lazy callable (sm100 auto only) or None if unknown."""
     requested = _requested()
     registry = _registry()
     if requested is None or registry is None:
         FLASH_IMPL_STATE["reason"] = (
             "off" if requested is None else "torch has no flash attention impl registry (< 2.11)"
         )
+        _warn_explicit(requested)
         return None
     if torch.compiler.is_compiling():
         return FLASH_IMPL_STATE["active"]
@@ -394,8 +437,32 @@ def maybe_activate_flash_attention_impl(model = None):
     if not candidates:
         FLASH_IMPL_STATE["reason"] = f"no supported impl for devices sm{sorted(majors or [])}"
         deactivate_flash_attention_impl()
+        _warn_explicit(requested)
         return None
     major = next(iter(majors))
+    if requested == "auto" and major == 9:
+        hidden = _hidden_size(model) if model is not None else None
+        if hidden is None or hidden < _HOPPER_AUTO_MIN_HIDDEN:
+            FLASH_IMPL_STATE["reason"] = (
+                f"auto keeps torch's bundled flash on sm90 below hidden_size {_HOPPER_AUTO_MIN_HIDDEN} "
+                f"(model: {hidden}); {_ENV}=fa3 or fa4 opts in"
+            )
+            deactivate_flash_attention_impl()
+            return None
+    if requested == "auto" and major == 10 and callable(mean_document_length):
+        mean_document_length = mean_document_length()
+    if (
+        requested == "auto"
+        and major == 10
+        and mean_document_length is not None
+        and mean_document_length < _BLACKWELL_AUTO_MIN_MEAN_DOC_LEN
+    ):
+        FLASH_IMPL_STATE["reason"] = (
+            f"auto keeps torch's bundled flash on sm100 for documents averaging under "
+            f"{_BLACKWELL_AUTO_MIN_MEAN_DOC_LEN} tokens ({mean_document_length:.0f}); {_ENV}=fa4 opts in"
+        )
+        deactivate_flash_attention_impl()
+        return None
     facts = model_facts(model) if model is not None else (False, [], None, None, None, None)
     cases = _probe_cases(facts)
     # auto falls through to the next impl when one is missing, refuses this model or fails its probe.
@@ -421,8 +488,7 @@ def maybe_activate_flash_attention_impl(model = None):
     if error is not None:
         FLASH_IMPL_STATE["reason"] = error
         deactivate_flash_attention_impl()
-        if requested != "auto":
-            _log_once(f"Unsloth: {_ENV}={requested.lower()} not used: {error}", logging.WARNING)
+        _warn_explicit(requested)
         return None
     FLASH_IMPL_STATE["active"] = impl
     FLASH_IMPL_STATE["reason"] = f"{impl} active"
@@ -445,11 +511,63 @@ def deactivate_flash_attention_impl():
             pass
 
 
-def scope_flash_attention_impl_to_train(trainer, model) -> None:
+def _sampled_rows(dataset, indices, key):
+    # Custom transform = unknown: rows may differ from storage and running it early advances its RNG.
+    format = getattr(dataset, "format", None) or {}
+    if format.get("type") == "custom":
+        return None
+    columns = set(dataset.column_names)
+    if format.get("columns") is not None and not format.get("output_all_columns", False):
+        columns &= set(format["columns"])
+    wanted = [c for c in dict.fromkeys((key, "input_ids")) if c in columns]
+    if not wanted:
+        return None
+    return list(dataset.with_format(None).select_columns(wanted).select(indices))
+
+
+def _mean_document_length(
+    dataset,
+    rows = 128,
+    key = "seq_lengths",
+):
+    # Rows spread across the dataset: TRL BFD puts the longest documents first.
+    try:
+        total = len(dataset)
+        if total <= 0:
+            return None
+        n = min(rows, total)
+        indices = sorted({i * (total - 1) // (n - 1) for i in range(n)}) if n > 1 else [0]
+        sample = _sampled_rows(dataset, indices, key)
+        if sample is None:
+            return None
+        lengths = []
+        for row in sample:
+            per_document = row.get(key)
+            if per_document is None:
+                ids = row.get("input_ids")
+                if ids is None:
+                    continue
+                per_document = [len(ids)]
+            lengths.extend(int(x) for x in per_document)
+        if not lengths:
+            lengths = [len(row["input_ids"]) for row in sample if row.get("input_ids") is not None]
+    except Exception:
+        return None
+    lengths = [x for x in lengths if x > 0]
+    return sum(lengths) / len(lengths) if lengths else None
+
+
+def scope_flash_attention_impl_to_train(
+    trainer,
+    model,
+    sequence_lengths_key = "seq_lengths",
+) -> None:
     """Active only during trainer.train: FA4's launch cost makes decode attention ~6x slower."""
     if trainer is None or getattr(trainer, "_unsloth_flash_impl_wrapped", False):
         return
-    if _requested() is None or _registry() is None:
+    requested = _requested()
+    # Explicit fa3 / fa4 still wraps without a registry so train() reports the fallback.
+    if requested is None or (requested == "auto" and _registry() is None):
         return
     original = getattr(trainer, "train", None)
     if not callable(original):
@@ -460,7 +578,10 @@ def scope_flash_attention_impl_to_train(trainer, model) -> None:
         activated = None
         try:
             activated = maybe_activate_flash_attention_impl(
-                getattr(trainer, "model", None) or model
+                getattr(trainer, "model", None) or model,
+                mean_document_length = lambda: _mean_document_length(
+                    getattr(trainer, "train_dataset", None), key = sequence_lengths_key
+                ),
             )
         except Exception as exc:
             FLASH_IMPL_STATE["reason"] = f"activation error ({type(exc).__name__}: {exc})"

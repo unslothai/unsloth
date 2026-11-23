@@ -67,8 +67,10 @@ test("the chat load asks before unloading anything and loads with the chosen eng
   const offerAt = source.indexOf("confirmManagedEngineIfNeeded(");
   const unloadAt = source.indexOf("await unloadModel({ model_path: currentCheckpoint })");
   assert.ok(offerAt > 0 && unloadAt > offerAt, "the offer must come before the preliminary unload");
-  assert.match(source, /loadModel\(\{\s*model_path: loadPath,\s*\.\.\.loadEngineFields,/);
-  const revalidateAt = source.indexOf("...loadEngineFields,", offerAt);
+  // The request reads loadEngineFields when built, so both the re-validate and the load see the pick.
+  assert.match(source, /loadRequest = \(\): LoadModelRequest => \(\{\s*model_path: loadPath,\s*\.\.\.loadEngineFields,/);
+  assert.match(source, /loadModel\(\{\s*\.\.\.loadRequest\(\),/);
+  const revalidateAt = source.indexOf("validateModel(loadRequest(), { signal: abortCtrl.signal })", offerAt);
   assert.ok(revalidateAt > offerAt && revalidateAt < unloadAt, "the chosen engine must be validated before the unload");
   // Keep loaded models: the switch re-asks about running chats and then replaces, like any managed load.
   const branch = source.slice(offerAt, unloadAt);
@@ -77,7 +79,7 @@ test("the chat load asks before unloading anything and loads with the chosen eng
   // Declining the replacement prompt this engine needs is a cancellation, and the toast stops promising kept models.
   const offerBranch = source.slice(offerAt, unloadAt);
   assert.match(offerBranch, /abortCtrl\.abort\(\);\s*throw new Error\("Cancelled"\);/);
-  assert.match(offerBranch, /\},\s*\{ signal: abortCtrl\.signal \},\s*\),/);
+  assert.match(offerBranch, /validateModel\(loadRequest\(\), \{ signal: abortCtrl\.signal \}\)/);
   assert.match(offerBranch, /loadingDescription = loadingDescription\.replace\(switchingNote, "Switching models\."\);/);
 });
 
@@ -94,4 +96,16 @@ test("an install started in the dialog stays mounted until it hands the load ove
   assert.match(dialog, /ready\.length === 0 \|\| shown\.includes\(engine\.engine\)/);
   assert.match(dialog, /open && ready\.length === 0 && unshown\.length > 0/);
   assert.match(dialog, /onUse=\{\(\) => resolve\(engine\.engine\)\}/);
+});
+
+test("the dialog opens on the install prompt, and the load toast waits with it", () => {
+  const install = readText("../src/features/model-picker/components/inference-engines.tsx");
+  // Settings keeps the two-step install; only the centred dialog skips "Install engine".
+  assert.match(install, /\(centered && autoConfirm && canInstall && !engine\.installed && !running\)/);
+  assert.match(install, /useAfterInstall\.current = !!onUse;\s*setAutoConfirm\(false\);/);
+  const dialog = readText("../src/features/model-picker/components/managed-engine-offer-dialog.tsx");
+  assert.match(dialog, /centered=\{true\}/);
+  const runtime = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  const waiting = runtime.indexOf('"Waiting for an engine…"');
+  assert.ok(waiting > 0 && waiting < runtime.indexOf("await confirmManagedEngineIfNeeded("));
 });

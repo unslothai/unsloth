@@ -264,6 +264,48 @@ def test_probe_runs_in_eval_mode_and_keeps_the_rng(monkeypatch):
     assert mixer.training and mixer.dropout.training
 
 
+class SideStateLinear(torch.nn.Module):
+    """Int4PackedLinear's contract: train() keeps a cached copy of the mode outside the training flag."""
+
+    def __init__(self):
+        super().__init__()
+        self.cached_training = False
+
+    def train(self, mode = True):
+        self.cached_training = bool(mode)
+        return super().train(mode)
+
+    def forward(self, x):
+        return x
+
+
+class SideStateGatedDeltaNet(FakeGatedDeltaNet):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.proj = SideStateLinear()
+
+    def forward(
+        self,
+        hidden_states,
+        cache_params = None,
+        attention_mask = None,
+    ):
+        return super().forward(self.proj(hidden_states), cache_params, attention_mask)
+
+
+@pytest.mark.parametrize("conv,accepted", [(conv_exact, True), (conv_leaky, False)])
+def test_probe_restores_train_side_state_on_every_exit(monkeypatch, conv, accepted):
+    monkeypatch.delenv(ENV, raising = False)
+    mixer = SideStateGatedDeltaNet(conv = conv)
+    model = FakeHybrid(mixer)
+    model.train()
+    assert mixer.proj.cached_training is True
+    assert patch_hybrid_linear_attention_varlen(model) is accepted
+    assert mixer.proj.training is True
+    # The mode-synced state must follow the restored flag, accepted or rejected.
+    assert mixer.proj.cached_training is True
+
+
 def test_probe_failure_to_run_is_a_rejection(monkeypatch, caplog):
     monkeypatch.delenv(ENV, raising = False)
 
@@ -377,7 +419,27 @@ def _zoo_style_dispatch(torch_function, name_seq_idx = True):
     return causal_conv1d_fn
 
 
+def scan_fast(
+    x,
+    cu_seqlens = None,
+    **kwargs,
+):
+    return scan_exact(x, cu_seqlens)
+
+
 def _kwargs_model(name, conv_impl):
+    modeling = types.ModuleType(name)
+    _install_kwargs_mixer(modeling.__dict__, conv_impl)
+    modeling.FakeKwargsGatedDeltaNet.__module__ = name
+    sys.modules[name] = modeling
+    return FakeHybrid(modeling.FakeKwargsGatedDeltaNet())
+
+
+def _install_kwargs_mixer(
+    namespace,
+    conv_impl,
+    scan_impl = scan_fast,
+):
     def conv_ref(
         hidden_states,
         weight,
@@ -390,17 +452,9 @@ def _kwargs_model(name, conv_impl):
     def scan_ref(x, **kwargs):
         return scan_exact(x)
 
-    def scan_fast(
-        x,
-        cu_seqlens = None,
-        **kwargs,
-    ):
-        return scan_exact(x, cu_seqlens)
-
-    modeling = types.ModuleType(name)
     impl = conv_impl(conv_ref)
-    modeling.causal_conv1d_fn = _hub_wrapped(impl, impl)
-    modeling.torch_chunk_gated_delta_rule = _hub_wrapped(scan_ref, scan_fast)
+    namespace["causal_conv1d_fn"] = _hub_wrapped(impl, impl)
+    namespace["torch_chunk_gated_delta_rule"] = _hub_wrapped(scan_ref, scan_impl)
     exec(
         "import torch\n"
         "class FakeKwargsGatedDeltaNet(torch.nn.Module):\n"
@@ -412,11 +466,8 @@ def _kwargs_model(name, conv_impl):
         "        x = causal_conv1d_fn(hidden_states.transpose(1, 2), self.conv1d.weight.squeeze(1), None,\n"
         "                             activation = 'silu', **kwargs).transpose(1, 2)\n"
         "        return torch_chunk_gated_delta_rule(x, cu_seqlens = kwargs.pop('cu_seq_lens_q', None), **kwargs)\n",
-        modeling.__dict__,
+        namespace,
     )
-    modeling.FakeKwargsGatedDeltaNet.__module__ = name
-    sys.modules[name] = modeling
-    return FakeHybrid(modeling.FakeKwargsGatedDeltaNet())
 
 
 @pytest.mark.parametrize("mode", [None, "1"])
@@ -428,6 +479,48 @@ def test_zoo_triton_conv_is_accepted(monkeypatch, mode):
     name = "fake_modeling_zoo_conv_gdn"
     try:
         model = _kwargs_model(name, _zoo_style_dispatch)
+        assert patch_hybrid_linear_attention_varlen(model) is True
+        ids = torch.randint(0, 32, (1, 9), generator = torch.Generator().manual_seed(2))
+        packed = model(
+            input_ids = ids,
+            packed_seq_lengths = torch.tensor([4, 1, 4], dtype = torch.int32),
+            use_cache = False,
+        )
+        alone = torch.cat(
+            [model(input_ids = ids[:, s:e]) for s, e in ((0, 4), (4, 5), (5, 9))], dim = 1
+        )
+        torch.testing.assert_close(packed, alone)
+        assert model.linear_attn._unsloth_varlen_kwargs_hit
+    finally:
+        sys.modules.pop(name, None)
+
+
+def _kernels_func(func, zoo = False):
+    # `kernels` installed: hub functions are Func() modules whose class forward holds the closure.
+    class Func(torch.nn.Module):
+        def forward(self, *args, **kwargs):
+            return func(*args, **kwargs)
+
+    layer = Func()
+    if zoo:
+
+        class Func(type(layer)):
+            def forward(self, *args, **kwargs):
+                return super().forward(*args, **kwargs)
+
+        layer.__class__ = Func
+        layer._unsloth_triton_causal_conv1d = True
+    return layer
+
+
+def test_kernels_hub_func_modules_are_accepted(monkeypatch):
+    monkeypatch.delenv(ENV, raising = False)
+    name = "fake_modeling_kernels_func_gdn"
+    try:
+        model = _kwargs_model(name, _zoo_style_dispatch)
+        modeling = sys.modules[name]
+        modeling.causal_conv1d_fn = _kernels_func(modeling.causal_conv1d_fn, zoo = True)
+        modeling.torch_chunk_gated_delta_rule = _kernels_func(modeling.torch_chunk_gated_delta_rule)
         assert patch_hybrid_linear_attention_varlen(model) is True
         ids = torch.randint(0, 32, (1, 9), generator = torch.Generator().manual_seed(2))
         packed = model(
@@ -500,10 +593,31 @@ def test_default_on_is_cuda_only(monkeypatch, caplog):
     model = FakeHybrid(mixer)
     with caplog.at_level(logging.WARNING, logger = "unsloth.hybrid_packing"):
         assert patch_hybrid_linear_attention_varlen(model) is False
-    assert "only on CUDA" in caplog.text
+    assert "default-on only on CUDA" in caplog.text
     assert _untouched(model, conv_exact, scan_exact)
     monkeypatch.setenv(ENV, "1")
     assert patch_hybrid_linear_attention_varlen(FakeHybrid(FakeGatedDeltaNet())) is True
+
+
+def test_opt_in_records_the_device_outside_the_default_on_set(monkeypatch):
+    monkeypatch.undo()  # the real device check
+    monkeypatch.setenv(ENV, "1")
+    monkeypatch.setattr(torch.version, "hip", None)
+    cpu_model = FakeHybrid(FakeGatedDeltaNet())
+    assert patch_hybrid_linear_attention_varlen(cpu_model) is True
+    assert packing_module.hybrid_packing_opt_in_device(cpu_model) == "cpu"
+    monkeypatch.setattr(torch.version, "hip", "6.4")
+    rocm_model = FakeHybrid(FakeGatedDeltaNet())
+    assert patch_hybrid_linear_attention_varlen(rocm_model) is True
+    assert packing_module.hybrid_packing_opt_in_device(rocm_model) == "ROCm"
+
+
+def test_default_on_device_records_no_opt_in(monkeypatch):
+    monkeypatch.delenv(ENV, raising = False)
+    model = FakeHybrid(FakeGatedDeltaNet())
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    assert packing_module.hybrid_packing_opt_in_device(model) is None
+    assert packing_module.hybrid_packing_opt_in_device(object()) is None
 
 
 def test_default_on_is_cuda_only_for_kwargs_mixers(monkeypatch, caplog):
@@ -596,3 +710,207 @@ def test_a_stale_stash_never_reaches_a_call_of_another_length(monkeypatch):
     mixer._unsloth_varlen_conv_hit = mixer._unsloth_varlen_scan_hit = False
     torch.testing.assert_close(mixer(hidden), plain)
     assert not mixer._unsloth_varlen_conv_hit and not mixer._unsloth_varlen_scan_hit
+
+
+def test_boundary_check_holds_after_a_dynamic_recompile():
+    # Traced, `total in (dim, dim)` came out False once the conv layout recompiled with dynamic shapes.
+    seen = []
+
+    def check(seq_idx, x):
+        seen.append(packing_module._varlen_seq_idx_applies(seq_idx, (x,), {}))
+        return x + 1
+
+    seq_idx = torch.zeros(1, 300, dtype = torch.int32)
+    torch._dynamo.reset()
+    try:
+        compiled = torch.compile(check, backend = "eager")
+        compiled(seq_idx, torch.zeros(1, 300, 8))  # (batch, seqlen, ...)
+        compiled(seq_idx, torch.zeros(1, 8, 300))  # causal_conv1d_fn: (batch, dim, seqlen)
+    finally:
+        torch._dynamo.reset()
+    assert seen == [True, True]
+
+
+@pytest.mark.parametrize("folds", [True, False])
+def test_a_packed_mixer_runs_outside_a_compiled_block(monkeypatch, folds):
+    # Traced, transformers' hub-kernel wrappers run their torch reference where Dynamo folds
+    # torch.compiler.is_exporting() to True (torch 2.10 / 2.11), and it ignores seq_idx / cu_seqlens.
+    # Where it does not, the packed mixer stays in the graph.
+    monkeypatch.setattr(packing_module, "_FOLDS_IS_EXPORTING", [folds])
+    traced = []
+
+    class Mixer(torch.nn.Module):
+        def forward(self, hidden_states, **kwargs):
+            traced.append(torch.compiler.is_compiling())
+            return hidden_states * 2
+
+    mixer = Mixer()
+    packing_module._wrap_kwargs_mixer_forward(mixer)
+    mixer._unsloth_varlen = (
+        torch.tensor([0, 4, 9], dtype = torch.int32),
+        torch.tensor([[0] * 4 + [1] * 5], dtype = torch.int32),
+    )
+    hidden = torch.randn(1, 9, 8)
+    torch._dynamo.reset()
+    try:
+        block = torch.compile(lambda h: mixer(h), backend = "eager")
+        block(hidden)
+        mixer._unsloth_varlen = None
+        block(hidden)
+    finally:
+        torch._dynamo.reset()
+    assert traced == ([False, True] if folds else [True, True])  # only the packed call leaves it
+
+
+def test_is_exporting_fold_probe_matches_this_torch():
+    from packaging.version import Version
+    folds = packing_module._dynamo_folds_is_exporting()
+    assert folds == (Version(torch.__version__.split("+")[0]).release[:2] in ((2, 10), (2, 11)))
+
+
+def test_probes_and_block_adapters_match_the_namespace_dynamo_reads(monkeypatch):
+    # Unsloth's compiled modules run `from <modeling> import __name__`, so Dynamo resolves their globals
+    # through the modeling module; a kernel bound differently there failed the block's closure guard.
+    from unsloth.models import _block_compile as block
+
+    monkeypatch.delenv(ENV, raising = False)
+    names = (
+        "fake_alias.fla.ops.gated_delta_rule.chunk",
+        "fake_modeling_kwargs_alias_gdn",
+        "fake_unsloth_compiled_module_alias_gdn",
+    )
+    fla, modeling, compiled = (types.ModuleType(n) for n in names)
+
+    def chunk_gated_delta_rule(
+        x,
+        cu_seqlens = None,
+        **kwargs,
+    ):
+        return scan_exact(x, cu_seqlens)
+
+    fla.chunk_gated_delta_rule = chunk_gated_delta_rule
+    compiled.__name__ = modeling.__name__
+    for module in (modeling, compiled):
+        _install_kwargs_mixer(vars(module), _zoo_style_dispatch, scan_impl = chunk_gated_delta_rule)
+    for n, module in zip(names, (fla, modeling, compiled)):
+        monkeypatch.setitem(sys.modules, n, module)
+    model = FakeHybrid(compiled.FakeKwargsGatedDeltaNet())
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    # Route only these modules: routing a real fla import would outlive this test.
+    monkeypatch.setattr(block, "sys", SimpleNamespace(modules = {n: sys.modules[n] for n in names}))
+    block._route_fla_kernel()
+    block._route_causal_conv(model.linear_attn)
+    for kernel in ("causal_conv1d_fn", "torch_chunk_gated_delta_rule"):
+        probe = vars(compiled)[kernel]
+        assert vars(modeling)[kernel] is probe, kernel
+        assert probe._unsloth_varlen_probe_of is not None, kernel
+        assert getattr(probe.__kwdefaults__["_fn"], "_unsloth_block_adapter", False), kernel
+
+
+def test_a_failed_probe_restores_the_mirrored_alias_namespace(monkeypatch):
+    # A stale compiled module of another model family is walked too (its name says unsloth_compiled), and its
+    # probes are mirrored into the modeling module it imports. A failed exactness probe rolls back both, or
+    # the compiled global and sys.modules[__name__] disagree and the block's closure guard fails again.
+    monkeypatch.delenv(ENV, raising = False)
+    names = (
+        "fake_modeling_rollback_gdn",
+        "fake_other_family_modeling",
+        "fake_unsloth_compiled_module_stale",
+    )
+    modeling, other, stale = (types.ModuleType(n) for n in names)
+    for module in (modeling, other, stale):
+        _install_kwargs_mixer(vars(module), _zoo_style_dispatch)
+    stale.__name__ = other.__name__
+    modeling.FakeKwargsGatedDeltaNet.__module__ = modeling.__name__
+    for n, module in zip(names, (modeling, other, stale)):
+        monkeypatch.setitem(sys.modules, n, module)
+    before = {
+        n: {k: vars(m)[k] for k in packing_module._KWARGS_KERNELS if k in vars(m)}
+        for n, m in zip(names, (modeling, other, stale))
+    }
+    monkeypatch.setattr(packing_module, "_hybrid_exactness_probe", lambda target: "forced failure")
+    assert (
+        patch_hybrid_linear_attention_varlen(FakeHybrid(modeling.FakeKwargsGatedDeltaNet()))
+        is False
+    )
+    for n, m in zip(names, (modeling, other, stale)):
+        for k, fn in before[n].items():
+            assert vars(m)[k] is fn, (n, k)
+
+
+@pytest.mark.parametrize("varlen", [True, False])
+def test_rocm_default_on_follows_the_varlen_self_check(monkeypatch, varlen):
+    """ROCm GPUs pack hybrids by default exactly when hf_packed_attention's flash varlen self-check passes."""
+    from unsloth.utils import hf_packed_attention as hpa
+
+    monkeypatch.undo()
+    mixer = FakeGatedDeltaNet()
+    monkeypatch.setattr(
+        mixer, "parameters", lambda: iter([types.SimpleNamespace(device = torch.device("cuda", 0))])
+    )
+    monkeypatch.setattr(torch.version, "hip", "7.1")
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: (lambda *a: None) if varlen else None)
+    assert packing_module._auto_hybrid_device_ok(mixer) is varlen
+    assert packing_module._hybrid_opt_in_device([mixer]) == (None if varlen else "ROCm")
+    monkeypatch.setattr(torch.version, "hip", None)
+    assert packing_module._auto_hybrid_device_ok(mixer)
+
+
+class _CheckpointedHybrid(FakeHybrid):
+    """Checkpoints the mixer, so backward replays it after the forward has returned."""
+
+    def __init__(self, mixer, reentrant):
+        super().__init__(mixer)
+        self.proj = torch.nn.Linear(8, 8)
+        self.reentrant = reentrant
+
+    def forward(
+        self,
+        input_ids = None,
+        **kw,
+    ):
+        from torch.utils.checkpoint import checkpoint
+
+        hidden = self.proj(self.embed(input_ids))
+        if torch.is_grad_enabled():
+            return checkpoint(self.linear_attn, hidden, use_reentrant = self.reentrant)
+        return self.linear_attn(hidden)
+
+
+@pytest.mark.parametrize("reentrant", [True, False])
+@pytest.mark.parametrize("no_grad", ["no_grad", "inference_mode"])
+def test_checkpoint_replay_keeps_boundaries_across_a_no_grad_forward(
+    monkeypatch, no_grad, reentrant
+):
+    """GRPO verifies a packed grad forward with per-row no-grad forwards before backward; the checkpoint replay
+    must still see the packed boundaries, or the LoRA gradient comes from a forward that spans documents."""
+    monkeypatch.delenv(ENV, raising = False)
+    model = _CheckpointedHybrid(FakeGatedDeltaNet(), reentrant)
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    ids = torch.randint(0, 32, (1, 8), generator = torch.Generator().manual_seed(3))
+    lengths = torch.tensor([4, 4], dtype = torch.int32)
+    seen = []
+
+    def record(mixer, args):
+        meta = mixer._unsloth_varlen
+        seen.append(None if meta is None else meta[0].tolist())
+
+    def grads(between):
+        model.zero_grad()
+        out = model(input_ids = ids, packed_seq_lengths = lengths, use_cache = False)
+        between()
+        out.square().sum().backward()
+        return torch.cat([p.grad.flatten().clone() for p in model.proj.parameters()])
+
+    def row_forward():
+        with getattr(torch, no_grad)():
+            model(input_ids = ids[:, :4], use_cache = False)
+
+    expected = grads(lambda: None)
+    with model.linear_attn.register_forward_pre_hook(record):
+        got = grads(row_forward)
+    assert seen == [[0, 4, 8], None, [0, 4, 8]]
+    torch.testing.assert_close(got, expected, rtol = 0, atol = 0)
+    # A grad-enabled forward still owns the stash afterwards, as the replay of its own backward needs.
+    model(input_ids = ids[:, :4], use_cache = False)
+    assert model.linear_attn._unsloth_varlen is None

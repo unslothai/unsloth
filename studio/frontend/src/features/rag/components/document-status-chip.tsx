@@ -4,10 +4,12 @@
 import { Badge } from "@/components/assistant-ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { FileEmpty02Icon, Folder02Icon } from "@hugeicons/core-free-icons";
+import { FileEmpty02Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Folder02Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { XIcon } from "lucide-react";
+import type { ReactElement, ReactNode } from "react";
 import type { DocumentStatus } from "../types/rag";
+import { runningPercent } from "./source-folder-copy";
 
 export const STAGE_LABELS: Record<string, string> = {
   parsing: "Reading document",
@@ -25,7 +27,10 @@ export function DocumentStatusChip({
   stage,
   error,
   onRemove,
+  onOpen,
+  openTrigger,
   onRetry,
+  title,
   shared = false,
 }: {
   filename: string;
@@ -34,18 +39,36 @@ export function DocumentStatusChip({
   stage?: string | null;
   error?: string | null;
   onRemove?: () => void;
+  /** Makes the name a button that opens the source. */
+  onOpen?: () => void;
+  /** Hands that button to a viewer that owns its own open state (e.g. a dialog trigger). */
+  openTrigger?: (trigger: ReactElement) => ReactNode;
   onRetry?: () => void;
+  /** Hover text; an error still wins. */
+  title?: string;
   /** Indexed for the whole project rather than this one chat: swap the file
    * glyph for a folder so the two scopes are told apart at a glance. */
   shared?: boolean;
 }) {
   const processing = status === "pending" || status === "running";
+  const openable = status === "completed" && (onOpen || openTrigger);
+  const nameButton = openable ? (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label={`Preview ${filename}`}
+      className="truncate rounded-sm text-left underline-offset-2 hover:underline focus-visible:underline focus-visible:outline-none"
+    >
+      {filename}
+    </button>
+  ) : null;
   return (
     <Badge
       variant="outline"
       size="sm"
       title={
         error ??
+        title ??
         (processing && stage && STAGE_LABELS[stage]
           ? `${filename} — ${STAGE_LABELS[stage]}`
           : shared
@@ -57,13 +80,20 @@ export function DocumentStatusChip({
         status === "failed" && "border-destructive/40 text-destructive",
       )}
     >
-      {/* file, or folder when the doc is a project-wide source */}
       <HugeiconsIcon
         icon={shared ? Folder02Icon : FileEmpty02Icon}
         strokeWidth={2}
         className="size-3 shrink-0"
       />
-      <span className="truncate">{filename}</span>
+      {nameButton ? (
+        openTrigger ? (
+          openTrigger(nameButton)
+        ) : (
+          nameButton
+        )
+      ) : (
+        <span className="truncate">{filename}</span>
+      )}
       {status === "failed" && onRetry ? (
         <button
           type="button"
@@ -78,7 +108,7 @@ export function DocumentStatusChip({
       {processing ? (
         <span className="flex shrink-0 items-center gap-1 text-ui-10 text-muted-foreground">
           {progress != null
-            ? `${Math.round(progress <= 1 ? progress * 100 : progress)}%`
+            ? `${runningPercent(progress)}%`
             : null}
           <Spinner className="size-3.5" />
         </span>
@@ -89,7 +119,7 @@ export function DocumentStatusChip({
           aria-label={`Remove ${filename}`}
           className="shrink-0 rounded-full text-muted-foreground hover:text-foreground"
         >
-          <XIcon className="size-3" />
+          <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
         </button>
       ) : null}
     </Badge>

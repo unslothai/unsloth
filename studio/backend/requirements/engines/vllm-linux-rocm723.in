@@ -5,3 +5,6 @@ transformers==5.12.1
 
 # Native load-time INT8 and FP8 conversion.
 torchao==0.17.0
+
+# CA trust floor, as in no-torch-runtime.txt: certifi 2026.10.19 drops the distrusted emSign ECC Root CA - G3.
+certifi>=2026.10.19

@@ -5,14 +5,19 @@
 
 from __future__ import annotations
 
+import contextvars
+import hashlib
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 from hub.utils.hf_tokens import call_with_anonymous_retry
 from loggers import get_logger
+from utils import gguf_names as _gguf_names
 from utils.paths.path_utils import (
     drop_shadowed_appledouble_names as _drop_shadowed_appledouble_names,
     file_contents_available_locally,
@@ -74,59 +79,25 @@ GGUF_QUANT_PREFERENCE = [
 ]
 
 _GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-(\d{3,})", re.IGNORECASE)
-_GGUF_QUANT_RE = re.compile(
-    r"(UD-)?"
-    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
-    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-    r"|P?TQ[0-9]+_[0-9]+"
-    r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
-    r"|Q[0-9]+_K"
-    r"|BF16|F16|F32)",
-    re.IGNORECASE,
-)
+_GGUF_QUANT_RE = _gguf_names.GGUF_QUANT_RE
 
 
 def is_mmproj_filename(filename: str) -> bool:
-    return "mmproj" in filename.lower()
+    return _gguf_names.is_mmproj_filename(filename)
 
 
-# Anchored at an END of the stem, never a substring, for the reason is_mtp_drafter_path documents: a name that merely contains the word (Qwen3-Imatrix-Tuned-Q4_K_M.gguf) is a real model, while every published imatrix leads or closes with it.
-_IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+_IMATRIX_TOKEN_RE = _gguf_names.IMATRIX_TOKEN_RE
+_DRAFTER_KINDS = _gguf_names.DRAFTER_KINDS
+_DRAFTER_DIR_KINDS = _gguf_names.DRAFTER_DIR_KINDS
+_DSPARK_BEFORE_QUANT_RE = _gguf_names.DSPARK_BEFORE_QUANT_RE
 
 
 def is_imatrix_filename(path: str) -> bool:
-    """True for a calibration imatrix: ``imatrix.gguf``, ``imatrix_unsloth.gguf``, ``imatrix_unsloth.dat``, ``<model>-imatrix.gguf``, ``<model>.imatrix``. It holds activation statistics for llama-quantize, not a model, and llama-server never opens one, so it is neither a selectable variant nor a companion to fetch: unlike mmproj and the MTP drafter it is excluded outright, everywhere they are. Most repos spell it .dat or .gguf_file, which no GGUF listing sees; the ones that publish imatrix_unsloth.gguf (unsloth/Qwen3.8-27B-GGUF) put a valid GGUF container carrying no model in front of the variant menu, download and loader. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_imatrix_path`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports)."""
-    name = path.replace("\\", "/").rsplit("/", 1)[-1]
-    stem = name.rsplit(".", 1)[0] if "." in name else name
-    return bool(_IMATRIX_TOKEN_RE.search(stem)) or name.lower().endswith(".imatrix")
-
-
-# dspark and dflash are the same DeepSeek V4 Flash drafter: the folder it ships in and the architecture it reports.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
-
-# Directories only: mtp/ and dspark/ are always a publisher's companion folder, while dflash/ is a family name a user picks for real weights.
-_DRAFTER_DIR_KINDS = ("mtp", "dspark")
-
-# <model>-dspark-<quant>.gguf drafters (prism-ml Bonsai, third-party DSpark GGUFs); a name going on past the quant (DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4-BF16.gguf) is the model.
-_DSPARK_BEFORE_QUANT_RE = re.compile(
-    rf"-dspark-(?:{_GGUF_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
-    re.IGNORECASE,
-)
+    return _gguf_names.is_imatrix_filename(path)
 
 
 def is_mtp_drafter_path(path: str) -> bool:
-    """True for a separate-file drafter, a companion to the main model rather than a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash), the ``<model>-dspark-<quant>.gguf`` drafters (prism-ml Bonsai) and the ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss). Repos that bake the head into the main GGUF (Qwen) have no such file, so this is False for them. Must be excluded from main-model selection everywhere mmproj is. Matched by basename prefix, by an exact parent dir for ``_DRAFTER_DIR_KINDS``, or by ``_DSPARK_BEFORE_QUANT_RE``; never a bare substring, since the kind names double as family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports; bundles the mmproj check)."""
-    p = path.replace("\\", "/").lower()
-    if not p.endswith(".gguf"):
-        return False
-    parts = [segment for segment in p.split("/") if segment]
-    name, parents = parts[-1], parts[:-1]
-    return (
-        any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS)
-        or any(kind in parents for kind in _DRAFTER_DIR_KINDS)
-        or _DSPARK_BEFORE_QUANT_RE.search(name) is not None
-    )
+    return _gguf_names.is_mtp_drafter_path(path)
 
 
 def is_reclaimable_drafter_path(path: str) -> bool:
@@ -317,6 +288,93 @@ def _first_mainline_loadable(names: list[str]) -> Optional[str]:
     return next(iter(loadable or names), None)
 
 
+def _repo_id_of(name: object) -> Optional[str]:
+    """*name* as an ``org/repo`` id when it reads as one: a repo id, or an HF cache ``models--org--repo`` folder."""
+    if not isinstance(name, str) or not name.strip():
+        return None
+    text = name.strip().rstrip("/\\")
+    for segment in reversed(re.split(r"[/\\]", text)):
+        if segment.startswith("models--"):
+            parts = segment[len("models--") :].split("--", 1)
+            return "/".join(parts) if len(parts) == 2 and all(parts) else None
+    return text
+
+
+def _repo_id_candidates(name: object) -> list:
+    """``_repo_id_of(name)``, plus the trailing ``org/repo`` of a plain local clone such as
+    ``/models/unsloth/LTX-2.5-GGUF``, so a copied curated repo keeps its per-repo defaults."""
+    rid = _repo_id_of(name)
+    out = [rid] if rid else []
+    if rid and rid == str(name).strip().rstrip("/\\"):
+        segments = [s for s in re.split(r"[/\\]", rid) if s]
+        tail = "/".join(segments[-2:])
+        if len(segments) >= 2 and tail != rid:
+            out.append(tail)
+    return out
+
+
+def default_gguf_subdir(*repo_ids: object) -> Optional[str]:
+    """The subdirectory a bare id of *repo_ids* defaults to (``VideoFamily.gguf_default_subdir``), or None."""
+    from core.inference.video_families import gguf_default_subdir_for_repo
+
+    for name in repo_ids:
+        for rid in _repo_id_candidates(name):
+            subdir = gguf_default_subdir_for_repo(rid)
+            if subdir:
+                return subdir
+    return None
+
+
+def gguf_root_label(*repo_ids: object) -> Optional[str]:
+    """``VideoFamily.gguf_root_label`` for *repo_ids*, else None."""
+    from core.inference.video_families import gguf_root_label_for_repo
+
+    for name in repo_ids:
+        for rid in _repo_id_candidates(name):
+            label = gguf_root_label_for_repo(rid)
+            if label:
+                return label
+    return None
+
+
+def default_gguf_scope(
+    items: Iterable,
+    *repo_ids: object,
+    key = None,
+) -> list:
+    """Bare repo id defaults: default subdirectory rows, else root rows, else all; every resolver
+    shares this rule so one id names one checkpoint"""
+    rows = list(items)
+    key_of = key or (lambda item: item)
+    subdir = default_gguf_subdir(*repo_ids)
+    if subdir:
+        prefix = subdir.strip("/").casefold() + "/"
+        scoped = [item for item in rows if str(key_of(item) or "").casefold().startswith(prefix)]
+        if scoped:
+            return scoped
+    root = [item for item in rows if "/" not in str(key_of(item) or "")]
+    if not root:
+        return rows
+    root_keys = {str(key_of(item) or "").casefold() for item in root}
+
+    def _same_quant_directory(item) -> bool:
+        value = str(key_of(item) or "").replace("\\", "/")
+        parents, separator, _basename = value.rpartition("/")
+        segments = [segment for segment in parents.split("/") if segment]
+        return bool(
+            separator
+            and segments
+            and all(_is_quant_directory(segment) for segment in segments)
+            and bare_quant_alias(value).casefold() in root_keys
+        )
+
+    return [
+        item
+        for item in rows
+        if "/" not in str(key_of(item) or "").replace("\\", "/") or _same_quant_directory(item)
+    ]
+
+
 def _gguf_stem(filename: str) -> str:
     basename = filename.rsplit("/", 1)[-1]
     return _GGUF_SPLIT_SUFFIX_RE.sub("", basename.rsplit(".", 1)[0]).strip()
@@ -426,8 +484,98 @@ def gguf_checkpoint_family(filename: str) -> Optional[str]:
     return family.strip("-_. /\t\r\n") or None
 
 
+def _fold_name(text: str, *, drop_quant: bool) -> str:
+    token = quant_token_with_bpw(text) if drop_quant else None
+    if token is not None:
+        text = re.sub(re.escape(token), "", text, count = 1, flags = re.IGNORECASE)
+    return re.sub(r"[-_.\s]+", "-", text).strip("-").casefold()
+
+
+def _checkpoint_identity(filename: str) -> Optional[str]:
+    """keep a quant directory's non-quant words unless they repeat the file's name."""
+    parts = gguf_variant_family(filename.replace("\\", "/")).split("/")
+    stem = _fold_name(parts.pop(), drop_quant = True)
+    segments = []
+    for segment in filter(None, parts):
+        quant_dir = _is_quant_directory(segment)
+        folded = _fold_name(segment, drop_quant = quant_dir)
+        if quant_dir and folded in ("", stem):
+            continue
+        segments.append(folded)
+    return "/".join((*segments, stem)).strip("/") or None
+
+
+def _paths_by_variant_key(paths: Iterable[str]) -> dict[str, list[str]]:
+    by_key: dict[str, list[str]] = {}
+    for path in paths:
+        by_key.setdefault(gguf_variant_key(path).lower(), []).append(path)
+    for members in by_key.values():
+        members.sort(key = lambda path: path.replace("\\", "/"))
+    return by_key
+
+
+def _loader_visible_members(members: Sequence[str]) -> list[str]:
+    from utils.models.model_config import _extract_quant_label as _loader_quant
+    return [path for path in members if not is_big_endian_gguf_path(path, _loader_quant(path))]
+
+
+def _listed_identity(members: Sequence[str]) -> Optional[str]:
+    """prefer the first lister-visible file over hidden big-endian members."""
+    selectable = _loader_visible_members(members)
+    return _checkpoint_identity((selectable or members)[0])
+
+
+def gguf_listed_checkpoints(
+    snapshots: Iterable[Iterable[str]], completed: Optional[Iterable[Iterable[str]]] = None
+) -> dict[str, Optional[str]]:
+    groups = [_paths_by_variant_key(paths) for paths in snapshots]
+    whole = [set(keys) for keys in completed] if completed is not None else []
+    if len(whole) < len(groups):
+        whole.extend(set() for _ in range(len(groups) - len(whole)))
+
+    listed: dict[str, Optional[str]] = {}
+    complete_keys: set[str] = set()
+    for index, snapshot in enumerate(groups):
+        for key, members in snapshot.items():
+            selectable = _loader_visible_members(members)
+            if not selectable:
+                continue
+            complete = gguf_variant_key(selectable[0]) in whole[index]
+            if key not in listed or (complete and key not in complete_keys):
+                listed[key] = _checkpoint_identity(selectable[0])
+            if complete:
+                complete_keys.add(key)
+    return listed
+
+
+def gguf_variant_keys_by_checkpoint(
+    paths: Iterable[str], listed: Optional[dict[str, Optional[str]]] = None
+) -> dict[str, str]:
+    """separate checkpoints sharing a key; listed preserves the row's cross-snapshot build."""
+    keys: dict[str, str] = {}
+    for key, members in _paths_by_variant_key(paths).items():
+        identity_listed = listed[key] if listed and key in listed else _listed_identity(members)
+        colliding: dict[Optional[str], list[str]] = {}
+        for path in members:
+            identity = _checkpoint_identity(path)
+            family = gguf_variant_family(path.replace("\\", "/"))
+            if identity != identity_listed and family.casefold() == key.casefold():
+                colliding.setdefault(identity, []).append(path.replace("\\", "/"))
+        collision_keys = {
+            identity: min(identity_paths) for identity, identity_paths in colliding.items()
+        }
+        for path in members:
+            normalized = path.replace("\\", "/")
+            identity = _checkpoint_identity(path)
+            if identity == identity_listed:
+                keys[path] = gguf_variant_key(normalized)
+            else:
+                keys[path] = collision_keys.get(identity, gguf_variant_family(normalized))
+    return keys
+
+
 def local_path_physical_identity(raw_path: str) -> str:
-    """Identity for an existing local path without folding valid filename characters."""
+    """identify an existing local path without folding valid filename characters."""
     try:
         path = os.path.realpath(os.path.expanduser(raw_path))
         stat = os.stat(path)
@@ -439,7 +587,7 @@ def local_path_physical_identity(raw_path: str) -> str:
 
 
 def should_group_local_gguf_files(filenames: Sequence[str]) -> bool:
-    """Whether filenames are variants of one selectable checkpoint."""
+    """whether filenames are variants of one selectable checkpoint."""
     if len(filenames) == 1:
         return True
 
@@ -803,11 +951,34 @@ def _variant_scope_label(filename: str, *, with_stem: bool = False) -> str:
     return f"{parents}/{stem}" if with_stem else parents
 
 
-def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
+_NAME_SEPARATORS = "-_. /"
+
+
+def _distinct_name_tails(variants: list[GgufVariantInfo]) -> dict[int, str]:
+    """Each name past the shared prefix (``HIGH`` in ``Model-HIGH.gguf``); empty when none is shared."""
+    stems = [variant.filename.replace("\\", "/").rsplit(".", 1)[0] for variant in variants]
+    shared = os.path.commonprefix(stems)
+    cut = max(shared.rfind(sep) for sep in _NAME_SEPARATORS) + 1
+    if cut <= 0:
+        return {}
+    tails = {id(variant): stem[cut:] for variant, stem in zip(variants, stems)}
+    if not all(tails.values()) or len(set(tails.values())) != len(tails):
+        return {}
+    return tails
+
+
+def _apply_gguf_display_labels(
+    variants: list[GgufVariantInfo],
+    *repo_ids: object,
+    name_tails: bool = False,
+) -> None:
+    """Fill ``display_label`` where the key alone does not say which checkpoint a row is."""
+    root_label = gguf_root_label(*repo_ids) if repo_ids else None
     unknown_variants = [
         variant for variant in variants if extract_quant_token(variant.filename) is None
     ]
     ambiguous = len(unknown_variants) > 1
+    unknown_tails = _distinct_name_tails(unknown_variants) if ambiguous and name_tails else {}
 
     # The bpw modifier reads perfectly well on its own, so a key that is only the token plus its bpw suffix is NOT path-qualified and needs no scope label.
     def _plain_key(variant) -> Optional[str]:
@@ -836,26 +1007,39 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
             variant.display_label = f"{task} · {token or 'GGUF'} · {build}"
             continue
         if token is None:
-            variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
+            variant.display_label = (
+                f"GGUF · {unknown_tails.get(id(variant), variant.filename)}"
+                if ambiguous
+                else "GGUF"
+            )
         elif variant.quant.lower() != (_plain_key(variant) or "").lower():
-            # A key qualified by path: show the quant, plus what distinguishes it.
             collides = scopes.get(_variant_scope_label(variant.filename).lower(), 0) > 1
             variant.display_label = (
                 f"{token} · {_variant_scope_label(variant.filename, with_stem = collides)}"
             )
+        elif root_label and "/" not in variant.filename.replace("\\", "/"):
+            # root quant labels identify the default checkpoint
+            variant.display_label = f"{variant.quant} · {root_label}"
 
 
-def group_gguf_variant_files(entries) -> dict[str, tuple[str, int]]:
-    """``variant key -> (first filename, summed size of ONE shard set)``: a quant shipped twice (``QwQ-32B-BF16-*`` beside ``QwQ-32B.BF16-*``, or whole beside split) keeps only the set holding the first file, the one the loader opens."""
+def group_gguf_variant_files(
+    entries, keys: Optional[dict[str, str]] = None
+) -> dict[str, tuple[str, int]]:
+    """group each variant's first shard set and size, with optional path-specific keys."""
+
+    def key_of(path: str) -> str:
+        return (keys or {}).get(path) or gguf_variant_key(path)
+
     families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
     for path, size in entries:
-        families.setdefault(gguf_variant_key(path), {}).setdefault(gguf_shard_set(path), []).append(
-            (path, int(size or 0))
-        )
+        families.setdefault(key_of(path).casefold(), {}).setdefault(
+            gguf_shard_set(path), []
+        ).append((path, int(size or 0)))
     grouped: dict[str, tuple[str, int]] = {}
-    for key, by_family in families.items():
+    for by_family in families.values():
         chosen = min(by_family.values(), key = lambda members: min(path for path, _ in members))
-        grouped[key] = (min(path for path, _ in chosen), sum(size for _, size in chosen))
+        first = min(path for path, _ in chosen)
+        grouped[key_of(first)] = (first, sum(size for _, size in chosen))
     return grouped
 
 
@@ -1027,7 +1211,7 @@ def merge_sibling_snapshot_variants(
                 whole.add(key)
     if changed:
         # Labels disambiguate within a revision, so a merged set can hold names only the merge brings together.
-        _apply_gguf_display_labels(merged)
+        _apply_gguf_display_labels(merged, repo_id)
     return merged, has_vision or any(merged_vision.values()), merged_complete, snapshot
 
 
@@ -1137,7 +1321,7 @@ def list_partial_gguf_variants_from_state(
         )
 
     variants.sort(key = lambda variant: -variant.size_bytes)
-    _apply_gguf_display_labels(variants)
+    _apply_gguf_display_labels(variants, repo_id)
     return variants, has_vision
 
 
@@ -1181,16 +1365,49 @@ def _ready_cached_variants(cached: tuple) -> tuple[list[GgufVariantInfo], bool, 
     return whole or variants, has_vision, None
 
 
-def list_gguf_variants(
-    repo_id: str, hf_token: Optional[str] = None
-) -> tuple[list[GgufVariantInfo], bool, Optional[list]]:
+# A caller's list here receives the model_info list_gguf_variants fetched, for reuse in the same request.
+HUB_MODEL_INFO_SINK: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
+    "gguf_hub_model_info_sink", default = None
+)
+
+
+# Every picker open re-lists each Discover GGUF repo; one listing per repo and credential per window
+# keeps anonymous users under the Hub's API rate limit. A 429 is not re-asked until its window ends.
+_HUB_LISTING_TTL_S = 120.0
+_HUB_RATE_LIMIT_S = 60.0
+_HUB_LISTING_MAX = 256
+_hub_listings: dict[tuple, tuple[float, object]] = {}
+_hub_rate_limited: dict[tuple, tuple[float, BaseException]] = {}
+_hub_listing_lock = threading.Lock()
+
+
+def _hub_listing_key(repo_id: str, hf_token) -> tuple:
+    token = hashlib.sha256(repr(hf_token).encode()).hexdigest()[:16]
+    return (repo_id.lower(), token, os.environ.get("HF_ENDPOINT", ""))
+
+
+def _retry_after_s(exc: BaseException) -> Optional[float]:
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) != 429:
+        return None
+    try:
+        return max(1.0, min(float(response.headers.get("Retry-After")), 600.0))
+    except (TypeError, ValueError, AttributeError):
+        return _HUB_RATE_LIMIT_S
+
+
+def _hub_model_info(repo_id: str, hf_token):
     from huggingface_hub import HfApi
 
-    if _env_offline():
-        cached = list_gguf_variants_from_hf_cache(repo_id)
-        if cached is not None:
-            return _ready_cached_variants(cached)
-
+    key = _hub_listing_key(repo_id, hf_token)
+    now = time.monotonic()
+    with _hub_listing_lock:
+        hit = _hub_listings.get(key)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        limited = _hub_rate_limited.get(key)
+        if limited is not None and limited[0] > now:
+            raise limited[1].with_traceback(None)
     try:
         # A refused credential retries once anonymously: a public listing still answers.
         info = call_with_anonymous_retry(
@@ -1201,6 +1418,35 @@ def list_gguf_variants(
             ),
             hf_token,
         )
+    except Exception as exc:
+        wait = _retry_after_s(exc)
+        if wait is not None:
+            with _hub_listing_lock:
+                now = time.monotonic()
+                for stale in [k for k, (until, _) in _hub_rate_limited.items() if until <= now]:
+                    del _hub_rate_limited[stale]
+                _hub_rate_limited[key] = (now + wait, exc)
+                while len(_hub_rate_limited) > _HUB_LISTING_MAX:
+                    _hub_rate_limited.pop(next(iter(_hub_rate_limited)))
+        raise
+    with _hub_listing_lock:
+        _hub_rate_limited.pop(key, None)
+        _hub_listings[key] = (time.monotonic() + _HUB_LISTING_TTL_S, info)
+        while len(_hub_listings) > _HUB_LISTING_MAX:
+            _hub_listings.pop(next(iter(_hub_listings)))
+    return info
+
+
+def list_gguf_variants(
+    repo_id: str, hf_token: Optional[str] = None
+) -> tuple[list[GgufVariantInfo], bool, Optional[list]]:
+    if _env_offline():
+        cached = list_gguf_variants_from_hf_cache(repo_id)
+        if cached is not None:
+            return _ready_cached_variants(cached)
+
+    try:
+        info = _hub_model_info(repo_id, hf_token)
     except Exception as exc:
         if type(exc).__name__ in (
             "RepositoryNotFoundError",
@@ -1219,6 +1465,9 @@ def list_gguf_variants(
             return _ready_cached_variants(cached)
         raise
 
+    sink = HUB_MODEL_INFO_SINK.get()
+    if sink is not None:
+        sink.append(info)
     has_vision = False
     main_files: list[tuple[str, int]] = []
 
@@ -1247,7 +1496,7 @@ def list_gguf_variants(
     ]
 
     variants.sort(key = lambda variant: -variant.size_bytes)
-    _apply_gguf_display_labels(variants)
+    _apply_gguf_display_labels(variants, repo_id)
     return variants, has_vision, list(info.siblings)
 
 
@@ -1295,14 +1544,15 @@ def list_local_gguf_variants(
 
     main_files: list[tuple[str, int]] = []
     has_vision = False
-    # Match the cache dir of ANY H3 bundle repo: the aggregation runs over whichever mirror the user actually downloaded. A whole SEGMENT, not a substring: "models--unsloth--MiniMax-H3-GGUF-mirror" (and -v2, -i1) contains the marker while being an ordinary chat repo, and the denoiser filter then left it with no quants, which withholds the auto-switch entry so a downloaded model 404s.
-    segments = set(root.as_posix().lower().split("/"))
+    # match H3 bundle caches by full path segment so similarly named chat repos keep their quants
+    path_segments = root.as_posix().lower().split("/")
+    segments = set(path_segments)
     h3_bundle_repo = next(
         (r for r in _H3_BUNDLE_REPOS if f"models--{r.replace('/', '--')}" in segments), None
     )
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
-        # Off by default: the Hub lists the dangling link an evicted blob leaves, so a user can see and clean that quant. Only a caller advertising what it loads excludes it.
+        # keep dangling cache links visible for cleanup unless the caller requires loadable files
         if require_existing_files and not _is_existing_file(file):
             continue
         if h3_bundle_repo and not _is_selectable_repo_gguf(h3_bundle_repo, file.name):
@@ -1310,7 +1560,7 @@ def list_local_gguf_variants(
         if is_imatrix_filename(file.name):
             continue
         if is_mmproj_filename(file.name):
-            # Header metadata distinguishes vision projectors from audio-only ones, read only when Windows reports the file fully present: opening a cloud placeholder would recall it during discovery.
+            # inspect complete local projectors only because opening a Windows cloud placeholder recalls it
             try:
                 info = file.stat()
                 has_vision = has_vision or (
@@ -1334,10 +1584,42 @@ def list_local_gguf_variants(
             continue
         main_files.append((rel, size))
 
+    # custom folders split shared-quant builds; HF caches keep remote keys, and the first keeps the bare key
+    keys = (
+        None
+        if any(
+            segment.startswith("models--")
+            and index + 2 < len(path_segments)
+            and path_segments[index + 1] == "snapshots"
+            for index, segment in enumerate(path_segments)
+        )
+        else gguf_variant_keys_by_checkpoint(rel for rel, _size in main_files)
+    )
     variants = [
         GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
-        for quant, (filename, size) in group_gguf_variant_files(main_files).items()
+        for quant, (filename, size) in group_gguf_variant_files(main_files, keys).items()
     ]
     variants.sort(key = lambda variant: -variant.size_bytes)
-    _apply_gguf_display_labels(variants)
+    _apply_gguf_display_labels(variants, directory, model_root, name_tails = keys is not None)
+    if keys:
+        _label_split_builds(variants, keys)
     return variants, has_vision
+
+
+def _label_split_builds(variants: list[GgufVariantInfo], keys: dict[str, str]) -> None:
+    """label all rows for a quant split across builds, including the bare-keyed first build."""
+    split = {
+        variant.filename
+        for variant in variants
+        if keys.get(variant.filename, variant.quant) != gguf_variant_key(variant.filename)
+    }
+    split_tokens = {(quant_token_with_bpw(name) or "").lower() for name in split}
+    for variant in variants:
+        token = quant_token_with_bpw(variant.filename)
+        if token is None or token.lower() not in split_tokens:
+            continue
+        # directory-qualified siblings keep their existing directory labels
+        if variant.filename not in split and variant.quant.lower() != token.lower():
+            continue
+        scope = _variant_scope_label(variant.filename, with_stem = True)
+        variant.display_label = f"{extract_quant_token(variant.filename)} · {scope}"

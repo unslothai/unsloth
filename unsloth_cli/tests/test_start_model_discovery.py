@@ -38,8 +38,6 @@ def test_discovery_avoids_full_catalog(monkeypatch, operation):
     "unsupported",
     [
         pytest.param("404", id = "route-404s"),
-        # Studio's SPA catch-all answered an unknown /api path with a 200 body before it
-        # was changed to raise 404, so a resident model must survive that shape too.
         pytest.param({"error": "API endpoint not found"}, id = "spa-catch-all-answers-200"),
     ],
 )

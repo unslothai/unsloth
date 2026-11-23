@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""The fast decode loops call self_attn directly, so the attention mask must follow each layer's device.
-
-With layers split across GPUs (device_map="auto" on 2 x T4), batched generation died in SDPA with
-"attn_bias is on cuda:0, different from other tensors on cuda:1".
-"""
+"""Decode loops call self_attn directly, so the mask must follow each layer's device across GPUs."""
 
 from __future__ import annotations
 

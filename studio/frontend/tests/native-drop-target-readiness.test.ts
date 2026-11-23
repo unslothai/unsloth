@@ -10,8 +10,7 @@ class FakeElement {
 }
 
 const zone = new FakeElement();
-// The stub hands these back: `installed` settles the drag-drop install the
-// module awaits, `deliver` is the callback it registered.
+// The stub fills these: `installed` settles the listener install, `deliver` is its callback.
 const control: {
   installed?: () => void;
   deliver?: (event: {
@@ -37,8 +36,7 @@ const { nativeDropTargetAt, registerNativeDropTarget } = await import(
   "../src/features/native-intents/native-drop-targets.ts"
 );
 
-/** The install runs through a dynamic import, so no fixed number of ticks says
- * it is done. Wait for the condition itself. */
+/** The install is a dynamic import, so wait on the condition, not a tick count. */
 async function until(condition: () => boolean, what: string) {
   for (let i = 0; i < 500 && !condition(); i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -51,9 +49,7 @@ registerNativeDropTarget(zone as unknown as HTMLElement, {
   onDrop: (paths) => dropped.push(paths),
 });
 
-// Registration is synchronous but the listener behind it is not. Claiming the
-// element early would make the chat-wide handler step aside for nothing, and
-// the drop would land nowhere at all.
+// Claim only after the async listener is installed, or drops land nowhere.
 test("a target is not claimed until its listener is installed", async () => {
   await until(() => control.installed !== undefined, "the drag-drop install");
   assert.equal(nativeDropTargetAt({ x: 10, y: 10 }), null);

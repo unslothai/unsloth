@@ -31,7 +31,6 @@ def _cached_file(repo_dir: Path, snapshot: Path, name: str, payload: str, *, lay
     target = snapshot / name
     target.parent.mkdir(parents = True, exist_ok = True)
     if layout == "symlink":
-        # the relative spelling huggingface_hub writes, so the tree survives being moved
         target.symlink_to(os.path.relpath(blob, target.parent))
     else:
         target.write_bytes(payload.encode("utf-8"))

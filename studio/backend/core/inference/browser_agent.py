@@ -1,25 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Browser use: tools that let the model drive the browser panel the user is looking at.
-
-Every tool loop (GGUF, safetensors/MLX, external providers) runs these like any other tool; the
-page itself is driven by the chat tab, which runs each action in the agent's own browser tab and
-posts the result back (``state.browser_actions``). The tab is where the user can watch, stop and
-take over, and it gates the risky actions (submitting forms, buying, signing in, new sites) with a
-prompt this side cannot classify: only the live page knows what ``r12`` is.
-
-What this side enforces: argument shapes, http(s) only, public hosts only, the request's website
-policy before and after a navigation, and that page text reaches the model fenced as untrusted.
-"""
+"""Lets the model drive the chat browser panel; enforces argument shapes, http(s) only, public or
+this-machine hosts off Studio ports, website policy before and after navigation, fenced untrusted
+text."""
 
 from __future__ import annotations
 
+import base64
 import ipaddress
 import json
+import mimetypes
+import os
 import re
+import stat
+import sys
+import unicodedata
 from typing import Any, Callable, Optional
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from loggers import get_logger
 
@@ -35,16 +33,20 @@ BROWSER_NAVIGATE_TOOL = {
     "function": {
         "name": "browser_navigate",
         "description": (
-            "Open a web page in the browser panel beside the chat, where the user watches. "
-            "Returns the page's text and its interactive elements, each with a ref such as r12 "
-            "that the other browser tools take. " + _UNTRUSTED_NOTE
+            "Open a web page in the browser panel beside the chat, where the user watches, or a "
+            "file from the workspace python and terminal write to, such as an HTML page made "
+            "there. Returns the page's text and its interactive elements, each with a ref such "
+            "as r12 that the other browser tools take. " + _UNTRUSTED_NOTE
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": 'A full http(s) address, or "back", "forward" or "reload".',
+                    "description": (
+                        'A full http(s) address; a workspace file by its path, such as "page.html" '
+                        '(a file:// URL of it works too); or "back", "forward" or "reload".'
+                    ),
                 }
             },
             "required": ["url"],
@@ -92,15 +94,90 @@ BROWSER_FIND_TOOL = {
     },
 }
 
+_POINT_NOTE = (
+    "x and y are pixels in the latest browser_screenshot, from its top-left corner; without one, "
+    "CSS pixels of the visible page."
+)
+
 BROWSER_CLICK_TOOL = {
     "type": "function",
     "function": {
         "name": "browser_click",
-        "description": "Click an element by its ref from the latest snapshot.",
+        "description": (
+            "Click an element by its ref from the latest snapshot, or click at a point (x and y) "
+            "for what has no ref, such as a canvas or a map. " + _POINT_NOTE
+        ),
         "parameters": {
             "type": "object",
-            "properties": {"ref": {"type": "string", "description": "For example r12."}},
-            "required": ["ref"],
+            "properties": {
+                "ref": {"type": "string", "description": "For example r12."},
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+            },
+        },
+    },
+}
+
+BROWSER_MOVE_MOUSE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browser_move_mouse",
+        "description": (
+            "Move the mouse over an element (ref) or to a point (x and y), for example to open a "
+            "menu that shows on hover. " + _POINT_NOTE
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string"},
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+            },
+        },
+    },
+}
+
+BROWSER_DRAG_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browser_drag",
+        "description": (
+            "Press the mouse on an element or point, move it to another, and release: to drag an "
+            "item or a map. Start at ref or x and y, end at to_ref or to_x and to_y. " + _POINT_NOTE
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string"},
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "to_ref": {"type": "string"},
+                "to_x": {"type": "number"},
+                "to_y": {"type": "number"},
+            },
+        },
+    },
+}
+
+BROWSER_EVALUATE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browser_evaluate",
+        "description": (
+            "Run JavaScript in the current page and get back what it returns, for what the other "
+            "browser tools cannot do. script is the body of an async function: use return to give "
+            "a value (made into JSON), and await if needed. The user sees the script and is asked "
+            "first every time, so keep it short and plain. " + _UNTRUSTED_NOTE
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "script": {
+                    "type": "string",
+                    "description": "For example: return document.querySelectorAll('tr').length;",
+                }
+            },
+            "required": ["script"],
         },
     },
 }
@@ -131,7 +208,8 @@ BROWSER_SELECT_TOOL = {
         "name": "browser_select",
         "description": (
             "Choose an option in a dropdown, or set a checkbox or radio button, by ref. value is "
-            'the option text, or "true"/"false" for a checkbox.'
+            'the option text, or "true"/"false" for a checkbox or radio button, whose own ref '
+            "is the one to pass."
         ),
         "parameters": {
             "type": "object",
@@ -219,17 +297,98 @@ BROWSER_HISTORY_TOOL = {
     },
 }
 
+BROWSER_TABS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browser_tabs",
+        "description": (
+            "List the tabs open in the browser panel, web pages and files alike (an HTML page or "
+            "React component made in this chat, a PDF, an image, code, text), or switch to one by "
+            "its number. The other browser tools then work in that tab: on an HTML or React file "
+            "they read and click its preview as on any page, and browser_read_file and "
+            "browser_edit_file read and change the file itself."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tab": {
+                    "type": "integer",
+                    "description": "The number of the tab to switch to; leave out to only list.",
+                }
+            },
+        },
+    },
+}
+
+BROWSER_READ_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browser_read_file",
+        "description": (
+            "Read the file shown in the browser panel: the source of an HTML, React, Markdown, "
+            "code or text file, or the text of a PDF or document, with line numbers (not part "
+            "of the file). Works in the agent's tab, or the file tab in front if the agent's tab "
+            "is a web page."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "start_line": {
+                    "type": "integer",
+                    "description": "First line to read, from 1; for files too long for one read.",
+                }
+            },
+        },
+    },
+}
+
+BROWSER_EDIT_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browser_edit_file",
+        "description": (
+            "Change the HTML, React, Markdown, code or text file shown in the browser panel: "
+            "replace old_text, copied exactly from browser_read_file without the line numbers, "
+            "with new_text, or give content to rewrite the whole file. The preview reloads with "
+            "the change, and Back in the panel shows the version before it. PDFs, documents and "
+            "images can't be edited here. For files in the panel, not edit_file, which works on "
+            "the code sandbox's files."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "old_text": {
+                    "type": "string",
+                    "description": "Text to replace; it must appear once, unless replace_all.",
+                },
+                "new_text": {"type": "string"},
+                "replace_all": {"type": "boolean"},
+                "content": {
+                    "type": "string",
+                    "description": "The whole new file, instead of old_text and new_text.",
+                },
+            },
+        },
+    },
+}
+
 BROWSER_TOOLS = [
     BROWSER_NAVIGATE_TOOL,
     BROWSER_SNAPSHOT_TOOL,
     BROWSER_FIND_TOOL,
     BROWSER_CLICK_TOOL,
+    BROWSER_MOVE_MOUSE_TOOL,
+    BROWSER_DRAG_TOOL,
     BROWSER_TYPE_TOOL,
     BROWSER_SELECT_TOOL,
     BROWSER_SCROLL_TOOL,
     BROWSER_PRESS_KEY_TOOL,
+    BROWSER_EVALUATE_TOOL,
     BROWSER_SCREENSHOT_TOOL,
     BROWSER_HISTORY_TOOL,
+    BROWSER_TABS_TOOL,
+    BROWSER_READ_FILE_TOOL,
+    BROWSER_EDIT_FILE_TOOL,
 ]
 
 BROWSER_TOOL_NAMES = frozenset(tool["function"]["name"] for tool in BROWSER_TOOLS)
@@ -241,10 +400,30 @@ _ACTION_TIMEOUT_S = 600.0
 _MIN_ACTION_TIMEOUT_S = 30.0
 _MAX_URL_CHARS = 4096
 _MAX_TEXT_CHARS = 8000
+_MAX_SCRIPT_CHARS = 8000
+_MAX_FILE_EDIT_CHARS = 500_000
+_MAX_TAB = 1000
+_HIDDEN_TAIL_RE = re.compile(r"(?:[ \t]*\r?\n){4,}|[ \t]{200,}")
+# Past any real screen: a point there is a mistake, not a far corner.
+_MAX_POINT = 100_000
 _MAX_MODEL_CHARS = 24000
 _REF_RE = re.compile(r"^\[?r?(\d{1,9})\]?$", re.IGNORECASE)
-_LOCAL_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home", ".home.arpa", ".corp")
+_LOCAL_SUFFIXES = (
+    ".local",
+    ".localhost",
+    ".internal",
+    ".lan",
+    ".home",
+    ".home.arpa",
+    ".corp",
+    ".intranet",
+)
+# Studio's own ports, as the desktop panel's local_origin refuses them.
+_STUDIO_PORTS = range(8888, 8909)
+_ASSIGNED_PORTS = 32768
 _FENCE = "untrusted_web_content"
+# Google's country domains, not google.com.evil.example; mirrored in features/browser/address.ts.
+_GOOGLE_HOST = r"google\.(?:[a-z]{2,3}|co\.[a-z]{2}|com\.[a-z]{2})"
 
 
 def is_browser_tool(name: Any) -> bool:
@@ -263,6 +442,33 @@ def _ref(arguments: dict) -> Optional[str]:
     return f"r{int(match.group(1))}"
 
 
+def _coordinate(arguments: dict, key: str) -> Optional[float]:
+    raw = arguments.get(key)
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{key} must be a number of pixels.")
+    if not (0 <= value <= _MAX_POINT):
+        raise ValueError(f"{key} must be a number of pixels from 0 to {_MAX_POINT}.")
+    return round(value, 1)
+
+
+def _target(arguments: dict, prefix: str = "") -> dict:
+    """A ref or an x/y point, as `{"ref": ...}` or `{"x": ..., "y": ...}`, keyed with `prefix`."""
+    ref = _ref({"ref": arguments.get(f"{prefix}ref")})
+    if ref:
+        return {f"{prefix}ref": ref}
+    x = _coordinate(arguments, f"{prefix}x")
+    y = _coordinate(arguments, f"{prefix}y")
+    if x is None or y is None:
+        raise ValueError(
+            f"give {prefix}ref from the latest snapshot, or both {prefix}x and {prefix}y."
+        )
+    return {f"{prefix}x": x, f"{prefix}y": y}
+
+
 def _host_problem(hostname: str) -> Optional[str]:
     """Why the browser must not open this host, or None. Literal and naming checks only; the
     resolver check runs after (``_validate_and_resolve_host``)."""
@@ -275,9 +481,241 @@ def _host_problem(hostname: str) -> Optional[str]:
         ip = None
     if ip is not None:
         return None if ip.is_global else f"{host} is not a public address"
-    if host == "localhost" or "." not in host or host.endswith(_LOCAL_SUFFIXES):
+    if host == "localhost" or "." not in host or f".{host}".endswith(_LOCAL_SUFFIXES):
         return f"{host} is a local name"
     return None
+
+
+def _is_loopback(hostname: str) -> bool:
+    host = hostname.strip("[]").lower()
+    if host == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip == ipaddress.IPv6Address("::1") or (ip.version == 4 and ip.is_loopback)
+
+
+def _own_ports() -> set[int]:
+    """The ports this server listens on (`-p 8000`), which the fixed range can miss; empty before it binds."""
+    state = getattr(getattr(sys.modules.get("main"), "app", None), "state", None)
+    ports = (getattr(state, name, None) for name in ("server_port", "loopback_http_port"))
+    return {port for port in ports if isinstance(port, int) and port > 0}
+
+
+def _studio_port_problem(url: str) -> Optional[str]:
+    parsed = urlsplit(url)
+    try:
+        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    except ValueError:
+        return "the address has a bad port"
+    if port in _STUDIO_PORTS or port >= _ASSIGNED_PORTS or port in _own_ports():
+        return f"{parsed.hostname}:{port} is Unsloth's own address"
+    return None
+
+
+def _whatwg_path(path: str) -> str:
+    """The path as the tab's URL parser leaves it: `\\` is `/`, and `.` / `..` (also as %2e)
+    segments are resolved, with no network-path meaning for a leading `//`."""
+    segments: list[str] = []
+    parts = path.replace("\\", "/").split("/")[1:]
+    for index, part in enumerate(parts):
+        dots = re.sub(r"%2e", ".", part, flags = re.IGNORECASE)
+        last = index == len(parts) - 1
+        if dots == "..":
+            if segments:
+                segments.pop()
+            if last:
+                segments.append("")
+        elif dots == ".":
+            if last:
+                segments.append("")
+        else:
+            segments.append(part)
+    return "/" + "/".join(segments)
+
+
+def _redirect_target(url: str) -> Optional[str]:
+    """The page a search engine's redirect link lands on, as the browser tab unwraps it
+    (``unwrapRedirect`` in features/browser/address.ts), or None."""
+    try:
+        parsed = urlsplit(url)
+        # The tab's URL parser maps the host (UTS 46): full-width letters and ideographic dots too.
+        host = unicodedata.normalize("NFKC", parsed.hostname or "").replace("\u3002", ".").lower()
+        host = host.rstrip(".").removeprefix("www.")
+    except ValueError:
+        return None
+    query = parse_qs(parsed.query)
+    path = _whatwg_path(parsed.path)
+    target = None
+    if (host == "duckduckgo.com" or host.endswith(".duckduckgo.com")) and path == "/l/":
+        target = (query.get("uddg") or [None])[0]
+    elif re.fullmatch(_GOOGLE_HOST, host) and path == "/url":
+        target = (query.get("q") or query.get("url") or [None])[0]
+    return target if target and re.match(r"^https?://", target, re.IGNORECASE) else None
+
+
+_MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024
+# A bare first segment ending in one of these is a file name, not a host: none is a top-level domain.
+_FILE_SUFFIXES = (
+    ".html",
+    ".htm",
+    ".svg",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".pdf",
+    ".txt",
+    ".json",
+    ".csv",
+    ".js",
+    ".jsx",
+    ".tsx",
+    ".css",
+    ".xml",
+    ".ts",
+    ".mjs",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".log",
+    ".jsonl",
+    ".tsv",
+)
+
+
+_WINDOWS = os.name == "nt"
+
+
+def workspace_path_of(raw: Any) -> Optional[str]:
+    """The file path in a navigate target that names a file rather than a site, or None.
+    Syntax only: `page.html`, `./a/b.html`, `/abs/x.svg`, `file:///abs/x.html`."""
+    target = str(raw or "").strip()
+    if re.match(r"^file:", target, re.IGNORECASE):
+        try:
+            parsed = urlsplit(target)
+            host = parsed.hostname
+        except ValueError:
+            return None
+        if (host or "localhost").lower() != "localhost":
+            return None
+        path = unquote(parsed.path)
+        # file:///C:/x.html carries the drive after a slash; Windows reads `/C:/x` as relative to the current drive.
+        if _WINDOWS and re.match(r"^/[a-zA-Z]:[/\\]", path):
+            path = path[1:]
+        return path or None
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", target) or target.startswith("//"):
+        return None
+    path = re.split(r"[?#]", target, maxsplit = 1)[0]
+    if re.match(r"^(?:\.{1,2}[/\\]|[/\\~]|[a-zA-Z]:[/\\])", path):
+        return path
+    parts = re.split(r"[/\\]", path, maxsplit = 1)
+    first = parts[0].lower()
+    # A dotless first segment is never a site the browser opens, so `out/page.html` is a folder.
+    folder = len(parts) == 2 and parts[1] and not re.search(r"[.:]", first) and first != "localhost"
+    return path if folder or first.endswith(_FILE_SUFFIXES) else None
+
+
+def _workspace_file_named(target: str, session_id: Optional[str]) -> Optional[str]:
+    """A bare name such as `run.py`, `notes.md` or `main.go` that is a file in the workspace, else
+    None (a site). Many suffixes are also top-level domains, so the file has to exist."""
+    # Read-only: probing every bare host must not create a sandbox for a chat that only browses.
+    from .tools import resolve_sandbox_workdir
+
+    path = re.split(r"[?#]", target, maxsplit = 1)[0]
+    # A bare name only: `example.com/../run.py` is a web address that would resolve onto the file.
+    if not path or ":" in path or re.search(r"[/\\]", path):
+        return None
+    try:
+        workdir = os.path.realpath(resolve_sandbox_workdir(session_id))
+    except Exception:
+        return None
+    return path if os.path.isfile(os.path.join(workdir, path)) else None
+
+
+def _read_inside(full: str, workdir: str) -> Optional[bytes]:
+    """`full`'s bytes, None if too large. Walks from a held root without following links, as
+    view_image does: a writer racing the checks can swap the file or a parent for a link."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    if os.open in os.supports_dir_fd:
+        directory = os.open(workdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            parts = os.path.relpath(full, workdir).split(os.sep)
+            for part in parts[:-1]:
+                child = os.open(
+                    part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd = directory
+                )
+                os.close(directory)
+                directory = child
+            handle = os.open(parts[-1], flags, dir_fd = directory)
+        finally:
+            os.close(directory)
+    else:
+        handle = os.open(full, flags)
+    with os.fdopen(handle, "rb") as source:
+        info = os.fstat(source.fileno())
+        checked_path = os.path.realpath(full)
+        checked = os.stat(checked_path)
+        if (
+            os.path.commonpath([workdir, checked_path]) != workdir
+            or not stat.S_ISREG(info.st_mode)
+            or (info.st_dev, info.st_ino) != (checked.st_dev, checked.st_ino)
+        ):
+            raise OSError("not a regular file inside the workspace")
+        if info.st_size > _MAX_WORKSPACE_FILE_BYTES:
+            return None
+        data = source.read(_MAX_WORKSPACE_FILE_BYTES + 1)
+    return None if len(data) > _MAX_WORKSPACE_FILE_BYTES else data
+
+
+def _workspace_file_request(path: str, session_id: Optional[str]) -> dict:
+    """The panel's open_file action for a file in this chat's tool workspace, or ValueError
+    telling the model what to do instead."""
+    from .tools import resolve_sandbox_workdir
+
+    workdir = os.path.realpath(resolve_sandbox_workdir(session_id))
+    expanded = os.path.expanduser(path)
+    full = os.path.realpath(
+        expanded if os.path.isabs(expanded) else os.path.join(workdir, expanded)
+    )
+    try:
+        inside = os.path.commonpath([workdir, full]) == workdir
+    except ValueError:
+        inside = False
+    if not inside:
+        raise ValueError(
+            f"{path} is outside the workspace, and the browser opens only files in it "
+            f"({workdir}, where python and terminal run). Write or copy the file there first, "
+            "then open it by its name, or give a full http(s) address."
+        )
+    # Forward slashes on every OS: the panel keys the tab on it.
+    shown = os.path.relpath(full, workdir).replace(os.sep, "/")
+    if not os.path.isfile(full):
+        raise ValueError(
+            f"there is no file {shown} in the workspace ({workdir}). Write it there with python "
+            "or terminal first, then open it by that name."
+        )
+    try:
+        data = _read_inside(full, workdir)
+    except OSError:
+        raise ValueError(f"{shown} could not be read inside the workspace ({workdir}).") from None
+    if data is None:
+        raise ValueError(
+            f"{shown} is over {_MAX_WORKSPACE_FILE_BYTES // (1024 * 1024)} MB, the most the "
+            "browser opens from the workspace."
+        )
+    content_type = mimetypes.guess_type(full)[0] or "text/plain"
+    return {
+        "op": "open_file",
+        "name": os.path.basename(full),
+        "path": shown,
+        "content_type": content_type,
+        "data": base64.b64encode(data).decode("ascii"),
+    }
 
 
 def normalize_navigation_url(raw: Any, website_policy: Optional[dict]) -> str:
@@ -293,10 +731,17 @@ def normalize_navigation_url(raw: Any, website_policy: Optional[dict]) -> str:
     if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", url):
         if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", url) and not re.match(r"^[^:/]+:\d", url):
             raise ValueError("only http and https pages can be opened.")
-        url = "https://" + url.lstrip("/")
+        url = url.lstrip("/")
+        url = ("http://" if _is_loopback(urlsplit("//" + url).hostname or "") else "https://") + url
     allowed, reason, hostname = check_url_access(url, website_policy)
     if not allowed:
         raise ValueError(reason.removeprefix("Blocked: "))
+    # The desktop panel decides: it opens only the local origins the user typed there.
+    if _is_loopback(urlsplit(url).hostname or ""):
+        problem = _studio_port_problem(url)
+        if problem:
+            raise ValueError(f"{problem}, so the browser can't open it.")
+        return url
     problem = _host_problem(urlsplit(url).hostname or "")
     if problem:
         raise ValueError(f"{problem}, and the browser only opens public sites.")
@@ -305,15 +750,35 @@ def normalize_navigation_url(raw: Any, website_policy: Optional[dict]) -> str:
     ok, reason, _ips = _validate_and_resolve_host(hostname, port)
     if not ok:
         raise ValueError(reason.removeprefix("Blocked: "))
+    # The tab opens a redirect link's target, so the target has to pass the same checks.
+    target = _redirect_target(url)
+    if target is not None:
+        normalize_navigation_url(target, website_policy)
     return url
 
 
-def _validated_request(name: str, arguments: dict, website_policy: Optional[dict]) -> dict:
+def _validated_request(
+    name: str,
+    arguments: dict,
+    website_policy: Optional[dict],
+    session_id: Optional[str] = None,
+) -> dict:
     op = name.removeprefix("browser_")
     if name == "browser_navigate":
         target = str(arguments.get("url") or "").strip()
         if target.lower() in ("back", "forward", "reload"):
             return {"op": target.lower()}
+        if len(target) <= _MAX_URL_CHARS:
+            # Syntax only, so tools._browser_opens_workspace_file asks for exactly these.
+            path = workspace_path_of(target)
+            if path is not None:
+                return _workspace_file_request(path, session_id)
+            named = _workspace_file_named(target, session_id)
+            if named is not None:
+                raise ValueError(
+                    f"{named} is a file in the workspace, not a site. Open it as ./{named}, or give "
+                    "the site's full https:// address."
+                )
         return {"op": "navigate", "url": normalize_navigation_url(target, website_policy)}
     if name == "browser_snapshot":
         request: dict = {"op": op, "full_page": arguments.get("full_page") is True}
@@ -326,7 +791,27 @@ def _validated_request(name: str, arguments: dict, website_policy: Optional[dict
         if not query:
             raise ValueError("query is empty.")
         return {"op": op, "query": query[:200]}
-    if name in ("browser_click", "browser_type", "browser_select"):
+    if name == "browser_click":
+        return {"op": op, **_target(arguments)}
+    if name == "browser_move_mouse":
+        return {"op": "move", **_target(arguments)}
+    if name == "browser_drag":
+        return {"op": op, **_target(arguments), **_target(arguments, "to_")}
+    if name == "browser_evaluate":
+        script = arguments.get("script")
+        if not isinstance(script, str) or not script.strip():
+            raise ValueError("script must be the JavaScript to run.")
+        if len(script) > _MAX_SCRIPT_CHARS:
+            raise ValueError(f"script is longer than {_MAX_SCRIPT_CHARS} characters.")
+        # Approved as shown: no bidi overrides, invisible marks, or blank runs hiding a tail.
+        if any(unicodedata.category(char) == "Cf" for char in script):
+            raise ValueError(
+                "script has invisible or direction-changing characters; write them as \\u escapes."
+            )
+        if _HIDDEN_TAIL_RE.search(script):
+            raise ValueError("script has a long run of blank space; remove it.")
+        return {"op": op, "script": script}
+    if name in ("browser_type", "browser_select"):
         ref = _ref(arguments)
         if not ref:
             raise ValueError("ref is required. Take one from the latest snapshot, for example r12.")
@@ -340,7 +825,16 @@ def _validated_request(name: str, arguments: dict, website_policy: Optional[dict
             request["text"] = text
             request["submit"] = arguments.get("submit") is True
         if name == "browser_select":
-            request["value"] = str(arguments.get("value") or "")[:500]
+            value = arguments.get("value")
+            if isinstance(value, bool):
+                value = "true" if value else "false"
+            value = ("" if value is None else str(value)).strip()
+            # The tab matches an empty value to the first option, which the model never meant.
+            if not value:
+                raise ValueError(
+                    'value is empty. Give the option text, or "true"/"false" for a checkbox.'
+                )
+            request["value"] = value[:500]
         return request
     if name == "browser_scroll":
         direction = str(arguments.get("direction") or "down").lower()
@@ -369,7 +863,61 @@ def _validated_request(name: str, arguments: dict, website_policy: Optional[dict
             "query": str(arguments.get("query") or "").strip()[:200],
             "limit": max(1, min(limit, 50)),
         }
+    if name == "browser_tabs":
+        tab = _whole_number(arguments, "tab")
+        if tab is not None and not 1 <= tab <= _MAX_TAB:
+            raise ValueError("tab must be the number of a tab in the list.")
+        return {"op": "tabs", **({"tab": tab} if tab is not None else {})}
+    if name == "browser_read_file":
+        start = _whole_number(arguments, "start_line") or 1
+        if start < 1:
+            raise ValueError("start_line counts from 1.")
+        return {"op": "read_file", "start_line": start}
+    if name == "browser_edit_file":
+        return {"op": "edit_file", **_file_edit(arguments)}
     raise ValueError(f"unknown browser tool {name}.")
+
+
+def _whole_number(arguments: dict, key: str) -> Optional[int]:
+    raw = arguments.get(key)
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{key} must be a whole number.")
+    if isinstance(raw, bool) or not value.is_integer():
+        raise ValueError(f"{key} must be a whole number.")
+    return int(value)
+
+
+def _file_edit(arguments: dict) -> dict:
+    def text(key: str) -> Optional[str]:
+        value = arguments.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"{key} must be a string.")
+        if len(value) > _MAX_FILE_EDIT_CHARS:
+            raise ValueError(f"{key} is longer than {_MAX_FILE_EDIT_CHARS} characters.")
+        return value
+
+    content = text("content")
+    old = text("old_text")
+    new = text("new_text")
+    if content is not None:
+        if old is not None or new is not None:
+            raise ValueError("give either content, or old_text and new_text, not both.")
+        return {"content": content}
+    if not old:
+        raise ValueError(
+            "old_text is empty. Give the text to replace, or content for the whole file."
+        )
+    if new is None:
+        raise ValueError("new_text is required with old_text; an empty string deletes old_text.")
+    if old == new:
+        raise ValueError("old_text and new_text are the same, so nothing would change.")
+    return {"old_text": old, "new_text": new, "replace_all": arguments.get("replace_all") is True}
 
 
 def _clip(value: Any, limit: int) -> str:
@@ -396,7 +944,11 @@ def format_result(name: str, result: dict, website_policy: Optional[dict]) -> st
     url = _one_line(_clip(result.get("url"), _MAX_URL_CHARS))
     if url.lower().startswith(("http://", "https://")):
         # A followed link or a redirect can land where browser_navigate would refuse to go.
-        problem = _host_problem(urlsplit(url).hostname or "")
+        try:
+            host = urlsplit(url).hostname or ""
+        except ValueError:
+            return "Error: the page's address could not be read, so its content is withheld."
+        problem = _studio_port_problem(url) if _is_loopback(host) else _host_problem(host)
         if problem:
             return (
                 f"Error: the page went to {problem}, so its content is withheld. "
@@ -410,18 +962,23 @@ def format_result(name: str, result: dict, website_policy: Optional[dict]) -> st
                 "disallows, so its content is withheld. Navigate somewhere else."
             )
     title = _one_line(_clip(result.get("title"), 300))
+    file = _one_line(_clip(result.get("file"), 300))
     note = _one_line(_clip(result.get("note"), 1000))
     text = _clip(result.get("text"), 400_000)
     if len(text) > _MAX_MODEL_CHARS:
-        text = (
-            text[:_MAX_MODEL_CHARS]
-            + "\n... (cut here: use browser_find, browser_scroll or a snapshot ref to see more)"
+        more = (
+            "browser_read_file with a later start_line"
+            if name == "browser_read_file"
+            else "browser_find, browser_scroll or a snapshot ref"
         )
+        text = text[:_MAX_MODEL_CHARS] + f"\n... (cut here: use {more} to see more)"
     # The title and note come from the page too (a selected option's words), so everything but
     # this tool's own framing goes inside the fence.
     page = []
     if url:
         page.append(f"Page: {title + ' ' if title else ''}<{url}>")
+    elif file:
+        page.append(f"File: {file}")
     if note:
         page.append(note)
     if text:
@@ -442,12 +999,28 @@ def _with_screenshot(body: str, image: Any) -> str:
     url = _png_data_url(data)
     if url is None:
         return "Error: the screenshot was not a readable image."
+    size = _png_size(url)
+    if size:
+        body += (
+            f"\nThe picture is {size[0]}x{size[1]} pixels; browser_click, browser_move_mouse and "
+            "browser_drag take x and y in these pixels."
+        )
     return (
         body
         + "\n"
         + SENTINEL
         + json.dumps([{"data": url.split(",", 1)[1], "mimeType": "image/png"}])
     )
+
+
+def _png_size(url: str) -> Optional[tuple[int, int]]:
+    import base64
+    import struct
+
+    head = base64.b64decode(url.split(",", 1)[1][:44])
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    return struct.unpack(">II", head[16:24])
 
 
 def execute_browser_tool(
@@ -462,6 +1035,7 @@ def execute_browser_tool(
 ) -> str:
     from state.browser_actions import (
         begin_browser_action,
+        discard_browser_action,
         new_action_id,
         wait_browser_action,
     )
@@ -469,13 +1043,13 @@ def execute_browser_tool(
 
     if output_callback is None:
         return (
-            "Error: the browser is only available in a Studio chat, where the browser panel runs "
+            "Error: the browser is only available in an Unsloth chat, where the browser panel runs "
             "these actions."
         )
     if not isinstance(arguments, dict):
         arguments = {}
     try:
-        request = _validated_request(name, arguments, website_policy)
+        request = _validated_request(name, arguments, website_policy, session_id)
     except ValueError as exc:
         return f"Error: {exc}"
     from .web_access_policy import normalize_website_policy
@@ -491,21 +1065,23 @@ def execute_browser_tool(
         if timeout is None
         else max(_MIN_ACTION_TIMEOUT_S, min(float(timeout), _ACTION_TIMEOUT_S))
     )
-    output_callback(
-        {
-            "browser_action": {
-                "id": action_id,
-                "session_id": session_id or "",
-                **request,
-                # The tab keeps clicks and form posts to the same limits a navigation is held to.
-                "allowed_domains": list(policy["allowedDomains"]),
-                "blocked_domains": list(policy["blockedDomains"]),
-                # The tab drops a question still open when this side stops waiting, so a late
-                # Allow can't run an action nobody is waiting for.
-                "timeout_s": wait,
+    try:
+        output_callback(
+            {
+                "browser_action": {
+                    "id": action_id,
+                    "session_id": session_id or "",
+                    **request,
+                    "allowed_domains": list(policy["allowedDomains"]),
+                    "blocked_domains": list(policy["blockedDomains"]),
+                    # The tab drops an unanswered question once this side stops waiting, so a late Allow can't run.
+                    "timeout_s": wait,
+                }
             }
-        }
-    )
+        )
+    except BaseException:
+        discard_browser_action(action_id, slot)
+        raise
     outcome, result = wait_browser_action(slot, action_id, cancel_event, wait)
     if outcome == "cancelled":
         return "Error: the browser action was stopped."

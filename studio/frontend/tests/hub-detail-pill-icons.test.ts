@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// The Hub detail pills reuse the sidebar's Video and Library icons, Base chips draw
+// Hugeicons' Layer, and the stats row has no Memory pill.
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { readSrc } from "./helpers/kit.ts";
+
+function sidebarIcon(row: string): string {
+  const sidebar = readSrc("components/app-sidebar.tsx");
+  const match = sidebar.match(new RegExp(`\\n    ${row}: \\{\\n      icon: (\\w+),`));
+  assert.ok(match, `sidebar ${row} row`);
+  return match[1];
+}
+
+test("Video gen draws the sidebar's Video icon", () => {
+  const shared = readSrc("features/hub/catalog/shared.tsx");
+  const icon = sidebarIcon("video");
+  assert.match(
+    shared,
+    new RegExp(`key === "diffusion" && label === "Video gen"\\) return ${icon};`),
+  );
+  assert.match(shared, /icon=\{capabilityIcon\(capability\.key, capability\.label\)\}/);
+});
+
+test("the Library stat draws the sidebar's Library icon", () => {
+  const inspector = readSrc("features/hub/catalog/model-inspector.tsx");
+  const icon = sidebarIcon("library");
+  assert.match(inspector, new RegExp(`label="Library"[\\s\\S]{0,80}icon=\\{${icon}\\}`));
+});
+
+test("every Base chip draws Layer", () => {
+  const inspector = readSrc("features/hub/catalog/model-inspector.tsx");
+  assert.match(inspector, /icon=\{LayerIcon\}[\s\S]{0,160}>Base<\/span>/);
+  const local = readSrc("features/hub/catalog/local-on-device-card.tsx");
+  const reference = local.slice(local.indexOf("function BaseModelReference"));
+  assert.match(reference.slice(0, 1500), /icon=\{LayerIcon\}/);
+});
+
+test("the detail stats carry no Memory pill", () => {
+  const inspector = readSrc("features/hub/catalog/model-inspector.tsx");
+  assert.doesNotMatch(inspector, /label="Memory"|RamMemoryIcon|minMemory/);
+});

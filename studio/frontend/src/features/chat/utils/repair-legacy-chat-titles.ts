@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import {
+  advertisedThreadPatchGuards,
   batchListChatMessages,
   listChatImportLedger,
   updateChatThread,
@@ -14,46 +15,50 @@ import {
   threadsAwaitingImport,
   threadsMissingMessages,
 } from "./chat-title";
-import { type GuardProbe, readGuardProbe } from "./openapi-support";
+import {
+  type GuardProbe,
+  readGuardProbe,
+  resolveGuardProbe,
+} from "./openapi-support";
 import { runWithConcurrency } from "./run-with-concurrency";
 import { createSerialQueue } from "./serial-queue";
 
-/** Threads already tried, so ones that could not be rewritten stay off every later refresh. */
+/** Threads already tried, so unrewritable ones are not retried on every refresh. */
 const attempted = new Set<string>();
 
-/** Rows per pass, so a long history drains in pages. */
 const REPAIR_PER_PASS = 100;
 
-/** Writes in flight. Each PATCH is a synchronous SQLite call server side. */
+/** Each PATCH is a synchronous SQLite call server side. */
 const REPAIR_CONCURRENCY = 4;
 
-/** Breather between pages. */
 const REPAIR_PAGE_PAUSE_MS = 500;
 
-/** Several sidebars can be mounted at once, so REPAIR_CONCURRENCY only holds if their passes
- *  queue rather than overlap. */
+/** Several sidebars may mount at once; passes must queue to honour REPAIR_CONCURRENCY. */
 const serial = createSerialQueue();
 
-/** Cached once the served schema answers. A failed probe is not cached, so a startup hiccup does
- *  not park the migration for the session. */
+/** A failed probe is not cached, so a startup hiccup does not park the migration. */
 let guardSupport: Promise<boolean> | null = null;
 
-/** Whether this backend enforces the conditional title patch. Probing by sending one would let
- *  an older backend apply the write, the very harm being checked for, so the served schema
- *  answers; anything unreadable is a no. */
+/** Read from the served schema: probing with a real patch could let an old backend apply it. */
+async function probeServedSchema(): Promise<GuardProbe> {
+  try {
+    const response = await authFetch("/openapi.json");
+    return readGuardProbe(
+      response.ok,
+      response.ok ? await response.json() : null,
+    );
+  } catch {
+    return { supported: false, settled: false };
+  }
+}
+
+/** Every repair starts from a thread list, so the advertised flag is already known when present. */
 function backendEnforcesTitleGuard(): Promise<boolean> {
   guardSupport ??= (async () => {
-    let probe: GuardProbe = { supported: false, settled: false };
-    try {
-      const response = await authFetch("/openapi.json");
-      probe = readGuardProbe(
-        response.ok,
-        response.ok ? await response.json() : null,
-      );
-    } catch {
-      probe = { supported: false, settled: false };
-    }
-    // Only a settled answer is worth remembering.
+    const probe = await resolveGuardProbe(
+      advertisedThreadPatchGuards(),
+      probeServedSchema,
+    );
     if (!probe.settled) guardSupport = null;
     return probe.supported;
   })();
@@ -68,7 +73,7 @@ export function repairLegacyChatTitles(
 }
 
 async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
-  // Claim nothing until the guard is known: a rewrite that can silently beat a rename is not worth a tidier title.
+  // Do nothing until the guard is known: an unguarded rewrite could beat a rename.
   if (!(await backendEnforcesTitleGuard())) return 0;
 
   const { candidates, rest, hasMore } = selectLegacyRepairPage(
@@ -82,8 +87,7 @@ async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
 
   let messages: Map<string, MessageRecord[]>;
   try {
-    // Not the caller's earlier map: the backend's own view, taken as late as possible, is what the
-    // rewrite has to be based on. One batched call.
+    // Use the backend's own messages, fetched as late as possible, as the rewrite base.
     messages = await batchListChatMessages(ids);
   } catch {
     // Nothing was decided, so let a later refresh try these again.
@@ -91,12 +95,9 @@ async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
     return 0;
   }
 
-  // Backend messages only: Dexie keeps rows the backend has pruned, so merging the two could put
-  // a deleted prompt back into a title. A chat not imported yet reads as unknown below.
+  // Backend messages only: Dexie may hold pruned rows that would resurrect a deleted prompt.
   const repairs = planLegacyTitleRepairs(candidates, messages);
 
-  // Nothing stored means either mid-import or emptied by the user; the ledger tells them apart,
-  // and is only fetched when there is something to decide.
   const withoutMessages = threadsMissingMessages(ids, messages);
   if (withoutMessages.length > 0) {
     let imported = new Set<string>();
@@ -113,10 +114,8 @@ async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
   let repaired = 0;
   await runWithConcurrency(repairs, REPAIR_CONCURRENCY, async (repair) => {
     try {
-      // The backend PATCH directly, not updateStoredChatThread: that ensures the thread first,
-      // re-importing one deleted on another client, and a migration must never create anything.
-      // Both guards answer 409 if a rename or a delete of the opening prompt lands first, and a
-      // title patch leaves updatedAt alone, so Recents keeps its order.
+      // Direct PATCH, not updateStoredChatThread, which would re-import a thread deleted elsewhere.
+      // Guards answer 409 on a racing rename or delete; updatedAt is untouched.
       await updateChatThread(
         repair.threadId,
         { title: repair.title },
@@ -131,8 +130,7 @@ async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
     }
   });
 
-  // A page that wrote nothing fires no history update, so schedule the next one here. It runs on
-  // `rest`, so rows this page unmarked are not drawn again.
+  // A page that wrote nothing fires no history update, so schedule the next one here.
   if (hasMore) {
     setTimeout(() => {
       void repairLegacyChatTitles(rest).catch(() => undefined);

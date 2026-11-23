@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""The eval prediction_step forces UNSLOTH_RETURN_LOGITS=1 only when the logits are kept, and must
-put the caller's value back. A loss-only eval must not force it: that materialized
-[bsz, seq, vocab] logits per batch and spiked eval VRAM far above training (#1801).
-
-UNSLOTH_RETURN_LOGITS=1 also blocks packing and padding-free when the next trainer is built, so
-an evaluate() that raised part way used to leave logits forced on for the rest of the process.
-The step is lifted out of PatchRL with ``ast`` so this runs without ``import unsloth``.
-"""
+"""Eval forces UNSLOTH_RETURN_LOGITS only when logits are kept, and restores the caller's value."""
 
 from __future__ import annotations
 

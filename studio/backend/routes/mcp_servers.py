@@ -10,8 +10,18 @@ from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
+from integrations import editors
+from integrations import unreal as unreal_tools
 from integrations.blender import service as blender
-from models.mcp_servers import BlenderSettings, BlenderSetup, McpBuiltinResponse
+from models.mcp_servers import (
+    BlenderSettings,
+    BlenderSetup,
+    EditorSetup,
+    EditorTest,
+    McpBuiltinResponse,
+    UnrealToolsInstall,
+    UnrealToolsInstallResult,
+)
 
 from auth.authentication import (
     authenticated_via_api_key,
@@ -30,6 +40,7 @@ from core.inference.mcp_client import (
     close_mcp_sessions,
     invalidate_tool_cache,
     is_stdio,
+    is_studio_tools,
     join_stdio_command,
     list_tools_async,
     oauth_client_kwargs,
@@ -69,16 +80,13 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter(dependencies = [Depends(get_current_subject)])
 
-# Only a UI session may define a local command; API keys keep http(s) MCP. Annotated, not a Depends default:
-# these routes are also called directly by the tests, where a Depends object is truthy and would read as "API key".
+# Local commands need a UI session; API keys keep http(s). Not a default: tests call it directly
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 WithoutCredential = Annotated[bool, Depends(request_admitted_without_credential)]
 
 
 def _looks_like_command(value: str) -> bool:
-    """Whitespace is a one-way signal: a URL can't hold an unencoded space, so a value with whitespace is
-    definitely a command. No whitespace proves nothing (a lone token may be a single-arg command or a
-    scheme-less URL)."""
+    """Whitespace proves a command (a URL cannot hold an unencoded space); no whitespace proves nothing."""
     return any(ch.isspace() for ch in value)
 
 
@@ -87,8 +95,7 @@ def _normalize_stdio_command(url: str) -> str:
     trimmed = raw.strip()
     if not trimmed:
         raise HTTPException(status_code = 400, detail = "command must not be empty")
-    # Leading whitespace is executable-field padding. At the other end, only
-    # space/tab delimit arguments on Windows. POSIX quoting protects whitespace.
+    # Trailing whitespace is stripped only on Windows; POSIX quoting protects whitespace
     normalized = raw.lstrip().rstrip(" \t") if sys.platform == "win32" else trimmed
     try:
         parts = parse_stdio_command(normalized)
@@ -121,8 +128,7 @@ def _validate_url(url: str) -> str:
     trimmed = raw.strip()
     if not trimmed:
         raise HTTPException(status_code = 400, detail = "url must not be empty")
-    # Non-HTTP values reuse the URL field for local commands. Syntax validation
-    # is policy-free, but persistence and execution stay behind the stdio gate.
+    # Syntax only: persisting and running a command stay behind the stdio gate.
     if stdio_mcp_enabled() and is_stdio(trimmed):
         return _normalize_stdio_command(raw)
     parsed = urlparse(trimmed)
@@ -138,6 +144,19 @@ def _validate_url(url: str) -> str:
     if not parsed.netloc:
         raise HTTPException(status_code = 400, detail = "url is missing a host")
     return trimmed
+
+
+def _http_origin(url: str) -> tuple:
+    try:
+        parsed = urlparse((url or "").strip())
+        scheme = parsed.scheme.lower()
+        return (
+            scheme,
+            (parsed.hostname or "").lower(),
+            parsed.port or {"http": 80, "https": 443}.get(scheme),
+        )
+    except ValueError:
+        return (url,)
 
 
 def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
@@ -192,7 +211,12 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
         builtin_id = row.get("builtin_id"),
         display_name = row["display_name"],
         url = row["url"],
-        headers = (parse_server_headers(row) or {}) if include_headers else {},
+        # A managed editor row's headers carry the editor's capability token, which no client needs.
+        headers = (
+            (parse_server_headers(row) or {})
+            if include_headers and row.get("builtin_id") not in editors.EDITORS
+            else {}
+        ),
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
         oauth_client_id = row.get("oauth_client_id"),
@@ -204,10 +228,20 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
     )
 
 
-def _blender_row():
+def _builtin_row(builtin_id: str = "blender"):
     return next(
-        (row for row in mcp_servers_db.list_servers() if row.get("builtin_id") == "blender"), None
+        (row for row in mcp_servers_db.list_servers() if row.get("builtin_id") == builtin_id), None
     )
+
+
+def _require_ui_for_studio_tools(via_api_key, no_credential = False) -> None:
+    # The row runs Unsloth Studio's own tools as the account, so like a stdio command only a UI session adds it.
+    if via_api_key or no_credential:
+        raise HTTPException(
+            status_code = 403,
+            detail = "The Unsloth Studio tools server can only be added from the Unsloth Studio UI, "
+            "not with an API key.",
+        )
 
 
 def _require_managed_access(
@@ -226,15 +260,28 @@ def list_builtins(
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
     no_credential: WithoutCredential = False,
+    detect: Optional[str] = None,
 ):
+    # Install detection reads the disk (and the registry on Windows): only for the app being set up when asked.
+    def wanted(builtin_id: str) -> bool:
+        return detect is None or detect == builtin_id
+
     if via_api_key or no_credential:
-        item = blender.catalog_item()
-        item.available = False
-        item.unavailable_reason = (
-            "An authenticated Unsloth Studio UI session is required for Blender MCP."
-        )
-        return [item]
-    return [blender.catalog_item(_blender_row())]
+        items = [
+            blender.catalog_item(detect = wanted("blender")),
+            *(editors.catalog_item(key, detect = wanted(key)) for key in editors.EDITORS),
+        ]
+        for item in items:
+            item.available = False
+            item.unavailable_reason = f"An authenticated Unsloth Studio UI session is required for {item.display_name} MCP."
+        return items
+    return [
+        blender.catalog_item(_builtin_row(), detect = wanted("blender")),
+        *(
+            editors.catalog_item(key, _builtin_row(key), detect = wanted(key))
+            for key in editors.EDITORS
+        ),
+    ]
 
 
 @router.post("/builtins/blender/test", response_model = McpServerProbeResult)
@@ -246,7 +293,7 @@ async def test_blender(
     no_credential: WithoutCredential = False,
 ):
     _require_managed_access(via_api_key, no_credential, executes = True)
-    row = _blender_row()
+    row = _builtin_row()
     config = json.loads(row.get("builtin_config_json") or "{}") if row else {}
     if not (config.get("consent") or payload.consent):
         raise HTTPException(
@@ -254,9 +301,17 @@ async def test_blender(
         )
     settings = BlenderSettings(port = payload.port, blender_path = payload.blender_path)
     on_tools = None
-    if row and blender.settings_for(row) == settings:
+    saved = bool(row) and blender.settings_for(row) == settings
+    if saved:
         on_tools = lambda tools: cache_tools(row["id"], tools)
-    return await blender.probe(settings, on_tools = on_tools)
+    result = await blender.probe(settings, on_tools = on_tools)
+    if saved and result.blender_path:
+        mcp_servers_db.update_server(
+            row["id"],
+            {"builtin_config_json": json.dumps({**config, "blender_path": result.blender_path})},
+        )
+        await asyncio.to_thread(close_mcp_sessions, row["url"], parse_server_headers(row))
+    return result
 
 
 @router.put("/builtins/blender", response_model = McpBuiltinResponse)
@@ -268,7 +323,7 @@ async def setup_blender(
     no_credential: WithoutCredential = False,
 ):
     _require_managed_access(via_api_key, no_credential, executes = payload.is_enabled)
-    old = _blender_row()
+    old = _builtin_row()
     config = json.loads(old.get("builtin_config_json") or "{}") if old else {}
     if payload.is_enabled and not (config.get("consent") or payload.consent):
         raise HTTPException(
@@ -301,6 +356,107 @@ async def setup_blender(
             raise HTTPException(status_code = 400, detail = result.error)
         mcp_servers_db.update_server(server_id, {"is_enabled": True})
     return blender.catalog_item(mcp_servers_db.get_server(server_id))
+
+
+def _editor_or_404(builtin_id: str) -> None:
+    if builtin_id not in editors.EDITORS:
+        raise HTTPException(status_code = 404, detail = "Unknown managed MCP integration")
+
+
+def _consented(row) -> bool:
+    return bool(json.loads(row.get("builtin_config_json") or "{}").get("consent")) if row else False
+
+
+# {editor}, not {builtin_id}: these are owner-only integration slots, not per-account objects.
+@router.post("/builtins/{editor}/test", response_model = McpServerProbeResult)
+@serialize_mcp_server_mutation
+async def test_editor(
+    editor: str,
+    payload: EditorTest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
+):
+    builtin_id = editor
+    _editor_or_404(builtin_id)
+    _require_managed_access(via_api_key, no_credential, executes = True)
+    row = _builtin_row(builtin_id)
+    name = editors.EDITORS[builtin_id].display_name
+    if not (_consented(row) or payload.consent):
+        raise HTTPException(
+            status_code = 400, detail = f"Explicit consent is required before testing {name} MCP."
+        )
+    settings = editors.normalize(builtin_id, payload)
+    on_tools = None
+    if row and editors.settings_for(builtin_id, row) == settings:
+        on_tools = lambda tools: cache_tools(row["id"], tools)
+    return await editors.probe(builtin_id, settings, on_tools = on_tools)
+
+
+@router.post("/builtins/unreal/install-tools", response_model = UnrealToolsInstallResult)
+def install_unreal_tools(
+    payload: UnrealToolsInstall,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
+):
+    # The editor runs what lands in Content/Python, so this follows the editor-tools gate.
+    _require_managed_access(via_api_key, no_credential, executes = True)
+    try:
+        files = unreal_tools.install(payload.project_path)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 400, detail = f"Could not write to the project: {exc}"
+        ) from exc
+    return UnrealToolsInstallResult(files = files)
+
+
+@router.put("/builtins/{editor}", response_model = McpBuiltinResponse)
+@serialize_mcp_server_mutation
+async def setup_editor(
+    editor: str,
+    payload: EditorSetup,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
+):
+    builtin_id = editor
+    _editor_or_404(builtin_id)
+    _require_managed_access(via_api_key, no_credential, executes = payload.is_enabled)
+    old = _builtin_row(builtin_id)
+    name = editors.EDITORS[builtin_id].display_name
+    consent = _consented(old) or payload.consent
+    if payload.is_enabled and not consent:
+        raise HTTPException(
+            status_code = 400, detail = f"Explicit consent is required before enabling {name} MCP."
+        )
+    settings = editors.normalize(builtin_id, payload)
+    config = json.dumps({**settings.model_dump(), "consent": bool(consent)})
+    server_id = old["id"] if old else uuid.uuid4().hex[:16]
+    if old:
+        mcp_servers_db.update_server(
+            server_id, {"builtin_config_json": config, "is_enabled": False}
+        )
+    else:
+        mcp_servers_db.create_server(
+            server_id, name, "", is_enabled = False, builtin_id = builtin_id, builtin_config_json = config
+        )
+    invalidate_tool_cache(server_id)
+    if old:
+        await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
+    if payload.is_enabled:
+        result = await editors.probe(
+            builtin_id,
+            settings,
+            check_editor = False,
+            on_tools = lambda tools: cache_tools(server_id, tools),
+        )
+        if not result.ok:
+            raise HTTPException(status_code = 400, detail = result.error)
+        mcp_servers_db.update_server(server_id, {"is_enabled": True})
+    return editors.catalog_item(builtin_id, mcp_servers_db.get_server(server_id))
 
 
 @router.post("/stdio/decode", response_model = McpStdioCommand)
@@ -370,6 +526,7 @@ async def create_mcp_server(
     payload: McpServerCreate,
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
 ):
     display_name = (payload.display_name or "").strip()
     if not display_name:
@@ -377,9 +534,10 @@ async def create_mcp_server(
     url = _validate_url(payload.url)
     if is_stdio(url):
         require_ui_session_for_local_commands(via_api_key)
+    if is_studio_tools(url):
+        _require_ui_for_studio_tools(via_api_key, no_credential)
     headers = _normalize_headers(payload.headers)
-    # OAuth is HTTP-only; force it off for stdio commands so a stale flag can't
-    # push the probe onto the 305s OAuth timeout. Backend enforces this.
+    # OAuth is HTTP-only; a stale flag would push stdio probes onto the 305s OAuth timeout.
     use_oauth = payload.use_oauth and not is_stdio(url)
     client_id, client_secret = (
         _oauth_client(payload.oauth_client_id, payload.oauth_client_secret)
@@ -471,17 +629,26 @@ async def update_mcp_server(
     _oauth_client(client_id, changes.get("oauth_client_secret", old.get("oauth_client_secret")))
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
-    # Both directions, so an API key can neither repoint an http row at a command nor edit a stdio row's
-    # env/name/enabled flag. Before every side effect, so a refusal leaves the row, its OAuth tokens, cache and
-    # sessions untouched.
+    # Check both directions before any side effect; API keys must not repoint http rows or edit stdio env
     if is_stdio(old["url"]) or is_stdio(changes.get("url", old["url"])):
         require_ui_session_for_local_commands(via_api_key)
-    # headers == HTTP headers (remote) or env vars (stdio). On a transport-type switch with no new headers, drop
-    # the old ones so env secrets aren't re-sent as HTTP headers (or vice versa).
+    # Repointing either way; plain edits such as is_enabled stay open to API keys, as for any http row.
+    if "url" in changes and (is_studio_tools(old["url"]) or is_studio_tools(changes["url"])):
+        _require_ui_for_studio_tools(via_api_key, no_credential)
+    # On transport switch with no new headers, drop old ones so env secrets are not sent as HTTP headers
     if (
         "url" in changes
         and is_stdio(changes["url"]) != is_stdio(old["url"])
         and "headers_json" not in changes
+    ):
+        changes["headers_json"] = None
+    # Saved headers belong to one origin: repointing an http row elsewhere drops them unless resent.
+    if (
+        "url" in changes
+        and "headers_json" not in changes
+        and not is_stdio(old["url"])
+        and not is_stdio(changes["url"])
+        and _http_origin(changes["url"]) != _http_origin(old["url"])
     ):
         changes["headers_json"] = None
     # Clear persisted OAuth tokens when the URL, the OAuth flag or the client changes
@@ -508,8 +675,7 @@ async def update_mcp_server(
     if invalidates_tools:
         invalidate_tool_cache(server_id)
     if invalidates_tools:
-        # Narrow to this row's env: another server row sharing the command but
-        # with a different env keeps its live sessions.
+        # Narrowed by env: another row sharing the command with a different env keeps its sessions.
         await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
     return _row_to_response(mcp_servers_db.get_server(server_id), include_headers = not no_credential)
 
@@ -575,7 +741,7 @@ async def refresh_mcp_server_tools(
     if server.get("builtin_id"):
         raise HTTPException(
             status_code = 400,
-            detail = "Use the managed integration Test action to check Blender readiness.",
+            detail = f"Use the managed integration Test action to check {server['display_name']} readiness.",
         )
     # Refresh uses the stored address.
     if is_stdio(server["url"]):
@@ -603,9 +769,7 @@ async def refresh_mcp_server_tools(
         if current is not None and not any(
             current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
         ):
-            # Start the cool-off so the next chat send does not re-hang on this server's timeout. If the row changed
-            # while the probe was awaiting, the FAILURE belongs to the old config and must not park the newly edited
-            # server.
+            # Start the cool-off so the next send does not re-hang; a row changed mid-probe must not be parked
             record_probe_failure(server_id, use_oauth)
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
@@ -622,6 +786,7 @@ async def import_mcp_servers(
     payload: McpServerImportRequest,
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
 ):
     """Bulk-register servers from a standard mcpServers JSON config (issue
     #5936). Each entry rides the existing create path: _validate_url applies
@@ -637,10 +802,11 @@ async def import_mcp_servers(
     for entry in entries:
         try:
             url = _validate_url(entry.url)
-            # Per entry, so an API-key import of a mixed config still creates its
-            # http entries and reports the stdio ones.
+            # Checked per entry: an API-key import of a mixed config still creates http entries, reports stdio.
             if is_stdio(url):
                 require_ui_session_for_local_commands(via_api_key)
+            if is_studio_tools(url):
+                _require_ui_for_studio_tools(via_api_key, no_credential)
             headers = _normalize_headers(entry.headers)
         except HTTPException as exc:
             errors.append(f"{entry.display_name}: {exc.detail}")
@@ -669,11 +835,9 @@ async def test_mcp_server(
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
 ):
-    # URL/header validation must surface as 400 like create/update so the frontend's create-form pre-flight gets the
-    # same error semantics as the save call. Only catch transport/timeout errors below.
+    # Validation must surface as 400, like save; only transport and timeout errors are caught below
     url = _validate_url(payload.url)
-    # Caller-supplied and unstored, so the gate has to land before
-    # list_tools_async -- after it the process has already started.
+    # Gate before list_tools_async: after it the process has already started.
     if is_stdio(url):
         require_ui_session_for_local_commands(via_api_key)
     headers = _normalize_headers(payload.headers)
@@ -717,11 +881,18 @@ def _ui_server_or_404(server_id: str, via_api_key: bool) -> dict:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
     if not server.get("is_enabled"):
         raise HTTPException(status_code = 400, detail = "MCP server is disabled")
-    if is_stdio(server["url"]):
+    # Managed editors run code here over loopback HTTP, so they take the stdio gate too.
+    if is_stdio(server["url"]) or server.get("builtin_id") in editors.EDITORS:
         require_ui_session_for_local_commands(via_api_key)
         if not stdio_mcp_enabled():
             raise HTTPException(status_code = 400, detail = stdio_mcp_disabled_reason())
     return server
+
+
+async def _ui_project_gate(server_id: str, session_id: Optional[str]) -> None:
+    from core.inference.tools import mcp_project_excludes
+    if await asyncio.to_thread(mcp_project_excludes, server_id, session_id):
+        raise HTTPException(status_code = 400, detail = "MCP server is not enabled for this project")
 
 
 def _row_still_matches(server_id: str, server: dict) -> bool:
@@ -763,7 +934,7 @@ async def _warm_tool_cache(server: dict) -> None:
 
 
 def _ui_call_kwargs(server_id: str, server: dict, thread_id, session_id) -> dict:
-    from core.inference.tools import mcp_session_scope
+    from core.inference.tools import mcp_project_excludes, mcp_session_scope
     return {
         "url": server["url"],
         "headers": parse_server_headers(server),
@@ -772,7 +943,10 @@ def _ui_call_kwargs(server_id: str, server: dict, thread_id, session_id) -> dict
         **oauth_client_kwargs(server),
         # execute_tool's key, so a widget reaches the chat's own stdio subprocess.
         "scope": mcp_session_scope(session_id, thread_id),
-        "config_check": lambda: _row_still_matches(server_id, server),
+        "config_check": lambda: (
+            _row_still_matches(server_id, server)
+            and not mcp_project_excludes(server_id, session_id)
+        ),
     }
 
 
@@ -786,6 +960,7 @@ async def read_mcp_ui_resource(
     via_api_key: ViaApiKey = False,
 ):
     server = _ui_server_or_404(server_id, via_api_key)
+    await _ui_project_gate(server_id, session_id)
     uri = (uri or "").strip()
     # Any ui:// resource (widgets read their own assets), no other scheme: a filesystem server maps file:// onto the host.
     if not uri.startswith(UI_RESOURCE_SCHEME):
@@ -833,6 +1008,7 @@ async def call_mcp_ui_tool(
     if get_tool_policy() is False:
         raise HTTPException(status_code = 403, detail = "Tools are disabled on this server")
     server = _ui_server_or_404(server_id, via_api_key)
+    await _ui_project_gate(server_id, payload.session_id)
     tool_name = (payload.tool_name or "").strip()
     if not tool_name:
         raise HTTPException(status_code = 400, detail = "tool_name must not be empty")

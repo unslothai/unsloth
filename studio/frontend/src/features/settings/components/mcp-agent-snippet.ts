@@ -47,14 +47,9 @@ function claudeSnippet(
   os: AgentCommandOs,
   apiKey: string | null,
 ): string {
-  const command = `claude mcp add --transport http ${MCP_SERVER_NAME} ${quoteShellArg(url, os)}`;
-  if (apiKey) {
-    return `${command} --header ${quoteShellArg(`Authorization: Bearer ${apiKey}`, os)}`;
-  }
-  // In PowerShell $UNSLOTH_API_KEY is an unset shell variable, not the environment.
-  const envRef =
-    os === "windows" ? `$env:${MCP_API_KEY_ENV}` : `$${MCP_API_KEY_ENV}`;
-  return `${command} --header "Authorization: Bearer ${envRef}"`;
+  const command = `claude mcp add --transport http --scope user ${MCP_SERVER_NAME} ${quoteShellArg(url, os)}`;
+  const token = apiKey ?? `\${${MCP_API_KEY_ENV}}`;
+  return `${command} --header ${quoteShellArg(`Authorization: Bearer ${token}`, os)}`;
 }
 
 function codexSnippet(url: string, os: AgentCommandOs): string {
@@ -168,6 +163,10 @@ const CONFIG_PATHS: Record<string, string> = {
 
 // these read the key from UNSLOTH_API_KEY even when the caller passes one.
 const ENV_ONLY_AGENT_IDS: ReadonlySet<string> = new Set(["codex", "vibe"]);
+
+export function hasMcpSnippet(agentId: string): boolean {
+  return BUILDERS.has(agentId);
+}
 
 /** returns setup for a known agent and valid base URL, with a literal key only when provided. */
 export function buildMcpSnippet(

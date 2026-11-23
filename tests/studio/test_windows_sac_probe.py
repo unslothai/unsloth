@@ -149,7 +149,6 @@ def _load_scenario():
 @pytest.fixture
 def s():
     module = _load_scenario()
-    # The fakes below stand in for a verified Studio; the check itself is tested against a real socket.
     module.studio_identity_error = lambda *a, **k: None
     return module
 
@@ -565,7 +564,6 @@ def test_the_signature_audit_covers_every_windows_family():
         'throw "no Windows assets on $tag"',
         "enumerated $($assets.Count) Windows asset(s) but inventoried $audited",
     )
-    # A hard coded profile would silently shrink the set again.
     _lacks(
         body,
         "*windows-x64-cuda12-legacy.zip",
@@ -577,7 +575,7 @@ def test_the_signature_audit_covers_every_windows_family():
 def test_the_readme_does_not_claim_the_release_tag_pins_a_run():
     body = _text(PROBE_DIR / "README.md")
     assert "read\nby the installer only" in body or "read by the installer only" in body
-    _has(body, "re-run the Studio installer", "$env:UNSLOTH_STUDIO_PASSWORD")
+    _has(body, "re-run the Unsloth Studio installer", "$env:UNSLOTH_STUDIO_PASSWORD")
 
 
 def test_a_padded_load_reply_is_read_for_its_deferred_error(s):
@@ -844,7 +842,6 @@ def test_the_venv_inventory_comes_from_the_running_interpreter_and_cannot_be_emp
         "$venvDir = Resolve-VenvDir",
         "no PE files found under $venvDir",
     )
-    # collect reads run's recorded venv instead of resolving it again in this shell.
     collect = _collect()
     _has(collect, "$venvTail = ", "Get-ScopeTail (Resolve-VenvDir $dir)")
     assert "$VENV_DIR -replace" not in collect
@@ -942,7 +939,7 @@ def test_installer_trees_under_a_custom_studio_home_are_recorded_for_revert():
 
 def test_trees_the_installer_created_are_recorded_even_when_the_install_fails():
     init = _init()
-    warning = "Write-Warning 'Studio still not found after the installer ran."
+    warning = "Write-Warning 'Unsloth Studio still not found after the installer ran."
     _before(init, "$created = @($absentBefore", warning)
     _before(init, "$b.StudioInstallRoots = @(", warning)
     # Ctrl+C mid-install skips a catch and the normal return, never a finally.
@@ -1135,7 +1132,6 @@ def test_the_scenario_password_is_cleared_even_when_the_run_is_interrupted():
     clear = "Remove-Item Env:\\SAC_PROBE_STUDIO_PASSWORD -ErrorAction SilentlyContinue"
     assert run.count(clear) == 2
     assert run.index("} finally {") < run.rindex(clear)
-    # An inherited value is dropped before the captured one is set.
     _before(run, clear, "if ($STUDIO_PASSWORD) { $env:SAC_PROBE_STUDIO_PASSWORD")
 
 
@@ -1214,9 +1210,8 @@ def test_a_studio_that_never_answered_fails_prepare():
     start = "Start-Studio $python $Port $startLog"
     assert "if (-not (Start-Studio $python $Port $startLog)) {" in init
     assert "| Out-Null\n}" not in init.split(start)[-1]
-    # prepare fails; run only warns, because its inventories are still evidence.
     assert "if ($allowInstall) {" in init.split(start)[1]
-    assert 'throw "Studio did not answer on port $Port within 5 minutes' in init
+    assert 'throw "Unsloth Studio did not answer on port $Port within 5 minutes' in init
 
 
 def test_only_studio_is_treated_as_studio_on_the_port():
@@ -1289,7 +1284,7 @@ def test_an_installer_that_produced_no_interpreter_fails_prepare():
         tail,
         "if ($allowInstall) {",
         "throw 'the installer ran but produced no managed interpreter",
-        "Write-Warning 'Studio still not found after the installer ran.",
+        "Write-Warning 'Unsloth Studio still not found after the installer ran.",
     )
 
 
@@ -1376,7 +1371,6 @@ def test_a_failed_dismount_is_reclaimed_by_the_next_revert():
     """The policy block clears AuditPolicyApplied even when the dismount after the refresh failed."""
     assert "function Clear-EfiOwnership {" in _ps1()
     reclaim = _ps1("function Clear-EfiOwnership", "function Test-PolicyActive")
-    # Reclaims only a drive still pointing at the partition we left; never mounts.
     assert "mountvol.exe" not in reclaim
     _has(reclaim, "Dismount-Efi $true", "Test-Path -LiteralPath 'S:\\EFI\\Microsoft\\Boot'")
     revert = _revert()

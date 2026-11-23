@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A VLM repo without preprocessor_config.json (Step-3.7-Flash) still gets its native processor.
-
-Without it the remote processor's patch_pixel_values are ignored by the native forward ("tokens: 493,
-features: 169"). Functions are ast-extracted from vision.py; hub resolver and offline check stubbed.
-"""
+"""Without preprocessor_config.json, a VLM must still use the native processor, or patch values drop."""
 
 import ast
 import json
@@ -127,7 +123,7 @@ def test_broken_preprocessor_config_is_not_replaced_by_defaults(tmp_path):
 
 
 def test_unlisted_vlm_without_preprocessor_config_still_fails(tmp_path):
-    # LLaVA has a registered image processor, but its class defaults need not match the checkpoint.
+    # LLaVA's registered image processor defaults need not match the checkpoint.
     repo = _tokenizer_repo(tmp_path)
     transformers.LlavaConfig().save_pretrained(repo)
     processor, err = NS["_construct_vlm_processor_fallback"](repo, "llava", None, False)

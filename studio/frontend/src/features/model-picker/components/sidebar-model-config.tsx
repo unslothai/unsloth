@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { modelConfigInstanceKey } from "../model-config/config-signature";
 import { residentModelConfigTarget } from "../model-config/model-config-handoff";
 import type { PerModelConfig } from "../model-config/per-model-config";
@@ -19,7 +19,8 @@ interface SidebarModelConfigProps {
   onReload: (config: PerModelConfig) => void;
 }
 
-export function SidebarModelConfig({
+// Memoized: the chat page re-renders it on every event, even with the panel collapsed.
+export const SidebarModelConfig = memo(function SidebarModelConfig({
   modelId,
   ggufVariant,
   isGguf,
@@ -53,4 +54,4 @@ export function SidebarModelConfig({
       isDiffusion={isDiffusion}
     />
   );
-}
+});

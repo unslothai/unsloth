@@ -51,6 +51,7 @@ def test_invalid_api_type_is_rejected(schema):
         ("custom", "responses", "responses", ""),
         ("custom", "responses", "responses", "?api-version=2025-04-01-preview"),
         ("custom", "chat_completions", "chat/completions", ""),
+        ("custom", "chat_completions", "chat/completions", "?api-version=2025-04-01-preview"),
         ("openai", "chat_completions", "responses", ""),
     ],
 )
@@ -112,6 +113,87 @@ def test_selected_endpoint_and_payload(monkeypatch, provider_type, api_type, end
         assert "messages" not in body
     else:
         assert body["messages"][0]["content"] == "Be brief"
+
+
+def test_base_url_query_survives_model_list_and_non_stream_calls(monkeypatch):
+    sent = []
+
+    def handle(request):
+        sent.append(request)
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json = {"data": [{"id": "gateway-model"}]})
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, json = {"choices": [{"message": {"content": "pong"}}]})
+        if request.url.path == "/v1/audio/transcriptions":
+            return httpx.Response(200, json = {"text": "hi"})
+        return httpx.Response(404)
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            client = ExternalProviderClient(
+                "custom", "https://gateway.example/v1?api-version=preview", "test-key"
+            )
+            assert [m["id"] for m in await client.list_models()] == ["gateway-model"]
+            await client.verify_models_endpoint_lightweight()
+            await client.chat_completion(
+                messages = [{"role": "user", "content": "ping"}], model = "gateway-model"
+            )
+            await client.create_transcription(b"RIFF", "a.wav", "audio/wav", "whisper-1")
+
+    asyncio.run(run())
+    assert [(r.url.path, r.url.query.decode()) for r in sent] == [
+        ("/v1/models", "api-version=preview"),
+        ("/v1/models", "api-version=preview"),
+        ("/v1/chat/completions", "api-version=preview"),
+        ("/v1/audio/transcriptions", "api-version=preview"),
+    ]
+
+
+def test_base_url_query_survives_native_provider_calls(monkeypatch):
+    sent = []
+
+    def handle(request):
+        sent.append(request)
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json = {"data": []})
+        return httpx.Response(200, json = {})
+
+    async def drain(client, model):
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "ping"}], model = model
+        ):
+            pass
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            monkeypatch.setattr(ep, "_openrouter_catalog", {})
+            # Empty, so the Anthropic output-cap lookup is made here whatever ran before.
+            monkeypatch.setattr(ep, "_anthropic_output_caps", {})
+            await drain(
+                ExternalProviderClient("anthropic", "https://gw.example/v1?tenant=a", "k"),
+                "claude-sonnet-4-5",
+            )
+            await drain(
+                ExternalProviderClient(
+                    "gemini", "https://generativelanguage.googleapis.com/v1beta?tenant=a", "k"
+                ),
+                "gemini-2.5-flash",
+            )
+            router = ExternalProviderClient("openrouter", "https://gw.example/api/v1?tenant=a", "k")
+            await router.list_models()
+            await router.api_key_rejected()
+
+    asyncio.run(run())
+    assert [(r.url.path, r.url.query.decode()) for r in sent] == [
+        # The output-cap lookup before an Anthropic stream with no max_tokens (#16953).
+        ("/v1/models/claude-sonnet-4-5", "tenant=a"),
+        ("/v1/messages", "tenant=a"),
+        ("/v1beta/models/gemini-2.5-flash:streamGenerateContent", "tenant=a&alt=sse"),
+        ("/api/v1/models", "tenant=a"),
+        ("/api/v1/key", "tenant=a"),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -246,6 +328,7 @@ def test_non_stream_route_reports_local_context_truncation(monkeypatch, server_c
         _payload,
         *,
         tools = None,
+        **_kwargs,
     ):
         assert tools is None
         return messages[-1:], truncation, 128
@@ -290,7 +373,8 @@ def test_non_stream_route_reports_local_context_truncation(monkeypatch, server_c
     response = asyncio.run(run())
     assert response.status_code == 200
     body = json.loads(response.body)
-    assert body["context_truncated"] == truncation
+    # The cloud fit says whether a summary was tried before turns were dropped.
+    assert body["context_truncated"] == {**truncation, "summary_failed": False}
     assert "old" not in json.dumps(requests[-1]["input"])
     assert "latest" in json.dumps(requests[-1]["input"])
     assert len(requests) == (2 if server_compaction_rejected else 1)
@@ -327,3 +411,27 @@ def test_responses_follow_up_preserves_reasoning_metadata():
         messages, supports_vision = False, provider_type = "custom", api_type = "responses"
     )
     assert built[0]["extra_content"] == reasoning
+
+
+def test_native_openai_follow_up_keeps_only_its_reasoning_items():
+    # OpenAI wants a tool call's reasoning items back with its outputs (function-calling guide).
+    from routes.inference import _build_external_messages
+
+    reasoning = [{"type": "reasoning", "id": "rs_1", "encrypted_content": "enc_blob"}]
+    messages = [
+        ChatMessage(
+            role = "assistant",
+            content = None,
+            tool_calls = [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+            extra_content = {"openai_responses_reasoning": reasoning, "google": {"x": 1}},
+        ),
+        ChatMessage(role = "tool", tool_call_id = "call_1", content = "result"),
+    ]
+    built = _build_external_messages(messages, supports_vision = False, provider_type = "openai")
+    assert built[0]["extra_content"] == {"openai_responses_reasoning": reasoning}

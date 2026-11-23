@@ -22,7 +22,6 @@ def test_unknown_palette_is_dropped_and_the_rest_kept():
     cleaned = drop_unknown_palette(stored, PALETTES)
     assert cleaned["appearance"] == {"theme": "dark"}
     assert cleaned["version"] == 1
-    # The stored record itself is left alone.
     assert stored["appearance"]["palette"] == "neon-ramen"
 
 

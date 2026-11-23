@@ -314,7 +314,7 @@ def _tokens(
     ids = torch.randint(3, cfg["vocab_size"], (batch, length), generator = g)
     eos = cfg["eos_token_id"]
     ids[0, 5] = eos
-    ids[0, 6] = eos  # back-to-back EOS
+    ids[0, 6] = eos
     if batch > 1:
         ids[1, 11] = eos
     return ids

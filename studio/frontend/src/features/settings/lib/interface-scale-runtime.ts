@@ -2,13 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * macOS draws the titlebar and traffic lights itself, at a size webview zoom does not
- * touch. Every CSS inset that has to clear them is therefore divided by the zoom, so the
- * gap stays the same number of screen points at any interface scale.
- *
- * These two numbers are the single source for that. `provider.tsx` builds its `var(...)`
- * fallbacks from them and the tests assert against them, so changing the titlebar height
- * here cannot leave a stale divisor behind at any scale but 100%.
+ * macOS draws the titlebar at a size webview zoom does not touch, so insets are divided by zoom.
+ * Single source for provider.tsx's var() fallbacks and the tests.
  */
 export const NATIVE_MAC_TITLEBAR_HEIGHT_PX = 34;
 export const NATIVE_MAC_TRAFFIC_LIGHT_INSET_PX = 78;
@@ -19,10 +14,7 @@ export const NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR = `var(--studio-native-traffic-l
 let appliedInterfaceZoom = 1;
 const appliedInterfaceZoomListeners = new Set<() => void>();
 
-/**
- * The zoom last handed to the webview, not a reading off it. Page zoom is not observable
- * from JS, so this is the only value the non-Windows drop path has.
- */
+/** Page zoom is not observable from JS, so this is the last zoom handed to the webview. */
 export function getAppliedInterfaceZoom(): number {
   return appliedInterfaceZoom;
 }

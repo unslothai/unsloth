@@ -110,13 +110,13 @@ def test_second_expert_call_is_idempotent(sm75):
         (
             types.SimpleNamespace(vae_force_fp32 = False),
             _target(),
-        ),  # LTX-2 / HV1.5 / H3 / image families
+        ),
         (types.SimpleNamespace(), _target()),
         (_wan(), _target(backend = "rocm")),
         (_wan(), _target(device = "mps", backend = "mps")),
         (_wan(), _target(device = "cpu", backend = "cpu")),
         (_wan(), _target(device = "xpu", backend = "xpu")),
-        (_wan(), types.SimpleNamespace(device = "cuda")),  # no backend field: fail closed to fp32
+        (_wan(), types.SimpleNamespace(device = "cuda")),
     ],
 )
 def test_everything_else_keeps_the_fp32_pin(sm75, family, target):

@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""UI font size scaling regression (Settings > Appearance).
-
-Drives the real appearance controls and asserts the typography-scale
-contract: text and line heights scale by size/16, the root font size and
-layout geometry never move, an explicit Code font size stays fixed, and an
-overflowing Radix select scrolls its viewport by keyboard and wheel.
-
-Runs against an already-booted, already-bootstrapped Unsloth:
-    BASE_URL=http://127.0.0.1:18894 STUDIO_PW=... python tests/studio/playwright_ui_font_scale.py
-"""
+"""Font scale regression: text scales by size/16 while the root size and layout stay fixed."""
 
 import os
 import re
@@ -34,8 +25,7 @@ PW = os.environ["STUDIO_PW"]
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_fontscale"))
 ART.mkdir(parents = True, exist_ok = True)
 
-# Read the range from the store instead of restating it: the default is the one size at which data-ui-font-size is
-# dropped, and it has already moved once (16 -> 15), which is exactly what a pinned copy here fails on.
+# Read the range from the store: the default size has already moved once (16 -> 15).
 _STORE = (
     Path(__file__).resolve().parents[2]
     / "studio/frontend/src/features/settings/stores/appearance-custom-store.ts"
@@ -48,7 +38,6 @@ if _RANGE is None:
     raise AssertionError("[font-scale] FAIL: no UI_FONT_SIZE_RANGE in appearance-custom-store.ts")
 SIZES = (int(_RANGE.group(1)), int(_RANGE.group(2)))
 DEFAULT = int(_RANGE.group(3))
-# The base the authored rem typography is written against; --ui-font-scale is the preference divided by it.
 _BASE = re.search(r"UI_FONT_SIZE_CSS_BASE\s*=\s*(\d+)", _STORE)
 if _BASE is None:
     raise AssertionError(
@@ -56,13 +45,9 @@ if _BASE is None:
     )
 CSS_BASE = int(_BASE.group(1))
 
-# Per-step ceiling: every step here takes a few seconds on a hosted runner, so a step that has not
-# finished in this long is stuck, and the run stops there naming it instead of every later step
-# waiting out its own timeouts. STUDIO_PW_STEP_BUDGET_SCALE stretches it on a slow lane. The
-# whole run keeps an absolute wall as the sibling suites do.
 STEP_BUDGET_S = step_budget_s(180)
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
-_watchdog = None  # armed in main()
+_watchdog = None
 
 
 def settled_scroll_top(
@@ -70,14 +55,7 @@ def settled_scroll_top(
     quiet_ms = 200,
     timeout_ms = 5_000,
 ):
-    """The select viewport's scrollTop once it has stopped moving.
-
-    Radix scrolls the highlighted item into view off the back of the keypress, so
-    a scrollTop read straight after `keyboard.press` is a mid-scroll sample, not
-    where the viewport ends up. Poll until it holds the same value for `quiet_ms`.
-    Falls back to the last value seen rather than raising: this only establishes
-    the floor for the wheel check, and that check reports its own failure.
-    """
+    """Poll scrollTop until it holds for quiet_ms; a read right after keypress is mid-scroll."""
     last = page.evaluate(SCROLL_TOP_JS)
     quiet_since = time.monotonic()
     deadline = time.monotonic() + timeout_ms / 1000
@@ -150,9 +128,7 @@ def measure(page):
     return page.evaluate(MEASURE_JS)
 
 
-# The effect each field has on <html> once its value is applied (appearance-custom-store.ts):
-# data-ui-font-size for the UI size, dropped at the default; --custom-code-font-size for the Code
-# size, dropped when the field is cleared.
+# data-ui-font-size is dropped at the default; --custom-code-font-size when the field is cleared.
 _APPLIED_JS = {
     "UI font size": """(want) => document.documentElement.getAttribute("data-ui-font-size") === want""",
     "Code font size": """(want) => (document.documentElement.style
@@ -165,8 +141,6 @@ def set_input(page, label, value):
     field.scroll_into_view_if_needed()
     field.fill(str(value))
     page.keyboard.press("Enter")
-    # Wait for the value to take effect rather than 600 ms. A value that never applies runs the
-    # wait out and the caller's own assertion reports it, as before.
     if label == "UI font size":
         want = None if int(value) == DEFAULT else str(value)
     else:
@@ -195,8 +169,7 @@ def wait_for_no_dialog(page):
 
 
 def open_appearance(page):
-    # The shortcut can fire before the app has wired its key handler, so press each chord once behind a fixed sleep and
-    # a slow boot loses the dialog. Alternate them on a bounded retry, waiting on the dialog itself.
+    # The shortcut can fire before the key handler is wired, so retry while waiting on the dialog.
     dialog = page.get_by_role("dialog")
     for attempt in range(10):
         page.keyboard.press("Meta+," if attempt % 2 else "Control+,")
@@ -208,7 +181,6 @@ def open_appearance(page):
     if dialog.count() == 0:
         fail("settings dialog did not open after 10 attempts")
     dialog.get_by_role("button").filter(has_text = "Appearance").first.click()
-    # Wait for the control the caller is about to drive, not a fixed interval.
     page.locator("input[aria-label='UI font size']").wait_for(state = "visible", timeout = 15_000)
 
 
@@ -286,16 +258,12 @@ def main():
 
         viewport = page.locator("[data-radix-select-viewport]")
         viewport.wait_for(state = "visible")
-        # Wait for the overflow itself rather than a fixed sleep: the list is populated asynchronously, so measuring
-        # too early reads it as short.
         try:
             page.wait_for_function(SCROLLABLE_JS, timeout = 10_000)
         except PWTimeout:
             fail(f"select viewport not scrollable: {page.evaluate(VIEWPORT_STATE_JS)}")
 
-        # Radix moves focus into the listbox after the content opens, so a fixed
-        # burst of presses can land on the trigger and scroll nothing. Press until
-        # it moves instead; a real regression still fails, just after more tries.
+        # Radix moves focus into the listbox after opening, so early presses can scroll nothing.
         kb_top = 0
         for _ in range(40):
             page.keyboard.press("ArrowDown")
@@ -306,22 +274,18 @@ def main():
         if not kb_top > 0:
             fail(f"keyboard did not scroll the select viewport after 40 presses: {kb_top}")
 
-        # That read lands mid-scroll and comes in low (24-35px on the ubuntu CI image), which is neither the floor the
-        # wheel has to beat nor a moment a wheel event survives. Let the scroll finish and re-read instead of racing it.
+        # The keyboard read lands mid-scroll and comes in low; let it settle first.
         kb_top = settled_scroll_top(page)
-        # At 0 the comparison below is unsatisfiable, so the wheel would always fail.
         if not kb_top > 0:
             fail(f"select viewport returned to the top once the keyboard scroll settled: {kb_top}")
 
         vp_box = viewport.bounding_box()
-        # Keep the pointer inside the viewport: a fixed 40px offset lands outside a shorter box and the wheel then goes
-        # to whatever is underneath.
+        # A fixed offset can land outside a shorter box and wheel whatever is underneath.
         page.mouse.move(
             vp_box["x"] + vp_box["width"] / 2,
             vp_box["y"] + min(40, vp_box["height"] / 2),
         )
-        # A single wheel event can be dropped, so retry a bounded number of times. A
-        # viewport that truly refuses the wheel never moves and still fails.
+        # A single wheel event can be dropped.
         wheel_top = kb_top
         for _ in range(5):
             page.mouse.wheel(0, -400)
@@ -341,14 +305,13 @@ def main():
         try:
             viewport.wait_for(state = "detached", timeout = 10_000)
         except PWTimeout:
-            pass  # best-effort, as the fixed pause was
+            pass
 
         step("cn keeps text-ui-* next to color classes (hub tabs)")
         page.keyboard.press("Escape")
         wait_for_no_dialog(page)
         page.goto(f"{BASE}/hub", wait_until = "domcontentloaded")
         tab = page.get_by_role("radio").filter(has_text = "Discover").first
-        # The hub has rendered once its tabs have, instead of 2 s after the navigation.
         tab.wait_for(state = "visible", timeout = 15000)
         open_appearance(page)
         small = SIZES[0]
@@ -358,15 +321,13 @@ def main():
         tab = page.get_by_role("radio").filter(has_text = "Discover").first
         tab.wait_for(state = "visible", timeout = 15000)
         tab_font = tab.evaluate("el => parseFloat(getComputedStyle(el).fontSize)")
-        # text-ui-12p5 at the smallest scale; the unscaled 12.5px means twMerge dropped the token.
+        # The unscaled 12.5px means twMerge dropped the text-ui-12p5 token.
         if not near(tab_font, 12.5 * small / CSS_BASE):
             fail(f"hub tab font did not scale (twMerge drop?): {tab_font}")
         icon_w = page.evaluate(
             "() => { const el = document.querySelector('.size-icon');"
             " return el ? parseFloat(getComputedStyle(el).width) : null; }"
         )
-        # Standard icons render at the UI font size itself below the CSS base, so the smallest setting gives glyphs of
-        # exactly that many px.
         if not near(icon_w, small):
             fail(f"size-icon did not match the UI font size below {CSS_BASE}: {icon_w}")
         page.goto(BASE, wait_until = "domcontentloaded")

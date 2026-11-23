@@ -4,15 +4,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
 import { toast } from "@/lib/toast";
-import { generateAudio, runAudio } from "../api";
+import { generateAudio, runAudio, runSpeechOnConnection } from "../api";
 import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import {
   audioOptionLabel,
+  audioOptionSpecsFor,
   audioOptionsForRequest,
   type AudioOptionValue,
   type AudioOptionValues,
   missingRequiredAudioOptions,
-  parseAudioOptions,
   readAudioOptionValues,
   saveAudioOptionValues,
 } from "../audio-options";
@@ -41,6 +41,11 @@ import { galleryCache } from "./use-audio-gallery";
 import { useAudioCloneStore } from "../stores/audio-clone-store";
 import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
+import {
+  speakVoiceLogic,
+  speakVoiceStored,
+  voiceOptionName,
+} from "../tools/panel-logic";
 import { audioToolPanelsFor, isInstructionPanel } from "../tools/registry";
 import {
   audioModelContextFor,
@@ -48,10 +53,12 @@ import {
   collectToolRequest,
   toolValueKey,
 } from "../tools/select";
-import { showRunResult } from "./use-clone-generation";
+import { showRunResult, warnIgnoredOptions } from "./use-clone-generation";
 import type { AudioWorkflowId } from "../workflows";
+import { reportAudioFailure } from "../audio-failure-actions";
 import type { AudioGallery } from "./use-audio-gallery";
 import type { AudioModelSlot } from "./use-audio-model-slot";
+import type { SpeakConnection } from "./use-speak-connection";
 
 type TtsWorkflow = "speak" | "music";
 type TtsDraftField = "prompt" | "instructions";
@@ -84,7 +91,8 @@ export function useSpeechGeneration({
   setSelectedId,
   pendingTranscribeRelease,
   replayQueuedTtsPick,
-}: { workflow: TtsWorkflow } & Pick<
+  connection,
+}: { workflow: TtsWorkflow; connection: SpeakConnection | null } & Pick<
   AudioHostState,
   | "status"
   | "busyRef"
@@ -188,8 +196,8 @@ export function useSpeechGeneration({
   );
   const samplingControls = audioSamplingControlsApply(status?.audio_type);
   const audioOptionSpecs = useMemo(
-    () => parseAudioOptions(status?.audio_options),
-    [status?.audio_options],
+    () => audioOptionSpecsFor(status, workflow),
+    [status, workflow],
   );
   const audioOptionsModel = status?.active_model ?? null;
   const [audioOptionValues, setAudioOptionValues] = useState<AudioOptionValues>(
@@ -223,7 +231,6 @@ export function useSpeechGeneration({
     ? "music"
     : nativeAudioInstructionsKind(status?.audio_type);
 
-  // Instruction panels edit the page's instruction draft; other panels keep a value per model.
   const voices = useAudioVoicesStore((state) => state.voices);
   const voicesLoaded = useAudioVoicesStore(
     (state) => state.loaded && !state.error,
@@ -236,8 +243,20 @@ export function useSpeechGeneration({
         musicNeedsDescription,
       }),
       savedVoiceIds: voicesLoaded ? voices.map((voice) => voice.id) : null,
+      voicesWithoutTranscript: voices
+        .filter((voice) => !voice.transcript?.trim())
+        .map((voice) => voice.id),
+      voiceOption: voiceOptionName(audioOptionSpecs),
     }),
-    [status, workflow, cudaMusicGeneration, musicNeedsDescription, voices, voicesLoaded],
+    [
+      status,
+      workflow,
+      cudaMusicGeneration,
+      musicNeedsDescription,
+      voices,
+      voicesLoaded,
+      audioOptionSpecs,
+    ],
   );
   const toolPanels = useMemo(
     () => audioToolPanelsFor(workflow, toolContext),
@@ -247,13 +266,19 @@ export function useSpeechGeneration({
   const toolValues = useMemo(() => {
     const values: Record<string, unknown> = {};
     for (const panel of toolPanels) {
+      const stored =
+        storedToolValues[toolValueKey(audioOptionsModel, workflow, panel.id)];
       values[panel.id] = isInstructionPanel(panel.id)
         ? { instructions: audioInstructions, language: audioLanguage }
-        : storedToolValues[toolValueKey(audioOptionsModel, workflow, panel.id)];
+        : panel.id === speakVoiceLogic.id
+          ? speakVoiceStored(stored, audioOptionValues, toolContext.voiceOption)
+          : stored;
     }
     return values;
   }, [
     toolPanels,
+    audioOptionValues,
+    toolContext.voiceOption,
     audioInstructions,
     audioLanguage,
     storedToolValues,
@@ -315,7 +340,7 @@ export function useSpeechGeneration({
       return;
     }
     const instructions = audioInstructions.trim();
-    if (musicNeedsDescription && !instructions) {
+    if (!connection && musicNeedsDescription && !instructions) {
       updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
@@ -324,17 +349,16 @@ export function useSpeechGeneration({
       );
       return;
     }
-    if (toolRequest.error) {
+    if (!connection && toolRequest.error) {
       updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       toast.error(toolRequest.error);
       return;
     }
-    const missingOptions = missingRequiredAudioOptions(
-      advancedOptionSpecs,
-      audioOptionValues,
-    );
+    const missingOptions = connection
+      ? []
+      : missingRequiredAudioOptions(advancedOptionSpecs, audioOptionValues);
     if (missingOptions.length > 0) {
       updateGenerationPhase(null);
       busyRef.current = null;
@@ -351,26 +375,43 @@ export function useSpeechGeneration({
     };
     const savedVoice =
       workflow === "speak" ? toolRequest.patch.inputs?.reference : undefined;
-    const language = audioLanguage.trim();
+    // MOSS Local's language rides its Style panel; Supertonic's has its own.
+    const language = (
+      toolRequest.patch.language ?? (mossLocalGeneration ? audioLanguage : "")
+    ).trim();
     saveLastPrompt(ttsDraftKey("prompt", workflow), prompt);
-    if (savedVoice) {
+    if (savedVoice || connection) {
       const voiceController = new AbortController();
       generateAbort.current = voiceController;
       updateGenerationPhase("generating");
       try {
-        const response = await runAudio(
-          {
-            workflow: "speak",
-            text,
-            instructions:
-              instructionsKind !== null && instructions ? instructions : null,
-            language: mossLocalGeneration && language ? language : null,
-            inputs: { reference: savedVoice },
-            options: requestOptions,
-            speed: toolRequest.patch.speed ?? null,
-          },
-          voiceController.signal,
-        );
+        const response = connection
+          ? await runSpeechOnConnection(
+              {
+                text,
+                providerId: connection.providerId,
+                model: connection.model,
+                voice: connection.voice.trim() || "alloy",
+                instructions: instructions || null,
+                speed: connection.speed,
+              },
+              voiceController.signal,
+            )
+          : await runAudio(
+              {
+                workflow: "speak",
+                text,
+                instructions:
+                  instructionsKind !== null && instructions
+                    ? instructions
+                    : null,
+                language: language || null,
+                inputs: { reference: savedVoice },
+                options: requestOptions,
+                speed: toolRequest.patch.speed ?? null,
+              },
+              voiceController.signal,
+            );
         updateGenerationPhase("finishing");
         await showRunResult({
           response,
@@ -384,6 +425,7 @@ export function useSpeechGeneration({
       } catch (error) {
         if (!voiceController.signal.aborted) {
           updateGenerationPhase("finishing");
+          reportAudioFailure(error);
           const message =
             error instanceof Error ? error.message : "Audio generation failed.";
           setGenerationError(message);
@@ -416,14 +458,13 @@ export function useSpeechGeneration({
         ...(instructionsKind !== null && instructions
           ? { audio_instructions: instructions }
           : {}),
-        ...(mossLocalGeneration && language
-          ? { audio_language: language }
-          : {}),
+        ...(language ? { audio_language: language } : {}),
         ...(Object.keys(requestOptions).length > 0
           ? { audio_options: requestOptions }
           : {}),
         signal: controller.signal,
       });
+      warnIgnoredOptions(generated.ignored_options, generated.model);
       if (generated.choices[0]?.finish_reason === "length")
         toast.warning(
           maxTokens < TTS_MAX_TOKENS
@@ -463,6 +504,7 @@ export function useSpeechGeneration({
     } catch (error) {
       if (!controller.signal.aborted) {
         updateGenerationPhase("finishing");
+        reportAudioFailure(error);
         setGenerationError(
           error instanceof Error ? error.message : "Audio generation failed.",
         );
@@ -505,6 +547,7 @@ export function useSpeechGeneration({
     refreshStatus,
     replayQueuedTtsPick,
     selectClip,
+    connection,
   ]);
 
   // Only unmount aborts: RootLayout keeps this page mounted so leaving the tab does not cancel synthesis.

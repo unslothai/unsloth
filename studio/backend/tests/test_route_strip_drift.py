@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pins the known divergence between the route display strip and the canonical one.
-
-``routes/inference.py::_strip_tool_xml_for_display`` predates the parser and never picked
-up the markdown-code gating in ``core/tool_healing.py``, so it deletes a rehearsal inside
-a fenced code block that the canonical strip keeps.
-
-Changing a shipped streaming route changes what users see, so it is pinned rather than
-fixed here: this test fails if either side moves, making the follow-up deliberate.
-"""
+"""Pins the known divergence where the display strip deletes rehearsals inside fenced code blocks."""
 
 import sys
 from pathlib import Path

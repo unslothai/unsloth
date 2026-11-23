@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""CVE-2026-4538: torch.export .pt2 loading unpickles archive payloads with weights_only=False
-(always on older torch, as a fallback after a failed weights_only=True load on newer torch, and
-for `use_pickle` weights / constants), so a crafted .pt2 runs code on load. No torch release
-fixes it (pytorch/pytorch#176791 was closed unmerged).
-
-patch_torch_export_pt2_unsafe_load forces weights_only=True only for loads issued from the two
-export loader modules. The tests call torch.load from a function whose globals are those
-modules, which is exactly what the guard keys on, with a harmless class that torch's
-weights_only allowlist rejects.
-"""
+"""Forces weights_only=True on torch.load in the two .pt2 export loader modules (CVE-2026-4538)."""
 
 import importlib
 import importlib.util
@@ -90,7 +81,6 @@ def _unguarded_load():
 
 
 def test_unpatched_torch_unpickles_from_export_loader(monkeypatch):
-    # The defect: without the guard the export loader path unpickles arbitrary objects.
     monkeypatch.setattr(torch, "load", _unguarded_load())
     loaded = _load_from(_SERIALIZE)(_payload({"x": NotATensor()}))
     assert type(loaded["x"]).__name__ == "NotATensor"
@@ -149,11 +139,9 @@ def test_rng_guard_composes_in_either_order(guarded):
     # The rng guard (CVE-2026-1839) keys its idempotency on markers on torch.load.
     flag = object()
     guarded_load = torch.load
-    # rng shim outside the pt2 guard: its unsloth frame is skipped, the payload still blocked.
     torch.load = _rng_style_wrapper(guarded_load, flag)
     with pytest.raises(pickle.UnpicklingError):
         _load_from(_SERIALIZE)(_payload({"x": NotATensor()}))
-    # pt2 guard applied over the rng shim keeps the rng markers and still blocks.
     torch.load = _rng_style_wrapper(_unguarded_load(), flag)
     import_fixes.patch_torch_export_pt2_unsafe_load()
     assert torch.load._unsloth_pt2_guard and torch.load._unsloth_rng_flag is flag
@@ -181,8 +169,7 @@ def test_export_roundtrip_and_compile_unchanged(guarded, tmp_path):
 
 
 def test_outer_torch_load_wrapper_does_not_hide_export_caller(guarded):
-    # Another library wrapping torch.load after Unsloth puts its own frame between the export
-    # loader and the guard.
+    # Another library wrapping torch.load after Unsloth adds a frame between loader and guard.
     inner = torch.load
 
     def outer(*args, **kwargs):

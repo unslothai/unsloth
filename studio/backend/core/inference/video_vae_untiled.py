@@ -8,36 +8,30 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+from .family_profile import profile_table as _profile_table
+
 UNTILED_ENV = "UNSLOTH_VIDEO_VAE_UNTILED"
 
-# Untiled fp16 decode peak per latent pixel (h x w), measured on a B200; frame count does not enter (Wan's causal cache
-# decodes one latent frame at a time). Scaled by the decoder's element size: fp32 peaked at 21.1 GiB vs fp16 9.6 GiB.
-# A14B: Wan2.1 VAE (8x spatial), measured <= 0.58 MiB per latent pixel at 480p / 720p.
+# Untiled decode peak models per family (``FamilyProfile.untiled_vae`` on the video registry, measured on a B200; the
+# reasoning sits next to the data). Per latent pixel (h x w) + the (spatial, temporal) RGB output for a causal decoder
+# (Wan), or per output frame x latent pixel + the temporal scale for a decoder holding every frame (LTX-2 / 2.3 / 2.5).
+_UNTILED = _profile_table("untiled_vae")
 _BYTES_PER_LATENT_PIXEL = {
-    "wan2.2-ti2v-5b": 2.5 * 2**20,
-    "wan2.2-t2v-a14b": 0.6 * 2**20,
-    "wan2.1-t2v-1.3b": 0.6 * 2**20,
-    "wan2.1-t2v-14b": 0.6 * 2**20,
+    name: m.bytes_per_latent_pixel
+    for name, m in _UNTILED.items()
+    if m.bytes_per_latent_pixel is not None
 }
-# (spatial, temporal) upsampling to the RGB output, which Wan's decode holds about twice (per-frame torch.cat, then
-# clamp) and which grows with frames: 1021 frames at 1280x704 is 5.2 GiB per fp16 copy.
-_OUTPUT_SCALE = {
-    "wan2.2-ti2v-5b": (16, 4),
-    "wan2.2-t2v-a14b": (8, 4),
-    "wan2.1-t2v-1.3b": (8, 4),
-    "wan2.1-t2v-14b": (8, 4),
-}
-# LTX-2 / 2.3 holds every frame: peak per output frame x latent pixel, 0.102-0.105 MiB measured bf16 (B200).
+_OUTPUT_SCALE = {name: m.output_scale for name, m in _UNTILED.items() if m.output_scale is not None}
 _BYTES_PER_FRAME_LATENT_PIXEL = {
-    "ltx-2": 0.11 * 2**20,
-    # Same conv decoder layout as 2.3 (vae/ of the Diffusers pack); unmeasured, priced as 2.3.
-    "ltx-2.5": 0.11 * 2**20,
+    name: m.bytes_per_frame_latent_pixel
+    for name, m in _UNTILED.items()
+    if m.bytes_per_frame_latent_pixel is not None
 }
 _TEMPORAL_SCALE = {
-    "ltx-2": 8,
-    "ltx-2.5": 8,
+    name: m.temporal_scale for name, m in _UNTILED.items() if m.temporal_scale is not None
 }
 _MARGIN = 1.25
+_OOM = object()
 _MARGIN_BYTES = 2 * 2**30
 
 
@@ -68,6 +62,163 @@ def untiled_decode_bytes(
     return int(coef * itemsize / 2 * batch * height * width + output)
 
 
+# Wan's untiled decode runs two latent frames per decoder call (after the one-frame first call) when the second frame's
+# activations also fit: fewer, larger convs. Measured on the fused fp16 decode: A100 2.1-2.9% faster, T4 (sm75) 11%
+# slower, so NVIDIA sm80+ only. "0" = one frame per call everywhere; "force" = also off that range (CPU, ROCm, sm < 80).
+PAIR_FRAMES_ENV = "UNSLOTH_VIDEO_VAE_WAN_PAIR_FRAMES"
+_PAIR_LAYER = "wan_pair_frames"
+_PAIR_ATTR = "_unsloth_wan_pair_frames"
+_PAIR_MIN_CAPABILITY = (8, 0)
+
+
+def _pair_frames_enabled(device: Any = None) -> bool:
+    raw = os.environ.get(PAIR_FRAMES_ENV, "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw == "force":
+        return True
+    if getattr(device, "type", device) != "cuda":
+        return False
+    try:
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+
+        if is_rocm_torch(torch):
+            return False
+        return tuple(torch.cuda.get_device_capability(device)) >= _PAIR_MIN_CAPABILITY
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def pair_frames_extra_bytes(
+    family: str,
+    latent_shape: tuple,
+    itemsize: int = 2,
+) -> Optional[int]:
+    """Extra peak of decoding two latent frames per call instead of one: a second frame's decoder activations (the
+    per-latent-pixel term of the causal model). None for a family without one."""
+    coef = _BYTES_PER_LATENT_PIXEL.get(family)
+    if coef is None or len(latent_shape) != 5:
+        return None
+    batch, _, _, height, width = (int(x) for x in latent_shape)
+    return int(coef * max(2, itemsize) / 2 * max(1, batch) * height * width)
+
+
+def _install_pair_layer(vae: Any) -> bool:
+    """A ``_decode`` layer that runs :func:`wan_paired_decode` while the gate holds the pair flag on an untiled decode."""
+    from . import decode_layers  # noqa: PLC0415
+
+    if decode_layers.find(vae, "_decode", _PAIR_LAYER) is not None:
+        return True
+    try:
+        from . import diffusion_vae_fused  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return False
+    if not diffusion_vae_fused.wan_pair_decode_ok(vae):
+        return False
+
+    def make(inner: Any, layer: Any) -> Any:
+        def _decode(z: Any, *args: Any, **kwargs: Any) -> Any:
+            if (
+                vae.__dict__.get(_PAIR_ATTR)
+                and not getattr(vae, "use_tiling", False)
+                and getattr(z, "dim", lambda: 0)() == 5
+                and len(args) + len(kwargs) <= 1
+                and set(kwargs) <= {"return_dict"}
+            ):
+                return_dict = args[0] if args else kwargs.get("return_dict", True)
+                return diffusion_vae_fused.wan_paired_decode(vae, z, return_dict)
+            return inner(z, *args, **kwargs)
+
+        return _decode
+
+    decode_layers.wrap(vae, "_decode", _PAIR_LAYER, make)
+    return True
+
+
+# When untiled does not fit, decode the fewest tiles that fit at the stock overlap (stock Wan: 28 tiles at 1280x704).
+WIDE_TILES_ENV = "UNSLOTH_VIDEO_VAE_WAN_WIDE_TILES"
+_STOCK_TILE = (256, 192)  # diffusers AutoencoderKLWan tile_sample_min / tile_sample_stride
+
+
+def _wide_tiles_enabled() -> bool:
+    return os.environ.get(WIDE_TILES_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+# (longest tile, edge tile) latents a family's wide tiles keep; Cosmos3: the Wan@16x seam audit floor.
+_WIDE_TILE_FLOOR = {"cosmos3-nano": (16, 8), "cosmos3-edge": (16, 8)}
+
+
+def _wide_axis(
+    length: int, n: int, overlap: int, floor: Optional[tuple]
+) -> Optional[tuple[int, int]]:
+    """(tile, stride) latents for ``n`` tiles over ``length``, or None when ``floor`` rules the count out."""
+    if n == 1:
+        return length, length
+    stride = -(-length // n)
+    if floor is None:
+        return min(length, stride + overlap), stride
+    tile_floor, edge_floor = floor
+    if -(-length // stride) != n or length - (n - 1) * stride < edge_floor:
+        return None
+    return min(length, max(stride + overlap, tile_floor)), stride
+
+
+def wide_tile_plan(
+    family: str,
+    latent_shape: tuple,
+    ratio: int,
+    free: int,
+    itemsize: int = 2,
+    max_tiles: int = 16,
+) -> Optional[tuple[int, int, int, int]]:
+    """(min_h, stride_h, min_w, stride_w) sample px, or None. A single-tile axis gets stride >= size: no blend there."""
+    coef = _BYTES_PER_LATENT_PIXEL.get(family)
+    if coef is None or len(latent_shape) != 5 or ratio <= 0:
+        return None
+    batch, _, latent_frames, height, width = (int(x) for x in latent_shape)
+    spatial, temporal = _OUTPUT_SCALE[family]
+    overlap = max(1, (_STOCK_TILE[0] - _STOCK_TILE[1]) // ratio)
+    frames = (max(1, latent_frames) - 1) * temporal + 1
+    itemsize = max(2, itemsize)
+    out_bytes = 2 * max(1, batch) * 3 * frames * height * spatial * width * spatial * itemsize
+    best = None
+    for n_h in range(1, height + 1):
+        for n_w in range(1, width + 1):
+            if n_h * n_w > max_tiles or (n_h == 1 and n_w == 1):
+                continue
+            axis_h = _wide_axis(height, n_h, overlap, _WIDE_TILE_FLOOR.get(family))
+            axis_w = _wide_axis(width, n_w, overlap, _WIDE_TILE_FLOOR.get(family))
+            if axis_h is None or axis_w is None:
+                continue
+            (tile_h, stride_h), (tile_w, stride_w) = axis_h, axis_w
+            need = coef * itemsize / 2 * max(1, batch) * tile_h * tile_w + out_bytes
+            if need * _MARGIN + _MARGIN_BYTES > free:
+                continue
+            area = (n_h * tile_h) * (n_w * tile_w)
+            key = (n_h * n_w, area)
+            if best is None or key < best[0]:
+                best = (
+                    key,
+                    (
+                        tile_h,
+                        stride_h if n_h > 1 else height,
+                        tile_w,
+                        stride_w if n_w > 1 else width,
+                    ),
+                )
+    if best is None:
+        return None
+    tile_h, stride_h, tile_w, stride_w = best[1]
+    stock_tiles = len(range(0, height, _STOCK_TILE[1] // ratio)) * len(
+        range(0, width, _STOCK_TILE[1] // ratio)
+    )
+    if best[0][0] >= stock_tiles:
+        return None
+    return tile_h * ratio, stride_h * ratio, tile_w * ratio, stride_w * ratio
+
+
 def _decoder_itemsize(vae: Any) -> int:
     """Decoder weight element size; 4 if unreadable."""
     try:
@@ -80,15 +231,117 @@ def _decoder_itemsize(vae: Any) -> int:
 
 
 def _free_bytes(device: Any) -> Optional[int]:
-    """Device free memory plus torch's unused cache."""
+    """Free device memory + torch's reusable cache (not graph pools) minus the VRAM Budget reserve; CPU: cgroup-capped MemAvailable."""
+    if getattr(device, "type", device) == "cpu":
+        try:
+            from .diffusion_memory import _available_system_memory_mib
+            mib = _available_system_memory_mib()
+        except Exception:  # noqa: BLE001
+            return None
+        return None if mib is None else max(0, int(mib)) * 2**20
     try:
         import torch
 
-        free, _ = torch.cuda.mem_get_info(device)
-        cached = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
-        return int(free) + max(0, int(cached))
+        from .diffusion_memory import cuda_reusable_cache_bytes, user_budget_reserve_bytes
+
+        free, total = torch.cuda.mem_get_info(device)
+        cached = cuda_reusable_cache_bytes(device)
+        return max(0, int(free) + cached - user_budget_reserve_bytes(device, total))
     except Exception:  # noqa: BLE001
         return None
+
+
+# torch's CPU allocator refusals: ``not enough memory`` (Windows commit limit), ``can't allocate memory`` (POSIX ENOMEM).
+_CPU_ALLOC_REFUSALS = ("not enough memory", "can't allocate memory")
+
+
+def _is_oom(exc: BaseException) -> bool:
+    from .diffusion_batched import is_oom_error
+
+    if is_oom_error(exc):
+        return True
+    seen = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        msg = str(cur).lower()
+        if any(s in msg for s in _CPU_ALLOC_REFUSALS):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def _in_chain(fn: Any, target: Any) -> bool:
+    for _ in range(16):
+        if fn is None:
+            return False
+        if fn is target:
+            return True
+        from .decode_layers import next_layer  # noqa: PLC0415
+
+        fn = next_layer(fn)
+    return False
+
+
+# Under model CPU offload the denoiser is still on the card until the VAE's hook runs inside decode. "0" = old behaviour.
+FREE_AFTER_OFFLOAD_ENV = "UNSLOTH_VIDEO_VAE_FREE_AFTER_OFFLOAD"
+
+
+def _free_after_offload_enabled() -> bool:
+    return os.environ.get(FREE_AFTER_OFFLOAD_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _on_device(module: Any) -> bool:
+    try:
+        first = next(iter(module.parameters()), None)
+    except Exception:  # noqa: BLE001
+        return False
+    return first is not None and first.device.type != "cpu"
+
+
+def run_offload_hook_first(vae: Any, logger: Any = None) -> bool:
+    """Run the VAE's offload pre-hook before the fit check so it sees the decode's free memory (the decode's own hook
+    call then moves nothing). True when the hook ran."""
+    if not _free_after_offload_enabled():
+        return False
+    hook = getattr(vae, "_hf_hook", None)
+    if hook is None or "CpuOffload" not in type(hook).__name__:
+        return False
+    pre_forward = getattr(hook, "pre_forward", None)
+    if not callable(pre_forward):
+        return False
+    prev_model = getattr(getattr(hook, "prev_module_hook", None), "model", None)
+    if not (prev_model is not None and _on_device(prev_model)) and _on_device(vae):
+        return False
+    try:
+        pre_forward(vae)
+    except Exception as exc:  # noqa: BLE001 - the decode's own hook call still moves them
+        if logger is not None:
+            logger.debug("video.vae_untiled: offload hook before the fit check failed (%s)", exc)
+        return False
+    return True
+
+
+def _decode_device(vae: Any, z: Any) -> Any:
+    """Where the decode allocates: the latent's card, unless a multi-GPU split put the VAE on another CUDA card (its
+    boundary moves the latent there inside this wrapper). An offloaded VAE (weights on the host) keeps the latent's."""
+    device = getattr(z, "device", None)
+    try:
+        vae_device = next(vae.parameters()).device
+    except Exception:  # noqa: BLE001
+        return device
+    if (
+        getattr(vae_device, "type", None) == "cuda"
+        and getattr(device, "type", None) == "cuda"
+        and vae_device != device
+    ):
+        return vae_device
+    return device
 
 
 def install_untiled_decode(
@@ -108,9 +361,12 @@ def install_untiled_decode(
         return False
     if getattr(decode, "_unsloth_untiled_decode", False):
         return True
-    stats = {"untiled": 0, "tiled": 0, "oom_fallback": 0}
-    # Smallest estimate that ran out of memory; never retried untiled.
+    stats = {"untiled": 0, "tiled": 0, "wide": 0, "oom_fallback": 0, "paired": 0}
+    # Smallest estimates that OOMed, never retried (untiled / wide / two frames per call).
     oom_need: list = []
+    oom_wide: list = []
+    oom_pair: list = []
+    pair_ready = _install_pair_layer(vae)
 
     def gated(z: Any, *args: Any, **kwargs: Any) -> Any:
         if not getattr(vae, "use_tiling", False):
@@ -118,56 +374,187 @@ def install_untiled_decode(
         need = untiled_decode_bytes(
             family, tuple(getattr(z, "shape", ())), itemsize = _decoder_itemsize(vae)
         )
-        free = _free_bytes(getattr(z, "device", None))
+        free = _free_bytes(_decode_device(vae, z))
         fits = (
             need is not None
             and free is not None
             and need * _MARGIN + _MARGIN_BYTES <= free
             and not (oom_need and need >= oom_need[0])
         )
+        shape = tuple(getattr(z, "shape", ()))
+        extra = (
+            pair_frames_extra_bytes(family, shape, itemsize = _decoder_itemsize(vae))
+            if fits
+            and pair_ready
+            and len(shape) == 5
+            and shape[2] >= 3
+            and _pair_frames_enabled(_decode_device(vae, z))
+            else None
+        )
+        pair = (
+            extra is not None
+            and (need + extra) * _MARGIN + _MARGIN_BYTES <= free
+            and not (oom_pair and need >= oom_pair[0])
+        )
         if logger is not None:
             logger.info(
                 "video.vae_untiled: decode %s (untiled needs ~%s MiB with margin, %s MiB free)",
-                "untiled" if fits else "tiled",
-                "?" if need is None else int((need * _MARGIN + _MARGIN_BYTES) / 2**20),
+                ("untiled, 2 latent frames per call" if pair else "untiled") if fits else "tiled",
+                "?"
+                if need is None
+                else int(((need + (extra if pair else 0)) * _MARGIN + _MARGIN_BYTES) / 2**20),
                 "?" if free is None else int(free / 2**20),
             )
         if not fits:
             stats["tiled"] += 1
+            wide = None
+            ratio = int(getattr(vae, "spatial_compression_ratio", 0) or 0)
+            if (
+                _wide_tiles_enabled()
+                and free is not None
+                and hasattr(vae, "tile_sample_min_height")
+            ):
+                wide = wide_tile_plan(
+                    family,
+                    tuple(getattr(z, "shape", ())),
+                    ratio,
+                    free,
+                    itemsize = _decoder_itemsize(vae),
+                )
+            if wide is None or (oom_wide and need is not None and need >= oom_wide[0]):
+                return decode(z, *args, **kwargs)
+            stock = (
+                vae.tile_sample_min_height,
+                vae.tile_sample_stride_height,
+                vae.tile_sample_min_width,
+                vae.tile_sample_stride_width,
+            )
+            (
+                vae.tile_sample_min_height,
+                vae.tile_sample_stride_height,
+                vae.tile_sample_min_width,
+                vae.tile_sample_stride_width,
+            ) = wide
+            if logger is not None:
+                logger.info(
+                    "video.vae_untiled: wide tiles %dx%d (stride %dx%d) instead of %dx%d",
+                    wide[0],
+                    wide[2],
+                    wide[1],
+                    wide[3],
+                    stock[0],
+                    stock[2],
+                )
+            import torch
+
+            try:
+                out = decode(z, *args, **kwargs)
+                stats["wide"] += 1
+                return out
+            except Exception as exc:  # noqa: BLE001
+                if not _is_oom(exc):
+                    raise
+            finally:
+                (
+                    vae.tile_sample_min_height,
+                    vae.tile_sample_stride_height,
+                    vae.tile_sample_min_width,
+                    vae.tile_sample_stride_width,
+                ) = stock
+            stats["oom_fallback"] += 1
+            oom_wide[:] = [min([need, *oom_wide])] if need is not None else oom_wide
+            from .diffusion_vae_oom import clear_partial_decode  # noqa: PLC0415
+
+            clear_partial_decode(vae, z)
+            torch.cuda.empty_cache()
+            if logger is not None:
+                logger.warning(
+                    "video.vae_untiled: wide tiles ran out of memory; decoding at the stock tile size"
+                )
             return decode(z, *args, **kwargs)
         import torch
 
-        from .diffusion_batched import is_oom_error
+        if pair:
+            out = _paired(z, args, kwargs)
+            if out is not _OOM:
+                return out
+            # pair OOM: never again at this size; retry one frame per call
+            oom_pair[:] = [min([need, *oom_pair])]
+            from .diffusion_vae_oom import clear_partial_decode  # noqa: PLC0415
 
+            clear_partial_decode(vae, z)
+            torch.cuda.empty_cache()
+            if logger is not None:
+                logger.warning(
+                    "video.vae_untiled: 2 latent frames per call ran out of memory; one frame per call"
+                )
         vae.use_tiling = False
         try:
             out = decode(z, *args, **kwargs)
             stats["untiled"] += 1
             return out
         except Exception as exc:  # noqa: BLE001
-            if not is_oom_error(exc):
+            if not _is_oom(exc):
                 raise
         finally:
             vae.use_tiling = True
         # Retried outside the handler so the failed attempt's tensors (held by the traceback) are gone first.
         stats["oom_fallback"] += 1
         oom_need[:] = [min([need, *oom_need])]
+        from .diffusion_vae_oom import clear_partial_decode  # noqa: PLC0415
+
+        clear_partial_decode(
+            vae, z
+        )  # the untiled attempt's causal state goes before the tiled decode
         torch.cuda.empty_cache()
         if logger is not None:
             logger.warning("video.vae_untiled: untiled decode ran out of memory; decoding tiled")
         return decode(z, *args, **kwargs)
 
+    def _paired(z: Any, args: tuple, kwargs: dict) -> Any:
+        vae.use_tiling = False
+        vae.__dict__[_PAIR_ATTR] = True
+        try:
+            out = decode(z, *args, **kwargs)
+            stats["untiled"] += 1
+            stats["paired"] += 1
+            return out
+        except Exception as exc:  # noqa: BLE001
+            if not _is_oom(exc):
+                raise
+        finally:
+            vae.__dict__[_PAIR_ATTR] = False
+            vae.use_tiling = True
+        return _OOM
+
     def untiled_when_fits(*args: Any, **kwargs: Any) -> Any:
         try:
+            run_offload_hook_first(vae, logger)
             return gated(*args, **kwargs)
         finally:
             # A failed VAE compile restores its eager decode into this slot; the guarded inner call already runs eager.
-            if vae.__dict__.get("decode") is not untiled_when_fits:
+            # (a layer installed over this one, e.g. the OOM retry's decode scope, keeps it in its __wrapped__ chain)
+            if not _in_chain(vae.__dict__.get("decode"), untiled_when_fits):
                 vae.decode = untiled_when_fits
 
     untiled_when_fits._unsloth_untiled_decode = True
     untiled_when_fits._unsloth_untiled_stats = stats
+    vae._unsloth_untiled_stats = stats
     vae.decode = untiled_when_fits
     if logger is not None:
         logger.info("video.vae_untiled: resident %s VAE decodes untiled when it fits", family)
     return True
+
+
+def untiled_decode_stats(pipe: Any) -> Optional[dict]:
+    """Copy of decode-route counts since load (``wide`` is a subset of ``tiled``); None if not installed."""
+    stats = getattr(getattr(pipe, "vae", None), "_unsloth_untiled_stats", None)
+    return dict(stats) if isinstance(stats, dict) else None
+
+
+def decode_stats_delta(before: Optional[dict], after: Optional[dict]) -> Optional[dict]:
+    """Per-render counts from two ``untiled_decode_stats`` reads."""
+    if after is None:
+        return None
+    before = before or {}
+    return {k: v - before.get(k, 0) for k, v in after.items()}

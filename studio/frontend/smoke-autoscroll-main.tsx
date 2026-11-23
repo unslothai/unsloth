@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness for tests/studio/playwright_chat_autoscroll.py: the real useIntentAwareAutoScroll on a
-// real scroller with text streamed in, so measured per-frame work is the hook's own.
-// Same shape as smoke-ansi.html and smoke-research.html: a vite entry, no backend, no auth.
+// Harness for tests/studio/playwright_chat_autoscroll.py; vite entry, no backend.
 
 import {
   IntentAwareScrollProvider,
@@ -28,25 +26,18 @@ function Harness(): ReactElement {
   useEffect(() => {
     const viewport = () => viewportRef.current;
     const api = {
-      /** Seed a viewport that already overflows, as a loaded thread does. */
       seed(count = 40): void {
         setBlocks(Array.from({ length: count }, (_, index) => `${index}`));
         setTail("");
       },
-      /** One streamed token into the trailing message: a characterData mutation. */
       token(text: string): void {
         setTail((current) => current + text);
       },
-      /** One finished message: a childList mutation. */
       block(): void {
         setBlocks((current) => [...current, `${current.length}`]);
         setTail("");
       },
-      /**
-       * Grow content with no mutation record and no border-box resize, like a decoding image, a
-       * `font-display: swap` webfont or a late KaTeX pass. The MutationObserver excludes `style`,
-       * so only a frame that reads layout notices.
-       */
+      /** Grow content with no mutation or resize, like a late image or webfont. */
       growSilently(px: number): void {
         const spacer = spacerRef.current;
         if (spacer) spacer.style.height = `${px}px`;
@@ -66,7 +57,6 @@ function Harness(): ReactElement {
       isAtBottom(): boolean {
         return context.getIsAtBottom();
       },
-      /** Scroll up the way a reader does, so the hook detaches. */
       scrollUpBy(px: number): void {
         const element = viewport();
         if (element) element.scrollTop = Math.max(0, element.scrollTop - px);
@@ -104,7 +94,6 @@ function Harness(): ReactElement {
         }}
         style={{
           height: "100vh",
-          // A chat column's width, so prose wraps as in the app and a seeded thread overflows.
           width: "760px",
           overflowY: "auto",
           padding: "16px",

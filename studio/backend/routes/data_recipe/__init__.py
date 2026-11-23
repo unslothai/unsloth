@@ -31,8 +31,7 @@ _header_authenticated.include_router(mcp_router)
 _header_authenticated.include_router(library_router)
 
 router = APIRouter()
-# Kept out of the group above: the download link is fetched without a header, so it brings its
-# own guard.
+# Separate: the download link is fetched without a header and has its own guard.
 router.include_router(jobs_download_router)
 router.include_router(_header_authenticated)
 

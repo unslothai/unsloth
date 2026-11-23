@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type {
+  RemoteCodeBlockCause,
   RemoteCodeFinding,
   RemoteCodeScan,
   RemoteCodeSeverity,
@@ -20,6 +21,9 @@ interface SnippetRowResponse {
 }
 
 interface RemoteCodeScanResponse {
+  block_cause?: string | null;
+  block_source?: string;
+  block_target?: string | null;
   requires_trust_remote_code?: boolean;
   has_remote_code?: boolean;
   approvable?: boolean;
@@ -43,7 +47,7 @@ interface RemoteCodeScanResponse {
   provider?: string | null;
 }
 
-/** Scan a model's auto_map code for the consent dialog; the token rides in the POST body, never the URL. */
+/** The token rides in the POST body, never the URL. */
 export async function getRemoteCodeScan(
   modelName: string,
   hfToken?: string | null,
@@ -91,6 +95,9 @@ export async function getRemoteCodeScan(
     level: u.level ?? "unsafe",
   }));
   return {
+    blockCause: (data.block_cause as RemoteCodeBlockCause | null) ?? null,
+    blockSource: data.block_source ?? "Hugging Face",
+    blockTarget: data.block_target ?? null,
     requiresTrustRemoteCode: Boolean(
       data.requires_trust_remote_code ?? data.has_remote_code,
     ),
@@ -112,7 +119,7 @@ export async function getRemoteCodeScan(
   };
 }
 
-/** Decline cleanup: fire-and-forget purge of the metadata-only cache entry the scan created (never weights or a local path). */
+/** Fire-and-forget purge of the metadata-only cache the scan created, never weights. */
 export async function discardRemoteCodeDownload(
   modelName: string,
 ): Promise<void> {

@@ -102,7 +102,6 @@ class TestGetModelName(unittest.TestCase):
             ),
             ("unsloth/Kimi-K2-Instruct", True, "unsloth/Kimi-K2-Instruct-BF16", True),
             ("unsloth/Kimi-K2-Instruct", False, "unsloth/Kimi-K2-Instruct", False),
-            # DeepScaleR-1.5B must resolve to its own 16bit repo, not another model
             (
                 "agentica-org/DeepScaleR-1.5B-Preview",
                 False,
@@ -119,7 +118,6 @@ class TestGetModelName(unittest.TestCase):
             "google/gemma-3-random-prototype-123",
             "imdatta0/nanoqwen-fp8",
             "imdatta0/nanoqwen-bf16",
-            # Backward compatibility for legacy 4bit names
             ("unsloth/llama-2-7b-bnb-4bit", True, "unsloth/llama-2-7b-bnb-4bit", False),
             ("unsloth/llama-2-7b-bnb-4bit", False, "unsloth/llama-2-7b", True),
             ("google/gemma-2-9b", True, "unsloth/gemma-2-9b-bnb-4bit", True),

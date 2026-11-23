@@ -6,6 +6,30 @@ import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 import type * as Session from "../src/features/auth/session.ts";
 
+test("refresh preserves a backfilled session marker when access token is missing", (t) => {
+  const previousWindow = globalThis.window;
+  const previousStorage = globalThis.localStorage;
+  const values = new Map([["unsloth_auth_refresh_token", "old-refresh"]]);
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+  } as unknown as Storage;
+  globalThis.localStorage = storage;
+  globalThis.window = { localStorage: storage, addEventListener() {}, dispatchEvent() {} } as unknown as Window & typeof globalThis;
+  t.after(() => { globalThis.window = previousWindow; globalThis.localStorage = previousStorage; });
+  const session = loadWithStubs<typeof Session>(new URL("../src/features/auth/session.ts", import.meta.url), {
+    "@/lib/api-base": { isTauri: false },
+    "@/lib/account-transition": { installAccountTransitionListener: () => {} },
+    "./login-client": { getLoginMode: () => "single" },
+    "./session-events": { AUTH_SESSION_STORED_EVENT: "stored" },
+  });
+  const mark = session.ensureAuthSessionMark();
+  assert.ok(mark);
+  session.storeAuthTokens("new-access", "new-refresh", true);
+  assert.equal(session.getAuthSessionMark(), mark);
+  assert.equal(session.getRefreshToken(), "new-refresh");
+});
+
 for (const [desktop, loginMode, change, expected] of [
   [true, "single", true, "/chat"],
   [true, "single", false, "/chat"],
@@ -48,10 +72,8 @@ for (const [desktop, loginMode, change, expected] of [
   });
 }
 
-// Account settings are read once per session, and a session still owing a password change is
-// refused them with a 403. The bootstrap sign-in on /change-password stores its tokens before the
-// change, so "has a token" is not "may read settings": a read in that gap leaves personalization
-// unhydrated for the whole session. The gate agrees with the route the session is sent to.
+// A session still owing a password change is refused settings (403) though it holds tokens,
+// so the read gate must follow the route, not token presence.
 for (const [desktop, loginMode, token, change, expected] of [
   [false, "single", false, false, false],
   [false, "single", true, true, false],

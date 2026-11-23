@@ -40,6 +40,23 @@ def _fast_inference_blocks(cls_name):
     raise AssertionError(f"{cls_name}.from_pretrained has no pre-Volta gate before the GB10 block")
 
 
+def _drop_helper():
+    # The real helper the fallbacks call, sliced the same way.
+    tree = ast.parse(LOADER_PATH.read_text(encoding = "utf-8"))
+    nodes = [
+        n
+        for n in tree.body
+        if (
+            isinstance(n, ast.Assign)
+            and any(getattr(t, "id", None) == "_VLLM_ENGINE_KWARGS" for t in n.targets)
+        )
+        or (isinstance(n, ast.FunctionDef) and n.name == "_drop_vllm_engine_kwargs")
+    ]
+    ns = {}
+    exec(compile(ast.Module(nodes, []), str(LOADER_PATH), "exec"), ns)
+    return ns["_drop_vllm_engine_kwargs"]
+
+
 def _run(
     cls_name,
     device_type,
@@ -62,8 +79,12 @@ def _run(
         "DEVICE_TYPE_TORCH": device_type_torch,
         "DEVICE_COUNT": 1,
         "torch": types.SimpleNamespace(cuda = cuda),
+        "kwargs": {"enforce_eager": True},
+        "_drop_vllm_engine_kwargs": _drop_helper(),
     }
     exec(compile(ast.Module(_fast_inference_blocks(cls_name), []), str(LOADER_PATH), "exec"), ns)
+    # A fallback drops vLLM-only kwargs; staying on vLLM keeps them.
+    assert ("enforce_eager" in ns["kwargs"]) is ns["fast_inference"]
     return ns["fast_inference"]
 
 

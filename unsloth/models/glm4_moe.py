@@ -9,16 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-GLM-4.7 Flash (GLM4 MoE Lite) optimized implementation using grouped GEMM.
-
-Key architecture differences from Qwen3 MoE:
-- Router uses sigmoid activation (not softmax)
-- Has routed_scaling_factor of 1.8
-- Has 1 shared expert that processes all tokens
-- Uses group-based selection before topk
-- Uses MLA (Multi-head Latent Attention)
-"""
+"""GLM-4.7 Flash MoE with sigmoid routing, routed_scaling_factor 1.8, a shared expert and MLA."""
 
 from .loader_utils import DEFAULT_DEVICE_MAP
 from .llama import *
@@ -52,8 +43,7 @@ try:
     if _moe_path not in sys.path:
         sys.path.insert(0, _moe_path)
 
-    # Import first to apply the TMA compatibility shim, which patches triton.language for both old and
-    # new TMA API names.
+    # Import first to apply the TMA API compatibility shim to triton.language.
     import grouped_gemm  # noqa: F401 - triggers TMA compatibility shim
 
     from grouped_gemm.interface import grouped_gemm
@@ -115,15 +105,8 @@ torch_nn_functional_silu = torch.nn.functional.silu
 
 
 def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
-    """
-    Optimized MoE forward pass using grouped GEMM.
-
-    GLM4 MoE specifics:
-    - Uses sigmoid router activation (not softmax)
-    - Has routed_scaling_factor of 1.8
-    - Has 1 shared expert that always processes all tokens
-    - Uses group-based selection with topk_group
-    """
+    """GLM4 MoE uses a sigmoid router (not softmax) with routed_scaling_factor 1.8, one shared
+    expert that processes all tokens, and group-based selection with topk_group."""
     residuals = hidden_states
     orig_shape = hidden_states.shape
     batch_size, seq_len, hidden_dim = orig_shape
@@ -191,17 +174,9 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
 def Glm4MoeLiteNaiveMoe_fast_forward(
     self, hidden_states: torch.Tensor, top_k_index: torch.Tensor, top_k_weights: torch.Tensor
 ) -> torch.Tensor:
-    """
-    Optimized expert forward using grouped GEMM.
-
-    Args:
-        hidden_states: [num_tokens, hidden_dim]
-        top_k_index: [num_tokens, top_k] indices of selected experts
-        top_k_weights: [num_tokens, top_k] weights for selected experts
-
-    Returns:
-        [num_tokens, hidden_dim] output after weighted sum of expert outputs
-    """
+    """Grouped GEMM expert forward: hidden_states is [num_tokens, hidden_dim], top_k_index and
+    top_k_weights are [num_tokens, top_k]; returns the [num_tokens, hidden_dim] weighted expert
+    sum."""
     num_tokens, hidden_dim = hidden_states.shape
     top_k = top_k_index.shape[1]
     top_k_weights = top_k_weights.to(hidden_states.dtype)
@@ -315,7 +290,7 @@ def Glm4MoeLiteDecoderLayer_fast_forward(
         hidden_states = residual + hidden_states
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, reuse_grad = True)
         hidden_states, _ = self.self_attn(
             hidden_states = hidden_states,
             attention_mask = attention_mask,
@@ -329,7 +304,9 @@ def Glm4MoeLiteDecoderLayer_fast_forward(
         hidden_states = residual + hidden_states
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(
+            self.post_attention_layernorm, hidden_states, reuse_grad = True
+        )
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
@@ -337,9 +314,6 @@ def Glm4MoeLiteDecoderLayer_fast_forward(
 
 
 def Glm4MoeLiteMLP_fast_forward(self, x):
-    """
-    Optimized MLP forward using fused SwiGLU.
-    """
     return fast_swiglu_inference(self, x)
 
 
@@ -366,8 +340,7 @@ class FastGLM47Model(FastLlamaModel):
             Glm4MoeLiteNaiveMoe.forward = Glm4MoeLiteNaiveMoe_fast_forward
             Glm4MoeLiteMoE.forward = Glm4MoeLiteMoE_fast_forward
 
-        # Attention/rope/decoder/model forwards are NOT patched: GLM4 uses MLA with different projection
-        # names and lacks extend_rope_embedding, so the Llama-compatible infrastructure does not apply.
+        # GLM4 uses MLA and lacks extend_rope_embedding, so Llama attention patches do not apply.
 
         return
 

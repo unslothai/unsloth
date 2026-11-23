@@ -11,7 +11,10 @@
 #
 # This runs `catalog:check --network`, which HEADs every declared repo id and
 # every declared filename anonymously (what a fresh install sees) and asserts
-# each `gated` flag matches what the Hub reports.
+# each `gated` flag matches what the Hub reports. A folder in the audio.cpp
+# umbrella repo that the bundled seed does not list is only a ::warning::,
+# since Unsloth Studio lists it from /api/inference/audio/catalog; a stale
+# AUDIO_CPP_UNOFFERED_FOLDERS entry still fails.
 #
 # Schedule + manual only, never on pull_request. The check is opt-in for the
 # same reason it lives here: it depends on huggingface.co being up, and a Hub
@@ -24,12 +27,11 @@ name: Model catalog network check
 
 on:
   schedule:
-    - cron: '19 6 * * *'   # 06:19 UTC daily, off the cron rush
+    - cron: '19 6 * * *'
   workflow_dispatch:
 
 concurrency:
-  # The event is part of the group so a manual dispatch and the nightly cannot
-  # coalesce; both resolve to refs/heads/main.
+  # Event is in the group so a manual dispatch and the nightly cannot coalesce.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: false
 
@@ -49,13 +51,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 
-      # No `npm ci`: the check is a standalone node script over two data
-      # modules and the built-in fetch, so it needs no dependencies at all.
-      # Skipping the install also keeps this job away from the lockfile /
-      # allowScripts machinery the frontend PR gate has to run.
+      # No `npm ci`: the check is a standalone node script with no dependencies.
       - name: Catalog entries must still resolve on the Hub
         run: npm run catalog:check:network

@@ -1,26 +1,8 @@
 <#
-    Pester v5 unit tests for Write-StudioLine / step / substep /
-    Write-StudioStdoutMirror in studio/setup.ps1, guarding the desktop setup log
-    printing every step twice with the first copy split across two lines:
-
-        gpu
-      none (chat-only / GGUF)
-        gpu            none (chat-only / GGUF)
-
-    Two causes. step/substep called Write-Host AND the console mirror, and the
-    CLI spawns setup.ps1 as `-Command "& '...' *>&1"`, so both reached the pipe.
-    And step's non-VT branch built one line from two Write-Host calls with
-    -NoNewline, which a redirected consumer splits at the record boundary.
-
-    Invariant now: exactly ONE sink. Redirected -> console handle. Interactive
-    -> Write-Host. Every other line in both entry scripts goes through
-    Write-StudioLine for the same reason: Write-Host is written by 5.1's console
-    host on the OEM code page, not by the UTF-8 writer bound to [Console]::Out,
-    so the banner and the footer used to arrive as U+FFFD.
-
-    Pure string formatting, so it runs on any pwsh host. Functions are extracted
-    and dot-sourced because setup.ps1 is a top-level installer; a missing one
-    FAILS loudly rather than silently passing.
+    Pester tests for Write-StudioLine / step / substep / Write-StudioStdoutMirror in setup.ps1.
+    Invariant: exactly one sink per line (console handle when redirected, else Write-Host),
+    so the desktop log does not print each step twice or split a label across lines.
+    Functions are extracted and dot-sourced; a missing one fails loudly.
 #>
 
 BeforeAll {
@@ -42,8 +24,6 @@ BeforeAll {
         . ([scriptblock]::Create($src))
     }
 
-    # Capture the console-handle sink without a real pipe, so the redirected
-    # path can be asserted from an ordinary interactive test host.
     function Invoke-CapturingConsoleOut {
         param(
             [Parameter(Mandatory = $true)][scriptblock]$Body,
@@ -54,8 +34,7 @@ BeforeAll {
         $writer = New-Object System.IO.StringWriter
         try {
             [Console]::SetOut($writer)
-            # 6>&1 folds Write-Host into the pipeline so a stray one on the
-            # redirected path is caught, not swallowed by the test host.
+            # 6>&1 folds Write-Host into the pipeline so a stray one on the redirected path is caught.
             $hostRecords = & $Body 6>&1
         } finally {
             [Console]::SetOut($previous)
@@ -63,27 +42,19 @@ BeforeAll {
         [pscustomobject]@{
             Console = $writer.ToString()
             HostRecordCount = @($hostRecords).Count
-            # Rendered to strings: 6>&1 yields InformationRecord objects, and the
-            # tests care about the text the user would have read.
             HostRecords = @(@($hostRecords) | ForEach-Object { "$_" })
         }
     }
 
-    # Split on the real line separator only: the split-label bug produced a
-    # genuine newline, not a CR redraw.
-    #
-    # The leading comma is load-bearing. `return @($x)` unrolls a one-element
-    # array to a scalar, and a scalar string answers .Count = 1 while [0] gives
-    # its first CHARACTER, so a "one line, and it reads X" test would pass the
-    # count then compare against a single space.
+    # The leading comma is load-bearing: `return @($x)` unrolls a one-element array to a
+    # scalar string, whose [0] is its first character.
     function Get-EmittedLines {
         param([string]$Text)
         if ([string]::IsNullOrEmpty($Text)) { return , @() }
         return , @($Text -split "`r?`n" | Where-Object { $_ -ne '' })
     }
 
-    # Strip comments before asserting a construct is absent: the scripts under
-    # test describe -NoNewline in prose, which a naive match would hit.
+    # Strip comments first: the scripts under test mention -NoNewline in prose.
     function Get-CodeWithoutComments {
         param([string]$Source)
         $stripped = $Source -replace '(?m)#.*$', ''
@@ -126,8 +97,6 @@ Describe 'Write-StudioLine is the single sink for every non-step line' {
     }
 
     It 'never leaks an ANSI escape onto the redirected sink' {
-        # Enable-StudioVirtualTerminal returns false without a console handle, so
-        # the colored branch must be unreachable there.
         $r = Invoke-CapturingConsoleOut -Redirected $true -Body {
             Write-StudioLine "warning" -ForegroundColor Yellow
         }
@@ -150,8 +119,7 @@ Describe 'Write-StudioLine is the single sink for every non-step line' {
     }
 
     It 'passes -ForegroundColor through only when the caller supplied one' {
-        # An omitted color must not become an empty string: Write-Host cannot
-        # bind that to ConsoleColor and the install would abort under "Stop".
+        # An empty color cannot bind to ConsoleColor and would abort the install under "Stop".
         { Invoke-CapturingConsoleOut -Redirected $false -Body {
             Write-StudioLine "no color here"
         } } | Should -Not -Throw
@@ -281,8 +249,7 @@ Describe 'Source contracts that keep the fix from regressing' {
     }
 
     It 'no longer calls IsOutputRedirected from inside the mirror' {
-        # Reading it per-call let the sink disagree with the branch
-        # step/substep took; it must be resolved once, up front.
+        # Resolved once up front, so the sink cannot disagree with the branch step/substep took.
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name 'Write-StudioStdoutMirror'
         $src | Should -Not -Match 'IsOutputRedirected'
     }
@@ -299,8 +266,7 @@ Describe 'Source contracts that keep the fix from regressing' {
     }
 
     It 'defines Write-StudioLine in install.ps1 too, with the same body' {
-        # install.ps1 cannot dot-source setup.ps1, so it holds a copy. A copy
-        # that drifts is a copy that stops routing the installer's own banner.
+        # install.ps1 cannot dot-source setup.ps1, so it holds a copy that must not drift.
         $setup = ((Get-FunctionSource -Path $script:SetupPs1 -Name 'Write-StudioLine') -replace '\s+', ' ').Trim()
         $install = ((Get-FunctionSource -Path $script:InstallPs1 -Name 'Write-StudioLine') -replace '\s+', ' ').Trim()
         $setup | Should -Not -BeNullOrEmpty
@@ -308,9 +274,7 @@ Describe 'Source contracts that keep the fix from regressing' {
     }
 
     It 'defines Write-StudioLine before the first line either script prints' {
-        # PowerShell resolves functions at call time, but a top-level call above
-        # the definition still fails. Comments are stripped first: both scripts
-        # name the helper in the prose above it.
+        # A top-level call above the definition fails; comments are stripped since both name it in prose.
         foreach ($path in @($script:SetupPs1, $script:InstallPs1)) {
             $source = Get-CodeWithoutComments (Get-Content -Raw -LiteralPath $path)
             $definition = $source.IndexOf('function Write-StudioLine')

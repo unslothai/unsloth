@@ -351,7 +351,6 @@ def test_conversion_refuses_when_one_layer_has_no_scale():
 
 
 def test_a_layer_that_fails_half_way_leaves_the_whole_tree_on_torchao(monkeypatch):
-    # A raise after the first swap used to leave a mixed tree the loader logged as torchao.
     torch = pytest.importorskip("torch")
     import torch.nn as nn
 

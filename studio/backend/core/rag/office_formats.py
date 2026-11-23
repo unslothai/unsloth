@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Text from Office, OpenDocument, e-book, email and RTF files, using only the stdlib.
-
-Each reader returns ``[(text, page_number), ...]``: one entry per slide (numbered), or
-per sheet / chapter (unnumbered). Table rows are joined with " | ", as for .docx.
-"""
+"""Stdlib readers for Office, OpenDocument, e-book, email and RTF; (text, page_number) per slide,
+unnumbered per sheet or chapter; table rows joined by ' | '."""
 
 from __future__ import annotations
 
@@ -54,8 +51,8 @@ _NS = {
     "opf": "http://www.idpf.org/2007/opf",
 }
 # ISO Strict OOXML names the same schemas with other URIs.
-_STRICT_NS = tuple(
-    (f"http://purl.oclc.org/ooxml/{strict}".encode(), _NS[prefix].encode())
+_STRICT_NS = {
+    f"http://purl.oclc.org/ooxml/{strict}": _NS[prefix]
     for strict, prefix in (
         ("spreadsheetml/main", "s"),
         ("presentationml/main", "p"),
@@ -64,7 +61,17 @@ _STRICT_NS = tuple(
         ("drawingml/diagram", "dgm"),
         ("officeDocument/relationships", "r"),
     )
-)
+}
+
+
+# expat also reads UTF-16, where an ASCII search for the declaration finds nothing.
+_ENTITY_DECLS = tuple("<!ENTITY".encode(codec) for codec in ("utf-8", "utf-16-le", "utf-16-be"))
+
+
+def _transitional_name(name: str) -> str:
+    namespace, separator, local = name.partition("}")
+    mapped = _STRICT_NS.get(namespace[1:]) if separator else None
+    return f"{{{mapped}}}{local}" if mapped else name
 
 
 def _q(prefix: str, tag: str) -> str:
@@ -118,18 +125,32 @@ class _Archive:
     def _xml_events(self, name: str, events: tuple[str, ...]):
         data = self.read(name)
         # Office XML never declares entities; refusing them rules out expansion attacks.
-        if b"<!ENTITY" in data:
+        if any(decl in data for decl in _ENTITY_DECLS):
             raise ValueError("XML entity declarations are not supported")
-        if b"purl.oclc.org/ooxml/" in data:
-            for strict, transitional in _STRICT_NS:
-                data = data.replace(strict, transitional)
-        parser = ET.XMLPullParser(events)
+        parser = ET.XMLPullParser((*events, "start-ns"))
+        strict = False
+
+        def read_events():
+            nonlocal strict
+            for event, element in parser.read_events():
+                if event == "start-ns":
+                    strict = strict or element[1] in _STRICT_NS
+                    continue
+                if strict and event == "start":
+                    # Expanded names identify namespaces in every XML encoding; values are data.
+                    element.tag = _transitional_name(element.tag)
+                    if element.attrib:
+                        element.attrib = {
+                            _transitional_name(key): value for key, value in element.attrib.items()
+                        }
+                yield event, element
+
         try:
             for start in range(0, len(data), 1 << 20):
                 parser.feed(data[start : start + (1 << 20)])
-                yield from parser.read_events()
+                yield from read_events()
             parser.close()
-            yield from parser.read_events()
+            yield from read_events()
         except ET.ParseError as exc:
             raise ValueError(f"malformed XML in {name}") from exc
 
@@ -213,6 +234,7 @@ _BUILTIN_DATE_FORMATS = {
 
 
 _BUILTIN_DURATION_FORMATS = {46}  # [h]:mm:ss
+_BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 # Classified as openpyxl does: quoted text and locale tags aside, any date or time token.
 _FORMAT_STRIP = re.compile(r'".*?"|\[(?!hh?\]|mm?\]|ss?\])[^\]]*\]')
 _FORMAT_DURATION = re.compile(
@@ -268,11 +290,13 @@ _BUILTIN_NUMBER_FORMATS = {
 }
 _MAX_FORMAT_CHARS = 1024
 _FORMAT_LITERALS = frozenset(" $-+/():!^&'~{}<>=\u20ac\u00a3\u00a5")
+_FORMAT_COLOR = re.compile(r"black|blue|cyan|green|magenta|red|white|yellow|color\d+", re.I)
+_FORMAT_SYSTEM_DATE = re.compile(r"-(f400|f800|x-sys)", re.I)  # long date and time of the OS
 
 
 def _format_tokens(code: str) -> list[tuple[str, str]] | None:
-    """("lit" | "ph" | "exp" | "sep", text) tokens of a number format, or None if unsupported."""
-    tokens, i = [], 0
+    """("lit" | "ph" | "exp" | "sep" | "color" | "fill", text) tokens of a number format, or None if unsupported."""
+    tokens, i, separators = [], 0, 0
     while i < len(code):
         ch = code[i]
         if ch == '"':
@@ -287,14 +311,19 @@ def _format_tokens(code: str) -> list[tuple[str, str]] | None:
             end = code.find("]", i)
             inner = code[i + 1 : end] if end > 0 else ""
             if inner.startswith("$"):  # currency and locale, such as [$EUR-407]
+                if _FORMAT_SYSTEM_DATE.search(inner):
+                    return None
                 tokens.append(("lit", inner[1:].split("-")[0]))
-            elif not inner.isalnum():  # conditions such as [>100]
+            elif _FORMAT_COLOR.fullmatch(inner):
+                tokens.append(("color", inner))
+            else:  # conditions such as [>100], elapsed time
                 return None
-            i = end + 1  # colours are dropped
+            i = end + 1
         elif ch == "_":  # space the width of the next character
             tokens.append(("lit", " "))
             i += 2
         elif ch == "*":  # fill with the next character
+            tokens.append(("fill", code[i + 1 : i + 2]))
             i += 2
         elif ch in "0#?.,%":
             tokens.append(("ph", ch))
@@ -303,8 +332,15 @@ def _format_tokens(code: str) -> list[tuple[str, str]] | None:
             tokens.append(("exp", code[i + 1]))
             i += 2
         elif ch == ";":
+            separators += 1
+            if separators == 3:  # the fourth section formats text, not numbers
+                break
             tokens.append(("sep", ";"))
             i += 1
+        elif ch == "@":  # a section holding @ formats text too, wherever it sits
+            while tokens and tokens.pop()[0] != "sep":
+                pass
+            break
         elif ch in _FORMAT_LITERALS:
             tokens.append(("lit", ch))
             i += 1
@@ -324,35 +360,100 @@ def _group(digits: str) -> str:
     return ",".join([digits[:head]] + [digits[i : i + 3] for i in range(head, len(digits), 3)])
 
 
-def _format_section(value: float, tokens: list[tuple[str, str]]) -> str | None:
-    marks = [i for i, (kind, _) in enumerate(tokens) if kind in ("ph", "exp")]
+def _section_plan(tokens: list[tuple[str, str]]):
+    """The value-independent reading of one format section: its literal text when it shows no
+    digits, None when unsupported, else the layout ``_apply_section`` fills in."""
     if not any(kind == "ph" and ch in "0#?" for kind, ch in tokens):
         return "".join(text for kind, text in tokens if kind == "lit")
+    marks = [i for i, (kind, _) in enumerate(tokens) if kind in ("ph", "exp")]
     first, last = marks[0], marks[-1]
+    inserts: list[tuple[int, str]] = []
     if any(kind == "lit" for kind, _ in tokens[first:last]):
-        return None
+        # Only 000-00-0000 style: fractions, decimals, grouping, exponents and a # right of a 0
+        # (0-## would pad globally and show 1 as -1) stay unsupported.
+        span = tokens[first : last + 1]
+        if any(ch not in "0#" if kind == "ph" else kind != "lit" or "/" in ch for kind, ch in span):
+            return None
+        if "".join(ch for kind, ch in span if kind == "ph").lstrip("#").strip("0"):
+            return None
+        digits = 0
+        for kind, text in reversed(span):
+            if kind == "ph":
+                digits += 1
+            elif inserts and inserts[-1][0] == digits:
+                inserts[-1] = (digits, text + inserts[-1][1])
+            else:
+                inserts.append((digits, text))
+        inserts.reverse()  # leftmost first
+        tokens = tokens[:first] + [token for token in span if token[0] == "ph"] + tokens[last + 1 :]
+        last = first + digits - 1
     prefix = "".join(text for kind, text in tokens[:first] if kind == "lit")
     suffix = "".join(text for kind, text in tokens[last + 1 :] if kind == "lit")
     pattern = "".join(ch if kind == "ph" else "E" + ch for kind, ch in tokens[first : last + 1])
     percent = "%" * pattern.count("%")
-    value *= 100 ** len(percent)
     pattern = pattern.replace("%", "")
     mantissa, _, exponent = pattern.partition("E")
     sign_style, exponent = (exponent[:1], exponent[1:]) if exponent else ("", "")
     whole, dot, fraction = mantissa.partition(".")
+    thousands = 0
     while whole.endswith(","):  # trailing commas scale by thousands
-        whole, value = whole[:-1], value / 1000
+        whole, thousands = whole[:-1], thousands + 1
+    while fraction.endswith(","):
+        fraction, thousands = fraction[:-1], thousands + 1
     grouped, whole = "," in whole, whole.replace(",", "")
     places, required = sum(fraction.count(c) for c in "0#?"), fraction.count("0")
-    min_whole = whole.count("0")
+    return (
+        prefix,
+        suffix,
+        percent,
+        thousands,
+        grouped,
+        dot,
+        places,
+        required,
+        whole.count("0"),
+        sign_style,
+        max(len(whole), 1),
+        "#" in whole,
+        exponent.count("0"),
+        tuple(inserts),
+    )
+
+
+_GENERAL = object()
+
+
+def _apply_section(value: float, plan) -> str | None:
+    if plan is _GENERAL:
+        return _number(value)
+    if plan is None or isinstance(plan, str):
+        return plan
+    (
+        prefix,
+        suffix,
+        percent,
+        thousands,
+        grouped,
+        dot,
+        places,
+        required,
+        min_whole,
+        sign_style,
+        width,
+        hashed,
+        exp_digits,
+        inserts,
+    ) = plan
+    value *= 100 ** len(percent)
+    for _ in range(thousands):
+        value = value / 1000
     power = 0
     if sign_style:
-        width = max(len(whole), 1)
         if value:
             power = math.floor(math.log10(value))
-            power = power - power % width if "#" in whole else power - (max(min_whole, 1) - 1)
+            power = power - power % width if hashed else power - (max(min_whole, 1) - 1)
         if float(_round(value / 10**power, places)) >= 10 ** max(width, min_whole, 1):
-            power += width if "#" in whole else 1
+            power += width if hashed else 1
         value /= 10**power
     digits = _round(value, places)
     int_part, _, frac_part = digits.partition(".")
@@ -361,15 +462,22 @@ def _format_section(value: float, tokens: list[tuple[str, str]]) -> str | None:
     int_part = "" if int_part == "0" and min_whole == 0 else int_part.zfill(min_whole)
     if grouped and int_part:
         int_part = _group(int_part)
+    if inserts:  # digits beyond the placeholders stay in the leftmost group
+        pieces, start = [], 0
+        for count, insert in inserts:
+            at = max(len(int_part) - count, 0)
+            pieces += [int_part[start:at], insert]
+            start = at
+        int_part = "".join(pieces) + int_part[start:]
     text = int_part + (dot + frac_part if dot else "")
     if sign_style:
         exp_sign = "-" if power < 0 else ("+" if sign_style == "+" else "")
-        text += f"E{exp_sign}{str(abs(power)).zfill(exponent.count('0'))}"
+        text += f"E{exp_sign}{str(abs(power)).zfill(exp_digits)}"
     return prefix + text + percent + suffix
 
 
-def _format_number(value: float, code: str) -> str | None:
-    """``value`` as a numeric format displays it, or None for formats left as stored."""
+def _number_plan(code: str):
+    """Each section of a numeric format read once, or None if unsupported."""
     tokens = _format_tokens(code) if code else None
     if not tokens:
         return None
@@ -379,26 +487,66 @@ def _format_number(value: float, code: str) -> str | None:
             sections.append([])
         else:
             sections[-1].append(token)
-    if value < 0 and len(sections) > 1 and sections[1]:
-        return _format_section(-value, sections[1])
-    if value == 0 and len(sections) > 2 and sections[2]:
-        return _format_section(0.0, sections[2])
-    text = _format_section(abs(value), sections[0])
+    # An empty section hides its values; Excel reads a colour-only one as General.
+    return [
+        _GENERAL
+        if section and all(kind == "color" for kind, _ in section)
+        else _section_plan([token for token in section if token[0] in ("lit", "ph", "exp")])
+        for section in sections
+    ]
+
+
+def _apply_number(value: float, plan) -> str | None:
+    if plan is None:
+        return None
+    if value < 0 and len(plan) > 1:
+        return _apply_section(-value, plan[1])
+    if value == 0 and len(plan) > 2:
+        return _apply_section(0.0, plan[2])
+    text = _apply_section(abs(value), plan[0])
     return None if text is None else ("-" + text if value < 0 else text)
+
+
+_NUMBER_ERRORS = (ArithmeticError, ValueError, decimal.InvalidOperation)
+
+
+def _cell_plan(format_id: int, code: str):
+    if len(code) > _MAX_FORMAT_CHARS:
+        code = ""
+    kind = _format_kind(format_id, code)
+    if kind:
+        return kind, None
+    try:
+        return None, _number_plan(code or _BUILTIN_NUMBER_FORMATS.get(format_id, ""))
+    except _NUMBER_ERRORS:
+        return None, None
+
+
+class _CellNumbers:
+    """Shows numeric cells as their formats display them, reading each distinct format once per workbook."""
+
+    def __init__(self, date1904: bool):
+        self.date1904 = date1904
+        self._plans: dict[tuple[int, str], tuple] = {}
+
+    def __call__(self, value: float, format_id: int, code: str) -> str:
+        key = (format_id, code)
+        plan = self._plans.get(key)
+        if plan is None:
+            plan = self._plans[key] = _cell_plan(format_id, code)
+        kind, number_plan = plan
+        if kind:
+            return _serial_text(value, kind, self.date1904)
+        try:
+            text = _apply_number(value, number_plan)
+        except _NUMBER_ERRORS:
+            text = None
+        return _number(value) if text is None else text
 
 
 def _cell_number(value: float, format_id: int, code: str, date1904: bool) -> str:
     """A numeric cell as its format displays it, falling back to the stored number."""
-    if len(code) > _MAX_FORMAT_CHARS:  # tokenized per cell
-        code = ""
-    kind = _format_kind(format_id, code)
-    if kind:
-        return _serial_text(value, kind, date1904)
-    try:
-        text = _format_number(value, code or _BUILTIN_NUMBER_FORMATS.get(format_id, ""))
-    except (ArithmeticError, ValueError, decimal.InvalidOperation):
-        text = None
-    return _number(value) if text is None else text
+    return _CellNumbers(date1904)(value, format_id, code)
 
 
 def _column_index(ref: str) -> int:
@@ -410,16 +558,32 @@ def _column_index(ref: str) -> int:
     return index - 1
 
 
+def _decode_xstring(text: str) -> str:
+    if "_x" not in text:
+        return text
+    return re.sub(
+        r"_x005[Ff]_(x[0-9a-fA-F]{4}_)|_x([0-9a-fA-F]{4})_",
+        lambda match: f"_{match[1]}" if match[1] else chr(int(match[2], 16)),
+        text,
+    )
+
+
+def _xlsx_unicode(text: str) -> str:
+    if re.search(r"[\ud800-\udfff]", text):
+        return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+    return text
+
+
 def _xlsx_text(node: ET.Element) -> str:
     # Plain <t> or rich runs <r><t>; phonetic hints (<rPh>) are skipped.
     parts = []
     for child in node:
         if child.tag == _q("s", "t"):
-            parts.append(child.text or "")
+            parts.append(_decode_xstring(child.text or ""))
         elif child.tag == _q("s", "r"):
             t = child.find(_q("s", "t"))
-            parts.append((t.text or "") if t is not None else "")
-    return "".join(parts)
+            parts.append(_decode_xstring(t.text or "") if t is not None else "")
+    return _xlsx_unicode("".join(parts))
 
 
 def xlsx(path: str) -> list[Section]:
@@ -455,6 +619,7 @@ def xlsx(path: str) -> list[Section]:
                 fmt = int(xf.get("numFmtId", "0") or 0)
                 style_formats.append((fmt, custom.get(fmt, "")))
 
+        cell_number = _CellNumbers(date1904)
         sections: list[Section] = []
         seen: set[int] = set()
         budget = _Budget()
@@ -480,7 +645,9 @@ def xlsx(path: str) -> list[Section]:
                         value = _xlsx_text(inline) if inline is not None else ""
                     elif kind == "b":
                         value = "TRUE" if raw == "1" else "FALSE"
-                    elif kind in ("str", "e"):
+                    elif kind == "str":
+                        value = _xlsx_unicode(_decode_xstring(raw))
+                    elif kind == "e":
                         value = raw
                     else:
                         try:
@@ -492,7 +659,7 @@ def xlsx(path: str) -> list[Section]:
                             fmt, code = (
                                 style_formats[style] if style < len(style_formats) else (0, "")
                             )
-                            value = _cell_number(number, fmt, code, date1904)
+                            value = cell_number(number, fmt, code)
                     cells.extend([""] * (col - len(cells)))
                     if col == len(cells):
                         cells.append(value)
@@ -880,6 +1047,8 @@ def _email_parts(part, html_text) -> list[str]:
     """Inline body text in order: every part of a mixed message, one choice per alternative."""
     if part.get_content_disposition() == "attachment":
         return []
+    if part.get_content_type() == "message/rfc822" and part.is_multipart():
+        return [_email_text(message, html_text) for message in part.get_payload()]
     if part.get_content_maintype() == "multipart":
         children = list(part.iter_parts())
         if part.get_content_subtype() != "alternative":
@@ -892,14 +1061,22 @@ def _email_parts(part, html_text) -> list[str]:
         return []
     if part.get_content_type() not in ("text/plain", "text/html"):
         return []
-    try:
-        content = part.get_content()
-    except (LookupError, ValueError):
-        content = part.get_payload(decode = True) or b""
-        content = content.decode("utf-8", "replace") if isinstance(content, bytes) else content
-    if part.get_content_subtype() == "html":
-        return [html_text(content.encode("utf-8") if isinstance(content, str) else content)]
-    return [content]
+    is_html = part.get_content_subtype() == "html"
+    content = None
+    # The stdlib reads an undeclared charset as ASCII (Chrome MHTML omits it), so sniff the bytes.
+    if part.get_content_charset() is not None:
+        try:
+            content = part.get_content()
+        except (LookupError, ValueError):
+            pass
+    if not isinstance(content, str):
+        raw = part.get_payload(decode = True) or b""
+        if is_html:
+            return [html_text(raw)]
+        from .parsers import _decode_text
+
+        return [_decode_text(raw)]
+    return [html_text(content.encode("utf-8")) if is_html else content]
 
 
 def _email_text(message, html_text) -> str:
@@ -1203,8 +1380,13 @@ def doc(path: str) -> list[Section]:
                 chars.append(word[offset : offset + hi - lo].decode("cp1252", "replace"))
             else:
                 offset = fc + 2 * (lo - start)
-                chars.append(word[offset : offset + 2 * (hi - lo)].decode("utf-16-le", "replace"))
-        return _word_text("".join(chars))
+                raw = word[offset : offset + 2 * (hi - lo)]
+                if len(raw) & 1:
+                    # Corrupt piece ending mid-character: one U+FFFD.
+                    raw = raw[:-1] + b"\xfd\xff"
+                chars.append(raw.decode("utf-16-le", "surrogatepass"))
+        text = "".join(chars).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+        return _word_text(text)
 
     # Stories follow the main text in this order; headers and comments are left out, as for .docx.
     starts = [sum(ccps[:i]) for i in range(len(ccps))]
@@ -1234,7 +1416,7 @@ def _word_text(raw: str) -> str:
     # A cell ends in 0x07; a row ends in one more.
     text = "".join(out).replace("\x07\x07", "\n").replace("\x07", " | ")
     text = text.translate({0x0D: "\n", 0x0B: "\n", 0x0C: "\n", 0x1E: "-", 0x1F: None})
-    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = _BLANK_LINE_RUN.sub("\n\n", text)
     return _clean_control(text).strip()
 
 
@@ -1300,10 +1482,16 @@ def _xls_string(segments: list[bytes], seg: int, pos: int) -> tuple[str, int, in
         n = min(count, max(avail, 1))
         raw = segments[seg][pos : pos + n * width]
         pos += n * width
-        parts.append(raw.decode("utf-16-le" if wide else "latin-1", "replace"))
+        if not parts and n == count:
+            take(4 * runs + ext)
+            return raw.decode("utf-16-le" if wide else "latin-1", "replace"), seg, pos
+        if wide and len(raw) & 1:
+            # A corrupt record can end mid-character; one U+FFFD keeps the rest aligned.
+            raw = raw[:-1] + b"\xfd\xff"
+        parts.append(raw if wide else raw.decode("latin-1").encode("utf-16-le"))
         count -= n
     take(4 * runs + ext)
-    return "".join(parts), seg, pos
+    return b"".join(parts).decode("utf-16-le", "replace"), seg, pos
 
 
 def _xls_short_string(body: bytes, pos: int, length_bytes: int) -> str:
@@ -1379,9 +1567,11 @@ def xls(path: str) -> list[Section]:
         elif kind == 0x000A:  # end of the workbook globals
             break
 
+    cell_number = _CellNumbers(date1904)
+
     def number(value: float, xf: int) -> str:
         fmt = xf_formats[xf] if xf < len(xf_formats) else 0
-        return _cell_number(value, fmt, formats.get(fmt, ""), date1904)
+        return cell_number(value, fmt, formats.get(fmt, ""))
 
     sections: list[Section] = []
     # BIFF cell records are a few bytes each, so 200 MB of them would hold tens of millions of
@@ -1519,11 +1709,8 @@ def _ppt_record_at(data: bytes, offset: int | None, kind: int) -> tuple[int, int
 
 
 def _ppt_current(cf: CompoundFile, data: bytes) -> tuple[dict[int, int], int] | None:
-    """Persist id -> offset as of the latest save, and the document's persist id.
-
-    Incremental saves append new versions of records, so the stream also holds stale ones;
-    the edit chain from "Current User" says which are live.
-    """
+    """Returns (persist id to offset map as of the latest save, and the document's persist id);
+    stale record copies are skipped via the Current User chain."""
     if not cf.exists("Current User"):
         return None
     user = cf.read("Current User")

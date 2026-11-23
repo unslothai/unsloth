@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-VLM (Vision-Language Model) processing utilities.
-
-Generates smart instructions for VLM datasets via content analysis and
-heuristics.
-"""
+"""VLM dataset utilities that generate instructions from content analysis and heuristics."""
 
 import re
 from itertools import islice
@@ -17,8 +12,9 @@ def generate_smart_vlm_instruction(
     text_column = "text",
     image_column = "image",
     dataset_name = None,
+    fallback_instruction = None,
 ):
-    """selects a VLM instruction from explicit columns, heuristics, an LLM, or the default."""
+    """selects a VLM instruction from explicit columns, heuristics, an LLM, or the default. fallback_instruction, when set, replaces everything after the explicit question-column scan."""
     sample = next(iter(dataset))
     column_names = set(sample.keys())
 
@@ -51,9 +47,31 @@ def generate_smart_vlm_instruction(
                     "confidence": 1.0,
                 }
 
+    # Per-row questions win; only a split without them takes the caller's prompt (the training one, for eval).
+    if fallback_instruction is not None:
+        return {
+            "instruction": fallback_instruction,
+            "instruction_column": None,
+            "instruction_type": "inherited",
+            "uses_dynamic_instruction": False,
+            "confidence": 1.0,
+        }
+
     text_col_lower = text_column.lower()
 
-    text_sample = str(sample.get(text_column, ""))[:500]
+    # Hints read the rows the question scan reads, not row 0: a seeded row bound reorders train before formatting.
+    text_rows = dataset
+    fmt = getattr(dataset, "format", None)
+    # A set_transform / with_transform callback may read the columns a projection drops: keep whole rows then.
+    if hasattr(dataset, "select_columns") and not (
+        isinstance(fmt, dict) and fmt.get("type") == "custom"
+    ):
+        try:
+            # Only the text column: full rows decode 100 images, about a second per split on Radiology_mini.
+            text_rows = dataset.select_columns([text_column])
+        except Exception:
+            text_rows = dataset
+    text_samples = [str(row.get(text_column, ""))[:500] for row in islice(text_rows, 100)]
 
     # Task-specific keywords and their instructions
     task_patterns = {
@@ -119,6 +137,7 @@ def generate_smart_vlm_instruction(
     # Score each task by column/dataset name and content matches
     best_match = None
     best_score = 0.0
+    best_hits = 0
 
     for task_name, task_info in task_patterns.items():
         score = 0.0
@@ -131,13 +150,16 @@ def generate_smart_vlm_instruction(
         ):
             score += 0.3
 
-        for pattern in task_info["content_hints"]:
-            if re.search(pattern, text_sample, re.IGNORECASE):
-                score += 0.4
-                break
+        hits = sum(
+            any(re.search(pattern, text, re.IGNORECASE) for pattern in task_info["content_hints"])
+            for text in text_samples
+        )
+        if hits:
+            score += 0.4
 
-        if score > best_score:
-            best_score = score
+        # A tie goes to the task whose hints match more rows (LaTeX rows can also hold a long word).
+        if (score, hits) > (best_score, best_hits):
+            best_score, best_hits = score, hits
             best_match = task_info
 
     if best_match and best_score > 0.5:

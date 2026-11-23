@@ -16,6 +16,8 @@ export type UploadLimitSettings = {
   defaultUploadSizeMb: number;
   minUploadSizeMb: number;
   maxAllowedUploadSizeMb: number;
+  /** The Audio page upload cap; null means none, undefined an older backend. */
+  audioInputMaxBytes?: number | null;
 };
 
 type ApiUploadLimitSettings = {
@@ -31,6 +33,8 @@ type ApiUploadLimitSettings = {
   min_upload_size_mb: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   max_allowed_upload_size_mb: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  audio_input_max_bytes?: number | null;
 };
 
 let cachedUploadLimit: UploadLimitSettings | null = null;
@@ -68,6 +72,7 @@ function fromApi(settings: ApiUploadLimitSettings): UploadLimitSettings {
     defaultUploadSizeMb: settings.default_upload_size_mb,
     minUploadSizeMb: settings.min_upload_size_mb,
     maxAllowedUploadSizeMb: settings.max_allowed_upload_size_mb,
+    audioInputMaxBytes: settings.audio_input_max_bytes,
   };
 }
 
@@ -87,9 +92,7 @@ async function fetchUploadLimitSettings(): Promise<UploadLimitSettings> {
   return fromApi(await res.json());
 }
 
-/** The cached limit, fetching it once if needed. `force` refetches instead of reading the
- *  cache, for a caller that must agree with the server rather than merely show a number: the
- *  setting can be changed from another tab or process, which no event here reaches. */
+/** `force` refetches: the limit can change from another tab or process. */
 export async function loadUploadLimitSettings({ force = false } = {}) {
   if (cachedUploadLimit && !force) {
     return cachedUploadLimit;

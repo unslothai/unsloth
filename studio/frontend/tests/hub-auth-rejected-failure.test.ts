@@ -5,10 +5,7 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
 
-// A Hub that answers 401 is reachable and refusing the saved token (an expired
-// or revoked OAuth token makes every read 401, public listings included). The
-// panel used to call that "Couldn't reach Hugging Face", which sends the user to
-// check a connection that works.
+// A Hub that answers 401 is reachable and refusing the saved token.
 register("./store-stub-resolver.mjs", import.meta.url);
 const {
   classifyFetchFailure,
@@ -47,23 +44,20 @@ test("a 401 is a refused token; 403, 404, 429 and 5xx are not", () => {
   assert.equal(rejected?.status, 401);
   assert.equal(rejected?.origin, HF);
   assert.match(rejected?.message ?? "", /refused the saved Hugging Face token/);
-  // A gated or private repo answers 403/404 to a token that is perfectly valid.
   for (const status of [403, 404, 429, 500, 502, 503]) {
     assert.equal(hubAuthFailure({ status }, HF), null, `status ${status}`);
   }
 });
 
 test("the SDK's error text is enough when the status was not kept", () => {
-  // What @huggingface/hub's createApiError leaves in `message` for a 401: the
-  // Hub's JSON error when there is one, else "Api error with status 401".
+  // What @huggingface/hub's createApiError leaves in `message` for a 401.
   for (const message of [
     "OAuth token verification failed: Invalid Compact JWS",
     "Invalid credentials in Authorization header",
   ]) {
     assert.equal(hubAuthFailure({ message }, HF)?.kind, "auth-rejected", message);
   }
-  // A bare 401 can be the Studio relay's own session answer, so text alone that names no
-  // token is not a refusal of the Hugging Face token.
+  // A bare 401 can be the Studio relay's own session answer, not a Hugging Face token refusal.
   for (const message of [
     "Api error with status 401",
     "Unauthorized",
@@ -82,7 +76,6 @@ test("the SDK's error text is enough when the status was not kept", () => {
 });
 
 test("an explicit status wins over the text", () => {
-  // "Unauthorized" in a 403 body is still a 403: a gated repo, not a dead token.
   assert.equal(hubAuthFailure({ status: 403, message: "Unauthorized" }, HF), null);
 });
 
@@ -106,8 +99,7 @@ test("a 401 answer does not back the Hub off or record an outage", async () => {
   try {
     const response = await fetchWithTimeout(`${HF}/api/models?search=qwen`, {}, 1_000);
     assert.equal(response.status, 401);
-    // The Hub is reachable: on-device paths, the offline fallbacks and the
-    // backoff all key off this phase, and a refused token must not trip them.
+    // Offline fallbacks and backoff key off this phase, so a refused token must not trip them.
     assert.equal(getHubPhase(HF), "available");
     assert.equal(getLastHubFailure(HF), null);
   } finally {
@@ -130,9 +122,7 @@ test("the discovery feed names a refused token instead of an unreachable Hub", a
   assert.match(branch, /rejected your token/);
   assert.match(branch, /offlineLike: false/);
   assert.match(branch, /tokenRejected: true/);
-  // Both panels recover the refusal from an SDK error the network layer never saw.
   assert.equal(states.match(/hubAuthFailure\(\{ message \}\)/g)?.length, 2);
-  // The fix is the token: offer it, and do not suggest switching hubs over it.
   assert.equal(states.match(/\{tokenRejected \? <UpdateTokenButton \/> : null\}/g)?.length, 2);
   assert.equal(states.match(/!offlineLike && !tokenRejected \? <UseModelScopeButton \/>/g)?.length, 2);
   assert.match(states, /openSettings\("general"\)/);

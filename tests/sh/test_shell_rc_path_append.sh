@@ -1,13 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# Guards the shell-rc PATH append in install.sh (_persist_login_path_dir and the fish drop-in
-# arm _persist_fish_path_dir). Under `set -e` an unwritable rc used to abort the installer at
-# its last cosmetic step, which immutable homes (NixOS/home-manager, chezmoi) hit every time.
-# Contract: a writable rc gets the export; an rc already mentioning .local/bin is untouched;
-# no rc is a no-op; an unwritable rc warns, prints the manual line and returns 0; the lines go
-# in as ONE redirect so no partial write is possible. The fish arm shares all of it.
+# Guards install.sh's shell-rc PATH append (POSIX and fish arms): an unwritable rc must warn,
+# print the manual line and return 0 under `set -e`, written as ONE redirect.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -39,8 +34,6 @@ assert_not_contains() {
     fi
 }
 
-# Extract the functions under test. The POSIX arm delegates to the fish arm and reads
-# _PATH_LINE_RE, so all three come along.
 _FN_FILE=$(mktemp)
 {
     grep '^_PATH_LINE_RE=' "$INSTALL_SH"
@@ -69,15 +62,11 @@ HARNESS
 
 _SH="${BASH:-/bin/bash}"
 
-# `set -e` mirrors install.sh: a non-zero return kills the runner before it echoes RC, which
-# is the regression being guarded. $5 pins the profile file so the rc-selection cascade stays
-# out of it; SHELL is forced non-fish so the POSIX arm runs.
+# `set -e` mirrors install.sh; $5 pins the profile file and SHELL is forced non-fish.
 _run() {  # $1 = rc path
-    # LC_ALL=C so the raw-diagnostic assertions below can match the shell's own wording.
     ( LC_ALL=C SHELL=/bin/bash "$_SH" -c "set -e; . '$_HARNESS'; . '$_FN_FILE'; _persist_login_path_dir \"\$HOME/.local/bin\" '\$HOME/.local/bin' '~/.local/bin' '\\.local/bin' '$1'; echo \"RC=\$?\"" 2>&1 )
 }
 
-# The fish arm picks its own file under $HOME, so steer it with HOME, not an argument.
 _run_fish() {  # $1 = HOME
     ( LC_ALL=C HOME="$1" SHELL=/usr/bin/fish "$_SH" -c "set -e; . '$_HARNESS'; . '$_FN_FILE'; _persist_login_path_dir \"\$HOME/.local/bin\" '\$HOME/.local/bin' '~/.local/bin' '\\.local/bin'; echo \"RC=\$?\"" 2>&1 )
 }
@@ -107,13 +96,12 @@ else
 fi
 
 echo "=== no home at all (nothing to write to): no-op ==="
-# The current shape derives the file, so "nowhere to persist to" means an unset HOME.
 _out=$( env -u HOME "$_SH" -c "set -e; . '$_HARNESS'; . '$_FN_FILE'; _persist_login_path_dir '/x/.local/bin' '\$HOME/.local/bin' '~/.local/bin' '\\.local/bin'; echo \"RC=\$?\"" 2>&1 )
 assert_contains     "returns 0"  "$_out" "RC=0"
 assert_not_contains "no step"    "$_out" "STEP path"
 
 echo "=== READ-ONLY rc: warns, does not fail the install ==="
-# The NixOS / home-manager / chezmoi shape. Root ignores the write bit, so skip there.
+# Root ignores the write bit, so skip there.
 _rc3="$_TMP/.bashrc_ro"; : > "$_rc3"; chmod 0444 "$_rc3"
 if [ "$(id -u)" = "0" ] || { echo x >> "$_rc3"; } 2>/dev/null; then
     echo "  SKIP: cannot make a file unwritable as this user (running as root?)"
@@ -125,9 +113,7 @@ else
     assert_contains     "prints the manual line"      "$_out" 'export PATH="$HOME/.local/bin:$PATH"'
     assert_contains     "reassures install is fine"   "$_out" "only the PATH line is missing"
     assert_not_contains "does not claim success"      "$_out" "added ~/.local/bin to PATH in"
-    # `>> file 2>/dev/null` silences nothing: redirections apply left to right, so stderr is
-    # still the terminal when the append fails. Only 2>/dev/null placed first is quiet, and a
-    # raw diagnostic is what this branch exists to replace.
+    # `>> file 2>/dev/null` still prints the error: redirections apply left to right.
     assert_not_contains "no raw shell diagnostic"     "$_out" "Permission denied"
     if [ ! -s "$_rc3" ]; then
         echo "  PASS: read-only file left empty (no partial write)"; PASS=$((PASS + 1))
@@ -155,7 +141,6 @@ else
 fi
 
 echo "=== fish: READ-ONLY drop-in warns, does not fail the install ==="
-# Same immutable-home shape as the POSIX case: home-manager manages conf.d too.
 _fro="$_TMP/fishro"; mkdir -p "$_fro/.config/fish/conf.d"
 _frofile="$_fro/.config/fish/conf.d/unsloth.fish"; : > "$_frofile"; chmod 0444 "$_frofile"
 if [ "$(id -u)" = "0" ] || { echo x >> "$_frofile"; } 2>/dev/null; then

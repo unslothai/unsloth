@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withTimeFormat } from "@/lib/time-format";
 import { ActionBarMorePrimitive, useAuiState } from "@assistant-ui/react";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -14,8 +15,7 @@ import { formatMessageDate } from "@/lib/format-message-date";
 import { messageTimestamp } from "@/lib/message-timestamp";
 import type { FC } from "react";
 
-/** When the message was written, heading the More menu, with the details button beside it.
- *  The menu renders only while open, so no timer. */
+/** The menu renders only while open, so no timer. */
 export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
   onShowDetails,
 }) => {
@@ -28,13 +28,12 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
       : null;
 
   return (
-    // One item, so the time opens the details as the button beside it does.
     <Tooltip>
       <TooltipTrigger asChild={true}>
         <ActionBarMorePrimitive.Item
           onSelect={onShowDetails}
           aria-label="See response details"
-          className="group/menu-time flex w-fit max-w-full cursor-pointer items-center rounded-[11px] text-muted-foreground outline-none"
+          className="group/menu-time flex w-fit max-w-full cursor-pointer items-center rounded-md text-muted-foreground outline-none"
         >
           {date && (
             <time
@@ -55,10 +54,12 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
           </span>
         </ActionBarMorePrimitive.Item>
       </TooltipTrigger>
-      {/* Above, so it never covers the time. The full date leads, where the time's title gave it. */}
       <TooltipContent side="top" className="tooltip-compact">
         {date
-          ? `${date.toLocaleString(locale, { dateStyle: "full", timeStyle: "short" })} · See response details`
+          ? `${date.toLocaleString(
+              locale,
+              withTimeFormat({ dateStyle: "full", timeStyle: "short" }, locale),
+            )} · See response details`
           : "See response details"}
       </TooltipContent>
     </Tooltip>

@@ -34,7 +34,6 @@ def status(
     assert body["default_username"] == "unsloth"
     assert body["login_mode"] == ("multi" if count > 1 else "single")
     assert "alice" not in response.text and "bob" not in response.text
-    # Preserve the public pre-login hint for older clients.
     if full_access is None:
         full_access = count <= 1
     assert (not policy.installation_has_managed_accounts()) == full_access

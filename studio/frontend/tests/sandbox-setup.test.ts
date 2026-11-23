@@ -706,7 +706,6 @@ function sandboxPopup(capabilityNow: SandboxCapability | null) {
     SandboxSetupDialog: (props: {
       open: boolean;
       onOpenChange: (open: boolean) => void;
-      onLearnMore?: () => void;
     }) => StubElement;
   }>(new URL("../src/features/chat/sandbox-setup-dialog.tsx", import.meta.url), {
     "react/jsx-runtime": stubJsxRuntime(),
@@ -757,12 +756,11 @@ function sandboxPopup(capabilityNow: SandboxCapability | null) {
     "./sandbox-setup-state": setupState,
     "./stores/chat-runtime-store": { useChatRuntimeStore: store },
   });
-  const render = (props: { onLearnMore?: () => void } = {}) => {
+  const render = () => {
     const closes: boolean[] = [];
     const root = dialog.SandboxSetupDialog({
       open: true,
       onOpenChange: (open) => closes.push(open),
-      ...props,
     });
     const inner = root.props.children as StubElement;
     const content = (inner.type as (p: unknown) => StubElement)(inner.props);
@@ -804,14 +802,8 @@ test("the High popup names the missing OS sandbox and offers Install, Learn more
   other.button("settings.sandbox.learnMore")();
   await new Promise((resolve) => setTimeout(resolve, 5));
   assert.deepEqual(other.closes, [false]);
-  assert.deepEqual(popup.opened, [["sandbox", "sandbox-permissions"]]);
-
-  let learned = 0;
-  const inSettings = popup.render({ onLearnMore: () => learned++ });
-  inSettings.button("settings.sandbox.learnMore")();
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  assert.equal(learned, 1);
-  assert.equal(popup.opened.length, 1, "Settings scrolls itself; it opens nothing");
+  // #13656: the OS sandbox status and setup, not Permissions, where High was just picked.
+  assert.deepEqual(popup.opened, [["sandbox", "sandbox-os"]]);
 });
 
 test("the High popup stays short: no probe reason, no command block, a one-line Windows note", () => {
@@ -829,6 +821,47 @@ test("the High popup stays short: no probe reason, no command block, a one-line 
   windows.button("sandboxSetup.windowsSetup");
   assert.ok(windows.texts.includes("sandboxSetup.windowsNote"));
   assert.ok(!windows.texts.includes("settings.sandbox.disclosure"));
+});
+
+test("with nothing to install, the High popup says why instead of showing nothing", () => {
+  // #13656: Windows with MXC allowed and prepared but failing its check, ARM64, or a pre-24H2 build.
+  const reason = "MXC probe failed: the container did not start";
+  const deadEnd = capability({
+    platform: "win32",
+    backend: "mxc-processcontainer",
+    reason,
+    setupAction: null,
+    manualCommand: "",
+    canRunSetup: false,
+  });
+  const view = setupState.sandboxSetupView({ capability: deadEnd, job: null, consent: false });
+  assert.equal(view.install, null);
+  assert.equal(view.command, "");
+  assert.equal(view.showOwnerOnly, false);
+  assert.equal(view.reason, reason);
+  assert.ok(sandboxPopup(deadEnd).render().texts.includes(reason));
+
+  for (const offers of [
+    capability(),
+    capability({ canRunSetup: false, setupAction: null, setupBlocked: "no_elevation" }),
+    capability({ platform: "win32", setupAction: null, canRunSetup: false, manualCommand: "", setupBlocked: "not_owner" }),
+  ]) {
+    assert.equal(
+      setupState.sandboxSetupView({ capability: offers, job: null, consent: false }).reason,
+      "",
+    );
+  }
+  const readyNow = { ...deadEnd, pythonOsIsolated: true, terminalOsIsolated: true, reason: "passed" };
+  assert.equal(
+    setupState.sandboxSetupView({ capability: readyNow, job: null, consent: false }).reason,
+    "",
+  );
+  for (const state of ["running", "failed"] as const) {
+    assert.equal(
+      setupState.sandboxSetupView({ capability: deadEnd, job: setupJob({ state }), consent: false }).reason,
+      "",
+    );
+  }
 });
 
 test("an install that makes the OS sandbox pass turns High on", () => {

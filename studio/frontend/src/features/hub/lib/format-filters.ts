@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isGgufLike } from "./model-identifiers.ts";
+
 export type FormatFilterModelFormat =
   | "gguf"
   | "safetensors"
@@ -15,7 +17,8 @@ export type FormatFilterValue =
   | "gguf"
   | "checkpoint"
   | "mlx"
-  | "npu";
+  | "npu"
+  | "unsloth";
 
 export function matchesFormat(
   modelFormat: boolean | FormatFilterModelFormat | null | undefined,
@@ -33,23 +36,83 @@ export function matchesFormat(
     return normalized === "gguf";
   }
   if (formatFilter === "mlx") return normalized === "mlx";
-  // NPU models come from Lemonade's catalog, never from a Hub repo or the disk scan.
   if (formatFilter === "npu") return false;
+  // Where a model came from, not its format: the On Device list checks the row's source.
+  if (formatFilter === "unsloth") return false;
   return normalized === "safetensors" || normalized === "checkpoint";
 }
 
+// Mirrors the backend's looks_like_mlx_repo.
+const MLX_NAME_RE = /(?:^|[-_.])mlx(?:$|[-_.])/i;
+const MLX_OWNER_PREFIX = "mlx-community/";
+// Callers pass a filesystem path, which may be Windows.
+const PATH_SEP_RE = /[\\/]/;
+
+/** The model card's own marking. The Hub never inspects weights, so many MLX uploads lack it. */
+export function hasMlxCardTag(model: {
+  tags?: readonly string[] | null;
+  libraryName?: string | null;
+}): boolean {
+  return (
+    model.libraryName?.toLowerCase() === "mlx" ||
+    Boolean(model.tags?.some((tag) => tag.toLowerCase() === "mlx"))
+  );
+}
+
+/** MLX by name, or by `hintedIsMlx` (pass hasMlxCardTag); either alone misses real MLX repos. */
+export function isMlxId(id: string, hintedIsMlx?: boolean): boolean {
+  if (hintedIsMlx) return true;
+  const trimmed = id.trim();
+  if (trimmed.toLowerCase().startsWith(MLX_OWNER_PREFIX)) return true;
+  const leaf = trimmed.split(PATH_SEP_RE).filter(Boolean).at(-1) ?? trimmed;
+  return MLX_NAME_RE.test(leaf);
+}
+
+export function cachedRepoIsMlx(repo: {
+  repo_id: string;
+  tags?: readonly string[] | null;
+  library_name?: string | null;
+}): boolean {
+  return isMlxId(
+    repo.repo_id,
+    hasMlxCardTag({ tags: repo.tags, libraryName: repo.library_name }),
+  );
+}
+
+export function namedOrTaggedMlx(model: {
+  names: readonly string[];
+  tags?: readonly string[] | null;
+  libraryName?: string | null;
+  omlx?: boolean;
+}): boolean {
+  return (
+    hasMlxCardTag(model) ||
+    Boolean(model.omlx) ||
+    model.names.some((name) => isMlxId(name))
+  );
+}
+
+export function localRowIsMlx(row: {
+  id: string;
+  display_name?: string | null;
+  model_id?: string | null;
+  path?: string | null;
+  source?: string | null;
+}): boolean {
+  return namedOrTaggedMlx({
+    names: [row.id, row.display_name ?? "", row.model_id ?? "", row.path ?? ""],
+    omlx: row.source === "omlx",
+  });
+}
+
 export function detectResultFormat(result: {
+  id: string;
   isGguf: boolean;
   tags?: string[];
   libraryName?: string;
 }): FormatFilterModelFormat {
   if (result.isGguf) return "gguf";
-  if (
-    result.libraryName?.toLowerCase() === "mlx" ||
-    result.tags?.some((tag) => tag.toLowerCase() === "mlx")
-  ) {
-    return "mlx";
-  }
+  if (isMlxId(result.id, hasMlxCardTag(result))) return "mlx";
   return "safetensors";
 }
 
@@ -97,11 +160,38 @@ export function matchesRecommended(
   return format !== null && checkpointQuantFormats.includes(format);
 }
 
+/** Recommended for an image / video model: also full-precision checkpoints, since diffusers repos are the main way to run them. */
+export function matchesRecommendedDiffusion(
+  result: { id: string; isGguf: boolean; quantMethod?: string },
+  checkpointQuantFormats: readonly string[],
+): boolean {
+  return (
+    matchesRecommended(result, checkpointQuantFormats) ||
+    checkpointQuantFormat(result) === null
+  );
+}
+
+// Recommended browsing lists every GGUF but only checkpoints with more than this many likes.
+export const MIN_RECOMMENDED_CHECKPOINT_LIKES = 30;
+
+export function hasRecommendedCheckpointLikes(result: {
+  id: string;
+  isGguf: boolean;
+  likes?: number;
+  tags?: readonly string[];
+}): boolean {
+  // A safetensors repo that also ships a stray .gguf is still tagged "gguf"; its weights are safetensors.
+  const isGgufRepo =
+    isGgufLike(result.id) ||
+    (result.isGguf &&
+      !result.tags?.some((tag) => tag.toLowerCase() === "safetensors"));
+  return isGgufRepo || (result.likes ?? 0) > MIN_RECOMMENDED_CHECKPOINT_LIKES;
+}
+
 // Inference-only quant formats Unsloth cannot fine-tune. Matched on the repo
 // name since the search listing often omits the quant config.
 const NON_FINETUNABLE_NAME =
   /(?:^|[-_/.])(?:fp8|nvfp4|mxfp4|w4a16|w8a8|w8a16|int4|int8|gptq|awq|mobile|litert|tflite)(?:[-_/.]|$)/i;
-// Quant methods Unsloth can fine-tune: full precision (none) or bitsandbytes.
 const FINETUNABLE_QUANT = new Set(["bitsandbytes", "bnb", "bnb_4bit"]);
 
 export function isUnslothFinetunable(result: {
@@ -111,4 +201,19 @@ export function isUnslothFinetunable(result: {
   if (NON_FINETUNABLE_NAME.test(result.id)) return false;
   const quant = result.quantMethod?.toLowerCase();
   return !quant || FINETUNABLE_QUANT.has(quant);
+}
+
+/** A shared ?npu= link opens on another filter; true while it still has to switch to NPU. */
+export function npuLinkNeedsFormat({
+  npu,
+  formatFilter,
+  modelsMode,
+  npuSupported,
+}: {
+  npu: string | null;
+  formatFilter: FormatFilterValue;
+  modelsMode: boolean;
+  npuSupported: boolean;
+}): boolean {
+  return npu !== null && formatFilter !== "npu" && modelsMode && npuSupported;
 }

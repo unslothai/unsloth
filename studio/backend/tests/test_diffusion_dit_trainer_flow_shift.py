@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the DiT trainer's timestep-shift / CFG-dropout / loss-weighting levers.
-
-CPU-only: cover the flow_shift config resolution (qwen-image defaults to "auto", every
-other family stays on the identity 1.0), the exact sigma transform for the auto and
-numeric modes, the shifted sampling distribution, and the bell weight table. The full
-training loop is exercised by the live GPU smokes, not here."""
+"""CPU tests for flow_shift resolution, sigma transforms, shifted sampling and bell loss weights."""
 
 from __future__ import annotations
 
@@ -42,11 +37,10 @@ def _qwen_scheduler():
 
 def _flux_static_scheduler():
     # A static-shift scheduler (shift baked into sigmas at init, no dynamic shifting).
-    from diffusers import FlowMatchEulerDiscreteScheduler
-    return FlowMatchEulerDiscreteScheduler(num_train_timesteps = 1000, shift = 3.0)
+    diffusers = pytest.importorskip("diffusers")
+    return diffusers.FlowMatchEulerDiscreteScheduler(num_train_timesteps = 1000, shift = 3.0)
 
 
-# ── config resolution ─────────────────────────────────────────────────────────
 def test_flow_shift_defaults_per_family():
     qwen = DiffusionLoraConfig(
         base_model = "Qwen/Qwen-Image", data_dir = "d", output_dir = "o"
@@ -56,11 +50,11 @@ def test_flow_shift_defaults_per_family():
     flux = DiffusionLoraConfig(
         base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o"
     ).normalized()
-    assert flux.flow_shift == 1.0
+    assert flux.flow_shift is None
     zimg = DiffusionLoraConfig(
         base_model = "Tongyi-MAI/Z-Image-Turbo", data_dir = "d", output_dir = "o"
     ).normalized()
-    assert zimg.flow_shift == 1.0
+    assert zimg.flow_shift is None
 
 
 def test_flow_shift_explicit_values_and_validation():
@@ -68,7 +62,6 @@ def test_flow_shift_explicit_values_and_validation():
         base_model = "Qwen/Qwen-Image", data_dir = "d", output_dir = "o", flow_shift = 2.2
     ).normalized()
     assert cfg.flow_shift == 2.2
-    # String numerics from the Unsloth config path coerce; "auto" passes through.
     assert (
         DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", flow_shift = "3.0")
         .normalized()
@@ -138,7 +131,6 @@ def test_config_from_dict_plumbs_the_new_fields():
     assert cfg.weighting_scheme == "bell"
 
 
-# ── sigma table transforms ────────────────────────────────────────────────────
 def test_auto_table_matches_the_exact_qwen_transform():
     import torch
 
@@ -150,11 +142,9 @@ def test_auto_table_matches_the_exact_qwen_transform():
     scale = (1.0 - shifted[-1]) / (1.0 - QWEN_SHIFT_TERMINAL)
     expected = 1.0 - (1.0 - shifted) / scale
     assert torch.allclose(table, expected, atol = 1e-6)
-    # Fixed-point spot checks: sigma 1.0 stays 1.0, the terminal sigma lands on 0.02, and u = 0.5 rises to ~0.754.
     assert abs(float(table[0]) - 1.0) < 1e-6
     assert abs(float(table[-1]) - QWEN_SHIFT_TERMINAL) < 1e-6
     assert abs(float(table[499]) - 0.75427) < 1e-3
-    # The table stays a valid descending schedule in (0, 1].
     assert bool((table[:-1] > table[1:]).all())
 
 
@@ -170,13 +160,60 @@ def test_numeric_table_applies_the_linear_shift():
 
 
 def test_identity_and_static_families_are_untouched():
-    # flow_shift 1.0 must return the scheduler's own table object (no numeric drift for FLUX / Z-Image / Krea 2), and "auto"
-    # on a static-shift scheduler is a no-op: its init already baked the shift into sigmas.
+    # None returns the scheduler's own table; "auto" on a static-shift scheduler is a no-op.
     sched = _qwen_scheduler()
+    assert _training_sigma_table(sched, None) is sched.sigmas
     assert _training_sigma_table(sched, 1.0) is sched.sigmas
     static = _flux_static_scheduler()
+    assert _training_sigma_table(static, None) is static.sigmas
     assert _training_sigma_table(static, "auto") is static.sigmas
-    assert _training_sigma_table(static, 1.0) is static.sigmas
+
+
+def test_a_numeric_shift_is_the_effective_shift_on_a_static_scheduler():
+    import torch
+
+    # Z-Image-Turbo bakes in shift 3: a requested 3 is that schedule (not 9); 1.0 is unshifted.
+    static = _flux_static_scheduler()
+    assert torch.allclose(_training_sigma_table(static, 3.0), static.sigmas, atol = 1e-6)
+    u = _training_sigma_table(static, 1.0)
+    assert torch.allclose(u, torch.linspace(1.0, 0.001, 1000), atol = 1e-6)
+    assert torch.allclose(_training_sigma_table(static, 2.0), 2.0 * u / (1.0 + u), atol = 1e-6)
+
+
+def test_the_resume_identity_keeps_the_default_token_and_drops_min_snr_for_flow_families():
+    from core.training import diffusion_checkpoint as dc
+
+    flux = DiffusionLoraConfig(
+        base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o"
+    ).normalized()
+    ident = dc.identity_for_config(flux)
+    # Earlier builds recorded the model's own schedule as "1.0", so a default run still resumes their checkpoints.
+    assert ident.flow_shift == "1.0"
+    assert ident.snr_gamma is None
+    old = dc.CheckpointIdentity.from_dict({**ident.as_dict(), "snr_gamma": "5.0"})
+    assert old.mismatch_reason(ident) is None
+    # FLUX.1 shifts dynamically, so older checkpoints still resume.
+    flux_shifted = dc.identity_for_config(
+        DiffusionLoraConfig(
+            base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o", flow_shift = 3.0
+        ).normalized()
+    )
+    assert flux_shifted.flow_shift == "3.0"
+    legacy = dc.CheckpointIdentity.from_dict({**flux_shifted.as_dict(), "flow_shift": "3.0"})
+    assert legacy.mismatch_reason(flux_shifted) is None
+    # Z-Image bakes a static shift in: a number is now effective, not on top of it, so an older run is refused.
+    zimage_shifted = dc.identity_for_config(
+        DiffusionLoraConfig(
+            base_model = "Tongyi-MAI/Z-Image-Turbo", data_dir = "d", output_dir = "o", flow_shift = 3.0
+        ).normalized()
+    )
+    assert zimage_shifted.flow_shift == "effective:3.0"
+    legacy = dc.CheckpointIdentity.from_dict({**zimage_shifted.as_dict(), "flow_shift": "3.0"})
+    assert "timestep shift" in (legacy.mismatch_reason(zimage_shifted) or "")
+    sdxl = DiffusionLoraConfig(
+        base_model = "stabilityai/stable-diffusion-xl-base-1.0", data_dir = "d", output_dir = "o"
+    ).normalized()
+    assert dc.identity_for_config(sdxl).snr_gamma == "5.0"
 
 
 def test_sampled_sigma_distribution_shifts_under_auto():
@@ -203,12 +240,10 @@ def test_gather_sigmas_broadcasts_to_ndim():
     assert abs(float(sig[0].flatten()) - 1.0) < 1e-6
 
 
-# ── bell weighting ────────────────────────────────────────────────────────────
 def test_bell_weights_shape_peak_and_normalization():
     w = _bell_loss_weights(1000)
     assert w.shape == (1000,)
     assert float(w.min()) >= 0.0
-    # Peak at mid-schedule, mean 1 so the expected loss scale is unchanged.
     assert int(w.argmax()) == 500
     assert abs(float(w.mean()) - 1.0) < 1e-5
     assert float(w[500]) > float(w[0])

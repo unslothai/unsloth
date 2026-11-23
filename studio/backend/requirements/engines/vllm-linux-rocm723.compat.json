@@ -1,5 +1,5 @@
 {
- "lock_sha256": "6d85f7ded51a9040fd55741a3d353374de3a2e5a5fc49a37d63d2731887fe2af",
+ "lock_sha256": "edecb31e71d20017bb78daf4608568e0b6db128a4156226cb8eb2f41f3ecc91c",
  "requires": {
   "accelerate": [
    ">=0.21.0"
@@ -581,7 +581,7 @@
   "botocore": 16008194,
   "cachetools": 16918,
   "cbor2": 463316,
-  "certifi": 136983,
+  "certifi": 136464,
   "cffi": 221822,
   "charset-normalizer": 257601,
   "click": 125251,

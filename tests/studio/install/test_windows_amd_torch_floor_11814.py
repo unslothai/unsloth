@@ -1,15 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""unslothai/unsloth#11814: every Windows AMD family gets the torch 2.11 floor.
-
-install.ps1 keeps a venv's existing torch release on reinstall (Get-PreviousTorchPin)
-unless the arch has a ROCm floor to veto it. With the floor on five arches only, a
-gfx103X-all venv from an earlier install stayed on 2.10.0+rocm7.13.0, whose _grouped_mm
-access-violates on an RX 6500 XT and takes `import unsloth` down with it. What this file
-pins: the Windows-routed RDNA arches all carry the 2.11 trio in the python repair map, the
-two PowerShell installers carry the same keys with the same specs, and the 2.11-allowlist
-leaves agree with the family map for those arches.
-"""
+"""Every Windows AMD family gets the torch 2.11 floor, so reinstalls cannot keep a 2.10 ROCm build."""
 
 import importlib.util
 import re

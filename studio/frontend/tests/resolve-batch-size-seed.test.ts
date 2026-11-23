@@ -55,13 +55,11 @@ test("a clean control follows a same-model move", () => {
 
 test("a pending edit keeps the control while the baseline advances", () => {
   assert.deepEqual(seed(1024, 8192, 4096), { loaded: 1024 });
-  // typed against a server still at the defaults
   assert.deepEqual(seed(1024, 8192, null), { loaded: 1024 });
 });
 
 test("a null echo clears a clean control along with the baseline", () => {
   assert.deepEqual(seed(null, 4096, 4096), { loaded: null, value: null });
-  // dirty control keeps its intent
   assert.deepEqual(seed(null, 8192, 4096), { loaded: null });
 });
 
@@ -73,14 +71,11 @@ test("a non-gguf status clears like a null echo", () => {
 });
 
 test("a swap adopts the new model's reported size instead of blanking the control", () => {
-  // another client loaded a different GGUF with an explicit -b; blanking here would
-  // leave the control reading "default" and revert the server on the next Reload
+  // another client loaded a GGUF with explicit -b; blanking would revert it on the next Reload
   assert.deepEqual(seed(4096, null, null, { modelChanged: true }), {
     loaded: 4096,
     value: 4096,
   });
-  // and it adopts even when the new model happens to report what the old one ran,
-  // which the steady-echo short-circuit would otherwise swallow
   assert.deepEqual(seed(4096, 4096, 4096, { modelChanged: true }), {
     loaded: 4096,
     value: 4096,
@@ -102,7 +97,6 @@ test("a swap to a model running the defaults clears both sides", () => {
 });
 
 test("a swap to a non-gguf or an older backend still drops the stale control", () => {
-  // non-gguf echoes null, so the baseline goes too
   assert.deepEqual(
     seed(undefined, 4096, 4096, { isGguf: false, modelChanged: true }),
     {
@@ -110,10 +104,7 @@ test("a swap to a non-gguf or an older backend still drops the stale control", (
       value: null,
     },
   );
-  // an older backend says nothing, so there is no baseline to adopt -- and the pair
-  // staged against the departed model must not follow onto the new one. Leaving the
-  // baseline behind would have a later failed swap roll back with the old model's
-  // -b, which the backend that reported nothing never ran.
+  // an older backend reports nothing, so the old model's staged pair must not follow
   assert.deepEqual(seed(undefined, 8192, 2048, { modelChanged: true }), {
     loaded: null,
     value: null,

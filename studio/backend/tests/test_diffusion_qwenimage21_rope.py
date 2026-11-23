@@ -87,7 +87,7 @@ def _compiled(prep, x, freqs, dynamic):
 @pytest.mark.parametrize("seq", [77, 1024])
 def test_compiled_real_rope_matches_the_complex_one(dynamic, seq, emulating):
     """Fused QK-norm may move a few elements one ulp off B200; read off each pair's length."""
-    # Inductor's norm schedule depends on this head layout.
+    # Inductor's norm schedule depends on this head layout
     attn = _attention("cuda", heads = 32, dim_head = 128)
     prep, x, freqs = _qk(attn, seq, "cuda")
     with torch.inference_mode():
@@ -120,7 +120,7 @@ def test_the_real_form_runs_inside_the_compiled_block(monkeypatch, emulating):
     attn = _attention("cuda")
     prep, x, freqs = _qk(attn, 64, "cuda")
     _compiled(prep, x, freqs, False)
-    assert len(calls) == 2  # traced once for q, once for k
+    assert len(calls) == 2
 
 
 def _fake_fusion(monkeypatch):

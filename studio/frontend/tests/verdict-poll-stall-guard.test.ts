@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The recovery poll's no-stacking guard in app-sidebar.tsx, run rather than pattern-matched.
-// The effect lives in a .tsx that pulls in the whole shell, so lift the interval out of the
-// source and drive it with a fake clock, a fake setInterval and reads the test settles by hand.
-//
-// The race: a /api/health read that outlives the stall window is given up on and the next tick
-// starts a replacement, which takes the guard over. The abandoned read still settles eventually,
-// and its `finally` used to zero the shared marker while the replacement was in flight, so every
-// following tick saw a free guard and fired another forced read. On the backend this exists for,
-// one still importing torch, that is a read every three seconds piled onto the process the poll
-// is waiting for.
+// Lifted from app-sidebar.tsx and run with a fake clock. An abandoned stalled read must not
+// release the guard while its replacement is in flight, or every tick fires a forced read.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -19,10 +11,8 @@ import { readSrcAsync } from "./helpers/kit.ts";
 
 const src = await readSrcAsync("components/app-sidebar.tsx");
 
-// The interval, verbatim, from the marker it opens with to the cleanup it returns.
 const START = "let pollingSince = 0;";
-// A single-line marker that appears once: the follow-up cancel is written twice, in
-// the finally and in stopPolling, so it cannot delimit the block.
+// The follow-up cancel appears twice, so it cannot delimit the block.
 const END = "return () => stopPolling();";
 const from = src.indexOf(START);
 const to = src.indexOf(END, from);
@@ -50,10 +40,7 @@ const startPoll = new Function(
   "VERDICT_POLL_STALL_MS",
   "VERDICT_UNKNOWN_POLL_MS",
   "SELF_HEAL_POLL_MS",
-  // The follow-up read the settled-inventory branch schedules. This scenario is the
-  // unknown verdict, which does not take that branch, so the timer is never armed here;
-  // the bindings exist so the lifted block still evaluates. The timer itself goes
-  // through the injected window, like the interval.
+  // Unused in this scenario but needed so the lifted block evaluates.
   "selfHealSettled",
   "INVENTORY_FOLLOW_UP_MS",
   body,
@@ -61,8 +48,6 @@ const startPoll = new Function(
   window: {
     setInterval: (fn: () => void, ms: number) => number;
     clearInterval: (id: number) => void;
-    // The follow-up read's timer. This scenario never arms it, but the lifted block
-    // reaches for it through the injected window and the type has to allow that.
     setTimeout: (fn: () => void, ms: number) => number;
     clearTimeout: (id: number) => void;
   },
@@ -76,7 +61,6 @@ const startPoll = new Function(
   followUpMs: number,
 ) => () => void;
 
-/** The interval, wired to a clock and a queue of reads the test settles when it chooses. */
 function harness() {
   let clock = 1_700_000_000_000; // any non-zero start: the guard reads its marker as truthy
   let tick: (() => void) | undefined;
@@ -105,7 +89,6 @@ function harness() {
     true,
     STALL_MS,
     POLL_MS,
-    // The self-heal cadence is the other branch; this scenario is the unknown verdict.
     15000,
     false,
     FOLLOW_UP_MS,
@@ -119,7 +102,6 @@ function harness() {
       clock += ms;
     },
     tick: () => tick?.(),
-    // Node runs the promise callbacks the interval attached before the next macrotask.
     settle: async (index: number, how: "resolve" | "reject" = "resolve") => {
       pending[index][how]();
       await new Promise((r) => setImmediate(r));
@@ -155,12 +137,10 @@ test("a stalled read cannot clear the guard its replacement now owns", async () 
   poll.tick();
   assert.equal(poll.reads(), 1);
 
-  // The first read outlives the stall window, so the poll gives up on it and replaces it.
   poll.advance(STALL_MS + POLL_MS);
   poll.tick();
   assert.equal(poll.reads(), 2, "the stall window did not release the guard");
 
-  // The abandoned read finally answers, long after ownership moved on.
   await poll.settle(0);
 
   poll.advance(POLL_MS);
@@ -171,14 +151,12 @@ test("a stalled read cannot clear the guard its replacement now owns", async () 
     "the abandoned read cleared a guard it no longer held, so the poll stacked another " +
       "forced /api/health onto the backend it is waiting for",
   );
-  // And it keeps holding: the replacement is still in flight, tick after tick.
   poll.advance(POLL_MS);
   poll.tick();
   poll.advance(POLL_MS);
   poll.tick();
   assert.equal(poll.reads(), 2, "the guard leaked one tick later instead");
 
-  // The replacement still releases it normally when it answers.
   await poll.settle(1);
   poll.advance(POLL_MS);
   poll.tick();

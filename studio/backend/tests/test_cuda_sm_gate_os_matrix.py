@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""OS x GPU-vendor matrix for the CUDA SM gate, the sibling of
-``test_gpu_arch_gate_os_matrix_7624.py`` for the ROCm arch gate.
-
-The gate refuses a launch only when every visible GPU is OLDER than the oldest
-arch the bundle was compiled for, and must be inert everywhere else. Output
-alone cannot show that: a gate that ran and passed returns None exactly like one
-that never ran, so the marker reader and the nvidia-smi probe are spied and
-asserted un-called on the cells that must not reach them.
-
-Matrix: [Windows, Linux, WSL, macOS] x [NVIDIA, AMD, CPU-only]. No NVIDIA GPU is
-needed; nvidia-smi, the marker and the masks are faked in the shapes the
-installer writes (digit-string ``supported_sms``, ``compute_cap`` as "8.6").
-"""
+"""The gate refuses only when every GPU predates the bundle's oldest arch and is inert elsewhere."""
 
 from __future__ import annotations
 
@@ -23,7 +11,6 @@ import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
 
-# sys.platform / platform.system() pair per simulated host.
 _OS_CELLS = {
     "windows": ("win32", "Windows"),
     "linux": ("linux", "Linux"),
@@ -33,7 +20,6 @@ _OS_CELLS = {
 OS_KEYS = list(_OS_CELLS)
 VENDORS = ["nvidia", "amd", "cpu"]
 
-# As the installer writes them.
 CUDA12_OLDER = ["75", "80", "86", "89"]
 CUDA13_NEWER = ["100", "120"]
 
@@ -122,8 +108,7 @@ class TestTheGateAcrossTheOsAndVendorMatrix:
     @pytest.mark.parametrize("os_key", OS_KEYS)
     @pytest.mark.parametrize("vendor", VENDORS)
     def test_only_an_nvidia_host_can_be_refused(self, os_key, vendor, monkeypatch, host):
-        """No nvidia-smi means unknowable coverage, so the gate opens whatever
-        the marker claims."""
+        """No nvidia-smi leaves coverage unknown, so the gate opens whatever the marker claims."""
         host(os_key)
         rows = "0, 7.5\n" if vendor == "nvidia" else None
         error = _gate(monkeypatch, sms = frozenset({86, 89}), caps_rows = rows)
@@ -137,8 +122,7 @@ class TestTheGateAcrossTheOsAndVendorMatrix:
     def test_an_unmarked_install_never_probes_the_gpu(
         self, os_key, vendor, monkeypatch, host, marker_spy, smi_spy
     ):
-        """Unknown coverage must short-circuit before shelling out to
-        nvidia-smi on every load."""
+        """Unknown coverage must short-circuit before shelling out to nvidia-smi on every load."""
         host(os_key)
         monkeypatch.setattr(
             LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/x/llama-server")
@@ -149,8 +133,7 @@ class TestTheGateAcrossTheOsAndVendorMatrix:
 
     @pytest.mark.parametrize("os_key", OS_KEYS)
     def test_a_non_cuda_bundle_is_inert(self, os_key, monkeypatch, host):
-        """Vulkan/CPU/ROCm bundles declare no supported_sms. That invariant is
-        why the call site needs no explicit is_vulkan_backend guard."""
+        """Bundles declaring no supported_sms need no is_vulkan_backend guard at the call site."""
         host(os_key)
         assert _gate(monkeypatch, sms = None, caps_rows = "0, 7.5\n") is None
 
@@ -159,18 +142,17 @@ class TestTheSmFloorDecision:
     @pytest.mark.parametrize(
         "sms, cap, refused",
         [
-            (CUDA12_OLDER, "7.5", False),  # exactly the floor
-            (CUDA12_OLDER, "7.0", True),  # below every compiled arch
-            (CUDA12_OLDER, "9.0", False),  # newer card JITs the PTX forward
-            (CUDA13_NEWER, "8.9", True),  # sm_89 below an sm_100 floor
+            (CUDA12_OLDER, "7.5", False),
+            (CUDA12_OLDER, "7.0", True),
+            (CUDA12_OLDER, "9.0", False),
+            (CUDA13_NEWER, "8.9", True),
             (CUDA13_NEWER, "12.0", False),
-            (["120"], "12.1", False),  # GB10 on a 5090 bundle, same major
-            (["121"], "12.0", True),  # sm_121 PTX cannot JIT down to sm_120
+            (["120"], "12.1", False),
+            (["121"], "12.0", True),
         ],
     )
     def test_floor_not_exact_membership(self, sms, cap, refused, monkeypatch):
-        """Only the too-old direction is broken: an exact-SM test would refuse
-        the legacy sm_50-61 PTX bundle that drives an sm_86 host fine."""
+        """Exact-SM matching would refuse the sm_50-61 PTX bundle that drives sm_86 fine."""
         error = _gate(monkeypatch, sms = frozenset(int(s) for s in sms), caps_rows = f"0, {cap}\n")
         assert bool(error) is refused, error
 
@@ -199,8 +181,7 @@ class TestTheSmFloorDecision:
 
 
 class TestVisibilityMasks:
-    """Mask entries are ordinals in CUDA's order while nvidia-smi reports
-    physical PCI indices, so the mask is trusted only when both agree."""
+    """Mask ids are CUDA ordinals, not nvidia-smi PCI indices; trusted only when the two agree."""
 
     def test_a_numeric_mask_hiding_the_old_card_opens_the_gate(self, monkeypatch):
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
@@ -231,9 +212,8 @@ class TestVisibilityMasks:
         ],
     )
     def test_a_uuid_or_mig_mask_is_ignored_and_the_whole_host_is_judged(self, mask, monkeypatch):
-        """Neither names a physical index we can map back, so the mask is
-        dropped and every card is weighed. That errs toward launching and only
-        refuses when nothing on the host could run, whichever instance wins."""
+        """UUID or MIG masks name no physical index we can map back, so the mask is dropped and
+        every card weighed; the gate refuses only if nothing could run, whichever instance wins."""
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
         monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
         assert _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n1, 8.6\n") is None
@@ -254,8 +234,7 @@ class TestMarkerParsing:
 
     @pytest.mark.parametrize("raw", [["86"], [86], [" 86 "], ["75", "86"]])
     def test_the_installer_string_format_round_trips(self, raw, monkeypatch):
-        """The installer writes sorted digit strings; the reader must take
-        those plus the ints an older marker may hold."""
+        """Installer writes sorted digit strings; readers also accept ints from older markers."""
         from utils import llama_cpp_freshness as freshness
 
         monkeypatch.setattr(freshness, "read_install_marker", lambda b: {"supported_sms": raw})

@@ -1,30 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Train the same rows with PLAIN TRL, so an Unsloth trace has something to sit
-next to.
-
-**What this can say, and what it deliberately does not.** It does NOT assert
-that the two paths produce the same losses, and the temptation to is the whole
-reason this docstring is long. The `frontier` leg already showed transformers
-5.5.0 and 5.15.1 producing different step-1 losses on identical weights, data
-and seed (10.3222 against 6.4367), so the loss function itself moves between
-library versions. Two DIFFERENT stacks agreeing to a tolerance would be a
-coincidence, and a check built on one would go red on ordinary drift, which is
-the kind of red that gets a check switched off the week before it is right.
-
-What it asserts is the pair of claims that are version-independent: the plain
-path **runs at all** on this model and this trl, and it **converges** rather
-than sitting flat or going non-finite. Everything else is reported side by side
-for a human.
-
-**Why a separate file and a separate process.** Unsloth patches transformers,
-trl and peft at import time. Anything that has imported it is no longer a
-control, and an in-process "comparison" would be Unsloth against itself with
-extra steps. This module must never import unsloth, and the guard in
-tests/kaggle/test_t4_smoke_harness.py asserts that from the source rather than
-trusting the convention.
-"""
+"""Must never import unsloth: it patches transformers, trl and peft at import, ending the control."""
 
 from __future__ import annotations
 
@@ -64,10 +41,7 @@ def _rows(path: Path) -> list[dict]:
 
 def run(args) -> dict:
     """Load in 4bit, attach LoRA, train, and report the step trace."""
-    # Asserted rather than assumed: an unsloth already in sys.modules means
-    # transformers is patched and this arm is not a control. It cannot happen
-    # by accident in a fresh process, which is exactly why it would go
-    # unnoticed if it ever did.
+    # An unsloth already imported means transformers is patched and this arm is not a control.
     if "unsloth" in sys.modules or "unsloth_zoo" in sys.modules:
         raise RuntimeError(
             "unsloth is imported in the plain-TRL process, so this is not a "
@@ -85,11 +59,7 @@ def run(args) -> dict:
 
     _seed_everything(args.seed)
 
-    # float16 and NF4, to match what the Unsloth arm ends up on: a T4 is sm_75
-    # and has no bf16, and load_in_4bit there resolves to NF4 with a float16
-    # compute dtype. Matching the numeric path is not enough to make the losses
-    # comparable (see the module docstring) but mismatching it would add a
-    # difference nobody asked about.
+    # Match the Unsloth arm on T4: no bf16, so NF4 with float16 compute.
     quant = BitsAndBytesConfig(
         load_in_4bit = True,
         bnb_4bit_quant_type = "nf4",
@@ -108,21 +78,11 @@ def run(args) -> dict:
     result["load_seconds"] = round(time.time() - t0, 1)
     result["resolved_checkpoint"] = getattr(getattr(model, "config", None), "_name_or_path", None)
 
-    # The plain arm resolves its own repo, and it is NOT the one the Unsloth arm
-    # loads: Unsloth's FLOAT_TO_INT_MAPPER redirects a 16bit name to a
-    # pre-quantised `-unsloth-bnb-4bit` sibling, while this path quantises the
-    # original on the fly. Recorded rather than reconciled, because forcing them
-    # onto one repo would test a path neither a user nor the leg takes.
+    # Unsloth redirects to a pre-quantised -unsloth-bnb-4bit repo; this arm quantises the original.
 
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-    # Gradient checkpointing ON, and leaving it off was an unfair comparison
-    # rather than a neutral one: the unsloth arm runs with
-    # `gradient_checkpointing="unsloth"`, so a control without it is measured
-    # with the single largest memory lever disabled on one side only. On
-    # gemma-4-E2B-it that is the difference between a comparison and an OOM --
-    # the control asked for 8.75GiB on top of 8.96GiB already resident, on a
-    # 14.56GiB card (kernel unsloth-probe-latestcompile-r4-e67ef2).
+    # Gradient checkpointing on, matching the unsloth arm; without it the control can OOM.
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing = True)
     model = get_peft_model(
         model,
@@ -169,10 +129,7 @@ def run(args) -> dict:
         save_strategy = "no",
         max_length = args.max_seq_length,
         gradient_checkpointing = True,
-        # Required with gradient checkpointing on a PEFT model: without it the
-        # inputs carry no grad and the backward finds nothing to do, which
-        # surfaces as "element 0 of tensors does not require grad" rather than
-        # as a configuration mistake.
+        # Needed with checkpointing on PEFT, or backward finds no grad-requiring inputs.
         gradient_checkpointing_kwargs = {"use_reentrant": False},
     )
     trainer = SFTTrainer(model = model, train_dataset = dataset, args = config)
@@ -195,9 +152,7 @@ def run(args) -> dict:
     return result
 
 
-# Substrings that identify an out-of-memory failure, whichever layer raised it.
-# torch says "CUDA out of memory", accelerate and bitsandbytes wrap it, and the
-# exception TYPE is not reliably OutOfMemoryError once it has been re-raised.
+# Matched by text: the exception type is unreliable once re-raised.
 _OOM_MARKERS = ("out of memory", "outofmemoryerror", "cuda oom")
 
 
@@ -212,33 +167,12 @@ def comparison_failures(
     *,
     allow_oom: bool = False,
 ) -> list[str]:
-    """The two claims this comparison is entitled to make.
-
-    Kept as a pure function of two dicts so the rules are testable on CPU
-    without a GPU or a model, and separated from `run` so a guard cannot pass by
-    exercising the rule against a hand-written dict alone -- see the Default
-    leg, where seven such guards all passed while the code that produces the
-    dict raised NameError on hardware.
-    """
+    """Separate from run so the rule is testable on CPU; guards must also exercise run, which can raise."""
     if naive is None:
         return ["the plain-TRL arm produced no report at all"]
     if naive.get("error"):
         if allow_oom and _is_oom(naive["error"]) and not naive.get("metrics"):
-            # An OOM BEFORE a single step is a statement about the card, not
-            # about either training stack, and it is measured: on
-            # gemma-4-E2B-it the plain arm asks for 8.75GiB with 8.96GiB
-            # already resident on a 14.56GiB T4, and it does so at LOAD --
-            # `metrics` is absent, so no step ever ran. Gradient checkpointing
-            # does not touch that, and enabling it changed nothing.
-            #
-            # The likely cause is worth naming rather than implying: E2B is a
-            # MatFormer SUBMODEL of E4B and the checkpoint carries the larger
-            # weights, so a loader that does not extract the submodel
-            # materialises all of them.
-            #
-            # Narrow on purpose. An OOM DURING training is still a failure --
-            # that is a finding about the run, not about the card -- and this
-            # only ever applies when the caller opted in.
+            # An OOM before any step is about the card, not the stack; only when the caller opted in.
             return []
         return [f"the plain-TRL arm did not run: {naive['error']}"]
 
@@ -259,10 +193,7 @@ def comparison_failures(
         failures.append(f"the plain-TRL arm produced a non-finite loss: {losses}")
         return failures
 
-    # Converged, stated as "the end is below the start" rather than as a rate.
-    # A tiny run on a tiny dataset has no business asserting a slope, but a
-    # trace that FINISHES no lower than it started did not learn, and that is
-    # the same rule the Unsloth arm is held to.
+    # A trace that ends no lower than it started did not learn.
     if losses[-1] >= losses[0]:
         failures.append(
             f"the plain-TRL arm did not converge: first loss {losses[0]}, last "
@@ -270,11 +201,7 @@ def comparison_failures(
             f"not about agreeing with unsloth"
         )
 
-    # Deliberately NOT compared for equality. Two library stacks do not produce
-    # one fp16 trajectory, and asserting they do would be red on drift. The
-    # count is checked instead, because a plain arm that silently ran fewer
-    # steps is reported beside a full unsloth trace as though they were the
-    # same experiment.
+    # Not compared for equality across stacks; the step count is checked instead.
     if unsloth_metrics:
         if len(metrics) != len(unsloth_metrics):
             failures.append(
@@ -305,10 +232,7 @@ def main() -> int:
     outdir.mkdir(parents = True, exist_ok = True)
     report_path = outdir / "naive_trl_report.json"
 
-    # A crash here must not take the leg down: this arm is a COMPARISON, and a
-    # leg whose unsloth run passed should not go red because the control could
-    # not install. The failure is recorded, reported, and left for
-    # comparison_failures to rule on.
+    # The control arm must not fail the leg; comparison_failures rules on it.
     try:
         result = run(args)
     except BaseException as exc:  # noqa: BLE001

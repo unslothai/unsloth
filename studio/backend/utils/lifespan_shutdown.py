@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resilient FastAPI lifespan shutdown cleanup.
-
-On an abrupt shutdown (Windows console-close, interpreter teardown racing
-uvicorn) the loop's default executor may already be dead, so an unguarded
-``asyncio.to_thread`` raise here would abort the nested-lifespan unwind and
-surface as "Application shutdown failed". Dependency-injected so it can be
-unit-tested without the heavy backend import graph.
-"""
+"""Shutdown cleanup that tolerates a dead default executor, so asyncio.to_thread cannot abort unwind."""
 
 import asyncio
 import contextvars
@@ -27,9 +20,7 @@ async def run_lifespan_shutdown(
 ) -> None:
     """Run each shutdown step guarded so one failure can't skip the others; never raise."""
     loop = asyncio.get_running_loop()
-    # Copy context for parity with asyncio.to_thread. Schedule and await
-    # separately so a dead executor (raises at submit) runs inline, while a
-    # body exception (raised at await) is logged, not re-run.
+    # Schedule and await separately: a dead executor runs inline, a body error is only logged.
     ctx = contextvars.copy_context()
     try:
         future = loop.run_in_executor(None, ctx.run, terminate_downloads)
@@ -51,13 +42,11 @@ async def run_lifespan_shutdown(
         if invalidate is not None:
             invalidate()
         hw_module.DEVICE = None
-        # /api/health reads a set event as "DEVICE is authoritative", so leaving it set over
-        # a cleared DEVICE would publish a device that is gone. getattr: tests inject a stub.
+        # Health reads a set event as DEVICE authoritative, so it must be cleared with DEVICE or a gone device is published. getattr: tests inject a stub.
         detection_complete = getattr(hw_module, "DETECTION_COMPLETE", None)
         if detection_complete is not None:
             detection_complete.clear()
-        # Health falls back to a bare CHAT_ONLY read while the event is clear, so leaving it
-        # False would show Train and Export on an unknown host. Hidden until detection says so.
+        # Health falls back to CHAT_ONLY while clear; hide Train/Export until detection.
         hw_module.CHAT_ONLY = True
         hw_module.CHAT_ONLY_REASON = None
         hw_module.IS_ROCM = False

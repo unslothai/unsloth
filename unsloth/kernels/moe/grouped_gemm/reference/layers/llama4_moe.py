@@ -190,8 +190,7 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
             hidden_states = hidden_states.sum(dim = 1)
         hidden_states_after_weight_merge = hidden_states.view(-1, hidden_dim)
 
-        # Token counts per expert plus gather indices (token to expert order): auxiliary structs, not
-        # recorded in the autograd graph.
+        # Token counts per expert and gather indices are auxiliary structs, kept out of the autograd graph.
         token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
             selected_experts
         )
@@ -364,8 +363,7 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
             hidden_states = hidden_states.sum(dim = 1)
         hidden_states = hidden_states.view(-1, hidden_dim)
 
-        # Token counts per expert plus gather indices (token to expert order): auxiliary structs, not
-        # recorded in the autograd graph.
+        # Token counts per expert and gather indices are auxiliary structs, kept out of the autograd graph.
         token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
             selected_experts
         )

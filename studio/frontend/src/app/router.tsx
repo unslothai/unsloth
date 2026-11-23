@@ -5,6 +5,7 @@ import { Link, createRouter, useRouterState } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
 import { useT } from "@/i18n";
+import { parseSearch, stringifySearch } from "./router-search";
 import { Route as rootRoute } from "./routes/__root";
 import { Route as apiMonitorRoute } from "./routes/api";
 import { Route as dataRecipesRoute } from "./routes/data-recipes";
@@ -19,6 +20,8 @@ import { Route as loginRoute } from "./routes/login";
 import { Route as hubRoute } from "./routes/hub";
 import { Route as projectsRoute } from "./routes/projects";
 import { Route as libraryRoute } from "./routes/library";
+import { Route as tasksRoute } from "./routes/tasks";
+import { Route as translateRoute } from "./routes/translate";
 import { Route as changePasswordRoute } from "./routes/change-password";
 import { Route as settingsRoute } from "./routes/settings";
 import { Route as studioRoute } from "./routes/studio";
@@ -33,6 +36,8 @@ const routeTree = rootRoute.addChildren([
   chatRoute,
   projectsRoute,
   libraryRoute,
+  tasksRoute,
+  translateRoute,
   exportRoute,
   imagesRoute,
   videoRoute,
@@ -66,6 +71,8 @@ function DefaultNotFound() {
 
 export const router = createRouter({
   routeTree,
+  parseSearch,
+  stringifySearch,
   defaultNotFoundComponent: DefaultNotFound,
 });
 

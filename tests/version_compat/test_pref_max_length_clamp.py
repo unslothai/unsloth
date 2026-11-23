@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Preference-trainer rows longer than the model max_seq_length must not crash the log-prob gather.
-
-The fast forward cuts input_ids to model.max_seq_length while TRL builds labels at args.max_length.
-"""
+"""Overlength preference rows must not crash the log-prob gather, which mixes two truncation lengths."""
 
 from __future__ import annotations
 

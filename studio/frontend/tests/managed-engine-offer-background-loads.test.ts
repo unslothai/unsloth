@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
+import { DEFAULT_ENGINE_LAUNCH_FIELDS } from "../src/features/chat/lib/engine-launch-fields.ts";
 
 const OFFER = {
   quantization: "compressed-tensors",
@@ -69,7 +70,8 @@ const paneDecisionBody = new AsyncFunction(
   "validation",
   "deps",
   `const { sel, compareModelDisplayName, confirmManagedEngineIfNeeded, validateModel, panePayload,
-     throwIfCompareCancelled, compareSignal, ownConfig, reconcilePersistedGpuIds } = deps;
+     throwIfCompareCancelled, compareSignal, ownConfig, reconcilePersistedGpuIds,
+     DEFAULT_ENGINE_LAUNCH_FIELDS } = deps;
    let paneEngineFields = { engine: paneEngine };
    ${composer.slice(paneStart, paneEnd)}
    return paneEngineFields;`,
@@ -101,6 +103,7 @@ async function paneDecision(
     compareSignal: undefined,
     ownConfig,
     reconcilePersistedGpuIds: (ids: number[] | null) => ids,
+    DEFAULT_ENGINE_LAUNCH_FIELDS,
   });
   return { fields, asked, revalidated, validation };
 }
@@ -116,6 +119,7 @@ test("a default-engine compare pane offers vLLM and loads with the pick", async 
     engine: "vllm",
     engine_precision: "auto",
     engine_parallelism: "tensor",
+    ...DEFAULT_ENGINE_LAUNCH_FIELDS,
     load_in_4bit: false,
   });
   assert.equal(

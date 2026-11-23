@@ -292,8 +292,6 @@ def test_orphan_retry_losing_its_lease_still_retires_the_orphan(
         assert store.get_document(conn, original) is None
     finally:
         conn.close()
-    # The replacement still holds a non-terminal job, so startup repair reaches it; the orphan
-    # held none, which is the whole reason it had to be retired here.
     rag_db.reconcile_orphaned_ingestion_jobs()
     conn = rag_db.get_connection()
     try:

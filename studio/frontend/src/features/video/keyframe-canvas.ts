@@ -3,9 +3,6 @@
 
 import type { VideoGenerationDefaults, VideoStatus } from "./api";
 
-/** Sentinel for deriving resolution from the keyframe aspect ratio. */
-export const MATCH_SOURCE_RESOLUTION = -1;
-
 /** The preset whose aspect ratio is nearest the picture's, compared in log space so 2:1 and 1:2 are
  *  equally far from square; ties keep the list order, so the family default wins. Mirrors the
  *  backend's first_frame_canvas. */
@@ -89,6 +86,57 @@ export function snapCanvasWithinCap(
     if (area > bestArea || (area === bestArea && distance < bestDistance)) best = candidate;
   }
   return best;
+}
+
+/** The Default preset's size: the family's default_resolution when it is one of the presets, else the first. */
+export function defaultVideoResolution(
+  defaults: Pick<VideoGenerationDefaults, "default_resolution"> | null | undefined,
+  presets: ReadonlyArray<readonly [number, number]>,
+): [number, number] | null {
+  const wanted = defaults?.default_resolution;
+  if (wanted && presets.some(([w, h]) => w === wanted[0] && h === wanted[1])) {
+    return [wanted[0], wanted[1]];
+  }
+  return presets[0] ? [presets[0][0], presets[0][1]] : null;
+}
+
+/** The size a family declares for its first render (MiniMax-H3: the reference templates' 864x480), when it is
+ *  one of its presets. A family that declares none keeps the size the page already holds (`held`) when that is one
+ *  of its trained sizes (null), else starts at its first preset: the page's 768x512 fallback or the previous
+ *  family's size would otherwise be fitted to an untrained size. */
+export function familyFirstRenderResolution(
+  defaults: Pick<VideoGenerationDefaults, "default_resolution"> | null | undefined,
+  presets: ReadonlyArray<readonly [number, number]>,
+  held?: readonly [number, number] | null,
+): [number, number] | null {
+  const isPreset = (size: readonly [number, number]) =>
+    presets.some(([w, h]) => w === size[0] && h === size[1]);
+  const wanted = defaults?.default_resolution;
+  if (wanted && isPreset(wanted)) return [wanted[0], wanted[1]];
+  const first = presets[0];
+  if (held && first && !isPreset(held)) return [first[0], first[1]];
+  return null;
+}
+
+/** Whether staging a keyframe switches the size to "Match source". A family whose keyframes keep the chosen
+ *  canvas (MiniMax-H3, like the reference workflow) leaves the size alone. */
+export function keyframeSelectsMatchSource(
+  defaults: Pick<VideoGenerationDefaults, "keyframe_keeps_canvas"> | null | undefined,
+): boolean {
+  return defaults?.keyframe_keeps_canvas !== true;
+}
+
+/** The width and height a request sends: the chosen size, or for "Match source" nothing (the backend derives it),
+ *  except where an omitted size means the family default canvas, which then needs the matched size itself. */
+export function requestCanvas(
+  sourceSized: boolean,
+  matched: readonly [number, number] | null,
+  chosen: readonly [number, number],
+  keepsCanvas: boolean,
+): { width: number | undefined; height: number | undefined } {
+  if (!sourceSized) return { width: chosen[0], height: chosen[1] };
+  if (keepsCanvas && matched) return { width: matched[0], height: matched[1] };
+  return { width: undefined, height: undefined };
 }
 
 /** Which keyframes the loaded checkpoint takes. Newer backends report each one; an older backend

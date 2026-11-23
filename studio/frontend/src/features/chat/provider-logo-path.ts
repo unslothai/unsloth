@@ -3,34 +3,45 @@
 
 import { PROVIDER_LOGOS } from "../hub/lib/provider-logos";
 
-// API provider names differ from the model hub's publisher IDs.
 const HUB_PROVIDER_IDS = new Map([
   ["openai", "openai"],
   ["openai_codex", "openai"],
   ["mistral", "mistralai"],
   ["deepseek", "deepseek-ai"],
   ["huggingface", "huggingface"],
-  ["kimi", "moonshotai"],
   ["qwen", "qwen"],
+  ["qwencloud", "qwen"],
+  ["minimax", "minimax"],
+  ["xai", "xai-org"],
+  ["nvidia", "nvidia"],
+  ["cohere", "cohere"],
+  ["azure", "microsoft"],
 ]);
 
 const HUB_LOGO_PATHS = new Map(
   PROVIDER_LOGOS.map(({ id, logoPath }) => [id, logoPath]),
 );
 
-// Gemini keeps its own mark; the hub uses Google's logo for Gemma models.
 const CONNECTION_LOGO_PATHS = new Map([
   ["gemini", "/provider-logos/gemini.svg"],
-  ["anthropic", "/provider-logos/anthropic.svg"],
-  ["openrouter", "/provider-logos/openrouter.svg"],
+  ["anthropic", "/provider-logos/claude.svg"],
+  ["openrouter", "/provider-logos/openrouter-mark.svg"],
   ["vllm", "/provider-logos/vllm.svg"],
+  ["sglang", "/provider-logos/sglang.png"],
   ["ollama", "/provider-logos/ollama.svg"],
   ["llama_cpp", "/provider-logos/llama_cpp.svg"],
   ["liquid", "/provider-logos/liquid.svg"],
   ["typesafe", "/provider-logos/typesafe.svg"],
+  ["opencode", "/provider-logos/opencode.svg"],
+  ["opencode_go", "/provider-logos/opencode.svg"],
+  ["zai", "/provider-logos/zai.svg"],
+  ["kimi", "/provider-logos/moonshot.svg"],
+  ["vertex", "/provider-logos/vertex.svg"],
+  ["bedrock", "/provider-logos/bedrock.svg"],
+  ["perplexity", "/provider-logos/perplexity.svg"],
+  ["vercel", "/provider-logos/vercel.svg"],
 ]);
 
-/** Public asset path shared by Connections, agent icons, and the model picker. */
 export function providerLogoPath(
   providerType: string | undefined | null,
 ): string | undefined {

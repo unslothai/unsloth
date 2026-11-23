@@ -188,6 +188,33 @@ def _require_schema_object(schema, message: str) -> dict:
     return schema
 
 
+def grammar_from_json_schema(schema: dict) -> str:
+    if not LLGUIDANCE_AVAILABLE:
+        raise ResponseFormatError(MISSING_ENGINE_MESSAGE)
+    return _cached_grammar(_canonical_schema_json(schema), prelude_close = None)
+
+
+def grammar_from_gbnf(gbnf: str) -> str:
+    """A llama.cpp GBNF grammar as an llguidance one."""
+    if not LLGUIDANCE_AVAILABLE:
+        raise ResponseFormatError(MISSING_ENGINE_MESSAGE)
+    digest = hashlib.sha256(gbnf.encode("utf-8")).hexdigest()
+    return _memoized(f"{LLGUIDANCE_VERSION}:gbnf:{digest}", lambda: _compile_gbnf(gbnf))
+
+
+def _compile_gbnf(gbnf: str) -> str:
+    from llguidance.gbnf_to_lark import gbnf_to_lark
+
+    try:
+        grammar = _llg.LLMatcher.grammar_from_lark(gbnf_to_lark(gbnf))
+    except Exception as exc:
+        raise ResponseFormatError(f"invalid grammar: {exc}") from exc
+    error = _llg.LLMatcher.validate_grammar(grammar)
+    if error:
+        raise ResponseFormatError(f"invalid grammar: {error}")
+    return grammar
+
+
 def _reserved_token_text(tokenizer, token_id: int) -> str:
     try:
         return str(_unwrap_hf_tokenizer(tokenizer).convert_ids_to_tokens(int(token_id)))
@@ -246,6 +273,9 @@ class GrammarConstraint:
         self._strips_special_tokens = strips_special_tokens
         self._dropped_ids = None
         self._runtime_stops = None
+        self._settled = None
+        self._drafted = []
+        self._deferred = {}
         self.allows_reasoning = allows_reasoning
 
     def _bind(self, n_vocab: int) -> None:
@@ -316,6 +346,46 @@ class GrammarConstraint:
                 raise ResponseFormatError(self._desync_message(int(token_id)))
             raise GrammarDesyncError(f"guided decoding desynced on token {int(token_id)}: {error}")
 
+    def follow(self, drafted) -> bool:
+        kept = _common_prefix(self._drafted, drafted)
+        rest = drafted[kept:]
+        if kept < len(self._drafted):
+            self._matcher, self._settled, self._drafted, rest = self._settled, None, [], drafted
+            self._deferred = {
+                depth: error for depth, error in self._deferred.items() if depth <= kept
+            }
+        if not rest:
+            return True
+        if self._settled is None:
+            # llguidance's rollback misrestores a max_tokens rule (the prelude) and an end token.
+            self._settled, self._matcher = self._matcher, self._matcher.deep_copy()
+        admitted = self._matcher.try_consume_tokens(rest)
+        self._drafted.extend(rest[:admitted])
+        return admitted == len(rest)
+
+    def mask_ahead(self, logits):
+        try:
+            return self.mask_logits(logits)
+        except ResponseFormatError as error:
+            self._deferred.setdefault(len(self._drafted), error)
+            return logits
+
+    def commit(self, tokens) -> None:
+        reached = [
+            depth for depth in self._deferred if depth <= _common_prefix(self._drafted, tokens)
+        ]
+        if reached:
+            raise self._deferred[min(reached)]
+        if self._settled is not None:
+            self._matcher, self._settled = self._settled, None
+        self._drafted, self._deferred = [], {}
+        for token_id in tokens:
+            if self._matcher is not None and not self._matcher.is_stopped():
+                if self._matcher.try_consume_tokens([int(token_id)]):
+                    continue
+                _llg_mlx.fill_next_token_bitmask(self._matcher, self._bitmask)
+            self.advance(token_id)
+
     def _mask_allowed(self, token_id: int) -> bool:
         try:
             import numpy as np
@@ -334,19 +404,46 @@ class GrammarConstraint:
         )
 
 
+def _common_prefix(held, tokens) -> int:
+    kept = 0
+    for a, b in zip(held, tokens):
+        if a != b:
+            break
+        kept += 1
+    return kept
+
+
 def make_grammar_logits_processor(constraint: GrammarConstraint):
-    state = {"seen": None}
+    """Each call commits its history until ``settle`` is first called; then only ``settle`` does."""
+    state = {"seen": None, "committed": None}
 
     def _processor(tokens, logits):
-        seen = state["seen"]
-        if seen is None:
+        seen, committed = state["seen"], state["committed"]
+        if seen is None or committed is None:
+            import mlx.core as mx
+
+            unseen = None if seen is None else tokens[seen:]
+            # Queued apart, so reading the new tokens waits for the last sample but not for this forward,
+            # which then runs on the GPU while the host advances the matcher and fills the mask.
+            if unseen is not None:
+                mx.async_eval(unseen)
+            mx.async_eval(logits)
+            if unseen is not None:
+                for token_id in unseen.tolist():
+                    constraint.advance(int(token_id))
             state["seen"] = int(tokens.shape[0])
-        else:
-            for token_id in tokens[seen:].tolist():
-                constraint.advance(int(token_id))
-            state["seen"] = int(tokens.shape[0])
+        elif not constraint.follow(tokens[committed:].tolist()):
+            return logits
+        elif int(tokens.shape[0]) > committed:
+            return constraint.mask_ahead(logits)
         return constraint.mask_logits(logits)
 
+    def settle(tokens):
+        start = state["seen"] if state["committed"] is None else state["committed"]
+        constraint.commit(tokens[start:].tolist())
+        state["committed"] = int(tokens.shape[0])
+
+    _processor.settle = settle
     return _processor
 
 
@@ -370,12 +467,16 @@ def _canonical_schema_json(schema: dict) -> str:
 def _cached_grammar(schema_json: str, *, prelude_close: Optional[str]) -> str:
     digest = hashlib.sha256(schema_json.encode("utf-8")).hexdigest()
     key = f"{LLGUIDANCE_VERSION}:{prelude_close or ''}:" f"{_PRELUDE_MAX_TOKENS}:{digest}"
+    return _memoized(key, lambda: _compile_grammar(schema_json, prelude_close))
+
+
+def _memoized(key: str, build) -> str:
     with _CACHE_LOCK:
         cached = _GRAMMAR_CACHE.get(key)
         if cached is not None:
             _GRAMMAR_CACHE.move_to_end(key)
             return cached
-    grammar = _compile_grammar(schema_json, prelude_close)
+    grammar = build()
     with _CACHE_LOCK:
         _GRAMMAR_CACHE[key] = grammar
         cached_bytes = sum(len(value) for value in _GRAMMAR_CACHE.values())

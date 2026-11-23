@@ -23,7 +23,12 @@ GGUF_QUANTS = ["q4_k_m", "q5_k_m", "q8_0", "f16"]
 
 def list_checkpoints(
     outputs_dir: Path = typer.Option(
-        Path("./outputs"), "--outputs-dir", help = "Directory that holds training runs."
+        Path("./outputs"),
+        "--outputs-dir",
+        help = (
+            "Directory that holds training runs, inside Unsloth's outputs folder. "
+            "A relative path is resolved there."
+        ),
     ),
 ):
     """List checkpoints detected in the outputs directory."""
@@ -31,7 +36,11 @@ def list_checkpoints(
         from studio.backend.core.export import ExportBackend
 
     backend = ExportBackend()
-    checkpoints = backend.scan_checkpoints(outputs_dir = str(outputs_dir))
+    try:
+        checkpoints = backend.scan_checkpoints(outputs_dir = str(outputs_dir))
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err = True)
+        raise typer.Exit(code = 1)
     if not checkpoints:
         typer.echo("No checkpoints found.")
         raise typer.Exit()

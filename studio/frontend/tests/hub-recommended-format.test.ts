@@ -6,8 +6,10 @@ import test from "node:test";
 
 import {
   checkpointQuantFormat,
+  hasRecommendedCheckpointLikes,
   matchesFormat,
   matchesRecommended,
+  matchesRecommendedDiffusion,
 } from "../src/features/hub/lib/format-filters.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
@@ -63,6 +65,68 @@ test("Recommended lists every GGUF and only the checkpoints this GPU runs native
   assert.equal(matchesRecommended(nvfp4, ["fp8", "nvfp4"]), true);
 });
 
+test("Recommended browsing lists checkpoints only past 30 likes", async () => {
+  assert.equal(hasRecommendedCheckpointLikes({ ...gguf, likes: 0 }), true);
+  assert.equal(hasRecommendedCheckpointLikes(fp8), false);
+  assert.equal(hasRecommendedCheckpointLikes({ ...fp8, likes: 30 }), false);
+  assert.equal(hasRecommendedCheckpointLikes({ ...fp8, likes: 31 }), true);
+  // Safetensors repo cross-tagged "gguf" for a stray .gguf file (Nemotron-3.5-Bolt-74B-A9B).
+  const crossTagged = {
+    id: "unsloth/NVIDIA-Nemotron-3.5-Bolt-74B-A9B",
+    isGguf: true,
+    tags: ["transformers", "safetensors", "gguf"],
+  };
+  assert.equal(
+    hasRecommendedCheckpointLikes({ ...crossTagged, likes: 2 }),
+    false,
+  );
+  assert.equal(
+    hasRecommendedCheckpointLikes({ ...crossTagged, likes: 31 }),
+    true,
+  );
+  assert.equal(
+    hasRecommendedCheckpointLikes({ ...gguf, tags: ["safetensors", "gguf"] }),
+    true,
+  );
+  const rule = await readSrcAsync("features/hub/lib/recommended-browse.ts");
+  assert.match(
+    rule,
+    /\(!browsing \|\|[\s\S]{0,240}hasRecommendedCheckpointLikes\(result\)\)\) &&\s*matchesRecommended\(result, quantFormats\)/,
+  );
+  const page = await readSrcAsync("features/hub/hub-page.tsx");
+  assert.match(
+    page,
+    /matchesFormat\(row\.result\.isGguf, "gguf"\)\)[\s\S]{0,200}\.filter\(\s*\(row\) => isDiffusionRow\(row\) \|\| hasRecommendedCheckpointLikes\(row\.result\),?\s*\)/,
+  );
+});
+
+test("image and video models skip the likes rules and list full-precision checkpoints", async () => {
+  // FLUX.3 klein: a 23-like GGUF with no provider logo, and its BF16 diffusers repo.
+  const fluxBf16 = { id: "unsloth/flux-3-image-klein", isGguf: false };
+  assert.equal(matchesRecommendedDiffusion(fluxBf16, []), true);
+  assert.equal(matchesRecommended(fluxBf16, []), false);
+  assert.equal(
+    matchesRecommendedDiffusion(
+      { id: "unsloth/flux-3-image-klein-GGUF", isGguf: true },
+      [],
+    ),
+    true,
+  );
+  // Quantized checkpoints still need a GPU that runs them natively.
+  const fluxFp8 = { id: "unsloth/flux-3-image-klein-FP8", isGguf: false };
+  assert.equal(matchesRecommendedDiffusion(fluxFp8, []), false);
+  assert.equal(matchesRecommendedDiffusion(fluxFp8, ["fp8"]), true);
+  const page = await readSrcAsync("features/hub/hub-page.tsx");
+  assert.match(
+    page,
+    /isDiffusionRow\(row\) \? diffusionQuantFormats : checkpointQuantFormats/,
+  );
+  assert.match(
+    page,
+    /searchBrowsing,\s*isDiffusionResult\(result\),\s*quantFormats,/,
+  );
+});
+
 test("the GGUF filter stays a plain format match", () => {
   assert.equal(matchesFormat("gguf", "gguf"), true);
   assert.equal(matchesFormat("safetensors", "gguf"), false);
@@ -73,7 +137,20 @@ test("the likes threshold only curates Recommended, and Recommended is the defau
   const page = await readSrcAsync("features/hub/hub-page.tsx");
   assert.match(
     page,
-    /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*resolveOwnerProviderLogo/,
+    /if \(format !== "recommended"\) \{\s*return matchesFormat\(detectResultFormat\(result\), format\);\s*\}\s*if \(diffusion\) return matchesRecommendedDiffusion\(result, quantFormats\);\s*return matchesRecommendedBrowse\(result, quantFormats, browsing\);/,
+  );
+  assert.match(
+    await readSrcAsync("features/hub/lib/recommended-browse.ts"),
+    /\(!browsing \|\|\s*\(\(resolveOwnerProviderLogo/,
+  );
+  // The search's skip test follows the formats' contents: a system poll's new array must not restart it.
+  assert.match(
+    page,
+    /const quantFormatsKey = checkpointQuantFormats\.join\(","\);[\s\S]{0,600}\[effectiveDiscoverFormat, searchBrowsing, quantFormatsKey\]/,
+  );
+  assert.match(
+    page,
+    /matchesDiscoverFormat\(\s*row\.result,\s*effectiveDiscoverFormat,\s*!hasQuery,\s*isDiffusionRow\(row\),/,
   );
   assert.doesNotMatch(page, /preset\?\.format \?\? "gguf"/);
   const channels = await readSrcAsync("features/hub/lib/channels.ts");
@@ -121,7 +198,7 @@ test("the chat picker lists FP8 / NVFP4 checkpoints the GPU runs, whatever their
   // The curated-search fit gate waives size for them too.
   assert.match(
     picker,
-    /cachedIdFor\(id\) !== null \|\|\s*runsCheckpointQuant\(\{ id \}\) \|\|\s*searchRowFits\(\{ id \}\)/,
+    /cachedIdFor\(id\) !== null \|\|\s*runsCheckpointQuant\(\{ id \}\) \|\|[\s\S]{0,120}?searchRowFits\(\{\s*id\b/,
   );
   // Task pages (images, audio) keep their own formats.
   assert.match(
@@ -140,4 +217,32 @@ test("a capable Recommended channel query drops the GGUF-only tag", async () => 
     page,
     /tags: widenRecommendedChannel\s*\?\s*withoutGgufTag\(liveListChannel\.tags\)\s*:\s*liveListChannel\.tags/,
   );
+});
+
+test("on a Mac, the chat picker skips FP8 / NVFP4 / GPTQ / AWQ checkpoints but keeps MLX and plain safetensors", async () => {
+  const { isRecommendableFormat } = await import(
+    "../src/features/model-picker/components/model-selector/recommended-fit.ts"
+  );
+  for (const id of [
+    "unsloth/Mistral-Large-4-1T-A52B-NVFP4",
+    "unsloth/Mistral-Large-4-1T-A52B-FP8",
+    "org/Llama-4-GPTQ-Int4",
+    "org/Qwen3-32B-AWQ",
+  ]) {
+    assert.equal(isRecommendableFormat(id, false, true), false, id);
+  }
+  assert.equal(
+    isRecommendableFormat("unsloth/Qwen3-8B", false, true, "fp8"),
+    false,
+  );
+  for (const id of [
+    "unsloth/Qwen3-8B",
+    "mlx-community/Qwen3-8B-4bit",
+    "unsloth/Qwen3-8B-FP8-mlx",
+    "unsloth/Qwen3-8B-GGUF",
+  ]) {
+    assert.equal(isRecommendableFormat(id, false, true), true, id);
+  }
+  assert.equal(isRecommendableFormat("unsloth/Qwen3-8B", false, false), false);
+  assert.equal(isRecommendableFormat("unsloth/Qwen3-8B-GGUF", false, false), true);
 });

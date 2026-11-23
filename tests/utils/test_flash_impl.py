@@ -131,6 +131,50 @@ def test_hopper_auto_prefers_fa3_then_fa4(fake, monkeypatch):
     assert fi.maybe_activate_flash_attention_impl(_model()) is None
 
 
+@pytest.mark.parametrize("hidden_size", [896, 1024, fi._HOPPER_AUTO_MIN_HIDDEN - 8])
+def test_hopper_auto_keeps_bundled_flash_for_narrow_models(fake, monkeypatch, hidden_size):
+    # H100: FA3's extra host time per call outweighs its kernel win while a narrow model is launch bound.
+    monkeypatch.setattr(fi, "_device_majors", lambda: {9})
+    narrow = _model(hidden_size = hidden_size, head_dim = 128)
+    assert fi.maybe_activate_flash_attention_impl(narrow) is None
+    assert fake.probes == [] and fake.current_impl is None
+    assert str(hidden_size) in fi.FLASH_IMPL_STATE["reason"]
+    # No model: nothing to size, so auto stays off on sm90.
+    assert fi.maybe_activate_flash_attention_impl(None) is None
+    # fa3 / fa4 still opt in for any width.
+    for value, impl in (("fa3", "FA3"), ("fa4", "FA4")):
+        monkeypatch.setenv(fi._ENV, value)
+        assert fi.maybe_activate_flash_attention_impl(narrow) == impl
+        fi.deactivate_flash_attention_impl()
+    # sm100 is not gated on width.
+    monkeypatch.setenv(fi._ENV, "auto")
+    monkeypatch.setattr(fi, "_device_majors", lambda: {10})
+    assert fi.maybe_activate_flash_attention_impl(narrow) == "FA4"
+    fi.deactivate_flash_attention_impl()
+
+
+def test_hopper_auto_width_gate_reads_text_config_and_restores(fake, monkeypatch):
+    monkeypatch.setattr(fi, "_device_majors", lambda: {9})
+    wide = fi._HOPPER_AUTO_MIN_HIDDEN
+    multimodal = types.SimpleNamespace(
+        config = types.SimpleNamespace(
+            text_config = _config(hidden_size = wide),
+            vision_config = types.SimpleNamespace(
+                hidden_size = 1152, num_attention_heads = 16, head_dim = 72
+            ),
+        ),
+        dtype = torch.bfloat16,
+    )
+    assert fi.maybe_activate_flash_attention_impl(multimodal) == "FA3"
+    # A later narrow model restores torch's bundled flash.
+    assert fi.maybe_activate_flash_attention_impl(_model(hidden_size = 1024)) is None
+    assert fake.current_impl is None and fi.FLASH_IMPL_STATE["active"] is None
+    assert (
+        fi._hidden_size(types.SimpleNamespace(config = types.SimpleNamespace(hidden_size = True)))
+        is None
+    )
+
+
 def test_hopper_auto_tries_fa4_when_fa3_fails_its_probe(fake, monkeypatch):
     monkeypatch.setattr(fi, "_device_majors", lambda: {9})
     tried = []
@@ -316,6 +360,40 @@ def test_probe_repeats_kv_heads_without_enable_gqa(monkeypatch, native_gqa):
     assert dk.shape == dv.shape == (sum([200, 1, 333, 64, 130]), 2, 64)
 
 
+def test_probe_pins_varlen_to_flash(monkeypatch):
+    """torch 2.15's varlen_attn takes cuDNN first where eligible, which no impl replaces: the probe
+    (reference and impl arm alike) must run with only flash enabled."""
+    varlen = pytest.importorskip("torch.nn.attention.varlen")
+    seen = []
+
+    def fake(
+        q,
+        k,
+        v,
+        cu_q,
+        cu_k,
+        max_q,
+        max_k,
+        window_size = (-1, -1),
+        enable_gqa = False,
+    ):
+        seen.append(
+            (
+                torch.backends.cuda.flash_sdp_enabled(),
+                torch.backends.cuda.cudnn_sdp_enabled(),
+                torch.backends.cuda.mem_efficient_sdp_enabled(),
+                torch.backends.cuda.math_sdp_enabled(),
+            )
+        )
+        return q * (k.float().mean() + v.float().mean()).to(q.dtype)
+
+    monkeypatch.setattr(varlen, "varlen_attn", fake)
+    before = torch.backends.cuda.cudnn_sdp_enabled()
+    fi._run_case(("varlen", 64, 4, None, torch.float32), "cpu")
+    assert seen == [(True, False, False, False)]
+    assert torch.backends.cuda.cudnn_sdp_enabled() == before  # restored
+
+
 def test_scope_skipped_when_off(fake, monkeypatch):
     monkeypatch.setenv(fi._ENV, "off")
 
@@ -360,6 +438,135 @@ def test_flash_impl_allows_reads_torch_active_impl(monkeypatch):
     assert not fi.flash_impl_allows(160, None, torch.device("cuda", 0))
     assert not fi.flash_impl_allows(256, 4096, torch.device("cuda", 0))
     assert fi.flash_impl_allows(256, None, torch.device("cuda", 0))
+
+
+@pytest.mark.parametrize("mean_len", [150.0, 700, 1023])
+def test_blackwell_auto_keeps_bundled_flash_for_short_documents(fake, monkeypatch, mean_len):
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = mean_len) is None
+    assert fake.probes == [] and fake.current_impl is None
+    assert f"{mean_len:.0f}" in fi.FLASH_IMPL_STATE["reason"]
+    for long_or_unknown in (fi._BLACKWELL_AUTO_MIN_MEAN_DOC_LEN, 8192, None):
+        assert (
+            fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = long_or_unknown)
+            == "FA4"
+        )
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = mean_len) is None
+    assert fake.current_impl is None and fi.FLASH_IMPL_STATE["active"] is None
+    monkeypatch.setenv(fi._ENV, "fa4")
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = mean_len) == "FA4"
+    fi.deactivate_flash_attention_impl()
+    monkeypatch.setenv(fi._ENV, "auto")
+    monkeypatch.setattr(fi, "_device_majors", lambda: {9})
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = mean_len) == "FA3"
+    fi.deactivate_flash_attention_impl()
+
+
+def test_mean_document_length_reads_packed_and_padding_free_rows():
+    datasets = pytest.importorskip("datasets")
+    packed = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * 8, [1] * 6], "seq_lengths": [[3, 5], [6]]}
+    )
+    assert fi._mean_document_length(packed) == pytest.approx(14 / 3)
+    packed.set_format("torch")
+    assert fi._mean_document_length(packed) == pytest.approx(14 / 3)
+    rows = datasets.Dataset.from_dict({"input_ids": [[1] * 100, [1] * 300], "labels": [[1], [1]]})
+    assert fi._mean_document_length(rows) == 200
+    assert fi._mean_document_length(rows, rows = 1) == 100
+    longest_first = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * n for n in (400, 300, 200, 100)]}
+    )
+    assert fi._mean_document_length(longest_first, rows = 2) == 250
+    # The sample reaches the tail when the size is not a multiple of rows: 128 x 1200 then 72 x 100.
+    tail = datasets.Dataset.from_dict({"input_ids": [[1] * 1200] * 128 + [[1] * 100] * 72})
+    assert fi._mean_document_length(tail) < 1024
+    mixed = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * 8, [1] * 6], "seq_lengths": [[3, 5], None]}
+    )
+    assert fi._mean_document_length(mixed) == pytest.approx(14 / 3)
+    # The last row is always sampled: 128 one-document rows, then one row of many short documents.
+    last = datasets.Dataset.from_dict(
+        {
+            "input_ids": [[1] * 1024] * 128 + [[1] * 1024],
+            "seq_lengths": [[1024]] * 128 + [[8] * 128],
+        }
+    )
+    assert fi._mean_document_length(last) < 1024
+    # Columns hidden by the format are not read: the collator sees one document per row.
+    hidden = datasets.Dataset.from_dict({"input_ids": [[1] * 8192], "seq_lengths": [[64] * 128]})
+    hidden.set_format("torch", columns = ["input_ids"])
+    assert fi._mean_document_length(hidden) == 8192
+    empty = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * 100, [1] * 300], "seq_lengths": [[], []]}
+    )
+    assert fi._mean_document_length(empty) == 200
+    custom = datasets.Dataset.from_dict({"input_ids": [[1] * 2000], "doc_lens": [[100] * 20]})
+    assert fi._mean_document_length(custom, key = "doc_lens") == 100
+    assert fi._mean_document_length(custom) == 2000
+    assert fi._mean_document_length(None) is None
+    assert fi._mean_document_length(datasets.Dataset.from_dict({"text": ["a"]})) is None
+    assert fi._mean_document_length(rows.select([])) is None
+    streamed = rows.to_iterable_dataset()
+    assert fi._mean_document_length(streamed) is None
+
+
+def test_mean_document_length_with_dataset_transforms_is_unknown():
+    datasets = pytest.importorskip("datasets")
+    calls = [0]
+
+    def truncate(batch):
+        calls[0] += 1
+        return {"input_ids": [ids[:10] for ids in batch["input_ids"]]}
+
+    stored = datasets.Dataset.from_dict({"input_ids": [[1] * 4096, [1] * 4096]}).with_transform(
+        truncate
+    )
+    assert fi._mean_document_length(stored) is None
+
+    def tokenize(batch):
+        calls[0] += 1
+        return {"input_ids": [[1] * len(text) for text in batch["text"]]}
+
+    raw = datasets.Dataset.from_dict({"text": ["a" * 100]}).with_transform(tokenize)
+    assert fi._mean_document_length(raw) is None
+    assert calls[0] == 0
+
+
+def test_document_length_only_read_under_auto_on_sm100(fake, monkeypatch):
+    calls = []
+
+    def length():
+        calls.append(1)
+        return 100
+
+    for requested, majors in (("fa4", {10}), ("auto", {9}), ("off", {10})):
+        monkeypatch.setenv("UNSLOTH_FLASH_ATTENTION_IMPL", requested)
+        monkeypatch.setattr(fi, "_device_majors", lambda majors = majors: majors)
+        fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = length)
+        fi.deactivate_flash_attention_impl()
+    assert calls == []
+    monkeypatch.setenv("UNSLOTH_FLASH_ATTENTION_IMPL", "auto")
+    monkeypatch.setattr(fi, "_device_majors", lambda: {10})
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = length) is None
+    assert calls == [1]
+
+
+def test_scope_to_train_reads_the_train_dataset_document_length(fake):
+    datasets = pytest.importorskip("datasets")
+    seen = []
+
+    class Trainer:
+        def train(self):
+            seen.append(fake.current_impl)
+
+    short = datasets.Dataset.from_dict({"input_ids": [[1] * 8], "seq_lengths": [[200] * 40]})
+    long = datasets.Dataset.from_dict({"input_ids": [[1] * 8], "seq_lengths": [[4096, 4096]]})
+    for dataset in (short, long, None):
+        trainer = Trainer()
+        trainer.model, trainer.train_dataset = _model(), dataset
+        fi.scope_flash_attention_impl_to_train(trainer, trainer.model)
+        trainer.train()
+    assert seen == [None, "FA4", "FA4"] and fake.current_impl is None
+    assert len(fake.probes) == 1
 
 
 def _fa4_ready():
@@ -412,17 +619,21 @@ def _varlen(
     cu = torch.tensor(
         [0, *torch.tensor(lengths).cumsum(0).tolist()], device = "cuda", dtype = torch.int32
     )
-    out = varlen_attn(
-        q,
-        k,
-        v,
-        cu,
-        cu,
-        max(lengths),
-        max(lengths),
-        window_size = (window - 1, 0) if window else (-1, 0),
-        enable_gqa = True,
-    )
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    # torch 2.15's varlen_attn takes cuDNN first on sm90 / sm100, which no impl replaces: pin flash.
+    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+        out = varlen_attn(
+            q,
+            k,
+            v,
+            cu,
+            cu,
+            max(lengths),
+            max(lengths),
+            window_size = (window - 1, 0) if window else (-1, 0),
+            enable_gqa = True,
+        )
     out.backward(randn(*out.shape))
     return out.detach(), q.grad, k.grad, v.grad
 
@@ -444,7 +655,9 @@ def test_fa4_varlen_matches_bundled_flash(real_fa4):
     model = _model(num_attention_heads = 16, num_key_value_heads = 4)
     assert fi.maybe_activate_flash_attention_impl(model) == "FA4", fi.FLASH_IMPL_STATE["reason"]
     for case, ref in zip(cases, refs):
-        got = _varlen(*case)
+        with fi._count_impl_calls("FA4") as calls:
+            got = _varlen(*case)
+        assert calls["fwd"] and calls["bwd"], (case, calls)
         for a, b in zip(got, ref):
             err = (a.float() - b.float()).abs().max().item() / b.float().abs().max().item()
             assert err < 2e-2, (case, err)
@@ -607,3 +820,220 @@ def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(
         assert hpa.HF_PACKED_ATTENTION_STATS["efficient"] == before + 1
     else:
         assert out == ("orig", None) and not used
+
+
+@pytest.mark.parametrize("key", ["llm_config", "language_config"])
+def test_hidden_size_reads_a_decoder_exposed_only_as_llm_or_language_config(key):
+    # InternVL / Nemotron-style: a narrow vision tower, the wide decoder only under llm_config / language_config.
+    config = types.SimpleNamespace(vision_config = types.SimpleNamespace(hidden_size = 1024))
+    setattr(config, key, types.SimpleNamespace(hidden_size = 4096))
+    assert fi._hidden_size(types.SimpleNamespace(config = config)) == 4096
+
+
+def test_hidden_size_follows_get_text_config():
+    class Config:
+        vision_config = types.SimpleNamespace(hidden_size = 1152)
+
+        def get_text_config(self):
+            return types.SimpleNamespace(hidden_size = 3072)
+
+    assert fi._hidden_size(types.SimpleNamespace(config = Config())) == 3072
+
+
+@pytest.mark.parametrize("value", ["fa3", "fa4"])
+@pytest.mark.parametrize("case", ["device", "registry"])
+def test_explicit_request_that_falls_back_warns(fake, monkeypatch, caplog, value, case):
+    import logging
+
+    monkeypatch.setitem(fi.FLASH_IMPL_STATE, "logged", set())
+    monkeypatch.setenv(fi._ENV, value)
+    if case == "device":
+        monkeypatch.setattr(fi, "_device_majors", lambda: {8})
+        reason = "no supported impl for devices sm[8]"
+    else:
+        monkeypatch.setattr(fi, "_registry", lambda: None)
+        reason = "torch has no flash attention impl registry (< 2.11)"
+    with caplog.at_level(logging.WARNING, logger = fi.__name__):
+        assert fi.maybe_activate_flash_attention_impl(_model()) is None
+        assert fi.maybe_activate_flash_attention_impl(_model()) is None
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings == [f"Unsloth: {fi._ENV}={value} not used: {reason}"]
+    assert fake.probes == [] and fake.current_impl is None
+
+
+def test_auto_fallback_stays_quiet(fake, monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setitem(fi.FLASH_IMPL_STATE, "logged", set())
+    monkeypatch.setattr(fi, "_device_majors", lambda: {8})
+    with caplog.at_level(logging.WARNING, logger = fi.__name__):
+        assert fi.maybe_activate_flash_attention_impl(_model()) is None
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.parametrize("value", ["fa3", "fa4", "auto"])
+@pytest.mark.parametrize("case", ["device", "registry"])
+def test_explicit_fallback_warns_once_through_trainer_setup(fake, monkeypatch, caplog, value, case):
+    import logging
+
+    from unsloth.utils import packing
+
+    monkeypatch.setitem(fi.FLASH_IMPL_STATE, "logged", set())
+    monkeypatch.setenv(fi._ENV, value)
+    if case == "device":
+        monkeypatch.setattr(fi, "_device_majors", lambda: {8})
+        reason = "no supported impl for devices sm[8]"
+    else:
+        monkeypatch.setattr(fi, "_registry", lambda: None)
+        reason = "torch has no flash attention impl registry (< 2.11)"
+    calls = []
+
+    class Trainer:
+        def train(self):
+            calls.append(fake.current_impl)
+            return "done"
+
+    collator = types.SimpleNamespace(padding_free = True, _unsloth_padding_free_lengths_wrapped = True)
+    trainer = Trainer()
+    trainer.model, trainer.data_collator = _model(), collator
+    with caplog.at_level(logging.WARNING, logger = fi.__name__):
+        packing.enable_padding_free_metadata(trainer.model, trainer)
+        packing.enable_padding_free_metadata(trainer.model, trainer)
+        assert trainer.train() == "done" and trainer.train() == "done"
+    assert calls == [None, None]
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    if value == "auto":
+        assert warnings == []
+        assert ("train" in vars(trainer)) == (case == "device")
+    else:
+        assert warnings == [f"Unsloth: {fi._ENV}={value} not used: {reason}"]
+    assert fake.probes == [] and fake.current_impl is None
+
+
+def test_active_impl_read_in_a_graph_retraces_on_impl_change_only(monkeypatch):
+    """Traced code reads the impl name: bundled <-> FA4 retraces; re-activating the same impl reuses it."""
+    registry = types.SimpleNamespace(_FLASH_ATTENTION_ACTIVE = None)
+    monkeypatch.setattr(fi, "_TORCH_FLASH_REGISTRY", registry)
+    frames = []
+
+    def backend(gm, example_inputs):
+        frames.append(gm)
+        return gm.forward
+
+    @torch.compile(backend = backend, fullgraph = True)
+    def f(x):
+        return x + 1 if fi.active_flash_impl() is None else x + 2
+
+    torch._dynamo.reset()
+    x = torch.zeros(3)
+    assert f(x).tolist() == [1, 1, 1]
+    registry._FLASH_ATTENTION_ACTIVE = ("FA4", object())
+    assert f(x).tolist() == [2, 2, 2]
+    registry._FLASH_ATTENTION_ACTIVE = ("FA4", object())
+    assert f(x).tolist() == [2, 2, 2]
+    registry._FLASH_ATTENTION_ACTIVE = None
+    assert f(x).tolist() == [1, 1, 1]
+    assert len(frames) == 2
+
+
+@needs_fa4
+@pytest.mark.parametrize("window", [None, 37])
+def test_fa4_runs_inside_the_compiled_packed_block(real_fa4, window):
+    """Prepared packed attention under inductor with FA4 matches fp64 per document, leak-free."""
+    from torch._dynamo.testing import CompileCounterWithBackend
+
+    from unsloth.utils import attention_dispatch as ad
+    from unsloth.utils import packing
+
+    assert fi.maybe_activate_flash_attention_impl(_model()) == "FA4", fi.FLASH_IMPL_STATE["reason"]
+
+    def attend(Q, K, V, cu, carrier):
+        config = ad.AttentionConfig(backend = ad.SDPA, n_kv_heads = K.shape[1], n_groups = 4)
+        context = ad.AttentionContext(
+            bsz = 1,
+            q_len = Q.shape[2],
+            kv_seq_len = K.shape[2],
+            n_heads = Q.shape[1],
+            head_dim = Q.shape[3],
+            requires_grad = True,
+            seq_info = packing.get_packed_info_from_kwargs(
+                {packing.PACKED_BLOCK_KWARG: (cu, carrier)}, Q.device
+            ),
+            attention_mask = None,
+            causal_mask = None,
+            sliding_window = window,
+        )
+        return ad.run_attention(config = config, context = context, Q = Q, K = K, V = V)
+
+    def reference(Q, K, V, lengths):
+        K, V = K.repeat_interleave(4, dim = 1), V.repeat_interleave(4, dim = 1)
+        outs, start = [], 0
+        for length in lengths:
+            q, k, v = (x[:, :, start : start + length] for x in (Q, K, V))
+            idx = torch.arange(length, device = Q.device)
+            mask = idx[None, :] <= idx[:, None]
+            if window is not None:
+                mask &= idx[None, :] > idx[:, None] - window
+            s = (q @ k.transpose(-1, -2)) * Q.shape[-1] ** -0.5
+            outs.append(torch.softmax(s.masked_fill(~mask, float("-inf")), -1) @ v)
+            start += length
+        return torch.cat(outs, dim = 2).transpose(1, 2)
+
+    torch._dynamo.reset()
+    counter = CompileCounterWithBackend("inductor")
+    compiled = torch.compile(attend, backend = counter, fullgraph = True)
+    frames = []
+    for lengths in ([3, 1, 50, 10], [1, 90, 2, 26, 4, 5], [200, 333, 1, 130, 136]):
+        total = sum(lengths)
+        g = torch.Generator(device = "cuda").manual_seed(total)
+        Q, K, V = (
+            torch.randn(1, h, total, 128, generator = g, device = "cuda", dtype = torch.bfloat16)
+            for h in (8, 2, 2)
+        )
+        dO = torch.randn(1, total, 8, 128, generator = g, device = "cuda", dtype = torch.bfloat16)
+        cu = torch.tensor([0, *torch.tensor(lengths).cumsum(0).tolist()], device = "cuda")
+        cu = cu.to(torch.int32)
+        carrier = torch.empty(max(lengths), dtype = torch.uint8, device = "cuda")
+        for t in (Q, K, V):
+            torch._dynamo.mark_dynamic(t, 2)
+        torch._dynamo.mark_dynamic(cu, 0)
+        torch._dynamo.mark_dynamic(carrier, 0)
+        q, k, v = (x.clone().requires_grad_() for x in (Q, K, V))
+        with fi._count_impl_calls("FA4") as calls:
+            out = compiled(q, k, v, cu, carrier)
+            out.backward(dO)
+            torch.cuda.synchronize()
+        assert calls["fwd"] >= 1 and calls["bwd"] >= 1, calls
+        q64, k64, v64 = (x.detach().double().requires_grad_() for x in (Q, K, V))
+        ref = reference(q64, k64, v64, lengths)
+        ref.backward(dO.double())
+        for got, want in ((out, ref), (q.grad, q64.grad), (k.grad, k64.grad), (v.grad, v64.grad)):
+            assert ((got.double() - want).norm() / want.norm()).item() < 1e-2
+        K2 = K.clone()
+        K2[:, :, : lengths[0]] += 1.0
+        a = compiled(*(x.clone().requires_grad_() for x in (Q, K, V)), cu, carrier).detach()
+        b = compiled(*(x.clone().requires_grad_() for x in (Q, K2, V)), cu, carrier).detach()
+        assert torch.equal(a[:, lengths[0] :], b[:, lengths[0] :])
+        frames.append(counter.frame_count)
+    assert frames[1] == frames[2], frames
+
+
+@pytest.mark.parametrize("impl", [None, "FA3", "FA4"])
+def test_packed_block_probe_is_keyed_on_the_active_impl(monkeypatch, impl):
+    """The compiled block's varlen probe answers per impl: a verdict cached under bundled flash is
+    not reused once FA3 (sm90, capability mocked) or FA4 is behind torch's flash op."""
+    from unsloth.utils import attention_dispatch as ad
+
+    registry = types.SimpleNamespace(_FLASH_ATTENTION_ACTIVE = impl and (impl, object()))
+    monkeypatch.setattr(fi, "_TORCH_FLASH_REGISTRY", registry)
+    monkeypatch.setattr(ad, "_DEVICE_BACKENDS", None)
+    monkeypatch.setattr(ad, "_ring_attention_active", lambda: False)
+    monkeypatch.setattr(ad, "get_cp_manager", lambda: None)
+    monkeypatch.delenv("UNSLOTH_TORCH_VARLEN", raising = False)
+    seen = []
+    monkeypatch.setattr(ad, "_packed_varlen_ok_eager", lambda *key: seen.append(key) or True)
+    config = types.SimpleNamespace(num_attention_heads = 8, num_key_value_heads = 2, sliding_window = 64)
+    attention = types.SimpleNamespace(config = config, head_dim = 128, attention_dropout = 0.0)
+    layer = types.SimpleNamespace(self_attn = attention, training = True)
+    assert ad._packed_block_kernel(layer, torch.zeros(1, 4, 8, dtype = torch.bfloat16))
+    assert {key[-1] for key in seen} == {impl} and {key[-2] for key in seen} == {None, 64}

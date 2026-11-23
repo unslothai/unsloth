@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The training-start overlay showed resources as "Downloading -- 99%" with no download
-// running (#7858). The backend caps progress at 0.99 until it verifies the snapshot, and
-// verification compares against `expected_bytes`, which counts every file in the repo while a
-// training run fetches a subset -- so the cap never lifts. These pin the settling rule that
-// replaces it, and the readings it must refuse to settle.
+// The backend caps progress at 0.99 until verifying against `expected_bytes`, which counts every
+// repo file while training fetches a subset, so settling has to be decided here.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -35,7 +32,6 @@ function state(over: Partial<DownloadState> = {}): DownloadState {
   };
 }
 
-/** Feed the same reading twice, as the 1.5s poll would when nothing is moving. */
 function pollTwice(reading: DownloadProgressReading): DownloadState {
   const first = downloadStateFromProgress(reading, EMPTY_DOWNLOAD_STATE);
   return downloadStateFromProgress(reading, first);
@@ -55,9 +51,7 @@ test("a verified snapshot settles on the first reading", () => {
 });
 
 test("a subset fetch settles once its bytes stop moving", () => {
-  // Qwen3.5-0.8B-Base: expected counts README.md, LICENSE and .gitattributes, which the
-  // trainer never fetches, so completed sits 16,640 bytes short and progress is pinned at
-  // the 0.99 cap for a model that is entirely present.
+  // expected counts README/LICENSE/.gitattributes the trainer never fetches.
   const reading: DownloadProgressReading = {
     downloaded_bytes: 1_769_897_109,
     completed_bytes: 1_769_897_109,
@@ -71,8 +65,7 @@ test("a subset fetch settles once its bytes stop moving", () => {
 });
 
 test("a settled subset fetch reports the bytes it actually holds", () => {
-  // Not `expected_bytes`: OpenThoughts-1k-sample ships a second config load_dataset never
-  // wants, so settling at the expected total would claim 28.1 MB for a 14.0 MB fetch.
+  // Not `expected_bytes`: a dataset can ship configs load_dataset never fetches.
   const settled = coerceCachedStateReady(
     pollTwice({
       downloaded_bytes: 14_002_749,
@@ -88,8 +81,7 @@ test("a settled subset fetch reports the bytes it actually holds", () => {
 });
 
 test("one quiet reading is not enough, because blobs finalize between files", () => {
-  // Mid-download, huggingface_hub has just linked a blob and not yet opened the next, so
-  // downloaded == completed for this single tick.
+  // Between files downloaded == completed for a single tick.
   const betweenFiles = downloadStateFromProgress({
     downloaded_bytes: 5 * GB,
     completed_bytes: 5 * GB,
@@ -103,7 +95,6 @@ test("one quiet reading is not enough, because blobs finalize between files", ()
 });
 
 test("bytes in flight never settle, however long they sit", () => {
-  // A resumed download: finalized bytes near the total with an `.incomplete` blob growing.
   const resuming: DownloadProgressReading = {
     downloaded_bytes: 20 * GB,
     completed_bytes: 19.9 * GB,
@@ -139,8 +130,7 @@ test("a growing download never settles", () => {
 });
 
 test("a transfer that stalled and resumed stops reading as settled", () => {
-  // A slow multi-file download can go quiet for two polls between files. Latching settlement
-  // would then show Ready, with no rate or progress, for the rest of the transfer.
+  // A slow multi-file download can go quiet for two polls, so settlement must not latch.
   const reading: DownloadProgressReading = {
     downloaded_bytes: 5 * GB,
     completed_bytes: 5 * GB,
@@ -161,7 +151,6 @@ test("a transfer that stalled and resumed stops reading as settled", () => {
 });
 
 test("a cache dir with bytes still expected is not ready", () => {
-  // The repo dir exists from an earlier attempt, but nothing has arrived for this one.
   const empty = state({ downloadedBytes: 0, completedBytes: 0, totalBytes: 20 * GB });
   assert.deepEqual(coerceCachedStateReady(empty), empty);
 });
@@ -185,8 +174,7 @@ test("a cached entry of unknown size still settles instead of hanging", () => {
 });
 
 test("a response without complete_on_disk never settles on verification alone", () => {
-  // A backend older than the field. Reading a missing value as truthy would settle a row
-  // nothing has verified, and the poll would stop on its very first reading.
+  // Older backend: a missing field must not read as truthy and settle an unverified row.
   const legacy = {
     downloaded_bytes: 400 * MB,
     completed_bytes: 200 * MB,
@@ -201,9 +189,8 @@ test("a response without complete_on_disk never settles on verification alone", 
 });
 
 test("a stale reading cannot become the baseline the next poll settles against", () => {
-  // The poll is an interval, not a chain, so a slow request can resolve after a newer one.
-  // Comparing byte counts for equality means a stale pair looks exactly like a quiet one,
-  // and the row would settle reporting the STALE total as its size.
+  // The poll is an interval, so a slow request can resolve after a newer one; a stale pair
+  // looks exactly like a quiet one.
   const fresh: DownloadProgressReading = {
     downloaded_bytes: 12 * GB,
     completed_bytes: 12 * GB,
@@ -216,17 +203,14 @@ test("a stale reading cannot become the baseline the next poll settles against",
   const settled = pollTwice(fresh);
   assert.equal(settled.settled, true);
   assert.equal(coerceCachedStateReady(settled).totalBytes, 12 * GB);
-  // The overlay drops the stale response by generation, so the row keeps the fresh total.
   const afterStale = downloadStateFromProgress(stale, settled);
   assert.equal(afterStale.settled, false);
   assert.equal(downloadStateFromProgress(stale, afterStale).totalBytes, 20 * GB);
 });
 
 test("an orphaned .incomplete blob stops the transfer without ever settling", () => {
-  // A dataset that loads from its processed Arrow cache can still have a stray `.incomplete`
-  // blob in the raw hub cache. `downloaded_bytes` counts it and `completed_bytes` does not, so
-  // the row can never settle -- but nothing is transferring either, and gating preparation on
-  // `!settled` left tokenization labelled Downloading for the whole pre-step window.
+  // A stray `.incomplete` blob in the raw hub cache means the row never settles, so preparation
+  // must not be gated on `!settled`.
   const stuck: DownloadProgressReading = {
     downloaded_bytes: 14.1 * MB,
     completed_bytes: 13.4 * MB,
@@ -265,9 +249,7 @@ test("a live transfer keeps reporting movement", () => {
 });
 
 test("a verified snapshot is never reported as moving", () => {
-  // `complete_on_disk` is what stops the poll, so a `moving: true` recorded on the same
-  // reading freezes for the rest of the run and suppresses this row's preparation step --
-  // an already-cached model would never show "Loading <repo>".
+  // `complete_on_disk` stops the poll, so a `moving: true` on that reading would freeze forever.
   const verified = downloadStateFromProgress({
     downloaded_bytes: 1.51 * GB,
     completed_bytes: 1.51 * GB,

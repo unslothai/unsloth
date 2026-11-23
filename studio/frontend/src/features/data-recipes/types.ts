@@ -15,7 +15,6 @@ export type RecipeRecord = {
 
 export type SaveRecipeInput = {
   id?: string | null;
-  /** updatedAt of the copy being edited; defaults to the cached copy. */
   baseUpdatedAt?: number;
   name: string;
   payload: RecipePayload;

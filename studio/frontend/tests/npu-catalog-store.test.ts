@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as zustand from "zustand";
+import * as displayName from "../src/features/npu/display-name.ts";
 import type * as NpuCatalogStore from "../src/features/npu/npu-catalog-store.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -28,9 +29,9 @@ function harness() {
   const listings: ReturnType<typeof deferred<{ id: string }[]>>[] = [];
   const toasts: string[] = [];
   const activity: boolean[] = [];
-  // What GET /api/npu/downloads answers: the pulls the backend is still running.
   const running: { model: string; percent: number | null }[] = [];
   const backend = { reachable: true };
+  const cancelled: string[] = [];
   const pull = (follow: boolean) => (id: string, onProgress: Progress) =>
     new Promise<void>((resolve, reject) => {
       pulls.push({
@@ -44,6 +45,7 @@ function harness() {
     new URL("../src/features/npu/npu-catalog-store.ts", import.meta.url),
     {
       zustand,
+      "./display-name": displayName,
       "@/lib/toast": {
         toast: { error: (title: string) => toasts.push(title) },
       },
@@ -54,6 +56,10 @@ function harness() {
       },
       "./api": {
         NpuDownloadError,
+        NpuDownloadCancelled,
+        cancelNpuModelDownload: async (id: string) => {
+          cancelled.push(id);
+        },
         listNpuDownloads: async () => {
           if (!backend.reachable) throw new Error("Failed to fetch");
           return running;
@@ -71,12 +77,22 @@ function harness() {
       },
     },
   );
-  return { store, pulls, listings, toasts, activity, running, backend };
+  return {
+    store,
+    pulls,
+    listings,
+    toasts,
+    activity,
+    running,
+    backend,
+    cancelled,
+  };
 }
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 class NpuDownloadError extends Error {}
+class NpuDownloadCancelled extends NpuDownloadError {}
 
 type Clock = {
   enable: (options: { apis: "setTimeout"[] }) => void;
@@ -87,7 +103,6 @@ const settle = async () => {
   for (let i = 0; i < 20; i++) await tick();
 };
 
-/** Wait for `condition`, letting promises settle and moving a mocked clock through reconnect delays. */
 async function until(condition: () => boolean, clock?: Clock): Promise<void> {
   for (let i = 0; i < 200 && !condition(); i++) {
     await tick();
@@ -96,7 +111,6 @@ async function until(condition: () => boolean, clock?: Clock): Promise<void> {
   assert.ok(condition());
 }
 
-/** Reconnects wait real seconds; tests run them on a mocked clock instead. */
 function mockedClock(t: { mock: { timers: Clock } }): Clock {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   return t.mock.timers;
@@ -145,7 +159,6 @@ test("streams that keep breaking never end a pull the backend still runs", async
   running.push({ model: id, percent: 25 });
   const job = store.followNpuDownload(id);
   pulls[0].finish(new Error("network error"));
-  // Seven streams in a row break while the backend reports the pull moving from 25% to 50%.
   for (let i = 1; i <= 7; i++) {
     await until(() => pulls.length === i + 1, clock);
     assert.equal(
@@ -159,7 +172,6 @@ test("streams that keep breaking never end a pull the backend still runs", async
   await until(() => pulls.length === 9, clock);
   assert.deepEqual(toasts, []);
   assert.equal(store.useNpuCatalogStore.getState().progress[id], 50);
-  // The pull ends on the backend; the list says it finished.
   running.length = 0;
   pulls[8].finish(new Error("network error"));
   await until(() => listings.length === 1, clock);
@@ -199,7 +211,6 @@ test("an unreachable backend leaves the pull active and reconnecting until it an
   running.push({ model: id, percent: 40 });
   const job = store.followNpuDownload(id);
   pulls[0].onProgress({ event: "progress", percent: 40 });
-  // The connection drops: the stream and every check fail, many times over.
   backend.reachable = false;
   for (let i = 0; i < 8; i++) {
     await until(() => pulls.length === i + 1, clock);
@@ -211,8 +222,7 @@ test("an unreachable backend leaves the pull active and reconnecting until it an
     assert.equal(activity.at(-1), true);
   }
   assert.deepEqual(toasts, []);
-  // Connectivity returns while the backend is still downloading; the first stream breaks again
-  // before any event, so the listing alone has to end the reconnecting state.
+  // The first stream breaks before any event, so the listing alone must end reconnecting.
   backend.reachable = true;
   running[0].percent = 70;
   await until(() => pulls.length === 9, clock);
@@ -241,7 +251,6 @@ test("a pull lost while the backend was unreachable is reported when it answers"
   backend.reachable = false;
   pulls[0].finish(new TypeError("Failed to fetch"));
   await until(() => pulls.length === 2, clock);
-  // Studio restarted meanwhile: the follow finds no pull (a 404 resolves the stream).
   backend.reachable = true;
   pulls[1].finish();
   await until(() => listings.length === 1, clock);
@@ -295,7 +304,6 @@ test("a download the backend reports failed is not followed again", async () => 
 test("progress outlives the picker and one stream serves every follower", async () => {
   const { store, pulls, listings } = harness();
   const first = store.followNpuDownload("qwen3-0.6b-FLM");
-  // A remounted picker asking again reuses the running stream.
   assert.equal(store.followNpuDownload("qwen3-0.6b-FLM"), first);
   assert.equal(pulls.length, 1);
   assert.equal(pulls[0].follow, false);
@@ -304,11 +312,9 @@ test("progress outlives the picker and one stream serves every follower", async 
     store.useNpuCatalogStore.getState().progress["qwen3-0.6b-FLM"],
     42,
   );
-  // downloadNpuModel resolves only after the stream's complete event.
   pulls[0].onProgress({ event: "complete", percent: 100 });
   pulls[0].finish();
   await tick();
-  // Still downloading until the refreshed list says otherwise, so the row never flickers back.
   assert.equal(
     "qwen3-0.6b-FLM" in store.useNpuCatalogStore.getState().progress,
     true,
@@ -318,6 +324,55 @@ test("progress outlives the picker and one stream serves every follower", async 
   const state = store.useNpuCatalogStore.getState();
   assert.deepEqual(state.progress, {});
   assert.deepEqual(state.models, [{ id: "qwen3-0.6b-FLM" }]);
+});
+
+test("verifying and finishing show as phases, and progress clears them", async () => {
+  const { store, pulls, listings } = harness();
+  const id = "qwen3.6-moe-35b-a3b-FLM";
+  const job = store.followNpuDownload(id);
+  const phase = () => store.useNpuCatalogStore.getState().phases[id];
+  pulls[0].onProgress({ event: "verifying", percent: 30 });
+  assert.equal(phase(), "verifying");
+  pulls[0].onProgress({ event: "progress", percent: 31 });
+  assert.equal(phase(), undefined);
+  pulls[0].onProgress({ event: "finishing", percent: 99 });
+  assert.equal(phase(), "finishing");
+  pulls[0].onProgress({ event: "complete", percent: 100 });
+  pulls[0].finish();
+  await until(() => listings.length === 1);
+  listings[0].resolve([{ id, downloaded: true }] as never);
+  assert.equal(await job, true);
+  assert.deepEqual(store.useNpuCatalogStore.getState().phases, {});
+});
+
+test("a cancelled pull ends quietly and is not followed again", async () => {
+  const { store, pulls, listings, toasts, activity, running, cancelled } =
+    harness();
+  const id = "gemma3-4b-FLM";
+  running.push({ model: id, percent: 50 });
+  const job = store.followNpuDownload(id);
+  await store.cancelNpuDownload(id);
+  assert.deepEqual(cancelled, [id]);
+  pulls[0].finish(new NpuDownloadCancelled("The download was cancelled"));
+  await until(() => listings.length === 1);
+  listings[0].resolve([{ id, downloaded: false }] as never);
+  assert.equal(await job, false);
+  assert.equal(pulls.length, 1);
+  assert.deepEqual(toasts, []);
+  assert.equal(activity.at(-1), false);
+});
+
+test("a cancel that lands while finishing never reports success, even if the model registered", async () => {
+  const { store, pulls, listings, toasts } = harness();
+  const id = "gemma3-4b-FLM";
+  const job = store.followNpuDownload(id);
+  await tick();
+  pulls[0].onProgress({ event: "finishing", percent: 100 });
+  pulls[0].finish(new NpuDownloadCancelled("The download was cancelled"));
+  await until(() => listings.length === 1);
+  listings[0].resolve([{ id, downloaded: true }] as never);
+  assert.equal(await job, false);
+  assert.deepEqual(toasts, []);
 });
 
 test("a repeated percent leaves the store untouched", () => {
@@ -345,7 +400,6 @@ test("following a backend pull never starts one and opens at its last percent", 
 test("a followed pull that ended before its stream opened reports how it ended", async () => {
   const { store, pulls, listings } = harness();
   const failed = store.followNpuDownload("gemma3-4b-FLM", { follow: true });
-  // The backend answers 404 once the pull is over, which the API reads as the stream ending.
   pulls[0].finish();
   await tick();
   listings[0].resolve([{ id: "gemma3-4b-FLM", downloaded: false }] as never);
@@ -362,7 +416,6 @@ test("a failed pull is reported once, clears its progress, and the next try stre
   const job = store.followNpuDownload("llama3.2-1b-FLM");
   void store.followNpuDownload("llama3.2-1b-FLM");
   pulls[0].finish(new Error("connection reset"));
-  // Relisted, so the row offers to resume from what the failed pull kept.
   await until(() => listings.length === 1);
   listings[0].resolve([]);
   assert.equal(await job, false);

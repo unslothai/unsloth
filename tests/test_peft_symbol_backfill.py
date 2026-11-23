@@ -1,14 +1,4 @@
-"""Tests _backfill_missing_peft_symbols in import_fixes.py.
-
-peft's ``transformers_weight_conversion`` imports 3 names from
-``transformers.conversion_mapping`` and 8 from ``core_model_loading`` at module
-top level. Unsloth stubs those submodules when absent, but an importable one can
-still lack individual symbols: transformers 5.0.0.dev0 ships
-``conversion_mapping`` WITHOUT ``_MODEL_TO_CONVERSION_PATTERN``, whose
-ImportError took down `import unsloth` in Ministral_3_(3B)_Reinforcement_Learning.
-The old guard only asked whether the submodule imported. Backfilling must be
-strictly additive: never replace a real module, never overwrite a real symbol.
-"""
+"""Backfill only adds missing symbols: an importable submodule can still lack one peft imports."""
 
 import importlib.util
 import sys
@@ -40,8 +30,7 @@ backfill = FIXES._backfill_missing_peft_symbols
 @pytest.fixture(autouse = True)
 def _restore_modules():
     saved = {k: sys.modules.get(k) for k in (CONV, CORE)}
-    # An import also binds the submodule on its package, and `import a.b as m` reads it
-    # from there, so a stale binding outlives the sys.modules restore below.
+    # Imports also bind the submodule on its package, outliving the sys.modules restore.
     package = sys.modules.get("transformers")
     bound = dict(vars(package)) if package is not None else {}
     yield
@@ -86,8 +75,8 @@ def test_backfilled_pattern_supports_copy_like_peft_does():
     pattern = sys.modules[CONV]._MODEL_TO_CONVERSION_PATTERN
     assert isinstance(pattern, dict)
     copied = pattern.copy()
-    copied["llama"] = object()  # peft assigns by key at module top
-    assert pattern == {}  # copy must not alias
+    copied["llama"] = object()
+    assert pattern == {}
 
 
 def test_complete_module_is_left_alone():
@@ -125,14 +114,12 @@ def test_core_model_loading_classes_are_subclassable():
 
 
 def test_missing_module_returns_empty(monkeypatch):
-    # A None entry makes the import raise, which is what an absent submodule does, without
-    # executing the real module a second time as a pop-and-reimport would.
+    # A None entry makes the import raise without re-executing the real module.
     monkeypatch.setitem(sys.modules, CONV, None)
     assert backfill(CONV) == ()
 
 
 def test_required_symbols_match_peft_import_list():
-    # Guards against the lists drifting apart silently.
     assert set(FIXES._PEFT_REQUIRED_SYMBOLS) == set(FIXES._PEFT_STUB_BUILDERS)
     for name, symbols in FIXES._PEFT_REQUIRED_SYMBOLS.items():
         donor = FIXES._PEFT_STUB_BUILDERS[name]()
@@ -140,10 +127,6 @@ def test_required_symbols_match_peft_import_list():
             assert hasattr(donor, s), f"{name} stub lacks {s}"
 
 
-# ---- saying so when the stand-in is not equivalent -----------------------
-# Inert donors are right wherever the symbol never existed, but not for a
-# transformers 5 that merely renamed one, so warn rather than silently skip
-# work peft should have done.
 def test_a_missing_mapping_function_is_announced():
     _fake_real_module(
         CONV,

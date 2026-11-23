@@ -102,7 +102,6 @@ def test_blank_csv_cells_are_not_converted_to_none_for_chatml(tmp_path):
 
 
 def test_a_blank_cell_in_a_numeric_column_still_converts_to_chatml(tmp_path):
-    # The blank cell types the column float, so 1 and 3 arrive as 1.0 and 3.0.
     csv_path = tmp_path / "train.csv"
     csv_path.write_text("instruction,input,output\nA,1,x\nB,,y\nC,3,\n")
     dataset = load_dataset("csv", data_files = str(csv_path), split = "train")
@@ -129,7 +128,6 @@ def test_a_blank_cell_in_a_numeric_column_still_converts_to_chatml(tmp_path):
 
 
 def test_every_cell_reaches_a_chat_template_as_text():
-    # A chat template renders content directly: a non-string is a crash or a repr.
     dataset = Dataset.from_dict({"instruction": ["a"], "input": [True], "output": [7]})
 
     conversations = convert_alpaca_to_chatml(dataset, batch_size = 1, num_proc = 1)["conversations"]
@@ -145,9 +143,58 @@ def test_cell_text_maps_every_empty_spelling_to_empty_text():
     assert cell_text(float("nan")) == ""
     assert cell_text("") == ""
 
-    # Present values survive, including the ones `or ""` would have dropped.
     assert cell_text("None") == "None"
     assert cell_text(0) == "0"
     assert cell_text(False) == "False"
     assert cell_text("0") == "0"
     assert cell_text(" ") == " "
+
+
+def test_alpaca_without_input_column_formats_empty_input_on_every_row():
+    dataset = Dataset.from_dict(
+        {
+            "instruction": ["a", "b", "c", "d", "e"],
+            "output": ["1", None, "3", "4", "5"],
+        }
+    )
+
+    texts = _format(dataset)
+
+    assert len(texts) == 5
+    for instruction, output, text in zip("abcde", ["1", "", "3", "4", "5"], texts):
+        assert text.endswith(
+            f"### Instruction:\n{instruction}\n\n### Input:\n\n\n### Response:\n{output}</s>"
+        )
+
+
+def test_alpaca_input_column_is_read_per_row_across_batches():
+    dataset = Dataset.from_dict(
+        {
+            "instruction": [f"i{n}" for n in range(5)],
+            "input": [f"x{n}" if n % 2 else None for n in range(5)],
+            "output": [f"o{n}" for n in range(5)],
+        }
+    )
+
+    texts = _format(dataset)
+
+    for n, text in enumerate(texts):
+        expected_input = f"x{n}" if n % 2 else ""
+        assert text.endswith(
+            f"### Instruction:\ni{n}\n\n### Input:\n{expected_input}\n\n### Response:\no{n}</s>"
+        )
+
+
+def test_alpaca_system_column_formats_from_a_numpy_formatted_dataset():
+    dataset = Dataset.from_dict(
+        {
+            "instruction": ["a", "b"],
+            "output": ["1", "2"],
+            "system": ["Be brief.", ""],
+        }
+    ).with_format("numpy")
+
+    texts = _format(dataset)
+
+    assert texts[0].startswith("Be brief.\n\n### Instruction:\na\n")
+    assert texts[1].endswith("### Instruction:\nb\n\n### Input:\n\n\n### Response:\n2</s>")

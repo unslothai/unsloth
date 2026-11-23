@@ -27,8 +27,7 @@ const NO_COMPLETED_VALIDATION: CompletedValidation = {
   token: "",
 };
 
-/** Validates the HF token via the whoami-v2 API, debounced to avoid excessive requests
-* while typing. isValid is null until checked. */
+/** Debounced; isValid is null until checked. */
 export function useHfTokenValidation(token: string): HfTokenValidationState {
   const normalizedToken = token.trim().replace(/^["']+|["']+$/g, "");
   const debouncedToken = useDebouncedValue(normalizedToken, 500);

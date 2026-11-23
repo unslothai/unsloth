@@ -29,11 +29,8 @@ const EMPTY: TrainingTransformersUpgradeNotice = {
   installSwitchesTo16Bit: false,
 };
 
-/** What the Configure preview must disclose about the transformers this model needs.
- *
- * Two things it otherwise gets wrong: a model no installed transformers ships (the run
- * stops on a consent dialog first), and the latest sidecar's 16-bit rule, which makes a
- * "QLoRA · 4-bit" preview understate the run's VRAM by roughly threefold. */
+/** Discloses a model no installed transformers ships, and the sidecar's 16-bit rule that makes
+ * a "QLoRA · 4-bit" preview understate VRAM. */
 export function useTrainingTransformersUpgradeNotice(): TrainingTransformersUpgradeNotice {
   const { selectedModel, trainingMethod, modelKnownCached, modelLocalPath } =
     useTrainingConfigStore(
@@ -45,23 +42,14 @@ export function useTrainingTransformersUpgradeNotice(): TrainingTransformersUpgr
       })),
     );
   const hfToken = useHfTokenStore((s) => s.token);
-  // Every cached answer is about the sidecar installed when it was taken, and an install
-  // both lands the offered release and flips the run to 16-bit. Reading through the
-  // generation re-asks after one, so Configure does not keep offering an install that
-  // already ran, or keep promising 4-bit for a run the new overlay loads in 16-bit.
+  // An install changes every cached answer, so key on the sidecar generation.
   const sidecarGeneration = useTransformersUpgradeDialogStore(
     (s) => s.sidecarGeneration,
   );
-  // The copy the run would load, resolved exactly as freshModelCachePin resolves it for
-  // the start: a cached model loads from its pinned snapshot, so the preview describes
-  // that snapshot rather than whatever the repo publishes today. A known-cached row can
-  // carry a null path and the backend still resolves the pin from the cache roots, so
-  // the flag travels on its own rather than being read off the path.
+  // Resolved like freshModelCachePin; a known-cached row can have a null path, so the flag travels alone.
   const preferLocalCache = Boolean(modelKnownCached);
   const localPath = (preferLocalCache && modelLocalPath) || null;
-  // The cache is the state; this counter only re-renders once an answer lands in it, keeping
-  // setState out of the effect body. Reading the map during render already answers for a model
-  // asked about before, and switching models needs no reset because the key changes with it.
+  // The cache is the state; this counter only forces a re-render once an answer lands.
   const [, markAnswered] = useState(0);
   const key = selectedModel
     ? upgradeNoticeCacheKey(
@@ -92,8 +80,7 @@ export function useTrainingTransformersUpgradeNotice(): TrainingTransformersUpgr
           markAnswered((n) => n + 1);
         }
       })
-      // A preview notice is never worth an error surface: an unreachable check leaves
-      // the preview reading as it did before this hook existed.
+      // An unreachable check leaves the preview as it was.
       .catch(() => undefined);
     return () => {
       active = false;

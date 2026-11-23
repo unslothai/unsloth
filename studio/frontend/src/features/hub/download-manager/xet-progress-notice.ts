@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Xet writes chunks out of order, so progress reads 0% and then completes at
-// once, which looks like a hang. No toast import here: poll-loop shows it.
+// Xet writes chunks out of order, so progress reads 0% then completes at once.
 
 import {
   DOWNLOAD_KIND,
@@ -11,34 +10,24 @@ import {
   TRANSPORT,
 } from "./constants";
 
-// The cap and the count live on the server (utils/xet_notice_settings.py); a copy
-// here could only drift out of step with what is enforced.
+// The cap and count live on the server (utils/xet_notice_settings.py).
 
-// Longer than the Toaster's 5s default, like the explanatory toasts in chat.
 export const XET_NOTICE_DURATION_MS = 8000;
 
-// SHORT on purpose, as a correctness constraint. At 62 + 330 chars sonner rendered
-// this 235px tall over the Model hub toolbar, leaving 4 to 6 controls unclickable for
-// 8s, which is what #9293 reverted. It must end above the filter row, near 158px, so
-// title plus about two lines. Re-measure before adding a sentence.
+// Kept short on purpose: a taller toast covers the Model hub toolbar controls (must end above
+// ~158px). Re-measure before adding a sentence.
 export const XET_NOTICE_TITLE = "Download is running";
-// The "switch to HTTP in Model Hub" advice is gone on purpose: it cost two lines and
-// left the toast bottom at y=126.5 against a row centred at y=127, a margin any font
-// or translation would have erased. Without it the toast ends near y=100.
 export const XET_NOTICE_DESCRIPTION =
   "Xet sends the file in small pieces, so the bar can sit at 0% and then jump to done. Nothing is stuck.";
 export const XET_NOTICE_DESCRIPTION_CLASS = "!text-muted-foreground";
-// A restart is also a start disclosure. Keeping its copy here lets poll-loop combine it with the
-// Xet explanation instead of creating an unrelated toast that can outlive its download.
+// Kept here so poll-loop can combine it with the Xet notice instead of a separate toast.
 export const RESTART_NOTICE_TITLE = "Restarting this download";
 export const RESTART_NOTICE_DESCRIPTION =
   "The earlier partial can't be resumed, so this download is starting over.";
 export const RESTART_XET_NOTICE_DESCRIPTION =
   "The partial can't be resumed, so Xet is starting over. The bar may stay at 0% and jump to done.";
 
-/** The notice, plus whatever the starting surface wanted to add. Chat auto-loads and
- * says so; the Hub does not, passes nothing, and gets the short form. The test budget
- * applies to that form alone, since only it renders over the hub toolbar. */
+/** The size budget applies only to the short Hub form, which renders over the toolbar. */
 function appendCallerDescription(
   description: string,
   callerToast?: { description: string } | null,
@@ -53,7 +42,6 @@ export function composeNoticeDescription(
   return appendCallerDescription(XET_NOTICE_DESCRIPTION, callerToast);
 }
 
-/** One accepted restart, optionally carrying the Xet and caller facts. */
 export function composeRestartNoticeDescription({
   xet,
   callerToast,
@@ -67,17 +55,7 @@ export function composeRestartNoticeDescription({
   );
 }
 
-/** Only the transport that behaves this way, and only while it is news.
- *
- * A start that attached to a job another tab or client already owns is
- * accepted and reports that job's transport, but this user started nothing.
- * `live` is the backend calling the job running with no cancel pending: a
- * start the user already cancelled has nothing to reassure them about.
- * Neither shows the notice nor spends one of the three.
- *
- * No "the caller already toasted" clause: suppressing the notice whenever chat had
- * something to say removed the 0%-explanation where it is most useful. The caller's
- * line is folded in by composeNoticeDescription instead. */
+/** Skip for attached jobs (the user started nothing) and for already-cancelled starts. */
 export function shouldShowXetNotice(args: {
   kind: DownloadKind;
   transport: ResolvedTransport;

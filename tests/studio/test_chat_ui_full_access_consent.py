@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Chat UI permission step finds the Full access consent dialog by structure, not by its copy.
-
-#12630 reworded the dialog ("Enable Full access?" became "Turn on Full access?", "I understand"
-became "Turn on"). The consent flow was unchanged, but the step looked the heading and the confirm
-button up by their old English names, so Chat UI went red on main. The step now reaches the title,
-Cancel and confirm through the data-slot attributes the shared AlertDialog parts render. These
-checks run in the fast shard and pin both halves of that contract: the step names no dialog copy,
-and the dialog still renders those slots with a title naming the mode and a body warning about the
-sandbox. The same PR also dropped the pill's data-variant="danger", which the step still asserted, so
-the attributes the step reads off the pill are pinned to the ones the pill renders.
-"""
+"""The permission step finds the consent dialog by data-slot attributes, not by its English copy."""
 
 from __future__ import annotations
 

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Library state in studio.db.
-
-The Library lists files that already live elsewhere (chat uploads, generated images, sandbox
-files), so it only stores what those sources cannot: folders, and a per-item overlay of display
-name, favorite flag and folder. Files uploaded straight into the Library are the one source it
-owns; their bytes sit under ``account_path("library")``.
-"""
+"""Library state (studio.db): folders and an overlay for files kept elsewhere, except Library uploads"""
 
 import sqlite3
 import threading
@@ -47,8 +41,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # Added after the first release of the table, in place: a studio.db from before keeps its
-    # rows, fingerprinted on first sight.
+    # Added after first release, in place; an older studio.db keeps rows, fingerprinted on first sight.
     entry_columns = {row[1] for row in conn.execute("PRAGMA table_info(library_entries)")}
     for column, kind in (("opened_at", "INTEGER"), ("fingerprint", "TEXT")):
         if column in entry_columns:
@@ -80,8 +73,7 @@ def reset_schema_state_for_tests() -> None:
 def get_connection() -> sqlite3.Connection:
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    # One key for the check and the add, or a home reached through a link never finds its entry
-    # and runs the schema again on every connection.
+    # One key for check and add, or a symlinked home reruns the schema on every connection.
     schema_path = db_path.resolve()
     conn = connect_studio_db(db_path)
     conn.row_factory = sqlite3.Row
@@ -338,9 +330,7 @@ def mark_opened(item_id: str, fingerprint: Optional[str] = None) -> None:
 
 
 def reconcile_entries(adopt: list[tuple[str, str]], stale: list[tuple[str, str]]) -> None:
-    """Fingerprint legacy rows with the file found at their path (``adopt``), and drop rows kept
-    for a file since replaced (``stale``). Each only while the row still reads as the listing saw
-    it, so a write that landed in between is kept."""
+    """Each update applies only if the row is unchanged since the listing; a newer write is kept."""
     if not adopt and not stale:
         return
     conn = get_connection()

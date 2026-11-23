@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seed an official image PIPELINE pick with its hosted pre-quantized denoiser.
-
-A ``kind == "pipeline"`` pick assembles every component from one repo, so the only way to run a
-quantised denoiser without materialising the bf16 shards is handing ``from_pretrained`` an
-already-quantised ``transformer=``. Torch-free at import."""
+"""Seeds an official pipeline pick with its hosted pre-quantized transformer to avoid bf16 shards;
+torch-free at import"""
 
 from __future__ import annotations
 
@@ -13,8 +10,7 @@ from typing import Any, Optional
 
 from .diffusion_families import IDEOGRAM4_FAMILY_NAME
 
-# The planner DECIDED against the seed, unlike never having asked: the pull kept the dense shards, so
-# the loader must not re-take the decision and fetch the artifact inline.
+# Planner declined (dense shards kept): the loader must not re-decide and fetch the artifact inline.
 PIPELINE_SEED_DECLINED = "__declined__"
 
 DENOISER_COMPONENT = "transformer"
@@ -127,16 +123,25 @@ def denoiser_prequant_pipe_kwargs(
         )
         if source is None:
             return {}
+        rocm_hosted = False
         if target is not None:
             from .diffusion_transformer_quant import dense_transformer_supported
             if not dense_transformer_supported(target):
-                return {}
+                # ROCm has no torchao path: only an explicit int8 RDNA pick seeds, read as native W8A8 Linears.
+                from .diffusion_rocm_hosted_int8 import rocm_image_hosted_int8_reason
+                if rocm_image_hosted_int8_reason(fam, scheme, target) is None:
+                    return {}
+                rocm_hosted = True
         import diffusers
 
         from .diffusion_prequant import load_prequantized_transformer
         from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
 
-        transformer_cls = getattr(diffusers, str(getattr(fam, "transformer_class", "")), None)
+        class_name = str(getattr(fam, "transformer_class", ""))
+        transformer_cls = getattr(diffusers, class_name, None)
+        if transformer_cls is None:
+            from .diffusion_moss_image import in_tree_class
+            transformer_cls = in_tree_class(class_name)
         if transformer_cls is None:
             _warn(
                 logger,
@@ -147,6 +152,35 @@ def denoiser_prequant_pipe_kwargs(
                 ),
             )
             return {}
+        if rocm_hosted:
+            from .diffusion_rocm_hosted_int8 import load_rocm_hosted_transformer
+
+            module = load_rocm_hosted_transformer(
+                fam,
+                transformer_cls,
+                base_repo,
+                source,
+                hf_token = hf_token,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+                logger = logger,
+            )
+            if module is None:
+                if logger is not None:
+                    logger.info(
+                        "diffusion.denoiser_prequant: the hosted int8 ConvRot checkpoint for %s was not read "
+                        "as native W8A8 Linears, so the released denoiser is loaded and quantised at load",
+                        getattr(fam, "name", None),
+                    )
+                return {}
+            if logger is not None:
+                logger.info(
+                    "diffusion.denoiser_prequant: seeded the int8 denoiser for %s from the hosted ConvRot "
+                    "checkpoint as native W8A8 Linears on this ROCm GPU (%s)",
+                    getattr(fam, "name", None),
+                    source.location,
+                )
+            return {DENOISER_COMPONENT: module}
         module = load_prequantized_transformer(
             transformer_cls,
             base_repo,
@@ -186,10 +220,7 @@ def denoiser_prequant_pipe_kwargs(
 
 
 def prequant_artifact_label(source: Any, module: Any = None) -> Optional[str]:
-    """``prequant:<repo>/<file>`` for a hosted artifact, ``prequant:<path>`` for a local override;
-    the scheme alone cannot tell either from a runtime quantise. ``module`` is the seeded denoiser,
-    which carries the file that really loaded: a repo holding only ``fallback_filename`` serves
-    that one, and ``source.filename`` would then name a file nobody fetched."""
+    """Labels the file that loaded (on module), since a fallback-only repo serves a different file."""
     if source is None:
         return None
     kind = getattr(source, "kind", None)

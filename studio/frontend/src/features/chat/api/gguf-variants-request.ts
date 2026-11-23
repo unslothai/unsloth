@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// How the chat side asks for a repo's GGUF quants. Split out of chat-api so it imports without
-// the auth barrel. The picker's expander and chat auto-load both block on this listing, so an
-// unbounded request leaves the expander on "Loading variants" forever.
+// Split out of chat-api so it imports without the auth barrel; bounded so the picker's expander
+// never hangs on "Loading variants".
 
 import {
   type PollSignal,
@@ -58,9 +57,7 @@ export function ggufVariantsAbort(signal?: AbortSignal): PollSignal {
     : disposableTimeoutSignal(GGUF_VARIANTS_TIMEOUT_MS);
 }
 
-/** Runs a listing under the bound and settles on it whatever the request is doing. Handing the
- *  signal to fetch alone is not enough: on a 401 authFetch awaits a shared session refresh that
- *  carries no signal, so the listing could still hang there. */
+/** Settles on the bound regardless: on a 401 authFetch awaits a shared refresh with no signal. */
 export function runBoundedVariantsRequest<T>(
   signal: AbortSignal | undefined,
   request: (signal: AbortSignal) => Promise<T>,

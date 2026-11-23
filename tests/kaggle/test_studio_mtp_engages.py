@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Selecting the MTP repo is a REQUEST; the drafter engaging is the result.
-
-`--chat-model unsloth/Qwen3.5-2B-MTP-GGUF` was chosen because multi-token
-prediction is a distinct serving path in llama.cpp. But when the companion is
-missing, the binary was built without MTP, or the drafter is downgraded for
-VRAM, the main GGUF still loads and still generates -- so every inference
-assertion stays green while the path the repo was chosen for never ran. That is
-the shape this directory keeps being caught by: nothing red, and a claim nobody
-made.
-
-`spec_drafter_kind` is what settles it, and `spec_fallback_reason` names WHICH
-of those happened, since "llama.cpp has no MTP" and "the drafter was downgraded
-for VRAM" are different findings and only one is about this leg.
-"""
+"""Choosing the MTP repo is a request; spec_drafter_kind shows whether the drafter engaged."""
 
 from __future__ import annotations
 

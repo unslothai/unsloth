@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Import real torchao on a torch built without torch.distributed (AMD's Windows ROCm wheels).
-
-torchao imports DTensor / DeviceMesh / the functional collectives at module scope and keys
-dispatch tables on c10d ops, none of which exist on such a build, so ``import torchao`` dies
-(pytorch/ao#3452; the upstream guard, pytorch/ao#4761, is unmerged). All of it only serves
-isinstance() checks and collective handlers that cannot run without distributed. So each torchao
-module body executes inside a window where imports made BY torchao code get inert stand-ins for
-missing torch.distributed modules and lookups made BY torchao code get inert keys for missing
-c10d ops. Everything else, torch internals imported meanwhile included, sees the real (absent)
-torch.distributed. Stdlib + torch only: Studio loads this file without importing unsloth.
-"""
+"""Imports real torchao on torch builds without torch.distributed (AMD Windows ROCm); only imports
+and c10d lookups made by torchao code get inert stand-ins, all else sees the real absence. Stdlib
+and torch only; Studio loads it without importing unsloth."""
 
 import importlib
 import importlib.abc

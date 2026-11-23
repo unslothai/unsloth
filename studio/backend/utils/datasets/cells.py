@@ -3,6 +3,8 @@
 
 """Turning raw dataset cells into the text we are willing to train on."""
 
+import json
+import math
 from pathlib import Path
 
 # Feature ids tagging each column of a CSV read by `csv_as_text_kwargs`.
@@ -17,16 +19,19 @@ _NA_CELLS = frozenset(
 )
 
 
-def cell_text(value):
-    """The text to train on for a single Alpaca-style dataset cell.
+def _finite(value):
+    if isinstance(value, dict):
+        return {key: _finite(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_finite(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
-    A blank cell is a missing value to every loader we use, so it arrives as
-    None, and a column holding numbers arrives typed, so a cell typed as 1
-    arrives as 1.0. Untreated, the first trains the word None and the second
-    raises on .strip(). NaN counts as blank too: Arrow normalises a blank
-    numeric cell to null, but a dataset built straight from pandas need not have
-    passed through Arrow.
-    """
+
+def cell_text(value):
+    """Blank cells (None or NaN) become empty text, since None would train the word None; numeric
+    cells arrive as floats, which fail on .strip(); dict/list cells train as JSON."""
     if value is None:
         return ""
     if isinstance(value, dict) and {"text", "answer_start"} <= value.keys():
@@ -39,10 +44,34 @@ def cell_text(value):
         return value
     if isinstance(value, float) and value != value:
         return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(_finite(value), ensure_ascii = False, default = str)
     return str(value)
 
 
 _SHAREGPT_ROLES = {"human": "user", "gpt": "assistant"}
+
+
+def content_text(content):
+    if isinstance(content, list):
+        return "\n".join(
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
+        )
+    return cell_text(content)
+
+
+def only_text_parts(content):
+    return (
+        isinstance(content, list)
+        and bool(content)
+        and all(isinstance(part, dict) and part.get("type") == "text" for part in content)
+    )
+
+
+def _turn_text(content):
+    return content_text(content) if only_text_parts(content) else cell_text(content)
 
 
 def _message(turn):
@@ -57,10 +86,41 @@ def _message(turn):
     return None
 
 
+def wrapped_messages(value):
+    if isinstance(value, dict) and len(value) == 1:
+        (inner,) = value.values()
+        if inner is None or isinstance(inner, list):
+            return inner
+    return value
+
+
+def unwrap_message_column(
+    dataset,
+    column,
+    batch_size = 1000,
+):
+    features = getattr(dataset, "features", None)
+    feature = features.get(column) if features else None
+    if column is None or (features and not (isinstance(feature, dict) and len(feature) == 1)):
+        return dataset
+    if features:
+        from datasets import Features
+        (inner,) = feature.values()
+        features = Features({**features, column: inner})
+    return dataset.map(
+        lambda batch: {column: [wrapped_messages(value) for value in batch[column]]},
+        batched = True,
+        batch_size = batch_size,
+        features = features,
+    )
+
+
 def message_list_columns(dataset):
     features = getattr(dataset, "features", None) or {}
     columns = set()
     for column, feature in features.items():
+        if isinstance(feature, dict) and len(feature) == 1:
+            (feature,) = feature.values()
         item = getattr(feature, "feature", None)
         if item is None and isinstance(feature, list) and len(feature) == 1:
             item = feature[0]
@@ -76,12 +136,15 @@ def cell_turns(
     role,
     empty_is_messages = False,
 ):
-    messages = [_message(turn) for turn in value] if isinstance(value, list) else [None]
+    turns = wrapped_messages(value)
+    if turns is None and value is not None and empty_is_messages:
+        turns = []
+    messages = [_message(turn) for turn in turns] if isinstance(turns, list) else [None]
     if (messages or empty_is_messages) and all(message is not None for message in messages):
         return [
             message
             if message["content"] is None and message.get("tool_calls")
-            else {**message, "content": cell_text(message["content"])}
+            else {**message, "content": _turn_text(message["content"])}
             for message in messages
         ]
     return [{"role": role, "content": cell_text(value)}]
@@ -115,20 +178,36 @@ def csv_as_text_kwargs(files):
     import pyarrow as pa
     from datasets import Features, Value
 
+    def _string_columns(frame):
+        return {
+            field.name
+            for field in pa.Table.from_pandas(frame).schema
+            if pa.types.is_string(field.type) or pa.types.is_large_string(field.type)
+        }
+
+    def _cell_text(value):
+        return None if value == "" else value
+
     with pd.read_csv(files[0], chunksize = _CSV_CHUNK_ROWS) as chunks:
         first = next(chunks)
     headers = [first.columns] + [pd.read_csv(path, nrows = 0).columns for path in files[1:]]
-    # A string schema needs the same columns in every file; else keep the loader's defaults.
-    if any(set(columns) != set(headers[0]) for columns in headers):
-        return {}
-    strings = {
-        field.name
-        for field in pa.Table.from_pandas(first).schema
-        if pa.types.is_string(field.type) or pa.types.is_large_string(field.type)
-    }
-    tags = {name: _CSV_TEXT if name in strings else _CSV_TYPED for name in first.columns}
+    if all(set(columns) == set(headers[0]) for columns in headers):
+        strings = _string_columns(first)
+        tags = {name: _CSV_TEXT if name in strings else _CSV_TYPED for name in first.columns}
+        return {
+            "features": Features({name: Value("string", id = tag) for name, tag in tags.items()}),
+            "keep_default_na": False,
+            "na_values": [""],
+        }
+    # Features needs every column in every file, so read text columns through converters;
+    # columns numeric in every file stay typed, as the default loader reads them.
+    text = set()
+    for path in files:
+        text |= _string_columns(
+            pd.read_csv(path, nrows = _CSV_CHUNK_ROWS, keep_default_na = False, na_values = [""])
+        )
     return {
-        "features": Features({name: Value("string", id = tag) for name, tag in tags.items()}),
+        "converters": {name: _cell_text for name in text},
         "keep_default_na": False,
         "na_values": [""],
     }

@@ -9,3 +9,7 @@ export const AUTH_TOKEN_KEY = "unsloth_auth_token";
 export function authFetch(input, init) {
   return globalThis.fetch(input, init);
 }
+
+export function isAccountOwner() {
+  return true;
+}

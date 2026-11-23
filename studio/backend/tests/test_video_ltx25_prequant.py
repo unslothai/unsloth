@@ -203,7 +203,11 @@ def test_the_baked_int8_excludes_are_this_runtimes():
 
 @pytest.mark.parametrize(
     "scheme, rotated, fmt",
-    [("fp8", False, PREQUANT_FORMAT), ("int8", False, PREQUANT_FORMAT), ("int8", True, PREQUANT_FORMAT_ROTATED)],
+    [
+        ("fp8", False, PREQUANT_FORMAT),
+        ("int8", False, PREQUANT_FORMAT),
+        ("int8", True, PREQUANT_FORMAT_ROTATED),
+    ],
 )
 def test_the_baked_metadata_passes_the_loader(scheme, rotated, fmt):
     meta = _meta(scheme, rotated)
@@ -237,7 +241,9 @@ def _api(siblings = None, missing = False):
         if missing:
             raise RuntimeError(f"404 Client Error: {repo_id}")
         return types.SimpleNamespace(
-            siblings = [types.SimpleNamespace(rfilename = n, size = s) for n, s in (siblings or {}).items()]
+            siblings = [
+                types.SimpleNamespace(rfilename = n, size = s) for n, s in (siblings or {}).items()
+            ]
         )
 
     return types.SimpleNamespace(token = None, model_info = model_info, asked = asked)
@@ -256,7 +262,9 @@ def _planning(monkeypatch):
     import core.inference.diffusion_prequant as pq
     from core.inference import video_denoiser_prequant as vdp
 
-    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True)
+    monkeypatch.setattr(
+        pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
     monkeypatch.setattr(vdp, "hosted_denoiser_refused", lambda *a, **k: False)
 
 
@@ -268,7 +276,9 @@ def _planning(monkeypatch):
         ("fp8", None, "LTX-2.5-FP8.safetensors"),
     ],
 )
-def test_once_published_the_plan_credits_the_hosted_file(fam, monkeypatch, _planning, scheme, env, expected):
+def test_once_published_the_plan_credits_the_hosted_file(
+    fam, monkeypatch, _planning, scheme, env, expected
+):
     from core.inference.video import VideoBackend
 
     if env is not None:
@@ -284,10 +294,66 @@ def test_until_published_the_plan_keeps_the_dense_shards(fam, _planning):
     # renders are pixel-identical to that, so nothing but load time and the download changes).
     from core.inference.video import VideoBackend
 
-    assert VideoBackend._denoiser_prequant_hub_files(fam, "int8", PACK, _api(missing = True)) == (None, [])
+    assert VideoBackend._denoiser_prequant_hub_files(fam, "int8", PACK, _api(missing = True)) == (
+        None,
+        [],
+    )
     # A listing without the rotated file still serves int8 from the plain one.
     plain = {k: v for k, v in _PUBLISHED.items() if "ConvRot" not in k}
     assert VideoBackend._denoiser_prequant_hub_files(fam, "int8", PACK, _api(plain)) == (
         REPO,
         [("LTX-2.5-INT8.safetensors", plain["LTX-2.5-INT8.safetensors"])],
     )
+
+
+@pytest.mark.parametrize(
+    "requested, scheme, expected",
+    [
+        ("auto", "int8", "int8"),
+        (None, "int8", "int8"),
+        ("auto", "fp8", None),
+        ("fp8", "fp8", "fp8"),
+        ("int8", "int8", "int8"),
+    ],
+)
+def test_auto_seeds_int8_where_bf16_fits_like_comfyui(
+    fam, monkeypatch, requested, scheme, expected
+):
+    import types
+
+    import core.inference.video as vid
+
+    backend = vid.VideoBackend()
+    backend._state = types.SimpleNamespace(pipe = None)
+    monkeypatch.setattr(vid, "_video_auto_denoiser_scheme", lambda fam, **kw: scheme)
+    monkeypatch.setattr(vid, "_pipeline_device_mib", lambda pipe, ordinal = None: 0)
+    monkeypatch.setattr(vid, "_video_seed_stays_resident", lambda fam, **kw: True)
+    monkeypatch.setattr(
+        vid,
+        "resolve_diffusion_device_target",
+        lambda **_k: types.SimpleNamespace(device = "cuda", dtype = None, ordinal = None),
+    )
+    assert (
+        backend._video_planned_auto_denoiser_scheme(
+            fam, base = PACK, kind = "pipeline", transformer_quant = requested, speed_mode = None
+        )
+        == expected
+    )
+
+
+def test_only_the_measured_int8_skips_the_resident_bf16_rule(fam):
+    import core.inference.video as vid
+
+    assert fam.profile.auto_prequant_when_resident == frozenset({"int8"})
+    assert not vid._auto_seed_yields_to_resident_bf16("int8", "auto", fam)
+    assert vid._auto_seed_yields_to_resident_bf16("fp8", "auto", fam)
+    for repo in ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "Wan-AI/Wan2.2-T2V-A14B-Diffusers"):
+        wan = detect_video_family(repo)
+        assert wan.profile.auto_prequant_when_resident == frozenset({"int8"})
+        assert not vid._auto_seed_yields_to_resident_bf16("int8", "auto", wan)
+        assert vid._auto_seed_yields_to_resident_bf16("fp8", "auto", wan)
+    for repo in ("Lightricks/LTX-2", "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v"):
+        other = detect_video_family(repo)
+        assert other.name != fam.name
+        assert vid._auto_seed_yields_to_resident_bf16("int8", "auto", other)
+    assert vid._auto_seed_yields_to_resident_bf16("int8", "auto")

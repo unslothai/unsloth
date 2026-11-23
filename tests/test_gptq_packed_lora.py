@@ -97,12 +97,34 @@ def test_gptq_backend_left_alone(monkeypatch):
         is None
     )
     assert (
-        gptq_trainable_quantization_config(_config({"quant_method": "awq", "bits": 4}), None)
-        is None
-    )
-    assert (
         gptq_trainable_quantization_config(_config({"quant_method": "bitsandbytes"}), None) is None
     )
     assert gptq_trainable_quantization_config(_config(None), None) is None
     monkeypatch.setattr(transformers.utils, "is_gptqmodel_available", lambda: False)
     assert gptq_trainable_quantization_config(_config(dict(_GPTQ8)), None) is None
+
+
+_AWQ4 = {"quant_method": "awq", "bits": 4, "group_size": 64, "zero_point": True, "version": "gemm"}
+
+
+def test_awq_checkpoint_gets_trainable_backend(monkeypatch):
+    from transformers.quantizers.auto import AutoHfQuantizer
+
+    monkeypatch.setattr(transformers.utils, "is_gptqmodel_available", lambda: True)
+    cfg = gptq_trainable_quantization_config(_config(dict(_AWQ4)), None)
+    assert type(cfg).__name__ == "AwqConfig" and cfg.backend == "auto_trainable"
+    merged = AutoHfQuantizer.merge_quantization_configs(dict(_AWQ4), cfg)
+    assert (merged.bits, merged.group_size, merged.zero_point) == (4, 64, True)
+    assert merged.format == "gemm" and merged.backend == "auto_trainable"
+    # Configs saved by transformers 4.x (Qwen/Qwen3-8B-AWQ) carry the legacy default backend.
+    for legacy in ("autoawq", "llm-awq"):
+        legacy_cfg = gptq_trainable_quantization_config(_config({**_AWQ4, "backend": legacy}), None)
+        assert legacy_cfg is not None and legacy_cfg.backend == "auto_trainable"
+
+
+def test_awq_backend_left_alone(monkeypatch):
+    monkeypatch.setattr(transformers.utils, "is_gptqmodel_available", lambda: True)
+    assert gptq_trainable_quantization_config(_config(dict(_AWQ4)), object()) is None
+    assert gptq_trainable_quantization_config(_config({**_AWQ4, "backend": "gemm"}), None) is None
+    monkeypatch.setattr(transformers.utils, "is_gptqmodel_available", lambda: False)
+    assert gptq_trainable_quantization_config(_config(dict(_AWQ4)), None) is None

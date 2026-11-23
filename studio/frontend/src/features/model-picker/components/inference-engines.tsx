@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -13,10 +14,12 @@ import {
 import { useIsAccountOwner } from "@/features/auth";
 import { SettingsRow } from "@/features/settings/components/settings-row";
 import { SettingsSection } from "@/features/settings/components/settings-section";
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 import { isEngineGpuDevice, useGpuDevices } from "@/hooks/use-gpu-info";
 import { formatGiB } from "@/lib/memory/format";
-import { useEffect, useRef, useState } from "react";
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
+import { cn } from "@/lib/utils";
+import { type Ref, useEffect, useRef, useState } from "react";
 import {
   type EngineStatus,
   type InferenceEngine,
@@ -36,19 +39,28 @@ const PRECISION_LABELS = [
   ["int8", "INT8 (8-bit)"],
   ["fp8", "FP8 (8-bit)"],
 ] as const;
+// Ceilings below Studio's measured budget; it never raises the engine past what is free.
+const GPU_MEMORY_LIMITS = [0.95, 0.9, 0.8, 0.7, 0.5, 0.3] as const;
 
 export function EngineInstall({
   engine,
   management = false,
+  centered = false,
   onUse,
 }: {
   engine: EngineStatus;
   management?: boolean;
+  /** The load dialog: centred, and the install prompt (size, Install and load) shown up front. */
+  centered?: boolean;
   onUse?: () => void;
 }) {
   const t = useT();
+  const locale = useLocale();
+  useTimeFormat();
   const isOwner = useIsAccountOwner();
   const useAfterInstall = useRef(false);
+  // Off once an install starts, until it fails or stops: the next poll may not show it running yet.
+  const [autoConfirm, setAutoConfirm] = useState(true);
   useEffect(() => {
     if (
       engine.job.state === "error" ||
@@ -56,6 +68,7 @@ export function EngineInstall({
       engine.job.state === "waiting"
     ) {
       useAfterInstall.current = false;
+      setAutoConfirm(true);
     }
     if (
       useAfterInstall.current &&
@@ -70,6 +83,21 @@ export function EngineInstall({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const running = engine.job.state === "running";
+  // A retry clears the last failure: the same message coming back must read as a new attempt.
+  const failed = engine.job.state === "error" && !confirm && !busy;
+  const finishedAt = engine.job.finished_at;
+  const lastAttempt =
+    typeof finishedAt === "number"
+      ? new Intl.DateTimeFormat(
+          locale,
+          withTimeFormat({ timeStyle: "medium" }, locale),
+        ).format(finishedAt * 1000)
+      : null;
+  const canInstall = !engine.in_use && isOwner && !engine.unsupported_reason;
+  // The dialog's user already asked to load, so skip the extra "Install engine" click there.
+  const showConfirm =
+    confirm ||
+    (centered && autoConfirm && canInstall && !engine.installed && !running);
   const action = async (
     operation: "install" | "cancel" | "remove" | "rollback",
   ) => {
@@ -78,6 +106,7 @@ export function EngineInstall({
     try {
       if (operation === "install") {
         useAfterInstall.current = !!onUse;
+        setAutoConfirm(false);
       }
       if (operation === "cancel") {
         useAfterInstall.current = false;
@@ -86,13 +115,14 @@ export function EngineInstall({
       setConfirm(false);
     } catch (err) {
       useAfterInstall.current = false;
+      setAutoConfirm(true);
       setError(err instanceof Error ? err.message : "Engine operation failed");
     } finally {
       setBusy(false);
     }
   };
   return (
-    <div className="space-y-2 text-ui-12">
+    <div className={cn("space-y-2 text-ui-12", centered && "text-center")}>
       {/* Settings shows these under the engine name (engineNote). */}
       {!management && !(isOwner || engine.installed) && (
         <p className="text-muted-foreground">
@@ -105,7 +135,10 @@ export function EngineInstall({
       {running ? (
         <output
           aria-live="polite"
-          className="flex items-center justify-between gap-3"
+          className={cn(
+            "flex items-center gap-3",
+            centered ? "justify-center" : "justify-between",
+          )}
         >
           <span>{t("managedEngines.installing")}</span>
           <Button
@@ -118,7 +151,12 @@ export function EngineInstall({
           </Button>
         </output>
       ) : (
-        <div className="flex flex-wrap items-center gap-2">
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-2",
+            centered && "justify-center",
+          )}
+        >
           {engine.installed && (
             <span>
               {t("managedEngines.installed", {
@@ -126,28 +164,27 @@ export function EngineInstall({
               })}
             </span>
           )}
-          {(!engine.installed || !engine.current || management) && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={
-                busy || engine.in_use || !isOwner || !!engine.unsupported_reason
-              }
-              onClick={() => setConfirm(true)}
-            >
-              {engine.installed
-                ? t(
-                    engine.current
-                      ? "managedEngines.repair"
-                      : "managedEngines.update",
-                  )
-                : t("managedEngines.install")}
-            </Button>
-          )}
+          {(!engine.installed || !engine.current || management) &&
+            !(centered && showConfirm) && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || !canInstall}
+                onClick={() => setConfirm(true)}
+              >
+                {engine.installed
+                  ? t(
+                      engine.current
+                        ? "managedEngines.repair"
+                        : "managedEngines.update",
+                    )
+                  : t("managedEngines.install")}
+              </Button>
+            )}
           {management && isOwner && engine.installed && (
             <Button
               size="sm"
-              variant="ghost"
+              variant="destructive"
               disabled={busy || engine.in_use}
               onClick={() => void action("remove")}
             >
@@ -169,12 +206,14 @@ export function EngineInstall({
       {management && engine.in_use && (
         <p className="text-muted-foreground">{t("managedEngines.inUse")}</p>
       )}
-      {confirm && (
+      {showConfirm && (
         <section
           aria-label={t("managedEngines.installTitle", {
             engine: names[engine.engine],
           })}
-          className="space-y-3 rounded-lg border p-3"
+          className={cn(
+            centered ? "space-y-1 text-muted-foreground" : "space-y-3 rounded-lg border p-3",
+          )}
         >
           <p>
             {engine.download_bytes
@@ -192,9 +231,10 @@ export function EngineInstall({
             <p>{t(wslNoticeKey(engine)!, { engine: names[engine.engine] })}</p>
           )}
           <p>{t("managedEngines.background")}</p>
-          <div className="flex gap-2">
+          <div className={cn("flex gap-2", centered && "justify-center pt-3")}>
             <Button
-              size="sm"
+              variant="dark"
+              size={centered ? "default" : "sm"}
               disabled={busy}
               onClick={() => void action("install")}
             >
@@ -202,18 +242,25 @@ export function EngineInstall({
                 ? t("managedEngines.installAndLoad")
                 : t("managedEngines.install")}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>
-              {t("common.cancel")}
-            </Button>
+            {!centered && (
+              <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>
+                {t("common.cancel")}
+              </Button>
+            )}
           </div>
         </section>
       )}
-      {(error || engine.job.state === "error") && (
+      {(error || failed) && (
         <p role="alert" className="whitespace-pre-wrap text-destructive">
           {error || t("managedEngines.failed")}
         </p>
       )}
-      {engine.job.state === "error" && (
+      {failed && !error && lastAttempt && (
+        <p className="text-muted-foreground">
+          {t("managedEngines.lastAttempt", { time: lastAttempt })}
+        </p>
+      )}
+      {failed && (
         <details>
           <summary>{t("managedEngines.details")}</summary>
           <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-ui-11">
@@ -231,7 +278,9 @@ export function EngineInstall({
   );
 }
 
-export function InferenceEnginesSection() {
+export function InferenceEnginesSection({
+  ref,
+}: { ref?: Ref<HTMLElement> } = {}) {
   const t = useT();
   const isOwner = useIsAccountOwner();
   const { engines, error } = useEngines();
@@ -239,11 +288,8 @@ export function InferenceEnginesSection() {
   const engineNote = (engine: EngineStatus) =>
     engine.unsupported_reason ||
     (isOwner || engine.installed ? undefined : t("managedEngines.ownerRequired"));
-  return (
-    <SettingsSection
-      title={t("managedEngines.title")}
-      description={t("managedEngines.description")}
-    >
+  const rows = (
+    <>
       {error && <p role="alert">{error}</p>}
       {engines.map((engine) => (
         <SettingsRow
@@ -254,6 +300,15 @@ export function InferenceEnginesSection() {
           <EngineInstall engine={engine} management={true} />
         </SettingsRow>
       ))}
+    </>
+  );
+  return (
+    <SettingsSection
+      ref={ref}
+      title={t("managedEngines.title")}
+      description={t("managedEngines.description")}
+    >
+      {rows}
     </SettingsSection>
   );
 }
@@ -268,6 +323,12 @@ export function InferenceEnginePicker({
   onParallelismChange,
   precision = "auto",
   onPrecisionChange,
+  kvCacheDtype = "auto",
+  onKvCacheDtypeChange,
+  gpuMemoryUtilization = null,
+  onGpuMemoryUtilizationChange,
+  seed = null,
+  onSeedChange,
   onGpuChange,
 }: {
   value: InferenceEngine;
@@ -281,6 +342,12 @@ export function InferenceEnginePicker({
   onPrecisionChange: (
     precision: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8",
   ) => void;
+  kvCacheDtype?: "auto" | "fp8";
+  onKvCacheDtypeChange: (dtype: "auto" | "fp8") => void;
+  gpuMemoryUtilization?: number | null;
+  onGpuMemoryUtilizationChange: (fraction: number | null) => void;
+  seed?: number | null;
+  onSeedChange: (seed: number | null) => void;
   onGpuChange: (ids: number[]) => void;
 }) {
   const { engines, error } = useEngines();
@@ -382,7 +449,7 @@ export function InferenceEnginePicker({
                       {device.index}: {device.name}
                     </span>
                     <Switch
-                      className="panel-switch shrink-0"
+                      className="shrink-0"
                       aria-label={`GPU ${device.index}: ${device.name}`}
                       checked={checked}
                       disabled={checked && selectedGpuIds.length === 1}
@@ -474,6 +541,113 @@ export function InferenceEnginePicker({
             </div>
             <p className="text-ui-12 text-muted-foreground">
               {t("managedEngines.precisionHelp")}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3 text-ui-13">
+              <span>{t("managedEngines.kvCache")}</span>
+              <Select
+                value={kvCacheDtype}
+                onValueChange={(value) =>
+                  onKvCacheDtypeChange(value as typeof kvCacheDtype)
+                }
+              >
+                <SelectTrigger
+                  className="w-44"
+                  aria-label={t("managedEngines.kvCache")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">
+                    {t("managedEngines.precisionAuto")}
+                  </SelectItem>
+                  <SelectItem value="fp8">
+                    {t("managedEngines.kvCacheFp8")}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-ui-12 text-muted-foreground">
+              {t("managedEngines.kvCacheHelp")}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3 text-ui-13">
+              <span>{t("managedEngines.gpuMemory")}</span>
+              <Select
+                value={
+                  gpuMemoryUtilization == null
+                    ? "auto"
+                    : String(gpuMemoryUtilization)
+                }
+                onValueChange={(value) =>
+                  onGpuMemoryUtilizationChange(
+                    value === "auto" ? null : Number(value),
+                  )
+                }
+              >
+                <SelectTrigger
+                  className="w-44"
+                  aria-label={t("managedEngines.gpuMemory")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">
+                    {t("managedEngines.gpuMemoryAuto")}
+                  </SelectItem>
+                  {/* A stored value off the preset list stays selectable. */}
+                  {[
+                    ...new Set([
+                      ...GPU_MEMORY_LIMITS,
+                      ...(gpuMemoryUtilization == null
+                        ? []
+                        : [gpuMemoryUtilization]),
+                    ]),
+                  ]
+                    .sort((a, b) => b - a)
+                    .map((fraction) => (
+                      <SelectItem key={fraction} value={String(fraction)}>
+                        {`${Math.round(fraction * 100)}%`}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-ui-12 text-muted-foreground">
+              {t("managedEngines.gpuMemoryHelp")}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3 text-ui-13">
+              <span>{t("managedEngines.seed")}</span>
+              <Input
+                className="w-44"
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={2 ** 31 - 1}
+                step={1}
+                aria-label={t("managedEngines.seed")}
+                placeholder={t("managedEngines.seedPlaceholder")}
+                value={seed ?? ""}
+                onChange={(event) => {
+                  const raw = event.target.value.trim();
+                  const next = Number(raw);
+                  onSeedChange(
+                    raw !== "" &&
+                      Number.isInteger(next) &&
+                      next >= 0 &&
+                      next <= 2 ** 31 - 1
+                      ? next
+                      : null,
+                  );
+                }}
+              />
+            </div>
+            <p className="text-ui-12 text-muted-foreground">
+              {t("managedEngines.seedHelp")}
             </p>
           </div>
           <EngineInstall

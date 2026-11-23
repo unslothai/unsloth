@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Parallel suites do not share one torch.compile cache directory.
-
-Inductor's on-disk caches default to one directory per USER, not per process, so four
-xdist workers on a runner would share `fxgraph`, `aotautograd` and the Triton cache
-underneath it. The upstream recipe is explicit that a common `TORCHINDUCTOR_CACHE_DIR`
-is how processes are made to SHARE compiled artifacts, so a different value per worker
-is how they are kept apart.
-
-Two things are asserted, and the second is the one that rots: that the splitting works,
-and that it is actually reached from the conftest of every suite that runs with `-n`. A
-helper nobody imports is the failure mode here, and it is silent.
-"""
+"""Inductor's caches are per user, not per process, so each xdist worker needs its own cache dir."""
 
 import importlib.util
 import os

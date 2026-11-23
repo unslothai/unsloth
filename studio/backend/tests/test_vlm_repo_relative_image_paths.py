@@ -29,8 +29,6 @@ def _fake_hub(monkeypatch, tmp_path, repo_files):
 
 
 def test_simple_image_text_resolves_a_repo_relative_image_path(monkeypatch, tmp_path):
-    # convert_sharegpt_with_images_to_vlm_format keys its lookup by the full relative path too;
-    # the simple {image, text} converter has to resolve the same "images/a.png" value.
     fetched = _fake_hub(monkeypatch, tmp_path, ["README.md", "images/a.png"])
     ds = Dataset.from_dict({"image": ["images/a.png"], "text": ["a cat"]})
 

@@ -1,19 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Permission-safe wrapper around datasets.load_dataset.
-
-A shared HF datasets cache can contain subtrees owned by another user (for
-example populated by an earlier root-run job). datasets then raises
-"[Errno 13] Permission denied: ..._builder.lock" while locking the cached
-builder, killing the training run even though the dataset itself is fine.
-Retry such loads in an Unsloth-owned cache so the run proceeds; the worst case
-is one rebuild of the dataset in the fallback location.
-
-On Windows, huggingface_hub's concurrent symlink capability probe can also
-publish a brief false positive and raise WinError 1314; only then, retry in
-its regular-file cache mode for this worker.
-"""
+"""Retries load_dataset in an Unsloth-owned cache on Errno 13 from a shared HF cache; on Windows
+only WinError 1314 does, in regular-file mode; JSON rows adding keys get a full schema."""
 
 import logging
 import os
@@ -56,8 +45,7 @@ class _NoSymlinkSupport(dict):
 def _disable_hf_symlinks_for_process() -> None:
     """Switch an affected worker to HF's regular-file cache fallback."""
     os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
-    # huggingface_hub is already imported, so update its live state too. Hub 1.9
-    # added this constant; older installs decide purely from the mapping below.
+    # huggingface_hub is already imported, so its live state must be updated too; Hub 1.9 added the constant.
     try:
         from huggingface_hub import constants, file_download
     except ImportError:  # never mask the load error we are recovering
@@ -80,7 +68,7 @@ def studio_datasets_cache() -> str:
 
 
 def load_dataset_cache_safe(*args, **kwargs):
-    """Load a dataset with narrow retries for known cache permission failures."""
+    """Load a dataset with narrow retries for known cache permission and JSON schema failures."""
     from datasets import load_dataset
 
     # datasets is in sys.modules exactly now.
@@ -88,6 +76,62 @@ def load_dataset_cache_safe(*args, **kwargs):
 
     quiet_third_party_progress_bars()
 
+    files = _local_json_files(args, kwargs)
+    try:
+        dataset = _load_with_cache_retries(load_dataset, args, kwargs)
+    except Exception as error:
+        if files is None:
+            raise
+        from datasets.exceptions import DatasetGenerationError
+
+        if not isinstance(error, DatasetGenerationError):
+            raise
+        rebuilt = _json_rows_rebuild(files, kwargs)
+        if rebuilt is None:
+            raise
+        logger.warning(
+            "Rows of %s do not share one structure (%s); reloaded with a schema covering every row",
+            kwargs["data_files"],
+            error.__cause__ or error,
+        )
+        return rebuilt
+    features = getattr(dataset, "features", None)
+    if files is None or features is None:
+        return dataset
+    from utils.datasets.json_rows import has_timestamp
+
+    if not has_timestamp(features.arrow_schema):
+        return dataset
+    return _json_rows_rebuild(files, kwargs) or dataset
+
+
+def _local_json_files(args, kwargs):
+    loader = args[0] if args else kwargs.get("path")
+    files = kwargs.get("data_files")
+    if loader != "json" or kwargs.get("features") is not None or kwargs.get("streaming"):
+        return None
+    if kwargs.get("split") != "train":
+        return None
+    if isinstance(files, (str, os.PathLike)):
+        files = [files]
+    if not isinstance(files, (list, tuple)) or not files:
+        return None
+    if not all(isinstance(path, (str, os.PathLike)) and os.path.isfile(path) for path in files):
+        return None
+    return files
+
+
+def _json_rows_rebuild(files, kwargs):
+    """Rows as ``json`` parses them: one schema across rows, and date strings kept as written."""
+    from functools import partial
+
+    from utils.datasets.json_rows import json_rows_dataset
+
+    rebuild = partial(json_rows_dataset, files)
+    return _load_with_cache_retries(rebuild, (), {"cache_dir": kwargs.get("cache_dir")})
+
+
+def _load_with_cache_retries(load_dataset, args, kwargs):
     try:
         return load_dataset(*args, **kwargs)
     except OSError as error:
@@ -101,8 +145,7 @@ def load_dataset_cache_safe(*args, **kwargs):
             try:
                 return load_dataset(*args, **kwargs)
             except OSError as retry_error:
-                # A second 1314 is a cache dir Hub had not probed; the
-                # Unsloth-owned cache is probed fresh and clears both cases.
+                # A second 1314 is a cache dir Hub had not probed; the Unsloth-owned cache is probed fresh too.
                 if _is_retryable_cache_error(retry_error):
                     return _retry_in_studio_cache(load_dataset, args, kwargs, retry_error)
                 raise
@@ -119,8 +162,7 @@ def _retry_in_studio_cache(load_dataset, args, kwargs, error):
         fallback,
     )
     kwargs["cache_dir"] = fallback
-    # Nested builders consult the env var while the load runs; restore it
-    # after so other datasets keep trying the shared cache first.
+    # Nested builders read the env var during the load; restore it after so other datasets still try the shared cache first.
     old_env = os.environ.get("HF_DATASETS_CACHE")
     os.environ["HF_DATASETS_CACHE"] = fallback
     try:

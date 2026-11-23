@@ -1,0 +1,195 @@
+{
+ "audio_cpp_tag": "v0.9.0-unsloth.1",
+ "about": "Expected Advanced options per catalog model and workflow, derived from audio.cpp's webui/configs/model_params.json and C++ runtime defaults independently of audio_cpp_option_table.py (which names each value's source). include: offered with this default (null: offered, sends nothing); optional: if offered, with this default; exclude: never offered. names: accepted aliases.",
+ "models": {
+  "audio-cpp/MiniMax-Music3-GGUF": [
+   {"exclude":["duration_sec","lyrics"],"include":{"ar_guidance_scale":{"default":1.5},"guidance_scale":{"default":1.7},"num_inference_steps":{"default":30},"top_k":{"default":50}},"optional":{},"workflow":"music"}
+  ],
+  "audio-cpp/Yue2-3B-GGUF": [
+   {"exclude":["export_semantic","lyrics","semantic_max_tokens","semantic_min_tokens","semantic_prefix","stop_after","style"],"include":{"abc_repetition_penalty":{"default":1.005},"abc_temperature":{"default":0.7},"abc_top_k":{"default":30},"abc_top_p":{"default":0.9},"cot":{"default":"full"},"guidance_scale":{"default":null},"num_inference_steps":{"default":8},"semantic_repetition_penalty":{"default":1.2},"semantic_temperature":{"default":1.0},"semantic_top_k":{"default":100},"semantic_top_p":{"default":0.95}},"optional":{},"workflow":"music"}
+  ],
+  "audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF": [
+   {"exclude":["duration_seconds","guidance_scale","route"],"include":{"lm_cfg_scale":{"default":2.0},"lm_temperature":{"default":0.85},"lm_top_k":{"default":0},"lm_top_p":{"default":0.9},"num_inference_steps":{"default":8},"shift":{"default":3.0}},"optional":{"bpm":{"default":null},"keyscale":{"default":null},"timesignature":{"default":null}},"variant":"turbo","workflow":"music"},
+   {"exclude":["duration_seconds","route"],"include":{"guidance_scale":{"default":7.0},"lm_cfg_scale":{"default":2.0},"lm_temperature":{"default":0.85},"lm_top_k":{"default":0},"lm_top_p":{"default":0.9},"num_inference_steps":{"default":32},"shift":{"default":1.0}},"optional":{"bpm":{"default":null},"keyscale":{"default":null},"timesignature":{"default":null}},"variant":"base","workflow":"music"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Breeze-TTS-2-GGUF": [
+   {"exclude":["instruction"],"include":{"depth_temperature":{"default":0.9},"guidance_scale":{"default":1.0},"max_tokens":{"default":1500},"temperature":{"default":0.9},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":600},"top_k":{"default":50},"top_p":{"default":1.0}},"optional":{},"workflow":"speak"},
+   {"exclude":["instruction","voice"],"include":{"depth_temperature":{"default":0.9},"guidance_scale":{"default":1.0},"max_tokens":{"default":1500},"temperature":{"default":0.9},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":600},"top_k":{"default":50},"top_p":{"default":1.0}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Chatterbox-GGUF": [
+   {"exclude":["voice"],"include":{"exaggeration":{"default":0.5},"guidance_scale":{"default":0.5},"min_p":{"default":0.05},"repetition_penalty":{"default":1.2},"temperature":{"default":0.8},"top_p":{"default":1.0}},"optional":{},"workflow":"clone"},
+   {"exclude":["exaggeration","min_p","repetition_penalty","temperature","top_p","voice"],"include":{"num_inference_steps":{"default":10},"s3gen_cfg_rate":{"default":0.7}},"optional":{},"workflow":"convert"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Chatterbox-Turbo-GGUF": [
+   {"exclude":["exaggeration","max_new_tokens","min_p"],"include":{"repetition_penalty":{"default":1.2},"temperature":{"default":0.8},"text_chunk_size":{"default":128},"top_k":{"default":1000},"top_p":{"default":0.95}},"optional":{},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Confucius4-TTS-GGUF": [
+   {"exclude":["language","voice"],"include":{"cross_fade_duration_sec":{"default":0.3},"edge_fade_duration_sec":{"default":0.1},"edge_pad_duration_sec":{"default":0.1},"guidance_scale":{"default":0.7},"max_tokens":{"default":1520},"num_beams":{"default":3},"num_inference_steps":{"default":25},"repetition_penalty":{"default":10.0},"temperature":{"default":0.8},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":80},"top_k":{"default":30},"top_p":{"default":0.8}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/ControlFoley-GGUF": [
+   {"exclude":["duration_sec","mask_away_clip"],"include":{"guidance_scale":{"default":4.5},"num_inference_steps":{"default":25}},"optional":{},"workflow":"music"}
+  ],
+  "audio-cpp/audio.cpp-gguf/CosyVoice3-GGUF": [
+   {"exclude":["voice"],"include":{"max_tokens":{"default":null},"min_tokens":{"default":null},"num_inference_steps":{"default":10},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":600},"top_k":{"default":25}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/DotTTS-Edit-GGUF": [
+   {"exclude":["source_text","target_text","template_name","use_xvector"],"include":{"guidance_scale":{"default":1.2},"max_tokens":{"default":500},"num_inference_steps":{"default":10},"sampler_mode":{"default":"euler"},"speaker_scale":{"default":1.5},"text_chunk_mode":{"default":"tag_aware"},"text_chunk_size":{"default":320},"vocoder_merge_steps":{"default":4}},"optional":{"reference_duration_sec":{"default":null}},"workflow":"speak"},
+   {"exclude":["source_text","target_text","template_name","use_xvector","voice"],"include":{"guidance_scale":{"default":1.2},"max_tokens":{"default":500},"num_inference_steps":{"default":10},"sampler_mode":{"default":"euler"},"speaker_scale":{"default":1.5},"text_chunk_mode":{"default":"tag_aware"},"text_chunk_size":{"default":320},"vocoder_merge_steps":{"default":4}},"optional":{"reference_duration_sec":{"default":null}},"workflow":"clone"},
+   {"exclude":["source_text","target_text","template_name","voice"],"include":{"guidance_scale":{"default":1.2},"max_tokens":{"default":500},"num_inference_steps":{"default":10},"sampler_mode":{"default":"euler"},"speaker_scale":{"default":1.5},"text_chunk_mode":{"default":"tag_aware"},"text_chunk_size":{"default":320},"use_xvector":{"default":"auto"},"vocoder_merge_steps":{"default":4}},"optional":{"reference_duration_sec":{"default":null}},"workflow":"edit"}
+  ],
+  "audio-cpp/audio.cpp-gguf/DotTTS-MF-GGUF": [
+   {"exclude":[],"include":{"guidance_scale":{"default":1.2},"max_tokens":{"default":500},"num_inference_steps":{"default":10},"sampler_mode":{"default":"euler"},"speaker_scale":{"default":1.5},"text_chunk_mode":{"default":"tag_aware"},"text_chunk_size":{"default":320},"vocoder_merge_steps":{"default":4}},"optional":{"reference_duration_sec":{"default":null}},"workflow":"speak"},
+   {"exclude":["voice"],"include":{"guidance_scale":{"default":1.2},"max_tokens":{"default":500},"num_inference_steps":{"default":10},"sampler_mode":{"default":"euler"},"speaker_scale":{"default":1.5},"text_chunk_mode":{"default":"tag_aware"},"text_chunk_size":{"default":320},"vocoder_merge_steps":{"default":4}},"optional":{"reference_duration_sec":{"default":null}},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/DotTTS-SOAR-GGUF": [
+   {"exclude":[],"include":{"guidance_scale":{"default":1.2},"max_tokens":{"default":500},"num_inference_steps":{"default":10},"sampler_mode":{"default":"euler"},"speaker_scale":{"default":1.5},"text_chunk_mode":{"default":"tag_aware"},"text_chunk_size":{"default":320},"vocoder_merge_steps":{"default":4}},"optional":{"reference_duration_sec":{"default":null}},"workflow":"speak"},
+   {"exclude":["voice"],"include":{"guidance_scale":{"default":1.2},"max_tokens":{"default":500},"num_inference_steps":{"default":10},"sampler_mode":{"default":"euler"},"speaker_scale":{"default":1.5},"text_chunk_mode":{"default":"tag_aware"},"text_chunk_size":{"default":320},"vocoder_merge_steps":{"default":4}},"optional":{"reference_duration_sec":{"default":null}},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/DramaBox-GGUF": [
+   {"exclude":["reference_duration_sec"],"include":{"audio_chunk_duration_sec":{"default":37.0},"audio_chunk_threshold_sec":{"default":45.0},"cross_fade_duration_sec":{"default":0.05},"duration_scale":{"default":1.1},"duration_sec":{"default":0.0},"guidance_rescale":{"default":"auto"},"guidance_scale":{"default":2.5},"num_inference_steps":{"default":30},"spatio_temporal_guidance_scale":{"default":1.5}},"optional":{"negative_prompt":{"default":null}},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/FireRedAudio-GGUF": [
+   {"exclude":["enable_thinking","max_new_tokens","temperature","template_name","top_k","top_p","voice"],"include":{"guidance_scale":{"default":2.0},"max_new_audio_steps":{"default":750},"max_new_text_tokens":{"default":512},"min_new_audio_steps":{"default":6},"num_inference_steps":{"default":10}},"optional":{},"workflow":"clone"},
+   {"exclude":["enable_thinking","max_new_tokens","temperature","template_name","top_k","top_p","voice"],"include":{"guidance_scale":{"default":2.0},"max_new_audio_steps":{"default":750},"max_new_text_tokens":{"default":512},"min_new_audio_steps":{"default":6},"num_inference_steps":{"default":10}},"optional":{},"workflow":"edit"}
+  ],
+  "audio-cpp/audio.cpp-gguf/FireRedTTS3-Base-GGUF": [
+   {"exclude":["template_name","voice"],"include":{"guidance_scale":{"default":2.0},"num_inference_steps":{"default":10},"stop_threshold":{"default":0.5},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":600}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/FireRedTTS3-Instruct-GGUF": [
+   {"exclude":["template_name","voice"],"include":{"guidance_scale":{"default":2.0},"num_inference_steps":{"default":10},"stop_threshold":{"default":0.5},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":600}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Fish-Audio-S2-Pro-GGUF": [
+   {"exclude":["repetition_penalty"],"include":{"max_tokens":{"default":1024},"temperature":{"default":0.8},"text_chunk_mode":{"default":"word_budget"},"text_chunk_size":{"default":200},"top_k":{"default":30},"top_p":{"default":0.8}},"optional":{},"workflow":"speak"},
+   {"exclude":["repetition_penalty","voice"],"include":{"max_tokens":{"default":1024},"temperature":{"default":0.8},"text_chunk_mode":{"default":"word_budget"},"text_chunk_size":{"default":200},"top_k":{"default":30},"top_p":{"default":0.8}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/HeartMuLa-GGUF": [
+   {"exclude":["infinite_chunk_audio_duration_ms","infinite_mode","lyrics","tags","text_chunk_size"],"include":{"codec_duration_sec":{"default":29.76},"codec_guidance_scale":{"default":1.25},"guidance_scale":{"default":1.5},"num_inference_steps":{"default":10},"temperature":{"default":1.0},"top_k":{"default":50}},"optional":{},"workflow":"music"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Higgs-Audio-v3-TTS-4B-GGUF": [
+   {"exclude":["repetition_penalty"],"include":{"max_tokens":{"default":2048},"temperature":{"default":0.8},"text_chunk_size":{"default":1024},"top_k":{"default":30},"top_p":{"default":0.8}},"optional":{},"workflow":"speak"},
+   {"exclude":["repetition_penalty","voice"],"include":{"max_tokens":{"default":2048},"temperature":{"default":0.8},"text_chunk_size":{"default":1024},"top_k":{"default":30},"top_p":{"default":0.8}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/IndexTTS2-GGUF": [
+   {"exclude":["voice"],"include":{"do_sample":{"default":true},"duration_factor":{"default":1.0},"emotion_alpha":{"default":1.0},"interval_silence_ms":{"default":200},"length_penalty":{"default":0.0},"max_tokens":{"default":1500},"num_beams":{"default":3},"repetition_penalty":{"default":10.0},"temperature":{"default":0.8},"top_k":{"default":30},"top_p":{"default":0.8},"use_random_emotion":{"default":false}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/IndexTTS2.5-GGUF": [
+   {"exclude":["voice"],"include":{"do_sample":{"default":true},"duration_factor":{"default":1.0},"emotion_alpha":{"default":1.0},"interval_silence_ms":{"default":200},"length_penalty":{"default":0.0},"max_tokens":{"default":1500},"num_beams":{"default":3},"repetition_penalty":{"default":10.0},"temperature":{"default":0.8},"top_k":{"default":30},"top_p":{"default":0.8},"use_random_emotion":{"default":false}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Inflect-Micro-v2-GGUF": [
+   {"exclude":["text_chunk_mode"],"include":{"speaking_rate":{"default":1.0},"text_chunk_size":{"default":280},"variation":{"default":0.667}},"optional":{},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Irodori-TTS-500M-v3-GGUF": [
+   {"exclude":["caption","caption_guidance_scale","no_ref"],"include":{"duration_scale":{"default":1.0},"duration_sec":{"default":null},"guidance_max_t":{"default":1.0},"guidance_min_t":{"default":0.5},"guidance_mode":{"default":"independent"},"guidance_scale":{"default":null},"max_duration_sec":{"default":30.0},"min_duration_sec":{"default":0.5},"num_inference_steps":{"default":40},"speaker_guidance_scale":{"default":5.0},"text_chunk_mode":{"default":"endline"},"text_chunk_size":{"default":null},"text_guidance_scale":{"default":3.0},"trim_tail":{"default":true}},"optional":{},"workflow":"speak"},
+   {"exclude":["caption","caption_guidance_scale","no_ref","voice"],"include":{"duration_scale":{"default":1.0},"duration_sec":{"default":null},"guidance_max_t":{"default":1.0},"guidance_min_t":{"default":0.5},"guidance_mode":{"default":"independent"},"guidance_scale":{"default":null},"max_duration_sec":{"default":30.0},"min_duration_sec":{"default":0.5},"num_inference_steps":{"default":40},"speaker_guidance_scale":{"default":5.0},"text_chunk_mode":{"default":"endline"},"text_chunk_size":{"default":null},"text_guidance_scale":{"default":3.0},"trim_tail":{"default":true}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Irodori-TTS-600M-v3-VoiceDesign-GGUF": [
+   {"exclude":["no_ref"],"include":{"caption_guidance_scale":{"default":3.0},"duration_scale":{"default":1.0},"duration_sec":{"default":null},"guidance_max_t":{"default":1.0},"guidance_min_t":{"default":0.5},"guidance_mode":{"default":"independent"},"guidance_scale":{"default":null},"max_duration_sec":{"default":30.0},"min_duration_sec":{"default":0.5},"num_inference_steps":{"default":40},"speaker_guidance_scale":{"default":5.0},"text_chunk_mode":{"default":"endline"},"text_chunk_size":{"default":null},"text_guidance_scale":{"default":3.0},"trim_tail":{"default":true}},"optional":{},"workflow":"speak"},
+   {"exclude":["no_ref","voice"],"include":{"caption_guidance_scale":{"default":3.0},"duration_scale":{"default":1.0},"duration_sec":{"default":null},"guidance_max_t":{"default":1.0},"guidance_min_t":{"default":0.5},"guidance_mode":{"default":"independent"},"guidance_scale":{"default":null},"max_duration_sec":{"default":30.0},"min_duration_sec":{"default":0.5},"num_inference_steps":{"default":40},"speaker_guidance_scale":{"default":5.0},"text_chunk_mode":{"default":"endline"},"text_chunk_size":{"default":null},"text_guidance_scale":{"default":3.0},"trim_tail":{"default":true}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Irodori-TTS-v4-Small-GGUF": [
+   {"exclude":["no_ref"],"include":{"caption_guidance_scale":{"default":3.0},"duration_scale":{"default":1.0},"duration_sec":{"default":null},"guidance_max_t":{"default":1.0},"guidance_min_t":{"default":0.5},"guidance_mode":{"default":"independent"},"guidance_scale":{"default":null},"max_duration_sec":{"default":30.0},"min_duration_sec":{"default":0.5},"num_inference_steps":{"default":40},"speaker_guidance_scale":{"default":5.0},"text_chunk_mode":{"default":"endline"},"text_chunk_size":{"default":null},"text_guidance_scale":{"default":3.0},"trim_tail":{"default":true}},"optional":{},"workflow":"speak"},
+   {"exclude":["no_ref","voice"],"include":{"caption_guidance_scale":{"default":3.0},"duration_scale":{"default":1.0},"duration_sec":{"default":null},"guidance_max_t":{"default":1.0},"guidance_min_t":{"default":0.5},"guidance_mode":{"default":"independent"},"guidance_scale":{"default":null},"max_duration_sec":{"default":30.0},"min_duration_sec":{"default":0.5},"num_inference_steps":{"default":40},"speaker_guidance_scale":{"default":5.0},"text_chunk_mode":{"default":"endline"},"text_chunk_size":{"default":null},"text_guidance_scale":{"default":3.0},"trim_tail":{"default":true}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/KittenTTS-GGUF": [
+   {"exclude":[],"include":{"speed":{"default":1.0},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":400},"voice":{"default":"Leo"}},"optional":{},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF": [
+   {"exclude":["language","return_timestamps"],"include":{"speed":{"default":1.0},"text_chunk_size":{"default":240},"voice":{"default":"af_heart"}},"optional":{},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/KugelAudio-0-Open-GGUF": [
+   {"exclude":[],"include":{"do_sample":{"default":false},"guidance_scale":{"default":3.0},"max_tokens":{"default":2048},"num_inference_steps":{"default":20},"temperature":{"default":1.0},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":300},"voice":{"default":"default"}},"optional":{"voice_id":{"default":"default"}},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/MOSS-TTS-Local-v1.5-GGUF": [
+   {"exclude":[],"include":{"do_sample":{"default":true},"max_tokens":{"default":4096},"repetition_penalty":{"default":1.0},"temperature":{"default":1.7},"text_temperature":{"default":1.0},"top_k":{"default":25},"top_p":{"default":0.8}},"optional":{},"workflow":"speak"},
+   {"exclude":["voice"],"include":{"do_sample":{"default":true},"max_tokens":{"default":4096},"repetition_penalty":{"default":1.0},"temperature":{"default":1.7},"text_temperature":{"default":1.0},"top_k":{"default":25},"top_p":{"default":0.8}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/MOSS-TTS-Nano-100M-GGUF": [
+   {"exclude":[],"include":{"do_sample":{"default":true},"repetition_penalty":{"default":1.0},"temperature":{"default":1.7},"text_temperature":{"default":1.5},"top_k":{"default":25},"top_p":{"default":0.8}},"optional":{"max_tokens":{"default":null}},"workflow":"speak"},
+   {"exclude":["voice"],"include":{"do_sample":{"default":true},"repetition_penalty":{"default":1.0},"temperature":{"default":1.7},"text_temperature":{"default":1.5},"top_k":{"default":25},"top_p":{"default":0.8}},"optional":{"max_tokens":{"default":null}},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/MOSS-VoiceGenerator-GGUF": [
+   {"exclude":["voice"],"include":{"repetition_penalty":{"default":1.1},"temperature":{"default":1.5},"top_k":{"default":50},"top_p":{"default":0.6}},"optional":{"max_frames":{"default":null},"min_frames":{"default":null}},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/MagpieTTS-Multilingual-357M-GGUF": [
+   {"exclude":[],"include":{"guidance_scale":{"default":2.5},"max_tokens":{"default":500},"temperature":{"default":0.6},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":300},"top_k":{"default":80}},"optional":{},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Maya1-GGUF": [
+   {"exclude":["instruct"],"include":{"max_tokens":{"default":2048},"min_tokens":{"default":28},"repetition_penalty":{"default":1.1},"temperature":{"default":0.4},"text_chunk_mode":{"default":"tag_aware"},"text_chunk_size":{"default":300},"top_p":{"default":0.9}},"optional":{},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/MeanVC2-GGUF": [
+   {"exclude":["seed","voice"],"include":{},"optional":{},"workflow":"convert"}
+  ],
+  "audio-cpp/audio.cpp-gguf/MiDashengLM-Gen-GGUF": [
+   {"exclude":["duration_sec"],"include":{"guidance_scale":{"default":2.0},"min_stop_step":{"default":5},"stop_threshold":{"default":0.5}},"optional":{},"workflow":"music"}
+  ],
+  "audio-cpp/audio.cpp-gguf/MioTTS-1.7B-GGUF": [
+   {"exclude":["best_of_n","voice"],"include":{"do_sample":{"default":true},"frequency_penalty":{"default":0.0},"max_tokens":{"default":700},"presence_penalty":{"default":0.0},"repetition_penalty":{"default":1.0},"temperature":{"default":0.8},"top_k":{"default":50},"top_p":{"default":1.0}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/NeuTTS-2E-GGUF": [
+   {"exclude":[],"include":{"emotion":{"default":"neutral"},"max_tokens":{"default":0},"min_tokens":{"default":50},"temperature":{"default":1.0},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":600},"top_k":{"default":50},"voice_id":{"default":"emily"}},"optional":{},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/OmniVoice-GGUF": [
+   {"exclude":[],"include":{"audio_chunk_duration":{"default":15.0},"audio_chunk_threshold":{"default":30.0},"class_temperature":{"default":0.0},"denoise":{"default":true},"guidance_scale":{"default":2.0},"layer_penalty_factor":{"default":5.0},"num_inference_steps":{"default":32},"position_temperature":{"default":5.0},"postprocess_output":{"default":true},"preprocess_prompt":{"default":true},"speed":{"default":1.0},"t_shift":{"default":0.1}},"optional":{"duration":{"default":null}},"workflow":"speak"},
+   {"exclude":["voice"],"include":{"audio_chunk_duration":{"default":15.0},"audio_chunk_threshold":{"default":30.0},"class_temperature":{"default":0.0},"denoise":{"default":true},"guidance_scale":{"default":2.0},"layer_penalty_factor":{"default":5.0},"num_inference_steps":{"default":32},"position_temperature":{"default":5.0},"postprocess_output":{"default":true},"preprocess_prompt":{"default":true},"speed":{"default":1.0},"t_shift":{"default":0.1}},"optional":{"duration":{"default":null}},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Piper-TTS-GGUF": [
+   {"exclude":[],"include":{"duration_variation":{"default":0.8},"speed":{"default":1.0},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":280},"variation":{"default":0.667}},"optional":{},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/PocketTTS-GGUF": [
+   {"exclude":[],"include":{"eos_threshold":{"default":-4.0},"frames_after_eos":{"default":-1}},"optional":{"noise_clamp":{"default":null},"temperature":{"default":null},"voice":{"default":"alba"}},"workflow":"speak"},
+   {"exclude":["voice"],"include":{"eos_threshold":{"default":-4.0},"frames_after_eos":{"default":-1}},"optional":{"noise_clamp":{"default":null},"temperature":{"default":null}},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF": [
+   {"exclude":["voice"],"include":{"do_sample":{"default":true},"repetition_penalty":{"default":1.05},"subtalker_do_sample":{"default":true},"subtalker_temperature":{"default":0.9},"subtalker_top_k":{"default":50},"subtalker_top_p":{"default":1.0},"temperature":{"default":0.9},"text_chunk_size":{"default":8192},"top_k":{"default":50},"top_p":{"default":1.0},"x_vector_only_mode":{"default":false}},"optional":{"max_tokens":{"default":null}},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-1.7B-Base-GGUF": [
+   {"exclude":["voice"],"include":{"do_sample":{"default":true},"repetition_penalty":{"default":1.05},"subtalker_do_sample":{"default":true},"subtalker_temperature":{"default":0.9},"subtalker_top_k":{"default":50},"subtalker_top_p":{"default":1.0},"temperature":{"default":0.9},"text_chunk_size":{"default":8192},"top_k":{"default":50},"top_p":{"default":1.0},"x_vector_only_mode":{"default":false}},"optional":{"max_tokens":{"default":null}},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF": [
+   {"exclude":[],"include":{"do_sample":{"default":true},"repetition_penalty":{"default":1.05},"subtalker_do_sample":{"default":true},"subtalker_temperature":{"default":0.9},"subtalker_top_k":{"default":50},"subtalker_top_p":{"default":1.0},"temperature":{"default":0.9},"text_chunk_size":{"default":8192},"top_k":{"default":50},"top_p":{"default":1.0},"voice":{"default":"vivian"}},"optional":{"max_tokens":{"default":null}},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF": [
+   {"exclude":["voice"],"include":{"do_sample":{"default":true},"repetition_penalty":{"default":1.05},"subtalker_do_sample":{"default":true},"subtalker_temperature":{"default":0.9},"subtalker_top_k":{"default":50},"subtalker_top_p":{"default":1.0},"temperature":{"default":0.9},"text_chunk_size":{"default":8192},"top_k":{"default":50},"top_p":{"default":1.0}},"optional":{"max_tokens":{"default":null}},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/RVC-GGUF": [
+   {"exclude":["audio_pad_duration_sec","pitch_extractor","semitone_shift","speaker_id","voice","voice_id"],"include":{"output_sample_rate":{"default":0},"pitch_filter_radius":{"default":3},"retrieval_blend":{"default":0.0},"rms_mix_rate":{"default":0.25},"split_center_sec":{"default":30},"split_query_sec":{"default":5},"split_threshold_sec":{"default":32},"unvoiced_protection":{"default":0.33}},"optional":{},"workflow":"convert"}
+  ],
+  "audio-cpp/audio.cpp-gguf/SeedVC-MLX-GGUF": [
+   {"exclude":["auto_f0_adjust","f0_condition","semitone_shift","voice"],"include":{"inference_guidance_scale":{"default":0.7},"intelligibility_guidance_scale":{"default":0.7},"length_adjust":{"default":1.0},"num_inference_steps":{"default":30},"similarity_guidance_scale":{"default":0.7},"voice_anonymization":{"default":false}},"optional":{"route":{"default":null}},"workflow":"convert"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Medium-GGUF": [
+   {"exclude":["batch_size","duration_seconds"],"include":{"apg_scale":{"default":1.0},"guidance_scale":{"default":1.0},"num_inference_steps":{"default":8}},"optional":{"negative_prompt":{"default":null}},"workflow":"music"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF": [
+   {"exclude":["batch_size","duration_seconds"],"include":{"apg_scale":{"default":1.0},"guidance_scale":{"default":1.0},"num_inference_steps":{"default":8}},"optional":{"negative_prompt":{"default":null}},"workflow":"music"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-SFX-GGUF": [
+   {"exclude":["batch_size","duration_seconds"],"include":{"apg_scale":{"default":1.0},"guidance_scale":{"default":1.0},"num_inference_steps":{"default":8}},"optional":{"negative_prompt":{"default":null}},"workflow":"music"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Supertonic-3-GGUF": [
+   {"exclude":[],"include":{"num_inference_steps":{"default":8},"speed":{"default":1.05,"names":["speed","speaking_rate"]},"voice":{"default":"M1","values":["M1","M2","M3","M4","M5","F1","F2","F3","F4","F5"]}},"optional":{"text_chunk_size":{"default":null}},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Tone-Color-VC-GGUF": [
+   {"exclude":["voice"],"include":{"temperature":{"default":0.3}},"optional":{},"workflow":"convert"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Vevo2-GGUF": [
+   {"exclude":["audio_chunk_duration_sec","cross_fade_duration_sec","predict_target_prosody","reference_duration_seconds","route","target_duration_seconds","use_prosody_code","voice"],"include":{"max_tokens":{"default":500},"repetition_penalty":{"default":1.1},"temperature":{"default":0.7},"top_k":{"default":20},"top_p":{"default":0.8}},"optional":{},"workflow":"clone"},
+   {"exclude":["predict_target_prosody","reference_duration_seconds","route","target_duration_seconds","use_prosody_code","voice"],"include":{"audio_chunk_duration_sec":{"default":0.0},"cross_fade_duration_sec":{"default":1.0},"max_tokens":{"default":500},"repetition_penalty":{"default":1.1},"temperature":{"default":0.7},"top_k":{"default":20},"top_p":{"default":0.8}},"optional":{},"workflow":"edit"},
+   {"exclude":["predict_target_prosody","reference_duration_seconds","route","target_duration_seconds","use_pitch_shift","use_prosody_code","voice"],"include":{"num_inference_steps":{"default":32}},"optional":{},"workflow":"convert"}
+  ],
+  "audio-cpp/audio.cpp-gguf/VibeVoice-1.5B-GGUF": [
+   {"exclude":[],"include":{"do_sample":{"default":false},"guidance_scale":{"default":1.3},"max_length_times":{"default":2.0},"num_inference_steps":{"default":10},"temperature":{"default":1.0},"top_k":{"default":50},"top_p":{"default":1.0}},"optional":{},"workflow":"speak"}
+  ],
+  "audio-cpp/audio.cpp-gguf/VoxCPM1-GGUF": [
+   {"exclude":["prompt_text"],"include":{"guidance_scale":{"default":2.0},"max_tokens":{"default":4096},"min_tokens":{"default":2},"num_inference_steps":{"default":10},"retry_badcase":{"default":true},"retry_badcase_max_times":{"default":3},"retry_badcase_ratio_threshold":{"default":6.0},"text_chunk_mode":{"default":"tag_aware"}},"optional":{},"workflow":"speak"},
+   {"exclude":["prompt_text","voice"],"include":{"guidance_scale":{"default":2.0},"max_tokens":{"default":4096},"min_tokens":{"default":2},"num_inference_steps":{"default":10},"retry_badcase":{"default":true},"retry_badcase_max_times":{"default":3},"retry_badcase_ratio_threshold":{"default":6.0},"text_chunk_mode":{"default":"tag_aware"}},"optional":{},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/VoxCPM2-GGUF": [
+   {"exclude":["prompt_text"],"include":{"guidance_scale":{"default":2.0},"min_tokens":{"default":2},"num_inference_steps":{"default":10},"retry_badcase":{"default":true},"retry_badcase_max_times":{"default":3},"retry_badcase_ratio_threshold":{"default":6.0},"text_chunk_mode":{"default":"tag_aware"}},"optional":{"max_tokens":{"default":null}},"workflow":"speak"},
+   {"exclude":["prompt_text","voice"],"include":{"guidance_scale":{"default":2.0},"min_tokens":{"default":2},"num_inference_steps":{"default":10},"retry_badcase":{"default":true},"retry_badcase_max_times":{"default":3},"retry_badcase_ratio_threshold":{"default":6.0},"text_chunk_mode":{"default":"tag_aware"}},"optional":{"max_tokens":{"default":null}},"workflow":"clone"}
+  ],
+  "audio-cpp/audio.cpp-gguf/Voxtral-4B-TTS-2603-GGUF": [
+   {"exclude":["voice"],"include":{"guidance_scale":{"default":1.2},"max_tokens":{"default":2048},"num_inference_steps":{"default":7},"text_chunk_mode":{"default":"default"},"text_chunk_size":{"default":300},"voice_id":{"default":"casual_male","values":["casual_female","casual_male","cheerful_female","neutral_female","neutral_male","pt_male","pt_female","nl_male","nl_female","it_male","it_female","fr_male","fr_female","es_male","es_female","de_male","de_female","ar_male","hi_male","hi_female"]}},"optional":{},"workflow":"speak"}
+  ]
+ }
+}

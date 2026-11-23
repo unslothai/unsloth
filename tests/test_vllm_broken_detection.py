@@ -66,7 +66,7 @@ class _FakeVllmFinder(importlib.abc.MetaPathFinder):
                 loader = _ExtensionLoader(broken = fullname in self.broken, error = self.error),
                 is_package = False,
             )
-        return None  # absent -> ModuleNotFoundError, which the guard ignores
+        return None
 
 
 @contextlib.contextmanager
@@ -114,7 +114,7 @@ def _fake_vllm(
     ids = ["core_C", "sibling_C_stable_libtorch"],
 )
 def test_disable_broken_vllm_detects_lazy_loaded_broken_extension(broken_ext):
-    # A CUDA-major mismatch breaks every ext; whichever one loads first must trip detection.
+    # A CUDA-major mismatch breaks every ext; whichever loads first must trip detection.
     present = {"vllm._C", "vllm._C_stable_libtorch"}
     with _fake_vllm(present = present, broken = {broken_ext}) as import_fixes:
         detected = import_fixes.disable_broken_vllm()
@@ -124,7 +124,6 @@ def test_disable_broken_vllm_detects_lazy_loaded_broken_extension(broken_ext):
             "lazily-importable vllm package — issue #6590 would resurface."
         )
         assert import_fixes.VLLM_BROKEN is True
-        # Once disabled, vLLM must look absent so callers fall back cleanly.
         assert importlib.util.find_spec("vllm") is None
 
 
@@ -137,8 +136,7 @@ def test_disable_broken_vllm_detects_lazy_loaded_broken_extension(broken_ext):
     ids = ["libnccl", "libcuda"],
 )
 def test_disable_broken_vllm_detects_non_cudart_so_failure(error):
-    # A CUDA mismatch can surface through a non-libcudart .so (libnccl, libcuda), which the old
-    # libcudart/libcublas/libnvrtc allow-list let slip through.
+    # A CUDA mismatch can surface through a non-libcudart .so (libnccl, libcuda).
     with _fake_vllm(present = {"vllm._C"}, broken = {"vllm._C"}, error = error) as import_fixes:
         detected = import_fixes.disable_broken_vllm()
 
@@ -155,8 +153,7 @@ def test_disable_broken_vllm_detects_non_cudart_so_failure(error):
     ids = ["core_only", "all_present"],
 )
 def test_disable_broken_vllm_keeps_healthy_vllm_enabled(present):
-    # Healthy install: an absent sibling (ModuleNotFoundError) or an extra present
-    # ext that loads cleanly must NOT be mistaken for an ABI break.
+    # An absent sibling or a cleanly loading extra ext must NOT read as an ABI break.
     with _fake_vllm(present = present, broken = set()) as import_fixes:
         detected = import_fixes.disable_broken_vllm()
 
@@ -165,7 +162,7 @@ def test_disable_broken_vllm_keeps_healthy_vllm_enabled(present):
         assert importlib.util.find_spec("vllm") is not None
 
 
-# vllm/transformers_utils/config.py raises this at import on vLLM >= 0.24 under transformers < 5.
+# vLLM >= 0.24 raises this at import under transformers < 5.
 _NEEDS_TRANSFORMERS_V5 = (
     "Support for Transformers v4 is deprecated and was removed in vLLM v0.24.0. "
     "Please upgrade to Transformers v5: pip install --upgrade transformers"
@@ -191,7 +188,6 @@ def _chained(outer, inner):
     ids = ["direct", "chained"],
 )
 def test_disable_broken_vllm_disables_vllm_that_needs_transformers_v5(error):
-    # vLLM >= 0.24 refuses transformers 4.x at import; that used to escape and fail `import unsloth`.
     with _fake_vllm(present = set(), broken = set()) as import_fixes:
         assert import_fixes.disable_broken_vllm(error) is True
         assert import_fixes.VLLM_BROKEN is True
