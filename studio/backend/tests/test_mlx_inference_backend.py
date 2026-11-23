@@ -5190,6 +5190,8 @@ def _text_family_backend(
     monkeypatch.setattr(
         model_config, "_read_raw_config_json", lambda name, token: configs.get(name)
     )
+    # The stub loader builds families no installed mlx-vlm / mlx-lm ships (mm_family).
+    monkeypatch.setattr(mlx_inference, "_mlx_unsupported_model_type", lambda *a: None)
     monkeypatch.setattr(mlx_inference, "_classify_mlx_audio_type", lambda *a, **k: None)
     monkeypatch.setattr(mlx_inference, "_row_quantized_cache_gap", lambda: None)
     monkeypatch.setattr(
