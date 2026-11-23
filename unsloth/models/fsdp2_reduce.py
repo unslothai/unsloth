@@ -39,6 +39,18 @@ try:
     )
 except ImportError:  # torch without custom reduce-scatter comms: nothing is installed
     _DefaultReduceScatter = None
+try:
+    from torch.distributed.fsdp._fully_shard._fsdp_collectives import (
+        ProcessGroupAllocReduceScatter as _ProcessGroupAllocReduceScatter,
+    )
+except ImportError:
+    _ProcessGroupAllocReduceScatter = None
+
+# Comms FSDP2's allocator setter installs: they differ from the default only in where the staging buffers come
+# from, so stock FSDP2 runs the same collective whichever one a rank holds.
+_ALLOCATION_ONLY = tuple(
+    c for c in (_DefaultReduceScatter, _ProcessGroupAllocReduceScatter) if c is not None
+)
 
 
 def half_transport_enabled():
@@ -79,7 +91,7 @@ def _cpu_group(pg):
 
 
 def _min_over(values, group):
-    t = torch.tensor(values, dtype = torch.int64)
+    t = torch.tensor(values, dtype = torch.int64, device = "cpu")
     dist.all_reduce(t, op = dist.ReduceOp.MIN, group = group)
     return t.tolist()
 
@@ -89,8 +101,10 @@ _Base = _DefaultReduceScatter if _DefaultReduceScatter is not None else object
 
 class _HalfTransportReduceScatter(_Base):
     """Wraps one param group's default reduce-scatter comm. A subclass of DefaultReduceScatter, so FSDP2's public
-    setters (set_allocate_memory_from_process_group, set_symm_mem) accept it and replace it; the group's hooks
-    then defer to whatever comm the group holds."""
+    setters (set_allocate_memory_from_process_group, set_symm_mem) accept it and replace it. The setter may run on
+    some ranks only (stock FSDP2 runs the same collective either way), so a replacement is not acted on locally:
+    an allocator comm is adopted as `inner` and the next vote sends every rank to the stock collective for good,
+    after which the group holds the setter's comm again."""
 
     def __init__(self, inner, group, piece_bytes, vote_group):
         self.inner = inner
@@ -100,6 +114,9 @@ class _HalfTransportReduceScatter(_Base):
         self.dtype = None  # resolved on first use: FSDP2 sets the dtypes at lazy init
         self.resolved = False
         self.inert = False  # every rank agreed the group has no 16-bit gradients: no further votes
+        self.replaced = (
+            False  # a public setter replaced this comm on this rank: `inner` is the setter's comm
+        )
         self.fresh = (
             False  # this rank's packed gradients are all `dtype` (set by the group's hooks)
         )
@@ -137,11 +154,13 @@ class _HalfTransportReduceScatter(_Base):
         dtype = self.resolve()
         if self.inert or async_op:
             return self._stock(output_tensor, input_tensor, group, op, async_op)
+        keep = not self.replaced
         name = _op_name(op)
         world = dist.get_world_size(group)
         width = output_tensor.numel()
         local_ok = (
-            fresh
+            keep
+            and fresh
             and dtype in _HALF
             and name in ("SUM", "AVG")
             and world > 1
@@ -154,11 +173,16 @@ class _HalfTransportReduceScatter(_Base):
             and input_tensor.numel() == world * width
         )
         code = _CODES.get(dtype, 0)
-        # One CPU vote per reduce: [all ranks can carry, min dtype code, -max dtype code].
-        ok, lo, neg_hi = _min_over([int(local_ok), code, -code], self.vote_group)
+        # One CPU vote per reduce: [all ranks can carry, min dtype code, -max dtype code, no rank replaced].
+        ok, lo, neg_hi, kept = _min_over([int(local_ok), code, -code, int(keep)], self.vote_group)
         self.votes += 1
-        if lo == -neg_hi == 0:
-            self.inert = True  # agreed: no 16-bit gradients in this group, ever
+        if (lo == -neg_hi == 0) or not kept:
+            # agreed: no 16-bit gradients in this group, ever, or a setter replaced the comm on some rank
+            self.inert = True
+            if self.replaced and self.group._reduce_scatter_comm is self:
+                self.group._reduce_scatter_comm = (
+                    self.inner
+                )  # hand the group back the setter's comm
         if not ok or lo != -neg_hi:
             return self._stock(output_tensor, input_tensor, group, op, async_op)
         rows = input_tensor.view(world, width)  # row r: this rank's contribution to rank r's shard
@@ -251,8 +275,16 @@ def _wrap_group(group, comm):
         group._take_unsharded_grads_to_reduce = take_grads
 
     def post_backward(*args, **kwargs):
-        if group._reduce_scatter_comm is not comm:  # a public setter replaced the comm
-            return original(*args, **kwargs)
+        current = group._reduce_scatter_comm
+        if current is not comm:  # a public setter replaced the comm, possibly on this rank only
+            if comm.inert or type(current) not in _ALLOCATION_ONLY:
+                # inert: every rank already takes the stock collective with no vote. Any other comm (symmetric
+                # memory, a custom comm) changes the collective under stock FSDP2 as well: defer to it.
+                return original(*args, **kwargs)
+            # Keep voting with the other ranks, which may still hold this comm: vote "replaced", reduce with the
+            # setter's comm, and agree on the stock collective everywhere.
+            comm.inner, comm.replaced = current, True
+            group._reduce_scatter_comm = comm
         comm.fresh = False
         try:
             if take is None and group.reduce_grads:
@@ -299,6 +331,8 @@ def install_half_transport_reduce(modules, enabled = None):
         return []
     if not dist.is_available() or not dist.is_initialized():
         return []
+    if not dist.is_gloo_available():
+        return []  # the per-reduce vote needs a CPU (gloo) group
     local = (1 if (enabled or half_transport_enabled()) else 0, _piece_bytes())
     installed, settings = [], {}
     for group in _param_groups(modules):
@@ -314,8 +348,14 @@ def install_half_transport_reduce(modules, enabled = None):
             on, piece = _min_over(list(local), vote_group)
             settings[key] = (on, piece, vote_group)
         on, piece, vote_group = settings[key]
-        if not on or type(group._reduce_scatter_comm) is not _DefaultReduceScatter:
-            continue  # off on some rank, or a comm someone customised: keep it
+        if not on:
+            continue  # off on some rank
+        # A comm someone customised (an allocator setter may have run on some ranks only): agreed per group.
+        (default,) = _min_over(
+            [int(type(group._reduce_scatter_comm) is _DefaultReduceScatter)], vote_group
+        )
+        if not default:
+            continue
         comm = _HalfTransportReduceScatter(group._reduce_scatter_comm, group, piece, vote_group)
         group._reduce_scatter_comm = comm
         group._unsloth_half_transport = comm

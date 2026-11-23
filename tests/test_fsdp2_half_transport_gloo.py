@@ -94,13 +94,16 @@ def _grads(rank, world, dtype, transport, w):
     for block in model:
         fsdp.fully_shard(block, mesh = mesh, mp_policy = policy)
     fsdp.fully_shard(model, mesh = mesh, mp_policy = policy)
+    if _per_rank(w["setter_before"], rank):
+        for block in model:
+            block.set_allocate_memory_from_process_group_for_comm(True)
     comms = install_half_transport_reduce([*model, model])
     if w["reinstall"]:
         again = install_half_transport_reduce([*model, model])
         assert len(again) == len(comms) and all(
             a is b for a, b in zip(again, comms)
         ), "re-install stacked"
-    if w["setter"]:
+    if _per_rank(w["setter"], rank):
         for block in model:
             block.set_allocate_memory_from_process_group_for_comm(False)
     if w["unused"]:
@@ -172,6 +175,7 @@ def _run(
     reinstall = False,
     setter = False,
     unused = False,
+    setter_before = False,
 ):
     """Returns (n_ref, n_new, calls, fallbacks) from rank 0, every rank's counts, bitwise, max_rel."""
     import torch.multiprocessing as mp
@@ -188,6 +192,7 @@ def _run(
         reinstall = reinstall,
         setter = setter,
         unused = unused,
+        setter_before = setter_before,
     )
     out = tmp_path / "result.txt"
     rendezvous = (tmp_path / "store").resolve().as_uri()
@@ -287,7 +292,33 @@ def test_transport_installation_is_idempotent(tmp_path):
 @requires_custom_reduce_scatter
 def test_public_allocator_setter_replaces_the_comm(tmp_path):
     _, n_new, calls, fallbacks, bitwise, max_rel = _run(tmp_path, 2, "bfloat16", setter = True)
-    assert (n_new, calls, fallbacks) == (3, 0, 0)  # the setter's comm reduces; ours is detached
+    # One agreed vote per group sends every rank to the setter's comm, which the group then holds again.
+    assert (n_new, calls, fallbacks) == (3, 0, 3)
+    assert bitwise, max_rel
+
+
+@requires_custom_reduce_scatter
+def test_allocator_setter_on_one_rank_agrees_on_the_stock_collective(tmp_path):
+    # Rank 0 alone resets its allocator after install. Stock FSDP2 runs the same collective either way, so
+    # every rank must agree on the stock collective instead of rank 1 voting while rank 0 reduce-scatters.
+    _, n_new, calls, fallbacks, bitwise, max_rel = _run(
+        tmp_path, 2, "bfloat16", setter = [True, False]
+    )
+    assert (n_new, calls, fallbacks) == (
+        3,
+        0,
+        3,
+    )  # one agreed vote per group, then the stock collective
+    assert bitwise, max_rel
+
+
+@requires_custom_reduce_scatter
+def test_allocator_setter_on_one_rank_before_install_agrees_off(tmp_path):
+    # Rank 0 alone picks the process-group allocator before install: no rank installs on its groups.
+    _, n_new, calls, fallbacks, bitwise, max_rel = _run(
+        tmp_path, 2, "bfloat16", setter_before = [True, False]
+    )
+    assert (n_new, calls, fallbacks) == (0, 0, 0)
     assert bitwise, max_rel
 
 
