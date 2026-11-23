@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 UTILS_SRC = (REPO_ROOT / "unsloth" / "models" / "_utils.py").read_text(encoding = "utf-8")
 VISION_SRC = (REPO_ROOT / "unsloth" / "models" / "vision.py").read_text(encoding = "utf-8")
 LLAMA_SRC = (REPO_ROOT / "unsloth" / "models" / "llama.py").read_text(encoding = "utf-8")
+GUARD_SOURCES = {"FastBaseModel": VISION_SRC, "FastLlamaModel": LLAMA_SRC}
 
 
 def _method(src, class_name, name):
@@ -38,11 +39,19 @@ def _top_level_function(src, name):
 
 
 def _is_full_finetuning_impl():
-    """The real helper, exec'd out of _utils.py so the package import chain is not needed."""
+    """The real helper, exec'd out of _utils.py so the package import chain is not needed.
+    A tree without it gets a stub that fails loudly only if a guard actually calls it, so an
+    env-only guard is judged on its answer, not on the missing name."""
+    try:
+        node = _top_level_function(UTILS_SRC, "_is_full_finetuning")
+    except AssertionError:
+
+        def _missing(model):
+            raise AssertionError("_is_full_finetuning is not defined in _utils.py")
+
+        return _missing
     ns = {"os": os}
-    exec(
-        ast.get_source_segment(UTILS_SRC, _top_level_function(UTILS_SRC, "_is_full_finetuning")), ns
-    )
+    exec(ast.get_source_segment(UTILS_SRC, node), ns)
     return ns["_is_full_finetuning"]
 
 
@@ -107,17 +116,11 @@ def _loaded_model(full_finetuning):
     return model
 
 
-@pytest.mark.parametrize(
-    "class_name,src",
-    [
-        ("FastBaseModel", VISION_SRC),
-        ("FastLlamaModel", LLAMA_SRC),
-    ],
-)
-def test_peft_guard_follows_the_model_not_the_last_load(class_name, src, monkeypatch):
+@pytest.mark.parametrize("class_name", sorted(GUARD_SOURCES))
+def test_peft_guard_follows_the_model_not_the_last_load(class_name, monkeypatch):
     """Load full_finetuning=True, then a LoRA load flips the env to "0": the first model's
     get_peft_model must still no-op, or it injects adapters into a model that trains in full."""
-    guard = _finetuning_guard(src, class_name)
+    guard = _finetuning_guard(GUARD_SOURCES[class_name], class_name)
     full_model = _loaded_model(True)
     lora_model = _loaded_model(False)
 
@@ -126,17 +129,11 @@ def test_peft_guard_follows_the_model_not_the_last_load(class_name, src, monkeyp
     assert _guard_returns_early(guard, lora_model, "0", monkeypatch) is False
 
 
-@pytest.mark.parametrize(
-    "class_name,src",
-    [
-        ("FastBaseModel", VISION_SRC),
-        ("FastLlamaModel", LLAMA_SRC),
-    ],
-)
-def test_peft_guard_survives_a_later_full_finetuning_load(class_name, src, monkeypatch):
+@pytest.mark.parametrize("class_name", sorted(GUARD_SOURCES))
+def test_peft_guard_survives_a_later_full_finetuning_load(class_name, monkeypatch):
     """The other order: a LoRA model loaded first must still get adapters after a later
     full_finetuning=True load sets the env to "1"."""
-    guard = _finetuning_guard(src, class_name)
+    guard = _finetuning_guard(GUARD_SOURCES[class_name], class_name)
     lora_model = _loaded_model(False)
     full_model = _loaded_model(True)
 
@@ -145,16 +142,10 @@ def test_peft_guard_survives_a_later_full_finetuning_load(class_name, src, monke
 
 
 @pytest.mark.parametrize("env", ["0", "1"])
-@pytest.mark.parametrize(
-    "class_name,src",
-    [
-        ("FastBaseModel", VISION_SRC),
-        ("FastLlamaModel", LLAMA_SRC),
-    ],
-)
-def test_peft_guard_preserves_the_env_for_an_unstamped_model(class_name, src, env, monkeypatch):
+@pytest.mark.parametrize("class_name", sorted(GUARD_SOURCES))
+def test_peft_guard_preserves_the_env_for_an_unstamped_model(class_name, env, monkeypatch):
     """A model this process never loaded keeps the explicit environment answer."""
-    guard = _finetuning_guard(src, class_name)
+    guard = _finetuning_guard(GUARD_SOURCES[class_name], class_name)
     model = types.SimpleNamespace()
     assert _guard_returns_early(guard, model, env, monkeypatch) is (env == "1")
 

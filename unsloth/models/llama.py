@@ -3830,7 +3830,7 @@ class FastLlamaModel:
         **kwargs,
     ):
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
-        # This path only loads for adapters: full finetuning delegates to FastModel in loader.py, so it owns the shared flag for its own duration.
+        # loader.py sends full finetuning to FastModel, so this load is always LoRA. Say so, or load-time readers (packed experts, MXFP4, expert quantization) inherit an earlier full finetuning load's "1".
         os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
         if trust_remote_code:
             if fast_inference:
