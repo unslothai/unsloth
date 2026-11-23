@@ -482,9 +482,9 @@ export function pickerMinHeight(
   zoomOut: number,
 ): number {
   const screenHeight = innerHeight / zoomOut;
-  if (innerWidth > innerHeight && screenHeight <= 900) return 400;
+  if (innerWidth > innerHeight && screenHeight <= 900) return 420;
   const t = Math.min(1, Math.max(0, (screenHeight - 1080) / 300));
-  return Math.round(420 + 120 * t);
+  return Math.round(440 + 100 * t);
 }
 
 /** Short of room below, a downward panel rides up over the composer, never past the window top. */

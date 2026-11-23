@@ -18,11 +18,11 @@
 # Strix APUs / RDNA4 cards (AMD per-arch wheels, see Dockerfile.rocm):
 #   ROCM_GFX=gfx1151 TAG=unsloth-rocm-strix:test bash docker/test_locally-rocm.sh
 #
-# All output is teed to $LOG_DIR (default /tmp/unsloth-rocm-test/).
+# All output is teed to $LOG_DIR (default ${TMPDIR:-/tmp}/unsloth-rocm-test-<uid>/).
 set -uo pipefail
 
 TAG="${TAG:-unsloth-rocm:test}"
-LOG_DIR="${LOG_DIR:-/tmp/unsloth-rocm-test}"
+LOG_DIR="${LOG_DIR:-${TMPDIR:-/tmp}/unsloth-rocm-test-$(id -u)}"
 SKIP_BUILD=0
 SKIP_NOTEBOOK=0
 ROCM_VERSION="${ROCM_VERSION:-7.2.4}"
@@ -41,6 +41,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p "$LOG_DIR"
+# The container runs $LOG_DIR/host/run_notebook.sh as root with the HF cache and HF_TOKEN: refuse a
+# directory another user owns or can write (a pre-created shared /tmp path), and keep ours go-w.
+if [[ -L "$LOG_DIR" || ! -O "$LOG_DIR" ]]; then
+    echo "ERROR: $LOG_DIR is a symlink or not owned by $(id -un); pass --log-dir to a directory you own." >&2
+    exit 1
+fi
+chmod go-w "$LOG_DIR" || exit 1
 
 GREEN='\033[1;32m'; RED='\033[1;31m'; YELLOW='\033[1;33m'; BLUE='\033[1;34m'; NC='\033[0m'
 banner() { printf "\n${BLUE}==== %s ====${NC}\n" "$*"; }

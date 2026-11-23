@@ -1198,9 +1198,8 @@ def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> Non
 
 
 def _screenshot_request(backend, tools) -> bool:
-    """Whether a request offering the computer tool can afford precise screenshots: its images then
-    reach the processor as taken (the parent already caps every other image), under the screenshot
-    budget."""
+    """Whether a request offering the computer tool can afford precise screenshots: its images reach
+    the processor as taken, since the parent caps all other images."""
     from core.inference.computer_use import COMPUTER_TOOL_NAME
     from core.inference.computer_use.budget import affords_precision
 

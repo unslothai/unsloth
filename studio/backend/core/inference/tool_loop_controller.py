@@ -691,6 +691,36 @@ def _canonical_tool_name(name: str, allowed: Collection[str]) -> "str | None":
     return match
 
 
+# Page-read tools other agent harnesses ship (WebFetch, web_fetch, fetch_url); models trained on them call these
+# names for what Studio's web_search does with its url argument (LFM2.5 calls web_fetch, #18802).
+_WEB_FETCH_ALIASES = frozenset(
+    {"web_fetch", "webfetch", "fetch", "fetch_url", "url_fetch", "fetch_page", "fetch_webpage"}
+)
+
+
+def _web_fetch_alias(name: str, raw_args: Any, allowed: Collection[str]) -> bool:
+    """Whether a call to a missing page-read tool means web_search on its URL: web_search is enabled, nothing
+    enabled carries the sampled name, and the arguments name a URL. Without a URL it stays an unknown tool."""
+    if "web_search" not in allowed or not name or not name.isascii():
+        return False
+    if _tool_name_key(name) not in _WEB_FETCH_ALIASES:
+        return False
+    if any(_tool_name_key(tool) == _tool_name_key(name) for tool in allowed):
+        return False
+    args = raw_args
+    if isinstance(args, str):
+        try:
+            args = json.loads(args) if args.strip() else {}
+        except ValueError:
+            return False
+    if not isinstance(args, Mapping):
+        return False
+    from core.inference.tools import _resolve_web_search_args  # noqa: PLC0415 -- cycle at import time
+
+    _query, url = _resolve_web_search_args(dict(args))
+    return bool(url)
+
+
 def _tool_healing_exec_names() -> "frozenset[str]":
     from core.tool_healing import EXECUTION_CLASS_TOOL_NAMES  # noqa: PLC0415 -- cycle at import time
     return EXECUTION_CLASS_TOOL_NAMES
@@ -1357,6 +1387,10 @@ class ToolLoopController:
             canonical = _canonical_tool_name(tool_name, self._allowed_tool_names)
             if canonical is not None:
                 tool_name, name_healed = canonical, True
+            elif _web_fetch_alias(
+                tool_name, function.get("arguments", {}), self._allowed_tool_names
+            ):
+                tool_name, name_healed = "web_search", True
         # Deferred schemas must not shift the cached prompt prefix.
         extra_schema = None
         if (

@@ -1932,6 +1932,89 @@ def fix_transformers_chat_template_path_traversal():
                 logger.info(f"Unsloth: Failed patching {target.__name__}.{name} ({e})")
 
 
+_GEMMA4_TOOL_ARGUMENTS_PATCH_FLAG = "_unsloth_patched_gemma4_tool_arguments"
+_GEMMA4_TOOL_CALL_MARKER = "<|tool_call>call:"
+
+
+def _gemma4_object_arguments(conversations):
+    """JSON-object string arguments -> dicts; returns the input itself when nothing parses."""
+    import json
+
+    changed = False
+    result = []
+    for conversation in conversations:
+        new_conversation = conversation
+        for i, message in enumerate(conversation):
+            calls = message.get("tool_calls") if isinstance(message, dict) else None
+            if not isinstance(calls, list):
+                continue
+            new_calls = None
+            for j, call in enumerate(calls):
+                function = call.get("function") if isinstance(call, dict) else None
+                arguments = function.get("arguments") if isinstance(function, dict) else None
+                if not isinstance(arguments, str):
+                    continue
+                try:
+                    parsed = json.loads(arguments)
+                # RecursionError: deeply nested input; keep the string as before.
+                except (ValueError, RecursionError):
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                if new_calls is None:
+                    new_calls = list(calls)
+                new_calls[j] = {**call, "function": {**function, "arguments": parsed}}
+            if new_calls is not None:
+                if new_conversation is conversation:
+                    new_conversation = list(conversation)
+                new_conversation[i] = {**message, "tool_calls": new_calls}
+                changed = True
+        result.append(new_conversation)
+    return result if changed else conversations
+
+
+def fix_gemma4_string_tool_arguments():
+    """Gemma 4 templates write call:NAME{key:<|"|>value<|"|>} only for mapping arguments and paste an
+    OpenAI-style JSON string verbatim (Google's raises), so training data with string arguments teaches
+    the wrong call syntax. Decode JSON-object strings before rendering any template with that call syntax;
+    anything else renders as before."""
+    try:
+        from transformers.utils import chat_template_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the Gemma 4 tool argument fix ({e})")
+        return
+    original = getattr(chat_template_utils, "render_jinja_template", None)
+    if original is None or getattr(original, _GEMMA4_TOOL_ARGUMENTS_PATCH_FLAG, False):
+        return
+
+    @functools.wraps(original)
+    def render_jinja_template(*args, **kwargs):
+        chat_template = kwargs.get("chat_template", args[3] if len(args) > 3 else None)
+        if isinstance(chat_template, str) and _GEMMA4_TOOL_CALL_MARKER in chat_template:
+            if args:
+                args = (_gemma4_object_arguments(args[0]),) + args[1:]
+            elif "conversations" in kwargs:
+                kwargs["conversations"] = _gemma4_object_arguments(kwargs["conversations"])
+        return original(*args, **kwargs)
+
+    setattr(render_jinja_template, _GEMMA4_TOOL_ARGUMENTS_PATCH_FLAG, True)
+    # Tokenizers and processors call the name they imported, not the module attribute.
+    modules = [chat_template_utils]
+    try:
+        from transformers import tokenization_utils_base
+        modules.append(tokenization_utils_base)
+    except Exception:
+        pass
+    try:
+        from transformers import processing_utils
+        modules.append(processing_utils)
+    except Exception:
+        pass
+    for module in modules:
+        if getattr(module, "render_jinja_template", None) is original:
+            module.render_jinja_template = render_jinja_template
+
+
 _TOKENIZER_VOCAB_PATH_PATCH_FLAG = "_unsloth_patched_tokenizer_config_vocab_paths"
 # Resolved files _from_pretrained reads itself; every other one it hands to the tokenizer class.
 _TOKENIZER_FILES_READ_BY_LOADER = (
@@ -5615,6 +5698,63 @@ def fix_transformers_voxtral_realtime_inplace_audio_add():
     cls.forward = forward
 
 
+def _torch_pickle_load_unsafe():
+    """torch < 2.6 can run code from a .bin / .pt even with weights_only=True (CVE-2025-32434)."""
+    try:
+        import torch
+        return TrueVersion(torch.__version__.split("+")[0]) < TrueVersion("2.6")
+    except Exception:
+        return False
+
+
+def refuse_pickle_checkpoint_on_old_torch(path = None):
+    """Raise before torch.load reads a pickled checkpoint (adapter_model.bin, pytorch_model.bin)
+    on torch < 2.6, where weights_only=True is bypassable (CVE-2025-32434). No-op on torch >= 2.6."""
+    if not _torch_pickle_load_unsafe():
+        return
+    name = os.path.basename(str(path)) if path is not None else "a pickled checkpoint"
+    raise RuntimeError(
+        f"Unsloth: refusing to load `{name}` with torch {__import__('torch').__version__}: torch < 2.6 "
+        "can execute code hidden in .bin / .pt files even with weights_only=True (CVE-2025-32434). "
+        "Upgrade to torch >= 2.6, or use a checkpoint saved as .safetensors "
+        "(for LoRA adapters: adapter_model.safetensors)."
+    )
+
+
+def patch_peft_bin_load_old_torch():
+    """PEFT's load_peft_weights reads adapter_model.bin via torch_load(weights_only=True) with no
+    torch version check, so on torch < 2.6 a Hub LoRA repo could run code (CVE-2025-32434).
+    Refuse there; safetensors adapters never reach torch_load. No-op on torch >= 2.6. Idempotent."""
+    if not _torch_pickle_load_unsafe() or importlib.util.find_spec("peft") is None:
+        return
+    try:
+        import peft.utils.save_and_load as peft_save_and_load
+    except Exception:
+        return
+    torch_load = getattr(peft_save_and_load, "torch_load", None)
+    if torch_load is None or getattr(torch_load, "_unsloth_old_torch_guard", False):
+        return
+
+    @functools.wraps(torch_load)
+    def _guarded_peft_torch_load(f, *args, **kwargs):
+        refuse_pickle_checkpoint_on_old_torch(f)
+        return torch_load(f, *args, **kwargs)
+
+    _guarded_peft_torch_load._unsloth_old_torch_guard = True
+    peft_save_and_load.torch_load = _guarded_peft_torch_load
+    # Modules that did `from peft.utils.save_and_load import torch_load` hold their own reference.
+    for module in list(sys.modules.values()):
+        try:
+            if (
+                getattr(module, "__name__", "").startswith("peft.")
+                and getattr(module, "torch_load", None) is torch_load
+            ):
+                module.torch_load = _guarded_peft_torch_load
+        except Exception:
+            pass
+    logger.info("Unsloth: refusing PEFT adapter_model.bin loads on torch < 2.6 (CVE-2025-32434).")
+
+
 def patch_unsafe_trainer_rng_load():
     """Harden Trainer._load_rng_state against CVE-2026-1839 (RCE from a malicious
     rng_state.pth on resume). Hardens only the rng torch.load, via a thread-local
@@ -7772,17 +7912,24 @@ def _same_tensor(tensor):
     return tensor
 
 
+def _detached_tensor(tensor):
+    # Nothing backpropagates the example score_mod forward; an identity pack saves an op's output
+    # (tanh soft-capping) on its own node, a cycle gc cannot break, so every call leaked that graph.
+    return tensor.detach()
+
+
 def fix_flex_attention_eager_saved_tensor_hooks():
     """Eager flex_attention traces its score_mod backward in create_fw_bw_graph during forward; inside a
     non-reentrant checkpoint (DDP) that trace unpacks through the checkpoint's hooks and restarts the
-    recompute mid forward. The traced graph owns no activations, so trace it under identity hooks."""
+    recompute mid forward. The traced graph owns no activations, so trace it under our own hooks
+    (detaching pack, identity unpack)."""
     try:
         import torch
         flex_hop = importlib.import_module("torch._higher_order_ops.flex_attention")
     except Exception:
         return
     original = getattr(flex_hop, "create_fw_bw_graph", None)
-    # torch < 2.7 cannot query the active hooks: always trace under identity hooks there.
+    # Without the getter (torch < 2.7, some 2.7 wheels) the active hooks cannot be read: always use ours.
     top_hooks = getattr(torch._C._autograd, "_top_saved_tensors_default_hooks", None)
     if original is None:
         return
@@ -7797,7 +7944,7 @@ def fix_flex_attention_eager_saved_tensor_hooks():
             active = False
         if not active:
             return original(*args, **kwargs)
-        hooks = torch.autograd.graph.saved_tensors_hooks(_same_tensor, _same_tensor)
+        hooks = torch.autograd.graph.saved_tensors_hooks(_detached_tensor, _same_tensor)
         try:
             # Raises while saved-tensor hooks are disabled; those calls keep torch's behaviour.
             hooks.__enter__()

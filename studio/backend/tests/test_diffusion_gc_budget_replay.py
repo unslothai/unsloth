@@ -338,3 +338,54 @@ def test_a_preview_drops_the_fp8_backward_copies_and_keeps_their_budget(
     # Every preview after the plan starts with no copies held, and the budget survives for the next backward.
     assert all(n == 0 and used == 0 for _s, n, used, _b in planned), at_preview
     assert not f8.BACKWARD_WEIGHTS.active and f8.BACKWARD_WEIGHTS.entries == {}
+
+
+@pytest.mark.allow_network
+def test_an_fp8_conversion_that_cannot_fall_back_reloads_the_base_as_nf4(
+    tmp_path, monkeypatch, tiny_pipe_dir
+):
+    """Auto's fp8 below the bf16 fit: a failed conversion must not move the bf16 rest onto the card; the base reloads
+    as nf4 with a fresh adapter and the run trains on it."""
+    monkeypatch.setattr(dit, "_load_fp8_prequant_transformer", lambda *a, **k: None)
+
+    import weakref
+
+    old = []
+
+    def apply(
+        transformer,
+        on_event,
+        family = None,
+        device = None,
+    ):
+        # This frame holds the half-converted base; the raised exception's traceback keeps it alive.
+        old.append(weakref.ref(transformer))
+        raise dit.Fp8FallbackDoesNotFit("no fp8 here")
+
+    monkeypatch.setattr(dit, "_apply_fp8_training", apply)
+    spec = dit._SPECS[FAMILY]
+    orig, asked, built, old_alive_at_reload = spec.load_transformer, [], [], []
+
+    def load(cfg, device, dtype, base_precision):
+        asked.append(base_precision)
+        if base_precision == "nf4":
+            import gc
+            gc.collect()
+            old_alive_at_reload.append(old[0]() is not None)
+        # CPU has no bnb: the reload's nf4 stands in; no ref to the failed fp8 base is kept.
+        model = orig(cfg, device, dtype, "bf16")
+        if base_precision == "nf4":
+            built.append(model)
+        return model
+
+    monkeypatch.setattr(spec, "load_transformer", load)
+    lora, losses, _rec, _alive, warnings, _b = _run(
+        tmp_path, monkeypatch, tiny_pipe_dir, budget = False, accum = 1, steps = 2, precision = "fp8"
+    )
+    assert asked == ["fp8", "nf4"]
+    # The failed base is released before the nf4 replacement loads, not held alongside it on the card.
+    assert old_alive_at_reload == [False]
+    assert any("training nf4 instead" in w for w in warnings), warnings
+    assert len(losses) == 2 and lora
+    # The adapter trained is the reloaded model's, not the dropped one's.
+    assert any("lora" in n for n, _ in built[0].named_parameters())

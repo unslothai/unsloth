@@ -10488,10 +10488,9 @@ def diffusion_visual_server_backfill_needed(
     return not _visual_server_absence_recorded(load_prebuilt_metadata(install_dir), choice.name)
 
 
-# The bundle asset whose extraction left no visual-server. A release can ship a bundle
-# without it (b12540's macOS bundles do), and re-extracting that same bundle can never
-# backfill it, so every update would re-download and re-validate an install that is
-# already complete. Keyed on the asset name: a later bundle that carries it backfills.
+# Keyed on asset name: a bundle without the visual-server (b12540 macOS) never backfills by
+# re-extraction, so record its absence to stop per-update re-download; a later bundle carrying it
+# backfills.
 MARKER_VISUAL_SERVER_ABSENT = "diffusion_visual_server_absent_from"
 
 
@@ -10508,14 +10507,9 @@ def record_visual_server_absence(
     choice: AssetChoice,
     approved_checksums: ApprovedReleaseChecksums,
 ) -> None:
-    """After activation, note a bundle that shipped without the visual-server.
-
-    Only when the backfill check would otherwise keep firing for this exact bundle, so a
-    complete install or an upstream bundle leaves the marker untouched. Not when the
-    release also approves a standalone visual-server: a failed fetch of that is
-    transient, and the next update's backfill is what retries it. Best-effort: the
-    install is already valid, and a missed write only costs one more re-extract.
-    """
+    """Best-effort marker after activation for a bundle shipped without the visual-server, only when
+    backfill would keep firing; skipped if a standalone visual-server is approved (transient
+    fetch, next backfill retries); a missed write costs one re-extract."""
     if _standalone_visual_server_artifacts(host, approved_checksums):
         return
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"

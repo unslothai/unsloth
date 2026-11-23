@@ -135,7 +135,6 @@ def test_l4_float32_gemma3_does_not_get_the_small_tiles(cards, monkeypatch):
     assert resolve(torch.bfloat16) == "eager"
     monkeypatch.delenv("UNSLOTH_FORCE_FLOAT32")
     cards(A100)
-    # A100 fits the template, but float32 at head_dim 256 leaves flex (slow compile, see
-    # tests/test_flex_float32_large_head_dim.py); bf16 keeps it.
+    # A100 float32 at head_dim 256 leaves flex_attention (slow compile); bf16 keeps it.
     assert resolve(torch.float32) == "eager"
     assert resolve(torch.bfloat16) == "flex_attention"

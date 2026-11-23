@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Who may send a large request body. FastAPI reads a body before the route's auth dependency runs,
-so without this an unauthenticated client could make the server hold a body up to the full upload
-cap per connection. Only bodies over ``PREAUTH_BODY_MAX_BYTES`` ask: every unauthenticated route
-(login, refresh, desktop shell) takes a few hundred bytes."""
+"""Bodies over PREAUTH_BODY_MAX_BYTES need a credential first: FastAPI reads bodies before auth, so
+unauthenticated clients could make the server hold up to the full upload cap per connection."""
 
 from __future__ import annotations
 
@@ -69,9 +67,8 @@ def _credential_valid(token: str) -> bool:
 
 
 def caller_may_send_large_body(scope: dict, path: str) -> bool:
-    """True when the request carries a credential that would pass the route's auth: a valid session
-    or API key (header or ``?token=``), a preview capability on its preview route, or a transport the
-    keyless API access setting admits. Blocking (SQLite), so run it off the event loop."""
+    """Blocking SQLite lookup: run off the event loop. True for a valid session or API key (header
+    or ?token=), a preview capability on its preview route, or keyless transport."""
     bearer = _bearer(scope)
     for token in (bearer, _query(scope, "token")):
         if token and _credential_valid(token):

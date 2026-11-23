@@ -81,7 +81,12 @@ def load_rl_wrapper(names = WRAPPER_NAMES):
         node
         for node in ast.parse(replacements.read_text(encoding = "utf-8")).body
         if isinstance(node, ast.FunctionDef)
-        and node.name in ("_unsloth_get_model_config", "_unsloth_text_configs")
+        and node.name
+        in (
+            "_unsloth_get_model_config",
+            "_unsloth_text_configs",
+            "_unsloth_forward_returns_hidden_states",
+        )
     ]
     exec(
         compile(ast.Module(body = config_helpers, type_ignores = []), str(replacements), "exec"),

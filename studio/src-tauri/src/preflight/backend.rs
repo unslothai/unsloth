@@ -320,7 +320,19 @@ pub(super) async fn probe_backend_ports(ignored_ports: &[u16]) -> Vec<BackendPro
     };
 
     // The desktop-auth probe stays sequential per candidate because it has auth-log side effects.
-    let ports: Vec<u16> = crate::desktop_backend_owner::desktop_candidate_ports().collect();
+    let candidates: Vec<u16> = crate::desktop_backend_owner::desktop_candidate_ports().collect();
+    let candidate_count = candidates.len();
+    let ports = crate::tcp_listeners::retain_listening(
+        candidates,
+        crate::tcp_listeners::loopback_listening_ports().as_ref(),
+    );
+    if ports.len() != candidate_count {
+        info!(
+            "Desktop preflight: probing {} of {} candidate ports with a loopback TCP listener",
+            ports.len(),
+            candidate_count
+        );
+    }
     let mut health_futs = Vec::with_capacity(ports.len());
     for port in ports {
         let c = client.clone();

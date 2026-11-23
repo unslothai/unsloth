@@ -24,6 +24,7 @@ from unsloth_cli._inference import (
     resolve_model_config,
     server_load_opts,
     stream_markdown,
+    use_plain_tracebacks,
     user_turn,
     visible_text,
 )
@@ -283,6 +284,8 @@ def chat(
     """Start an interactive chat with a model (loads once, stays warm)."""
     if not verbose:
         configure_quiet_logging()
+    else:
+        use_plain_tracebacks()
 
     from rich.console import Console
 

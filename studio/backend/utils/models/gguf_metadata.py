@@ -316,6 +316,19 @@ def read_gguf_nextn_predict_layers(path: str) -> Optional[int]:
     return result
 
 
+# Visit-indexed looped Inkling 2: block_count counts visits; the physical-layer layout already stores physical layers.
+_LOOP_VISIT_KEYS = ("loop.core_start", "loop.core_end", "num_loops")
+
+
+def _loop_weight_layers(block: Optional[int], vals: Dict[str, int]) -> Optional[int]:
+    """llama.cpp counts -ngl in physical layers, so drop the repeat passes over a visit-indexed loop core."""
+    start, end, count = (vals.get(k) for k in _LOOP_VISIT_KEYS)
+    if not block or not count or count <= 1 or start is None or not end or not 0 <= start < end:
+        return block
+    n_phys = block - (count - 1) * (end - start)
+    return n_phys if end <= n_phys else block
+
+
 def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
     vals = _parse_gguf_arch_uints(
         path,
@@ -325,13 +338,14 @@ def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
                 "block_count",
                 "expert_count",
                 "leading_dense_block_count",
+                *_LOOP_VISIT_KEYS,
             }
         ),
     )
     if vals is None:
         return None
     ctx = vals.get("context_length")
-    block = vals.get("block_count")
+    block = _loop_weight_layers(vals.get("block_count"), vals)
     # A real context/layer count is positive; treat 0/garbage as absent so the UI never builds a slider with max < min.
     context_length = ctx if ctx and ctx > 0 else None
     layer_count = block if block and block > 0 else None
