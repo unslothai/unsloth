@@ -220,16 +220,37 @@ def test_cross_term_transposed_weight_and_partial_tiles(dora_mod, device):
     # PEFT transposes the stored Conv1D weight before computing the norm.
     W = torch.randn(1025, 97, device = device, dtype = torch.float16).t()
     expected = A.double() @ W.double().t()
-    cross_term = mod._cross_term_fp32
-    if (
-        device == "cuda"
-        and torch.version.cuda is not None
-        and importlib.util.find_spec("triton") is not None
-        and torch.cuda.get_device_capability()[0] >= 8
-    ):
-        # Inductor can elide the round trip through FP16 when splitting the adapter outside the kernel.
-        cross_term = torch.compile(cross_term, fullgraph = True)
-    assert _rel(cross_term(W, A).double(), expected) < 2e-6
+    assert _rel(mod._cross_term_fp32(W, A).double(), expected) < 2e-6
+    # Inductor elides a float16 -> float32 cast pair, which dropped the low half of a cast-based split.
+    torch._dynamo.reset()
+    compiled = torch.compile(mod._cross_term_fp32, fullgraph = True)
+    assert _rel(compiled(W, A).double(), expected) < 2e-6
+    torch._dynamo.reset()
+
+
+def _uses_kernel(mod, device):
+    return (
+        device == "cuda" and mod.triton is not None and torch.cuda.get_device_capability()[0] >= 8
+    )
+
+
+@pytest.mark.parametrize("device", _devices())
+def test_one_kernel_variant_across_projection_shapes(dora_mod, device):
+    mod, _ = dora_mod
+    if not _uses_kernel(mod, device):
+        pytest.skip("Triton cross term needs CUDA with compute capability 8+")
+    torch.manual_seed(6)
+    A = torch.randn(16, 2048, device = device)
+    for d_out in (512, 2048, 8192, 1000):  # k / v, q / o, gate / up, and an odd width
+        W = torch.randn(d_out, 2048, device = device, dtype = torch.bfloat16)
+        assert _rel(mod._cross_term_fp32(W, A).double(), A.double() @ W.double().t()) < 2e-6
+    caches = mod._dora_cross_kernel.device_caches
+    assert sum(len(c[0]) for c in caches.values()) == 1
+
+
+def test_triton_off_switch(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DORA_TRITON", "0")
+    assert _load().triton is None
 
 
 def test_autocast_does_not_lower_precision(dora_mod):
