@@ -536,28 +536,45 @@ def test_explicit_native_flash_runs_flash_sdpa(monkeypatch, _isolated):
     assert entry["routed"] == {"_native_flash": N_BLOCKS}
 
 
-def test_flash_without_flash_attn_keeps_the_automatic_pick(monkeypatch, _isolated):
+@pytest.mark.parametrize("requested", ["flash", "flash2", "flash3", "_flash_3_hub", "flash4"])
+def test_unusable_flash_pick_falls_back_to_flash_sdpa(monkeypatch, _isolated, requested):
     _auto_cudnn_runs(monkeypatch)
     pipe = _pipe()
-    pipe.transformer.fail_on = {"flash"}
-    engaged, entry = _load_like_studio(pipe, "flash")
-    # the cuDNN pin the automatic pick runs, not bare native SDPA
-    assert engaged == "_native_cudnn"
-    assert pipe.transformer.set_calls[-1] == "_native_cudnn"
-    assert entry["value"] == "_native_cudnn" and entry["routed"] == {"_native_cudnn": N_BLOCKS}
+    pipe.transformer.fail_on = {"flash", "_flash_3_hub"}
+    engaged, entry = _load_like_studio(pipe, requested)
+    # the same FlashAttention algorithm through torch SDPA, not bare native SDPA and not cuDNN
+    assert engaged == "_native_flash"
+    assert pipe.transformer.set_calls[-1] == "_native_flash"
+    assert entry["value"] == "_native_flash" and entry["routed"] == {"_native_flash": N_BLOCKS}
     # the status still says the explicit pick did not run, and why
-    assert entry["status"] == "fell_back"
-    assert "could not set it" in entry["reason"] and "flash is not available" in entry["reason"]
-    decline = A.attention_decline(pipe)
-    assert decline["tried"] == "flash" and decline["engaged"] == "_native_cudnn"
+    if requested in ("flash3", "_flash_3_hub", "flash4"):  # sm89 stub: FA3 needs sm90, FA4 sm100+
+        assert entry["status"] == "unsupported" and "GPU and this one is sm89" in entry["reason"]
+    else:
+        assert entry["status"] == "fell_back"
+        assert "could not set it" in entry["reason"] and "is not available" in entry["reason"]
+        decline = A.attention_decline(pipe)
+        assert decline["engaged"] == "_native_flash"
     assert _isolated == {"auto": 0, "dispatch": 0, "requested": 0}
 
 
-def test_arch_gated_pick_keeps_the_automatic_pick(monkeypatch, _isolated):
+def test_flash_fallback_without_flash_sdpa_takes_cudnn(monkeypatch, _isolated):
     _auto_cudnn_runs(monkeypatch)
-    engaged, entry = _load_like_studio(_pipe(), "flash4")  # sm89 stub: FA4 needs sm100+
+    monkeypatch.setattr(A, "available_sdpa_kernels", lambda *a, **k: (A.SDPA_CUDNN,))
+    pipe = _pipe()
+    pipe.transformer.fail_on = {"flash"}
+    engaged, entry = _load_like_studio(pipe, "flash")
+    assert engaged == "_native_cudnn" and entry["status"] == "fell_back"
+    assert entry["routed"] == {"_native_cudnn": N_BLOCKS}
+
+
+def test_unusable_sage_keeps_the_automatic_cudnn_pick(monkeypatch, _isolated):
+    _auto_cudnn_runs(monkeypatch)
+    _sage_missing(monkeypatch)
+    pipe = _pipe()
+    engaged, entry = _load_like_studio(pipe, "sage")
     assert engaged == "_native_cudnn"
-    assert entry["status"] == "unsupported" and "sm100" in entry["reason"]
+    assert entry["status"] == "fell_back" and "sageattention is not installed" in entry["reason"]
+    assert entry["routed"] == {"_native_cudnn": N_BLOCKS}
 
 
 def test_flash_without_flash_attn_and_speed_off_stays_native(monkeypatch, _isolated):
@@ -619,9 +636,16 @@ def test_h3_fallback_keeps_the_strided_processors(monkeypatch):
     _auto_cudnn_runs(monkeypatch)
     monkeypatch.setattr(H, "_capability", lambda device = None: (8, 9))
     target = _target()
-    fallback = A.explicit_pick_fallback(target, "flash", speed_active = True)
-    fallback = H.h3_attention_backend(fallback, requested = None, target = target)
-    assert fallback == "_native_flash" and H.strided_install_backend(fallback)
+    for pick in ("flash", "sage"):
+        fallback = A.explicit_pick_fallback(target, pick, speed_active = True)
+        fallback = H.h3_attention_backend(fallback, requested = None, target = target)
+        assert fallback == "_native_flash" and H.strided_install_backend(fallback)
+    # a Blackwell card keeps the cuDNN pick for sage and flash SDPA for flash: both strided
+    monkeypatch.setattr(H, "_capability", lambda device = None: (12, 0))
+    for pick, want in (("flash", "_native_flash"), ("sage", "_native_cudnn")):
+        fallback = A.explicit_pick_fallback(target, pick, speed_active = True)
+        fallback = H.h3_attention_backend(fallback, requested = None, target = target)
+        assert fallback == want and H.strided_install_backend(fallback)
     explicit = A.select_attention_backend(target, "_native_flash", speed_active = True)
     explicit = H.h3_attention_backend(explicit, requested = "_native_flash", target = target)
     assert explicit == "_native_flash" and H.strided_install_backend(explicit)

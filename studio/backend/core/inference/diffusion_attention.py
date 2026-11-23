@@ -4127,6 +4127,10 @@ def _auto_request(requested: Any) -> bool:
         return False
 
 
+# FlashAttention picks whose closest stand-in is torch SDPA's flash kernel
+_FLASH_FAMILY = frozenset({"flash", "_flash_3_hub", "flash_4_hub"})
+
+
 def explicit_pick_fallback(
     target: Any,
     requested: Any,
@@ -4134,17 +4138,25 @@ def explicit_pick_fallback(
     speed_active: bool,
     family: Any = None,
 ) -> Optional[str]:
-    """The automatic pick an explicit kernel falls back to when it cannot run (flash_attn missing, Sage unusable, an
-    out-of-range arch), so the levers that never needed that kernel (cuDNN, strided processors, fused QK-RoPE) stay.
+    """The closest kernel an explicit pick falls back to when it cannot run (flash_attn missing, Sage unusable, an
+    out-of-range arch), so the levers that never needed that kernel (strided processors, fused QK-RoPE) stay:
 
-    Only the NVIDIA cuDNN upgrade: None for an auto / native / unsloth_int8 / unknown request, with speed off (which
-    stays bit-identical), and off NVIDIA (the automatic pick there is native SDPA or a timed ROCm flash race)."""
+    - flash / flash2 / flash3 / flash4: torch SDPA's flash kernel, the same exact FlashAttention algorithm without the
+      flash_attn package or the arch-gated hub build (apply moves it to cuDNN if this torch build has no flash SDPA).
+    - sage, xformers, cudnn and the rest: Studio's automatic pick (the cuDNN upgrade), as no SDPA kernel is closer.
+
+    NVIDIA with speed on only: None for an auto / native / unsloth_int8 / unknown request, with speed off (which stays
+    bit-identical), and off NVIDIA (the automatic pick there is native SDPA or a timed ROCm flash race)."""
     try:
         alias = normalize_attention_backend(requested)
     except ValueError:
         return None
     if alias in (ATTN_AUTO, INT8_ATTENTION_BACKEND) or _ALIASES[alias] == ATTN_NATIVE:
         return None
+    if not speed_active or not _is_cuda_nvidia(target):
+        return None
+    if _ALIASES[alias] in _FLASH_FAMILY:
+        return "_native_flash"
     try:
         pick = select_attention_backend(target, None, speed_active = speed_active, family = family)
     except Exception:  # noqa: BLE001 - no fallback: the explicit pick's own native fallback stays
@@ -4188,7 +4200,7 @@ def apply_attention_backend(
             _stamp_decline(pipe, {**first, "engaged": _status_name(engaged)})
         if logger is not None:
             logger.info(
-                "diffusion.attention: %s could not run here; keeping Studio's automatic pick (%s)",
+                "diffusion.attention: %s could not run here; falling back to %s",
                 "the requested backend" if backend is None else _backend_label(backend),
                 _backend_label(engaged),
             )
