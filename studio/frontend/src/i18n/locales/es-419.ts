@@ -1499,6 +1499,7 @@ export const es419 = {
       voice: "Voz",
       connections: "Conexiones",
       data: "Datos",
+      knowledge: "Conocimiento",
       apiKeys: "API",
       remoteLan: "Remoto y LAN",
       agents: "Agentes",

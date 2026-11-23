@@ -1491,6 +1491,7 @@ export const vi = {
       voice: "Giọng nói",
       connections: "Kết nối",
       data: "Dữ liệu",
+      knowledge: "Tri thức",
       apiKeys: "API",
       remoteLan: "Từ xa & LAN",
       agents: "Tác tử",

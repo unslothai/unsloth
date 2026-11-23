@@ -1365,6 +1365,7 @@ export const ja = {
       about: "情報",
       voice: "音声",
       data: "データ",
+      knowledge: "ナレッジ",
       agents: "エージェント",
       debugging: "ログ",
       keyboardShortcuts: "ショートカット",

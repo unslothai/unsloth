@@ -1367,6 +1367,7 @@ export const fr = {
       remoteLan: "Accès distant et LAN",
       about: "À propos",
       data: "Données",
+      knowledge: "Connaissances",
       agents: "Agents",
       debugging: "Journaux",
       voice: "Voix",

@@ -1487,6 +1487,7 @@ export const tr = {
       voice: "Ses",
       connections: "Bağlantılar",
       data: "Veriler",
+      knowledge: "Bilgi",
       apiKeys: "API",
       remoteLan: "Uzak ve LAN",
       agents: "Ajanlar",

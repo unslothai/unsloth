@@ -1427,6 +1427,7 @@ export const th = {
       voice: "เสียงพูด",
       connections: "การเชื่อมต่อ",
       data: "ข้อมูล",
+      knowledge: "ความรู้",
       apiKeys: "API",
       remoteLan: "ระยะไกลและ LAN",
       agents: "เอเจนต์",

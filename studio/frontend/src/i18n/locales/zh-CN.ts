@@ -1361,6 +1361,7 @@ export const zhCN = {
       about: "关于",
       voice: "语音",
       data: "数据",
+      knowledge: "知识",
       agents: "智能体",
       debugging: "日志",
       keyboardShortcuts: "快捷键",

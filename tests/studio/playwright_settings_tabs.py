@@ -32,6 +32,7 @@ TABS = [
     "voice",
     "connections",
     "library",
+    "knowledge",
     "data",
     "api-keys",
     "remote-lan",

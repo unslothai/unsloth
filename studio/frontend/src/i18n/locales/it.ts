@@ -1244,6 +1244,7 @@ export const it = {
       voice: "Voce",
       connections: "Connessioni",
       data: "Dati",
+      knowledge: "Conoscenza",
       apiKeys: "API",
       remoteLan: "Remoto e LAN",
       agents: "Agenti",

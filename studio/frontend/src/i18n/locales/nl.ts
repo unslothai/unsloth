@@ -1506,6 +1506,7 @@ export const nl = {
       voice: "Spraak",
       connections: "Verbindingen",
       data: "Gegevens",
+      knowledge: "Kennis",
       apiKeys: "API",
       remoteLan: "Extern en LAN",
       agents: "Agents",

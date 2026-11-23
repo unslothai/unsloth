@@ -1494,6 +1494,7 @@ export const cs = {
       voice: "Hlas",
       connections: "Připojení",
       data: "Data",
+      knowledge: "Znalosti",
       apiKeys: "API",
       remoteLan: "Vzdálený přístup a LAN",
       agents: "Agenti",
