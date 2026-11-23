@@ -5473,7 +5473,10 @@ class FastBaseModel:
         # Inkling 2 wraps its attention Linears: map the usual LoRA names onto them.
         from .inkling2 import patch_inkling2_model
 
-        patch_inkling2_model(model)
+        if patch_inkling2_model(model):
+            # Its language attention is eager only upstream; route it through flex (UNSLOTH_INKLING2_FLEX=0 keeps eager).
+            from .inkling2_flex import enable_inkling2_flex
+            enable_inkling2_flex(model)
 
         if hasattr(model, "config"):
             model.config.update({"unsloth_version": __version__})
