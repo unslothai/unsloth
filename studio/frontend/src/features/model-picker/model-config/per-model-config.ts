@@ -25,7 +25,7 @@ import {
 export interface PerModelConfig {
   engineParallelism?: "tensor" | "pipeline" | "data";
   enginePrecision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
-  engineKvCacheDtype?: "auto" | "fp8";
+  engineKvCacheDtype?: "auto" | "fp8" | "turboquant";
   engineSeed?: number | null;
   engineGpuMemoryUtilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
@@ -1177,7 +1177,10 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       partial.engine === "vllm" || partial.engine === "sglang"
         ? partial.engine
         : "auto",
-    engineKvCacheDtype: partial.engineKvCacheDtype === "fp8" ? "fp8" : "auto",
+    engineKvCacheDtype:
+      partial.engineKvCacheDtype === "fp8" || partial.engineKvCacheDtype === "turboquant"
+        ? partial.engineKvCacheDtype
+        : "auto",
     engineSeed: normalizeEngineSeed(partial.engineSeed),
     engineGpuMemoryUtilization: normalizeEngineGpuMemoryUtilization(
       partial.engineGpuMemoryUtilization,

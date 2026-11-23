@@ -82,9 +82,10 @@ class LoadRequest(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
-    engine_kv_cache_dtype: Literal["auto", "fp8"] = Field(
+    engine_kv_cache_dtype: Literal["auto", "fp8", "turboquant"] = Field(
         "auto",
-        description = "Managed engine KV cache dtype; 'fp8' halves KV cache memory (vLLM --kv-cache-dtype).",
+        description = "Managed engine KV cache dtype; 'fp8' halves KV cache memory (vLLM --kv-cache-dtype), "
+        "'turboquant' is vllm-metal's quantized KV cache on Apple Silicon.",
     )
     engine_seed: Optional[int] = Field(
         None, ge = 0, le = 2**31 - 1, description = "Managed engine seed (vLLM --seed)."
@@ -744,9 +745,10 @@ class ValidateModelRequest(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
-    engine_kv_cache_dtype: Literal["auto", "fp8"] = Field(
+    engine_kv_cache_dtype: Literal["auto", "fp8", "turboquant"] = Field(
         "auto",
-        description = "Managed engine KV cache dtype; 'fp8' halves KV cache memory (vLLM --kv-cache-dtype).",
+        description = "Managed engine KV cache dtype; 'fp8' halves KV cache memory (vLLM --kv-cache-dtype), "
+        "'turboquant' is vllm-metal's quantized KV cache on Apple Silicon.",
     )
     engine_seed: Optional[int] = Field(
         None, ge = 0, le = 2**31 - 1, description = "Managed engine seed (vLLM --seed)."
@@ -1707,7 +1709,7 @@ class _InferenceRuntimeFields(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
-    engine_kv_cache_dtype: Literal["auto", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8", "turboquant"] = "auto"
     engine_seed: Optional[int] = None
     engine_gpu_memory_utilization: Optional[float] = None
     engine: Literal["auto", "vllm", "sglang"] = Field(

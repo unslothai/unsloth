@@ -42,6 +42,8 @@ function describeOverride(override: ApiModelOverride): string[] {
   }
   if (override.engine_kv_cache_dtype === "fp8") {
     parts.push("FP8 KV cache");
+  } else if (override.engine_kv_cache_dtype === "turboquant") {
+    parts.push("TurboQuant KV cache");
   }
   if (override.engine_seed != null) {
     parts.push(`seed ${override.engine_seed}`);

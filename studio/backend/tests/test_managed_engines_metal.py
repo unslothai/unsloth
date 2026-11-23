@@ -3,11 +3,12 @@
 
 """vLLM on Apple Silicon: the vllm-metal profile, its support checks and its memory budget."""
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
-from core.inference import engine_adapters
+from core.inference import engine_adapters, managed_engine
 from core.inference import engine_install as install
 
 
@@ -75,3 +76,52 @@ def test_metal_budget_reads_unified_memory(monkeypatch):
     monkeypatch.setattr("utils.vram_budget_settings.get_vram_budget_fraction", lambda: 0.9)
     fraction = engine_adapters.gpu_memory_fraction([0], 512, 0.0, engine_adapters.metal_memory_rows)
     assert fraction == int((64 * 1024 - 512) / (128 * 1024) * 1000) / 1000
+
+
+@pytest.mark.parametrize(
+    "platform, kv, refused",
+    [
+        ("metal", "turboquant", None),
+        ("metal", "fp8", "cannot use an FP8 KV cache"),
+        ("cuda", "fp8", None),
+        ("cuda", "turboquant", "cannot use a TurboQuant KV cache"),
+    ],
+)
+def test_kv_cache_options_follow_the_platform(tmp_path, monkeypatch, platform, kv, refused):
+    # vllm-metal 0.33 stores its paged KV cache in the model dtype and refuses --kv-cache-dtype fp8.
+    monkeypatch.setattr(install, "gpu_platform", lambda: platform)
+    monkeypatch.setattr(managed_engine, "profile", install.profile)
+    monkeypatch.setattr(
+        managed_engine.subprocess, "run", lambda argv, **_: SimpleNamespace(stdout = "9.0\n")
+    )
+    (tmp_path / "config.json").write_text(json.dumps({"num_attention_heads": 8}))
+    config = SimpleNamespace(is_local = True, path = str(tmp_path))
+    if refused:
+        with pytest.raises(ValueError, match = refused):
+            managed_engine.validate_model(config, kv_cache_dtype = kv)
+    else:
+        assert managed_engine.validate_model(config, kv_cache_dtype = kv)["kv_cache_dtype"] == kv
+    assert install.status("vllm")["kv_cache_dtypes"] == list(
+        install.profile("vllm")["kv_cache_dtypes"]
+    )
+    if platform == "metal":
+        (tmp_path / "config.json").write_text(
+            json.dumps({"num_attention_heads": 8, "kv_lora_rank": 512})
+        )
+        with pytest.raises(ValueError, match = "MLA"):
+            managed_engine.validate_model(config, kv_cache_dtype = "turboquant")
+
+
+def test_turboquant_reaches_vllm_metal_as_platform_config():
+    argv = engine_adapters.ADAPTERS["vllm"].command(
+        "/env/bin/python",
+        "org/model",
+        45678,
+        "key",
+        4096,
+        0.8,
+        1,
+        options = {"tool_parser": None, "kv_cache_dtype": "turboquant"},
+    )
+    assert "--kv-cache-dtype" not in argv
+    assert json.loads(argv[argv.index("--additional-config") + 1]) == {"turboquant": True}

@@ -13,7 +13,11 @@ const {
   convertsToInteger,
   precisionAfterEngineSwitch,
   supportsPrecision,
+  supportsKvCacheDtype,
 } = await import("../src/features/model-picker/api/engines.ts");
+const { normalizePerModelConfig } = await import(
+  "../src/features/model-picker/model-config/per-model-config.ts"
+);
 
 const installed: EngineStatus = {
   engine: "vllm",
@@ -142,4 +146,16 @@ test("an AMD build offers only the precisions it loads, and a retained 4-bit res
   assert.equal(precisionAfterEngineSwitch("fp8", rocm), "fp8");
   // An older backend reports no list, so nothing beyond the SGLang rule is withheld.
   assert.equal(supportsPrecision(installed, "int4"), true);
+});
+
+test("Apple Silicon offers TurboQuant instead of an FP8 KV cache, and a saved choice survives", () => {
+  const metal = { ...installed, platform: "metal" as const, kv_cache_dtypes: ["auto", "turboquant"] };
+  assert.equal(supportsKvCacheDtype(metal, "turboquant"), true);
+  assert.equal(supportsKvCacheDtype(metal, "fp8"), false);
+  // An older backend reports no list: today's auto and FP8, never TurboQuant.
+  assert.equal(supportsKvCacheDtype(installed, "fp8"), true);
+  assert.equal(supportsKvCacheDtype(installed, "turboquant"), false);
+  for (const dtype of ["turboquant", "fp8", "auto"] as const) {
+    assert.equal(normalizePerModelConfig({ engineKvCacheDtype: dtype }).engineKvCacheDtype, dtype);
+  }
 });

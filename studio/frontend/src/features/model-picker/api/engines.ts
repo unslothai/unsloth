@@ -17,6 +17,8 @@ export interface EngineStatus {
   unsupported_reason: string | null;
   /** Load precisions this host's build of the engine supports; absent from older backends. */
   precisions?: string[];
+  /** KV cache dtypes this host's build supports; absent from older backends, which offer auto and fp8. */
+  kv_cache_dtypes?: string[];
   /** "rocm": the engine runs on an AMD GPU. */
   platform?: "cuda" | "rocm" | "metal";
   /** "wsl": on Windows the engine runs inside Studio's own WSL2 distro. */
@@ -68,6 +70,13 @@ export function supportsPrecision(
     return false;
   }
   return !engine?.precisions || engine.precisions.includes(precision);
+}
+
+export function supportsKvCacheDtype(
+  engine: EngineStatus | undefined,
+  dtype: string,
+): boolean {
+  return (engine?.kv_cache_dtypes ?? ["auto", "fp8"]).includes(dtype);
 }
 
 export function wslNoticeKey(

@@ -259,7 +259,10 @@ class EngineAdapter:
                 else []
             ),
             *(
-                [
+                # vllm-metal takes its quantized KV cache from the platform config, not --kv-cache-dtype.
+                ["--additional-config", json.dumps({"turboquant": True})]
+                if options.get("kv_cache_dtype") == "turboquant"
+                else [
                     "--kv-cache-dtype",
                     # SGLang names the FP8 format; vLLM's "fp8" is the same E4M3 cache.
                     "fp8_e4m3" if self.name == "sglang" else options["kv_cache_dtype"],

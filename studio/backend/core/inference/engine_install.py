@@ -27,6 +27,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 PRECISIONS = ("auto", "bf16", "fp16", "int4", "int8", "fp8")
+KV_CACHE_DTYPES = ("auto", "fp8")
 ENGINE_NAMES = {"vllm": "vLLM", "sglang": "SGLang"}
 PROFILES = {
     "vllm": {
@@ -80,6 +81,8 @@ PROFILES = {
             "bitsandbytes": False,
             # MLX-quantized checkpoints load as stored; load-time conversion is CUDA/ROCm-only.
             "precisions": ("auto", "bf16", "fp16"),
+            # The paged KV cache is stored in the model dtype; TurboQuant is Metal's quantized cache.
+            "kv_cache_dtypes": ("auto", "turboquant"),
             "releases": ({"version": "0.33.0", "torch": "2.14.0", "lock": "vllm-macos-metal"},),
         },
     },
@@ -208,6 +211,7 @@ def _flavor(engine: str) -> dict:
         "platform": "cuda",
         "python": PYTHON,
         "precisions": PRECISIONS,
+        "kv_cache_dtypes": KV_CACHE_DTYPES,
         "bitsandbytes": True,
         **{key: value for key, value in PROFILES[engine].items() if key not in _FLAVORS},
     }
@@ -1195,6 +1199,7 @@ def status(engine: str) -> dict:
         ),
         "unsupported_reason": support_reason(engine, wait = False),
         "precisions": list(wanted["precisions"]),
+        "kv_cache_dtypes": list(wanted["kv_cache_dtypes"]),
         "platform": gpu_platform(),
         # Only priced while an install or update is on offer: the plan reads Studio's packages.
         "download_bytes": None

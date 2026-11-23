@@ -290,6 +290,11 @@ def validate_model(
         or (engine == "vllm" and precision == "int4" and parallelism != "pipeline")
         else "auto",
     }
+    if kv_cache_dtype not in profile(engine)["kv_cache_dtypes"]:
+        label = {"fp8": "an FP8", "turboquant": "a TurboQuant"}.get(kv_cache_dtype, kv_cache_dtype)
+        raise ValueError(
+            f"{ENGINE_NAMES[engine]} on this GPU cannot use {label} KV cache. Choose Model default for KV cache."
+        )
     # Unset options stay out of the dict, so a default load keeps today's argv and cache key.
     if kv_cache_dtype != "auto":
         options["kv_cache_dtype"] = kv_cache_dtype
@@ -345,6 +350,11 @@ def validate_model(
         raise ValueError(
             "SGLang cannot use an FP8 KV cache with this model's attention. "
             "Choose Model default for KV cache, or use vLLM."
+        )
+    if kv_cache_dtype == "turboquant" and metadata.get("kv_lora_rank"):
+        # vllm-metal raises NotImplementedError for TurboQuant on MLA at engine start.
+        raise ValueError(
+            "TurboQuant cannot compress this model's attention cache (MLA). Choose Model default for KV cache."
         )
     size = len(gpu_ids or [0])
     if size > 1 and parallelism == "tensor":

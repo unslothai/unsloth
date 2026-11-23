@@ -450,8 +450,8 @@ def normalize_model_override(
         entry["engine_precision"] = payload["engine_precision"]
     if payload.get("engine") in ("vllm", "sglang"):
         entry["engine"] = payload["engine"]
-    if payload.get("engine_kv_cache_dtype") == "fp8":
-        entry["engine_kv_cache_dtype"] = "fp8"
+    if payload.get("engine_kv_cache_dtype") in ("fp8", "turboquant"):
+        entry["engine_kv_cache_dtype"] = payload["engine_kv_cache_dtype"]
     seed = _bounded_int(payload.get("engine_seed"), minimum = 0, maximum = 2**31 - 1)
     if seed is not None:
         entry["engine_seed"] = seed

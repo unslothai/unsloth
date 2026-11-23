@@ -1183,7 +1183,7 @@ class ModelOverridePayload(BaseModel):
     engine_parallelism: Optional[Literal["tensor", "pipeline", "data"]] = None
     engine_precision: Optional[Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"]] = None
     engine: Optional[Literal["auto", "vllm", "sglang"]] = None
-    engine_kv_cache_dtype: Optional[Literal["auto", "fp8"]] = None
+    engine_kv_cache_dtype: Optional[Literal["auto", "fp8", "turboquant"]] = None
     engine_seed: Optional[int] = Field(default = None, ge = 0, le = 2**31 - 1)
     engine_gpu_memory_utilization: Optional[float] = Field(default = None, ge = 0.05, le = 0.99)
     # None leaves the stored value alone (the UI has no control for flags); [] clears them.
