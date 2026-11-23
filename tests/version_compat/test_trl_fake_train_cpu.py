@@ -542,3 +542,52 @@ def test_gkd_trains_text_only_with_a_multimodal_processor(tmp_path, repo):
     assert trainer.processing_class is processor.tokenizer
     assert trainer.generation_config.pad_token_id == processor.tokenizer.pad_token_id
     assert torch.isfinite(torch.tensor(trainer.train().training_loss))
+
+
+def test_sft_eval_reaches_the_unsloth_prediction_step(tmp_path):
+    """TRL >= 1.15 SFTTrainer.prediction_step skips super(), so eval bypassed Unsloth's prediction_step."""
+    from datasets import Dataset
+    from trl import SFTConfig, SFTTrainer
+
+    from unsloth.models._utils import EMPTY_LOGITS
+
+    model, tok = _load_plain()
+
+    # Unsloth's fused CE: labels without UNSLOTH_RETURN_LOGITS=1 give EMPTY_LOGITS. zoo's requires_grad_post_hook
+    # also marks output.loss when it lands on the module that returns it (trl#8246).
+    def fused_ce(module, args, kwargs, output):
+        if kwargs.get("labels") is not None and os.environ.get("UNSLOTH_RETURN_LOGITS", "0") != "1":
+            output.logits = EMPTY_LOGITS
+        if getattr(output, "loss", None) is not None:
+            output.loss.requires_grad_(True)
+        return output
+
+    model.register_forward_hook(fused_ce, with_kwargs = True)
+    ds = Dataset.from_list([{"text": "The quick brown fox jumps over the lazy dog."}] * 4)
+    cfg = SFTConfig(
+        output_dir = str(tmp_path / "ci_sft_eval"),
+        per_device_eval_batch_size = 2,
+        report_to = "none",
+        use_cpu = True,
+        max_length = None,
+        padding_free = False,
+        dataset_text_field = "text",
+        fp16 = False,
+        bf16 = False,
+    )
+
+    def make(compute_metrics = None):
+        return SFTTrainer(
+            model = model,
+            processing_class = tok,
+            args = cfg,
+            train_dataset = ds,
+            eval_dataset = ds,
+            compute_metrics = compute_metrics,
+        )
+
+    metrics = make(lambda p: {"vocab": p.predictions.shape[-1]}).evaluate()
+    assert metrics["eval_vocab"] == model.config.vocab_size
+    trainer = make()
+    assert trainer.predict(trainer.eval_dataset).predictions.shape[0] == 4
+    assert "eval_loss" in make().evaluate()

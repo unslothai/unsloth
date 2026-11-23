@@ -1536,13 +1536,15 @@ def sft_trainer_compute_loss(function_name, function):
                     loss = loss * (self.accelerator.num_processes // max(int(tp_size or 1), 1))
                 aux_loss = getattr(outputs, "aux_loss", None)
                 if getattr(self, "aux_loss_enabled", False) and aux_loss is not None:
+                    # Eval accumulates nothing, and Trainer sets the attribute only inside the training loop (#2464).
                     steps = (
                         self.current_gradient_accumulation_steps
-                        if num_items_in_batch is not None
+                        if num_items_in_batch is not None and getattr(model, "training", True)
                         else 1
                     )
                     loss = loss + self.router_aux_loss_coef * aux_loss / steps
-                if return_outputs:
+                # Unsloth's prediction_step sets UNSLOTH_RETURN_LOGITS=1 only when it keeps the logits (#1801).
+                if return_outputs and os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1":
                     # prediction_step / compute_metrics read logits, which the fused head never builds (as TRL does).
                     with torch.no_grad():
                         outputs = model(**{k: v for k, v in inputs.items() if k != "labels"})
@@ -1597,6 +1599,27 @@ def sft_trainer_compute_loss(function_name, function):
 
 
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
+
+
+# TRL >= 1.15 SFTTrainer.prediction_step no longer calls super(), so it shadowed Unsloth's Trainer.prediction_step:
+# compute_metrics / predict() got the fused CE's EmptyLogits and the eval loss was never detached (trl#8246).
+def sft_trainer_prediction_step(function_name, function):
+    if function_name != "prediction_step" or "super().prediction_step" in function:
+        return function
+
+    def prediction_step(
+        self,
+        model,
+        inputs,
+        prediction_loss_only,
+        ignore_keys = None,
+    ):
+        return super().prediction_step(model, inputs, prediction_loss_only, ignore_keys = ignore_keys)
+
+    return inspect.getsource(prediction_step)
+
+
+RL_FUNCTIONS["sft_trainer"].append(sft_trainer_prediction_step)
 
 
 # Route ORPO/CPO row tokenization through the underlying text tokenizer when the processing class is a multimodal processor; CPO reuses this code (#4952).
