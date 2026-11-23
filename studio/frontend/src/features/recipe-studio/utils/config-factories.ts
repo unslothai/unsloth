@@ -428,7 +428,8 @@ export function makeSeedConfig(
     seed_splits: [],
     seed_globs_by_split: {},
     seed_columns: [],
-    sampling_strategy: "ordered",
+    sampling_strategy:
+      seedSourceType === "unstructured" ? "shuffle" : "ordered",
     selection_type: "none",
     selection_start: "0",
     selection_end: "10",
