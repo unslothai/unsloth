@@ -30020,7 +30020,9 @@ def _window_room_max_tokens(window: int, prompt_tokens: int, compaction_threshol
     if prompt_tokens >= window:
         # Only a replayed summary or compaction epoch (applied later) can make this fit: guess.
         return window // 4
-    return max(_MIN_WINDOW_ROOM_TOKENS, window - prompt_tokens - window // 32)
+    room = window - prompt_tokens
+    # The floor never passes the room itself: a strict server refuses prompt + reply > window.
+    return min(room, max(_MIN_WINDOW_ROOM_TOKENS, room - window // 32))
 
 
 def _extends_turn(old: Any, new: Any) -> bool:

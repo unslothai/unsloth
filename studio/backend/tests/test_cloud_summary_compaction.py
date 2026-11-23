@@ -1125,6 +1125,8 @@ def test_max_asks_for_the_room_the_window_leaves_after_the_prompt():
     assert ri._window_room_max_tokens(64_000, 70_000, 6_000) == 64_000 - 6_000 - 2_000
     assert ri._window_room_max_tokens(64_000, 63_000, None) == ri._MIN_WINDOW_ROOM_TOKENS
     assert ri._window_room_max_tokens(64_000, 200_000, None) == 16_000
+    # Less room than the floor: the reply gets what is left, never prompt + reply > window.
+    assert ri._window_room_max_tokens(8_192, 8_000, None) == 192
 
 
 def test_a_request_without_max_tokens_gets_the_windows_room(monkeypatch):
