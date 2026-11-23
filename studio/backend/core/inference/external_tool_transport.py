@@ -172,6 +172,10 @@ class OAICompatTransport:
             if fit is None or fit[0] is None:
                 return None
             refit_messages, max_tokens, truncation_line = fit
+            if self._reply_limit is not None:
+                # The refit sizes the reply from the request's window, not the smaller one served.
+                room = self._reply_limit(refit_messages, tools)
+                max_tokens = room if max_tokens is None else min(max_tokens, room)
             self.sent_messages = refit_messages
 
             async def _resend():

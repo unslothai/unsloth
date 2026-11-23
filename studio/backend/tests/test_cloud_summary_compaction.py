@@ -1013,6 +1013,46 @@ def test_openrouter_without_max_tokens_keeps_the_provider_default(ui, monkeypatc
     assert "max_tokens" not in sent
 
 
+def test_an_overflow_retry_still_gets_the_room_its_refit_prompt_leaves():
+    from core.inference.external_tool_transport import OAICompatTransport
+
+    sent = []
+    overflow = (
+        'data: {"error":{"message":"This model\'s maximum context length is 8192 tokens",'
+        '"code":"context_length_exceeded"}}'
+    )
+
+    class _Client:
+        provider_type = "custom"
+        api_type = "chat_completions"
+
+        async def stream_chat_completion(self, **kwargs):
+            sent.append(kwargs.get("max_tokens"))
+            if len(sent) == 1:
+                yield overflow
+                return
+            yield 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}'
+
+    async def refitter(messages, tools):
+        # The fitter only knows the request's (larger) window, so its reply cap is too generous.
+        yield (messages[-2:], 50_000, "")
+
+    transport = OAICompatTransport(
+        _Client(),
+        model = "m",
+        max_tokens = 9_000,
+        overflow_refitter = refitter,
+        reply_limit = lambda messages, tools: 10_000 - 1_000 * len(messages),
+    )
+
+    async def run(messages):
+        async for _ in transport._stream_provider(messages, None, None):
+            pass
+
+    asyncio.run(run([{"role": "user", "content": "a"}] * 5))
+    assert sent == [5_000, 8_000]
+
+
 def test_each_tool_loop_round_gets_the_room_its_own_prompt_leaves():
     from core.inference.external_tool_transport import OAICompatTransport
 
