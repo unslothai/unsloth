@@ -244,7 +244,7 @@ def _not_reached(*args, **kwargs):
     raise AssertionError("the routing harness does not reach this helper")
 
 
-def _routing_environment(monkeypatch, model):
+def _routing_environment(monkeypatch, model, **overrides):
     calls = {"merge": [], "adapter": [], "prewarm": [], "convert": []}
 
     zoo = types.ModuleType("unsloth_zoo.saving_utils")
@@ -293,6 +293,7 @@ def _routing_environment(monkeypatch, model):
             save = lambda *args, **kwargs: None,
             cuda = types.SimpleNamespace(is_bf16_supported = lambda: False),
         ),
+        **overrides,
     )
     return namespace["unsloth_generic_save"], calls
 
@@ -360,6 +361,49 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
     assert len(calls["merge"]) == 1
     assert len(calls["prewarm"]) == 1
     assert len(calls["convert"]) == (save_method != "merged_4bit_forced")
+
+
+@pytest.mark.parametrize("is_main_process", [True, False])
+def test_only_the_writing_rank_runs_the_inkling2_writer(monkeypatch, tmp_path, is_main_process):
+    """The Inkling 2 writer has no rank guard: a DDP rank with is_main_process=False must not run it."""
+    written = []
+    writer = lambda *args, **kwargs: written.append(args)
+    model = _PeftModel()
+    generic_save, calls = _routing_environment(
+        monkeypatch,
+        model,
+        is_inkling2_config = lambda config: True,
+        save_inkling2_merged_16bit = writer,
+    )
+    generic_save(
+        model,
+        None,
+        save_directory = str(tmp_path),
+        save_method = "merged_16bit",
+        is_main_process = is_main_process,
+    )
+    assert len(written) == is_main_process
+    assert calls["merge"] == []
+
+    save_model = _load(
+        "unsloth_save_model",
+        torch = types.SimpleNamespace(save = None),
+        _refuse_mtp_variant = lambda model, variant: None,
+        _attached_mtp_head = lambda model: None,
+        PreTrainedTokenizerBase = type("T", (), {}),
+        ProcessorMixin = type("P", (), {}),
+        _normalize_safe_serialization = lambda value: True,
+        get_token = lambda: None,
+        _collect_garbage = lambda before = None: None,
+        clean_gpu_cache = None,
+        is_inkling2_config = lambda config: True,
+        save_inkling2_merged_16bit = writer,
+    )["unsloth_save_model"]
+    written.clear()
+    save_model(
+        model, None, str(tmp_path), save_method = "merged_16bit", is_main_process = is_main_process
+    )
+    assert len(written) == is_main_process
 
 
 @pytest.mark.parametrize(

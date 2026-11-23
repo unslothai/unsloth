@@ -1726,6 +1726,9 @@ def unsloth_save_model(
     raise_if_merging_mistral_format_view(model, save_method)
     raise_if_merging_inkling2(model, save_method)
     if save_method == "merged_16bit" and is_inkling2_config(getattr(model, "config", None)):
+        # The Inkling 2 writer has no rank guard and fixed shard names: only the writing rank runs it.
+        if not is_main_process:
+            return
         return save_inkling2_merged_16bit(
             model, tokenizer, save_directory, push_to_hub = push_to_hub, token = token, private = private
         )
@@ -7545,15 +7548,17 @@ def unsloth_generic_save(
         )
     elif save_method == "merged_16bit" and is_inkling2_config(getattr(model, "config", None)):
         # The generic merge cannot place Inkling 2's LoRA weights (own key names, NVFP4 / MXFP8 experts).
-        save_inkling2_merged_16bit(
-            model,
-            tokenizer,
-            save_directory,
-            push_to_hub = push_to_hub,
-            token = token,
-            private = private,
-            dtype = dtype,
-        )
+        # Its writer has no rank guard and fixed shard names: only the writing rank runs it.
+        if is_main_process:
+            save_inkling2_merged_16bit(
+                model,
+                tokenizer,
+                save_directory,
+                push_to_hub = push_to_hub,
+                token = token,
+                private = private,
+                dtype = dtype,
+            )
     else:
         raise_if_merging_mistral_format_view(model, save_method)
         raise_if_merging_inkling2(model, save_method)
