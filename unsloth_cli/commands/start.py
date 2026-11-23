@@ -260,6 +260,14 @@ class _PassthroughCommand(TyperCommand):
             ctx.args = remaining
         return remaining
 
+    def invoke(self, ctx: click.Context):
+        global _agent_ctx
+        _agent_ctx = ctx
+        return super().invoke(ctx)
+
+
+_agent_ctx: Optional[typer.Context] = None
+
 
 # provider routing overrides ANTHROPIC_BASE_URL and would bypass the local server (#9864).
 _CLAUDE_ENV_UNSET = (
@@ -5441,6 +5449,7 @@ def _run(
             typer.echo(f"Unsloth Studio is still running at {base}.")
             typer.echo("Stop it with: unsloth studio stop")
         return
+    _remember_start(entry)
     try:
         code = _launch(
             command,
@@ -5471,6 +5480,77 @@ def _run(
 
 def _agents_config_root() -> Path:
     return _studio_auth_root() / "agents"
+
+
+_CONTINUE_ARGS = {
+    "claude": ["--continue"],
+    "opencode": ["--continue"],
+    "vibe": ["--continue"],
+    "codex": ["resume", "--last"],
+    "hermes": ["--continue"],
+    "pi": ["--continue"],
+    # Both reopen their saved sessions on a plain launch of a kept home.
+    "openclaw": [],
+    "dsh": [],
+}
+_OWN_HOME_AGENTS = ("claude", "opencode", "vibe")
+_REPLAYED_FLAGS = ("persist", "as_subagent", "auto_route")
+
+
+def _last_start_path() -> Path:
+    return _studio_auth_root() / "last_start.json"
+
+
+def _remember_start(entry: dict) -> None:
+    ctx = _agent_ctx
+    if ctx is None or ctx.info_name not in _CONTINUE_ARGS:
+        return
+    last = {
+        "agent": ctx.info_name,
+        "model": ctx.params.get("model") or entry["id"],
+        "gguf_variant": ctx.params.get("gguf_variant"),
+        "flags": [name for name in _REPLAYED_FLAGS if ctx.params.get(name)],
+        "server": os.environ.get("UNSLOTH_STUDIO_URL"),
+    }
+    try:
+        _write_private_json(_last_start_path(), last)
+    except OSError:
+        pass
+
+
+@start_app.callback(invoke_without_command = True)
+def _start_group(
+    ctx: typer.Context,
+    resume: bool = typer.Option(
+        False,
+        "--continue",
+        "-c",
+        help = "Reopen the last launched agent and model in its most recent session.",
+    ),
+):
+    if not resume:
+        return
+    if ctx.invoked_subcommand is not None:
+        _fail(f"Put --continue after the agent: unsloth start {ctx.invoked_subcommand} --continue")
+    last = _read_json_object(_last_start_path()) or {}
+    agent = last.get("agent")
+    if agent not in _CONTINUE_ARGS or not last.get("model"):
+        _fail("Nothing to continue yet. Start an agent first, e.g. `unsloth start claude`.")
+    flags = [name for name in last.get("flags") or [] if name in _REPLAYED_FLAGS]
+    if agent not in _OWN_HOME_AGENTS and "persist" not in flags:
+        _fail(
+            f"The last {agent} session was not kept, so there is nothing to resume. "
+            f"Start it with `unsloth start {agent} --persist` to keep sessions you can continue."
+        )
+    if last.get("server"):
+        os.environ.setdefault("UNSLOTH_STUDIO_URL", last["server"])
+    args = ["--model", last["model"]]
+    if last.get("gguf_variant"):
+        args += ["--gguf-variant", last["gguf_variant"]]
+    args += ["--" + name.replace("_", "-") for name in flags]
+    command = ctx.command.get_command(ctx, agent)
+    with command.make_context(agent, [*args, *_CONTINUE_ARGS[agent]], parent = ctx) as sub:
+        command.invoke(sub)
 
 
 @contextlib.contextmanager

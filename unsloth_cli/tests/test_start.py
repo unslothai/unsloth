@@ -5307,6 +5307,13 @@ def _gguf_only_host(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _private_last_start(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        start, "_last_start_path", lambda: tmp_path / "last_start.json", raising = False
+    )
+
+
+@pytest.fixture(autouse = True)
 def _reset_auto_served():
     # Never leave a fake server in the module slot: the atexit backstop would signal it.
     yield
@@ -10333,6 +10340,37 @@ def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatc
         captured = _capture_launch(monkeypatch, [agent, "--persist"])
         assert "resume" not in captured["command"]
         assert "--continue" not in captured["command"]
+
+
+def test_bare_continue_reopens_the_last_agent_and_model(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    first = _capture_launch(monkeypatch, ["codex", "--persist"])
+    resumed = _capture_launch(monkeypatch, ["--continue"])
+    assert resumed["command"] == [*first["command"], "resume", "--last"]
+    assert resumed["env"]["CODEX_HOME"] == str(tmp_path / "agents" / "codex")
+
+
+def test_short_continue_reopens_claude_with_its_own_continue(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    _capture_launch(monkeypatch, ["claude"])
+    resumed = _capture_launch(monkeypatch, ["-c"])
+    assert resumed["command"][1:] == ["--model", MODEL["id"], "--continue"]
+
+
+def test_continue_refuses_a_session_that_was_not_kept(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/hermes")
+    _capture_launch(monkeypatch, ["hermes"])
+    result = CliRunner().invoke(start.start_app, ["--continue"])
+    assert result.exit_code == 1
+    assert "nothing to resume" in result.output
+    assert "unsloth start hermes --persist" in result.output
+
+
+def test_continue_with_nothing_started_says_so(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["--continue"])
+    assert result.exit_code == 1
+    assert "Nothing to continue yet" in result.output
 
 
 @pytest.mark.parametrize(
