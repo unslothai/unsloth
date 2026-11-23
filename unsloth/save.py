@@ -1064,9 +1064,7 @@ def _without_runtime_truncation(
 
 @contextmanager
 def _left_padding_side(tokenizer):
-    """Force the source tokenizer's padding side to "left" for one save or push, restoring the
-    original afterwards even when the write raises. `tokenizer` may be a processor whose
-    `.tokenizer` holds the real tokenizer."""
+    # Restore even when the write raises: a caught save error must not leave training left-padded.
     source_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
     old_padding_side = source_tokenizer.padding_side
     source_tokenizer.padding_side = "left"
