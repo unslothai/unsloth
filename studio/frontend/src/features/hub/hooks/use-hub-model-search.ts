@@ -297,8 +297,7 @@ function makeMapModel(
 
 const UNSLOTH_PREFETCH = 20;
 const UNSLOTH_QUERY_PREFETCH = 3;
-// Newest-first lists one release's FP8 / bnb / NVFP4 / GGUF uploads by upload time, so three rows
-// can miss the GGUF a typed name wants: only popularity sorts keep the short head.
+// Newest-first lists a release's FP8 / bnb / NVFP4 / GGUF by upload time: three rows can miss the GGUF.
 const POPULARITY_SORTS = new Set<HfSortKey>(["downloads", "likes", "trendingScore"]);
 /** Rejected unsloth rows a filtered search scans before moving on to general results. */
 const UNSLOTH_FILTER_REJECT_LIMIT = 40;
