@@ -5,6 +5,7 @@
   "features": [
     {
       "image": "inkling.webp",
+      "imageDark": "inkling-dark.webp",
       "alt": "Inkling 2 Mini",
       "title": "Inkling 2 Mini",
       "summary": "A 26B model with 5.4B active and a 1M context, the strongest for its size.",
@@ -14,6 +15,7 @@
     },
     {
       "image": "leaner.webp",
+      "imageDark": "leaner-dark.webp",
       "alt": "66% less RAM, 87% fewer prompt tokens, 2.2x faster MiniMax-H3-Image",
       "title": "Leaner and faster",
       "summary": "GGUF image models load with up to 66% less RAM, and MCP chats send up to 87% fewer prompt tokens."

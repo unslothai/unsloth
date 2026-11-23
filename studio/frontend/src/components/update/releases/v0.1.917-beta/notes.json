@@ -5,12 +5,14 @@
   "features": [
     {
       "image": "code-blocks.webp",
+      "imageDark": "code-blocks-dark.webp",
       "alt": "A Python code block in a chat reply",
       "title": "Code blocks and Thinking",
       "summary": "Expandable panels that scroll on their own, with better syntax highlighting."
     },
     {
       "image": "export.webp",
+      "imageDark": "export-dark.webp",
       "alt": "The chat menu with Export to HTML and PDF",
       "title": "HTML and PDF export",
       "summary": "Export a chat straight from the chat menu."

@@ -5,6 +5,7 @@
   "features": [
     {
       "image": "translate.webp",
+      "imageDark": "translate-dark.webp",
       "alt": "English text translated to Japanese on the Translate page",
       "title": "Translate",
       "summary": "Translate any text into any language, entirely on your device.",
@@ -13,6 +14,7 @@
     },
     {
       "image": "engram.webp",
+      "imageDark": "engram-dark.webp",
       "alt": "Engram tables",
       "title": "Engram tables",
       "summary": "Swap the Engram table for Qwen3.8-Flash-Next and DeepSeek-V4.1.",

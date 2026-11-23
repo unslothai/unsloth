@@ -25,6 +25,8 @@ interface Release {
   date: string;
   features: {
     image: string;
+    // Artwork for the dark theme; falls back to `image`.
+    imageDark?: string;
     alt: string;
     title: string;
     summary: string;

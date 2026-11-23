@@ -5,6 +5,7 @@
   "features": [
     {
       "image": "scheduled.webp",
+      "imageDark": "scheduled-dark.webp",
       "alt": "The Scheduled page with daily, weekly, and hourly tasks",
       "title": "Scheduled tasks",
       "summary": "Run a prompt on a schedule with a local model or an API connection.",
@@ -13,6 +14,7 @@
     },
     {
       "image": "minimax.webp",
+      "imageDark": "minimax-dark.webp",
       "alt": "MiniMax-M3.1-Flash",
       "title": "MiniMax-M3.1-Flash",
       "summary": "MiniMax's 428B MoE with 23B active.",

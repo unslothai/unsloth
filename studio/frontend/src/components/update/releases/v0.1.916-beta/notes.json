@@ -5,12 +5,14 @@
   "features": [
     {
       "image": "perf.webp",
+      "imageDark": "perf-dark.webp",
       "alt": "2x two-GPU generation, 40% faster loads, 50% fewer tokens",
       "title": "Faster across the board",
       "summary": "Two-GPU image and video up to 2x faster, and image and video models load up to 40% faster."
     },
     {
       "image": "floating-browser.webp",
+      "imageDark": "floating-browser-dark.webp",
       "alt": "Floating browser",
       "title": "Floating browser",
       "summary": "Each chat runs its own browser in a window you can move and resize.",

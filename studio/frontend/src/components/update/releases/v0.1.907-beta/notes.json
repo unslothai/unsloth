@@ -5,12 +5,14 @@
   "features": [
     {
       "image": "speed.webp",
+      "imageDark": "speed-dark.webp",
       "alt": "Up to 10x faster UI, 5x faster inference, and 3x more file types",
       "title": "Faster everywhere",
       "summary": "The app is up to 10x faster with several chats open, and inference up to 5x faster."
     },
     {
       "image": "video.webp",
+      "imageDark": "video-dark.webp",
       "alt": "LTX-2.5 and Wan2.2 video models",
       "title": "LTX-2.5 and Wan2.2",
       "summary": "Generate video from text or from an image.",

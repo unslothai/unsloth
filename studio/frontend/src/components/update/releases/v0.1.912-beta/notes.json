@@ -15,7 +15,8 @@
       "title": "Multi-LoRA batching",
       "summary": "Train up to four compatible queued jobs together.",
       "open": "/studio",
-      "action": "Start training"
+      "action": "Start training",
+      "imageDark": "multi-lora-dark.webp"
     }
   ],
   "changes": {

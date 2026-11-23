@@ -5,6 +5,7 @@
   "features": [
     {
       "image": "flint.webp",
+      "imageDark": "flint-dark.webp",
       "alt": "Flint coding agent model",
       "title": "Flint",
       "summary": "Recursive's 40B coding-agent MoE runs in 24 GB at 3-bit.",
@@ -14,6 +15,7 @@
     },
     {
       "image": "moss-image.webp",
+      "imageDark": "moss-image-dark.webp",
       "alt": "MOSS-Image model",
       "title": "MOSS-Image",
       "summary": "A 5.1B image model for top-tier generation, as GGUF and FP8.",

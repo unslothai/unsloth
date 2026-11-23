@@ -5,6 +5,7 @@
   "features": [
     {
       "image": "amd-npu.webp",
+      "imageDark": "amd-npu-dark.webp",
       "alt": "AMD Ryzen AI NPU support",
       "title": "AMD NPU support",
       "summary": "Run on Ryzen AI NPUs, 2 to 4x more efficient per joule per token than GPUs.",
@@ -12,6 +13,7 @@
     },
     {
       "image": "video-lora.webp",
+      "imageDark": "video-lora-dark.webp",
       "alt": "Video LoRA training",
       "title": "Video LoRA",
       "summary": "Train LoRAs for LTX-2.5 and MOSS-Image.",

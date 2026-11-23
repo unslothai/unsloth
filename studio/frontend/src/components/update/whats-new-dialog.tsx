@@ -12,6 +12,7 @@ import {
   type SettingsTab,
   useSettingsDialogStore,
 } from "@/features/settings/stores/settings-dialog-store";
+import { useTheme } from "@/features/settings/stores/theme-store";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useLocale, useT } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
@@ -317,6 +318,16 @@ function ExternalLink({ href, children }: { href: string; children: string }) {
 
 type Feature = Release["features"][number];
 
+/** The artwork drawn for the app's current theme, light when a release ships only one. */
+function useFeatureImage(): (version: string, feature: Feature) => string {
+  const dark = useTheme().resolved === "dark";
+  return (version, feature) =>
+    releaseImageUrl(
+      version,
+      dark && feature.imageDark ? feature.imageDark : feature.image,
+    );
+}
+
 const CHANGE_SECTIONS = [
   { key: "new", label: "updateNotes.newLabel" },
   { key: "improved", label: "updateNotes.improved" },
@@ -421,13 +432,14 @@ function SectionLabel({ children }: { children: string }) {
 
 function ReleaseBody({ entry }: { entry: Release }) {
   const t = useT();
+  const imageFor = useFeatureImage();
   return (
     <>
       <div className="mt-9 grid gap-x-6 gap-y-8 sm:grid-cols-2">
         {entry.features.map((feature) => (
           <figure key={feature.title}>
             <img
-              src={releaseImageUrl(entry.version, feature.image)}
+              src={imageFor(entry.version, feature)}
               onError={(event) => {
                 event.currentTarget.style.display = "none";
               }}
@@ -496,6 +508,7 @@ function CatchUp({
   locale: ReturnType<typeof useLocale>;
 }) {
   const t = useT();
+  const imageFor = useFeatureImage();
   return (
     <>
       <h2 className="font-heading text-2xl font-semibold tracking-tight">
@@ -547,7 +560,7 @@ function CatchUp({
             </div>
             {entry.features[0] && (
               <img
-                src={releaseImageUrl(entry.version, entry.features[0].image)}
+                src={imageFor(entry.version, entry.features[0])}
                 alt=""
                 onError={(event) => {
                   event.currentTarget.style.display = "none";

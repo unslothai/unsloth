@@ -119,22 +119,6 @@ export function UpdatePill({
           <Button
             size="sm"
             variant="primary"
-            className="h-auto rounded-full px-3.5 py-2 text-ui-13"
-            disabled={offer.actionDisabled}
-            title={offer.note ?? undefined}
-            aria-description={offer.note ?? undefined}
-            onClick={() => {
-              rememberUpdateTarget(offer.latestVersion);
-              offer.runAction();
-              if (offer.source === "desktop") setOpen(false);
-            }}
-            data-testid="update-popover-action"
-          >
-            {offer.actionLabel}
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
             className="h-auto gap-1.5 rounded-full px-3 py-2 text-ui-13 font-medium"
             aria-haspopup="dialog"
             onClick={() => {
@@ -148,11 +132,27 @@ export function UpdatePill({
           >
             <HugeiconsIcon
               icon={SparklesIcon}
-              className="size-3.5 text-primary"
+              className="size-3.5"
               strokeWidth={2}
               aria-hidden="true"
             />
             {t("updateNotes.whatsNew")}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-auto rounded-full px-3.5 py-2 text-ui-13 font-medium"
+            disabled={offer.actionDisabled}
+            title={offer.note ?? undefined}
+            aria-description={offer.note ?? undefined}
+            onClick={() => {
+              rememberUpdateTarget(offer.latestVersion);
+              offer.runAction();
+              if (offer.source === "desktop") setOpen(false);
+            }}
+            data-testid="update-popover-action"
+          >
+            {offer.actionLabel}
           </Button>
           <Button
             size="sm"

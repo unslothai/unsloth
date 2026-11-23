@@ -5,6 +5,7 @@
   "features": [
     {
       "image": "browser-use.webp",
+      "imageDark": "browser-use-dark.webp",
       "alt": "The chat box + menu with Browser use and Computer use",
       "title": "Browser use",
       "summary": "Let a local model take control of the Unsloth browser from the + menu in the chat box.",
@@ -14,6 +15,7 @@
     },
     {
       "image": "qwen-image.webp",
+      "imageDark": "qwen-image-dark.webp",
       "alt": "Qwen-Image-2.1-Turbo",
       "title": "Qwen-Image-2.1-Turbo",
       "summary": "Images in 8 steps, 2.5x faster.",

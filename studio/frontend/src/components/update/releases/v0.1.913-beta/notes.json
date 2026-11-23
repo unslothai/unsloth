@@ -17,7 +17,8 @@
       "title": "14 new languages",
       "summary": "Use Studio in 14 more languages, picked in Settings.",
       "open": "settings:general",
-      "action": "Change language"
+      "action": "Change language",
+      "imageDark": "languages-dark.webp"
     }
   ],
   "changes": {

@@ -5,6 +5,7 @@
   "features": [
     {
       "image": "model-picker.webp",
+      "imageDark": "model-picker-dark.webp",
       "alt": "The model picker open above the chat box",
       "title": "New model picker",
       "summary": "Switch models from the chat box, with Favorites, On Device, Discover, and Connected tabs.",
@@ -13,6 +14,7 @@
     },
     {
       "image": "computer-use.webp",
+      "imageDark": "computer-use-dark.webp",
       "alt": "Computer use settings",
       "title": "Computer use (beta)",
       "summary": "Vision models can see your screen and use apps. Off by default, with approvals.",

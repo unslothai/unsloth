@@ -5,6 +5,7 @@
   "features": [
     {
       "image": "nemotron.webp",
+      "imageDark": "nemotron-dark.webp",
       "alt": "NVIDIA Nemotron 3.5",
       "title": "NVIDIA Nemotron 3.5",
       "summary": "Bolt runs in 24 GB of memory, and Super VL brings 120B with 12B active.",
@@ -12,6 +13,7 @@
     },
     {
       "image": "muse-spark.webp",
+      "imageDark": "muse-spark-dark.webp",
       "alt": "Meta Muse Spark Open",
       "title": "Meta Muse Spark Open",
       "summary": "An 816B model with 42.7B active that runs on 256 GB.",

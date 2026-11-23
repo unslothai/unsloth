@@ -5,6 +5,7 @@
   "features": [
     {
       "image": "sandbox.webp",
+      "imageDark": "sandbox-dark.webp",
       "alt": "Sandbox level set to High in Security settings",
       "title": "Sandboxed tools",
       "summary": "Python and terminal tools run in the OS sandbox: Bubblewrap on Linux, Seatbelt on macOS, and MXC on Windows.",
@@ -14,6 +15,7 @@
     },
     {
       "image": "decision.webp",
+      "imageDark": "decision-dark.webp",
       "alt": "Decision accuracy rising from 30% to 80%",
       "title": "Decision models",
       "summary": "Turn any text or vision model into a decision model, then test, export, and serve it.",

@@ -5,6 +5,7 @@
   "features": [
     {
       "image": "deepseek.webp",
+      "imageDark": "deepseek-dark.webp",
       "alt": "DeepSeek-V4.1-Flash",
       "title": "DeepSeek-V4.1-Flash",
       "summary": "552B with 16B active, in about 125 GB at 1-bit with its Engram table on SSD.",
@@ -12,6 +13,7 @@
     },
     {
       "image": "flux3.webp",
+      "imageDark": "flux3-dark.webp",
       "alt": "FLUX.3 Image Klein",
       "title": "FLUX.3 Image Klein",
       "summary": "Runs on 24 GB and edits with up to 10 reference images.",

@@ -5,6 +5,7 @@
   "features": [
     {
       "image": "theme-files.webp",
+      "imageDark": "theme-files-dark.webp",
       "alt": "Theme files",
       "title": "Theme files",
       "summary": "Export your Appearance settings to a file and import someone else's.",
@@ -13,6 +14,7 @@
     },
     {
       "image": "async-grpo.webp",
+      "imageDark": "async-grpo-dark.webp",
       "alt": "AsyncGRPO",
       "title": "AsyncGRPO",
       "summary": "Reinforcement learning steps run 1.46x to 2.47x faster on A100."

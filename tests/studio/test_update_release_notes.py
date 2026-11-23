@@ -51,11 +51,12 @@ def test_curated_release_sections_and_webp_files(notes_path):
         for label, description in rows:
             assert label and description
     for feature in notes["features"]:
-        filename = Path(feature["image"])
-        assert filename.name == feature["image"] and filename.suffix == ".webp"
-        with (REPO / "images" / "releases" / tag / filename).open("rb") as image:
-            header = image.read(12)
-        assert header[:4] == b"RIFF" and header[8:] == b"WEBP"
+        for name in filter(None, (feature["image"], feature.get("imageDark"))):
+            filename = Path(name)
+            assert filename.name == name and filename.suffix == ".webp"
+            with (REPO / "images" / "releases" / tag / filename).open("rb") as image:
+                header = image.read(12)
+            assert header[:4] == b"RIFF" and header[8:] == b"WEBP"
 
 
 CARD_CAP = {
