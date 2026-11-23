@@ -185,11 +185,24 @@ def _load_conditioners(cfg, device):
     auth = {"token": cfg.hf_token} if cfg.hf_token else {}
     load_components_strict(
         pipe,
-        names = list(_H3_TEXT_COMPONENTS),
+        names = [n for n in _H3_TEXT_COMPONENTS if n != "text_encoder"],
         torch_dtype = torch.bfloat16,
         cache_dir = cache_dir,
         **auth,
     )
+    te_config = _read_layers_config(pipe, cache_dir, auth)
+    load_components_strict(
+        pipe,
+        names = ["text_encoder"],
+        torch_dtype = torch.bfloat16,
+        cache_dir = cache_dir,
+        **({"config": te_config} if te_config is not None else {}),
+        **auth,
+    )
+    if te_config is not None:
+        _finish_read_layers(pipe.text_encoder)
+    # Moved before the VAEs load, so the host never holds both; the VAEs move after it is freed (_train_h3).
+    pipe.text_encoder.to(device)
     load_components_strict(
         pipe,
         names = list(_H3_VAE_COMPONENTS),
@@ -197,10 +210,72 @@ def _load_conditioners(cfg, device):
         cache_dir = cache_dir,
         **auth,
     )
+    _drop_vae_decoders(pipe)
     _assert_component_grid(pipe)
-    # Only the conditioner moves here; the VAEs move after it is freed (_train_h3).
-    pipe.text_encoder.to(device)
     return pipe
+
+
+def _read_layers_config(pipe, cache_dir, auth) -> Any:
+    """The conditioner config cut to the _H3_TEXT_ENCODER_LAYER layers hidden_states[50] reads, so layers 50-63
+    are never loaded. None (load it whole) when the config cannot be read or is not deeper than the read layer."""
+    try:
+        import transformers
+
+        spec = pipe._component_specs["text_encoder"]
+        repo = spec.pretrained_model_name_or_path
+        if not repo:
+            return None
+        config = transformers.AutoConfig.from_pretrained(
+            repo,
+            subfolder = spec.subfolder or "",
+            revision = spec.revision,
+            cache_dir = cache_dir,
+            **auth,
+        )
+        text_config = getattr(config, "text_config", config)
+        if int(text_config.num_hidden_layers) <= _H3_TEXT_ENCODER_LAYER:
+            # _encode_prompt names the mismatch.
+            return None
+        text_config.num_hidden_layers = _H3_TEXT_ENCODER_LAYER
+        return config
+    except Exception:  # noqa: BLE001 -- the whole conditioner still encodes identically
+        return None
+
+
+def _finish_read_layers(encoder) -> None:
+    """A pass-through 51st slot keeps hidden_states[50] the raw output of the 50th layer, not the post-norm one; the
+    norm and the LM head never feed it, so they go before the move to the device."""
+    import torch
+
+    from core.inference.video_minimax_h3_te import _terminator_layer_class
+
+    language_model = encoder.model.language_model
+    if len(language_model.layers) != _H3_TEXT_ENCODER_LAYER:
+        raise ValueError(
+            f"Expected {_H3_TEXT_ENCODER_LAYER} conditioner layers, loaded {len(language_model.layers)}."
+        )
+    language_model.layers.append(_terminator_layer_class()())
+    encoder.config.text_config.num_hidden_layers = _H3_TEXT_ENCODER_LAYER + 1
+    language_model.norm = torch.nn.Identity()
+    encoder.lm_head = torch.nn.Identity()
+
+
+# The halves of each VAE the cache build never runs: it only encodes.
+_H3_VAE_DECODE_ONLY = {
+    "vae": ("decoder", "post_quant_conv"),
+    "audio_vae": ("decoder", "dec_in_proj"),
+}
+
+
+def _drop_vae_decoders(pipe) -> None:
+    """Training never decodes, so the decoders (about 2.4B of the video VAE's 2.6B params) never reach the device."""
+    for attr, children in _H3_VAE_DECODE_ONLY.items():
+        module = getattr(pipe, attr, None)
+        if not hasattr(module, "_modules"):
+            continue
+        for child in children:
+            if child in module._modules:
+                setattr(module, child, None)
 
 
 def _encode_prompt(pipe, caption: str, device) -> Any:
@@ -235,7 +310,8 @@ def _encode_prompt(pipe, caption: str, device) -> Any:
         if hidden is None:
             out = encoder.model(**kwargs, output_hidden_states = True)
             hidden = out.hidden_states[_H3_TEXT_ENCODER_LAYER]
-    return hidden.to("cpu", torch.float32)
+    # The conditioner runs in bf16; keeping its dtype halves the host bytes and is exact after the cast back.
+    return hidden.to("cpu")
 
 
 class _HiddenStateReached(Exception):
