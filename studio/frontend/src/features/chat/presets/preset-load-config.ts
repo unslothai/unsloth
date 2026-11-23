@@ -240,6 +240,7 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     platform.deviceType,
     platform.chatOnlyReason,
     platform.mlxInference,
+    store.loadedEngine,
   );
   const effectiveContextLength = requestableContextLength(
     capturedContextLength({

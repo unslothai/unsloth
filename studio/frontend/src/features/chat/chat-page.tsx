@@ -5136,6 +5136,7 @@ export function ChatPage({
                   platformDeviceType,
                   platformChatOnlyReason,
                   platformMlxInference,
+                  loadedEngine,
                 )}
                 contextEnforced={loadedContextEnforced}
                 contextUnboundedWhenBatched={loadedContextUnboundedWhenBatched}

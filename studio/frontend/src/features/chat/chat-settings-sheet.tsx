@@ -555,6 +555,7 @@ export function ChatSettingsPanel({
     platformDeviceType,
     platformChatOnlyReason,
     platformMlxInference,
+    loadedEngine,
   );
   // The backend's own classification: the native token survives a switch to a remote GGUF, and
   // org/name.gguf is a repo id, not a file.

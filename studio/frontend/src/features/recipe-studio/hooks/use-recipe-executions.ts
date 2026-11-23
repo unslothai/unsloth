@@ -352,6 +352,7 @@ async function loadLocalModelSelection(
             platform.deviceType,
             platform.chatOnlyReason,
             platform.mlxInference,
+            "auto",
           ),
           DEFAULT_MAX_SEQ_LENGTH,
         ),

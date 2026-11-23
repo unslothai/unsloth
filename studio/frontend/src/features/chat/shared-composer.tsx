@@ -1810,6 +1810,7 @@ export function SharedComposer({
               platform.deviceType,
               platform.chatOnlyReason,
               platform.mlxInference,
+              ownConfig.engine,
             ),
             DEFAULT_MAX_SEQ_LENGTH,
           );
@@ -1821,6 +1822,7 @@ export function SharedComposer({
           platform.deviceType,
           platform.chatOnlyReason,
           platform.mlxInference,
+          ownConfig.engine,
         );
         const effectiveSpeculativeType = resolveSpeculativeType(
           ownConfig.speculativeType,
@@ -2125,6 +2127,7 @@ export function SharedComposer({
                 platform.deviceType,
                 platform.chatOnlyReason,
                 platform.mlxInference,
+                ownConfig.engine,
               ),
               requestedContextLength: compareMaxSeqLength,
             });

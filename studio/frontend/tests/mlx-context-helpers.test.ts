@@ -144,14 +144,14 @@ test("a thought resumes on llama-server and on a load MLX reports serving", () =
 });
 
 test("MLX is a Mac non-GGUF load, and the reasons that rule it out", () => {
-  assert.equal(isServedByMlx(false, "mac", null), true);
-  assert.equal(isServedByMlx(true, "mac", null), false);
-  assert.equal(isServedByMlx(false, "cuda", null), false);
-  assert.equal(isServedByMlx(false, "mac", "no_torch", true), true);
-  assert.equal(isServedByMlx(false, "mac", "no_torch", false), false);
-  assert.equal(isServedByMlx(false, "mac", null, false), false);
-  assert.equal(isServedByMlx(true, "mac", "no_torch", true), false);
-  assert.equal(isServedByMlx(false, "cuda", null, true), false);
+  assert.equal(isServedByMlx(false, "mac", null, null, "auto"), true);
+  assert.equal(isServedByMlx(true, "mac", null, null, "auto"), false);
+  assert.equal(isServedByMlx(false, "cuda", null, null, "auto"), false);
+  assert.equal(isServedByMlx(false, "mac", "no_torch", true, "auto"), true);
+  assert.equal(isServedByMlx(false, "mac", "no_torch", false, "auto"), false);
+  assert.equal(isServedByMlx(false, "mac", null, false, "auto"), false);
+  assert.equal(isServedByMlx(true, "mac", "no_torch", true, "auto"), false);
+  assert.equal(isServedByMlx(false, "cuda", null, true, "auto"), false);
   // A picked vLLM engine (vllm-metal on Apple Silicon) serves instead of MLX.
   assert.equal(isServedByMlx(false, "mac", null, null, "auto"), true);
   assert.equal(isServedByMlx(false, "mac", null, true, "vllm"), false);
@@ -162,7 +162,7 @@ test("MLX is a Mac non-GGUF load, and the reasons that rule it out", () => {
     "rosetta",
     "detection_failed",
   ]) {
-    assert.equal(isServedByMlx(false, "mac", reason), false, reason);
+    assert.equal(isServedByMlx(false, "mac", reason, null, "auto"), false, reason);
   }
 });
 

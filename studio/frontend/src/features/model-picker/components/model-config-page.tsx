@@ -3617,6 +3617,7 @@ export function ModelConfigPage({
       isGguf: Boolean(target.isGguf),
       isAppleUnifiedMemory,
       classifiedIsDiffusion,
+      managedEngine: (configState.engine ?? "auto") !== "auto",
     })
       ? {
           modelPath: target.id,
@@ -3665,6 +3666,7 @@ export function ModelConfigPage({
   // The header probe gates the request; hold the row's place while it runs.
   const estimateAwaitingProbe =
     memoryEstimateRequest == null &&
+    (configState.engine ?? "auto") === "auto" &&
     contextFetchKey != null &&
     stagedDims == null &&
     !isDiffusion &&

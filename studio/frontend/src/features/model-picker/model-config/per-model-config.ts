@@ -187,9 +187,9 @@ const NO_MLX_REASONS = new Set([
 export function isServedByMlx(
   isGguf: boolean,
   deviceType: string | null | undefined,
-  chatOnlyReason?: string | null,
-  mlxInference?: boolean | null,
-  engine?: string | null,
+  chatOnlyReason: string | null | undefined,
+  mlxInference: boolean | null | undefined,
+  engine: string | null | undefined,
 ): boolean {
   if (isGguf || deviceType !== "mac" || (engine ?? "auto") !== "auto") return false;
   if (typeof mlxInference === "boolean") return mlxInference;
@@ -212,7 +212,7 @@ export function residentIsServedByMlx(
   mlxInference?: boolean | null,
 ): boolean {
   return (
-    isServedByMlx(isGguf, deviceType, chatOnlyReason, mlxInference) &&
+    isServedByMlx(isGguf, deviceType, chatOnlyReason, mlxInference, "auto") &&
     loadedIsMlx !== false
   );
 }
@@ -220,13 +220,14 @@ export function residentIsServedByMlx(
 export function presetLoadSettingNames(
   isGguf: boolean,
   deviceType: string | null | undefined,
-  chatOnlyReason?: string | null,
-  mlxInference?: boolean | null,
+  chatOnlyReason: string | null | undefined,
+  mlxInference: boolean | null | undefined,
+  engine: string | null | undefined,
 ): string {
   if (isGguf) {
     return "context window, KV cache dtype, speculative decoding, GPU layers";
   }
-  return isServedByMlx(isGguf, deviceType, chatOnlyReason, mlxInference)
+  return isServedByMlx(isGguf, deviceType, chatOnlyReason, mlxInference, engine)
     ? "max seq length, KV cache dtype"
     : "max seq length";
 }
