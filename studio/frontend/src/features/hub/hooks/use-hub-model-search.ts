@@ -297,14 +297,9 @@ function makeMapModel(
 
 const UNSLOTH_PREFETCH = 20;
 const UNSLOTH_QUERY_PREFETCH = 3;
-const POPULARITY_SORTS: ReadonlySet<HfSortKey> = new Set(["downloads", "likes", "trendingScore"]);
-
-/** Unsloth matches floated above a search's general results. A popularity sort puts the wanted
- *  repo in the first few; newest-first orders one release's FP8 / bnb / NVFP4 / GGUF uploads by
- *  upload time, so a typed name reads the whole family instead of three arbitrary siblings. */
-function unslothPrefetchLimit(query: string, sortBy: HfSortKey): number {
-  return query.trim() && POPULARITY_SORTS.has(sortBy) ? UNSLOTH_QUERY_PREFETCH : UNSLOTH_PREFETCH;
-}
+// Newest-first lists one release's FP8 / bnb / NVFP4 / GGUF uploads by upload time, so three rows
+// can miss the GGUF a typed name wants: only popularity sorts keep the short head.
+const POPULARITY_SORTS = new Set<HfSortKey>(["downloads", "likes", "trendingScore"]);
 /** Rejected unsloth rows a filtered search scans before moving on to general results. */
 const UNSLOTH_FILTER_REJECT_LIMIT = 40;
 
@@ -377,7 +372,8 @@ async function* mergedModelIterator(
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
 
-  const limit = unslothPrefetchLimit(query, sortBy);
+  const limit =
+    query.trim() && POPULARITY_SORTS.has(sortBy) ? UNSLOTH_QUERY_PREFETCH : UNSLOTH_PREFETCH;
   // Unfiltered phase 1 reads at most `limit` rows; avoids the Hub's default 500 (megabytes).
   const unslothRows = filterPriority || parameterFilter ? {} : { limit };
   const unslothIter = mergeTaskIterators(
