@@ -1796,8 +1796,12 @@ def _saved_attention_frames_possible() -> bool:
     # a graph break per layer for nothing, Unsupported under a user's fullgraph=True.
     if not _unsloth_checkpoint_installed():
         return False
-    if not torch.compiler.is_compiling():
-        return True
+    return not torch.compiler.is_compiling() or _in_unsloth_compiled_region()
+
+
+def _in_unsloth_compiled_region() -> bool:
+    # Unsloth's own per-layer compile (fullgraph=False, a graph break is legal); not set when the block
+    # is inlined into a user's torch.compile, which may be fullgraph=True.
     flag = getattr(sys.modules.get("unsloth.models._block_compile"), "_IN_COMPILED_REGION", None)
     return bool(flag) and bool(flag[0])
 
@@ -1806,7 +1810,13 @@ def _explicit_saves_attention() -> bool:
     # UNSLOTH_GC_SAVE_ATTENTION=1 / offload. ROCm: zoo makes a frame only for a checkpoint on a device
     # whose SDPA keeps an attention kernel, so a call outside a frame stays in the caller's graph instead
     # of crossing compiler.disable (Unsupported under fullgraph=True). Dynamo guards on the frame read.
-    return not _ROCM_SDPA_GUARD or _saved_attention_active()
+    # Inside a frame, only eager code and Unsloth's own blocks may cross it: any other compile may be
+    # fullgraph=True, and both checkpoint passes then stay in the graph alike (nothing kept or looked up).
+    if not _ROCM_SDPA_GUARD:
+        return True
+    if not _saved_attention_active():
+        return False
+    return not torch.compiler.is_compiling() or _in_unsloth_compiled_region()
 
 
 def _select_rocm_saved_sdpa(q):

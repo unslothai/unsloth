@@ -362,6 +362,74 @@ def test_rocm_explicit_routing_without_a_frame_compiles_fullgraph(monkeypatch, c
     assert SA.SAVED_ATTENTION_STATS["reused"] == 4 and saved[2] == 2
 
 
+def _rocm_explicit_routing(monkeypatch):
+    if not hasattr(SA, "save_attention_requested"):
+        pytest.skip(
+            "unsloth_zoo without per-device ROCm eligibility keeps ROCm saved attention off"
+        )
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", True)
+    monkeypatch.setattr(torch.version, "hip", "7.13.0", raising = False)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", None)
+    monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
+    monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")
+
+
+def test_rocm_explicit_routing_inside_a_frame_compiles_fullgraph(monkeypatch, checkpointing):
+    """A live checkpoint frame on an eligible device (CPU tensors are kept): a user's fullgraph=True
+    training compile must not reach the compiler-disabled saved_attention_call. Both checkpoint passes
+    stay in the graph, so forward + backward compile and the frame keeps nothing."""
+    _rocm_explicit_routing(monkeypatch)
+    q = torch.randn(1, H, S, D, requires_grad = True)
+    k = torch.randn(1, KV, S, D, requires_grad = True)
+    frame = SA.new_saved_attention_frame([q])
+    assert frame is not None
+    ref_q, ref_k = q.detach().requires_grad_(), k.detach().requires_grad_()
+    ref = _attend()(ref_q, ref_k, ref_k)
+    ref.sum().backward()
+    torch._dynamo.reset()
+    try:
+        compiled = torch.compile(_attend(), backend = "eager", fullgraph = True)
+        with SA.saved_attention_scope(frame, False), torch.no_grad():
+            first = compiled(q, k, k)
+        with SA.saved_attention_scope(frame, True):
+            out = compiled(q, k, k)
+            out.sum().backward()
+    finally:
+        torch._dynamo.reset()
+    torch.testing.assert_close(first, ref.detach())
+    torch.testing.assert_close(out, ref)
+    torch.testing.assert_close(q.grad, ref_q.grad)
+    torch.testing.assert_close(k.grad, ref_k.grad)
+    assert frame.entries == [] and SA.SAVED_ATTENTION_STATS.get("stored", 0) == 0
+
+
+def test_rocm_explicit_routing_inside_an_unsloth_block_still_reuses(monkeypatch, checkpointing):
+    """Unsloth's own block compile (fullgraph=False) may break the graph: there a live frame keeps the
+    first pass's kernel output and the replay reuses it."""
+    import sys
+    import types
+
+    _rocm_explicit_routing(monkeypatch)
+    block = types.ModuleType("unsloth.models._block_compile")
+    block._IN_COMPILED_REGION = [True]
+    monkeypatch.setitem(sys.modules, "unsloth.models._block_compile", block)
+    q = torch.randn(1, H, S, D, requires_grad = True)
+    k = torch.randn(1, KV, S, D, requires_grad = True)
+    frame = SA.new_saved_attention_frame([q])
+    torch._dynamo.reset()
+    try:
+        compiled = torch.compile(_attend(), backend = "eager", fullgraph = False)
+        with SA.saved_attention_scope(frame, False), torch.no_grad():
+            compiled(q, k, k)
+        with SA.saved_attention_scope(frame, True):
+            out = compiled(q, k, k)
+    finally:
+        torch._dynamo.reset()
+    torch.testing.assert_close(out, _attend()(q, k, k))
+    assert SA.SAVED_ATTENTION_STATS["stored"] >= 1 and SA.SAVED_ATTENTION_STATS["reused"] >= 1
+
+
 def test_rocm_saved_attention_selector_applies_the_sdpa_check(monkeypatch):
     from torch.nn.attention import SDPBackend
 
