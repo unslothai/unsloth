@@ -168,7 +168,6 @@ def test_dataset_csv_file_uses_raw_loader(tmp_path, monkeypatch):
     path.write_text("text\n" + "\n".join(f"row{i} has words" for i in range(60)), encoding = "utf-8")
     dataset, hub_loads = _run_cli(monkeypatch, dataset = str(path), chunk_size = 32, stride = 8)
     assert hub_loads == []
-    # 180 text-column words chunk into more than one window; the hub path maps columns instead.
     assert len(dataset["input_ids"]) > 1
     assert _longest_row(dataset) <= 32
 

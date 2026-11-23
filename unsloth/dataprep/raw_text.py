@@ -62,7 +62,6 @@ class RawTextDataLoader:
 
     @staticmethod
     def supports_file(file_path):
-        """Check if the file's extension maps to a format this loader parses."""
         return Path(file_path).suffix.lower() in SUPPORTED_FORMATS
 
     def load_from_file(
