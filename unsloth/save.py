@@ -8209,7 +8209,7 @@ def _torchao_hf_quantizer_attached(model):
 
 
 def _plain_vocab_weight(module):
-    """The weight a vocab module computes with, or None when it carries LoRA (its merge already handles it)."""
+    """The weight a vocab module computes with (embedding LoRA merged in), or None when a linear LoRA or DoRA covers it."""
     if hasattr(module, "modules_to_save"):
         if not getattr(module, "disable_adapters", False):
             for adapter in getattr(module, "active_adapters", None) or []:
@@ -8222,11 +8222,31 @@ def _plain_vocab_weight(module):
             module = module.original_module
     if len(getattr(module, "lora_A", None) or {}):
         return None
+    # An embedding LoRA keeps its factors in lora_embedding_A / _B: compare against (and write) the merged weight.
+    lora = module if len(getattr(module, "lora_embedding_A", None) or {}) else None
     while hasattr(module, "base_layer"):
         module = module.base_layer
     weight = getattr(module, "weight", None)
     if not isinstance(weight, torch.Tensor) or not weight.is_floating_point() or weight.is_meta:
         return None
+    if (
+        lora is not None
+        and not getattr(lora, "merged", False)
+        and not getattr(lora, "disable_adapters", False)
+    ):
+        active = [
+            a for a in (getattr(lora, "active_adapters", None) or []) if a in lora.lora_embedding_A
+        ]
+        if any((getattr(lora, "use_dora", None) or {}).get(a) for a in active):
+            return None
+        try:
+            with torch.no_grad():
+                for adapter in active:
+                    weight = weight + lora.get_delta_weight(adapter).to(
+                        device = weight.device, dtype = weight.dtype
+                    )
+        except Exception:
+            return None
     return weight
 
 

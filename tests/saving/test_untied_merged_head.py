@@ -63,12 +63,13 @@ def _train_and_merge(
     ensure_weight_tying,
     shard = False,
     gemma2 = False,
+    target_modules = ("q_proj", "v_proj"),
 ):
     base = AutoModelForCausalLM.from_pretrained(_base(tmp_path, shard, gemma2), dtype = torch.float32)
     config = LoraConfig(
         r = 4,
         lora_alpha = 8,
-        target_modules = ["q_proj", "v_proj"],
+        target_modules = list(target_modules),
         modules_to_save = list(modules_to_save),
         ensure_weight_tying = ensure_weight_tying,
     )
@@ -131,4 +132,15 @@ def test_tied_training_still_writes_one_tensor(tmp_path):
     reference, logits, config, keys, _ = _train_and_merge(tmp_path, ("embed_tokens",), True)
     assert config["tie_word_embeddings"] is True
     assert "lm_head.weight" not in keys
+    torch.testing.assert_close(logits, reference, atol = 1e-4, rtol = 1e-4)
+
+
+@pytest.mark.parametrize("shard", [False, True])
+def test_embedding_lora_survives_the_untied_head(tmp_path, shard):
+    # PEFT keeps an embedding LoRA in lora_embedding_A / _B, so the untie must write the merged embedding, not the base one.
+    reference, logits, config, keys, _ = _train_and_merge(
+        tmp_path, ("lm_head",), False, shard, target_modules = ("q_proj", "v_proj", "embed_tokens")
+    )
+    assert config.get("tie_word_embeddings", True) is False
+    assert "lm_head.weight" in keys
     torch.testing.assert_close(logits, reference, atol = 1e-4, rtol = 1e-4)
