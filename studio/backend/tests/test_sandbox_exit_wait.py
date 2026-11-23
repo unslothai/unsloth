@@ -302,7 +302,7 @@ class TestScopeWrapperOnlyWhereItApplies:
         from core.inference import sandbox_landlock, sandbox_linux
 
         if sandbox_linux.shutil.which("bwrap") is None:
-            pytest.skip("bubblewrap is not installed on this host")
+            pytest.skip(reason = "bubblewrap is not installed on this host")
         monkeypatch.setattr(sandbox_landlock, "_abi_reports_scope", lambda: abi_has_scope)
         monkeypatch.setattr(tools, "_sandbox_shims", ("/usr/bin/setpriv", "/usr/bin/prlimit"))
         monkeypatch.setattr(tools, "_sandbox_rlimit_args", lambda: ["--cpu=600:600"])
@@ -332,7 +332,7 @@ class TestScopeWrapperOnlyWhereItApplies:
         from core.inference import sandbox_landlock
 
         if sandbox_landlock._libc is None:
-            pytest.skip("no libc")
+            pytest.skip(reason = "ctypes cannot load libc on this platform")
         calls = []
 
         class FakeLibc:

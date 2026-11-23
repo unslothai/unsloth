@@ -23537,19 +23537,15 @@ _BACKGROUND_STOPPED_NOTE = (
 )
 
 
-# Longest single poll()/kqueue slice: a huge timeout overflows the C conversion (CPython gh-154836 clamps the same).
+# Huge timeouts overflow the C conversion (CPython gh-154836).
 _EXIT_WAIT_MAX_SLICE_S = 24 * 3600.0
-# The last stretch before a deadline is left to Popen.wait, so a timeout fires exactly when it did before: Linux lets a
-# poll() wake up to 0.1% (at most 100 ms) late, and halving slices keep that slack ahead of this tail.
+# Left to Popen.wait so timeouts fire as before: Linux poll() may wake up to 0.1% (max 100 ms) late.
 _EXIT_WAIT_TAIL_S = 0.05
 
 
 def _open_exit_waiter(proc):
-    """A pidfd (Linux) or kqueue (macOS) that turns ready when *proc* exits, or None to keep Popen's loop.
-
-    Opened under Popen's waitpid lock with the returncode unset, so nothing reaps the pid (and lets it be reused)
-    before the handle names it; Python 3.15+ already waits this way inside Popen.wait.
-    """
+    """pidfd (Linux) or kqueue (macOS) ready on exit, else None. Opened under Popen's waitpid lock so the pid cannot be
+    reaped and reused first; Python 3.15+ does this inside Popen.wait."""
     if sys.platform == "win32" or not isinstance(proc, subprocess.Popen):
         return None
     if hasattr(subprocess.Popen, "_wait_pidfd"):
@@ -23567,7 +23563,7 @@ def _open_exit_waiter(proc):
             except OSError:
                 return None
             try:
-                # Still our unreaped child: an outside waitpid(-1) reaping it would let the pid be reused.
+                # An outside waitpid(-1) may have reaped it, freeing the pid for reuse.
                 os.waitid(os.P_PIDFD, fd, os.WEXITED | os.WNOHANG | os.WNOWAIT)
             except (OSError, AttributeError):
                 os.close(fd)
@@ -23594,7 +23590,7 @@ def _open_exit_waiter(proc):
                 0,
             )
         except OSError:
-            # ESRCH for a child that already exited: Popen's loop reaps it on its first check.
+            # ESRCH: already exited.
             kq.close()
             return None
         return ("kqueue", kq)
@@ -23613,7 +23609,6 @@ def _wait_exit_event(waiter, deadline: float) -> bool:
             lead = deadline - _EXIT_WAIT_TAIL_S - time.monotonic()
             if lead <= 0:
                 return False
-            # Half the lead (down to the tail size), so a slice's timer slack never reaches the deadline.
             wait_s = min(lead, max(lead / 2, _EXIT_WAIT_TAIL_S), _EXIT_WAIT_MAX_SLICE_S)
             if kind == "pidfd":
                 ready = poller.poll(wait_s * 1000)
@@ -23629,8 +23624,7 @@ def _wait_exit_event(waiter, deadline: float) -> bool:
 
 
 def _wait_process(proc, timeout) -> None:
-    """proc.wait(timeout) woken by the kernel's exit notification instead of Python 3.9-3.14's 1-50 ms sleep loop,
-    which noticed every exit up to 50 ms late. Any unavailable piece keeps proc.wait(timeout) itself."""
+    """proc.wait(timeout) woken by the exit event, not Python <= 3.14's 1-50 ms sleep loop; falls back to proc.wait."""
     if timeout is None:
         proc.wait(timeout = timeout)
         return
@@ -23649,7 +23643,6 @@ def _wait_process(proc, timeout) -> None:
         _wait_exit_event(waiter, deadline)
     except Exception:  # noqa: BLE001 - fall through to the stdlib wait for what is left
         logger.debug("exit wait failed", exc_info = True)
-    # Reaps an exited child at once; otherwise waits out the rest exactly as before and raises at the deadline.
     try:
         proc.wait(timeout = max(deadline - time.monotonic(), 0.0))
     except subprocess.TimeoutExpired:
