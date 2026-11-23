@@ -1,39 +1,44 @@
 {
   "version": "0.1.922-beta",
-  "title": "Theme files and fixes",
+  "title": "Video Restyle on Mac and OCR",
   "date": "2026-11-20",
   "features": [
     {
-      "image": "theme-files.webp",
-      "imageDark": "theme-files-dark.webp",
-      "alt": "Theme files",
-      "title": "Theme files",
-      "summary": "Export your Appearance settings to a file and import someone else's.",
-      "open": "settings:appearance",
-      "action": "Export a theme"
+      "image": "video-restyle.webp",
+      "imageDark": "video-restyle-dark.webp",
+      "alt": "Video Restyle on Mac",
+      "title": "Video Restyle on Mac",
+      "summary": "Re-render a whole clip in a new style on Apple Silicon.",
+      "open": "/video",
+      "action": "Restyle a video"
     },
     {
-      "image": "async-grpo.webp",
-      "imageDark": "async-grpo-dark.webp",
-      "alt": "AsyncGRPO",
-      "title": "AsyncGRPO",
-      "summary": "Reinforcement learning steps run 1.46x to 2.47x faster on A100."
+      "image": "scanned-pdfs.webp",
+      "imageDark": "scanned-pdfs-dark.webp",
+      "alt": "Scanned PDFs read with OCR",
+      "title": "Scanned PDFs in chat",
+      "summary": "Attach a scanned PDF and the model reads it with OCR."
     }
   ],
   "changes": {
     "new": [
+      ["Appearance", "Theme files let you share your Appearance settings."],
       [
         "Chat",
-        "A reasoning model that runs out of tokens while thinking now offers Retry."
-      ],
-      ["Video", "Video Restyle re-renders a whole clip in a new style on Mac."]
+        "A reasoning model that runs out of tokens while thinking shows advice and Retry."
+      ]
     ],
-    "improved": [["Inkling 2 Mini", "Uses less memory and runs faster."]],
+    "improved": [
+      ["Inkling 2 Mini", "Less memory and faster."],
+      ["Training", "AsyncGRPO steps are 1.46x to 2.47x faster on A100."],
+      ["MCP", "Tool output length in Settings now applies to MCP results."]
+    ],
     "fixed": [
       [
         "Windows",
         "Desktop no longer gets stuck on an incomplete install on some AMD PCs."
-      ]
+      ],
+      ["Mac", "Chat-only installs no longer show small models as Does not fit."]
     ]
   },
   "more": 18

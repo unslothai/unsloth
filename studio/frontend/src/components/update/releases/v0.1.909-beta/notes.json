@@ -24,10 +24,13 @@
   ],
   "changes": {
     "new": [
-      ["MCP", "Run unsloth mcp add to connect Claude Code, Codex, or Cursor."],
+      [
+        "MCP",
+        "unsloth mcp add connects Claude Code, Codex or Cursor to Unsloth."
+      ],
       [
         "Chat",
-        "Chat models can use the image or video model loaded beside them."
+        "Images and videos in chat from the image or video model loaded beside it."
       ],
       [
         "Image editing",
@@ -35,7 +38,7 @@
       ],
       [
         "Training",
-        "Preview the tokens your model will learn before training starts."
+        "Token preview shows what your model will learn before training starts."
       ]
     ]
   },

@@ -20,13 +20,20 @@
     }
   ],
   "changes": {
-    "improved": [
-      ["Startup", "Start Studio about twice as fast on first launch."]
-    ],
     "new": [
       [
         "Browser use",
         "Let models control the built-in browser from its new tab page."
+      ]
+    ],
+    "improved": [
+      [
+        "Speed",
+        "2x faster first launch, plus faster tool calls, model lists, dataset prep and MiniMax-H3 loads."
+      ],
+      [
+        "vLLM and SGLang",
+        "Thinking, resume, JSON output and auto-compact now work there too."
       ]
     ]
   },

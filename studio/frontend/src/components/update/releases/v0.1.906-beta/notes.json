@@ -28,12 +28,12 @@
     "new": [
       [
         "Training",
-        "Train text-diffusion LLMs such as DiffusionGemma, LLaDA, and Dream."
+        "Train text-diffusion LLMs like DiffusionGemma, LLaDA and Dream."
       ]
     ],
     "improved": [
-      ["MoE", "Run MoE GGUFs larger than your VRAM up to 3x faster."],
-      ["Mac", "Speculative decoding makes MLX replies up to 2.8x faster."]
+      ["MoE", "Up to 3x faster MoE GGUFs that are bigger than your VRAM."],
+      ["Mac", "Speculative decoding for up to 2.8x faster MLX replies."]
     ]
   },
   "more": 291,

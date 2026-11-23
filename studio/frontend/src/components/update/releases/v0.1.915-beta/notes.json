@@ -24,13 +24,20 @@
   ],
   "changes": {
     "new": [
-      ["Chat", "Chat context is kept when you switch between GGUF models."],
+      [
+        "Composer",
+        "A position slider places the chat box anywhere on new chats."
+      ],
+      ["Training", "FP8 LoRA training with lower GPU memory use."]
+    ],
+    "improved": [
       [
         "Glass",
-        "Glass themes reach pages, menus, the sidebar, and the browser."
-      ]
-    ],
-    "improved": [["Training", "FP8 LoRA training uses less GPU memory."]]
+        "Glass themes reach pages, menus, the sidebar and the browser."
+      ],
+      ["Memory", "Lower idle memory with faster MLX loading and reloading."],
+      ["Chat", "Chat context is kept when you switch between GGUF models."]
+    ]
   },
   "more": 79
 }

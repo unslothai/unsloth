@@ -23,18 +23,29 @@
   ],
   "changes": {
     "new": [
-      ["Compaction", "Compaction works with every API connection."],
       [
         "Browser use",
-        "Models can click, drag, and run approved scripts, with per-site rules."
+        "Click, move the mouse, drag, run approved scripts and set per-site rules."
       ],
       ["Hardware", "NVIDIA RTX Spark runs with the Windows ARM64 download."]
+    ],
+    "improved": [
+      ["Inference", "Up to 5x faster with a 95% cache hit rate and MoE fixes."],
+      [
+        "Compaction",
+        "Works with every API connection, with better UI handling."
+      ],
+      [
+        "Image training",
+        "Faster image LoRA training with aspect buckets and fused AdamW."
+      ]
     ],
     "fixed": [
       [
         "Files",
-        "Drag and drop works again on Desktop, with over 3x more file types."
-      ]
+        "Drag and drop works again on Desktop, with 3x more supported files."
+      ],
+      ["Hardware", "Windows AMD, Intel XPU and CUDA/PyTorch fixes."]
     ]
   },
   "more": 137

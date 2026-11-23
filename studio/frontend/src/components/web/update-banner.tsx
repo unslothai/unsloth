@@ -170,8 +170,8 @@ export function WebUpdateBanner({
             <div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-y-2">
               <Button
                 size="sm"
-                variant="secondary"
-                className="h-auto gap-1.5 whitespace-nowrap rounded-full px-3 py-2 text-ui-13 font-medium"
+                variant="primary"
+                className="h-auto gap-1.5 whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                 onClick={() =>
                   useWhatsNew.getState().show({
                     version: status.latestVersion,
@@ -183,7 +183,7 @@ export function WebUpdateBanner({
               >
                 <HugeiconsIcon
                   icon={SparklesIcon}
-                  className="size-3.5 text-primary"
+                  className="size-3.5"
                   strokeWidth={2}
                   aria-hidden="true"
                 />
@@ -202,8 +202,8 @@ export function WebUpdateBanner({
                 </Button>
                 <Button
                   size="sm"
-                  variant="primary"
-                  className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
+                  variant="secondary"
+                  className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13 font-medium"
                   onClick={handleCopyCommand}
                   data-testid="web-update-copy-button"
                 >

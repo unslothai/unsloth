@@ -24,11 +24,20 @@
   "changes": {
     "new": [
       [
-        "Compaction",
-        "Long chats on connected providers are summarized automatically, and /compact works with cloud models."
+        "Projects",
+        "Browse files, search folders and view Git changes from the Files tab."
       ]
     ],
-    "improved": [["Training", "Gemma 4 12B trains 1.4 to 2.6x faster."]]
+    "improved": [
+      [
+        "Computer use",
+        "Local vision models and connected providers see your screen and use apps, with permission controls."
+      ],
+      [
+        "Connections",
+        "Live status, a redesigned provider gallery and 9 new providers."
+      ]
+    ]
   },
   "more": 17
 }

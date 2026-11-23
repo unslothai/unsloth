@@ -1041,7 +1041,7 @@ def test_desktop_banner_opens_release_dialog_for_the_offered_version():
     src = TAURI_BANNER.read_text(encoding = "utf-8")
     assert 'aria-haspopup="dialog"' in src
     assert "version: notesTargetVersion" in src
-    _shown_at(src, "What's New")
+    assert 't("updateNotes.whatsNew")' in src
 
 
 @pytest.mark.parametrize(

@@ -17,7 +17,11 @@ import type {
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { Alert02Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import {
+  Alert02Icon,
+  Download01Icon,
+  SparklesIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
@@ -221,15 +225,21 @@ export function UpdateBanner({
               {!showFailure && notesTargetVersion ? (
                 <Button
                   size="sm"
-                  variant="ghost"
-                  className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                  variant="primary"
+                  className="h-auto gap-1.5 whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                   onClick={() =>
                     useWhatsNew.getState().show({version: notesTargetVersion, url: releasePageUrl ?? manualReleaseUrl})
                   }
                   aria-haspopup="dialog"
                   data-testid="tauri-update-release-notes-toggle"
                 >
-                  {t("shell.helpMenu.whatsNew")}
+                  <HugeiconsIcon
+                    icon={SparklesIcon}
+                    className="size-3.5"
+                    strokeWidth={2}
+                    aria-hidden="true"
+                  />
+                  {t("updateNotes.whatsNew")}
                 </Button>
               ) : null}
               {showFailure ? (
@@ -276,8 +286,8 @@ export function UpdateBanner({
                   </Button>
                   <Button
                     size="sm"
-                    variant="primary"
-                    className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
+                    variant="secondary"
+                    className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13 font-medium"
                     onClick={onInstall}
                     disabled={installDisabled}
                     data-testid="tauri-update-install"

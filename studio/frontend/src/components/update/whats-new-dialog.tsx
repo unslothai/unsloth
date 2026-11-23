@@ -242,6 +242,11 @@ function UpdateAction() {
       >
         {liveOffer.actionLabel}
       </Button>
+      {liveOffer.actionDisabled && liveOffer.note && (
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+          {liveOffer.note}
+        </p>
+      )}
     </div>
   );
 }
@@ -543,7 +548,7 @@ function CatchUp({
                   </li>
                 ))}
                 {changeRows(entry).map(([label, description]) => (
-                  <li key={label}>
+                  <li key={`${label}:${description}`}>
                     <span className="font-medium">{label}.</span>{" "}
                     <span className="text-muted-foreground">{description}</span>
                     <GuideLink href={entry.guides?.[label]} />

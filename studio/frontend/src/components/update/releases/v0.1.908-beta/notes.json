@@ -23,24 +23,24 @@
   "changes": {
     "new": [
       [
-        "Image servers",
-        "Generate images through sd-server, Ollama, Lemonade, and more."
+        "Images",
+        "Generate through sd-server, Ollama, Lemonade and other image servers."
       ],
       [
         "Diffusion LLMs",
-        "Train and chat with LLaDA, Dream, and SDAR on a live denoising canvas."
+        "Train and chat with LLaDA, Dream, SDAR and more on a live denoising canvas."
       ]
     ],
     "improved": [
       [
         "Coding agents",
-        "Claude Code and Codex reprocess far less of each prompt on local GGUFs."
+        "Claude Code and Codex on local GGUFs re-process far less of each prompt."
       ]
     ],
     "fixed": [
       [
         "Browser use",
-        "Each chat gets its own tab, and Always allow now sticks."
+        "Always allow works, plus a visible cursor and a separate tab for each chat."
       ]
     ]
   },

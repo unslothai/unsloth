@@ -22,14 +22,12 @@
   ],
   "changes": {
     "new": [
-      [
-        "Scheduled tasks",
-        "Schedule a task inside a chat and get replies right there."
-      ]
+      ["Models", "NVIDIA Cosmos3 Nano-FP8 and Edge-FP8 video models now load."],
+      ["Scheduled tasks", "Tasks inside a chat reply right in that chat."]
     ],
     "improved": [
-      ["Diffusion LoRA", "Up to 42% faster per step, and now on T4 GPUs too."],
-      ["Strix Halo", "FLUX.3 Klein up to 28% faster per step on Windows."]
+      ["Strix Halo", "FLUX.3 Klein up to 28% faster per step on Windows."],
+      ["Diffusion LoRA", "Up to 42% faster per step, and now on T4 GPUs too."]
     ]
   },
   "more": 28,

@@ -22,14 +22,19 @@
     }
   ],
   "changes": {
-    "improved": [
+    "new": [
       [
-        "Generation",
-        "Render Qwen-Image up to twice as fast under a 16 GB VRAM limit."
+        "Models",
+        "DeepSeek-V4.1-Flash-1017 Dynamic v3.1 GGUFs (preview), the most accurate for their size."
       ],
-      ["Updates", "App updates finish twice as fast."]
+      ["Fine-tuning", "MoE fine-tuning runs compatible API jobs together."]
     ],
-    "new": [["Models", "DeepSeek-V4.1-Flash gets new Dynamic v3.1 GGUFs."]]
+    "improved": [
+      ["Updates", "App updates finish twice as fast."],
+      ["Linux", "Much less lag and better performance."],
+      ["Qwen-Image", "Renders up to 2x faster under a 16 GB VRAM limit."],
+      ["Interface", "A cleaner, more consistent UI."]
+    ]
   },
   "more": 238,
   "guides": {

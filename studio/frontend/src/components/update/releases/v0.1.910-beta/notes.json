@@ -27,22 +27,23 @@
   "changes": {
     "new": [
       [
+        "Mac",
+        "MLX MoE models too big for memory keep experts on SSD, so Qwen3.8-Flash-Next runs on a 32 GB Mac."
+      ],
+      [
         "Install",
         "A much smaller chat-only Desktop for GGUF chat. Add training later in Settings."
       ],
       [
-        "Mac",
-        "MLX MoE models keep experts on SSD, so Qwen3.8-Flash-Next runs on a 32 GB Mac."
+        "Models",
+        "NVIDIA Nemotron 3.5 Bolt E4B scores 63.2 on Tau2-Bench vs the original's 38.7."
       ],
       [
         "Export",
-        "Prune 25% or 50% of a MoE model's least useful experts with REAP."
-      ],
-      [
-        "Models",
-        "NVIDIA Nemotron 3.5 Bolt E4B scores 63.2 on Tau2-Bench, up from 38.7."
+        "Export a smaller MoE by pruning 25% or 50% of its least useful experts with REAP."
       ]
-    ]
+    ],
+    "improved": [["Interface", "A more consistent UI across Unsloth."]]
   },
   "more": 531,
   "guides": {

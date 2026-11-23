@@ -22,24 +22,18 @@
   ],
   "changes": {
     "new": [
-      [
-        "Chat navigation",
-        "Bookmark a turn and jump back to an earlier message."
-      ],
-      ["Training", "Fine-tune text models on CPU from the Train page."]
+      ["Chat navigation", "Preview, bookmark and jump between earlier turns."],
+      ["Training", "CPU text training directly from the Train page."]
     ],
     "improved": [
       [
-        "Search",
-        "Search large document collections faster with the new RAG index."
-      ]
-    ],
-    "fixed": [
-      [
-        "MCP connections",
-        "Chat reconnects to its MCP session after the server restarts."
+        "DeepSeek-V4.1",
+        "Unsloth's 512K context GGUFs rank strongest across Terminal Bench, DeepSWE and AutomationBench."
       ]
     ]
   },
-  "more": 313
+  "more": 313,
+  "guides": {
+    "DeepSeek-V4.1": "https://unsloth.ai/docs/models/deepseek-v4.1-flash"
+  }
 }

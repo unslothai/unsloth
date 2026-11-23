@@ -164,6 +164,15 @@ export function UpdatePill({
             {t("desktopUpdate.banner.later")}
           </Button>
         </div>
+        {/* A disabled button takes no hover or focus, so its reason is shown as text. */}
+        {offer.actionDisabled && offer.note && (
+          <p
+            className="mt-3 text-xs leading-relaxed text-muted-foreground"
+            data-testid="update-popover-note"
+          >
+            {offer.note}
+          </p>
+        )}
       </PopoverContent>
     </Popover>
   );

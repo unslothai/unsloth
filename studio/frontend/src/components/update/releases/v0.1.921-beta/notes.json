@@ -22,16 +22,27 @@
     }
   ],
   "changes": {
-    "new": [["Documents", "Scanned PDFs in chat are read with OCR."]],
     "improved": [
       [
+        "MiniMax-H3-Image",
+        "Renders a new prompt in 36.7 s on 8 GB GPUs, down from 82.7 s."
+      ],
+      [
         "Images",
-        "MiniMax-H3-Image renders a new prompt in 36.7 s on 8 GB GPUs, down from 82.7 s."
+        "GGUF image models load with 52 to 66% less RAM on Linux and macOS."
+      ],
+      ["MCP", "MCP chats process 83 to 87% fewer prompt tokens."],
+      [
+        "FLUX.1",
+        "FLUX.1 takes 16 to 28% less time per step when streaming from RAM."
       ]
+    ],
+    "fixed": [
+      ["Images", "GTX 16xx cards no longer fail renders with a NaN error."]
     ]
   },
   "more": 20,
   "guides": {
-    "Images": "https://unsloth.ai/docs/models/minimax-h3-image"
+    "MiniMax-H3-Image": "https://unsloth.ai/docs/models/minimax-h3-image"
   }
 }

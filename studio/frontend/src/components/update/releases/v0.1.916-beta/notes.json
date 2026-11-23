@@ -22,14 +22,23 @@
     }
   ],
   "changes": {
+    "new": [
+      ["Browser", "Each chat can run its own browser."],
+      ["Images and video", "Up to 2x faster on two matching NVIDIA GPUs."]
+    ],
     "improved": [
       [
         "Models",
         "Qwen3.8-Flash Dynamic v3.1 uses 50% fewer tokens and is 15% more accurate."
       ],
-      ["Chats", "Search and delete chats much faster."]
+      ["Chats", "Search and delete chats much faster."],
+      ["Loading", "Image and video models load up to 40% faster."],
+      ["LTX-2.5", "Much faster for new prompts on 16 to 24 GB GPUs."]
     ],
-    "fixed": [["Memory", "Unified memory offloading now works for big models."]]
+    "fixed": [
+      ["Memory", "Unified memory offloading now works for big models."],
+      ["Glass", "No more blur, better rendering and more options."]
+    ]
   },
   "more": 177
 }

@@ -23,11 +23,11 @@
   ],
   "changes": {
     "new": [
-      ["Images", "Edit images with prompts in FLUX.3."],
-      ["Presets", "Save Run settings as named presets for each model."]
+      ["Images", "FLUX.3 now edits images with prompts."],
+      ["Presets", "Save your Run settings as named presets for each model."]
     ],
     "improved": [
-      ["Performance", "Large gains on Mac, less lag, and smaller binaries."]
+      ["Performance", "Large Mac gains, less lag and smaller binaries."]
     ]
   },
   "more": 376

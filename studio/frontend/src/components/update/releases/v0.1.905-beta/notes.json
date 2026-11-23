@@ -23,14 +23,13 @@
     }
   ],
   "changes": {
-    "new": [
-      [
-        "ComfyUI",
-        "Load ComfyUI image and video models, text encoders, and VAEs directly."
-      ]
-    ],
+    "new": [["ComfyUI", "Load ComfyUI diffusion models natively in Unsloth."]],
     "improved": [
-      ["Diffusion", "Generate faster and more accurately with INT8 ConvRot."]
+      ["Diffusion", "Faster and more accurate generation with INT8 ConvRot."],
+      [
+        "Browser",
+        "A better Browser in Desktop, plus 100+ bug and performance fixes."
+      ]
     ]
   },
   "more": 148

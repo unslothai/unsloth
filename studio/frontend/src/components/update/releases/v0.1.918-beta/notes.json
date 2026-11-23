@@ -25,18 +25,28 @@
   ],
   "changes": {
     "new": [
+      ["Engram", "Change and swap engrams for Qwen Flash and DeepSeek."],
       [
         "Creative apps",
-        "Connect Unreal Engine, Unity, Godot, and Roblox through MCP."
+        "Connect Unreal Engine, Unity, Godot and Roblox through MCP, alongside Blender."
       ],
       [
         "MiniMax-H3-Image",
-        "GGUF for CPU, Mac, and AMD, plus FP8 and INT8 on NVIDIA."
+        "GGUF for CPU, Mac and AMD, FP8 and INT8 on NVIDIA, plus LoRA training."
       ],
-      ["Connections", "Live connection status and 9 new providers."],
       [
         "Projects",
-        "Browse files, search folders, and see Git changes in the new Files tab."
+        "Browse project files, search folders and view Git changes in the new Files tab."
+      ]
+    ],
+    "improved": [
+      [
+        "Connections",
+        "Live connection status, a redesigned provider gallery and 9 new providers."
+      ],
+      [
+        "Compaction",
+        "Long chats are summarized automatically, with limits per connection."
       ]
     ]
   },

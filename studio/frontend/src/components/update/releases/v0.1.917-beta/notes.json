@@ -1,35 +1,39 @@
 {
   "version": "0.1.917-beta",
-  "title": "Faster chats and new code blocks",
+  "title": "Qwen3.8-27B and new code blocks",
   "date": "2026-11-11",
   "features": [
+    {
+      "image": "qwen38-27b.webp",
+      "imageDark": "qwen38-27b-dark.webp",
+      "alt": "Qwen3.8-27B",
+      "title": "Qwen3.8-27B",
+      "summary": "New Dynamic v3.1 GGUFs, ready to run locally.",
+      "link": "https://unsloth.ai/docs/models/qwen3.8",
+      "open": "/hub?model=unsloth/Qwen3.8-27B-GGUF",
+      "action": "Get Qwen3.8-27B"
+    },
     {
       "image": "code-blocks.webp",
       "imageDark": "code-blocks-dark.webp",
       "alt": "A Python code block in a chat reply",
       "title": "Code blocks and Thinking",
       "summary": "Expandable panels that scroll on their own, with better syntax highlighting."
-    },
-    {
-      "image": "export.webp",
-      "imageDark": "export-dark.webp",
-      "alt": "The chat menu with Export to HTML and PDF",
-      "title": "HTML and PDF export",
-      "summary": "Export a chat straight from the chat menu."
     }
   ],
   "changes": {
     "new": [
-      ["Models", "New Qwen3.8-27B Dynamic v3.1 GGUFs."],
-      ["Images", "Queue the next image while another one renders."],
+      ["Chat", "Export chats to HTML and PDF from the chat menu."],
+      ["Images", "Queue upcoming images while another one renders."],
       ["Mac", "Run Claude Code and Codex on MLX models with unsloth start."]
     ],
     "improved": [
-      ["Performance", "Smoother streaming, scrolling, and menus in long chats."]
+      [
+        "Performance",
+        "Faster streaming, scrolling, menus and dialogs, especially in long chats."
+      ],
+      ["Glass", "Less lag while typing, scrolling and generating."]
     ]
   },
-  "more": 474,
-  "guides": {
-    "Models": "https://unsloth.ai/docs/models/qwen3.8"
-  }
+  "more": 474
 }
