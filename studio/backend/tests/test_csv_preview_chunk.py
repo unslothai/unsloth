@@ -112,7 +112,6 @@ def test_csv_preview_matches_the_default_chunk(tmp_path, name):
 
 @pytest.mark.parametrize("line", [4, 50, 9_999])
 def test_a_malformed_row_in_the_first_10k_rows_still_fails(tmp_path, line):
-    # csv_as_text_kwargs parses the first 10k rows, so damage past the preview rows still surfaces.
     path = tmp_path / "bad.csv"
     path.write_text(HEADER + _rows(line - 1) + "x,y,z,extra\n" + _rows(20, line))
 
