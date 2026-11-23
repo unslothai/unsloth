@@ -43,11 +43,13 @@ const NAME_ARCHITECTURES: [RegExp, string][] = [
   [/(^|[^a-z0-9])lfm2/i, "lfm2"],
 ];
 
-/** The architecture, else the one a model's name gives: a local GGUF is not read before converting. */
+/** The architecture, else the one a model's name gives: a local GGUF is not read before converting.
+ *  Only the last path segment counts, so a parent folder never names another family. */
 export function q4nxArchitecture(architecture?: string | null, name?: string | null): string | null {
   const arch = architecture?.trim().toLowerCase();
   if (arch) return arch;
-  return NAME_ARCHITECTURES.find(([re]) => re.test(name ?? ""))?.[1] ?? null;
+  const leaf = (name ?? "").trim().split(/[\\/]/).pop() ?? "";
+  return NAME_ARCHITECTURES.find(([re]) => re.test(leaf))?.[1] ?? null;
 }
 
 /** The quant that packs directly for an architecture, or null when it is not known. */

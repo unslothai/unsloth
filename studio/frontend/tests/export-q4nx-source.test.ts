@@ -496,6 +496,11 @@ test("a local GGUF with no architecture is read by its model name", () => {
   assert.equal(q4nxArchitecture(null, "LFM2-1.2B-Q4_0.gguf"), "lfm2");
   assert.equal(q4nxArchitecture(null, "Qwen3.50-fake"), null);
   assert.equal(q4nxArchitecture("llama", "Qwen3.5-4B"), "llama");
+  assert.equal(
+    q4nxArchitecture(null, "/models/Qwen3.5-comparisons/Qwen2.5-3B-Instruct-Q4_0.gguf"),
+    "qwen2",
+  );
+  assert.equal(q4nxArchitecture(null, "C:\\models\\Qwen3.5-runs\\Llama-3.2-1B-Q4_1.gguf"), null);
   // A local Qwen3.5 Q4_0 is the repeated-slashes file: refused, not "packs directly".
   assert.equal(q4nxPacking("Q4_0", null, "unsloth/Qwen3.5-4B-GGUF"), "mismatch");
   assert.equal(q4nxPacking("Q4_K_M", null, "unsloth/Qwen3.5-4B-GGUF"), "direct");
