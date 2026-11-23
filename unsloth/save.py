@@ -5344,11 +5344,8 @@ def unsloth_save_pretrained_gguf(
 
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
-    # An FSDP2 writer reaches this inside its gather, which already chose it: no veto there.
-    if not is_main_process:
-        from .models.fsdp2_save import fsdp2_gather_active
-        if not fsdp2_gather_active():
-            return None
+    if _defer_to_main_process(is_main_process):
+        return None
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
     # Read before the processor is unwrapped to its tokenizer below.
@@ -5966,6 +5963,17 @@ def _free_merge_if_disk_is_tight(
     return freed
 
 
+def _defer_to_main_process(is_main_process):
+    """A non-main rank skips the export, except the FSDP2 writer (any rank of its mesh), which
+    reaches it inside the gather that chose it. A function, not an inline import, so callers that
+    snapshot locals() forward no extra name."""
+    if is_main_process:
+        return False
+    from .models.fsdp2_save import fsdp2_gather_active
+
+    return not fsdp2_gather_active()
+
+
 def _ddp_push_on_rank0(method):
     """Plain DDP merged / GGUF Hub upload: rank 0 alone merges, converts and uploads, the others
     return None without waiting (as `_tp_collective_save` does for push_to_hub)."""
@@ -6020,10 +6028,8 @@ def unsloth_push_to_hub_gguf(
     _assert_export_target_is_not_base_with_lora_layers(self)
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
-    if not is_main_process:
-        from .models.fsdp2_save import fsdp2_gather_active
-        if not fsdp2_gather_active():
-            return None
+    if _defer_to_main_process(is_main_process):
+        return None
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA, not a merged model.
     if save_method is not None and str(save_method).lower() == "lora":
@@ -6950,10 +6956,8 @@ def _push_merged_to_hub_revision(save_kwargs):
     from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, LocalEntryNotFoundError
     from unsloth_zoo.saving_utils import get_original_model_id
 
-    if not save_kwargs["is_main_process"]:
-        from unsloth.models.fsdp2_save import fsdp2_gather_active
-        if not fsdp2_gather_active():
-            return
+    if _defer_to_main_process(save_kwargs["is_main_process"]):
+        return
     token = save_kwargs["token"]
     if token is None:
         token = get_token()
@@ -7438,7 +7442,7 @@ def unsloth_generic_save(
     # Full-finetuned models have no adapters to merge, so fall back to save_pretrained, mirroring the torchao and GGUF save paths.
     _is_peft = isinstance(model, PeftModel)
     if not _is_peft:
-        if not is_main_process:
+        if _defer_to_main_process(is_main_process):
             return
 
         _save_kwargs = dict(
@@ -7577,11 +7581,8 @@ def unsloth_generic_save(
     else:
         raise_if_merging_mistral_format_view(model, save_method)
         raise_if_merging_inkling2(model, save_method)
-        # The FSDP2 writer (any rank of its mesh) is already inside the gather.
-        if not is_main_process:
-            from unsloth.models.fsdp2_save import fsdp2_gather_active
-            if not fsdp2_gather_active():
-                return
+        if _defer_to_main_process(is_main_process):
+            return
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
         # An older unsloth_zoo accepts `output_dtype` but still writes the base dtype.

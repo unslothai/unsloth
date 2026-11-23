@@ -200,7 +200,15 @@ def test_save_pretrained_gguf_inside_fsdp2_gather_ignores_the_flag(monkeypatch, 
     monkeypatch.setattr(tokenizer_utils, "_tokenizer_objects", lambda *a: [])
     merged, converted = [], []
 
-    monkeypatch.setattr(unsloth_save, "unsloth_generic_save", lambda **kwargs: merged.append(1))
+    import inspect
+
+    real_save = inspect.signature(unsloth_save.unsloth_generic_save)
+    # bind(): the forwarded kwargs must be ones the real merge accepts.
+    monkeypatch.setattr(
+        unsloth_save,
+        "unsloth_generic_save",
+        lambda **kwargs: merged.append(real_save.bind(**kwargs)),
+    )
     monkeypatch.setattr(
         unsloth_save,
         "save_to_gguf",
@@ -213,7 +221,7 @@ def test_save_pretrained_gguf_inside_fsdp2_gather_ignores_the_flag(monkeypatch, 
         is_main_process = False,
         quantization_method = "q8_0",
     )
-    assert merged == [1] and converted == [1]
+    assert len(merged) == 1 and converted == [1]
     assert out["gguf_files"] == [str(tmp_path / "m.gguf")]
 
 
@@ -225,3 +233,22 @@ def test_push_to_hub_gguf_inside_fsdp2_gather_ignores_the_flag(monkeypatch, tmp_
         _tiny_peft_model(), "user/repo", object(), token = "hf_x", is_main_process = False
     )
     assert calls["save"] == 1 and calls["hub"]
+
+
+def test_full_model_inside_fsdp2_gather_ignores_the_flag(monkeypatch, tmp_path):
+    """The non-PEFT branch (also the staged save of a merged Hub push) honours the gather too."""
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: True)
+    model = LlamaForCausalLM(
+        LlamaConfig(
+            hidden_size = 16,
+            intermediate_size = 32,
+            num_hidden_layers = 1,
+            num_attention_heads = 2,
+            num_key_value_heads = 1,
+            vocab_size = 32,
+        )
+    )
+    _generic_save(model, str(tmp_path / "full"), is_main_process = False)
+    assert (tmp_path / "full" / "config.json").exists()

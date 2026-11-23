@@ -168,6 +168,7 @@ def saving(monkeypatch, tmp_path):
             cuda = SimpleNamespace(is_bf16_supported = lambda: False),
         ),
         get_token = lambda: "cached-fixture",
+        _defer_to_main_process = lambda is_main_process: not is_main_process,
         _determine_username = lambda repo, old, token: (repo, repo.split("/")[0]),
         _prewarm_base_model_hub_cache = lambda *args, **kwargs: None,
         get_model_name = lambda name: name,
