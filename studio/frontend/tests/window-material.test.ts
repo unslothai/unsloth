@@ -677,7 +677,7 @@ test("the lens tint copies the host's fill when only its ::before carries the bl
 
 test("a lens stays on the visible box of a host that scrolls itself", () => {
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
-	assert.match(lens, /el\.style\.translate = host\.scrollLeft \|\| host\.scrollTop \? `\$\{host\.scrollLeft\}px \$\{host\.scrollTop\}px` : "";/);
+	assert.match(lens, /if \(el\.style\.translate\) el\.style\.translate = "";\s*const sx = host\.scrollLeft;\s*const sy = host\.scrollTop;\s*el\.style\.translate = sx \|\| sy \? `\$\{sx\}px \$\{sy\}px` : "";/);
 	assert.match(lens, /host\.addEventListener\("scroll", place, \{ passive: true \}\);/);
 	assert.match(lens, /host\.removeEventListener\("scroll", place\);/);
 });

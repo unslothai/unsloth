@@ -131,6 +131,11 @@ function Lens({
     const workspace = wallpaper.parentElement;
     let last = "";
     const place = () => {
+      // The translated lens counts as scrollable overflow: drop it first so a host whose content shrank can clamp its scroll.
+      if (el.style.translate) el.style.translate = "";
+      const sx = host.scrollLeft;
+      const sy = host.scrollTop;
+      el.style.translate = sx || sy ? `${sx}px ${sy}px` : "";
       const w = wallpaper.getBoundingClientRect();
       const h = host.getBoundingClientRect();
       const opacity = getComputedStyle(wallpaper).opacity;
@@ -149,8 +154,6 @@ function Lens({
         h.top,
         h.width,
         h.height,
-        host.scrollLeft,
-        host.scrollTop,
         opacity,
         fill.backgroundColor,
         fill.backgroundImage,
@@ -158,8 +161,6 @@ function Lens({
       ].join();
       if (key === last) return;
       last = key;
-      // A dialog scrolling its own box would carry the lens away with its content.
-      el.style.translate = host.scrollLeft || host.scrollTop ? `${host.scrollLeft}px ${host.scrollTop}px` : "";
       for (const copy of copies) {
         copy.style.left = `${w.left - h.left}px`;
         copy.style.top = `${w.top - h.top}px`;
