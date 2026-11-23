@@ -461,6 +461,7 @@ from core.inference.tool_call_parser import (
     RAG_SEARCH_CAP_NUDGE,
     RAG_SEARCH_TOOLS,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
+    has_tool_signal,
     strip_leading_bare_json_call,
     strip_llama3_leading_sentinels,
     strip_tool_markup as _shared_strip_tool_markup,
@@ -504,6 +505,7 @@ from core.inference.mcp_images import (
     MAX_TOTAL_MODEL_IMAGES as MCP_MAX_TOTAL_MODEL_IMAGES,
     append_image_turn as append_mcp_image_turn,
     is_image_tool as mcp_is_image_tool,
+    is_synthetic_image_turn as mcp_is_synthetic_image_turn,
     mentions_images as mcp_images_mentioned_in,
 )
 from core.inference.tool_facts import STEPWISE, repeatable
@@ -2457,8 +2459,16 @@ _MAX_TOOL_CALLS_PER_TURN = 8
 _MAX_LENGTH_CONTINUATIONS = 2
 _CONTINUE_AFTER_LENGTH_STATUS = "Continuing after a long thought..."
 _CONTINUE_TRUNCATED_ANSWER_STATUS = "Continuing the answer..."
+_FINAL_ANSWER_TOOL_LIMIT_MESSAGE = (
+    "The model asked for another tool after its tools ran out, so it gave no answer. "
+    "Ask again, or raise Max Tool Calls Per Message if it hit that limit."
+)
+_FINAL_ANSWER_RETRY_NUDGE = (
+    "Tools are no longer available. Write your answer now from the results above, in plain text."
+)
 # Below this a tool result carries only the cut notice; the floor catches a collapse to zero.
 _MIN_USEFUL_RESULT_TOKENS = 64
+_LEAD_RAW_THINK_RE = re.compile(r"\A\s*(?:\[THINK\].*?\[/THINK\]|<think>.*?</think>)", re.DOTALL)
 # llama.cpp's default per-image embedding cap plus mtmd's delimiters, when the admission figure is out of reach.
 _FALLBACK_IMAGE_TOKENS = 4096 + 128
 
@@ -40276,6 +40286,26 @@ class LlamaCppBackend:
                 return cleaned
             return cleaned[: len(cleaned) - len(answer)] + kept
 
+        def _answer_is_call_only(answer: str) -> bool:
+            """Only calls, judged as the display strips them: markup and a leading Llama 3 bare-JSON call."""
+            if not auto_heal_tool_calls or not answer.strip():
+                return False
+            # The strip also drops non-call text (a raw [THINK] block), so require a call outside the reasoning.
+            lead = _LEAD_RAW_THINK_RE.sub("", answer[_lead_think_span(answer) :], count = 1).lstrip()
+            gate = _enabled_names_gate
+            if not has_tool_signal(lead) and not (
+                gate
+                and (
+                    strip_leading_bare_json_call(lead, gate) != lead
+                    or leading_bare_gemma_call_is_promotable(lead, gate)
+                )
+            ):
+                return False
+            kept = _LEAD_RAW_THINK_RE.sub("", _strip_tool_markup(answer, final = True), count = 1)
+            if gate:
+                kept = strip_leading_bare_json_call(kept.lstrip(), gate)
+            return not kept.strip()
+
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
@@ -43588,6 +43618,7 @@ class LlamaCppBackend:
         _final_length_continuations = 0
         _continue_final = False
         _final_replayed_chars = 0
+        _final_call_retried = False
 
         def _remaining_output_budget() -> "Optional[int]":
             """What is left of a cap the CALLER set, or None when they set none.
@@ -44039,7 +44070,81 @@ class LlamaCppBackend:
                             )
                             if _meta is not None:
                                 yield _meta
+                    elif (
+                        auto_heal_tool_calls
+                        and not _final_call_retried
+                        and stream_payload.get("tools")
+                        # A continuation prefill would ask the retry to finish the call.
+                        and not stream_payload.get("continue_final_message")
+                        and _metadata_finish_reason != "length"
+                        and _answer_is_call_only(answer_text)
+                        and _remaining_output_budget() != 0
+                    ):
+                        # The answer was only a stripped tool call despite tool_choice "none" (#18802): re-ask once with no tools in the prompt.
+                        _final_call_retried = True
+                        logger.info("Final answer was only a tool call; retrying without tools")
+                        stream_payload.pop("tools", None)
+                        stream_payload.pop("tool_choice", None)
+                        # Appended to the last turn, not a new one: Ministral counts a user turn after a tool result as two in a row.
+                        _last_t = (
+                            stream_payload["messages"][-1] if stream_payload["messages"] else None
+                        )
+                        # A synthetic image turn must stay image-only, or the Ministral alternation fix skips it.
+                        if (
+                            _last_t is not None
+                            and _last_t.get("role") in ("tool", "user")
+                            and not mcp_is_synthetic_image_turn(_last_t)
+                        ):
+
+                            def _noted(message):
+                                return {
+                                    **message,
+                                    "content": with_appended_text(
+                                        message["content"], f"\n\n{_FINAL_ANSWER_RETRY_NUDGE}"
+                                    ),
+                                }
+
+                            stream_payload["messages"] = [
+                                *stream_payload["messages"][:-1],
+                                _noted(_last_t),
+                            ]
+                            # A respawn refit rebuilds from these, so the note must live there too.
+                            if _refit_tail:
+                                _refit_tail = [*_refit_tail[:-1], _noted(_refit_tail[-1])]
+                            elif conversation and conversation[-1].get("role") == _last_t["role"]:
+                                conversation[-1] = _noted(conversation[-1])
+                        # Admission and respawn refits must count the request actually sent.
+                        _final_tools = None
+                        _next_cap_t = _remaining_output_budget()
+                        if _next_cap_t is not None:
+                            stream_payload["max_tokens"] = _next_cap_t
+                        _fu_t = (
+                            _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
+                        )
+                        _accumulated_completion_tokens += _fu_t.get("completion_tokens", 0)
+                        _it_t = _metadata_timings or {}
+                        _accumulated_predicted_ms += _it_t.get("predicted_ms", 0)
+                        _accumulated_predicted_n += _it_t.get("predicted_n", 0)
+                        _stream_done = False
+                        _metadata_finish_reason = None
+                        _metadata_usage = None
+                        _metadata_timings = None
+                        # A fresh pass, as after a tool round: rewinding the shown text in place desyncs the route cursor.
+                        cumulative = _last_emitted = _attempt_started_at = ""
+                        answer_text = reasoning_text = ""
+                        in_thinking = has_content_tokens = False
+                        _prov_entry = _lead_wrap = _final_reasoning_started_at = None
+                        _final_reasoning_summary_emitted = False
+                        _final_answer_stripper.reset()
+                        _continue_final = True
+                        yield {"type": "status", "text": "", "new_pass": True}
                     else:
+                        if _answer_is_call_only(answer_text):
+                            # Call-only and not retried (or retried again): an empty bubble is not actionable.
+                            # Its own segment: the shown snapshot may still hold an unclosed call that would swallow it.
+                            yield {"type": "status", "text": "", "new_pass": True}
+                            _last_emitted = _FINAL_ANSWER_TOOL_LIMIT_MESSAGE
+                            yield {"type": "content", "text": _last_emitted}
                         _cut = _quote_cut_event(
                             reasoning_text,
                             answer_text,
