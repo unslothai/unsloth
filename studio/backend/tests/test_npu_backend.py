@@ -172,6 +172,30 @@ def test_catalog_keeps_flm_chat_models_only(npu):
     assert by_id["qwen3-0.6b-FLM"].model_path == "lemonade:qwen3-0.6b-FLM"
 
 
+def test_catalog_rows_name_their_model_card_repo(npu):
+    npu.enable()
+    (npu._flm_binary().parent / "model_list.json").write_text(
+        json.dumps(
+            {
+                "model_path": "models",
+                "models": {
+                    "qwen3": {
+                        "0.6b": {
+                            "name": "Qwen3-0.6B-NPU2",
+                            "url": "https://huggingface.co/FastFlowLM/Qwen3-0.6B-NPU2/resolve/v2",
+                        }
+                    }
+                },
+            }
+        )
+    )
+    by_id = {model.id: model.to_json() for model in npu.catalog()}
+    assert by_id["qwen3-0.6b-FLM"]["hf_repo"] == "FastFlowLM/Qwen3-0.6B-NPU2"
+    assert by_id["qwen3-0.6b-FLM"]["hf_revision"] == "v2"
+    assert by_id["gemma3-4b-FLM"]["hf_repo"] is None
+    assert by_id["gemma3-4b-FLM"]["hf_revision"] is None
+
+
 def test_download_relays_progress_then_completes(npu):
     npu.enable()
     events = list(npu.download("qwen3-0.6b-FLM"))
@@ -253,6 +277,7 @@ def test_studio_downloads_the_files_and_lemond_only_registers_them(npu, flm_mani
     percents = [event["percent"] for event in events]
     assert percents == sorted(percents) and percents[-1] == 100
     assert events[-1] == {"event": "complete", "model": "qwen3-0.6b-FLM", "percent": 100}
+    assert events[-2] == {"event": "finishing", "percent": 99}
     pulls = [r for r in _requests(npu) if r["path"] in ("/v1/delete", "/v1/pull")]
     assert pulls == [
         {
@@ -261,6 +286,24 @@ def test_studio_downloads_the_files_and_lemond_only_registers_them(npu, flm_mani
         }
     ]
     assert {m.id: m.downloaded for m in npu.catalog()}["qwen3-0.6b-FLM"] is True
+
+
+def test_a_cancelled_download_keeps_its_partial_and_never_registers(npu, flm_manifest):
+    import threading
+
+    from .test_flm_files import CONFIG
+
+    cancel = threading.Event()
+    with pytest.raises(nb.NpuDownloadCancelled, match = "was cancelled"):
+        for event in npu.download("qwen3-0.6b-FLM", cancel = cancel):
+            # Once the weights have bytes on disk: a cancel before the first byte leaves no partial.
+            if event.get("file") == "model.q4nx" and event["bytes_downloaded"] > len(CONFIG):
+                cancel.set()
+    folder = npu.root / "flm" / "models" / "Qwen3-0.6B-NPU2"
+    assert (folder / "model.q4nx.partial").stat().st_size > 0
+    assert not any(r["path"] == "/v1/pull" for r in _requests(npu))
+    assert {m.id: m.resume_percent for m in npu.catalog()}["qwen3-0.6b-FLM"] > 0
+    assert (folder / "config.json").read_bytes() == CONFIG
 
 
 def test_the_catalog_offers_to_resume_an_interrupted_download(npu, flm_manifest):
@@ -313,7 +356,7 @@ def test_load_reports_the_context_lemond_started_with(npu, monkeypatch):
     assert load == {"model_name": "qwen3-0.6b-FLM", "ctx_size": 8192, "save_options": False}
 
     npu.load("qwen3-0.6b-FLM", 100_000)
-    assert npu.loaded_context_length == 40960
+    assert npu.loaded_context_length == 32768
     upstream = npu.upstream()
     assert upstream.model == "qwen3-0.6b-FLM"
     assert upstream.public_model == "lemonade:qwen3-0.6b-FLM"
@@ -327,7 +370,7 @@ def test_qwen38_is_held_to_its_engine_limit_not_its_checkpoint_metadata(npu, mon
     npu.enable()
     by_id = {model.id: model for model in npu.catalog()}
     assert by_id["qwen3.8-mtp-27b-FLM"].max_context_length == 8192
-    assert by_id["qwen3-0.6b-FLM"].max_context_length == 40960
+    assert by_id["qwen3-0.6b-FLM"].max_context_length == 32768
 
     npu.load("qwen3.8-mtp-27b-FLM", 16384)
     load = [r["body"] for r in _requests(npu) if r["path"] == "/v1/load"][-1]
@@ -341,7 +384,8 @@ def test_qwen38_is_held_to_its_engine_limit_not_its_checkpoint_metadata(npu, mon
 )
 def test_a_runtime_limit_caps_whatever_lemond_reports(reported, expected):
     assert nb._max_context_length("qwen3.8-mtp:27b", reported) == expected
-    assert nb._max_context_length("qwen3:0.6b", reported) == (reported or None)
+    assert nb._max_context_length("qwen3.8-dflash2:27b", reported) == expected
+    assert nb._max_context_length("unlisted:tag", reported) == (reported or None)
 
 
 def test_the_resident_reports_what_its_load_asked_for(npu):
@@ -378,6 +422,94 @@ def test_a_catalog_error_body_is_an_error_not_an_empty_catalog(npu, monkeypatch)
     npu.enable()
     with pytest.raises(nb.NpuError, match = "catalog unavailable"):
         npu.catalog()
+
+
+def _restarted(npu) -> nb.LemonadeNpuBackend:
+    npu.enable()
+    npu.shutdown()
+    restarted = nb.LemonadeNpuBackend(root = npu.root)
+    assert restarted.status()["ready"] is True
+    return restarted
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX execute bit")
+def test_a_lemond_that_cannot_be_spawned_is_an_npu_error(npu):
+    restarted = _restarted(npu)
+    lemond = npu.installer.binary
+    lemond.chmod(0o644)
+    try:
+        with pytest.raises(
+            nb.NpuError, match = "The NPU runtime could not start .*Permission denied"
+        ):
+            restarted.catalog()
+    finally:
+        lemond.chmod(0o755)
+        restarted.shutdown()
+
+
+def test_a_lemond_that_stops_answering_is_an_npu_error(npu, monkeypatch):
+    npu.enable()
+
+    def gone(self, method, path, **kwargs):
+        raise LemonadeUnavailable(f"Lemonade request {path} failed: Connection refused")
+
+    monkeypatch.setattr(LemonadeServer, "request", gone)
+    with pytest.raises(nb.NpuError, match = "Listing NPU models failed: .*Connection refused"):
+        npu.catalog()
+
+
+def _raising(error: Exception):
+    def start(self, timeout = 60.0):
+        raise error
+
+    return start
+
+
+def _exited(returncode: int) -> LemonadeUnavailable:
+    error = LemonadeUnavailable("Lemonade did not start. Last output:\n")
+    error.returncode = returncode
+    return error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError(22, "An Application Control policy has blocked this file", None, 4551),
+        _exited(0xC0E90002),
+    ],
+)
+def test_a_windows_code_integrity_block_names_its_fix(npu, monkeypatch, error):
+    restarted = _restarted(npu)
+
+    monkeypatch.setattr(LemonadeServer, "start", _raising(error))
+    with pytest.raises(
+        nb.NpuError, match = "Windows blocked part of the local model runtime"
+    ) as caught:
+        restarted.catalog()
+    assert "Smart App Control" in str(caught.value)
+    assert str(npu.installer.binary.parent) in str(caught.value)
+    restarted.shutdown()
+
+
+def test_a_fail_fast_exit_alone_is_a_crash_not_a_policy_block(npu, monkeypatch):
+    restarted = _restarted(npu)
+    crashed = _exited(0xC0000602)
+    monkeypatch.setattr(LemonadeServer, "start", _raising(crashed))
+    with pytest.raises(nb.NpuError, match = "lemond exited with status") as caught:
+        restarted.catalog()
+    assert "Smart App Control" not in str(caught.value)
+
+    for output in (
+        "This program was blocked by Smart App Control",
+        # The status in the output too: the classifier matches it before the policy wording.
+        "exit 0xC0000602: This program was blocked by Smart App Control",
+    ):
+        refused = LemonadeUnavailable(f"Lemonade did not start. Last output:\n{output}")
+        refused.returncode = 0xC0000602
+        monkeypatch.setattr(LemonadeServer, "start", _raising(refused))
+        with pytest.raises(nb.NpuError, match = "Smart App Control has no per-application exception"):
+            restarted.catalog()
+    restarted.shutdown()
 
 
 def test_unload_then_delete(npu):
@@ -794,10 +926,8 @@ def test_stop_ends_the_process(npu):
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PR_SET_PDEATHSIG is Linux")
 def test_lemond_dies_with_a_killed_owner_even_if_it_ignores_sigterm(tmp_path):
-    """A SIGKILLed Unsloth must not leave lemond (and the model FastFlowLM holds) behind.
-
-    The death signal is SIGKILL, not SIGTERM: this lemond ignores SIGTERM outright, and the real one
-    took about 9 s over it with a model loaded."""
+    """A SIGKILLed Unsloth must not leave lemond behind; lemond ignores SIGTERM, so the signal is
+    SIGKILL."""
     import signal
     import subprocess
     import time
@@ -982,6 +1112,35 @@ def test_stop_interrupts_a_start_that_never_becomes_ready(tmp_path):
     server.close()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX shell stand-in for lemond")
+@pytest.mark.parametrize(
+    "script, returncode, reason",
+    [
+        ("exec sleep 60", None, "did not answer its health check within 1 s"),
+        ("exit 3", 3, "did not start"),
+    ],
+)
+def test_a_failed_start_reports_lemonds_own_exit_status(tmp_path, script, returncode, reason):
+    binary = tmp_path / "lemond"
+    binary.write_text(f"#!/bin/sh\n{script}\n", encoding = "utf-8")
+    binary.chmod(0o755)
+    server = LemonadeServer(
+        binary,
+        cache_dir = tmp_path / "cache",
+        config_dir = tmp_path / "config",
+        flm_model_dir = tmp_path / "flm",
+    )
+    with pytest.raises(LemonadeUnavailable, match = reason) as caught:
+        server.start(timeout = 1)
+    assert caught.value.returncode == returncode
+    message = nb._lemonade_start_error(binary, caught.value)
+    if returncode is None:
+        assert "exited with status" not in message
+    else:
+        assert "lemond exited with status 3." in message
+    server.close()
+
+
 @pytest.mark.parametrize(
     "path, expected",
     [
@@ -1003,3 +1162,127 @@ def test_model_id_from_path_rejects_non_ids(path):
 def test_other_model_paths_are_not_npu():
     assert not nb.is_npu_model_path("unsloth/Qwen3-0.6B-GGUF")
     assert not nb.is_npu_model_path(None)
+
+
+def test_reloading_the_resident_model_restarts_it_in_lemond(npu):
+    # lemond treats a load of what it already holds as done, so Reload model must unload first.
+    npu.enable()
+    list(npu.download("qwen3-0.6b-FLM"))
+    npu.load("qwen3-0.6b-FLM")
+    assert not [r for r in _requests(npu) if r["path"] == "/v1/unload"]
+    npu.load("qwen3-0.6b-FLM")
+    paths = [r["path"] for r in _requests(npu) if r["path"] in ("/v1/load", "/v1/unload")]
+    assert paths == ["/v1/load", "/v1/unload", "/v1/load"]
+    assert npu.is_loaded
+
+
+def test_the_name_the_app_shows_resolves_to_the_lemonade_id(npu):
+    npu.enable()
+    (npu._flm_binary().parent / "model_list.json").write_text(
+        json.dumps(
+            {
+                "model_path": "models",
+                "models": {
+                    "qwen3": {
+                        "0.6b": {
+                            "url": "https://huggingface.co/FastFlowLM/Qwen3-0.6B-NPU2/resolve/v2"
+                        }
+                    }
+                },
+            }
+        )
+    )
+    for name in (
+        "Qwen3-0.6B-NPU2",
+        "qwen3-0.6b-npu2",
+        "FastFlowLM/Qwen3-0.6B-NPU2",
+        " fastflowlm/QWEN3-0.6B-NPU2 ",
+    ):
+        assert npu.model_path_for_name(name, start_runtime = False) == "lemonade:qwen3-0.6b-FLM"
+    # No repo on record, another owner, or not a display name at all.
+    for name in (
+        "Gemma3-4B-NPU2",
+        "someone/Qwen3-0.6B-NPU2",
+        "unsloth/Qwen3-0.6B-GGUF",
+        "qwen3-0.6b-FLM",
+    ):
+        assert npu.model_path_for_name(name, start_runtime = False) is None
+    by_id = {model.id: model for model in npu.catalog()}
+    assert by_id["qwen3-0.6b-FLM"].display_name == "Qwen3-0.6B-NPU2"
+    assert by_id["gemma3-4b-FLM"].display_name is None
+
+
+def test_a_display_name_starts_the_runtime_only_when_allowed(npu):
+    assert npu.can_run()
+    assert npu.model_path_for_name("Qwen3-0.6B-NPU2", start_runtime = False) is None
+    assert npu._server is None
+    assert not _requests(npu)
+
+
+def test_a_display_name_two_models_share_is_refused(npu, monkeypatch):
+    def _model(model_id):
+        return nb.NpuModel(
+            id = model_id,
+            checkpoint = "qwen3:0.6b",
+            size_gb = 0.66,
+            downloaded = True,
+            labels = ("chat",),
+            max_context_length = 40960,
+            hf_repo = "FastFlowLM/Qwen3-0.6B-NPU2",
+        )
+
+    monkeypatch.setattr(npu, "catalog", lambda: [_model("b-FLM"), _model("a-FLM")])
+    with pytest.raises(nb.NpuError, match = "lemonade:a-FLM, lemonade:b-FLM"):
+        npu.model_path_for_name("Qwen3-0.6B-NPU2", start_runtime = True)
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("Qwen3.6-35B-A3B-NPU2", True),
+        ("FastFlowLM/Qwen3.6-35B-A3B-NPU2", True),
+        ("fastflowlm/anything", True),
+        ("Qwen3-0.6B-npu", True),
+        ("lemonade:qwen3-0.6b-FLM", False),
+        ("unsloth/Qwen3-0.6B-NPU2", False),
+        ("FastFlowLM/a/b", False),
+        ("unsloth/Qwen3-0.6B-GGUF:Q4_K_M", False),
+        ("Qwen3-0.6B", False),
+        (None, False),
+    ],
+)
+def test_which_names_are_tried_as_npu_display_names(name, expected):
+    assert nb.looks_like_npu_display_name(name) is expected
+
+
+# flm_host's answers when flm.exe exits 0xC0E90002 (a DLL Smart App Control refused) with no output.
+_SILENT_REFUSAL = "exit code 3236495362 (0xC0E90002)"
+
+
+def test_a_refused_dll_at_install_is_named_not_left_blank(npu, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_LEMOND_INSTALL_ERROR", f"FastFlowLM does not run: [ERROR] {_SILENT_REFUSAL}"
+    )
+    with pytest.raises(nb.NpuError, match = "Smart App Control") as info:
+        npu.enable()
+    assert str(npu._flm_binary().parent) in str(info.value)
+
+
+def test_a_refused_dll_at_load_is_named(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM"]')
+    monkeypatch.setenv("FAKE_LEMOND_LOAD_FAILS_FOR", "qwen3-0.6b-FLM")
+    monkeypatch.setenv(
+        "FAKE_LEMOND_LOAD_ERROR",
+        f"Failed to load model 'qwen3-0.6b-FLM': FastFlowLM failed to start: {_SILENT_REFUSAL}",
+    )
+    npu.enable()
+    with pytest.raises(nb.NpuError, match = "Smart App Control") as info:
+        npu.load("qwen3-0.6b-FLM")
+
+
+def test_an_ordinary_install_failure_keeps_its_reason(npu, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_LEMOND_INSTALL_ERROR", "FastFlowLM does not run: [ERROR] exit code 1 (0x00000001)"
+    )
+    with pytest.raises(nb.NpuError, match = "Installing FastFlowLM failed: .*0x00000001"):
+        npu.enable()

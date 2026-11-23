@@ -49,6 +49,20 @@ test("Ollama rows are offered under their own label", () => {
   assert.equal(localGgufKindFor(option, true), "direct");
 });
 
+test("an Ollama MLX tag is offered as a checkpoint, not a GGUF file", () => {
+  const [option] = chatLocalModelOptions([
+    row({
+      id: "/home/u/.ollama/models/.studio_links/0c918e29a9/mlx/gemma4-e4b-mlx",
+      path: "/home/u/.ollama/models/manifests/registry.ollama.ai/library/gemma4/e4b-mlx",
+      source: "ollama",
+      model_format: "safetensors",
+    }),
+  ]);
+  assert.ok(option);
+  assert.equal(option.isDirectGguf, undefined);
+  assert.equal(option.isGguf, undefined);
+});
+
 test("Hermes downloads are offered under their own label", () => {
   const options = chatLocalModelOptions([
     row({
@@ -128,4 +142,84 @@ test("an oMLX row is offered and labelled oMLX", () => {
   ]);
   assert.equal(options.length, 1);
   assert.equal(options[0].baseModel, "oMLX");
+});
+
+test("image and video checkpoints stay out of chat, and speech rows carry their audio type", () => {
+  const options = chatLocalModelOptions([
+    row({ id: "/models/flux", task: "text-to-image" }),
+    row({ id: "/models/wan", task: "text-to-video" }),
+    // biome-ignore lint/style/useNamingConvention: API schema
+    row({ id: "/models/tts", task: "text-to-speech", audio_type: "csm" }),
+    row({ id: "/models/chat", task: "text-generation" }),
+  ]);
+  assert.deepEqual(
+    options.map((option) => option.id),
+    ["/models/tts", "/models/chat"],
+  );
+  assert.equal(options[0]?.audioType, "csm");
+  assert.equal(options[1]?.audioType, undefined);
+});
+
+test("a GGUF directory without gguf in its name is still offered as GGUF", () => {
+  const [dir, plain] = chatLocalModelOptions([
+    // biome-ignore lint/style/useNamingConvention: API schema
+    row({ id: "/models/llama", path: "/models/llama", model_format: "gguf" }),
+    row({ id: "/models/qwen", path: "/models/qwen" }),
+  ]);
+  assert.equal(dir?.isGguf, true);
+  assert.equal(dir?.isDirectGguf, undefined);
+  assert.equal(plain?.isGguf, undefined);
+});
+
+test("an oMLX folder with a plain name is an MLX row in the On Device picker", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { localRowIsMlx } = await import("../src/features/hub/lib/format-filters.ts");
+  const { matchesFormat } = await import(
+    "../src/components/assistant-ui/composer-model-picker/picker-model.ts"
+  );
+  const source = readFileSync(
+    new URL(
+      "../src/components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const body = /function loraFormat\(lora: LoraModelOption\): FormatTone \{([\s\S]*?)\n\}/.exec(source);
+  assert.ok(body, "loraFormat moved");
+  const looksGguf = /const LOOKS_GGUF = (\/[^\n]+\/[a-z]*);/.exec(source);
+  const mlxSegment = /const MLX_PATH_SEGMENT = (\/[^\n]+\/[a-z]*);/.exec(source);
+  assert.ok(looksGguf && mlxSegment, "the format regexes moved");
+  const loraFormat = new Function(
+    "localRowIsMlx",
+    "LOOKS_GGUF",
+    "MLX_PATH_SEGMENT",
+    "lora",
+    body[1],
+  ).bind(
+    null,
+    localRowIsMlx,
+    new Function(`return ${looksGguf[1]}`)(),
+    new Function(`return ${mlxSegment[1]}`)(),
+  ) as (lora: unknown) => string;
+
+  const omlx = row({
+    id: "/Users/me/.omlx/models/Qwen3-8B-4bit",
+    display_name: "Qwen3-8B-4bit",
+    path: "/Users/me/.omlx/models/Qwen3-8B-4bit",
+    source: "omlx",
+    model_format: "safetensors",
+  });
+  const [option] = chatLocalModelOptions([omlx]);
+  assert.equal(option?.localSource, "omlx");
+  const format = loraFormat(option);
+  assert.equal(format, "mlx");
+  assert.equal(matchesFormat({ kind: "local", format } as never, "mlx"), true);
+  assert.equal(matchesFormat({ kind: "local", format } as never, "safetensors"), false);
+
+  // The same folder outside oMLX stays a plain checkpoint.
+  const [custom] = chatLocalModelOptions([
+    row({ id: "/models/Qwen3-8B-4bit", path: "/models/Qwen3-8B-4bit", source: "custom" }),
+  ]);
+  assert.equal(custom?.localSource, "custom");
+  assert.equal(loraFormat(custom), "checkpoint");
 });

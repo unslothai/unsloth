@@ -126,6 +126,11 @@ function browserAgentToolsForTurn(): string[] {
   return [];
 }
 
+// Computer use off too; the count and the request both call computerUseToolsForTurn().
+function computerUseToolsForTurn(): string[] {
+  return [];
+}
+
 export function seed(patch: any): void {
   Object.assign(state, patch);
 }

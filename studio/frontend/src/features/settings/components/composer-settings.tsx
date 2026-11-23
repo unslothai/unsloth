@@ -134,6 +134,16 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
               ))}
             </div>
           </SettingsRow>
+          <SettingsRow
+            label={t("composerSettings.shareDraft")}
+            description={t("composerSettings.shareDraftDescription")}
+          >
+            <Switch
+              aria-label={t("composerSettings.shareDraft")}
+              checked={prefs.shareComposerDraft}
+              onCheckedChange={prefs.setShareComposerDraft}
+            />
+          </SettingsRow>
         </div>
       </SettingsSection>
     </div>
@@ -155,6 +165,15 @@ export function ComposerFormatRows() {
           onCheckedChange={prefs.setPlainTextComposer}
         />
       </SettingsRow>
+    </>
+  );
+}
+
+export function RichTextPasteRow() {
+  const t = useT();
+  const prefs = useChatPreferencesStore();
+  return (
+    <>
       <SettingsRow
         label={t("composerSettings.richPaste")}
         badge={<Badge variant="secondary" className="h-4 px-1.5 text-ui-10 text-muted-foreground">{t("shell.beta")}</Badge>}

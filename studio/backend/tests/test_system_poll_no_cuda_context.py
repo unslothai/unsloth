@@ -619,6 +619,54 @@ def test_context_free_free_excludes_the_reserved_framebuffer(monkeypatch):
     assert hw._context_free_cuda_memory_info(0, round(99.5 * gib)) == round(97.5 * gib)
 
 
+def test_context_free_accepts_reserved_framebuffer_on_16gb_card(monkeypatch):
+    # RTX 5070 Ti (#18732): nvidia-smi 16303 MiB, torch total_memory 15878.56 MiB.
+    mib = 1 << 20
+    torch_total_bytes = int(15878.56 * mib)
+    _nvidia_smi_reading(
+        monkeypatch, used_gb = round(1400 / 1024, 2), driver_total_gb = round(16303 / 1024, 2)
+    )
+    free_bytes = hw._context_free_cuda_memory_info(0, torch_total_bytes)
+    assert free_bytes is not None
+    assert free_bytes == hw._free_in_torch_scope(torch_total_bytes, round(1400 / 1024, 2))
+
+
+def test_gpu_summary_16gb_card_with_reserved_framebuffer_creates_no_context(monkeypatch):
+    mib = 1 << 20
+    torch_total_bytes = int(15878.56 * mib)
+    torch_stub, _props = _summary_torch(
+        properties_total = torch_total_bytes,
+        driver_free = None,
+        driver_total = torch_total_bytes,
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    _shared_setup_4(monkeypatch)
+    monkeypatch.setattr(
+        hw,
+        "_smi_query",
+        lambda *a, **k: {
+            "available": True,
+            "devices": [
+                {
+                    "visible_ordinal": 0,
+                    "vram_used_gb": round(1400 / 1024, 2),
+                    "vram_total_gb": round(16303 / 1024, 2),
+                }
+            ],
+        },
+    )
+
+    summary = hw.get_gpu_summary()
+
+    assert summary["gpu_name"] == "Test GPU"
+    assert summary["vram_total_gb"] == round(torch_total_bytes / (1 << 30), 2)
+    assert summary["vram_free_gb"] == round(
+        hw._free_in_torch_scope(torch_total_bytes, round(1400 / 1024, 2)) / (1 << 30), 2
+    )
+
+
 def test_context_free_free_is_zero_on_a_full_card(monkeypatch):
     gib = 1 << 30
     _nvidia_smi_reading(monkeypatch, used_gb = 99.5, driver_total_gb = 100.0)
@@ -656,8 +704,7 @@ def test_context_free_keeps_smi_on_a_single_gpu_under_fastest_first(monkeypatch)
 
 
 def test_context_free_declines_when_the_gpu_count_is_not_smi_confirmed(monkeypatch):
-    # `nvidia-smi -L` failing falls back to torch's VISIBLE count, which a mask shrinks to one;
-    # the count is cached, so the exemption must not be granted then.
+    # Without nvidia-smi -L, a masked torch count would be cached, so decline the exemption.
     gib = 1 << 30
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
     _nvidia_smi_reading(monkeypatch, used_gb = 2.0, driver_total_gb = 24.0)
@@ -730,8 +777,7 @@ def test_context_free_uuid_mask_skips_the_cuda_order_gate(monkeypatch):
 
 
 def test_parent_visible_spec_ignores_a_rocr_mask_on_windows(monkeypatch):
-    # Windows HIP has no ROCr layer, so a stray ROCR var masks nothing there and
-    # must not be read as the ordinal to physical mapping.
+    # Windows HIP has no ROCr layer: a stray ROCR var masks nothing and must not map ordinals.
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 2)
     monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
@@ -780,8 +826,7 @@ def test_context_free_nvidia_smi_declines_whole_gpu_metrics_for_mig(monkeypatch)
 
 
 def test_context_free_never_spawns_amd_smi_on_windows_without_a_hip_sdk(monkeypatch):
-    """Stay behind the amd.py elevation guard; amd-smi raises a UAC prompt on Windows without HIP
-    runtime."""
+    """amd-smi raises a UAC prompt on Windows without HIP, so the amd.py guard must hold."""
     from utils.hardware import amd
 
     spawned = []
@@ -818,8 +863,7 @@ def test_context_free_never_spawns_amd_smi_on_windows_without_a_hip_sdk(monkeypa
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "the guard is Windows-only")
 def test_amd_smi_is_refused_on_a_real_windows_host_unless_opted_in():
-    # The test above fakes the platform. This one runs the same predicate against
-    # the real OS, PATH and environment, so the guard is pinned where it applies.
+    # Runs the same guard on the real OS, PATH and environment, not a faked platform.
     from utils.hardware import amd
     if os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower() in ("1", "true", "yes", "on"):
         pytest.skip(
@@ -1743,8 +1787,7 @@ def test_context_free_windows_rocm_declines_when_counters_outnumber_devices(monk
 
 
 def test_gpu_summary_apu_counters_need_positively_identified_uma(monkeypatch):
-    # Carve-out=True also covers UNCERTAIN devices; adding Shared Usage there would understate
-    # free on a misread discrete GPU.
+    # Shared Usage needs positively identified UMA: carve-out=True also covers uncertain GPUs.
     _props, gib = _shared_setup_3(monkeypatch)
     monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda _props: False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
@@ -1759,8 +1802,7 @@ def test_gpu_summary_apu_counters_need_positively_identified_uma(monkeypatch):
     assert summary == {"gpu_name": "Test GPU", "vram_total_gb": 100.0, "vram_free_gb": 98.0}
 
 
-# Measured gfx1151 (AMD CI Strix Halo): torch total 64 GiB, sysfs vram 64 GiB carve-out,
-# gtt 31.22 GiB on top; an 8 GiB allocation landed in vram_used.
+# On measured gfx1151 (Strix Halo) the sysfs vram carve-out is 64 GiB, so VRAM is not zero.
 _MEASURED_STRIX_HALO_TOTAL_BYTES = 68719476736
 
 
@@ -1799,8 +1841,7 @@ def test_the_measured_strix_halo_is_not_reported_as_having_no_vram(monkeypatch):
 
 
 def test_an_unreadable_sysfs_total_still_leaves_the_split_unknown(monkeypatch):
-    """The other direction: WSL and anything else with no DRM sysfs must keep
-    answering None, because there a zero would be an assertion nobody measured."""
+    """With no DRM sysfs (WSL and the like), answer None: a zero would be an unmeasured claim."""
     # The sysfs reader returns {} off Linux, so pin the platform to test the logic itself.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     devices = [{"index": 0, "total_gb": 100.0, "_rocm_known_unified": True}]

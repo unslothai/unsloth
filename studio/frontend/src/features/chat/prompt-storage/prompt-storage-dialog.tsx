@@ -21,6 +21,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { authFetch } from "@/features/auth";
+import {
+  SANDBOX_FILE_TOOLS,
+  isSandboxToolResult,
+  sandboxFilePath,
+} from "@/components/assistant-ui/sandbox-files";
 
 import { cn } from "@/lib/utils";
 import { BookmarkIcon, TrashIcon } from "@/lib/hugeicons-derived";
@@ -90,10 +96,11 @@ import type { ThreadRecord, MessageRecord } from "../types";
 import {
   buildNamedConversationsMarkdown,
   conversationExportBasename,
+  conversationModelLabel,
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../utils/conversation-markdown-export";
-import { csvDocument, csvEscape, CSV_MIME } from "../utils/csv-export";
+import { COMBINED_CSV_HEADER, csvDocument, csvEscape, CSV_MIME, PROMPT_LISTS_CSV_HEADER } from "../utils/csv-export";
 import { parseCsv } from "../utils/csv-parse";
 import {
   canMergeConversationExport,
@@ -112,6 +119,15 @@ import {
   contentBlocksToMarkdownBlocks,
   renderConversationBlocks,
 } from "../utils/conversation-markdown";
+import {
+  CONVERSATION_HTML_MIME_TYPE,
+  CONVERSATION_PDF_MIME_TYPE,
+  type NamedConversationHtml,
+  buildConversationHtmlBody,
+  buildConversationHtmlDocument,
+  isDataImage,
+} from "../utils/conversation-html";
+import { renderConversationPdf } from "../api/chat-export-api";
 import { planChatItemSources } from "../utils/project-source-plan";
 import { stripSearchImageTokens } from "../search-images/search-images.ts";
 import { saveMarkdownAsProjectSource } from "@/features/rag/api/save-markdown-source";
@@ -187,10 +203,14 @@ function exportListCsv(entry: PromptListEntry): Promise<void> {
 }
 
 function exportAllListsCsv(entries: PromptListEntry[]): Promise<void> {
+  const numbered = entries.length > 1;
   const rows = entries
-    .flatMap((e) => e.items.map((text, i) => `${csvEscape(e.name)},${i + 1},${csvEscape(text)}`))
+    .flatMap((e, n) =>
+      e.items.map((text, i) => `${numbered ? `${n + 1},` : ""}${csvEscape(e.name)},${i + 1},${csvEscape(text)}`),
+    )
     .join("\n");
-  return downloadBlob(csvDocument(["list_name,order,prompt_text", rows]), "prompt-lists.csv", CSV_MIME);
+  const header = numbered ? PROMPT_LISTS_CSV_HEADER : "list_name,order,prompt_text";
+  return downloadBlob(csvDocument([header, rows]), "prompt-lists.csv", CSV_MIME);
 }
 
 function contentBlocksToText(content: unknown): string {
@@ -330,7 +350,10 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
   return parts.join("\n\n");
 }
 
-function messageToMarkdown(msg: { content: unknown; attachments?: unknown }): string {
+function messageToMarkdown(
+  msg: { content: unknown; attachments?: unknown },
+  format: "markdown" | "pdf" = "markdown",
+): string {
   const normalizeToolResult = toolResultModelText;
   const blocks = contentBlocksToMarkdownBlocks(msg.content, normalizeToolResult);
   if (Array.isArray(msg.attachments)) {
@@ -348,7 +371,7 @@ function messageToMarkdown(msg: { content: unknown; attachments?: unknown }): st
       );
     }
   }
-  return renderConversationBlocks(blocks);
+  return renderConversationBlocks(blocks, format);
 }
 
 // OpenAI messages format: tool_calls + role tool, images as image_url, audio dropped.
@@ -585,6 +608,148 @@ export const exportConversationMarkdown = (
   notifyNoContent: () => toast.info("No exportable content."),
 })(threadId);
 
+async function loadConversationForHtml(
+  threadId: string,
+  format: "html" | "pdf",
+  title?: string,
+  liveBranch?: string[] | null,
+): Promise<NamedConversationHtml | null> {
+  const messages = await loadDisplayedBranchMessages(threadId, { liveBranch });
+  if (!messages) return null;
+  const thread =
+    title === undefined || format === "pdf"
+      ? await getStoredChatThread(threadId).catch(() => undefined)
+      : undefined;
+  return {
+    title: title ?? (thread?.title?.trim() || "Conversation"),
+    model: format === "pdf" ? conversationModelLabel(thread?.modelId) || undefined : undefined,
+    messages: await Promise.all(messages.map(async (msg) => {
+      const images: string[] = [];
+      const rest = {
+        content: takeDataImages(await withSandboxImages(msg.content), images),
+        attachments: msg.attachments?.map((attachment) => ({
+          content: takeDataImages(attachment?.content, images),
+        })),
+      };
+      return {
+        role: String(msg.role ?? ""),
+        content: stripSearchImageTokens(
+          msg.role === "user" || msg.role === "system"
+            ? messageToText(rest)
+            : messageToMarkdown(rest, format === "pdf" ? "pdf" : "markdown"),
+        ),
+        images,
+      };
+    })),
+  };
+}
+
+async function withSandboxImages(content: unknown): Promise<unknown> {
+  if (!Array.isArray(content)) return content;
+  const parts = await Promise.all(
+    content.map(async (part) => {
+      const { type, toolName, result } = (part ?? {}) as Record<string, unknown>;
+      if (
+        type !== "tool-call" ||
+        typeof toolName !== "string" ||
+        !SANDBOX_FILE_TOOLS.has(toolName) ||
+        !isSandboxToolResult(result)
+      ) {
+        return [part];
+      }
+      const { sessionId, images } = result as { text: string; sessionId: string; images: unknown[] };
+      const pictures = await Promise.all(
+        images
+          .filter((name): name is string => typeof name === "string" && name.length > 0)
+          .map((name) => sandboxImageMarkdown(sessionId, name)),
+      );
+      return [part, ...pictures.map((text) => ({ type: "text", text }))];
+    }),
+  );
+  return parts.flat();
+}
+
+// marked overflows V8's fixed regexp backtrack stack on a data URL of about 8M characters.
+const MAX_INLINE_IMAGE_BYTES = 4 * 1024 * 1024;
+
+async function sandboxImageMarkdown(sessionId: string, name: string): Promise<string> {
+  const alt = name.replace(/[\\[\]]/g, "\\$&");
+  const blob = await authFetch(sandboxFilePath(sessionId, name))
+    .then((response) => (response.ok ? response.blob() : null))
+    .catch(() => null);
+  const src = blob && blob.size <= MAX_INLINE_IMAGE_BYTES ? await blobDataUrl(blob) : "";
+  return isDataImage(src) ? `![${alt}](${src})` : `[image: ${alt}]`;
+}
+
+function blobDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => resolve("");
+    reader.readAsDataURL(blob);
+  });
+}
+
+function takeDataImages(content: unknown, images: string[]): unknown {
+  if (!Array.isArray(content)) return content;
+  return content.filter((part) => {
+    const { type, image } = (part ?? {}) as { type?: unknown; image?: unknown };
+    if (type !== "image" || typeof image !== "string" || !isDataImage(image)) {
+      return true;
+    }
+    images.push(image);
+    return false;
+  });
+}
+
+async function pdfBytes(title: string, body: string, model?: string): Promise<Uint8Array> {
+  const pending = toast.loading("Rendering PDF...");
+  try {
+    if (body.includes('<code class="language-')) {
+      const { highlightPdfCode } = await import("../utils/pdf-code");
+      body = await highlightPdfCode(body);
+    }
+    return await renderConversationPdf(title, body, model);
+  } finally {
+    toast.dismiss(pending);
+  }
+}
+
+async function exportConversationDocument(
+  threadId: string,
+  format: "html" | "pdf",
+  liveBranch?: string[] | null,
+): Promise<void> {
+  const conversation = await loadConversationForHtml(threadId, format, undefined, liveBranch);
+  if (!conversation) return;
+  const body = buildConversationHtmlBody([conversation]);
+  if (!body) { toast.info("No exportable content."); return; }
+  const basename = await conversationBasename(threadId);
+  if (format === "html") {
+    await downloadBlob(
+      buildConversationHtmlDocument(conversation.title, body),
+      `${basename}.html`,
+      CONVERSATION_HTML_MIME_TYPE,
+    );
+    return;
+  }
+  await downloadBlob(
+    await pdfBytes(conversation.title, body, conversation.model),
+    `${basename}.pdf`,
+    CONVERSATION_PDF_MIME_TYPE,
+  );
+}
+
+export const exportConversationHtml = (
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> => exportConversationDocument(threadId, "html", liveBranch);
+
+export const exportConversationPdf = (
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> => exportConversationDocument(threadId, "pdf", liveBranch);
+
 // "skipped" must not stop a pair; "failed" already toasted, so stop.
 type SaveSourceOutcome = "saved" | "skipped" | "failed";
 
@@ -664,7 +829,9 @@ export type ConvExportFormat =
   | "jsonl-messages"
   | "csv"
   | "sharegpt"
-  | "markdown";
+  | "markdown"
+  | "html"
+  | "pdf";
 
 const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
   "jsonl-raw": "Training JSONL",
@@ -672,6 +839,8 @@ const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
   csv: "CSV",
   sharegpt: "ShareGPT JSONL",
   markdown: "Markdown",
+  html: "HTML",
+  pdf: "PDF",
 };
 
 export const EXPORT_FORMATS_LIST = (
@@ -715,13 +884,34 @@ async function buildThreadContent(
     return await buildConversationMarkdownForThread(threadId);
   }
 
+  const rows = csvMessageRows(messages);
+  return rows.length > 0 ? rows.join("\n") : null;
+}
+
+function csvMessageRows(messages: MessageRecord[]): string[] {
   const rows: string[] = [];
   for (const msg of messages) {
     const content = messageToText(msg);
     if (!content.trim()) continue;
     rows.push(`${csvEscape(msg.role as string)},${csvEscape(content)}`);
   }
-  return rows.length > 0 ? rows.join("\n") : null;
+  return rows;
+}
+
+async function combinedConversationsCsv(threadIds: string[]): Promise<string | null> {
+  const rows: string[] = [];
+  let chat = 0;
+  for (const { id, title } of await titledConversations(threadIds)) {
+    const messages = await loadConversationMessages(id, {
+      includeSiblings: exportFormatIncludesSiblings("csv"),
+    });
+    const messageRows = messages ? csvMessageRows(messages) : [];
+    if (messageRows.length === 0) continue;
+    chat++;
+    const lead = `${chat},${csvEscape(title)},`;
+    for (const row of messageRows) rows.push(lead + row);
+  }
+  return rows.length > 0 ? csvDocument([COMBINED_CSV_HEADER, ...rows]) : null;
 }
 
 function csvHeader(format: ConvExportFormat): string {
@@ -731,12 +921,15 @@ function csvHeader(format: ConvExportFormat): string {
 function exportExt(format: ConvExportFormat): string {
   if (format === "csv") return "csv";
   if (format === "markdown") return "md";
+  if (format === "html" || format === "pdf") return format;
   return "jsonl";
 }
 
 function exportMime(format: ConvExportFormat): string {
   if (format === "csv") return CSV_MIME;
   if (format === "markdown") return CONVERSATION_MARKDOWN_MIME_TYPE;
+  if (format === "html") return CONVERSATION_HTML_MIME_TYPE;
+  if (format === "pdf") return CONVERSATION_PDF_MIME_TYPE;
   return "application/x-ndjson";
 }
 
@@ -751,30 +944,27 @@ export async function exportBulkConversationsMerged(
     return;
   }
 
+  if (format === "html" || format === "pdf") {
+    const conversations: NamedConversationHtml[] = [];
+    for (const { id, title } of await titledConversations(threadIds)) {
+      const conversation = await loadConversationForHtml(id, format, title);
+      if (conversation) conversations.push(conversation);
+    }
+    const body = buildConversationHtmlBody(conversations);
+    if (!body) { toast.info("No exportable content."); return; }
+    const title = conversations.length === 1 ? conversations[0].title : basename;
+    await downloadBlob(
+      format === "html"
+        ? buildConversationHtmlDocument(title, body)
+        : await pdfBytes(title, body, conversations.length === 1 ? conversations[0].model : undefined),
+      `${basename}.${format}`,
+      exportMime(format),
+    );
+    return;
+  }
+
   if (format === "markdown" && threadIds.length > 1) {
-    const conversations: Array<{ id: string; title: string }> = [];
-    const pairs = new Map<string, ThreadRecord[]>();
-    for (const id of threadIds) {
-      const thread = await getStoredChatThread(id);
-      conversations.push({ id, title: thread?.title?.trim() || id });
-      if (thread?.pairId) {
-        const halves = pairs.get(thread.pairId) ?? [];
-        halves.push(thread);
-        pairs.set(thread.pairId, halves);
-      }
-    }
-    const pairedTitles = new Map<string, string>();
-    for (const [pairId, halves] of pairs) {
-      if (halves.length < 2) continue;
-      const plans = planChatItemSources(
-        { id: pairId, title: halves[0].title?.trim() || pairId, type: "pair" },
-        halves,
-      );
-      for (const plan of plans) pairedTitles.set(plan.id, plan.title);
-    }
-    for (const conversation of conversations) {
-      conversation.title = pairedTitles.get(conversation.id) ?? conversation.title;
-    }
+    const conversations = await titledConversations(threadIds);
     const body = await buildNamedConversationsMarkdown(
       conversations,
       buildConversationMarkdownForThread,
@@ -785,6 +975,13 @@ export async function exportBulkConversationsMerged(
       `${basename}.md`,
       CONVERSATION_MARKDOWN_MIME_TYPE,
     );
+    return;
+  }
+
+  if (format === "csv" && threadIds.length > 1) {
+    const body = await combinedConversationsCsv(threadIds);
+    if (!body) { toast.info("No exportable content."); return; }
+    await downloadBlob(body, `${basename}.csv`, CSV_MIME);
     return;
   }
 
@@ -811,6 +1008,36 @@ export async function exportBulkConversationsMerged(
   );
 }
 
+/** Thread titles, with compare halves named by model so the two can be told apart. */
+async function titledConversations(
+  threadIds: string[],
+): Promise<Array<{ id: string; title: string }>> {
+  const conversations: Array<{ id: string; title: string }> = [];
+  const pairs = new Map<string, ThreadRecord[]>();
+  for (const id of threadIds) {
+    const thread = await getStoredChatThread(id);
+    conversations.push({ id, title: thread?.title?.trim() || id });
+    if (thread?.pairId) {
+      const halves = pairs.get(thread.pairId) ?? [];
+      halves.push(thread);
+      pairs.set(thread.pairId, halves);
+    }
+  }
+  const pairedTitles = new Map<string, string>();
+  for (const [pairId, halves] of pairs) {
+    if (halves.length < 2) continue;
+    const plans = planChatItemSources(
+      { id: pairId, title: halves[0].title?.trim() || pairId, type: "pair" },
+      halves,
+    );
+    for (const plan of plans) pairedTitles.set(plan.id, plan.title);
+  }
+  for (const conversation of conversations) {
+    conversation.title = pairedTitles.get(conversation.id) ?? conversation.title;
+  }
+  return conversations;
+}
+
 export async function exportBulkConversationsSeparate(
   threadIds: string[],
   format: ConvExportFormat,
@@ -824,6 +1051,16 @@ export async function exportBulkConversationsSeparate(
   const files: Record<string, Uint8Array> = {};
 
   for (const id of threadIds) {
+    if (format === "html" || format === "pdf") {
+      const conversation = await loadConversationForHtml(id, format);
+      const body = conversation ? buildConversationHtmlBody([conversation]) : "";
+      if (!conversation || !body) continue;
+      files[`${id}.${ext}`] =
+        format === "html"
+          ? strToU8(buildConversationHtmlDocument(conversation.title, body))
+          : await pdfBytes(conversation.title, body, conversation.model);
+      continue;
+    }
     const content = await buildThreadContent(id, format);
     if (!content) continue;
     const body = header ? csvDocument([header, content]) : ndjsonBody([content]);
@@ -836,24 +1073,33 @@ export async function exportBulkConversationsSeparate(
   await downloadBlob(zipped, `${basename}.zip`, "application/zip");
 }
 
-// "recents" = chats outside projects; "all" adds project chats.
+const SCOPE_BASENAMES = {
+  recents: "recents",
+  all: "all-chats",
+  history: "unsloth-chats",
+  archived: "unsloth-archived-chats",
+} as const;
+
+// "recents" = chats outside projects; "all" adds project chats; "history" adds archived ones too.
 export async function bulkExportConversationsByScope(
-  scope: "recents" | "all",
+  scope: keyof typeof SCOPE_BASENAMES,
   format: ConvExportFormat,
   merged: boolean,
 ): Promise<void> {
   try {
-    const threads = await listStoredChatThreads({
-      includeArchived: false,
+    const listed = await listStoredChatThreads({
+      includeArchived: scope === "history" || scope === "archived",
       ...(scope === "recents" ? { projectId: null } : {}),
     });
+    const threads =
+      scope === "archived" ? listed.filter((t) => t.archived) : listed;
     const ids = [...new Set(threads.map((t) => t.id))];
     if (ids.length === 0) {
       toast.info("No conversations to export.");
       return;
     }
     const ts = new Date().toISOString().slice(0, 10);
-    const basename = scope === "all" ? `all-chats-${ts}` : `recents-${ts}`;
+    const basename = `${SCOPE_BASENAMES[scope]}-${ts}`;
     if (merged) {
       await exportBulkConversationsMerged(ids, format, basename);
     } else {
@@ -1180,23 +1426,26 @@ async function importListsFromText(text: string, isCsv: boolean): Promise<{ coun
   const lists: PromptListEntry[] = [];
   let skipped = 0;
   if (isCsv) {
-    const rows = parseCsv(text).slice(1);
-    const listMap = new Map<string, Array<{ order: number; text: string }>>();
-    for (const cells of rows) {
+    const [header = [], ...rows] = parseCsv(text);
+    const numbered = header.map((cell) => cell.trim().toLowerCase()).join(",") === PROMPT_LISTS_CSV_HEADER;
+    const listMap = new Map<string, { name: string; items: Array<{ order: number; text: string }> }>();
+    for (const row of rows) {
+      const cells = numbered ? row.slice(1) : row;
       const listName = cells[0]?.trim();
       const promptText = cells[2]?.trim();
       if (listName && promptText) {
         const order = parseInt(cells[1] ?? "0", 10) || 0;
-        if (!listMap.has(listName)) listMap.set(listName, []);
-        listMap.get(listName)!.push({ order, text: promptText });
+        const key = numbered ? row[0] : listName;
+        if (!listMap.has(key)) listMap.set(key, { name: listName, items: [] });
+        listMap.get(key)!.items.push({ order, text: promptText });
       }
     }
-    for (const [listName, items] of listMap.entries()) {
+    for (const { name, items } of listMap.values()) {
       const sorted = items.sort((a, b) => a.order - b.order).map((x) => x.text);
       if (sorted.length > 0) {
         lists.push({
           id: newId(),
-          name: listName,
+          name,
           items: sorted,
           createdAt: now(),
           updatedAt: now(),

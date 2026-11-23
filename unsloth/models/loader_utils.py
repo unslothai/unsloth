@@ -23,6 +23,7 @@ import contextlib
 import contextvars
 import copy
 import threading as _threading
+from time import monotonic as _time_monotonic
 import functools
 import inspect
 from typing import Union
@@ -46,6 +47,7 @@ _MAPPER_HELPERS = {
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
 from unsloth_zoo.utils import Version, get_quant_type
+from .packed_expert_loader import quantize_moe_experts_if_requested  # noqa: F401  (re-exported)
 import gc
 import traceback as _traceback
 
@@ -619,6 +621,30 @@ def _single_device_index(device_map):
     return None
 
 
+def no_placement_matcher(model, names = None):
+    """Predicate: is this tensor name one of `model._no_placement_params`? transformers reads the names relative to a
+    `_no_split_modules` module: a bare name ("weight", DeepSeek-V4.1's engram table) matches only a direct tensor of
+    such a module (a suffix match would take every weight in the model); a dotted one (Qwen4Exp's
+    "ple.ple_embedding.ngram_embedding.weight") keeps the suffix match."""
+    names = list(getattr(model, "_no_placement_params", None) or [] if names is None else names)
+    dotted = [n for n in names if "." in n]
+    bare = {n for n in names if "." not in n}
+    roots = set()
+    if bare:
+        no_split = set(getattr(model, "_no_split_modules", None) or [])
+        roots = {
+            path for path, module in model.named_modules() if type(module).__name__ in no_split
+        }
+
+    def match(name):
+        if any(name == n or name.endswith("." + n) for n in dotted):
+            return True
+        owner, _, leaf = name.rpartition(".")
+        return leaf in bare and owner in roots
+
+    return match
+
+
 def no_placement_tensor_names(model):
     """Every tensor name under a module owning one of the model's `_no_placement_params`."""
     names = getattr(model, "_no_placement_params", None)
@@ -627,11 +653,8 @@ def no_placement_tensor_names(model):
     tensors = list(model.named_parameters(remove_duplicate = False)) + list(
         model.named_buffers(remove_duplicate = False)
     )
-    owners = {
-        name.rsplit(".", 1)[0]
-        for name, _ in tensors
-        if any(name == n or name.endswith("." + n) for n in names)
-    }
+    match = no_placement_matcher(model, names)
+    owners = {name.rsplit(".", 1)[0] for name, _ in tensors if match(name)}
     return {name for name, _ in tensors if any(name.startswith(o + ".") for o in owners)}
 
 
@@ -661,10 +684,11 @@ def exclude_no_placement_params(device_map, model_class, config):
             f"Unsloth: could not build {model_class.__name__} on meta to place {names} ({error})."
         )
         return device_map
+    match = no_placement_matcher(meta, names)
     matched = {
         name
         for name, _ in list(meta.named_parameters()) + list(meta.named_buffers())
-        if any(name == n or name.endswith("." + n) for n in names)
+        if match(name)
     }
     if not matched:
         return device_map
@@ -1819,11 +1843,27 @@ def _load_probe_memo_scope(fn):
     return _wrapper
 
 
+# Failed fetches retry after a short pause, not per load: a firewall would cost each load the timeout.
+_NEW_MAPPER_TTL_S = 3600.0
+_NEW_MAPPER_RETRY_S = 300.0
+_NEW_MAPPER_CACHE = {"entry": None}  # (tables, fetched_at): one slot, never a torn pair
+
+
 def _new_mapper_tables():
     memo = _LOAD_PROBE_MEMO.get()
     if memo is not None and "new_mapper" in memo:
         return tuple(dict(table) for table in memo["new_mapper"])
-    tables = _get_new_mapper()
+    entry = _NEW_MAPPER_CACHE["entry"]
+    tables = None
+    if entry is not None:
+        cached, at = entry
+        age = _time_monotonic() - at
+        if 0 <= age < (_NEW_MAPPER_TTL_S if any(cached) else _NEW_MAPPER_RETRY_S):
+            tables = tuple(dict(table) for table in cached)
+    if tables is None:
+        # No lock around the fetch: a fork while another thread is fetching must not leave the child waiting.
+        tables = _get_new_mapper()
+        _NEW_MAPPER_CACHE["entry"] = (tuple(dict(table) for table in tables), _time_monotonic())
     if memo is not None and any(tables):
         memo["new_mapper"] = tuple(dict(table) for table in tables)
     return tables
@@ -4228,6 +4268,18 @@ def check_and_disable_bitsandbytes_loading(
     """Disable bnb flags for non-bnb quantized checkpoints; returns ``(load_in_4bit, load_in_8bit, quant_method)``.
 
     ``requantize_packed = False`` under fast_inference / full_finetuning: nothing would consume the plan."""
+    # Inkling 2's "modelopt" config describes its own expert layout, decoded by transformers' conversion mapping:
+    # drop it so the generic ModelOpt rewrite stays off and bitsandbytes can quantize the dequantized weights.
+    from .inkling2 import (
+        inkling2_owns_modelopt_quantization,
+        drop_inkling2_quantization_config,
+        register_inkling2_expert_dequantization,
+    )
+
+    if inkling2_owns_modelopt_quantization(model_config):
+        drop_inkling2_quantization_config(model_config, verbose = verbose, load_in_4bit = load_in_4bit)
+        register_inkling2_expert_dequantization()
+        return load_in_4bit, load_in_8bit, None
     quant_method = get_quant_type(model_config)
     if quant_method is None:
         # Also under vLLM: it reads the file itself, but the bitsandbytes flags must still drop.
@@ -4246,7 +4298,11 @@ def check_and_disable_bitsandbytes_loading(
 
     if str(quant_method).lower() in ("compressed-tensors", "compressed_tensors", "sparseml"):
         from .mxfp4_compressed_linear import install_compressed_tensors_keep_packed
+
         install_compressed_tensors_keep_packed()
+        from .packed_expert_loader import install_packed_expert_loading
+
+        install_packed_expert_loading()
 
     # Packed compressed-tensors: drop its quant config here and keep load_in_4bit for on-the-fly bnb re-quantization.
     if (
@@ -4263,6 +4319,10 @@ def check_and_disable_bitsandbytes_loading(
         # Whoever loads the weights (vLLM included), a merged_16bit save must dequantize them.
         from .modelopt_fp8 import enable_modelopt_merged_save
         enable_modelopt_merged_save(model_config)
+    if rewrite_modelopt and str(quant_method).lower() == "modelopt":
+        from .modelopt_nvfp4 import arm_modelopt_nvfp4_loading
+        if arm_modelopt_nvfp4_loading(model_config, verbose = verbose) is not None:
+            quant_method = "compressed-tensors"
     if rewrite_modelopt and str(quant_method).lower() == "modelopt":
         from .modelopt_fp8 import arm_modelopt_fp8_loading
         if arm_modelopt_fp8_loading(model_config, verbose = verbose) is not None:
@@ -4354,6 +4414,10 @@ def _index_weight_map(path):
 
 
 def _bin_dtypes(path):
+    from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    # torch < 2.6 can run code from the pickle even with weights_only (CVE-2025-32434).
+    refuse_pickle_checkpoint_on_old_torch(path)
     # mmap + weights_only reads the pickle and storage metadata, not the tensor bytes.
     state_dict = torch.load(path, map_location = "cpu", mmap = True, weights_only = True)
     return {k: str(v.dtype) for k, v in state_dict.items() if isinstance(v, torch.Tensor)}

@@ -153,8 +153,14 @@ const VIDEO_PAGE_TASKS: ReadonlySet<string> = new Set([
   "image-text-to-video",
 ]);
 
-// Video page repos whose Hub card names no pipeline task. Not Cosmos3-Nano: its guardrail package is not installed.
-const VIDEO_PAGE_REPOS: ReadonlySet<string> = new Set(["nvidia/cosmos3-edge"]);
+// Video page repos whose Hub card names no pipeline task.
+const VIDEO_PAGE_REPOS: ReadonlySet<string> = new Set([
+  "nvidia/cosmos3-nano",
+  "nvidia/cosmos3-edge",
+  // NVIDIA's ModelOpt FP8 builds of the same pipelines.
+  "nvidia/cosmos3-nano-fp8",
+  "nvidia/cosmos3-edge-fp8",
+]);
 
 /** Which Unsloth page runs this pipeline task, if any. */
 export function studioPageForTask(

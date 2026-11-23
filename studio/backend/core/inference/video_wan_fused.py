@@ -13,10 +13,12 @@ import os
 import threading
 from typing import Any, Callable, Optional
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 WAN_FUSED_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ADALN"
 # rotary only (the block fusion stays): UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0
 WAN_FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ROPE"
+WAN_FUSED_ANY_LENGTH_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ANY_LENGTH"
 _MODULE = "diffusers.models.transformers.transformer_wan"
 _CLASS = "WanTransformerBlock"
 # ``_digest(WanTransformerBlock.forward)``: identical in diffusers 0.36.0, 0.37.0, 0.40.0 and main (80c7ed26).
@@ -54,6 +56,7 @@ def wanted(dtype: Any, device: Any = "cuda") -> bool:
 
 
 @functools.lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _kernels() -> Optional[dict]:
     """Build the Triton kernels once; None when Triton is unavailable (the stock forward then stays)."""
     try:
@@ -62,6 +65,15 @@ def _kernels() -> Optional[dict]:
     except Exception:  # noqa: BLE001
         return None
 
+    # L only splits the row id into (sample, token): no alignment depends on it.
+    any_length = (os.environ.get(WAN_FUSED_ANY_LENGTH_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+    unspec = ["L"] if any_length else []
+
     @triton.jit
     def _mul_rn(a, b):
         # enable_fp_fusion=False is not enough (ptxas forms FFMA2 on sm_100), hence inline PTX.
@@ -69,7 +81,7 @@ def _kernels() -> Optional[dict]:
             "mul.rn.f32 $0, $1, $2;", "=r,r,r", [a, b], dtype = tl.float32, is_pure = True, pack = 1
         )
 
-    @triton.jit
+    @triton.jit(do_not_specialize = unspec)
     def _modnorm(
         X,
         MEAN,
@@ -108,7 +120,7 @@ def _kernels() -> Optional[dict]:
         y = y + shift
         tl.store(OUT + row * D + col, y.to(OUT.dtype.element_ty), mask = mask)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = unspec)
     def _gate_residual(
         X,
         A,
@@ -157,7 +169,7 @@ def _kernels() -> Optional[dict]:
         y = tl.fma(w, _mul_rn(rstd, x - mean), bb)
         tl.store(OUT + row * D + col, y.to(OUT.dtype.element_ty), mask = mask)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = unspec)
     def _rope(
         X,
         COS,
@@ -393,9 +405,7 @@ def _rope_ok(x: Any, freqs: Any) -> bool:
 
 
 def _self_attention(attn: Any, hidden_states: Any, rotary_emb: Any) -> Any:
-    """``WanAttnProcessor.__call__`` for self-attention (no mask, no image branch), step for step, with the rotary as
-    one kernel per q / k. None when the processor or the inputs are not the ones this reproduces; the caller then runs
-    the stock module."""
+    """Fused self-attention matching WanAttnProcessor; None when unsupported, so the stock module runs."""
     import torch
 
     if (os.environ.get(WAN_FUSED_ROPE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):

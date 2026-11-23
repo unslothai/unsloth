@@ -175,7 +175,7 @@ export function ParamsSection({
                   {useEpochs
                     ? t("studio.params.epochs")
                     : t("studio.params.maxSteps")}
-                  <Tooltip>
+                  <Tooltip disableHoverableContent={false}>
                     <TooltipTrigger asChild={true}>
                       <button
                         type="button"
@@ -279,7 +279,7 @@ export function ParamsSection({
             <div className="flex flex-col gap-2">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 {t("studio.params.contextLength")}
-                <Tooltip>
+                <Tooltip disableHoverableContent={false}>
                   <TooltipTrigger asChild={true}>
                     <button
                       type="button"
@@ -361,7 +361,7 @@ export function ParamsSection({
           <div className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               {t("studio.params.learningRate")}
-              <Tooltip>
+              <Tooltip disableHoverableContent={false}>
                 <TooltipTrigger asChild={true}>
                   <button
                     type="button"

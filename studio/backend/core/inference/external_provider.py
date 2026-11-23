@@ -33,6 +33,7 @@ from core.inference.openai_responses_shared import (
     response_event_type,
 )
 from core.inference.sse_control_frames import sanitize_provider_sse_line
+from core.inference.http_stream import aiter_sse_lines
 from models.providers import (
     normalize_provider_extra_headers,
     normalize_provider_reasoning_config,
@@ -48,7 +49,18 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
 # custom may reject include_usage; OpenAI Responses returns usage without it; listed streams need it.
 _USAGE_STREAM_OPTION_PROVIDERS = frozenset(
-    {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen", "qwencloud"}
+    {
+        "vllm",
+        "llama_cpp",
+        "ollama",
+        "openrouter",
+        "kimi",
+        "lemonade",
+        "qwen",
+        "qwencloud",
+        "xai",
+        "azure",
+    }
 )
 
 
@@ -75,15 +87,23 @@ def _json_object_refused_for_schema(
 
 
 # launch-time windows are absent from catalogues; custom covers unregistered self-hosted servers.
-_SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
+_SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom", "ollama"})
+# Hosted providers whose model listing carries each model's window; needs the saved key.
+_CATALOG_WINDOW_PROVIDERS = frozenset({"anthropic", "openrouter", "gemini"})
 # refresh within one or two turns to detect server restarts.
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _GEMINI_MAX_MODEL_PAGES = 20
-_GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?:-|$)")
-_served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
+_GEMINI_RESTRICTED_GENERATION = re.compile(
+    r"^gemini-(?:3\.[78]-flash|(?:[4-9]|\d{2,})(?:\.\d+)?)(?:-|$)"
+)
+_GEMINI_DUMMY_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
+_served_windows: dict[tuple[str, str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
+_served_vision: dict[tuple[str, str, str, str], tuple[float, Optional[bool]]] = {}
+# outlives the TTL: Ollama unloads an idle model after keep_alive and reloads it at the same window.
+_ollama_last_windows: dict[tuple[str, str, str, str], int] = {}
 
 
 def _positive_int(value: Any) -> Optional[int]:
@@ -194,6 +214,12 @@ def _append_provider_path(base_url: str, endpoint: str) -> str:
     path = f"{parts.path.rstrip('/')}/{endpoint_path.lstrip('/')}"
     query = "&".join(q for q in (parts.query, endpoint_query) if q)
     return urlunsplit((parts.scheme, parts.netloc, path, query, parts.fragment))
+
+
+def _native_server_path(base_url: str, endpoint: str) -> str:
+    parts = urlsplit(base_url)
+    root = urlunsplit(parts._replace(path = parts.path.rstrip("/").removesuffix("/v1")))
+    return _append_provider_path(root, endpoint)
 
 
 def caches_at_the_last_block(
@@ -671,8 +697,25 @@ _ANTHROPIC_COMPACTION_BETA = "compact-2026-01-12"
 _ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
 # thresholds below 50K tokens return an upstream 400.
 _ANTHROPIC_COMPACTION_MIN = 50_000
-# compaction above this is slow and costly on 1M-token windows; Anthropic defaults to 150K.
+# The default ceiling: compaction above this is slow and costly on 1M-token windows (Anthropic's own
+# default is 150K). Neither vendor documents an upper limit, only a floor, so a connection's
+# "Auto-compact after" setting may go past it up to the model's window (compaction_uncapped):
+#   Anthropic: trigger "value must be at least 50,000 tokens", default 150,000
+#     https://platform.claude.com/docs/en/build-with-claude/compaction-threshold
+#   OpenAI: context_management[].compact_threshold "minimum: 1000"
+#     https://developers.openai.com/api/reference/resources/responses/methods/create
 _SERVER_COMPACTION_MAX = 200_000
+_OPENAI_COMPACTION_MIN = 1_000
+
+
+def anthropic_compaction_trigger(threshold: int, uncapped: bool = False) -> int:
+    trigger = max(int(threshold), _ANTHROPIC_COMPACTION_MIN)
+    return trigger if uncapped else min(trigger, _SERVER_COMPACTION_MAX)
+
+
+def openai_compaction_threshold(threshold: int, uncapped: bool = False) -> int:
+    trigger = max(int(threshold), _OPENAI_COMPACTION_MIN)
+    return trigger if uncapped else min(trigger, _SERVER_COMPACTION_MAX)
 
 
 # Anthropic fast mode is limited to Opus 5/4.8; Opus 4.7 rejects speed, 4.6 reports standard, and Priority conflicts.
@@ -1186,6 +1229,7 @@ def _slim_openrouter_models(payload: Any) -> list[dict[str, Any]]:
         slim["created"] = m.get("created") or 0
         models.append(slim)
     models.sort(key = lambda m: m["created"], reverse = True)
+    models.sort(key = lambda m: (not m["id"].startswith("openrouter/"), not m["id"].startswith("~")))
     return models
 
 
@@ -1612,7 +1656,7 @@ class ExternalProviderClient:
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
-        from core.inference.providers import get_provider_info
+        from core.inference.providers import get_provider_info, speaks_native_gemini
 
         provider_info = get_provider_info(self.provider_type) or {}
         auth_header = provider_info.get("auth_header", "Authorization")
@@ -1620,8 +1664,7 @@ class ExternalProviderClient:
 
         # Non-Google Gemini bases (LiteLLM, custom gateways) use OAI-compat Bearer auth, not x-goog-api-key.
         if self.provider_type == "gemini":
-            _host = (urlparse(self.base_url).hostname or "").lower()
-            if _host != "generativelanguage.googleapis.com":
+            if not speaks_native_gemini(self.base_url):
                 auth_header = "Authorization"
                 auth_prefix = "Bearer "
 
@@ -1664,7 +1707,11 @@ class ExternalProviderClient:
         if (
             base.scheme == "https"
             and base.hostname == "opencode.ai"
-            and (base.path == "/inference/go" or base.path.startswith("/inference/go/"))
+            # /zen/go is the older Go base URL; the gateway still serves and enforces it.
+            and any(
+                base.path == prefix or base.path.startswith(prefix + "/")
+                for prefix in ("/inference/go", "/zen/go")
+            )
         ):
             # Hashed so the raw conversation ID never leaves Studio; titles and probes have no thread.
             headers["x-opencode-session"] = (
@@ -1677,13 +1724,12 @@ class ExternalProviderClient:
 
     def _is_openai_compatible(self) -> bool:
         """Return False for providers needing request/response translation (e.g. Anthropic)."""
-        from core.inference.providers import get_provider_info
+        from core.inference.providers import get_provider_info, speaks_native_gemini
 
         info = get_provider_info(self.provider_type) or {}
         # Google-hosted Gemini uses native translator; non-Google bases stay OAI-compat for LiteLLM/proxies.
         if self.provider_type == "gemini":
-            _host = (urlparse(self.base_url).hostname or "").lower()
-            if _host != "generativelanguage.googleapis.com":
+            if not speaks_native_gemini(self.base_url):
                 return True
         return info.get("openai_compatible", True)
 
@@ -1715,6 +1761,7 @@ class ExternalProviderClient:
         preserve_thinking: Optional[bool] = None,
         thread_id: Optional[str] = None,
         compaction_fallback: Optional[CompactionFallback] = None,
+        compaction_uncapped: bool = False,
     ) -> AsyncGenerator[str, None]:
         """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in."""
         self.set_header_context(thread_id, model)
@@ -1782,6 +1829,7 @@ class ExternalProviderClient:
                 fast_mode = fast_mode,
                 tools = tools,
                 response_format = response_format,
+                compaction_uncapped = compaction_uncapped,
             ):
                 yield line
             return
@@ -1806,6 +1854,7 @@ class ExternalProviderClient:
                 stream = stream if self.provider_type == "custom" else True,
                 compaction_fallback = compaction_fallback,
                 thread_id = thread_id,
+                compaction_uncapped = compaction_uncapped,
             ):
                 yield line
             return
@@ -1841,6 +1890,12 @@ class ExternalProviderClient:
             else {}
         )
 
+        from core.inference.providers import get_provider_info
+
+        provider_info = get_provider_info(self.provider_type) or {}
+        max_temperature = provider_info.get("max_temperature")
+        if max_temperature is not None and temperature is not None:
+            temperature = min(temperature, max_temperature)
         body: dict[str, Any] = {
             "model": model,
             "messages": _vllm_reasoning_turns(messages)
@@ -1854,11 +1909,18 @@ class ExternalProviderClient:
         if top_p is not None:
             body["top_p"] = top_p
         # Only alongside stream=True: the field is rejected on a non-streaming request.
-        if stream and self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS:
+        if stream and (
+            self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS
+            # A custom server that reports a window is a llama-server or vLLM, which take the option.
+            or (self.provider_type == "custom" and self._known_served_window(model))
+        ):
             body["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
             # Newer OpenAI models reject max_tokens; MiniMax counts thinking against it.
-            if self.provider_type in ("openai", "minimax"):
+            if (
+                self.provider_type in ("openai", "minimax")
+                or provider_info.get("max_tokens_field") == "max_completion_tokens"
+            ):
                 body["max_completion_tokens"] = max_tokens
             else:
                 body["max_tokens"] = max_tokens
@@ -1872,9 +1934,6 @@ class ExternalProviderClient:
             )
 
         # Drop registry-unusable fields so fixed-default models (Kimi k2.6) don't 400 on pydantic defaults.
-        from core.inference.providers import get_provider_info
-
-        provider_info = get_provider_info(self.provider_type) or {}
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
 
@@ -1903,6 +1962,16 @@ class ExternalProviderClient:
             _apply_qwen_reasoning_controls(body, enable_thinking)
         elif self.provider_type == "huggingface":
             _apply_passthrough_reasoning_effort(body, enable_thinking, reasoning_effort)
+        elif provider_info.get("reasoning_effort_values"):
+            _apply_passthrough_reasoning_effort(
+                body,
+                enable_thinking,
+                reasoning_effort,
+                provider_info.get("reasoning_effort_aliases"),
+            )
+            # A value the provider does not list is an error there, so it sends its default instead.
+            if body.get("reasoning_effort") not in provider_info["reasoning_effort_values"]:
+                body.pop("reasoning_effort", None)
         elif provider_info.get("supports_chat_template_kwargs"):
             # chat_template_kwargs is opt-in per registry entry (strict gateways 400 on it); vLLM <=0.16
             # 400s on reasoning_effort=none, so off rides on the kwarg alone.
@@ -1980,7 +2049,10 @@ class ExternalProviderClient:
         # Forward tools/tool_choice on every OAI-compat route; dropping them silently loses function calling.
         if tools:
             body["tools"] = tools
-        if tool_choice is not None:
+        # FastFlowLM turns a bare "none" into a decoding constraint, which turns NPU speculation off.
+        if tool_choice is not None and not (
+            self.provider_type == "lemonade" and tool_choice_disabled and not tools
+        ):
             body["tool_choice"] = tool_choice
         # JSON mode / guided decoding; dropping `response_format` silently turns output into free prose.
         if response_format is not None:
@@ -2296,7 +2368,7 @@ class ExternalProviderClient:
                     )
                     return
 
-                lines_gen = response.aiter_lines().__aiter__()
+                lines_gen = aiter_sse_lines(response).__aiter__()
                 try:
                     while True:
                         try:
@@ -2391,7 +2463,7 @@ class ExternalProviderClient:
                         )
                         return
                     # Manual __anext__ loop, not async for, avoids Python 3.13 + httpcore 1.0.x GeneratorExit interaction.
-                    lines_gen = response.aiter_lines().__aiter__()
+                    lines_gen = aiter_sse_lines(response).__aiter__()
                     try:
                         while True:
                             try:
@@ -2495,7 +2567,7 @@ class ExternalProviderClient:
                     )
                     return
 
-                lines_gen = response.aiter_lines().__aiter__()
+                lines_gen = aiter_sse_lines(response).__aiter__()
                 # Latch final usage; a big prompt_tokens is evidence the server injected search results into context.
                 last_usage: Optional[dict[str, Any]] = None
                 annotation_shapes: set[str] = set()
@@ -2607,6 +2679,7 @@ class ExternalProviderClient:
         fast_mode: Optional[bool] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         response_format: Optional[dict[str, Any]] = None,
+        compaction_uncapped: bool = False,
     ) -> AsyncGenerator[str, None]:
         """call Anthropic Messages and translate its SSE into OpenAI stream events."""
         import json as _json
@@ -3155,10 +3228,7 @@ class ExternalProviderClient:
             and _anthropic_supports_compaction(model)
         )
         if compaction_active and compaction_threshold is not None:
-            trigger_value = min(
-                max(int(compaction_threshold), _ANTHROPIC_COMPACTION_MIN),
-                _SERVER_COMPACTION_MAX,
-            )
+            trigger_value = anthropic_compaction_trigger(compaction_threshold, compaction_uncapped)
             body["context_management"] = {
                 "edits": [
                     {
@@ -3263,7 +3333,7 @@ class ExternalProviderClient:
                     return
 
                 # NOTE: same manual __anext__ loop as stream_chat_completion — see comment there.
-                lines_gen = response.aiter_lines().__aiter__()
+                lines_gen = aiter_sse_lines(response).__aiter__()
                 thinking_open = False
                 client_tool_indices: dict[int, int] = {}
                 # Held until message_stop so an errored or cut-off stream never executes a partial call.
@@ -4469,6 +4539,10 @@ class ExternalProviderClient:
                     if isinstance(sig, str) and sig:
                         fc_part["thoughtSignature"] = sig
                     parts.append(fc_part)
+                # Gemini 3 400s when a step's first functionCall is unsigned; Gemini itself signs only that one.
+                _fc_parts = [p for p in parts if "functionCall" in p]
+                if _fc_parts and not any("thoughtSignature" in p for p in _fc_parts):
+                    _fc_parts[0]["thoughtSignature"] = _GEMINI_DUMMY_THOUGHT_SIGNATURE
             if role == "tool":
                 # Drop follow-up when its tool_call was dropped or replayed natively; else orphan functionResponse.
                 _tc_id_for_skip = msg.get("tool_call_id")
@@ -4874,6 +4948,11 @@ class ExternalProviderClient:
                 if _allowed:
                     _fcc["allowedFunctionNames"] = _allowed
                 body["toolConfig"] = {"functionCallingConfig": _fcc}
+        # Gemini 400s on hosted tools beside functionDeclarations unless this is set; Vertex rejects the field.
+        if function_declarations and any("functionDeclarations" not in t for t in tools_array):
+            from core.inference.providers import is_vertex_host
+            if not is_vertex_host(urlsplit(self.base_url or "").hostname):
+                body.setdefault("toolConfig", {})["includeServerSideToolInvocations"] = True
 
         # JSON mode only on tool-free turns: Gemini 400s on response mime type plus function calling.
         _rf_type = response_format.get("type") if isinstance(response_format, dict) else None
@@ -5037,7 +5116,7 @@ class ExternalProviderClient:
                     web_search_tool_started = True
 
                 # __anext__ loop as in stream_chat_completion (Python 3.13 + httpcore 1.0.x GeneratorExit ordering).
-                lines_gen = response.aiter_lines().__aiter__()
+                lines_gen = aiter_sse_lines(response).__aiter__()
                 final_finish_reason: Optional[str] = None
                 bare_json = ""
                 stream_error: Optional[str] = None
@@ -5581,6 +5660,7 @@ class ExternalProviderClient:
         stream: bool = True,
         compaction_fallback: Optional[CompactionFallback] = None,
         thread_id: Optional[str] = None,
+        compaction_uncapped: bool = False,
     ) -> AsyncGenerator[str, None]:
         """Responses takes input and instructions, not messages; presence_penalty and top_k are dropped."""
         import json as _json
@@ -5951,7 +6031,9 @@ class ExternalProviderClient:
             body["context_management"] = [
                 {
                     "type": "compaction",
-                    "compact_threshold": min(int(compaction_threshold), _SERVER_COMPACTION_MAX),
+                    "compact_threshold": openai_compaction_threshold(
+                        compaction_threshold, compaction_uncapped
+                    ),
                 }
             ]
 
@@ -6324,7 +6406,7 @@ class ExternalProviderClient:
                         return
 
                     # Same manual __anext__ loop as stream_chat_completion; see it for GeneratorExit/aclose ordering.
-                    lines_gen = response.aiter_lines().__aiter__()
+                    lines_gen = aiter_sse_lines(response).__aiter__()
                     done_emitted = False
                     reasoning_open = False
                     reasoning_emitted = False
@@ -6702,6 +6784,9 @@ class ExternalProviderClient:
                                 ):
                                     raw_item_id = item.get("id")
                                     if isinstance(raw_item_id, str) and raw_item_id:
+                                        if reasoning_open:
+                                            yield _chunk_with_text("</think>")
+                                            reasoning_open = False
                                         arguments = _image_generation_arguments(
                                             "",
                                             raw_item_id,
@@ -6720,6 +6805,9 @@ class ExternalProviderClient:
                                 item = event.get("item", {})
                                 if not isinstance(item, dict):
                                     continue
+                                if reasoning_open and item.get("type") != "reasoning":
+                                    yield _chunk_with_text("</think>")
+                                    reasoning_open = False
                                 if item.get("type") == "reasoning":
                                     last_openai_reasoning_replay_item = (
                                         _record_openai_reasoning_replay_item(item)
@@ -7243,8 +7331,16 @@ class ExternalProviderClient:
         }
         if top_p is not None:
             body["top_p"] = top_p
+        from core.inference.providers import get_provider_info
+
+        provider_info = get_provider_info(self.provider_type) or {}
+        for field in provider_info.get("body_omit", ()):
+            body.pop(field, None)
         if max_tokens is not None:
-            if self.provider_type == "openai":
+            if (
+                self.provider_type == "openai"
+                or provider_info.get("max_tokens_field") == "max_completion_tokens"
+            ):
                 body["max_completion_tokens"] = max_tokens
             else:
                 body["max_tokens"] = max_tokens
@@ -7356,6 +7452,32 @@ class ExternalProviderClient:
         response.raise_for_status()
         return [item["b64_json"] for item in response.json()["data"]]
 
+    async def create_image_edits(
+        self, prompt: str, model: str, n: int, images: list[bytes]
+    ) -> list[str]:
+        """POST PNGs to /images/edits. No ``size`` is sent: the server picks the output size."""
+        field = "image" if len(images) == 1 else "image[]"
+        headers = self._auth_headers()
+        headers.pop("Content-Type", None)
+        response = await _client().post(
+            _append_provider_path(self.base_url, "/images/edits"),
+            headers = headers,
+            # llama-swap routes on the `model` form field.
+            data = {
+                "model": model,
+                "prompt": prompt,
+                "n": str(n),
+                "response_format": "b64_json",
+            },
+            files = [
+                (field, (f"image-{index}.png", image, "image/png"))
+                for index, image in enumerate(images, start = 1)
+            ],
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        return [item["b64_json"] for item in response.json()["data"]]
+
     async def create_transcription(
         self,
         audio: bytes,
@@ -7365,6 +7487,7 @@ class ExternalProviderClient:
         language: Optional[str] = None,
         response_format: str = "json",
         timestamp_granularities: Optional[list[str]] = None,
+        prompt: Optional[str] = None,
     ) -> tuple[bytes, str]:
         """Post audio to an OpenAI-compatible transcription endpoint."""
         data = {
@@ -7373,6 +7496,8 @@ class ExternalProviderClient:
         }
         if language:
             data["language"] = language
+        if prompt:
+            data["prompt"] = prompt
         if timestamp_granularities:
             # Repeated field, so httpx wants the list under the bracketed name OpenAI uses.
             data["timestamp_granularities[]"] = list(timestamp_granularities)
@@ -7420,14 +7545,25 @@ class ExternalProviderClient:
         return response.json()
 
     async def list_decision_models(self) -> list[str]:
+        from core.inference.providers import get_provider_info
+
+        native = bool((get_provider_info(self.provider_type) or {}).get("decisions_only"))
         response = await _client().get(
             re.sub(r"/systemone$", "", self.base_url.rstrip("/")) + "/models",
-            params = {"output_modalities": "decisions"},
+            params = None if native else {"output_modalities": "decisions"},
             headers = self._auth_headers(),
             timeout = self._timeout,
         )
         response.raise_for_status()
         data = response.json()
+        if native:
+            # System One's own list is {"models": [{"name": ...}]}: decision models only, no modality field.
+            models = data.get("models") if isinstance(data, dict) else None
+            return [
+                model["name"]
+                for model in (models if isinstance(models, list) else [])
+                if isinstance(model, dict) and isinstance(model.get("name"), str)
+            ]
         models = data.get("data") if isinstance(data, dict) else None
         return [
             model["id"]
@@ -7442,8 +7578,20 @@ class ExternalProviderClient:
         """return each provider's OpenAI-compatible /models entries, including Anthropic."""
         if self.provider_type == "openrouter":
             return await self._list_openrouter_models()
+        if self.provider_type == "cohere" and (urlparse(self.base_url).hostname or "").lower() in (
+            "api.cohere.ai",
+            "api.cohere.com",
+        ):
+            return await self._list_cohere_models()
         try:
             data, models = await self._models_payload(self._timeout)
+            if self.provider_type == "vercel":
+                # Embedding, image, video and speech models share the list; only `language` ones chat.
+                models = [
+                    {**m, "context_length": m.get("context_window")}
+                    for m in models
+                    if m.get("type") == "language"
+                ]
             if self.provider_type == "ollama":
                 # only /api/tags carries each model's "thinking" capability.
                 if not models:
@@ -7456,6 +7604,37 @@ class ExternalProviderClient:
         except httpx.HTTPError as exc:
             logger.error("Failed to list models from %s: %s", self.provider_type, exc)
             raise
+
+    async def _list_cohere_models(self) -> list[dict[str, Any]]:
+        """The compatibility base has no /models; the native list is on api.cohere.com, named by `name`."""
+        models: list[dict[str, Any]] = []
+        token: Optional[str] = None
+        for _ in range(5):
+            params: dict[str, Any] = {"endpoint": "chat", "page_size": 1000}
+            if token:
+                params["page_token"] = token
+            response = await _client().get(
+                "https://api.cohere.com/v1/models",
+                params = params,
+                headers = self._auth_headers(),
+                timeout = self._timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            for entry in (data.get("models") if isinstance(data, dict) else None) or []:
+                if (
+                    isinstance(entry, dict)
+                    and isinstance(entry.get("name"), str)
+                    and not entry.get("is_deprecated")
+                    and not entry.get("finetuned")
+                ):
+                    models.append(
+                        {"id": entry["name"], "context_length": entry.get("context_length")}
+                    )
+            token = data.get("next_page_token") if isinstance(data, dict) else None
+            if not token:
+                break
+        return models
 
     async def _list_openrouter_models(self) -> list[dict[str, Any]]:
         key_digest = hashlib.sha256((self.api_key or "").encode("utf-8")).hexdigest()[:16]
@@ -7547,7 +7726,37 @@ class ExternalProviderClient:
             token = page.get("nextPageToken")
         return {**data, "models": models}
 
+    async def _read_ollama_loaded_window(self, model: str) -> Optional[int]:
+        response = await _client().get(
+            _native_server_path(self.base_url, "/api/ps"),
+            headers = self._auth_headers(),
+            timeout = _SERVED_WINDOW_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        body = response.json()
+        loaded = body.get("models") if isinstance(body, dict) else None
+        # /api/ps always names the tag; a bare name means :latest.
+        wanted = (model if ":" in model.rsplit("/", 1)[-1] else f"{model}:latest").casefold()
+        for entry in loaded if isinstance(loaded, list) else []:
+            if isinstance(entry, dict) and wanted in {
+                str(entry.get(k) or "").casefold() for k in ("name", "model")
+            }:
+                return _positive_int(entry.get("context_length"))
+        return None
+
+    async def load_ollama_window(self, model: str) -> Optional[int]:
+        response = await _client().post(
+            _native_server_path(self.base_url, "/api/generate"),
+            json = {"model": model},
+            headers = self._auth_headers(),
+            timeout = 120.0,
+        )
+        response.raise_for_status()
+        return await self._read_ollama_loaded_window(model)
+
     async def _read_served_window(self, model: str) -> Optional[int]:
+        if self.provider_type == "ollama":
+            return await self._read_ollama_loaded_window(model)
         _, entries = await self._models_payload(_SERVED_WINDOW_TIMEOUT_S)
         by_id = {e["id"]: e for e in entries if isinstance(e.get("id"), str)}
         entry = by_id.get(model) or next(
@@ -7606,16 +7815,21 @@ class ExternalProviderClient:
         _served_versions[key] = (now + _SERVED_WINDOW_TTL_S, full)
         return full
 
+    def _known_served_window(self, model: str) -> Optional[int]:
+        key = (self.provider_type, self.base_url, self._credential_digest(), model)
+        cached = _served_windows.get(key)
+        return cached[1] if cached is not None and cached[0] > time.monotonic() else None
+
     async def served_context_window(self, model: str) -> Optional[int]:
         """cache served windows and missing results for one minute to limit silent-server reads."""
         if self.provider_type not in _SERVED_WINDOW_PROVIDERS:
             return None
         now = time.monotonic()
-        key = (self.base_url, self._credential_digest(), model)
+        key = (self.provider_type, self.base_url, self._credential_digest(), model)
         cached = _served_windows.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
-        window = None
+        window, failed = None, False
         try:
             # both reads share one deadline because the first token waits for them.
             window = await asyncio.wait_for(
@@ -7624,13 +7838,41 @@ class ExternalProviderClient:
         except httpx.ConnectError as exc:
             # retry a down or restarting server next turn instead of caching the miss for a minute.
             logger.info("No served context window from %s: %s", self.provider_type, exc)
-            return None
+            return _ollama_last_windows.get(key)
         except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as exc:
             logger.info("No served context window from %s: %r", self.provider_type, exc)
+            failed = True
+        if self.provider_type == "ollama":
+            if window is not None:
+                _ollama_last_windows[key] = window
+            elif key in _ollama_last_windows or not failed:
+                # /api/ps lists a model only while it is loaded.
+                return _ollama_last_windows.get(key)
         for stale in [k for k, (expiry, _) in _served_windows.items() if expiry <= now]:
             del _served_windows[stale]
         _served_windows[key] = (now + _SERVED_WINDOW_TTL_S, window)
         return window
+
+    async def catalog_context_window(self, model: str) -> Optional[int]:
+        """A hosted provider's listed window: Anthropic and Gemini input limits, OpenRouter context_length."""
+        if self.provider_type not in _CATALOG_WINDOW_PROVIDERS:
+            return None
+        try:
+            models = await asyncio.wait_for(self.list_models(), timeout = _SERVED_WINDOW_TIMEOUT_S)
+        except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as exc:
+            logger.info("No catalogued context window from %s: %r", self.provider_type, exc)
+            return None
+        for entry in models:
+            if isinstance(entry, dict) and entry.get("id") == model:
+                top = entry.get("top_provider")
+                # OpenRouter's context_length is the widest route; the default route may be narrower.
+                listed = [
+                    _positive_int(entry.get("max_input_tokens")),
+                    _positive_int(entry.get("context_length")),
+                    _positive_int(top.get("context_length") if isinstance(top, dict) else None),
+                ]
+                return min((w for w in listed if w), default = None)
+        return None
 
     async def served_chat_template(self, model: str) -> Optional[str]:
         """llama-server's chat template from /props, cached for a minute like the served window."""
@@ -7667,6 +7909,51 @@ class ExternalProviderClient:
         _served_templates[key] = (now + _SERVED_WINDOW_TTL_S, template)
         return template
 
+    async def _read_served_vision(self, model: str) -> Optional[bool]:
+        if self.provider_type == "ollama":
+            response = await _client().post(
+                _native_server_path(self.base_url, "/api/show"),
+                json = {"model": model},
+                headers = self._auth_headers(),
+                timeout = _SERVED_WINDOW_TIMEOUT_S,
+            )
+            response.raise_for_status()
+            body = response.json()
+            names = body.get("capabilities") if isinstance(body, dict) else None
+            return "vision" in names if isinstance(names, list) else None
+        response = await _client().get(
+            f"{self.base_url.removesuffix('/v1')}/props",
+            params = {"model": model},
+            headers = self._auth_headers(),
+            timeout = _SERVED_WINDOW_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        body = response.json()
+        modalities = body.get("modalities") if isinstance(body, dict) else None
+        vision = modalities.get("vision") if isinstance(modalities, dict) else None
+        return vision if isinstance(vision, bool) else None
+
+    async def served_model_reads_images(self, model: str) -> Optional[bool]:
+        if self.provider_type not in ("ollama", "llama_cpp"):
+            return None
+        now = time.monotonic()
+        key = (self.provider_type, self.base_url, self._credential_digest(), model)
+        cached = _served_vision.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        vision = None
+        try:
+            vision = await self._read_served_vision(model)
+        except httpx.ConnectError as exc:
+            logger.info("No served vision flag from %s: %s", self.provider_type, type(exc).__name__)
+            return None
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("No served vision flag from %s: %s", self.provider_type, type(exc).__name__)
+        for stale in [k for k, (expiry, _) in _served_vision.items() if expiry <= now]:
+            del _served_vision[stale]
+        _served_vision[key] = (now + _SERVED_WINDOW_TTL_S, vision)
+        return vision
+
     @staticmethod
     def _parse_gemini_models(payload: Any) -> list[dict[str, Any]]:
         """map Gemini models to OpenAI entries and exclude advertised embedding-only models."""
@@ -7701,6 +7988,11 @@ class ExternalProviderClient:
                     "id": short_id,
                     "owned_by": "google",
                     "display_name": entry.get("displayName") or short_id,
+                    **(
+                        {"max_input_tokens": limit}
+                        if isinstance(limit := entry.get("inputTokenLimit"), int) and limit > 0
+                        else {}
+                    ),
                 }
             )
         return out
@@ -7792,6 +8084,8 @@ class ExternalProviderClient:
         401/403 count as not rejected."""
         if self.provider_type == "openrouter":
             url = _append_provider_path(self.base_url, "/key")
+        elif self.provider_type == "vercel":
+            url = _append_provider_path(self.base_url, "/credits")
         elif (
             self.provider_type == "huggingface"
             and (urlparse(self.base_url).hostname or "").lower() == "router.huggingface.co"

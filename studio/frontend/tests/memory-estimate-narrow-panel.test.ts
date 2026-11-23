@@ -235,3 +235,37 @@ test("gluing round-trips the note the row actually builds", () => {
   const spaced = (text: string) => text.replace(new RegExp(NBSP, "g"), " ");
   assert.equal(spaced(glueNoteItems(note)), spaced(note));
 });
+
+test("the first fetch keeps the row's frame instead of rendering nothing", () => {
+  for (const expanded of [false, true]) {
+    const html = render({ estimate: null, loading: true, expanded });
+    assert.match(html, /data-memory-estimate=""/);
+    assert.match(html, /Estimated Memory Usage/);
+    assert.match(html, /data-memory-placeholder=""/);
+    assert.match(html, />GPU<\/span>/);
+    // A split pool loads with GPU and Total, so both lines are held.
+    assert.match(html, />Total<\/span>/);
+    assert.equal(html.match(/data-memory-placeholder=""/g)?.length, 2);
+    assert.match(html, /Weights[\s\S]*KV cache[\s\S]*Compute buffers/);
+    assert.ok(html.includes(`aria-expanded="${expanded}"`));
+  }
+  assert.match(
+    render({ estimate: null, loading: true, singleMemoryPool: true, isUnifiedMemory: true }),
+    />Unified<\/span>/,
+  );
+  const shared = render({ estimate: null, loading: true, singleMemoryPool: true });
+  assert.match(shared, />Shared<\/span>/);
+  assert.equal(shared.match(/data-memory-placeholder=""/g)?.length, 1);
+  // No GPU: the loaded row shows RAM alone, so the placeholder holds one line, not two.
+  const cpu = render({ estimate: null, loading: true, gpuCapacityGb: 0 });
+  assert.match(cpu, />RAM<\/span>/);
+  assert.equal(cpu.match(/data-memory-placeholder=""/g)?.length, 1);
+});
+
+test("no row once the backend has said it cannot size the model", () => {
+  assert.equal(render({ estimate: null, loading: false }), "");
+  assert.equal(
+    render({ estimate: { ...props.estimate!, available: false }, loading: false }),
+    "",
+  );
+});

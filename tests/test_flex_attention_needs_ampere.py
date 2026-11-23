@@ -14,6 +14,7 @@
 
 """Flex attention must not be chosen on sm75: its uncompiled backward dies on Half vs Float."""
 
+import contextlib
 import sys
 import types
 from unittest import mock
@@ -31,6 +32,17 @@ def _supports(model_type = "gemma3"):
     return U._supports_flex_attention(_Model, {}, model_type)
 
 
+@contextlib.contextmanager
+def _vendor(hip):
+    """_is_hip_build also reads the +rocm wheel tag, so an NVIDIA simulation drops it too."""
+    version = U.torch.__version__
+    if hip is None:
+        version = type(version)(str(version).split("+")[0])
+    with mock.patch.object(U.torch.version, "hip", hip, create = True):
+        with mock.patch.object(U.torch, "__version__", version):
+            yield
+
+
 def _cuda(capabilities, hip = None):
     """Patch just enough of torch for the vendor/capability probe."""
     return mock.patch.multiple(
@@ -38,7 +50,7 @@ def _cuda(capabilities, hip = None):
         is_available = lambda: bool(capabilities),
         device_count = lambda: len(capabilities),
         get_device_capability = lambda index = 0: capabilities[index],
-    ), mock.patch.object(U.torch.version, "hip", hip, create = True)
+    ), _vendor(hip)
 
 
 @pytest.mark.parametrize("capability", [(7, 0), (7, 5)])
@@ -70,7 +82,7 @@ def test_rocm_is_not_judged_by_a_cuda_capability():
     """`get_device_capability` answers on ROCm too, with numbers that are not
     CUDA's, so reading them would disable flex on AMD for no reason."""
     cuda, hip = _cuda([(7, 5)], hip = "6.2.0")
-    with cuda, hip:
+    with cuda, hip, mock.patch.object(U, "triton_runs_on_device", lambda index = 0: True):
         assert U._flex_attention_gpu_is_supported() is True
 
 

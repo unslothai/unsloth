@@ -31,6 +31,9 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from utils.paths.path_utils import drop_appledouble_metadata
 from hub.services import training_downloads
+from loggers import get_logger
+
+logger = get_logger(__name__)
 
 # Spawn (not fork): a fresh interpreter so parent CUDA/torch state never leaks into the trainer.
 _CTX = mp.get_context("spawn")
@@ -162,8 +165,7 @@ def _default_target(
     )
 
 
-# Cap on retained metric points; over it, arrays are decimated so a long run stays bounded while the
-# chart keeps its shape.
+# Cap on retained metric points; past it the arrays are decimated so a long run stays bounded.
 _METRIC_CAP = 4000
 
 
@@ -230,8 +232,7 @@ def _resume_fields(
     return {
         "can_resume": can_resume,
         "checkpoint_step": state.get("checkpoint_step"),
-        # The EXACT bundle this run would continue, so the client resumes the one it was shown rather than
-        # whatever is newest in a folder two runs share.
+        # The EXACT bundle this run would continue, not the newest in a folder two runs share.
         "checkpoint_path": state.get("checkpoint_path") if can_resume else None,
         "resume_blocked_reason": state.get("resume_blocked_reason"),
     }
@@ -371,6 +372,8 @@ def _idle_state() -> dict[str, Any]:
         "base_model": None,
         "samples_per_second": None,
         "peak_memory_gb": None,
+        # block_swap as resolved by the trainer (blocks swapped, host / pinned GiB); None when it did not run.
+        "block_swap": None,
         # Newest checkpoint-<N> path and step; why it failed to save (Resume tooltip); resumed-from step.
         "checkpoint_path": None,
         "checkpoint_step": None,
@@ -385,8 +388,7 @@ def _idle_state() -> dict[str, Any]:
         "metric_loss": [],
         "metric_lr": [],
         "metric_grad_norm": [],
-        # Null on every other family, and on H3 steps that reported only the combined loss, so the series
-        # stay index-aligned.
+        # Null for other families and H3 steps with only a combined loss; series stay aligned.
         "metric_video_loss": [],
         "metric_audio_loss": [],
         "samples": [],
@@ -429,9 +431,7 @@ def _append_samples(
         delete_sample_files(output_dir, [e["path"] for e in entries if e["step"] not in keep])
 
 
-# The value series, in append order, paired index-for-index with metric_steps. One list so a new
-# series cannot be added to the appends and forgotten in the decimation below, which would
-# silently misalign the curves.
+# Values paired index-for-index with metric_steps; one list so no series is forgotten in decimation.
 _METRIC_SERIES: tuple[str, ...] = (
     "metric_loss",
     "metric_lr",
@@ -531,6 +531,9 @@ class DiffusionTrainingService:
         self._gpu_admissions = 0
         self._proc: Any = None
         self._stop_queue: Any = None
+        # lend_vram(): request seq -> Event the pump sets on the child's acknowledgement.
+        self._vram_acks: dict[int, threading.Event] = {}
+        self._vram_seq = 0
         self._pump: Optional[threading.Thread] = None
         self._state: dict[str, Any] = _idle_state()
         # The active job's start config, scrubbed of secrets, kept for the run record.
@@ -620,6 +623,57 @@ class DiffusionTrainingService:
         finally:
             with self._lock:
                 self._gpu_admissions = max(0, self._gpu_admissions - 1)
+
+    def _send_vram_request(self, kind: str) -> Optional[threading.Event]:
+        with self._lock:
+            if self._stop_queue is None or self._proc is None or not self._proc.is_alive():
+                return None
+            self._vram_seq += 1
+            seq = self._vram_seq
+            waiter = threading.Event()
+            self._vram_acks[seq] = waiter
+            queue = self._stop_queue
+        try:
+            queue.put({"vram": kind, "seq": seq})
+        except Exception:  # noqa: BLE001 -- a closed queue: nothing running to ask
+            with self._lock:
+                self._vram_acks.pop(seq, None)
+            return None
+        waiter.seq = seq
+        return waiter
+
+    @contextlib.contextmanager
+    def lend_vram(
+        self,
+        reason: str,
+        timeout: float = 30.0,
+    ):
+        """Ask a running trainer to give back the GPU memory it holds only for speed (the DiT nf4 dequant
+        cache) before another Studio model loads on the card; it caches nothing until the block exits,
+        then re-sizes from what is free. Waits at most ``timeout`` for the acknowledgement (the trainer
+        answers between steps) and proceeds either way, as the load did before. Yields True if the
+        trainer acknowledged. No-op when nothing is training."""
+        waiter = self._send_vram_request("lend")
+        acked = False
+        if waiter is not None:
+            logger.info("Asking diffusion training to free its idle GPU cache (%s)", reason)
+            acked = waiter.wait(timeout)
+            with self._lock:
+                self._vram_acks.pop(waiter.seq, None)
+            if not acked:
+                logger.warning(
+                    "Diffusion training did not confirm freeing its GPU cache within %.0fs (%s)",
+                    timeout,
+                    reason,
+                )
+        try:
+            yield acked
+        finally:
+            if waiter is not None:
+                back = self._send_vram_request("return")
+                if back is not None:
+                    with self._lock:
+                        self._vram_acks.pop(back.seq, None)
 
     @_invalidates_gpu_memory("diffusion training start")
     @owned_job()
@@ -806,8 +860,7 @@ class DiffusionTrainingService:
                 return False
             self._stop_signalled = True
             if not save:
-                # Remembered here so a child that dies before its discarded completion still blocks the resume the
-                # user threw away.
+                # Kept so a child dying before a discarded completion still blocks the resume.
                 self._discard_requested = True
             self._state["message"] = (
                 "Stop requested; finishing the current step and saving a partial adapter..."
@@ -1081,9 +1134,14 @@ class DiffusionTrainingService:
         ev: dict[str, Any],
         proc: Any = None,
     ) -> None:
-        """Events from a superseded job's process are ignored, so a stale pump cannot touch current
-        state."""
+        """Events from a superseded process are dropped so a stale pump cannot touch state."""
         etype = ev.get("type")
+        if etype == "vram_request_ack":
+            with self._lock:
+                waiter = self._vram_acks.get(ev.get("seq"))
+            if waiter is not None:
+                waiter.set()
+            return
         with self._lock:
             if proc is not None and self._proc is not proc:
                 return
@@ -1167,6 +1225,13 @@ class DiffusionTrainingService:
                         else f"Preparing ({stage})..."
                     ),
                 )
+            elif etype == "block_swap":
+                swap = {
+                    k: ev.get(k)
+                    for k in ("swapped_blocks", "total_blocks", "host_gib", "pinned_gib")
+                    if _finite_or_none(ev.get(k)) is not None
+                }
+                s["block_swap"] = swap or None
             elif etype == "warning":
                 # Non-fatal trainer notes; keep training state, surface the text.
                 s["message"] = str(ev.get("message", "warning"))

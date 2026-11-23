@@ -83,8 +83,7 @@ export const MessageTiming: FC<{
     draftN > 0 && typeof draftAccepted === "number" && Number.isFinite(draftAccepted)
       ? `${formatNumber(draftAccepted)} / ${formatNumber(draftN)} (${Math.round((draftAccepted / draftN) * 100)}%)`
       : null;
-  // `??` (not `||`) so an explicit cache_n=0 isn't replaced by a stale
-  // contextUsage.cachedTokens from a prior turn.
+  // `??` not `||`: explicit cache_n=0 must not be replaced by stale contextUsage.cachedTokens.
   const cacheHits =
     st?.cache_n ?? custom?.contextUsage?.cachedTokens ?? 0;
   const cacheWrites = custom?.contextUsage?.cacheWriteTokens ?? 0;
@@ -105,7 +104,8 @@ export const MessageTiming: FC<{
     : formatTimingMs(timing.totalStreamTime);
 
   return (
-    <Tooltip>
+    // Hoverable, so the figures can be selected and copied from the card.
+    <Tooltip disableHoverableContent={false}>
       <TooltipTrigger asChild>
         <button
           type="button"
@@ -122,7 +122,6 @@ export const MessageTiming: FC<{
       <TooltipContent
         side={side}
         sideOffset={8}
-        data-slot="message-timing-popover"
         variant="rich"
         className="[&_span>svg]:hidden!"
       >

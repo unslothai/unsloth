@@ -64,6 +64,42 @@ export function isPresetSize(
   return limits.presets.some(([w, h]) => w === width && h === height);
 }
 
+// A trained size cut to the family's grid sits up to about 2.5% off the ratio it was made for (832x480 against 16:9).
+const PRESET_ASPECT_TOLERANCE = 0.03;
+
+/** The Aspect ratio a size shows under. Like matchAspect (an exact ratio within 0.01), except a trained size
+ *  takes the nearest named ratio within 3%, so 832x480 reads as 16:9 instead of Custom. */
+export function videoSizeAspect(
+  width: number,
+  height: number,
+  limits: VideoSizeLimits,
+  ratios: Readonly<Record<string, readonly [number, number]>>,
+): { key: string; portrait: boolean } {
+  const portrait = height > width;
+  const target = Math.max(width, height) / Math.min(width, height);
+  const preset = isPresetSize(width, height, limits);
+  let best: string | null = null;
+  let bestOff = Number.POSITIVE_INFINITY;
+  for (const [key, [a, b]] of Object.entries(ratios)) {
+    const ratio = a / b;
+    const off = preset ? Math.abs(target / ratio - 1) : Math.abs(target - ratio);
+    if (off < (preset ? PRESET_ASPECT_TOLERANCE : 0.01) && off < bestOff) {
+      best = key;
+      bestOff = off;
+    }
+  }
+  return { key: best ?? "custom", portrait };
+}
+
+/** The Trained sizes select's value: the shown size when it is a trained one, else "" (its placeholder). */
+export function trainedSizeValue(
+  size: readonly [number, number],
+  limits: VideoSizeLimits,
+  sourceSized = false,
+): string {
+  return !sourceSized && isPresetSize(size[0], size[1], limits) ? `${size[0]}x${size[1]}` : "";
+}
+
 export function isValidVideoSize(
   width: number,
   height: number,
@@ -100,6 +136,29 @@ export function snapVideoDim(value: number, limits: VideoSizeLimits): number {
     Math.floor(MAX_VIDEO_SIDE / m) * m,
     Math.max(m, Math.round(value / m) * m),
   );
+}
+
+/** The size a width (or height) edit gives under a locked named ratio. A trained size of that ratio with the edited
+ *  side wins (832 under 16:9 gives 832x480, not 832x464), since presets are cut to the grid a few percent off the
+ *  exact ratio; otherwise the other side follows the exact ratio, as before. */
+export function lockedVideoSize(
+  side: "width" | "height",
+  value: number,
+  ratio: readonly [number, number],
+  portrait: boolean,
+  limits: VideoSizeLimits,
+): [number, number] {
+  const wh = portrait ? ratio[1] / ratio[0] : ratio[0] / ratio[1];
+  const preset = limits.presets.find(
+    ([w, h]) =>
+      (side === "width" ? w === value : h === value) &&
+      h > w === portrait &&
+      Math.abs(w / h / wh - 1) < PRESET_ASPECT_TOLERANCE,
+  );
+  if (preset) return [preset[0], preset[1]];
+  return side === "width"
+    ? [value, snapVideoDim(value / wh, limits)]
+    : [snapVideoDim(value * wh, limits), value];
 }
 
 /** The nearest size the backend accepts: kept when valid, else rescaled into the area band at the

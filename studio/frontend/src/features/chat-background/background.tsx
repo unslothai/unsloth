@@ -7,29 +7,26 @@ import {
 	type CSSProperties,
 } from "react";
 import { useAppearanceCustomStore } from "@/features/settings/stores/appearance-custom-store";
-import { useChatBackground, setBackgroundError } from "./storage";
+import {
+	clearBackgroundError,
+	setBackgroundError,
+	useChatBackground,
+} from "./storage";
+import { loadImage } from "./image";
 import { acquireRender } from "./render";
 import { safeArtworkOpacity, type RGB } from "./contrast";
 import {
 	type ChatBackgroundValue,
-	type ImageSizing,
 	fadeKey,
 	visibilityKey,
 } from "./model";
 import { useAppliedMaterial } from "./material";
 import { ComposerGlassLenses } from "./lens";
+import { WallpaperArtwork } from "./artwork";
 import { useWallpaperHostFlags } from "./host-flags";
 import { type ImageTone, glassReadability, measureTone } from "./tone";
 
 type Frame = { url: string; value: ChatBackgroundValue };
-const BACKGROUND_SIZE: Record<ImageSizing, string> = {
-	cover: "cover",
-	contain: "contain",
-	width: "100% auto",
-	height: "auto 100%",
-	stretch: "100% 100%",
-	original: "auto",
-};
 // The window titlebar sits outside the wallpaper's subtree, so a ready wallpaper marks the root
 // rather than having CSS ask html:has(), which re-matches on every DOM change.
 export const ROOT_READY = "data-chat-wallpaper-ready";
@@ -180,10 +177,8 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			.then(async (blob) => {
 				if (cancelled) return;
 				const url = URL.createObjectURL(blob);
-				const image = new Image();
-				image.src = url;
 				try {
-					await image.decode();
+					await loadImage(new Image(), url);
 				} catch {
 					urls.current.delete(url);
 					URL.revokeObjectURL(url);
@@ -195,6 +190,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 					return;
 				}
 				adoptFrame(url);
+				clearBackgroundError("effect");
 			})
 			.catch(() => {
 				if (!cancelled) setBackgroundError("effect");
@@ -317,18 +313,13 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 							className="chat-wallpaper-image"
 							data-fade={adjustment[fadeKey(glass)]}
 						>
-							<div
-								className="chat-wallpaper-artwork"
-								style={{
-									backgroundImage: `url("${frame.url}")`,
-									backgroundPosition: adjustment.position,
-									backgroundSize: BACKGROUND_SIZE[adjustment.sizing],
-									transform: `scale(${adjustment.zoom / 100})`,
-									transformOrigin: adjustment.position,
-									filter: adjustment.blur
-										? `blur(${adjustment.blur}px)`
-										: undefined,
-								}}
+							<WallpaperArtwork
+								url={frame.url}
+								sizing={adjustment.sizing}
+								position={adjustment.position}
+								zoom={adjustment.zoom}
+								blur={adjustment.blur}
+								bakeable={i === 1}
 							/>
 						</div>
 					</div>

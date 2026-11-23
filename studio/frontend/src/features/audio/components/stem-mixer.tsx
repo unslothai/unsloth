@@ -12,7 +12,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Slider } from "@/components/ui/slider";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   Download01Icon,
@@ -37,6 +36,12 @@ import {
   stemMixerReducer,
 } from "./stem-mixer-state";
 import type { StemMixerProps } from "./stem-mixer-types";
+import {
+  CLIP_ICON_COLUMN,
+  CLIP_PLAY_BUTTON,
+  CLIPS_TITLE_INSET,
+  CLIPS_TOP_ROW,
+} from "./clips-card";
 import { WaveformBars } from "./waveform";
 import { formatSeconds } from "./waveform-peaks";
 import { ArrowUpIcon, PlayIcon } from "lucide-react";
@@ -51,6 +56,7 @@ export function StemMixer({
   autoFocus = false,
   onDownloadStem,
   onDownloadAll,
+  actions,
   sendTargets,
   onSend,
   active,
@@ -121,95 +127,97 @@ export function StemMixer({
       tabIndex={0}
       aria-label="Stem mixer"
       onKeyDown={handleKeyDown}
-      className="@container corner-squircle grid gap-3 rounded-2xl bg-card p-4 ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className={cn(
+        CLIPS_TOP_ROW,
+        "@container gap-3 outline-none focus-visible:ring-2 focus-visible:ring-ring",
+      )}
     >
       <output aria-live="polite" aria-atomic="true" className="sr-only">
         {status}
       </output>
-      <header className="flex flex-wrap items-center gap-2">
-        <div className="min-w-0 flex-1">
-          <h3 className="truncate text-ui-13 font-medium text-foreground">
-            {title}
-          </h3>
-          <p className="truncate text-ui-11p5 text-muted-foreground">
-            {subtitle ? `${subtitle} · ` : ""}
-            <span className="font-mono tabular-nums">
-              {formatSeconds(duration)}
-            </span>
-          </p>
-        </div>
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Button
           ref={playRef}
           type="button"
-          variant="muted"
+          variant="ghost"
           size="icon"
-          className="size-[calc(32px*var(--ui-space-scale,1))] shrink-0"
+          className={cn(CLIP_PLAY_BUTTON, CLIP_ICON_COLUMN)}
+          title={playing ? "Pause" : "Play all stems"}
           aria-label={playing ? "Pause stems" : "Play stems"}
           disabled={!ready}
           onClick={toggle}
         >
           {playing ? (
-            <HugeiconsIcon icon={PauseIcon} className="size-3.5" />
+            <HugeiconsIcon icon={PauseIcon} className="size-4" />
           ) : (
-            <PlayIcon className="size-3.5" />
+            <PlayIcon className="size-4" />
           )}
         </Button>
-        <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
-          {formatSeconds(position)} / {formatSeconds(duration)}
-        </span>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={stems.some((stem) => !stem.src)}
-          onClick={onDownloadAll}
-        >
-          <HugeiconsIcon
-            icon={Download01Icon}
-            strokeWidth={1.75}
-            data-icon="inline-start"
-          />
-          Download all
-        </Button>
-        {sendTargets.length > 0 ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild={true}>
-              <Button type="button" variant="outline" size="sm">
-                <ArrowUpIcon
-                  strokeWidth={1.75}
-                  data-icon="inline-start"
-                />
-                Send to
-                <HugeiconsIcon
-                  icon={ChevronDownStandardIcon}
-                  strokeWidth={1.75}
-                  data-icon="inline-end"
-                />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {stems.map((stem) => (
-                <DropdownMenuSub key={stem.clipId}>
-                  <DropdownMenuSubTrigger disabled={!stem.src}>
-                    <span>{stem.label}</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent>
-                    {sendTargets.map((target) => (
-                      <DropdownMenuItem
-                        key={target.id}
-                        onSelect={() => onSend(target, stem.clipId)}
-                      >
-                        {target.label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : null}
+        <div className="grid min-h-[calc(40px*var(--ui-space-scale,1))] min-w-0 flex-1 content-between">
+          <h3 className="truncate text-ui-15 font-medium leading-snug text-foreground">
+            {title}
+          </h3>
+          <p className="truncate text-ui-12 text-muted-foreground">
+            {subtitle ? `${subtitle} · ` : ""}
+            <span className="font-mono tabular-nums">
+              {position > 0
+                ? `${formatSeconds(position)} / ${formatSeconds(duration)}`
+                : formatSeconds(duration)}
+            </span>
+          </p>
+        </div>
+        <div className="-me-1 flex shrink-0 items-center">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="Download all stems"
+            title="Download all"
+            className="size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+            disabled={stems.some((stem) => !stem.src)}
+            onClick={onDownloadAll}
+          >
+            <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
+          </Button>
+          {sendTargets.length > 0 ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Send a stem to"
+                  title="Send to"
+                  className="size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+                >
+                  <ArrowUpIcon strokeWidth={1.75} className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {stems.map((stem) => (
+                  <DropdownMenuSub key={stem.clipId}>
+                    <DropdownMenuSubTrigger disabled={!stem.src}>
+                      <span>{stem.label}</span>
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent>
+                      {sendTargets.map((target) => (
+                        <DropdownMenuItem
+                          key={target.id}
+                          onSelect={() => onSend(target, stem.clipId)}
+                        >
+                          {target.label}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+          {actions}
+        </div>
       </header>
-      <ul className="grid gap-2">
+      <ul className={cn("grid gap-2", CLIPS_TITLE_INSET)}>
         {stems.map((stem) => {
           const level = stemMix(mix, stem.role);
           const silent = effectiveGain(mix, stem.role) === 0;
@@ -253,6 +261,7 @@ export function StemMixer({
                   type="button"
                   variant="ghost"
                   size="icon-xs"
+                  title={`Solo ${stem.label}`}
                   aria-label={`Solo ${stem.label}`}
                   aria-pressed={level.solo}
                   className="size-[calc(24px*var(--ui-space-scale,1))] text-muted-foreground aria-pressed:bg-action aria-pressed:text-background"
@@ -266,6 +275,7 @@ export function StemMixer({
                   type="button"
                   variant="ghost"
                   size="icon-xs"
+                  title={`Mute ${stem.label}`}
                   aria-label={`Mute ${stem.label}`}
                   aria-pressed={level.muted}
                   className="size-[calc(24px*var(--ui-space-scale,1))] text-muted-foreground aria-pressed:bg-action aria-pressed:text-background"
@@ -298,6 +308,7 @@ export function StemMixer({
                   type="button"
                   variant="ghost"
                   size="icon-xs"
+                  title={`Download ${stem.label}`}
                   aria-label={`Download ${stem.label}`}
                   className="size-[calc(24px*var(--ui-space-scale,1))] text-muted-foreground"
                   disabled={!stem.src}

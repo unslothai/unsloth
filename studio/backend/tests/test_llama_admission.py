@@ -65,8 +65,7 @@ def test_admission_config_defaults(monkeypatch):
 
     config = llama_admission_config_from_env()
 
-    # Literals, not the module constants: comparing a default to itself would let
-    # any future value change through silently.
+    # Literals, not constants: comparing a default to itself would hide any future change.
     assert config.enabled is True
     assert config.queue_timeout_s is None
     assert config.keepalive_interval_s == 5.0
@@ -514,8 +513,7 @@ def test_grant_reclaims_the_slot_when_the_waiters_loop_is_gone():
 
 
 def test_cancel_returns_the_granted_slot_when_the_waiters_loop_is_gone():
-    # Routes cancel() from finally blocks, so a raise here would mask their
-    # exception and skip the release that hands the granted slot back.
+    # cancel() runs in finally: a raise would mask their error and skip freeing the slot.
     queue = get_llama_admission_queue("http://llama.test")
     config = LlamaAdmissionConfig()
     held = reservation = None
@@ -662,8 +660,7 @@ def test_explicit_queue_per_slot_is_not_floored(monkeypatch):
 
 
 def test_module_imports_on_python_39(monkeypatch):
-    """No 3.10+ API on an import path. The package declares >=3.9 but CI only
-    runs 3.12, so a regression here would ship broken."""
+    """No 3.10+ API on an import path: the package declares >=3.9 but CI only runs 3.12."""
     import ast
     import pathlib
 

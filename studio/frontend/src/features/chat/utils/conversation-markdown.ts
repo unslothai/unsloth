@@ -24,7 +24,7 @@ const ROLE_LABELS: Readonly<Record<string, string>> = {
   user: "User",
 };
 
-function roleLabel(role: string): string {
+export function roleLabel(role: string): string {
   const knownLabel = ROLE_LABELS[role];
   if (knownLabel) {
     return knownLabel;
@@ -504,9 +504,16 @@ export function contentBlocksToMarkdownBlocks(
 
 export function renderConversationBlocks(
   blocks: readonly ConversationMarkdownBlock[],
+  format: "markdown" | "pdf" = "markdown",
 ): string {
   return blocks
-    .map((block) => renderBlock(block))
+    .map((block) => {
+      if (format === "pdf") {
+        if (block.kind === "thinking") return "";
+        if (block.kind === "tool-call") return `(Calling tool ${inlineCode(block.name)})`;
+      }
+      return renderBlock(block);
+    })
     .filter((rendered) => rendered.length > 0)
     .join("\n\n");
 }

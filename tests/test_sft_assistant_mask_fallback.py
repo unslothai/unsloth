@@ -49,6 +49,20 @@ def __init__(self, processing_class, args, get_training_chat_template, is_chat_t
 """
 
 
+# TRL >= 1.18: the swap is unconditional and passes require_prefix_preservation=False.
+TRL_118_SHAPED_INIT = """
+def __init__(self, processing_class, args, get_training_chat_template, is_chat_template_stop_token_trained, warn):
+    if args.assistant_only_loss:
+        self.chat_template = get_training_chat_template(processing_class, require_prefix_preservation=False)
+    else:
+        self.chat_template = None
+    if args.assistant_only_loss and not is_chat_template_stop_token_trained(
+        processing_class, chat_template=self.chat_template
+    ):
+        warn()
+"""
+
+
 class _Args:
     assistant_only_loss = True
     dataset_kwargs = None
@@ -102,7 +116,7 @@ def test_applies_to_installed_trl():
     sft_trainer = pytest.importorskip("trl.trainer.sft_trainer")
     # The class, not __init__: other tests may leave __init__ wrapped.
     source = Path(sft_trainer.__file__).read_text(encoding = "utf-8")
-    if "get_training_chat_template(processing_class)" not in source:
+    if "self.chat_template = get_training_chat_template(processing_class" not in source:
         pytest.skip("installed TRL predates the training-template swap")
     patched = _load()("__init__", source)
     assert "_unsloth_assistant_mask_fallback = True" in patched
@@ -135,3 +149,26 @@ def test_skipped_preparation_keeps_trl_error():
         namespace["__init__"](
             type("T", (), {})(), _Tok(), args, _unsupported, lambda *a, **k: False, lambda: None
         )
+
+
+def _unsupported_118(processing_class, require_prefix_preservation = True):
+    assert require_prefix_preservation is False, "the TRL 1.18 keyword must be passed through"
+    raise ValueError("The chat template is not training-compatible")
+
+
+def test_trl_118_call_falls_back_and_keeps_its_keyword():
+    fallback = _load()
+    patched = fallback("__init__", TRL_118_SHAPED_INIT)
+    assert "_unsloth_assistant_mask_fallback = True" in patched
+    assert "require_prefix_preservation=False" in patched
+    with pytest.raises(ValueError):
+        _run(TRL_118_SHAPED_INIT, _unsupported_118)
+    trainer, warned = _run(patched, _unsupported_118)
+    assert trainer.chat_template is None
+    assert trainer._unsloth_assistant_mask_fallback is True
+    assert warned == []
+    trainer, warned = _run(
+        patched, lambda pc, require_prefix_preservation = True: "TRAINING_TEMPLATE"
+    )
+    assert trainer.chat_template == "TRAINING_TEMPLATE"
+    assert warned == [1]

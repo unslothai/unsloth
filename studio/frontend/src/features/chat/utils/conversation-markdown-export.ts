@@ -78,6 +78,11 @@ function localDateStamp(date: Date): string {
 }
 
 /** `<model> - <title> (YYYY-MM-DD)`, dropping a missing part; model = its display name. */
+/** A stored model id as users know it: no external-provider prefix, no local folder path. */
+export function conversationModelLabel(modelId: string | null | undefined): string {
+  return modelDisplayName(parseExternalModelId(modelId)?.modelId ?? modelId ?? "");
+}
+
 export function conversationExportBasename(
   thread:
     | { readonly title?: string | null; readonly modelId?: string | null }
@@ -85,9 +90,8 @@ export function conversationExportBasename(
     | undefined,
   date: Date,
 ): string {
-  const modelId = parseExternalModelId(thread?.modelId)?.modelId ?? thread?.modelId ?? "";
   // Not split("/"): a Windows local path has no "/" and would put the whole path in the name.
-  const model = filenamePart(modelDisplayName(modelId));
+  const model = filenamePart(conversationModelLabel(thread?.modelId));
   const title = filenamePart(thread?.title ?? "");
   const name = [model, title].filter(Boolean).join(" - ") || "conversation";
   // Cut on a code point (no lone surrogate); Windows refuses a trailing dot or space.

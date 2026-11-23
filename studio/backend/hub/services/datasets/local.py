@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import threading
 import uuid
 from contextlib import suppress
 from pathlib import Path
@@ -36,6 +38,7 @@ LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
 LOCAL_UPLOAD_CHUNK_BYTES = 1024 * 1024
 LOCAL_DATASETS_ROOT = LazyPath(recipe_datasets_root)
 DATASET_UPLOAD_DIR = LazyPath(dataset_uploads_root)
+_REUSE_LOCK = threading.Lock()
 
 
 def _safe_read_metadata(path: Path) -> dict | None:
@@ -121,10 +124,14 @@ def _safe_mtime(path: Path) -> float | None:
         return None
 
 
+def _is_upload_id(prefix: str) -> bool:
+    return len(prefix) == 32 and all(c in "0123456789abcdef" for c in prefix)
+
+
 def _display_uploaded_dataset_name(path: Path) -> str:
     stem = path.stem
     prefix, sep, rest = stem.partition("_")
-    if sep and len(prefix) == 32 and all(c in "0123456789abcdef" for c in prefix):
+    if sep and _is_upload_id(prefix):
         return f"{rest}{path.suffix}"
     return path.name
 
@@ -206,10 +213,22 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
 _JSONL_SCHEMA_BYTES = 10 << 20
 
 
+def _first_significant_byte(f) -> bytes:
+    """First byte that ``bytes.strip`` would keep, or ``b""`` for an empty / all-whitespace file."""
+    while chunk := f.read(1 << 16):
+        if stripped := chunk.lstrip():
+            return stripped[:1]
+    return b""
+
+
 def _jsonl_head(path: Path, preview_size: int) -> tuple[list[dict], bytes] | None:
     """First ``preview_size`` JSON Lines objects and the bytes of the loader's first batch. ``None`` if not JSON Lines."""
     rows, keys, window, scanned = [], {}, [], 0
     with path.open("rb") as f:
+        # Only an object decodes to a dict: a minified JSON array is one huge line, so don't read or parse it here.
+        if preview_size > 0 and _first_significant_byte(f) not in (b"", b"{"):
+            return None
+        f.seek(0)
         for line in f:
             if line.strip():
                 try:
@@ -232,17 +251,27 @@ def _jsonl_head(path: Path, preview_size: int) -> tuple[list[dict], bytes] | Non
     return [{key: row.get(key) for key in keys} for row in rows], b"".join(window)
 
 
-def _jsonl_rows_dataset(rows: list[dict], window: bytes):
+def _jsonl_rows_dataset(
+    rows: list[dict],
+    window: bytes,
+    dates_as_written: bool = False,
+):
     import io
 
     import pyarrow as pa
     import pyarrow.json as paj
     from datasets import Dataset
 
+    from utils.datasets.json_rows import has_timestamp, timestamps_as_strings
+
     try:
         # The loader's reader types as training does; one block, no threads: #15681 segfaults only threaded.
         options = paj.ReadOptions(use_threads = False, block_size = len(window))
         table = paj.read_json(io.BytesIO(window), read_options = options)
+        if dates_as_written and has_timestamp(table.schema):
+            # Local JSON training keeps date strings as written, so its preview does too.
+            parse = paj.ParseOptions(explicit_schema = timestamps_as_strings(table.schema))
+            table = paj.read_json(io.BytesIO(window), read_options = options, parse_options = parse)
         return Dataset.from_list(table.slice(0, len(rows)).to_pylist())
     except pa.ArrowException as error:
         # A field that is a string in one row and an object in another (#15681): show the rows as written.
@@ -252,7 +281,13 @@ def _jsonl_rows_dataset(rows: list[dict], window: bytes):
             raise error from None
 
 
-def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
+def _stream_file_preview_slice(
+    path: Path,
+    preview_size: int,
+    *,
+    dates_as_written: bool = False,
+    **load_kwargs,
+):
     """Stream the first ``preview_size`` rows so a large file is never fully parsed into Arrow; returns ``(Dataset, None)`` or ``None`` if empty/unsupported."""
     from itertools import islice
 
@@ -263,7 +298,7 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
         if not load_kwargs:
             head = _jsonl_head(path, preview_size)
             if head is not None:
-                return (_jsonl_rows_dataset(*head), None) if head[0] else None
+                return (_jsonl_rows_dataset(*head, dates_as_written), None) if head[0] else None
         loader = "json"
     elif name.endswith((".csv", ".tsv")):
         loader = "csv"
@@ -286,7 +321,32 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
     rows = list(islice(streamed, preview_size))
     if not rows:
         return None
-    return Dataset.from_list(rows, features = load_kwargs.get("features")), None
+    preview = Dataset.from_list(rows, features = load_kwargs.get("features"))
+    if dates_as_written and loader == "json" and not load_kwargs:
+        import pyarrow as pa
+        from datasets import Features
+
+        from utils.datasets.json_rows import has_timestamp, head_rows, timestamps_as_strings
+
+        schema = preview.features.arrow_schema
+        if has_timestamp(schema):
+            # The streamed schema keeps the loader's columns and types; only dates read as written.
+            try:
+                written = head_rows(path, preview_size)
+                preview = Dataset.from_list(
+                    [{key: row.get(key) for key in schema.names} for row in written],
+                    features = Features.from_arrow_schema(timestamps_as_strings(schema)),
+                )
+            except (
+                OSError,
+                ValueError,
+                TypeError,
+                OverflowError,
+                AttributeError,
+                pa.ArrowException,
+            ):
+                pass
+    return preview, None
 
 
 def _parquet_preview_slice(files: list[Path], preview_size: int):
@@ -347,35 +407,29 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
     from utils.datasets.cells import csv_as_text_kwargs
 
     if dataset_path.is_dir():
-        parquet_dir = (
-            dataset_path / "parquet-files"
-            if (dataset_path / "parquet-files").exists()
-            else dataset_path
-        )
-        parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
-        if parquet_files:
+        from utils.paths import dataset_files_in_dir
+
+        try:
+            files = dataset_files_in_dir(dataset_path)
+        except ValueError:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Unsupported local dataset directory (expected parquet/json/jsonl/csv files)",
+            ) from None
+        if files[0].suffix.lower() == ".parquet":
             if train_split == "train":
-                preview = _parquet_preview_slice(parquet_files, preview_size)
+                preview = _parquet_preview_slice(files, preview_size)
                 if preview is not None:
                     return preview
             dataset = load_dataset(
                 "parquet",
-                data_files = [str(path) for path in parquet_files],
+                data_files = [str(path) for path in files],
                 split = train_split,
             )
             total_rows = len(dataset)
             preview_slice = dataset.select(range(min(preview_size, total_rows)))
             return preview_slice, total_rows
-
-        candidate_files: list[Path] = []
-        for ext in LOCAL_FILE_EXTS:
-            candidate_files.extend(drop_appledouble_metadata(sorted(dataset_path.glob(f"*{ext}"))))
-        if not candidate_files:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Unsupported local dataset directory (expected parquet/json/jsonl/csv files)",
-            )
-        dataset_path = candidate_files[0]
+        dataset_path = files[0]
 
     suffix = dataset_path.suffix.lower()
     # Parquet/Arrow give a cheap exact total_rows; JSON/CSV carry none, so stream and report None.
@@ -391,7 +445,10 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
 
     if suffix in (".json", ".jsonl", ".csv"):
         preview = _stream_file_preview_slice(
-            dataset_path, preview_size, **csv_as_text_kwargs([dataset_path])
+            dataset_path,
+            preview_size,
+            dates_as_written = True,
+            **csv_as_text_kwargs([dataset_path]),
         )
         if preview is None:
             raise HTTPException(
@@ -457,10 +514,11 @@ def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResp
     if grant.size_bytes is not None and grant.size_bytes > max_bytes:
         raise _upload_too_large(max_label)
 
+    partial_path = _partial_upload_path(stored_path)
     written = 0
     upload_complete = False
     try:
-        with open(grant.canonical_path, "rb") as source, open(stored_path, "wb") as target:
+        with open(grant.canonical_path, "rb") as source, open(partial_path, "wb") as target:
             while chunk := source.read(LOCAL_UPLOAD_CHUNK_BYTES):
                 written += len(chunk)
                 if written > max_bytes:
@@ -475,13 +533,15 @@ def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResp
     finally:
         if not upload_complete:
             with suppress(OSError):
-                stored_path.unlink(missing_ok = True)
+                partial_path.unlink(missing_ok = True)
 
     if written == 0:
-        stored_path.unlink(missing_ok = True)
+        partial_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Dropped dataset is empty")
 
-    return UploadDatasetResponse(filename = filename, stored_path = str(stored_path))
+    return UploadDatasetResponse(
+        filename = filename, stored_path = str(_publish_upload(partial_path, stored_path))
+    )
 
 
 async def upload_dataset_response(
@@ -502,10 +562,11 @@ async def upload_dataset_response(
     if isinstance(declared_size, int) and declared_size > max_bytes:
         raise _upload_too_large(max_label)
 
+    partial_path = _partial_upload_path(stored_path)
     written = 0
     upload_complete = False
     try:
-        with open(stored_path, "wb") as f:
+        with open(partial_path, "wb") as f:
             while chunk := await file.read(LOCAL_UPLOAD_CHUNK_BYTES):
                 written += len(chunk)
                 if written > max_bytes:
@@ -515,13 +576,82 @@ async def upload_dataset_response(
     finally:
         if not upload_complete:
             with suppress(OSError):
-                stored_path.unlink(missing_ok = True)
+                partial_path.unlink(missing_ok = True)
 
     if written == 0:
-        stored_path.unlink(missing_ok = True)
+        partial_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Empty upload payload")
 
-    return UploadDatasetResponse(filename = filename, stored_path = str(stored_path))
+    reused_path = await asyncio.to_thread(_publish_upload, partial_path, stored_path)
+    return UploadDatasetResponse(filename = filename, stored_path = str(reused_path))
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(LOCAL_UPLOAD_CHUNK_BYTES):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _partial_upload_path(stored_path: Path) -> Path:
+    # Only the upload id: appending to a long original name can exceed the 255-byte filename limit.
+    return stored_path.with_name(f"{stored_path.name.split('_', 1)[0]}.part")
+
+
+def _publish_upload(partial_path: Path, stored_path: Path) -> Path:
+    try:
+        with _REUSE_LOCK:
+            existing = _find_identical_upload(partial_path, stored_path)
+            if existing is not None:
+                return existing
+            partial_path.replace(stored_path)
+            return stored_path
+    finally:
+        with suppress(OSError):
+            partial_path.unlink(missing_ok = True)
+
+
+def _find_identical_upload(partial_path: Path, stored_path: Path) -> Path | None:
+    suffix = stored_path.name.split("_", 1)[-1]
+    try:
+        size = partial_path.stat().st_size
+        candidates = [
+            path
+            for path in DATASET_UPLOAD_DIR.iterdir()
+            if path.is_file()
+            and not path.is_symlink()
+            and within_account(path)
+            and _is_upload_id(path.name.split("_", 1)[0])
+            and path.name.split("_", 1)[-1] == suffix
+            and path.stat().st_size == size
+        ]
+        if not candidates:
+            return None
+        new_digest = _file_digest(partial_path)
+        for existing in candidates:
+            if _file_digest(existing) == new_digest:
+                return existing
+    except OSError:
+        pass
+    return None
+
+
+def delete_uploaded_dataset_response(dataset_id: str) -> dict:
+    name = Path(dataset_id or "").name
+    if not name or name != dataset_id or Path(name).suffix.lower() not in LOCAL_UPLOAD_EXTS:
+        raise HTTPException(status_code = 400, detail = "Invalid uploaded dataset id")
+    path = DATASET_UPLOAD_DIR / name
+    with _REUSE_LOCK:
+        if not path.is_file() or path.is_symlink() or not within_account(path):
+            raise HTTPException(status_code = 404, detail = "Uploaded dataset not found")
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise HTTPException(
+                status_code = 500, detail = "Could not delete the uploaded dataset"
+            ) from exc
+    return {"status": "deleted", "id": name}
 
 
 def list_local_datasets_response() -> LocalDatasetsResponse:

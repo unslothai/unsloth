@@ -146,12 +146,33 @@ def test_the_fit_recovery_rungs_stand_down_for_this_refusal():
     """A startup crash, so the --fit rungs would take it first and waste a load."""
     import inspect
 
+    import ast
+    import textwrap
+
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "_capability_crash = _tensor_capability_crash or self._is_kv_unified_refused" in src
-    # Every --fit rung and the MoE cache rung, and only those: the HIP rung keeps its
-    # narrower gate.
-    assert src.count("and not _capability_crash") == 4
-    assert src.count("and not _tensor_capability_crash") == 1
+    # Every startup-crash recovery rung (the --fit rungs, the MoE cache rung, the
+    # context-halving rung, and any added later) uses the full gate; only the HIP
+    # rung is narrower. Read the gates by shape so a new rung does not need a count bump.
+    full, narrow, ungated = [], [], []
+    for node in ast.walk(ast.parse(textwrap.dedent(src))):
+        if not (isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And)):
+            continue
+        terms = [ast.unparse(v) for v in node.values]
+        if "_startup_crashed" not in terms:
+            continue
+        others = [t for t in terms if t != "_startup_crashed"]
+        if all(t.startswith("self._is_") for t in others):
+            continue  # a crash classifier, not a retry
+        if "not _capability_crash" in terms:
+            full.append(node.lineno)
+        elif "not _tensor_capability_crash" in terms and "_hip_rocr_mismatch" in terms:
+            narrow.append(node.lineno)
+        else:
+            ungated.append((node.lineno, terms))
+    assert ungated == []
+    assert len(narrow) == 1
+    assert len(full) >= 4
 
 
 def test_the_retry_commits_the_one_slot_geometry_it_launched():

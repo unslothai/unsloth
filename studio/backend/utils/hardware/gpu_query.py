@@ -134,10 +134,6 @@ def _query_fields(argv: Sequence[str]) -> list[str]:
     return []
 
 
-def _nounits(argv: Sequence[str]) -> bool:
-    return any(arg.startswith("--format=") and "nounits" in arg for arg in argv[1:])
-
-
 @dataclass
 class _Entry:
     # None = the CLI's latest answer had no rows (failed or empty): never served, only orders writers.

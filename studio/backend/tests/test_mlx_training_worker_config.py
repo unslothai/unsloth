@@ -347,7 +347,8 @@ def test_mlx_vlm_adapter_applies_chw_layout_to_message_images():
 
     adapted = _adapt_for_mlx_vlm([item], resize = 128, image_layout = "chw")
 
-    assert adapted[0]["image"].shape == (3, 80, 128)
+    assert adapted[0]["images"].shape == (3, 80, 128)
+    assert "image" not in adapted[0]
     assert adapted[0]["messages"][0]["content"][0] == {"type": "image"}
 
 
@@ -571,15 +572,18 @@ def _finalize(
     trainer,
     stop = (False, True),
     checkpoint_ok = True,
+    output_dir = "/out",
+    owns_output_dir = False,
 ):
     events = []
     _worker._finalize_mlx_training(
         trainer,
         lambda: stop,
-        "/out",
+        output_dir,
         lambda: None,
         lambda event_type, **payload: events.append((event_type, payload)),
         lambda: checkpoint_ok,
+        owns_output_dir = owns_output_dir,
     )
     return events
 
@@ -626,12 +630,53 @@ def test_mlx_rank0_save_failure_reaches_every_rank():
 
 def test_mlx_single_process_finalization_keeps_prior_contract():
     trainer = _FakeRankTrainer()
+    trainer._global_step = 3
     assert _finalize(trainer, stop = (True, False))[-1][1]["status_message"] == "Training cancelled"
     assert trainer.saved == []
 
     events = _finalize(trainer, stop = (True, True), checkpoint_ok = False)
     assert trainer.saved == ["/out"]
     assert events[-1][0] == "error" and events[-1][1]["resume_blocked"] is True
+
+
+@pytest.mark.parametrize(
+    "rank, world_size, owns_output_dir",
+    [(0, 1, True), (0, 2, True), (1, 2, True), (0, 1, False)],
+)
+def test_mlx_stop_before_first_step_saves_nothing_and_is_not_an_error(
+    tmp_path, rank, world_size, owns_output_dir
+):
+    out = tmp_path / "run"
+    out.mkdir()
+    (out / _worker.ROW_BOUND_MARKER_FILE).write_text("{}")
+    trainer = _FakeRankTrainer(rank = rank, world_size = world_size)
+    trainer._global_step = 0
+    events = _finalize(
+        trainer,
+        stop = (True, True),
+        checkpoint_ok = False,
+        output_dir = str(out),
+        owns_output_dir = owns_output_dir,
+    )
+    assert trainer.saved == []
+    # Only the main rank removes the folder, and only one this run created.
+    assert out.exists() == (rank != 0 or not owns_output_dir)
+    assert events[-1] == (
+        "complete",
+        {"output_dir": None, "saved": False, "status_message": "Training stopped"},
+    )
+
+
+def test_mlx_stop_before_first_step_keeps_an_output_dir_with_other_files(tmp_path):
+    (tmp_path / _worker.ROW_BOUND_MARKER_FILE).write_text("{}")
+    (tmp_path / "keep.txt").write_text("x")
+    trainer = _FakeRankTrainer()
+    trainer._global_step = 0
+    events = _finalize(trainer, stop = (True, True), output_dir = str(tmp_path), owns_output_dir = True)
+    assert events[-1][1]["saved"] is False
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        [_worker.ROW_BOUND_MARKER_FILE, "keep.txt"]
+    )
 
 
 def _adapter_setup_block():
@@ -842,6 +887,29 @@ def test_mlx_slice_reads_a_stream_lazily():
     assert calls == [("skip", 2), ("take", 3)]
 
 
+@pytest.mark.parametrize("slice_start, slice_end", [(2, 4), (50, None)])
+def test_mlx_slice_clamps_the_end_and_refuses_a_start_past_the_last_row(slice_start, slice_end):
+    from datasets import Dataset
+
+    body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
+    nodes = [n for n in body if isinstance(n, ast.FunctionDef) and n.name == "_slice"]
+    namespace = {
+        **vars(_worker),
+        "dataset_streaming": False,
+        "slice_start": slice_start,
+        "slice_end": slice_end,
+        "mlx_split_names_rows": False,
+    }
+    exec(compile(ast.Module(body = nodes, type_ignores = []), "<slice>", "exec"), namespace)
+    rows = Dataset.from_list([{"i": i} for i in range(4)])
+
+    if slice_start >= 4:
+        with pytest.raises(ValueError, match = "Train Split Start 50 is past the last row"):
+            namespace["_slice"](rows)
+    else:
+        assert namespace["_slice"](rows)["i"] == [2, 3]
+
+
 def _run_mlx_assignment(target, **names):
     body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
     nodes = [n for n in body if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == target]
@@ -921,7 +989,9 @@ def test_mlx_audio_dataset_formats_both_splits_as_audio_rows(image_col):
         "custom_format_mapping": None,
         "_send": lambda *_a, **_kw: None,
         "vision_image_size": None,
-        "_mlx_audio_rows": lambda ds, processor, mapping, *column: formatted.append((ds, *column))
+        "_mlx_audio_rows": lambda ds, processor, mapping, *column, **_kw: formatted.append(
+            (ds, *column)
+        )
         or ([ds], image_col),
         "_adapt_for_mlx_vlm": lambda rows, **_kw: adapted.append(rows) or [*rows, "lifted"],
         "format_and_template_dataset": lambda *_a, **_kw: pytest.fail(
@@ -1026,6 +1096,52 @@ def test_mlx_audio_rows_carry_each_rows_images(monkeypatch):
     # An eval split whose train split had no images trains on audio alone.
     eval_rows, eval_image_col = _worker._mlx_audio_rows(dataset, "processor", None, None)
     assert eval_image_col is None and "images" not in eval_rows[0]
+
+
+def test_mlx_audio_rows_skip_blank_transcripts(monkeypatch):
+    from utils.datasets import audio_decode
+
+    monkeypatch.setattr(audio_decode, "ensure_audio_decoding", lambda: True)
+    monkeypatch.setattr(_worker, "logger", types.SimpleNamespace(warning = lambda *a: None))
+    zoo_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+    zoo_utils.audio_extractor_sampling_rate = lambda processor: 16000
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", zoo_utils)
+    clip = {"array": [0.1], "sampling_rate": 16000}
+
+    def dataset(texts):
+        return _AudioRowsDataset([{"audio": clip, "text": text} for text in texts])
+
+    rows, _ = _worker._mlx_audio_rows(dataset(["hi", None, " "]), "processor")
+
+    assert [row["messages"][2]["content"][0]["text"] for row in rows] == ["hi"]
+    with pytest.raises(ValueError, match = "blank"):
+        _worker._mlx_audio_rows(dataset([None, ""]), "processor")
+    assert _worker._mlx_audio_rows(dataset([None, ""]), "processor", None, None) == ([], None)
+
+
+def test_mlx_blank_audio_eval_split_disables_eval_not_training():
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
+    branch = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.If) and ast.unparse(n.test) == "is_dataset_audio"
+    )
+    events = []
+    namespace = {
+        "is_dataset_audio": True,
+        "_send": lambda kind, **kw: events.append((kind, kw)),
+        "_mlx_audio_rows": lambda ds, *a, **kw: (ds, None),
+        "tokenizer": None,
+        "custom_format_mapping": None,
+        "dataset": [{"messages": []}],
+        "eval_dataset": [],
+        "eval_enabled": True,
+    }
+    exec(compile(ast.Module(body = [branch], type_ignores = []), "<audio>", "exec"), namespace)
+
+    assert namespace["eval_dataset"] is None and namespace["eval_enabled"] is False
+    assert namespace["dataset"] == [{"messages": []}]
+    assert [kind for kind, _ in events].count("warning") == 1
 
 
 @pytest.mark.parametrize("is_dataset_audio", [True, False])

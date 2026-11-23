@@ -42,6 +42,7 @@ from core.inference.sd_cpp_args import (
     build_sd_cpp_video_command,
     native_speed_flags,
     speed_flags_without,
+    with_module_flash_attn,
     sd_cli_output_paths,
 )
 
@@ -246,8 +247,7 @@ class SdCppCancelled(RuntimeError):
 
 
 def _terminate(proc: "subprocess.Popen") -> None:
-    """Hard-stop an sd-cli process (and children). On POSIX it's a session leader, so kill the
-    whole group; else kill just the process."""
+    """Hard-stop sd-cli and its children: POSIX kills the session group, else just the process."""
     if proc.poll() is not None:
         return
     try:
@@ -709,7 +709,8 @@ class SdCppEngine:
             ),
             offload,
         )
-        merged_extra = speed + list(extra_args or [])
+        # Module form of --diffusion-fa for the managed flags only; a user's own extra args pass through as given.
+        merged_extra = with_module_flash_attn(speed, binary) + list(extra_args or [])
         cmd = build_sd_cpp_command(
             binary,
             files,

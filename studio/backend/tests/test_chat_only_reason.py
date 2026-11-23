@@ -22,8 +22,7 @@ import utils.hardware.hardware as hw  # noqa: E402
 def _no_torch(monkeypatch):
     # Force the non-CUDA/XPU path regardless of the test host's real GPUs.
     monkeypatch.setattr(hw, "_has_torch", lambda: False)
-    # The no_torch verdict reads the venv's install manifest; pin it so the answer does
-    # not depend on which venv runs these tests.
+    # no_torch reads the venv's install manifest, so pin it to keep tests venv-independent.
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: False)
     monkeypatch.setattr(hw, "_NO_TORCH_SETTLED_EPOCH", None)
     monkeypatch.setattr(hw, "_CHAT_ONLY_HINT", None)
@@ -279,11 +278,23 @@ def test_a_declined_settle_does_not_mark_the_epoch(monkeypatch):
     assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
 
 
-def test_apple_silicon_no_torch_install_with_usable_mlx_enables_training(monkeypatch):
+def test_apple_silicon_no_torch_install_with_usable_mlx_chats_on_mlx_without_training(monkeypatch):
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)
-    hw.detect_hardware()
+    assert hw.detect_hardware() == hw.DeviceType.MLX
+    assert hw.CHAT_ONLY is True
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    capability = hw.export_capability()
+    assert capability["export_supported"] is False
+    assert capability["export_unsupported_reason"] == "no_torch"
+
+
+def test_apple_silicon_full_install_with_usable_mlx_enables_training(monkeypatch):
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(hw, "_installed_without_torch", lambda: False)
+    monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)
+    assert hw.detect_hardware() == hw.DeviceType.MLX
     assert hw.CHAT_ONLY is False
     assert hw.CHAT_ONLY_REASON is None
 

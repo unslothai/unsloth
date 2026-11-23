@@ -37,10 +37,8 @@ import { hoistHasAnchors } from "../vite-plugin-has-anchor.ts";
 const SRC = path.resolve(import.meta.dirname, "../src");
 
 /*
- * Rules allowed to keep a style after their :has(), measured harmless with all of them present: a
- * sidebar toggle and a run-settings open at 150 turns restyle ~140 / ~250 elements (Chromium), and
- * WebKit typing at 150 turns is as fast as with none of them. Their anchor never holds the thread.
- * Tailwind utilities are listed by class token, hand-written rules by selector.
+ * Tailwind rules allowed after a :has() (measured harmless with all present; their anchor never
+ * holds the thread); utilities by class token, hand-written rules by selector
  */
 const ALLOWED_TAILWIND = new Set<string>([
   // Chat model controls (a notice beside the picker) and the composer's files panel.
@@ -59,7 +57,7 @@ const ALLOWED_TAILWIND = new Set<string>([
   "group-has-[[data-orientation=horizontal]]/field:text-balance",
   "group-has-[[data-slot=command-shortcut]]/command-item:hidden",
   "group-has-[input:disabled]/number:pointer-events-none",
-  "group-has-[input:disabled]/number:opacity-0",
+  "group-has-[input:disabled]/number:opacity-0!",
   "group-has-[>input]/input-group:pt-3",
   "group-has-[>input]/input-group:pb-3",
   "group-has-[>svg]/alert:col-start-2",

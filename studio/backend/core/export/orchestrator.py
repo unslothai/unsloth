@@ -45,8 +45,7 @@ _CLEANUP_TIMEOUT = 30.0
 
 
 def _sweep_reap_staging_of(pid: Optional[int]) -> None:
-    """A worker confirmed dead (cancelled, killed at shutdown, crashed) cannot remove its REAP
-    staging copy, a full model, itself."""
+    """A dead worker cannot remove its REAP staging copy, a full model, so this sweeps it."""
     try:
         from core.export.reap import sweep_reap_staging
         sweep_reap_staging(dead_pid = pid)

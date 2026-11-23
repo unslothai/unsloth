@@ -678,8 +678,7 @@ def test_worker_generate_branches_check_drain_before_clearing_cancel():
 
 
 def test_worker_generate_rechecks_drain_after_clearing_cancel():
-    # Drain check reads unset, parent sets drain+cancel, worker clears cancel: the post-clear
-    # drain re-check must catch it.
+    # Re-check drain after clearing cancel, or a drain set in between is missed.
 
     import queue as _queue
 
@@ -2231,8 +2230,7 @@ def test_load_model_aborts_publish_when_cancelled_after_wait_response(monkeypatc
     assert "m" not in o.loading_models
 
 
-# Compare mode bypasses _gen_lock, so _dispatcher_lifecycle_lock must serialize
-# check-then-spawn or an orphan dispatcher steals 'unloaded'.
+# Compare mode bypasses _gen_lock, so _dispatcher_lifecycle_lock must serialize check-then-spawn.
 
 
 def test_concurrent_start_dispatcher_spawns_exactly_one():
@@ -2855,9 +2853,8 @@ def test_shutdown_closes_the_cancel_handshake_itself():
 
 
 def test_a_load_registering_after_the_sweep_is_still_cancelled():
-    """uvicorn's should_exit stops new connections, not request tasks it already
-    admitted, so a /load can register after the shutdown snapshot was taken and
-    would otherwise never be cancelled by anything."""
+    """uvicorn's should_exit stops new connections but not admitted request tasks, so a /load can
+    register after the shutdown snapshot and must still be cancelled."""
     import importlib
 
     inf = importlib.import_module("routes.inference")
@@ -2879,8 +2876,7 @@ def test_a_load_registering_after_the_sweep_is_still_cancelled():
 
 
 def test_the_latch_is_scoped_to_a_lifecycle_not_the_process():
-    """An embedded host calls run_server again. A permanent latch would refuse every
-    /load of the second session; the backend flag had exactly this bug."""
+    """A permanent latch would refuse every /load in an embedded host's second run_server."""
     import importlib
 
     inf = importlib.import_module("routes.inference")
@@ -3042,11 +3038,9 @@ def test_the_impl_cancel_check_refuses_a_load_once_shutdown_has_latched():
 
 
 def test_a_second_backend_instance_is_covered_by_the_shutdown_latch():
-    """A helper/advisor load builds its OWN LlamaCppBackend (hub/utils/llm_assist.py,
-    utils/datasets/llm_assist.py). run.py only tears down the routes singleton, and
-    _shutting_down is per-instance, so that second backend would still consider a
-    spawn valid and Popen a server after terminate_all took its snapshot.
-    """
+    """Helper and advisor loads build their own LlamaCppBackend (hub/utils/llm_assist.py,
+    utils/datasets/llm_assist.py); run.py tears down only the routes singleton, and
+    _shutting_down is per-instance, so such a backend could Popen after terminate_all's snapshot."""
     from core.inference.llama_cpp import LlamaCppBackend
     from utils import process_lifetime
 
@@ -3544,9 +3538,8 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
 
 
 def test_the_adapter_path_accepts_the_same_images_kwarg_as_the_locked_one():
-    """The tool loop hands both paths one common_kwargs. Without `images` on the
-    dispatched path an adapter-controlled vision chat raises TypeError before it
-    generates, and the markers left in the conversation have no pixels behind."""
+    """The tool loop passes both paths one common_kwargs; without images on the dispatched path, an
+    adapter vision chat raises TypeError and its markers have no pixels."""
     import inspect
 
     from core.inference.orchestrator import InferenceOrchestrator
@@ -3573,8 +3566,7 @@ def test_the_adapter_path_forwards_images_to_the_worker_command():
 
 
 def test_both_generation_paths_forward_the_image_ordinal():
-    """Both generation paths must forward the image ordinal, or the marker top-up lands on the wrong
-    turn."""
+    """Both paths must forward the image ordinal, or the marker top-up hits the wrong turn."""
     import inspect
 
     from core.inference.orchestrator import InferenceOrchestrator

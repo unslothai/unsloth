@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import errno
 import fnmatch
 import glob
 import hashlib
@@ -178,20 +179,21 @@ def _glibc_below(min_os: Optional[str]) -> Optional[str]:
     return version
 
 
-def _accelerator_from_env() -> str:
-    """``UNSLOTH_AUDIO_CPP_ACCELERATOR`` (auto|cpu|cuda|vulkan|metal), for hosts whose GPU is not visible
-    at install time (a Docker build). Set, it is an explicit request and never downgraded."""
+def _accelerator_from_env(install_dir: Path) -> str:
+    """``UNSLOTH_AUDIO_CPP_ACCELERATOR`` (auto|cpu|cuda|vulkan|metal), an explicit request never
+    downgraded (a Docker build whose GPU is not visible); unset or invalid, the request the install in
+    ``install_dir`` was made with, so an update keeps it."""
     raw = (os.environ.get("UNSLOTH_AUDIO_CPP_ACCELERATOR") or "").strip().lower()
-    if not raw:
-        return "auto"
-    if raw not in ACCELERATORS:
+    if raw in ACCELERATORS:
+        return raw
+    if raw:
         print(
             f"audio.cpp: ignoring UNSLOTH_AUDIO_CPP_ACCELERATOR={raw!r} (expected one of {', '.join(ACCELERATORS)})",
             file = sys.stderr,
             flush = True,
         )
-        return "auto"
-    return raw
+    recorded = read_install_record(install_dir).get("accelerator_request")
+    return recorded if recorded in ACCELERATORS else "auto"
 
 
 def _expected_sha256(release: dict, asset: dict) -> Optional[str]:
@@ -641,6 +643,7 @@ def resolve_for_request(
     detected: Optional[str],
     token: Optional[str],
     tag: Optional[str] = None,
+    supply_runtime: bool = True,
 ) -> tuple[str, str, Optional[dict], Optional[str]]:
     """``(accelerator, repo, release, asset)``. An auto-detected GPU the published bundles do not
     cover (an older driver, Linux arm64) falls back to the CPU build, which still runs every model;
@@ -649,6 +652,8 @@ def resolve_for_request(
     repo, release, chosen = resolve(accel, token, tag)
     if requested == "auto" and accel == "cuda" and chosen:
         major = _cuda_major(chosen)
+        if supply_runtime and not _linux_cuda_runtime_available(major):
+            _install_linux_cuda_runtime_wheels(major)
         if not _linux_cuda_runtime_available(major):
             # Linux CUDA bundles load cudart / cuBLAS from torch's nvidia-* wheels.
             print(
@@ -844,6 +849,35 @@ def _sweep_retired_trees(target: Path) -> None:
             shutil.rmtree(staging, ignore_errors = True)
 
 
+def _retire_tree(target: Path, retired: Path) -> None:
+    """os.replace, or on EXDEV copy then remove: overlayfs will not rename an image-layer
+    directory, where the Docker image keeps audio.cpp (#17638)."""
+    try:
+        os.replace(target, retired)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV or target.is_symlink():
+            raise
+        print(f"audio.cpp: {exc.strerror}; copying {target} aside instead", flush = True)
+    # Renamed to ``retired`` only once whole, so a rollback never restores a partial copy.
+    copying = retired.with_name(retired.name + ".copying")
+    shutil.rmtree(copying, ignore_errors = True)
+    try:
+        shutil.copytree(target, copying, symlinks = True)
+        os.replace(copying, retired)
+    except BaseException:
+        shutil.rmtree(copying, ignore_errors = True)
+        raise
+    try:
+        shutil.rmtree(target)
+    except OSError:
+        # A half-removed tree is no install: put the copy back.
+        shutil.rmtree(target, ignore_errors = True)
+        if not target.exists():
+            os.replace(retired, target)
+        raise
+
+
 def _is_unreadable(target: Path) -> bool:
     """Whether this account cannot look inside ``target``: a tree an elevated run staged under
     mkdtemp's Windows ACL is owned by Administrators and denies the same user unelevated (#14052).
@@ -872,7 +906,7 @@ def _server_in_use(server: Optional[Path]) -> bool:
 
 
 def _cuda_runtime_satisfied(record: dict) -> bool:
-    """A CUDA install that skipped its cudart archive still has torch's runtime to lean on."""
+    """A CUDA install that skipped its cudart archive still has torch's or the wheels' runtime to lean on."""
     if (
         record.get("backend") != "cuda"
         or record.get("cudart_asset")
@@ -880,7 +914,10 @@ def _cuda_runtime_satisfied(record: dict) -> bool:
     ):
         return True
     match = _CUDA_LINE.search(str(record.get("asset") or ""))
-    return bool(match) and torch_provides_cuda_runtime(int(match.group(1)))
+    if not match:
+        return False
+    major = int(match.group(1))
+    return torch_provides_cuda_runtime(major) or _windows_wheel_runtime_present(major)
 
 
 def _intact_install(target: Path, record: dict) -> Optional[Path]:
@@ -913,9 +950,12 @@ def _record_fits_request(record: dict, requested: str, detected: Optional[str]) 
         requested == "auto"
         and detected == "cuda"
         and record.get("accelerator") == "cpu"
-        and _linux_cuda_runtime_available(torch_cuda_major())
+        and (
+            _linux_cuda_runtime_available(torch_cuda_major())
+            or (_cuda_runtime_wheels_installable() and not record.get("cuda_runtime_wheels_tried"))
+        )
     ):
-        # Installed as the CPU fallback; torch's CUDA runtime is here now, so look up the GPU build.
+        # A CPU fallback whose CUDA runtime is here now, or a chat-only one from before the wheel step.
         return False
     return True
 
@@ -1009,6 +1049,111 @@ def _ldconfig_libs() -> set[str]:
     except Exception:  # noqa: BLE001 - no ldconfig: only the wheel dirs count
         return set()
     return {line.split()[0] for line in out.splitlines()[1:] if line.strip()}
+
+
+# Chat-only (no torch) installs have no nvidia-* wheels; the CUDA bundles link these three.
+_LINUX_CUDA_RUNTIME_WHEELS = {
+    12: ("nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12", "nvidia-cufft-cu12"),
+    13: ("nvidia-cuda-runtime", "nvidia-cublas", "nvidia-cufft"),
+}
+
+
+def _cuda_runtime_wheels_installable() -> bool:
+    """Linux x86_64 without torch: the only hosts where the CUDA runtime comes from these wheels."""
+    return (
+        sys.platform.startswith("linux")
+        and platform.machine().lower() in ("x86_64", "amd64")
+        and torch_cuda_major() is None
+    )
+
+
+def _install_linux_cuda_runtime_wheels(major: Optional[int]) -> None:
+    """Never raises: the caller falls back to the CPU build."""
+    wheels = _LINUX_CUDA_RUNTIME_WHEELS.get(major or 0)
+    if not wheels or not _cuda_runtime_wheels_installable():
+        return
+    _pip_install_wheels(wheels, f"CUDA {major} runtime")
+
+
+def _pip_install_wheels(wheels: Sequence[str], what: str) -> None:
+    """Installs ``wheels`` into this env; never raises (each caller re-checks and falls back)."""
+    try:
+        if __package__:
+            from .install_llama_prebuilt import _uv_for_wheels
+        else:
+            from install_llama_prebuilt import _uv_for_wheels  # type: ignore[no-redef]
+        uv = _uv_for_wheels()
+    except Exception:  # noqa: BLE001
+        uv = shutil.which("uv")
+    cmd = (
+        [uv, "pip", "install", "--python", sys.executable]
+        if uv
+        else [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
+    )
+    print(f"audio.cpp: no {what}; installing {', '.join(wheels)}", flush = True)
+    try:
+        result = subprocess.run([*cmd, "--only-binary", ":all:", *wheels], timeout = 1800)
+        if result.returncode != 0:
+            print(
+                f"audio.cpp: CUDA runtime wheel install failed (exit {result.returncode})",
+                flush = True,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"audio.cpp: CUDA runtime wheel install failed ({exc})", flush = True)
+
+
+# Windows x64 chat-only: llama.cpp's step installed cudart + cuBLAS already; only cuFFT is missing.
+_WINDOWS_CUFFT_WHEELS = {12: "nvidia-cufft-cu12", 13: "nvidia-cufft"}
+_CUFFT_DLL = {12: "cufft64_11", 13: "cufft64_12"}
+
+
+def _windows_wheel_runtime_present(major: int, *, cufft: bool = True) -> bool:
+    """Whether the env's nvidia-* wheels (or torch) carry the DLLs a line-``major`` Windows bundle loads."""
+    if sys.platform != "win32":
+        return False
+    dirs = [Path(d) for d in _cuda_runtime_dirs("cuda")]
+    patterns = [f"cudart64_{major}*.dll", f"cublas64_{major}*.dll", f"cublasLt64_{major}*.dll"]
+    if cufft:
+        patterns.append(f"{_CUFFT_DLL.get(major, 'cufft64_')}*.dll")
+    return all(any(any(d.glob(pattern)) for d in dirs) for pattern in patterns)
+
+
+def _windows_runtime_from_wheels(major: Optional[int]) -> bool:
+    """True when llama.cpp's wheels for this line plus cuFFT replace the cudart archive. Never raises."""
+    if (
+        major not in _WINDOWS_CUFFT_WHEELS
+        or sys.platform != "win32"
+        or platform.machine().lower() not in ("amd64", "x86_64")
+        or torch_cuda_major() is not None
+        or not _windows_wheel_runtime_present(major, cufft = False)
+    ):
+        return False
+    if not _windows_wheel_runtime_present(major):
+        _pip_install_wheels((_WINDOWS_CUFFT_WHEELS[major],), f"cuFFT for CUDA {major}")
+    return _windows_wheel_runtime_present(major)
+
+
+def _runtime_wheels_marker(requested: str, detected: Optional[str]) -> bool:
+    return requested == "auto" and detected == "cuda" and _cuda_runtime_wheels_installable()
+
+
+def _refresh_kept_record(
+    target: Path, record: dict, requested: str, detected: Optional[str]
+) -> None:
+    """Record this run's request (and, for CPU, the wheel attempt) on a kept install."""
+    updated = {**record, "accelerator_request": requested, "detected_accelerator": detected}
+    if (
+        record.get("accelerator") == "cpu"
+        and not record.get("cuda_runtime_wheels_tried")
+        and _runtime_wheels_marker(requested, detected)
+    ):
+        updated["cuda_runtime_wheels_tried"] = True
+    if updated == record:
+        return
+    try:
+        (target / INSTALL_RECORD).write_text(json.dumps(updated, indent = 2), encoding = "utf-8")
+    except OSError:
+        pass
 
 
 def _linux_cuda_runtime_available(major: Optional[int]) -> bool:
@@ -1209,7 +1354,14 @@ def _install_locked(
     token = token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     try:
         accel, repo, release, chosen = resolve_for_request(
-            requested, "cpu" if vulkan_unusable else detected, token, release_tag
+            requested,
+            "cpu" if vulkan_unusable else detected,
+            token,
+            release_tag,
+            # A CPU fallback that already tried the wheels does not retry them for every new release.
+            supply_runtime = not (
+                existing.get("accelerator") == "cpu" and existing.get("cuda_runtime_wheels_tried")
+            ),
         )
     except (ReleaseLookupUnavailable, GitHubRateLimited) as exc:
         # The lookup could not answer, which says nothing about the tree on disk. Keep a complete one
@@ -1244,6 +1396,7 @@ def _install_locked(
         and _intact_install(target, existing) is not None
     ):
         print(f"audio.cpp: already matches {chosen}", flush = True)
+        _refresh_kept_record(target, existing, requested, detected)
         return _intact_install(target, existing)
     if (
         not force
@@ -1256,12 +1409,18 @@ def _install_locked(
     ):
         # The lookup named an older release than the one installed: never downgrade to it.
         print(f"audio.cpp: already matches {existing.get('asset')}", flush = True)
+        _refresh_kept_record(target, existing, requested, detected)
         return _intact_install(target, existing)
 
     cudart = cudart_asset_for(list(assets), chosen)
     cuda_match = _CUDA_LINE.search(chosen)
     cuda_major = int(cuda_match.group(1)) if cuda_match else None
     torch_runtime = bool(cudart and cuda_major and torch_provides_cuda_runtime(cuda_major))
+    if cudart and not torch_runtime and _windows_runtime_from_wheels(cuda_major):
+        print(
+            f"audio.cpp: CUDA runtime from this env's nvidia wheels; skipping {cudart}", flush = True
+        )
+        cudart = None
     cudart_expected = (
         _expected_sha256(release, assets[cudart]) if cudart and not torch_runtime else None
     )
@@ -1326,6 +1485,7 @@ def _install_locked(
             "accelerator": accel,
             "accelerator_request": requested,
             "detected_accelerator": detected,
+            "cuda_runtime_wheels_tried": _runtime_wheels_marker(requested, detected),
             "espeak": (server.parent / "espeak-ng-data.bin").is_file(),
             "server_relpath": server.relative_to(tree).as_posix(),
             "server_sha256": core.sha256_file(server),
@@ -1341,7 +1501,7 @@ def _install_locked(
         retired = None
         if target.exists():
             retired = target.with_name(target.name + f".old-{os.getpid()}")
-            os.replace(target, retired)
+            _retire_tree(target, retired)
         try:
             os.replace(tree, target)
         except OSError:
@@ -1361,10 +1521,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(description = "Install a prebuilt audiocpp_server (audio.cpp).")
     p.add_argument(
         "--accelerator",
-        default = _accelerator_from_env(),
+        default = None,
         type = lambda value: value.strip().lower(),
         choices = list(ACCELERATORS),
-        help = "default: UNSLOTH_AUDIO_CPP_ACCELERATOR, else auto (detect; CPU when no bundle covers the GPU)",
+        help = "default: UNSLOTH_AUDIO_CPP_ACCELERATOR, else the installed request, else auto (detect; CPU when no bundle covers the GPU)",
     )
     p.add_argument("--install-dir", default = None)
     p.add_argument("--force", action = "store_true", help = "reinstall even when the bundle matches")
@@ -1382,17 +1542,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = p.parse_args(argv)
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     release_tag = (args.published_release_tag or "").strip() or None
+    install_dir = Path(args.install_dir).expanduser() if args.install_dir else None
+    accelerator = args.accelerator or _accelerator_from_env(install_dir or default_install_dir())
     try:
         if args.print_asset:
-            detected = detect_accelerator() if args.accelerator == "auto" else None
+            detected = detect_accelerator() if accelerator == "auto" else None
             _, repo, release, chosen = resolve_for_request(
-                args.accelerator, detected, token, release_tag
+                accelerator, detected, token, release_tag, supply_runtime = False
             )
             print(f"{repo} {release.get('tag_name') if release else '-'} {chosen or '(none)'}")
             return EXIT_OK if chosen else EXIT_FAILED
         install(
-            install_dir = Path(args.install_dir).expanduser() if args.install_dir else None,
-            accelerator = args.accelerator,
+            install_dir = install_dir,
+            accelerator = accelerator,
             force = args.force,
             release_tag = release_tag,
             keep_newer = args.keep_newer,

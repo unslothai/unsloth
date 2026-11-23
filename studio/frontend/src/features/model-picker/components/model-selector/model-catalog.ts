@@ -39,8 +39,9 @@ export interface ModelArtifact {
   repoId: string;
   /** Vendor repo this unsloth mirror copies byte for byte; its id resolves here too. */
   upstreamRepoId?: string;
-  /** The open repo the backend downloads this vendor id from (diffusion_families._GATED_MIRROR_PAIRS),
-   *  so a gate on repoId never reaches the user. The network check judges this repo instead. */
+  /** The unsloth repo the backend downloads this vendor id's files from (diffusion_families mirror pairs), so a
+   *  gate on repoId never reaches the user and download labels name the repo actually fetched. The network check
+   *  judges this repo instead, so a row still marked `gated` keeps it unset. */
   fetchedFrom?: string;
   format: ArtifactFormat;
   loadKind: LoadKind;
@@ -81,10 +82,14 @@ export interface CatalogGroup {
   task?: "tts" | "stt";
   /** Descending quality order: bf16, fp8, bnb-4bit, gguf. The router walks it. */
   artifacts: ModelArtifact[];
+  /** sd.cpp route but no curated GGUF row: hidden on CPU-only. Must match ``family_sd_cpp_supported`` (tested). */
+  nativeGgufRoute?: boolean;
   /** Cross-owner ids for this group; suffix stripping never merges owners. */
   aliases?: readonly string[];
   /** Capability glyph fallback; the Hub listing's tags win. */
   capabilities?: Partial<ModelCapabilities>;
+  /** A package the load needs that the app does not install, shown as a chip on the row. */
+  requires?: string;
   /** Leads the Recommended list whatever the dropdown sort, in catalog order among pinned groups. */
   pinToTop?: boolean;
   /** With `pinToTop`: every row of this group (its GGUF too) leads before the next pinned group's
@@ -215,6 +220,8 @@ const audioGgufGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
 const FLUX3_KLEIN_AUTO_TE = { denseGb: 8.27, quantisedGb: 4.89 } as const;
 const QWEN_IMAGE_21_AUTO_TE = { denseGb: 16.33, quantisedGb: 8.71 } as const;
 const FLUX1_KONTEXT_AUTO_TE = { denseGb: 8.87, quantisedGb: 5.74 } as const;
+// No te_quant_auto: the loader itself takes the hosted int8 Qwen3-VL-32B (unsloth/MiniMax-H3-FP8) when no encoder is set.
+const MINIMAX_H3_IMAGE_AUTO_TE = { denseGb: 62.14, quantisedGb: 25.28 } as const;
 
 export const IMAGE_CATALOG: CatalogGroup[] = [
   {
@@ -241,8 +248,33 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [gguf("unsloth/Z-Image-GGUF")],
   },
   {
-    // FLUX.3 Image Klein (distilled): text to image and up to 10 reference images. Pinned first, so its
-    // "Fast FP8" and GGUF rows lead the list above Qwen-Image 2.1's. The bf16 row keeps the gated BFL id; the backend
+    // CUDA / ROCm only; keeps the official id (the loader reads VAE, tokenizer, config from it).
+    // Size is the bf16 total; the fit rule reads the measured offload tiers instead.
+    canonicalId: "MiniMaxAI/MiniMax-H3-Image",
+    displayName: "MiniMax-H3-Image",
+    description: "Text-to-image and image editing with up to 16 pictures",
+    scope: "image",
+    // Same reason as Qwen-Image 2.1's alias: the int8 half of the prequant repo has no artifact row.
+    aliases: ["unsloth/MiniMax-H3-Image-FP8"],
+    pinToTop: true,
+    pinRowsTogether: true,
+    artifacts: [
+      bf16Pipeline("MiniMaxAI/MiniMax-H3-Image", 126, {
+        totalParams: 33122643440,
+        prequantRepo: "unsloth/MiniMax-H3-Image-FP8",
+            prequantSizeGb: { fp8: 18.88, int8: 18.88 },
+        autoQuantTextEncoderGb: MINIMAX_H3_IMAGE_AUTO_TE,
+        offloadFitTiers: [
+          { gpuGb: 22, systemRamGb: 48, requiresDenseQuant: true },
+          { gpuGb: 39, systemRamGb: 64, requiresDenseQuant: true },
+        ],
+      }),
+      gguf("unsloth/MiniMax-H3-Image-GGUF"),
+    ],
+  },
+  {
+    // FLUX.3 Image Klein (distilled): text to image and up to 10 reference images. Pinned right under
+    // MiniMax-H3-Image. The bf16 row keeps the gated BFL id; the backend
     // fetches it from unsloth/flux-3-image-klein-FP8, which carries the official diffusers folders
     // byte-identical beside the FP8 / INT8 checkpoints. The GGUFs pair with the same repo for the Qwen3-VL
     // text encoder and the FLUX.2 VAE.
@@ -300,6 +332,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
       bf16Pipeline("OpenMOSS-Team/MOSS-Image-SFT", 25.33, {
         totalParams: 5082308624,
         prequantRepo: "unsloth/MOSS-Image-SFT-FP8",
+        fetchedFrom: "unsloth/MOSS-Image-SFT-FP8",
         prequantSizeGb: { fp8: 5.04, int8: 5.04 },
       }),
       gguf("unsloth/MOSS-Image-SFT-GGUF"),
@@ -316,6 +349,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
       bf16Pipeline("OpenMOSS-Team/MOSS-Image-Base", 25.33, {
         totalParams: 5082308624,
         prequantRepo: "unsloth/MOSS-Image-Base-FP8",
+        fetchedFrom: "unsloth/MOSS-Image-Base-FP8",
         prequantSizeGb: { fp8: 5.04, int8: 5.04 },
       }),
       gguf("unsloth/MOSS-Image-Base-GGUF"),
@@ -354,6 +388,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
       bf16Pipeline("Qwen/Qwen-Image-2.1-Turbo", 33, {
         totalParams: 7115124736,
         prequantRepo: "unsloth/Qwen-Image-2.1-Turbo-FP8",
+        fetchedFrom: "unsloth/Qwen-Image-2.1-Turbo-FP8",
         prequantSizeGb: { fp8: 7.12, int8: 7.26 },
         autoQuantTextEncoderGb: QWEN_IMAGE_21_AUTO_TE,
       }),
@@ -469,6 +504,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "Krea 2 Turbo",
     description: "Text-to-image",
     scope: "image",
+    nativeGgufRoute: true,
     artifacts: [
       bf16Mirror("krea/Krea-2-Turbo", 18, {
         totalParams: 12820073036,
@@ -580,6 +616,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     capabilities: { audio: true },
     artifacts: [
       bf16Pipeline("MiniMaxAI/MiniMax-H3", 145, {
+        fetchedFrom: "unsloth/MiniMax-H3",
         // Measured tiers in GiB (nvidia.py / main.py), while video.py estimators use decimal GB: never
         // copy figures across or the conversion applies twice and sends capable hosts to GGUF.
         offloadFitTiers: [
@@ -614,6 +651,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         "Lightricks/LTX-2.3",
         "ltx-2.3-22b-distilled.safetensors",
         90,
+        { fetchedFrom: "unsloth/LTX-2.3-FP8" },
       ),
       // No FP8 artifact: the LTX-2.3 loader refuses the official scaled-FP8 single file.
       gguf("unsloth/LTX-2.3-GGUF", { totalParams: 21_005_004_544 }),
@@ -655,21 +693,36 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     description: "Text-to-video with audio",
     scope: "video",
     capabilities: { audio: true },
-    artifacts: [bf16Pipeline("Lightricks/LTX-2", 90, { totalParams: 18876174592 })],
+    artifacts: [
+      bf16Pipeline("Lightricks/LTX-2", 90, {
+        totalParams: 18876174592,
+        fetchedFrom: "unsloth/LTX-2-FP8",
+      }),
+    ],
   },
   {
     canonicalId: "Wan-AI/Wan2.2-TI2V-5B",
     displayName: "Wan 2.2 TI2V 5B",
     description: "Text-to-video 720p",
     scope: "video",
-    artifacts: [bf16Pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", 30, { totalParams: 4999787712 })],
+    artifacts: [
+      bf16Pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", 30, {
+        totalParams: 4999787712,
+        fetchedFrom: "unsloth/Wan2.2-TI2V-5B-FP8",
+      }),
+    ],
   },
   {
     canonicalId: "Wan-AI/Wan2.2-T2V-A14B",
     displayName: "Wan 2.2 T2V A14B (MoE)",
     description: "Text-to-video, dual-expert",
     scope: "video",
-    artifacts: [bf16Pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 114, { totalParams: 14288491584 })],
+    artifacts: [
+      bf16Pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 114, {
+        totalParams: 14288491584,
+        fetchedFrom: "unsloth/Wan2.2-T2V-A14B-FP8",
+      }),
+    ],
   },
   {
     canonicalId: "Wan-AI/Wan2.1-T2V-1.3B",
@@ -704,13 +757,26 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
-  // Not Cosmos3 Nano: its checkpoint enables the guardrail, whose package Studio does not install.
+  {
+    canonicalId: "nvidia/Cosmos3-Nano",
+    displayName: "Cosmos3 Nano",
+    description: "Text and image to video up to 720p",
+    scope: "video",
+    artifacts: [
+      bf16Pipeline("nvidia/Cosmos3-Nano", 32, { totalParams: 15750057456 }),
+      // NVIDIA's ModelOpt FP8 build: W8A8 fp8 GEMMs on RTX 40 / Hopper / Blackwell, weight-only elsewhere.
+      fp8Pipeline("nvidia/Cosmos3-Nano-FP8", 20, { totalParams: 15750057456 }),
+    ],
+  },
   {
     canonicalId: "nvidia/Cosmos3-Edge",
     displayName: "Cosmos3 Edge",
-    description: "Text and image to video 480p, small",
+    description: "Text and image to video up to 480p, small",
     scope: "video",
-    artifacts: [bf16Pipeline("nvidia/Cosmos3-Edge", 9, { totalParams: 3858999728 })],
+    artifacts: [
+      bf16Pipeline("nvidia/Cosmos3-Edge", 9, { totalParams: 3858999728 }),
+      fp8Pipeline("nvidia/Cosmos3-Edge-FP8", 6, { totalParams: 3858999728 }),
+    ],
   },
 ];
 
@@ -1006,6 +1072,22 @@ export function artifactForRepoId(
   return group ? { group, artifact } : null;
 }
 
+/** The repo a pick of this id downloads from, for download labels: a vendor id's unsloth mirror, an unsloth
+ *  copy's own id for its upstream, else the id itself. Planning and loading keep the picked id. */
+export function downloadRepoIdFor(repoId: string, catalog: CatalogGroup[]): string {
+  const hit = artifactForRepoId(repoId, catalog);
+  if (!hit) return repoId;
+  if (hit.artifact.fetchedFrom) return hit.artifact.fetchedFrom;
+  const upstream = hit.artifact.upstreamRepoId?.toLowerCase();
+  return upstream && upstream === repoId.trim().toLowerCase() ? hit.artifact.repoId : repoId;
+}
+
+export function isMediaCatalogRepo(repoId: string): boolean {
+  return [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG].some(
+    (catalog) => artifactForRepoId(repoId, catalog) !== null,
+  );
+}
+
 const BYTES_PER_GB = 1024 ** 3;
 
 /** Curated size (bytes) of an exact artifact id; undefined for GGUF. */
@@ -1128,6 +1210,25 @@ function curatedPerfSuffix(
   );
 }
 
+/** Video Recommended tiers on an accelerated host: the "Fast" rows lead, every GGUF (the "Slow" row there) trails.
+ *  Video only, since its dense rows keep vendor ids and would otherwise sort under the unsloth/* GGUFs; undefined
+ *  for Images, Audio and hosts without the Fast / Slow split, whose orders stay as they are. */
+export function videoRecommendedTierFor(
+  catalog: CatalogGroup[] | undefined,
+  host: HostClass,
+  denseQuantSchemes: readonly string[] = [],
+): ((row: { id: string; isGguf?: boolean }) => "lead" | "trail" | undefined) | undefined {
+  if (!catalog?.length || !catalog.every((g) => g.scope === "video")) return undefined;
+  if (!ggufPerfSuffix(host)) return undefined;
+  return (row) => {
+    const hit = artifactForRepoId(row.id, catalog);
+    if (row.isGguf || hit?.artifact.format === "gguf") return "trail";
+    return hit && curatedPerfSuffix(hit, host, denseQuantSchemes)?.startsWith("Fast")
+      ? "lead"
+      : undefined;
+  };
+}
+
 /** A curated row as name plus chips. Null for unknown ids. */
 export function curatedRowLabelFor(
   repoId: string,
@@ -1164,7 +1265,8 @@ export function curatedRowLabelFor(
       tags: twin ? ["llama.cpp"] : [],
     };
   }
-  if (hit.group.artifacts.length <= 1) return { name: qualify(hit.group.displayName), tags: [] };
+  const needs = hit.group.requires ? [`needs ${hit.group.requires}`] : [];
+  if (hit.group.artifacts.length <= 1) return { name: qualify(hit.group.displayName), tags: needs };
   const [format, ...rest] = hit.artifact.label.split(LABEL_PART_SEPARATOR);
   // The chip is the stored precision; "Safetensors" is left off (the format dot says it).
   const tags = [format.trim()].filter((tag) => tag && tag.toLowerCase() !== "safetensors");
@@ -1177,7 +1279,7 @@ export function curatedRowLabelFor(
     kept.length > 0
       ? `${hit.group.displayName} (${kept.join(LABEL_PART_SEPARATOR)})`
       : hit.group.displayName;
-  return { name: qualify(name), tags };
+  return { name: qualify(name), tags: [...tags, ...needs] };
 }
 
 /** Back-compat: the flat ModelOption list the ModelSelector `models` prop expects, one option per ARTIFACT. */
@@ -1190,7 +1292,7 @@ export function catalogToModelOptions(
   for (const group of catalog) {
     for (const artifact of group.artifacts) {
       // The `models` prop is built only here, so this covers trigger name and seed ids.
-      if (!curatedArtifactIsOfferable(artifact.repoId, host)) continue;
+      if (!curatedArtifactIsOfferable(artifact.repoId, host, group)) continue;
       const name =
         curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
         group.displayName;

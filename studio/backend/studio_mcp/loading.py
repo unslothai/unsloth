@@ -13,14 +13,15 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
+from core.inference import model_identity
 from studio_mcp import job_store
 from studio_mcp import placement as place
+from studio_mcp import problems
 from studio_mcp.caller import Caller
 from studio_mcp.errors import raise_for_route, tool_error
 from studio_mcp.forward import forward
@@ -87,6 +88,8 @@ class LoadJob(job_store.Job):
     post: Optional[asyncio.Future] = field(default = None, repr = False)
     # The media load's load_token: an unload naming it ends this load only, even if its POST is still out.
     load_token: Optional[str] = None
+    # A chat tool call's key fingerprint: only that call follows the job, which stops with it.
+    scoped: Optional[str] = None
 
     def note(self, fraction: Optional[float], phase: str) -> None:
         # A step without a fraction keeps the last one, so progress never drops back.
@@ -116,42 +119,39 @@ def deadline_after(wait_s: Optional[float]) -> float:
     return time.monotonic() + wait
 
 
-def _is_path(name: str) -> bool:
-    if name.startswith(("/", "~", ".")) or "\\" in name or name[1:3] in (":/", ":\\"):
-        return True
-    # A relative path (models/Foo.gguf) reads like a Hub id; one that exists on disk is a path.
-    try:
-        return Path(name).expanduser().exists()
-    except (OSError, ValueError):
-        return False
-
-
 def _same(left: Optional[str], right: Optional[str]) -> bool:
-    # Hub ids match in any case; a local path keeps the file system's case.
-    if not left or not right:
-        return False
-    return left == right if _is_path(left) or _is_path(right) else left.lower() == right.lower()
-
-
-def _repo(name: str) -> str:
-    # A GGUF is listed as repo:variant in one place and the bare repo in another. A local path
-    # (C:\models\a.gguf) has a drive letter there, not a variant, and a ref: handle is one opaque id.
-    if name.startswith("ref:"):
-        return name
-    head, sep, tail = name.partition(":")
-    return head if sep and len(head) > 1 and "/" not in tail and "\\" not in tail else name
+    # A relative path that exists on disk keeps its case, as the loaders read it.
+    return model_identity.same_model(left, right, probe = True)
 
 
 def _same_id(left: str, right: str) -> bool:
-    return _same(left, right) or _same(_repo(left), _repo(right))
+    return model_identity.same_repo(left, right, probe = True)
+
+
+def _fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
+def _scope_of(caller: Caller) -> Optional[str]:
+    return _fingerprint(caller.token) if caller.call_scoped else None
+
+
+async def stop_scoped_loads(token: str) -> int:
+    """Ends the jobs of the loads a call-scoped key started; a media load already posted still finishes."""
+    jobs = [job for job in LOADS.running() if job.scoped == _fingerprint(token)]
+    for job in jobs:
+        job_store.mark_cancelled(job)
+    return len(jobs)
 
 
 def _in_flight(caller: Caller, asked: LoadJob) -> Optional[LoadJob]:
     for job in LOADS.running(caller.account_id):
         if (
-            job.slot == asked.slot
+            # Another call's key is revoked when that call ends.
+            job.scoped == asked.scoped
+            and job.slot == asked.slot
             and _same(job.model, asked.model)
-            and (job.variant or "").lower() == (asked.variant or "").lower()
+            and model_identity.same_variant(job.variant, asked.variant)
             and job.options == asked.options
         ):
             return job
@@ -232,6 +232,7 @@ async def start_load(
         model = model,
         variant = variant,
         options = (options, hashlib.sha256(token.encode()).hexdigest()[:16] if token else None),
+        scoped = _scope_of(caller),
     )
 
     async def drive(job: LoadJob) -> LoadResult:
@@ -357,10 +358,13 @@ async def finish_load(
 def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
     async def poll() -> Progress:
         loading = await route_json("GET", "/api/inference/load-progress", caller = caller)
+        # Checked before the fraction: the placement search reports 0, which reads as no progress.
+        if isinstance(loading, dict) and loading.get("phase") == "fit":
+            return 0.0, "Finding a GPU layer split that fits in memory"
         fraction = number(loading.get("fraction")) if isinstance(loading, dict) else None
         if fraction and opt_text(loading.get("phase")):
             return min(fraction, 1.0), f"Loading into memory ({loading['phase']})"
-        if model.startswith(("/", "\\", "ref:")) or ":" in model[:3]:
+        if model_identity.is_local(model):
             return None
         download = await route_json(
             "GET",
@@ -373,6 +377,22 @@ def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
         return (min(fraction, 1.0), "Downloading") if fraction else None
 
     return poll
+
+
+_NOT_LLM_MARKERS = ("autoconfig", "model_type", "unrecognized model")
+
+
+def _wrong_kind_hint(message: str) -> Optional[str]:
+    """A note on kind for a model the llm route could not read; None for any other failure."""
+    if not any(marker in message.lower() for marker in _NOT_LLM_MARKERS):
+        return None
+    tools = problems.caller_tools()
+    if "load_model" not in tools:
+        return None
+    hint = "If this is an image, video or speech-to-text model, pass kind"
+    if "list_models" in tools:
+        hint += "; list_models(source='catalog') shows each catalog model's kind"
+    return hint + "."
 
 
 async def load_llm(
@@ -391,6 +411,7 @@ async def load_llm(
     kv_cache_type: Optional[str] = None,
     gpu_layers: Optional[int] = None,
     is_lora: bool = False,
+    precheck: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> LoadResult:
     body: dict[str, Any] = {
         "model_path": model,
@@ -412,6 +433,8 @@ async def load_llm(
     async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
         # The GGUF listing and status reads run inside the job, so a slow one never holds the call
         # past ``wait_s``; device='cpu' for a chat model that is not a GGUF is refused here.
+        if precheck is not None:
+            await precheck()
         gguf = await place.require_cpu_gguf(caller, kind, model, variant, device, gpu_layers)
         body.update(
             place.llm_fields(
@@ -423,12 +446,18 @@ async def load_llm(
                 gpu_layers = gpu_layers,
             )
         )
-        payload = await with_progress(
-            None,
-            route_json("POST", "/api/inference/load", caller = caller, json_body = body),
-            _llm_poll(caller, model),
-            job,
-        )
+        try:
+            payload = await with_progress(
+                None,
+                route_json("POST", "/api/inference/load", caller = caller, json_body = body),
+                _llm_poll(caller, model),
+                job,
+            )
+        except ToolError as error:
+            hint = _wrong_kind_hint(str(error))
+            if hint is None:
+                raise
+            raise tool_error(str(error), hint) from error
         if not isinstance(payload, dict):
             raise ToolError("Unsloth Studio did not confirm the load")
         loaded = opt_text(payload.get("model")) or model
@@ -569,6 +598,7 @@ def _resident_matches(
     if not isinstance(status, dict) or status.get("loaded") is not True:
         return False
     names = {opt_text(status.get("repo_id")), opt_text(status.get("display_repo_id"))}
+    # Any case, paths too: status may spell the resident path differently from the request.
     if model.lower() not in {name.lower() for name in names if name}:
         return False
     # Another file of the same repo is another model: a missing field reads as not loaded yet.
@@ -581,16 +611,13 @@ def _resident_matches(
     resident = opt_text(status.get("gguf_filename"))
     if resident:
         return os.path.normcase(resident) == os.path.normcase(wanted)
-    from hub.utils.gguf import extract_quant_token, quant_token_with_bpw
-
     # Video status names only a GGUF's quant; a plain checkpoint has none to compare.
-    quant = extract_quant_token(wanted) if wanted.lower().endswith(".gguf") else None
-    if not quant:
+    quant = model_identity.resident_quant_matches(
+        opt_text(status.get("gguf_variant")), wanted, settled = settled
+    )
+    if quant is None:
         return True
-    if (opt_text(status.get("gguf_variant")) or "").lower() != quant.lower():
-        return False
-    # Status drops a -3.97bpw style suffix, so until the load reports ready a sibling build matches too.
-    if not settled and quant_token_with_bpw(wanted) != quant:
+    if not quant:
         return False
     # MiniMax-H3 ships its fl2va and ref2va partitions at the same quant; status names the one loaded.
     h3_task = opt_text(status.get("h3_task"))
@@ -830,9 +857,8 @@ class _MediaToken:
     answered: Optional[int] = None
 
 
-# Media load tokens this process posted, per (account, slot), whose load may still be in flight or
-# resident. Each leaves only on a definitive outcome: a token unload's answer, a 4xx refusal of its
-# POST (no load registered), or a newer load of the slot shown ready after its POST had answered.
+# Media load tokens this process posted per (account, slot); each drops only on a definitive
+# outcome.
 _MEDIA_TOKENS: dict[tuple[str, str], dict[str, _MediaToken]] = {}
 _MEDIA_ORDER = itertools.count(1)
 # Unload POSTs this process sent per slot and not answered yet: a load posts only after them.

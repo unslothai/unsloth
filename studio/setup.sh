@@ -2411,6 +2411,23 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
+# UNSLOTH_HNSW_PREFETCH=1 only: by default the backend fetches the pair when a knowledge base needs
+# it. A skipped (current) Python stack leaves it unchecked; --check-only is offline.
+_hnsw_backfill() {
+    case "${UNSLOTH_HNSW_PREFETCH:-0}" in 1|true|yes|on) ;; *) return 0 ;; esac
+    case "${RAG_VEC_ANN_AUTO_INSTALL:-1}" in 0|false|no|off) return 0 ;; esac
+    local _installer="$SCRIPT_DIR/install_hnsw_prebuilt.py" _status
+    [ -f "$_installer" ] || return 0
+    _status=$(python "$_installer" --check-only --json 2>/dev/null | tail -n 1 \
+        | sed -n 's/.*"status": *"\([a-z_]*\)".*/\1/p') || return 0
+    case "$_status" in
+        already|disabled|unsupported|offline|"") return 0 ;;
+    esac
+    _status=$(python "$_installer" --json --timeout 300 2>/dev/null | tail -n 1 \
+        | sed -n 's/.*"status": *"\([a-z_]*\)".*/\1/p') || true
+    step "HNSW search" "${_status:-failed}" "$([ "$_status" = ready ] || printf '%s' "$C_WARN")"
+}
+
 # Phases a release adds below would be skipped by the update installing it; exec keeps the CLI's PID.
 _setup_rerun_if_replaced() {
     if [ "${UNSLOTH_SETUP_RERUN:-}" = 1 ] || [ -z "$_SETUP_SELF_SUM" ]; then
@@ -3412,6 +3429,7 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
+    _hnsw_backfill || true
 fi
 _frontend_bg_reap
 
@@ -3593,15 +3611,15 @@ elif [ -d "$STUDIO_HOME/.venv_t5" ]; then
     _NEED_T5_510=true
 fi
 _sidecar_current "$VENV_T5_530_DIR" "5.3.0" || _NEED_T5_530=true
-_sidecar_current "$VENV_T5_550_DIR" "5.5.0" || _NEED_T5_550=true
-_sidecar_current "$VENV_T5_510_DIR" "5.10.2" || _NEED_T5_510=true
+_sidecar_current "$VENV_T5_550_DIR" "5.5.4" || _NEED_T5_550=true
+_sidecar_current "$VENV_T5_510_DIR" "5.15.1" || _NEED_T5_510=true
 # Sidecar rebuilds reach the network; defer under offline keep. Deferred tiers are not reported current.
 _DEFER_T5_530=false
 _DEFER_T5_550=false
 _DEFER_T5_510=false
 # The pip fallback does not read UV_OFFLINE.
 if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then
-    for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
+    for _ofp in "530 5.3.0" "550 5.5.4" "510 5.15.1"; do
         # Not `set --`: at top-level scope that overwrites the script's own "$@".
         _ofp_key=${_ofp%% *}; _ofp_ver=${_ofp#* }
         if eval "[ \"\$_NEED_T5_$_ofp_key\" = true ]"; then
@@ -3613,7 +3631,7 @@ if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then
     unset _ofp _ofp_key _ofp_ver
 fi
 if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then
-    for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
+    for _ofp in "530 5.3.0" "550 5.5.4" "510 5.15.1"; do
         _ofp_key=${_ofp%% *}; _ofp_ver=${_ofp#* }
         if eval "[ \"\$_NEED_T5_$_ofp_key\" = true ]"; then
             substep "transformers $_ofp_ver sidecar is stale but UV_OFFLINE is set -- left for the next online update"
@@ -3633,20 +3651,20 @@ else
     _sidecar_top_up_tiktoken "$VENV_T5_530_DIR" "5.3"
 fi
 if [ "$_NEED_T5_550" = true ]; then
-    _install_sidecar "$VENV_T5_550_DIR" "5.5.0" "5.5"
+    _install_sidecar "$VENV_T5_550_DIR" "5.5.4" "5.5"
 elif [ "$_DEFER_T5_550" = true ]; then
-    step "transformers" "5.5.0 sidecar stale -- left for the next online update"
+    step "transformers" "5.5.4 sidecar stale -- left for the next online update"
 else
-    step "transformers" "5.5.0 sidecar current"
+    step "transformers" "5.5.4 sidecar current"
     _sidecar_top_up_tiktoken "$VENV_T5_550_DIR" "5.5"
 fi
 if [ "$_NEED_T5_510" = true ]; then
-    _install_sidecar "$VENV_T5_510_DIR" "5.10.2" "5.10"
+    _install_sidecar "$VENV_T5_510_DIR" "5.15.1" "5.15"
 elif [ "$_DEFER_T5_510" = true ]; then
-    step "transformers" "5.10.2 sidecar stale -- left for the next online update"
+    step "transformers" "5.15.1 sidecar stale -- left for the next online update"
 else
-    step "transformers" "5.10.2 sidecar current"
-    _sidecar_top_up_tiktoken "$VENV_T5_510_DIR" "5.10"
+    step "transformers" "5.15.1 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_510_DIR" "5.15"
 fi
 fi
 
@@ -3800,18 +3818,19 @@ _setup_supported_gfx_from_name() {
     _sup_gfx_in="$1"
     _sup_gfx_out=""
     case "$_sup_gfx_in" in
-        *9070*|*9080*|*"R9700"*)                                                                       _sup_gfx_out="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
-        *9060*)                                                                                        _sup_gfx_out="gfx1200" ;;  # RDNA 4 (Navi 44)
+        *9070*|*9080*|*"R9700"*|*"R9600D"*)                                                                       _sup_gfx_out="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
+        *9060*|*"RX 9050"*)                                                                                        _sup_gfx_out="gfx1200" ;;  # RDNA 4 (Navi 44)
         *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _sup_gfx_out="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
-        *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _sup_gfx_out="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
-        *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _sup_gfx_out="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
-        *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _sup_gfx_out="gfx1102" ;;  # RDNA 3 (Navi 33)
+        *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"Z2 Extreme"*) _sup_gfx_out="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+        *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*) _sup_gfx_out="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+        *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"RX 7400"*|*"RX 7300"*|*"PRO W7400"*|*"Pro W7400"*|*"Steam Machine"*)                              _sup_gfx_out="gfx1102" ;;  # RDNA 3 (Navi 33)
         *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _sup_gfx_out="gfx1101" ;;  # RDNA 3 (Navi 32)
         *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _sup_gfx_out="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
-        *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _sup_gfx_out="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
-        *"RX 6950"*|*"RX 6900"*|*"RX 6850"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*) _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
-        *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _sup_gfx_out="gfx1032" ;;  # RDNA 2 (Navi 23)
-        *"RX 6550"*|*"RX 6500"*|*"RX 6450"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*|*"PRO W6300"*)                    _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
+        *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*)            _sup_gfx_out="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
+        *"RX 6750 GRE 10"*|*"RX 6800S"*|*"RX 6700S"*|*"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*) _sup_gfx_out="gfx1032" ;;  # RDNA 2 (Navi 23)
+        *"RX 6850"*|*"RX 6800M"*|*"RX 6750"*|*"RX 6700"*)                                _sup_gfx_out="gfx1031" ;;  # RDNA 2 (Navi 22)
+        *"RX 6950"*|*"RX 6900"*|*"RX 6800"*|*"PRO W6800"*|*"PRO W6900"*|*"PRO V620"*|*"Pro V620"*)                 _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
+        *"6550S"*|*"RX 6550"*|*"RX 6500"*|*"RX 6450"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*|*"PRO W6300"*)                    _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
     esac
     [ -n "$_sup_gfx_out" ] || return 1
     printf '%s\n' "$_sup_gfx_out"
@@ -3975,9 +3994,8 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
         _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""
-        # Krackan Point 2 names overlap the table's gfx1152 patterns (install.sh tests them first).
-        # amd-smi names only the first device, so a covered lspci peer (the same rule as
-        # _setup_unsupported_gfx_any) keeps the table's answer, as before.
+        # amd-smi names only the first device: a covered lspci peer decides the arch, as in
+        # _setup_unsupported_gfx_any and install.sh; a lone Krackan Point 2 is gfx1153.
         _setup_k2_name_ere='820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'
         if printf '%s\n' "$_setup_mkt" | grep -Eqi "$_setup_k2_name_ere"; then
             _setup_k2_peer=""
@@ -3988,14 +4006,14 @@ elif [ "$_setup_amd_detected" = true ]; then
                     if _setup_k2_peer_gfx=$(_setup_supported_gfx_from_name "$_setup_k2_ln" 2>/dev/null); then
                         # The APU's own line can carry the Krackan die name it shares with gfx1152 (install.sh skips it too).
                         [ "$_setup_k2_peer_gfx" = gfx1152 ] && continue
-                        _setup_k2_peer=1
+                        _setup_k2_peer=$_setup_k2_peer_gfx
                         break
                     fi
                 done <<EOF
 $(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
 EOF
             fi
-            [ -n "$_setup_k2_peer" ] || _setup_gfx=gfx1153
+            if [ -n "$_setup_k2_peer" ]; then _setup_gfx=$_setup_k2_peer; else _setup_gfx=gfx1153; fi
         fi
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"

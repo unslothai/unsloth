@@ -45,6 +45,18 @@ CATALOG = [
         "max_context_window": 262144,
     },
     {
+        "id": "d3-edge-FLM",
+        "checkpoint": "d3:edge",
+        "labels": ["decision", "chat"],
+        "size": 0.58,
+    },
+    {
+        "id": "qwen3.5-oga-hipep-9b-FLM",
+        "checkpoint": "qwen3.5-oga-hipep:9b",
+        "labels": ["vision", "reasoning", "tool-calling", "chat"],
+        "size": 9.0,
+    },
+    {
         "id": "embed-gemma-300m-FLM",
         "checkpoint": "embed-gemma:300m",
         "labels": ["embeddings"],
@@ -57,6 +69,31 @@ CATALOG = [
         "recipe": "llamacpp",
     },
 ]
+
+
+def _flm_list_rows() -> list[dict]:
+    """Rows `flm list` adds from an FLM_CONFIG_PATH catalog, installed when its files are on disk."""
+    path = os.environ.get("FLM_CONFIG_PATH")
+    if not path:
+        return []
+    listing = json.loads(Path(path).read_text(encoding = "utf-8"))
+    root = Path(os.environ.get("FLM_MODEL_PATH", ".")) / listing.get("model_path", "models")
+    rows = []
+    for family, sizes in listing.get("models", {}).items():
+        if not family.startswith("local-"):
+            continue
+        for size, entry in sizes.items():
+            folder = root / entry["name"]
+            rows.append(
+                {
+                    "id": f"{family}-{size}-FLM",
+                    "checkpoint": f"{family}:{size}",
+                    "labels": [*entry.get("label", []), "chat"],
+                    "size": entry.get("footprint"),
+                    "installed": all((folder / name).is_file() for name in entry["files"]),
+                }
+            )
+    return rows
 
 
 def main() -> None:
@@ -75,6 +112,8 @@ def main() -> None:
     cache = Path(args.cache_dir)
     record = cache / "requests.jsonl"
     downloaded = set(json.loads(os.environ.get("FAKE_LEMOND_DOWNLOADED", "[]")))
+    flm_rows = _flm_list_rows()
+    downloaded.update(row["id"] for row in flm_rows if row.pop("installed"))
     loaded: dict[str, dict] = {}
 
     class Handler(BaseHTTPRequestHandler):
@@ -137,7 +176,7 @@ def main() -> None:
                     {
                         "data": [
                             {"recipe": "flm", **row, "downloaded": row["id"] in downloaded}
-                            for row in CATALOG
+                            for row in [*CATALOG, *flm_rows]
                         ]
                     },
                 )
@@ -167,6 +206,9 @@ def main() -> None:
                     encoding = "utf-8",
                 )
                 flm.chmod(0o755)
+                if os.environ.get("FAKE_LEMOND_INSTALL_ERROR"):
+                    self._send(500, {"error": {"message": os.environ["FAKE_LEMOND_INSTALL_ERROR"]}})
+                    return
                 self._send(200, {"status": "success", "recipe": "flm", "backend": "npu"})
             elif self.path == "/v1/pull":
                 pull = os.environ.get("FAKE_LEMOND_PULL")
@@ -193,7 +235,8 @@ def main() -> None:
                     self._send(404, {"error": {"message": f"Model '{name}' was not found."}})
                     return
                 if name == os.environ.get("FAKE_LEMOND_LOAD_FAILS_FOR"):
-                    self._send(500, {"error": {"message": "flm failed to start"}})
+                    message = os.environ.get("FAKE_LEMOND_LOAD_ERROR", "flm failed to start")
+                    self._send(500, {"error": {"message": message}})
                     return
                 loaded.clear()
                 loaded[name] = {"ctx_size": body.get("ctx_size"), "flm_args": ""}

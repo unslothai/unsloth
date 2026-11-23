@@ -124,24 +124,42 @@ def test_the_streamed_decode_holds_at_most_two_block_slots():
     held: list = []
     orig = model._slot
 
+    peak = {"n": 0}
+
     def slot(blk, x, b, s, st):
         held.append(b)
+        live = __import__("inspect").currentframe().f_back.f_locals["slots"]
+        peak["n"] = max(peak["n"], len(live) + 1)
         return orig(blk, x, b, s, st)
 
     model._slot = slot
-    peak = {"n": 0}
-    orig_window = model._window_attn
-
-    def window_attn(*args, **kwargs):
-        frame = __import__("inspect").currentframe().f_back
-        peak["n"] = max(peak["n"], len(frame.f_locals["slots"]))
-        return orig_window(*args, **kwargs)
-
-    model._window_attn = window_attn
     model.decode_raw(torch.randn(1, 24, 17, 3, 3))
     assert peak["n"] == 2
     # every block is projected once per layer
     assert len(held) == LAYERS * 4
+
+
+def test_window_attention_compiles_fullgraph_on_full_and_padded_windows():
+    model = _tiny()
+    seen: list = []
+    orig = model._window_attn
+
+    def window_attn(*args):
+        seen.append(args)
+        return orig(*args)
+
+    model._window_attn = window_attn
+    model.decode_raw(torch.randn(1, 24, 2 * model.block, model.window, model.window))
+    model.decode_raw(torch.randn(1, 24, 7, 6, 9))
+    model._window_attn = orig
+    full = next(a for a in seen if a[-2] == 0 and a[0].shape[0] == model.block and a[-1] == 0)
+    padded = next(a for a in seen if a[-1] != 0)
+    for args in (full, padded):
+        torch._dynamo.reset()
+        explain = torch._dynamo.explain(orig)(*args)
+        assert explain.graph_break_count == 0
+        assert torch.equal(torch.compile(orig, fullgraph = True, backend = "eager")(*args), orig(*args))
+    torch._dynamo.reset()
 
 
 def test_a_still_decodes_as_a_block_of_copies_keeping_the_first_frame():
@@ -432,3 +450,53 @@ def test_the_h3_load_installs_sol_after_the_stock_levers_and_under_the_oom_scope
     }
     # the audio VAE is never handed to it
     assert "audio_vae" not in ast.unparse(install)
+
+
+# ------------------------------------------------------------------------------------------------ host reads
+def _count_host_reads(monkeypatch) -> dict:
+    n = {"reads": 0}
+    orig_bool, orig_item = torch.Tensor.__bool__, torch.Tensor.item
+
+    def counted_bool(self):
+        n["reads"] += 1
+        return orig_bool(self)
+
+    def counted_item(self):
+        n["reads"] += 1
+        return orig_item(self)
+
+    monkeypatch.setattr(torch.Tensor, "__bool__", counted_bool)
+    monkeypatch.setattr(torch.Tensor, "item", counted_item)
+    return n
+
+
+@pytest.mark.parametrize("T,H,W", [(7, 6, 9), (10, 8, 8), (1, 8, 8)])
+def test_the_decode_reads_nothing_back_and_matches_the_old_path(monkeypatch, T, H, W):
+    """Window masks are decided from the window geometry (host ints), not by reading the mask back per window; the
+    kill switch restores the per-window read and must give the same bits."""
+    model = _tiny()
+    z = torch.randn(1, 24, T, H, W, generator = torch.Generator().manual_seed(T + H))
+    monkeypatch.setenv(S.SOL_LEAN_WINDOWS_ENV, "0")
+    old = model.decode_raw(z)
+    monkeypatch.delenv(S.SOL_LEAN_WINDOWS_ENV)
+    n = _count_host_reads(monkeypatch)
+    got = model.decode_raw(z)
+    assert n["reads"] == 0
+    assert torch.equal(got, old)
+
+
+def test_the_rope_tables_are_built_once_per_window_geometry():
+    model = _tiny()
+    calls: list = []
+    orig = model._rope
+
+    def rope(t0, n, H, W, s, st, device):
+        calls.append((n, s, st))
+        return orig(t0, n, H, W, s, st, device)
+
+    model._rope = rope
+    model.decode_raw(torch.randn(1, 24, 12, 8, 8, generator = torch.Generator().manual_seed(3)))
+    assert len(calls) == len(
+        set(calls)
+    )  # 3 layers, 3 blocks each: one table per (rows, shift) only
+    assert model._rope_tables is None  # released with the decode

@@ -11,7 +11,10 @@ import {
   createMcpStdioSnapshot,
   resolveMcpStdioUrl,
 } from "../src/features/chat/mcp-server-form.ts";
-import { normalizeMcpUrl } from "../src/features/chat/mcp-server-url.ts";
+import {
+  normalizeMcpUrl,
+  UNSLOTH_STUDIO_TOOLS_MCP_URL,
+} from "../src/features/chat/mcp-server-url.ts";
 import {
   readAfterPendingMcpServerMutations,
   readMcpServerMutationSnapshot,
@@ -745,14 +748,15 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
   assert.deepEqual(listOccurrences, [
     "api/mcp-servers-api.ts",
     "chat-mcp-servers-dialog.tsx",
+    "components/edit-project-dialog.tsx",
     "mcp-composer-button.tsx",
     "runtime-provider.tsx",
   ]);
 
   assert.equal(
     MCP_SERVERS_API.match(/return trackMcpServerMutation\(/g)?.length,
-    5,
-    "create, update, delete, import, and managed Blender updates must register at the API boundary",
+    6,
+    "create, update, delete, import, and managed Blender and editor updates must register at the API boundary",
   );
   assert.match(
     listApi,
@@ -785,6 +789,11 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
   assert.match(
     composerRefresh,
     /await listMcpServers\(\{\s*waitForPendingMutations,\s*minimumMutationEpoch,\s*\}\)/,
+  );
+  // Project edits need a settled list so a just-disabled server is never preselected.
+  assert.match(
+    readFileSync(join(chatRoot, "components/edit-project-dialog.tsx"), "utf8"),
+    /\blistMcpServers\(\)/,
   );
   assert.match(
     CHAT_MCP_SERVERS_DIALOG,
@@ -856,6 +865,24 @@ test("the Decisions row stays hidden while the Decision API is off", () => {
     MCP_COMPOSER_BUTTON,
     /const enabledCount = servers\.filter\([\s\S]*decisionsUrl !== null \|\| normalizeMcpUrl\(s\.url\) !== "studio:decisions"/,
   );
+});
+
+test("Unsloth Studio is the first preset, any loopback port, and never a custom row", () => {
+  const url = "http://127.0.0.1/mcp/studio-tools";
+  assert.equal(UNSLOTH_STUDIO_TOOLS_MCP_URL, url);
+  const urls = [
+    url,
+    "http://localhost:8889/mcp/studio-tools/",
+    "http://[::1]:8888/mcp/studio-tools",
+    url.replace("http", "https"),
+    url.replace("127.0.0.1", "example.com"),
+    `${url}/extra`,
+  ];
+  const studio = urls.map((u) => normalizeMcpUrl(u) === "studio:tools");
+  assert.deepEqual(studio, [true, true, true, false, false, false]);
+  const presetThenFilter =
+    /const MCP_PRESETS: readonly McpPreset\[\] = \[\s*\{\s*id: "unsloth-studio",\s*displayName: "Unsloth",\s*url: UNSLOTH_STUDIO_TOOLS_MCP_URL,[\s\S]*const customServers = servers\.filter\([^;]*normalizeMcpUrl\(s\.url\) !== "studio:tools"/;
+  assert.match(MCP_COMPOSER_BUTTON, presetThenFilter);
 });
 
 test("an older Decision API settings response cannot replace a newer one", () => {

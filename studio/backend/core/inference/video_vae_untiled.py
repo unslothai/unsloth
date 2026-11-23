@@ -31,6 +31,7 @@ _TEMPORAL_SCALE = {
     name: m.temporal_scale for name, m in _UNTILED.items() if m.temporal_scale is not None
 }
 _MARGIN = 1.25
+_OOM = object()
 _MARGIN_BYTES = 2 * 2**30
 
 
@@ -59,6 +60,81 @@ def untiled_decode_bytes(
     frames = (max(1, latent_frames) - 1) * temporal + 1
     output = 2 * batch * 3 * frames * height * spatial * width * spatial * itemsize
     return int(coef * itemsize / 2 * batch * height * width + output)
+
+
+# Wan's untiled decode runs two latent frames per decoder call (after the one-frame first call) when the second frame's
+# activations also fit: fewer, larger convs. Measured on the fused fp16 decode: A100 2.1-2.9% faster, T4 (sm75) 11%
+# slower, so NVIDIA sm80+ only. "0" = one frame per call everywhere; "force" = also off that range (CPU, ROCm, sm < 80).
+PAIR_FRAMES_ENV = "UNSLOTH_VIDEO_VAE_WAN_PAIR_FRAMES"
+_PAIR_LAYER = "wan_pair_frames"
+_PAIR_ATTR = "_unsloth_wan_pair_frames"
+_PAIR_MIN_CAPABILITY = (8, 0)
+
+
+def _pair_frames_enabled(device: Any = None) -> bool:
+    raw = os.environ.get(PAIR_FRAMES_ENV, "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw == "force":
+        return True
+    if getattr(device, "type", device) != "cuda":
+        return False
+    try:
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+
+        if is_rocm_torch(torch):
+            return False
+        return tuple(torch.cuda.get_device_capability(device)) >= _PAIR_MIN_CAPABILITY
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def pair_frames_extra_bytes(
+    family: str,
+    latent_shape: tuple,
+    itemsize: int = 2,
+) -> Optional[int]:
+    """Extra peak of decoding two latent frames per call instead of one: a second frame's decoder activations (the
+    per-latent-pixel term of the causal model). None for a family without one."""
+    coef = _BYTES_PER_LATENT_PIXEL.get(family)
+    if coef is None or len(latent_shape) != 5:
+        return None
+    batch, _, _, height, width = (int(x) for x in latent_shape)
+    return int(coef * max(2, itemsize) / 2 * max(1, batch) * height * width)
+
+
+def _install_pair_layer(vae: Any) -> bool:
+    """A ``_decode`` layer that runs :func:`wan_paired_decode` while the gate holds the pair flag on an untiled decode."""
+    from . import decode_layers  # noqa: PLC0415
+
+    if decode_layers.find(vae, "_decode", _PAIR_LAYER) is not None:
+        return True
+    try:
+        from . import diffusion_vae_fused  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return False
+    if not diffusion_vae_fused.wan_pair_decode_ok(vae):
+        return False
+
+    def make(inner: Any, layer: Any) -> Any:
+        def _decode(z: Any, *args: Any, **kwargs: Any) -> Any:
+            if (
+                vae.__dict__.get(_PAIR_ATTR)
+                and not getattr(vae, "use_tiling", False)
+                and getattr(z, "dim", lambda: 0)() == 5
+                and len(args) + len(kwargs) <= 1
+                and set(kwargs) <= {"return_dict"}
+            ):
+                return_dict = args[0] if args else kwargs.get("return_dict", True)
+                return diffusion_vae_fused.wan_paired_decode(vae, z, return_dict)
+            return inner(z, *args, **kwargs)
+
+        return _decode
+
+    decode_layers.wrap(vae, "_decode", _PAIR_LAYER, make)
+    return True
 
 
 # When untiled does not fit, decode the fewest tiles that fit at the stock overlap (stock Wan: 28 tiles at 1280x704).
@@ -175,10 +251,24 @@ def _free_bytes(device: Any) -> Optional[int]:
         return None
 
 
+# torch's CPU allocator refusals: ``not enough memory`` (Windows commit limit), ``can't allocate memory`` (POSIX ENOMEM).
+_CPU_ALLOC_REFUSALS = ("not enough memory", "can't allocate memory")
+
+
 def _is_oom(exc: BaseException) -> bool:
-    """A device OOM, or the CPU allocator's ``not enough memory`` (raised e.g. on Windows commit limits)."""
     from .diffusion_batched import is_oom_error
-    return is_oom_error(exc) or "not enough memory" in str(exc).lower()
+
+    if is_oom_error(exc):
+        return True
+    seen = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        msg = str(cur).lower()
+        if any(s in msg for s in _CPU_ALLOC_REFUSALS):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 def _in_chain(fn: Any, target: Any) -> bool:
@@ -271,10 +361,12 @@ def install_untiled_decode(
         return False
     if getattr(decode, "_unsloth_untiled_decode", False):
         return True
-    stats = {"untiled": 0, "tiled": 0, "wide": 0, "oom_fallback": 0}
-    # Smallest estimates that OOMed, never retried (untiled / wide).
+    stats = {"untiled": 0, "tiled": 0, "wide": 0, "oom_fallback": 0, "paired": 0}
+    # Smallest estimates that OOMed, never retried (untiled / wide / two frames per call).
     oom_need: list = []
     oom_wide: list = []
+    oom_pair: list = []
+    pair_ready = _install_pair_layer(vae)
 
     def gated(z: Any, *args: Any, **kwargs: Any) -> Any:
         if not getattr(vae, "use_tiling", False):
@@ -289,11 +381,28 @@ def install_untiled_decode(
             and need * _MARGIN + _MARGIN_BYTES <= free
             and not (oom_need and need >= oom_need[0])
         )
+        shape = tuple(getattr(z, "shape", ()))
+        extra = (
+            pair_frames_extra_bytes(family, shape, itemsize = _decoder_itemsize(vae))
+            if fits
+            and pair_ready
+            and len(shape) == 5
+            and shape[2] >= 3
+            and _pair_frames_enabled(_decode_device(vae, z))
+            else None
+        )
+        pair = (
+            extra is not None
+            and (need + extra) * _MARGIN + _MARGIN_BYTES <= free
+            and not (oom_pair and need >= oom_pair[0])
+        )
         if logger is not None:
             logger.info(
                 "video.vae_untiled: decode %s (untiled needs ~%s MiB with margin, %s MiB free)",
-                "untiled" if fits else "tiled",
-                "?" if need is None else int((need * _MARGIN + _MARGIN_BYTES) / 2**20),
+                ("untiled, 2 latent frames per call" if pair else "untiled") if fits else "tiled",
+                "?"
+                if need is None
+                else int(((need + (extra if pair else 0)) * _MARGIN + _MARGIN_BYTES) / 2**20),
                 "?" if free is None else int(free / 2**20),
             )
         if not fits:
@@ -365,6 +474,20 @@ def install_untiled_decode(
             return decode(z, *args, **kwargs)
         import torch
 
+        if pair:
+            out = _paired(z, args, kwargs)
+            if out is not _OOM:
+                return out
+            # pair OOM: never again at this size; retry one frame per call
+            oom_pair[:] = [min([need, *oom_pair])]
+            from .diffusion_vae_oom import clear_partial_decode  # noqa: PLC0415
+
+            clear_partial_decode(vae, z)
+            torch.cuda.empty_cache()
+            if logger is not None:
+                logger.warning(
+                    "video.vae_untiled: 2 latent frames per call ran out of memory; one frame per call"
+                )
         vae.use_tiling = False
         try:
             out = decode(z, *args, **kwargs)
@@ -388,6 +511,22 @@ def install_untiled_decode(
             logger.warning("video.vae_untiled: untiled decode ran out of memory; decoding tiled")
         return decode(z, *args, **kwargs)
 
+    def _paired(z: Any, args: tuple, kwargs: dict) -> Any:
+        vae.use_tiling = False
+        vae.__dict__[_PAIR_ATTR] = True
+        try:
+            out = decode(z, *args, **kwargs)
+            stats["untiled"] += 1
+            stats["paired"] += 1
+            return out
+        except Exception as exc:  # noqa: BLE001
+            if not _is_oom(exc):
+                raise
+        finally:
+            vae.__dict__[_PAIR_ATTR] = False
+            vae.use_tiling = True
+        return _OOM
+
     def untiled_when_fits(*args: Any, **kwargs: Any) -> Any:
         try:
             run_offload_hook_first(vae, logger)
@@ -400,7 +539,22 @@ def install_untiled_decode(
 
     untiled_when_fits._unsloth_untiled_decode = True
     untiled_when_fits._unsloth_untiled_stats = stats
+    vae._unsloth_untiled_stats = stats
     vae.decode = untiled_when_fits
     if logger is not None:
         logger.info("video.vae_untiled: resident %s VAE decodes untiled when it fits", family)
     return True
+
+
+def untiled_decode_stats(pipe: Any) -> Optional[dict]:
+    """Copy of decode-route counts since load (``wide`` is a subset of ``tiled``); None if not installed."""
+    stats = getattr(getattr(pipe, "vae", None), "_unsloth_untiled_stats", None)
+    return dict(stats) if isinstance(stats, dict) else None
+
+
+def decode_stats_delta(before: Optional[dict], after: Optional[dict]) -> Optional[dict]:
+    """Per-render counts from two ``untiled_decode_stats`` reads."""
+    if after is None:
+        return None
+    before = before or {}
+    return {k: v - before.get(k, 0) for k, v in after.items()}

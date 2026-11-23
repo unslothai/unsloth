@@ -1392,14 +1392,50 @@ pub(super) async fn probe_managed_install() -> ManagedProbe {
     result
 }
 
-pub async fn managed_install_ready() -> bool {
-    matches!(probe_managed_install().await, ManagedProbe::Ready { .. })
+pub async fn managed_install_not_ready_reason() -> Option<String> {
+    not_ready_reason(probe_managed_install().await)
+}
+
+fn not_ready_reason(probe: ManagedProbe) -> Option<String> {
+    match probe {
+        ManagedProbe::Ready { .. } => None,
+        ManagedProbe::Missing => Some("managed_install_missing".to_string()),
+        ManagedProbe::Stale { reason, .. } | ManagedProbe::Unavailable { reason } => Some(reason),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::version::MIN_DESKTOP_BACKEND_VERSION;
     use super::*;
+
+    #[test]
+    fn a_not_ready_install_reports_the_probe_reason() {
+        let bin = PathBuf::from("unsloth");
+        assert_eq!(
+            not_ready_reason(ManagedProbe::Ready { bin: bin.clone() }),
+            None
+        );
+        assert_eq!(
+            not_ready_reason(ManagedProbe::Stale {
+                bin,
+                reason: "studio_install_incomplete".to_string(),
+            })
+            .as_deref(),
+            Some("studio_install_incomplete")
+        );
+        assert_eq!(
+            not_ready_reason(ManagedProbe::Unavailable {
+                reason: "managed_environment_busy".to_string(),
+            })
+            .as_deref(),
+            Some("managed_environment_busy")
+        );
+        assert_eq!(
+            not_ready_reason(ManagedProbe::Missing).as_deref(),
+            Some("managed_install_missing")
+        );
+    }
 
     fn healthy_capability() -> DesktopCapability {
         DesktopCapability {

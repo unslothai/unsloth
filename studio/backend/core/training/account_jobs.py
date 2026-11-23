@@ -221,12 +221,16 @@ def validate_job_paths(values: dict, *, cached_resources: bool = False) -> None:
         "imatrix_path",
         "data_dir",
         "conditioning_cache_dir",
-        "cond_cache_dir",
         "vae_path",
         "text_encoder_path",
         "dataset_path",
     ):
         account_path(values.get(key))
+    from core.training.diffusion_train_extras import cond_cache_is_off
+
+    # "off" (the trainers' no-cache value, which the start route writes) names no directory.
+    if not cond_cache_is_off(values.get("cond_cache_dir")):
+        account_path(values.get("cond_cache_dir"))
     export_write_path(values.get("save_directory"))
     if isinstance(values.get("imatrix_file"), (str, Path)):
         account_path(values["imatrix_file"])
@@ -274,8 +278,7 @@ def refresh_job_owner(service) -> None:
 
 
 def owned_job(*, continuation: bool = False):
-    """Hold ownership across validation/spawn and while work is live. Skipped when no managed
-    account ever existed."""
+    """Holds ownership through validation, spawn and live work; skipped if no managed account."""
 
     def decorate(fn):
         @wraps(fn)

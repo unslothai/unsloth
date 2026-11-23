@@ -72,7 +72,8 @@ _VOID = {
     "track",
     "wbr",
 }
-_IGNORE = {"head", "script", "style", "nav", "svg"}
+# Ruby annotations (<rt>, <rtc>) and their fallback parentheses (<rp>) are not prose.
+_IGNORE = {"head", "script", "style", "nav", "svg", "rt", "rp", "rtc"}
 
 
 class _BookTextParser(HTMLParser):
@@ -87,6 +88,11 @@ class _BookTextParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag == "body":
             self.handle_endtag("head")
+        elif tag in {"rb", "rp", "rt", "rtc"} and any(t == "ruby" for t, _ in self.stack):
+            # Implied ruby end tags (HTML tree builder), else base text after an unclosed <rt> is lost.
+            closes = {"rb", "rp", "rt", "rtc"} if tag in {"rb", "rtc"} else {"rb", "rp", "rt"}
+            while self.stack and self.stack[-1][0] in closes:
+                self.stack.pop()
         attrs = dict(attrs)
         if tag == "meta" and self.encoding is None:
             self.encoding = attrs.get("charset")
@@ -218,9 +224,19 @@ def _read_epub(path, chapter_markers):
             item = items.get(ref.get("idref"))
             if item is None:
                 raise ValueError("EPUB reading order references a missing manifest item")
-            if "nav" in item.get("properties", "").split():
-                continue
-            if item.get("media-type") not in {"application/xhtml+xml", "text/html"}:
+            # A foreign spine item can point to a text version through manifest fallback IDs.
+            seen = set()
+            while item is not None and item.get("media-type") not in {
+                "application/xhtml+xml",
+                "text/html",
+            }:
+                fallback = item.get("fallback")
+                if not fallback or fallback in seen:
+                    item = None
+                    break
+                seen.add(fallback)
+                item = items.get(fallback)
+            if item is None or "nav" in item.get("properties", "").split():
                 continue
             name = _archive_path(base, item.get("href", ""))
             if name in encrypted:

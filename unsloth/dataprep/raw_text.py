@@ -130,13 +130,8 @@ class RawTextDataLoader:
         stride,
         return_tokenized = True,
     ):
-        """
-        Intelligent chunking that:
-        1. Respects sentence/paragraph boundaries
-        2. Handles various text formats (.txt, .md, .json, etc.)
-        3. Maintains context with stride overlap
-        4. Returns tokenized chunks directly (more efficient) or text chunks
-        """
+        """Chunks text at sentence or paragraph boundaries with stride overlap, returning tokenized
+        chunks (more efficient) or text chunks; handles .txt, .md, .json and other text formats."""
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {chunk_size}")
         if stride < 0:
@@ -153,16 +148,13 @@ class RawTextDataLoader:
         if not text or not text.strip():
             return []
 
-        # Tokenize the whole text once for accurate token counts
         tokenized = self.tokenizer(text, return_tensors = "pt", add_special_tokens = False)
         tokens = tokenized["input_ids"]
 
-        # Normalise tokenizer return formats
         if hasattr(tokens, "__len__") and len(tokens) > 0:
             if hasattr(tokens[0], "__len__"):
                 tokens = tokens[0]
         elif isinstance(tokens, int):
-            # Tokenizer returned a count; build a range
             tokens = list(range(tokens))
 
         eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
@@ -173,7 +165,6 @@ class RawTextDataLoader:
         num_tokens = len(tokens) + int(reserve_eos)
 
         if num_tokens <= chunk_size:
-            # Fits in a single chunk
             if return_tokenized:
                 tokens = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
                 if eos_token_id is not None:
@@ -214,7 +205,11 @@ class RawTextDataLoader:
 
                 chunks.append({"input_ids": chunk_tokens_list, "attention_mask": attention_mask})
             else:
-                chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = True)
+                # Literal special tokens are corpus text; clean-up would rewrite spacing (Llama 3 enables it).
+                decode_kwargs = {"skip_special_tokens": False}
+                if getattr(self.tokenizer, "clean_up_tokenization_spaces", False):
+                    decode_kwargs["clean_up_tokenization_spaces"] = False
+                chunk_text = self.tokenizer.decode(chunk_tokens, **decode_kwargs)
                 if is_last:
                     chunk_text += eos_token
 
@@ -361,8 +356,15 @@ class TextPreprocessor:
     _NEWLINE_SPACES_PATTERN = re.compile(r" *\n *")
     _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n\n\n+")
     # One pass, so a "# comment" inside a fenced block stays code instead of becoming a heading.
+    # Language = info string's first word (c++); the lookbehind keeps a failed fence line linear.
+    # Fences fill their own line, so an inline ```span``` is none. The lookahead finds the closer
+    # or, first, the next opener with an info string; then only the opener line matches (no
+    # closer group), which keeps the scan linear and its memory constant.
     _STRUCTURE_PATTERN = re.compile(
-        r"```(\w*)\n((?s:.*?))\n```|^(#{1,3}) (.+)$",
+        r"^([^\S\n]*)```+[^\S\n]*([^\s`]*)(?:(?<=[^\s`])[^\S\n][^\n`]*)?\n"
+        r"(?=(?s:.*?)^(?:([^\S\n]*```+[^\S\n]*$)|[^\S\n]*```+[^\S\n]*[^\s`][^\n`]*$))"
+        r"(?(3)(?:\3$|((?s:.*?))\n\3$))"
+        r"|^(#{1,3}) (.+)$",
         re.MULTILINE,
     )
     _HEADING_TAGS = {1: "chapter", 2: "section", 3: "subsection"}
@@ -390,10 +392,12 @@ class TextPreprocessor:
         """Add special tokens for structure (chapters, sections)"""
 
         def tag(match):
+            if match[5] is not None:
+                name = self._HEADING_TAGS[len(match[5])]
+                return f"<|{name}|>{match[6]}<|/{name}|>"
             if match[3] is None:
-                return f"<|code|{match[1]}|>{match[2]}<|/code|>"
-            name = self._HEADING_TAGS[len(match[3])]
-            return f"<|{name}|>{match[4]}<|/{name}|>"
+                return match[0]
+            return f"{match[1]}<|code|{match[2]}|>{match[4] or ''}<|/code|>"
 
         return self._STRUCTURE_PATTERN.sub(tag, text)
 
@@ -402,15 +406,10 @@ class TextPreprocessor:
         dataset,
         tokenizer = None,
     ):
-        """
-        Check for:
-        - Minimum/maximum sequence lengths
-        - Character encoding issues
-        - Repeated content
-        - Empty chunks
-        """
+        """Checks a dataset for min and max sequence lengths, character encoding issues, repeated
+        content and empty chunks."""
         stats = {
-            "total_samples": len(dataset),
+            "total_samples": 0,
             "empty_samples": 0,
             "min_length": float("inf"),
             "max_length": 0,
@@ -444,6 +443,7 @@ class TextPreprocessor:
         seen_texts = set()
 
         for i, text in enumerate(texts):
+            stats["total_samples"] += 1
             if not text or len(text.strip()) == 0:
                 stats["empty_samples"] += 1
                 continue

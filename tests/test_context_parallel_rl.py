@@ -253,7 +253,7 @@ def _fake_trainer_class(log):
 @pytest.mark.parametrize("kind", ["dpo_trainer", "grpo_trainer"])
 def test_rl_scopes_keep_generation_unsharded(monkeypatch, kind):
     log = []
-    manager = types.SimpleNamespace(size = 2, backend = "ulysses")
+    manager = types.SimpleNamespace(size = 2, backend = "ulysses", _clear_real_tokens = lambda: None)
     monkeypatch.setattr(cp, "_check_cp_runtime", lambda *a: None)
     monkeypatch.setattr(cp, "_check_cp_trainer", lambda *a: None)
     monkeypatch.setattr(cp, "_install_accelerator_state", lambda *a: None)
@@ -586,7 +586,7 @@ def _cp_fake_trainer(
     log,
     installs = None,
 ):
-    manager = types.SimpleNamespace(size = 2, backend = "ulysses")
+    manager = types.SimpleNamespace(size = 2, backend = "ulysses", _clear_real_tokens = lambda: None)
     monkeypatch.setattr(cp, "_check_cp_runtime", lambda *a: None)
     monkeypatch.setattr(cp, "_check_cp_trainer", lambda *a: None)
     monkeypatch.setattr(
@@ -637,9 +637,8 @@ def test_rl_evaluate_and_predict_refuse_iterable_datasets(monkeypatch, kind):
 
 
 def test_trainers_built_before_cp_keep_the_plain_methods(monkeypatch):
-    # The generated RL trainers bind self.train on the instance in __init__ (rl.py: MethodType(...)), from
-    # the instance's CP train when one is bound, else from the class. A trainer built before CP keeps the
-    # class's own train (no CP wrapper runs for it); the CP trainer installs its state only inside train.
+    # RL trainers bind self.train in __init__ from the CP train if bound, else the class; a trainer
+    # built before CP keeps the class train; CP installs its state only inside train.
     installs = []
     Trainer = _cp_fake_trainer(monkeypatch, "dpo_trainer", [], installs)
     plain_train = Trainer.__dict__.get("train")

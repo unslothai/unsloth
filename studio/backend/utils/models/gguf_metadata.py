@@ -316,6 +316,19 @@ def read_gguf_nextn_predict_layers(path: str) -> Optional[int]:
     return result
 
 
+# Visit-indexed looped Inkling 2: block_count counts visits; the physical-layer layout already stores physical layers.
+_LOOP_VISIT_KEYS = ("loop.core_start", "loop.core_end", "num_loops")
+
+
+def _loop_weight_layers(block: Optional[int], vals: Dict[str, int]) -> Optional[int]:
+    """llama.cpp counts -ngl in physical layers, so drop the repeat passes over a visit-indexed loop core."""
+    start, end, count = (vals.get(k) for k in _LOOP_VISIT_KEYS)
+    if not block or not count or count <= 1 or start is None or not end or not 0 <= start < end:
+        return block
+    n_phys = block - (count - 1) * (end - start)
+    return n_phys if end <= n_phys else block
+
+
 def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
     vals = _parse_gguf_arch_uints(
         path,
@@ -325,13 +338,14 @@ def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
                 "block_count",
                 "expert_count",
                 "leading_dense_block_count",
+                *_LOOP_VISIT_KEYS,
             }
         ),
     )
     if vals is None:
         return None
     ctx = vals.get("context_length")
-    block = vals.get("block_count")
+    block = _loop_weight_layers(vals.get("block_count"), vals)
     # A real context/layer count is positive; treat 0/garbage as absent so the UI never builds a slider with max < min.
     context_length = ctx if ctx and ctx > 0 else None
     layer_count = block if block and block > 0 else None
@@ -432,10 +446,9 @@ def _walk_memo_store(f, key: tuple, started: int, *items: Tuple[tuple, tuple]) -
 
 
 def skip_gguf_strings(f, count: int) -> int:
-    """Skip up to ``count`` GGUF strings (u64 length + bytes) through one buffer; return how many,
-    with ``f`` at the next. Stops at an entry over 1 MiB, a length cut short by EOF, or a stream
-    that cannot rewind, so the caller's per-entry loop handles the rest exactly as before. A walk
-    already done on the same unchanged file is replayed as one seek."""
+    """Skips up to count GGUF strings (u64 length plus bytes) through one buffer and returns how
+    many, leaving f at the next; stops at an entry over 1 MiB, EOF or an unrewindable stream; an
+    unchanged file's walk replays as one seek."""
     if not _can_rewind(f):
         return 0
     key, hit, started = _walk_memo_lookup(f, count, None)
@@ -1143,13 +1156,8 @@ def read_mmproj_audio_capability(path: str) -> Optional[bool]:
     return _read_gguf_bool(path, "clip.has_audio_encoder")
 
 
-def read_mmproj_projector_type(path: str) -> Optional[str]:
-    """``clip.projector_type`` from an mmproj GGUF, or None if absent or unreadable. The family name llama.cpp keys its per-projector image-token limits on (``qwen3vl_merger``, ``gemma3``, ``pixtral``, ...), so a caller sizing the KV an image will occupy can look the ceiling up instead of assuming one."""
-    return _read_gguf_string(path, "clip.projector_type")
-
-
 def read_mmproj_vision_projector_type(path: str) -> Optional[str]:
-    """Return the image tower family, falling back to the single-tower key."""
+    """The image tower's family (``qwen3vl_merger``, ``gemma4v``, ``pixtral``, ...), which llama.cpp keys its image-token limits on. Mixed-modality projectors (Gemma 4, LFM3) carry it only under ``clip.vision.projector_type``; single-tower ones under ``clip.projector_type``. None if absent or unreadable."""
     return _read_gguf_string(path, "clip.vision.projector_type") or _read_gguf_string(
         path, "clip.projector_type"
     )

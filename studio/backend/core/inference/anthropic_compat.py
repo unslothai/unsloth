@@ -5,9 +5,14 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import re
+import sys
+import threading
 import uuid
+from collections import OrderedDict
 from typing import Any, Optional, Union
 
 from core.inference.tool_loop_controller import is_tool_error
@@ -26,8 +31,7 @@ def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = False) -> st
 
 
 def anthropic_tool_use_id(upstream_id = None, prefix = "toolu_") -> str:
-    """Return an Anthropic tool id: the upstream id if it already starts with
-    ``prefix``, else a fresh '<prefix><24 hex>'."""
+    """Upstream tool id if it starts with prefix, else a fresh prefix plus 24 hex digits."""
     if upstream_id and isinstance(upstream_id, str) and upstream_id.startswith(prefix):
         return upstream_id
     return f"{prefix}{uuid.uuid4().hex[:24]}"
@@ -95,6 +99,72 @@ def _anthropic_block_texts(content: Any) -> list[str]:
     return texts
 
 
+# Keyed by the str's cached salted hash (sha256 when PYTHONHASHSEED pins it) so the base64 is not pinned.
+_PDF_TEXTS: OrderedDict[Any, str] = OrderedDict()
+_PDF_TEXTS_LOCK = threading.Lock()
+_PDF_TEXTS_MAX = 256
+# Pinned on the request's own source dict so eviction between warm-up and conversion can't force an on-loop parse.
+_PDF_TEXT_KEY = "_unsloth_pdf_text"
+
+
+def _pdf_document_text(data: str) -> str:
+    key = (
+        (hash(data), len(data))
+        if sys.flags.hash_randomization
+        else hashlib.sha256(data.encode("ascii", "replace")).digest()
+    )
+    with _PDF_TEXTS_LOCK:
+        if key in _PDF_TEXTS:
+            _PDF_TEXTS.move_to_end(key)
+            return _PDF_TEXTS[key]
+    from core.inference.tools import _extract_pdf_text
+
+    try:
+        text = _extract_pdf_text(base64.b64decode(data))
+    except Exception:
+        text = ""
+    with _PDF_TEXTS_LOCK:
+        _PDF_TEXTS[key] = text
+        while len(_PDF_TEXTS) > _PDF_TEXTS_MAX:
+            _PDF_TEXTS.popitem(last = False)
+    return text
+
+
+def _field(obj: Any, name: str) -> Any:
+    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+
+def _is_pdf_document(block: Any) -> bool:
+    source = _field(block, "source")
+    return (
+        _field(block, "type") == "document"
+        and isinstance(source, dict)
+        and source.get("type") == "base64"
+        and source.get("media_type") == "application/pdf"
+        and isinstance(source.get("data"), str)
+    )
+
+
+def warm_anthropic_pdf_documents(messages: list) -> None:
+    """Parse PDF documents ahead of conversion, which runs on the event loop and would wait on MUPDF_LOCK."""
+    for message in messages:
+        content = _field(message, "content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            btype = _field(block, "type")
+            if btype == "tool_result" and isinstance(nested := _field(block, "content"), list):
+                items = nested
+            elif btype == "document":
+                items = (block,)
+            else:
+                continue
+            for item in items:
+                if _is_pdf_document(item):
+                    source = _field(item, "source")
+                    source[_PDF_TEXT_KEY] = _pdf_document_text(source["data"])
+
+
 def anthropic_reference_block_text(block: dict) -> str:
     btype = block.get("type")
     source = block.get("source")
@@ -108,6 +178,11 @@ def anthropic_reference_block_text(block: dict) -> str:
             body = [source["data"]]
         elif stype == "content":
             body = _anthropic_block_texts(source.get("content"))
+        elif _is_pdf_document(block):
+            text = source.get(_PDF_TEXT_KEY)
+            if not isinstance(text, str):
+                text = _pdf_document_text(source["data"])
+            body = [text or DOCUMENT_OMITTED]
         else:
             body = [DOCUMENT_OMITTED]
     else:
@@ -704,6 +779,10 @@ class AnthropicStreamEmitter:
         elif etype == "status" and not event.get("text"):
             # A new cumulative segment can start without a tool_end (a rejected call).
             self._prev_text = ""
+            if event.get("new_pass"):
+                self._reset_turn()
+                if self._text_block_open or self._thinking_block_open:
+                    return [self._close_block()]
             return []
         return []
 
@@ -1000,6 +1079,10 @@ class AnthropicStreamEmitter:
                     },
                 )
             )
+        self._reset_turn()
+        return events
+
+    def _reset_turn(self) -> None:
         # Reset per synthesis turn: a new turn may legitimately open with its own leading <think> block
         self._prev_text = ""
         self._tag_buf = ""
@@ -1010,7 +1093,6 @@ class AnthropicStreamEmitter:
         self._active_wrap = None
         self._wrap_chars = 0
         self._close_skip = 0
-        return events
 
     def _alloc_block_index(self) -> None:
         if self._block_index_used:

@@ -97,8 +97,10 @@ import {
   removeJob,
   repoKeyOf,
   scheduleRemoval,
+  scheduleRetention,
   setExpectedBytesForJob,
 } from "./download-manager-state";
+import { isRetryableDownload } from "./retry-download";
 import {
   floorHoldEnded,
   hasObservedExpectedBytes,
@@ -300,7 +302,9 @@ export function finalize(
       etaSeconds: 0,
     });
     notify(job, "onError", 0);
-    scheduleRemoval(key, ERROR_LINGER_MS);
+    // A retryable failure stays listed until dismissed or retried; the linger only ends its inventory row.
+    if (isRetryableDownload(job)) scheduleRetention(key, ERROR_LINGER_MS);
+    else scheduleRemoval(key, ERROR_LINGER_MS);
   }
   scheduleInventoryBump();
 }
@@ -791,6 +795,11 @@ export async function startJob(
       : opts.adopt && existing?.downloadDir !== undefined
         ? { downloadDir: existing.downloadDir }
         : {}),
+    ...(req.engramPrecision
+      ? { engramPrecision: req.engramPrecision }
+      : req.engramPrecision === undefined && opts.adopt && existing?.engramPrecision
+        ? { engramPrecision: existing.engramPrecision }
+        : {}),
     ...(inventoryKind !== undefined
       ? { inventoryKind }
       : opts.adopt && existing?.inventoryKind !== undefined
@@ -1093,6 +1102,9 @@ export function adoptJob(
           : {}),
         ...(Number.isSafeInteger(known) ? {} : { serverGeneration: generation }),
         ...(req.files?.length ? { scopedFiles: [...req.files] } : {}),
+        ...(req.engramPrecision !== undefined
+          ? { engramPrecision: req.engramPrecision || undefined }
+          : {}),
         ...(inventoryKind ? { inventoryKind } : {}),
       });
     }
@@ -1140,6 +1152,8 @@ export async function probeAndAdopt(
             expectedBytes: 0,
             // Carry the file list so a sibling checkpoint's request is not read as already started.
             ...(active.files && active.files.length > 0 ? { files: [...active.files] } : {}),
+            // And the table: null is the quant's own, which clears a stale choice.
+            engramPrecision: active.engram_precision ?? null,
           },
           active.generation,
           active.state,

@@ -2,6 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import {
+  COMPOSER_SURFACE,
+  FIND_SCOPE_SURFACE,
+  SIDEBAR_SURFACE,
+  trackedSurfaces,
+} from "@/lib/surface-registry";
 import { zoomTypedOffZoomKey } from "../../interface-zoom/lib/zoom-chords";
 import {
   SHORTCUT_SLOTS,
@@ -19,7 +25,23 @@ import {
   useKeyboardShortcutsStore,
 } from "../stores/keyboard-shortcuts-store";
 
-export const COMPOSER_INPUT_SELECTOR = ".aui-composer-input";
+export const COMPOSER_INPUT_SELECTOR = COMPOSER_SURFACE;
+
+// Every element these can match registers itself (useSurfaceRef), so a check reads a handful of
+// elements, not the whole document; any other selector is still a document query.
+const TRACKED_SURFACE_SELECTORS: ReadonlySet<string> = new Set([
+  COMPOSER_SURFACE,
+  SIDEBAR_SURFACE,
+  FIND_SCOPE_SURFACE,
+]);
+
+/** What `document.querySelectorAll(selector)` matches, in no particular order. */
+export function surfaceElements(selector: string): Element[] {
+  const tracked = TRACKED_SURFACE_SELECTORS.has(selector)
+    ? trackedSurfaces(selector, selector)
+    : null;
+  return tracked ?? [...document.querySelectorAll(selector)];
+}
 
 export function isTextEntryFocused(exceptFor?: string): boolean {
   if (typeof document === "undefined") return false;
@@ -37,9 +59,7 @@ export function isImeComposing(event: KeyboardEvent): boolean {
   return event.isComposing || event.keyCode === 229;
 }
 
-// Set only while the listeners re-read their snapshots. Nothing mutates the DOM between two
-// listeners (React schedules their re-renders), so each id and each document query is answered
-// once per pass instead of once per subscriber; a long chat makes every miss a whole-tree walk.
+// Set only for one listener pass, since nothing mutates the DOM between listeners.
 let passAnswers: Map<string, boolean> | null = null;
 
 function answerOncePerPass(key: string, compute: () => boolean): boolean {
@@ -56,7 +76,7 @@ export function isSurfaceInForeground(selector: string): boolean {
   if (typeof document === "undefined") return false;
   // Every match: Compare keeps an inert base composer mounted; Radix aria-hides the page under a modal.
   return answerOncePerPass(`foreground\0${selector}`, () =>
-    [...document.querySelectorAll(selector)].some(
+    surfaceElements(selector).some(
       (el) => !el.closest('[aria-hidden="true"], [inert]'),
     ),
   );
@@ -67,7 +87,7 @@ export function isSurfaceInForeground(selector: string): boolean {
 export function isSurfaceBackgrounded(selector: string): boolean {
   if (typeof document === "undefined") return false;
   return answerOncePerPass(`backgrounded\0${selector}`, () => {
-    const found = [...document.querySelectorAll(selector)];
+    const found = surfaceElements(selector);
     return (
       found.length > 0 &&
       found.every((el) => el.closest('[aria-hidden="true"], [inert]') !== null)

@@ -11,6 +11,7 @@ from typing import Any, Literal, Optional, Union
 
 from fastmcp.exceptions import ToolError
 
+from studio_mcp import profile
 from studio_mcp import checkpoints, export_jobs
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import tool_error
@@ -114,5 +115,8 @@ async def export_model(
     job = export_jobs.start(caller.account_id, format, run)
     return ExportJobRef(job_id = job.job_id)
 
+
+# The export job keeps the key past the call and loads a checkpoint.
+FACTS = {"export_model": {profile.OUTLIVES_CALL, profile.SWAPS_MODELS}}
 
 TOOLS = ((export_model, WRITES),)

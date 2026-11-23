@@ -76,8 +76,7 @@ def test_bpw_variant_key(path, expected):
 
 
 def test_key_is_unchanged_where_there_is_no_modifier():
-    """The persisted variant identity must not churn for the repos that have no bpw
-    modifier, which is all but a handful on the whole Hub."""
+    """Persisted variant identity must not churn for repos that carry no bpw modifier."""
     for path in (
         "Wan2.2-TI2V-5B-Q4_K_M.gguf",
         "Qwen3-8B-UD-Q8_K_XL.gguf",
@@ -90,9 +89,7 @@ def test_key_is_unchanged_where_there_is_no_modifier():
 
 
 def test_a_bare_bpw_name_is_not_truncated_at_its_decimal_point():
-    """Folder names and stored variant strings arrive without a ``.gguf`` extension, and
-    cutting at the last dot would leave ``IQ4_XS-3``, silently dropping the modifier and
-    keying the folder as the bare quant again."""
+    """Stored names lack the .gguf suffix, so cutting at the last dot leaves IQ4_XS-3 and drops the bpw."""
     assert quant_token_with_bpw("IQ4_XS-3.53bpw") == "IQ4_XS-3.53bpw"
     assert quant_token_with_bpw("Llama-3.1-8B-Instruct-IQ4_XS-3.57bpw") == "IQ4_XS-3.57bpw"
     assert quant_token_with_bpw("Q6_K") == "Q6_K"
@@ -251,8 +248,7 @@ def test_empty_folder_cleanup_takes_only_the_variants_own_folder(tmp_path):
 
 
 def test_empty_folder_cleanup_still_takes_a_bare_quant_folder(tmp_path):
-    """The unqualified path is unchanged: a plain ``Q6_K`` variant still clears
-    ``Q6_K/`` and the ``<model>-Q6_K/`` spelling of the same quant."""
+    """A bare Q6_K variant must still clear the Q6_K/ folder and the <model>-Q6_K/ spelling."""
     from hub.services.models.deletion import _remove_empty_variant_dirs
 
     snapshot = tmp_path / "repo" / "snapshots" / "rev"

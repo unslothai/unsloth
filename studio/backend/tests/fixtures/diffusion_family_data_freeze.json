@@ -76,6 +76,9 @@
     "steps": 30
    }
   },
+  "minimax-h3-image": {
+   "MiniMaxAI/MiniMax-H3-Image": null
+  },
   "moss-image": {
    "OpenMOSS-Team/MOSS-Image-Base": null,
    "OpenMOSS-Team/MOSS-Image-SFT": null
@@ -85,7 +88,8 @@
     "default": 2,
     "max": 3,
     "steps": 20
-   }
+   },
+   "nvidia/Qwen-Image-Flash": null
   },
   "qwen-image-2.1": {
    "Qwen/Qwen-Image-2.1": {
@@ -102,7 +106,10 @@
    "Qwen/Qwen-Image-Layered": null
   },
   "sdxl": {
-   "stabilityai/stable-diffusion-xl-base-1.0": null
+   "stabilityai/stable-diffusion-xl-base-1.0": {
+    "max": 2,
+    "steps": 25
+   }
   },
   "wan2.1-t2v-1.3b": {
    "Wan-AI/Wan2.1-T2V-1.3B-Diffusers": null
@@ -247,6 +254,10 @@
     1.0
    ]
   },
+  "minimax-h3-image": [
+   6,
+   1.0
+  ],
   "moss-image": [
    25,
    2.5
@@ -400,14 +411,14 @@
    "vae_fused_encoder": true
   },
   "flux.3-klein": {
-   "cudnn_benchmark": true,
-   "filter_reduction_configs": false,
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
   "flux.3-klein-base": {
-   "cudnn_benchmark": true,
-   "filter_reduction_configs": false,
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
@@ -425,13 +436,13 @@
   },
   "hunyuanvideo-1.5": {
    "cudnn_benchmark": false,
-   "filter_reduction_configs": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
   "hunyuanvideo-1.5-720p": {
    "cudnn_benchmark": false,
-   "filter_reduction_configs": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
@@ -468,6 +479,12 @@
   "minimax-h3": {
    "cudnn_benchmark": true,
    "filter_reduction_configs": true,
+   "filter_reduction_configs_archs": [],
+   "vae_fused_encoder": true
+  },
+  "minimax-h3-image": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
@@ -1432,7 +1449,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "convrot_default_on": false,
+   "convrot_default_on": true,
    "fp8": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1448,8 +1465,8 @@
     "zero_row": []
    },
    "int8": {
-    "convrot_filename": null,
-    "convrot_repo": null,
+    "convrot_filename": "FLUX.1-schnell-INT8-ConvRot.safetensors",
+    "convrot_repo": "unsloth/FLUX.1-schnell-FP8",
     "convrot_spec": [
      0,
      []
@@ -1717,7 +1734,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1732,7 +1749,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "convrot_default_on": false,
+   "convrot_default_on": true,
    "fp8": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1748,11 +1765,27 @@
     "zero_row": []
    },
    "int8": {
-    "convrot_filename": null,
-    "convrot_repo": null,
+    "convrot_filename": "FLUX.2-klein-4B-INT8-ConvRot.safetensors",
+    "convrot_repo": "unsloth/FLUX.2-klein-4B-FP8",
     "convrot_spec": [
-     0,
-     []
+     256,
+     [
+      "context_embedder",
+      "attn.to_q",
+      "attn.to_k",
+      "attn.to_v",
+      "attn.to_out.0",
+      "attn.add_q_proj",
+      "attn.add_k_proj",
+      "attn.add_v_proj",
+      "attn.to_add_out",
+      "ff.linear_in",
+      "ff.linear_out",
+      "ff_context.linear_in",
+      "ff_context.linear_out",
+      "attn.to_qkv_mlp_proj",
+      "attn.to_out"
+     ]
     ],
     "convrot_variant_repos": [],
     "exclude": [
@@ -1823,7 +1856,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1844,7 +1877,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "convrot_default_on": false,
+   "convrot_default_on": true,
    "fp8": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1866,11 +1899,18 @@
     "zero_row": []
    },
    "int8": {
-    "convrot_filename": null,
-    "convrot_repo": null,
+    "convrot_filename": "flux-3-image-klein-INT8-ConvRot.safetensors",
+    "convrot_repo": "unsloth/flux-3-image-klein-FP8",
     "convrot_spec": [
-     0,
-     []
+     256,
+     [
+      "attn.to_q",
+      "attn.to_k",
+      "attn.to_v",
+      "attn.to_out.0",
+      "ff.linear_in",
+      "ff.linear_out"
+     ]
     ],
     "convrot_variant_repos": [],
     "exclude": [
@@ -1958,7 +1998,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1979,7 +2019,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "convrot_default_on": false,
+   "convrot_default_on": true,
    "fp8": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -2004,8 +2044,15 @@
     "convrot_filename": null,
     "convrot_repo": null,
     "convrot_spec": [
-     0,
-     []
+     256,
+     [
+      "attn.to_q",
+      "attn.to_k",
+      "attn.to_v",
+      "attn.to_out.0",
+      "ff.linear_in",
+      "ff.linear_out"
+     ]
     ],
     "convrot_variant_repos": [],
     "exclude": [
@@ -3104,6 +3151,106 @@
    "preview_key": null,
    "te_int8_effective": "fp8"
   },
+  "minimax-h3-image": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
   "moss-image": {
    "auto": {
     "convrot_filename": null,
@@ -3123,7 +3270,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -4290,7 +4437,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -4423,6 +4570,10 @@
     "max": 3,
     "steps": 25
    },
+   "stabilityai/stable-diffusion-xl-base-1.0": {
+    "max": 2,
+    "steps": 25
+   },
    "wan-ai/wan2.2-ti2v-5b-diffusers": {
     "default": 2,
     "max": 3,
@@ -4444,14 +4595,8 @@
   ],
   "family_auto_bf16_when_resident": {
    "anima": "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled",
-   "flux.2-klein": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
-   "flux.3-klein": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
-   "flux.3-klein-base": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
    "hidream-i1": "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail",
-   "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail",
-   "moss-image": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
-   "moss-image-base": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
-   "z-image": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)"
+   "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail"
   },
   "family_auto_prefer": {
    "flux.1": {
@@ -4574,6 +4719,19 @@
     "fp8",
     "mxfp8"
    ],
+   "minimax-h3-image": [
+    "fp8",
+    "mxfp8",
+    "nf4"
+   ],
+   "moss-image": [
+    "fp8",
+    "mxfp8"
+   ],
+   "moss-image-base": [
+    "fp8",
+    "mxfp8"
+   ],
    "qwen-image": [
     "fp8"
    ],
@@ -4592,6 +4750,48 @@
    "time_embed"
   ],
   "int8_family_convrot": {
+   "flux.2-klein": [
+    256,
+    [
+     "context_embedder",
+     "attn.to_q",
+     "attn.to_k",
+     "attn.to_v",
+     "attn.to_out.0",
+     "attn.add_q_proj",
+     "attn.add_k_proj",
+     "attn.add_v_proj",
+     "attn.to_add_out",
+     "ff.linear_in",
+     "ff.linear_out",
+     "ff_context.linear_in",
+     "ff_context.linear_out",
+     "attn.to_qkv_mlp_proj",
+     "attn.to_out"
+    ]
+   ],
+   "flux.3-klein": [
+    256,
+    [
+     "attn.to_q",
+     "attn.to_k",
+     "attn.to_v",
+     "attn.to_out.0",
+     "ff.linear_in",
+     "ff.linear_out"
+    ]
+   ],
+   "flux.3-klein-base": [
+    256,
+    [
+     "attn.to_q",
+     "attn.to_k",
+     "attn.to_v",
+     "attn.to_out.0",
+     "ff.linear_in",
+     "ff.linear_out"
+    ]
+   ],
    "moss-image": [
     256,
     [
@@ -4641,6 +4841,10 @@
    ]
   },
   "int8_family_convrot_default_on": [
+   "flux.1",
+   "flux.2-klein",
+   "flux.3-klein",
+   "flux.3-klein-base",
    "ltx-2.5",
    "moss-image",
    "moss-image-base",
@@ -4648,12 +4852,18 @@
    "z-image"
   ],
   "int8_family_convrot_filename": {
+   "flux.1": "FLUX.1-schnell-INT8-ConvRot.safetensors",
+   "flux.2-klein": "FLUX.2-klein-4B-INT8-ConvRot.safetensors",
+   "flux.3-klein": "flux-3-image-klein-INT8-ConvRot.safetensors",
    "moss-image": "MOSS-Image-SFT-INT8-ConvRot.safetensors",
    "moss-image-base": "MOSS-Image-SFT-INT8-ConvRot.safetensors",
    "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
    "z-image": "Z-Image-Turbo-INT8-ConvRot.safetensors"
   },
   "int8_family_convrot_repo": {
+   "flux.1": "unsloth/FLUX.1-schnell-FP8",
+   "flux.2-klein": "unsloth/FLUX.2-klein-4B-FP8",
+   "flux.3-klein": "unsloth/flux-3-image-klein-FP8",
    "moss-image": "unsloth/MOSS-Image-SFT-FP8",
    "moss-image-base": "unsloth/MOSS-Image-SFT-FP8",
    "qwen-image-2.1": "unsloth/Qwen-Image-2.1-FP8",
@@ -4801,15 +5011,19 @@
    "flux.3-klein-base": "FLUX.3 Klein Base",
    "krea-2": "Krea 2",
    "ltx-2": "LTX-2",
+   "ltx-2.5": "LTX-2.5",
    "minimax-h3": "MiniMax-H3",
+   "minimax-h3-image": "MiniMax-H3-Image",
    "moss-image": "MOSS-Image",
    "qwen-image": "Qwen-Image",
+   "qwen-image-2.1": "Qwen-Image-2.1",
    "sdxl": "SDXL",
    "wan2.2-ti2v-5b": "Wan2.2 TI2V 5B",
    "z-image": "Z-Image"
   },
   "trainable_video_families": [
    "ltx-2",
+   "ltx-2.5",
    "minimax-h3",
    "wan2.2-ti2v-5b"
   ],
@@ -4824,6 +5038,7 @@
    "black-forest-labs/flux.2-dev",
    "black-forest-labs/flux.2-klein-4b",
    "black-forest-labs/flux.2-klein-9b",
+   "black-forest-labs/flux.2-klein-9b-kv",
    "black-forest-labs/flux.2-klein-base-4b",
    "black-forest-labs/flux.2-klein-base-9b",
    "circlestone-labs/anima-base-v1.0-diffusers",
@@ -4837,6 +5052,8 @@
    "krea/krea-2-raw",
    "krea/krea-2-turbo",
    "lodestones/chroma1-hd",
+   "minimaxai/minimax-h3-image",
+   "nvidia/qwen-image-flash",
    "openmoss-team/moss-image-base",
    "openmoss-team/moss-image-sft",
    "qwen/qwen-image",
@@ -4851,6 +5068,8 @@
    "tongyi-mai/z-image-turbo"
   ],
   "trusted_video_repos": [
+   "fastvideo/fastwan2.1-t2v-1.3b-diffusers",
+   "fastvideo/fastwan2.2-ti2v-5b-fullattn-diffusers",
    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-720p_t2v",
    "lightricks/ltx-2",
@@ -4860,7 +5079,9 @@
    "lightricks/ltx-2.5-diffusers",
    "minimaxai/minimax-h3",
    "nvidia/cosmos3-edge",
+   "nvidia/cosmos3-edge-fp8",
    "nvidia/cosmos3-nano",
+   "nvidia/cosmos3-nano-fp8",
    "wan-ai/wan2.1-t2v-1.3b-diffusers",
    "wan-ai/wan2.1-t2v-14b-diffusers",
    "wan-ai/wan2.2-t2v-a14b-diffusers",

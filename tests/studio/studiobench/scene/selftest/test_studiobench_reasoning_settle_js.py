@@ -226,8 +226,7 @@ def test_losing_the_state_restarts_the_streak():
 
 
 def test_the_timing_includes_the_click_dispatch_it_names():
-    """open_ms must include the click dispatch as well as the settle wait, or slower handlers look
-    faster."""
+    """open_ms includes the click dispatch and settle wait, or slower handlers look faster."""
     out = run_settle(flip_frame = 2, mount_done_frame = 3, spans_static = True, click_ms = 40.0)
     dispatch = PANES * 40.0
     assert out["openDispatchMs"] == dispatch

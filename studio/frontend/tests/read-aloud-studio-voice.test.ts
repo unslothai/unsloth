@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Read aloud on the "Unsloth model" engine speaks with the loaded speech model (named, so
-// one kept beside the chat model answers), in a saved Audio voice, and keeps its clips out of
-// Speak's history.
+// Read aloud on the Unsloth model engine speaks with the loaded speech model (named, so one kept
+// beside the chat model answers), in a saved Audio voice, and keeps clips out of Speak's history.
 
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import test from "node:test";
 
+import * as speechText from "../src/features/chat/voice/speech-text.ts";
+import * as ttsChunkPlan from "../src/features/chat/voice/tts-chunk-plan.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 import * as modelCatalog from "../src/features/settings/api/openai-model-catalog.ts";
@@ -70,6 +71,8 @@ function load(
       "../search-images/search-images": {
         stripSearchImageTokens: (text: string) => text,
       },
+      "../voice/speech-text": speechText,
+      "../voice/tts-chunk-plan": ttsChunkPlan,
       "../utils/speech-text": {
         markdownToSpeechText: (text: string) => text,
       },

@@ -38,10 +38,14 @@ def _load(*names, **env):
     # GGUF path; none of these fixtures is a Mistral-format view, so it never refuses here.
     namespace = {
         "raise_if_merging_mistral_format_view": lambda model, save_method: None,
+        # Same for the Inkling 2 merge refusal: no fixture is an Inkling 2 model.
+        "raise_if_merging_inkling2": lambda model, save_method: None,
         "lora_relative_to_original_base": lambda model: contextlib.nullcontext(),
         # Unmerges FSDP2 streamed layers when a save raises; these fixtures never stream.
         "_unmerge_flags_on_error": lambda streamed: contextlib.nullcontext(),
         "nullcontext": contextlib.nullcontext,
+        # unsloth_save_model frees the training-time NF4 dequant cache first (#18285); none here.
+        "_release_nf4_dequant_cache": lambda: None,
         # Full saves add bare Params4bit quant state (fused 4-bit experts); none in these fixtures.
         "PeftModel": type("PeftModel", (), {}),
         "_save_bare_params4bit_quant_state": lambda model: contextlib.nullcontext(),
@@ -202,6 +206,10 @@ _GENERIC_SAVE_REAL_HELPERS = (
     "_cast_state_dict_16bit",
     "_requests_float32",
     "_stamp_saved_config_float32",
+    # A non-Gemma model leaves the merged config.json alone.
+    "_gemma_rope_the_zoo_export_drops",
+    "_write_trained_gemma_rope",
+    "_is_main_rank",
 )
 _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
     {
@@ -219,6 +227,11 @@ _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
         "_stitch_mtp_head",
         "_mtp_head_tensor_names",
         "_unmerge_flags_on_error",
+        # LFM3-Audio config rewrite: no LFM3-Audio checkpoint in these fixtures.
+        "_release_layout_for_merged_save",
+        "_push_lfm3_audio_release_config",
+        # Shard-wise cast: these fixtures hold no real tensors, so the eager cast runs.
+        "_restamp_index_total_size",
         # Decorator factory; _load strips decorators.
         "_model_parallel_refuses_save",
     }
@@ -238,6 +251,8 @@ def _routing_environment(monkeypatch, model):
 
     namespace = _load(
         *_GENERIC_SAVE_REAL_HELPERS,
+        # Called by _gemma_rope_the_zoo_export_drops, not by the save itself.
+        "_gemma_live_linear_rope",
         "_collect_garbage",
         "unsloth_generic_save",
         os = os,
@@ -259,6 +274,10 @@ def _routing_environment(monkeypatch, model):
         _internal_mtp_save = contextlib.nullcontext,
         _stitch_mtp_head = lambda model, directory: None,
         _mtp_head_tensor_names = lambda model: [],
+        _release_layout_for_merged_save = lambda model, directory, method: False,
+        _push_lfm3_audio_release_config = lambda model, save_directory, token = None: False,
+        _restamp_index_total_size = _not_reached,
+        _CastShardsOnWrite = _not_reached,
         lora_relative_to_original_base = lambda model: (
             calls["convert"].append(model) or contextlib.nullcontext()
         ),
@@ -338,6 +357,100 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
     assert len(calls["merge"]) == 1
     assert len(calls["prewarm"]) == 1
     assert len(calls["convert"]) == (save_method != "merged_4bit_forced")
+
+
+@pytest.mark.parametrize(
+    "spelling, canonical",
+    [
+        ("Merged_16bit", "merged_16bit"),
+        ("merged 16bit", "merged_16bit"),
+        ("merged-16bit", "merged_16bit"),
+        (" merged_16bit ", "merged_16bit"),
+        ("Merged_4bit_Forced", "merged_4bit"),
+    ],
+)
+def test_a_respelled_merge_method_reaches_the_merge_canonically(
+    monkeypatch, tmp_path, spelling, canonical
+):
+    """The merge writes config.json only for the exact string, so a respelling saved no config."""
+    model = _PeftModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    generic_save(model, None, save_directory = str(tmp_path), save_method = spelling)
+    assert [c["save_method"] for c in calls["merge"]] == [canonical]
+
+
+@pytest.mark.parametrize(
+    "spelling, canonical",
+    [
+        ("Merged_4bit_Forced", "merged_4bit_forced"),
+        ("forced merged 4bit", "forced_merged_4bit"),
+        (" Merged-16bit ", "merged_16bit"),
+        ("LoRA", "lora"),
+    ],
+)
+@pytest.mark.parametrize("by_keyword", [True, False])
+def test_the_fsdp2_gather_placement_reads_the_canonical_method(spelling, canonical, by_keyword):
+    """FSDP2 picks where gathered weights live before unsloth_generic_save canonicalizes, so a
+    respelled merged_4bit offloaded the LoRA operands its in-place merge needs on the GPU."""
+    ns = _load("_merged_save_method", "_fsdp2_merged_offload")
+    args, kwargs = ((), {"save_method": spelling}) if by_keyword else (("d", None, spelling), {})
+    assert ns["_merged_save_method"](args, kwargs) == canonical
+    fsdp2 = types.ModuleType("unsloth.models.fsdp2_save")
+    fsdp2.offload_all_but_4bit_merge_operands = lambda model: "keep-4bit-merge-operands"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "unsloth.models.fsdp2_save", fsdp2)
+        ns["__package__"] = "unsloth"
+        ns["__name__"] = "unsloth.save"
+        offload = ns["_fsdp2_merged_offload"](object(), args, kwargs)
+    assert offload == ("keep-4bit-merge-operands" if "4bit" in canonical else True)
+    assert ns["_merged_save_method"]((), {}) == "merged_16bit"
+    assert ns["_merged_save_method"]((), {"save_method": None}) is None
+
+
+@pytest.mark.parametrize("spelling", ["merged-4bit-forced", "Merged 4bit", "forced-merged-4bit"])
+def test_a_respelled_in_place_merge_is_refused_under_tensor_parallel(spelling):
+    refuse = _load(
+        "_refuse_tp_in_place_merge",
+        _TP_IN_PLACE_MERGES = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit"),
+    )["_refuse_tp_in_place_merge"]
+
+    def fn(
+        save_directory,
+        tokenizer = None,
+        save_method = "merged_16bit",
+    ):
+        pass
+
+    for args, kwargs in ((("d", None, spelling), {}), (("d",), {"save_method": spelling})):
+        with pytest.raises(RuntimeError, match = "tensor parallel"):
+            refuse(fn, "save_pretrained_merged", args, kwargs)
+    refuse(fn, "save_pretrained_merged", ("d",), {"save_method": "merged-16bit"})
+
+
+@pytest.mark.parametrize("spelling", ["Merged_4bit", "merged-4bit", " MERGED 4BIT "])
+def test_unsloth_save_model_guards_a_respelled_merged_4bit(spelling):
+    """unsloth_save_model checked the guard before lowercasing, then merged into 4bit anyway."""
+    save_model = _load(
+        "unsloth_save_model",
+        torch = types.SimpleNamespace(save = None),
+        _refuse_mtp_variant = lambda model, variant: None,
+        _attached_mtp_head = lambda model: None,
+        PreTrainedTokenizerBase = type("T", (), {}),
+        ProcessorMixin = type("P", (), {}),
+        _normalize_safe_serialization = lambda value: True,
+        get_token = lambda: None,
+    )["unsloth_save_model"]
+    with pytest.raises(RuntimeError, match = "merged_4bit_forced"):
+        save_model(object(), None, "d", save_method = spelling)
+
+
+@pytest.mark.parametrize("spelling", ["Merged_4bit", "merged-4bit", " MERGED 4BIT "])
+def test_a_respelled_merged_4bit_still_hits_the_accuracy_guard(monkeypatch, tmp_path, spelling):
+    model = _PeftModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    with pytest.raises(RuntimeError, match = "merged_4bit_forced"):
+        generic_save(model, None, save_directory = str(tmp_path), save_method = spelling)
+    assert calls["merge"] == []
 
 
 @pytest.mark.parametrize(
@@ -864,3 +977,100 @@ def test_every_helper_the_generic_save_calls_is_loaded_or_stubbed():
     assert (
         covered <= called
     ), f"{sorted(covered - called)} are no longer called by unsloth_generic_save"
+
+
+class GemmaFixedRotaryEmbedding:
+    """Named as unsloth's Gemma rotary: `scaling_factor` is set only when it applied linear RoPE."""
+
+
+def _gemma_model(scaling_factor = None):
+    model = _PeftModel()
+    model.config = types.SimpleNamespace(
+        _name_or_path = "base/gemma",
+        model_type = "gemma",
+        # What the loader leaves on the in-memory config past the native window.
+        rope_scaling = {"type": "linear", "factor": 2.0},
+        max_position_embeddings = 16384,
+    )
+    rotary = GemmaFixedRotaryEmbedding()
+    if scaling_factor is not None:
+        rotary.scaling_factor = scaling_factor
+    model.modules = lambda: iter([model, rotary])
+    return model
+
+
+# config.json as a zoo export without the RoPE carry-over writes it: the base checkpoint's.
+_BASE_GEMMA_CONFIGS = {
+    "transformers4": {"model_type": "gemma", "max_position_embeddings": 8192, "rope_scaling": None},
+    "transformers5": {
+        "model_type": "gemma",
+        "max_position_embeddings": 8192,
+        "rope_parameters": {"rope_type": "default", "rope_theta": 10000.0},
+    },
+}
+
+
+def _merge_writing(base_config, carries_rope = False):
+    zoo = sys.modules["unsloth_zoo.saving_utils"]
+    if carries_rope:
+        zoo._carry_over_rope_scaling = lambda *args: []
+
+    def merge(*args, **kwargs):
+        with open(os.path.join(kwargs["save_directory"], "config.json"), "w") as f:
+            json.dump(base_config, f)
+
+    zoo.merge_and_overwrite_lora = merge
+
+
+@pytest.mark.parametrize("layout", sorted(_BASE_GEMMA_CONFIGS))
+def test_a_merged_gemma_keeps_the_linear_rope_it_trained_with_on_an_older_zoo(
+    monkeypatch, tmp_path, layout
+):
+    """Gemma / Gemma 2 apply the loader's linear RoPE past the native window; an unsloth_zoo
+    without the RoPE carry-over writes the base config, so the merge reloaded unscaled."""
+    model = _gemma_model(scaling_factor = 2.0)
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    _merge_writing(_BASE_GEMMA_CONFIGS[layout])
+    generic_save(model, None, save_directory = str(tmp_path), save_method = "merged_16bit")
+    saved = json.loads((tmp_path / "config.json").read_text())
+    key = "rope_parameters" if layout == "transformers5" else "rope_scaling"
+    assert saved[key]["rope_type"] == "linear" and saved[key]["factor"] == 2.0
+    assert saved["max_position_embeddings"] == 16384
+    if layout == "transformers5":
+        # transformers 5 reads rope_theta from rope_parameters.
+        assert saved[key]["rope_theta"] == 10000.0
+
+
+@pytest.mark.parametrize(
+    "scaling_factor, carries_rope", [(None, False), (2.0, True)], ids = ["unscaled", "zoo_carries"]
+)
+def test_a_merged_gemma_config_is_left_alone_when_nothing_was_dropped(
+    monkeypatch, tmp_path, scaling_factor, carries_rope
+):
+    """An unscaled rotary trained unscaled, and a newer zoo writes the trained RoPE itself."""
+    model = _gemma_model(scaling_factor = scaling_factor)
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    _merge_writing(_BASE_GEMMA_CONFIGS["transformers5"], carries_rope = carries_rope)
+    generic_save(model, None, save_directory = str(tmp_path), save_method = "merged_16bit")
+    assert (
+        json.loads((tmp_path / "config.json").read_text()) == _BASE_GEMMA_CONFIGS["transformers5"]
+    )
+
+
+def test_a_merged_upload_of_a_scaled_gemma_on_an_older_zoo_is_refused_before_merging(
+    monkeypatch, tmp_path
+):
+    """The streamed upload leaves no local config.json to fix, so refuse rather than upload a
+    model whose RoPE differs from the trained one."""
+    model = _gemma_model(scaling_factor = 2.0)
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    with pytest.raises(RuntimeError, match = "linear RoPE scaling"):
+        generic_save(
+            model,
+            None,
+            save_directory = "owner/model",
+            save_method = "merged_16bit",
+            push_to_hub = True,
+            token = "fixture-token",
+        )
+    assert calls["merge"] == [] and calls["prewarm"] == []

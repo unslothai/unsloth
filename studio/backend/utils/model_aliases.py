@@ -6,8 +6,10 @@ than the target; names exclude / and :"""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
 from typing import Any, Callable, Iterable, Optional
 
 MODEL_ALIASES_SETTING_KEY = "openai_api_model_aliases"
@@ -15,8 +17,7 @@ MAX_MODEL_ALIASES = 100
 MAX_ALIAS_TARGET_LENGTH = 512
 _ALIAS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _ALIAS_PATH_PREFIXES = ("/v1", "/api/inference")
-# Chat-model routes only: media, lifecycle and Decision API routes use their own model ids
-# (an STT "small" selector, "clef"), which an alias must never rewrite.
+# Chat routes only: media, lifecycle and Decision API ids (e.g. STT small) are never rewritten.
 _ALIAS_ROUTES = frozenset(
     (
         "/chat/completions",
@@ -29,9 +30,31 @@ _ALIAS_ROUTES = frozenset(
     )
 )
 _MODEL_VALUE_RE = re.compile(rb'"model"\s*:\s*"([^"\\]*)"')
+ALIAS_SCOPE_KEY = "_unsloth_model_alias"
+_LOAD_SETTING_KEYS = ("max_seq_length", "kv_cache_dtype", "speculative_type")
 
 
-def normalize_model_aliases(raw: Any) -> list[dict[str, str]]:
+def _normalize_load_settings(name: str, raw: Any) -> dict[str, Any]:
+    from utils.openai_auto_switch_settings import MLX_ONLY_SPEC_TYPES, normalize_model_override
+
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Alias '{name}' has invalid load settings.")
+    # A misspelled or unsupported key would otherwise save an alias without the setting.
+    for key in raw:
+        if key not in _LOAD_SETTING_KEYS:
+            raise ValueError(f"Alias '{name}' has an unknown load setting: {key}.")
+    sent = {key: raw[key] for key in _LOAD_SETTING_KEYS if raw.get(key) is not None}
+    settings = normalize_model_override(sent)
+    for key in sent:
+        # Load settings are for GGUF models, which read an MLX-only mode as no mode.
+        if key not in settings or settings[key] in MLX_ONLY_SPEC_TYPES:
+            raise ValueError(f"Alias '{name}' has an invalid load setting: {key}.")
+    return settings
+
+
+def normalize_model_aliases(raw: Any) -> list[dict[str, Any]]:
     """Validated ``[{"name", "model"}]``; raises ValueError naming the first bad entry."""
     if raw is None:
         return []
@@ -39,7 +62,7 @@ def normalize_model_aliases(raw: Any) -> list[dict[str, str]]:
         raise ValueError("Model aliases must be a list.")
     if len(raw) > MAX_MODEL_ALIASES:
         raise ValueError(f"At most {MAX_MODEL_ALIASES} model aliases are allowed.")
-    aliases: list[dict[str, str]] = []
+    aliases: list[dict[str, Any]] = []
     seen: set[str] = set()
     for entry in raw:
         if not isinstance(entry, dict):
@@ -59,7 +82,11 @@ def normalize_model_aliases(raw: Any) -> list[dict[str, str]]:
         if name.lower() in seen:
             raise ValueError(f"Alias '{name}' is defined twice.")
         seen.add(name.lower())
-        aliases.append({"name": name, "model": model})
+        alias: dict[str, Any] = {"name": name, "model": model}
+        load_settings = _normalize_load_settings(name, entry.get("load_settings"))
+        if load_settings:
+            alias["load_settings"] = load_settings
+        aliases.append(alias)
     # One hop only: a target naming another alias would be served as a literal model id.
     for alias in aliases:
         if alias["model"].lower() in seen:
@@ -67,10 +94,10 @@ def normalize_model_aliases(raw: Any) -> list[dict[str, str]]:
     return aliases
 
 
-_normalized: tuple[Any, list[dict[str, str]]] = (None, [])
+_normalized: tuple[Any, list[dict[str, Any]]] = (None, [])
 
 
-def get_model_aliases() -> list[dict[str, str]]:
+def get_model_aliases() -> list[dict[str, Any]]:
     global _normalized
     from utils.openai_auto_switch_settings import _cached_setting
 
@@ -86,19 +113,56 @@ def get_model_aliases() -> list[dict[str, str]]:
     return _normalized[1]
 
 
-def set_model_aliases(raw: Any, model_ids: Iterable[str] = ()) -> list[dict[str, str]]:
+class AliasConflict(ValueError):
+    pass
+
+
+_write_lock = threading.Lock()
+
+
+def model_aliases_revision(aliases: Optional[list[dict[str, Any]]] = None) -> str:
+    stored = json.dumps(get_model_aliases() if aliases is None else aliases, sort_keys = True)
+    return hashlib.sha256(stored.encode("utf-8")).hexdigest()[:16]
+
+
+def set_model_aliases(
+    raw: Any,
+    model_ids: Iterable[str] = (),
+    revision: Optional[str] = None,
+) -> list[dict[str, Any]]:
     """Replace the whole alias list; the same input always stores the same value. ``model_ids``
-    are real ids an alias may not reuse: the rewrite would silently serve other weights."""
+    are real ids an alias may not reuse: the rewrite would silently serve other weights.
+    ``revision`` is the list the caller edited; a caller without one predates load settings."""
     from storage.studio_db import upsert_app_settings
     from utils.openai_auto_switch_settings import _invalidate
 
     aliases = normalize_model_aliases(raw)
-    taken = {model_id.lower() for model_id in model_ids}
-    for alias in aliases:
-        if alias["name"].lower() in taken:
-            raise ValueError(f"'{alias['name']}' is already the name of a model on this server.")
-    upsert_app_settings({MODEL_ALIASES_SETTING_KEY: aliases})
-    _invalidate(MODEL_ALIASES_SETTING_KEY)
+    with _write_lock:
+        if revision is None:
+            sent = {(a["name"].lower(), a["model"]): (a, e) for a, e in zip(aliases, raw or ())}
+            for stored in get_model_aliases():
+                if "load_settings" not in stored:
+                    continue
+                kept = sent.get((stored["name"].lower(), stored["model"]))
+                if kept is None:
+                    raise AliasConflict(
+                        f"Alias '{stored['name']}' has load settings this page did not load. "
+                        "Reload the page and try again."
+                    )
+                if "load_settings" not in kept[1]:
+                    kept[0]["load_settings"] = stored["load_settings"]
+        elif revision != model_aliases_revision():
+            raise AliasConflict(
+                "Model aliases were changed somewhere else. Reload the page and try again."
+            )
+        taken = {model_id.lower() for model_id in model_ids}
+        for alias in aliases:
+            if alias["name"].lower() in taken:
+                raise ValueError(
+                    f"'{alias['name']}' is already the name of a model on this server."
+                )
+        upsert_app_settings({MODEL_ALIASES_SETTING_KEY: aliases})
+        _invalidate(MODEL_ALIASES_SETTING_KEY)
     return aliases
 
 
@@ -136,12 +200,16 @@ def alias_model_objects(
         # The alias already names its quant; a listed one would invite an unresolvable "alias:Q4".
         row = {k: v for k, v in listed.items() if k not in ("display_name", "quant")}
         row.update(id = alias["name"], alias_for = target)
+        if alias.get("load_settings"):
+            row["load_settings"] = alias["load_settings"]
         rows.append(row)
     return rows
 
 
-def _rewrite_alias_body(body: bytes, aliases: dict[str, str]) -> Optional[bytes]:
-    """The body with an aliased top-level ``model`` replaced by its target, or None if unchanged."""
+def _rewrite_alias_body(
+    body: bytes, aliases: dict[str, dict[str, Any]]
+) -> Optional[tuple[bytes, dict[str, Any]]]:
+    """The body with an aliased ``model`` swapped for its target, plus that alias, or None."""
     # Cheap scan first so a large (image, audio) body is only parsed when it names an alias.
     if not any(
         value.decode("utf-8", "ignore").strip().lower() in aliases
@@ -157,11 +225,11 @@ def _rewrite_alias_body(body: bytes, aliases: dict[str, str]) -> Optional[bytes]
     model = payload.get("model")
     if not isinstance(model, str):
         return None
-    target = aliases.get(model.strip().lower())
-    if target is None:
+    alias = aliases.get(model.strip().lower())
+    if alias is None:
         return None
-    payload["model"] = target
-    return json.dumps(payload, ensure_ascii = False).encode("utf-8")
+    payload["model"] = alias["model"]
+    return json.dumps(payload, ensure_ascii = False).encode("utf-8"), alias
 
 
 class ModelAliasMiddleware:
@@ -189,7 +257,7 @@ class ModelAliasMiddleware:
         ):
             await self.app(scope, receive, send)
             return
-        aliases = model_alias_map()
+        aliases = {alias["name"].lower(): alias for alias in get_model_aliases()}
         if not aliases:
             await self.app(scope, receive, send)
             return
@@ -205,7 +273,7 @@ class ModelAliasMiddleware:
         body = b"".join(chunks)
         rewritten = _rewrite_alias_body(body, aliases)
         if rewritten is not None:
-            body = rewritten
+            body, scope[ALIAS_SCOPE_KEY] = rewritten
             headers = [(k, v) for k, v in scope.get("headers", []) if k != b"content-length"]
             headers.append((b"content-length", str(len(body)).encode("ascii")))
             # In place: outer middlewares (keep-warm) read markers the route sets on this same dict.

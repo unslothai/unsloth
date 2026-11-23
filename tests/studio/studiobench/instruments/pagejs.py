@@ -83,9 +83,8 @@ class FramesInstrument(_PageInstrument):
         self._arm_screencast()
 
     def _arm_screencast(self) -> None:
-        """CDP presented frames: the only one of the three clocks that is not the page's own
-        opinion of itself. A page whose main thread is wedged reports nothing from rAF and nothing
-        from a timer; the compositor still presents, or visibly does not."""
+        """CDP frames, the only clock not the page's opinion; a wedged thread reports nothing via
+        rAF/timers."""
         ctx = self.ctx
         if ctx is None or ctx.cdp is None:
             return
@@ -118,8 +117,7 @@ class FramesInstrument(_PageInstrument):
             self._screencast_on = False
 
     def calibrate(self, idle_ms: int = 1200) -> dict:
-        """Calibrate only in an enforced idle window: a loaded page's load would be read as the
-        timer floor."""
+        """Calibrate only in an enforced idle window; page load would read as the timer floor."""
         if self.page is None:
             self.clamp = {"clampMs": None, "reason": "no page"}
             return self.clamp
@@ -154,8 +152,7 @@ class FramesInstrument(_PageInstrument):
         return out
 
     def _clock_agreement(self, out: dict, presented: int, elapsed_ms: float) -> dict:
-        """Screencast is liveness only, as it emits on visual change; agreement is rAF against the
-        1ms timer."""
+        """Screencast is liveness only; agreement is rAF against the 1ms timer."""
         raf = out.get("frames")
         lag_ticks = out.get("lag_ticks")
         clamp = out.get("clamp_ms")

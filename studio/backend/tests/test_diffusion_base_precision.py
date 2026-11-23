@@ -288,8 +288,13 @@ def test_repo_is_prequantized_alias_is_same_object():
     assert dit._repo_is_prequantized is repo_is_prequantized
 
 
-def test_pick_auto_precision_policy_table():
-    p = dit._pick_auto_precision
+def test_pick_auto_precision_policy_table(monkeypatch):
+    # A family measured below 1.5x but not in the fp8-over-bf16 set, so every band shows its plain pick.
+    monkeypatch.setattr(dit, "_AUTO_FP8_MEASURED", dit._AUTO_FP8_MEASURED | {"measured"})
+
+    def p(*args):
+        args = args + (True,) * (7 - len(args))
+        return dit._pick_auto_precision(*args, "measured")
 
     assert p(True, "cuda", 140, 23.8, (10, 0), True) == "nf4"
     assert p(False, "cpu", 140, 23.8, (10, 0), True) == "nf4"
@@ -300,12 +305,25 @@ def test_pick_auto_precision_policy_table():
     assert p(False, "cuda", 140, 23.8, (8, 0), True) == "bf16"
     assert p(False, "cuda", 140, 23.8, (10, 0), False) == "bf16"
 
-    # 30 > 23.8 * 1.15 (int8 band) but not > 23.8 * 1.5 (bf16 band).
-    assert p(False, "cuda", 30, 23.8, (10, 0), True) == "int8"
-    assert p(False, "cuda", 30, 23.8, (10, 0), True, False) == "nf4"
+    # 30 > 23.8 * 1.15 (the 8-bit band) but not > 23.8 * 1.5 (bf16 band): frozen fp8 on sm89+, int8 below.
+    assert p(False, "cuda", 30, 23.8, (10, 0), True) == "fp8"
+    assert p(False, "cuda", 30, 23.8, (8, 9), True) == "fp8"
+    assert p(False, "cuda", 30, 23.8, (12, 0), True, False) == "fp8"
+    assert p(False, "cuda", 30, 23.8, (8, 6), True) == "int8"
+    assert p(False, "cuda", 30, 23.8, (8, 0), True) == "int8"
+    assert p(False, "cuda", 30, 23.8, None, True) == "int8"
+    assert p(False, "cuda", 30, 23.8, (10, 0), False) == "int8"
+    assert p(False, "cuda", 30, 23.8, (10, 0), False, False) == "nf4"
     assert p(False, "cuda", 140, 23.8, (10, 0), True, False) == "bf16"
-    assert p(False, "cuda", 25, 23.8, (10, 0), True) == "nf4"
+    # Below 1.15x the streamed fp8 base still fits down to 0.9x dense on sm89+; int8 cannot, so older cards keep nf4.
+    assert p(False, "cuda", 25, 23.8, (10, 0), True) == "fp8"
+    assert p(False, "cuda", 21.5, 23.8, (8, 9), True) == "fp8"
+    assert p(False, "cuda", 21.4, 23.8, (8, 9), True) == "nf4"
+    assert p(False, "cuda", 25, 23.8, (8, 6), True) == "nf4"
+    assert p(False, "cuda", 25, 23.8, (10, 0), False) == "nf4"
     assert p(False, "cuda", 10, 23.8, (10, 0), True) == "nf4"
+    # fp8 never replaces nf4 for a prequant base.
+    assert p(True, "cuda", 30, 23.8, (8, 9), True) == "nf4"
 
 
 def test_resolve_base_precision_passes_explicit_through():
@@ -340,12 +358,25 @@ def test_resolve_auto_int8_band_gates_on_torchao(monkeypatch):
             return (10, 0)
 
     monkeypatch.setattr(torch, "cuda", _FakeCuda)
+    monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
+    monkeypatch.setattr(dit, "_auto_fp8_probe_ok", lambda device: True)
 
+    # flux.1's fp8 base is unmeasured, so Auto keeps the torchao int8 gate for it.
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
-
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "int8"
+    # The frozen fp8 base of a measured family (sm100 here) needs no torchao; the kill switch restores the int8 gate.
+    spec = dit._SPECS["flux.2-klein"]
+    monkeypatch.setattr(dit, "_dense_bf16_gb", lambda spec, base_model: 23.8)
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "fp8"
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "fp8"
+    monkeypatch.setenv("UNSLOTH_DIT_AUTO_FP8", "0")
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "int8"
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
 
 
 def test_resolve_auto_uses_klein_variant_size(monkeypatch):
@@ -363,6 +394,8 @@ def test_resolve_auto_uses_klein_variant_size(monkeypatch):
             return (10, 0)
 
     monkeypatch.setattr(torch, "cuda", _FakeCuda)
+    monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
+    monkeypatch.setattr(dit, "_auto_fp8_probe_ok", lambda device: True)
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
 
     four_b = _cfg(
@@ -376,6 +409,11 @@ def test_resolve_auto_uses_klein_variant_size(monkeypatch):
         mixed_precision = "bf16",
     )
 
+    # 20 GB free is 2.5x the 4B's 8.1 GB: fp8 is measured faster than compiled bf16 for flux.2-klein on sm89+.
+    assert dit._resolve_base_precision(four_b, spec, "cuda") == "fp8"
+    # 20 GB free is 1.10x the 9B's 18.2 GB: the streamed fp8 base on sm89+.
+    assert dit._resolve_base_precision(nine_b, spec, "cuda") == "fp8"
+    monkeypatch.setenv("UNSLOTH_DIT_AUTO_FP8", "0")
     assert dit._resolve_base_precision(four_b, spec, "cuda") == "bf16"
     assert dit._resolve_base_precision(nine_b, spec, "cuda") == "nf4"
 
@@ -398,6 +436,8 @@ def test_resolve_auto_int8_band_treats_stub_as_absent(monkeypatch):
 
     monkeypatch.setattr(torch, "cuda", _FakeCuda)
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)
+    # Explicit fp8 refuses the stub, so Auto must not pick the frozen fp8 base there either.
+    monkeypatch.setattr(dit, "is_stubbed", lambda name: name == "torchao")
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
 
 
@@ -416,6 +456,9 @@ def _fake_cuda_with_free_gb(monkeypatch, free_gb: float):
 
     monkeypatch.setattr(torch, "cuda", _FakeCuda)
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+    # Independent of whether this host has Triton: the bf16-band fp8 pick only applies to compiled runs.
+    monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
+    monkeypatch.setattr(dit, "_auto_fp8_probe_ok", lambda device: True)
 
 
 @pytest.mark.parametrize(
@@ -428,10 +471,13 @@ def _fake_cuda_with_free_gb(monkeypatch, free_gb: float):
     ],
 )
 def test_auto_sizes_flux2_klein_9b_off_its_own_weights(monkeypatch, base_model):
-    # Family dense_bf16_gb (8.1) is the 4B; 9B dense is 18.2 GB, so 20 GB free must pick nf4.
+    # Family dense_bf16_gb (8.1) is the 4B; 9B dense is 18.2 GB, so 20 GB free (1.10x) is below the 8-bit band: the
+    # streamed fp8 base on this sm100 (int8 would never fit), nf4 with the fp8 pick switched off.
     spec = dit._SPECS["flux.2-klein"]
     _fake_cuda_with_free_gb(monkeypatch, 20.0)
     cfg = _cfg(base_model = base_model, base_precision = "auto", mixed_precision = "bf16")
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "fp8"
+    monkeypatch.setenv("UNSLOTH_DIT_AUTO_FP8", "0")
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
     assert dit._dense_bf16_gb(spec, base_model) > 2 * spec.dense_bf16_gb
 
@@ -444,11 +490,14 @@ def test_auto_still_picks_bf16_for_the_klein_4b_default(monkeypatch):
         base_precision = "auto",
         mixed_precision = "bf16",
     )
+    # The bf16 band on sm89+ trains klein on the frozen fp8 base (1.32x at the same held-out loss).
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "fp8"
+    monkeypatch.setenv("UNSLOTH_DIT_AUTO_FP8", "0")
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "bf16"
 
 
 def test_the_klein_4b_bf16_band_edge_does_not_move(monkeypatch):
-    # Band edge is dense_gb * 1.5: 8.1 -> 12.15 keeps int8; 7.8 -> 11.70 would flip to bf16.
+    # Band edge is dense_gb * 1.5: 8.1 -> 12.15 keeps the 8-bit band (fp8 on this sm100); 7.8 -> 11.70 would flip to bf16.
     spec = dit._SPECS["flux.2-klein"]
     _fake_cuda_with_free_gb(monkeypatch, 12.0)
     cfg = _cfg(
@@ -456,7 +505,7 @@ def test_the_klein_4b_bf16_band_edge_does_not_move(monkeypatch):
         base_precision = "auto",
         mixed_precision = "bf16",
     )
-    assert dit._resolve_base_precision(cfg, spec, "cuda") == "int8"
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "fp8"
 
 
 def test_dense_bf16_gb_keeps_every_base_without_an_override_exactly_where_it_was():
@@ -1050,9 +1099,8 @@ def test_dit_accelerator_missing_reason_and_info_hide_train_without_a_gpu(monkey
 
 
 def test_dit_accelerator_gate_survives_a_torch_without_every_probe(monkeypatch):
-    """torch.mps.is_available() only exists from torch 2.5 and the supported floor is 2.4.
-    Probing the accelerators under one shared try/except turned that AttributeError into
-    "no block", so the very hosts the gate exists for (CPU-only) sailed through it."""
+    """torch.mps.is_available() is absent before torch 2.5 but the floor is 2.4; a shared try/except
+    would turn that AttributeError into no block, letting CPU-only hosts pass."""
     import torch
 
     from core.training.diffusion_train_common import dit_accelerator_missing_reason
@@ -1077,7 +1125,11 @@ def test_dit_accelerator_gate_survives_a_torch_without_every_probe(monkeypatch):
 @pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
 def test_lowp_probe_failure_falls_back_before_touching_the_model(monkeypatch, mode):
     # An arch whose float8 / MX GEMM fails (unverified sm89 / sm120 paths) must fall back to bf16 at load, not mid-run.
-    def broken_probe(convert, transformer):
+    def broken_probe(
+        convert,
+        transformer,
+        device = None,
+    ):
         raise RuntimeError("CUBLAS_STATUS_NOT_SUPPORTED")
 
     monkeypatch.setattr(dit, "_probe_lowp", broken_probe)
@@ -1142,3 +1194,57 @@ def test_training_access_facts_follow_no_token_mirror_with_cached_vendor_shard(
     assert fetched == mirror
     assert facts["gated"] is False
     assert mirror in facts["note"]
+
+
+def _fake_cuda(monkeypatch, free_gb, capability):
+    import torch
+
+    class _FakeCuda:
+        @staticmethod
+        def mem_get_info():
+            return (int(free_gb * 1e9), int(80 * 1e9))
+
+        @staticmethod
+        def get_device_capability():
+            return capability
+
+    monkeypatch.setattr(torch, "cuda", _FakeCuda)
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+    monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
+    monkeypatch.setattr(dit, "_auto_fp8_probe_ok", lambda device: True)
+
+
+@pytest.mark.parametrize(
+    "capability, expected",
+    [((8, 9), "fp8"), ((9, 0), "fp8"), ((12, 0), "fp8"), ((8, 6), "int8"), ((8, 0), "int8")],
+)
+def test_auto_band_picks_frozen_fp8_on_sm89_plus(monkeypatch, capability, expected):
+    """Z-Image (12.3 GB dense) with 16.4 GB free is inside the 1.15x-1.5x band."""
+    monkeypatch.delenv("UNSLOTH_DIT_AUTO_FP8", raising = False)
+    _fake_cuda(monkeypatch, 16.4, capability)
+    cfg = _cfg(base_model = "Tongyi-MAI/Z-Image", base_precision = "auto", mixed_precision = "bf16")
+    assert dit._resolve_base_precision(cfg, dit._SPECS["z-image"], "cuda") == expected
+
+
+def test_auto_fp8_skips_rocm_and_keeps_the_bf16_band(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_DIT_AUTO_FP8", raising = False)
+    cfg = _cfg(base_model = "Tongyi-MAI/Z-Image", base_precision = "auto", mixed_precision = "bf16")
+    _fake_cuda(monkeypatch, 21.9, (8, 9))
+    # z-image is one of the families fp8 measured faster for above 1.5x; flux.1 keeps compiled bf16 there.
+    assert dit._resolve_base_precision(cfg, dit._SPECS["z-image"], "cuda") == "fp8"
+    _fake_cuda(monkeypatch, 40.0, (8, 9))
+    assert (
+        dit._resolve_base_precision(
+            _cfg(base_precision = "auto", mixed_precision = "bf16"), dit._SPECS["flux.1"], "cuda"
+        )
+        == "bf16"
+    )
+    _fake_cuda(monkeypatch, 16.4, (9, 4))
+    monkeypatch.setattr(dit, "torch_is_rocm", lambda: True)
+    assert dit._resolve_base_precision(cfg, dit._SPECS["z-image"], "cuda") not in ("fp8", "int8")
+
+
+def test_auto_fp8_does_not_trigger_block_swap():
+    """Block swap only replaces an Auto int8 pick; the fp8 base already halves the weights."""
+    cfg = _cfg(base_model = "Tongyi-MAI/Z-Image", base_precision = "auto", mixed_precision = "bf16")
+    assert dit._auto_block_swap_wanted(cfg, "fp8", "cuda") is False

@@ -209,8 +209,7 @@ def _case_parity(
     ref = _reference(build(**build_kw), ids, labels, attention_mask, n_mb, steps)
     out = {"ref": {k: ref[k] for k in ("losses", "aux")}}
     if build_kw.get("aux", True) and build_kw.get("coef", 0.01) >= 1.0:
-        # The auxiliary loss is visible: dropping it changes the router / adapter gradients by far more than
-        # the parity tolerance.
+        # Dropping the aux loss moves router and adapter gradients far beyond the parity tolerance.
         dropped = _reference(
             build(**{**build_kw, "aux": False}), ids, labels, attention_mask, n_mb, 1
         )["grads"]
@@ -322,6 +321,9 @@ def _worker(rank, world, port, case, tmp, kwargs):
     try:
         res = CASES[case](rank, world, tmp, **kwargs)
         torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
+        # Rank 0 hosts the TCP store; leaving before a peer's last store call (a size-1
+        # subgroup needs no rendezvous with rank 0) breaks that peer's pipe.
+        dist.barrier()
     finally:
         dist.destroy_process_group()
 
@@ -429,8 +431,7 @@ def test_router_statistics_sum_over_stages_to_transformers_loss():
     [(True, True, True), (True, False, False), (False, True, False), (True, None, False)],
 )
 def test_aux_loss_refuses_reentrant_checkpointing(aux, reentrant, refused):
-    # Failing before: reentrant checkpointing captured router logits under no_grad, so the auxiliary loss added
-    # its value to the pipeline loss but no gradient.
+    # Reentrant checkpointing captured router logits under no_grad, so the aux loss got no gradient.
     model = build(aux = aux)
     if reentrant is not None:
         model.gradient_checkpointing_enable(

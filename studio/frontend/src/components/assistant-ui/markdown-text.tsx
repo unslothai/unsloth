@@ -42,7 +42,9 @@ import {
 import { preprocessLaTeX } from "@/lib/latex";
 import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled, urlToBlob } from "@/lib/native-files";
+import { backendPathUrl, desktopSignedMediaPath, protectedBackendPath } from "@/lib/api-base";
 import { openLink } from "@/lib/open-link";
+import { videoMimeForName } from "@/lib/video-utils";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
@@ -116,14 +118,17 @@ import { AudioPlayer } from "./audio-player";
 import {
   type ContextFile,
   FileContextMenu,
+  loadBackendFile,
   loadSandboxFile,
   WebLinkContextMenu,
 } from "./link-context-menu";
 import {
   decodeSegment,
   markdownSandboxImageSrc,
+  markdownSandboxVideoSrc,
   sandboxFileForHref,
   sandboxSessionIdFor,
+  sandboxVideoFileForSrc,
   sandboxSessionInSrc,
 } from "./sandbox-files";
 import { MARKDOWN_TABLE_ICONS, MarkdownTable } from "./markdown-table";
@@ -235,10 +240,12 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const projectId = useChatProjectScope();
   const file = src
-    ? markdownSandboxImageSrc(src, {
+    ? (markdownSandboxImageSrc(src, {
         threadId: remoteId ?? activeThreadId ?? undefined,
         projectId,
-      })
+      }) ??
+      desktopSignedMediaPath(src) ??
+      protectedBackendPath(src))
     : null;
   const sandbox = useSandboxImage(file);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
@@ -348,6 +355,57 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
   );
 });
 
+function SandboxVideo({ url, label }: { url: string; label: string }) {
+  const { ref, state } = useSandboxImage<HTMLSpanElement>(url, videoMimeForName(url.split(/[?#]/)[0]));
+  return (
+    <span ref={ref} data-streamdown="video-wrapper" className="my-4 block max-w-full">
+      {state.status === "failed" ? (
+        <span className="text-xs text-muted-foreground">Video not available</span>
+      ) : state.status === "loaded" ? (
+        <video
+          src={state.url}
+          controls={true}
+          loop={true}
+          playsInline={true}
+          preload="metadata"
+          aria-label={label || "Video"}
+          className="block h-auto max-h-[min(70dvh,620px)] max-w-full rounded-lg"
+        />
+      ) : (
+        <span
+          role="status"
+          aria-busy="true"
+          aria-label="Loading video…"
+          className="block aspect-video w-full max-w-xl rounded-lg bg-muted/20"
+        />
+      )}
+    </span>
+  );
+}
+
+function useSandboxScope() {
+  const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const projectId = useChatProjectScope();
+  return { threadId: remoteId ?? activeThreadId ?? undefined, projectId };
+}
+
+const MarkdownMedia = memo(function MarkdownMedia(props: ComponentProps<"img">) {
+  const scope = useSandboxScope();
+  const video = props.src ? markdownSandboxVideoSrc(props.src, scope) : null;
+  return video ? <SandboxVideo url={video} label={props.alt ?? ""} /> : <MarkdownImage {...props} />;
+});
+
+function SandboxVideoLink({ href, label, children }: { href: string; label: string; children: ReactNode }) {
+  const video = markdownSandboxVideoSrc(href, useSandboxScope());
+  return (
+    <>
+      {video ? <SandboxVideo url={video} label={label} /> : null}
+      {children}
+    </>
+  );
+}
+
 const LINK_CLASS =
   "text-foreground underline underline-offset-2 decoration-foreground/40 hover:decoration-foreground transition-colors cursor-pointer";
 
@@ -356,19 +414,35 @@ function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
   const file = href ? sandboxFileForHref(href) : null;
   // Only file links subscribe to the chat's scope; links re-render per streamed token.
   if (href && file !== null) {
-    return (
+    const link = (
       <SandboxFileLink href={href} file={file} dom={dom}>
         {children}
       </SandboxFileLink>
     );
+    return sandboxVideoFileForSrc(href) !== null ? (
+      <SandboxVideoLink href={href} label={typeof children === "string" ? children : ""}>
+        {link}
+      </SandboxVideoLink>
+    ) : (
+      link
+    );
   }
+  const backend = href ? protectedBackendPath(href) : null;
+  if (backend !== null) {
+    return (
+      <BackendFileLink href={backend} dom={dom}>
+        {children}
+      </BackendFileLink>
+    );
+  }
+  const target = href ? backendPathUrl(href) : href;
   const link = (
     <a
-      href={href}
+      href={target}
       rel="noopener noreferrer"
       className={LINK_CLASS}
       onClick={(e) => {
-        if (href && openLink(href)) {
+        if (target && openLink(target)) {
           e.preventDefault();
         }
       }}
@@ -377,7 +451,57 @@ function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
       {children}
     </a>
   );
-  return href ? <WebLinkContextMenu href={href}>{link}</WebLinkContextMenu> : link;
+  return target ? <WebLinkContextMenu href={target}>{link}</WebLinkContextMenu> : link;
+}
+
+/** A backend file the chat's tools linked (a saved voice sample): fetched with the session's credentials. */
+function BackendFileLink({
+  href,
+  dom,
+  children,
+}: {
+  href: string;
+  dom: Omit<ComponentProps<"a">, "href" | "children">;
+  children: ReactNode;
+}) {
+  const t = useT();
+  const parts = href.split(/[?#]/)[0].split("/").filter(Boolean);
+  const tail = decodeSegment(parts.at(-1) ?? "");
+  const base = tail === "file" ? decodeSegment(parts.at(-2) ?? "file") : tail;
+  const named = (blob: Blob) => {
+    const ext = blob.type.split("/")[1]?.split(/[;+]/)[0];
+    return base.includes(".") || !ext ? base : `${base}.${ext === "mpeg" ? "mp3" : ext}`;
+  };
+  const target: ContextFile = { name: base, load: () => loadBackendFile(href) };
+  const openFile = () => {
+    void target
+      .load()
+      .then(async (blob) => {
+        if (filesOpenInBrowser()) {
+          openFileInBrowser({ blob, name: named(blob), contentType: blob.type, key: `backend:${href}` });
+          return;
+        }
+        await downloadFile(blob, named(blob), blob.type || undefined);
+      })
+      .catch((error) => {
+        if (!isDownloadCancelled(error)) toast.error(t("linkMenu.openFailed", { name: base }));
+      });
+  };
+  return (
+    <FileContextMenu file={{ ...target, open: openFile }}>
+      <a
+        href={backendPathUrl(href)}
+        className={LINK_CLASS}
+        onClick={(event) => {
+          event.preventDefault();
+          openFile();
+        }}
+        {...dom}
+      >
+        {children}
+      </a>
+    </FileContextMenu>
+  );
 }
 
 function SandboxFileLink({
@@ -456,7 +580,7 @@ const STREAMDOWN_COMPONENTS = {
   a: MarkdownLink,
   // Module-scoped: Streamdown's memo comparator ignores `components`.
   [SEARCH_IMAGE_TAG]: SearchImageElement,
-  img: MarkdownImage,
+  img: MarkdownMedia,
   table: MarkdownTable,
 };
 const STREAMDOWN_ALLOWED_TAGS = {
@@ -637,6 +761,19 @@ function MermaidCopyButton({ source }: { source: string }) {
   );
 }
 
+/** A block's own wrap and expand choices, by language and code: the thread window remounts rows
+ *  it scrolls back to, and the choices would otherwise reset with the component. */
+const blockViews = new Map<string, { wrapped?: boolean; expanded?: boolean }>();
+const BLOCK_VIEWS_MAX = 500;
+
+function rememberBlockView(key: string | null, view: { wrapped?: boolean; expanded?: boolean }) {
+  if (key === null) return;
+  const next = { ...blockViews.get(key), ...view };
+  blockViews.delete(key);
+  blockViews.set(key, next);
+  if (blockViews.size > BLOCK_VIEWS_MAX) blockViews.delete(blockViews.keys().next().value as string);
+}
+
 export function CodeBlockActions({
   disabled,
   language,
@@ -651,12 +788,23 @@ export function CodeBlockActions({
 }) {
   const { copied, showCopied } = useCopiedState();
   const actionsRef = useRef<HTMLDivElement>(null);
+  const viewKey = wrappable && typeof source === "string" ? `${language ?? ""}\n${source}` : null;
+  const remembered = viewKey === null ? undefined : blockViews.get(viewKey);
   // Starts from Appearance > Code > Word wrap; the toggle overrides it for this block only.
   const [wrapped, setWrapped] = useState(
-    () => typeof document !== "undefined" && document.documentElement.hasAttribute("data-code-wrap"),
+    () =>
+      remembered?.wrapped ??
+      (typeof document !== "undefined" && document.documentElement.hasAttribute("data-code-wrap")),
   );
   const wrapLabel = wrapped ? "Disable word wrap" : "Enable word wrap";
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(() => remembered?.expanded ?? false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: restores a remembered view once, on mount
+  useLayoutEffect(() => {
+    const wrapper = actionsRef.current?.parentElement;
+    if (!wrapper || !remembered) return;
+    if (remembered.wrapped !== undefined) wrapper.setAttribute("data-wrap", remembered.wrapped ? "on" : "off");
+    if (remembered.expanded) wrapper.toggleAttribute("data-code-expanded", true);
+  }, []);
   const [overflowing, setOverflowing] = useState(false);
   useEffect(() => {
     const wrapper = actionsRef.current?.parentElement;
@@ -696,6 +844,7 @@ export function CodeBlockActions({
             const next = !wrapped;
             // The block is this bar's sibling; index.css keys the per-block wrap on the shared wrapper.
             actionsRef.current?.parentElement?.setAttribute("data-wrap", next ? "on" : "off");
+            rememberBlockView(viewKey, { wrapped: next });
             setWrapped(next);
           }}
         >
@@ -710,6 +859,7 @@ export function CodeBlockActions({
           onClick={() => {
             const next = !expanded;
             actionsRef.current?.parentElement?.toggleAttribute("data-code-expanded", next);
+            rememberBlockView(viewKey, { expanded: next });
             setExpanded(next);
           }}
         >
@@ -952,7 +1102,8 @@ const tokenizesOffThread = (body: string, streaming: boolean): boolean =>
 const slowMainThreadRegex =
   typeof window !== "undefined"
   && typeof window.requestIdleCallback !== "function";
-const MAIN_THREAD_TAIL_CHARS = 512;
+// JavaScriptCore interprets lookbehind patterns, so there even a short fence goes to the worker.
+const MAIN_THREAD_TAIL_CHARS = slowMainThreadRegex ? 0 : 512;
 
 const settlesOffThread = (
   body: string,
@@ -960,7 +1111,7 @@ const settlesOffThread = (
   options: ReturnType<typeof fenceHighlightOptions>,
 ): boolean => {
   if (!tokenizesOffThread(body, streaming)) {
-    if (streaming || !slowMainThreadRegex) return false;
+    if (streaming) return false;
     const state = highlightWorkerState();
     if (state === "unavailable" || state === "stalled") return false;
   }
@@ -1102,7 +1253,7 @@ function useFenceTokens(
       }
       show(settled);
     };
-    if (defer()) {
+    if (defer() && !settlesOffThread(body, streaming, options)) {
       if (displayed.current !== null
         && (displayed.current.body !== body || displayed.current.language !== languageToken)) {
         show(null);
@@ -1239,12 +1390,13 @@ function FenceBlock({
 
   /* warm(true) tokenizes now (a sync cache hit for render); warm(false) only loads the grammar. */
   const warm = useCallback(
-    (tokens: boolean) => {
+    (tokens: boolean, inView = false) => {
       const body = trimTrailingNewlines(source);
       const options = fenceHighlightOptions(body, languageToken);
       const inline =
         tokens
-        && (!settlesOffThread(body, Boolean(isIncomplete), options)
+        && ((inView && !slowMainThreadRegex && !tokenizesOffThread(body, Boolean(isIncomplete)))
+          || !settlesOffThread(body, Boolean(isIncomplete), options)
           || code.cached(options) !== null);
       if (inline && !isIncomplete) code.highlightExact(options, () => {});
       else code.highlight(inline ? options : fenceHighlightOptions("", languageToken), () => {});

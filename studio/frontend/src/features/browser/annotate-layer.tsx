@@ -484,7 +484,7 @@ export function AnnotateLayer({
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => setFrame((value) => value + 1));
     };
-    // Reduced motion gives zoom a 0.01ms transition, so content settles when it ends.
+    // A zoom that transitions settles when it ends; an instant one is redrawn by the [zoom] effect below.
     const zoomed = (event: TransitionEvent) => event.propertyName === "zoom" && redraw();
     page.addEventListener("scroll", redraw, { capture: true, passive: true });
     page.addEventListener("transitionend", zoomed, true);

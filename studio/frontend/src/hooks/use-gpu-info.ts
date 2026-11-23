@@ -82,7 +82,7 @@ export interface GpuInfo {
   /** Whether host available memory was reported, including a real zero. */
   systemRamAvailableKnown?: boolean;
   systemRamTotalGb: number;
-  /** Apple MLX only: what llama.cpp and MLX admit right now, `min(working set, free) * 0.85`
+  /** Apple Silicon only: what llama.cpp (and MLX) admit right now, `min(working set, free) * 0.85`
    *  (`_apple_metal_memory_budget_bytes`). Null on every other host and on older backends. */
   unifiedLoadBudgetGb?: number | null;
   /** `min(working set, free + AGX in use) * 0.85`: the budget once the loader has freed a resident model. */
@@ -107,17 +107,25 @@ function finiteNonNegative(value: number | null | undefined): number | null {
 
 function appleUnifiedLoadBudgetGb(
   data: SystemInfoResponse | null,
+  inventoryBackend: string | null | undefined,
   devices: readonly GpuDevice[],
   afterUnload = false,
 ): number | null {
-  if (data?.device_backend !== "mlx" || devices.length !== 1) return null;
+  const metalInventory = inventoryBackend === "metal";
+  if (
+    (data?.device_backend !== "mlx" && !metalInventory) ||
+    devices.length !== 1
+  ) {
+    return null;
+  }
   const device = devices[0];
   const workingSetGb = finitePositive(device.metal_working_set_gb);
   if (device.shared_memory !== true || workingSetGb === null) return null;
   let freeGb =
     finiteNonNegative(device.vram_free_gb) ??
-    finiteNonNegative(data.memory?.available_gb);
-  if (afterUnload) {
+    finiteNonNegative(data?.memory?.available_gb);
+  // The Metal inventory cannot see the resident's share, so a switch keeps the live budget.
+  if (afterUnload && !metalInventory) {
     // The AGX in-use figure holds the resident model's Metal buffers, which the loader frees first;
     // other apps' memory stays counted. Unknown usage leaves only the working-set ceiling.
     const usedGb = finiteNonNegative(device.vram_used_gb);
@@ -225,8 +233,17 @@ function toGpuInfo(
       unifiedMemory: loadDevice?.unified_memory === true,
     }),
     deviceCount: devices.length,
-    unifiedLoadBudgetGb: appleUnifiedLoadBudgetGb(data, devices),
-    unifiedLoadCeilingGb: appleUnifiedLoadBudgetGb(data, devices, true),
+    unifiedLoadBudgetGb: appleUnifiedLoadBudgetGb(
+      data,
+      gpuData.backend,
+      devices,
+    ),
+    unifiedLoadCeilingGb: appleUnifiedLoadBudgetGb(
+      data,
+      gpuData.backend,
+      devices,
+      true,
+    ),
   };
 }
 
@@ -333,12 +350,16 @@ export function nextGpuInfo(current: GpuInfo, next: GpuInfo): GpuInfo {
 }
 
 /** Aggregate GPU info from /api/system; shares one module-level fetch across all GPU hooks. */
-function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
+function useGpuInfoSource(
+  source: "gpu" | "inference_gpu",
+  enabled = true,
+): GpuInfo {
   const cachedSystem = getCachedSystemInfo();
   const [gpu, setGpu] = useState<GpuInfo>(
     cachedSystem ? toGpuInfo(cachedSystem, source) : DEFAULT_GPU,
   );
   useEffect(() => {
+    if (!enabled) return;
     // No early return on cachedSystem: a consumer mounting as the cache fills would stay default.
     let cancelled = false;
     const sync = (data: SystemInfoResponse) => {
@@ -362,17 +383,18 @@ function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
       cancelled = true;
       unsubscribe();
     };
-  }, [source]);
+  }, [source, enabled]);
   return gpu;
 }
 
-export function useGpuInfo(): GpuInfo {
-  return useGpuInfoSource("gpu");
+/** `enabled` false reads only the cache, for a consumer mounted long before it is shown. */
+export function useGpuInfo(enabled = true): GpuInfo {
+  return useGpuInfoSource("gpu", enabled);
 }
 
 /** Includes a separately installed Vulkan backend. */
-export function useInferenceGpuInfo(): GpuInfo {
-  return useGpuInfoSource("inference_gpu");
+export function useInferenceGpuInfo(enabled = true): GpuInfo {
+  return useGpuInfoSource("inference_gpu", enabled);
 }
 
 /** Optional engines launch on torch's physical CUDA/ROCm ids (`useGpuDevices(true)`), never a Vulkan ordinal. */

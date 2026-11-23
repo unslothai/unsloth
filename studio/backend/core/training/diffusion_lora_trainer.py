@@ -73,6 +73,11 @@ from core.training.diffusion_train_common import (  # noqa: F401
     restore_resume_state,
     write_resume_checkpoint,
 )
+from core.training.diffusion_gc_budget import (
+    OUT_OF_MEMORY,
+    BudgetedSteps,
+    enable_budgeted_checkpointing,
+)
 from core.training.diffusion_samples import (
     discard_samples,
     initial_noise,
@@ -185,9 +190,7 @@ def _load_image_tensor_planned(
 def _encode_sdxl_prompts(
     prompts: list[str], tokenizers: list, text_encoders: list, device: Any
 ) -> tuple:
-    """Encode a batch of prompts with both SDXL text encoders. Returns
-    (prompt_embeds [B, T, 2048], pooled_prompt_embeds [B, 1280]). Text encoders are
-    frozen, so this runs without grad."""
+    """Encode prompts with both SDXL text encoders to [B, T, 2048] embeds and [B, 1280] pooled; no grad."""
     import torch
 
     embeds_list = []
@@ -325,6 +328,17 @@ def _mps_available() -> bool:
         return False
 
 
+def _unet_lora_metadata_kwargs(save, unet) -> dict:
+    # Without the adapter metadata diffusers' loader assumes lora_alpha == rank.
+    import inspect
+    try:
+        if "unet_lora_adapter_metadata" not in inspect.signature(save).parameters:
+            return {}
+        return {"unet_lora_adapter_metadata": unet.peft_config["default"].to_dict()}
+    except Exception:  # noqa: BLE001 -- metadata is best-effort; the weights still save
+        return {}
+
+
 def run_diffusion_lora_training(
     config: DiffusionLoraConfig,
     *,
@@ -382,8 +396,7 @@ def run_diffusion_lora_training(
         pairs = discover_image_caption_pairs(
             cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
         )
-        # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so every
-        # downstream read agrees.
+        # Resolve num_epochs to train_steps now the size is known; rebind cfg so reads agree.
         cfg = replace(
             cfg,
             train_steps = resolve_train_steps(cfg, len(pairs), [p for p, _ in pairs]),
@@ -444,6 +457,11 @@ def run_diffusion_lora_training(
         for m in (unet, vae, *text_encoders):
             m.requires_grad_(False)
         vae.to(device, dtype = torch.float32)
+        # ROCm: the VAE's single-head attention (head dim 512) takes the routed exact path inference uses; Windows
+        # ROCm's fused kernels return garbage there, which would encode every training latent wrong.
+        from core.inference.diffusion_vae_attn_chunked import install as _route_vae_attention
+
+        _route_vae_attention(vae)
         for m in (unet, *text_encoders):
             m.to(device, dtype = weight_dtype)
 
@@ -456,14 +474,17 @@ def run_diffusion_lora_training(
                 target_modules = list(cfg.lora_target_modules),
             )
         )
+        gc_budget = None
         if cfg.gradient_checkpointing:
-            enable_diffusion_gradient_checkpointing(unet)
+            # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
+            gc_budget = enable_budgeted_checkpointing(unet, device)
+            if gc_budget is None:
+                enable_diffusion_gradient_checkpointing(unet)
         # LoRA params must be fp32 for a stable optimizer under mixed precision.
         if weight_dtype != torch.float32:
             cast_training_params(unet, dtype = torch.float32)
 
-        # Regionally torch.compile the U-Net repeated blocks via the DiT trainer's never-fatal wrapper (failure
-        # falls back to eager).
+        # Regional torch.compile of U-Net blocks; never-fatal, falls back to eager.
         from core.training.diffusion_dit_trainer import (
             _compile_engagement_warning,
             _dynamo_compile_counters,
@@ -480,8 +501,7 @@ def run_diffusion_lora_training(
         )
         # A frozen fp16 UNet (pre-Ampere / RDNA2 fallback) underflows the LoRA gradients without loss scaling.
         scaler = torch.amp.GradScaler("cuda", enabled = weight_dtype is torch.float16)
-        # The scheduler advances once per optimizer update, so count warmup/decay in optimizer steps; the
-        # accumulation factor would stretch warmup.
+        # Scheduler ticks per optimizer update: warmup counts optimizer steps, not micro-steps.
         lr_sched = get_scheduler(
             cfg.lr_scheduler,
             optimizer = optimizer,
@@ -492,8 +512,7 @@ def run_diffusion_lora_training(
         vae_scale = vae.config.scaling_factor
         prediction_type = noise_scheduler.config.prediction_type
 
-        # Deterministic, so the precomputed embeddings are bit-identical to in-loop encoding; the ~1.5 GB
-        # CLIP encoders are freed afterwards.
+        # Deterministic, so precomputed embeds are bit-identical; the ~1.5 GB CLIP is freed.
         precompute = os.environ.get("UNSLOTH_DIFFUSION_NO_PRECOMPUTE", "") not in ("1", "true")
         caption_embeds: dict[str, tuple] = {}
         sample_plan = plan_samples(cfg, "sdxl", [c for _, c in pairs])
@@ -571,8 +590,7 @@ def run_diffusion_lora_training(
                     torch.cuda.empty_cache()
         if sample_plan is not None and vae is not None:
             sample_vae = vae
-        # Variant picks use their own stream so the loop index/noise draws stay seed-deterministic whether
-        # or not the cache is enabled.
+        # Variant picks use a separate RNG; seeded loop draws match with or without the cache.
         variant_rng = random.Random(cfg.seed + 1)
 
         _emit(on_event, "model_load_completed", compiled = compiled)
@@ -581,9 +599,8 @@ def run_diffusion_lora_training(
         # Env override and over-budget fallback disable the cache; the paths draw crops from different RNGs.
         identity = with_cache_mode(identity, latent_cache is not None)
 
-        # Permutation-cycle index sampler: each image is visited once per cycle before any repeat, so a
-        # short run does not leave a small dataset partly unseen.
-        # Bucketed runs draw each batch from one bucket so its latents stack into one shape.
+        # Each image once per cycle so short runs see all; bucketed batches draw from one bucket to
+        # stack.
         index_sampler = (
             PermutationBatchSampler(len(pairs), rng)
             if canvases is None
@@ -591,8 +608,7 @@ def run_diffusion_lora_training(
         )
 
         def _next_batch() -> tuple[list[int], list[str], list[str]]:
-            # Draw the full configured batch, not min(batch, n): the sampler refills across cycles so a small
-            # dataset still yields that many indices.
+            # Draw the full batch, not min(batch, n): the sampler refills across cycles.
             idx = index_sampler.next_batch(cfg.train_batch_size)
             if canvases is not None:
                 idx = idx[1]
@@ -617,8 +633,7 @@ def run_diffusion_lora_training(
         if scaler.is_enabled() and isinstance(scaler_state, dict) and scaler_state:
             # Continue at the scale the run had backed off to, not 2**16, which would overflow again.
             scaler.load_state_dict(scaler_state)
-        # Bound HERE: the checkpoint scan and the periodic saves both need it, and the two earlier
-        # assignments live inside early-return branches.
+        # Bound here: earlier assignments sit in early-return branches; scan and saves need it.
         out_dir = Path(cfg.output_dir).expanduser()
         # Foreign bundles in a reused output_dir must be cleared or they outrank this run.
         resumed_here = bool(resumed) and resumed_into_this_dir(cfg, out_dir)
@@ -742,6 +757,38 @@ def run_diffusion_lora_training(
                 _sample(resumed)
 
         train_peak = TrainingPeakMemory(device)
+
+        def _restart_peak():
+            # The failed attempt's peak is not the training cost.
+            train_peak.pause()
+            train_peak.resume()
+
+        budget_steps = BudgetedSteps(
+            gc_budget,
+            device,
+            optimizer,
+            warn = lambda message: _emit(on_event, "warning", message = message),
+            on_step_down = _restart_peak,
+        )
+
+        def _forward_backward(noisy, timesteps, prompt_embeds, added, target):
+            model_pred = unet(
+                noisy, timesteps, prompt_embeds, added_cond_kwargs = added, return_dict = False
+            )[0]
+            if cfg.snr_gamma is not None:
+                snr = compute_snr(noise_scheduler, timesteps)
+                w = torch.stack([snr, cfg.snr_gamma * torch.ones_like(timesteps)], dim = 1).min(
+                    dim = 1
+                )[0]
+                w = w / snr if prediction_type != "v_prediction" else w / (snr + 1)
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
+                loss = loss.mean(dim = list(range(1, loss.ndim))) * w
+                loss = loss.mean()
+            else:
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
+            scaler.scale(loss / cfg.gradient_accumulation_steps).backward()
+            return loss
+
         compile_watch = _dynamo_compile_counters() if compiled else None
         for opt_step in range(resumed, cfg.train_steps):
             if stop_latched:
@@ -749,6 +796,7 @@ def run_diffusion_lora_training(
                 break
             optimizer.zero_grad(set_to_none = True)
             step_acc = None
+            budget_steps.start_step()
             for _ in range(cfg.gradient_accumulation_steps):
                 idx, img_paths, captions = _next_batch()
                 if latent_cache is not None:
@@ -799,29 +847,26 @@ def run_diffusion_lora_training(
                 pooled = pooled.to(dtype = weight_dtype)
                 added = {"text_embeds": pooled, "time_ids": batch_time_ids}
 
-                model_pred = unet(
-                    noisy, timesteps, prompt_embeds, added_cond_kwargs = added, return_dict = False
-                )[0]
-
                 if prediction_type == "v_prediction":
                     target = noise_scheduler.get_velocity(latents, noise, timesteps)
                 else:
                     target = noise
 
-                if cfg.snr_gamma is not None:
-                    snr = compute_snr(noise_scheduler, timesteps)
-                    w = torch.stack([snr, cfg.snr_gamma * torch.ones_like(timesteps)], dim = 1).min(
-                        dim = 1
-                    )[0]
-                    w = w / snr if prediction_type != "v_prediction" else w / (snr + 1)
-                    loss = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
-                    loss = loss.mean(dim = list(range(1, loss.ndim))) * w
-                    loss = loss.mean()
+                if gc_budget is not None and not gc_budget.planned and canvases is not None:
+                    # Bucketed runs: the plan is measured on this canvas and scaled to the largest bucket.
+                    gc_budget.note_canvas(max(canvases[i][0] * canvases[i][1] for i in idx))
+                loss = budget_steps.forward_backward(
+                    _forward_backward, (noisy, timesteps, prompt_embeds, added, target)
+                )
+                if loss is OUT_OF_MEMORY:
+                    # Drop every device reference to the micro-batch first, so the rerun has a clean step's memory.
+                    loss = noisy = timesteps = prompt_embeds = pooled = added = target = None
+                    latents = noise = batch_time_ids = pixel_values = None
+                    step_acc = None
+                    for loss in budget_steps.rerun(_forward_backward):
+                        step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
                 else:
-                    loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
-
-                scaler.scale(loss / cfg.gradient_accumulation_steps).backward()
-                step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
+                    step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
                 micro += 1
 
             # max_grad_norm <= 0 disables clipping; clip_grad_norm_(0.0) would zero all grads.
@@ -834,11 +879,16 @@ def run_diffusion_lora_training(
                     grad_norm = None
             step_loss = loss_value(step_acc)
             scale_before = scaler.get_scale() if scaler.is_enabled() else None
+            budget_steps.before_update()
             scaler.step(optimizer)
             scaler.update()
             # An overflow step lowers the scale and skips the update; the schedule must not run ahead of the weights.
             if scale_before is None or scaler.get_scale() >= scale_before:
                 lr_sched.step()
+                # After step 1: plan the checkpointing budget (bucketed runs scale to the largest canvas).
+                budget_steps.after_update(
+                    max(c[0] * c[1] for c in canvases) if canvases is not None else None
+                )
 
             running_loss += step_loss
             done = opt_step + 1
@@ -908,6 +958,7 @@ def run_diffusion_lora_training(
                 unet_lora_layers = unet_lora,
                 safe_serialization = True,
                 weight_name = DEFAULT_LORA_FILENAME,
+                **_unet_lora_metadata_kwargs(StableDiffusionXLPipeline.save_lora_weights, unet),
             )
             lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
             # Mirror into loras/diffusion for the Images picker (scan skips subdirs); use done, not cfg.train_steps, so a stop at 11/500 does not advertise 500.
@@ -956,6 +1007,35 @@ def _make_lora_optimizer(
     return make_lora_optimizer(params, lr, resume_optimizer_class)
 
 
+def _drain_stop_queue(stop_queue: Any, event_queue: Any) -> Any:
+    """Drain the queue and return the last stop message (True or a dict with save=False); else False.
+    A {"vram": "lend" | "return"} message is the parent asking for the GPU room the trainer keeps idle
+    (the DiT dequant cache): served here, between steps, and acknowledged; never a stop."""
+    got: Any = None
+    saw = False
+    try:
+        while not stop_queue.empty():
+            msg = stop_queue.get_nowait()
+            if isinstance(msg, dict) and "vram" in msg:
+                _serve_vram_request(msg, event_queue)
+                continue
+            got = msg
+            saw = True
+    except Exception:  # noqa: BLE001 -- an empty/closed queue just means "keep going"
+        pass
+    return got if saw else False
+
+
+def _serve_vram_request(msg: dict, event_queue: Any) -> None:
+    ack: dict = {"kind": msg.get("vram")}
+    try:
+        from .diffusion_lora_fast import handle_vram_request
+        ack = handle_vram_request(str(msg.get("vram")))
+    except Exception as exc:  # noqa: BLE001 -- the parent must still hear back, never wait out its timeout
+        ack["error"] = str(exc)
+    event_queue.put({"type": "vram_request_ack", "seq": msg.get("seq"), "ts": time.time(), **ack})
+
+
 def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Unexpected exceptions become an error event on the queue, not a silent subprocess crash."""
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -964,21 +1044,21 @@ def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config:
         event_queue.put(ev)
 
     def should_stop() -> Any:
-        # Drain the queue and return the last stop message (True or a dict with save=False); else False.
-        got: Any = None
-        saw = False
-        try:
-            while not stop_queue.empty():
-                got = stop_queue.get_nowait()
-                saw = True
-        except Exception:  # noqa: BLE001 -- an empty/closed queue just means "keep going"
-            pass
-        return got if saw else False
+        return _drain_stop_queue(stop_queue, event_queue)
 
     try:
         # normalized() validates the family; the registry sends DiT families to their own trainer.
         cfg = _config_from_dict(config).normalized()
         trainer = get_trainer(cfg.resolved_family)
+        if cfg.num_gpus > 1 and getattr(trainer, "__name__", "") != "run_dit_lora_training":
+            on_event(
+                {
+                    "type": "warning",
+                    "message": f"num_gpus={cfg.num_gpus} applies to DiT families only; "
+                    f"{cfg.resolved_family} trains on one GPU.",
+                    "ts": time.time(),
+                }
+            )
         from .diffusion_download_progress import TrainingDownloadProgress
 
         with TrainingDownloadProgress(on_event) as report:

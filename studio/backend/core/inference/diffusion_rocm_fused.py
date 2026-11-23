@@ -14,6 +14,7 @@ import sys
 import threading
 from typing import Any, Callable, Optional
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_FUSED_ROPE"
 FUSED_ADALN_ENV = "UNSLOTH_DIFFUSION_FUSED_ADALN"
@@ -230,6 +231,7 @@ def uninstall_rope() -> None:
 
 
 @functools.lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _adaln_kernel() -> Optional[Callable]:
     try:
         import triton
@@ -347,6 +349,13 @@ def _adaln_eligible(norm: Any, x: Any, scale: Any, shift: Any) -> Optional[float
     return eps
 
 
+def _count(key: str) -> None:
+    """Eager census only: a counter bumped under Dynamo becomes a guard on its value, so every call recompiles."""
+    import torch
+    if not torch.compiler.is_compiling():
+        COUNTS[key] += 1
+
+
 def _fused_modulate(norm: Any, x: Any, scale: Any, shift: Any) -> Optional[Any]:
     """``norm(x) * (1 + scale[:, None]) + shift[:, None]`` in one kernel, or None when not eligible."""
     import torch
@@ -382,16 +391,16 @@ def _adaln_zero_forward(
 ):
     cls = _CLASSES["AdaLayerNormZero"]
     if self.emb is not None or timestep is not None or class_labels is not None:
-        COUNTS["adaln_stock"] += 1
+        _count("adaln_stock")
         return _prev(cls)(self, x, timestep, class_labels, hidden_dtype, emb)
     e = self.linear(self.silu(emb))
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = e.chunk(6, dim = 1)
     out = _fused_modulate(self.norm, x, scale_msa, shift_msa)
     if out is None:
-        COUNTS["adaln_stock"] += 1
+        _count("adaln_stock")
         out = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
     else:
-        COUNTS["adaln_fused"] += 1
+        _count("adaln_fused")
     return out, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 
@@ -404,10 +413,10 @@ def _adaln_zero_single_forward(
     shift_msa, scale_msa, gate_msa = e.chunk(3, dim = 1)
     out = _fused_modulate(self.norm, x, scale_msa, shift_msa)
     if out is None:
-        COUNTS["adaln_stock"] += 1
+        _count("adaln_stock")
         out = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
     else:
-        COUNTS["adaln_fused"] += 1
+        _count("adaln_fused")
     return out, gate_msa
 
 
@@ -416,10 +425,10 @@ def _adaln_continuous_forward(self, x, conditioning_embedding):
     scale, shift = e.chunk(2, dim = 1)
     out = _fused_modulate(self.norm, x, scale, shift)
     if out is None:
-        COUNTS["adaln_stock"] += 1
+        _count("adaln_stock")
         out = self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
     else:
-        COUNTS["adaln_fused"] += 1
+        _count("adaln_fused")
     return out
 
 

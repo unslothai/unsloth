@@ -484,6 +484,57 @@ def test_resolver_falls_back_to_the_cache_only_without_a_hosted_repo(env, tmp_pa
     assert override.location == "/x/y.safetensors"
 
 
+def test_offline_load_reads_the_cache_when_the_hosted_file_is_not_on_disk(
+    env, tmp_path, scheme, monkeypatch
+):
+    import core.inference.diffusion_families as F
+    import core.inference.diffusion_prequant as P
+
+    base, model = _write_base(tmp_path)
+    fam = _fam(base)
+    monkeypatch.setattr(
+        F, "family_prequant_repo", lambda *a, **k: "unsloth-test/Never-Downloaded-INT8"
+    )
+    monkeypatch.setattr(F, "family_prequant_filename", lambda *a, **k: None)
+    offline = [False]
+    monkeypatch.setattr(P, "hub_offline", lambda: offline[0])
+    monkeypatch.delenv(P.OFFLINE_LOCAL_BUILD_ENV, raising = False)
+
+    def resolved():
+        return P.resolve_prequant_source(fam, scheme, base_repo = str(base))
+
+    # No local build yet: the hosted repo, online or offline.
+    assert resolved().kind == "repo"
+    offline[0] = True
+    assert resolved().kind == "repo"
+    _quantize(model, scheme)
+    path = C.save_runtime_quant(model, fam, base_repo = str(base))
+    assert path is not None
+    # Offline with the hosted file absent: the earlier runtime build of these shards.
+    src = resolved()
+    assert src.kind == "path" and src.location == path
+    usable = P.usable_prequant_source(fam, scheme, base_repo = str(base), local_files_only = True)
+    assert usable is not None and usable.location == path
+    # A local_files_only load scope counts as offline too.
+    offline[0] = False
+    assert resolved().kind == "repo"
+    token = P._LOCAL_FILES_ONLY.set(True)
+    try:
+        assert resolved().kind == "path"
+    finally:
+        P._LOCAL_FILES_ONLY.reset(token)
+    # Hosted file already downloaded: it stays the source.
+    offline[0] = True
+    real_cached = P.cached_checkpoint_path
+    monkeypatch.setattr(P, "cached_checkpoint_path", lambda *a, **k: "/hub/blob.pt")
+    assert resolved().kind == "repo"
+    monkeypatch.setattr(P, "cached_checkpoint_path", real_cached)
+    assert resolved().kind == "path"
+    # Kill switch: today's hosted source.
+    monkeypatch.setenv(P.OFFLINE_LOCAL_BUILD_ENV, "0")
+    assert resolved().kind == "repo"
+
+
 # ------------------------------------------------------------------------------------------------ quantize stamp
 def test_quantize_transformer_stamps_what_the_cache_needs(env, tmp_path, scheme, monkeypatch):
     import core.inference.diffusion_transformer_quant as Q
@@ -715,9 +766,8 @@ def test_an_artifact_over_the_budget_never_evicts_the_existing_cache(
 def test_bases_sharing_their_weights_but_not_their_identity_never_share_an_entry(
     env, tmp_path, scheme
 ):
-    """Two bases whose shards are one Hub blob (a mirror and its upstream under different names) fingerprint alike,
-    but the loader validates the artifact's recorded base_model_id against the requested base: each needs its own
-    entry."""
+    """Bases sharing one Hub blob fingerprint alike, but the loader checks base_model_id, so each
+    base needs its own cache entry."""
     base_a, model = _write_base(tmp_path, name = "model-a")
     shard = "transformer/diffusion_pytorch_model.safetensors"
     blob = tmp_path / "blobs" / ("ab" * 32)

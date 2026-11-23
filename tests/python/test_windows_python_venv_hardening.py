@@ -121,11 +121,8 @@ def _uv_cache_functions(source: str) -> str:
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_arch_probe_ignores_startup_output(tmp_path: Path, shell: str):
-    """Startup output must not reach the arch tag.
-
-    The caller compares the tag with -eq "win-amd64", so a contaminated answer reads
-    as "unknown" and Windows on ARM silently settles for a native ARM64 interpreter.
-    """
+    """Startup output must not reach the arch tag: the caller compares it with -eq win-amd64, so
+    contaminated output silently settles for a native ARM64 interpreter."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     probe = _extract(r"    function Get-PythonPlatformTag \{.*?\n    \}\n", source)
     (tmp_path / "sitecustomize.py").write_text('print("STARTUP_BANNER")\n', encoding = "utf-8")
@@ -223,14 +220,8 @@ Write-Output ("dir=" + [string]$script:StudioVenvRollbackDir)
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_restoring_a_split_move_never_deletes_the_half_left_behind(tmp_path: Path, shell: str):
-    """Restoration must merge the two halves, not clear the destination first.
-
-    After a partway move the target holds the entries the move never got to -- not
-    an incomplete *new* environment. The committed-replacement path removes the
-    target before moving the backup back, which for a split tree deletes files that
-    exist nowhere else. Keeping the rollback active is only safe if restoration
-    takes a merge path, so this pins the file that never moved to being still there.
-    """
+    """Restoring a split move must merge into the destination, not clear it first, since clearing
+    deletes files that exist nowhere else; the half that never moved must still be there."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
@@ -278,14 +269,8 @@ Write-Output ("active=" + $script:StudioVenvRollbackActive)
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_merging_a_split_move_keeps_every_sibling_at_its_own_path(tmp_path: Path, shell: str):
-    """Each entry must land at its own path, not nested under the previous one.
-
-    PowerShell variable names are case-insensitive, so a per-entry $destination
-    reassigns the $Destination parameter. Only the first sibling at a level then
-    lands correctly and the rest are appended to its path, so a restored venv comes
-    back with pyvenv.cfg buried inside Lib. One entry per level hides it, so this
-    uses several.
-    """
+    """Each sibling must land at its own path: PowerShell names are case-insensitive, so a per-entry
+    $destination reassigns $Destination and buries pyvenv.cfg inside Lib."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
@@ -348,12 +333,8 @@ Write-Output ("active=" + $script:StudioVenvRollbackActive)
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("side", ["destination", "source"])
 def test_merging_a_split_move_never_walks_through_a_link(tmp_path: Path, shell: str, side: str):
-    """A junction on either side is a leaf, not a subtree to recurse into.
-
-    Recursing through one moves venv files to wherever the link points, outside
-    $StudioHome, and replaces the link with a real directory. Either half can carry
-    the link, so both directions are pinned here.
-    """
+    """A junction on either side is a leaf: recursing through one moves venv files outside
+    $StudioHome and replaces the link with a real directory, so both sides are pinned."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
@@ -804,9 +785,8 @@ foreach ($root in @($env:TEST_STUDIO_HOME_ONE, $env:TEST_STUDIO_HOME_TWO)) {{
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_a_non_ascii_marker_survives_the_rollback(tmp_path: Path, shell: str):
-    """The update writes this file BOM-less UTF-8, and Windows PowerShell 5.1 reads a
-    BOM-less file with the active ANSI code page, so a non-ASCII path came back as
-    mojibake and the rollback wrote that back over a marker that had been correct."""
+    """The marker is written BOM-less UTF-8, which Windows PowerShell 5.1 reads as ANSI, so a
+    non-ASCII path became mojibake and the rollback wrote that over a correct marker."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     functions = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
@@ -850,9 +830,8 @@ Restore-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME
 def test_a_rolled_back_install_restores_the_previous_uv_cache_marker(
     tmp_path: Path, shell: str, preexisting: bool
 ):
-    """The marker describes the environment, so it goes back when the environment does:
-    install.ps1 restores the previous venv on failure, and a marker for an install that
-    never happened would outlive it."""
+    """The marker describes the environment, so it is restored with the previous venv on failure;
+    otherwise a marker for an install that never happened would outlive it."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     functions = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)

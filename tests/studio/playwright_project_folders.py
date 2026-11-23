@@ -152,6 +152,13 @@ async def scene(
             if path.split("/")[2] != stored.get("id"):
                 return await route.fulfill(status = 404, json = {"detail": "Project not found"})
             return await route.fulfill(json = stored)
+        if path.startswith("mcp/servers") and req.method == "GET":
+            return await route.fulfill(
+                json = [
+                    {"id": "review-server", "display_name": "Review server", "is_enabled": True},
+                    {"id": "off-server", "display_name": "Off server", "is_enabled": False},
+                ]
+            )
         return await route.fulfill(json = {})
 
     await context.route(f"{base_url}/api/**", api)
@@ -245,6 +252,14 @@ async def scene(
                         "Where code and file tools run for every chat in this project.", exact = True
                     )
                 ).to_be_visible()
+                # Only globally enabled servers are offered for a project's own set.
+                use_set = dialog.get_by_label("Use a specific set of servers for this project")
+                await expect(use_set).to_be_enabled()
+                await expect(use_set).not_to_be_checked()
+                await use_set.check()
+                await expect(dialog.get_by_label("Review server", exact = True)).to_be_checked()
+                await expect(dialog.get_by_label("Off server", exact = True)).to_have_count(0)
+                await use_set.uncheck()
                 await page.evaluate("window.__cancelPick=true")
                 await dialog.get_by_role("button", name = CHANGE, exact = True).click()
                 await expect(dialog.get_by_role("button", name = CHANGE, exact = True)).to_be_enabled()

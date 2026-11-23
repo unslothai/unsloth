@@ -17,7 +17,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Iterable, Union
 
-from storage.studio_db import get_connection, on_wal_keeper_closed
+from storage.studio_db import get_connection, insert_server_chat_message, on_wal_keeper_closed
 from utils.account_context import current_account_id
 from utils.paths import studio_db_path
 
@@ -572,28 +572,15 @@ def create_run(
             (assistant_message_id,),
         ).fetchone()
         if assistant is None:
-            # An empty placeholder adds no attachment entries. Preserve an already
-            # clean inventory without clearing older dirtiness or advancing its version.
-            inventory_was_clean = (
-                conn.execute(
-                    "SELECT 1 FROM chat_attachment_inventory_state WHERE singleton=1 AND dirty=0"
-                ).fetchone()
-                is not None
+            insert_server_chat_message(
+                conn,
+                assistant_message_id,
+                thread_id,
+                user_message_id,
+                "[]",
+                json.dumps(metadata, ensure_ascii = False),
+                created,
             )
-            conn.execute(
-                """INSERT INTO chat_messages
-                   (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
-                   VALUES (?, ?, ?, 'assistant', '[]', ?, ?)""",
-                (
-                    assistant_message_id,
-                    thread_id,
-                    user_message_id,
-                    json.dumps(metadata, ensure_ascii = False),
-                    created,
-                ),
-            )
-            if inventory_was_clean:
-                conn.execute("UPDATE chat_attachment_inventory_state SET dirty=0 WHERE singleton=1")
         else:
             assistant_metadata = _loads(assistant["metadata_json"], {})
             existing_run_id = (
@@ -710,10 +697,9 @@ def get_run_state(run_id: str) -> dict[str, Any] | None:
 
 
 def get_run_frame(run_id: str) -> tuple[dict[str, Any], str] | None:
-    """get_run_state's fields plus get_run's row as its compact JSON text, without parsing request_json.
-
-    A request_json SQLite does not see as one line of valid JSON (corrupt, hand edited) takes the old
-    parse and re-encode, so the route never splices text the client cannot parse or that splits the frame."""
+    """get_run_state fields plus get_run row as compact JSON text, without parsing request_json; an
+    invalid request_json is re-encoded so the route never splices unparseable or frame-splitting
+    text."""
     conn = _connect()
     try:
         row = _execute_splice(
