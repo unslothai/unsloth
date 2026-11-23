@@ -5292,6 +5292,7 @@ export const cs = {
     copy: "Kopírovat překlad",
     copied: "Zkopírováno",
     useAsSource: "Přeložit tento text",
+    downloadSubtitles: "Stáhnout titulky",
     stale: "Text nebo nastavení se změnily. Pro aktualizaci přeložte znovu.",
     stopped: "Zastaveno před koncem. Pro zbytek přeložte znovu.",
     chat: "Chatovat s přeloženým textem",

@@ -5147,6 +5147,7 @@ export const sv = {
     copy: "Kopiera översättning",
     copied: "Kopierat",
     useAsSource: "Översätt den här texten",
+    downloadSubtitles: "Ladda ned undertexter",
     stale: "Texten eller inställningarna har ändrats. Översätt igen för att uppdatera.",
     stopped: "Stoppades före slutet. Översätt igen för resten.",
     chat: "Chatta med översatt text",

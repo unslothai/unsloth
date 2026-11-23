@@ -5270,6 +5270,7 @@ export const vi = {
     copy: "Sao chép bản dịch",
     copied: "Đã sao chép",
     useAsSource: "Dịch văn bản này",
+    downloadSubtitles: "Tải phụ đề xuống",
     stale: "Văn bản hoặc cài đặt đã thay đổi. Hãy dịch lại để cập nhật.",
     stopped: "Đã dừng trước khi xong. Hãy dịch lại để có phần còn lại.",
     chat: "Trò chuyện với văn bản đã dịch",

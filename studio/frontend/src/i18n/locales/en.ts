@@ -4951,6 +4951,7 @@ export const en = {
     copied: "Copied",
     // Moves the translation into the text box, to translate it onward into another language.
     useAsSource: "Translate this text",
+    downloadSubtitles: "Download subtitles",
     stale: "The text or settings changed. Translate again to update.",
     stopped: "Stopped before the end. Translate again for the rest.",
     // Opens a new chat with the translation in the message box, to ask about it.

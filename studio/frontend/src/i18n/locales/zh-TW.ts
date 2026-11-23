@@ -5004,6 +5004,7 @@ export const zhTW = {
     copy: "複製譯文",
     copied: "已複製",
     useAsSource: "翻譯這段文字",
+    downloadSubtitles: "下載字幕",
     stale: "文字或設定已變更。請重新翻譯以更新。",
     stopped: "在結束前已停止。再次翻譯以取得剩餘部分。",
     chat: "用譯文開始聊天",

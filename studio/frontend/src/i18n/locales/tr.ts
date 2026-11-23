@@ -5272,6 +5272,7 @@ export const tr = {
     copy: "Çeviriyi kopyala",
     copied: "Kopyalandı",
     useAsSource: "Bu metni çevir",
+    downloadSubtitles: "Altyazıları indir",
     stale: "Metin veya ayarlar değişti. Güncellemek için yeniden çevirin.",
     stopped: "Bitmeden durduruldu. Geri kalanı için yeniden çevirin.",
     chat: "Çevrilen metinle sohbet et",
