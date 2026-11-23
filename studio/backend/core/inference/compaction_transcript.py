@@ -85,10 +85,10 @@ def mention(path: str) -> str:
 
 def link_in_block(messages: list[dict], path: str) -> list[dict]:
     """Adds the transcript's path to the block's opening paragraph (not a quoted bullet, so it is
-    never carried into the next epoch as one of the user's instructions). Idempotent."""
+    never carried into the next epoch as one of the user's instructions). Idempotent; the same list
+    when nothing changes."""
     sentence = mention(path)
-    out = list(messages)
-    for index, message in enumerate(out):
+    for index, message in enumerate(messages):
         content = message.get("content")
         if message.get("role") not in ("system", "developer") or not isinstance(content, str):
             continue
@@ -96,15 +96,16 @@ def link_in_block(messages: list[dict], path: str) -> list[dict]:
         if start == -1:
             continue
         if sentence in content:
-            return out
+            return messages
         end = content.find("\n\n", start)
         if end == -1:
             end = content.find("\n</carried_forward>", start)
         if end == -1:
-            return out
+            return messages
+        out = list(messages)
         out[index] = {**message, "content": content[:end] + " " + sentence + content[end:]}
         return out
-    return out
+    return messages
 
 
 def _cut_section(role: str, cut) -> list[str]:
