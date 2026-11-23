@@ -297,6 +297,8 @@ function makeMapModel(
 
 const UNSLOTH_PREFETCH = 20;
 const UNSLOTH_QUERY_PREFETCH = 3;
+// Newest-first lists a release's FP8 / bnb / NVFP4 / GGUF by upload time: three rows can miss the GGUF.
+const POPULARITY_SORTS = new Set<HfSortKey>(["downloads", "likes", "trendingScore"]);
 /** Rejected unsloth rows a filtered search scans before moving on to general results. */
 const UNSLOTH_FILTER_REJECT_LIMIT = 40;
 
@@ -369,7 +371,8 @@ async function* mergedModelIterator(
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
 
-  const limit = query.trim() ? UNSLOTH_QUERY_PREFETCH : UNSLOTH_PREFETCH;
+  const limit =
+    query.trim() && POPULARITY_SORTS.has(sortBy) ? UNSLOTH_QUERY_PREFETCH : UNSLOTH_PREFETCH;
   // Unfiltered phase 1 reads at most `limit` rows; avoids the Hub's default 500 (megabytes).
   const unslothRows = filterPriority || parameterFilter ? {} : { limit };
   const unslothIter = mergeTaskIterators(

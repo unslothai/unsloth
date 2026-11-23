@@ -507,14 +507,20 @@ class PersistentConditioningCache:
         image_path: str,
         variant: tuple[float, float, bool],
         shape: Optional[tuple[int, int]] = None,
+        content_hash: Optional[str] = None,
     ) -> str:
+        """``content_hash``: ``self.content_hash(image_path)`` read once by a caller keying many variants of one image."""
         u_left, u_top, flip = variant
         geom = f"{shape[0]}x{shape[1]}" if shape else str(self.resolution)
         var = f"{u_left:.6f}_{u_top:.6f}_{int(bool(flip))}"
         return (
             f"lat_v{_LATENT_CACHE_VERSION}{_latent_cache_salt()}_{self.family}_{geom}_"
-            f"{_file_content_hash(image_path)}_{var}"
+            f"{content_hash or _file_content_hash(image_path)}_{var}"
         )
+
+    @staticmethod
+    def content_hash(image_path: str) -> str:
+        return _file_content_hash(image_path)
 
     def text_key(self, caption: str) -> str:
         encoder = f"_{self.text_encoder}" if self.text_encoder else ""

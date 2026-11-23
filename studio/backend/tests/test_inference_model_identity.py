@@ -49,6 +49,20 @@ def test_names(monkeypatch, name, local, split):
     assert ("/api/models/download-progress" in asked) is not local
 
 
+@pytest.mark.parametrize("name", ["unsloth/Qwen3-GGUF:Q4_K_M", "/models/a.gguf"])
+def test_the_placement_search_reports_itself_not_the_finished_download(monkeypatch, name):
+    """Fraction 0 read as no progress: a Hub model showed its finished download, a local one nothing."""
+
+    async def route_json(method, path, **kwargs):
+        if path == "/api/inference/load-progress":
+            return {"phase": "fit", "bytes_loaded": 0, "bytes_total": 1000, "fraction": 0.0}
+        return {"progress": 1.0}
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+    fraction, message = asyncio.run(loading._llm_poll(None, name)())
+    assert fraction == 0.0 and "split" in message
+
+
 @pytest.mark.parametrize(
     "left, right, model, repo",
     [

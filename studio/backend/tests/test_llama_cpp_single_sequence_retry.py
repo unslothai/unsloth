@@ -151,9 +151,8 @@ def test_the_fit_recovery_rungs_stand_down_for_this_refusal():
 
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "_capability_crash = _tensor_capability_crash or self._is_kv_unified_refused" in src
-    # Every startup-crash recovery rung (the --fit rungs, the MoE cache rung, the
-    # context-halving rung, and any added later) uses the full gate; only the HIP
-    # rung is narrower. Read the gates by shape so a new rung does not need a count bump.
+    # Every startup-crash recovery rung except HIP uses the full gate; a new rung needs no count
+    # bump.
     full, narrow, ungated = [], [], []
     for node in ast.walk(ast.parse(textwrap.dedent(src))):
         if not (isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And)):

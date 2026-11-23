@@ -1869,8 +1869,7 @@ class InferenceBackend:
                 model.base_model.enable_adapter_layers()
 
     def image_tokens(self, width: int, height: int) -> Optional[int]:
-        """Prompt tokens one computer-use screenshot of this size adds under the screenshot budget;
-        None without an image processor."""
+        """Tokens a screenshot this size adds to the budget; None without an image processor."""
         from PIL import Image
 
         processor = (self.models.get(self.active_model_name) or {}).get("processor")

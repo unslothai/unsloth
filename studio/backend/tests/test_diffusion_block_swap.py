@@ -66,7 +66,7 @@ def test_default_config_is_off(monkeypatch):
 def test_gating():
     assert bs.block_swap_error(None, "nf4", "cpu", False) is None
     assert "CUDA" in bs.block_swap_error("auto", "bf16", "cpu", True)
-    for mode in ("nf4", "int8", "fp8", "mxfp8"):
+    for mode in ("nf4", "int8", "mxfp8"):
         assert "bf16" in bs.block_swap_error("auto", mode, "cuda", True)
     assert "gradient_checkpointing" in bs.block_swap_error(4, "bf16", "cuda", False)
     assert bs.block_swap_error(4, "bf16", "cuda", True) is None

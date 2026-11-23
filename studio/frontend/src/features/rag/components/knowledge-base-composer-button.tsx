@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useIsAccountOwner } from "@/features/auth";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
+import { useSettingsDialogStore } from "@/features/settings";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
 import {
@@ -227,6 +228,14 @@ export function KnowledgeBaseComposerButton({
               }}
             >
               Manage knowledge bases…
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                setMenuOpen(false);
+                useSettingsDialogStore.getState().openDialog("knowledge");
+              }}
+            >
+              Open Knowledge in Settings
             </DropdownMenuItem>
             </>
           )}

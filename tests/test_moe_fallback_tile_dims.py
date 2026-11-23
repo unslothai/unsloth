@@ -195,6 +195,8 @@ def test_get_or_autotune_wires_dims(ac, monkeypatch, hidden, inter):
 def _device(ac, monkeypatch, capability, smem):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
+    # An NVIDIA card: _fit_configs_to_smem leaves ROCm configs alone, also on a real ROCm host.
+    monkeypatch.setattr(torch.version, "hip", None)
     monkeypatch.setattr(ac, "_device_smem_per_block", lambda: smem)
 
 

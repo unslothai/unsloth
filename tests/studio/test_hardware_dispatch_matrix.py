@@ -172,6 +172,10 @@ def spoof_hardware(monkeypatch):
 
         torch_version = torch.version
         monkeypatch.setattr(torch_version, "hip", profile.hip_version, raising = False)
+        if profile.hip_version is None:
+            # detect_hardware also reads the +rocm wheel tag, so drop it from a real ROCm torch.
+            version = torch.__version__
+            monkeypatch.setattr(torch, "__version__", type(version)(str(version).split("+")[0]))
 
         # Always stubbed; the real get_device_name needs the XPU torch build.
         if hasattr(torch, "xpu"):

@@ -292,6 +292,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "ON documents(linked_folder_id) WHERE linked_folder_id IS NOT NULL"
     )
     ensure_linked_folder_columns(conn)
+    _ensure_fts_scope_index(conn)
     if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
         conn.executemany(
             "UPDATE chunks_fts SET text=? WHERE rowid=?",
@@ -303,6 +304,32 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         conn.execute("PRAGMA user_version = 1")
     conn.commit()
+
+
+# B-tree on the FTS5 content table's scope column (c2); FTS5 never reads it, so bm25 is unchanged.
+FTS_SCOPE_INDEX = "idx_chunks_fts_content_scope"
+
+
+def _ensure_fts_scope_index(conn: sqlite3.Connection) -> None:
+    """Skipped if the columns are not (text, chunk_id, scope); search then keeps the unindexed filter."""
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(chunks_fts)").fetchall()]
+    if columns != ["text", "chunk_id", "scope"]:
+        return
+    try:
+        conn.execute(f"CREATE INDEX IF NOT EXISTS {FTS_SCOPE_INDEX} ON chunks_fts_content(c2)")
+    except sqlite3.OperationalError as exc:
+        logger.info("RAG lexical scope index unavailable (%s)", exc)
+
+
+def fts_scope_index_exists(conn: sqlite3.Connection) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name=? "
+            "AND tbl_name='chunks_fts_content'",
+            (FTS_SCOPE_INDEX,),
+        ).fetchone()
+        is not None
+    )
 
 
 def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:

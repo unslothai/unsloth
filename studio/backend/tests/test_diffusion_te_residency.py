@@ -545,8 +545,7 @@ def test_lend_from_loaded_engine_passes_the_load_size(monkeypatch):
 
 
 def test_a_group_lend_hands_the_freed_memory_back_to_the_driver():
-    """The other load is usually another process (dictation worker, llama.cpp): blocks left in this process's
-    allocator cache are not free to it."""
+    """Another load (often a separate process) cannot use blocks left in this allocator cache."""
     r = _Recorder(mib = 4_600, kind = tr.KIND_GROUPS)
     with (
         patch.object(tr.EncoderResidency, "resident_mib", return_value = 4_600),

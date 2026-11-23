@@ -5,7 +5,7 @@ import { readGenerationProgress } from "./lib/generation-progress";
 import { NewChatNonceContext } from "./query-draft";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
-import { isMcpToolOnly, mcpImageMappingsEnabled } from "./api/mcp-image";
+import { isMcpToolOnly, mcpImageMappingsEnabled, projectMcpServers } from "./api/mcp-image";
 import { listMcpServers } from "./api/mcp-servers-api";
 import {
   classifiedAttachmentFile,
@@ -54,9 +54,11 @@ import {
   findLatestUserAudioBase64,
   findLatestUserVideoBase64,
   messagesContainImage,
+  resolveProjectId,
 } from "./api/chat-adapter";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
+  getChatProject,
   streamChatCompletions,
   uploadChatAttachmentOriginal,
 } from "./api/chat-api";
@@ -423,7 +425,12 @@ async function mcpToolOnlyEnabled(): Promise<boolean | null> {
       });
   if (!toolsSupported || !state.mcpEnabledForChat) return false;
   try {
-    return mcpImageMappingsEnabled(await listMcpServers());
+    const projectId = await resolveProjectId(state.activeThreadId ?? undefined);
+    const [servers, project] = await Promise.all([
+      listMcpServers(),
+      projectId ? getChatProject(projectId) : null,
+    ]);
+    return mcpImageMappingsEnabled(projectMcpServers(servers, project?.mcpServerIds));
   } catch {
     return null;
   }
@@ -2542,7 +2549,9 @@ function useStudioRuntimeAdapters(
       if (!remoteId) return;
       const generation = beginSavedHistoryReconciliation(remoteId);
       let idsAtRead: Set<string> | undefined;
+      let runningAtRead = false;
       try {
+        runningAtRead = aui.thread().getState().isRunning;
         idsAtRead = new Set(aui.thread().export().messages.map((item) => item.message.id));
       } catch {
         idsAtRead = undefined;
@@ -2563,6 +2572,7 @@ function useStudioRuntimeAdapters(
                 useChatRuntimeStore.getState().editingMessageId ?? null,
               toThreadMessage,
               idsAtRead,
+              runningAtRead,
             });
           }
           if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
