@@ -83,6 +83,23 @@ _ROCM_FLEX_STATIC = bool(getattr(torch.version, "hip", None)) and (
 _flex_attention_static = (
     torch.compile(_rocm_static_flex_entry, dynamic = False) if _ROCM_FLEX_STATIC else None
 )
+# Inside an enclosing graph the dynamic = False compile above is inlined into the caller's graph, so the padded
+# length would stay symbolic there: unsloth_zoo specializes the Q / K / V sequence sizes at trace time instead.
+_specialize_flex_shapes = None
+if _ROCM_FLEX_STATIC:
+    try:
+        from unsloth_zoo.rocm_flex_static import specialize_flex_shapes as _specialize_flex_shapes
+    except Exception:
+        _specialize_flex_shapes = None
+
+
+def _without_dynamic_marks(tensor):
+    # A caller's mark_dynamic / maybe_mark_dynamic on an input wins over dynamic = False; a view carries no marks.
+    if getattr(tensor, "_dynamo_dynamic_indices", None) or getattr(
+        tensor, "_dynamo_weak_dynamic_indices", None
+    ):
+        return tensor.view_as(tensor)
+    return tensor
 
 
 def _uses_static_flex(query, key, value) -> bool:
@@ -97,6 +114,11 @@ def _uses_static_flex(query, key, value) -> bool:
 
 def _flex_attention_compiled(query, key, value, **kwargs):
     if _uses_static_flex(query, key, value):
+        if torch.compiler.is_compiling():
+            if _specialize_flex_shapes is not None:
+                _specialize_flex_shapes(query, key, value)
+        else:
+            query, key, value = map(_without_dynamic_marks, (query, key, value))
         return _flex_attention_static(query, key, value, **kwargs)
     return _flex_attention_dynamic(query, key, value, **kwargs)
 
