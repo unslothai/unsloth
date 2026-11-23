@@ -5355,6 +5355,12 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
 
 # q8_0 banded kernel registration string (survives strip); only llama.cpp#399 builds have it.
 _INKLING2_BANDED_QUANT_KV_RE = re.compile(rb"flash_attn_ext_banded\w*ggml_type8E")
+# Several slots reserve Inkling 2's dense relative bias from unslothai/llama.cpp#386 7adbb5d3f, first in
+# b12649-mix. The inkling2_loop loader (#395) marks an Unsloth build; b12631-mix has it with the banded
+# reserve, so the build number gates it too.
+_INKLING2_MULTI_SEQ_DENSE_RE = re.compile(rb"inkling2_loop: %zu cache slots exceed")
+_INKLING2_MULTI_SEQ_DENSE_BUILD = 12649
+_LLAMA_LIB_GLOBS = ("libllama.so*", "libllama*.dylib", "llama.dll")
 _GGML_GPU_LIB_GLOBS = {
     "cuda": ("libggml-cuda.so*", "ggml-cuda.dll"),
     "hip": ("libggml-hip.so*", "ggml-hip.dll"),
@@ -5370,9 +5376,9 @@ def _lib_matches(path: str, _mtime_ns: int, _size: int, pattern: "re.Pattern[byt
         return False
 
 
-def _gpu_lib_has_banded_quant_kv(lib_dir: Path, backend: str) -> bool:
-    """Whether the ggml CUDA / HIP library beside llama-server has the quantized banded kernel; fails closed."""
-    for pattern in _GGML_GPU_LIB_GLOBS.get(backend, ()):
+def _lib_dir_matches(lib_dir: Path, globs: Iterable[str], marker: "re.Pattern[bytes]") -> bool:
+    """Whether a library matching ``globs`` in ``lib_dir`` contains ``marker``; fails closed."""
+    for pattern in globs:
         try:
             candidates = sorted(lib_dir.glob(pattern))
         except OSError:
@@ -5384,19 +5390,36 @@ def _gpu_lib_has_banded_quant_kv(lib_dir: Path, backend: str) -> bool:
             except OSError:
                 continue
             if resolved.is_file() and _lib_matches(
-                str(resolved), st.st_mtime_ns, st.st_size, _INKLING2_BANDED_QUANT_KV_RE
+                str(resolved), st.st_mtime_ns, st.st_size, marker
             ):
                 return True
     return False
 
 
+def _gpu_lib_has_banded_quant_kv(lib_dir: Path, backend: str) -> bool:
+    """Whether the ggml CUDA / HIP library beside llama-server has the quantized banded kernel; fails closed."""
+    return _lib_dir_matches(
+        lib_dir, _GGML_GPU_LIB_GLOBS.get(backend, ()), _INKLING2_BANDED_QUANT_KV_RE
+    )
+
+
+def _llama_lib_has_multi_seq_dense(lib_dir: Path) -> bool:
+    """Whether libllama beside llama-server reserves Inkling 2's dense bias for several slots; fails closed."""
+    return _lib_dir_matches(lib_dir, _LLAMA_LIB_GLOBS, _INKLING2_MULTI_SEQ_DENSE_RE)
+
+
 class _Inkling2BandedSupport(NamedTuple):
     """backend: ggml GPU backend, None if unknown; quant_kv: quantized banded K/V + shared mask;
-    tile_kv: every visible CUDA card dequantizes q8_0 / q4_0 in the tile (Turing MMA)."""
+    tile_kv: every visible CUDA card dequantizes q8_0 / q4_0 in the tile (Turing MMA);
+    multi_seq_dense: the reserve holds the worst case, the dense bias of a multi-sequence ubatch
+    with several slots and of a small ubatch with one (_inkling2_reserve_bytes); build_known:
+    the build number was read, so that reserve is identified, not assumed."""
 
     backend: Optional[str] = None
     quant_kv: bool = False
     tile_kv: bool = False
+    multi_seq_dense: bool = False
+    build_known: bool = False
 
 
 # Unknown build prices as pre-#399.
@@ -11052,7 +11075,15 @@ class LlamaCppBackend:
                 _llama_lib_dir(binary), backend
             )
             tile_kv = backend == "cuda" and quant_kv and cls._inkling2_cuda_tile_kv(binary)
-            return _Inkling2BandedSupport(backend, quant_kv, tile_kv)
+            build_number = cls.probe_build_number(binary)
+            # An unknown build (a source build reports 1) with the loader prices the dense reserve
+            # and keeps the older --fit growth margin: high on both.
+            multi_seq_dense = (
+                build_number is None or build_number >= _INKLING2_MULTI_SEQ_DENSE_BUILD
+            ) and _llama_lib_has_multi_seq_dense(_llama_lib_dir(binary))
+            return _Inkling2BandedSupport(
+                backend, quant_kv, tile_kv, multi_seq_dense, build_number is not None
+            )
         except Exception as exc:  # noqa: BLE001 -- an unreadable build prices as legacy
             logger.debug("Inkling 2 banded probe failed: %s", exc)
             return _INKLING2_BANDED_LEGACY
@@ -19168,6 +19199,21 @@ class LlamaCppBackend:
     _INKLING2_RUNTIME_BYTES_PER_UB = 800 * 1024
     _INKLING2_BANDED_SHARED_BYTES = 2
     _INKLING2_BANDED_SHARED_RESERVE_BYTES = 4
+    # Builds with multi_seq_dense (b12649-mix on) reserve Inkling 2's worst case. Several slots: the
+    # dense bias in query-row chunks of at most 2^29 elements, 6 B per element (n_kv x rows x n_head)
+    # plus 24 B per cell per ub token; a sliding cache that needs chunks adds its own, plus 1.75 B per
+    # sliding cell, ub token and head. Both slot counts add an f32 [ub, ub, n_head] block, twice.
+    # Inkling-2-Mini, 4 slots, ub=512: 3798 / 5526 / 10902 MiB at 64K / 256K / 512K; --swa-full
+    # 6461 / 17023 / 32379 MiB at 64K / 274,688 / 524,288; 64 slots 6466 MiB at 64K.
+    _INKLING2_DENSE_BIAS_BYTES = 6
+    _INKLING2_DENSE_SWA_BYTES = 1.75
+    _INKLING2_SWA_FULL_CELL_BYTES = 6
+    _INKLING2_DENSE_CELL_BYTES = 24
+    _INKLING2_DENSE_BLOCK_BYTES = 8
+    _INKLING2_DENSE_CHUNK_ELEMS = 1 << 29
+    _INKLING2_RESERVED_RUNTIME_BYTES_PER_UB = 256 * 1024
+    _INKLING2_DENSE_CHUNK_MAX = 64
+    _INKLING2_DENSE_TILE_ROWS = 64
     _INKLING2_SHARED_RUNTIME_BYTES_PER_UB = 1200 * 1024
 
     def _compute_activation_width(self) -> int:
@@ -19405,6 +19451,79 @@ class LlamaCppBackend:
     _INKLING2_FIT_RUNTIME_ACT = 4.4
     _INKLING2_FIT_RUNTIME_MASK_BYTES = 2.6
 
+    def _inkling2_dense_bias_elems(self, n_ctx: int, ub: int, n_head: int) -> int:
+        """n_kv x rows of one dense-bias chunk, bounded so it never falls as the context grows.
+        llama.cpp sizes a chunk in whole 64-row tiles under 2^29 elements for a full cache, at
+        most _INKLING2_DENSE_CHUNK_MAX chunks, so the rows drop at each budget boundary; the
+        context searches assume monotone memory."""
+        n_kv = max(1, (n_ctx + 255) // 256 * 256)
+        tile = self._INKLING2_DENSE_TILE_ROWS
+        tiles = -(-ub // tile)
+        min_rows = min(ub, max(tile, -(-tiles // self._INKLING2_DENSE_CHUNK_MAX) * tile))
+        budget = self._INKLING2_DENSE_CHUNK_ELEMS // max(1, n_head)
+        return max(min(n_kv * ub, budget), n_kv * min_rows)
+
+    def _inkling2_reserve_bytes(
+        self,
+        n_ctx: int,
+        ub: int,
+        cache_type_kv: Optional[str],
+        *,
+        split_extra: int = 0,
+        n_parallel: int = 1,
+        swa_full: bool = False,
+    ) -> int:
+        """Context scratch of a build that reserves Inkling 2's worst case (multi_seq_dense), for a
+        load on the banded path. Prompts then only grow the CUDA pool past it (+112 MiB after a
+        105K-token prompt at 256K, ub=512), the same with any slot count."""
+        n_head = self._inkling2_bias_heads()
+        kv_type = (cache_type_kv or "f16").strip().lower()
+        fixed = (
+            self._INKLING2_DENSE_BLOCK_BYTES * n_head * ub * ub
+            + self._INKLING2_RESERVED_RUNTIME_BYTES_PER_UB * ub
+        )
+        if n_parallel <= 1:
+            # The banded mask, or the dense bias a small ubatch takes over the full cache: f32
+            # [n_kv, rows, n_head] and its permuted copy, plus an f16 K/V copy for any other cache.
+            rows = min(ub, self._INKLING2_BANDED_MIN_UBATCH - 1)
+            dense = 2 * 4 * n_head * rows
+            if kv_type != "f16":
+                dense += self._attention_dequant_width() * 2
+            banded = (
+                self._INKLING2_BANDED_SHARED_RESERVE_BYTES
+                if self._inkling2_banded().quant_kv
+                else self._INKLING2_BANDED_BYTES
+            ) * ub
+            per_cell = max(dense, banded) + split_extra
+            if swa_full:
+                # The sliding layers' mask and distances now span the full cache too: q4_0 at
+                # 131K / 262K / 415,488, ub=512 1516 / 3012 / 4762 MiB, ub=2048 2341 / 4605 / 7254.
+                per_cell += self._INKLING2_SWA_FULL_CELL_BYTES * ub
+            return int(per_cell * n_ctx + fixed)
+        # Several slots: a ubatch can hold several sequences, so the reserve is the dense bias in
+        # query-row chunks. The sliding layers chunk over their own cache (the full one with
+        # --swa-full, else window x slots + ub); one that needs chunks too stacks on the full
+        # layers' bias, a smaller one reuses it (4 -> 16 slots: +37 MiB at 64K).
+        window = self._effective_sliding_window()
+        n_swa = 0
+        if window > 0:
+            n_swa = (
+                n_ctx
+                if swa_full
+                else min(n_ctx, _pad_kv_cells(window * max(1, int(n_parallel)) + ub))
+            )
+            if n_swa * ub <= self._INKLING2_DENSE_CHUNK_ELEMS // max(1, n_head):
+                n_swa = 0
+        elems = self._inkling2_dense_bias_elems(n_ctx, ub, n_head)
+        if n_swa:
+            elems += self._inkling2_dense_bias_elems(n_swa, ub, n_head)
+        return int(
+            (self._INKLING2_DENSE_CELL_BYTES * ub + split_extra) * (n_ctx + n_swa)
+            + self._INKLING2_DENSE_BIAS_BYTES * n_head * elems
+            + self._INKLING2_DENSE_SWA_BYTES * ub * n_head * n_swa
+            + fixed
+        )
+
     def _inkling2_fit_regrowth_mib(
         self,
         n_ctx: int,
@@ -19426,6 +19545,10 @@ class LlamaCppBackend:
         ub = max(1, int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch))
         if self._inkling2_banded_terms(n_ctx, ub, cache_type_kv, flash_attn = flash_attn) is None:
             return 0
+        build = self._inkling2_banded()
+        if build.multi_seq_dense and build.build_known:
+            # The reserve already holds the worst case: only the CUDA pool grows past it.
+            return math.ceil(self._INKLING2_RESERVED_RUNTIME_BYTES_PER_UB * ub / (1024 * 1024))
         # Mini's activation estimate as a fixed scale, so the growth tracks ub and context
         # like #18919's runtime term instead of a larger model's own activations.
         act = self._INKLING2_FIT_ACT_MIB_PER_UB * ub * 1024 * 1024
@@ -19445,18 +19568,19 @@ class LlamaCppBackend:
                     ctxs.add(knee)
 
         def growth(ctx: int) -> int:
+            # Banded terms, not _compute_buffer_ctx_bytes: an unknown build may be the banded
+            # b12631-mix, and the dense reserve would inflate the margin (5957 against 600 MiB
+            # at 262K, 4 slots, q8_0, ub=512).
+            reserved, regrown, fixed = self._inkling2_banded_terms(
+                ctx, ub, cache_type_kv, flash_attn = flash_attn
+            )
             if legacy:
                 # Older builds: #18919's 18 B/cell reserve is a planner bound that overtakes the
                 # 15 B/cell runtime rate at long contexts, as the measured reserve does (growth
                 # 270 -> 140 MiB from 32K to 128K), so only the runtime term can grow past it.
-                _, regrown, fixed = self._inkling2_banded_terms(
-                    ctx, ub, cache_type_kv, flash_attn = flash_attn
-                )
                 scratch = regrown + fixed
             else:
-                scratch = self._compute_buffer_ctx_bytes(
-                    ctx, ub, cache_type_kv, flash_attn = flash_attn, n_parallel = n_parallel
-                )
+                scratch = max(reserved, regrown) + fixed
             runtime = max(
                 act + scratch,
                 self._INKLING2_FIT_RUNTIME_ACT * act
@@ -19486,6 +19610,7 @@ class LlamaCppBackend:
         layer_split: bool = False,
         flash_attn: bool = True,
         n_parallel: int = 1,
+        swa_full: bool = False,
     ) -> int:
         """Per-device context scratch: KQ mask and dequant; without flash attention, float32 scores
         and mask."""
@@ -19542,6 +19667,15 @@ class LlamaCppBackend:
                 n_ctx, ub, cache_type_kv, flash_attn = flash_attn, split_extra = split_extra
             )
             if banded is not None:
+                if self._inkling2_banded().multi_seq_dense:
+                    return self._inkling2_reserve_bytes(
+                        n_ctx,
+                        ub,
+                        cache_type_kv,
+                        split_extra = split_extra,
+                        n_parallel = n_parallel,
+                        swa_full = swa_full,
+                    )
                 reserve, regrown, fixed = banded
                 return int(max(reserve, regrown) + fixed)
             per_tok = (
@@ -19592,6 +19726,7 @@ class LlamaCppBackend:
         split_extra_for_slots: Optional[Callable[[int], int]] = None,
         ubatch_for_slots: Optional[Callable[[int], Optional[int]]] = None,
         mtp_bytes_for_slots: Optional[Callable[[int, Optional[int]], int]] = None,
+        ctx_compute_for_slots: Optional[Callable[[int], int]] = None,
         ctx_checkpoints: int = 0,
         include_requested: bool = False,
         exact: bool = False,
@@ -19631,9 +19766,13 @@ class LlamaCppBackend:
         count, since a reduced candidate lowers the batch floor and so the ubatch too;
         pricing the reserve at the requested pair over-charged every candidate, so one that
         fits could be rejected and the load kept --fit. ``split_extra_for_slots(slots)``
-        re-prices the split step, whose sliding-window masks also scale with slots."""
+        re-prices the split step, whose sliding-window masks also scale with slots.
+        ``ctx_compute_for_slots(slots)`` adds the context-scaling compute per candidate (Inkling 2
+        reserves a dense bias for several slots and a banded one for one); the caller then leaves
+        it out of ``base_footprint_bytes`` and ``per_device_overhead_bytes``."""
         for slots in range(n_parallel if include_requested else n_parallel - 1, 0, -1):
             _ub = ubatch_for_slots(slots) if ubatch_for_slots else n_ubatch
+            _cc = ctx_compute_for_slots(slots) if ctx_compute_for_slots else 0
             cb = self._estimate_compute_buffer_bytes(
                 n_ubatch = _ub, n_parallel = slots, per_device_tensor = False
             )
@@ -19655,6 +19794,7 @@ class LlamaCppBackend:
             kv = _kv(ctx_checkpoints)
             total = (
                 base_footprint_bytes
+                + _cc
                 + cb
                 + (mtp_bytes_for_slots(slots, _ub) if mtp_bytes_for_slots else 0)
                 + kv
@@ -19673,7 +19813,7 @@ class LlamaCppBackend:
                 gpus,
                 usable_fraction = pin_fraction,
                 total_by_idx = total_by_idx,
-                per_device_overhead_bytes = per_device_overhead_bytes,
+                per_device_overhead_bytes = per_device_overhead_bytes + _cc,
                 min_gpus = min_gpus,
                 split_extra_bytes = (
                     split_extra_for_slots(slots) if split_extra_for_slots else split_extra_bytes
@@ -23646,7 +23786,12 @@ class LlamaCppBackend:
         def _cc_ctx(ctx: int) -> int:
             # Same state _kv_at prices with: the mask is f32 whenever tensor mode does not answer True.
             return n_dev * self._compute_buffer_ctx_bytes(
-                ctx, n_ubatch, cc_cache_type, flash_attn = flash_attn
+                ctx,
+                n_ubatch,
+                cc_cache_type,
+                flash_attn = flash_attn,
+                n_parallel = n_parallel,
+                swa_full = swa_full,
             )
 
         def _fit_ctx(ctx: int) -> int:
@@ -23782,6 +23927,8 @@ class LlamaCppBackend:
             scratch_cache_type_kv or cache_type_kv,
             # Same state as the KV above.
             flash_attn = flash_attn,
+            n_parallel = n_parallel,
+            swa_full = swa_full,
         )
         total_bytes = model_size + kv_bytes + mtp_bytes + max(0, soft_overhead_bytes)
 
@@ -27211,6 +27358,7 @@ class LlamaCppBackend:
                             layer_split = n_gpus > 1 and not _pipeline_parallel_off,
                             flash_attn = planned_flash_attn,
                             n_parallel = slots or n_parallel,
+                            swa_full = swa_full,
                         )
 
                     def _cc_split_extra(
@@ -29116,9 +29264,7 @@ class LlamaCppBackend:
                         )
                         # Slot-independent footprint (folded compute buffer and the MTP
                         # reserve swapped out so the helper re-prices both per candidate).
-                        _base_footprint = (
-                            model_size_fit - _compute_buffer_pipeline + _cc_bytes(_reduce_ctx)
-                        )
+                        _base_footprint = model_size_fit - _compute_buffer_pipeline
                         _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
                             n_parallel,
                             _reduce_ctx,
@@ -29127,7 +29273,7 @@ class LlamaCppBackend:
                             _base_footprint,
                             cache_type_kv,
                             _pin_fraction,
-                            _pipeline_overhead_bytes + _cc_bytes(_reduce_ctx),
+                            _pipeline_overhead_bytes,
                             _layer_min_gpus,
                             _effective_ubatch,
                             swa_full = swa_full,
@@ -29136,6 +29282,7 @@ class LlamaCppBackend:
                             split_extra_for_slots = lambda s: _cc_split_extra(_reduce_ctx, s),
                             ubatch_for_slots = _ubatch_for_slots,
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
+                            ctx_compute_for_slots = lambda s: _cc_bytes(_reduce_ctx, slots = s),
                             ctx_checkpoints = _placement_ctx_checkpoints,
                             # An explicit device pick skips the discrete tier; host-only accounting still applies.
                             integrated = _integrated_gpus,
@@ -29161,10 +29308,10 @@ class LlamaCppBackend:
                                     ctx,
                                     devices,
                                     total_by_idx,
-                                    model_size_fit - _compute_buffer_pipeline + _cc_bytes(ctx),
+                                    model_size_fit - _compute_buffer_pipeline,
                                     cache_type_kv,
                                     _pin_fraction,
-                                    _pipeline_overhead_bytes + _cc_bytes(ctx),
+                                    _pipeline_overhead_bytes,
                                     _layer_min_gpus,
                                     _effective_ubatch,
                                     swa_full = swa_full,
@@ -29173,6 +29320,7 @@ class LlamaCppBackend:
                                     split_extra_bytes = _cc_split_extra(ctx),
                                     ubatch_for_slots = _ubatch_for_slots,
                                     mtp_bytes_for_slots = (lambda s, ub, c = ctx: _mtp_bytes(c, s, ub)),
+                                    ctx_compute_for_slots = (lambda s, c = ctx: _cc_bytes(c, slots = s)),
                                     include_requested = True,
                                     exact = True,  # only n_parallel is accepted below
                                     ctx_checkpoints = _placement_ctx_checkpoints,

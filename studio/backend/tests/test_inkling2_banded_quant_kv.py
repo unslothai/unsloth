@@ -35,6 +35,11 @@ NEW_CUDA = _Inkling2BandedSupport("cuda", True, True)
 # A #399 build on a pre-Turing (or unknown) card: no banded MMA, so no in-tile dequant.
 NEW_CUDA_PRE_TURING = _Inkling2BandedSupport("cuda", True, False)
 NEW_HIP = _Inkling2BandedSupport("hip", True)
+# unslothai/llama.cpp b12649-mix on: several slots reserve the dense relative bias.
+MULTI_SEQ_CUDA = _Inkling2BandedSupport("cuda", True, True, True, True)
+# The same reserve assumed from an unreadable build number: priced, not identified.
+MULTI_SEQ_CUDA_UNKNOWN = _Inkling2BandedSupport("cuda", True, True, True, False)
+LOOP_MARKER = b"inkling2_loop: %zu cache slots exceed the maximum of %d"
 
 # Registration strings of the banded MMA kernel: #399 instantiates it per K/V tile type.
 NEW_KERNEL = b"_Z25flash_attn_ext_banded_mmaILi128ELi1EL9ggml_type8EEvPKcS2_S2_S2_PKhS2_PKfPfS7_fil"
@@ -242,7 +247,7 @@ class TestProbe:
     ):
         self._caps(monkeypatch, caps, sms)
         binary = self._install(tmp_path, {"libggml-cuda.so": NEW_KERNEL})
-        assert LlamaCppBackend.inkling2_banded_support(binary) == ("cuda", True, tile)
+        assert LlamaCppBackend.inkling2_banded_support(binary) == ("cuda", True, tile, False, False)
 
     def test_new_cuda_library(self, tmp_path):
         binary = self._install(
@@ -260,14 +265,52 @@ class TestProbe:
 
     def test_vulkan_build_never_claims_the_quantized_path(self, tmp_path):
         binary = self._install(tmp_path, {"libggml-vulkan.so": NEW_KERNEL})
-        assert LlamaCppBackend.inkling2_banded_support(binary) == ("vulkan", False, False)
+        assert LlamaCppBackend.inkling2_banded_support(binary) == (
+            "vulkan",
+            False,
+            False,
+            False,
+            False,
+        )
 
     def test_metal_build(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             LlamaCppBackend, "_build_has_metal", staticmethod(lambda binary = None: True)
         )
         binary = self._install(tmp_path, {"libggml-metal.dylib": b""})
-        assert LlamaCppBackend.inkling2_banded_support(binary) == ("metal", False, False)
+        assert LlamaCppBackend.inkling2_banded_support(binary) == (
+            "metal",
+            False,
+            False,
+            False,
+            False,
+        )
+
+    @pytest.mark.parametrize(
+        "build,dense", [(12649, True), (12700, True), (12631, False), (None, True)]
+    )
+    def test_loop_loader_and_build_mark_the_dense_reserve(
+        self, tmp_path, monkeypatch, build, dense
+    ):
+        # b12631-mix has the loader but still reserves the banded graph.
+        monkeypatch.setattr(
+            LlamaCppBackend, "probe_build_number", classmethod(lambda cls, binary = None: build)
+        )
+        binary = self._install(
+            tmp_path,
+            {"libggml-cuda.so": NEW_KERNEL, "libllama.so.1.0.0": b"x" + LOOP_MARKER + b"y"},
+        )
+        assert LlamaCppBackend.inkling2_banded_support(binary) == (
+            "cuda",
+            True,
+            True,
+            dense,
+            build is not None,
+        )
+
+    def test_libllama_without_the_loader_keeps_the_banded_reserve(self, tmp_path):
+        binary = self._install(tmp_path, {"libggml-cuda.so": NEW_KERNEL, "libllama.so": b"llama"})
+        assert LlamaCppBackend.inkling2_banded_support(binary) == NEW_CUDA
 
     def test_static_build_is_unknown(self, tmp_path):
         assert LlamaCppBackend.inkling2_banded_support(self._install(tmp_path, {})) == (
@@ -297,3 +340,237 @@ class TestProbe:
     def test_a_backend_built_without_init_prices_as_legacy(self):
         b = LlamaCppBackend.__new__(LlamaCppBackend)
         assert b._inkling2_banded() == _INKLING2_BANDED_LEGACY
+
+
+def _llama_cpp_chunk_rows(
+    n_ctx,
+    ub,
+    n_head = 24,
+):
+    """inkling2.cpp's query rows per dense-bias chunk (single stream, full cache)."""
+    n_kv = (n_ctx + 255) // 256 * 256
+    budget = (1 << 29) // (n_kv * n_head) // 64 * 64
+    tiles = -(-ub // 64)
+    return min(ub, max(64, budget, -(-tiles // 64) * 64))
+
+
+class TestMultiSlotDenseReserve:
+    """From unslothai/llama.cpp b12649-mix, a ubatch that can hold several sequences reserves the
+    dense relative bias (#386 7adbb5d3f), in query-row chunks of at most 2^29 elements. Measured
+    CUDA0 MiB, Inkling-2-Mini UD-Q4_K_XL, --kv-unified, flash attention, RTX 6000 Ada."""
+
+    _MEASURED = [
+        # (n_ctx, ub, slots, cache type, --swa-full, MiB)
+        (8192, 512, 4, "f16", False, 880.53),
+        (16384, 512, 4, "f16", False, 1480.53),
+        (32768, 512, 4, "f16", False, 2680.53),
+        (65536, 512, 4, "f16", False, 3798.03),
+        (131072, 512, 4, "f16", False, 3990.03),
+        (241664, 512, 4, "f16", False, 5106.03),
+        (262144, 512, 4, "f16", False, 5526.03),
+        (524288, 512, 4, "f16", False, 10902.03),
+        (32768, 2048, 4, "f16", False, 5033.19),
+        (131072, 2048, 4, "f16", False, 8297.19),
+        (8192, 4096, 4, "f16", False, 8162.0),
+        (65536, 512, 2, "f16", False, 3791.87),
+        (65536, 512, 4, "q8_0", False, 3801.78),
+        (262144, 512, 4, "q8_0", False, 5526.03),
+        # The sliding layers chunk over their own cache: --swa-full or enough slots to fill it.
+        (65536, 512, 4, "f16", True, 6461.28),
+        (65536, 512, 4, "q8_0", True, 6465.03),
+        (131072, 512, 4, "q8_0", True, 9340.53),
+        (65536, 512, 16, "f16", False, 3834.94),
+        (262144, 512, 16, "f16", False, 5562.94),
+        (65536, 512, 64, "f16", False, 6465.85),
+        (131072, 512, 64, "f16", False, 7150.35),
+        (65536, 512, 64, "q8_0", False, 6469.60),
+        (98304, 512, 4, "f16", True, 7899.78),
+        (196608, 512, 4, "q4_0", True, 12219.03),
+        # Studio's auto context with --swa-full, 4 slots and q4_0: crashed at --fit off before.
+        (274688, 512, 4, "q4_0", True, 17022.78),
+        # llama.cpp's allocation-free graph sizing on the same build.
+        (524288, 512, 4, "q4_0", True, 32379.0),
+        (196608, 512, 64, "q4_0", False, 7794.10),
+        (274688, 512, 4, "q4_0", False, 5783.28),
+    ]
+
+    @pytest.mark.parametrize("ctx,ub,slots,kv,swa_full,measured", _MEASURED)
+    def test_estimate_covers_the_reserve(self, ctx, ub, slots, kv, swa_full, measured):
+        b = _inkling2_mini(MULTI_SEQ_CUDA)
+        est = (
+            b._estimate_compute_buffer_bytes(n_ubatch = ub, n_parallel = slots)
+            + b._compute_buffer_ctx_bytes(ctx, ub, kv, n_parallel = slots, swa_full = swa_full)
+        ) / MIB
+        # Highest at 8K ub=4096, where the sliding cache is the whole context: 1.77x.
+        assert measured <= est <= measured * 1.8
+
+    def test_a_sliding_cache_that_needs_chunks_adds_its_own_bias(self):
+        b = _inkling2_mini(MULTI_SEQ_CUDA)
+        compact = b._compute_buffer_ctx_bytes(65536, 512, "f16", n_parallel = 4)
+        assert b._compute_buffer_ctx_bytes(65536, 512, "f16", n_parallel = 16) == compact
+        assert b._compute_buffer_ctx_bytes(65536, 512, "f16", n_parallel = 64) > compact + 2600 * MIB
+        assert b._compute_buffer_ctx_bytes(
+            65536, 512, "f16", n_parallel = 4, swa_full = True
+        ) == b._compute_buffer_ctx_bytes(65536, 512, "f16", n_parallel = 64)
+
+    @pytest.mark.parametrize("ub", [512, 2048, 4096])
+    def test_bias_bound_covers_every_chunk_and_never_falls(self, ub):
+        b = _inkling2_mini(MULTI_SEQ_CUDA)
+        prev = [0, 0, 0]
+        for ctx in range(4096, 1048577, 256):
+            elems = b._inkling2_dense_bias_elems(ctx, ub, 24)
+            assert elems >= ((ctx + 255) // 256 * 256) * _llama_cpp_chunk_rows(ctx, ub)
+            cost = [
+                b._compute_buffer_ctx_bytes(ctx, ub, "f16", n_parallel = s, swa_full = f)
+                for s, f in ((4, False), (64, False), (4, True))
+            ]
+            assert all(c >= p for c, p in zip(cost, prev)), ctx
+            prev = cost
+
+    @pytest.mark.parametrize(
+        "ctx,ub,rows",
+        [
+            (32768, 512, 512),  # 682 rows fit the budget: one call
+            (65536, 512, 320),
+            (131072, 512, 128),
+            (262144, 512, 64),
+            (1048576, 512, 64),  # the 64-row floor
+            (131072, 8192, 128),  # at most 64 chunks: 8192 / 64
+        ],
+    )
+    def test_reference_chunk_rows(self, ctx, ub, rows):
+        assert _llama_cpp_chunk_rows(ctx, ub) == rows
+
+    # One slot on the same build: the reserve also holds the dense bias of a small ubatch
+    # (32 rows over the full cache). 256K at ub=512 adds the +112 MiB measured after a 105K prompt.
+    _ONE_SLOT = [
+        # (n_ctx, ub, cache type, MiB)
+        (65536, 256, "f16", 357.02),
+        (262144, 256, "f16", 1353.02),
+        (65536, 512, "f16", 414.30),
+        (131072, 512, "f16", 769.71),
+        (262144, 512, "f16", 1497.71 + 112),
+        (524288, 512, "f16", 2953.71),
+        (655360, 512, "f16", 3681.71),
+        (65536, 1024, "f16", 867.52),
+        (262144, 1024, "f16", 1792.33),
+        (65536, 2048, "f16", 1980.96),
+        (262144, 2048, "f16", 2844.58),
+        (262144, 512, "bf16", 2522.08),
+        (262144, 512, "q8_0", 2522.08),
+        (262144, 512, "q4_0", 2522.08),
+        (262144, 2048, "q8_0", 3420.96),
+    ]
+
+    # One slot with --swa-full: the sliding layers' per-cell inputs span the full cache. 415,488 at
+    # ub=2048 is Studio's auto context that ran out of memory on the first prompt before.
+    _ONE_SLOT_SWA_FULL = [
+        (131072, 512, "q4_0", 1515.58),
+        (262144, 512, "q4_0", 3011.58),
+        (415488, 512, "q4_0", 4761.78),
+        (131072, 512, "f16", 1009.20),
+        (131072, 2048, "q4_0", 2340.96),
+        (262144, 2048, "q4_0", 4604.96),
+        (415488, 2048, "q4_0", 7253.66),
+        (131072, 2048, "f16", 2172.58),
+    ]
+
+    @pytest.mark.parametrize("ctx,ub,kv,measured", _ONE_SLOT_SWA_FULL)
+    def test_one_slot_swa_full_covers_the_reserve(self, ctx, ub, kv, measured):
+        b = _inkling2_mini(MULTI_SEQ_CUDA)
+        est = (
+            b._estimate_compute_buffer_bytes(n_ubatch = ub, n_parallel = 1)
+            + b._compute_buffer_ctx_bytes(ctx, ub, kv, n_parallel = 1, swa_full = True)
+        ) / MIB
+        # Highest at 131K ub=2048, where the per-ubatch terms dominate: 2.1x.
+        assert measured <= est <= measured * 2.2
+
+    @pytest.mark.parametrize("ctx,ub,kv,measured", _ONE_SLOT)
+    def test_one_slot_estimate_covers_the_reserve(self, ctx, ub, kv, measured):
+        est = _compute(_inkling2_mini(MULTI_SEQ_CUDA), ctx, kv, ub = ub, slots = 1) / MIB
+        assert measured <= est <= measured * 1.8
+
+    @pytest.mark.parametrize(
+        "kv,per_cell", [("f16", 6144), ("q8_0", 6144 + 4096), ("bf16", 6144 + 4096)]
+    )
+    def test_one_slot_reserve_holds_the_small_ubatch_dense_bias(self, kv, per_cell):
+        b = _inkling2_mini(MULTI_SEQ_CUDA)
+        n = 1 << 20
+        grown = b._inkling2_reserve_bytes(2 * n, 512, kv) - b._inkling2_reserve_bytes(n, 512, kv)
+        assert grown == per_cell * n
+
+    def test_older_builds_keep_the_banded_price_for_several_slots(self):
+        b = _inkling2_mini(NEW_CUDA)
+        assert b._compute_buffer_ctx_bytes(65536, 512, "f16", n_parallel = 4) == (
+            b._compute_buffer_ctx_bytes(65536, 512, "f16", n_parallel = 1)
+        )
+
+    @pytest.mark.parametrize("slots", [1, 4])
+    def test_fit_margin_is_only_the_pool_once_the_reserve_holds_the_worst_case(self, slots):
+        # 256 KiB per ub token; the B200-era runtime term added ~2.4 GB at 262K q8_0.
+        b = _inkling2_mini(MULTI_SEQ_CUDA)
+        assert b._inkling2_fit_regrowth_mib(262144, 512, "q8_0", n_parallel = slots) == 128
+
+    def test_an_unknown_build_keeps_the_older_fit_margin(self):
+        # b12631-mix has the loader but the banded reserve; without its build number it must
+        # not lose the growth allowance, while the compute estimate still errs high.
+        unknown = _inkling2_mini(MULTI_SEQ_CUDA_UNKNOWN)
+        known = _inkling2_mini(MULTI_SEQ_CUDA)
+        assert unknown._inkling2_fit_regrowth_mib(32768, 2048, "f16", n_parallel = 4) > 512
+        assert known._inkling2_fit_regrowth_mib(32768, 2048, "f16", n_parallel = 4) == 512
+        assert unknown._compute_buffer_ctx_bytes(32768, 2048, "f16", n_parallel = 4) == (
+            known._compute_buffer_ctx_bytes(32768, 2048, "f16", n_parallel = 4)
+        )
+
+    @pytest.mark.parametrize(
+        "ctx,ub,kv,slots",
+        [(262144, 512, "q8_0", 4), (32768, 2048, "f16", 4), (131072, 512, "q4_0", 1)],
+    )
+    def test_an_unknown_build_prices_the_banded_build_margin(self, ctx, ub, kv, slots):
+        # The margin is the banded build's own, not one derived from the dense reserve.
+        unknown = _inkling2_mini(MULTI_SEQ_CUDA_UNKNOWN)
+        banded = _inkling2_mini(NEW_CUDA)
+        margin = unknown._inkling2_fit_regrowth_mib(ctx, ub, kv, n_parallel = slots)
+        assert margin == banded._inkling2_fit_regrowth_mib(ctx, ub, kv, n_parallel = slots)
+        if (ctx, slots) == (262144, 4):
+            # An RTX 3090 load with a build-1 llama-server reserved 5957 MiB here.
+            assert margin == 600
+
+    def test_banded_builds_keep_the_regrowth_margin_for_several_slots(self):
+        b = _inkling2_mini(NEW_CUDA)
+        assert b._inkling2_fit_regrowth_mib(32768, 2048, "f16", n_parallel = 4) > 0
+
+    def test_flash_attention_off_keeps_the_dense_upper_bound(self):
+        b = _inkling2_mini(MULTI_SEQ_CUDA)
+        assert b._compute_buffer_ctx_bytes(
+            65536, 512, "f16", flash_attn = False, n_parallel = 4
+        ) == b._compute_buffer_ctx_bytes(65536, 512, "f16", flash_attn = False, n_parallel = 1)
+
+    def test_slot_retry_prices_each_candidate_with_its_own_compute(self, monkeypatch):
+        b = _inkling2_mini(MULTI_SEQ_CUDA)
+        seen = []
+
+        def _select(total, gpus, **kw):
+            seen.append(kw["per_device_overhead_bytes"])
+            return [0], True  # nothing fits, so every candidate is priced
+
+        monkeypatch.setattr(b, "_select_gpus_split_aware", _select)
+
+        def cc(slots):
+            return b._compute_buffer_ctx_bytes(65536, 512, "f16", n_parallel = slots)
+
+        b._slots_that_fit_on_gpu(
+            4,
+            65536,
+            [(0, 48_000)],
+            {0: 49_140},
+            0,
+            "f16",
+            1.0,
+            0,
+            1,
+            512,
+            ctx_compute_for_slots = cc,
+        )
+        assert seen == [cc(3), cc(2), cc(1)]
+        assert cc(1) * 3 < cc(2)

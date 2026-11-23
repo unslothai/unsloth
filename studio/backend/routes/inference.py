@@ -14316,7 +14316,13 @@ def _gguf_runtime_bytes(
             # mirrors _plan_tensor_parallel: per-device buffer and ctx growth on every device
             compute = devices * (
                 _flat_buffer(True)
-                + probe._compute_buffer_ctx_bytes(ctx, effective_ubatch, cache_type_for_scratch)
+                + probe._compute_buffer_ctx_bytes(
+                    ctx,
+                    effective_ubatch,
+                    cache_type_for_scratch,
+                    n_parallel = slots,
+                    swa_full = swa_full,
+                )
             )
         else:
             # layer_split follows the loader: -ot, -ncmoe, --no-kv-offload disable pipeline parallelism.
@@ -14335,6 +14341,7 @@ def _gguf_runtime_bytes(
                     layer_split = devices > 1 and not pipeline_parallel_off,
                     flash_attn = flash_attn,
                     n_parallel = slots,
+                    swa_full = swa_full,
                 )
             )
         if compute <= 0:
