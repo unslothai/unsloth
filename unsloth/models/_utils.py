@@ -12958,13 +12958,14 @@ def _embedding_leaves(names):
 
 
 def _vllm_unmovable_embedding_modules(model, target_modules):
-    """Names to leave in `target_modules` under fast inference. vLLM cannot sync a trainable embedding, so modules_to_save is refused below. Only lm_head is spared: LoRA on it never trained here either, so redirecting it would newly raise on scripts that run today. embed_tokens still redirects, so still raises."""
+    """Names to leave in `target_modules` under fast inference. vLLM cannot sync a trainable embedding, so modules_to_save is refused below. Only lm_head is spared and stays a LoRA target, since redirecting it would newly raise on scripts that run today: SFT trains that LoRA through the head's own forward, while vLLM sampling never applies it, so GRPO keeps it frozen to stay on-policy. embed_tokens still redirects, so still raises."""
     if getattr(model, "vllm_engine", None) is None:
         return ()
     if type(target_modules) in (list, tuple) and "lm_head" in _embedding_leaves(target_modules):
         logger.warning_once(
-            "Unsloth: Fast inference cannot train `lm_head`, so it is left as an "
-            "untrained LoRA target.\nUse `fast_inference = False` to train it."
+            "Unsloth: With fast inference, `lm_head` stays a LoRA target. SFT trains it, but vLLM "
+            "sampling does not apply an lm_head LoRA, so GRPO keeps it frozen to stay on-policy.\n"
+            "Use `fast_inference = False` to train it with GRPO."
         )
     return ("lm_head",)
 
@@ -12976,7 +12977,7 @@ def _redirect_embedding_targets(
     allow_redirect = True,
     skip = (),
 ):
-    """Move embed_tokens/lm_head into modules_to_save. Returns (targets, saved, moved). LoRA on either is silently dead here: the fused CE loss reads `lm_head.weight` instead of calling the module, and PEFT's `lora_embedding_A/B` are never unfrozen."""
+    """Move embed_tokens/lm_head into modules_to_save. Returns (targets, saved, moved). LoRA on lm_head would make the loss leave the fused CE (which reads `lm_head.weight`) for the head's own forward and its full logits, and PEFT's `lora_embedding_A/B` are never unfrozen, so both train as full modules instead."""
     if type(target_modules) not in (list, tuple) or not allow_redirect:
         return target_modules, modules_to_save, ()
 
