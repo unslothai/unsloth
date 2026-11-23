@@ -34,7 +34,6 @@ def test_queued_drafter_checks_leave_the_default_executor_free(monkeypatch):
         ]
         await asyncio.sleep(0.5)
         try:
-            # Any other route doing asyncio.to_thread (training status, history, ...).
             other = await asyncio.wait_for(asyncio.to_thread(lambda: "ok"), timeout = 5)
         finally:
             release.set()

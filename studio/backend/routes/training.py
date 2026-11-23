@@ -1700,8 +1700,7 @@ async def get_offload_state(current_subject: str = Depends(get_current_subject))
     return {"active": True, **offload}
 
 
-# Probes run two at a time for up to 300 s each; queued checks wait here, not on the shared default
-# executor that training start/stop/status and most other routes reach through asyncio.to_thread.
+# Own pool: queued 300 s probes must not hold the default executor other routes reach via asyncio.to_thread.
 _drafter_pool = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "drafter-probe")
 
 
