@@ -304,12 +304,8 @@ def test_amd_offers_only_the_checkpoints_vllms_rocm_build_loads(tmp_path):
                 assert engines(metadata) is None, metadata
 
 
-def test_apple_silicon_offers_vllm_only_for_awq(tmp_path):
-    # vllm-metal 0.33.0 loads AWQ through mlx-lm; GPTQ, compressed-tensors and auto-round fail at engine start.
-    def engines(metadata):
-        offer = route._managed_engine_offer_for(_config(tmp_path, metadata), None)
-        return offer and offer["engines"]
-
+def test_apple_silicon_offers_no_engine(tmp_path):
+    # Default (MLX) loads AWQ; vllm-metal 0.33.0 fails GPTQ, compressed-tensors and auto-round at engine start.
     mac = {"vllm": None, "sglang": "SGLang requires an NVIDIA GPU."}
     with (
         patch("core.inference.engine_install.gpu_platform", return_value = "metal"),
@@ -320,6 +316,8 @@ def test_apple_silicon_offers_vllm_only_for_awq(tmp_path):
             {"compressed-tensors": (), "awq": (), "gptq": (), "auto-round": ()},
         ),
     ):
-        assert engines({"quantization_config": {"quant_method": "awq"}}) == ["vllm"]
-        for method in ("gptq", "compressed-tensors", "auto-round"):
-            assert engines({"quantization_config": {"quant_method": method}}) is None, method
+        for method in ("awq", "gptq", "compressed-tensors", "auto-round"):
+            metadata = {"quantization_config": {"quant_method": method}}
+            assert (
+                route._managed_engine_offer_for(_config(tmp_path, metadata), None) is None
+            ), method
