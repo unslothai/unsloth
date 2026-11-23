@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-//! A connect to a closed 127.0.0.1 port on Windows runs until the 2 s client timeout; skip ports with no listener.
+//! A connect to a closed 127.0.0.1 port on Windows runs until the 2 s client timeout; skip ports
+//! no 127.0.0.1 connect can reach. One such port in a concurrent scan costs the whole timeout,
+//! so a listener on `::1` or a LAN address alone must not count.
 
 use std::collections::HashSet;
 
 /// `None` (not Windows, or any table read failed) means probe every port (fail open).
-pub(crate) fn listening_ports() -> Option<HashSet<u16>> {
+pub(crate) fn loopback_listening_ports() -> Option<HashSet<u16>> {
     #[cfg(windows)]
     {
-        windows_tables::listening_ports()
+        windows_tables::loopback_listening_ports()
     }
     #[cfg(not(windows))]
     {
@@ -33,9 +35,24 @@ fn port_from_table_dword(value: u32) -> u16 {
     u16::from_be(value as u16)
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+fn v4_reaches_loopback(addr: [u8; 4]) -> bool {
+    addr == [127, 0, 0, 1] || addr == [0, 0, 0, 0]
+}
+
+/// `::` may be dual-stack (IPV6_V6ONLY is not in the table), so it is kept.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn v6_reaches_loopback(addr: [u8; 16]) -> bool {
+    let ip = std::net::Ipv6Addr::from(addr);
+    ip.is_unspecified()
+        || ip
+            .to_ipv4_mapped()
+            .is_some_and(|v4| v4_reaches_loopback(v4.octets()))
+}
+
 #[cfg(windows)]
 mod windows_tables {
-    use super::port_from_table_dword;
+    use super::{port_from_table_dword, v4_reaches_loopback, v6_reaches_loopback};
     use std::collections::HashSet;
     use windows_sys::Win32::Foundation::{
         ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_SUPPORTED, NO_ERROR,
@@ -49,13 +66,16 @@ mod windows_tables {
     const AF_INET6: u32 = 23;
     const MAX_ATTEMPTS: usize = 4;
 
-    pub(super) fn listening_ports() -> Option<HashSet<u16>> {
+    pub(super) fn loopback_listening_ports() -> Option<HashSet<u16>> {
         let mut ports = HashSet::new();
         let v4 = read_table(AF_INET)??;
         collect::<MIB_TCPROW_OWNER_PID>(
             &v4,
             std::mem::offset_of!(MIB_TCPTABLE_OWNER_PID, table),
-            |row| row.dwLocalPort,
+            |row| {
+                v4_reaches_loopback(row.dwLocalAddr.to_ne_bytes())
+                    .then(|| port_from_table_dword(row.dwLocalPort))
+            },
             &mut ports,
         )?;
         // Unsupported IPv6 family counts as no IPv6 listeners.
@@ -63,7 +83,10 @@ mod windows_tables {
             collect::<MIB_TCP6ROW_OWNER_PID>(
                 &v6,
                 std::mem::offset_of!(MIB_TCP6TABLE_OWNER_PID, table),
-                |row| row.dwLocalPort,
+                |row| {
+                    v6_reaches_loopback(row.ucLocalAddr)
+                        .then(|| port_from_table_dword(row.dwLocalPort))
+                },
                 &mut ports,
             )?;
         }
@@ -90,10 +113,7 @@ mod windows_tables {
                 )
             };
             match rc {
-                NO_ERROR if !buffer.is_empty() => {
-                    buffer.truncate((size as usize).div_ceil(4).min(buffer.len()));
-                    return Some(Some(buffer));
-                }
+                NO_ERROR if !buffer.is_empty() => return Some(Some(buffer)),
                 NO_ERROR | ERROR_INSUFFICIENT_BUFFER => {
                     let bytes = (size as usize).max(4) + 1024;
                     buffer = vec![0u32; bytes.div_ceil(4)];
@@ -109,7 +129,7 @@ mod windows_tables {
     fn collect<Row>(
         buffer: &[u32],
         rows_offset: usize,
-        local_port: impl Fn(&Row) -> u32,
+        reachable_port: impl Fn(&Row) -> Option<u16>,
         ports: &mut HashSet<u16>,
     ) -> Option<()> {
         let count = *buffer.first()? as usize;
@@ -125,10 +145,7 @@ mod windows_tables {
                 count,
             )
         };
-        ports.extend(
-            rows.iter()
-                .map(|row| port_from_table_dword(local_port(row))),
-        );
+        ports.extend(rows.iter().filter_map(reachable_port));
         Some(())
     }
 }
@@ -171,30 +188,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn only_addresses_a_127_0_0_1_connect_reaches_count() {
+        assert!(v4_reaches_loopback([127, 0, 0, 1]));
+        assert!(v4_reaches_loopback([0, 0, 0, 0]));
+        assert!(!v4_reaches_loopback([127, 0, 0, 2]));
+        assert!(!v4_reaches_loopback([192, 168, 1, 5]));
+
+        let v6 = |s: &str| s.parse::<std::net::Ipv6Addr>().unwrap().octets();
+        assert!(v6_reaches_loopback(v6("::")));
+        assert!(v6_reaches_loopback(v6("::ffff:127.0.0.1")));
+        assert!(v6_reaches_loopback(v6("::ffff:0.0.0.0")));
+        assert!(!v6_reaches_loopback(v6("::1")));
+        assert!(!v6_reaches_loopback(v6("fe80::1")));
+        assert!(!v6_reaches_loopback(v6("::ffff:10.0.0.1")));
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn other_platforms_report_unknown() {
-        assert!(listening_ports().is_none());
+        assert!(loopback_listening_ports().is_none());
     }
 
     #[cfg(windows)]
     #[test]
-    fn windows_tables_list_live_listeners_on_both_families() {
+    fn windows_tables_list_only_loopback_reachable_listeners() {
         let v4 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let v4_port = v4.local_addr().unwrap().port();
-        let v6 = std::net::TcpListener::bind("[::1]:0").ok();
-        let ports = listening_ports().expect("listener tables readable");
-        assert!(ports.contains(&v4_port), "missing IPv4 listener {v4_port}");
-        if let Some(v6) = v6 {
+        let any = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let any_port = any.local_addr().unwrap().port();
+        let v6_only = std::net::TcpListener::bind("[::1]:0").ok();
+        let ports = loopback_listening_ports().expect("listener tables readable");
+        assert!(
+            ports.contains(&v4_port),
+            "missing 127.0.0.1 listener {v4_port}"
+        );
+        assert!(
+            ports.contains(&any_port),
+            "missing 0.0.0.0 listener {any_port}"
+        );
+        if let Some(v6) = v6_only {
             let v6_port = v6.local_addr().unwrap().port();
-            assert!(ports.contains(&v6_port), "missing IPv6 listener {v6_port}");
+            assert!(
+                !ports.contains(&v6_port),
+                "::1-only listener {v6_port} listed"
+            );
         }
 
         let closed = {
             let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             probe.local_addr().unwrap().port()
         };
-        let ports = listening_ports().expect("listener tables readable");
+        let ports = loopback_listening_ports().expect("listener tables readable");
         assert!(
             !ports.contains(&closed),
             "closed port {closed} still listed"

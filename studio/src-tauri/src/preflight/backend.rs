@@ -324,11 +324,11 @@ pub(super) async fn probe_backend_ports(ignored_ports: &[u16]) -> Vec<BackendPro
     let candidate_count = candidates.len();
     let ports = crate::tcp_listeners::retain_listening(
         candidates,
-        crate::tcp_listeners::listening_ports().as_ref(),
+        crate::tcp_listeners::loopback_listening_ports().as_ref(),
     );
     if ports.len() != candidate_count {
         info!(
-            "Desktop preflight: probing {} of {} candidate ports with a TCP listener",
+            "Desktop preflight: probing {} of {} candidate ports with a loopback TCP listener",
             ports.len(),
             candidate_count
         );
