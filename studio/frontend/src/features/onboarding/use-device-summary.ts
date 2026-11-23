@@ -4,8 +4,8 @@
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { authFetch } from "@/features/auth";
 import {
-  type HardwareInfo,
   refreshHardwareInfo,
+  useHardwareInfo,
 } from "@/hooks/use-hardware-info";
 import { useEffect, useState } from "react";
 import { videoAvailable } from "./lib/pages";
@@ -38,50 +38,60 @@ async function readRamGb(): Promise<number | null> {
   }
 }
 
-function toSummary(
-  hardware: HardwareInfo,
-  ramGb: number | null,
-): DeviceSummary {
-  const platform = usePlatformStore.getState();
+const DETECT_POLL_MS = 1500;
+const DETECT_TIMEOUT_MS = 60_000;
+
+// Reactive, not a snapshot: on a first run the verdict is still a guess when the dialog mounts.
+export function useDeviceSummary(): DeviceSummary {
+  const hardware = useHardwareInfo();
+  const unknown = usePlatformStore((s) => s.capabilitiesUnknown());
+  const appleSilicon = usePlatformStore((s) => s.appleSilicon);
+  const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const trainUnavailable = usePlatformStore((s) => s.isTrainUnavailable());
+  const [ramGb, setRamGb] = useState<number | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const deadline = Date.now() + DETECT_TIMEOUT_MS;
+    const probe = async () => {
+      await fetchDeviceType({ detectHardware: true }).catch(() => undefined);
+      if (cancelled) return;
+      if (!usePlatformStore.getState().capabilitiesUnknown()) {
+        // GPU fields cached before detection settled would be stale.
+        void refreshHardwareInfo();
+        return;
+      }
+      if (Date.now() > deadline) {
+        setFailed(true);
+        return;
+      }
+      timer = window.setTimeout(probe, DETECT_POLL_MS);
+    };
+    void probe();
+    void readRamGb().then((gb) => {
+      if (!cancelled) setRamGb(gb);
+    });
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  if (failed) return { status: "error" };
+  if (unknown || !hardware.loaded) return { status: "checking" };
   const primary = hardware.gpus[0];
   return {
     status: "ready",
     gpuName: hardware.gpuName ?? primary?.name ?? null,
     gpuCount: hardware.gpus.length,
     vramGb: hardware.vramTotalGb ?? primary?.vramTotalGb ?? null,
-    unifiedMemory: platform.appleSilicon || primary?.unifiedMemory === true,
-    appleSilicon: platform.appleSilicon,
+    unifiedMemory: appleSilicon || primary?.unifiedMemory === true,
+    appleSilicon,
     ramGb,
-    train: !platform.isTrainUnavailable(),
-    image: !platform.isChatOnly(),
-    video: videoAvailable(platform.isChatOnly(), hardware.videoSupported),
+    train: !trainUnavailable,
+    image: !chatOnly,
+    video: videoAvailable(chatOnly, hardware.videoSupported),
   };
-}
-
-export function useDeviceSummary(): DeviceSummary {
-  const [summary, setSummary] = useState<DeviceSummary>({ status: "checking" });
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        await fetchDeviceType({ detectHardware: true });
-        const [hardware, ramGb] = await Promise.all([
-          refreshHardwareInfo(),
-          readRamGb(),
-        ]);
-        if (cancelled) return;
-        if (!hardware.loaded) {
-          setSummary({ status: "error" });
-          return;
-        }
-        setSummary(toSummary(hardware, ramGb));
-      } catch {
-        if (!cancelled) setSummary({ status: "error" });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return summary;
 }
