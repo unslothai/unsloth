@@ -28,9 +28,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_sharded_load_bnb4_gloo as bnb4  # noqa: E402
 from test_tp_native_oracle import build  # noqa: E402
 
-if not hasattr(
-    __import__("importlib").import_module("transformers.core_model_loading"), "set_param_for_module"
-):
+try:
+    from transformers import core_model_loading as _core_model_loading
+except ImportError:
+    _core_model_loading = None
+if not hasattr(_core_model_loading, "set_param_for_module"):
     pytest.skip(
         "transformers without core_model_loading.set_param_for_module (4.x) keeps the full load",
         allow_module_level = True,
@@ -257,3 +259,59 @@ def test_native_fsdp2_env_quantizing_on_load_shards_only_when_the_4bit_load_does
         # embedding and output head dense; not as the float32 files.
         assert len(res["estimate"]) == 2 and all(e for e in res["estimate"]), res["estimate"]
         assert all(e == res["expected"] < res["files"] for e in res["estimate"]), res
+
+
+class _FakeMesh:
+    mesh = torch.arange(2)
+
+    def size(self):
+        return 2
+
+    def get_local_rank(self):
+        return 0
+
+
+def _load_with_warmup(record):
+    """_load_quantizing over a stand-in for from_pretrained that runs transformers' warmup the way 5.x does."""
+    from transformers import modeling_utils as mu
+
+    from unsloth.models.fsdp2_load import _load_quantizing
+
+    def original(cls, name, *args, **kwargs):
+        mu.caching_allocator_warmup(None, {"w": "cuda:0"}, None)
+        return torch.nn.Linear(4, 4)
+
+    state = {"active": False, "models": []}
+    _load_quantizing(original, None, "m", (), {}, _FakeMesh(), state)
+    return mu
+
+
+def test_chunked_quantize_on_load_sizes_the_allocator_warmup_to_this_ranks_share(monkeypatch):
+    from transformers import modeling_utils as mu
+
+    whole = 20 * 1024**3
+    counter = lambda *args, **kwargs: {torch.device("cuda", 0): whole}  # noqa: E731
+    requested = []
+    monkeypatch.setattr(mu, "get_total_byte_count", counter)
+    monkeypatch.setattr(
+        mu,
+        "caching_allocator_warmup",
+        lambda model, device_map, quantizer: requested.append(
+            dict(mu.get_total_byte_count(model, device_map, quantizer))
+        ),
+    )
+    _load_with_warmup(requested)
+    assert requested == [{torch.device("cuda", 0): whole // 2}], requested
+    assert mu.get_total_byte_count is counter  # restored after the load
+
+
+def test_chunked_quantize_on_load_skips_the_warmup_without_get_total_byte_count(monkeypatch):
+    from transformers import modeling_utils as mu
+
+    calls = []
+    warmup = lambda *args, **kwargs: calls.append(args)  # noqa: E731
+    monkeypatch.delattr(mu, "get_total_byte_count", raising = False)
+    monkeypatch.setattr(mu, "caching_allocator_warmup", warmup)
+    _load_with_warmup(calls)
+    assert calls == []
+    assert mu.caching_allocator_warmup is warmup  # restored after the load

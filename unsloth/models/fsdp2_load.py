@@ -339,6 +339,42 @@ def _keep_chunk(module, p, world, rank, ranks):
     return new
 
 
+def _shard_allocator_warmup(world):
+    """transformers 5 reserves the whole (quantized) model on each GPU before loading (caching_allocator_warmup,
+    capped by total, not free, memory), which can OOM a rank that only keeps 1/world of it. For the chunked load
+    size it to this rank's share (get_total_byte_count / world), or skip it when that helper is missing. Returns
+    the restore callable."""
+    try:
+        from transformers import modeling_utils as mu
+    except Exception:
+        return lambda: None
+    warmup = mu.__dict__.get("caching_allocator_warmup")
+    if not callable(warmup):
+        return lambda: None
+    counter = mu.__dict__.get("get_total_byte_count")
+    if callable(counter):
+
+        def per_rank(*args, **kwargs):
+            counts = counter(*args, **kwargs)
+            for device in list(counts):
+                counts[device] = -(-int(counts[device]) // world)
+            return counts
+
+        mu.get_total_byte_count = per_rank
+
+        def restore():
+            mu.get_total_byte_count = counter
+
+        return restore
+
+    mu.caching_allocator_warmup = lambda *args, **kwargs: None
+
+    def restore():
+        mu.caching_allocator_warmup = warmup
+
+    return restore
+
+
 def _load_quantizing(original, cls, name, args, kwargs, mesh, state):
     """A bitsandbytes 4-bit quantize-on-load under native FSDP2 sharded loading: transformers' own load, each
     parameter replaced by this rank's chunk as soon as transformers sets it (see the module docstring).
@@ -377,10 +413,12 @@ def _load_quantizing(original, cls, name, args, kwargs, mesh, state):
 
     loading.set_param_for_module = set_and_chunk
     state["active"] = True
+    restore_warmup = _shard_allocator_warmup(world)
     try:
         loaded = original(cls, name, *args, **kwargs)
     finally:
         loading.set_param_for_module = set_param
+        restore_warmup()
         state["active"] = False
     model = loaded[0] if isinstance(loaded, tuple) else loaded
     live = {
