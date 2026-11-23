@@ -180,6 +180,8 @@ def saving(monkeypatch, tmp_path):
         _internal_mtp_save = contextlib.nullcontext,
         _stitch_mtp_head = lambda model, directory: None,
         _mtp_head_tensor_names = lambda model: [],
+        # Separately trained lm_head: these fixtures train no vocab layers.
+        _untied_trained_vocab = lambda model: None,
         raise_if_merging_mistral_format_view = lambda model, save_method: None,
         raise_if_merging_inkling2 = lambda model, save_method: None,
         lora_relative_to_original_base = lambda model: contextlib.nullcontext(),

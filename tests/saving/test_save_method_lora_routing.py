@@ -234,6 +234,9 @@ _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
         "_restamp_index_total_size",
         # Decorator factory; _load strips decorators.
         "_model_parallel_refuses_save",
+        # Separately trained lm_head: these fixtures train no vocab layers.
+        "_untied_trained_vocab",
+        "_untie_merged_checkpoint",
     }
 )
 
@@ -274,6 +277,8 @@ def _routing_environment(monkeypatch, model):
         _internal_mtp_save = contextlib.nullcontext,
         _stitch_mtp_head = lambda model, directory: None,
         _mtp_head_tensor_names = lambda model: [],
+        _untied_trained_vocab = lambda model: None,
+        _untie_merged_checkpoint = _not_reached,
         _release_layout_for_merged_save = lambda model, directory, method: False,
         _push_lfm3_audio_release_config = lambda model, save_directory, token = None: False,
         _restamp_index_total_size = _not_reached,

@@ -76,6 +76,7 @@ from .models._utils import (
     _refuse_model_parallel_export,
     _convert_torchao_model,
     _merged_torchao_config_for_peft_qat,
+    _peft_merged_module_name,
     _peft_untied_lm_head,
     _strip_torchao_fake_quantization,
     lora_relative_to_original_base,
@@ -7398,6 +7399,8 @@ def unsloth_generic_save(
         or revision is not None
         or not isinstance(model, PeftModel)
         or _attached_mtp_head(model) is not None
+        # A separately trained lm_head is likewise written into a local copy before the upload.
+        or ("16bit" in str(save_method) and _untied_trained_vocab(model) is not None)
     ):
         return _push_merged_to_hub_revision(dict(locals()))
 
@@ -7602,6 +7605,9 @@ def unsloth_generic_save(
         if not push_to_hub:
             if _trained_rope_factor is not None and _is_main_rank():
                 _write_trained_gemma_rope(model, save_directory, _trained_rope_factor)
+            _untied_vocab = _untied_trained_vocab(model) if "16bit" in save_method else None
+            if _untied_vocab is not None and _is_main_rank():
+                _untie_merged_checkpoint(save_directory, *_untied_vocab[0], embed = _untied_vocab[1])
             _stitch_mtp_head(model, save_directory)
             _release_layout_for_merged_save(model, save_directory, save_method)
         elif "16bit" in save_method and is_main_process:
@@ -8202,8 +8208,71 @@ def _torchao_hf_quantizer_attached(model):
         del model.hf_quantizer
 
 
-def _untie_merged_checkpoint(save_directory, lm_head_key, lm_head_weight):
-    """Give a tied merged 16-bit checkpoint the model's own lm_head, so its torchao reload quantizes it apart from the embedding as QAT trained them."""
+def _plain_vocab_weight(module):
+    """The weight a vocab module computes with, or None when it carries LoRA (its merge already handles it)."""
+    if hasattr(module, "modules_to_save"):
+        if not getattr(module, "disable_adapters", False):
+            for adapter in getattr(module, "active_adapters", None) or []:
+                if adapter in module.modules_to_save:
+                    module = module.modules_to_save[adapter]
+                    break
+            else:
+                module = module.original_module
+        else:
+            module = module.original_module
+    if len(getattr(module, "lora_A", None) or {}):
+        return None
+    while hasattr(module, "base_layer"):
+        module = module.base_layer
+    weight = getattr(module, "weight", None)
+    if not isinstance(weight, torch.Tensor) or not weight.is_floating_point() or weight.is_meta:
+        return None
+    return weight
+
+
+def _untied_trained_vocab(model):
+    """((lm_head key, weight), (embed key, weight)) when a tied-config PEFT model trains its embedding and lm_head as
+    separate tensors (`ensure_weight_tying = False` with modules_to_save), else None. The merge writes such a model
+    tied, keeping one of the two, so the other is lost on reload."""
+    if not isinstance(model, PeftModel):
+        return None
+    configs = [getattr(model, "config", None)]
+    configs.append(getattr(configs[0], "text_config", None))
+    if not any(getattr(c, "tie_word_embeddings", False) for c in configs if c is not None):
+        return None
+    try:
+        embed, lm_head = model.get_input_embeddings(), model.get_output_embeddings()
+    except Exception:
+        return None
+    if embed is None or lm_head is None or embed is lm_head:
+        return None
+    if not any(hasattr(m, "modules_to_save") for m in (embed, lm_head)):
+        return None
+    w_embed, w_head = _plain_vocab_weight(embed), _plain_vocab_weight(lm_head)
+    if w_embed is None or w_head is None or w_embed.shape != w_head.shape:
+        return None
+    if w_embed.device == w_head.device and w_embed.data_ptr() == w_head.data_ptr():
+        return None
+    with torch.no_grad():
+        if torch.equal(w_embed, w_head.to(device = w_embed.device, dtype = w_embed.dtype)):
+            return None
+    names = {id(m): _peft_merged_module_name(n) for n, m in model.named_modules()}
+    embed_name, head_name = names.get(id(embed)), names.get(id(lm_head))
+    if not embed_name or not head_name:
+        return None
+    return (head_name + ".weight", w_head), (embed_name + ".weight", w_embed)
+
+
+def _untie_merged_checkpoint(
+    save_directory,
+    lm_head_key,
+    lm_head_weight,
+    embed = None,
+):
+    """Give a tied merged 16-bit checkpoint the model's own lm_head, so its torchao reload quantizes it apart from the embedding as QAT trained them.
+
+    `embed`: (key, weight) of the model's own embedding. The lm_head is then written into the embedding's file at its
+    dtype, and the embedding is rewritten too when the tied merge stored the head in its place."""
     from safetensors.torch import load_file, save_file
 
     config_path = os.path.join(save_directory, "config.json")
@@ -8216,13 +8285,23 @@ def _untie_merged_checkpoint(save_directory, lm_head_key, lm_head_weight):
         if not isinstance(node, dict):
             break
         candidates += [node, node.get("text_config")]
-    tied = [c for c in candidates if isinstance(c, dict) and c.get("tie_word_embeddings")]
+    # The model saved by `embed`'s caller is tied, so a config without the key relies on a default of True (Gemma 2).
+    tied = [
+        c
+        for c in candidates
+        if isinstance(c, dict) and c.get("tie_word_embeddings", embed is not None)
+    ]
     if not tied:
         return
 
     weight = lm_head_weight.detach().to("cpu").contiguous()
     index_path = os.path.join(save_directory, "model.safetensors.index.json")
-    if os.path.exists(index_path):
+    if embed is not None:
+        if not _write_untied_head_beside_embedding(
+            save_directory, index_path, lm_head_key, weight, *embed
+        ):
+            return
+    elif os.path.exists(index_path):
         with open(index_path, encoding = "utf-8") as f:
             index = json.load(f)
         if lm_head_key not in index["weight_map"]:
@@ -8260,6 +8339,55 @@ def _untie_merged_checkpoint(save_directory, lm_head_key, lm_head_weight):
         c["tie_word_embeddings"] = False
     with open(config_path, "w", encoding = "utf-8") as f:
         json.dump(config, f, indent = 2)
+
+
+def _write_untied_head_beside_embedding(
+    save_directory, index_path, lm_head_key, weight, embed_key, embed_weight
+):
+    """Store lm_head in the merged embedding's file at its dtype, restoring the embedding if the tied merge wrote the head there. False (nothing written) when the embedding is not found under `embed_key`."""
+    from safetensors.torch import load_file, save_file
+
+    index = None
+    if os.path.exists(index_path):
+        with open(index_path, encoding = "utf-8") as f:
+            index = json.load(f)
+        shard = index.get("weight_map", {}).get(embed_key)
+    else:
+        files = [
+            f
+            for f in os.listdir(save_directory)
+            if f.endswith(".safetensors") and not f.startswith("adapter_model")
+        ]
+        shard = (
+            "model.safetensors"
+            if "model.safetensors" in files
+            else (files[0] if len(files) == 1 else None)
+        )
+    tensors = load_file(os.path.join(save_directory, shard)) if shard is not None else {}
+    if embed_key not in tensors:
+        logger.warning_once(
+            f"Unsloth: the trained lm_head differs from the embedding, but `{embed_key}` was not found in "
+            f"`{save_directory}`, so the merged model stays tied and keeps only the embedding."
+        )
+        return False
+    path = os.path.join(save_directory, shard)
+    dtype = tensors[embed_key].dtype
+    added = 0 if lm_head_key in tensors else weight.numel() * dtype.itemsize
+    tensors[lm_head_key] = weight.to(dtype).contiguous()
+    embed_weight = embed_weight.detach().to(device = "cpu", dtype = dtype)
+    if not torch.equal(tensors[embed_key], embed_weight):
+        tensors[embed_key] = embed_weight.contiguous()
+    tmp = path + ".unsloth_untie"
+    save_file(tensors, tmp, metadata = {"format": "pt"})
+    del tensors
+    os.replace(tmp, path)
+    if index is not None:
+        index["weight_map"][lm_head_key] = shard
+        if isinstance(index.get("metadata", {}).get("total_size"), int):
+            index["metadata"]["total_size"] += added
+        with open(index_path, "w", encoding = "utf-8") as f:
+            json.dump(index, f, indent = 2)
+    return True
 
 
 def _unsloth_save_torchao_with_given_config(
