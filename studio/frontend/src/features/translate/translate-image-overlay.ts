@@ -124,7 +124,12 @@ export function fitText(
       high = size - 1;
     }
   }
-  return best;
+  if (best.lines.length * best.size * LINE_HEIGHT <= height) return best;
+  // Too long even at the smallest size: keep the lines that fit and mark the cut.
+  const room = Math.max(1, Math.floor(height / (best.size * LINE_HEIGHT)));
+  const kept = best.lines.slice(0, room);
+  kept[room - 1] = `${kept[room - 1].replace(/\s*\S$/u, "")}\u2026`;
+  return { size: best.size, lines: kept };
 }
 
 /** Paints each translated block over its box on a canvas already holding the image. */
@@ -185,8 +190,13 @@ export function drawTranslatedBlocks(
     ctx.textBaseline = "middle";
     const lineHeight = fitted.size * LINE_HEIGHT;
     const top = y + h / 2 - (fitted.lines.length * lineHeight) / 2;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
     fitted.lines.forEach((line, i) => {
       ctx.fillText(line, x + w / 2, top + lineHeight * (i + 0.5));
     });
+    ctx.restore();
   });
 }

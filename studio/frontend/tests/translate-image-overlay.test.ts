@@ -113,3 +113,16 @@ test("only an image Tesseract boxed, still in the text box, offers the overlay",
   const api = readSrc("features/rag/api/rag-api.ts");
   assert.match(api, /if \(boxes\) form\.append\("boxes", "true"\);/);
 });
+
+test("text too long for its box at the smallest size is cut to the box with an ellipsis", () => {
+  const measure = (text: string, size: number) => text.length * size * 0.6;
+  const fitted = fitText(
+    "one two three four five six seven eight nine ten",
+    50,
+    10,
+    measure,
+  );
+  assert.equal(fitted.size, 4);
+  assert.ok(fitted.lines.length * fitted.size * 1.2 <= 10);
+  assert.ok(fitted.lines[fitted.lines.length - 1].endsWith("\u2026"));
+});
