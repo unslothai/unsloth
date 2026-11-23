@@ -673,6 +673,21 @@ class TestListing:
         assert row.engram_ready == ["IQ4_NL"]
         assert [t.precision for t in response.engram_tables] == ["IQ4_NL"]
 
+    def test_the_own_table_is_judged_in_the_answering_snapshot_only(self, tmp_path, monkeypatch):
+        from core.inference import engram_tables as et
+        from hub.services.models import gguf_variants as gv
+
+        whole, swapped = tmp_path / "whole", tmp_path / "swapped"
+        for snapshot, shards in ((whole, self.SHARDS), (swapped, list(self.SHARDS)[:2])):
+            for name in shards:
+                (snapshot / name).parent.mkdir(parents = True, exist_ok = True)
+                (snapshot / name).write_bytes(b"\0")
+        monkeypatch.setattr(et, "repo_snapshots", lambda repo_id: [whole, swapped])
+        first = next(iter(self.SHARDS))
+        assert gv._all_shards_cached("Org/M-GGUF", first, None) is True
+        assert gv._all_shards_cached("Org/M-GGUF", first, str(swapped)) is False
+        assert gv._all_shards_cached("Org/M-GGUF", first, str(whole)) is True
+
     def test_a_cache_only_listing_never_seen_online_names_no_tables(
         self, repo, monkeypatch, real_repo_snapshots
     ):

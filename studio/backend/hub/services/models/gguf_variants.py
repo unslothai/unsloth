@@ -232,21 +232,28 @@ def _llama_loads_engram_tables() -> Optional[bool]:
     return bool(caps.get("supports_ple"))
 
 
-def _all_shards_cached(repo_id: str, filename: Optional[str]) -> bool:
-    """Every split shard of ``filename`` in one snapshot: the quant still holds its own table."""
+def _all_shards_cached(repo_id: str, filename: Optional[str], answered_from: Optional[str]) -> bool:
+    """Every split shard of ``filename`` in one snapshot (the answering one when known): the quant
+    still holds its own table."""
     from core.inference.engram_tables import repo_snapshots
     from hub.utils.gguf_lookup_tables import shard_names
 
     if not filename:
         return False
     names = shard_names(filename)
+    pinned = Path(answered_from) if answered_from else None
+    snapshots = [pinned] if pinned is not None and pinned.is_dir() else repo_snapshots(repo_id)
     return any(
         all(snapshot.joinpath(*name.split("/")).is_file() for name in names)
-        for snapshot in repo_snapshots(repo_id)
+        for snapshot in snapshots
     )
 
 
-def _with_remembered_engram(repo_id: str, response: GgufVariantsResponse) -> GgufVariantsResponse:
+def _with_remembered_engram(
+    repo_id: str,
+    response: GgufVariantsResponse,
+    answered_from: Optional[str] = None,
+) -> GgufVariantsResponse:
     """A cache-only answer (offline, or the Hub unreachable) names no Engram tables, which hid the
     Engram Table row; the last Hub answer fills them in, with ``downloaded`` read from disk."""
     if response.engram_tables or not response.variants or not _is_valid_repo_id(repo_id):
@@ -267,7 +274,7 @@ def _with_remembered_engram(repo_id: str, response: GgufVariantsResponse) -> Ggu
             variants.append(v)
             continue
         ready = [p for p, hit in cached.items() if hit and p != own] if v.downloaded else []
-        if v.downloaded and _all_shards_cached(repo_id, v.filename):
+        if v.downloaded and _all_shards_cached(repo_id, v.filename, answered_from):
             ready.insert(0, own)
         variants.append(v.model_copy(update = {"engram_precision": own, "engram_ready": ready}))
     return response.model_copy(
@@ -2711,7 +2718,7 @@ async def get_gguf_variants_answer(
         # Returned with the answer: coalesced callers must all see the copy it answered from.
         response = _compute_response()
         if cache_authorized[0]:
-            response = _with_remembered_engram(repo_id, response)
+            response = _with_remembered_engram(repo_id, response, answered_from[0])
         return VariantsAnswer(
             response, answered_from[0], cache_authorized[0], variant_context_sources
         )
