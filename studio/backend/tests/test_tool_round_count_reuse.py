@@ -175,6 +175,51 @@ def test_native_counts_never_evict_rendered_counts(monkeypatch):
     assert len(llama_cpp._count_memo(backend, llama_cpp._NATIVE_COUNT_MEMO)[1]) == 2
 
 
+def test_a_render_count_reuses_the_native_count_of_the_same_prompt(monkeypatch):
+    server = _Server(monkeypatch)
+    backend = _count_backend()
+    native = backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, prefer_native = True)
+    assert backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True) == native
+    assert [r[0] for r in server.requests] == [_NATIVE]
+
+
+@pytest.mark.parametrize("change", ["messages", "tools", "continue_final", "template_kwargs"])
+def test_a_render_count_of_a_different_prompt_still_renders(monkeypatch, change):
+    server = _Server(monkeypatch)
+    backend = _count_backend()
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, prefer_native = True)
+    messages, tools, kw = _MESSAGES, _TOOLS, {}
+    if change == "messages":
+        messages = _MESSAGES + [{"role": "assistant", "content": "x"}]
+    elif change == "tools":
+        tools = None
+    elif change == "continue_final":
+        kw = {"continue_final_message": True}
+    else:
+        kw = {"chat_template_kwargs": {"enable_thinking": False}}
+    backend.count_chat_tokens(messages, None, tools, strict = True, **kw)
+    assert len(server.paths("/apply-template")) == 1
+
+
+def test_a_caller_wanting_the_prompt_still_renders_after_a_native_count(monkeypatch):
+    server = _Server(monkeypatch)
+    backend = _count_backend()
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, prefer_native = True)
+    seen = []
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, on_prompt = seen.append)
+    assert len(seen) == 1
+    assert len(server.paths("/apply-template")) == 1
+
+
+def test_a_failed_native_count_leaves_render_counts_rendering(monkeypatch):
+    server = _Server(monkeypatch)
+    backend = _count_backend()
+    server.fail[_NATIVE] = 1
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, prefer_native = True)
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True)
+    assert len(server.paths("/apply-template")) == 2
+
+
 def _sse(delta: dict) -> str:
     return "data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}) + "\n"
 
