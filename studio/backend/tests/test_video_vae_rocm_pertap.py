@@ -145,7 +145,7 @@ def test_size_gate_input_and_output(monkeypatch):
     )  # 1536 elements x 4 bytes in; narrow out 4*4*64*4, wide out 64*6*64*4
     in_bytes = x.numel() * 4
     with torch.no_grad():
-        monkeypatch.setattr(P, "ENGAGE_BYTES", in_bytes)  # not exceeded: stock
+        monkeypatch.setattr(P, "ENGAGE_BYTES", in_bytes)
         assert not P._pertap_eligible(narrow, x)
         monkeypatch.setattr(P, "ENGAGE_BYTES", in_bytes - 1)
         assert P._pertap_eligible(narrow, x)
@@ -163,7 +163,7 @@ def test_default_gate_is_2gib_and_device_cuda():
     assert P.ENGAGE_DEVICE_TYPES == ("cuda",)
     conv = torch.nn.Conv3d(4, 4, 3)
     x = torch.randn(1, 4, 4, 4, 4)
-    assert not P._pertap_eligible(conv, x)  # CPU tensor never engages by default
+    assert not P._pertap_eligible(conv, x)
 
 
 def test_gate_counts_calls_and_falls_back(monkeypatch, engage_on_cpu):
@@ -173,7 +173,7 @@ def test_gate_counts_calls_and_falls_back(monkeypatch, engage_on_cpu):
     with torch.no_grad():
         conv(x)
         monkeypatch.setattr(P, "ENGAGE_BYTES", 2**40)
-        conv(x)  # under the gate: stock, not counted
+        conv(x)
     assert conv._unsloth_rocm_pertap_calls == 1
     # grad-tracking calls keep the stock op (autograd stays the stock graph)
     monkeypatch.setattr(P, "ENGAGE_BYTES", 0)
@@ -196,7 +196,6 @@ def test_kill_switch_per_call(monkeypatch, engage_on_cpu):
     assert conv._unsloth_rocm_pertap_calls == 1
 
 
-# ------------------------------------------------------------------ install / platform gate
 class AutoencoderKLLTX2Video(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -223,10 +222,10 @@ def _set_platform(monkeypatch, plat: str, hip, version: str):
         ("win32", "7.14.60850", "2.11.0+rocm7.14.0", 2),  # Windows ROCm wheel
         ("win32", None, "2.11.0+rocm7.14.0", 2),  # AMD SDK wheel: tag only in __version__
         ("linux", "7.13.0", "2.11.0+rocm7.13.0", 0),  # Linux ROCm: no cliff measured
-        ("win32", None, "2.11.0+cu128", 0),  # Windows CUDA
-        ("win32", None, "2.11.0+cpu", 0),  # Windows CPU
-        ("darwin", None, "2.11.0", 0),  # macOS / MPS
-        ("linux", None, "2.11.0+cu130", 0),  # Linux CUDA
+        ("win32", None, "2.11.0+cu128", 0),
+        ("win32", None, "2.11.0+cpu", 0),
+        ("darwin", None, "2.11.0", 0),
+        ("linux", None, "2.11.0+cu130", 0),
     ],
 )
 def test_platform_gate(plat, hip, version, expected, monkeypatch):
