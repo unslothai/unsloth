@@ -1690,7 +1690,7 @@ def unsloth_save_model(
             "if you're planning to do multiple saves.\n"
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
-    elif save_method == "merged_4bit_forced":
+    elif save_method in ("merged_4bit_forced", "forced_merged_4bit"):
         save_method = "merged_4bit"
 
     save_pretrained_settings = dict(locals())
@@ -7346,6 +7346,21 @@ def unsloth_generic_save(
             "if you're planning to do multiple saves.\n"
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
+    if save_method not in (
+        "lora",
+        "merged_16bit",
+        "merged_4bit_forced",
+        "forced_merged_4bit",
+        "mxfp4",
+    ):
+        raise RuntimeError(
+            f"Unsloth: save_method = {save_method!r} is not recognised. You must select one of these options when saving models:\n"
+            '"lora"               ==> This is the fastest and easiest. Just saves LoRA modules.\n'
+            '"merged_16bit"       ==> This merges LoRA weights and saves to float16. Needed for llama.cpp / GGUF.\n'
+            '"merged_4bit_forced" ==> This merges LoRA weights and saves to 4bit. Useful for DPO / inference.\n'
+            '"mxfp4"              ==> This merges LoRA weights into the mxfp4 GPT-OSS base.\n'
+            "save_pretrained_merged also takes the compressed exports, e.g. fp8, nvfp4, torchao_fp8."
+        )
     _refuse_unsaveable_text_core(model, save_method)
 
     # Rebound, not a new local: `locals()` below is forwarded as keywords.
@@ -7406,7 +7421,7 @@ def unsloth_generic_save(
     if token is None and push_to_hub:
         token = get_token()
 
-    if save_method == "merged_4bit_forced":
+    if save_method in ("merged_4bit_forced", "forced_merged_4bit"):
         save_method = "merged_4bit"
 
     # Full-finetuned models have no adapters to merge, so fall back to save_pretrained, mirroring the torchao and GGUF save paths.
@@ -7570,7 +7585,7 @@ def unsloth_generic_save(
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
 
         # merged_4bit merges into the loaded (already residual) weights, so it needs no conversion.
-        in_place = save_method in ("merged_4bit", "forced_merged_4bit")
+        in_place = save_method == "merged_4bit"
         # Under FSDP2 the gathered packed 4-bit base waits on the CPU: merge it one layer at a time on
         # its GPU first, so the merge below only unloads those layers.
         streamed = []
