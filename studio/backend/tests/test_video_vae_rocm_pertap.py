@@ -322,3 +322,52 @@ def test_video_backend_installs_after_frame_pad_fix():
     pertap = src.index("install_vae_rocm_pertap(pipe, target, logger = logger)")
     assert 0 < pertap - pad < 600
     assert '"vae_rocm_pertap_conv"' in src
+
+
+def test_fp16_keeps_stock_conv_no_overflow(engage_on_cpu):
+    """fp16 taps of +256*256 and -256*256 overflow before the fp32 sum (NaN); stock Conv3d returns the finite 0."""
+    conv = _patch(torch.nn.Conv3d(1, 1, (2, 1, 1), bias = False).half())
+    with torch.no_grad():
+        conv.weight.copy_(torch.tensor([256.0, -256.0]).view(1, 1, 2, 1, 1))
+        x = torch.full((1, 1, 2, 1, 1), 256.0, dtype = torch.float16)
+        ref = F.conv3d(x, conv.weight)
+        y = conv(x)
+    assert torch.isfinite(ref).all()
+    assert torch.equal(y, ref)
+    assert getattr(conv, "_unsloth_rocm_pertap_calls", 0) == 0
+
+
+def test_autocast_keeps_stock_output_dtype(engage_on_cpu):
+    geom = GEOMETRIES["ltx_k3_tpad0"]
+    conv = _patch(_conv(geom, torch.float32))
+    x = _input(geom, torch.float32)
+    with torch.no_grad(), torch.autocast("cpu", dtype = torch.bfloat16):
+        ref = F.conv3d(x, conv.weight, conv.bias, conv.stride, conv.padding)
+        y = conv(x)
+    assert ref.dtype == torch.bfloat16 and y.dtype == ref.dtype
+    assert getattr(conv, "_unsloth_rocm_pertap_calls", 0) == 0
+    bf16 = _patch(_conv(geom, torch.bfloat16))
+    with torch.no_grad():  # bf16 / fp32 outside autocast still take the per-tap path
+        conv(x)
+        bf16(x.bfloat16())
+    assert conv._unsloth_rocm_pertap_calls == 1 and bf16._unsloth_rocm_pertap_calls == 1
+
+
+def test_compiled_kill_switch_flip_does_not_recompile(monkeypatch, engage_on_cpu):
+    """is_compiling is checked before the env switch: flipping it adds no env guard, so no recompile."""
+    from torch._dynamo.testing import CompileCounter
+
+    geom = GEOMETRIES["ltx_k3_tpad0"]
+    conv = _patch(_conv(geom, torch.float32))
+    x = _input(geom, torch.float32)
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    compiled = torch.compile(conv, backend = counter, fullgraph = True, dynamic = True)
+    try:
+        with torch.no_grad():
+            for value in ("1", "0", "1"):
+                monkeypatch.setenv(P.PERTAP_ENV, value)
+                compiled(x)
+        assert counter.frame_count == 1
+    finally:
+        torch._dynamo.reset()
