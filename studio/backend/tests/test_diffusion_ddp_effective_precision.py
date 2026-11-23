@@ -91,7 +91,10 @@ from core.training import diffusion_ddp
 rank, world, store_file, own = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4].split(",")[int(sys.argv[1])]
 store = dist.FileStore(store_file, world)
 store.set_timeout(timedelta(seconds = 120))
-dist.init_process_group("gloo", store = store, rank = rank, world_size = world)
+# Bounded, so a rank stuck in a collective raises here instead of waiting out Gloo's 30 minute default.
+dist.init_process_group(
+    "gloo", store = store, rank = rank, world_size = world, timeout = timedelta(seconds = 60)
+)
 ctx = diffusion_ddp.activate_for_tests(rank, world, store)
 try:
     ctx.check_effective_precision(own)
@@ -106,6 +109,7 @@ def test_real_gloo_two_ranks(tmp_path, picks, verdict):
     import os
     import subprocess
     import sys
+    import time
     from pathlib import Path
 
     backend = Path(__file__).resolve().parents[1]
@@ -114,17 +118,40 @@ def test_real_gloo_two_ranks(tmp_path, picks, verdict):
         "PYTHONPATH": os.pathsep.join([str(backend), os.environ.get("PYTHONPATH", "")]),
     }
     store = str(tmp_path / "store")
-    procs = [
-        subprocess.Popen(
-            [sys.executable, "-c", _CHILD, str(r), "2", store, picks],
-            cwd = str(backend),
-            env = env,
-            stdout = subprocess.PIPE,
-            text = True,
+    # Each rank writes to files, not pipes: a rank cannot block on a full pipe while the other is waited on,
+    # and its stderr is kept for the failure message.
+    logs = [(tmp_path / f"rank{r}.out", tmp_path / f"rank{r}.err") for r in range(2)]
+    procs = []
+    for r, (out_path, err_path) in enumerate(logs):
+        with open(out_path, "w") as out_f, open(err_path, "w") as err_f:
+            procs.append(
+                subprocess.Popen(
+                    [sys.executable, "-c", _CHILD, str(r), "2", store, picks],
+                    cwd = str(backend),
+                    env = env,
+                    stdout = out_f,
+                    stderr = err_f,
+                    text = True,
+                )
+            )
+
+    def report():
+        return "\n".join(
+            f"rank {r} rc={p.returncode}\nstdout:\n{o.read_text()[-2000:]}\nstderr:\n{e.read_text()[-4000:]}"
+            for r, (p, (o, e)) in enumerate(zip(procs, logs))
         )
-        for r in range(2)
-    ]
-    outs = [p.communicate(timeout = 180)[0] for p in procs]
-    assert [p.returncode for p in procs] == [0, 0]
+
+    deadline = time.monotonic() + 180
+    try:
+        for p in procs:
+            p.wait(timeout = max(1.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        for p in procs:
+            p.kill()
+        for p in procs:
+            p.wait()
+        pytest.fail(f"the two Gloo ranks did not finish within 180 s:\n{report()}")
+    outs = [o.read_text() for o, _ in logs]
+    assert [p.returncode for p in procs] == [0, 0], report()
     # Gloo may print its own connection banner on stdout first; the verdict is the child's last line.
     assert all(o.strip().splitlines()[-1].startswith(verdict) for o in outs), outs
