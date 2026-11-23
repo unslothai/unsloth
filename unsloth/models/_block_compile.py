@@ -1862,7 +1862,8 @@ def _nf4_in_blocks():
     Linear4bit.forward = forward
 
 
-_CACHE_KWARGS = ("past_key_values", "past_key_value", "cache_params", "layer_past")
+# transformers >= 5.24 layers take `cache` (it was `past_key_values`).
+_CACHE_KWARGS = ("past_key_values", "past_key_value", "cache_params", "layer_past", "cache")
 
 
 def _has_cache(args, kwargs):
@@ -1920,8 +1921,9 @@ def _is_hf_checkpoint_wrapper(fn):
     )
 
 
-# The cache arguments transformers' wrapper clears before it checkpoints (unless _can_checkpoint_with_cache).
-_CHECKPOINT_CACHE_KWARGS = ("past_key_values", "layer_past")
+# The cache arguments transformers' wrapper clears before it checkpoints (unless _can_checkpoint_with_cache):
+# `past_key_values` on 5.23, `cache` on 5.24.
+_CHECKPOINT_CACHE_KWARGS = ("past_key_values", "cache", "layer_past")
 
 
 def _checkpointing(forward):
@@ -1932,7 +1934,9 @@ def _checkpointing(forward):
         outermost = type(self).forward is forward_with_checkpointing or (
             getattr(self.__dict__.get("forward"), "__func__", None) is forward_with_checkpointing
         )
-        if self.gradient_checkpointing and self.training and outermost:
+        # As transformers >= 5.24: without grad there is no backward to replay the layer, so it runs as is,
+        # cache included (generating from a model left in training mode).
+        if self.gradient_checkpointing and self.training and torch.is_grad_enabled() and outermost:
             if kwargs.get("use_cache"):
                 kwargs["use_cache"] = False
             if not getattr(self, "_can_checkpoint_with_cache", False):
@@ -2630,9 +2634,14 @@ def patch_block_compile(model):
     wrapped = []
     for cls in classes:
         if getattr(cls.forward, _MARK, False):
+            # Wrapped by an earlier model: this model's hooks may still hold the forward from before.
+            before = getattr(cls.forward, "_unsloth_block_before", None)
+            if before is not None:
+                _rebind_hooked_instances(model, cls, before)
             continue
         before = cls.forward
-        _wrap(cls, _COMPILE_OPTIONS, len(kinds.get(cls, ())) or 1)
+        installed = _wrap(cls, _COMPILE_OPTIONS, len(kinds.get(cls, ())) or 1)
+        installed._unsloth_block_before = before
         wrapped.append(cls.__name__)
         _rebind_hooked_instances(model, cls, before)
     for layer in compiled_layers:
