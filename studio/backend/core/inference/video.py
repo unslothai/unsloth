@@ -2024,6 +2024,9 @@ def _keep_fetched_checkpoint(
     out = dict(replanned)
     if _FETCH_CHECKPOINT in previous:
         out[_FETCH_CHECKPOINT] = previous[_FETCH_CHECKPOINT]
+    # The H3 fast-mode adapter is not part of any re-listed repo.
+    if _FETCH_H3_PI in previous:
+        out[_FETCH_H3_PI] = previous[_FETCH_H3_PI]
     return out
 
 
@@ -2129,6 +2132,8 @@ def _plan_fetch(
 
 _FETCH_CHECKPOINT = "checkpoint"
 _FETCH_BASE = "base"
+# MiniMax-H3 4-step fast mode: the pi-H3 adapter load_pipeline fetches (video_minimax_h3_pi.FETCH_ROLE).
+_FETCH_H3_PI = "h3_pi"
 
 
 def _physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional[int]]":
@@ -6916,6 +6921,17 @@ class VideoBackend:
                 ltx25_dev = ltx25_dev,
                 planned_files = (planned_files := {}),
             )
+            if kwargs.get("h3_fast_4step"):
+                from .video_minimax_h3_pi import H3_PI_REPO, h3_pi_fetch_files
+
+                # The adapter is part of this load: counted in the bar and kept from a delete mid-load.
+                planned_files[_FETCH_H3_PI] = _PlannedFetch(H3_PI_REPO, None, h3_pi_fetch_files())
+                expected = _plan_total(planned_files) if expected else expected
+                with self._lock:
+                    if self._load_token == token and self._loading is not None:
+                        self._loading.asset_repos = tuple(
+                            dict.fromkeys(self._loading.asset_repos + (H3_PI_REPO,))
+                        )
             with self._lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
@@ -9089,6 +9105,7 @@ class VideoBackend:
         _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         loras = load_kwargs.pop("loras", None)
+        h3_fast_4step = bool(load_kwargs.pop("h3_fast_4step", False))
         baking_loras = video_lora.has_active(loras)
         if baking_loras:
             # Planned as the load runs: the dense denoiser the adapters merge into, never a hosted quantized one.
@@ -9381,13 +9398,19 @@ class VideoBackend:
                 "checkpoint": labels[repo]["checkpoint"]
                 and (gguf is None or gguf in missing_names),
             }
-        return {
+        plan = {
             "entries": list(entries.values()),
             # Cache state changes what is left to fetch, never what the load needs on disk.
             "total_bytes": sum(entry["bytes"] for entry in entries.values()),
             "required_bytes": total,
             "checkpoint_bytes": int(checkpoint_bytes),
         }
+        if h3_fast_4step:
+            from .video_minimax_h3_pi import add_h3_pi_to_plan
+
+            # The fast-mode adapter the load merges, staged like any other file.
+            plan = add_h3_pi_to_plan(plan, hub_cache_dir())
+        return plan
 
     @staticmethod
     def _h3_bundled_repo(repo_id: str, filename: str, hub_repo: str) -> str:
@@ -16880,6 +16903,7 @@ class VideoBackend:
                 "supports_video_continuation": False,
                 "h3_task": None,
                 "h3_fast": None,
+                "h3_fast_dropped": None,
                 "defaults": None,
                 "resolved": None,
             }
@@ -16910,6 +16934,8 @@ class VideoBackend:
         h3_fast = getattr(state, "h3_fast", None)
         if h3_fast:
             default_steps, default_guidance = int(h3_fast["steps"]), float(h3_fast["guidance"])
+        from .video_minimax_h3_pi import h3_fast_drop_reason, h3_fast_status
+
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -16968,7 +16994,11 @@ class VideoBackend:
             "supports_references": fam.supports_references and state.h3_task == H3_TASK_REFERENCES,
             "supports_video_continuation": fam.supports_video_continuation,
             "h3_task": state.h3_task,
-            "h3_fast": dict(h3_fast) if h3_fast else None,
+            "h3_fast": h3_fast_status(h3_fast),
+            # Set when an automatic reload could not keep the mode the user loaded with.
+            "h3_fast_dropped": None
+            if h3_fast or fam.name != "minimax-h3"
+            else h3_fast_drop_reason((state.repo_id, state.display_repo_id), state.h3_task),
             "defaults": {
                 "steps": default_steps,
                 "guidance": default_guidance,

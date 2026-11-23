@@ -2334,3 +2334,48 @@ def test_h3_fast_availability_route(client, monkeypatch):
     _h3_fast_pick(monkeypatch, backend, available = False)
     body = client.get("/api/inference/video/h3-fast-4step").json()
     assert body["available"] is False and "unsloth/pi-H3" in body["reason"]
+
+
+def test_h3_fast_download_plan_carries_the_flag_and_refuses_without_the_mirror(client, monkeypatch):
+    backend = video_module.get_video_backend()
+    seen = {}
+
+    def _plan(model_path, **kwargs):
+        seen.update(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+    _h3_fast_pick(monkeypatch, backend, available = True)
+    body = {"model_path": "MiniMaxAI/MiniMax-H3", "model_kind": "pipeline"}
+    assert (
+        client.post(
+            "/api/inference/video/download-plan", json = {**body, "h3_fast_4step": True}
+        ).status_code
+        == 200
+    )
+    assert seen.get("h3_fast_4step") is True
+    seen.clear()
+    assert client.post("/api/inference/video/download-plan", json = body).status_code == 200
+    assert "h3_fast_4step" not in seen
+    _h3_fast_pick(monkeypatch, backend, available = False)
+    seen.clear()
+    resp = client.post("/api/inference/video/download-plan", json = {**body, "h3_fast_4step": True})
+    assert resp.status_code == 400 and "unsloth/pi-H3" in resp.json()["detail"]
+    assert not seen
+
+
+def test_h3_fast_user_load_is_remembered_for_automatic_reloads(client, monkeypatch):
+    from core.inference import video_minimax_h3_pi as PI
+
+    monkeypatch.setattr(PI, "_CHOICES", {})
+    backend = video_module.get_video_backend()
+    _h3_fast_pick(monkeypatch, backend, available = True)
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "MiniMaxAI/MiniMax-H3", "h3_fast_4step": True},
+    )
+    assert resp.status_code == 200, resp.json()
+    assert PI.wanted_h3_fast(("MiniMaxAI/MiniMax-H3",), "fl2va")
+    resp = client.post("/api/inference/video/load", json = {"model_path": "MiniMaxAI/MiniMax-H3"})
+    assert resp.status_code == 200, resp.json()
+    assert not PI.wanted_h3_fast(("MiniMaxAI/MiniMax-H3",), "fl2va")

@@ -5,6 +5,10 @@
 
 export const H3_FAST_STEPS = 4;
 export const H3_FAST_GUIDANCE = 1;
+// A draft mode: faster, but prompt adherence can drop on some prompts.
+export const H3_FAST_LABEL = "4-step fast mode (draft)";
+export const H3_FAST_DRAFT_NOTE =
+  "A faster draft mode: about 3.6x faster than the 20-step default at similar sharpness, but prompt adherence can drop on some prompts.";
 
 export interface H3FastAvailability {
   available: boolean;
@@ -24,6 +28,8 @@ export interface H3FastStatus {
   overwrites?: number;
   levers?: string[];
   restore?: string;
+  quality?: string;
+  note?: string;
 }
 
 type Kind = "gguf" | "single_file" | "pipeline";

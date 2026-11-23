@@ -484,6 +484,8 @@ def resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) ->
         return False
     if not partition_matches(status, pick):
         return False
+    if not _h3_fast_matches(status, pick):
+        return False
     if pick.model_kind == "single_file" and not resident_is_gguf(status):
         # loose checkpoints in one folder share it as model_path: only the file tells them apart
         return os.path.normcase(str(status.get("gguf_filename") or "")) == os.path.normcase(
@@ -496,6 +498,15 @@ def resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) ->
         return os.path.normcase(resident_filename) == os.path.normcase(pick.gguf_filename or "")
     loaded_quant = str(status.get("gguf_variant") or "").strip().lower()
     return loaded_quant == published_token(pick)
+
+
+def _h3_fast_matches(status: dict[str, Any], pick: MediaModelPick) -> bool:
+    """A build with the MiniMax-H3 4-step fast mode answers only for a pick wanting it, and the other way round."""
+    try:
+        from core.inference.video_minimax_h3_pi import h3_fast_matches
+    except Exception:  # noqa: BLE001 -- no fast mode here means nothing to compare
+        return not status.get("h3_fast")
+    return h3_fast_matches(status, (pick.model_id, pick.model_path), expected_partition(pick))
 
 
 def satisfied_by(status: dict[str, Any], name: str, pick: MediaModelPick) -> bool:

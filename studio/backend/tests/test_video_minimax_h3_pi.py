@@ -363,3 +363,178 @@ def test_a_fast_render_runs_4_steps_without_cfg(monkeypatch):
     backend.generate(prompt = "a fox", steps = 20, guidance = 3.0)
     # off: the request's steps stand
     assert seen["steps"] == 20
+
+
+# ── resident identity, automatic reloads, download plan / progress, draft label ──
+
+
+@pytest.fixture
+def _clean_choices(monkeypatch):
+    monkeypatch.setattr(PI, "_CHOICES", {})
+
+
+_FAST_STATUS = {
+    "loaded": True,
+    "repo_id": "MiniMaxAI/MiniMax-H3",
+    "h3_task": "fl2va",
+    "h3_fast": dict(_REPORT),
+}
+_PLAIN_STATUS = {
+    "loaded": True,
+    "repo_id": "MiniMaxAI/MiniMax-H3",
+    "h3_task": "fl2va",
+    "h3_fast": None,
+}
+
+
+def test_keepwarm_identity_tells_the_two_builds_apart():
+    from core.inference.media_keepwarm import _identity
+
+    assert _identity(_FAST_STATUS) != _identity(_PLAIN_STATUS)
+    assert _identity(_FAST_STATUS) == _identity(
+        {**_FAST_STATUS, "h3_fast": {"enabled": True, "merge_s": 9}}
+    )
+    hash(_identity(_FAST_STATUS))
+
+
+def test_a_resident_answers_only_for_the_mode_its_model_was_loaded_with(_clean_choices):
+    from core.inference.media_model_index import MediaModelPick, resident_is_pick, satisfied_by
+
+    pick = MediaModelPick("MiniMaxAI/MiniMax-H3", "MiniMaxAI/MiniMax-H3", model_kind = "pipeline")
+    name = "MiniMaxAI/MiniMax-H3"
+    # never chosen: a fast resident does not serve a plain request, a plain one does
+    assert not satisfied_by(_FAST_STATUS, name, pick)
+    assert satisfied_by(_PLAIN_STATUS, name, pick)
+    # loaded by the user in the mode: the other way round
+    PI.remember_h3_fast(("MiniMaxAI/MiniMax-H3",), "fl2va", True)
+    assert satisfied_by(_FAST_STATUS, name, pick) and resident_is_pick(_FAST_STATUS, name, pick)
+    assert not satisfied_by(_PLAIN_STATUS, name, pick)
+    PI.remember_h3_fast(("MiniMaxAI/MiniMax-H3",), "fl2va", False)
+    assert not resident_is_pick(_FAST_STATUS, name, pick)
+
+
+def test_mcp_load_never_takes_a_resident_in_the_other_mode():
+    from studio_mcp.loading import _resident_matches
+
+    model = "MiniMaxAI/MiniMax-H3"
+    assert not _resident_matches(_FAST_STATUS, model, {})
+    assert _resident_matches(_PLAIN_STATUS, model, {})
+    assert _resident_matches(_FAST_STATUS, model, {"h3_fast_4step": True})
+    assert not _resident_matches(_PLAIN_STATUS, model, {"h3_fast_4step": True})
+
+
+def test_an_automatic_reload_keeps_the_mode_or_drops_it_with_a_reason(_clean_choices, monkeypatch):
+    names = ("MiniMaxAI/MiniMax-H3",)
+    assert PI.auto_reload_h3_fast(names, "fl2va") is False
+    PI.remember_h3_fast(names, "fl2va", True)
+    seen = []
+
+    def avail(token, **kw):
+        seen.append(kw)
+        return {"available": True, "reason": None, "repo": PI.H3_PI_REPO, "cached": True}
+
+    monkeypatch.setattr(PI, "h3_pi_availability", avail)
+    assert PI.auto_reload_h3_fast(names, "fl2va") is True
+    # an automatic load may not reach the Hub
+    assert seen[-1]["local_files_only"] is True
+    monkeypatch.setattr(
+        PI,
+        "h3_pi_availability",
+        lambda token, **kw: {
+            "available": False,
+            "reason": "unsloth/pi-H3 is not in the local cache",
+            "repo": "",
+            "cached": False,
+        },
+    )
+    assert PI.auto_reload_h3_fast(names, "fl2va") is False
+    assert not PI.wanted_h3_fast(names, "fl2va")
+    assert "dropped on an automatic reload" in PI.h3_fast_drop_reason(names, "fl2va")
+    # a later user load clears it
+    PI.remember_h3_fast(names, "fl2va", True)
+    assert PI.h3_fast_drop_reason(names, "fl2va") is None
+
+
+def test_the_auto_switch_load_carries_the_mode(_clean_choices, monkeypatch):
+    import asyncio
+
+    import routes.video as RV
+    from core.inference import media_auto_switch as MAS
+    from core.inference.media_model_index import MediaModelPick
+
+    sent = []
+
+    async def fake_load(request, subject, **kw):
+        sent.append(request)
+
+    monkeypatch.setattr(RV, "load_video_model_gated", fake_load)
+    monkeypatch.setattr(
+        PI,
+        "h3_pi_availability",
+        lambda token, **kw: {"available": True, "reason": None, "repo": "", "cached": True},
+    )
+    pick = MediaModelPick("MiniMaxAI/MiniMax-H3", "MiniMaxAI/MiniMax-H3", model_kind = "pipeline")
+    asyncio.run(MAS._start_load(MAS.VIDEO, pick, "subject"))
+    assert sent[-1].h3_fast_4step is False
+    PI.remember_h3_fast(("MiniMaxAI/MiniMax-H3",), "fl2va", True)
+    asyncio.run(MAS._start_load(MAS.VIDEO, pick, "subject"))
+    assert sent[-1].h3_fast_4step is True and sent[-1].h3_task == "fl2va"
+
+
+def test_status_reports_a_dropped_mode(_clean_choices):
+    from core.inference.video import VideoBackend
+
+    PI.remember_h3_fast(("MiniMaxAI/MiniMax-H3",), "fl2va", False, reason = "dropped: no adapter")
+    backend = VideoBackend()
+    import dataclasses
+
+    backend._state = dataclasses.replace(_state(None), h3_task = "fl2va")
+    assert backend.status()["h3_fast_dropped"] == "dropped: no adapter"
+    backend._state = dataclasses.replace(_state(dict(_REPORT)), h3_task = "fl2va")
+    status = backend.status()
+    assert status["h3_fast_dropped"] is None
+    assert (
+        status["h3_fast"]["quality"] == "draft"
+        and "prompt adherence can drop" in status["h3_fast"]["note"]
+    )
+
+
+def test_the_download_plan_carries_the_adapter(monkeypatch, tmp_path):
+    monkeypatch.delenv(PI.H3_PI_DIR_ENV, raising = False)
+    monkeypatch.setattr(PI, "_cached_path", lambda cache_dir: None)
+    base = {
+        "entries": [{"repo_id": "unsloth/MiniMax-H3", "files": ["a"], "bytes": 10}],
+        "total_bytes": 10,
+        "required_bytes": 30,
+    }
+    plan = PI.add_h3_pi_to_plan(base)
+    assert plan["entries"][-1]["repo_id"] == "unsloth/pi-H3"
+    assert plan["entries"][-1]["files"] == [PI.H3_PI_FILE]
+    assert (
+        plan["total_bytes"] == 10 + PI.H3_PI_SIZE and plan["required_bytes"] == 30 + PI.H3_PI_SIZE
+    )
+    # already on disk: required, but nothing left to stage
+    monkeypatch.setattr(PI, "_cached_path", lambda cache_dir: "/x")
+    cached = PI.add_h3_pi_to_plan(base)
+    assert [e["repo_id"] for e in cached["entries"]] == ["unsloth/MiniMax-H3"]
+    assert cached["total_bytes"] == 10 and cached["required_bytes"] == 30 + PI.H3_PI_SIZE
+
+
+def test_the_load_progress_counts_the_adapter(monkeypatch, tmp_path):
+    from core.inference import video as V
+
+    plan = {
+        V._FETCH_BASE: V._PlannedFetch(
+            "unsloth/MiniMax-H3", None, (("a.safetensors", "k" * 64, 100),)
+        ),
+        V._FETCH_H3_PI: V._PlannedFetch(PI.H3_PI_REPO, None, PI.h3_pi_fetch_files()),
+    }
+    assert V._plan_total(plan) == 100 + PI.H3_PI_SIZE
+    # a re-plan after the checkpoint fetch keeps the adapter role
+    assert V._FETCH_H3_PI in V._keep_fetched_checkpoint({V._FETCH_BASE: plan[V._FETCH_BASE]}, plan)
+    monkeypatch.setattr(V.VideoBackend, "_plan_cache_roots", staticmethod(lambda: [tmp_path]))
+    assert V.VideoBackend._planned_bytes(plan) == 0
+    blobs = tmp_path / "models--unsloth--pi-H3" / "blobs"
+    blobs.mkdir(parents = True)
+    (blobs / f"{PI.H3_PI_SHA256}.incomplete").write_bytes(b"x" * 4096)
+    assert V.VideoBackend._planned_bytes(plan) == 4096

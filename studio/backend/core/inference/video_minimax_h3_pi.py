@@ -387,3 +387,119 @@ def apply_h3_pi_adapter(
 def pipe_h3_pi(pipe: Any) -> Optional[dict]:
     transformer = getattr(pipe, "transformer", None)
     return (getattr(transformer, "__dict__", None) or {}).get(_MERGED_ATTR)
+
+
+H3_PI_DRAFT_NOTE = (
+    "Faster draft mode: about 3.6x faster than the 20-step default at similar sharpness, but prompt adherence can "
+    "drop on some prompts."
+)
+
+
+def h3_fast_status(report: Optional[dict]) -> Optional[dict]:
+    """The status view of a merge report: labelled a draft mode."""
+    if not report:
+        return None
+    return {**report, "quality": "draft", "note": H3_PI_DRAFT_NOTE}
+
+
+# ── download plan / progress ──
+
+FETCH_ROLE = "h3_pi"
+
+
+def h3_pi_fetch_files() -> tuple:
+    """``(name, blob key, size)`` of the adapter, as a load's fetch plan lists files."""
+    return ((H3_PI_FILE, H3_PI_SHA256, H3_PI_SIZE),)
+
+
+def h3_pi_plan_entry(cache_dir: Optional[str] = None) -> Optional[dict]:
+    """The download-plan entry for the adapter, None when it is already on disk."""
+    if _override_path() or _cached_path(cache_dir):
+        return None
+    return {
+        "repo_id": H3_PI_REPO,
+        "files": [H3_PI_FILE],
+        "bytes": H3_PI_SIZE,
+        "gguf_filename": None,
+        "checkpoint": False,
+    }
+
+
+def add_h3_pi_to_plan(plan: dict, cache_dir: Optional[str] = None) -> dict:
+    """A video download plan with the adapter: an entry and its bytes while it is not on disk, always required."""
+    out = dict(plan)
+    entry = h3_pi_plan_entry(cache_dir)
+    entries = [e for e in out.get("entries") or [] if e.get("repo_id") != H3_PI_REPO]
+    if entry is not None:
+        entries.append(entry)
+    out["entries"] = entries
+    out["total_bytes"] = sum(int(e.get("bytes") or 0) for e in entries)
+    out["required_bytes"] = int(out.get("required_bytes") or 0) + H3_PI_SIZE
+    return out
+
+
+# ── the mode the user loaded with, for automatic reloads and resident matching ──
+
+_CHOICES: dict = {}
+
+
+def _choice_keys(names: Any, task: Optional[str]) -> list:
+    part = str(task or "fl2va").strip().lower()
+    return [(str(n).strip().lower(), part) for n in names if n and str(n).strip()]
+
+
+def remember_h3_fast(
+    names: Any,
+    task: Optional[str],
+    enabled: bool,
+    reason: Optional[str] = None,
+) -> None:
+    """Record a user load's choice (or an explicit drop with its reason) under every name the model goes by."""
+    for key in _choice_keys(names, task):
+        _CHOICES[key] = {"enabled": bool(enabled), "reason": reason}
+
+
+def _choice(names: Any, task: Optional[str]) -> dict:
+    for key in _choice_keys(names, task):
+        if key in _CHOICES:
+            return _CHOICES[key]
+    return {"enabled": False, "reason": None}
+
+
+def wanted_h3_fast(names: Any, task: Optional[str]) -> bool:
+    return bool(_choice(names, task)["enabled"])
+
+
+def h3_fast_drop_reason(names: Any, task: Optional[str]) -> Optional[str]:
+    return _choice(names, task)["reason"]
+
+
+def h3_fast_matches(status: Optional[dict], names: Any, task: Optional[str]) -> bool:
+    """A resident build answers for a pick only in the mode that pick's model was loaded with."""
+    status = status or {}
+    if not status.get("loaded"):
+        return True
+    return bool(status.get("h3_fast")) == wanted_h3_fast(names, task)
+
+
+def auto_reload_h3_fast(
+    names: Any,
+    task: Optional[str],
+    hf_token: Optional[str] = None,
+) -> bool:
+    """Whether an automatic reload keeps the mode: the user's choice while the adapter is on disk; otherwise the
+    mode is dropped and the reason recorded for status."""
+    if not wanted_h3_fast(names, task):
+        return False
+    from .diffusion import hub_cache_dir
+
+    available = h3_pi_availability(hf_token, local_files_only = True, cache_dir = hub_cache_dir())
+    if available["available"]:
+        return True
+    remember_h3_fast(
+        names,
+        task,
+        False,
+        reason = f"The 4-step fast mode was dropped on an automatic reload: {available['reason']}",
+    )
+    return False

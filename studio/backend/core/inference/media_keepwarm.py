@@ -250,13 +250,18 @@ _IDENTITY_FIELDS = (
     "h3_task",
     "transformer_quant",
     "text_encoder_quant",
+    # MiniMax-H3 4-step fast mode: the same repo with and without it is a different build.
+    "h3_fast",
 )
 
 
 def _identity(status: dict[str, Any]) -> Optional[tuple[Any, ...]]:
     if not status.get("loaded"):
         return None
-    return tuple(status.get(field) for field in _IDENTITY_FIELDS)
+    return tuple(
+        bool(status.get(field)) if field == "h3_fast" else status.get(field)
+        for field in _IDENTITY_FIELDS
+    )
 
 
 async def _tick(tracker: _Tracker, ttl: float) -> None:

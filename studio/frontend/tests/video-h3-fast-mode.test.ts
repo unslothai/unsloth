@@ -7,6 +7,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  H3_FAST_DRAFT_NOTE,
+  H3_FAST_LABEL,
   H3_FAST_STEPS,
   h3FastEngaged,
   h3FastLoadFields,
@@ -62,8 +64,24 @@ test("the page wires the switch into the load and the advanced panel", () => {
   assert.match(page, /h3_fast_4step: controls\.h3Fast \? true : undefined,/);
   assert.match(page, /h3FastLoadFields\(advanced\.h3_fast_4step === true, opts\.kind, opts\.h3Task\)/);
   assert.equal(page.split("h3_fast_4step: true").length - 1, 0, "the page never hard-codes the field");
-  assert.match(page, /aria-label="4-step fast mode"/);
+  assert.match(page, /aria-label=\{H3_FAST_LABEL\}/);
   assert.match(page, /getVideoH3FastAvailability\(ctl\.signal\)/);
   assert.match(api, /"\/api\/inference\/video\/h3-fast-4step"/);
   assert.match(api, /h3_fast\?: H3FastStatus \| null;/);
+});
+
+test("the mode is labelled a draft, with the prompt-adherence caveat", () => {
+  assert.match(H3_FAST_LABEL, /draft/);
+  assert.match(H3_FAST_DRAFT_NOTE, /prompt adherence can drop on some prompts/);
+  assert.match(page, /\{H3_FAST_DRAFT_NOTE\}/);
+  // the loaded build names it, and an automatic reload that dropped it says why
+  assert.match(page, /status\.h3_fast\?\.enabled \? \(\s*<BuildRow label="Steps" value=\{`\$\{status\.h3_fast\.steps\} · \$\{H3_FAST_LABEL\}`\} \/>/);
+  assert.match(page, /status\?\.h3_fast_dropped \?/);
+  assert.match(api, /h3_fast_dropped\?: string \| null;/);
+});
+
+test("the download plan asks for the adapter whenever the load will", () => {
+  const plan = page.slice(page.indexOf("const plan = await getVideoDownloadPlan({"), page.indexOf("// Superseded; report started"));
+  assert.match(plan, /h3FastLoadFields\(advanced\.h3_fast_4step === true, opts\.kind, opts\.h3Task\)/);
+  assert.equal(page.split("h3FastLoadFields(advanced.h3_fast_4step === true, opts.kind, opts.h3Task)").length - 1, 2);
 });

@@ -601,6 +601,9 @@ def _resident_matches(
     # Any case, paths too: status may spell the resident path differently from the request.
     if model.lower() not in {name.lower() for name in names if name}:
         return False
+    # A MiniMax-H3 build in the 4-step fast mode is another build than the one without it.
+    if bool(status.get("h3_fast")) != bool((body or {}).get("h3_fast_4step")):
+        return False
     # Another file of the same repo is another model: a missing field reads as not loaded yet.
     wanted = opt_text((body or {}).get("gguf_filename"))
     if not wanted:

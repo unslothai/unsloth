@@ -255,6 +255,12 @@ async def _start_load(
     else:
         from models.inference import VideoLoadRequest
         from routes.video import load_video_model_gated
+        from core.inference.video_minimax_h3_pi import auto_reload_h3_fast
+
+        # The mode the user loaded this model with, or an explicit drop recorded for status.
+        h3_fast = await asyncio.to_thread(
+            auto_reload_h3_fast, (pick.model_id, pick.model_path), partition, hf_token
+        )
         await load_video_model_gated(
             VideoLoadRequest(
                 model_path = pick.model_path,
@@ -263,6 +269,7 @@ async def _start_load(
                 model_kind = pick.model_kind,
                 h3_task = partition,
                 hf_token = hf_token,
+                h3_fast_4step = h3_fast,
             ),
             current_subject,
             user_initiated = False,

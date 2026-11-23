@@ -113,6 +113,8 @@ export interface VideoStatus {
   h3_task?: string | null;
   // MiniMax-H3 4-step fast mode (pi-H3) of the loaded build; null when off, absent on an older backend.
   h3_fast?: H3FastStatus | null;
+  // Why an automatic reload came back without the fast mode the user loaded with.
+  h3_fast_dropped?: string | null;
   defaults?: VideoGenerationDefaults | null;
   // One or two sentences on how the loaded model reads prompts; null when it has no tip.
   prompt_hint?: string | null;

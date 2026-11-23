@@ -250,6 +250,8 @@ async def video_download_plan(
                 request.hf_token,
                 False,
             )
+        if fam is not None:
+            await _refuse_h3_fast_pick(request, fam, kind, local_files_only = False)
         plan = await asyncio.to_thread(
             backend.download_plan,
             request.model_path,
@@ -272,6 +274,8 @@ async def video_download_plan(
             allow_device_probe = not training,
             # A LoRA load bakes into the dense denoiser, so the plan must not stage a hosted quantized one.
             loras = request.loras,
+            # The fast-mode adapter is staged with the rest; absent when off, so a plain plan is unchanged.
+            **({"h3_fast_4step": True} if request.h3_fast_4step else {}),
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
@@ -282,6 +286,37 @@ async def video_download_plan(
 
 
 _VIDEO_LOAD_CANCELLED = "Video load was cancelled."
+
+
+async def _refuse_h3_fast_pick(
+    request: Any, fam: Any, kind: str, *, local_files_only: bool
+) -> None:
+    """MiniMax-H3 4-step fast mode: a ValueError (400) when this pick cannot take it, before the GPU or any staging.
+    No mirror means no fast mode, never another repo."""
+    if not getattr(request, "h3_fast_4step", False):
+        return
+    from core.inference import video_lora
+    from core.inference.diffusion import hub_cache_dir
+    from core.inference.video_minimax_h3_pi import h3_pi_availability, h3_pi_static_refusal
+
+    refusal = h3_pi_static_refusal(
+        fam,
+        kind,
+        h3_task = request.h3_task,
+        gguf_filename = request.gguf_filename,
+        transformer_quant = request.transformer_quant,
+        has_loras = video_lora.has_active(request.loras),
+    )
+    if refusal is None:
+        availability = await asyncio.to_thread(
+            h3_pi_availability,
+            request.hf_token,
+            local_files_only = local_files_only,
+            cache_dir = hub_cache_dir(),
+        )
+        refusal = None if availability["available"] else availability["reason"]
+    if refusal:
+        raise ValueError(refusal)
 
 
 @router.post("/video/load", response_model = VideoStatusResponse)
@@ -434,33 +469,7 @@ async def load_video_model_gated(
                 video_lora.normalize_specs(request.loras),
                 getattr(fam, "name", None),
             )
-        if request.h3_fast_4step:
-            from core.inference import video_lora
-            from core.inference.video_minimax_h3_pi import (
-                h3_pi_availability,
-                h3_pi_static_refusal,
-            )
-
-            refusal = h3_pi_static_refusal(
-                fam,
-                kind,
-                h3_task = request.h3_task,
-                gguf_filename = request.gguf_filename,
-                transformer_quant = request.transformer_quant,
-                has_loras = video_lora.has_active(request.loras),
-            )
-            if refusal is None:
-                # Before the GPU is touched: no mirror means no fast mode, never another repo.
-                from core.inference.diffusion import hub_cache_dir
-                availability = await asyncio.to_thread(
-                    h3_pi_availability,
-                    request.hf_token,
-                    local_files_only = not user_initiated,
-                    cache_dir = hub_cache_dir(),
-                )
-                refusal = None if availability["available"] else availability["reason"]
-            if refusal:
-                raise ValueError(refusal)
+        await _refuse_h3_fast_pick(request, fam, kind, local_files_only = not user_initiated)
         # Refuse while training runs, BEFORE the precision check, whose GPU probe opens a CUDA context.
         _guard_video_load_against_training()
         # begin_load repeats this check, but inside acquire_for after chat is evicted. `auto` never refused.
@@ -506,6 +515,15 @@ async def load_video_model_gated(
             # Kicks the (slow) load onto a background thread and returns at once; begin_load itself validates
             # network-free. Recorded with its token, so an unload can name this load.
             prior = media_load_ids.admitting("video", backend, request.load_token)
+            if user_initiated and getattr(fam, "name", None) == "minimax-h3":
+                from core.inference.video_minimax_h3_pi import remember_h3_fast
+
+                # What an automatic reload of this model keeps; a new user load also clears a recorded drop.
+                remember_h3_fast(
+                    (request.model_path, request.display_repo_id),
+                    request.h3_task,
+                    bool(request.h3_fast_4step),
+                )
             started = backend.begin_load(
                 request.model_path,
                 display_repo_id = request.display_repo_id,

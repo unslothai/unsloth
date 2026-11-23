@@ -8434,7 +8434,13 @@ class VideoStatusResponse(BaseModel):
         None,
         description = "MiniMax-H3 4-step fast mode, null when off: steps, sampler, sigma_grid, "
         "guidance, adapter_repo, lora_layers, overwrites, weight_kinds, merge_s, levers (the "
-        "speed optimisations engaged with it) and restore (reload)",
+        "speed optimisations engaged with it), restore (reload), quality (draft) and note: a faster "
+        "draft mode, prompt adherence can drop on some prompts",
+    )
+    h3_fast_dropped: Optional[str] = Field(
+        None,
+        description = "MiniMax-H3: why an automatic reload of a model the user loaded in the 4-step fast "
+        "mode came back without it (the adapter was not on disk); null otherwise",
     )
     supports_cfg: bool = Field(
         True, description = "Whether guidance and negative prompts apply to this family"

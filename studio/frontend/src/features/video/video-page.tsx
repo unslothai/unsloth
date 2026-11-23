@@ -336,6 +336,8 @@ import {
   startCosmosGuardrailInstall,
 } from "./api";
 import {
+  H3_FAST_DRAFT_NOTE,
+  H3_FAST_LABEL,
   H3_FAST_STEPS,
   type H3FastAvailability,
   h3FastEngaged,
@@ -787,6 +789,9 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
             : `${status.memory_mode ?? "auto"} · ${offload} offload`
         }
       />
+      {status.h3_fast?.enabled ? (
+        <BuildRow label="Steps" value={`${status.h3_fast.steps} · ${H3_FAST_LABEL}`} />
+      ) : null}
       <BuildRow
         label="Attention"
         value={
@@ -3329,6 +3334,10 @@ function VideoGenerator({
           family_override: advanced.family_override,
           // The two H3 denoisers are separate downloads.
           h3_task: opts.h3Task,
+          // The fast-mode adapter is staged with the rest, so the plan and its bytes include it.
+          ...(isH3Load(repoId, opts, advanced.family_override)
+            ? h3FastLoadFields(advanced.h3_fast_4step === true, opts.kind, opts.h3Task)
+            : {}),
           gpu_ids: advanced.gpu_ids,
           // A Load anyway retry sends it on the plan too, or the plan refuses the pick again.
           allow_oversized_load: advanced.allow_oversized_load,
@@ -4273,20 +4282,24 @@ function VideoGenerator({
         <div className="flex flex-col gap-1">
           <div className="flex items-center justify-between">
             <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-              4-step fast mode
+              {H3_FAST_LABEL}
               <InfoHint>
-                MiniMax-H3 text-to-video, image-to-video and first/last-frame video in {H3_FAST_STEPS} steps with
-                the pi-H3 adapter (unsloth/pi-H3), merged into the denoiser at load. Steps and guidance are fixed
-                ({H3_FAST_STEPS} steps, no CFG). Takes effect on the next load: Reapply to turn it on or off.
+                {H3_FAST_DRAFT_NOTE} MiniMax-H3 text-to-video, image-to-video and first/last-frame video in{" "}
+                {H3_FAST_STEPS} steps with the pi-H3 adapter (unsloth/pi-H3), merged into the denoiser at load.
+                Steps and guidance are fixed ({H3_FAST_STEPS} steps, no CFG). Takes effect on the next load: Reapply
+                to turn it on or off.
               </InfoHint>
             </span>
             <Switch
               checked={h3Fast}
               disabled={h3FastToggle.disabled && !h3Fast}
               onCheckedChange={setH3Fast}
-              aria-label="4-step fast mode"
+              aria-label={H3_FAST_LABEL}
             />
           </div>
+          {status?.h3_fast_dropped ? (
+            <span className="text-ui-11 text-muted-foreground">{status.h3_fast_dropped}</span>
+          ) : null}
           {h3FastToggle.reason ? (
             <span className="text-ui-11 text-muted-foreground">{h3FastToggle.reason}</span>
           ) : h3FastNeedsReload(h3Fast, status) ? (
