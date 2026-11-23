@@ -125,10 +125,11 @@ import { TranslateHistoryList } from "./history-list";
 import { detectTranslateLanguage } from "./detect-language";
 import { ICON_ACTION, IconAction } from "./icon-action";
 import {
-  TRANSLATE_LANGUAGES,
   findTranslateLanguage,
   translateLanguageLabel,
+  translateLanguagesFor,
   translateSpeechTag,
+  translatesLanguage,
 } from "./languages";
 import {
   CHAT_TRANSLATE_MODEL,
@@ -158,6 +159,7 @@ import {
   customPromptOf,
   languageTabs,
   translatePromptOptions,
+  translatesWithDedicated,
   translationIsStale,
   useTranslateStore,
 } from "./translate-store";
@@ -344,13 +346,18 @@ function LanguagePicker({
   const [query, setQuery] = useState("");
   const listFade = useScrollFades();
   const [active, setActive] = useState(value);
+  const dedicated = useTranslateStore((state) =>
+    translatesWithDedicated(state.prefs),
+  );
   const languages = useMemo(
     () =>
-      TRANSLATE_LANGUAGES.map((language) => ({
-        ...language,
-        label: translateLanguageLabel(language, locale),
-      })).sort((a, b) => a.label.localeCompare(b.label, locale)),
-    [locale],
+      translateLanguagesFor(dedicated)
+        .map((language) => ({
+          ...language,
+          label: translateLanguageLabel(language, locale),
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label, locale)),
+    [locale, dedicated],
   );
   const needle = query.trim().toLowerCase();
   const shown = needle
@@ -514,6 +521,9 @@ function LanguageTabs({
       ? findTranslateLanguage(detected)
       : undefined;
   const reduced = useReducedMotion();
+  const dedicated = useTranslateStore((state) =>
+    translatesWithDedicated(state.prefs),
+  );
   const tab = (code: string, name: string) => {
     const active = code === value;
     return (
@@ -567,7 +577,7 @@ function LanguageTabs({
             )}
           {tabs.map((code) => {
             const language = findTranslateLanguage(code);
-            return language
+            return language && translatesLanguage(code, dedicated)
               ? tab(code, translateLanguageLabel(language, locale))
               : null;
           })}
@@ -1266,10 +1276,14 @@ export function TranslatePage() {
   const busy = phase !== null;
   const paneHeight = prefs.showPrompt ? PANE_HEIGHT_WITH_PROMPT : PANE_HEIGHT;
   const canTranslate = source.trim() !== "";
-  const detected = useMemo(
-    () => (prefs.from === AUTO_SOURCE ? detectTranslateLanguage(source) : null),
-    [prefs.from, source],
-  );
+  const dedicatedLanguages = translatesWithDedicated(prefs);
+  const detected = useMemo(() => {
+    const found =
+      prefs.from === AUTO_SOURCE ? detectTranslateLanguage(source) : null;
+    return found && translatesLanguage(found, dedicatedLanguages)
+      ? found
+      : null;
+  }, [prefs.from, source, dedicatedLanguages]);
   const canSwap =
     prefs.from !== AUTO_SOURCE ||
     (detected !== null && detected !== prefs.target);

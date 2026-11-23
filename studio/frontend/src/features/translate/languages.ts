@@ -6,9 +6,11 @@ export type TranslateLanguage = {
   name: string;
   /** BCP 47 tag for `Intl.DisplayNames`, when it differs from `code`. */
   intl?: string;
+  /** Not one of Hy-MT2's languages: offered only with a chat model. */
+  chatOnly?: true;
 };
 
-/** The languages Hy-MT2 was trained on (its model card), most used first. */
+/** The languages Hy-MT2 was trained on (its model card), most used first, then ones only chat models translate. */
 export const TRANSLATE_LANGUAGES: readonly TranslateLanguage[] = [
   { code: "en", name: "English" },
   { code: "zh", name: "Chinese", intl: "zh-Hans" },
@@ -48,6 +50,7 @@ export const TRANSLATE_LANGUAGES: readonly TranslateLanguage[] = [
   { code: "kk", name: "Kazakh" },
   { code: "mn", name: "Mongolian" },
   { code: "ug", name: "Uyghur" },
+  { code: "hmn", name: "Hmong", chatOnly: true },
 ];
 
 export const DEFAULT_TARGET_LANGUAGE = "en";
@@ -56,6 +59,20 @@ export function findTranslateLanguage(
   code: string,
 ): TranslateLanguage | undefined {
   return TRANSLATE_LANGUAGES.find((language) => language.code === code);
+}
+
+/** What a model translates: Hy-MT2 (`dedicated`) only its own languages. */
+export function translateLanguagesFor(
+  dedicated: boolean,
+): readonly TranslateLanguage[] {
+  return dedicated
+    ? TRANSLATE_LANGUAGES.filter((language) => !language.chatOnly)
+    : TRANSLATE_LANGUAGES;
+}
+
+export function translatesLanguage(code: string, dedicated: boolean): boolean {
+  const language = findTranslateLanguage(code);
+  return language !== undefined && !(dedicated && language.chatOnly);
 }
 
 export function translateLanguageLabel(
@@ -113,7 +130,8 @@ export function suggestedTargetLanguage(preferred: readonly string[]): string {
     const lower = tag.toLowerCase();
     if (/^zh-(tw|hk|mo)\b|hant/.test(lower)) return "zh-Hant";
     const primary = lower.split("-")[0];
-    const match = TRANSLATE_LANGUAGES.find(
+    // The default model is Hy-MT2.
+    const match = translateLanguagesFor(true).find(
       (language) => language.code === primary || language.intl === primary,
     );
     if (match) return match.code;

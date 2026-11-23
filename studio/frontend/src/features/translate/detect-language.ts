@@ -173,6 +173,12 @@ const LATIN: Record<string, [ReadonlySet<string>, string]> = {
     ),
     "",
   ],
+  hmn: [
+    words(
+      "kuv koj nws peb nej lawv yog muaj tsis tau yuav xav nyob mus ua hais pom paub kawm thiab rau hauv txog lub tus cov tias vim zoo tsaug ntau lus hmoob neeg hnub tsev chaw qhov twg cas ntawm ntawd ib kev nrog puas thaum yeej kom tom qab ces yam txhua lawm sib tshiab",
+    ),
+    "",
+  ],
 };
 
 const MALAY = new Set(["id", "ms"]);
