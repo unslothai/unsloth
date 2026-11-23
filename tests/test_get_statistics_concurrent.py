@@ -259,7 +259,6 @@ def test_background_start_failure_falls_back(monkeypatch):
 
 
 def test_no_fork_skips_the_probe_and_the_requests(monkeypatch, rec):
-    """Without fork (Windows) the time-limited child can never start, so the 8.8.8.8 probe is skipped as well."""
     import multiprocessing
 
     ns = _load(monkeypatch, rec.limiter, rec.snapshot_download)
