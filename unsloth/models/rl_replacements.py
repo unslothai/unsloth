@@ -4852,7 +4852,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     )
                     if _pg_unsafe is None:
                         _pg_unsafe = set()
-                    if _pg_layout is not None and _pg_layout.signature not in _pg_unsafe:
+                    if (
+                        _pg_layout is not None
+                        and _pg_layout.signature not in _pg_unsafe
+                        # Over one padded mini-batch's tokens: the chunked loop keeps the mini-batch cap.
+                        and _pg_layout.flat_ids.shape[1] <= batch_size * seq_len
+                    ):
                         _pg_sig = _pg_layout.signature
                         _pg_verified = getattr(
                             unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
