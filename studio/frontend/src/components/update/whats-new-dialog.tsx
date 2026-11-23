@@ -359,7 +359,7 @@ function CardActions({ feature }: { feature: object }) {
         <Button
           size="sm"
           variant="secondary"
-          className="h-8 rounded-md px-3 text-ui-13"
+          className="h-8 rounded-full px-3.5 text-ui-13"
           onClick={tryIt}
         >
           {target.startsWith(SETTINGS_PREFIX)
@@ -372,7 +372,7 @@ function CardActions({ feature }: { feature: object }) {
           size="sm"
           variant="ghost"
           className={cn(
-            "h-8 gap-1 rounded-md px-3 text-ui-13 text-muted-foreground hover:text-foreground",
+            "h-8 gap-1 rounded-full px-3 text-ui-13 text-muted-foreground hover:text-foreground",
             !target && "-ml-3",
           )}
           onClick={() => openExternalLink(guide)}
