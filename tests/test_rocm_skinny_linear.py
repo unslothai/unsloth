@@ -680,3 +680,75 @@ def test_row_count_is_not_specialized():
                             names |= {e.value for e in kw.value.elts}
             found[node.name] = names
     assert found == {"_skinny_linear_kernel": {"M"}, "_splitk_reduce_kernel": {"M"}}, found
+
+
+def test_launch_oom_and_device_errors_raise_and_do_not_latch(monkeypatch):
+    """OOM goes to the caller's recovery (generate()'s graph-OOM eager redo), and a HIP launch error is not
+    hidden: neither returns None nor turns the kernel off. Only a compile failure falls back and latches."""
+    mod = _load()
+    monkeypatch.setattr(mod, "skinny_linear_supported", lambda device: True)
+    if mod.triton is None:
+        monkeypatch.setattr(mod, "triton", object())
+    X, W, A, B = _operands()
+    raised = []
+
+    def make(error):
+        def boom(*a, **k):
+            raised.append(type(error))
+            raise error
+
+        return boom
+
+    for error in (
+        torch.cuda.OutOfMemoryError("HIP out of memory. Tried to allocate 64.00 KiB"),
+        RuntimeError("Triton Error [HIP]: Code: 1, Messsage: invalid argument"),
+        RuntimeError("HIP error: operation not permitted when stream is capturing"),
+    ):
+        monkeypatch.setattr(mod, "_launch", make(error))
+        with torch.no_grad(), pytest.raises(type(error)):
+            mod.skinny_decode_linear(X, W, A, B, 2.0, None)
+        assert not mod._BROKEN, error
+    assert len(raised) == 3
+    ran = []
+    monkeypatch.setattr(mod, "_launch", lambda *a, **k: ran.append(1))
+    with torch.no_grad():
+        assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is not None
+    assert ran == [1]
+    monkeypatch.setattr(mod, "_launch", make(RuntimeError("PassManager::run failed")))
+    with torch.no_grad(), pytest.warns(UserWarning, match = "failed to compile"):
+        assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is None
+    assert mod._BROKEN == {X.device.index}
+
+
+def test_rejected_decode_casts_the_adapters_once(monkeypatch):
+    """A call the kernel rejects (rows, routing, a fallback check) reuses the LoRA cast it made for the kernel:
+    one _fast_lora_weights lookup per projection, as without the kernel."""
+    U = pytest.importorskip("unsloth.kernels.utils")
+    real_cast = U._fast_lora_weights
+    casts = []
+
+    def cast(a, b, dtype):
+        casts.append(1)
+        return real_cast(a, b, dtype)
+
+    lin = torch.nn.Linear(8, 6, bias = False).to(torch.bfloat16)
+    lin.weight.requires_grad_(False)
+    lora_A = torch.nn.Parameter(torch.randn(4, 8))
+    lora_B = torch.nn.Parameter(torch.randn(6, 4))
+    monkeypatch.setattr(
+        U, "get_lora_parameters_bias", lambda p: (lin.weight, None, lora_A, lora_B, 2.0, None)
+    )
+    monkeypatch.setattr(U, "_fast_lora_weights", cast)
+    X = torch.randn(3, 1, 8, dtype = torch.bfloat16)
+    monkeypatch.setattr(U, "_ROCM_SKINNY_LINEAR", False)
+    with torch.no_grad():
+        want = U.fast_linear_forward(lin, X)
+    assert casts == [1]
+    monkeypatch.setattr(U, "_ROCM_SKINNY_LINEAR", True)
+    monkeypatch.setattr(U, "_rocm_skinny_supported", lambda device: True, raising = False)
+    monkeypatch.setattr(U, "_rocm_skinny_decode_linear", lambda *a: None, raising = False)
+    casts.clear()
+    with torch.no_grad():
+        got = U.fast_linear_forward(lin, X)
+    assert casts == [1], "the rejected call looked the LoRA cast up twice"
+    torch.testing.assert_close(got, want, rtol = 0, atol = 0)

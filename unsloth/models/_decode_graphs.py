@@ -133,6 +133,41 @@ def _rocm_default_ok():
 
 
 _DEFAULT_OK = _default_ok()
+_MEASURED_WEIGHTS = "_unsloth_decode_graph_measured_weights"
+
+
+def default_covers(model):
+    """Whether graph decode chosen by the unset default was measured for this model. On ROCm (gfx1151) it was
+    measured with 16-bit projection weights only, the ones the skinny decode linear takes: a 4-bit / 8-bit /
+    fp8 model there decodes eagerly unless UNSLOTH_DECODE_CUDA_GRAPHS=1. NVIDIA CUDA is unchanged."""
+    if ENABLED is not None or torch.version.hip is None:
+        return True
+    if os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS", "") == "1":
+        return True
+    d = getattr(model, "__dict__", None)
+    if d is None:
+        return True
+    ok = d.get(_MEASURED_WEIGHTS)
+    if ok is None:
+        ok = d[_MEASURED_WEIGHTS] = _plain_16bit_projections(model)
+    return ok
+
+
+def _plain_16bit_projections(model):
+    for name, module in model.named_modules():
+        if name.rsplit(".", 1)[-1] not in _PROJ_NAMES:
+            continue
+        base = module
+        while hasattr(base, "base_layer"):
+            base = base.base_layer
+        weight = getattr(base, "weight", None)
+        if (
+            type(weight) not in (torch.Tensor, torch.nn.Parameter)
+            or weight.dtype not in (torch.float16, torch.bfloat16)
+            or getattr(weight, "quant_state", None) is not None
+        ):
+            return False
+    return True
 
 
 class rl_generation:

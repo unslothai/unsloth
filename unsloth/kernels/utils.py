@@ -1866,6 +1866,7 @@ def fast_linear_forward(
             X, W, W_quant, lora_A, lora_B, lora_S, fused = not _has_lora_dropout_module(proj)
         )
 
+    lora_cast = None
     if W_quant is None and _ROCM_SKINNY_LINEAR and not _is_compiling():
         # gfx11 ROCm: base GEMM + LoRA in one launch (rocBLAS skinny GEMMs are slow there). Decided before the
         # LoRA cast: other devices cast once below, and trainable adapters under grad keep the path below
@@ -1878,6 +1879,8 @@ def fast_linear_forward(
             )
             if take:
                 A, B = _fast_lora_weights(lora_A, lora_B, X.dtype)
+                # A rejected call reuses this cast below instead of looking it up again.
+                lora_cast = (A, B)
         fused = _rocm_skinny_decode_linear(X, W, A, B, lora_S, out) if take else None
         if fused is not None:
             if bias is not None:
@@ -1933,7 +1936,9 @@ def fast_linear_forward(
         out_dim = out.shape[2]
         dtype = X.dtype
 
-        if _is_compiling():
+        if lora_cast is not None:
+            A, B = lora_cast
+        elif _is_compiling():
             A, B = lora_A.to(dtype), lora_B.to(dtype)
         else:
             A, B = _fast_lora_weights(lora_A, lora_B, dtype)

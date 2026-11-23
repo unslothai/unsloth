@@ -450,3 +450,58 @@ def test_short_calls_decode_eagerly_and_keep_the_kept_graph(runtime):
     )
     check("two", two, 24)
     assert _Stats(model)()["captures"] == before["captures"], (before, _Stats(model)())
+
+
+def test_rocm_default_skips_unmeasured_quantized_models(runtime):
+    """gfx1151 graph replay was measured with 16-bit projections only: under the unset default a quantized model
+    there decodes eagerly (UNSLOTH_DECODE_CUDA_GRAPHS=1 or ENABLED still force graphs); NVIDIA is unchanged."""
+
+    class Params4bit(torch.nn.Parameter):
+        pass
+
+    def model(quantized):
+        m = torch.nn.Module()
+        m.config = type("C", (), {"model_type": "qwen3"})()
+        lora = torch.nn.Module()
+        lora.base_layer = torch.nn.Linear(8, 8, bias = False).to(torch.bfloat16)
+        if quantized:
+            w = Params4bit(torch.zeros(32, 1, dtype = torch.uint8), requires_grad = False)
+            w.quant_state = object()
+            lora.base_layer.weight = w
+        m.layers = torch.nn.ModuleList([torch.nn.Module()])
+        m.layers[0].q_proj = lora
+        m.layers[0].o_proj = torch.nn.Linear(8, 8, bias = False).to(torch.float16)
+        return m
+
+    runtime.setattr(torch.version, "hip", "7.1.0", raising = False)
+    assert G.default_covers(model(False)) is True
+    assert G.default_covers(model(True)) is False
+    runtime.setenv(ENV, "1")
+    assert G.default_covers(model(True)) is True
+    runtime.delenv(ENV)
+    runtime.setattr(G, "ENABLED", True)
+    assert G.default_covers(model(True)) is True
+    runtime.setattr(G, "ENABLED", None)
+    runtime.setattr(torch.version, "hip", None, raising = False)
+    assert G.default_covers(model(True)) is True
+
+
+def test_generate_applies_the_rocm_default_coverage_before_planning():
+    import ast
+    import inspect
+
+    import unsloth.models.llama as L
+
+    body = ast.unparse(ast.parse(textwrap_dedent(inspect.getsource(L.unsloth_fast_generate))))
+    gate = body.index("if graphs and (not _decode_graphs.default_covers(self)):")
+    assert (
+        body.index("graphs = _decode_graphs.enabled()")
+        < gate
+        < body.index("_decode_graphs.plan_call(")
+    )
+    assert "graphs, plan = (False, 'eager')" in body
+
+
+def textwrap_dedent(src):
+    import textwrap
+    return textwrap.dedent(src)

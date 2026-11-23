@@ -3250,6 +3250,8 @@ def unsloth_fast_generate(self, *args, **kwargs):
     with _decode_graphs.generate_scope():
         graphs = _decode_graphs.enabled()
         plan, token = "graph", None
+        if graphs and not _decode_graphs.default_covers(self):
+            graphs, plan = False, "eager"
         if graphs:
             plan_len = _generation_plan_len(self, args, kwargs)
             try:

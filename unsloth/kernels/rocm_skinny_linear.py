@@ -315,7 +315,40 @@ def _launch(
 
 
 _INT32 = 2**31
-_BROKEN = []
+# Device indexes whose kernel failed to compile: they keep the rocBLAS path.
+_BROKEN = set()
+_DEVICE_ERRORS = tuple(
+    e for e in (torch.OutOfMemoryError, getattr(torch, "AcceleratorError", None)) if e is not None
+)
+# Runtime errors from the HIP driver (Triton's launcher, torch) rather than from compiling the kernel.
+_DEVICE_ERROR_TEXT = ("Triton Error [", "HIP error", "hipError", "CUDA error", "cudaError")
+_TritonError = None
+if triton is not None:
+    try:
+        from triton.errors import TritonError as _TritonError
+    except Exception:
+        pass
+
+
+def _compile_failure(error):
+    """Whether a launch error came from building the kernel (safe to fall back: nothing ran), not the device."""
+    if isinstance(error, _DEVICE_ERRORS):
+        return False
+    if _TritonError is not None and isinstance(error, _TritonError):
+        return True
+    text = str(error)
+    return not any(marker in text for marker in _DEVICE_ERROR_TEXT)
+
+
+def _warn_broken(error):
+    import warnings
+    warnings.warn(
+        f"Unsloth: the ROCm skinny decode linear failed to compile ({type(error).__name__}: {error}); "
+        "decode uses rocBLAS on this device (UNSLOTH_ROCM_SKINNY_LINEAR=0 skips the kernel).",
+        stacklevel = 3,
+    )
+
+
 _PLAIN = (torch.Tensor, torch.nn.Parameter)
 _STRIDED = torch.strided
 _functorch_active = getattr(torch._C, "_are_functorch_transforms_active", lambda: False)
@@ -343,7 +376,7 @@ def skinny_decode_linear(X, W, A, B, scale, out):
     dispatched ops. A supplied out gets its version counter bumped like an out= op, so a tensor autograd saved
     for backward still raises when backward reads it. This runs per projection per token in eager decode, so
     the checks stay arithmetic."""
-    if triton is None or _BROKEN:
+    if triton is None:
         return None
     if type(X) is not torch.Tensor or X.dim() != 3 or X.shape[1] != 1:
         return None
@@ -364,6 +397,8 @@ def skinny_decode_linear(X, W, A, B, scale, out):
     if W.device != device or not skinny_linear_supported(device):
         return None
     if device.index is not None and device.index != torch.cuda.current_device():
+        return None
+    if device.index in _BROKEN:
         return None
     grad = torch.is_grad_enabled()
     if grad and (X.requires_grad or W.requires_grad):
@@ -447,12 +482,15 @@ def skinny_decode_linear(X, W, A, B, scale, out):
             return None
     try:
         _launch(X[:, 0, :], W, A, B, scale, out[:, 0, :])
-    except torch.cuda.OutOfMemoryError:
-        return None
-    except Exception:
-        # A launch that cannot compile (an unusual UNSLOTH_ROCM_SKINNY_LINEAR_CONFIG, a Triton change) fails
-        # before it writes out: the rocBLAS path takes this and every later call.
-        _BROKEN.append(1)
+    except Exception as error:
+        if not _compile_failure(error):
+            # OOM goes to the caller's recovery (generate()'s eager redo frees the decode graphs); a HIP launch
+            # or capture error means the device state is not known to be good, so it is not hidden either.
+            raise
+        # A kernel that cannot compile (an unusual UNSLOTH_ROCM_SKINNY_LINEAR_CONFIG, a Triton change) fails
+        # before it writes out: the rocBLAS path takes this and every later call on this device.
+        _BROKEN.add(device.index)
+        _warn_broken(error)
         return None
     if supplied:
         # The raw-pointer write is invisible to autograd: bump the version as torch.matmul(out = out) does.
