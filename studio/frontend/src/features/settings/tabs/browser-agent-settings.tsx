@@ -25,9 +25,10 @@ import {
 } from "@/features/browser";
 import { useT } from "@/i18n";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
+import { cn } from "@/lib/utils";
 import { Cancel01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 
@@ -105,6 +106,8 @@ function ConfirmAllScripts({ open, onConfirm, onCancel }: { open: boolean; onCon
 
 // Fixed columns, not auto-fit: auto-fit left a choice alone on its own row at odd widths.
 const CHOICES = "grid grid-cols-1 gap-x-4 gap-y-3 @[30rem]/perms:grid-cols-2 @[44rem]/perms:grid-cols-3";
+// Site exceptions scroll inside their own box, so a long list never pushes the rest of the tab away.
+const SITE_LIST = "relative -mx-4 max-h-[min(28rem,55vh)] overflow-y-auto overscroll-contain px-4";
 
 function PermissionsTable() {
   const t = useT();
@@ -113,7 +116,24 @@ function PermissionsTable() {
   const [draft, setDraft] = useState<string | null>(null);
   const [invalid, setInvalid] = useState(false);
   const [confirmDefaultScripts, setConfirmDefaultScripts] = useState(false);
+  const added = useRef<string | null>(null);
+  const siteList = useRef<HTMLDivElement>(null);
   const sites = Object.keys(permissions.sites).sort();
+
+  // Sites are sorted, so a new one can land out of view inside the capped list: scroll the list to it.
+  useEffect(() => {
+    const site = added.current;
+    const list = siteList.current;
+    if (site === null || !list) return;
+    added.current = null;
+    // The store can turn a site away (the list is full); then there is nothing to show.
+    if (!Object.hasOwn(permissions.sites, site)) return;
+    const item = Array.from(list.children).find((child) => child instanceof HTMLElement && child.dataset.site === site);
+    if (!(item instanceof HTMLElement)) return;
+    // Line the new site's name up with the top of the list when any of it is out of view.
+    const top = item.offsetTop;
+    if (top < list.scrollTop || top + item.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = top;
+  }, [permissions.sites]);
   const columns: Array<[Column, string]> = [
     ["browsing", t("browser.agentSettings.browsing")],
     ["actions", t("browser.agentSettings.actions")],
@@ -132,10 +152,20 @@ function PermissionsTable() {
     setSiteRule(site, permissions.sites[site] ?? { ...DEFAULT_AGENT_RULE, browsing: "allow" });
     setDraft(null);
     setInvalid(false);
+    added.current = site;
   };
 
   const row = (name: string, rule: SiteRule, site: string | null) => (
-    <div key={site ?? "default"} className="flex flex-col gap-2.5 border-b border-border/60 py-4 first:pt-3 last:border-b-0 last:pb-5">
+    <div
+      key={site ?? "default"}
+      data-site={site ?? undefined}
+      className={cn(
+        "flex flex-col gap-2.5 border-b border-border/60 py-4",
+        site === null ? "pt-3" : null,
+        // The last row closes the card, unless the add-site form follows it.
+        draft === null && (site === null ? sites.length === 0 : site === sites[sites.length - 1]) ? "border-b-0 pb-5" : null,
+      )}
+    >
       <div className="flex min-h-8 items-center gap-2">
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate text-sm font-medium text-foreground" title={name}>
@@ -189,7 +219,11 @@ function PermissionsTable() {
     >
       <div className="@container/perms mt-2 flex flex-col rounded-2xl border border-border/80 px-4">
         {row(t("browser.agentSettings.default"), permissions.defaults, null)}
-        {sites.map((site) => row(site, permissions.sites[site] ?? DEFAULT_AGENT_RULE, site))}
+        {sites.length > 0 ? (
+          <div ref={siteList} className={SITE_LIST}>
+            {sites.map((site) => row(site, permissions.sites[site] ?? DEFAULT_AGENT_RULE, site))}
+          </div>
+        ) : null}
         {draft !== null ? (
           <form
             className="flex items-center gap-2 py-2"
