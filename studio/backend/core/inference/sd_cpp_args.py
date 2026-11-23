@@ -932,8 +932,43 @@ CPU_VAE_DECODE_MIB_PER_MPX = 5120
 VAE_TILE_PIXELS_HELP = "tile size for vae encode and decode in image pixels"
 
 
-def cpu_vae_tile_size(spare_mib: Optional[int], env: Optional[dict] = None) -> Optional[int]:
-    """Tile edge (px) for the CPU VAE, None = 256 px. Env 0/off keeps 256, a number pins it."""
+# A tile at least as large as the image decodes it in one piece: the same pixels as an untiled decode, and faster. A
+# smaller tile normalises each tile's GroupNorm on its own statistics, which shifts tone tile by tile on FLUX.2
+# (klein 4B vs untiled: 31.3 dB at 1536 px and 25.9 dB at 2048 px with 1024 px tiles). sd-server fixes the tile at
+# launch, so a family whose whole decode was measured first gets a tile covering its largest output (2048 px, then
+# 1536 px) when the budget holds that decode, then the per-tile ladder below. VAE compute buffer (ggml, MiB) of one
+# whole 2048 / 1536 px decode, pinned build on an L4. The FLUX VAEs grow faster than the area past 1536 px, so
+# nothing is extrapolated beyond 2048.
+_FLUX2_VAE_WHOLE_MIB = ((2048, 17040), (1536, 6336))
+_FLUX1_VAE_WHOLE_MIB = ((2048, 17028), (1536, 6336))
+_QWEN21_VAE_WHOLE_MIB = ((2048, 15552), (1536, 8748))
+WHOLE_VAE_DECODE_MIB: dict[str, tuple[tuple[int, int], ...]] = {
+    "flux.2-klein": _FLUX2_VAE_WHOLE_MIB,
+    "flux.2-dev": _FLUX2_VAE_WHOLE_MIB,
+    "z-image": _FLUX1_VAE_WHOLE_MIB,
+    "flux.1": _FLUX1_VAE_WHOLE_MIB,
+    "flux.1-kontext": _FLUX1_VAE_WHOLE_MIB,
+    "chroma": _FLUX1_VAE_WHOLE_MIB,
+    "qwen-image-2.1": _QWEN21_VAE_WHOLE_MIB,
+}
+# Margin on the measured buffer: the card retries a failed allocation with halved tiles, the CPU has no retry.
+GPU_WHOLE_VAE_MARGIN = 1.15
+CPU_WHOLE_VAE_MARGIN = 1.3
+
+
+def whole_vae_tiles(family: Optional[str]) -> tuple[tuple[int, int], ...]:
+    """(tile edge px, measured whole-decode MiB) pairs tried above the per-tile ladder for ``family``, largest first;
+    () when its whole decode is unmeasured (MiniMax-H3 keeps its own tiler)."""
+    return WHOLE_VAE_DECODE_MIB.get((family or "").strip().lower(), ())
+
+
+def cpu_vae_tile_size(
+    spare_mib: Optional[int],
+    env: Optional[dict] = None,
+    whole_tiles: Sequence[tuple[int, int]] = (),
+) -> Optional[int]:
+    """Tile edge (px) for the CPU VAE, None = 256 px. Env 0/off keeps 256, a number pins it. ``whole_tiles``
+    (``whole_vae_tiles``) are tried first."""
     import os
 
     forced = ((env if env is not None else os.environ).get(CPU_VAE_TILE_ENV) or "").strip().lower()
@@ -943,6 +978,9 @@ def cpu_vae_tile_size(spare_mib: Optional[int], env: Optional[dict] = None) -> O
         return int(forced)
     if spare_mib is None:
         return None
+    for side, mib in whole_tiles:
+        if int(mib * CPU_WHOLE_VAE_MARGIN) <= spare_mib:
+            return int(side)
     for size in CPU_VAE_TILE_SIZES:
         if CPU_VAE_DECODE_MIB_PER_MPX * (size / 1024) ** 2 <= spare_mib:
             return size
@@ -966,17 +1004,21 @@ def gpu_vae_tile_size(
     free_mib: Optional[int],
     vae_mib: Optional[int],
     env: Optional[dict] = None,
+    whole_tiles: Sequence[tuple[int, int]] = (),
 ) -> Optional[int]:
     """Tile edge (px) for decoding the offload path's VAE on the card, or None to keep it on the CPU.
 
     ``free_mib``: card VRAM free after the card reserve (None = unread, keeps the CPU). ``vae_mib``: the VAE file,
     counted twice (its weights may be widened to f32 on the card). Takes the largest tile whose decode buffer fits
-    beside them; sd.cpp still halves the tile if an allocation fails. ``UNSLOTH_SD_CPP_VAE_GPU``: 0 / off keeps the
-    VAE on the CPU."""
+    beside them, ``whole_tiles`` (``whole_vae_tiles``) first; sd.cpp still halves the tile if an allocation
+    fails. ``UNSLOTH_SD_CPP_VAE_GPU``: 0 / off keeps the VAE on the CPU."""
     forced = ((env if env is not None else os.environ).get(GPU_VAE_ENV) or "").strip().lower()
     if forced in ("0", "off", "false", "no") or free_mib is None:
         return None
     room = int(free_mib) - 2 * max(int(vae_mib or 0), 0)
+    for side, mib in whole_tiles:
+        if int(mib * GPU_WHOLE_VAE_MARGIN) <= room:
+            return int(side)
     for size in GPU_VAE_TILE_SIZES:
         if GPU_VAE_DECODE_MIB_PER_MPX * (size / 1024) ** 2 <= room:
             return size

@@ -3296,8 +3296,13 @@ def _offload_would_exhaust_host_ram(
     return True
 
 
-def _cpu_vae_tile_size(files: Any, binary: Optional[str]) -> Optional[int]:
-    """CPU VAE tile from host RAM left by the offloaded weights; None = 256 px. Windows: commit headroom caps it."""
+def _cpu_vae_tile_size(
+    files: Any,
+    binary: Optional[str],
+    family: Optional[str] = None,
+) -> Optional[int]:
+    """CPU VAE tile from host RAM left by the offloaded weights; None = 256 px. Windows: commit headroom caps it.
+    ``family`` with a measured whole decode first tries a tile covering its largest output."""
     if not sd_cpp_args_mod.sd_cpp_vae_tile_size_in_pixels(binary):
         return None
     try:
@@ -3323,7 +3328,9 @@ def _cpu_vae_tile_size(files: Any, binary: Optional[str]) -> Optional[int]:
     except Exception as exc:  # noqa: BLE001
         logger.debug("sd_cpp.vae_tile: host RAM unreadable: %s", exc)
         spare = None
-    size = sd_cpp_args_mod.cpu_vae_tile_size(spare)
+    size = sd_cpp_args_mod.cpu_vae_tile_size(
+        spare, whole_tiles = sd_cpp_args_mod.whole_vae_tiles(family)
+    )
     logger.info("sd_cpp.vae_tile: CPU VAE tile %s px (spare host RAM %s MiB)", size or 256, spare)
     return size
 
@@ -3360,13 +3367,15 @@ def _offload_vae_flags(
     klass: Optional[str],
     ordinal: Optional[int],
     description: Optional[str] = None,
+    family: Optional[str] = None,
 ) -> list[str]:
     """Offload flags with the VAE and text encoder placed. Under --offload-to-cpu every weight sits in host RAM and
     sd.cpp evicts the denoiser's card copies for the decode, so on a CUDA / Vulkan card whose free VRAM Studio reads
     (an off-torch AMD / Intel card auto-offloads here) the VAE decodes on the card in the largest tile its free VRAM
     holds, and the text encoder joins it when the card has ``GPU_TE_MIN_FREE_MIB`` free. Otherwise (other
     accelerators, latent-unit builds, an unread card, too little VRAM) both stay on the CPU, the VAE with a RAM-sized
-    tile."""
+    tile. A ``family`` with a measured whole decode first tries a tile covering its largest output (one tile = the
+    untiled decode)."""
     if policy not in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL):
         return offload_flags(policy)
     limit = vae = gpu_tile = None
@@ -3377,7 +3386,9 @@ def _offload_vae_flags(
             vae = file_mib(getattr(files, "vae", None))
         except Exception:  # noqa: BLE001
             vae = None
-        gpu_tile = sd_cpp_args_mod.gpu_vae_tile_size(limit, vae)
+        gpu_tile = sd_cpp_args_mod.gpu_vae_tile_size(
+            limit, vae, whole_tiles = sd_cpp_args_mod.whole_vae_tiles(family)
+        )
     te_gpu = bool(gpu_tile) and sd_cpp_args_mod.gpu_te_fits(limit)
     logger.info(
         "sd_cpp.vae_gpu: offload VAE on %s, text encoder on %s (%s card free after reserve %s MiB, VAE %s MiB)",
@@ -3389,10 +3400,18 @@ def _offload_vae_flags(
     )
     if gpu_tile:
         return offload_flags(policy, vae_on_cpu = False, vae_tile_size = gpu_tile, te_on_cpu = not te_gpu)
-    return offload_flags(policy, vae_tile_size = _cpu_vae_tile_size(files, binary))
+    ram_tile = (
+        _cpu_vae_tile_size(files, binary, family) if family else _cpu_vae_tile_size(files, binary)
+    )
+    return offload_flags(policy, vae_tile_size = ram_tile)
 
 
-def _cpu_backend_offload(flags: Any, files: Any, binary: Optional[str]) -> list[str]:
+def _cpu_backend_offload(
+    flags: Any,
+    files: Any,
+    binary: Optional[str],
+    family: Optional[str] = None,
+) -> list[str]:
     """``flags`` without the device pin, for a restart onto the CPU backend. A GPU VAE's tile was sized from the
     card's free VRAM, so the decode there gets the CPU VAE flags and RAM-sized tile it had before that gate."""
     flags = without_device_backend_flags(flags)
@@ -3410,7 +3429,11 @@ def _cpu_backend_offload(flags: Any, files: Any, binary: Optional[str]) -> list[
         elif f != "--clip-on-cpu":
             out.append(f)
             if f == "--vae-tiling":
-                size = _cpu_vae_tile_size(files, binary)
+                size = (
+                    _cpu_vae_tile_size(files, binary, family)
+                    if family
+                    else _cpu_vae_tile_size(files, binary)
+                )
                 if size:
                     out += ["--vae-tile-size", str(int(size))]
     return out
@@ -4256,6 +4279,7 @@ class SdCppDiffusionBackend:
                         klass or placed,
                         gpu_ordinal,
                         sd_cpp_listed_device(binary)[1] if binary else None,
+                        family = fam.name,
                     )
                 )
 
@@ -5862,7 +5886,12 @@ class SdCppDiffusionBackend:
             # WITHOUT the device pin. sd.cpp joins repeated --backend values into one spec instead of replacing,
             # and an explicit diffusion=CUDA0 outranks the bare `cpu` default, so leaving the pin on would restart
             # the server onto the very backend that just aborted.
-            offload = _cpu_backend_offload(state.offload_flags, state.files, server_binary),
+            offload = _cpu_backend_offload(
+                state.offload_flags,
+                state.files,
+                server_binary,
+                getattr(state.family, "name", None),
+            ),
             native_speed = state.native_speed,
             threads = state.threads,
             env = state.spawn_env(),
