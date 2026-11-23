@@ -3473,7 +3473,7 @@ export const pl = {
       rememberParamsPerModelHint:
         "Po wyłączeniu wszystkie modele używają tych samych ustawień.",
       autoCompactHint:
-        "Lokalne czaty GGUF i MLX: usunięte tury są indeksowane, aby model mógł je wyszukać i przywrócić, a reset cytuje dosłownie mieszczące się stałe instrukcje, zachowując najstarsze i najnowsze kosztem środkowych. Archiwizacja wymaga zapisanego czatu i indeksu wektorowego; bez nich starsze tury są odrzucane. Używa ustawionej długości kontekstu, a nie dostępnej VRAM. Modele API: dostawca streszcza starsze tury, gdy to możliwe, w przeciwnym razie najstarsze tury są odrzucane, gdy czat zbliża się do opublikowanego okna kontekstu modelu.",
+        "Lokalne czaty GGUF i MLX: usunięte tury są indeksowane, aby model mógł je wyszukać i przywrócić, a reset cytuje dosłownie mieszczące się stałe instrukcje, zachowując najstarsze i najnowsze kosztem środkowych. Archiwizacja wymaga zapisanego czatu i indeksu wektorowego; bez nich starsze tury są odrzucane. Używa ustawionej długości kontekstu, a nie dostępnej VRAM. Modele API: dostawca streszcza starsze tury, gdy to możliwe, w przeciwnym razie najstarsze tury wypadają z kontekstu, gdy czat zbliża się do opublikowanego okna kontekstu modelu, i są indeksowane w ten sam sposób.",
       pastedTextShortDescription:
         "Wklejony tekst o długości co najmniej {count} znaków staje się załącznikiem .txt.",
       pastedTextOffDescription:

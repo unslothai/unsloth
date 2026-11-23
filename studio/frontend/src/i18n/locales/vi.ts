@@ -3436,7 +3436,7 @@ export const vi = {
       rememberParamsPerModelHint:
         "Khi tắt, dùng cùng một cài đặt cho mọi mô hình.",
       autoCompactHint:
-        "Cuộc trò chuyện GGUF và MLX cục bộ: các lượt bị loại ra được lập chỉ mục để mô hình có thể tìm lại, và khi đặt lại, các chỉ dẫn thường trực vừa chỗ sẽ được trích dẫn lại nguyên văn, ưu tiên giữ phần cũ nhất và mới nhất hơn phần giữa. Việc lưu trữ cần một cuộc trò chuyện đã lưu và chỉ mục vector; nếu không có, các lượt cũ hơn sẽ bị loại bỏ. Dùng độ dài ngữ cảnh bạn đặt, không phải VRAM khả dụng. Mô hình API: nhà cung cấp tóm tắt các lượt cũ hơn khi có thể, nếu không thì các lượt cũ nhất bị loại bỏ khi cuộc trò chuyện gần đạt cửa sổ ngữ cảnh công bố của mô hình.",
+        "Cuộc trò chuyện GGUF và MLX cục bộ: các lượt bị loại ra được lập chỉ mục để mô hình có thể tìm lại, và khi đặt lại, các chỉ dẫn thường trực vừa chỗ sẽ được trích dẫn lại nguyên văn, ưu tiên giữ phần cũ nhất và mới nhất hơn phần giữa. Việc lưu trữ cần một cuộc trò chuyện đã lưu và chỉ mục vector; nếu không có, các lượt cũ hơn sẽ bị loại bỏ. Dùng độ dài ngữ cảnh bạn đặt, không phải VRAM khả dụng. Mô hình API: nhà cung cấp tóm tắt các lượt cũ hơn khi có thể, nếu không thì các lượt cũ nhất bị đưa ra khỏi ngữ cảnh khi cuộc trò chuyện gần đạt cửa sổ ngữ cảnh công bố của mô hình và được lập chỉ mục theo cách tương tự.",
       pastedTextShortDescription:
         "Nội dung dán từ {count} ký tự trở lên sẽ thành tệp đính kèm .txt.",
       pastedTextOffDescription: "Văn bản dán luôn ở lại trong hộp tin nhắn.",

@@ -3437,7 +3437,7 @@ export const id = {
       rememberParamsPerModelHint:
         "Jika nonaktif, gunakan pengaturan yang sama untuk setiap model.",
       autoCompactHint:
-        "Chat GGUF dan MLX lokal: giliran yang dikeluarkan diindeks agar model dapat mencarinya kembali, dan saat reset, instruksi tetap yang muat dikutip kembali kata demi kata, dengan mempertahankan yang terlama dan terbaru dibanding bagian tengah. Pengarsipan memerlukan chat yang tersimpan dan indeks vektor; tanpanya giliran lama akan dibuang. Menggunakan panjang konteks yang Anda atur, bukan VRAM yang tersedia. Model API: penyedia merangkum giliran lama jika memungkinkan, jika tidak giliran terlama dibuang saat chat mendekati jendela konteks yang dipublikasikan model.",
+        "Chat GGUF dan MLX lokal: giliran yang dikeluarkan diindeks agar model dapat mencarinya kembali, dan saat reset, instruksi tetap yang muat dikutip kembali kata demi kata, dengan mempertahankan yang terlama dan terbaru dibanding bagian tengah. Pengarsipan memerlukan chat yang tersimpan dan indeks vektor; tanpanya giliran lama akan dibuang. Menggunakan panjang konteks yang Anda atur, bukan VRAM yang tersedia. Model API: penyedia merangkum giliran lama jika memungkinkan, jika tidak giliran terlama dikeluarkan dari konteks saat chat mendekati jendela konteks yang dipublikasikan model dan diindeks dengan cara yang sama.",
       pastedTextShortDescription:
         "Tempelan sebanyak {count} karakter atau lebih menjadi lampiran .txt.",
       pastedTextOffDescription:

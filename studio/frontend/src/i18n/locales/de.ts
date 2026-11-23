@@ -3232,7 +3232,7 @@ export const de = {
       rememberParamsPerModelHint:
         "Wenn deaktiviert, verwenden alle Modelle dieselben Einstellungen.",
       autoCompactHint:
-        "Lokale GGUF- und MLX-Chats: Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset zitiert die dauerhaft geltenden Anweisungen, die hineinpassen, wortgetreu und mit Vorrang für die ältesten und neuesten vor allem dazwischen. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM. API-Modelle: Der Anbieter fasst ältere Runden zusammen, wo er das unterstützt, sonst werden die ältesten Runden verworfen, sobald der Chat das veröffentlichte Kontextfenster des Modells erreicht.",
+        "Lokale GGUF- und MLX-Chats: Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset zitiert die dauerhaft geltenden Anweisungen, die hineinpassen, wortgetreu und mit Vorrang für die ältesten und neuesten vor allem dazwischen. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM. API-Modelle: Der Anbieter fasst ältere Runden zusammen, wo er das unterstützt, sonst werden die ältesten Runden aus dem Kontext entfernt, sobald der Chat das veröffentlichte Kontextfenster des Modells erreicht, und genauso indexiert.",
       pastedTextShortDescription:
         "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt.",
       pastedTextOffDescription:

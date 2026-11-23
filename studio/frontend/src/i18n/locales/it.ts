@@ -3109,7 +3109,7 @@ export const it = {
       rememberParamsPerModelHint:
         "Quando è disattivata, tutti i modelli usano le stesse impostazioni.",
       autoCompactHint:
-        "Chat GGUF e MLX locali: I turni rimossi vengono indicizzati perché il modello possa recuperarli, e un ripristino cita parola per parola le istruzioni permanenti che rientrano, privilegiando le più vecchie e le più recenti rispetto a quelle intermedie. L’archiviazione richiede una chat salvata e l’indice vettoriale; senza di essi i turni più vecchi vengono eliminati. Usa la lunghezza del contesto impostata, non la VRAM disponibile. Modelli API: il provider riassume i turni più vecchi quando lo supporta, altrimenti i più vecchi vengono eliminati quando la chat si avvicina alla finestra di contesto pubblicata del modello.",
+        "Chat GGUF e MLX locali: I turni rimossi vengono indicizzati perché il modello possa recuperarli, e un ripristino cita parola per parola le istruzioni permanenti che rientrano, privilegiando le più vecchie e le più recenti rispetto a quelle intermedie. L’archiviazione richiede una chat salvata e l’indice vettoriale; senza di essi i turni più vecchi vengono eliminati. Usa la lunghezza del contesto impostata, non la VRAM disponibile. Modelli API: il provider riassume i turni più vecchi quando lo supporta, altrimenti i più vecchi escono dal contesto quando la chat si avvicina alla finestra di contesto pubblicata del modello e vengono indicizzati allo stesso modo.",
       pastedTextShortDescription: "Il testo incollato di almeno {count} caratteri diventa un allegato .txt.",
       pastedTextOffDescription:
         "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
