@@ -635,7 +635,7 @@ def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
         _bin = LlamaCppBackend._find_llama_server_binary()
         _caps = LlamaCppBackend.probe_server_capabilities(_bin)
         app.state.llama_cpp_capabilities = _caps
-        # Warm the --version cache the first GGUF load and memory estimate read.
+        # Warm the --version cache read by the first GGUF load.
         if _caps.get("found"):
             try:
                 LlamaCppBackend.probe_build_number(_bin)

@@ -184,7 +184,7 @@ def _compile_probe(chat_template: str, today: date):
 
 
 class _ProbeRenderer:
-    """Compiles the template once per probe; a compile error re-raises on every render, as before."""
+    """Compiles once; a compile error is re-raised on every render, as before."""
 
     __slots__ = ("_chat_template", "_today", "_template", "_error")
 

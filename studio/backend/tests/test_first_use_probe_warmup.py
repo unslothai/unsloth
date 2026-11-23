@@ -73,7 +73,6 @@ class TestStartupBuildProbe:
         assert len(version_calls) == 1
         assert LlamaCppBackend._build_number_cache, "startup probe left the build cache empty"
 
-        # What the first GGUF load and memory estimate ask (llama_cpp.load_model, routes/inference).
         assert LlamaCppBackend.reserves_micro_batch_outputs(str(binary)) is False
         assert LlamaCppBackend.resumes_thoughts(str(binary)) is True
         assert LlamaCppBackend.reserves_micro_batch_outputs() is False
