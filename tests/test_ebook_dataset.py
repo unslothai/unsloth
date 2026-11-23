@@ -207,6 +207,7 @@ def test_page_break_markers_keep_word_separators(ebooks, html, expected):
             "<ruby><rb role='doc-pagebreak'>12<rb>東京</rb></ruby>に行く。".encode(),
             "12東京に行く。",
         ),
+        (b'<p role="doc-pagebreak">12<hr>Actual chapter text</p>', "12\n\nActual chapter text"),
     ],
 )
 def test_unclosed_page_break_markers_keep_their_text(ebooks, html, expected):

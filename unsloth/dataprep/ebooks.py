@@ -74,6 +74,37 @@ _VOID = {
 }
 # Ruby annotations (<rt>, <rtc>) and their fallback parentheses (<rp>) are not prose.
 _MAX_PAGE_LABEL = 32
+_PAGE_LABEL_TAGS = {
+    "a",
+    "abbr",
+    "b",
+    "bdi",
+    "bdo",
+    "br",
+    "cite",
+    "code",
+    "del",
+    "dfn",
+    "em",
+    "font",
+    "i",
+    "img",
+    "ins",
+    "kbd",
+    "mark",
+    "q",
+    "s",
+    "samp",
+    "small",
+    "span",
+    "strong",
+    "sub",
+    "sup",
+    "time",
+    "u",
+    "var",
+    "wbr",
+}
 _IGNORE = {"head", "script", "style", "nav", "svg", "rt", "rp", "rtc"}
 
 
@@ -89,6 +120,10 @@ class _BookTextParser(HTMLParser):
         self.page_marks = []
 
     def handle_starttag(self, tag, attrs):
+        if tag not in _PAGE_LABEL_TAGS:
+            # A page label is phrasing content; any other tag may imply the marker's end tag, which
+            # leaves its extent ambiguous, so its text is kept.
+            self.page_marks.clear()
         if tag == "body":
             self.handle_endtag("head")
         elif tag in {"rb", "rp", "rt", "rtc"} and any(t == "ruby" for t, _ in self.stack):
@@ -96,8 +131,6 @@ class _BookTextParser(HTMLParser):
             closes = {"rb", "rp", "rt", "rtc"} if tag in {"rb", "rtc"} else {"rb", "rp", "rt"}
             while self.stack and self.stack[-1][0] in closes:
                 self.stack.pop()
-            while self.page_marks and self.page_marks[-1][0] >= len(self.stack):
-                self.page_marks.pop()
         attrs = dict(attrs)
         if tag == "meta" and self.encoding is None:
             self.encoding = attrs.get("charset")
