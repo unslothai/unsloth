@@ -199,6 +199,76 @@ def test_alongside_is_off_until_settings_turns_it_on(backends, monkeypatch):
     assert model_slots.slots == [] and not extra.llama.is_active
 
 
+def test_a_voice_load_keeps_its_slot_with_multi_model_off(backends, monkeypatch):
+    _, extra = backends
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_enabled", lambda: False)
+    model_slots.slots.remove(extra)
+    voice = _selected(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True))
+    assert voice is not None and voice.voice
+    model_slots.slots.append(voice)
+    assert _selected(LoadRequest(model_path = "org/D-GGUF")) is None
+    assert model_slots.slots == [voice]
+    inf._llama_cpp_backend.unload_model()
+    assert _selected(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True)) is None
+
+
+def test_a_voice_beside_an_npu_chat_takes_a_slot_of_its_own(backends, monkeypatch):
+    _, extra = backends
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_enabled", lambda: False)
+    model_slots.slots.remove(extra)
+    inf._llama_cpp_backend.unload_model()
+    monkeypatch.setattr(orchestrator, "_inference_backend", FakeOrchestrator(None))
+    npu_chat = SimpleNamespace(model_path = "lemonade:qwen3-0.6b-FLM", id = "qwen3-0.6b-FLM")
+    monkeypatch.setattr(inf, "_resident_npu_model", lambda: npu_chat)
+    voice = _selected(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True))
+    assert voice is not None and voice.voice
+
+
+def test_a_voice_load_never_replaces_a_managed_engine_chat(backends, monkeypatch):
+    _, extra = backends
+    managed = FakeOrchestrator("org/V")
+    managed._managed_engine = object()
+    monkeypatch.setattr(orchestrator, "_inference_backend", managed)
+    with pytest.raises(HTTPException) as excinfo:
+        _selected(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True))
+    assert excinfo.value.status_code == 409 and managed._managed_engine is not None
+    assert _selected(LoadRequest(model_path = "org/C-GGUF", alongside = True)) is None
+    assert model_slots.slots == [extra]
+
+
+def test_only_voice_models_may_load_as_the_voice(monkeypatch):
+    import core.inference.audio_cpp_models as audio_cpp_models
+
+    tasks = {
+        "audio-cpp/Kokoro-82M-GGUF": "tts",
+        "audio-cpp/parakeet-GGUF": "asr",
+        "audio-cpp/music-GGUF": "music",
+    }
+    monkeypatch.setattr(
+        audio_cpp_models,
+        "resolve",
+        lambda path, *a, **k: SimpleNamespace(task = tasks[path], unsupported = None)
+        if path in tasks
+        else None,
+    )
+    assert inf._is_voice_model(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True))
+    assert inf._is_voice_model(LoadRequest(model_path = "audio-cpp/parakeet-GGUF", voice = True))
+    assert not inf._is_voice_model(LoadRequest(model_path = "audio-cpp/music-GGUF", voice = True))
+    picked = []
+    monkeypatch.setattr(inf, "_select_load_slot", lambda request: picked.append(request))
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(
+            inf.load_model_gated(LoadRequest(model_path = "org/C-GGUF", voice = True), None, "s")
+        )
+    assert refused.value.status_code == 400 and not picked
+
+
+def test_a_voice_load_never_replaces_the_chat_model():
+    source = inspect.getsource(inf.load_model_gated)
+    refuse = source.index("if request.voice:")
+    assert refuse < source.index("await asyncio.to_thread(_unload_primary)")
+
+
 def test_a_kept_model_with_no_gpu_layers_does_not_hold_the_gpu(backends):
     _, extra = backends
     assert model_slots.holds_vram()
@@ -472,6 +542,31 @@ def test_a_short_fit_evicts_the_least_recently_used_slot_and_names_it(backends, 
     assert model_slots.slots[-1].request.model_path == "org/C-GGUF"
 
 
+def test_a_voice_never_unloads_a_kept_chat_to_make_room(backends, monkeypatch):
+    import core.inference.audio_cpp_models as audio_cpp_models
+
+    _, extra = backends
+    extra.request, extra.last_used = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0"), 5.0
+    older = _slot("org/D-GGUF", "Q4_K_M", last_used = 1.0)
+    model_slots.slots.append(older)
+    monkeypatch.setattr(
+        audio_cpp_models,
+        "resolve",
+        lambda path, *a, **k: SimpleNamespace(task = "tts", unsupported = None)
+        if path.startswith("audio-cpp/")
+        else None,
+    )
+    _gated_load_fakes(monkeypatch, short_fits = [1, 1])
+    request = LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True)
+    try:
+        asyncio.run(inf.load_model_gated(request, None, "s"))
+    except HTTPException as exc:
+        assert exc.status_code == 409
+    assert older in model_slots.slots and older.llama.is_active
+    assert extra in model_slots.slots
+    assert model_slots.eviction_victims(None, 5000, voices_only = True) == []
+
+
 def test_a_load_cancelled_after_a_short_fit_evicts_nothing(backends, monkeypatch):
     _, extra = backends
     extra.request, extra.last_used = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0"), 5.0
@@ -626,6 +721,26 @@ def test_a_host_ram_spill_loads_beside_the_others_under_always(backends, monkeyp
     request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
     assert not asyncio.run(inf.load_model_gated(request, None, "s")).evicted
     assert seen[-1].force_alongside and extra.llama.is_active
+
+
+def test_a_voice_short_on_memory_under_always_gets_the_cpu_retry_409(backends, monkeypatch):
+    import core.inference.audio_cpp_models as audio_cpp_models
+
+    _, extra = backends
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "always")
+    monkeypatch.setattr(
+        audio_cpp_models,
+        "resolve",
+        lambda path, *a, **k: SimpleNamespace(task = "tts", unsupported = None)
+        if path.startswith("audio-cpp/")
+        else None,
+    )
+    _gated_load_fakes(monkeypatch, short_fits = [1])
+    request = LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inf.load_model_gated(request, None, "s"))
+    assert excinfo.value.status_code == 409 and "enough memory" in excinfo.value.detail
+    assert extra.llama.is_active
 
 
 def test_a_capped_context_is_taken_only_once_nothing_is_left_to_evict(backends, monkeypatch):

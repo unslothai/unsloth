@@ -83,11 +83,14 @@ export function audioApiExampleFor(workflow: AudioCppWorkflow): {
   tab: AudioApiTab;
   run: AudioRunWorkflow | null;
 } {
-  return workflow === "speak" ||
+  if (
+    workflow === "speak" ||
     workflow === "clone" ||
     workflow === "transcribe"
-    ? { tab: workflow, run: null }
-    : { tab: "workflows", run: workflow };
+  ) {
+    return { tab: workflow, run: null };
+  }
+  return { tab: "workflows", run: workflow === "detect" ? null : workflow };
 }
 
 const folder = (name: string) => `${AUDIO_CPP_REPO}/${name}`;

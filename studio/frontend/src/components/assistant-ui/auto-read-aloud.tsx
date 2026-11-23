@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { decideAutoRead, useChatActive } from "@/features/chat";
+import { decideAutoRead, useChatActive, useChatRuntimeStore } from "@/features/chat";
 import { useVoiceSettingsStore } from "@/features/settings";
 import { useUnseenScheduledRuns } from "@/features/scheduled-tasks";
 import {
@@ -22,6 +22,7 @@ export const AutoReadAloud: FC = () => {
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const loading = useAuiState(({ thread }) => thread.isLoading);
   const scheduledPending = useUnseenScheduledRuns((state) => state.pendingReadAloudThreadId);
+  const voiceActive = useChatRuntimeStore((s) => s.voiceMode === "active");
   const lastId = useAuiState(({ thread }) => thread.messages.at(-1)?.id);
   const lastStatus = useAuiState(
     ({ thread }) => thread.messages.at(-1)?.status?.type,
@@ -36,6 +37,8 @@ export const AutoReadAloud: FC = () => {
     pendingRef.current = false;
     if (decision.kind !== "speak" || !active) return;
     if (!useVoiceSettingsStore.getState().autoReadAloud) return;
+    // Voice mode speaks the reply itself: a second read-aloud doubled it and talked over barge-ins.
+    if (useChatRuntimeStore.getState().voiceMode === "active") return;
     if (lastSpokenRef.current === decision.messageId) return;
     lastSpokenRef.current = decision.messageId;
     try {
@@ -74,6 +77,8 @@ export const AutoReadAloud: FC = () => {
     if (state.messages.length === 0) return;
     const decision = decideAutoRead(state.messages);
     if (decision.kind === "wait") return;
+    // Voice mode speaks its own turns: leave the request pending so it reads once voice is off.
+    if (voiceActive) return;
     if (!useUnseenScheduledRuns.getState().takeReadAloud(remoteId)) return;
     const { ttsEnabled, autoReadAloud } = useVoiceSettingsStore.getState();
     const source = state.messages.at(-1)?.metadata?.custom?.scheduledTask as
@@ -96,7 +101,7 @@ export const AutoReadAloud: FC = () => {
     } catch {
       // Keep the manual Read aloud action available when speech cannot start.
     }
-  }, [active, aui, lastId, lastStatus, loading, remoteId, scheduledPending]);
+  }, [active, aui, lastId, lastStatus, loading, remoteId, scheduledPending, voiceActive]);
 
   // The old thread's runtime stays alive, so its playback would overlap the next chat's.
   useEffect(() => {

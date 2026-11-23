@@ -90,3 +90,9 @@ test("a hidden chat stays silent and leaving a chat stops its own playback", () 
   assert.match(src, /threads\.getById\(\s*threadId,?\s*\)/);
   assert.match(src, /speech\?\.messageId === spoken\)[\s\S]*stopSpeaking\(\)/);
 });
+
+test("voice mode owns playback: the ordinary auto read-aloud stays quiet", () => {
+  const src = readSrc("components/assistant-ui/auto-read-aloud.tsx");
+  assert.match(src, /if \(useChatRuntimeStore\.getState\(\)\.voiceMode === "active"\) return;/);
+});
+
