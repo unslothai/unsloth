@@ -3750,7 +3750,7 @@ def _check_ollama_server():
         raise RuntimeError(
             "Unsloth: Timed out reaching the Ollama server at http://localhost:11434. "
             "Check that `ollama serve` is running and responsive, then try again."
-        )
+        ) from None
     if init_check.returncode == 0:
         print(init_check.stdout.strip())
     else:
@@ -3765,7 +3765,6 @@ def _run_ollama_command(args: list, description: str):
             stderr = subprocess.STDOUT,
             text = True,
             bufsize = 1,
-            universal_newlines = True,
             encoding = "utf-8",
             errors = "replace",
         )
@@ -3773,7 +3772,7 @@ def _run_ollama_command(args: list, description: str):
         raise RuntimeError(
             f"Unsloth: `ollama` is not installed or not on PATH, so `{description}` cannot run. "
             "Install Ollama and start `ollama serve`, then try again."
-        )
+        ) from None
 
     with process:
         for line in iter(process.stdout.readline, ""):
