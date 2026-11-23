@@ -3,8 +3,10 @@
 """Packed rows on the transformers modeling path run varlen attention, and nothing else changes."""
 
 import contextlib
+import gc
 import inspect
 import types
+import weakref
 
 import pytest
 import torch
@@ -1915,6 +1917,83 @@ def test_varlen_in_graph_probe_runs_its_backward_with_grad_enabled(monkeypatch, 
         assert hpa._varlen_in_graph_probe(0, torch.bfloat16, 64, 8, 2, None) is False
         assert torch.is_grad_enabled() is False  # the caller's mode is restored
     assert seen == [(True, False)]
+
+
+class _RecordTensors(torch.overrides.TorchFunctionMode):
+    """Weak references to every tensor a probe makes; factory calls land on the CPU."""
+
+    def __init__(self):
+        super().__init__()
+        self.refs = []
+
+    def __torch_function__(
+        self,
+        func,
+        types,
+        args = (),
+        kwargs = None,
+    ):
+        kwargs = dict(kwargs or {})
+        if "device" in kwargs:
+            kwargs["device"] = "cpu"
+        out = func(*args, **kwargs)
+        for tensor in out if isinstance(out, (tuple, list)) else (out,):
+            if isinstance(tensor, torch.Tensor):
+                self.refs.append(weakref.ref(tensor))
+        return out
+
+    def alive(self):
+        gc.collect()
+        return sum(ref() is not None for ref in self.refs)
+
+
+class _BackwardFails(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grad):
+        raise RuntimeError("this build's flash varlen backward refuses the shape")
+
+
+def test_varlen_in_graph_probe_frees_its_graph_when_backward_fails(monkeypatch):
+    """A probe pack hook returning its input saves an output on its own node, a cycle gc cannot break:
+    an aborted probe backward kept the whole probe graph alive for the rest of the run."""
+    from unsloth.utils import flash_impl
+
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_hip_window_ok", lambda device, window: True)
+    monkeypatch.setattr(flash_impl, "flash_impl_allows", lambda *args: True)
+    # sigmoid saves its own output for backward, like the flash kernel's out / logsumexp.
+    monkeypatch.setattr(
+        hpa,
+        "_flash_varlen",
+        lambda q, *args: _BackwardFails.apply(torch.sigmoid(q.transpose(1, 2))),
+    )
+    record = _RecordTensors()
+    with record:
+        assert hpa._varlen_in_graph_probe(0, torch.bfloat16, 16, 2, 2, None) is False
+    assert record.refs, "the probe did not run its forward"
+    assert record.alive() == 0, "the aborted probe's graph outlived the probe"
+
+
+def test_hip_varlen_match_frees_its_comparison_graph(monkeypatch):
+    """ROCm check: the error terms are built from grad-tracked outputs and never backpropagated."""
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN", [object()])
+
+    def matching(q, k, v, cu_seqlens, longest, scale, window):
+        out = hpa._document_reference(
+            q.float(), k.float(), v.float(), hpa._HIP_CHECK_LENGTHS, scale, window
+        )
+        return out.to(q.dtype)
+
+    monkeypatch.setattr(hpa, "_flash_varlen", matching)
+    monkeypatch.setattr(hpa, "_call_torch_varlen", lambda fn, *args: matching(*args))
+    record = _RecordTensors()
+    with record:
+        assert hpa._hip_varlen_matches(torch.device("cpu"), hpa._HIP_CHECK_WINDOW) is True
+    assert record.alive() == 0, "the match's comparison graph outlived the check"
 
 
 @pytest.mark.parametrize("compiled", [False, True])

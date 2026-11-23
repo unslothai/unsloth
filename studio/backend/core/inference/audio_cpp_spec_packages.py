@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The gguf packages in an audio.cpp model_specs entry: the repo each lives in, its files, the
-primary GGUF the runtime is handed. Pure: no IO, no Studio imports."""
+"""GGUF packages of an audio.cpp model_specs entry; pure, no IO, no Studio imports."""
 
 from __future__ import annotations
 
@@ -60,8 +59,7 @@ def packages_for_repo(
     umbrella_repo: str,
     folder: str = "",
 ) -> tuple[SpecPackage, ...]:
-    """Packages in repo_id; a package without a repo of its own lives in umbrella_repo. With folder,
-    only the packages in that folder of the umbrella."""
+    """Packages in repo_id; repo-less ones are in umbrella_repo; folder limits the umbrella's."""
     repo = _text(repo_id).lower()
     if not repo:
         return ()

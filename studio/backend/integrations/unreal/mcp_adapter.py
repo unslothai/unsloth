@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Epic's Unreal MCP hides ~50 toolsets behind call_tool. Models pass the dotted ``<toolset>.<tool>`` as tool_name
-(rewritten), omit optional parameters Epic still rejects (filled from the schema, retried once), and guess names
-(real names appended to the error)."""
+"""Epic's Unreal MCP hides ~50 toolsets behind call_tool: rewrites <toolset>.<tool> names, fills
+omitted params Epic rejects from the schema (retried once), lists real names on bad guesses."""
 
 import json
 import re

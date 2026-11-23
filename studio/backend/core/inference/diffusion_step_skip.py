@@ -53,9 +53,8 @@ def _is_tensor(obj: Any) -> bool:
 
 
 def parse_mask(mask: Any) -> tuple:
-    """A per-step compute mask ("1" compute, "0" skip; or bools) as a tuple of bools, () when malformed.
-
-    A usable mask computes its first ``MIN_HEAD_STEPS`` steps (taylor1 needs two computed points) and its last step."""
+    """Per-step mask ('1' compute, '0' skip, or bools) as a tuple of bools, () if malformed; a
+    usable one computes its first MIN_HEAD_STEPS and last step (taylor1 needs two)."""
     if isinstance(mask, str):
         text = mask.strip()
         if not text or set(text) - {"0", "1"}:
@@ -184,8 +183,9 @@ def auto_static_settings(
 
 
 def _call_signature(args: tuple, kwargs: dict) -> tuple:
-    """Reuse key: latent shape, prefix-KV mode (an ``extract`` call returns a longer sequence), container."""
-    hidden = kwargs.get("hidden_states", args[0] if args else None)
+    """Reuse key: latent shape, prefix-KV mode (an ``extract`` call returns a longer sequence), container. The latent
+    is the first positional argument, else ``hidden_states`` (DiTs) or ``sample`` (U-Nets) by keyword."""
+    hidden = kwargs.get("hidden_states", kwargs.get("sample", args[0] if args else None))
     if _is_tensor(hidden):
         shape = tuple(hidden.shape)
     elif isinstance(hidden, (list, tuple)) and hidden and all(_is_tensor(h) for h in hidden):

@@ -81,6 +81,7 @@ from .models._utils import (
     lora_relative_to_original_base,
 )
 from .models.mistral_format import raise_if_merging_mistral_format_view
+from .models.inkling2 import raise_if_merging_inkling2
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from .device_type import clean_gpu_cache
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
@@ -1707,6 +1708,7 @@ def unsloth_save_model(
     _collect_garbage(before = clean_gpu_cache)
 
     raise_if_merging_mistral_format_view(model, save_method)
+    raise_if_merging_inkling2(model, save_method)
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
             "Unsloth: You must select one of 3 options when saving models:\n"
@@ -2761,6 +2763,148 @@ def _place_gguf_output(src, dst):
         shutil.move(src, dst)
 
 
+def _record_gemma_linear_rope_in_gguf(
+    model_directory,
+    gguf_files,
+    factor = None,
+):
+    """llama.cpp's Gemma / Gemma 2 converters write no RoPE scaling, so a GGUF of a model with
+    linear scaling ran unscaled. llama.cpp reads `<arch>.rope.scaling.*` for every architecture,
+    so add them to the converter's output; llama-quantize copies them into every quant.
+    `factor` is the scaling the live model applies (1.0 = none); None reads `config.json`.
+    The keys go into each file's header in place: the tensor data moves up by at most a few
+    alignment units, so no second copy of the weights is ever on disk."""
+    if factor is None:
+        try:
+            with open(os.path.join(model_directory, "config.json"), "r", encoding = "utf-8") as f:
+                config = json.load(f)
+        except Exception:
+            return
+        rope = config.get("rope_parameters") or config.get("rope_scaling") or {}
+        if config.get("model_type") not in ("gemma", "gemma2") or not isinstance(rope, dict):
+            return
+        if (rope.get("rope_type") or rope.get("type")) != "linear":
+            return
+        factor = rope.get("factor", 1.0)
+    factor = float(factor)
+    if factor == 1.0:
+        return
+    _NO_METADATA = object()
+
+    def _plan_insert(gguf, path):
+        # Everything needed to rewrite the header, read before any byte changes; None when
+        # there is nothing to add, _NO_METADATA for a later shard of a split GGUF, which
+        # carries only split.* keys: llama.cpp reads every hparam (and llama-quantize copies
+        # every key) from the first shard alone. The reader's map is released on return.
+        reader = gguf.GGUFReader(path, "r")
+        arch = reader.get_field(gguf.Keys.General.ARCHITECTURE)
+        if arch is None:
+            return _NO_METADATA
+        arch = arch.contents()
+        if arch not in ("gemma", "gemma2") or f"{arch}.rope.scaling.type" in reader.fields:
+            return None
+        order = "<" if reader.endianess == gguf.GGUFEndian.LITTLE else ">"
+        end = lambda field: int(field.offset) + sum(int(p.nbytes) for p in field.parts)
+        kv_end = max(end(field) for field in reader.fields.values())
+        info_end = max([kv_end] + [end(tensor.field) for tensor in reader.tensors])
+        kv_count = int(reader.fields["GGUF.kv_count"].parts[0][0])
+        return dict(
+            arch = arch,
+            order = order,
+            kv_end = kv_end,
+            info_end = info_end,
+            kv_count = kv_count,
+            alignment = int(reader.alignment),
+            data_offset = int(reader.data_offset),
+        )
+
+    def _insert_linear_rope(gguf, path, plan):
+        import struct
+
+        order = plan["order"]
+
+        def _key(name, value_type):
+            name = name.encode("utf-8")
+            return struct.pack(f"{order}Q", len(name)) + name + struct.pack(f"{order}I", value_type)
+
+        value = gguf.RopeScalingType.LINEAR.value.encode("utf-8")
+        added = (
+            _key(f"{plan['arch']}.rope.scaling.type", int(gguf.GGUFValueType.STRING))
+            + struct.pack(f"{order}Q", len(value))
+            + value
+            + _key(f"{plan['arch']}.rope.scaling.factor", int(gguf.GGUFValueType.FLOAT32))
+            + struct.pack(f"{order}f", factor)
+        )
+        align = plan["alignment"]
+        new_info_end = plan["info_end"] + len(added)
+        new_data_offset = -(-new_info_end // align) * align
+        shift = new_data_offset - plan["data_offset"]
+        chunk = 64 * 1024 * 1024
+        with open(path, "r+b") as f:
+            f.seek(0, os.SEEK_END)
+            position = f.tell()
+            # Back to front, so every chunk is read before the shifted data overwrites it.
+            while shift and position > plan["data_offset"]:
+                start = max(plan["data_offset"], position - chunk)
+                f.seek(start)
+                block = f.read(position - start)
+                f.seek(start + shift)
+                f.write(block)
+                position = start
+            f.seek(0)
+            head = bytearray(f.read(plan["info_end"]))
+            head[16:24] = struct.pack(f"{order}Q", plan["kv_count"] + 2)
+            kv_end = plan["kv_end"]
+            header = bytes(head[:kv_end]) + added + bytes(head[kv_end:])
+            f.seek(0)
+            f.write(header + b"\x00" * (new_data_offset - len(header)))
+
+    try:
+        with use_local_gguf():
+            import gguf
+            plans = [(path, _plan_insert(gguf, path)) for path in gguf_files]
+        plans = [(path, plan) for path, plan in plans if plan is not _NO_METADATA]
+        if not plans:
+            raise ValueError("no GGUF file carries general.architecture")
+    except Exception as error:
+        if os.environ.get("UNSLOTH_GGUF_ALLOW_UNSCALED_ROPE", "0") == "1":
+            logger.warning(
+                f"Unsloth: could not record linear RoPE scaling {factor} in the GGUF ({error}); "
+                "it will run unscaled, unlike the trained model."
+            )
+            return
+        raise RuntimeError(
+            f"Unsloth: this Gemma model uses linear RoPE scaling (factor {factor}), which "
+            f"llama.cpp's converter leaves out, and adding it to the GGUF failed: {error}. "
+            "The GGUF would run unscaled, unlike the trained model. Set "
+            "UNSLOTH_GGUF_ALLOW_UNSCALED_ROPE=1 to keep it anyway."
+        ) from error
+    gc.collect()  # Windows cannot rename or extend a file that is still mapped.
+    for path, plan in plans:
+        if plan is None:
+            continue
+        # Edited under another name, so an interrupted edit never leaves a broken file at `path`.
+        # A short sibling name: appending to a near-limit basename (255 bytes, or Windows MAX_PATH) overflows it.
+        staged = os.path.join(
+            os.path.dirname(os.path.abspath(path)), f".unsloth_rope_{os.getpid()}_{id(plan):x}.tmp"
+        )
+        os.replace(path, staged)
+        try:
+            _insert_linear_rope(gguf, staged, plan)
+        except BaseException as error:
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
+            if not isinstance(error, Exception):
+                raise
+            raise RuntimeError(
+                f"Unsloth: adding linear RoPE scaling (factor {factor}) to {path} failed part "
+                f"way ({error}), so the half-edited file was removed. Please retry the export."
+            ) from error
+        os.replace(staged, path)
+
+
 def save_to_gguf(
     model_name: str,
     model_type: str,
@@ -2775,8 +2919,9 @@ def save_to_gguf(
     gguf_directory: Optional[Union[str, os.PathLike]] = None,
     merge_is_disposable: bool = False,
     preexisting_weights = None,
+    gemma_linear_rope = None,
 ):
-    """Orchestrate the HF to GGUF conversion: install, convert, quantize. `imatrix` is a resolved local importance-matrix path, forwarded to llama-quantize and required for the IQ types. `gguf_directory` places outputs separately from the model input directory. `merge_is_disposable` says `model_directory` was written by this export purely to feed the converter, so its weights may be reclaimed if the quants would not otherwise fit; off by default."""
+    """Orchestrate the HF to GGUF conversion: install, convert, quantize. `imatrix` is a resolved local importance-matrix path, forwarded to llama-quantize and required for the IQ types. `gguf_directory` places outputs separately from the model input directory. `merge_is_disposable` says `model_directory` was written by this export purely to feed the converter, so its weights may be reclaimed if the quants would not otherwise fit; off by default. `gemma_linear_rope` is the linear RoPE factor the live Gemma / Gemma 2 applies (1.0 = none), recorded in the GGUF whatever `model_directory`'s config says; None reads that config."""
     if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
         print_output = True
     else:
@@ -2921,6 +3066,7 @@ def save_to_gguf(
     if conversion_staging is not None:
         shutil.rmtree(conversion_staging, ignore_errors = True)
     is_vlm = is_vlm_update
+    _record_gemma_linear_rope_in_gguf(model_directory, initial_files, gemma_linear_rope)
 
     print(f"Unsloth: Initial conversion completed! Files: {initial_files}")
 
@@ -3531,6 +3677,8 @@ def create_huggingface_repo(
         card.push_to_hub(save_directory, token = token)
     except:
         if datasets:
+            # The repo already existed: a public one must not receive the (private) dataset names.
+            _refuse_private_push_to_public_repo(save_directory, private, token = token)
             try:
                 from huggingface_hub import metadata_update
                 metadata_update(save_directory, {"datasets": datasets}, overwrite = True, token = token)
@@ -3583,6 +3731,8 @@ def upload_to_huggingface(
         card.push_to_hub(save_directory, token = token)
     except:
         if datasets:
+            # The repo already existed: a public one must not receive the (private) dataset names.
+            _refuse_private_push_to_public_repo(save_directory, private, token = token)
             try:
                 from huggingface_hub import metadata_update
                 metadata_update(save_directory, {"datasets": datasets}, overwrite = True, token = token)
@@ -5189,6 +5339,7 @@ def unsloth_save_pretrained_gguf(
     "q3_k_xs" : "3-bit extra small quantization",
     """
     raise_if_merging_mistral_format_view(self, "gguf")  # the converter would read Mistral names
+    raise_if_merging_inkling2(self, "gguf")
     _assert_export_target_is_not_base_with_lora_layers(self)
 
     if tokenizer is None:
@@ -5471,6 +5622,8 @@ def unsloth_save_pretrained_gguf(
                 gguf_directory = gguf_directory,
                 merge_is_disposable = merge_is_disposable,
                 preexisting_weights = preexisting_weights,
+                # From the live rotary: a reused checkpoint's staged config.json is the base's, unscaled.
+                gemma_linear_rope = _gemma_live_linear_rope(self),
             )
     except Exception as e:
         if _gguf_child_was_oom_killed(e):
@@ -5842,6 +5995,7 @@ def unsloth_push_to_hub_gguf(
     `quantization_method` may be an alias -- "not_quantized" (fast conversion, big files), "fast_quantized" (fast conversion, OK size), "quantized" (slow conversion, small files) -- or a llama.cpp ftype: f32, f16, q8_0, q4_0, q4_1, q5_0, q5_1, or a k-quant q2_k / q3_k_s / q3_k_m / q3_k_l / q4_k_s / q4_k_m / q5_k_s / q5_k_m / q6_k. The _m and _l k-quants keep the attention and feed_forward.w2 tensors a level or two above the nominal width; q2_k_l is the Unsloth preset adding --output-tensor-type q8_0 --token-embedding-type q8_0.
     """
     raise_if_merging_mistral_format_view(self, "gguf")  # the converter would read Mistral names
+    raise_if_merging_inkling2(self, "gguf")
     _assert_export_target_is_not_base_with_lora_layers(self)
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
@@ -7098,6 +7252,61 @@ def _unmerge_flags_on_error(streamed):
         raise
 
 
+def _gemma_live_linear_rope(model):
+    """The linear RoPE factor a loaded Gemma / Gemma 2 applies (1.0 = none), from its Unsloth rotary,
+    which records `scaling_factor` only when it applied linear scaling; None when this is not such a
+    model or the rotary cannot be found."""
+    try:
+        if getattr(model.config, "model_type", None) not in ("gemma", "gemma2"):
+            return None
+        for module in model.modules():
+            if type(module).__name__ in (
+                "GemmaFixedRotaryEmbedding",
+                "GemmaFixedLinearScalingRotaryEmbedding",
+            ):
+                return float(getattr(module, "scaling_factor", 1.0))
+    except Exception:
+        return None
+    return None
+
+
+def _gemma_rope_the_zoo_export_drops(model):
+    """The linear RoPE factor a Gemma / Gemma 2 rotary trained with, when the installed unsloth_zoo
+    writes the base checkpoint's unscaled RoPE into a merged export instead; else None."""
+    try:
+        import importlib
+        if hasattr(importlib.import_module("unsloth_zoo.saving_utils"), "_carry_over_rope_scaling"):
+            return None
+    except Exception:
+        return None
+    factor = _gemma_live_linear_rope(model)
+    return None if factor in (None, 1.0) else factor
+
+
+def _write_trained_gemma_rope(model, save_directory, factor):
+    """Put the trained linear RoPE and window into a merged config.json, as newer unsloth_zoo does:
+    `rope_parameters` on transformers 5, `rope_scaling` on 4.x."""
+    path = os.path.join(save_directory, "config.json")
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding = "utf-8") as f:
+        data = json.load(f)
+    key = "rope_parameters" if isinstance(data.get("rope_parameters"), dict) else "rope_scaling"
+    config = model.config
+    trained = getattr(config, "rope_parameters", None) or getattr(config, "rope_scaling", None)
+    rope = dict(data.get(key) or {})
+    rope.update(trained if isinstance(trained, dict) else {})
+    rope.update(rope_type = "linear", factor = factor)
+    if "type" in rope:
+        rope["type"] = "linear"
+    data[key] = rope
+    if getattr(config, "max_position_embeddings", None):
+        data["max_position_embeddings"] = config.max_position_embeddings
+    with open(path, "w", encoding = "utf-8") as f:
+        json.dump(data, f, indent = 2, sort_keys = True)
+        f.write("\n")
+
+
 @_model_parallel_refuses_save("save_pretrained_merged")
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
@@ -7342,6 +7551,7 @@ def unsloth_generic_save(
         )
     else:
         raise_if_merging_mistral_format_view(model, save_method)
+        raise_if_merging_inkling2(model, save_method)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
         # An older unsloth_zoo accepts `output_dtype` but still writes the base dtype.
@@ -7351,6 +7561,15 @@ def unsloth_generic_save(
             raise RuntimeError(
                 "Unsloth: `dtype` needs a newer unsloth_zoo. Update via "
                 "`pip install --upgrade --no-cache-dir unsloth_zoo`."
+            )
+        _trained_rope_factor = _gemma_rope_the_zoo_export_drops(model)
+        if _trained_rope_factor is not None and push_to_hub:
+            raise RuntimeError(
+                "Unsloth: this Gemma model trained with linear RoPE scaling "
+                f"(factor {_trained_rope_factor}), which the installed unsloth_zoo leaves out "
+                "of a merged upload, so the uploaded model would not match the trained one. "
+                "Update via `pip install --upgrade --no-cache-dir unsloth_zoo`, or save "
+                "locally with `save_pretrained_merged` and upload that folder."
             )
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
 
@@ -7381,6 +7600,8 @@ def unsloth_generic_save(
             )
         # Pushes with an attached head were rerouted to a local save above.
         if not push_to_hub:
+            if _trained_rope_factor is not None and _is_main_rank():
+                _write_trained_gemma_rope(model, save_directory, _trained_rope_factor)
             _stitch_mtp_head(model, save_directory)
             _release_layout_for_merged_save(model, save_directory, save_method)
         elif "16bit" in save_method and is_main_process:

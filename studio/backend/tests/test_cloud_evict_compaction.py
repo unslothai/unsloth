@@ -155,8 +155,7 @@ def test_compact_starts_a_checkpoint_without_a_summary(
     assert "summarized" not in truncation
     assert studio_db.list_chat_thread_summaries(thread) == []
 
-    # The checkpoint stays in force on the next turn with auto-compact switched off, once the
-    # client has saved the reply that carries it.
+    # Checkpoint persists next turn with auto-compact off, once the reply carrying it is saved.
     count = len(chat) - 1
     studio_db.upsert_chat_message(
         {

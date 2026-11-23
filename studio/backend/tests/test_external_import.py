@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import base64
 import dataclasses
 import gc
 import json
@@ -711,6 +712,52 @@ def test_cursor_reads_the_query_and_strips_injected_context(cursor_home):
     assert t.messages[1]["content"][0] == {"type": "text", "text": "Source maps."}
     assert t.messages[1]["content"][1]["toolName"] == "Read"
     assert t.messages[1]["parentId"] == t.messages[0]["id"]
+
+
+def test_cursor_keeps_pasted_images(cursor_home):
+    project = cursor_home / "projects" / "p"
+    image = project / "assets" / "image-1.png"
+    image.parent.mkdir(parents = True)
+    image.write_bytes(base64.b64decode(PNG))
+    path = _write(
+        project / "agent-transcripts" / "s1" / "s1.jsonl",
+        [
+            k_turn(
+                "user",
+                "[Image]\n<image_files>\nThe following images were provided by the user and saved"
+                f" to the workspace for future use:\n1. {image}\n2. {project}/assets/gone.png\n"
+                "</image_files>\n<user_query>\nWhy does this button look broken?\n</user_query>",
+            ),
+            k_turn("assistant", "The padding is off."),
+        ],
+    )
+    t = cursor.read_transcript(path, "t", "s1")
+
+    assert t.messages[0]["content"] == [
+        {"type": "image", "image": f"data:image/png;base64,{PNG}"},
+        {"type": "text", "text": "Why does this button look broken?"},
+    ]
+    assert t.title == "Why does this button look broken?"
+
+
+def test_cursor_drops_the_placeholder_beside_an_image_only_paste(cursor_home):
+    project = cursor_home / "projects" / "p"
+    image = project / "assets" / "image-1.png"
+    image.parent.mkdir(parents = True)
+    image.write_bytes(base64.b64decode(PNG))
+    pasted = f"[Image]\n<image_files>\n1. {image}\n</image_files>\n<user_query>\n</user_query>"
+    path = _write(
+        project / "agent-transcripts" / "s1" / "s1.jsonl",
+        [
+            k_turn("user", pasted),
+            k_turn("assistant", "A button."),
+            k_turn("user", pasted.replace(str(image), str(project / "assets" / "gone.png"))),
+        ],
+    )
+    t = cursor.read_transcript(path, "t", "s1")
+
+    assert t.messages[0]["content"] == [{"type": "image", "image": f"data:image/png;base64,{PNG}"}]
+    assert len(t.messages) == 3 and t.messages[2]["content"][0]["type"] == "text"
 
 
 def test_codex_replays_events_not_the_injected_context(codex_home):

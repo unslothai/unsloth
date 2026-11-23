@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useSyncExternalStore } from "react";
+import { matchLocaleTag } from "./locale-tags";
 import {
   LOCALES,
   type Locale,
@@ -52,42 +53,8 @@ export function isLocalePreference(value: unknown): value is LocalePreference {
   return value === AUTO_LOCALE || isSupportedLocale(value);
 }
 
-function isTraditionalChinese(lowerTag: string): boolean {
-  if (lowerTag.includes("hant")) return true;
-  if (lowerTag.includes("hans")) return false;
-  const parts = lowerTag.split("-");
-  return parts.includes("tw") || parts.includes("hk") || parts.includes("mo");
-}
-
-const LATIN_AMERICAN_REGIONS = new Set(
-  "419 mx ar co cl pe ve ec gt cu bo do hn py sv ni cr pr pa uy us".split(" "),
-);
-
-function regionalLocale(language: string, lowerTag: string): Locale | null {
-  if (language === "zh") {
-    return isTraditionalChinese(lowerTag) ? "zh-TW" : "zh-CN";
-  }
-  if (language === "es") {
-    const region = lowerTag
-      .split("-")
-      .slice(1)
-      .find((part) => /^([a-z]{2}|\d{3})$/.test(part));
-    return region && LATIN_AMERICAN_REGIONS.has(region) ? "es-419" : "es";
-  }
-  return null;
-}
-
 function matchLocale(tag: string): Locale | null {
-  const locales = Object.keys(LOCALES) as Locale[];
-  const lower = tag.toLowerCase();
-  const exact = locales.find((locale) => locale.toLowerCase() === lower);
-  if (exact) return exact;
-  const language = lower.split("-")[0];
-  return (
-    regionalLocale(language, lower) ??
-    locales.find((locale) => locale.toLowerCase().split("-")[0] === language) ??
-    null
-  );
+  return matchLocaleTag(tag, Object.keys(LOCALES)) as Locale | null;
 }
 
 function detectLocale(): Locale {
