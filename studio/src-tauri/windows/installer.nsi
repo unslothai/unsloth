@@ -545,7 +545,7 @@ Function .onInit
       ${AndIf} $UpdateMode != 1
     !endif
       ${If} $PassiveMode != 1
-        MessageBox MB_OK 'This installer is for a different processor. To install Unsloth on this PC, download Unsloth-Desktop-Windows.exe.$\r$\n$\r$\nhttps://unsloth.ai/download/windows' /SD IDOK
+        MessageBox MB_OK|MB_ICONINFORMATION 'This installer is for a different processor. To install Unsloth on this PC, download Unsloth-Desktop-Windows.exe.$\r$\n$\r$\nhttps://unsloth.ai/download/windows' /SD IDOK
       ${EndIf}
       SetErrorLevel 1633 ; ERROR_INSTALL_PLATFORM_UNSUPPORTED
       Quit
