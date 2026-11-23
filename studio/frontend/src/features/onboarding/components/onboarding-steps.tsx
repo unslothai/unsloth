@@ -148,7 +148,7 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
         />
       </form>
       <div className="mt-6">
-        <div className="mx-auto flex w-[calc(23.75rem*var(--ui-space-scale,1))] flex-wrap justify-center gap-x-3 gap-y-2.5">
+        <div className="mx-auto flex w-[calc(23.75rem*var(--ui-space-scale,1))] max-w-full flex-wrap justify-center gap-x-3 gap-y-2.5">
           <AvatarChoice
             active={false}
             label={
