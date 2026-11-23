@@ -652,6 +652,7 @@ export const ja = {
       anyApp: "コンピュータ操作",
       anyAppDescription: "モデルが画面を見て、<b>マウスとキーボード</b>を操作できるようにします。チャットは、開始前、新しいアプリを使う前、リスクのある操作の前に確認します。スクリーンショットは、チャット相手のモデルに送信されます。",
       browser: "ブラウザ",
+      desktopOnlyDescription: "コンピュータ操作は Unsloth デスクトップアプリで動作します。オンにするには、アプリでこの設定を開いてください。",
       browserDescription: "モデルが Unsloth のブラウザパネルでページを開いて読み、代わりにクリックや入力を行えるようにします。",
       screen: "画面を見る",
       screenDescription: "macOS の「画面収録とシステムオーディオ録音」で許可を求められます。",

@@ -651,6 +651,7 @@ export const fr = {
       anyApp: "Utilisation de l'ordinateur",
       anyAppDescription: "Autorise les modèles à voir l'écran et à contrôler la <b>souris et le clavier</b>. Les discussions demandent votre autorisation avant de commencer, avant d'utiliser une nouvelle app et avant toute action risquée. Les captures d'écran sont envoyées au modèle avec lequel vous discutez.",
       browser: "Navigateur",
+      desktopOnlyDescription: "L'utilisation de l'ordinateur fonctionne dans l'application de bureau Unsloth. Ouvrez ces réglages dans l'application pour l'activer.",
       browserDescription: "Autorise les modèles à ouvrir des pages dans le panneau navigateur d'Unsloth, à les lire, et à cliquer et taper pour vous.",
       screen: "Voir l'écran",
       screenDescription: "macOS le demande dans « Enregistrement de l'écran et de l'audio système ».",

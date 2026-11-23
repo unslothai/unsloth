@@ -713,6 +713,7 @@ export const id = {
       anyApp: "Penggunaan komputer",
       anyAppDescription: "Izinkan model melihat layar dan mengendalikan <b>mouse serta keyboard</b>. Obrolan meminta izin sebelum mulai, sebelum menggunakan aplikasi baru, dan sebelum tindakan berisiko. Tangkapan layar dikirim ke model yang Anda ajak mengobrol.",
       browser: "Browser",
+      desktopOnlyDescription: "Penggunaan komputer berjalan di aplikasi desktop Unsloth. Buka pengaturan ini di sana untuk menyalakannya.",
       browserDescription: "Izinkan model membuka halaman di panel browser Unsloth, membacanya, serta mengklik dan mengetik untuk Anda.",
       screen: "Melihat layar",
       screenDescription: "macOS memintanya di \"Screen & System Audio Recording\".",

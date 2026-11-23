@@ -648,6 +648,7 @@ export const it = {
       anyApp: "Uso del computer",
       anyAppDescription: "Consenti ai modelli di vedere lo schermo e controllare <b>mouse e tastiera</b>. Le chat chiedono conferma prima di iniziare, prima di usare una nuova app e prima di qualsiasi azione rischiosa. Gli screenshot vengono inviati al modello con cui chatti.",
       browser: "Browser",
+      desktopOnlyDescription: "L'uso del computer funziona nell'app desktop di Unsloth. Apri queste impostazioni lì per attivarlo.",
       browserDescription: "Consenti ai modelli di aprire le pagine nel pannello browser di Unsloth, leggerle e fare clic e scrivere per te.",
       screen: "Vedere lo schermo",
       screenDescription: "macOS lo chiede in \"Registrazione schermo e audio di sistema\".",

@@ -685,6 +685,7 @@ export const zhTW = {
       anyApp: "電腦操作",
       anyAppDescription: "允許模型查看螢幕並控制<b>滑鼠和鍵盤</b>。對話在開始前、使用新 App 前以及執行有風險的操作前都會詢問。截圖會傳送給與你對話的模型。",
       browser: "瀏覽器",
+      desktopOnlyDescription: "電腦操作在 Unsloth 桌面應用程式中執行。請在應用程式中開啟此設定來啟用。",
       browserDescription: "允許模型在 Unsloth 的瀏覽器面板中開啟頁面、閱讀內容，並代為點按與輸入。",
       screen: "查看螢幕",
       screenDescription: "macOS 會在「Screen & System Audio Recording」中要求此權限。",

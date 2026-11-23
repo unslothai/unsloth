@@ -651,6 +651,7 @@ export const ko = {
       anyApp: "컴퓨터 사용",
       anyAppDescription: "모델이 화면을 보고 <b>마우스와 키보드</b>를 제어하도록 허용합니다. 채팅은 시작하기 전, 새 앱을 쓰기 전, 위험할 수 있는 작업 전에 확인을 요청합니다. 스크린샷은 대화 중인 모델로 전송됩니다.",
       browser: "브라우저",
+      desktopOnlyDescription: "컴퓨터 사용은 Unsloth 데스크톱 앱에서 작동합니다. 켜려면 앱에서 이 설정을 여세요.",
       browserDescription: "모델이 Unsloth의 브라우저 패널에서 페이지를 열어 읽고, 대신 클릭하고 입력하도록 허용합니다.",
       screen: "화면 보기",
       screenDescription: "macOS의 '화면 및 시스템 오디오 녹음'에서 권한을 요청합니다.",

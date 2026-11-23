@@ -717,6 +717,7 @@ export const nl = {
       anyApp: "Computergebruik",
       anyAppDescription: "Laat modellen het scherm zien en de <b>muis en het toetsenbord</b> bedienen. Chats vragen toestemming voordat ze beginnen, vóór het gebruiken van een nieuwe app en voordat er iets riskants gebeurt. Schermafbeeldingen gaan naar het model waarmee je chat.",
       browser: "Browser",
+      desktopOnlyDescription: "Computergebruik werkt in de Unsloth-desktopapp. Open deze instellingen daar om het aan te zetten.",
       browserDescription: "Laat modellen pagina's openen in het browserpaneel van Unsloth, ze lezen en voor je klikken en typen.",
       screen: "Het scherm zien",
       screenDescription: "macOS vraagt hierom onder 'Scherm- en systeemaudio-opname'.",

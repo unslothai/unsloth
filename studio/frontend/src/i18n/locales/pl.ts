@@ -716,6 +716,7 @@ export const pl = {
       anyApp: "Korzystanie z komputera",
       anyAppDescription: "Pozwól modelom widzieć ekran oraz sterować <b>myszą i klawiaturą</b>. Czaty pytają o zgodę przed rozpoczęciem, przed użyciem nowej aplikacji i przed każdą ryzykowną czynnością. Zrzuty ekranu trafiają do modelu, z którym rozmawiasz.",
       browser: "Przeglądarka",
+      desktopOnlyDescription: "Korzystanie z komputera działa w aplikacji Unsloth na komputer. Otwórz tam te ustawienia, aby je włączyć.",
       browserDescription: "Pozwól modelom otwierać strony w panelu przeglądarki Unsloth, czytać je oraz klikać i pisać za Ciebie.",
       screen: "Widzenie ekranu",
       screenDescription: "macOS prosi o to w sekcji \"Screen & System Audio Recording\".",

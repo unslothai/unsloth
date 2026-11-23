@@ -717,6 +717,7 @@ export const es419 = {
       anyApp: "Uso de la computadora",
       anyAppDescription: "Permite que los modelos vean la pantalla y controlen el <b>mouse y el teclado</b>. Los chats piden permiso antes de empezar, antes de usar una app nueva y antes de cualquier acción arriesgada. Las capturas de pantalla se envían al modelo con el que chateas.",
       browser: "Navegador",
+      desktopOnlyDescription: "El uso de la computadora funciona en la app de escritorio de Unsloth. Abre esta configuración allí para activarlo.",
       browserDescription: "Permite que los modelos abran páginas en el panel del navegador de Unsloth, las lean y hagan clic y escriban por ti.",
       screen: "Ver la pantalla",
       screenDescription: "macOS lo pide en «Grabación de pantalla y audio del sistema».",
