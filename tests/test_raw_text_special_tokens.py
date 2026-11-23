@@ -83,16 +83,20 @@ def test_raw_file_text_dataset_keeps_chat_role_tokens(raw_text, tokenizer, tmp_p
     assert output.count("[EOS]") == 2
 
 
-@pytest.mark.parametrize("stride", [0, 2])
-def test_text_chunks_cut_between_characters_not_inside_one(raw_text, stride):
+@pytest.fixture
+def byte_tokenizer():
     alphabet = sorted(tokenizers.pre_tokenizers.ByteLevel.alphabet())
     vocabulary = {symbol: index for index, symbol in enumerate(alphabet)}
     vocabulary["[EOS]"] = len(vocabulary)
     backend = tokenizers.Tokenizer(tokenizers.models.BPE(vocabulary, []))
     backend.pre_tokenizer = tokenizers.pre_tokenizers.ByteLevel(add_prefix_space = False)
     backend.decoder = tokenizers.decoders.ByteLevel()
-    tokenizer = transformers.PreTrainedTokenizerFast(tokenizer_object = backend, eos_token = "[EOS]")
+    return transformers.PreTrainedTokenizerFast(tokenizer_object = backend, eos_token = "[EOS]")
 
+
+@pytest.mark.parametrize("stride", [0, 2])
+def test_text_chunks_cut_between_characters_not_inside_one(raw_text, byte_tokenizer, stride):
+    tokenizer = byte_tokenizer
     text = "日本語のテキスト 😀 naïve café " * 4
     loader = raw_text.RawTextDataLoader(tokenizer, chunk_size = 8, stride = stride)
     chunks = loader.chunk_text(text, return_tokenized = False)
@@ -109,3 +113,14 @@ def test_text_chunks_cut_between_characters_not_inside_one(raw_text, stride):
     loader = raw_text.RawTextDataLoader(tokenizer, chunk_size = 6, stride = 4)
     chunks = loader.chunk_text("aébb é語\né", return_tokenized = False)
     assert chunks[-1] == "\né[EOS]" and not any("�" in chunk for chunk in chunks)
+
+
+def test_text_chunks_keep_literal_replacement_characters(raw_text, byte_tokenizer):
+    loader = raw_text.RawTextDataLoader(byte_tokenizer, chunk_size = 4, stride = 0)
+    assert loader.chunk_text("a\ufffd\ufffd", return_tokenized = False) == ["a\ufffd", "\ufffd[EOS]"]
+
+
+def test_text_chunks_keep_overlap_when_a_cut_moves(raw_text, byte_tokenizer):
+    loader = raw_text.RawTextDataLoader(byte_tokenizer, chunk_size = 12, stride = 10)
+    chunks = loader.chunk_text("日本語日本語", return_tokenized = False)
+    assert chunks == ["日本語日", "本語日本", "語日本語", "日本語[EOS]"]

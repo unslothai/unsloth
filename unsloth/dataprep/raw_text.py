@@ -179,10 +179,15 @@ class RawTextDataLoader:
             # Text chunks: move a cut inside a multi-token character (U+FFFD on both sides) to its edge, at most 3 tokens.
             if return_tokenized:
                 return idx
+            decode = self.tokenizer.decode
             for at in range(idx, idx + 4 * step, step):
-                if not 0 < at < len(tokens) or not (
-                    self.tokenizer.decode(tokens[max(0, at - 4) : at]).endswith("\ufffd")
-                    and self.tokenizer.decode(tokens[at : at + 4]).startswith("\ufffd")
+                if not 0 < at < len(tokens):
+                    return at
+                lo = max(0, at - 4)
+                left, right = decode(tokens[lo:at]), decode(tokens[at : at + 4])
+                # Literal U+FFFD in the corpus decodes the same split or joined.
+                if not (left.endswith("\ufffd") and right.startswith("\ufffd")) or (
+                    left + right == decode(tokens[lo : at + 4])
                 ):
                     return at
             return idx
@@ -196,6 +201,8 @@ class RawTextDataLoader:
             if end_idx == num_tokens:
                 break
             next_idx = cut(end_idx - stride)
+            if next_idx <= start_idx:
+                next_idx = cut(end_idx - stride, 1)
             start_idx = next_idx if next_idx > start_idx else end_idx
 
         # Stride 0 with an exact multiple leaves a lone-EOS chunk; end a full window at EOS so EOS keeps context and no token loses its label.
