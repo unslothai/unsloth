@@ -4954,6 +4954,14 @@ export const en = {
     // Moves the translation into the text box, to translate it onward into another language.
     useAsSource: "Translate this text",
     downloadSubtitles: "Download subtitles",
+    imageOverlay: {
+      show: "Show on image",
+      title: "Translation on the image",
+      description: "The translated text is drawn over the image where the original text was.",
+      working: "Translating the text on the image…",
+      download: "Download image",
+      failed: "Could not draw the translation on the image.",
+    },
     stale: "The text or settings changed. Translate again to update.",
     stopped: "Stopped before the end. Translate again for the rest.",
     // Opens a new chat with the translation in the message box, to ask about it.

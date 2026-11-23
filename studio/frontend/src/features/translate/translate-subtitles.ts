@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { TRANSLATE_CHUNK_CHARS } from "./translate-text.ts";
+import {
+  TRANSLATE_CHUNK_CHARS,
+  restoreChunkWhitespace,
+  splitForTranslation,
+} from "./translate-text.ts";
 
 export type SubtitleFormat = "srt" | "vtt";
 
@@ -153,57 +157,83 @@ export function splitNumberedBatch(
   return texts.some((text) => !text.trim()) ? null : texts;
 }
 
-/** Cue texts go out in numbered batches; a batch whose reply does not number every cue goes again cue by cue. */
-export async function translateSubtitles(
-  doc: SubtitleDocument,
+type BatchOptions = {
+  signal: AbortSignal;
+  onPhase: (phase: {
+    kind: "translating";
+    part: number;
+    parts: number;
+  }) => void;
+};
+
+/** Texts go out in numbered batches; a batch whose reply does not number every text goes again one by one.
+ *  `onBatch` sees the translations so far (null = not yet) and how many texts lead up to the batch's end. */
+export async function translateTexts(
+  sources: readonly string[],
   complete: (source: string) => Promise<string>,
-  options: {
-    signal: AbortSignal;
-    onPhase: (phase: {
-      kind: "translating";
-      part: number;
-      parts: number;
-    }) => void;
-    onOutput: (output: string) => void;
+  options: BatchOptions & {
+    eol?: string;
+    onBatch?: (texts: ReadonlyArray<string | null>, done: number) => void;
   },
-): Promise<string> {
-  const { signal, onPhase, onOutput } = options;
-  const texts: Array<string | null> = doc.cues.map(() => null);
-  const batches = subtitleBatches(doc.cues.map((cue) => cue.text));
+): Promise<string[]> {
+  const { signal, onPhase, onBatch } = options;
+  const eol = options.eol ?? "\n";
+  const texts: Array<string | null> = sources.map(() => null);
+  const batches = subtitleBatches(sources);
   const single = async (index: number) => {
-    const translated = cueText(await complete(doc.cues[index].text), doc.eol);
-    texts[index] = translated || doc.cues[index].text;
+    const translated = cueText(await complete(sources[index]), eol);
+    texts[index] = translated || sources[index];
   };
   for (const [part, batch] of batches.entries()) {
     signal.throwIfAborted();
     onPhase({ kind: "translating", part: part + 1, parts: batches.length });
-    // A cue line that already reads like a marker would shift the numbering.
+    // A line that already reads like a marker would shift the numbering.
     const numbered = batch.some((i) =>
-      doc.cues[i].text.split(/\r?\n/).some((line) => MARKER.test(line)),
+      sources[i].split(/\r?\n/).some((line) => MARKER.test(line)),
     );
     if (batch.length === 1 || numbered) {
-      for (const cue of batch) {
+      for (const index of batch) {
         signal.throwIfAborted();
-        await single(cue);
+        await single(index);
       }
     } else {
       const reply = splitNumberedBatch(
-        await complete(numberedBatch(batch.map((i) => doc.cues[i].text))),
+        await complete(numberedBatch(batch.map((i) => sources[i]))),
         batch.length,
       );
       if (reply) {
-        batch.forEach((cue, i) => {
-          texts[cue] = cueText(reply[i], doc.eol);
+        batch.forEach((index, i) => {
+          texts[index] = cueText(reply[i], eol);
         });
       } else {
-        for (const cue of batch) {
+        for (const index of batch) {
           signal.throwIfAborted();
-          await single(cue);
+          await single(index);
         }
       }
     }
-    onOutput(rebuildSubtitles(doc, texts, batch[batch.length - 1] + 1));
+    onBatch?.(texts, batch[batch.length - 1] + 1);
   }
+  return texts.map((text, index) => text ?? sources[index]);
+}
+
+/** Cue texts go out in numbered batches, keeping every cue number and timing. */
+export async function translateSubtitles(
+  doc: SubtitleDocument,
+  complete: (source: string) => Promise<string>,
+  options: BatchOptions & { onOutput: (output: string) => void },
+): Promise<string> {
+  const texts = await translateTexts(
+    doc.cues.map((cue) => cue.text),
+    complete,
+    {
+      signal: options.signal,
+      onPhase: options.onPhase,
+      eol: doc.eol,
+      onBatch: (partial, done) =>
+        options.onOutput(rebuildSubtitles(doc, partial, done)),
+    },
+  );
   return rebuildSubtitles(doc, texts);
 }
 
@@ -217,4 +247,35 @@ export function subtitleFileName(
 ): string {
   const base = sourceName?.replace(EXTENSION, "").trim() || "subtitles";
   return `${base}.${target}.${format}`;
+}
+
+/** Like `translateTexts`, but a text longer than one passage is split like any text, never sent whole. */
+export async function translateTextList(
+  texts: readonly string[],
+  complete: (source: string) => Promise<string>,
+  options: Parameters<typeof translateTexts>[2],
+): Promise<string[]> {
+  const long = texts.map((text) => text.length > TRANSLATE_CHUNK_CHARS);
+  const short = await translateTexts(
+    texts.filter((_, i) => !long[i]),
+    complete,
+    options,
+  );
+  let next = 0;
+  const out: string[] = [];
+  for (const [i, text] of texts.entries()) {
+    if (!long[i]) {
+      out.push(short[next++]);
+      continue;
+    }
+    let joined = "";
+    for (const chunk of splitForTranslation(text)) {
+      options.signal.throwIfAborted();
+      joined += chunk.text
+        ? restoreChunkWhitespace(chunk, await complete(chunk.text))
+        : chunk.after;
+    }
+    out.push(joined.trim());
+  }
+  return out;
 }
