@@ -2847,7 +2847,6 @@ def run_inference_process(
 
             elif cmd_type == "shutdown":
                 logger.info("Shutdown command received, exiting")
-                # os._exit below frees the CUDA context; backends without the exit variant unload fully.
                 unload = getattr(backend, "unload_model_for_exit", backend.unload_model)
                 for name in list(backend.models.keys()):
                     try:
