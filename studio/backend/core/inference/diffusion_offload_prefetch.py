@@ -1362,15 +1362,42 @@ def cross_forward_step(
 LIST_STREAM_DEPTH = 1
 
 
+def spread_stream_indices(
+    total: int,
+    count: int,
+    keep: Sequence[int] = (),
+) -> list:
+    """Sorted indices of the ``count`` of ``total`` list members to stream, spaced evenly and ending on the last one,
+    so each streamed copy overlaps the resident members run before it (a streamed tail leaves the copy engine idle
+    through the resident head). A superset of ``keep`` (members already streamed) when it fits in ``count``."""
+    total = max(0, int(total))
+    count = max(0, min(total, int(count)))
+    keep = sorted({int(i) for i in keep if 0 <= int(i) < total})
+    if len(keep) > count:
+        keep = []
+    extra = count - len(keep)
+    if not extra:
+        return keep
+    taken = set(keep)
+    free = [i for i in range(total) if i not in taken]
+    # floor(j * len(free) / extra) strictly increases (len(free) >= extra): distinct, the last free member first
+    picked = [free[len(free) - 1 - (j * len(free)) // extra] for j in range(extra)]
+    return sorted(taken.union(picked))
+
+
 class PrefetchedListStreamer:
-    """Streams ``blocks[resident:]`` via pinned slabs and event-fenced copies ``depth`` members ahead, from the second
-    forward on (the first records the order); a forward that raises still releases its queued copies."""
+    """Streams ``blocks[resident:]`` (or as many members spread among the resident ones) via pinned slabs and
+    event-fenced copies ``depth`` members ahead, from the second forward on (the first records the order); a forward
+    that raises still releases its queued copies."""
 
     def __init__(self) -> None:
         self.handles: list = []
         self.groups: list = []
         self.prefetcher: Optional[GroupPrefetcher] = None
         self.streamed = 0
+        # positions of the streamed members in the list (``stream_module_list(..., spread = True)`` spaces them out)
+        self.streamed_indices: list = []
+        self.spread = False
         self.pinned_bytes = 0
         self.replaced_bytes = 0
         self.arena: Any = None
@@ -1486,20 +1513,34 @@ def stream_module_list(
     release_after_forward: bool = False,
     reuse: Optional[dict] = None,
     reuse_arenas: Sequence[Any] = (),
+    spread: bool = False,
 ) -> Optional[PrefetchedListStreamer]:
     """A ``PrefetchedListStreamer`` over ``blocks``, or None (nothing changed) when it does not apply or cannot pin.
     Pins must fit ``_pin_budget_mib`` less ``reserve_bytes``, and ``max_pin_bytes`` if given. ``replaces_counted``:
     pins replace host copies the caller already counts, so only the live budget bounds them.
     ``release_after_forward``: empty the copy stream's cache after each forward (once-per-request owners).
     ``reuse``: ``PrefetchedListStreamer.detach()`` of an earlier streamer over the same blocks: its groups keep their
-    pinned copies (only the blocks new to the streamed set are pinned and counted), ``reuse_arenas`` their slabs."""
+    pinned copies (only the blocks new to the streamed set are pinned and counted), ``reuse_arenas`` their slabs.
+    ``spread``: stream ``len(blocks) - resident`` members spaced evenly among the resident ones
+    (``spread_stream_indices``, a superset of the reused ones) instead of ``blocks[resident:]``: the same weights and
+    the same number of copies in flight, but each copy overlaps resident compute."""
     import torch
 
     refused = _list_stream_refusal(device)
     blocks = list(blocks)
     resident = max(0, min(len(blocks), int(resident)))
-    streamed = blocks[resident:]
     reuse = dict(reuse or {})
+    if spread:
+        indices = spread_stream_indices(
+            len(blocks),
+            len(blocks) - resident,
+            [i for i, b in enumerate(blocks) if id(b) in reuse],
+        )
+    else:
+        indices = list(range(resident, len(blocks)))
+    chosen = set(indices)
+    streamed = [blocks[i] for i in indices]
+    kept_resident = [b for i, b in enumerate(blocks) if i not in chosen]
     fresh = [b for b in streamed if id(b) not in reuse]
     if refused is None and not streamed:
         refused = "nothing streams"
@@ -1587,7 +1628,7 @@ def stream_module_list(
                 type(group).offload_(group)
                 streamer.groups.append(group)
         streamer.arena = arena
-        for block in blocks[:resident]:
+        for block in kept_resident:
             block.to(onload)
         pf = GroupPrefetcher(owner, streamer.groups, onload, depth)
         pf.fence_first = True
@@ -1634,6 +1675,8 @@ def stream_module_list(
         streamer.handles.append(owner.register_forward_hook(_eager(_end), always_call = True))
         streamer.prefetcher = pf
         streamer.streamed = len(streamed)
+        streamer.streamed_indices = list(indices)
+        streamer.spread = bool(spread)
         streamer.pinned_bytes = int(need) + int(kept_bytes)
         streamer.replaced_bytes = int(replaced)
         bump_placement_epoch()
@@ -1660,12 +1703,13 @@ def stream_module_list(
         payload = getattr(arena, "payload_bytes", 0) if arena is not None else 0
         logger.info(
             "diffusion.memory: %s streams %d of %d members with pinned copies (%.2f GB) and event-fenced prefetch "
-            "(%d ahead)%s",
+            "(%d ahead)%s%s",
             type(owner).__name__,
             len(streamed),
             len(blocks),
             payload / 1e9,
             depth,
             " in place of the host copies the plan counts" if replaced else "",
+            " spread among the resident ones" if spread and kept_resident else "",
         )
     return streamer

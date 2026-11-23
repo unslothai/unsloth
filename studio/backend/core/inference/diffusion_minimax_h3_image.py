@@ -143,6 +143,8 @@ VRAM_BUDGET_ENV = "UNSLOTH_H3_IMAGE_VRAM_GB"
 HOST_BUDGET_ENV = "UNSLOTH_H3_IMAGE_HOST_GB"
 # "0": stream from pageable memory (ModuleListStreamer) instead of the pinned prefetch streamer
 PINNED_STREAM_ENV = "UNSLOTH_H3_IMAGE_PINNED_STREAM"
+# "0": the pinned DiT streamer streams the last blocks instead of spacing the streamed ones among the resident ones
+STREAM_SPREAD_ENV = "UNSLOTH_H3_IMAGE_STREAM_SPREAD"
 # "0": run every reference through the VAE encoder on every render (no posterior cache)
 REF_CACHE_ENV = "UNSLOTH_H3_IMAGE_REF_CACHE"
 # "0": keep the allocator blocks the load's staging and lever installs freed reserved on the card
@@ -1497,6 +1499,11 @@ def pinned_stream_enabled() -> bool:
     return not _env_off(PINNED_STREAM_ENV)
 
 
+def stream_spread_enabled() -> bool:
+    """Streamed DiT blocks spaced among the resident ones, so their copies overlap resident compute (same weights)."""
+    return not _env_off(STREAM_SPREAD_ENV)
+
+
 def stream_inflight() -> int:
     if not pinned_stream_enabled():
         return 1
@@ -1888,11 +1895,14 @@ class ModuleListStreamer:
         self.handles = []
         self.streamed = 0
         self._host: dict = {}
+        modules = list(modules)
+        # host first: rebuilt after a spread pinned streamer, other blocks become resident, so free before placing
+        for module in modules[max(0, int(resident)) :]:
+            module.to("cpu")
         for index, module in enumerate(modules):
             if index < resident:
                 module.to(self.device)
                 continue
-            module.to("cpu")
             self._host[id(module)] = [
                 (owner, kind, name, tensor)
                 for owner in module.modules()
@@ -4408,9 +4418,11 @@ def make_list_streamer(
     max_pin_bytes: Optional[int] = None,
     replaces_counted: bool = False,
     later_host_bytes: int = 0,
+    spread: bool = False,
 ) -> Any:
     """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``.
-    ``later_host_bytes``: host memory the load still takes after this streamer (a split encoder pin leaves it)."""
+    ``later_host_bytes``: host memory the load still takes after this streamer (a split encoder pin leaves it).
+    ``spread``: the pinned streamer spaces as many streamed members among the resident ones instead."""
     streamer = None
     if pinned and pinned_stream_enabled():
         from .diffusion_offload_prefetch import stream_module_list
@@ -4424,6 +4436,7 @@ def make_list_streamer(
             max_pin_bytes = max_pin_bytes,
             replaces_counted = replaces_counted,
             release_after_forward = role == "text_encoder",
+            spread = spread,
         )
     if streamer is None and pinned and role == "text_encoder" and te_partial_pin_enabled():
         streamer = _split_text_encoder_streamer(
@@ -4643,6 +4656,7 @@ def _place_streamed_dit(
         "transformer",
         max_pin_bytes = pin_room_bytes(plan, pinned_already),
         replaces_counted = pins_replace_counted(plan),
+        spread = stream_spread_enabled(),
     )
     streamer._unsloth_resident = resident
     return streamer
@@ -4743,6 +4757,8 @@ def demote_dit_blocks(
                 replaces_counted = pins_replace_counted(plan),
                 reuse = reuse,
                 reuse_arenas = arenas,
+                # spread: the reused (already streamed) blocks stay streamed, the new ones space among the rest
+                spread = bool(getattr(old, "spread", False)),
             )
 
         new = _pinned(keep)
