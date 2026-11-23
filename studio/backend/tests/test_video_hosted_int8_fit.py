@@ -47,6 +47,7 @@ ENVS = (
     NH.NATIVE_HOSTED_ENV,
     "UNSLOTH_NATIVE_INT8_ACT",
     "UNSLOTH_NATIVE_INT8_ROT",
+    tq.INT8_CONVROT_ENV,
 )
 
 
@@ -202,6 +203,38 @@ def test_stubbed_torchao_seed_check_is_unchanged(monkeypatch):
 def test_stubbed_torchao_kill_switch_restores_the_refusal(monkeypatch):
     monkeypatch.setenv(V.VIDEO_HOSTED_INT8_FIT_ENV, "0")
     ok, _ = _verified(monkeypatch, native_hosted = True, torchao = False)
+    assert ok is False
+
+
+PLAIN = "LTX-2.5-INT8.safetensors"
+
+
+def test_stubbed_torchao_never_commits_the_unrotated_safetensors_file(monkeypatch):
+    """The native read refuses the unrotated LTX-2.5-INT8.safetensors (activation rotation None), so with no torchao it
+    cannot load either: it must not drop the dense shards for it (it did, staging 25 GB before the dense re-plan)."""
+    ok, readable = _verified(monkeypatch, native_hosted = True, torchao = False, hub_names = (PLAIN,))
+    assert ok is False
+
+
+def test_stubbed_torchao_commits_the_convrot_file_beside_the_unrotated_one(monkeypatch):
+    ok, readable = _verified(
+        monkeypatch, native_hosted = True, torchao = False, hub_names = (PLAIN, CONVROT)
+    )
+    assert ok is True and readable(CONVROT) and not readable(PLAIN)
+
+
+def test_convrot_off_takes_the_hosted_int8_read_off_rocm(monkeypatch):
+    """UNSLOTH_DIFFUSION_INT8_CONVROT=0 resolves the unrotated hosted file: neither the native read nor its torchao-free
+    commit applies, so the load keeps the dense shards and the runtime build, as before the hosted route."""
+    _host(monkeypatch, rocm = True)
+    monkeypatch.setattr(tq, "_rdna_explicit_w8a8_arch_measured", lambda target: True, raising = False)
+    assert V._video_rocm_hosted_scheme(_fam(), "int8", GPU_BF16) == "int8"
+    assert V._video_native_hosted_reads_without_torchao(_fam(), "int8") is True
+    monkeypatch.setenv(tq.INT8_CONVROT_ENV, "0")
+    assert V._video_rocm_hosted_scheme(_fam(), "int8", GPU_BF16) is None
+    assert V._video_native_hosted_reads_without_torchao(_fam(), "int8") is False
+    assert _dit_gb() is None
+    ok, _ = _verified(monkeypatch, native_hosted = True, torchao = False, hub_names = (PLAIN,))
     assert ok is False
 
 
