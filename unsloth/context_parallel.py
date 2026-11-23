@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import functools
 import threading
@@ -2290,28 +2291,35 @@ _PASSTHROUGH_MARKER = "_unsloth_cp_hidden_states_passthrough"
 _PASSTHROUGH_AUDIT = {}  # code object -> {decoder attribute names: verdict}
 
 
-_OUTPUT_METHODS = frozenset(
-    (
-        "to_tuple",
-        "values",
-        "items",
-        "keys",
-        "get",
-        "setdefault",
-        "pop",
-        "update",
-        "__getitem__",
-        "__iter__",
-    )
+# The decoder output fields a forward may read anywhere: none of them is (or holds) the hidden-state tuple.
+# Enumerated from the Llama / Qwen2 / Qwen3 / Gemma / Gemma3 / Mistral (and Qwen3-MoE) CausalLM forwards
+# on transformers 4.57 and 5.x (5.x names the cache ``cache``).
+_FREE_OUTPUT_FIELDS = frozenset(
+    ("last_hidden_state", "past_key_values", "cache", "attentions", "router_logits")
 )
+_NESTED_SCOPES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ClassDef,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+# Reach a local by name (locals()["outputs"]) past the checks below.
+_INTROSPECTION = frozenset(("locals", "vars", "globals", "eval", "exec"))
 
 
 def _decoder_output_passthrough(function, attrs) -> bool:
-    """Static check of a CausalLM forward: every ``self.<attr>(...)`` decoder call is assigned to a plain
-    name, and that name is read only as a ``.attr`` field (never a method such as ``.to_tuple()``;
-    ``.hidden_states`` only as the ``hidden_states =`` keyword of the ModelOutput constructor it returns),
-    ``[0]`` or ``[1:]``. Nothing reads ``hidden_states`` by string. Anything else: False."""
-    import ast
+    """Strict allowlist check of a CausalLM forward: every ``self.<attr>(...)`` decoder call is assigned
+    to a plain name, and every read of that name is one of
+      ``name.last_hidden_state`` / ``.past_key_values`` / ``.cache`` / ``.attentions`` / ``.router_logits``
+      (a field read, not called or written), ``name[0]``, or
+      ``name.hidden_states`` as the ``hidden_states =`` keyword of the ModelOutput constructor the forward
+      itself returns.
+    Any other use (slices, other subscripts, methods, aliasing, passing the output on, starred unpacking,
+    reads from a nested scope or comprehension) and any ``hidden_states`` string: False."""
     import inspect
     import textwrap
 
@@ -2319,11 +2327,20 @@ def _decoder_output_passthrough(function, attrs) -> bool:
         tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
     except Exception:
         return False
+    if not tree.body or not isinstance(tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    forward = tree.body[0]
     parents = {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
             parents[child] = node
         if isinstance(node, ast.Constant) and node.value == "hidden_states":
+            return False
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in _INTROSPECTION
+        ):
             return False
 
     def decoder_call(node):
@@ -2335,6 +2352,14 @@ def _decoder_output_passthrough(function, attrs) -> bool:
             and isinstance(func.value, ast.Name)
             and func.value.id == "self"
         )
+
+    def in_nested_scope(node):
+        node = parents.get(node)
+        while node is not None and node is not forward:
+            if isinstance(node, _NESTED_SCOPES):
+                return True
+            node = parents.get(node)
+        return node is None
 
     names = set()
     for node in ast.walk(tree):
@@ -2384,10 +2409,9 @@ def _decoder_output_passthrough(function, attrs) -> bool:
             return False
         return isinstance(value, type) and issubclass(value, ModelOutput)
 
-    def passthrough_keyword(node):
-        # ``hidden_states = outputs.hidden_states`` only into the ModelOutput the forward returns: any other
-        # callee (self.consume(hidden_states = ...)) may read an intermediate state.
-        keyword = parents.get(node)
+    def returned_hidden_states(use):
+        # ``hidden_states = outputs.hidden_states`` straight into the ModelOutput the forward returns.
+        keyword = parents.get(use)
         if not (isinstance(keyword, ast.keyword) and keyword.arg == "hidden_states"):
             return False
         call = parents.get(keyword)
@@ -2398,39 +2422,47 @@ def _decoder_output_passthrough(function, attrs) -> bool:
         )
 
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr == "hidden_states"
-            and not passthrough_keyword(node)
-        ):
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and names.intersection(node.names):
             return False
+        if isinstance(node, ast.Attribute) and node.attr == "hidden_states":
+            value = node.value
+            if not (
+                isinstance(value, ast.Name)
+                and value.id in names
+                and isinstance(node.ctx, ast.Load)
+                and returned_hidden_states(node)
+            ):
+                return False
         if not (isinstance(node, ast.Name) and node.id in names):
             continue
-        if isinstance(node.ctx, ast.Store):
-            if not decoder_call(getattr(parents.get(node), "value", None)):
-                return False
-            continue
+        if in_nested_scope(node):
+            return False
         use = parents.get(node)
-        if isinstance(use, ast.Attribute) and use.value is node:
-            # Field reads only: an output method (to_tuple, values, items, get, ...) hands the
-            # hidden-state tuple on indirectly, so its use cannot be verified here.
+        if isinstance(node.ctx, ast.Store):
+            # Only as the target of its own decoder call.
+            if isinstance(use, ast.Assign) and use.targets == [node] and decoder_call(use.value):
+                continue
+            if isinstance(use, ast.AnnAssign) and use.target is node and decoder_call(use.value):
+                continue
+            return False
+        if not isinstance(node.ctx, ast.Load):
+            return False  # del
+        if isinstance(use, ast.Attribute) and use.value is node and isinstance(use.ctx, ast.Load):
             caller = parents.get(use)
-            if (isinstance(caller, ast.Call) and caller.func is use) or use.attr in _OUTPUT_METHODS:
-                return False
+            if isinstance(caller, ast.Call) and caller.func is use:
+                return False  # a method, never a field read
+            if use.attr in _FREE_OUTPUT_FIELDS or use.attr == "hidden_states":
+                continue  # hidden_states was checked above
+            return False
+        if (
+            isinstance(use, ast.Subscript)
+            and use.value is node
+            and isinstance(use.ctx, ast.Load)
+            and isinstance(use.slice, ast.Constant)
+            and type(use.slice.value) is int
+            and use.slice.value == 0
+        ):
             continue
-        if isinstance(use, ast.Subscript) and use.value is node:
-            index = use.slice
-            if isinstance(index, ast.Constant) and index.value == 0:
-                continue
-            if (
-                isinstance(index, ast.Slice)
-                and isinstance(index.lower, ast.Constant)
-                and isinstance(index.lower.value, int)
-                and index.lower.value >= 1
-                and index.upper is None
-                and index.step is None
-            ):
-                continue
         return False
     return True
 

@@ -483,10 +483,400 @@ def test_unknown_forward_wrapper_is_not_a_passthrough(monkeypatch):
 def test_transformers_causal_lm_forwards_keep_the_truncation(monkeypatch):
     # The real decorators (can_return_tuple, deprecate_kwarg) are known wrappers: these CausalLMs still
     # gather only the last hidden state.
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
+    from transformers.models.gemma.modeling_gemma import GemmaForCausalLM
     from transformers.models.llama.modeling_llama import LlamaForCausalLM
     from transformers.models.mistral.modeling_mistral import MistralForCausalLM
     from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
     from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
 
-    for cls in (LlamaForCausalLM, Qwen2ForCausalLM, Qwen3ForCausalLM, MistralForCausalLM):
+    for cls in (
+        LlamaForCausalLM,
+        Qwen2ForCausalLM,
+        Qwen3ForCausalLM,
+        MistralForCausalLM,
+        GemmaForCausalLM,
+        Gemma3ForCausalLM,
+    ):
         assert _find_decoder(monkeypatch, cls.forward) is not None, cls
+
+
+def test_unsloth_marked_forward_keeps_the_truncation(monkeypatch):
+    # Unsloth's own CausalLM forward is marked (its return_dict = False branch slices outputs[1:], which
+    # the audit alone would refuse).
+    from unsloth.models.llama import CausalLM_fast_forward, LlamaModel_fast_forward_inference
+
+    forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
+    assert getattr(forward, cp._PASSTHROUGH_MARKER, False)
+    assert not cp._decoder_output_passthrough(forward, frozenset({"model"}))
+    assert _find_decoder(monkeypatch, forward) is not None
+
+
+def test_slice_of_the_output_is_not_a_passthrough():
+    # outputs[1:] is the hidden-state tuple (and more): a consumer of the slice may read any state.
+    class _SliceLM:
+        def forward(
+            self,
+            input_ids = None,
+            **kwargs,
+        ):
+            outputs = self.model(input_ids = input_ids, **kwargs)
+            self.probe = outputs[1:][0][0]
+            return CausalLMOutputWithPast(
+                logits = outputs.last_hidden_state, hidden_states = outputs.hidden_states
+            )
+
+    assert not cp._decoder_output_passthrough(_SliceLM.forward, frozenset({"model"}))
+
+
+class _Accepted:
+    # The allowlisted shape: every other forward below differs from it in one use of the decoder output.
+    def forward(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        first = outputs[0]
+        cache = (outputs.past_key_values, outputs.cache, outputs.attentions, outputs.router_logits)
+        return CausalLMOutputWithPast(
+            logits = outputs.last_hidden_state + first,
+            past_key_values = cache[0],
+            hidden_states = outputs.hidden_states,
+            attentions = outputs.attentions,
+        )
+
+
+class _Rejected:
+    def slice(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        rest = (outputs.last_hidden_state,) + outputs[1:]
+        return rest
+
+    def slice_head(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.probe = outputs[:2]
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def index_one(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.probe = outputs[1]
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def index_negative(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.probe = outputs[-1]
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def index_variable(
+        self,
+        input_ids = None,
+        i = 0,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        return CausalLMOutputWithPast(logits = outputs[i], hidden_states = outputs.hidden_states)
+
+    def index_false(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        return CausalLMOutputWithPast(logits = outputs[False], hidden_states = outputs.hidden_states)
+
+    def index_by_key(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        return CausalLMOutputWithPast(
+            logits = outputs["last_hidden_state"], hidden_states = outputs.hidden_states
+        )
+
+    def method(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.probe = outputs.to_tuple()
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def unknown_field(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.probe = outputs.image_hidden_states
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def field_store(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        outputs.last_hidden_state = outputs.last_hidden_state * 2
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def alias(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        other = outputs
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = other.hidden_states)
+
+    def output_to_attribute(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.probe = outputs
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def hidden_states_to_name(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        states = outputs.hidden_states
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = states)
+
+    def hidden_states_to_attribute(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.probe = outputs.hidden_states
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def hidden_states_under_another_keyword(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        return CausalLMOutputWithPast(logits = outputs[0], attentions = outputs.hidden_states)
+
+    def hidden_states_into_another_call(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.consume(hidden_states = outputs.hidden_states)
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def output_into_a_call(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.consume(outputs)
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def output_as_keyword(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.consume(states = outputs)
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def getattr_field(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        return CausalLMOutputWithPast(
+            logits = getattr(outputs, "last_hidden_state"), hidden_states = outputs.hidden_states
+        )
+
+    def double_star(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        return CausalLMOutputWithPast(**outputs)
+
+    def starred(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.probe = (*outputs,)
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def unpacked(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        last, *self.probe = outputs
+        return CausalLMOutputWithPast(logits = last, hidden_states = outputs.hidden_states)
+
+    def iterated(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        for state in outputs:
+            self.probe = state
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def comprehension(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.probe = [outputs[0] for _ in range(2)]
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def lambda_scope(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.probe = lambda: outputs[0]
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def nested_return(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+
+        def later():
+            return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+        self.probe = later
+        return CausalLMOutputWithPast(logits = outputs[0])
+
+    def returned_output_assigned(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        result = CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+        return result
+
+    def returned_whole(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        return outputs
+
+    def compared(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        if outputs is None:
+            return None
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def walrus(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        if (other := outputs) is not None:
+            self.probe = other
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def rebound(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        outputs += ()
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def deleted(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        logits = outputs[0]
+        del outputs
+        return CausalLMOutputWithPast(logits = logits)
+
+    def by_locals(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.probe = locals()["outputs"]
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def global_name(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        global outputs
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+    def by_string(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
+        outputs = self.model(input_ids = input_ids, **kwargs)
+        self.probe = self.read("hidden_states")
+        return CausalLMOutputWithPast(logits = outputs[0], hidden_states = outputs.hidden_states)
+
+
+_REJECTED = sorted(name for name in vars(_Rejected) if not name.startswith("_"))
+
+
+def test_allowlisted_forward_is_a_passthrough():
+    assert cp._decoder_output_passthrough(_Accepted.forward, frozenset({"model"}))
+
+
+@pytest.mark.parametrize("name", _REJECTED)
+def test_other_uses_of_the_output_are_not_a_passthrough(name):
+    assert not cp._decoder_output_passthrough(getattr(_Rejected, name), frozenset({"model"}))
