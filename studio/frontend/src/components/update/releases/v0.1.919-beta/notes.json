@@ -8,7 +8,8 @@
       "alt": "English text translated to Japanese on the Translate page",
       "title": "Translate",
       "summary": "Translate any text into any language, entirely on your device.",
-      "open": "/translate"
+      "open": "/translate",
+      "action": "Translate text"
     },
     {
       "image": "/whats-new/v0.1.919-beta/engram.webp",

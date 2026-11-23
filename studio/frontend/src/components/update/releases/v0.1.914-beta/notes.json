@@ -8,14 +8,16 @@
       "alt": "A translucent Studio chat over an illustrated landscape",
       "title": "Glass themes",
       "summary": "Five glass styles with adjustable transparency.",
-      "open": "settings:appearance"
+      "open": "settings:appearance",
+      "action": "Try glass themes"
     },
     {
       "image": "https://github.com/user-attachments/assets/a4c01069-da2f-4cf3-afee-d19499cfefc3",
       "alt": "Custom artwork behind two Studio chats",
       "title": "Background controls",
       "summary": "Adjust the size, position, and placement of your chat background.",
-      "open": "settings:appearance"
+      "open": "settings:appearance",
+      "action": "Adjust background"
     }
   ],
   "changes": [

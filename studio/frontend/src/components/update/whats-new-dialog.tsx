@@ -323,10 +323,17 @@ function docsLink(item: object): string | undefined {
 }
 
 /** Where "Try it" goes: a route, or a Settings tab as `settings:<tab>`. */
-function openTarget(item: object): string | undefined {
-  return "open" in item && typeof item.open === "string"
-    ? item.open
-    : undefined;
+/** Where the card's button goes: a route, or a Settings tab as `settings:<tab>`. */
+function openTarget(item: object): { to: string; label: string } | undefined {
+  if (
+    "open" in item &&
+    typeof item.open === "string" &&
+    "action" in item &&
+    typeof item.action === "string"
+  ) {
+    return { to: item.open, label: item.action };
+  }
+  return undefined;
 }
 
 const SETTINGS_PREFIX = "settings:";
@@ -340,17 +347,14 @@ function CardActions({ feature }: { feature: object }) {
   if (!(guide || target)) {
     return null;
   }
-  const tryIt = () => {
-    if (!target) {
-      return;
-    }
+  const go = (to: string) => {
     close();
-    if (target.startsWith(SETTINGS_PREFIX)) {
+    if (to.startsWith(SETTINGS_PREFIX)) {
       useSettingsDialogStore
         .getState()
-        .openDialog(target.slice(SETTINGS_PREFIX.length) as SettingsTab);
+        .openDialog(to.slice(SETTINGS_PREFIX.length) as SettingsTab);
     } else {
-      router.history.push(target);
+      router.history.push(to);
     }
   };
   return (
@@ -358,23 +362,18 @@ function CardActions({ feature }: { feature: object }) {
       {target && (
         <Button
           size="sm"
-          variant="secondary"
+          variant="primary"
           className="h-8 rounded-full px-3.5 text-ui-13"
-          onClick={tryIt}
+          onClick={() => go(target.to)}
         >
-          {target.startsWith(SETTINGS_PREFIX)
-            ? t("updateNotes.openSettings")
-            : t("updateNotes.tryIt")}
+          {target.label}
         </Button>
       )}
       {guide && (
         <Button
           size="sm"
-          variant="ghost"
-          className={cn(
-            "h-8 gap-1 rounded-full px-3 text-ui-13 text-muted-foreground hover:text-foreground",
-            !target && "-ml-3",
-          )}
+          variant="secondary"
+          className="h-8 gap-1 rounded-full px-3.5 text-ui-13"
           onClick={() => openExternalLink(guide)}
         >
           {t("updateNotes.readGuide")}

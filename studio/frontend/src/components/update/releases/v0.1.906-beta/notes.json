@@ -9,7 +9,8 @@
       "title": "Browser use",
       "summary": "Let a local model take control of the Unsloth browser from the + menu in the chat box.",
       "link": "https://unsloth.ai/docs/basics/browser-use",
-      "open": "settings:browser"
+      "open": "settings:browser",
+      "action": "Browser settings"
     },
     {
       "image": "/whats-new/v0.1.906-beta/qwen-image.webp",
@@ -17,7 +18,8 @@
       "title": "Qwen-Image-2.1-Turbo",
       "summary": "Images in 8 steps, 2.5x faster.",
       "link": "https://unsloth.ai/docs/models/qwen-image-2.1/qwen-image-2.1-turbo",
-      "open": "/images"
+      "open": "/images",
+      "action": "Generate an image"
     }
   ],
   "changes": [

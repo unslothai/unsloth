@@ -8,14 +8,16 @@
       "alt": "Two Studio chats with custom backgrounds",
       "title": "Your own chat background",
       "summary": "Use your own image and move the composer to the bottom of a new chat.",
-      "open": "settings:appearance"
+      "open": "settings:appearance",
+      "action": "Set a background"
     },
     {
       "image": "/whats-new/v0.1.913-beta/languages.webp",
       "alt": "14 new languages",
       "title": "14 new languages",
       "summary": "Use Studio in 14 more languages, picked in Settings.",
-      "open": "settings:general"
+      "open": "settings:general",
+      "action": "Change language"
     }
   ],
   "changes": [

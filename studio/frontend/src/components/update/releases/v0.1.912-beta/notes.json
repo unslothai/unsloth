@@ -14,7 +14,8 @@
       "alt": "Multi-LoRA batching",
       "title": "Multi-LoRA batching",
       "summary": "Train up to four compatible queued jobs together.",
-      "open": "/studio"
+      "open": "/studio",
+      "action": "Start training"
     }
   ],
   "changes": [
