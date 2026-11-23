@@ -29,7 +29,13 @@ except Exception:
 
 __all__ = ["fused_label_smoothing_compute_loss"]
 
-_OFF = os.environ.get("UNSLOTH_FUSED_LABEL_SMOOTHING", "1") == "0"
+
+def _off():
+    # Read per call: llama.py imports this module with unsloth, so an import-time read would miss
+    # UNSLOTH_FUSED_LABEL_SMOOTHING=0 set after `import unsloth` but before training.
+    return os.environ.get("UNSLOTH_FUSED_LABEL_SMOOTHING", "1") == "0"
+
+
 # Models whose forward did not reach the fused CE once; they keep the stock LabelSmoother.
 _FALLBACK_MODELS = weakref.WeakSet()
 STATS = {"fused": 0, "fallback": 0}
@@ -137,7 +143,7 @@ def _head_not_fusable(model):
 def _skip_reason(trainer, model, inputs, return_outputs):
     """None when the fused path applies, else why not (counted in STATS)."""
     smoother = getattr(trainer, "label_smoother", None)
-    if _OFF or smoother is None:
+    if _off() or smoother is None:
         return "off"
     # Evaluation (prediction_step asks for outputs, under no_grad) keeps the stock smoother and its logits.
     if return_outputs or not torch.is_grad_enabled():
