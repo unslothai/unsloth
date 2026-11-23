@@ -106,6 +106,34 @@ def test_split_model_is_graphed_as_one_multi_card_graph(two_cards, llama):
     assert ("card1", "waits", "card0") in two_cards.log
 
 
+def test_failed_split_capture_resets_the_rng_only_on_cards_it_began_on(
+    two_cards, llama, monkeypatch
+):
+    # A capture that dies on card 0 never began on card 1: resetting card 1 runs a needless capture
+    # there (and, on torch 2.10 / 2.11, marks its shared RNG as capturing meanwhile). The reset holds
+    # the recording lock, so no split recording on another thread overlaps it.
+    hooks = pytest.importorskip("accelerate.hooks")
+    for layer in llama.model.layers:
+        hooks.add_hook_to_module(layer, hooks.AlignDevicesHook(execution_device = "cpu"))
+    resets = []
+    monkeypatch.setattr(
+        GG.G,
+        "_reset_rng_capture_flag",
+        lambda device: resets.append((device.index, GG._RECORDING.locked())),
+    )
+
+    def record(cls, pool, fn, cache, *side):
+        def body():
+            raise RuntimeError("operation not permitted when stream is capturing")
+
+        return GG._SegmentRecorder(_HostCards(), {0: pool, 1: "pool1"}, 0).run(body)
+
+    monkeypatch.setattr(two_cards, "record", classmethod(record))
+    s = T._both(llama, *T._ids(llama))
+    assert s["captures"] == 0 and len(s["capture_errors"]) == 1, s
+    assert resets == [(0, True)], resets
+
+
 @pytest.mark.parametrize(
     "setup, reason",
     [

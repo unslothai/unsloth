@@ -491,6 +491,27 @@ def test_failed_capture_clears_the_rng_capture_flag(host, llama, monkeypatch, fa
     assert resets[0].type == "cuda", resets
 
 
+def test_out_of_memory_capture_resets_the_rng_after_freeing_the_calls_graphs(
+    host, llama, monkeypatch
+):
+    # The reset is a small capture that allocates: run before the call's graphs (and the failed one,
+    # held by the error's traceback) are released, it can hit the same OOM and leave the RNG poisoned.
+    seen = []
+
+    def reset(device):
+        state = GG._state(llama)
+        seen.append(
+            (len(state.graphs), state.pool is None, sys.exc_info()[0], GG._RECORDING.locked())
+        )
+
+    monkeypatch.setattr(G, "_reset_rng_capture_flag", reset)
+    host.fail = torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 MiB")
+    s = _both(llama, *_ids(llama))
+    assert s["refusals"] == {"capture failed: out of memory": 9}, s
+    # Graphs and pool already freed, the error no longer being handled, the recording lock held.
+    assert seen == [(0, True, None, True)], seen
+
+
 def test_capture_setup_failure_runs_eagerly(host, llama, monkeypatch):
     def no_pool():
         raise torch.OutOfMemoryError("pool")
