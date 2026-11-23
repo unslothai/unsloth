@@ -99,14 +99,8 @@ _skills_home_counter = itertools.count()
 
 @pytest.fixture(scope = "session", autouse = True)
 def _plain_structlog_tracebacks():
-    """Render logged exceptions as plain tracebacks instead of rich ones.
-
-    A test process that never runs LogConfig.setup_logging keeps structlog's default ConsoleRenderer,
-    whose rich formatter shows locals and syntax-highlights each frame's file from line 1. A frame in
-    core/inference/llama_cpp.py (over 2 MB) costs seconds per logged exception, so the tool-loop tests,
-    whose stub backend fails every strict token count, spent most of their time formatting tracebacks.
-    Levels, events and exception text are unchanged; only the traceback layout differs.
-    """
+    """Without setup_logging, structlog's default rich formatter lexes each frame's file from line 1:
+    seconds per logged exception in the 2 MB llama_cpp.py, which the tool-loop tests log constantly."""
     try:
         import structlog
         from structlog import _config as structlog_config
