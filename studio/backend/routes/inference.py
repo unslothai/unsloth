@@ -31351,14 +31351,21 @@ async def _proxy_to_external_provider(
             )
             _room_payload = payload
 
-            def _reply_room(messages, tools = _external_fit_tools) -> int:
+            def _reply_room(
+                messages,
+                tools = _external_fit_tools,
+                threshold = None,
+            ) -> int:
+                # Fitted prompts are counted as sent: an irreducible turn can stay above the threshold.
                 return _window_room_max_tokens(
                     _reply_window,
                     _external_token_counter(_room_payload, tools)(messages),
-                    _room_threshold,
+                    threshold,
                 )
 
-            payload = payload.model_copy(update = {"max_tokens": _reply_room(chat_messages)})
+            payload = payload.model_copy(
+                update = {"max_tokens": _reply_room(chat_messages, threshold = _room_threshold)}
+            )
         elif _ui_stream_events_enabled(request):
             # Studio's Max with no window to read; an API caller keeps the provider's default.
             payload = payload.model_copy(update = {"max_tokens": _UNKNOWN_WINDOW_MAX_TOKENS})
@@ -31813,6 +31820,8 @@ async def _proxy_to_external_provider(
                     _sent_messages, overrides["max_tokens"], truncation_line = fit
                     if truncation_line:
                         yield truncation_line
+                if _reply_room is not None:
+                    overrides["max_tokens"] = _reply_room(_sent_messages)
                 async for line in _send_plain(_sent_messages, **overrides):
                     yield line
 
@@ -31824,6 +31833,8 @@ async def _proxy_to_external_provider(
                 if fit is None or fit[0] is None:
                     return None
                 refit_messages, max_tokens, truncation_line = fit
+                if _reply_room is not None:
+                    max_tokens = _reply_room(refit_messages)
 
                 async def _resend():
                     if truncation_line:

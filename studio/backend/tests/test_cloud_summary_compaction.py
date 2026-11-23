@@ -1278,3 +1278,29 @@ def test_a_replayed_summary_gives_the_reply_the_room_it_frees():
 
     asyncio.run(run([{"role": "user", "content": "a"}] * 9))
     assert sent == [9_000]
+
+
+def test_a_summarised_plain_chat_gets_the_room_its_fitted_prompt_leaves(monkeypatch):
+    # No Studio tool loop: the reply is sized from the prompt actually sent, not the pre-fit one.
+    monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
+    _, summaries, [sent] = _bodies(
+        _SummarisingHandler, provider_type = "custom", max_tokens = None, **_SMALL_TRIGGER
+    )
+    assert summaries
+    room = ri._window_room_max_tokens(
+        64_000,
+        ri._external_token_counter(ri.ChatCompletionRequest(messages = sent["messages"]), None)(
+            sent["messages"]
+        ),
+        None,
+    )
+    assert abs(sent["max_tokens"] - room) < 256
+
+
+def test_a_prompt_the_fit_cannot_shrink_below_the_threshold_still_fits_with_its_reply(monkeypatch):
+    monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
+    chat = [{"role": "user", "content": "word " * 12_000}]
+    _, sent = _proxy("custom", chat, max_tokens = None, **_SMALL_TRIGGER)
+    prompt = ri._external_token_counter(ri.ChatCompletionRequest(messages = chat), None)(chat)
+    assert prompt > _SMALL_TRIGGER["compaction_threshold"]
+    assert prompt + sent["max_tokens"] <= _SMALL_TRIGGER["context_window"]
