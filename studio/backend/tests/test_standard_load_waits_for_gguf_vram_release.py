@@ -12,10 +12,20 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import routes.inference as inf
-from core.inference import inference as inference_module
 from core.inference import worker as worker_module
 from core.inference.llama_cpp import LlamaCppBackend
+
+try:  # needs peft and torch, which some CPU-only CI legs (macOS) do not install
+    from core.inference import inference as inference_module
+except ImportError:
+    inference_module = None
+
+needs_inference = pytest.mark.skipif(
+    inference_module is None, reason = "core.inference.inference needs peft and torch"
+)
 
 _HELD = 16000.0  # MiB of weights the stopped server held on GPU 0
 _BEFORE = [(0, 4000)]  # free while it still holds them (WDDM / slow reclaim)
@@ -133,10 +143,12 @@ def _unload(method_name):
     return calls
 
 
+@needs_inference
 def test_a_plain_unload_still_clears_the_gpu_cache():
     assert _unload("unload_model") == ["graphs", "cache", "compiled"]
 
 
+@needs_inference
 def test_an_unload_before_exit_keeps_only_the_compiled_cache_cleanup():
     assert _unload("unload_model_for_exit") == ["compiled"]
 
@@ -149,11 +161,12 @@ def test_the_worker_shutdown_uses_the_exit_variant_when_the_backend_has_one():
     branch = branch[: branch.index("_exit_after_shutdown(resp_queue)")]
     assert 'getattr(backend, "unload_model_for_exit", backend.unload_model)' in branch
     # Backends without it (MLX, native audio, audio.cpp) keep their full unload.
-    core = Path(inference_module.__file__).parent
+    core = Path(worker_module.__file__).parent
     for name in ("mlx_inference.py", "native_audio.py", "audio_cpp_backend.py"):
         assert "def unload_model_for_exit" not in (core / name).read_text(encoding = "utf-8")
 
 
+@needs_inference
 def test_both_unloads_invalidate_the_gpu_memory_reading():
     events = []
     backend = _backend_with(object())
