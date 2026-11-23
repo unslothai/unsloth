@@ -435,3 +435,15 @@ def test_an_image_chat_answers_with_thinking_off(monkeypatch):
 
     assert posts == []
     assert payloads[1]["chat_template_kwargs"]["enable_thinking"] is False
+
+
+def test_raw_completion_text_ends_the_first_token_wait():
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    # Otherwise the first-token deadline keeps running and can cut a healthy answer mid-way.
+    assert LlamaCppBackend._sse_event_has_generated_output(
+        'data: {"content": "Here", "stop": false}'
+    )
+    assert not LlamaCppBackend._sse_event_has_generated_output(
+        'data: {"content": "", "stop": true, "stop_type": "eos"}'
+    )

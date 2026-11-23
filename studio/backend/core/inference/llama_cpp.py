@@ -8115,6 +8115,9 @@ def _context_usage_event(usage, timings):
 def _llama_chunk_has_generated_output(data: dict) -> bool:
     if data.get("type") == "diffusion_frame":
         return True
+    # /completion streams its text at the top level, not in choices.
+    if isinstance(data.get("content"), str) and data["content"]:
+        return True
     choices = data.get("choices")
     if not isinstance(choices, list):
         return False
