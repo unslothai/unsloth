@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-//! A connect to a closed 127.0.0.1 port takes 1-2 s on Windows; skip ports with no listener.
+//! A connect to a closed 127.0.0.1 port on Windows runs until the 2 s client timeout; skip ports with no listener.
 
 use std::collections::HashSet;
 
