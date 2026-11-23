@@ -74,9 +74,16 @@ _VOID = {
 }
 # Ruby annotations (<rt>, <rtc>) and their fallback parentheses (<rp>) are not prose.
 _IGNORE = {"head", "script", "style", "nav", "svg", "rt", "rp", "rtc"}
-# Soft hyphens, zero-width spaces, word joiners and stray BOMs are layout hints inside words, as
-# in TextPreprocessor.clean_text.
-_INVISIBLE = dict.fromkeys(map(ord, "\u00ad\u200b\u2060\ufeff"))
+# Layout hints inside words (soft hyphen, ZWSP, word joiner, BOM), as in TextPreprocessor.clean_text.
+_INVISIBLE = "\u00ad\u200b\u2060\ufeff"
+
+
+def _drop_invisible(text):
+    # str.replace, not str.translate: translate costs ~0.5 s per 7 MB of non-ASCII text.
+    for char in _INVISIBLE:
+        if char in text:
+            text = text.replace(char, "")
+    return text
 
 
 class _BookTextParser(HTMLParser):
@@ -168,15 +175,13 @@ def _html_text(data):
     # A declared UTF-8 encoding keeps a leading BOM, which str.strip() leaves in place.
     parser.feed(data.decode(encoding).lstrip("\ufeff"))
     parser.close()
-    text = unicodedata.normalize("NFC", "".join(parser.parts)).translate(_INVISIBLE)
+    text = _drop_invisible(unicodedata.normalize("NFC", "".join(parser.parts)))
     text = re.sub(r"[^\S\n]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
     text = _BLANK_LINE_RUN.sub("\n\n", text).strip()
     return re.sub(
         "\ue000(\\d+)\ue001",
-        lambda m: unicodedata.normalize("NFC", parser.preformatted[int(m[1])]).translate(
-            _INVISIBLE
-        ),
+        lambda m: _drop_invisible(unicodedata.normalize("NFC", parser.preformatted[int(m[1])])),
         text,
     )
 
