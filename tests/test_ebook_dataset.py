@@ -190,6 +190,8 @@ def test_page_break_markers_keep_word_separators(ebooks, html, expected):
     "html, expected",
     [
         (b'<body><p role="doc-pagebreak">12<p>Actual chapter text</body>', "Actual chapter text"),
+        (b'<body><p role="doc-pagebreak">12<hr>Actual chapter text</body>', "Actual chapter text"),
+        (b'<table><tr><td epub:type="pagebreak">12<td>Cell</table>', "Cell"),
         (
             b'<body><p>The <span epub:type="pagebreak">12 quick brown fox jumps over the lazy dog</p></body>',
             "The 12 quick brown fox jumps over the lazy dog",
