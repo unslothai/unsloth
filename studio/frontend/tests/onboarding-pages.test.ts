@@ -9,6 +9,7 @@ import {
   ONBOARDING_PAGES,
   decideOnboarding,
   greetingName,
+  stepIndex,
   videoAvailable,
 } from "../src/features/onboarding/lib/pages.ts";
 
@@ -93,4 +94,10 @@ test("video follows its own verdict, on a chat-only host too", () => {
   assert.equal(videoAvailable(true, null), false);
   assert.equal(videoAvailable(false, null), true);
   assert.equal(videoAvailable(false, false), false);
+});
+
+test("a step move never leaves the pages", () => {
+  assert.equal(stepIndex(3, 3), 2);
+  assert.equal(stepIndex(-1, 3), 0);
+  assert.equal(stepIndex(1, 3), 1);
 });

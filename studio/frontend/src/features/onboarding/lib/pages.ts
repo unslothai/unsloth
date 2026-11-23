@@ -52,3 +52,7 @@ export function videoAvailable(
 ): boolean {
   return chatOnly ? videoSupported === true : videoSupported !== false;
 }
+
+export function stepIndex(target: number, total: number): number {
+  return Math.min(Math.max(target, 0), Math.max(total - 1, 0));
+}

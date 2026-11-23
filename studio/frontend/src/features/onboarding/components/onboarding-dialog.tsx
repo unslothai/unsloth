@@ -28,6 +28,7 @@ import {
   CHAT_TOUR,
   ONBOARDING_PAGES,
   type OnboardingPageId,
+  stepIndex,
 } from "../lib/pages";
 import { useOnboardingStore } from "../store";
 import { useDeviceSummary } from "../use-device-summary";
@@ -131,33 +132,35 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
     }
   }, [close, navigate, page, pages, record, tour]);
 
+  // The outgoing step stays clickable while it fades out; one move per swap, or a double click skips a step.
+  const swapping = useRef(false);
+  const move = useCallback(
+    (target: number) => {
+      const to = stepIndex(target, pages.length);
+      if (swapping.current || to === index) return;
+      swapping.current = true;
+      if (to > index) record(page);
+      setDirection(to > index ? 1 : -1);
+      setIndex(to);
+    },
+    [index, page, pages.length, record],
+  );
+
   const next = useCallback(() => {
+    if (swapping.current) return;
     if (last) {
       finish();
       return;
     }
-    record(page);
-    setDirection(1);
-    setIndex((i) => i + 1);
-  }, [finish, last, page, record]);
+    move(index + 1);
+  }, [finish, index, last, move]);
 
-  const goTo = useCallback(
-    (target: number) => {
-      if (target === index) return;
-      if (target > index) record(page);
-      setDirection(target > index ? 1 : -1);
-      setIndex(target);
-    },
-    [index, page, record],
-  );
-
-  const back = useCallback(() => {
-    setDirection(-1);
-    setIndex((i) => Math.max(0, i - 1));
-  }, []);
+  const goTo = move;
+  const back = useCallback(() => move(index - 1), [index, move]);
 
   // A step swap unmounts whatever held focus; left on the body, keystrokes reach the composer behind.
   const keepFocusInside = useCallback(() => {
+    swapping.current = false;
     if (!cardRef.current?.contains(document.activeElement)) {
       primaryRef.current?.focus();
     }
