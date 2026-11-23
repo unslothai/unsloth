@@ -37,6 +37,25 @@ WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
 TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
 
 
+@pytest.mark.parametrize(
+    "notes_path", sorted((FRONTEND / "components/update/releases").glob("v*/notes.json")), ids=lambda p: p.parent.name
+)
+def test_curated_release_sections_and_webp_files(notes_path):
+    notes = json.loads(notes_path.read_text(encoding = "utf-8"))
+    tag = notes_path.parent.name
+    assert tag == f"v{notes['version']}"
+    assert set(notes["changes"]) <= {"new", "improved", "fixed"}
+    for rows in notes["changes"].values():
+        for label, description in rows:
+            assert label and description
+    for feature in notes["features"]:
+        filename = Path(feature["image"])
+        assert filename.name == feature["image"] and filename.suffix == ".webp"
+        with (REPO / "images" / "releases" / tag / filename).open("rb") as image:
+            header = image.read(12)
+        assert header[:4] == b"RIFF" and header[8:] == b"WEBP"
+
+
 CARD_CAP = {
     WEB_BANNER: "max-h-[calc(100dvh_-_2rem)]",
     TAURI_BANNER: "max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))]",

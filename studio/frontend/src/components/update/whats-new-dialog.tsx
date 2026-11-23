@@ -11,11 +11,12 @@ import {
 import { useT } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
 import { cn } from "@/lib/utils";
-import { SparklesIcon } from "@hugeicons/core-free-icons";
+import { WrenchIcon } from "@/lib/wrench-icon";
+import { ArrowUpRight01Icon, SparklesIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { ReleaseNotesPanel } from "./release-notes-panel";
-import { releases } from "./releases";
+import { releaseImageUrl, releases } from "./releases";
 import { displayVersion, useUpdateOffer } from "./update-offer-store";
 import { useWhatsNew } from "./whats-new-store";
 
@@ -23,6 +24,12 @@ const WASH =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]";
 const WASH_STRONG =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),transparent)]";
+
+const changeSections = [
+  { key: "new", label: "updateNotes.newLabel", icon: SparklesIcon },
+  { key: "improved", label: "updateNotes.improved", icon: ArrowUpRight01Icon },
+  { key: "fixed", label: "updateNotes.fixed", icon: WrenchIcon },
+] as const;
 
 export function WhatsNewDialog() {
   const { open, offer, close } = useWhatsNew();
@@ -192,7 +199,7 @@ function ReleaseHistory({
                     className={cn("overflow-hidden rounded-lg", WASH)}
                   >
                     <img
-                      src={feature.image}
+                      src={releaseImageUrl(entry.version, feature.image)}
                       onError={(event) => {
                         event.currentTarget.style.display = "none";
                       }}
@@ -213,34 +220,40 @@ function ReleaseHistory({
                   </figure>
                 ))}
               </div>
-              <section className="mt-6">
-                <h3 className="flex items-center gap-2.5 text-sm font-semibold">
-                  <span
-                    className={cn(
-                      "flex size-7 items-center justify-center rounded-sm text-primary",
-                      WASH_STRONG,
-                    )}
-                  >
-                    <HugeiconsIcon
-                      icon={SparklesIcon}
-                      className="size-4"
-                      strokeWidth={1.75}
-                      aria-hidden="true"
-                    />
-                  </span>
-                  {t("updateNotes.alsoInRelease")}
-                </h3>
-                <dl className="mt-3 grid grid-cols-[minmax(6.5rem,auto)_1fr] gap-x-5 gap-y-2.5 pl-[2.375rem] text-ui-13 leading-relaxed">
-                  {entry.changes.map(([label, description]) => (
-                    <div key={label} className="contents">
-                      <dt className="font-medium text-muted-foreground">
-                        {label}
-                      </dt>
-                      <dd>{description}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </section>
+              {changeSections.map(({ key, label, icon }) => {
+                const rows = entry.changes[key];
+                if (!rows?.length) return null;
+                return (
+                  <section key={key} className="mt-5">
+                    <h3 className="flex items-center gap-2.5 text-sm font-semibold">
+                      <span
+                        className={cn(
+                          "flex size-7 items-center justify-center rounded-sm text-primary",
+                          WASH_STRONG,
+                        )}
+                      >
+                        <HugeiconsIcon
+                          icon={icon}
+                          className="size-4"
+                          strokeWidth={1.75}
+                          aria-hidden="true"
+                        />
+                      </span>
+                      {t(label)}
+                    </h3>
+                    <dl className="mt-2 grid grid-cols-[minmax(6.5rem,auto)_1fr] gap-x-5 gap-y-2.5 pl-[2.375rem] text-ui-13 leading-relaxed">
+                      {rows.map(([label, description]) => (
+                        <div key={label} className="contents">
+                          <dt className="font-medium text-muted-foreground">
+                            {label}
+                          </dt>
+                          <dd>{description}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </section>
+                );
+              })}
             </>
           ) : (
             <ReleaseNotesPanel

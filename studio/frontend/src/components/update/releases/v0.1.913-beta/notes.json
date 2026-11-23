@@ -4,17 +4,19 @@
   "date": "2026-10-30",
   "features": [
     {
-      "image": "https://github.com/user-attachments/assets/a4c01069-da2f-4cf3-afee-d19499cfefc3",
+      "image": "backgrounds.webp",
       "alt": "Two Studio chats with custom backgrounds",
       "title": "Your own chat background",
       "summary": "Use your own image and move the composer to the bottom of a new chat."
     }
   ],
-  "changes": [
-    ["Languages", "Use Studio in 14 additional languages."],
-    [
-      "Generation",
-      "Render Qwen-Image up to twice as fast under a 16 GB VRAM limit."
+  "changes": {
+    "new": [["Languages", "Use Studio in 14 additional languages."]],
+    "improved": [
+      [
+        "Generation",
+        "Render Qwen-Image up to twice as fast under a 16 GB VRAM limit."
+      ]
     ]
-  ]
+  }
 }

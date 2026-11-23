@@ -4,17 +4,21 @@
   "date": "2026-10-28",
   "features": [
     {
-      "image": "https://github.com/user-attachments/assets/36f5a627-e30c-461a-bf55-508aa3f30fb4",
+      "image": "trick-or-treat.webp",
       "alt": "A tour of Studio’s Halloween themes",
       "title": "Trick or treat",
       "summary": "Eleven seasonal themes brought spooky greetings, bats, and spiders to Studio through October."
     }
   ],
-  "changes": [
-    [
-      "Fine-tuning",
-      "Train up to four compatible jobs together with multi-LoRA."
+  "changes": {
+    "new": [
+      [
+        "Fine-tuning",
+        "Train up to four compatible jobs together with multi-LoRA."
+      ]
     ],
-    ["Startup", "Start Studio about twice as fast on first launch."]
-  ]
+    "improved": [
+      ["Startup", "Start Studio about twice as fast on first launch."]
+    ]
+  }
 }
