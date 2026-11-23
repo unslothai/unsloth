@@ -5833,7 +5833,8 @@ export function createOpenAIStreamAdapter(
           findLatestUserVideoBase64(currentTurnMessages),
       );
       const generationCandidate = isDurableRunCandidate({
-        externalProvider: isExternalRequest,
+        // A saved key is resolved by the server; buildExternalRoutingFields sends headers only with a browser key.
+        externalKeyInBrowser: isExternalRequest && externalApiKey !== "",
         modelIsAudio: activeModel?.isAudio,
         loadedIsDiffusion: runtime.loadedIsDiffusion,
         // Turn-scoped, not thread-scoped: see currentTurnCarriesMedia above.
