@@ -194,19 +194,6 @@ def assert_local_pipeline_family(path: Optional[str], family: Optional[str]) -> 
         )
 
 
-def ltx25_training_message(subject: str) -> str:
-    return (
-        f"{subject} is LTX-2.5, which Unsloth can run on the Video page but cannot train yet. "
-        "Train on LTX-2 (Lightricks/LTX-2) instead."
-    )
-
-
-def assert_local_pipeline_not_ltx25(path: Optional[str]) -> None:
-    """Training guard: refuse a local diffusers LTX-2.5 folder whose name does not say so; unreadable passes."""
-    if local_ltx_pipeline_family(path) == LTX25_FAMILY:
-        raise ValueError(ltx25_training_message(f"'{path}' (by its model_index.json)"))
-
-
 @dataclass(frozen = True)
 class VideoFamily:
     name: str
@@ -301,6 +288,8 @@ class VideoFamily:
     prequant_resident_gb_by_scheme: tuple[tuple[str, float], ...] = field(default_factory = tuple)
     # (base_repo, scheme, repo_id) keyed on lowercased base id: a prequant only loads on its own base.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Lowercased base ids no hosted family prequant may stand in for (a distilled student of the family's base).
+    prequant_excluded_bases: tuple[str, ...] = field(default_factory = tuple)
     # Overrides the derived name; keep that fallback so old installs still resolve; task rows get none.
     prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
     # Separate partition, served ONLY by its own (scheme, task, filename) row or it loads the wrong one.
@@ -322,6 +311,12 @@ class VideoFamily:
     default_audio_flow_shift: Optional[float] = None
     # First/last-frame conditioning: the request may carry keyframe images.
     supports_keyframes: bool = False
+    # True: a keyframe keeps the chosen (or default) canvas instead of a source-aspect one, as MiniMax-H3's reference
+    # workflow does; the page then selects "Match source" only when asked.
+    keyframes_keep_canvas: bool = False
+    # The page's Default preset size (a preset), when it is not resolution_presets[0]; requests without a size still
+    # take resolution_presets[0].
+    ui_default_resolution: Optional[tuple[int, int]] = None
     # False for a keyframe family that takes a first frame only (LTX-2.5); MiniMax-H3 takes both.
     accepts_last_frame: bool = True
     # Diffusers class serving a first-frame request over the loaded pipeline's components (video_i2v).
@@ -414,21 +409,32 @@ _COSMOS3_REASONER_REFUSAL = (
     "This is a Cosmos3 Reasoner checkpoint, a vision-language model that answers in text rather than generating "
     "video. Load it from Chat, or load nvidia/Cosmos3-Nano or nvidia/Cosmos3-Edge here."
 )
+# ModelOpt FP8 builds: transformer via diffusion_modelopt_fp8, the rest is the bf16 sibling's pipeline.
 _COSMOS3_CONDITIONED_RE = (
-    _COSMOS3_VARIANT + r"(?:policy|sim|transfer|fp8)(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
+    _COSMOS3_VARIANT + r"(?:policy|sim|transfer)(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
 )
 _COSMOS3_CONDITIONED_REFUSAL = (
-    "This Cosmos3 checkpoint is a Policy, Sim, Transfer or FP8 build. The first three need action or control "
-    "inputs (and their own Diffusers pipelines) that Studio's Video page does not provide, and the FP8 builds are "
-    "untested here. Load nvidia/Cosmos3-Nano or nvidia/Cosmos3-Edge instead."
+    "This Cosmos3 checkpoint is a Policy, Sim or Transfer build. Those need action or control inputs (and their own "
+    "Diffusers pipelines) that Studio's Video page does not provide. Load nvidia/Cosmos3-Nano or nvidia/Cosmos3-Edge "
+    "(or their -FP8 builds) instead."
 )
 _COSMOS3_UNSUPPORTED = (
     (_COSMOS3_REASONER_RE, _COSMOS3_REASONER_REFUSAL),
     (_COSMOS3_CONDITIONED_RE, _COSMOS3_CONDITIONED_REFUSAL),
 )
 # Wan2.2-TI2V-5B VAE: stock tiles leave a 4-latent edge tile at 480 / 832 px; priced at its measured 2.5 MiB/latent px.
-_COSMOS3_PROFILE = FamilyProfile(
-    untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4))
+_COSMOS3_UNTILED_VAE = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4))
+COSMOS3_FP8_REPOS = {
+    COSMOS3_NANO_FAMILY: "nvidia/Cosmos3-Nano-FP8",
+    COSMOS3_EDGE_FAMILY: "nvidia/Cosmos3-Edge-FP8",
+}
+_COSMOS3_NANO_PROFILE = FamilyProfile(
+    untiled_vae = _COSMOS3_UNTILED_VAE,
+    trusted_repos = (COSMOS3_FP8_REPOS[COSMOS3_NANO_FAMILY].lower(),),
+)
+_COSMOS3_EDGE_PROFILE = FamilyProfile(
+    untiled_vae = _COSMOS3_UNTILED_VAE,
+    trusted_repos = (COSMOS3_FP8_REPOS[COSMOS3_EDGE_FAMILY].lower(),),
 )
 # Model-card sampling; the shipped scheduler_config.json's flow_shift 1.0 is used by neither card.
 _COSMOS3_NANO_SCHEDULER = (("flow_shift", 10.0),)
@@ -619,6 +625,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_flow_shift = 12.0,
         default_audio_flow_shift = 3.0,
         supports_keyframes = True,
+        keyframes_keep_canvas = True,
+        # The reference text-to-video and reference-to-video templates start at 0.4 MP 16:9 (864x480); a request
+        # without a size takes the reference node's 1344x768 (resolution_presets[0]).
+        ui_default_resolution = (864, 480),
         supports_references = True,
         unsupported_checkpoints = (
             (_H3_PDD_WITHOUT_HEADS_RE, H3_PDD_WITHOUT_HEADS_REFUSAL),
@@ -634,6 +644,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # reference 1280x720 resolves to the 1280x704 latent canvas it actually renders.
     VideoFamily(
         name = "ltx-2.5",
+        trainable = True,
+        label = "LTX-2.5",
         profile = FamilyProfile(
             # the 2.3 DiT less the video FFN bias
             int8_exclude_tokens = _LTX2_INT8_EXCLUDES,
@@ -655,6 +667,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             preview_factors = "ltx2",
             # The split single-file repo next to the Diffusers pack (safetensors, no remote code).
             trusted_repos = ("lightricks/ltx-2.5",),
+            # An explicit int8 pick on gfx1151 (ROCm 7.13, 512x320x17, 8 steps, 4 repeats) runs W8A8 read from the
+            # hosted ConvRot file; AUTO keeps bf16 (15.11 s/clip). Weight-only quantised at load measured 18.61 s/clip.
+            rdna_explicit_w8a8 = (
+                "hosted int8 W8A8 measured 16.01 vs 18.61 s/clip against weight-only int8 on gfx1151 (512x320x17, "
+                "8 steps), LPIPS 0.102 vs 0.164 against bf16"
+            ),
         ),
         pipeline_class = "LTX2Pipeline",
         transformer_class = "LTX2VideoTransformer3DModel",
@@ -761,11 +779,30 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             auto_static_skip = (
                 ("wan-ai/wan2.2-ti2v-5b-diffusers", (("default", 2), ("max", 3), ("steps", 50))),
             ),
+            # 27 computed steps like every-3, placed by a propagation-weighted guided-error rule (RA-CFGCache,
+            # calibrated offline on one held-out prompt): denser early, wider gaps late. 832x480x49, CFG 5, shift 8,
+            # 4 held-out prompts: mean LPIPS 0.050 vs 0.104 for every-3 at the same 54 calls (lower on all 4).
+            # 40 steps (22 computed, same rule, calibrated through Studio's INT8 compiled path): mean LPIPS 0.093 on
+            # 4 prompts x 2 seeds, under the max-tier bar of 0.10 (every-3 there: 0.132, so 40 never skipped
+            # before). 20 and 30 steps stay unskipped: both schedules measured 0.19-0.27 there.
+            auto_static_skip_masks = (
+                (
+                    "wan-ai/wan2.2-ti2v-5b-diffusers",
+                    (
+                        ("max", "11111111111101010100100100010001001001000100011111"),
+                        ("max", "1111111111101010010001000100010001001111"),
+                    ),
+                ),
+            ),
+            # FastVideo's dense-attention DMD student (video_dmd) loads from its own Diffusers repo.
+            trusted_repos = ("fastvideo/fastwan2.2-ti2v-5b-fullattn-diffusers",),
         ),
         comfy_flow_shift = 8.0,  # ComfyUI ModelSamplingSD3 8 (TI2V-5B template)
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        # The FastWan DMD student shares the architecture, not the weights: it quantizes at load.
+        prequant_excluded_bases = ("fastvideo/fastwan2.2-ti2v-5b-fullattn-diffusers",),
         # fp8 / int8: Wan2.2-TI2V-5B-<SCHEME>.pt; nvfp4: .safetensors only. Sizes from Hub (2026-08-04).
         prequant_repos = (
             ("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),
@@ -775,7 +812,14 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.safetensors"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 2.9), ("fp8", 5.1), ("int8", 5.0)),
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
-        aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
+        # "fastwan2.2-ti2v-5b-fullattn": FastVideo's dense-attention DMD student of this model (video_dmd).
+        aliases = (
+            "wan2.2-5b",
+            "wan-ti2v",
+            "wan2.2-ti2v",
+            "wan-ti2v-5b",
+            "fastwan2.2-ti2v-5b-fullattn",
+        ),
         has_audio = False,
         default_steps = 20,
         default_guidance = 5.0,
@@ -785,6 +829,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_multiple = 32,
         # 720P-only (upstream SUPPORTED_SIZES is exactly these two); first entry is the loader default.
         resolution_presets = ((1280, 704), (704, 1280)),
+        # The model card's --size 1280*704 and Diffusers example (height 704, width 1280).
+        ui_default_resolution = (1280, 704),
         # bf16-RESIDENT; transformer + VAE ship fp32 on disk, VAE stays fp32.
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
@@ -857,6 +903,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_multiple = 16,
         # 480p + 720p presets. A14B's VAE is 8x so multiple 16 renders 720 exactly (TI2V-5B's 16x VAE floors it to 704).
         resolution_presets = ((1280, 720), (832, 480), (480, 832), (720, 1280)),
+        # The model card's --size 1280*720 and Diffusers example (height 720, width 1280).
+        ui_default_resolution = (1280, 720),
         # bf16-RESIDENT: each expert ~28.6 GB bf16 (ships fp32), ~57.2 for both.
         bf16_components_gb = (57.2, 11.4, 0.5),
         vae_force_fp32 = True,
@@ -873,12 +921,17 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # Wan2.1-T2V-1.3B: 480P only (upstream calls 720P unstable for 1.3B).
     VideoFamily(
         name = "wan2.1-t2v-1.3b",
-        profile = FamilyProfile(untiled_vae = _WAN21_VAE_UNTILED),
+        # FastVideo's DMD student of this model (video_dmd) loads from its own Diffusers repo.
+        profile = FamilyProfile(
+            untiled_vae = _WAN21_VAE_UNTILED,
+            trusted_repos = ("fastvideo/fastwan2.1-t2v-1.3b-diffusers",),
+        ),
         comfy_flow_shift = 8.0,  # reference workflow shift; replaces the repo's flow_shift 3.0
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
-        aliases = ("wan2.1-1.3b", "wan21-t2v-1.3b", "wan21-1.3b"),
+        # "fastwan2.1-t2v-1.3b": FastVideo's DMD student of this model, sampled dense (video_dmd).
+        aliases = ("wan2.1-1.3b", "wan21-t2v-1.3b", "wan21-1.3b", "fastwan2.1-t2v-1.3b"),
         has_audio = False,
         default_steps = 30,
         default_guidance = 6.0,
@@ -887,6 +940,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         frame_step = 4,
         resolution_multiple = 16,
         resolution_presets = ((832, 480), (480, 832)),
+        # The model card's --size 832*480 and Diffusers example (height 480, width 832).
+        ui_default_resolution = (832, 480),
         bf16_components_gb = (2.8, 11.4, 0.5),
         vae_force_fp32 = True,
         # Finite in float16 like TI2V-5B (ComfyUI WAN21_T2V runs fp16): T4 keeps the DiT fp16, not the fp32 promotion.
@@ -916,6 +971,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         frame_step = 4,
         resolution_multiple = 16,
         resolution_presets = ((832, 480), (1280, 720), (480, 832), (720, 1280)),
+        # The Diffusers model card's example (height 480, width 832).
+        ui_default_resolution = (832, 480),
         bf16_components_gb = (28.6, 11.4, 0.5),
         vae_force_fp32 = True,
         # UMT5-XXL pre-cast fp8, one file for all four Wan bases (diffusion_te_prequant._TE_EQUIVALENT_BASES), the
@@ -963,7 +1020,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         frame_step = 4,
         resolution_multiple = 16,
         # Every entry is a real bucket of the 480p tier (generate_crop_size_list(base_size=640)).
-        resolution_presets = ((832, 480), (480, 832), (640, 640)),
+        resolution_presets = ((832, 480), (480, 832), (640, 640), (848, 480)),
+        # The pipeline's own size when none is given: the 16:9 bucket of target_size 640.
+        ui_default_resolution = (848, 480),
         # DiT fp32 on disk (32.0 to 16.6 bf16); VAE 4.7 to 2.4; Qwen2.5-VL TE bf16 14.0 + ByT5 0.8
         bf16_components_gb = (16.6, 14.8, 2.4),
         # Qwen2.5-VL-7B text tower pre-cast fp8 (ByT5 stays dense: glyph rendering). fp8 by default, as ComfyUI's
@@ -975,6 +1034,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         te_quant_auto_encoders = ("text_encoder",),
         fp16_guard = "native",
         cudnn_benchmark = False,
+        # Near-tied inductor norm-reduction configs, benchmarked per process, rendered different clips for one seed.
+        filter_reduction_configs = True,
         # Needs the capture-safe forward (diffusion_capture_safe) and the memoized trim (diffusion_attention).
         offload_cuda_graph = True,
     ),
@@ -1007,6 +1068,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_multiple = 16,
         # 720p-class presets: landscape, vertical, square (all /16).
         resolution_presets = ((1280, 720), (720, 1280), (960, 960)),
+        # The pipeline's own size when none is given: the 16:9 bucket of target_size 960.
+        ui_default_resolution = (1280, 720),
         bf16_components_gb = (16.6, 14.8, 2.4),
         # Qwen2.5-VL-7B text tower pre-cast fp8 (ByT5 stays dense: glyph rendering). fp8 by default, as ComfyUI's
         # HunyuanVideo-1.5 template (video_hunyuan_video_1.5_720p_t2v.json) loads qwen_2.5_vl_7b_fp8_scaled. The tensors are Qwen/Qwen2.5-VL-7B-Instruct's
@@ -1017,13 +1080,15 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         te_quant_auto_encoders = ("text_encoder",),
         fp16_guard = "native",
         cudnn_benchmark = False,
+        # Same DiT as the 480p repack: one reduction config per kernel, not a per-process benchmark.
+        filter_reduction_configs = True,
     ),
     VideoFamily(
         name = "cosmos3-nano",
         pipeline_class = "Cosmos3OmniPipeline",
         transformer_class = "Cosmos3OmniTransformer",
         base_repo = "nvidia/Cosmos3-Nano",
-        profile = _COSMOS3_PROFILE,
+        profile = _COSMOS3_NANO_PROFILE,
         has_audio = False,
         default_steps = 35,
         default_guidance = 6.0,
@@ -1050,6 +1115,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             *_COSMOS3_256P,
         ),
         duration_presets = (2.0, 5.0, 7.875),
+        # NVIDIA's default tier is 480p; without it a fresh Video page keeps its 768x512 fallback, an untrained size.
+        ui_default_resolution = (832, 480),
         bf16_components_gb = (30.4, 0.0, 1.4),
         supports_torch_compile = False,
         i2v_pipeline_class = "Cosmos3OmniPipeline",
@@ -1065,7 +1132,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "Cosmos3OmniPipeline",
         transformer_class = "Cosmos3OmniTransformer",
         base_repo = "nvidia/Cosmos3-Edge",
-        profile = _COSMOS3_PROFILE,
+        profile = _COSMOS3_EDGE_PROFILE,
         has_audio = False,
         default_steps = 20,
         default_guidance = 6.0,
@@ -1086,6 +1153,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             *_COSMOS3_256P,
         ),
         duration_presets = (3.0, 5.0, 6.0),
+        ui_default_resolution = (832, 480),
         bf16_components_gb = (6.7, 0.0, 1.4),
         supports_torch_compile = False,
         i2v_pipeline_class = "Cosmos3OmniPipeline",
@@ -1117,11 +1185,15 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         _H3_IMAGE_NOT_VIDEO,
     ),
     (
-        r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))[^/\\]*[/\\]*$",
-        "This is a FastVideo FastWan checkpoint. FastWan is distilled for FastVideo's own few-step "
-        "sampler and sparse attention (its repos declare WanDMDPipeline, which Diffusers does not "
-        "ship), so Unsloth cannot run it faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
-        "Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
+        # The dense-attention DMD students (FastWan2.2-TI2V-5B-FullAttn, FastWan2.1-T2V-1.3B) run as Diffusers repos
+        # through video_dmd; the sparse-attention releases and any GGUF / single-file copy stay refused.
+        r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))"
+        r"(?!(?![^/\\]*(?:gguf|safetensors))[^/\\]*(?<![a-z0-9])"
+        r"fastwan-?2-(?:2-ti2v-5b-fullattn|1-t2v-1-3b)(?![a-z0-9]))[^/\\]*[/\\]*$",
+        "This is a FastVideo FastWan checkpoint Unsloth cannot run faithfully: the sparse-attention releases need "
+        "FastVideo's own attention kernels, and the dense-attention DMD students load only as their Diffusers "
+        "repos. Load FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers or FastVideo/FastWan2.1-T2V-1.3B-Diffusers "
+        "(3-step students) or Wan-AI/Wan2.1-T2V-1.3B-Diffusers instead.",
     ),
     (
         r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])anyflow(?![a-z]))[^/\\]*[/\\]*$",
@@ -1847,6 +1919,9 @@ def validate_video_reference_conditioning(
 
 # (steps, guidance) per variant, matched by substring, most specific first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
+    # FastWan DMD students: their trained 3 timesteps, no CFG (video_dmd enforces both). Before every Wan key.
+    ("fastwan2.2-ti2v-5b-fullattn", 3, 1.0),
+    ("fastwan2.1-t2v-1.3b", 3, 1.0),
     ("cosmos3-nano", 35, 6.0),
     ("cosmos3-edge", 20, 6.0),
     # MiniMax-H3 PDD baked checkpoints: ComfyUI's recipe is 8 Euler steps on the simple schedule at CFG 1 (shifts 12 / 3
@@ -1873,7 +1948,7 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
 _NAME_SEGMENT_DEFAULT_KEYS = frozenset(
     k
     for k, _s, _g in _VIDEO_GENERATION_DEFAULTS
-    if k.startswith(("wan", "fusionx", "pdd", "cosmos3"))
+    if k.startswith(("wan", "fastwan", "fusionx", "pdd", "cosmos3"))
 )
 # A PDD recipe on another family's checkpoint (a Wan file under /models/pdd/) would silently run 8 steps at CFG 1.
 _FAMILY_SCOPED_DEFAULT_KEYS = {"pdd": "minimax-h3"}

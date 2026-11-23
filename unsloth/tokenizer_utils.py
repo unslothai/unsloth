@@ -1120,6 +1120,12 @@ def _load_correct_tokenizer(
         token = token,
         trust_remote_code = trust_remote_code,
     )
+    from .models.loader_utils import _resolved_revision
+
+    # Only the AutoTokenizer loads take it; the repairs and _mark_loaded_revision keep the plain ref.
+    revision_for_transformers = _resolved_revision(
+        tokenizer_name, revision, token, cache_dir = cache_dir
+    )
     _name_lower = tokenizer_name.lower()
     # These return the fast tokenizer unread by the slow one, so skip the slow load; the post-load fixes repair the fast backend.
     if (
@@ -1129,7 +1135,7 @@ def _load_correct_tokenizer(
         or "phi-4" in _name_lower
     ):
         fast_tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
+            tokenizer_name, cache_dir = cache_dir, revision = revision_for_transformers, **_load_kwargs
         )
         return _apply_post_load_tokenizer_fixes(
             fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
@@ -1138,7 +1144,7 @@ def _load_correct_tokenizer(
     fast_tokenizer = None
     if _TRANSFORMERS_V5:
         fast_tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
+            tokenizer_name, cache_dir = cache_dir, revision = revision_for_transformers, **_load_kwargs
         )
         _repair_tokenizer_backend_from_json(fast_tokenizer, **_repair_kwargs)
         if _slow_load_copies_fast(fast_tokenizer) and _same_tokenization_as_own_copy(
@@ -1158,7 +1164,7 @@ def _load_correct_tokenizer(
             legacy = False,
             from_slow = True,
             cache_dir = cache_dir,
-            revision = revision,
+            revision = revision_for_transformers,
             **_load_kwargs,
         )
     except:
@@ -1169,7 +1175,7 @@ def _load_correct_tokenizer(
     load_fast = fast_tokenizer is None
     if load_fast:
         fast_tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
+            tokenizer_name, cache_dir = cache_dir, revision = revision_for_transformers, **_load_kwargs
         )
     # Repair both before comparing them, or a v5 byte-level mismatch detours into the legacy path.
     if slow_tokenizer is not None:

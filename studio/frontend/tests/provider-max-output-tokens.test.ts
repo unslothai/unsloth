@@ -28,7 +28,7 @@ test("all max-output cap callers pass the selected connection override", () => {
   );
   assert.match(
     adapter,
-    /getExternalMaxOutputTokens\([\s\S]*?externalProvider\?\.maxOutputTokens/,
+    /externalRequestMaxTokens\([\s\S]*?externalProvider\?\.maxOutputTokens,\s*params\.maxTokens,/,
   );
 
   // re-gating this on the UI provider type makes the feature a no-op on the next sync
@@ -50,11 +50,11 @@ test("the connection editor exposes a bounded optional cap and warning", () => {
   assert.match(dialog, /Max Tokens limit/);
   assert.match(
     dialog,
-    /Caps Max Tokens for this connection\. Never raises it past a\s+model's documented limit\. Leave blank to use that limit, or\s+32,768 for a model without one\./,
+    /Caps Max Tokens for this connection\. Blank uses the model's\s+limit, or 32,768 without one\./,
   );
   assert.match(
     dialog,
-    /If the upstream provider does not support this value,\s+requests may fail\./,
+    /Requests may fail if the provider rejects this value\./,
   );
   // A number input sanitizes "131,072" to empty, which would silently clear the override.
   assert.match(

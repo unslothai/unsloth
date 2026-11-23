@@ -150,7 +150,9 @@ jobs:
             trl_spec: "trl>=0.18.2,<1.0.0"
           - id: tlatest5-trl1latest
             label: "HF=latest + TRL=latest"
-            transformers_spec: "transformers>=5,<6"
+            # Held below 5.24 until unsloth-zoo's patches are ported: 5.24.0 rewrote the sources they
+            # match (GLM-5-Next, Qwen4-Exp, DSA indexers, Cache.update, masking_utils). pyproject caps <=5.18.
+            transformers_spec: "transformers>=5,<5.24"
             trl_spec: "trl>=1,<2"
           - id: pyproject
             label: "HF=default + TRL=default"
@@ -245,6 +247,12 @@ jobs:
         # Every job pins 3.12, so this AST check guards the requires-python floor from pyproject.
         run: |
           python -m pytest -v --tb=short tests/test_python39_compatibility.py
+
+      - name: SFT assistant-mask fallback through the real trainer (HARD GATE)
+        # Needs real torch, TRL and unsloth, so it cannot ride the pytest-only version-compat bundle.
+        run: |
+          python -m pytest -v --tb=short \
+            tests/version_compat/test_sft_assistant_mask_fallback_trainer.py
 
       - name: generation correctness guards (HARD GATE)
         run: |
@@ -1406,6 +1414,10 @@ jobs:
               return getattr(cls, "__name__", "").startswith("Unsloth")
 
 
+          # Mirrors the exclusion in unsloth.models.rl.patch_trl_rl_trainers.
+          PATCHED_IN_PLACE = {"async_grpo_trainer"}
+
+
           def test_unsloth_patches_every_canonical_trainer_in_this_trl_version():
               """Verify the count + identity of canonically-patched trainers
               matches the trainer surface this TRL version actually ships.
@@ -1426,9 +1438,12 @@ jobs:
               # Re-enumerate (some classes may have been replaced in-module).
               after = _enumerate_canonical_trainer_classes()
               after_count = len(after)
-              patched = [(tf, cls.__name__) for tf, cls in after
+              # patch_trl_rl_trainers skips these on purpose: they are patched in place,
+              # keeping TRL's class (see test_trainers_patched_in_place_are_wrapped).
+              after_renamed = [(tf, cls) for tf, cls in after if tf not in PATCHED_IN_PLACE]
+              patched = [(tf, cls.__name__) for tf, cls in after_renamed
                          if _is_unsloth_patched(cls)]
-              unpatched = [(tf, cls.__name__) for tf, cls in after
+              unpatched = [(tf, cls.__name__) for tf, cls in after_renamed
                            if not _is_unsloth_patched(cls)]
               print(
                   f"\nCanonical trainer surface for TRL {trl.__version__}: "
@@ -1460,6 +1475,43 @@ jobs:
                   f"only {len(patched)} canonical trainers patched; "
                   "expected >= 6 (the smallest production cohort)."
               )
+
+
+          def test_trainers_patched_in_place_are_wrapped():
+              """TRL >= 1.18 ships trl.trainer.async_grpo_trainer. Unsloth patches
+              AsyncGRPOTrainer in place (patch_trl_async_grpo, which needs TRL's own
+              module globals), so the class keeps its name; check its __init__ is
+              Unsloth's wrapper instead."""
+              import importlib
+              import importlib.util
+              import unsloth.models.rl as rl
+              present = [
+                  tf for tf in sorted(PATCHED_IN_PLACE)
+                  if importlib.util.find_spec(f"trl.trainer.{tf}") is not None
+              ]
+              if not present:
+                  pytest.skip(f"TRL {trl.__version__} ships none of {sorted(PATCHED_IN_PLACE)}")
+              rl.patch_trl_async_grpo()
+              for tf in present:
+                  module = importlib.import_module(f"trl.trainer.{tf}")
+                  trainers = [
+                      v for k, v in vars(module).items()
+                      if k.endswith("Trainer") and isinstance(v, type)
+                      and v.__module__ == module.__name__
+                  ]
+                  assert trainers, f"trl.trainer.{tf} defines no *Trainer class"
+                  for cls in trainers:
+                      # Walk the __wrapped__ chain (other Unsloth patches may wrap on top) and
+                      # look for a layer whose code lives in unsloth.models.rl.
+                      files, fn = [], cls.__init__
+                      while fn is not None and len(files) < 16:
+                          code = getattr(fn, "__code__", None)
+                          files.append(getattr(code, "co_filename", None))
+                          fn = getattr(fn, "__wrapped__", None)
+                      assert rl.__file__ in files, (
+                          f"{tf}:{cls.__name__}.__init__ has no layer from Unsloth's in-place "
+                          f"patch in unsloth/models/rl.py: {files}"
+                      )
 
 
           def test_unsloth_patches_experimental_trainers_via_thin_wrappers():
@@ -2002,7 +2054,9 @@ jobs:
             trl_spec: "trl>=0.18.2,<1.0.0"
           - id: tlatest5-trl1latest
             label: "HF=latest + TRL=latest"
-            transformers_spec: "transformers>=5,<6"
+            # Held below 5.24 until unsloth-zoo's patches are ported: 5.24.0 rewrote the sources they
+            # match (GLM-5-Next, Qwen4-Exp, DSA indexers, Cache.update, masking_utils). pyproject caps <=5.18.
+            transformers_spec: "transformers>=5,<5.24"
             trl_spec: "trl>=1,<2"
           - id: pyproject
             label: "HF=default + TRL=default"
@@ -2010,8 +2064,7 @@ jobs:
             trl_spec: "__from_pyproject__"
     name: "Core zoo (${{ matrix.combo.label }})"
     runs-on: ubuntu-24.04
-    # A passing cell takes ~35 min (35 min cap cancelled it at 99%); PYTEST_TIMEOUT
-    # below names a hung test, this cap only bounds it.
+    # PYTEST_TIMEOUT names a hung test; this job cap only bounds the cell.
     timeout-minutes: 50
     # Same contract as `consolidated`: no job-level or per-step
     # `continue-on-error`, so a failing test fails the cell.

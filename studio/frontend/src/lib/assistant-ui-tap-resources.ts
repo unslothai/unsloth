@@ -180,9 +180,8 @@ export function tapResources(getElements: () => Element[], getElementsDeps?: rea
         continue;
       }
       if (next === null) {
-        // Reused, but tap's dev strict mode runs this fiber's effects, cleans them up (unmounting
-        // every child) and runs them again on first mount: remount from the last commit, as upstream
-        // re-commits its kept result.
+        // Dev strict mode reruns effects on first mount, unmounting children: remount from the last
+        // commit.
         if (!slot.fiber.isMounted && slot.committed !== null) commitResourceFiber(slot.fiber, slot.committed);
         continue;
       }

@@ -1414,34 +1414,96 @@ def _rocm_cuda(target: Any) -> bool:
 _FAMILY_RDNA_AUTO_W8A8: dict[str, str] = _profile_table("rdna_auto_w8a8", quant = True)
 
 
+def _rdna_compile_tier_proven(target: Any) -> bool:
+    """Whether the compiled RDNA int8 tier may be chosen on this host. Linux: yes (measured there; the regional compile
+    probe still runs when the tier engages). Elsewhere (Windows ROCm) only once that probe has passed on this card,
+    so a failed or unanswerable probe keeps the eager weight-only path. Kill switch UNSLOTH_DIFFUSION_ROCM_COMPILE=0."""
+    if _sys.platform.startswith("linux"):
+        return True
+    try:
+        from .diffusion_rocm_compile import rocm_block_compile_works
+        return bool(rocm_block_compile_works(getattr(target, "ordinal", None)))
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps the eager path
+        return False
+
+
 def rdna_auto_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
     """Measured reason AUTO picks W8A8 for ``family`` on ROCm RDNA, else None. Kill switch UNSLOTH_NATIVE_INT8_ACT=0."""
     reason = _FAMILY_RDNA_AUTO_W8A8.get(str(family or "").strip().lower())
     if reason is None or not _rocm_cuda(target) or not native_quant_host(target):
         return None
-    # Linux only: Windows ROCm has no compile tier.
-    if not _sys.platform.startswith("linux"):
-        return None
     if int8_act_disabled() or not rocm_rdna_w8a8_ready(getattr(target, "ordinal", None)):
         return None
     if native_quant_scheme(target, TQ_INT8, family = family) != TQ_INT8:
+        return None
+    if not _rdna_compile_tier_proven(target):
+        return None
+    return reason
+
+
+_FAMILY_RDNA_EXPLICIT_W8A8: dict[str, str] = _profile_table("rdna_explicit_w8a8", quant = True)
+
+# Only archs with measured W8A8 rows (kernels accept all gfx11/12); others stay weight-only. Widen per measurement.
+RDNA_EXPLICIT_W8A8_ARCHS = frozenset({"gfx1151"})
+
+
+def _rdna_explicit_w8a8_arch_measured(target: Any) -> bool:
+    """Whether ``target``'s own card (its ordinal, not the current device) is a measured arch. Never raises."""
+    try:
+        import torch
+
+        from .rocm_bf16 import _device_gfx_arch
+        return _device_gfx_arch(torch, getattr(target, "ordinal", None)) in RDNA_EXPLICIT_W8A8_ARCHS
+    except Exception:  # noqa: BLE001 - an unreadable arch keeps the weight-only build
+        return False
+
+
+def rdna_explicit_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
+    """Measured reason an explicit int8 request runs W8A8 for ``family`` on ROCm RDNA, else None (weight-only).
+    Only on the measured archs (``RDNA_EXPLICIT_W8A8_ARCHS``)."""
+    reason = _FAMILY_RDNA_EXPLICIT_W8A8.get(str(family or "").strip().lower())
+    if reason is None or rdna_explicit_int8_reason(target, family) is None:
+        return None
+    if not _rdna_explicit_w8a8_arch_measured(target):
         return None
     return reason
 
 
 def rdna_explicit_int8_reason(target: Any, family: Optional[str]) -> Optional[str]:
     """Why an explicit int8 request on this ROCm RDNA card compiles its denoiser from render 1, else None (eager).
-    Weight-only int8 stays the scheme unless the family's AUTO table measured W8A8 faster (``rdna_auto_w8a8_reason``);
+    Weight-only int8 stays the scheme unless the family's AUTO table measured W8A8 faster (``rdna_auto_w8a8_reason``,
+    or ``rdna_explicit_w8a8_reason`` for explicit requests only);
     eager int8 is slower than bf16 on gfx1151 for every measured family. Kill switch UNSLOTH_NATIVE_INT8_ACT=0."""
     if not _rocm_cuda(target) or not native_quant_host(target):
-        return None
-    if not _sys.platform.startswith("linux"):
         return None
     if int8_act_disabled() or not rocm_rdna_w8a8_ready(getattr(target, "ordinal", None)):
         return None
     if native_quant_scheme(target, TQ_INT8, family = family) != TQ_INT8:
         return None
+    if not _rdna_compile_tier_proven(target):
+        return None
     return "an explicit int8 request on RDNA is measured compiled"
+
+
+# "0" keeps an explicit int8 video DiT on ROCm weight-only and quantised from the dense shards at load.
+ROCM_VIDEO_HOSTED_INT8_ENV = "UNSLOTH_ROCM_VIDEO_HOSTED_INT8"
+
+
+def rocm_video_hosted_int8_enabled() -> bool:
+    raw = (_os.environ.get(ROCM_VIDEO_HOSTED_INT8_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def rdna_video_explicit_w8a8_reason(
+    target: Any, family: Optional[str], requested: Optional[str]
+) -> Optional[str]:
+    """Why an EXPLICIT int8 video request runs W8A8 on this ROCm RDNA card (the family's ``rdna_explicit_w8a8``),
+    else None. AUTO is never changed. Kill switches UNSLOTH_ROCM_VIDEO_HOSTED_INT8=0, UNSLOTH_NATIVE_INT8_ACT=0."""
+    if normalize_transformer_quant(requested) != TQ_INT8 or not rocm_video_hosted_int8_enabled():
+        return None
+    if not _rocm_cuda(target):
+        return None
+    return rdna_explicit_w8a8_reason(target, family)
 
 
 def select_transformer_quant_scheme(

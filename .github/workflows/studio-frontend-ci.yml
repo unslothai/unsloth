@@ -17,6 +17,7 @@ on:
 
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/playwright_chat_query.py'
       - 'tests/studio/playwright_tooltip_switch.py'
       - 'tests/studio/playwright_titlebar_blur.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
@@ -40,6 +41,7 @@ on:
       - 'tests/studio/playwright_code_block_flicker.py'
       - 'tests/studio/playwright_link_definition_probe.py'
       - 'tests/studio/playwright_user_message_time.py'
+      - 'tests/studio/playwright_message_timing_card.py'
       - 'tests/studio/playwright_progressive_rows.py'
       - 'tests/studio/playwright_long_chat_renders.py'
       - 'tests/studio/playwright_thread_window.py'
@@ -63,6 +65,7 @@ on:
       - 'tests/studio/playwright_model_picker_renders.py'
       - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/playwright_gallery_strip_renders.py'
+      - 'tests/studio/playwright_library_suggested_order.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       - 'tests/studio/_playwright_robust.py'
@@ -85,6 +88,7 @@ on:
       - 'tests/studio/test_frontend_dep_removal.py'
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/playwright_chat_query.py'
       - 'tests/studio/playwright_tooltip_switch.py'
       - 'tests/studio/playwright_titlebar_blur.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
@@ -108,6 +112,7 @@ on:
       - 'tests/studio/playwright_code_block_flicker.py'
       - 'tests/studio/playwright_link_definition_probe.py'
       - 'tests/studio/playwright_user_message_time.py'
+      - 'tests/studio/playwright_message_timing_card.py'
       - 'tests/studio/playwright_progressive_rows.py'
       - 'tests/studio/playwright_long_chat_renders.py'
       - 'tests/studio/playwright_thread_window.py'
@@ -131,6 +136,7 @@ on:
       - 'tests/studio/playwright_model_picker_renders.py'
       - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/playwright_gallery_strip_renders.py'
+      - 'tests/studio/playwright_library_suggested_order.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       - 'tests/studio/_playwright_robust.py'
@@ -226,11 +232,9 @@ jobs:
             exit 1
           fi
 
-      # Runs first in every frontend lane, so a long-chat typing regression fails within minutes
-      # instead of after the other suites. Ratio, not timing: Chromium's selector-matching time per
-      # keystroke in a 200-turn chat over a 40-turn chat (production build, real app ancestors), plus
-      # a :has() budget in the large one; a slow runner cannot fail it. A failure prints ms per key,
-      # the selectors responsible and the CSS they probably come from.
+      # Runs first in every frontend lane so a long-chat typing regression fails within minutes;
+      # ratio, not timing: selector matching per keystroke, 200-turn over 40-turn chat, plus :has()
+      # budget; slow runners pass.
       - name: Chromium for the long-chat typing gate
         working-directory: ${{ github.workspace }}
         shell: bash
@@ -456,6 +460,11 @@ jobs:
             tests/studio/test_appearance_coverage.py \
             tests/studio/test_has_lint.py -q
 
+      - name: Query-link routing and draft isolation
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 4
+        run: python3 tests/studio/playwright_chat_query.py
+
       # Keep data settings separate from the shorter checks. Each group owns its cache.
       # The step bound is the smaller one, leaving the job 25 minutes for the steps before it: a
       # job timeout is a cancellation, which skips the failure-only artifact upload, so a check
@@ -606,6 +615,11 @@ jobs:
         timeout-minutes: 5
         run: python3 tests/studio/playwright_user_message_time.py
 
+      - name: Browser check for the reply stats card
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_message_timing_card.py
+
       # the node suite runs no effects, so only this browser check covers the observer, re-arming, and cleanup.
       - name: Browser check for paged sidebar lists
         working-directory: ${{ github.workspace }}
@@ -643,6 +657,11 @@ jobs:
         working-directory: ${{ github.workspace }}
         timeout-minutes: 8
         run: python3 tests/studio/playwright_gallery_strip_renders.py
+
+      - name: Browser check for the Library's Suggested order when an item is opened
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_library_suggested_order.py
 
       # Two small sizes and one repetition on Chromium: enough to prove the fixture still
       # renders every kind of content it claims to and that the curve still rises, which is all
@@ -951,11 +970,9 @@ jobs:
       # --ignore-scripts: a platform gate, so no install scripts run at all.
       - run: npm ci --ignore-scripts --no-fund --no-audit
 
-      # Runs first in every frontend lane, so a long-chat typing regression fails within minutes
-      # instead of after the other suites. Ratio, not timing: Chromium's selector-matching time per
-      # keystroke in a 200-turn chat over a 40-turn chat (production build, real app ancestors), plus
-      # a :has() budget in the large one; a slow runner cannot fail it. A failure prints ms per key,
-      # the selectors responsible and the CSS they probably come from.
+      # Runs first in every frontend lane so a long-chat typing regression fails within minutes;
+      # ratio, not timing: selector matching per keystroke, 200-turn over 40-turn chat, plus :has()
+      # budget; slow runners pass.
       - name: Chromium for the long-chat typing gate
         working-directory: ${{ github.workspace }}
         shell: bash

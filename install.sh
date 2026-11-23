@@ -1,5 +1,5 @@
 #!/bin/sh
-# Unsloth Studio Installer. Usage, supported options and the web one-liner live in the README under "Unsloth Studio (web UI)" and are deliberately not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing download-and-run command lines is the first thing a generic script classifier reads. A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_INSTALL_SYSTEMD, UNSLOTH_SYSTEMD_HOST, UNSLOTH_SYSTEMD_PORT, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME), because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local run takes the equivalent flags (--no-torch, --isolated-uv-cache, --no-rollback, --python, --local). Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > UNSLOTH_HOME/studio > $HOME/.unsloth/studio
+# Unsloth Studio Installer. Usage, supported options and the web one-liner live in the README under "Unsloth Studio (web UI)" and are deliberately not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing download-and-run command lines is the first thing a generic script classifier reads. A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_INSTALL_SYSTEMD, UNSLOTH_SYSTEMD_HOST, UNSLOTH_SYSTEMD_PORT, UNSLOTH_INSTALL_LAUNCHD, UNSLOTH_LAUNCHD_HOST, UNSLOTH_LAUNCHD_PORT, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME), because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local run takes the equivalent flags (--no-torch, --isolated-uv-cache, --no-rollback, --python, --local). Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > UNSLOTH_HOME/studio > $HOME/.unsloth/studio
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
@@ -45,6 +45,8 @@ _VENV_DISCARDED=false
 _VENV_DISCARD_LEFTOVER=""
 _INSTALL_SYSTEMD=false
 _SYSTEMD_STARTED=false
+_INSTALL_LAUNCHD=false
+_LAUNCHD_STARTED=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
@@ -86,6 +88,7 @@ case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART
 case "${UNSLOTH_ISOLATE_UV_CACHE:-}" in 1|true|TRUE|yes|YES|on|ON) _ISOLATE_UV_CACHE=true ;; esac
 case "${UNSLOTH_INSTALL_NO_ROLLBACK:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_ROLLBACK=true ;; esac
 case "${UNSLOTH_INSTALL_SYSTEMD:-}" in 1|true|TRUE|yes|YES|on|ON) _INSTALL_SYSTEMD=true ;; esac
+case "${UNSLOTH_INSTALL_LAUNCHD:-}" in 1|true|TRUE|yes|YES|on|ON) _INSTALL_LAUNCHD=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
@@ -1451,6 +1454,55 @@ _install_systemd_user_service() {
     fi
 }
 
+_resolve_launchd_install_script() {
+    if [ "$_REPO_IS_CHECKOUT" = "1" ] && [ -f "$_REPO_ROOT/studio/launchd/install_user_agent.sh" ]; then
+        printf '%s\n' "$_REPO_ROOT/studio/launchd/install_user_agent.sh"
+        return 0
+    fi
+    [ -x "$VENV_DIR/bin/python" ] || return 0
+    "$VENV_DIR/bin/python" -I -c \
+        "import importlib.resources as r; print(r.files('studio') / 'launchd' / 'install_user_agent.sh')" \
+        2>/dev/null || true
+}
+
+_install_launchd_user_agent() {
+    if [ "$OS" != "macos" ]; then
+        step "launchd" "UNSLOTH_INSTALL_LAUNCHD is macOS only; skipped" "$C_WARN"
+        return 0
+    fi
+    # The desktop app's "Run Unsloth at login" agent already keeps a Studio backend up; a second
+    # server on the same home would fight it for the port.
+    _ld_account_home=$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)
+    for _ld_h in "$HOME" "$_ld_account_home"; do
+        if [ -n "$_ld_h" ] && [ -f "$_ld_h/Library/LaunchAgents/Unsloth.plist" ]; then
+            step "launchd" "desktop app's Run at login is on; skipped" "$C_WARN"
+            return 0
+        fi
+    done
+    _ld_script=$(_resolve_launchd_install_script)
+    if [ -z "$_ld_script" ] || [ ! -f "$_ld_script" ]; then
+        step "launchd" "agent helper not found in this install; skipped" "$C_WARN"
+        return 0
+    fi
+
+    set -- --unsloth-exe "$VENV_DIR/bin/unsloth" \
+        --host "${UNSLOTH_LAUNCHD_HOST:-127.0.0.1}" --port "${UNSLOTH_LAUNCHD_PORT:-8888}" --enable --start
+    [ "$_STUDIO_HOME_REDIRECT" != "default" ] && set -- "$@" --studio-home "$STUDIO_HOME"
+
+    if bash "$_ld_script" "$@" >/dev/null; then
+        _LAUNCHD_STARTED=true
+        step "launchd" "user agent loaded (ai.unsloth.studio.server)"
+        substep "status:  launchctl print gui/\$(id -u)/ai.unsloth.studio.server"
+        substep "restart: launchctl kickstart -k gui/\$(id -u)/ai.unsloth.studio.server"
+        substep "stop:    launchctl bootout gui/\$(id -u)/ai.unsloth.studio.server"
+        substep "logs:    $STUDIO_HOME/logs/server/"
+        substep "not running? $VENV_DIR/bin/unsloth studio -p ${UNSLOTH_LAUNCHD_PORT:-8888} shows why"
+        substep "binds 127.0.0.1 by default; set UNSLOTH_LAUNCHD_HOST=0.0.0.0 before install for LAN"
+    else
+        step "launchd" "user agent install failed; see the error above" "$C_WARN"
+    fi
+}
+
 # ── Helper: install packages via apt, escalating to sudo only if needed ──
 _smart_apt_install() {
     _PKGS="$*"
@@ -2219,7 +2271,7 @@ DESKTOP_EOF
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>ai.unsloth.studio</string>
+    <string>ai.unsloth.studio.launcher</string>
     <key>CFBundleName</key>
     <string>Unsloth Studio</string>
     <key>CFBundleDisplayName</key>
@@ -2290,6 +2342,9 @@ STUB_EOF
 
         # Touch so Finder indexes it
         touch "$_css_app"
+        # After the bundle id change, macOS 26 kept resolving Desktop's id here on touch alone.
+        _css_lsr="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+        [ -x "$_css_lsr" ] && "$_css_lsr" -f "$_css_app" >/dev/null 2>&1 || true
 
         # -n is required: without it a re-run creates the link inside the bundle.
         if [ -d "$HOME/Desktop" ]; then
@@ -2611,7 +2666,11 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
 fi
 
-if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+_OVERRIDES_FILE=""
+# A checkout's pins describe that checkout, not the released wheel, so take them only when the
+# checkout is what gets installed; otherwise _bootstrap_packaged_mlx_override reads the wheel's copy.
+if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] \
+   && { [ "$STUDIO_LOCAL_INSTALL" = true ] || [ -n "${UNSLOTH_CI_SOURCE_OVERLAY:-}" ]; }; then
     _OVERRIDES_FILE="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)/studio/backend/requirements/single-env/overrides-darwin-arm64.txt"
     if [ -f "$_OVERRIDES_FILE" ]; then
         # uv splits UV_OVERRIDE on whitespace; hand uv a copy in a whitespace-free temp dir.
@@ -4306,6 +4365,9 @@ TORCHVISION_CONSTRAINT="torchvision>=0.19,<${_TORCHVISION_CEILING}"
 TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"
 _CU130_TORCH_CEILING="2.15.0"
 _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
+# Apple Silicon: 2.13 is the first with fused MPS attention (mflux needs >=2.13); 2.15 lacks cp310/torchvision.
+_MACOS_TORCH_CEILING="2.15.0"
+_MACOS_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
@@ -4939,18 +5001,19 @@ _amd_arch_index_family_for_gfx() {
 # Kept in sync with install.ps1 nameArchTable.
 _infer_amd_gfx_arch_from_gpu_name() {
     case "$1" in
-        *9070*|*9080*|*"R9700"*) echo gfx1201 ;;
-        *9060*) echo gfx1200 ;;
+        *9070*|*9080*|*"R9700"*|*"R9600D"*) echo gfx1201 ;;
+        *9060*|*"RX 9050"*) echo gfx1200 ;;
         *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) echo gfx1151 ;;
-        *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) echo gfx1150 ;;
-        *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) echo gfx1152 ;;
-        *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*) echo gfx1102 ;;
+        *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"Z2 Extreme"*) echo gfx1150 ;;
+        *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*) echo gfx1152 ;;
+        *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"RX 7400"*|*"RX 7300"*|*"PRO W7400"*|*"Pro W7400"*|*"Steam Machine"*) echo gfx1102 ;;
         *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*) echo gfx1101 ;;
         *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*) echo gfx1100 ;;
-        *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*) echo gfx1103 ;;
-        *"RX 6950"*|*"RX 6900"*|*"RX 6850"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*) echo gfx1030 ;;
-        *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*) echo gfx1032 ;;
-        *"RX 6550"*|*"RX 6500"*|*"RX 6450"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*|*"PRO W6300"*) echo gfx1034 ;;
+        *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*) echo gfx1103 ;;
+        *"RX 6750 GRE 10"*|*"RX 6800S"*|*"RX 6700S"*|*"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*) echo gfx1032 ;;
+        *"RX 6850"*|*"RX 6800M"*|*"RX 6750"*|*"RX 6700"*) echo gfx1031 ;;
+        *"RX 6950"*|*"RX 6900"*|*"RX 6800"*|*"PRO W6800"*|*"PRO W6900"*|*"PRO V620"*|*"Pro V620"*) echo gfx1030 ;;
+        *"6550S"*|*"RX 6550"*|*"RX 6500"*|*"RX 6450"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*|*"PRO W6300"*) echo gfx1034 ;;
         *) return 1 ;;
     esac
 }
@@ -5879,6 +5942,28 @@ _cu130_torch213_platform() {
     case "$_ARCH" in x86_64|amd64|aarch64|arm64) ;; *) echo "no"; return ;; esac
     _ctr_py=$("$VENV_DIR/bin/python" -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>/dev/null || echo "")
     [ "$_ctr_py" = "3.13" ] && echo "yes" || echo "no"
+}
+
+# /cpu leaf on arm64 macOS with a Python 2.13 has wheels for; alone sets the preservation window.
+_macos_torch213_platform() {
+    [ "$(_torch_index_url_leaf "$1")" = "cpu" ] || { echo "no"; return; }
+    [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] || { echo "no"; return; }
+    _mtr_py=$("$VENV_DIR/bin/python" -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>/dev/null || echo "")
+    case "$_mtr_py" in 3.10|3.11|3.12|3.13|3.14) echo "yes" ;; *) echo "no" ;; esac
+}
+
+_macos_product_major() {
+    _mpm=$(sw_vers -productVersion 2>/dev/null) || _mpm=""
+    _mpm="${_mpm%%.*}"
+    case "$_mpm" in ''|*[!0-9]*) echo "" ;; *) echo "$_mpm" ;; esac
+}
+
+# New installs only: torch 2.13's macOS wheels are macosx_14_0 and it has no cp313t build.
+_macos_torch213_host_ok() {
+    _mth_major=$(_macos_product_major)
+    [ -n "$_mth_major" ] && [ "$_mth_major" -ge 14 ] 2>/dev/null || { echo "no"; return; }
+    _mth_gil=$("$VENV_DIR/bin/python" -c "import sysconfig; print('gil-disabled' if sysconfig.get_config_var('Py_GIL_DISABLED') else 'gil-enabled')" 2>/dev/null || echo "")
+    [ "$_mth_gil" = "gil-enabled" ] && echo "yes" || echo "no"
 }
 
 # `studio update` runs the installed release's setup, which would downgrade a newer torch;
@@ -6924,6 +7009,7 @@ fi  # _torch_index_pinned guard (Radeon + Strix reroute)
 # New installs on this route get 2.13; preservation keeps 2.4-2.14 installs on their release.
 _PRESERVE_TORCH_CONSTRAINT="$TORCH_CONSTRAINT"
 _CU130_NEW_INSTALL_ROUTE=false
+_MACOS_NEW_INSTALL_ROUTE=false
 if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_platform "$TORCH_INDEX_URL")" = "yes" ]; then
     _PRESERVE_TORCH_CONSTRAINT="torch>=2.4,<${_CU130_TORCH_CEILING}"
     # An existing home never takes 2.13 unasked, even when its torch could not be read or kept.
@@ -6934,13 +7020,25 @@ if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_platform "$TORCH_INDEX_URL"
        && [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
         _CU130_NEW_INSTALL_ROUTE=true
     fi
+elif [ "$SKIP_TORCH" = false ] && [ "$(_macos_torch213_platform "$TORCH_INDEX_URL")" = "yes" ]; then
+    # Same policy as cu130: keep a resident 2.4-2.14, move only a fresh home (or an explicit upgrade).
+    _PRESERVE_TORCH_CONSTRAINT="${TORCH_CONSTRAINT%%,*},<${_MACOS_TORCH_CEILING}"
+    if [ "$(printf '%s' "$PACKAGE_NAME" | tr '[:upper:]' '[:lower:]')" = "unsloth" ] \
+       && { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ]; } \
+       && [ "${_torch_index_pinned:-false}" = false ] \
+       && [ "$(_macos_torch213_host_ok)" = "yes" ] \
+       && [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
+        # an index set with UNSLOTH_TORCH_INDEX_URL (a mirror or snapshot) may not carry 2.13: only the chosen one moves
+        _MACOS_NEW_INSTALL_ROUTE=true
+    fi
 fi
 _PREV_TORCH_PIN=""
 _PREV_FALLBACK_CONSTRAINT="$TORCH_CONSTRAINT"
 if [ "$SKIP_TORCH" = false ]; then
     _prev_pin=$(_previous_torch_pin "$_PREV_TORCH_VER" "$_PRESERVE_TORCH_CONSTRAINT")
     if [ -z "$_prev_pin" ] && [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ] \
-       && [ "$_CU130_NEW_INSTALL_ROUTE" = false ] && [ -n "$_PREV_TORCH_VER" ] \
+       && [ "$_CU130_NEW_INSTALL_ROUTE" = false ] && [ "$_MACOS_NEW_INSTALL_ROUTE" = false ] \
+       && [ -n "$_PREV_TORCH_VER" ] \
        && [ "$(_torch_release_in_window "${_PREV_TORCH_VER%%+*}" "$TORCH_CONSTRAINT")" != "yes" ]; then
         _prev_pin=$(_previous_torch_pin "$_PREV_TORCH_VER" "$_PRESERVE_TORCH_CONSTRAINT" keep)
     fi
@@ -6952,6 +7050,10 @@ if [ "$SKIP_TORCH" = false ]; then
 fi
 if [ -z "$_PREV_TORCH_PIN" ] && [ "$_CU130_NEW_INSTALL_ROUTE" = true ]; then
     TORCH_CONSTRAINT="$_CU130_NEW_INSTALL_TORCH"
+    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"
+fi
+if [ -z "$_PREV_TORCH_PIN" ] && [ "$_MACOS_NEW_INSTALL_ROUTE" = true ]; then
+    TORCH_CONSTRAINT="$_MACOS_NEW_INSTALL_TORCH"
     TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"
 fi
 
@@ -7067,18 +7169,19 @@ elif _torch_index_url_is_rocm "$TORCH_INDEX_URL"; then
     elif [ -z "$_gpu_disp_gfx" ] && [ -n "$_gpu_disp_mkt" ]; then
         # In sync with install.ps1 nameArchTable; gfx1102 before gfx1100 ("RX 7700S").
         case "$_gpu_disp_mkt" in
-            *9070*|*9080*|*"R9700"*)                                                                       _gpu_disp_gfx="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
-            *9060*)                                                                                        _gpu_disp_gfx="gfx1200" ;;  # RDNA 4 (Navi 44)
+            *9070*|*9080*|*"R9700"*|*"R9600D"*)                                                                       _gpu_disp_gfx="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
+            *9060*|*"RX 9050"*)                                                                                        _gpu_disp_gfx="gfx1200" ;;  # RDNA 4 (Navi 44)
             *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
-            *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
-            *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _gpu_disp_gfx="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
-            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _gpu_disp_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
+            *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"Z2 Extreme"*) _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+            *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*) _gpu_disp_gfx="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"RX 7400"*|*"RX 7300"*|*"PRO W7400"*|*"Pro W7400"*|*"Steam Machine"*)                              _gpu_disp_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
             *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _gpu_disp_gfx="gfx1101" ;;  # RDNA 3 (Navi 32)
             *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _gpu_disp_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
-            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _gpu_disp_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
-            *"RX 6950"*|*"RX 6900"*|*"RX 6850"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*) _gpu_disp_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
-            *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _gpu_disp_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
-            *"RX 6550"*|*"RX 6500"*|*"RX 6450"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*|*"PRO W6300"*)                    _gpu_disp_gfx="gfx1034" ;;  # RDNA 2 (Navi 24)
+            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*)            _gpu_disp_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
+            *"RX 6750 GRE 10"*|*"RX 6800S"*|*"RX 6700S"*|*"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*) _gpu_disp_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
+            *"RX 6850"*|*"RX 6800M"*|*"RX 6750"*|*"RX 6700"*)                                _gpu_disp_gfx="gfx1031" ;;  # RDNA 2 (Navi 22)
+            *"RX 6950"*|*"RX 6900"*|*"RX 6800"*|*"PRO W6800"*|*"PRO W6900"*|*"PRO V620"*|*"Pro V620"*)                 _gpu_disp_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
+            *"6550S"*|*"RX 6550"*|*"RX 6500"*|*"RX 6450"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*|*"PRO W6300"*)                    _gpu_disp_gfx="gfx1034" ;;  # RDNA 2 (Navi 24)
         esac
         if [ -n "$_gpu_disp_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_gpu_disp_gfx"
@@ -7611,8 +7714,8 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.11.4}"
-_unsloth_zoo_install_spec="unsloth-zoo>=2026.11.4"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.11.9}"
+_unsloth_zoo_install_spec="unsloth-zoo>=2026.11.9"
 
 # An index lagging PyPI (mirror, delayed feed, cutoff) may lack these floors (#14031): lower them to its newest release.
 # The marker tells Desktop preflight this older backend is the newest available, so it is not repaired forever.
@@ -8656,6 +8759,12 @@ echo ""
 if [ "$_INSTALL_SYSTEMD" = true ]; then
     _install_systemd_user_service
     if [ "$_SYSTEMD_STARTED" = true ]; then
+        _SKIP_AUTOSTART=true
+    fi
+fi
+if [ "$_INSTALL_LAUNCHD" = true ]; then
+    _install_launchd_user_agent
+    if [ "$_LAUNCHD_STARTED" = true ]; then
         _SKIP_AUTOSTART=true
     fi
 fi

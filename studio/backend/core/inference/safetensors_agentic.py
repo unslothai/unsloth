@@ -11,6 +11,7 @@ native transformers has no such channel, so this loop parses tool calls from the
 dispatches via ``core.inference.tools``.
 """
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import bisect
 import inspect
 import json
@@ -20,7 +21,7 @@ from typing import Callable, Generator, Optional
 
 from loggers import get_logger
 
-from core.inference.llama_cpp import _has_answer_artifact
+from core.inference.llama_cpp import _FINAL_ANSWER_TOOL_LIMIT_MESSAGE, _has_answer_artifact
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _balanced_brace_end,
@@ -61,9 +62,8 @@ from core.inference.mcp_images import (
     png_payloads_per_result,
     trim_image_turns,
 )
-from core.inference.tool_facts import repeatable
+from core.inference.tool_facts import STEPWISE, repeatable
 from core.inference.tool_loop_controller import (
-    BROWSER_TOOL_NAMES,
     TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
     _reruns_after_new_work,
@@ -560,7 +560,7 @@ def run_safetensors_tool_loop(
     auto_heal_tool_calls: bool = True,
     deduplicate_tool_calls: bool = True,
     nudge_tool_calls: Optional[bool] = None,
-    max_tool_iterations: int = 25,
+    max_tool_iterations: int = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
     thread_id: Optional[str] = None,
@@ -583,6 +583,7 @@ def run_safetensors_tool_loop(
     context_fitter: Optional[Callable[[list, list, list], dict]] = None,
     tool_choice = None,
     disable_parallel_tool_use: bool = False,
+    mcp_match_exchange: Optional[dict] = None,
 ) -> Generator[dict, None, None]:
     """Yields status, content, tool_start and tool_end event dicts; content is cumulative text per turn."""
     if mcp_image is not None:
@@ -663,6 +664,18 @@ def run_safetensors_tool_loop(
     rag_autoinjected = bool(_auto)
     # As on llama-server: a forced tool is the only one offered until a call runs or is denied.
     forced_resolved = rag_autoinjected and forced_tool_name(tool_choice) == "search_knowledge_base"
+    if (
+        mcp_match_exchange
+        and mcp_match_exchange.get("messages")
+        and tool_choice != "none"
+        and not forced_tool_name(tool_choice)
+        and not (
+            continue_final_message and trailing_assistant_resume_kind(conversation) is not None
+        )
+    ):
+        for _ev in mcp_match_exchange["events"]:
+            yield _ev
+        conversation.extend(mcp_match_exchange["messages"])
 
     unrestricted_tools = not tools
     # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
@@ -697,7 +710,7 @@ def run_safetensors_tool_loop(
     reprompt_count = 0
     # A browser task is many steps, each a chance to announce the next one and stop: there one
     # nudge per tool turn, as in the GGUF and external loops; other requests never nudge after a tool.
-    browser_turns = any(name in BROWSER_TOOL_NAMES for name in _active_tool_names(tools or []))
+    browser_turns = any(name in STEPWISE for name in _active_tool_names(tools or []))
     post_tool_reprompts = 0
     # Text that triggered the last nudge; if the retry restates it, stop (GGUF parity).
     last_reprompt_text = ""
@@ -1307,6 +1320,19 @@ def run_safetensors_tool_loop(
             return
 
         if final_attempt_done:
+            # Only another call (reasoning aside), already without tools: an empty bubble is not actionable.
+            if tool_calls and not _reprompt_intent_text(
+                content_text, reasoning_prefilled = reasoning_prefilled, visible_only = True
+            ):
+                # Extend the shown snapshot, never restart it: a prefilled turn needs its </think> in the same snapshot.
+                display = _strip_streaming_display(cumulative_display)
+                sep = "\n\n" if display.strip() else ""
+                yield {
+                    "type": "content",
+                    "text": f"{display}{sep}{_FINAL_ANSWER_TOOL_LIMIT_MESSAGE}",
+                }
+                yield {"type": "status", "text": ""}
+                return
             if content_text:
                 yield {"type": "content", "text": content_text}
             yield {"type": "status", "text": ""}
@@ -1452,6 +1478,7 @@ def run_safetensors_tool_loop(
                 arguments = decision.arguments,
                 sandbox_level = sandbox_level,
                 session_id = session_id,
+                thread_id = thread_id,
             )
             # Sending the user's image always asks, whatever the permission mode.
             needs_confirm = needs_confirm or image_share is not None

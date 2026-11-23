@@ -434,6 +434,12 @@ test("a continuation request is read only when it carries text", () => {
     }),
     { partial: "half an answer" },
   );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: { unslothContinuation: { partial: "half", splitReasoningSeen: true } },
+    }),
+    { partial: "half", splitReasoningSeen: true },
+  );
   assert.equal(
     readContinuationRequest({
       custom: { unslothContinuation: { partial: "" } },

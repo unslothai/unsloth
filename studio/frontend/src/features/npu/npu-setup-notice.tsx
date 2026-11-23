@@ -3,30 +3,9 @@
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { cn } from "@/lib/utils";
 import { Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { npuRuntimeLabel } from "./api";
 import type { NpuCatalog } from "./use-npu-catalog";
-
-export function NpuRuntimeVersions({
-  catalog,
-  className,
-}: {
-  catalog: NpuCatalog;
-  className?: string;
-}) {
-  const label = catalog.ready ? npuRuntimeLabel(catalog.status.versions) : null;
-  if (!label) return null;
-  return (
-    <p
-      data-testid="npu-runtime-versions"
-      className={cn("text-ui-11 text-muted-foreground/70", className)}
-    >
-      {label}
-    </p>
-  );
-}
 
 export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
   const { status, ready, models, listError } = catalog;
@@ -98,7 +77,7 @@ function NpuEnableCard({ catalog }: { catalog: NpuCatalog }) {
         <span className="text-muted-foreground">
           {status.runtime_installed
             ? "Finishes setup and checks the NPU driver."
-            : "One-time setup: downloads about 47 MB and checks the NPU driver."}
+            : "One-time setup: downloads about 40 to 50 MB and checks the NPU driver."}
         </span>
         <Button size="sm" onClick={() => void enable()} disabled={enabling}>
           {enabling ? <Spinner className="size-3.5" /> : null}

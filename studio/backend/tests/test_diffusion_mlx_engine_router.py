@@ -12,6 +12,7 @@ import pytest
 
 from core.inference import diffusion_engine_router as r
 from core.inference.diffusion_families import detect_family
+from core.inference.mlx_diffusion_convert import MFLUX_VERSION
 from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_MLX, ENGINE_SD_CPP
 
 
@@ -45,6 +46,8 @@ def _clean(monkeypatch):
     )
     # No sd.cpp binary anywhere and no install: today's MPS / CPU choice is then diffusers, never a real exec.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_INSTALL", "0")
+    # The MLX choice is under test, not the CPU GGUF refusal (test_cpu_gguf_stays_native), so keep diffusers here.
+    monkeypatch.setenv(r.CPU_GGUF_DIFFUSERS_FALLBACK_ENV, "1")
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
     monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **_: None)
     monkeypatch.setattr(r, "_server_binary_runnable", lambda *_a, **_k: False)
@@ -80,7 +83,7 @@ def _host(
 
 
 _GOOD_VERSIONS = {
-    "mflux": "0.22.0",
+    "mflux": MFLUX_VERSION,
     "mlx": "0.32.3",
     "piexif": "1.1.3",
     "platformdirs": "4.3.8",
@@ -389,7 +392,9 @@ def test_missing_runtime_falls_back(monkeypatch, mlx, mflux, needle):
 @pytest.mark.parametrize(
     "versions, needle",
     [
-        ({"mflux": "0.17.0"}, "mflux==0.22.0 (found 0.17.0)"),
+        ({"mflux": "0.17.0"}, f"mflux=={MFLUX_VERSION} (found 0.17.0)"),
+        ({"mflux": "0.23.0"}, f"mflux=={MFLUX_VERSION} (found 0.23.0)"),
+        ({"mflux": None}, f"mflux=={MFLUX_VERSION} (found none)"),
         ({"mlx": "0.29.1"}, "mlx>=0.32.0,<0.33.0 (found 0.29.1)"),
         ({"mlx": None}, "mlx>=0.32.0,<0.33.0 (found none)"),
         ({"toml": None}, "toml>=0.10.2,<1 (found none)"),
@@ -405,6 +410,15 @@ def test_an_incompatible_installed_runtime_falls_back(monkeypatch, versions, nee
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
     assert _predict() == _select() == ENGINE_DIFFUSERS
     assert needle in (r.annotate_status({})["mlx_fallback_reason"] or "")
+
+
+@pytest.mark.parametrize("mflux", ["0.22.0", "0.24.0"])
+def test_either_supported_mflux_selects_mlx(monkeypatch, mflux):
+    _host(monkeypatch)
+    _device(monkeypatch, "mps")
+    _runtime(monkeypatch, versions = {"mflux": mflux})
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
+    assert _predict() == _select() == ENGINE_MLX
 
 
 @pytest.mark.parametrize("forced", ["diffusers", "sd_cpp"])
@@ -549,7 +563,7 @@ def test_runtime_requirements_match_the_installer():
     import ast
     from pathlib import Path
 
-    from core.inference.mlx_diffusion_convert import MFLUX_VERSION
+    from core.inference.mlx_diffusion_convert import MFLUX_COMPATIBLE_VERSIONS, MFLUX_VERSION
 
     source = (Path(__file__).resolve().parents[2] / "install_python_stack.py").read_text(
         encoding = "utf-8"
@@ -560,7 +574,12 @@ def test_runtime_requirements_match_the_installer():
         if isinstance(node, (ast.Assign, ast.AnnAssign))
         and isinstance(node.targets[0] if isinstance(node, ast.Assign) else node.target, ast.Name)
     }
-    assert ast.literal_eval(literals["_MLX_DIFFUSION_PINS"]) == (f"mflux=={MFLUX_VERSION}",)
+    newest, py310 = (
+        ast.literal_eval(literals[name]) for name in ("_MFLUX_PIN", "_MFLUX_PY310_PIN")
+    )
+    expected = newest if sys.version_info >= (3, 11) else py310
+    assert expected == f"mflux=={MFLUX_VERSION}"
+    assert {newest, py310} == {f"mflux=={v}" for v in MFLUX_COMPATIBLE_VERSIONS}
     deps = set(ast.literal_eval(literals["_MLX_DIFFUSION_DEPS"]))
     assert deps == {s for s in r._MLX_RUNTIME_REQUIREMENTS if not s.startswith("mlx")}
 

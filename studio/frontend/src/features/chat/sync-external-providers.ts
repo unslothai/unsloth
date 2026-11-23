@@ -27,6 +27,7 @@ import {
   setProviderModelCatalog,
 } from "./model-catalog";
 import { learnModelDisplayNames } from "./model-display-names";
+import { normalizeCompactionMode } from "./utils/auto-compaction";
 import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
@@ -37,6 +38,7 @@ import {
   getExternalProviderApiKey,
   isCustomProviderType,
   isPromptCacheTtl,
+  isVertexBaseUrl,
   learnCatalogModelCapabilities,
   loadNewModelChecksAt,
   newModelCheckOf,
@@ -106,6 +108,15 @@ export function resolveUiProviderTypeFromConfig(
   _registryRows: ProviderRegistryEntry[],
   _existingProviderType: string | undefined,
 ): string {
+  if (configProviderType === "gemini" && isVertexBaseUrl(configBaseUrl)) {
+    return "vertex";
+  }
+  if (
+    configProviderType === LEGACY_CUSTOM_PROVIDER_TYPE &&
+    (configDisplayName ?? "").trim().toLowerCase() === "sglang"
+  ) {
+    return "sglang";
+  }
   if (configProviderType !== CUSTOM_BACKEND_PROVIDER_TYPE) {
     return configProviderType;
   }
@@ -247,13 +258,19 @@ export async function syncExternalProvidersFromBackend(
   pruneExternalProviderApiKeys(loadedConfigRows.map((config) => config.id));
 
   const existingById = new Map<string, ExternalProviderConfig>();
+  // Switched-off rows first, so a row in both lists keeps the caller's copy.
+  for (const provider of useExternalProvidersStore.getState().disabledProviders) {
+    existingById.set(provider.id, provider);
+  }
   for (const provider of existingProviders) {
     existingById.set(provider.id, provider);
   }
 
   const backfillTasks: Array<() => Promise<unknown>> = [];
-  const syncedProviders = configRows
-    .filter((config) => config.is_enabled)
+  const enabledIds = new Set(
+    configRows.filter((config) => config.is_enabled).map((config) => config.id),
+  );
+  const syncedRows = configRows
     .map((config) => {
       const existing = existingById.get(config.id);
       const uiProviderType = resolveUiProviderTypeFromConfig(
@@ -332,6 +349,8 @@ export async function syncExternalProvidersFromBackend(
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,
+        autoCompactTokens: config.auto_compact_tokens ?? undefined,
+        compactionMode: normalizeCompactionMode(config.compaction_mode),
         extraHeaders: extraHeadersFromSaved(config.extra_headers),
         reasoningConfig:
           config.provider_type === "custom" &&
@@ -356,8 +375,12 @@ export async function syncExternalProvidersFromBackend(
       };
       return mergeLocalProviderOptions(existing, synced);
     });
+  const syncedProviders = syncedRows.filter((provider) => enabledIds.has(provider.id));
 
   if (isCurrent && !isCurrent()) return existingProviders;
+  useExternalProvidersStore
+    .getState()
+    .setDisabledProviders(syncedRows.filter((provider) => !enabledIds.has(provider.id)));
 
   await settleTasksIfCurrent(backfillTasks, isCurrent);
   void refreshProviderModelCatalogs(syncedProviders, isCurrent);
@@ -423,7 +446,7 @@ export function autoTickLimit(providerId: string, limit?: number): number | unde
 }
 
 // Gateways list new third-party models every week; ticking each would flood the picker.
-const NO_AUTO_TICK_PROVIDER_TYPES = new Set(["openrouter", "huggingface"]);
+const NO_AUTO_TICK_PROVIDER_TYPES = new Set(["openrouter", "huggingface", "vercel"]);
 export const MAX_AUTO_TICKED_MODELS = 3;
 
 export function autoTicksNewlyListedModels(

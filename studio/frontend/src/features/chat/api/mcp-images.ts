@@ -49,6 +49,8 @@ export function mcpImagesEnvelope(images: McpImage[]): string {
 
 // The backend keeps only the newest eight pictures, but only after parsing, so bound here too.
 export const MAX_TOTAL_MCP_IMAGES = 8;
+// Mirrors IMAGE_TRIM_STEP in studio/backend/core/inference/mcp_images.py.
+export const MCP_IMAGE_TRIM_STEP = 4;
 // Mirrors the backend's per-result promotion limit.
 export const MAX_MODEL_IMAGES = 4;
 // Mirrors LOCAL_MAX_IMAGES_PER_TURN in studio/backend/core/inference/mcp_images.py.
@@ -60,8 +62,23 @@ export const MAX_TOTAL_MCP_IMAGE_CHARS = 12_000_000;
 // Matches mcp_client.MAX_IMAGE_PAYLOAD_CHARS and mcp_images.py MAX_MCP_IMAGE_MIME_CHARS.
 export const MAX_MCP_IMAGE_MIME_CHARS = 256;
 
-export function isImageToolName(name: unknown): boolean {
-  return typeof name === "string" && (name === "view_image" || name.startsWith("mcp__"));
+export function isImageToolName(name: unknown, importedFrom?: unknown): boolean {
+  // "computer": its screenshots, so a later turn still shows the model the screen its results describe.
+  return (
+    typeof name === "string" &&
+    (name === "view_image" ||
+      name === "computer" ||
+      name.startsWith("mcp__") ||
+      (name === "Read" && importedFrom === "claude"))
+  );
+}
+
+/** Mirrors stepped_keep in mcp_images.py. */
+export function steppedKeep(count: number, limit: number, step = MCP_IMAGE_TRIM_STEP): number {
+  if (limit <= 0) return 0;
+  if (count <= limit) return count;
+  const s = limit >= step ? step : 1;
+  return count - Math.ceil((count - limit) / s) * s;
 }
 
 interface EnvelopeCarrier {
@@ -76,13 +93,24 @@ interface EnvelopeCarrier {
  */
 export function planMcpImageBound(
   batches: readonly (readonly (readonly McpImage[])[])[],
-  { localMarkers = false }: { localMarkers?: boolean } = {},
+  {
+    localMarkers = false,
+    exchanges = batches,
+    uncapped = false,
+  }: {
+    localMarkers?: boolean;
+    // Parallel results of one tool turn, admitted at most the cap between them; defaults to batches.
+    exchanges?: readonly (readonly (readonly McpImage[])[])[];
+    // A compacting llama.cpp chat keeps every picture its loop admitted; only the byte bound applies.
+    uncapped?: boolean;
+  } = {},
 ): McpImage[][][] {
+  if (!localMarkers) return planSteppedBound(batches, exchanges, uncapped);
   let budget = MAX_TOTAL_MCP_IMAGES;
   // Shared across results, bounding total candidates to MAX_TOTAL_MCP_IMAGES plus the allowance.
   let spare = DECODE_FAILURE_ALLOWANCE;
   let charsLeft = MAX_TOTAL_MCP_IMAGE_CHARS;
-  const perResult = localMarkers ? LOCAL_MAX_IMAGES_PER_TURN : MAX_MODEL_IMAGES;
+  const perResult = LOCAL_MAX_IMAGES_PER_TURN;
   const out: McpImage[][][] = batches.map((batch) => batch.map(() => []));
   // Newest first: those are the ones the backend would have kept.
   for (let b = batches.length - 1; b >= 0; b--) {
@@ -107,12 +135,7 @@ export function planMcpImageBound(
       }
       allowance -= keep.length;
       taken += keep.length;
-      if (keep.length === images.length) {
-        out[b][r] = images.slice();
-        continue;
-      }
-      const returned = Math.max(images[0]?.returned ?? 0, images.length);
-      out[b][r] = keep.length > 0 ? [{ ...keep[0], returned }, ...keep.slice(1)] : [];
+      out[b][r] = withReturned(images, keep);
     }
     // Fallback candidates consume spares so they cannot evict older results.
     const charged = Math.min(taken, room);
@@ -122,10 +145,101 @@ export function planMcpImageBound(
   return out;
 }
 
+// Mirrors _UNDECODABLE_PREFIXES in studio/backend/core/inference/mcp_images.py.
+const UNDECODABLE_PREFIXES = ["<svg", "<?xml", "<!DOCTYPE", "<html", "{", "["];
+
+/** Mirrors _sniffed_undecodable: only a header that plainly is not a raster. */
+export function sniffedUndecodable(image: McpImage): boolean {
+  let head: string;
+  try {
+    head = atob(image.data.slice(0, 32));
+  } catch {
+    return false;
+  }
+  // bytes.lstrip(): ASCII whitespace only.
+  let start = 0;
+  while (start < head.length && " \t\n\r\v\f".includes(head[start])) start++;
+  head = head.slice(start, start + 16);
+  return UNDECODABLE_PREFIXES.some((prefix) => head.startsWith(prefix));
+}
+
+function withReturned(images: readonly McpImage[], keep: McpImage[]): McpImage[] {
+  if (keep.length === images.length) return images.slice();
+  const returned = Math.max(images[0]?.returned ?? 0, images.length);
+  return keep.length > 0 ? [{ ...keep[0], returned }, ...keep.slice(1)] : [];
+}
+
+/**
+ * Data-URL path: sends exactly what the backend's tool loop last showed, since the backend steps its
+ * cut off this count (#18231). A spare rides only where its recount and admission ignore it.
+ */
+function planSteppedBound(
+  batches: readonly (readonly (readonly McpImage[])[])[],
+  exchanges: readonly (readonly (readonly McpImage[])[])[],
+  uncapped: boolean,
+): McpImage[][][] {
+  const bounded = (images: readonly McpImage[]) =>
+    images.filter(
+      (image) => image.mimeType.length <= MAX_MCP_IMAGE_MIME_CHARS && !sniffedUndecodable(image),
+    );
+  const exchangeOf = new Map<readonly McpImage[], number>();
+  let total = 0;
+  exchanges.forEach((exchange, e) => {
+    let admitted = 0;
+    for (const images of exchange) {
+      exchangeOf.set(images, e);
+      admitted += Math.min(MAX_MODEL_IMAGES, bounded(images).length);
+    }
+    total += Math.min(MAX_TOTAL_MCP_IMAGES, admitted);
+  });
+  let budget = uncapped ? total : steppedKeep(total, MAX_TOTAL_MCP_IMAGES);
+  let spare = DECODE_FAILURE_ALLOWANCE;
+  let charsLeft = MAX_TOTAL_MCP_IMAGE_CHARS;
+  const admittedBefore = new Map<number | string, number>();
+  const sentBefore = new Map<number | string, number>();
+  const out: McpImage[][][] = batches.map((batch) => batch.map(() => []));
+  for (let b = batches.length - 1; b >= 0; b--) {
+    for (let r = batches[b].length - 1; r >= 0; r--) {
+      const images = batches[b][r];
+      const e = exchangeOf.get(images) ?? `${b}:${r}`;
+      const candidates = bounded(images);
+      const capRoom = Math.max(0, MAX_TOTAL_MCP_IMAGES - (admittedBefore.get(e) ?? 0));
+      // The loop admits each result's head; the later cut drops the oldest, so the tail survives.
+      const live = candidates.slice(0, Math.min(MAX_MODEL_IMAGES, capRoom));
+      const shown = live.slice(Math.max(0, live.length - budget));
+      const keep = new Set<McpImage>();
+      const take = (image: McpImage) => {
+        if (charsLeft - image.data.length < 0) return false;
+        charsLeft -= image.data.length;
+        keep.add(image);
+        return true;
+      };
+      let sent = 0;
+      for (const image of shown) if (take(image)) sent++;
+      // Pictures past the byte bound leave their slot to later ones of the same result.
+      const rest = candidates.slice(live.length);
+      while (sent < shown.length && rest.length > 0) if (take(rest.shift()!)) sent++;
+      budget -= sent;
+      const before = sentBefore.get(e) ?? 0;
+      if (shown.length === live.length) {
+        for (const image of rest) {
+          if (spare <= 0) break;
+          if (sent < MAX_MODEL_IMAGES && before + sent < MAX_TOTAL_MCP_IMAGES) break;
+          if (take(image)) spare--;
+        }
+      }
+      admittedBefore.set(e, (admittedBefore.get(e) ?? 0) + live.length);
+      sentBefore.set(e, before + Math.min(MAX_MODEL_IMAGES, keep.size));
+      out[b][r] = withReturned(images, images.filter((image) => keep.has(image)));
+    }
+  }
+  return out;
+}
+
 /** The bound over already-serialized history, for callers holding only the wire shape. */
 export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
   messages: readonly T[],
-  { localMarkers = false }: { localMarkers?: boolean } = {},
+  { localMarkers = false, uncapped = false }: { localMarkers?: boolean; uncapped?: boolean } = {},
 ): T[] {
   const out = messages.slice();
   type Carrier = { index: number; text: string; images: McpImage[] };
@@ -159,9 +273,20 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     if (sameBatch && previous) previous.push(carrier);
     else batches.push([carrier]);
   }
+  // Adjacent tool messages are one parallel turn, as the backend's replay count groups them.
+  const exchanges: McpImage[][][] = [];
+  carriers.forEach((carrier, c) => {
+    const previous = carriers[c - 1];
+    let adjacent = previous !== undefined;
+    for (let j = (previous?.index ?? 0) + 1; adjacent && j < carrier.index; j++) {
+      if (out[j]?.role !== "tool") adjacent = false;
+    }
+    if (adjacent) exchanges[exchanges.length - 1].push(carrier.images);
+    else exchanges.push([carrier.images]);
+  });
   const plan = planMcpImageBound(
     batches.map((batch) => batch.map((carrier) => carrier.images)),
-    { localMarkers },
+    { localMarkers, exchanges, uncapped },
   );
   batches.forEach((batch, b) =>
     batch.forEach((carrier, r) => {

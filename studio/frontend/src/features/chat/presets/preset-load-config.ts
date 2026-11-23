@@ -235,7 +235,12 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     checkpoint: store.params.checkpoint,
   });
   const platform = usePlatformStore.getState();
-  const isMlx = isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason);
+  const isMlx = isServedByMlx(
+    isGguf,
+    platform.deviceType,
+    platform.chatOnlyReason,
+    platform.mlxInference,
+  );
   const effectiveContextLength = requestableContextLength(
     capturedContextLength({
       isGguf,

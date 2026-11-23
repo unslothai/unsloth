@@ -124,7 +124,8 @@ jobs:
         #
         # Shards root at `tests/` and differ only in ignores: `--ignore=FILE` does not filter explicit arguments.
         # `rest` is the remainder, so new files land in exactly one shard (test_ci_backend_pytest_shards.py).
-        # Ranges balance the 1500 s backstop: a-k hit it on 2026-10-23, g-r on 2026-11-09 (g-l ~40%, m-r ~60%).
+        # Ranges balance the 1500 s backstop: a-k hit it on 2026-10-23, g-r on 2026-11-09 (g-l ~40%, m-r ~60%),
+        # a-f on 2026-11-13, so test_diffusion* (~60% of a-f) has its own shard.
         include:
           - python: '3.13'
             scope: full
@@ -134,6 +135,24 @@ jobs:
               --ignore-glob=tests/*/*
               --ignore-glob=tests/*_test.py
               --ignore-glob=tests/test_[!a-f]*.py
+              --ignore-glob=tests/test_diffusion*.py
+          - python: '3.13'
+            scope: full
+            shard: diffusion
+            # Everything but test_diffusion*: one letter at a time, so test_diffusers* stays in a-f.
+            selection: >-
+              tests/
+              --ignore-glob=tests/*/*
+              --ignore-glob=tests/*_test.py
+              --ignore-glob=tests/test_[!d]*.py
+              --ignore-glob=tests/test_d[!i]*.py
+              --ignore-glob=tests/test_di[!f]*.py
+              --ignore-glob=tests/test_dif[!f]*.py
+              --ignore-glob=tests/test_diff[!u]*.py
+              --ignore-glob=tests/test_diffu[!s]*.py
+              --ignore-glob=tests/test_diffus[!i]*.py
+              --ignore-glob=tests/test_diffusi[!o]*.py
+              --ignore-glob=tests/test_diffusio[!n]*.py
           - python: '3.13'
             scope: full
             shard: g-l
@@ -222,12 +241,14 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchaudio<2.11'
           # Tracks pyproject.toml's cap.
-          pip install 'transformers>=4.51,<=5.17.0'
+          pip install 'transformers>=4.51,<=5.18.0'
           # peft is needed or importorskips of core/inference silently skip (a stub breaks find_spec).
           # Install after CPU torch; version from extras-no-deps.txt.
           pip install "$(grep -m1 -E '^peft==' studio/backend/requirements/extras-no-deps.txt)"
           # torchao: the pre-quant allowlist imports its tensor constructors; CPU-only is fine.
           pip install torchao
+          # usearch is not in studio.txt: installing via Studio's installer also tests that path.
+          python studio/install_hnsw_prebuilt.py --strict --json
 
       - name: Collect the bubblewrap install
         wait: bubblewrap
@@ -400,32 +421,28 @@ jobs:
           # interrupted at 74 to 98% on most runs. Locally on 4 cores they are 578 s of the
           # catch-all's 1258 s. The two globs are every *gloo* file except test_fs*, which is
           # fsdp2's: an explicit file root cannot be filtered by --ignore, so the split is done in
-          # the globs themselves.
+          # the globs themselves. A *gloo* file starting with d, i, m, s or u is rest-2's
+          # (tests/test_[dimsu]*.py), so the first glob leaves those letters out.
           - shard: gloo
             selection: >-
-              tests/test_[!fpt]*gloo*.py
+              tests/test_[!dfimpstu]*gloo*.py
               tests/test_f[!s]*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
+          # Gloo hit its 2100 s cap after 17886, 17930, DeepSeek-V4.1 tests; non-native TP files
+          # split off.
+          - shard: gloo-tp-env
+            selection: >-
               tests/test_tp_[!n]*gloo*.py
-          # #16407 grew test_parallel_cp_compose_gloo.py to about a third of the gloo shard's time
-          # (1143 of 3605 test-seconds measured per file), which took the shard to 1922 s of the
-          # 2100 s cap on main and over it on a slower runner. gloo-tp-pp has no room for it either
-          # (1397 s), so test_parallel_c*gloo* runs on its own. A *gloo* file named test_p[!ap]*
-          # would match no shard; tests/test_ci_repo_cpu_shards.py reports it as dropped.
-          # Its tests spawn 2 to 8 gloo ranks each: four at once peaked at about 20 GB (summed PSS,
-          # measured locally) and the 16 GB runner was shut down mid-run, twice. Two at once peak
-          # at about 12 GB.
+          # Issue 16407 grew the cp gloo file to a third of the shard; each gloo test spawns 2 to 8
+          # ranks, four at once peaked near 20 GB on a 16 GB runner, so 2 workers; test_p[!ap]*
+          # matches no shard.
           - shard: gloo-cp
             workers: 2
             selection: >-
               tests/test_parallel_c*gloo*.py
-          # The gloo shard then ran 1331 to 2058 s of the same cap on 2026-10-29. Measured per
-          # file, native tensor parallel plus pipeline parallel are about 51% of it, everything
-          # else about 49%. A *gloo* file named test_t[!p]* or test_tp[!_]* would match neither
-          # shard; tests/test_ci_repo_cpu_shards.py reports it as dropped.
-          # Pipeline parallel then kept growing (#15655, #15656, #16167, #16417): by 2026-11-04 the
-          # combined shard ran 31 to 36 minutes per job and one run was interrupted at the 2100 s
-          # cap with 174 tests passed, so tensor and pipeline parallel run in separate shards.
+          # Pipeline parallel growth (15655, 15656, 16167, 16417) hit the 2100 s cap, so TP and PP
+          # split; a gloo file named test_t[!p]* or test_tp[!_]* matches no shard and is reported
+          # dropped.
           - shard: gloo-tp
             selection: >-
               tests/test_tp_n*gloo*.py
@@ -472,7 +489,7 @@ jobs:
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
           # sentence-transformers rides the transformers pin so it cannot raise the ceiling, and
           # makes tests/test_st_modules_json_trust_gate.py run instead of skip.
-          pip install 'transformers>=4.51,<=5.17.0' sentence-transformers
+          pip install 'transformers>=4.51,<=5.18.0' sentence-transformers
           # bitsandbytes: hard import in unsloth/models/_utils.py; recent versions import on CPU.
           pip install 'bitsandbytes>=0.45'
           # zoo from git main (needed by the conftest preload), with deps so triton is installed.

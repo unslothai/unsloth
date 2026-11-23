@@ -27,6 +27,8 @@ class Caller:
     hf_token: Optional[str] = field(default = None, repr = False)
     # Who the call answers to: an agent on /mcp, or a chat turn through the bridge.
     profile: CallerProfile = AGENT
+    # False for a chat on an inference only key, whose routes refuse every load.
+    may_load: bool = True
 
     @property
     def call_scoped(self) -> bool:

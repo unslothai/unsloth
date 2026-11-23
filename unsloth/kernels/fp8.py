@@ -10,6 +10,7 @@
 # limitations under the License.
 import os
 import functools
+import inspect
 from contextlib import nullcontext
 import torch
 import torch.nn as nn
@@ -139,16 +140,20 @@ except:
 
 def _import_torchao_blockwise_gemm():
     # torchao <= 0.17 ships blockwise_fp8_gemm under prototype; 0.18 moved it to torchao.kernel.
+    # A class is not the kernel: on Windows ROCm without torchao, unsloth_zoo stubs every torchao
+    # import with sentinel classes, and calling one raises "blockwise_fp8_gemm() takes no arguments".
     try:
         from torchao.prototype.blockwise_fp8_inference.blockwise_quantization import (
             blockwise_fp8_gemm,
         )
-        return blockwise_fp8_gemm
+        if callable(blockwise_fp8_gemm) and not isinstance(blockwise_fp8_gemm, type):
+            return blockwise_fp8_gemm
     except Exception:
         pass
     try:
         from torchao.kernel.blockwise_quantization import blockwise_fp8_gemm
-        return blockwise_fp8_gemm
+        if callable(blockwise_fp8_gemm) and not isinstance(blockwise_fp8_gemm, type):
+            return blockwise_fp8_gemm
     except Exception:
         pass
     logger.info("Unsloth: Could not find torchao blockwise_fp8_gemm")
@@ -1135,10 +1140,10 @@ def _rocm_bytes_dequant_arch(device):
 
 
 def _hip_bytes_dequant(device, out_dtype):
-    # fp16 excluded: on gfx1151 the byte decoder rounds fp16 differently from the torch loop.
-    return (
-        _HIP_FP8_BYTES_DEQUANT and out_dtype != torch.float16 and _rocm_bytes_dequant_arch(device)
-    )
+    # fp16 only with the integer rounding: the plain cast fuses into v_fma_mixlo_f16.
+    if out_dtype == torch.float16 and not _fp8_exact_f16_round(out_dtype):
+        return False
+    return _HIP_FP8_BYTES_DEQUANT and _rocm_bytes_dequant_arch(device)
 
 
 def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
@@ -2759,11 +2764,29 @@ if FP8GroupedLinear is not None:
             grad_bias = gy.sum(1).reshape(-1) if ctx.has_bias else None
             return grad_x, None, None, None, None, grad_bias
 
+    def _fp8_grouped_eval_kernel_ok():
+        """Whether transformers' grouped fp8 eval kernel is usable; newer releases need the optional `kernels` package."""
+        try:
+            import transformers.integrations.finegrained_fp8 as _ff8
+
+            if "lazy_load_kernel" not in inspect.getsource(_ff8):
+                return True
+            from transformers.integrations.hub_kernels import is_kernels_available
+
+            return bool(is_kernels_available())
+        except Exception:
+            return False
+
+    # Read once at import: inspect.getsource inside the forward cannot be traced (fullgraph compiles fail).
+    _FP8_GROUPED_EVAL_KERNEL_OK = _fp8_grouped_eval_kernel_ok()
+
     def _fp8_grouped_forward(self, x):
-        # The upstream eval path runs its own fp8e4nv kernels, so pre-sm89 has to use the
-        # dequant path here too, not only while training.
+        # The upstream eval path runs its own fp8e4nv kernels (Hub kernels on newer transformers), so pre-sm89 and
+        # an install without `kernels` use the dequant path here too, not only while training.
         if self.weight.element_size() > 1 or (
-            not self.training and not _fp8_kernel_unsupported(self.weight, torch.float8_e4m3fn)
+            not self.training
+            and not _fp8_kernel_unsupported(self.weight, torch.float8_e4m3fn)
+            and _FP8_GROUPED_EVAL_KERNEL_OK
         ):
             return _fp8_grouped_forward_orig(self, x)
         bias = self.bias if self.has_bias else None

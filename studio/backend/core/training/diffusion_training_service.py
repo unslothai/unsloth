@@ -31,6 +31,9 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from utils.paths.path_utils import drop_appledouble_metadata
 from hub.services import training_downloads
+from loggers import get_logger
+
+logger = get_logger(__name__)
 
 # Spawn (not fork): a fresh interpreter so parent CUDA/torch state never leaks into the trainer.
 _CTX = mp.get_context("spawn")
@@ -369,6 +372,8 @@ def _idle_state() -> dict[str, Any]:
         "base_model": None,
         "samples_per_second": None,
         "peak_memory_gb": None,
+        # block_swap as resolved by the trainer (blocks swapped, host / pinned GiB); None when it did not run.
+        "block_swap": None,
         # Newest checkpoint-<N> path and step; why it failed to save (Resume tooltip); resumed-from step.
         "checkpoint_path": None,
         "checkpoint_step": None,
@@ -526,6 +531,9 @@ class DiffusionTrainingService:
         self._gpu_admissions = 0
         self._proc: Any = None
         self._stop_queue: Any = None
+        # lend_vram(): request seq -> Event the pump sets on the child's acknowledgement.
+        self._vram_acks: dict[int, threading.Event] = {}
+        self._vram_seq = 0
         self._pump: Optional[threading.Thread] = None
         self._state: dict[str, Any] = _idle_state()
         # The active job's start config, scrubbed of secrets, kept for the run record.
@@ -615,6 +623,56 @@ class DiffusionTrainingService:
         finally:
             with self._lock:
                 self._gpu_admissions = max(0, self._gpu_admissions - 1)
+
+    def _send_vram_request(self, kind: str) -> Optional[threading.Event]:
+        with self._lock:
+            if self._stop_queue is None or self._proc is None or not self._proc.is_alive():
+                return None
+            self._vram_seq += 1
+            seq = self._vram_seq
+            waiter = threading.Event()
+            self._vram_acks[seq] = waiter
+            queue = self._stop_queue
+        try:
+            queue.put({"vram": kind, "seq": seq})
+        except Exception:  # noqa: BLE001 -- a closed queue: nothing running to ask
+            with self._lock:
+                self._vram_acks.pop(seq, None)
+            return None
+        waiter.seq = seq
+        return waiter
+
+    @contextlib.contextmanager
+    def lend_vram(
+        self,
+        reason: str,
+        timeout: float = 30.0,
+    ):
+        """Trainer gives back GPU memory held only for speed (DiT nf4 dequant cache) before a model
+        loads; caches nothing until the block exits, then re-sizes from free memory; waits up to
+        timeout for an ack (answered between steps), proceeds either way; yields True if acked;
+        no-op when nothing trains."""
+        waiter = self._send_vram_request("lend")
+        acked = False
+        if waiter is not None:
+            logger.info("Asking diffusion training to free its idle GPU cache (%s)", reason)
+            acked = waiter.wait(timeout)
+            with self._lock:
+                self._vram_acks.pop(waiter.seq, None)
+            if not acked:
+                logger.warning(
+                    "Diffusion training did not confirm freeing its GPU cache within %.0fs (%s)",
+                    timeout,
+                    reason,
+                )
+        try:
+            yield acked
+        finally:
+            if waiter is not None:
+                back = self._send_vram_request("return")
+                if back is not None:
+                    with self._lock:
+                        self._vram_acks.pop(back.seq, None)
 
     @_invalidates_gpu_memory("diffusion training start")
     @owned_job()
@@ -1077,6 +1135,12 @@ class DiffusionTrainingService:
     ) -> None:
         """Events from a superseded process are dropped so a stale pump cannot touch state."""
         etype = ev.get("type")
+        if etype == "vram_request_ack":
+            with self._lock:
+                waiter = self._vram_acks.get(ev.get("seq"))
+            if waiter is not None:
+                waiter.set()
+            return
         with self._lock:
             if proc is not None and self._proc is not proc:
                 return
@@ -1160,6 +1224,13 @@ class DiffusionTrainingService:
                         else f"Preparing ({stage})..."
                     ),
                 )
+            elif etype == "block_swap":
+                swap = {
+                    k: ev.get(k)
+                    for k in ("swapped_blocks", "total_blocks", "host_gib", "pinned_gib")
+                    if _finite_or_none(ev.get(k)) is not None
+                }
+                s["block_swap"] = swap or None
             elif etype == "warning":
                 # Non-fatal trainer notes; keep training state, surface the text.
                 s["message"] = str(ev.get("message", "warning"))

@@ -1175,6 +1175,85 @@ def install_stg_compile_adapter(transformer: Any) -> int:
     return count
 
 
+# LTX-2.x text masks: the connectors replace padding with learned registers and return an all-ones mask, which the DiT
+# turns into an all-zero additive bias. That bias is a no-op, but it sends every text cross-attention to the
+# mem-efficient kernel, and Inductor materialises it at [batch, heads, video tokens, text tokens] (0.9 GB per call at
+# 1280x704x121). Dropping an all-ones mask keeps the maths and lets SDPA pick flash. =0 keeps the mask.
+LTX2_FULL_MASK_ENV = "UNSLOTH_LTX2_DROP_FULL_TEXT_MASK"
+_LTX2_TRANSFORMER_CLS = "LTX2VideoTransformer3DModel"
+_LTX2_MASK_KEYS = ("encoder_attention_mask", "audio_encoder_attention_mask")
+_LTX2_MASK_MEMO = "_unsloth_full_mask_memo"
+_LTX2_MASK_HOOK = "_unsloth_full_mask_hook"
+_LTX2_MASK_DROPS = "_unsloth_full_mask_drops"
+
+
+def ltx2_full_mask_drop_disabled() -> bool:
+    raw = (os.environ.get(LTX2_FULL_MASK_ENV) or "").strip().lower()
+    return raw in ("0", "off", "false", "no")
+
+
+def _ltx2_mask_all_ones(module: Any, mask: Any) -> bool:
+    """Whether a 2-D multiplicative text mask is 1 everywhere, memoised per tensor and version (one host read per
+    render: the pipeline passes the same mask to every step)."""
+    import torch
+
+    version = "inference" if mask.is_inference() else mask._version
+    memo = module.__dict__.setdefault(_LTX2_MASK_MEMO, [])
+    for held, held_version, verdict in memo:
+        if held is mask and held_version == version:
+            return verdict
+    verdict = bool(mask.numel() > 0 and bool(torch.all(mask == 1).item()))
+    memo.insert(0, (mask, version, verdict))
+    del memo[4:]
+    return verdict
+
+
+def _ltx2_full_mask_pre_hook(module: Any, args: Any, kwargs: dict) -> Any:
+    """Replace an all-ones text mask by None; any other mask, or a positional one, is passed through unchanged."""
+    try:
+        import torch
+
+        dropped = 0
+        for key in _LTX2_MASK_KEYS:
+            mask = kwargs.get(key)
+            # 2-D only: that is the multiplicative mask the DiT turns into a bias; 3-D+ is already a bias.
+            if torch.is_tensor(mask) and mask.dim() == 2 and _ltx2_mask_all_ones(module, mask):
+                kwargs[key] = None
+                dropped += 1
+        if dropped:
+            setattr(module, _LTX2_MASK_DROPS, getattr(module, _LTX2_MASK_DROPS, 0) + dropped)
+        return args, kwargs
+    except Exception:  # noqa: BLE001 - optimisation only; never break the forward
+        return None
+
+
+def install_ltx2_full_mask_drop(pipe: Any, logger: Any = None) -> int:
+    """Hook every LTX-2.x DiT of ``pipe`` once; returns the DiTs hooked (0 when switched off or not LTX-2.x)."""
+    if ltx2_full_mask_drop_disabled():
+        return 0
+    try:
+        from .diffusion_autoopt.targets import denoiser_dits
+        dits = denoiser_dits(pipe)
+    except Exception:  # noqa: BLE001
+        dits = [getattr(pipe, "transformer", None)]
+    count = 0
+    for dit in dits:
+        if dit is None or type(dit).__name__ != _LTX2_TRANSFORMER_CLS:
+            continue
+        if getattr(dit, _LTX2_MASK_HOOK, None) is None:
+            try:
+                handle = dit.register_forward_pre_hook(_ltx2_full_mask_pre_hook, with_kwargs = True)
+                setattr(dit, _LTX2_MASK_HOOK, handle)
+            except Exception:  # noqa: BLE001 - optimisation only
+                continue
+        count += 1
+    if count and logger is not None:
+        logger.info(
+            "video.ltx2: all-ones text masks dropped, text cross-attention runs without a bias"
+        )
+    return count
+
+
 def ltx23_verbatim_sigmas(pipe: Any) -> Any:
     """Disable scheduler sigma rewrites (dynamic shift, terminal stretch) so sigmas pass through intact."""
     import contextlib
@@ -1327,9 +1406,11 @@ def load_ltx23_transformer(
     if is_gguf:
         from .diffusion_gguf_exact import install_exact_dequant
         from .diffusion_gguf_lowbit import install_lowbit_iq
+        from .diffusion_gguf_mmap import install_gguf_mmap
 
         install_lowbit_iq()
         install_exact_dequant()
+        install_gguf_mmap()
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     elif device is not None:
         # Else the meta load copies every tensor back to the host.
@@ -1635,9 +1716,11 @@ def _assemble_ltx23_pipeline(
         if is_gguf:
             from .diffusion_gguf_exact import install_exact_dequant
             from .diffusion_gguf_lowbit import install_lowbit_iq
+            from .diffusion_gguf_mmap import install_gguf_mmap
 
             install_lowbit_iq()  # before the read: diffusers' reader refuses unknown types
             install_exact_dequant()
+            install_gguf_mmap()
         state = load_single_file_checkpoint(str(checkpoint_path))
     groups = _split_checkpoint(state)
     del state

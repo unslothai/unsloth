@@ -45,9 +45,10 @@ def test_renders_text_in_several_scripts_with_title_metadata():
         assert document.metadata["title"] == "My chat"
 
 
-def test_user_messages_keep_line_breaks_and_indentation():
+@pytest.mark.parametrize("role", ["user", "system"])
+def test_typed_messages_keep_line_breaks_and_indentation(role):
     body = (
-        '<section class="message user"><h3 class="role">User</h3>'
+        f'<section class="message {role}"><h3 class="role">{role}</h3>'
         '<div class="content">def f():\n    return 1\na,b\n1,2</div></section>'
     )
     response = _client().post("/api/chat-export/pdf", json = {"title": "x", "html": body})
@@ -116,7 +117,7 @@ def test_narrow_chats_keep_their_font_size():
         sizes = {
             span["size"]
             for block in document[0].get_text("dict")["blocks"]
-            for line in block["lines"]
+            for line in block.get("lines", [])
             for span in line["spans"]
             if "plain words" in span["text"]
         }
@@ -146,6 +147,32 @@ def test_a_wide_table_shrinks_only_its_own_page():
     assert any(max(page) < 10.5 for page in sizes if page)
 
 
+def test_links_keep_their_addresses():
+    columns = "".join(f"<th>column{index}</th>" for index in range(13))
+    paragraphs = "".join(f"<p>para {index}</p>" for index in range(90))
+    body = (
+        '<p><a href="https://example.com/x">Example</a> <a href="#fn1">note</a></p>'
+        '<p><a href="https://example.com/r">one</a> gap <a href="https://example.com/r">two</a></p>'
+        f'{paragraphs}<table><tr>{columns}<th><a href="https://example.com/t">cell</a></th></tr></table>'
+        f'{paragraphs}<p><a href="mailto:a@example.com">mail</a></p>'
+    )
+    response = _client().post("/api/chat-export/pdf", json = {"title": "x", "html": body})
+    assert response.status_code == 200
+    with pymupdf.open("pdf", response.content) as document:
+        links = [
+            (link["uri"], page.get_textbox(link["from"] + (-1, -1, 1, 1)).strip())
+            for page in document
+            for link in page.get_links()
+        ]
+    assert links == [
+        ("https://example.com/x", "Example"),
+        ("https://example.com/r", "one"),
+        ("https://example.com/r", "two"),
+        ("https://example.com/t", "cell"),
+        ("mailto:a@example.com", "mail"),
+    ]
+
+
 def test_only_data_images_embed(tmp_path):
     png = io.BytesIO()
     pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 4, 4), False)
@@ -160,7 +187,7 @@ def test_only_data_images_embed(tmp_path):
         )
         assert response.status_code == 200
         with pymupdf.open("pdf", response.content) as document:
-            return len(document[0].get_images())
+            return sum(1 for image in document[0].get_images() if image[2:4] == (4, 4))
 
     assert image_count(f"data:image/png;base64,{encoded}") == 1
     assert image_count(str(local)) == 0
@@ -230,3 +257,36 @@ def test_requires_authentication():
 def test_registered_under_api_chat_export():
     import routes
     assert routes.chat_export_router is chat_export.router
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "<pre><code>const x = 1;</code></pre>",
+        "<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>",
+    ],
+)
+def test_backgrounds_do_not_repeat_on_later_pages(block):
+    from core.chat_pdf import render_chat_pdf
+    body = block + "".join(
+        '<section class="message"><h3 class="role">Assistant</h3>' "<p>Answer text.</p></section>"
+        for _ in range(25)
+    )
+    with pymupdf.open("pdf", render_chat_pdf("Chat", body)) as document:
+        assert len(document) > 1
+        assert any(drawing["fill"] for drawing in document[0].get_drawings())
+        for page in list(document)[1:]:
+            assert not page.get_drawings()
+
+
+def test_code_background_continues_with_code_across_pages():
+    from core.chat_pdf import render_chat_pdf
+    body = "<pre><code>" + "".join(f"line {index}\n" for index in range(150)) + "</code></pre>"
+    with pymupdf.open("pdf", render_chat_pdf("Long code", body)) as document:
+        assert len(document) >= 3
+        assert "line 149" in document[-1].get_text()
+        for page in document:
+            assert any(
+                drawing["fill"] and drawing["rect"].width > 400 and drawing["rect"].height > 20
+                for drawing in page.get_drawings()
+            )

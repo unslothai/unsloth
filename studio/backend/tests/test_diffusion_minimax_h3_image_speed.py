@@ -28,6 +28,13 @@ from core.inference import video_minimax_h3_attn as A  # noqa: E402
 
 
 @pytest.fixture(autouse = True)
+def _picture_one_at_its_own_size(monkeypatch):
+    """Picture 1 keeps its own size here (the reference edit workflow's 4 MP rescale would make every CPU edit render
+    a 4 MP reference); the tests of that rescale turn it back on."""
+    monkeypatch.setenv("UNSLOTH_H3_IMAGE_SOURCE_RESIZE", "0")
+
+
+@pytest.fixture(autouse = True)
 def _restore_backend():
     from diffusers.models.attention_dispatch import _AttentionBackendRegistry
 
@@ -263,6 +270,94 @@ def test_the_streamed_tier_installs_the_int8_gemm_with_the_device(
     assert bool(streamed) == want
     if want:
         assert str(streamed[0]) == "cuda"
+
+
+@pytest.mark.parametrize(
+    "placement, streamer, gemm_env, ffn_env, want",
+    [
+        ("stream", "pinned", None, None, True),
+        ("stream", "pinned", None, "0", False),
+        ("stream", "pinned", "0", None, False),
+        ("stream", "pageable", None, None, False),
+        ("resident", None, None, None, True),
+    ],
+)
+def test_the_fused_swiglu_installs_on_every_int8_gemm_route(
+    monkeypatch, placement, streamer, gemm_env, ffn_env, want
+):
+    """The fused SwiGLU follows the int8 GEMM: resident and streamed (the pinned streamer keeps the swapped Linears'
+    parameters); no GEMM, the pageable streamer or UNSLOTH_H3_FUSED_SWIGLU=0 keep the stock MLP."""
+    from core.inference import diffusion_attention as D
+    from core.inference import diffusion_int8_gemm as G
+    from core.inference import video_minimax_h3_ffn as F
+    from core.inference.diffusion_minimax_h3_image import ModuleListStreamer
+
+    monkeypatch.setattr(G, "install", lambda t, logger = None, offload_active = False, device = None: 1)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(D, "select_attention_backend", lambda *a, **k: None)
+    monkeypatch.setattr(D, "apply_attention_backend", lambda *a, **k: None)
+    monkeypatch.setattr(A, "h3_attention_backend", lambda backend, **k: backend)
+    monkeypatch.setattr(S, "_fuse_qkv", lambda t, logger = None: False)
+    seen = []
+    real = F.install
+    monkeypatch.setattr(
+        F, "install", lambda t, device = None, logger = None: seen.append(device) or real(t)
+    )
+    for env, value in ((S.STREAMED_GEMM_ENV, gemm_env), (F.FUSED_SWIGLU_ENV, ffn_env)):
+        if value is None:
+            monkeypatch.delenv(env, raising = False)
+        else:
+            monkeypatch.setenv(env, value)
+    pipe = type("P", (), {})()
+    pipe.transformer = _model()
+    pipe._unsloth_h3_streamers = []
+    if streamer is not None:
+        s = (
+            ModuleListStreamer.__new__(ModuleListStreamer)
+            if streamer == "pageable"
+            else types.SimpleNamespace()
+        )
+        s._unsloth_role = "transformer"
+        pipe._unsloth_h3_streamers.append(s)
+    plan = type("Plan", (), {"placement": placement})()
+    levers = S._install(pipe, plan, "cuda", None)
+    gemm = "h3_int8_gemm" if placement == "resident" else "h3_int8_gemm_streamed"
+    assert (gemm in levers) == (gemm_env != "0" and streamer != "pageable")
+    assert ("h3_fused_swiglu" in levers) == want
+
+
+@pytest.mark.parametrize("env, want", [("1", True), (None, False), ("0", False)])
+def test_forced_int8_attention_installs_over_a_default_sdpa_pick(monkeypatch, env, want):
+    """sm75 / gfx1151 keep default SDPA (no cuDNN / flash pick): the INT8 env switch still installs the strided
+    processors (stock q/k norm + RoPE) and engages the kernel on them; without the switch nothing changes there."""
+    from core.inference import diffusion_attention as D
+    from core.inference import diffusion_int8_attention as I
+
+    if env is None:
+        monkeypatch.delenv(I.INT8_ATTENTION_ENV, raising = False)
+    else:
+        monkeypatch.setenv(I.INT8_ATTENTION_ENV, env)
+    monkeypatch.setenv(S.STREAMED_GEMM_ENV, "0")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(D, "select_attention_backend", lambda *a, **k: None)
+    monkeypatch.setattr(D, "apply_attention_backend", lambda *a, **k: None)
+    monkeypatch.setattr(A, "h3_attention_backend", lambda backend, **k: backend)
+    engaged = []
+    monkeypatch.setattr(
+        I,
+        "install_int8_attention",
+        lambda t, device = None, dtype = None, force = False, logger = None: engaged.append(force) or 1,
+    )
+    pipe = type("P", (), {})()
+    pipe.transformer = _model()
+    pipe._unsloth_h3_streamers = []
+    plan = type("Plan", (), {"placement": "stream"})()
+    levers = S._install(pipe, plan, "cuda", None)
+    assert ("h3_strided_attn" in levers) == want and ("h3_int8_attention" in levers) == want
+    assert A.strided_attention_count(pipe.transformer) == (4 if want else 0)
+    assert engaged == ([True] if want else [])
+    procs = [getattr(m, "processor", None) for m in pipe.transformer.modules()]
+    assert not any(getattr(p, "_unsloth_qk_rope", False) for p in procs)
 
 
 def test_compile_is_opt_in(monkeypatch):

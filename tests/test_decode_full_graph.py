@@ -66,8 +66,7 @@ def test_full_graph_matches_eager(name, load_in_4bit, bsz, monkeypatch):
     full = _forced(model, enc, tokens, True, True, monkeypatch)
     stats = G.stats(_causal(model))
     assert stats["disabled"] is None, stats
-    # Every step but the eager ones (the first fills the cache, a cache growth reallocates it)
-    # was one whole-step replay.
+    # Non-eager steps are whole-step replays; eager steps are the first fill and cache growth.
     replays = stats["replays"] - before.get("replays", 0)
     eager_steps = stats["eager_steps"] - before.get("eager_steps", 0)
     assert replays + eager_steps == tokens.shape[1] - 1, stats
@@ -118,8 +117,7 @@ def test_full_graph_generate_and_lora(monkeypatch):
     stats = G.stats(_causal(model))
     assert stats["disabled"] is None, stats
     assert stats["replays"] - before.get("replays", 0) == 40 - 2
-    # Greedy tokens may part on a near-tie; compare the first step that diverges onwards only
-    # through its logits, which see the same prefix until then.
+    # Greedy tokens may part on a near-tie; from the first divergence on, compare logits only.
     assert _kl(eager[:5], full[:5]) < 1e-3
 
 

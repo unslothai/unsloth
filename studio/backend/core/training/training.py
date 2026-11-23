@@ -261,6 +261,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "training_type": values.get("training_type", "LoRA/QLoRA"),
         "hf_token": values.get("hf_token", ""),
         "load_in_4bit": values.get("load_in_4bit", True),
+        "load_in_4bit_forced_16bit": bool(values.get("load_in_4bit_forced_16bit", False)),
         "max_seq_length": values.get("max_seq_length", 2048),
         "vision_image_size": values.get("vision_image_size"),
         "hf_dataset": values.get("hf_dataset", ""),
@@ -2785,6 +2786,13 @@ class TrainingBackend:
         with self._lock:
             return self._run_finished_locked()
 
+    def wait_for_finished_worker(self, timeout: float = _STOP_GRACE_S) -> None:
+        with self._lock:
+            proc = self._proc
+            if proc is None or not self._run_finished_locked():
+                return
+        proc.join(timeout = timeout)
+
     def is_training_active(self) -> bool:
         # A spawn past its sidecar-swap recheck counts as active even before _proc is recorded.
         if getattr(self, "_new_job_spawn_id", None) is not None or getattr(
@@ -3364,7 +3372,7 @@ class TrainingBackend:
                 db_action_kwargs = {
                     "status": "stopped" if stopped else "completed",
                     "output_dir": self._output_dir,
-                    "clear_output_dir": self._cancel_requested,
+                    "clear_output_dir": self._cancel_requested or event.get("saved") is False,
                     "expected_job_id": self.current_job_id,
                 }
                 self._terminal_finalize_payload = dict(db_action_kwargs)

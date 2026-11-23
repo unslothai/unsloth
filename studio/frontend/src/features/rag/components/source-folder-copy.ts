@@ -9,3 +9,53 @@ export function sourceFolderUnavailableMessage(isDesktop: boolean): string {
     ? "Folder selection is unavailable with this connection. You can still upload documents."
     : "Open Unsloth Desktop to add a source folder. You can still upload documents.";
 }
+
+export const FOLDER_SYNC_HELP =
+  "Synced files have been read and indexed (or set aside because they can't be), out of every supported file found in the folder. Chats can search a file as soon as it is synced.";
+
+/** Null before the scan counts the folder; processedFiles would stop short of the total. */
+export function folderSyncProgress(job: {
+  discoveredFiles?: number | null;
+  syncedFiles?: number | null;
+}): { synced: number; discovered: number } | null {
+  const discovered = job.discoveredFiles ?? 0;
+  if (job.syncedFiles == null || discovered <= 0) return null;
+  return { synced: Math.min(job.syncedFiles, discovered), discovered };
+}
+
+export function folderSyncLabel(synced: number, discovered: number): string {
+  return `${synced} of ${discovered} file${discovered === 1 ? "" : "s"} synced`;
+}
+
+export function linkedFolderDocumentsSummary(
+  name: string,
+  total: number,
+  indexing: number,
+): { label: string; title: string } {
+  const files = (n: number) => `${n} file${n === 1 ? "" : "s"}`;
+  if (indexing <= 0) {
+    return {
+      label: files(total),
+      title: `${name}: ${files(total)}, kept in sync and shared with every chat in this project. Manage it in the project's Sources tab.`,
+    };
+  }
+  const ready = total - indexing;
+  return {
+    label: `${ready} ready · ${indexing} indexing`,
+    title: `${name}: ${ready} of the ${files(total)} added from this folder so far ${ready === 1 ? "is" : "are"} ready to search and ${indexing} ${indexing === 1 ? "is" : "are"} still being indexed. The folder sync adds more files as it reaches them; the project's Sources tab shows how far it has got.`,
+  };
+}
+
+/** Floored so a chip still indexing never reads 100%. */
+export function runningPercent(progress: number): number {
+  const value = progress <= 1 ? progress * 100 : progress;
+  return Math.max(0, Math.min(99, Math.floor(value)));
+}
+
+/** Only while documents are still embedding; failed and legacy empty rows count on neither side. */
+export function embeddedSummary(kb: { indexedCount?: number; indexingCount?: number }): string {
+  const indexing = kb.indexingCount ?? 0;
+  if (!indexing || kb.indexedCount == null) return "";
+  const total = kb.indexedCount + indexing;
+  return ` · ${kb.indexedCount} of ${total} embedded (${Math.floor((kb.indexedCount * 100) / total)}%)`;
+}

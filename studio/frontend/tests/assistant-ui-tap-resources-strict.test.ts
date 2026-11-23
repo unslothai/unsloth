@@ -4,9 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// tap reads NODE_ENV at import: in development a root mounts in strict mode, running its effects,
-// cleaning them up (which unmounts every tapResources child) and running them again, as the dev
-// server does under React's StrictMode.
+// Read NODE_ENV at import: in development, roots run strict-mode effects, unmount and run again.
 process.env.NODE_ENV = "development";
 delete (globalThis as { MessageChannel?: unknown }).MessageChannel;
 const { createResourceRoot, flushResourcesSync, resource, tapEffect, tapResources: upstreamTapResources, tapState, withKey } = await import(

@@ -13,11 +13,14 @@ import json
 import secrets
 import threading
 import time
+import unicodedata
 from typing import Any, AsyncGenerator, Awaitable, Callable
 from urllib.parse import urlparse
 
 import httpx
 
+from core.inference.http_stream import aiter_sse_lines
+from core.inference.message_content import content_to_text
 from core.inference import openai_codex_auth as codex_auth
 from core.inference.openai_codex_auth import (
     OPENAI_CODEX_CLIENT_VERSION,
@@ -183,6 +186,22 @@ def _chunk(
     if usage is not None:
         body["usage"] = usage
     return "data: " + json.dumps(body, separators = (",", ":"))
+
+
+def _needs_join_space(prev: str, nxt: str) -> bool:
+    """A cut at a token boundary drops the next word's leading space; CJK and openers take none."""
+    return (
+        nxt.isalnum()
+        and not prev.isspace()
+        and prev not in "([{<\"'`/\\-_@#$"
+        and unicodedata.east_asian_width(prev) not in "WF"
+        and unicodedata.east_asian_width(nxt) not in "WF"
+    )
+
+
+def _estimated_tokens(text: str) -> float:
+    ascii_chars = len(text.encode("ascii", "ignore"))
+    return ascii_chars / 4 + len(text) - ascii_chars
 
 
 def _create_http_client() -> httpx.AsyncClient:
@@ -608,6 +627,10 @@ async def _stream_response(
 
 _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 _MAX_TRANSIENT_RETRIES = 2
+_CONTINUE_PROMPT = (
+    "Your previous reply was cut off. Continue it from exactly where it stopped, "
+    "without repeating anything already written."
+)
 
 
 def _is_terminal_quota(detail: str | None) -> bool:
@@ -785,7 +808,13 @@ class OpenAICodexClient:
         tool_choice: Any,
         response_format: dict[str, Any] | None = None,
         cancel_event: threading.Event | None = None,
+        continue_final_message: bool = False,
     ) -> AsyncGenerator[str, None]:
+        partial_tail = ""
+        if continue_final_message and messages and messages[-1].get("role") == "assistant":
+            # The Responses endpoint has no assistant prefill, so a resumed reply would start over.
+            partial_tail = content_to_text(messages[-1].get("content"))[-1:]
+            messages = [*messages, {"role": "user", "content": _CONTINUE_PROMPT}]
         instructions, input_items = _responses_input(messages)
         conversation_id = thread_id or secrets.token_urlsafe(24)
         affinity = hashlib.sha256(
@@ -857,6 +886,7 @@ class OpenAICodexClient:
         }
         completion_id = f"chatcmpl-codex-{request_id}"
         emitted_terminal, saw_tool_call = False, False
+        output_tokens = 0.0
         reasoning_items: list[dict[str, Any]] = []
         cancel_task: asyncio.Task | None = None
         try:
@@ -881,7 +911,7 @@ class OpenAICodexClient:
                     cancel_task = asyncio.create_task(_close_on_cancel())
                 event_name, tool_indexes = "", {}
                 try:
-                    async for line in response.aiter_lines():
+                    async for line in aiter_sse_lines(response):
                         if cancel_event is not None and cancel_event.is_set():
                             return
                         if not line:
@@ -908,7 +938,12 @@ class OpenAICodexClient:
                             delta = event.get("delta")
                             if not isinstance(delta, str):
                                 raise CodexTransportError("ChatGPT returned a malformed stream.")
+                            if partial_tail and delta:
+                                if _needs_join_space(partial_tail, delta[0]):
+                                    delta = " " + delta
+                                partial_tail = ""
                             yield _chunk(completion_id, model, {"content": delta})
+                            output_tokens += _estimated_tokens(delta)
                         elif kind in (
                             "response.reasoning_summary_text.delta",
                             "response.reasoning_text.delta",
@@ -916,6 +951,7 @@ class OpenAICodexClient:
                             delta = event.get("delta")
                             if isinstance(delta, str):
                                 yield _chunk(completion_id, model, {"reasoning_content": delta})
+                                output_tokens += _estimated_tokens(delta)
                         elif kind == "response.output_item.added":
                             item = event.get("item")
                             if isinstance(item, dict) and item.get("type") == "function_call":
@@ -1035,6 +1071,19 @@ class OpenAICodexClient:
                             raise CodexTransportError(
                                 f"ChatGPT Codex generation failed{f' ({code})' if code else ''}."
                             )
+                        if max_tokens is not None and output_tokens >= max_tokens:
+                            yield _chunk(
+                                completion_id,
+                                model,
+                                (
+                                    {"extra_content": {"openai_codex_reasoning": reasoning_items}}
+                                    if reasoning_items
+                                    else {}
+                                ),
+                                "length",
+                            )
+                            emitted_terminal = True
+                            break
                 except httpx.HTTPError:
                     if cancel_event is not None and cancel_event.is_set():
                         return

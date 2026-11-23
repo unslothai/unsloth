@@ -116,6 +116,17 @@ async function isPasswordChangeRequiredResponse(
   }
 }
 
+// A `?q=` chat open when its token went stale reopens after sign-in; an account switch clears
+// session storage, so it never reaches another account. Names match query-draft.ts (account-auth-redirect.test.ts).
+function rememberOpenQueryChat(): void {
+  try {
+    const nonce = new URLSearchParams(window.location.search).get("new");
+    if (nonce?.startsWith("query-")) window.sessionStorage.setItem("chat-query-resume", nonce);
+  } catch {
+    // Only the reopen is lost.
+  }
+}
+
 async function redirectToAuth(passwordChangeRequired = false): Promise<void> {
   if (isRedirecting) return;
   isRedirecting = true;
@@ -146,6 +157,7 @@ async function redirectToAuth(passwordChangeRequired = false): Promise<void> {
     isRedirecting = false;
     return;
   }
+  rememberOpenQueryChat();
   window.location.href = target;
 }
 
@@ -384,6 +396,13 @@ async function runRefresh(
         return "unavailable";
       }
       const stale = superseded();
+      // The server re-rotates a just-spent token, so a racing peer's pair may land first: use it.
+      if (
+        stale === "unavailable" &&
+        peerSessionMark !== undefined &&
+        (await peerRotated(refreshToken, startGeneration, peerSessionMark))
+      )
+        return "ok";
       if (stale) return stale;
       storeAuthTokens(payload.access_token, payload.refresh_token, preserveSessionMark);
       setMustChangePassword(payload.must_change_password ?? false);

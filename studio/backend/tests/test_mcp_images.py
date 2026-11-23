@@ -379,7 +379,8 @@ def test_the_data_url_history_is_capped_too():
     messages = promote_history(turns, vision = True)
     parts = mcp_images.count_image_parts(messages, "image_url")
 
-    assert parts == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    assert parts == mcp_images.stepped_keep(len(turns) // 2, mcp_images.MAX_TOTAL_MODEL_IMAGES)
+    assert parts <= mcp_images.MAX_TOTAL_MODEL_IMAGES
 
 
 def test_a_live_image_turn_merges_into_a_trailing_nudge():
@@ -522,6 +523,33 @@ def test_an_mcp_named_result_is_still_promoted_on_replay():
 
     assert out[0]["content"] == "[1 image returned]"
     assert out[1]["content"][1]["type"] == "image_url"
+
+
+def test_an_imported_claude_code_read_image_reaches_the_model():
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "toolu_1",
+                    "type": "function",
+                    "function": {"name": "Read", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "toolu_1",
+            "name": "Read",
+            "content": _envelope('{"result":""}', _image()),
+        },
+    ]
+
+    out = promote_history(history, vision = True)
+
+    assert out[1]["content"] == '{"result":""}'
+    assert out[2]["content"][1]["type"] == "image_url"
 
 
 def test_an_unnamed_tool_result_keeps_working():
@@ -767,7 +795,9 @@ def test_the_replay_cap_still_bounds_what_promotion_adds():
 
     out = promote_history(turns, vision = True)
 
-    assert mcp_images.count_image_parts(out, "image_url") == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    assert mcp_images.count_image_parts(out, "image_url") == mcp_images.stepped_keep(
+        len(turns) // 2, mcp_images.MAX_TOTAL_MODEL_IMAGES
+    )
 
 
 def test_the_sniff_charges_every_format_promotion_can_decode():
@@ -980,7 +1010,7 @@ def test_a_replayed_history_is_not_decoded_past_what_the_cap_can_keep():
     decoded: list = []
     real = _png()
 
-    def _counting_url(data):
+    def _counting_url(data, as_taken = False):
         decoded.append(data)
         return "data:image/png;base64," + real
 
@@ -1136,7 +1166,7 @@ def test_a_live_result_of_unreadable_entries_bounds_its_decode_attempts():
     entries could hold a worker on Pillow for a turn that shows four pictures at most."""
     attempts: list = []
 
-    def _counting_url(data):
+    def _counting_url(data, as_taken = False):
         attempts.append(data)
         return None
 
@@ -1159,7 +1189,7 @@ def test_the_allowance_still_looks_past_a_run_of_rejects():
     """The bound must still look past rejects: valid PNGs sit behind formats Pillow rejects."""
     seen: list = []
 
-    def _url(data):
+    def _url(data, as_taken = False):
         seen.append(data)
         return None if data.startswith("bad") else "data:image/png;base64," + _png()
 
@@ -1203,7 +1233,7 @@ def test_a_parallel_batch_shares_one_decode_attempt_budget():
     """Decode attempts share one budget across a parallel batch, so malformed results cannot multiply it."""
     attempts: list = []
     original = mcp_images._png_data_url
-    mcp_images._png_data_url = lambda data: (attempts.append(data), None)[1]
+    mcp_images._png_data_url = lambda data, as_taken = False: (attempts.append(data), None)[1]
     try:
         results = [
             [{"data": f"junk{r}-{i}", "mimeType": "image/png"} for i in range(8)] for r in range(25)
@@ -1220,7 +1250,7 @@ def test_a_parallel_batch_shares_one_decode_attempt_budget():
 def test_the_shared_budget_still_reaches_a_good_result_behind_bad_ones():
     """The shared decode budget must still reach real pictures behind a failing newest result."""
 
-    def _url(data):
+    def _url(data, as_taken = False):
         return None if data.startswith("bad") else "data:image/png;base64," + _png()
 
     original = mcp_images._png_data_url
@@ -1791,7 +1821,7 @@ def test_pixels_follow_their_own_marker_not_a_queue():
 def test_the_local_batch_shares_one_decode_attempt_budget():
     attempts: list = []
     original = mcp_images._png_data_url
-    mcp_images._png_data_url = lambda data: (attempts.append(data), None)[1]
+    mcp_images._png_data_url = lambda data, as_taken = False: (attempts.append(data), None)[1]
     try:
         results = [
             [{"data": f"j{r}-{i}", "mimeType": "image/png"} for i in range(8)] for r in range(25)
@@ -2090,7 +2120,7 @@ def test_a_gguf_replay_keeps_its_allowance_beside_the_attachment():
     """llama-server's limit is its context window, not an image cap; the live GGUF loop never
     reserved the attachment's slot, so replay must not lose a picture to it."""
     history = [{"role": "user", "content": "start"}]
-    for r in range(9):
+    for r in range(mcp_images.MAX_TOTAL_MODEL_IMAGES):
         history += [
             {
                 "role": "assistant",
@@ -2120,10 +2150,11 @@ def test_a_gguf_replay_keeps_its_allowance_beside_the_attachment():
         parts = mcp_images._all_image_url_parts(out)
         return sum(1 for part in parts if part["image_url"]["url"].startswith("data:image/png"))
 
+    limit = mcp_images.MAX_TOTAL_MODEL_IMAGES
     gguf = promote_history(history, vision = True)
-    assert promoted_parts(gguf) == mcp_images.MAX_TOTAL_MODEL_IMAGES + 1
+    assert promoted_parts(gguf) == limit + 1
     provider = promote_history(history, vision = True, reserve_for_caller = True)
-    assert promoted_parts(provider) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    assert promoted_parts(provider) == mcp_images.stepped_keep(limit, limit - 1) + 1
 
 
 def test_a_legacy_attachment_displaces_a_merged_replay_marker():
@@ -2195,9 +2226,9 @@ def test_the_client_tool_rebuild_decodes_each_picture_once(monkeypatch):
     decoded: list = []
     original = mcp_images._png_data_url
 
-    def counting(data):
+    def counting(data, as_taken = False):
         decoded.append(data[:16])
-        return original(data)
+        return original(data, as_taken)
 
     monkeypatch.setattr(mcp_images, "_png_data_url", counting)
     call = _client_tool_route(
@@ -2245,9 +2276,9 @@ def test_the_caller_reservation_is_taken_before_any_replay_decode(monkeypatch):
     decoded: list = []
     original = mcp_images._png_data_url
 
-    def counting(data):
+    def counting(data, as_taken = False):
         decoded.append(1)
-        return original(data)
+        return original(data, as_taken)
 
     monkeypatch.setattr(mcp_images, "_png_data_url", counting)
     attachments = [
@@ -2543,8 +2574,8 @@ def test_the_content_part_extractor_keeps_marker_text_and_hops_the_split(monkeyp
         assert "await _extract_content_parts_async(" in body, fn
         assert "= _extract_content_parts(" not in body, fn
     chat = inspect.getsource(inference_route.produce_openai_chat_completions)
-    assert chat.count("await _extract_content_parts_async(") == 1
-    assert chat.count("keep_tool_images = True") == 3
+    assert chat.count("await _extract_content_parts_async(") == 2
+    assert chat.count("keep_tool_images = True") == 4
 
 
 def test_the_note_counts_only_the_tools_pictures_in_a_mixed_turn():
@@ -2705,3 +2736,266 @@ def test_local_replay_does_not_add_a_second_image_to_an_attachment_turn():
     assert pixels == [attachment]
     assert messages[-1] is user
     assert len(mcp_images.image_marker_parts(messages)) == 1
+
+
+def _distinct_image(i: int) -> dict:
+    return _image(_png(size = (8 + i, 8)))
+
+
+def _screenshot_chain(
+    calls: int,
+    name: str = "computer",
+    limit = mcp_images.MAX_TOTAL_MODEL_IMAGES,
+):
+    """The live GGUF loop over a chain of one-screenshot calls, and the history a follow-up replays."""
+    conversation = [{"role": "user", "content": "do the task"}]
+    history = [{"role": "user", "content": "do the task"}]
+    owned: list = []
+    prompts = []
+    for i in range(calls):
+        call = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": f"c{i}", "type": "function", "function": {"name": name, "arguments": "{}"}}
+            ],
+        }
+        image = _distinct_image(i)
+        conversation += [call, {"role": "tool", "tool_call_id": f"c{i}", "content": "ok"}]
+        history += [
+            call,
+            {"role": "tool", "tool_call_id": f"c{i}", "content": _envelope("ok", image)},
+        ]
+        mcp_images.append_image_turn(
+            conversation, [[image]], per_result = True, owned = owned, limit = limit
+        )
+        prompts.append(json.loads(json.dumps(conversation)))
+    return conversation, history, prompts
+
+
+def _urls(conversation) -> list:
+    return [part["image_url"]["url"] for part in mcp_images._all_image_url_parts(conversation)]
+
+
+def test_stepped_keep_drops_a_step_at_a_time():
+    keep = [mcp_images.stepped_keep(n, 8, 4) for n in range(0, 18)]
+    assert keep == [0, 1, 2, 3, 4, 5, 6, 7, 8, 5, 6, 7, 8, 5, 6, 7, 8, 5]
+    assert mcp_images.stepped_keep(5, 2, 4) == 2
+    assert mcp_images.stepped_keep(5, 0) == 0
+
+
+def test_a_screenshot_chain_stays_append_only_between_drops():
+    """#18231: dropping the oldest picture per call shifted the prompt from the first image on,
+    so llama-server re-prefilled the whole chain on every call past the cap."""
+    _conversation, _history, prompts = _screenshot_chain(20)
+    shifted = [
+        index + 1
+        for index in range(1, len(prompts))
+        if prompts[index][: len(prompts[index - 1])] != prompts[index - 1]
+    ]
+    assert shifted == [9, 13, 17]
+    assert all(len(_urls(prompt)) <= mcp_images.MAX_TOTAL_MODEL_IMAGES for prompt in prompts)
+
+
+@pytest.mark.parametrize("calls", [3, 8, 9, 11, 12, 13, 16, 17, 23])
+def test_a_follow_up_replays_the_pictures_the_loop_last_sent(calls):
+    conversation, history, _prompts = _screenshot_chain(calls)
+    history += [{"role": "assistant", "content": "done"}, {"role": "user", "content": "next"}]
+
+    replay = promote_history(history, vision = True)
+
+    assert _urls(replay) == _urls(conversation)
+
+
+def test_a_frontend_bounded_replay_keeps_the_loop_cut():
+    """The frontend uploads stepped_keep(total); recounting that must keep all of it."""
+    limit = mcp_images.MAX_TOTAL_MODEL_IMAGES
+    for total in range(0, 40):
+        sent = mcp_images.stepped_keep(total, limit)
+        assert mcp_images.stepped_keep(sent, limit) == sent, total
+
+
+def test_a_parallel_batch_past_the_cap_replays_what_the_loop_admitted():
+    """Replay must cap each parallel batch like the live loop, or a follow-up steps from an unheld count."""
+    results = [[_distinct_image(3 * r + i) for i in range(3)] for r in range(3)]
+    call = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": f"c{r}",
+                "type": "function",
+                "function": {"name": "mcp__s__shot", "arguments": "{}"},
+            }
+            for r in range(3)
+        ],
+    }
+    conversation = [{"role": "user", "content": "go"}, call]
+    history = [{"role": "user", "content": "go"}, call]
+    for r, images in enumerate(results):
+        conversation.append({"role": "tool", "tool_call_id": f"c{r}", "content": "[3]"})
+        history.append(
+            {"role": "tool", "tool_call_id": f"c{r}", "content": _envelope("[3]", *images)}
+        )
+    mcp_images.append_image_turn(conversation, results, per_result = True, owned = [])
+    history += [{"role": "assistant", "content": "done"}, {"role": "user", "content": "next"}]
+
+    assert mcp_images.replay_image_total(history) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    assert _urls(promote_history(history, vision = True)) == _urls(conversation)
+
+
+def test_a_full_history_replay_keeps_the_tail_of_a_partly_trimmed_result():
+    """A trimmed middle result keeps its last picture live, so the replay keeps that one, not its first."""
+    history = [{"role": "user", "content": "go"}]
+    conversation = [{"role": "user", "content": "go"}]
+    owned: list = []
+    seen = 0
+    for r, n in enumerate((1, 4, 8)):
+        images = [_distinct_image(seen + i) for i in range(n)]
+        seen += n
+        call = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"c{r}",
+                    "type": "function",
+                    "function": {"name": "mcp__s__x", "arguments": "{}"},
+                }
+            ],
+        }
+        history += [
+            call,
+            {"role": "tool", "tool_call_id": f"c{r}", "content": _envelope("r", *images)},
+        ]
+        conversation += [call, {"role": "tool", "tool_call_id": f"c{r}", "content": "r"}]
+        mcp_images.append_image_turn(conversation, [images], per_result = True, owned = owned)
+    history += [{"role": "assistant", "content": "done"}, {"role": "user", "content": "next"}]
+
+    assert _urls(promote_history(history, vision = True)) == _urls(conversation)
+
+
+def test_a_plain_non_raster_does_not_shift_the_replay_cut():
+    """Eight screenshots and then an SVG: the loop admits no picture for the SVG, so replay must not
+    count it and step down to five."""
+    svg = {
+        "data": base64.b64encode(b"<svg xmlns='http://www.w3.org/2000/svg'/>").decode(),
+        "mimeType": "image/svg+xml",
+    }
+    conversation, history, _prompts = _screenshot_chain(8)
+    history += [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "svg",
+                    "type": "function",
+                    "function": {"name": "mcp__s__x", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "svg", "content": _envelope("icon", svg)},
+        {"role": "user", "content": "next"},
+    ]
+
+    assert mcp_images.replay_image_total(history) == 8
+    assert _urls(promote_history(history, vision = True)) == _urls(conversation)
+
+
+def test_a_leading_svg_does_not_cost_a_raster_its_replay_slot():
+    svg = {"data": base64.b64encode(b"<svg/>").decode(), "mimeType": "image/svg+xml"}
+    history = [{"role": "user", "content": "go"}]
+    conversation = [{"role": "user", "content": "go"}]
+    owned: list = []
+    for r, images in enumerate(
+        (
+            [svg] + [_distinct_image(i) for i in range(4)],
+            [_distinct_image(10 + i) for i in range(8)],
+        )
+    ):
+        call = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"c{r}",
+                    "type": "function",
+                    "function": {"name": "mcp__s__x", "arguments": "{}"},
+                }
+            ],
+        }
+        history += [
+            call,
+            {"role": "tool", "tool_call_id": f"c{r}", "content": _envelope("r", *images)},
+        ]
+        conversation += [call, {"role": "tool", "tool_call_id": f"c{r}", "content": "r"}]
+        mcp_images.append_image_turn(conversation, [images], per_result = True, owned = owned)
+    history += [{"role": "assistant", "content": "done"}, {"role": "user", "content": "next"}]
+
+    assert _urls(promote_history(history, vision = True)) == _urls(conversation)
+
+
+def test_a_compacting_chain_keeps_every_screenshot_append_only():
+    """With compaction on the loop passes limit None: no picture is dropped, so every request
+    extends the last one and the fit, not a picture count, makes room (#18231)."""
+    _conversation, _history, prompts = _screenshot_chain(30, limit = None)
+    assert all(
+        prompts[index][: len(prompts[index - 1])] == prompts[index - 1]
+        for index in range(1, len(prompts))
+    )
+    assert len(_urls(prompts[-1])) == 30
+
+
+@pytest.mark.parametrize("calls", [3, 9, 30])
+def test_an_uncapped_replay_restores_every_screenshot_the_loop_held(calls):
+    conversation, history, _prompts = _screenshot_chain(calls, limit = None)
+    history += [{"role": "assistant", "content": "done"}, {"role": "user", "content": "next"}]
+
+    assert _urls(promote_history(history, vision = True, limit = None)) == _urls(conversation)
+
+
+def test_a_repeated_picture_is_normalized_once(monkeypatch):
+    monkeypatch.setattr(mcp_images, "_PNG_MEMO", __import__("collections").OrderedDict())
+    monkeypatch.setattr(mcp_images, "_png_memo_chars", 0)
+    calls = []
+    real = mcp_images._normalized_png_data_url
+    monkeypatch.setattr(
+        mcp_images,
+        "_normalized_png_data_url",
+        lambda data, *rest: calls.append(1) or real(data, *rest),
+    )
+    data = _png(size = (12, 9))
+
+    first = mcp_images._png_data_url(data)
+    assert mcp_images._png_data_url(data) == first and first.startswith("data:image/png;base64,")
+    assert len(calls) == 1
+    assert mcp_images._png_data_url("not base64!") is None
+    assert mcp_images._png_data_url("not base64!") is None
+    assert len(calls) == 3, "a failure is not remembered"
+
+
+def test_the_png_memo_keeps_as_taken_apart(monkeypatch):
+    monkeypatch.setattr(mcp_images, "_PNG_MEMO", __import__("collections").OrderedDict())
+    monkeypatch.setattr(mcp_images, "_png_memo_chars", 0)
+    edge = mcp_images.MAX_IMAGE_EDGE + 200
+    data = _png(size = (edge, 20))
+    capped = mcp_images._png_data_url(data)
+    taken = mcp_images._png_data_url(data, True)
+    from PIL import Image
+
+    def width(url):
+        return Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1]))).size[0]
+
+    assert width(capped) == mcp_images.MAX_IMAGE_EDGE and width(taken) == edge
+    assert mcp_images._png_data_url(data) == capped
+
+
+def test_the_png_memo_stays_within_its_budget(monkeypatch):
+    monkeypatch.setattr(mcp_images, "_PNG_MEMO", __import__("collections").OrderedDict())
+    monkeypatch.setattr(mcp_images, "_png_memo_chars", 0)
+    monkeypatch.setattr(mcp_images, "_PNG_MEMO_MAX_CHARS", 600)
+    for index in range(10):
+        mcp_images._png_data_url(_png(size = (8 + index, 8)))
+    assert mcp_images._png_memo_chars == sum(len(v) for v in mcp_images._PNG_MEMO.values())
+    assert mcp_images._png_memo_chars <= 600

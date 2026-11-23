@@ -177,6 +177,7 @@ class Decision:
     plan: dm.MemoryPlan
     status: Optional[dict]
     cfg_parallel: Optional[str]
+    pipe: object = None
 
 
 def decide(
@@ -190,6 +191,7 @@ def decide(
     preload_split: bool = True,
     place: bool = True,
     calibrated: Optional[dm.CalibratedImageActivation] = None,
+    pipe: Optional[object] = None,
 ) -> Decision:
     """What an Automatic load (``gpu_ids`` None) or an explicit selection decides on ``host`` for ``sizes``."""
     host.install(monkeypatch)
@@ -216,7 +218,7 @@ def decide(
     dits = sum(m for m, r in sizes.values() if r == "dit")
     companions = sum(m for m, r in sizes.values() if r != "dit")
     tes = sum(m for m, r in sizes.values() if r == "text_encoder")
-    pipe = _Pipe()
+    pipe = _Pipe() if pipe is None else pipe
     with mg.selection_scope(selection if preload_split else None):
         one_card = dm.plan_diffusion_memory(
             target = _Target(ordinal = primary),
@@ -247,7 +249,7 @@ def decide(
                 },
             }
         cfg = mg.install_cfg_parallel(pipe, offload_policy = plan.offload_policy)
-    return Decision(primary, selection, one_card, plan, mg.placement_status(pipe), cfg)
+    return Decision(primary, selection, one_card, plan, mg.placement_status(pipe), cfg, pipe)
 
 
 def _placement(d: Decision) -> dict:
@@ -582,18 +584,22 @@ def test_layer_split_decline_reports_the_encode_activation_it_charged():
     assert "5555 MiB of activations" in reason
 
 
-# Kaggle 2x T4 Z-Image-Turbo fp16: the split was priced with the flat estimate and declined by ~1 GB.
+# Z-Image-Turbo fp16 on two cards: a split priced with the flat estimate declines when each card is held to 85% of
+# its safe budget; with the primary at the one-card budget it fits, every card within its limit.
 _ZIMAGE_T4 = dict(dit = 11739, te = 7672, vae = 211)
 _ZIMAGE_FLAT = 6963
 
 
-def test_zimage_on_two_t4s_flat_estimate_declines_the_layer_split(monkeypatch):
+def test_zimage_on_two_t4s_flat_estimate_fits_the_layer_split_at_the_one_card_budget(monkeypatch):
     host = Host([Card(0, T4, 300), Card(1, T4, 300)])
-    d = decide(monkeypatch, host, _sizes(**_ZIMAGE_T4), headroom = _ZIMAGE_FLAT)
-    assert d.plan.layer_split is None and d.plan.offload_policy != dm.OFFLOAD_NONE
-    layer = [r["reason"] for r in _placement(d)["rejected"] if r["kind"] == "layer_split"]
-    assert layer and "11931 MiB of denoiser and VAE weights" in layer[0]
-    assert "6963 MiB of activations" in layer[0] and "short by about" in layer[0]
+    d = decide(monkeypatch, host, _sizes(**_ZIMAGE_T4), headroom = _ZIMAGE_FLAT, place = False)
+    split = d.plan.layer_split
+    assert split is not None and split.cards == (0, 1)
+    budget = int(d.one_card.estimates["safe_device_budget_mib"])
+    for ordinal, required in split.card_required_mib:
+        assert required <= dict(split.card_limit_mib)[ordinal] <= budget
+    # the primary still carries the flat activation figure beside its weights
+    assert dict(split.card_required_mib)[0] >= dict(split.card_weights_mib)[0] + _ZIMAGE_FLAT
 
 
 def test_zimage_on_two_t4s_layer_split_fits_with_the_measured_activations(monkeypatch):
@@ -632,4 +638,294 @@ def test_a_split_priced_with_the_measured_row_is_a_calibrated_placement(monkeypa
     assert "calibrated_split_headroom_mib" in split.one_card.estimates
     assert not plan_is_calibrated(split.one_card)
     flat = decide(monkeypatch, host, _sizes(**_ZIMAGE_T4), headroom = _ZIMAGE_FLAT)
-    assert flat.plan.layer_split is None and not plan_is_calibrated(flat.plan)
+    # a split priced with the flat figure is not a calibrated placement
+    assert not plan_is_calibrated(flat.plan)
+
+
+# Wan2.2-TI2V-5B fp16 with a forced two-card split: an 85% primary cap left no room for a block
+# beside stems, VAE, overhead and headroom; a one-card resident plan is priced at full budget.
+_WAN5B_T4 = dict(dit = 9582, te = 10836, vae = 1631)
+_WAN5B_BLOCKS = {"transformer": lsp.DenoiserLayout(192, (313,) * 30)}
+_WAN5B_HEADROOM = 7839  # estimate_video_runtime_mib at the family default 1280x704, 121 frames
+_WAN5B_USED = (554, 732)  # nvidia-smi used on each card once torch holds its context
+
+
+def _wan5b_forced_split(monkeypatch):
+    monkeypatch.setenv(lsp.LAYER_SPLIT_ENV, "force")
+    host = Host([Card(0, T4, _WAN5B_USED[0]), Card(1, T4, _WAN5B_USED[1])])
+    return decide(
+        monkeypatch,
+        host,
+        _sizes(**_WAN5B_T4),
+        headroom = _WAN5B_HEADROOM,
+        blocks = _WAN5B_BLOCKS,
+        gpu_ids = [0, 1],
+        place = False,
+    )
+
+
+def test_wan5b_forced_split_on_two_t4s_prices_the_primary_with_the_one_card_budget(monkeypatch):
+    d = _wan5b_forced_split(monkeypatch)
+    assert d.one_card.offload_policy != dm.OFFLOAD_NONE
+    split = d.plan.layer_split
+    assert split is not None and split.cards == (0, 1), d.status["layer_split"]
+    budget = int(d.one_card.estimates["safe_device_budget_mib"])
+    limits = dict(split.card_limit_mib)
+    required = dict(split.card_required_mib)
+    # the primary is held to the budget a one-card resident plan gets there, never more
+    assert limits[0] == budget and required[0] <= budget
+    # the secondary keeps 85% of its safe budget
+    assert limits[1] == mg.secondary_resident_limit_mib(1, "auto") and required[1] <= limits[1]
+    # expected cut: 3 blocks beside the stems and the VAE, 27 on cuda:1
+    assert [(r.start, r.stop, r.card) for r in split.ranges] == [(0, 3, 0), (3, 30, 1)]
+    weights = dict(split.card_weights_mib)
+    assert required[0] >= weights[0] + _WAN5B_HEADROOM
+
+
+def test_layer_split_primary_never_exceeds_the_one_card_budget(monkeypatch):
+    # a primary already carrying a model too large for its budget is still refused: nothing above the budget is lent
+    monkeypatch.setenv(lsp.LAYER_SPLIT_ENV, "force")
+    host = Host([Card(0, T4, _WAN5B_USED[0]), Card(1, T4, _WAN5B_USED[1])])
+    d = decide(
+        monkeypatch,
+        host,
+        _sizes(dit = 9582, te = 10836, vae = 6000),
+        headroom = _WAN5B_HEADROOM,
+        blocks = _WAN5B_BLOCKS,
+        gpu_ids = [0, 1],
+        place = False,
+    )
+    assert d.plan.layer_split is None
+
+
+class WanTransformer3DModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(4, 4)
+
+
+class FluxTransformer2DModel(WanTransformer3DModel):
+    pass
+
+
+class HiDreamImageTransformer2DModel(WanTransformer3DModel):
+    pass
+
+
+class _DitPipe(_Pipe):
+    def __init__(self, denoiser):
+        self.transformer = denoiser
+
+
+def _priced(
+    monkeypatch,
+    *,
+    need_mib,
+    compute_s,
+    tokens,
+    h2d = 11.0,
+):
+    monkeypatch.setattr(mg, "replica_need_mib", lambda module: int(need_mib))
+    monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: (float(h2d), 30.0))
+    monkeypatch.setattr(mg, "_gemm_tflops", lambda o, d: 25.0)
+    priced = []
+
+    def compute(params, n, tflops):
+        priced.append((n, tflops))
+        return float(compute_s) * n / tokens
+
+    monkeypatch.setattr(mg, "denoiser_compute_s", compute)
+    return priced
+
+
+def _wan5b(
+    monkeypatch,
+    *,
+    gpu_ids = (0, 1),
+    guided = True,
+    cls = WanTransformer3DModel,
+    need = 9582 + 0,
+):
+    _priced(monkeypatch, need_mib = need, compute_s = 2.65, tokens = 5070)
+    host = Host([Card(0, T4, _WAN5B_USED[0]), Card(1, T4, _WAN5B_USED[1])])
+    pipe = _DitPipe(cls())
+    mg.note_default_request(pipe, guided = guided, steps = 10, tokens = 5070, why = "default guidance 5")
+    return decide(
+        monkeypatch,
+        host,
+        _sizes(**_WAN5B_T4),
+        headroom = _WAN5B_HEADROOM,
+        blocks = _WAN5B_BLOCKS,
+        gpu_ids = None if gpu_ids is None else list(gpu_ids),
+        place = False,
+        pipe = pipe,
+    )
+
+
+@pytest.mark.parametrize("gpu_ids", [(0, 1), None], ids = ["explicit", "automatic"])
+def test_wan5b_on_two_t4s_runs_one_card_plus_a_cfg_replica_instead_of_the_layer_split(
+    monkeypatch, gpu_ids
+):
+    d = _wan5b(monkeypatch, gpu_ids = gpu_ids)
+    assert d.plan is d.one_card and d.plan.offload_policy != dm.OFFLOAD_NONE
+    assert d.plan.layer_split is None and d.plan.secondary_ordinal is None
+    recorded = _recorded(d)
+    assert recorded is not None and recorded.chosen == "cfg_replica", recorded
+    assert "CFG replica on cuda:1" in recorded.summary and "s/step" in recorded.summary
+    kinds = {c.kind: c.reason for c in recorded.rejected}
+    assert "predicted faster" in kinds["layer_split"]
+
+
+def _recorded(d: Decision) -> mg.PlacementDecision:
+    return mg.placement_decision(d.pipe)
+
+
+def test_wan5b_kill_switch_keeps_the_layer_split(monkeypatch):
+    monkeypatch.setenv(mg.CFG_REPLICA_PLACEMENT_ENV, "0")
+    d = _wan5b(monkeypatch)
+    assert d.plan.layer_split is not None and d.plan.layer_split.cards == (0, 1)
+    assert _recorded(d).chosen == "layer_split"
+
+
+@pytest.mark.parametrize("gpu_ids", [(0, 1), None], ids = ["explicit", "automatic"])
+def test_forced_multigpu_split_is_not_replaced_by_the_replica(monkeypatch, gpu_ids):
+    monkeypatch.setenv(mg.MULTIGPU_ENV, "force")
+    _priced(monkeypatch, need_mib = 3900, compute_s = 1.0, tokens = 4096)
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    pipe = _DitPipe(WanTransformer3DModel())
+    mg.note_default_request(pipe, guided = True, steps = 20)
+    ids = None if gpu_ids is None else list(gpu_ids)
+    d = decide(
+        monkeypatch,
+        host,
+        _sizes(dit = 3900, te = 1600),
+        pipe = pipe,
+        gpu_ids = ids,
+        preload_split = False,
+        place = False,
+    )
+    assert d.plan.secondary_ordinal == 1
+    assert _recorded(d).chosen == "companion_split"
+    w = _wan5b(monkeypatch, gpu_ids = gpu_ids)
+    assert w.plan.layer_split is not None and w.plan.layer_split.cards == (0, 1)
+    assert _recorded(w).chosen == "layer_split"
+
+
+def test_wan5b_status_reports_the_replica_choice_and_its_fallback(monkeypatch):
+    d = _wan5b(monkeypatch)
+    p = _placement(d)
+    assert p["chosen"] == "offload", p
+    first = p["rejected"][0]
+    assert first["kind"] == "cfg_replica" and first["reason"].startswith(
+        "the CFG replica fell back to one card"
+    )
+    assert "not on a CUDA card" in first["reason"]
+    est = d.status["mode_estimate"]
+    assert est["chosen"] == "cfg_replica" and est["replica_card"] == "cuda:1"
+    assert est["replica_render_s"] < est["alternative_render_s"]
+
+
+def test_unguided_default_request_keeps_the_layer_split(monkeypatch):
+    d = _wan5b(monkeypatch, guided = False, cls = FluxTransformer2DModel)
+    assert d.plan.layer_split is not None
+    assert _recorded(d).chosen == "layer_split"
+    reasons = {c.kind: c.reason for c in _recorded(d).rejected}
+    assert "one denoiser branch per step" in reasons["cfg_replica"]
+
+
+def test_replica_that_does_not_fit_the_second_card_keeps_the_layer_split(monkeypatch):
+    d = _wan5b(monkeypatch, need = 14500)
+    assert d.plan.layer_split is not None
+    reasons = {c.kind: c.reason for c in _recorded(d).rejected}
+    assert "no card for a replica" in reasons["cfg_replica"]
+
+
+def test_family_whose_branches_cannot_overlap_keeps_the_layer_split(monkeypatch):
+    d = _wan5b(monkeypatch, cls = HiDreamImageTransformer2DModel)
+    assert d.plan.layer_split is not None
+    reasons = {c.kind: c.reason for c in _recorded(d).rejected}
+    assert "llama states" in reasons["cfg_replica"]
+
+
+def test_heavy_stream_on_the_primary_keeps_the_layer_split(monkeypatch):
+    d = _wan5b(monkeypatch)
+    _priced(monkeypatch, need_mib = 9582, compute_s = 0.3, tokens = 5070, h2d = 2.0)
+    host = Host([Card(0, T4, _WAN5B_USED[0]), Card(1, T4, _WAN5B_USED[1])])
+    pipe = _DitPipe(WanTransformer3DModel())
+    mg.note_default_request(pipe, guided = True, steps = 10, tokens = 5070)
+    d = decide(
+        monkeypatch,
+        host,
+        _sizes(**_WAN5B_T4),
+        headroom = _WAN5B_HEADROOM,
+        blocks = _WAN5B_BLOCKS,
+        gpu_ids = [0, 1],
+        place = False,
+        pipe = pipe,
+    )
+    assert d.plan.layer_split is not None
+    reasons = {c.kind: c.reason for c in _recorded(d).rejected}
+    assert "predicted slower" in reasons["cfg_replica"]
+
+
+class ZImageTransformer2DModel(WanTransformer3DModel):
+    pass
+
+
+def test_streamed_zimage_plan_keeps_the_split_its_replica_could_not_use(monkeypatch):
+    d = _wan5b(monkeypatch, cls = ZImageTransformer2DModel)
+    assert d.plan.layer_split is not None and d.plan.layer_split.cards == (0, 1)
+    recorded = _recorded(d)
+    assert recorded.chosen == "layer_split"
+    reasons = {c.kind: c.reason for c in recorded.rejected}
+    assert (
+        "Z-Image splits guidance only while no group-offload block streams"
+        in reasons["cfg_replica"]
+    )
+
+
+def test_unpriced_card_keeps_the_layer_split(monkeypatch):
+    d = _wan5b(monkeypatch)
+    monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: None)
+    pipe = _DitPipe(WanTransformer3DModel())
+    mg.note_default_request(pipe, guided = True, steps = 10, tokens = 5070)
+    host = Host([Card(0, T4, _WAN5B_USED[0]), Card(1, T4, _WAN5B_USED[1])])
+    d = decide(
+        monkeypatch,
+        host,
+        _sizes(**_WAN5B_T4),
+        headroom = _WAN5B_HEADROOM,
+        blocks = _WAN5B_BLOCKS,
+        gpu_ids = [0, 1],
+        place = False,
+        pipe = pipe,
+    )
+    assert d.plan.layer_split is not None
+
+
+def test_guided_model_that_fits_one_card_reports_the_cfg_replica(monkeypatch):
+    _priced(monkeypatch, need_mib = 3900, compute_s = 1.0, tokens = 4096)
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    pipe = _DitPipe(WanTransformer3DModel())
+    mg.note_default_request(pipe, guided = True, steps = 20)
+    d = decide(monkeypatch, host, _sizes(dit = 3900, te = 1600), pipe = pipe)
+    assert d.plan is d.one_card and d.plan.offload_policy == dm.OFFLOAD_NONE
+    recorded = mg.placement_decision(pipe)
+    assert recorded.chosen == "cfg_replica" and "everything resident on cuda:0" in recorded.summary
+    assert _placement(d)["chosen"] == "one_card"
+
+
+def test_guided_model_whose_text_encoder_would_move_runs_the_replica_instead(monkeypatch):
+    _priced(monkeypatch, need_mib = 2700, compute_s = 1.5, tokens = 32760)
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    pipe = _DitPipe(WanTransformer3DModel())
+    mg.note_default_request(pipe, guided = True, steps = 50, tokens = 32760)
+    d = decide(monkeypatch, host, _sizes(dit = 2700, te = 10834, vae = 485), headroom = 3500, pipe = pipe)
+    assert d.plan is d.one_card and d.plan.secondary_ordinal is None
+    recorded = mg.placement_decision(pipe)
+    assert recorded.chosen == "cfg_replica"
+    assert "predicted faster" in {c.kind: c.reason for c in recorded.rejected}["companion_split"]
+    pipe2 = _DitPipe(WanTransformer3DModel())
+    mg.note_default_request(pipe2, guided = False, steps = 50)
+    d2 = decide(monkeypatch, host, _sizes(dit = 2700, te = 10834, vae = 485), headroom = 3500, pipe = pipe2)
+    assert d2.plan.secondary_ordinal == 1 and _placement(d2)["chosen"] == "companion_split"

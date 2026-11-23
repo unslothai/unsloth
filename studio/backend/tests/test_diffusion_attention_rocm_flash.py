@@ -151,6 +151,7 @@ _NVIDIA_EXPECTED = {
     "sage": ("sage", "sage"),
     "xformers": ("xformers", "xformers"),
     "aiter": (None, None),
+    "unsloth_int8": ("_native_cudnn", "_native_cudnn"),
 }
 
 
@@ -544,10 +545,16 @@ def test_status_reason_is_derived_from_the_engaged_backend():
         return open(att.__file__.replace("diffusion_attention.py", name), encoding = "utf-8").read()
 
     image, video = read("diffusion.py"), read("video.py")
-    assert image.count("attention_status_reason(attention_backend, attention_engaged)") == 1
+    # the entry is read off the attention modules (attention_resolved_entry), whose auto reason is this one
+    assert (
+        image.count(
+            "attention_resolved_entry(\n                                attention_backend, attention_engaged"
+        )
+        == 1
+    )
     assert image.count("auto_attention_reason(attention_engaged)") == 1
     assert '"cuDNN fused attention upgrade"' not in image
-    assert video.count("attention_status_reason(attention_backend, attention_engaged)") == 2
+    assert video.count("attention_resolved_entry(") == 2
     assert "cuDNN fused attention on NVIDIA" not in video
 
 

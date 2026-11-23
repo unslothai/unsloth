@@ -3,7 +3,8 @@
 
 """Triton W8A8 linear for the native int8 layers on ROCm RDNA3 / RDNA4 (gfx11xx / gfx12xx): one kernel rotates
 (ConvRot) and row-quantises the activation, one int8 GEMM applies both row scales and the bias in its epilogue.
-Opaque custom ops, so a compiled model keeps them whole and calls sharing an input (Q / K / V) share one quant.
+Opaque custom ops, so a compiled model keeps them whole; it does not merge calls on one input, so Linears sharing an
+input share one quant only where a fused forward calls ``rotq`` once (``diffusion_int8_gemm.shared_rotq_linears``).
 Each card runs a parity probe first; a failure there keeps the stock path. UNSLOTH_NATIVE_INT8_RDNA_TRITON=0 disables."""
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import threading
 import types
 from functools import lru_cache
 from typing import Any, Optional
+
+from .triton_closure_globals import publishes_closure_globals
 
 RDNA_TRITON_ENV = "UNSLOTH_NATIVE_INT8_RDNA_TRITON"
 _NS = "unsloth_studio"
@@ -80,6 +83,7 @@ def _triton_version_ok() -> bool:
 
 
 @lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _kernels() -> Optional[types.SimpleNamespace]:
     try:
         import triton

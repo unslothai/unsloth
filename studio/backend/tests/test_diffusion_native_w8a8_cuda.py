@@ -461,10 +461,7 @@ def _arm_all(cr):
 
 
 def test_folds_match_and_keep_the_maths(cr):
-    """All three folds match the decomposed graph (per-token modulation, batch 2): the GELU and the gated residual land
-    in the GEMMs' epilogues, the norm in front of the first quant, the replaced GEMMs and quant leave the graph, and
-    the output stays within int8 code-flip noise of the unfolded graph (the folds read the materialised bf16
-    modulation and gate, as eager does)."""
+    """Folds match the decomposed graph within int8 code-flip noise; they read bf16 modulation and gate."""
     _arm_all(cr)
     gm, args, ref = _fold_block(cr)
     assert cr.fold_gelus(gm.graph) == 1
@@ -537,13 +534,85 @@ def test_pass_runs_the_folds_it_was_built_with(cr):
     assert not any("i8mm_gelu" in n or "rotq_norm" in n for n in names)
 
 
+def _fold_add(cr, gm, site):
+    """The ``aten.add`` node of ``site`` in the ``_fold_block`` graph."""
+    import torch
+
+    aten = torch.ops.aten
+    nodes = list(gm.graph.nodes)
+    adds = [n for n in nodes if cr._fn(n, aten.add.Tensor, aten.add.Scalar)]
+    if site == "residual":
+        return next(n for n in nodes if n.op == "output").args[0]
+    tanh = next(n for n in nodes if cr._fn(n, aten.tanh.default))
+    if site == "gelu_plus":  # 1 + tanh(...)
+        return next(n for n in adds if tanh in n.args)
+    if site == "gelu_inner":  # a + 0.044715 * a^3, the tanh argument
+        return next(n for n in tanh.args[0].args if cr._fn(n, aten.add.Tensor))
+    if site == "norm_eps":  # mean(x^2) + eps
+        return next(n for n in adds if any(cr._fn(a, aten.mean.dim) for a in n.args))
+    rotq = next(n for n in nodes if str(n.target).endswith("native_cuda_rotq.default"))
+    shift_add, _ = cr._view_root(rotq.args[0])
+    if site == "norm_shift":  # n * (1 + scale) + shift
+        return shift_add
+    if site == "norm_scale":  # 1 + scale
+        mul = next(a for a in shift_add.args if cr._fn(a, aten.mul.Tensor))
+        return next(a for a in mul.args if cr._fn(a, aten.add.Tensor))
+    raise AssertionError(site)
+
+
+@pytest.mark.parametrize(
+    "fold, site",
+    [
+        ("fold_residuals", "residual"),
+        ("fold_gelus", "gelu_plus"),
+        ("fold_gelus", "gelu_inner"),
+        ("fold_norms", "norm_shift"),
+        ("fold_norms", "norm_scale"),
+        ("fold_norms", "norm_eps"),
+    ],
+)
+@pytest.mark.parametrize("alpha", [2, -1, 0.5])
+def test_folds_refuse_a_scaled_add(cr, fold, site, alpha):
+    """``torch.add(x, y, alpha = a)`` is ``x + a * y``; every fold rebuilds the unit-coefficient add, so a non-unit
+    alpha anywhere in a matched pattern must keep the graph (and its result) as traced. ``alpha = 1`` still folds."""
+    import torch
+
+    _arm_all(cr)
+    gm, args, _ref = _fold_block(cr)
+    add = _fold_add(cr, gm, site)
+    add.kwargs = {"alpha": alpha}
+    gm.recompile()
+    want = gm(*args)
+    assert getattr(cr, fold)(gm.graph) == 0
+    gm.graph.eliminate_dead_code()
+    gm.recompile()
+    assert torch.equal(gm(*args), want)
+    gm, _args, _ref = _fold_block(cr)
+    _fold_add(cr, gm, site).kwargs = {"alpha": 1}
+    assert getattr(cr, fold)(gm.graph) == 1
+
+
+def test_norm_fold_refuses_a_low_precision_mean(cr):
+    import torch
+
+    _arm_all(cr)
+    gm, _args, _ref = _fold_block(cr)
+    mean = next(n for n in gm.graph.nodes if cr._fn(n, torch.ops.aten.mean.dim))
+    mean.kwargs = {"dtype": torch.bfloat16}
+    assert cr.fold_norms(gm.graph) == 0
+
+
+def test_pass_uuid_names_the_alpha_aware_folds(cr):
+    """Graphs folded before the alpha check must miss the FX graph cache."""
+    assert ".share.v3:" in cr.ShareRotqPass(share = True, folds = ("residual",)).uuid()
+
+
 @pytest.mark.parametrize(
     "fold, expected", [("fold_gelus", 1), ("fold_norms", 0), ("fold_residuals", 0)]
 )
 def test_folds_keep_a_dynamic_graph_dynamic(cr, fold, expected):
-    """A dynamic=True compile traces symbolic token counts: a fold that bakes the count in adds a shape guard, so the
-    graph recompiles per token count where the stock graph compiles once. The norm and residual folds keep the traced
-    maths there; the GELU fold needs no count and still folds."""
+    """dynamic=True: a fold that bakes the token count adds a shape guard and recompiles per count;
+    norm and residual folds keep the traced maths; GELU fold still folds."""
     _arm_all(cr)
     gm, _args, _ref = _fold_block(cr, tracing_mode = "symbolic")
     x = next(n for n in gm.graph.nodes if n.op == "placeholder").meta["val"]

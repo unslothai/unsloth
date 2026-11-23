@@ -115,7 +115,6 @@ import {
   CloudIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
-  DashboardSquareEditIcon,
   Download01Icon,
   Edit03Icon,
   FlimSlateIcon,
@@ -144,10 +143,11 @@ import {
   LayerIcon,
   ApiIcon,
   Clock01Icon,
+  AiTranslateIcon,
 } from "@hugeicons/core-free-icons";
 import { Folder02Icon, FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
-import { AiSpeechIcon, ChipIcon, MessageCircleIcon, Settings01Icon, TestTubeOutlineIcon, TrashIcon, withNoticeDot } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, ChipIcon, FilterHorizontalCircleIcon, MessageCircleIcon, Settings01Icon, TestTubeOutlineIcon, TrashIcon, withNoticeDot } from "@/lib/hugeicons-derived";
 import {
   Tooltip,
   TooltipContent,
@@ -257,6 +257,7 @@ import {
   useSectionDrag,
 } from "@/features/chat/hooks/use-section-drag";
 import { prefetchChatPage } from "@/features/chat/load-chat-page";
+import { clearAllChatsWithToast } from "@/features/chat/utils/clear-all-chats-toast";
 import {
   imeOwnsInputKeydown,
   inputImeHandlers,
@@ -353,6 +354,9 @@ import { translate, useT, type TranslationKey } from "@/i18n";
 import { Tick02Icon } from "@/lib/tick-icon";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
+
+const NAV_TAG =
+  "shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent";
 
 const SETTINGS_TAB_MENU_ITEMS: Record<
   "profile" | "appearance" | "resources" | "chat" | "connections",
@@ -712,9 +716,7 @@ function NavItem({
         <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop" />
         <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
         {badge && (
-          <Badge variant="accent" className="group-data-[collapsible=icon]:hidden">
-            {badge}
-          </Badge>
+          <span className={cn(NAV_TAG, "group-data-[collapsible=icon]:hidden")}>{badge}</span>
         )}
         {waiting ? (
           <>
@@ -1028,8 +1030,7 @@ function MoreMenuItem({
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {/* -my-0.5: a 20px badge would make the row 36px. */}
-      {badge && <Badge variant="accent" className="-my-0.5">{badge}</Badge>}
+      {badge && <span className={NAV_TAG}>{badge}</span>}
       {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
       {newAction && (
         <button
@@ -1104,7 +1105,7 @@ function MediaMoreSubmenu<Id extends string>({
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} />
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        {badge && <Badge variant="accent" className="-my-0.5">{badge}</Badge>}
+        {badge && <span className={NAV_TAG}>{badge}</span>}
         {spinner && (
           <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
         )}
@@ -3530,6 +3531,19 @@ export function AppSidebar() {
         </button>
       ),
     },
+    translate: {
+      icon: AiTranslateIcon,
+      label: t("shell.navigation.translate"),
+      badge: t("shell.navigation.newBadge"),
+      active: pathname === "/translate",
+      onClick: () => {
+        navigateFromRow({ to: "/translate" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/translate" }));
+      },
+    },
   };
   const navRowPinned = (item: SidebarNavItemPref) =>
     sidebarNavRowPinned(item, sidebarNavAuto, { projectsSectionShowing });
@@ -3766,15 +3780,20 @@ export function AppSidebar() {
     | { kind: "chats"; items: SidebarItem[] }
     | { kind: "project"; project: ProjectRecord }
     | { kind: "projects"; projects: ProjectRecord[] }
-    | { kind: "run"; run: TrainingRunSummary };
+    | { kind: "run"; run: TrainingRunSummary }
+    | { kind: "clearAll" };
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
   const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
+  const [clearingAll, setClearingAll] = useState(false);
 
   /** Always through here: a stale switch would delete an unrelated sandbox. */
   function openDeleteDialog(target: DeleteTarget) {
     // Project workspaces always ask from scratch; chats follow the preference.
-    const chats = target.kind === "chat" || target.kind === "chats";
+    const chats =
+      target.kind === "chat" ||
+      target.kind === "chats" ||
+      target.kind === "clearAll";
     setDeleteFilesOnDelete(chats && alwaysDeleteChatFiles);
     setConfirmingDelete(target);
   }
@@ -3792,7 +3811,27 @@ export function AppSidebar() {
       (target.kind === "project" || target.kind === "projects") &&
       deleteFilesOnDelete;
     const shouldDeleteChatFiles =
-      (target.kind === "chat" || target.kind === "chats") && deleteFilesOnDelete;
+      (target.kind === "chat" ||
+        target.kind === "chats" ||
+        target.kind === "clearAll") &&
+      deleteFilesOnDelete;
+    if (target.kind === "clearAll") {
+      // Stay modal until done: the backend clear is unfiltered, so a chat sent meanwhile would go too.
+      setClearingAll(true);
+      clearSelection();
+      if (activeThreadId !== undefined) {
+        useChatRuntimeStore.getState().setActiveThreadId(null);
+        navigate({ to: "/chat", search: { new: createNavigationNonce() } });
+      }
+      try {
+        await clearAllChatsWithToast({ deleteFiles: shouldDeleteChatFiles });
+      } finally {
+        setClearingAll(false);
+        setConfirmingDelete(null);
+        setDeleteFilesOnDelete(false);
+      }
+      return;
+    }
     setConfirmingDelete(null);
     setDeleteFilesOnDelete(false);
     if (target.kind === "chat") {
@@ -4514,6 +4553,14 @@ export function AppSidebar() {
           <DropdownMenuItem onSelect={() => setSectionDialog({ mode: "create" })}>
             <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.organize.newSection")}</span>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={() => openDeleteDialog({ kind: "clearAll" })}
+          >
+            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
+            <span>{t("settings.chat.clearAllChats")}</span>
           </DropdownMenuItem>
         </>
       );
@@ -6394,7 +6441,7 @@ export function AppSidebar() {
                             })
                         }
                       >
-                        <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} />
+                        <HugeiconsIcon icon={FilterHorizontalCircleIcon} strokeWidth={1.75} />
                         <span className="min-w-0 flex-1 truncate">
                           {t("shell.navigation.customizeSidebar")}
                         </span>
@@ -6836,12 +6883,12 @@ export function AppSidebar() {
                   <DropdownMenuItem
                     onSelect={() =>
                       useSettingsDialogStore.getState().openDialog("appearance", {
-                        scrollTarget: "appearance-sidebar-nav",
+                        scrollTarget: "appearance-profile-menu",
                       })
                     }
                   >
-                    <HugeiconsIcon icon={DashboardSquareEditIcon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("shell.navigation.customizeSidebar")}</span>
+                    <HugeiconsIcon icon={FilterHorizontalCircleIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>{t("shell.navigation.customizeProfileMenu")}</span>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   {HELP_GROUPS.map((group, index) => (
@@ -6921,7 +6968,7 @@ export function AppSidebar() {
     <Dialog
       open={confirmingDelete !== null}
       onOpenChange={(open) => {
-        if (!open) {
+        if (!open && !clearingAll) {
           setConfirmingDelete(null);
           setDeleteFilesOnDelete(false);
         }
@@ -6938,7 +6985,9 @@ export function AppSidebar() {
                   ? t("shell.selection.deleteTitle")
                   : confirmingDelete?.kind === "projects"
                     ? t("shell.selection.deleteProjectsTitle")
-                    : t("shell.dialog.deleteChat.title")}
+                    : confirmingDelete?.kind === "clearAll"
+                      ? t("settings.chat.clearAllChats")
+                      : t("shell.dialog.deleteChat.title")}
           </DialogTitle>
           <DialogDescription>
             {confirmingDelete?.kind === "run" ? (
@@ -6957,6 +7006,8 @@ export function AppSidebar() {
               t("shell.selection.deleteProjectsDescription", {
                 count: confirmingDelete.projects.length,
               })
+            ) : confirmingDelete?.kind === "clearAll" ? (
+              t("settings.chat.clearChatsConfirmDescription")
             ) : confirmingDelete?.kind === "project" ? (
               t("projectsPage.deleteProjectDescription", {
                 name: confirmingDelete.project.name,
@@ -6976,7 +7027,8 @@ export function AppSidebar() {
                     "The project workspace folder will be removed from disk.")
                   : confirmingDelete?.kind === "projects"
                     ? t("shell.selection.deleteProjectsFilesDescription")
-                    : confirmingDelete?.kind === "chats"
+                    : confirmingDelete?.kind === "chats" ||
+                        confirmingDelete?.kind === "clearAll"
                       ? t("shell.selection.deleteFilesDescription")
                     : t("shell.selection.deleteChatFilesDescription")}
               </span>
@@ -6986,6 +7038,7 @@ export function AppSidebar() {
               id="delete-files-on-delete"
               checked={deleteFilesOnDelete}
               onCheckedChange={setDeleteFilesOnDelete}
+              disabled={clearingAll}
               aria-label={t("shell.selection.deleteFilesLabel")}
             />
           </div>
@@ -6994,6 +7047,7 @@ export function AppSidebar() {
           <Button
             type="button"
             variant="ghost"
+            disabled={clearingAll}
             onClick={() => setConfirmingDelete(null)}
           >
             {t("common.cancel")}
@@ -7001,11 +7055,14 @@ export function AppSidebar() {
           <Button
             type="button"
             variant="destructive"
+            disabled={clearingAll}
             onClick={() => void commitDelete()}
           >
-            {deleteTargetHasFiles(confirmingDelete) && deleteFilesOnDelete
-              ? "Delete all"
-              : t("common.delete")}
+            {clearingAll
+              ? t("settings.chat.clearingAction")
+              : deleteTargetHasFiles(confirmingDelete) && deleteFilesOnDelete
+                ? "Delete all"
+                : t("common.delete")}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -5,7 +5,11 @@ export { ModelSelector } from "./components/model-selector";
 export { FolderBrowser } from "./components/model-selector/folder-browser";
 export { invalidateLlamaFlagCatalog } from "./api/llama-flags";
 export { ModelRowMenu } from "./components/model-selector/model-row-menu";
-export { formatFootprintBytes } from "./components/model-selector/pickers";
+export {
+  formatFootprintBytes,
+  ListLabel,
+  ModelRow,
+} from "./components/model-selector/pickers";
 export {
   makePinRank,
   pinKey,
@@ -27,6 +31,8 @@ export {
 } from "./components/numeric-value-input";
 export { ModelConfigPage } from "./components/model-config-page";
 export { SidebarModelConfig } from "./components/sidebar-model-config";
+export { ModelInfo } from "./components/model-info";
+export { hubRepoIdFor } from "./components/model-info-facts";
 export type { ModelPickTarget } from "./components/model-selector/types";
 export {
   fetchModelOverrides,

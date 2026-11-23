@@ -32,12 +32,14 @@ TABS = [
     "voice",
     "connections",
     "library",
+    "knowledge",
     "data",
     "api-keys",
     "remote-lan",
     "agents",
     "keyboard-shortcuts",
     "browser",
+    "computer-use",
     "debugging",
     "sandbox",
     "about",
@@ -69,7 +71,7 @@ LAN_STATUS = {
     "keyless_scope": "off",
     "keyless_tools": False,
 }
-PANEL = 'div[role="dialog"] main div.hover-scrollbar'
+PANEL = 'div[role="dialog"] main [data-settings-main-scroll]'
 DEEP_OPEN_HOLD_MS = 2500
 DEEP_OPEN_ABANDON_MS = 300
 # vite appends ?t= or ?v= to module URLs.
@@ -213,7 +215,7 @@ def open_dialog(page, tab: str | None = None) -> None:
 
 ON_SUBPAGE_JS = """() => ({
     subpage: !!document.querySelector('div[role="dialog"] main header button'),
-    elements: (document.querySelector('div[role="dialog"] main div.hover-scrollbar')
+    elements: (document.querySelector('div[role="dialog"] main [data-settings-main-scroll]')
         || { querySelectorAll: () => [] }).querySelectorAll('*').length,
 })"""
 
@@ -221,7 +223,7 @@ ABANDON_DEEP_OPEN_JS = """(delay) => {
     window.__abandonedAt = null;
     window.__settingsSmoke.openArchived('chats');
     setTimeout(() => {
-        const panel = document.querySelector('div[role="dialog"] main div.hover-scrollbar');
+        const panel = document.querySelector('div[role="dialog"] main [data-settings-main-scroll]');
         window.__abandonedAt = {
             elements: panel ? panel.querySelectorAll('*').length : null,
             subpage: !!document.querySelector('div[role="dialog"] main header button'),
@@ -301,7 +303,7 @@ def run_chunk_fail(page) -> None:
             nav: document.querySelectorAll('[data-testid^="settings-tab-"]').length,
             harness: !!document.querySelector('[data-testid="harness-root"]'),
             boundary: !!document.querySelector('[data-testid="harness-error-boundary"]'),
-            panelText: (document.querySelector('div[role="dialog"] main div.hover-scrollbar')
+            panelText: (document.querySelector('div[role="dialog"] main [data-settings-main-scroll]')
                 || {}).innerText || null,
             bodyText: (document.body.innerText || '').trim().length,
         })"""
@@ -654,6 +656,74 @@ def run_scroll_resets_on_tab_switch(page) -> None:
     report["steps"].append("scroll-reset")
 
 
+SEARCH_STATE_JS = """() => {
+    const aside = document.querySelector('div[role="dialog"] aside');
+    if (!aside) return null;
+    const results = [...aside.querySelectorAll('button:not([data-testid]):not([aria-label])')];
+    const nav = aside.querySelector('nav');
+    return {
+        query: aside.querySelector('input')?.value ?? null,
+        results: results.map(b => b.innerText.trim()),
+        current: results.filter(b => b.getAttribute('aria-current') === 'true')
+            .map(b => b.innerText.trim()),
+        navVisible: !!nav && getComputedStyle(nav).display !== 'none',
+    };
+}"""
+
+
+def run_search_reuse(page, query: str, first_label: str) -> None:
+    """A result click keeps the query, so the next result is one click away (#16313)."""
+    after_first = page.evaluate(SEARCH_STATE_JS)
+    report["search_reuse"] = {"after_first": after_first}
+    if not after_first or after_first["query"] != query:
+        fail(f"search reuse: opening '{first_label}' cleared the query ({after_first})")
+        close_dialog(page)
+        return
+    if first_label not in after_first["results"] or after_first["navVisible"]:
+        fail(f"search reuse: results did not stay after opening '{first_label}' ({after_first})")
+    if after_first["current"] != [first_label]:
+        fail(f"search reuse: opened result not marked current ({after_first['current']})")
+    # The last result sits in another tab when the query spans tabs, so the jump crosses panels.
+    second = next(
+        (txt for txt in reversed(after_first["results"]) if txt and txt != first_label), None
+    )
+    if second is None:
+        fail(f"search reuse: '{query}' has no second result to open ({after_first['results']})")
+        close_dialog(page)
+        return
+    buttons = page.locator('div[role="dialog"] aside button:not([data-testid]):not([aria-label])')
+    click_forced(buttons.nth(after_first["results"].index(second)))
+    until(
+        page,
+        f"""label => ({SEARCH_STATE_JS})()?.current?.[0] === label""",
+        arg = second,
+    )
+    after_second = page.evaluate(SEARCH_STATE_JS)
+    report["search_reuse"]["after_second"] = after_second
+    if after_second["query"] != query or after_second["current"] != [second]:
+        fail(
+            f"search reuse: second result '{second}' did not open from the kept list ({after_second})"
+        )
+    else:
+        log(f"search reuse: '{first_label}' then '{second}' opened from one '{query}' search")
+    # A panel link (Data > Manage storage) switches tabs through openDialog, not the list.
+    page.evaluate("() => window.__settingsSmoke.open('about')")
+    until(page, "() => window.__settingsSmoke.state().activeTab === 'about'")
+    page.wait_for_timeout(100)
+    left = page.evaluate(SEARCH_STATE_JS)
+    report["search_reuse"]["after_panel_link"] = left
+    if left["query"] != query or left["current"]:
+        fail(f"search reuse: a panel link left a stale current result ({left})")
+    click_forced(page.locator('div[role="dialog"] aside button[aria-label]').first)
+    until(page, f"() => ({SEARCH_STATE_JS})()?.navVisible === true")
+    cleared = page.evaluate(SEARCH_STATE_JS)
+    report["search_reuse"]["cleared"] = cleared
+    if cleared["query"] != "" or not cleared["navVisible"] or cleared["results"]:
+        fail(f"search reuse: the clear button did not bring the tab list back ({cleared})")
+    close_dialog(page)
+    report["steps"].append("search-reuse")
+
+
 def run(page) -> None:
     if CHUNK_FAIL:
         run_chunk_fail(page)
@@ -761,6 +831,9 @@ def run(page) -> None:
             log(f"search jump to '{target_label}': flashed, scrollTop {flashed['scrollTop']}")
     report["steps"].append("search-jump")
 
+    if index is not None:
+        run_search_reuse(page, query, target_label)
+
     run_composer_search(page)
 
     run_keystroke_search(page)
@@ -772,15 +845,21 @@ def run(page) -> None:
     report["page_errors"] = page.evaluate("() => window.__settingsSmoke.errors()")
 
 
+# (label key, section title key) for each control moved out of Appearance into the Chat tab.
+# test_settings_tabs_composer_search_sections.py checks these against chat-tab.tsx, so a later
+# regrouping fails there in the unit tests instead of only in this browser run.
+COMPOSER_SEARCH_SECTIONS = (
+    ("settings.appearance.custom.chatWidth.label", "settings.chat.groups.customization.title"),
+    ("settings.chat.composerPosition", "settings.chat.groups.customization.title"),
+    ("chatBackground.outline", "settings.chat.groups.customization.title"),
+    ("settings.appearance.custom.sentAttachments.label", "settings.general.chatDefaults"),
+)
+
+
 def run_composer_search(page) -> None:
-    """The moved controls must be reachable through search in Chat's Composer section."""
+    """Composer controls moved from Appearance must stay searchable in the Chat tab (chat-tab.tsx)."""
     results = []
-    for key in (
-        "settings.appearance.custom.chatWidth.label",
-        "settings.chat.composerPosition",
-        "chatBackground.outline",
-        "settings.appearance.custom.sentAttachments.label",
-    ):
+    for key, section_key in COMPOSER_SEARCH_SECTIONS:
         label = en_string(key)
         close_dialog(page)
         open_dialog(page, "appearance")
@@ -810,7 +889,7 @@ def run_composer_search(page) -> None:
             }"""
         )
         results.append(state)
-        if state != {"tab": "chat", "label": label, "section": en_string("composerSettings.title")}:
+        if state != {"tab": "chat", "label": label, "section": en_string(section_key)}:
             fail(f"composer search: '{label}' reached {state}")
     report["composer_search"] = results
     report["steps"].append("composer-search")

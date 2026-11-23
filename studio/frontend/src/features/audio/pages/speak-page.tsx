@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ParamSlider } from "@/features/chat";
 import { Field } from "../components/field";
 import type { SpeakConnection } from "../hooks/use-speak-connection";
+import { RecommendedModelPicks } from "../components/recommended-model-picks";
 import { TtsOutput, TtsRailFields } from "./tts-workspace";
 
 export function SpeakRail(
@@ -91,18 +92,28 @@ export function SpeakConnectionRail({
 export function SpeakOutput(
   {
     modelReady,
+    recommendedModels = [],
+    onPickModel,
     ...props
-  }: Omit<ComponentProps<typeof TtsOutput>, "emptyText"> & {
+  }: Omit<ComponentProps<typeof TtsOutput>, "emptyText" | "emptyActions"> & {
     modelReady: boolean;
+    recommendedModels?: readonly { id: string; name: string }[];
+    onPickModel?: (id: string) => void;
   },
 ) {
   return (
     <TtsOutput
       {...props}
+      emptyActions={
+        modelReady ? null : (
+          <RecommendedModelPicks models={recommendedModels} onPick={onPickModel} />
+        )
+      }
+      emptyTitle="Generated speech will appear here"
       emptyText={
         modelReady
-          ? "Generated speech lands here. Type a sentence and press Generate."
-          : "Generated speech lands here. Load a TTS model, type a sentence, and press Generate."
+          ? "Type a sentence and press Generate."
+          : "Load a speech model, type a sentence, and press Generate. For a conversation between several voices, load VibeVoice and write one line per speaker, like \"Speaker 1: Hi.\""
       }
     />
   );

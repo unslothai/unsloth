@@ -284,7 +284,7 @@ def Gemma2DecoderLayer_fast_forward(
         out_weight = torch.empty(
             self.input_layernorm.weight.shape,
             dtype = torch.float32,
-            device = f"{DEVICE_TYPE_TORCH}:0",
+            device = hidden_states.device,
         )
 
         residual = hidden_states
@@ -531,7 +531,8 @@ def Gemma2Model_fast_forward_inference(
     norm_weight = self.model.layers[0].input_layernorm.weight
     out_weights = _LazyDeviceScratch(
         DEVICE_COUNT,
-        lambda device: torch.empty_like(norm_weight, dtype = torch.float32, device = device),
+        # Shape only: under FSDP2 block streaming this is still a DTensor; empty_like would copy that.
+        lambda device: torch.empty(norm_weight.shape, dtype = torch.float32, device = device),
     )
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)

@@ -12,6 +12,8 @@ import {
   MAX_MCP_IMAGE_MIME_CHARS,
   MAX_TOTAL_MCP_IMAGE_CHARS,
   planMcpImageBound,
+  sniffedUndecodable,
+  steppedKeep,
   MCP_IMAGES_MARKER,
   boundMcpImageEnvelopes,
   mcpImagesEnvelope,
@@ -64,10 +66,22 @@ test("only an image tool call carries the privileged envelope", () => {
   assert.equal(isMcpToolName(undefined), false);
   assert.match(
     adapter,
-    /if \(isMcpImageToolResult\(result\) && isImageToolName\(tc\.toolName\)\) \{\n\s*content \+= mcpImagesEnvelope\(result\.images\);/,
+    /if \(isMcpImageToolResult\(result\) && isImageToolName\(tc\.toolName, importedFrom\)\) \{\n\s*content \+= mcpImagesEnvelope\(result\.images\);/,
   );
   // The wrapper branch is not gated, or JSON.stringify replays base64 as prompt text.
   assert.match(adapter, /^\s*isMcpImageToolResult\(result\) \|\|$/m);
+});
+
+test("an imported Claude Code Read image replays to the model, a live Read does not", () => {
+  assert.equal(isImageToolName("Read", "claude"), true);
+  assert.equal(isImageToolName("Read"), false);
+  assert.equal(isImageToolName("Read", "codex"), false);
+  assert.equal(isImageToolName("read_file", "claude"), false);
+  assert.match(adapter, /serializeToolResultPart\(toolPart, messageImportedFrom\(message\)\)/);
+  assert.match(
+    adapter,
+    /!isImageToolName\(tc\.toolName, messageImportedFrom\(message\)\)\) return;/,
+  );
 });
 
 const shot = (n: number, name = "mcp__fs__screenshot") => ({
@@ -391,7 +405,7 @@ test("the send path bounds the run's own results before serializing them", () =>
   );
   assert.match(
     adapter,
-    /const messages = boundMcpImageResults\(rawMessages, \{\n\s*readsImages: targetReadsImages,\n\s*localMarkers: mcpImagesLocalMarkers,\n\s*\}\);\n\s*const replayReasoning = [\s\S]*?;\n\s*const survivingMessages = pruneOutboundHistory\(messages, replayReasoning\);/,
+    /const messages = boundMcpImageResults\(rawMessages, \{\n\s*readsImages: targetReadsImages,\n\s*localMarkers: mcpImagesLocalMarkers,\n\s*uncapped: !isExternalRequest && compactingLlamaCppChat\(runtime\),\n\s*\}\);\n\s*const replayReasoning = [\s\S]*?;\n\s*const survivingMessages = pruneOutboundHistory\(messages, replayReasoning\);/,
   );
   assert.doesNotMatch(adapter, /boundMcpImageEnvelopes\(outboundMessages/);
   assert.doesNotMatch(adapter, /stripMcpImageEnvelopes\(outboundMessages/);
@@ -548,6 +562,7 @@ test("a client tool's structured result is not unwrapped as the MCP wrapper", ()
 test("sandbox image viewer replays bounded images without trusting arbitrary tools", () => {
   assert.equal(isImageToolName("view_image"), true);
   assert.equal(isImageToolName("python"), false);
+  assert.equal(isImageToolName("computer"), true);
   assert.equal(isImageToolName("mcp__files__image"), true);
   const messages = [
     { role: "tool", name: "view_image", content: RESULT },
@@ -556,4 +571,130 @@ test("sandbox image viewer replays bounded images without trusting arbitrary too
   const bounded = boundMcpImageEnvelopes(messages);
   assert.equal(splitMcpImages(bounded[0].content).images.length, 1);
   assert.equal(splitMcpImages(bounded[1].content).images.length, 0);
+});
+
+test("steppedKeep drops a step at a time, like the backend's stepped_keep", () => {
+  const keep = Array.from({ length: 18 }, (_, n) => steppedKeep(n, 8, 4));
+  assert.deepEqual(keep, [0, 1, 2, 3, 4, 5, 6, 7, 8, 5, 6, 7, 8, 5, 6, 7, 8, 5]);
+});
+
+test("a screenshot chain uploads a count the backend cuts where its tool loop did (#18231)", () => {
+  for (let calls = 1; calls <= 40; calls++) {
+    const chain = Array.from({ length: calls }, (_, i) => [
+      { role: "assistant", content: "" },
+      {
+        role: "tool",
+        name: "computer",
+        content: `ok${i}` + mcpImagesEnvelope([{ data: `s${i}`, mimeType: "image/jpeg" }]),
+      },
+    ]).flat();
+    const sent = boundMcpImageEnvelopes(chain).filter(
+      (m) => splitMcpImages(m.content).images.length > 0,
+    );
+    assert.equal(sent.length, steppedKeep(calls, MAX_TOTAL_MCP_IMAGES));
+    assert.equal(sent.at(-1)?.content, chain.at(-1)?.content, "newest first");
+    assert.equal(
+      steppedKeep(sent.length, MAX_TOTAL_MCP_IMAGES),
+      steppedKeep(calls, MAX_TOTAL_MCP_IMAGES),
+      `${calls} calls`,
+    );
+  }
+});
+
+test("a parallel turn past the cap uploads what the backend recounts to its admitted cap", () => {
+  // The backend counts min(4, images) per result and at most the cap per parallel turn.
+  const recount = (messages: { content: string }[]) =>
+    Math.min(
+      MAX_TOTAL_MCP_IMAGES,
+      messages.reduce(
+        (n, m) => n + Math.min(MAX_MODEL_IMAGES, splitMcpImages(m.content).images.length),
+        0,
+      ),
+    );
+  const turn = Array.from({ length: 3 }, (_, r) => shotOf(`p${r}`, 3));
+  const sent = boundMcpImageEnvelopes(turn);
+  const uploaded = sent.reduce((n, m) => n + splitMcpImages(m.content).images.length, 0);
+
+  assert.equal(recount(sent), recount(turn));
+  assert.ok(uploaded <= MAX_TOTAL_MCP_IMAGES + DECODE_FAILURE_ALLOWANCE, `${uploaded}`);
+});
+
+test("large screenshots still upload the stepped count under the byte bound", () => {
+  // About 1 MB of base64 each: twelve would pass the 12 MB bound, the stepped count does not.
+  const chain = Array.from({ length: 16 }, (_, i) => [
+    { role: "assistant", content: "" },
+    {
+      role: "tool",
+      name: "computer",
+      content: `ok${i}` + mcpImagesEnvelope([{ data: `${i}`.padEnd(1_050_000, "A"), mimeType: "image/png" }]),
+    },
+  ]).flat();
+  const sent = boundMcpImageEnvelopes(chain).filter(
+    (m) => splitMcpImages(m.content).images.length > 0,
+  );
+  assert.equal(sent.length, steppedKeep(16, MAX_TOTAL_MCP_IMAGES));
+});
+
+test("the non-raster sniff matches the backend's prefixes", () => {
+  const b64 = (text: string) => btoa(text);
+  assert.equal(sniffedUndecodable({ data: b64("<svg xmlns='x'/>"), mimeType: "image/svg+xml" }), true);
+  assert.equal(sniffedUndecodable({ data: b64("  <?xml version='1.0'?>"), mimeType: "image/png" }), true);
+  assert.equal(sniffedUndecodable({ data: b64("\x89PNG\r\n\x1a\n"), mimeType: "image/png" }), false);
+  assert.equal(sniffedUndecodable({ data: "s0", mimeType: "image/png" }), false);
+});
+
+test("a trailing SVG result does not shift the uploaded cut", () => {
+  const shots = Array.from({ length: 8 }, (_, i) => [
+    { role: "assistant", content: "" },
+    {
+      role: "tool",
+      name: "computer",
+      content: `ok${i}` + mcpImagesEnvelope([{ data: `s${i}`, mimeType: "image/jpeg" }]),
+    },
+  ]).flat();
+  const svg = { role: "tool", name: "mcp__s__x", content: "icon" + mcpImagesEnvelope([{ data: btoa("<svg/>"), mimeType: "image/svg+xml" }]) };
+  const sent = boundMcpImageEnvelopes([...shots, { role: "assistant", content: "" }, svg]).filter(
+    (m) => m.role === "tool" && m.name === "computer" && splitMcpImages(m.content).images.length > 0,
+  );
+  assert.equal(sent.length, 8);
+});
+
+test("a compacting llama.cpp chat uploads every picture its loop admitted", () => {
+  for (const calls of [8, 9, 13, 40]) {
+    const chain = Array.from({ length: calls }, (_, i) => [
+      { role: "assistant", content: "" },
+      {
+        role: "tool",
+        name: "computer",
+        content: `ok${i}` + mcpImagesEnvelope([{ data: `s${i}`, mimeType: "image/jpeg" }]),
+      },
+    ]).flat();
+    const sent = boundMcpImageEnvelopes(chain, { uncapped: true }).filter(
+      (m) => splitMcpImages(m.content).images.length > 0,
+    );
+    assert.equal(sent.length, calls);
+  }
+});
+
+test("the uncapped upload still honours the byte bound, newest first", () => {
+  const chain = Array.from({ length: 16 }, (_, i) => [
+    { role: "assistant", content: "" },
+    {
+      role: "tool",
+      name: "computer",
+      content: `ok${i}` + mcpImagesEnvelope([{ data: `${i}`.padEnd(1_050_000, "A"), mimeType: "image/png" }]),
+    },
+  ]).flat();
+  const kept = boundMcpImageEnvelopes(chain, { uncapped: true })
+    .map((m, index) => ({ index, n: splitMcpImages(m.content).images.length }))
+    .filter((row) => row.n > 0);
+  assert.equal(kept.length, 11);
+  assert.equal(kept.at(-1)?.index, chain.length - 1);
+});
+
+test("the adapter uncaps the upload only for a compacting llama.cpp chat", () => {
+  assert.match(
+    adapter,
+    /function compactingLlamaCppChat\([\s\S]*?state\.autoCompactEnabled &&\n\s*isServedByLlamaCpp\(/,
+  );
 });

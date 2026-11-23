@@ -233,8 +233,13 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert "pickNativeChatImport" in projects
     assert "if (!isTauri)" in projects
     assert 'type="file"' in data_tab
-    # Open WebUI exports are .json arrays.
-    assert 'accept=".json,.jsonl,.ndjson,.csv,.md,.markdown"' in data_tab
+    assert "accept={CHAT_IMPORT_ACCEPT}" in data_tab
+    assert "accept={CHAT_IMPORT_ACCEPT}" in projects
+    import_chats = _ui_source(FRONTEND / "features/chat/utils/import-chats.ts")
+    assert (
+        'export const CHAT_IMPORT_ACCEPT = ".json,.jsonl,.ndjson,.csv,.md,.markdown";'
+        in import_chats
+    )
 
     native_dialogs = _ui_source(NATIVE_DIALOGS)
     assert (
@@ -2106,7 +2111,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "pointer-events-none" in header_opening
     assert "relative" in header_opening
     assert "z-40" in header_opening
-    assert "@[50rem]:border-r" in header
+    assert "@[50rem]:border-r @[50rem]:border-border/60" in header
     # The media model picker shares Chat's control height (scaled in index.css), see _MEDIA_PICKER_CLASS.
     assert _MEDIA_PICKER_CLASS in header
     # No label override: the trigger reads exactly like Chat's.
@@ -2123,10 +2128,10 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert 'mode === "speak"' in layout
     assert '"panel-scroll-fade-action"' in layout
     assert '"panel-scroll-fade"' in layout
-    assert "relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3" in layout
+    assert "relative z-10 flex shrink-0 justify-center px-10 pt-3 pb-5 max-sm:px-5" in layout
     assert "btn-float-action" not in layout
     assert "absolute inset-x-0 bottom-0" not in layout
-    assert layout.count("p-6 px-10 @[50rem]:pt-[60px]") == 2
+    assert layout.count("px-10 pt-7 pb-6 max-sm:px-5") == 2
 
 
 TRAIN_SCROLLER_LAYOUT = (
@@ -2304,7 +2309,6 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (VIDEO_PAGE, "", "h", "48px", 1),
     (CHAT_PAGE, "", "h", "48px", 1),
     (IMAGES_PAGE, "@[50rem]:", "pt", "60px", 1),
-    (AUDIO_PAGE, "@[50rem]:", "pt", "60px", 2),
     (DIFFUSION_TRAIN_PANEL, "@[50rem]:", "pt", "42px", 1),
     (DIFFUSION_TRAIN_PANEL, "", "pt", "42px", 1),
     # Hand-set sidebar lengths stay put as labels grow, so rows clip their text; seven 30px rows

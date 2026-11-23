@@ -9,9 +9,12 @@ backend runs inside the strided processor instead of the stock one); all but the
 
 from __future__ import annotations
 
+import contextlib
+
 import os
 from functools import lru_cache
 from typing import Any, Optional
+from . import diffusion_int8_attention as _i8
 from .rocm_bf16 import is_rocm_torch
 
 STRIDED_ATTN_ENV = "UNSLOTH_H3_STRIDED_ATTN"
@@ -31,8 +34,7 @@ STRIDED_SAGE_BACKENDS = frozenset({"sage", "sage_hub"})
 
 
 def strided_install_backend(backend: Any) -> bool:
-    """Whether a load that engaged ``backend`` should install the strided processor: cuDNN / flash SDPA, or a Sage
-    backend unless UNSLOTH_H3_STRIDED_SAGE=0."""
+    """Strided processor for cuDNN or flash SDPA, and Sage unless UNSLOTH_H3_STRIDED_SAGE=0."""
     value = _backend_value(backend)
     if value in (_CUDNN, _FLASH):
         return True
@@ -86,7 +88,7 @@ def h3_attention_backend(
         return selected
     try:
         from .diffusion_attention import ATTN_AUTO, normalize_attention_backend
-        if normalize_attention_backend(requested) != ATTN_AUTO:
+        if normalize_attention_backend(requested) not in (ATTN_AUTO, "unsloth_int8"):
             return selected
     except Exception:  # noqa: BLE001 -- unparseable request: leave it alone
         return selected
@@ -153,9 +155,15 @@ def _strided_processor_for(base: Any) -> Any:
 
     class UnslothH3StridedAttnProcessor(MiniMaxH3AttnProcessor):
         _unsloth_qk_rope = False
+        # True: the reference kernel's single-rounding rotation (torch.ops.unsloth_h3.qk_norm_rope_once)
+        _unsloth_qk_rope_once = False
         _unsloth_shared_qkv = False
         # set from UNSLOTH_H3_STRIDED_SAGE at install: a sage backend runs here, not in the stock processor
         _unsloth_sage = False
+        # set by install_int8_attention: unmasked calls of at least this many tokens run the INT8 kernel
+        _unsloth_int8 = False
+        _unsloth_int8_min_tokens = 0
+        _unsloth_int8_sinks = 0
 
         def __call__(
             self,
@@ -171,7 +179,7 @@ def _strided_processor_for(base: Any) -> Any:
                 dispatch = getattr(base_module, "dispatch_attention_fn", None)
             sage = dispatch is not None
             if (
-                (kernel is None and not sage)
+                (kernel is None and not sage and not self._unsloth_int8)
                 or attention_mask is not None
                 or self._parallel_config is not None
             ):
@@ -203,7 +211,11 @@ def _strided_processor_for(base: Any) -> Any:
             ):
                 # Through torch.ops, not the Python wrapper: dynamo graph-breaks inside the wrapper's lru_cache.
                 cos, sin = rotary_emb
-                op = torch.ops.unsloth_h3.qk_norm_rope
+                op = (
+                    torch.ops.unsloth_h3.qk_norm_rope_once
+                    if self._unsloth_qk_rope_once
+                    else torch.ops.unsloth_h3.qk_norm_rope
+                )
                 query = op(query, attn.norm_q.weight, cos, sin, float(attn.norm_q.eps))
                 key = op(key, attn.norm_k.weight, cos, sin, float(attn.norm_k.eps))
             else:
@@ -213,9 +225,24 @@ def _strided_processor_for(base: Any) -> Any:
                     query = _apply_rotary_emb(query, *rotary_emb)
                     key = _apply_rotary_emb(key, *rotary_emb)
 
-            if sage:
-                # NHD in and out, through the same guarded dispatch the stock processor uses (calls Sage cannot
-                # take still run native there)
+            if (
+                self._unsloth_int8
+                and query.shape[1] >= self._unsloth_int8_min_tokens
+                # no backward in the kernel: gradient calls run native here, not inside the op (autograd cannot see in)
+                and not (
+                    torch.is_grad_enabled()
+                    and (query.requires_grad or key.requires_grad or value.requires_grad)
+                )
+            ):
+                mode = self._unsloth_int8_sinks
+                hidden_states = (
+                    _i8.int8_attention_call(query, key, value, mode)
+                    if mode
+                    else _i8.int8_attention_call(query, key, value)
+                )
+                hidden_states = hidden_states.flatten(2, 3).type_as(query)
+            elif sage:
+                # NHD in and out via guarded dispatch; calls Sage cannot take still run native.
                 hidden_states = dispatch(
                     query,
                     key,
@@ -228,7 +255,8 @@ def _strided_processor_for(base: Any) -> Any:
                 )
                 hidden_states = hidden_states.flatten(2, 3).type_as(query)
             else:
-                with sdpa_kernel(kernel):
+                # an INT8 route over a default SDPA pick has no kernel to pin
+                with sdpa_kernel(kernel) if kernel is not None else contextlib.nullcontext():
                     out = F.scaled_dot_product_attention(
                         query.permute(0, 2, 1, 3),
                         key.permute(0, 2, 1, 3),
@@ -299,9 +327,11 @@ def install_strided_attention(
     transformer: Any,
     logger: Any = None,
     qk_rope: Optional[bool] = None,
+    qk_rope_rounding: str = "eager",
 ) -> int:
     """Swap every H3 attention processor for the strided one, keeping its backend. Returns the count.
-    ``qk_rope=False`` keeps the stock q/k norm + rope; ``None`` follows UNSLOTH_H3_QK_ROPE."""
+    ``qk_rope=False`` keeps the stock q/k norm + rope; ``None`` follows UNSLOTH_H3_QK_ROPE.
+    ``qk_rope_rounding="once"``: the fused q/k norm + rope rounds the rotation once, as the reference kernel."""
     if not _enabled(STRIDED_ATTN_ENV):
         return 0
     modules = _h3_attention_modules(transformer)
@@ -330,6 +360,7 @@ def install_strided_attention(
             continue
         new = cls()
         new._unsloth_qk_rope = qk_rope_on
+        new._unsloth_qk_rope_once = qk_rope_on and qk_rope_rounding == "once"
         new._unsloth_shared_qkv = _enabled(SHARED_QKV_ENV)
         new._unsloth_sage = _enabled(STRIDED_SAGE_ENV)
         new._attention_backend = getattr(old, "_attention_backend", None)

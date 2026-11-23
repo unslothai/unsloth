@@ -109,6 +109,7 @@ import {
   IMAGE_CATALOG,
   catalogToModelOptions,
   curatedArtifactTakesDenseQuant,
+  downloadRepoIdFor,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import {
@@ -141,6 +142,7 @@ import {
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   type NewRecordProbeBaseline,
+  PAGE_MAX_ATTEMPTS,
   applyPin,
   fetchNextPage,
   fetchWhileStable,
@@ -166,6 +168,7 @@ import {
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
 import { isWorkflowEnabled, useImageWorkflowStore } from "./stores/image-workflow-store";
+import { useVideoDeployStore } from "@/features/video/video-deploy-store";
 import {
   CONNECTION_WORKFLOWS,
   WORKFLOW_EXAMPLE_PROMPTS,
@@ -180,7 +183,7 @@ import {
   parseExternalModelId,
   useExternalProvidersStore,
 } from "@/features/chat";
-import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import { ModelLoadCompactStatus, ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import { cancelConnectionImageGeneration } from "./connection-cancel";
 import {
   type ImageGenerationPresetParams,
@@ -216,20 +219,36 @@ import {
   denseTextEncoderBuildLabel,
   denseTransformerBuildLabel,
   isNativeEngineStatus,
+  engagedAttentionBackend,
   formatResolvedValue,
   isDenseQuantKind,
+  loadedTransformerPrecisionLabel,
   isPrecisionRefusal,
   denoiserPlacement,
   memoryRecipeValue,
   resolvedBadge,
   resolvedSeedKey,
+  resolvedRequestSelectValue,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
-import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
+import {
+  ATTENTION_SELECT_HINT,
+  INT8_ATTENTION_HINT,
+  INT8_ATTENTION_LABEL,
+  INT8_ATTENTION_OPTIONS,
+  int8AttentionSelection,
+  type Int8AttentionChoice,
+} from "@/lib/int8-attention";
+import {
+  diffusionPipelineLoadTarget,
+  diffusionStagingEntries,
+  stagedDownloadRepoId,
+} from "@/lib/diffusion-pipeline-load-target";
 import {
   routedImageFilename,
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
+import { createMediaLoadToast } from "@/lib/media-load-toast";
 import { toast } from "@/lib/toast";
 import { ejectWithToast } from "@/lib/media-eject";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
@@ -243,9 +262,10 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import {
   DEFAULT_GEN,
+  defaultSizeFor,
   defaultsFor,
   defaultsKeyFor,
-  fixedStepsFor,
+  maxStepsFor,
   loadedRecipeFor,
   residentDefaultsKey,
   residentRecipeFor,
@@ -272,10 +292,15 @@ import {
   familyPresetsCopy,
   familyPresetsWithin,
   inputImageWord,
+  matchSizeChoosable,
   maxAdditionalImages,
+  raiseToEditResolution,
+  type ReferenceRaise,
   resolveEditSize,
   restoreInputsNote,
+  seedMatchResolution,
   seedReferenceResolution,
+  sizeAfterReference,
   withLocalizedHint,
   withTransparencyPrompt,
 } from "./edit-conditioning";
@@ -339,7 +364,8 @@ import {
   unloadDiffusionModel,
 } from "./api";
 import { GenerationQueuePanel } from "./generation-queue-panel";
-import { queuedJobs, runningJob } from "./lib/generation-queue";
+import { collectGalleryWindow } from "./lib/gallery-window";
+import { pickReleased, queueBusy, queuedJobs, runningJob } from "./lib/generation-queue";
 import { useImageQueue } from "./use-image-queue";
 import {
   shouldContinueGenerating,
@@ -391,6 +417,9 @@ import {
   shouldOfferGenerateAnyway,
   shouldRunQueuedOversizedRetry,
 } from "./lib/memory-refusal";
+import { LORA_RELOAD_ACTION, LORA_RELOAD_TITLE, LoraReloadRefusalError, loraReloadReason } from "./lib/lora-reload";
+import { loraPresetRecipe, pickRecipe, type StepRecipe } from "./lib/lora-preset";
+import { generateGate, pickReleasedWhileNewest } from "./lib/generate-gate";
 import { HELD_BY_OTHER_ACCOUNT_NOTICE, heldByOtherAccount, ownDiffusionStatus } from "./lib/resident-owner";
 import {
   AUTOMATIC_SCHEDULE,
@@ -448,7 +477,9 @@ import {
 import { EnhancedPromptRecipeRow, EnhancePromptControls } from "./prompt-enhance-panel";
 import {
   ENGINE_HINT,
-  ENGINE_OPTIONS,
+  ENGINE_HINT_CPU_ONLY,
+  engineOptionsFor,
+  hostEngineChoice,
   type EngineChoice,
   engineModelKey,
   engineRequestField,
@@ -786,61 +817,64 @@ const LOAD_TOAST_CLASSNAMES = {
   description: "mt-0 w-full",
 } as const;
 
-function loadToastDescription(p: DiffusionLoadProgress) {
+function loadStatus(p: DiffusionLoadProgress) {
   if (p.phase === "saving_chat_context") {
-    return (
-      <ModelLoadDescription
-        title="Saving chat context…"
-        message="Saving the chat model's context so it can resume after this load."
-      />
-    );
+    return {
+      title: "Saving chat context…",
+      brief: "Saving chat context",
+      message: "Saving the chat model's context so it can resume after this load.",
+      progressPercent: null,
+      progressLabel: null,
+    };
   }
   // "Downloading" only when bytes actually remain: a cached model must not claim a download.
   const downloading = p.bytes_total > 0 && p.bytes_downloaded < p.bytes_total * 0.999;
-  const title = downloading
-    ? "Downloading model requirements…"
-    : p.phase === "finalizing"
-      ? "Loading to GPU…"
-      : "Starting model…";
   const hasTotal = p.bytes_total > 0;
+  return {
+    title: downloading
+      ? "Downloading model requirements…"
+      : p.phase === "finalizing"
+        ? "Loading to GPU…"
+        : "Starting model…",
+    brief: downloading ? "Downloading" : p.phase === "finalizing" ? "Loading to GPU" : "Starting",
+    message: downloading
+      ? "Downloading the files required to load this model."
+      : "Loading the model.",
+    progressPercent: hasTotal ? p.fraction * 100 : null,
+    progressLabel: hasTotal
+      ? `${formatBytes(p.bytes_downloaded)} of ${formatBytes(p.bytes_total)}`
+      : p.bytes_downloaded > 0
+        ? `${formatBytes(p.bytes_downloaded)} downloaded`
+        : null,
+  };
+}
+
+function LoadInlineStatus({ p }: { p: DiffusionLoadProgress }) {
+  const s = loadStatus(p);
   return (
-    <ModelLoadDescription
-      title={title}
-      message={
-        downloading
-          ? "Downloading the files required to load this model."
-          : "Loading the model."
-      }
-      progressPercent={hasTotal ? p.fraction * 100 : null}
-      progressLabel={
-        hasTotal
-          ? `${formatBytes(p.bytes_downloaded)} of ${formatBytes(p.bytes_total)}`
-          : p.bytes_downloaded > 0
-            ? `${formatBytes(p.bytes_downloaded)} downloaded`
-            : null
-      }
+    <ModelLoadCompactStatus
+      label={s.brief}
+      title={[s.title, s.message, s.progressLabel].filter(Boolean).join(" ")}
+      progressPercent={s.progressPercent}
     />
   );
 }
 
 // `onCancel` is the only control that reaches a first load in flight.
-function loadToastArgs(
-  p: DiffusionLoadProgress,
-  id?: string | number,
-  onCancel?: () => void,
-) {
+function loadToastArgs(p: DiffusionLoadProgress, onCancel: () => void) {
   return {
-    ...(id != null ? { id } : {}),
-    description: loadToastDescription(p),
+    description: <ModelLoadDescription {...loadStatus(p)} />,
     duration: Infinity,
     closeButton: true,
-    ...(onCancel ? { cancel: { label: "Cancel", onClick: onCancel } } : {}),
+    cancel: { label: "Cancel", onClick: onCancel },
     classNames: LOAD_TOAST_CLASSNAMES,
   };
 }
 
 const NO_SAMPLERS: DiffusionSamplerOption[] = [];
 const IMAGE_CONNECTION_TYPES = new Set(["custom", "vllm", "llama_cpp", "lemonade", "ollama"]);
+// Merges LoRA adapters into its weights at load, so a selection change is always a reload.
+const H3_IMAGE_FAMILY = "minimax-h3-image";
 
 const IDLE_PROGRESS: DiffusionLoadProgress = {
   phase: null,
@@ -1576,8 +1610,8 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
       <BuildRow
         label="Attention"
         value={
-          status.attention_backend
-            ? formatResolvedValue("attention_backend", status.attention_backend)
+          engagedAttentionBackend(status)
+            ? formatResolvedValue("attention_backend", engagedAttentionBackend(status))
             // sd.cpp reports no attention backend, so "Native SDPA" would be wrong there.
             :
               isNativeEngineStatus(status)
@@ -1629,6 +1663,7 @@ type LoadAdvanced = Pick<
   | "transformer_quant"
   | "text_encoder_quant"
   | "attention_backend"
+  | "int8_attention"
   | "memory_mode"
   | "transformer_cache"
   | "family_override"
@@ -1781,7 +1816,8 @@ export function ImagesPage({
   const initialReadySent = useRef(false);
   const imageInfoStamp = useLibrarySettingsStore((state) => state.imageInfoStamp);
   const [rememberedModel, setRememberedModel] = useState(readImageModel);
-  const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId; allowOversized?: boolean } | null>(null);
+  // `load: "next"` waits for a staged load to start (planning / companion downloads bump no sequence) and binds to it then.
+  const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number | "next"; workflow: WorkflowId; allowOversized?: boolean } | null>(null);
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
@@ -1930,6 +1966,7 @@ export function ImagesPage({
   const [referenceResolution, setReferenceResolution] = useState<number | null>(null);
   const [editSizing, setEditSizing] = useState<EditSizing>("source");
   const [matchResolution, setMatchResolution] = useState(1024);
+  const [referenceRaise, setReferenceRaise] = useState<ReferenceRaise | null>(null);
   const [pickedLocalizedMode, setLocalizedMode] = useState<LocalizedEditMode | null>(null);
   const [localizedLayer, setLocalizedLayer] = useState<string | null>(null);
   const [localizedColor, setLocalizedColor] = useState(ANNOTATION_COLORS[0].value);
@@ -1946,6 +1983,15 @@ export function ImagesPage({
   );
   // Trimmed like the request payload, whose duplicate-id check this mirrors.
   const takenLoraIds = useMemo(() => new Set(loras.map((l) => l.id.trim())), [loras]);
+  // Read at pick time without re-creating the pick callbacks on every LoRA edit.
+  const lorasRef = useRef(loras);
+  const sortedLorasRef = useRef(sortedLoras);
+  useEffect(() => {
+    lorasRef.current = loras;
+    sortedLorasRef.current = sortedLoras;
+  }, [loras, sortedLoras]);
+  // A pick that kept a selected distilled LoRA's recipe, with the model recipe to restore if the load drops that LoRA.
+  const heldLoraRecipe = useRef<{ preset: StepRecipe; model: StepRecipe } | null>(null);
   const [focusLoraRow, setFocusLoraRow] = useState<number | null>(null);
   // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
@@ -2016,6 +2062,7 @@ export function ImagesPage({
   const [attentionBackend, setAttentionBackend] = useState<"auto" | "native" | "cudnn" | "flash3" | "sage">(
     "auto",
   );
+  const [int8Attention, setInt8Attention] = useState<Int8AttentionChoice>("auto");
   useEffect(() => {
     setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
     setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
@@ -2044,6 +2091,7 @@ export function ImagesPage({
   );
   const componentsReconciled = useRef(false);
   const [initialLoadProbe, setInitialLoadProbe] = useState<"pending" | "loading" | "idle">("pending");
+  const [generateProbed, setGenerateProbed] = useState(false);
   const reconcileInitialComponents = useCallback(
     (loaded: DiffusionStatus) => {
       if (componentsReconciled.current || initialLoadProbe === "pending") return;
@@ -2124,6 +2172,18 @@ export function ImagesPage({
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
+  // A pick made during a run takes the stage from the live preview and is not replaced by finished runs.
+  const [pickedDuringRun, setPickedDuringRun] = useState(false);
+  const pickedDuringRunRef = useRef(false);
+  useEffect(() => {
+    pickedDuringRunRef.current = pickedDuringRun;
+  }, [pickedDuringRun]);
+  const pickImage = useCallback((id: string) => {
+    // Set now, not after the render: an in-flight gallery refresh reads it.
+    galleryCache.selectedId = id;
+    setSelectedId(id);
+    setPickedDuringRun(true);
+  }, []);
   // The base seed of this session's last run, for "Reuse last seed"; before one, the newest record's.
   const [sessionSeed, setSessionSeed] = useState<number | null>(null);
   // The strip lists active images only, so the gallery fallback also needs the archive to be empty: an
@@ -2183,19 +2243,23 @@ export function ImagesPage({
     setStopping(false);
   }, []);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const loadToastId = useRef<string | number | null>(null);
+  const [closedLoad, setClosedLoad] = useState<DiffusionLoadProgress | null>(null);
   // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
   const pendingEvicted = useRef<EvictedSlot[]>([]);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
   const lastLoadSig = useRef<string | null>(null);
   // `{ prev }` distinguishes "revert to null" from "nothing pending"; also carries the recipe.
   const quantRevert = useRef<PickRevert | null>(null);
+  // Mirrors quantRevert != null (busy is not set while a pick plans or downloads); keeps Generate off.
+  const [pickInFlight, setPickInFlight] = useState(false);
   // Staging does not set `busy`, so a second pick can overwrite quantRevert meanwhile.
   const stagedQuantRevert = useRef<PickRevert | null>(null);
   const pickSeq = useRef(0);
   // handleLoad overwrites lastLoad.current at load start.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
-  const pendingDeploy = useRef<{ loraId: string; family: string } | null>(null);
+  const pendingDeploy = useRef<{ loraId: string; family: string; families: string[] } | null>(
+    null,
+  );
   // Lazy state, not a ref, since a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
 
@@ -2288,27 +2352,38 @@ export function ImagesPage({
       }
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename));
+      const recipeKey = defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename);
+      const recommended = defaultsFor(recipeKey);
       pickDefaults.current = recommended;
       setPendingModelDefaults(recommended);
-      setSteps(recommended.steps);
-      setGuidance(recommended.guidance);
+      // A still-selected step-distilled LoRA (Lightning) keeps its own steps / CFG, as the video page does.
+      const preset = loraPresetRecipe(lorasRef.current, sortedLorasRef.current);
+      heldLoraRecipe.current = preset ? { preset, model: recommended } : null;
+      const applied = pickRecipe(recommended, lorasRef.current, sortedLorasRef.current);
+      setSteps(applied.steps);
+      setGuidance(applied.guidance);
+      const nativeSize = defaultSizeFor(recipeKey);
+      if (nativeSize) {
+        setWidth(nativeSize.width);
+        setHeight(nativeSize.height);
+      }
       if (revert) {
-        revert.appliedSteps = recommended.steps;
-        revert.appliedGuidance = recommended.guidance;
+        revert.appliedSteps = applied.steps;
+        revert.appliedGuidance = applied.guidance;
       }
     },
     [claimImageRecipe, familyOverride, imageFormClaimId, modelSelectionAction],
   );
 
-  const dismissLoadToast = useCallback(() => {
-    if (loadToastId.current != null) toast.dismiss(loadToastId.current);
-    loadToastId.current = null;
-  }, []);
+  const [loadToast] = useState(() =>
+    createMediaLoadToast<DiffusionLoadProgress>({
+      toastOptions: loadToastArgs,
+      onClosedChange: setClosedLoad,
+    }),
+  );
+  const dismissLoadToast = loadToast.dismiss;
   const pickToast = useDiffusionPickToast();
 
-  const cancelLoadRef = useRef<() => void>(() => {});
-  const cancelLoadFromToast = useCallback(() => cancelLoadRef.current(), []);
   // In-flight requests compare against this and discard their result after a cancel.
   const cancelSeq = useRef(0);
   // The compensating unload carries no identity, so it must not fire once a newer load owns the page.
@@ -2338,6 +2413,7 @@ export function ImagesPage({
     if (quantRevert.current) {
       revertPick(quantRevert.current);
       quantRevert.current = null;
+      setPickInFlight(quantRevert.current !== null);
     }
   }, [dismissLoadToast, pickGuard, pickToast, revertPick]);
 
@@ -2351,6 +2427,8 @@ export function ImagesPage({
   // Refresh the LoRA picker when the loaded family changes, since a LoRA is family-specific.
   // Not on first load or unload (a restore can precede the load), so track it in a ref.
   const loraCapable = Boolean(!external && status?.loaded && status?.supports_lora);
+  // An INT8 / FP8 build that did not bake this selection: Generate reloads with it first instead of a refused run.
+  const loraReload = loraCapable ? loraReloadReason(status, loras) : null;
   const loraOffNote = external ? null : loraUnavailableNote(status);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   const bakedLorasOnLoad = useRef(false);
@@ -2363,14 +2441,22 @@ export function ImagesPage({
     }
     const fam = status?.family ?? null;
     const prev = prevLoraFamilyRef.current;
+    const held = heldLoraRecipe.current;
+    heldLoraRecipe.current = null;
     if (prev != null && prev !== fam) {
       setLoras([]);
+      // The LoRA whose recipe the pick kept is gone: an untouched form takes the model's recipe.
+      if (held) {
+        setSteps((cur) => (cur === held.preset.steps ? held.model.steps : cur));
+        setGuidance((cur) => (cur === held.preset.guidance ? held.model.guidance : cur));
+      }
     }
     prevLoraFamilyRef.current = fam;
     const deploy = pendingDeploy.current;
     if (deploy) {
       pendingDeploy.current = null;
-      if (!deploy.family || deploy.family === fam) {
+      // The adapter runs on every family it was published for (Klein Base trains, Klein deploys).
+      if (!deploy.family || (fam != null && deploy.families.includes(fam))) {
         setLoras([{ id: deploy.loraId, weight: 1 }]);
       } else {
         toast.error(
@@ -2404,12 +2490,13 @@ export function ImagesPage({
     if (!loraCapable || checkedBuildForBake.current === residentBuildKey) return;
     checkedBuildForBake.current = residentBuildKey;
     const engaged = status?.resolved?.transformer_quant?.value;
-    if (engaged !== "int8" && engaged !== "fp8") return;
+    // MiniMax-H3-Image merges adapters into its weights at load at every precision.
+    if (engaged !== "int8" && engaged !== "fp8" && status?.family !== H3_IMAGE_FAMILY) return;
     if (bakedLorasOnLoad.current || loras.length === 0) return;
     setLoras([]);
     toast.info("LoRA selection cleared", {
       description:
-        "This quantized load bakes adapters in at load time. Pick them, then load again.",
+        "This quantized build takes LoRAs only when it loads. Pick them again and Generate reloads the model with them.",
     });
   }, [loraCapable, residentBuildKey, status?.resolved, loras]);
 
@@ -2422,10 +2509,10 @@ export function ImagesPage({
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
   // A model that reads no guidance here runs at its default, which the request and recipe then carry.
   const guidanceFixed = !external && status?.loaded === true && status.supports_guidance === false;
-  const fixedSteps = !external && status?.loaded === true ? fixedStepsFor(status.family) : null;
+  const maxSteps = !external && status?.loaded === true ? maxStepsFor(status.family) : null;
   useEffect(() => {
-    if (fixedSteps !== null && steps !== fixedSteps) setSteps(fixedSteps);
-  }, [fixedSteps, steps]);
+    if (maxSteps !== null && steps > maxSteps) setSteps(maxSteps);
+  }, [maxSteps, steps]);
   const effectiveGuidance = guidanceFixed
     ? (status?.generation_defaults?.guidance ?? DEFAULT_GEN.guidance)
     : guidance;
@@ -2571,6 +2658,7 @@ export function ImagesPage({
   const selectedThumb = selected ? thumbById[selected.id] : undefined;
   const livePreviewSrc =
     busy === "generating" && livePreview ? (genStep?.preview ?? undefined) : undefined;
+  const stagePreviewSrc = pickedDuringRun ? undefined : livePreviewSrc;
   const [viewerId, setViewerId] = useState<string | null>(null);
   const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
   const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
@@ -2659,6 +2747,7 @@ export function ImagesPage({
   const stripEpoch = useRef(0);
   const pageEpoch = useRef(0);
   const resyncSeq = useRef(0);
+  const refreshSeq = useRef(0);
   // The epoch is an EDGE, so a page starting after the bump sees it unchanged.
   const pendingShelfMutations = useRef(0);
 
@@ -2805,22 +2894,19 @@ export function ImagesPage({
   const resyncWindow = useCallback(
     async (count: number, stillFresh?: () => boolean) => {
       const ticket = (resyncSeq.current += 1);
+      const fresh = () => resyncSeq.current === ticket && (!stillFresh || stillFresh());
       for (let attempt = 0; attempt < RESYNC_MAX_ATTEMPTS; attempt += 1) {
         const paged = pageEpoch.current;
-        const wanted = Math.max(count, galleryCache.images.length, PAGE_SIZE);
-        const collected: GalleryImage[] = [];
-        let more = false;
-        while (collected.length < wanted) {
-          const page = await getGallery(
-            collected.length,
-            Math.min(PAGE_SIZE, wanted - collected.length),
-          );
-          collected.push(...page.images);
-          more = page.has_more;
-          if (!page.has_more || page.images.length === 0) break;
-        }
-        if (stillFresh && !stillFresh()) return;
-        if (resyncSeq.current !== ticket) return;
+        const result = await collectGalleryWindow(
+          (offset, limit) => getGallery(offset, limit),
+          galleryCache.images,
+          Math.max(count, galleryCache.images.length, PAGE_SIZE),
+          PAGE_SIZE,
+          () => galleryCache.selectedId,
+          fresh,
+        );
+        if (!result) return false;
+        const { images: collected, hasMore: more } = result;
         if (pageEpoch.current !== paged) continue;
         galleryCache.images = collected;
         galleryCache.hasMore = more;
@@ -2829,26 +2915,31 @@ export function ImagesPage({
         if (typeof IntersectionObserver === "undefined") {
           collected.forEach((image) => void ensureThumb(image));
         }
-        return;
+        return true;
       }
+      return false;
     },
     [ensureThumb],
   );
 
-  // This page stays mounted across routes, so an archive restore needs a resync.
-  useEffect(
-    () =>
-      subscribeGalleryChanged("images", () => {
-        // Bumped FIRST so in-flight reads are discarded.
-        stripEpoch.current += 1;
+  const refreshLoadedGallery = useCallback(() => {
+    const ticket = (refreshSeq.current += 1);
+    // Bumped FIRST so in-flight reads are discarded.
+    stripEpoch.current += 1;
+    void (async () => {
+      // Retried: a pin or archive mid-fetch discards it, and nothing else refetches the new image.
+      for (let attempt = 0; attempt < PAGE_MAX_ATTEMPTS && refreshSeq.current === ticket; attempt += 1) {
+        // After pending pin PATCHes, or this read could undo a pin on screen.
+        if (attempt > 0) await serializeById("image-pin", async () => {});
         const epoch = stripEpoch.current;
-        void resyncWindow(
-          galleryCache.images.length,
-          () => stripEpoch.current === epoch,
-        ).catch(() => void loadGallery());
-      }),
-    [loadGallery, resyncWindow],
-  );
+        const fresh = () => stripEpoch.current === epoch && refreshSeq.current === ticket;
+        if (await resyncWindow(galleryCache.images.length, fresh)) return;
+      }
+    })().catch(() => void loadGallery());
+  }, [loadGallery, resyncWindow]);
+
+  // This page stays mounted across routes, so an archive restore needs a resync.
+  useEffect(() => subscribeGalleryChanged("images", refreshLoadedGallery), [refreshLoadedGallery]);
 
   const { isFavorite, toggleFavorite } = useLibraryFavorites();
   const pinAttempt = useRef(new Map<string, number>());
@@ -3553,6 +3644,7 @@ export function ImagesPage({
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
         quantRevert.current?.commitRecipeClaim?.();
         quantRevert.current = null;
+        setPickInFlight(quantRevert.current !== null);
         setPendingModelDefaults(null);
         lastLoadRevert.current = null;
         return;
@@ -3568,6 +3660,7 @@ export function ImagesPage({
         if (quantRevert.current) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
         if (lastLoadRevert.current) {
           lastLoad.current = lastLoadRevert.current.prev;
@@ -3592,6 +3685,7 @@ export function ImagesPage({
         if (quantRevert.current) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
         if (lastLoadRevert.current) {
           lastLoad.current = lastLoadRevert.current.prev;
@@ -3603,25 +3697,25 @@ export function ImagesPage({
       }
       // Include bytes_total: the estimate lands as a 0->real jump while the rest holds.
       const sig = `${p.phase}:${p.bytes_downloaded}:${p.bytes_total}`;
-      if (loadToastId.current != null && sig !== lastLoadSig.current) {
+      if (sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
-        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast));
+        loadToast.update(p);
       }
     } catch {
       // Transient poll failure: keep trying.
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor, rememberFinishedLoad]);
+  }, [dismissLoadToast, refreshStatus, loadToast, offerLoadAnywayFor, rememberFinishedLoad]);
 
   // The unload failed, so restore the poll and toast. refreshStatus cannot: a first load is not resident.
   const restoreLoadTracking = useCallback(() => {
     loadTrackingRestored.current = true;
     setBusy("loading");
     lastLoadSig.current = null;
-    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+    loadToast.open(IDLE_PROGRESS);
     void pollLoadProgress();
-  }, [pollLoadProgress, cancelLoadFromToast]);
+  }, [pollLoadProgress, loadToast]);
 
   // generate-progress carries no terminal record, so refresh the gallery on completion.
   const resumeGeneratePoll = useCallback(() => {
@@ -3645,7 +3739,7 @@ export function ImagesPage({
           if (!isMounted.current) return;
           setBusy((prev) => (prev === "generating" ? null : prev));
           setGenStep(null);
-          void loadGallery();
+          refreshLoadedGallery();
           void refreshStatus();
           return;
         }
@@ -3664,14 +3758,10 @@ export function ImagesPage({
     };
     document.addEventListener("visibilitychange", genVisibilityListener.current);
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
-  }, [loadGallery, refreshStatus]);
+  }, [refreshLoadedGallery, refreshStatus]);
 
   const imageQueue = useImageQueue(active, (finished) => {
-    if (finished.some((job) => job.status === "done")) {
-      // Fences an earlier refresh still in flight, so it refetches instead of landing after this one.
-      stripEpoch.current += 1;
-      void loadGallery();
-    }
+    if (finished.some((job) => job.status === "done")) refreshLoadedGallery();
     let latest: ImageQueueJob | null = null;
     for (const job of finished) {
       if (job.status === "failed") toast.error(job.error ?? "A queued generation failed");
@@ -3687,6 +3777,16 @@ export function ImagesPage({
   });
   const queueRunningId = runningJob(imageQueue.jobs)?.id ?? null;
   const queueWaiting = queuedJobs(imageQueue.jobs).length > 0;
+  if (
+    pickedDuringRun &&
+    pickReleased({
+      statusKnown: generateProbed && imageQueue.polled,
+      generating: busy === "generating",
+      queueBusy: queueBusy(imageQueue.jobs),
+    })
+  ) {
+    setPickedDuringRun(false);
+  }
   useEffect(() => {
     if (busy !== null) return;
     followingJob.current = null;
@@ -3737,7 +3837,7 @@ export function ImagesPage({
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
+          loadToast.open(p);
           void pollLoadProgress();
         } else if (p.phase === "ready") {
           const ticket = ++statusTicket.current;
@@ -3766,6 +3866,7 @@ export function ImagesPage({
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      setGenerateProbed(true);
     })();
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
@@ -3776,7 +3877,7 @@ export function ImagesPage({
       }
       dismissLoadToast();
     };
-  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast, rememberFinishedLoad]);
+  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, loadToast, rememberFinishedLoad]);
 
   // Seed from a resident model's recipe, else flux.1-dev generates garbage at 9 steps.
   const residentSeeded = useRef(false);
@@ -3819,6 +3920,7 @@ export function ImagesPage({
     const matched = matchAspect(size.width, size.height);
     setAspect(matched.key);
     setPortrait(matched.portrait);
+    setReferenceRaise(null);
   }, [
     imagePresets.storedRecipe,
     residentDefaults,
@@ -3844,19 +3946,20 @@ export function ImagesPage({
     setEngineChoice(loadedEngine);
   }
   const engineForced = status?.engine_forced ?? null;
-  const engineSelection = useRef({ key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced });
+  const engineStatus = status;
+  const engineSelection = useRef({ key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced, status: engineStatus });
   useEffect(() => {
-    engineSelection.current = { key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced };
-  }, [loadedEngineKey, engineChoice, engineChoices, engineForced]);
+    engineSelection.current = { key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced, status: engineStatus };
+  }, [loadedEngineKey, engineChoice, engineChoices, engineForced, engineStatus]);
   // A load's engine: an explicit one it was handed, else the Engine select for the loaded checkpoint, else
   // the choice that checkpoint last loaded with. GGUF only; Auto omits the field.
   const engineFor = useCallback(
     (repoId: string, opts: ImageLoadOptions, advanced: LoadAdvanced) => {
       if (!sendsEngine(opts.kind, opts.filename)) return undefined;
-      if (advanced.engine) return engineRequestField(advanced.engine);
-      const { key, choice, stored } = engineSelection.current;
+      const { key, choice, stored, status: hostStatus } = engineSelection.current;
+      if (advanced.engine) return engineRequestField(hostEngineChoice(advanced.engine, hostStatus));
       const target = engineModelKey(repoId, opts.filename);
-      return engineRequestField(target && target === key ? choice : stored[target]);
+      return engineRequestField(hostEngineChoice(target && target === key ? choice : stored[target], hostStatus));
     },
     [],
   );
@@ -3889,12 +3992,14 @@ export function ImagesPage({
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
     );
     if (memory) setMemoryMode(memory);
-    const attention = resolvedSelectValue(record.attention_backend, (v) =>
+    const attention = resolvedRequestSelectValue(record.attention_backend, (v) =>
       (["auto", "native", "cudnn", "flash3", "sage"] as const).find(
         (o) => o === v || `_native_${o}` === v,
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
+    const int8 = int8AttentionSelection(record.int8_attention);
+    if (int8) setInt8Attention(int8);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
 
@@ -3918,6 +4023,8 @@ export function ImagesPage({
         transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
         text_encoder_quant: textEncoderQuant === "auto" ? undefined : textEncoderQuant,
         attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
+        // Always sent: the backend reads "auto" as no per-load override.
+        int8_attention: int8Attention,
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
         family_override: familyOverrideRequired ? explicitFamily(familyOverride) : undefined,
@@ -3941,6 +4048,7 @@ export function ImagesPage({
       transformerQuant,
       textEncoderQuant,
       attentionBackend,
+      int8Attention,
       memoryMode,
       transformerCache,
       familyOverride,
@@ -3965,6 +4073,7 @@ export function ImagesPage({
       // Read BEFORE the start request: a Cancel's unload can reach the backend first and stop nothing.
       const startSeq = cancelSeq.current;
       const startLoad = ++loadSeq.current;
+      if (pendingRecalledGeneration.current?.load === "next") pendingRecalledGeneration.current.load = startLoad;
       // An older pick's Load anyway prompt would retry a model this load supersedes.
       dismissLoadAnyway();
       // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
@@ -3981,8 +4090,7 @@ export function ImagesPage({
       setBusy("loading");
       dismissLoadToast();
       lastLoadSig.current = null;
-      const handedOver = pickToast.take(pickToastId);
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast));
+      loadToast.open(IDLE_PROGRESS, pickToast.take(pickToastId));
       // Snapshot first: a load that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
       // A torchao int8/fp8 transformer takes adapters only at LOAD time and /images/generate then
@@ -4022,8 +4130,8 @@ export function ImagesPage({
       lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getDiffusionLoadProgress, () => {
-        if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
-          toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));
+        if (startSeq === cancelSeq.current && startLoad === loadSeq.current) {
+          loadToast.update(SAVING_PROGRESS);
         }
       });
       try {
@@ -4042,6 +4150,7 @@ export function ImagesPage({
             : undefined,
           text_encoder_quant: advanced.text_encoder_quant,
           attention_backend: advanced.attention_backend,
+          int8_attention: advanced.int8_attention,
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
           family_override: advanced.family_override,
@@ -4090,7 +4199,7 @@ export function ImagesPage({
       void pollLoadProgress();
       return settle(true);
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, loadToast, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
   );
 
   const handleInitChange = useCallback((dataUrl: string | null) => {
@@ -4167,7 +4276,7 @@ export function ImagesPage({
   useLayoutEffect(() => {
     stripTileActions.set({
       tileProps: stripReorder.tileProps,
-      select: setSelectedId,
+      select: pickImage,
       setMenuId: setTileMenuId,
       togglePin: (id, pinned) => void handleTogglePin(id, pinned),
       archive: (id) => void handleArchive(id),
@@ -4213,6 +4322,7 @@ export function ImagesPage({
         if (quantRevert.current && quantRevert.current === owned) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
         if (stagedQuantRevert.current === owned) stagedQuantRevert.current = null;
       });
@@ -4263,6 +4373,7 @@ export function ImagesPage({
       if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
         revertPick(quantRevert.current);
         quantRevert.current = null;
+        setPickInFlight(quantRevert.current !== null);
       }
       stagedQuantRevert.current = null;
       startQueuedDownload();
@@ -4391,6 +4502,16 @@ export function ImagesPage({
       // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
       // Only load intents have an owner; a download-only pick holds no token and answers true.
       const owns = () => token === undefined || downloadOnly || pickGuard.holds(token);
+      // Hidden mid-plan (pickGuard.release) and still the newest pick: nothing else settles it, so take it back.
+      const dropReleasedPick = (owned: PickRevert | null) => {
+        if (downloadOnly || downloadSnapshot || pick !== pickSeq.current) return;
+        if (!pickReleasedWhileNewest(pickGuard, token)) return;
+        if (owned && quantRevert.current === owned) {
+          revertPick(owned);
+          quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
+        }
+      };
       // A download-only pick must not retire a staged load, or that model never loads.
       if (!downloadSnapshot && !downloadOnly) {
         pendingStagedLoad.current = null;
@@ -4398,7 +4519,10 @@ export function ImagesPage({
         stagedLoadDeferred.current = false;
         stagedQuantRevert.current = null;
         pickToast.dismissAll();
-        if (!owns()) return true;
+        if (!owns()) {
+          dropReleasedPick(quantRevert.current);
+          return true;
+        }
       }
       const picked = downloadSnapshot || downloadOnly ? null : pickComponentFiles({ repoId, ...opts });
       const withPicked = (a: LoadAdvanced): LoadAdvanced =>
@@ -4421,7 +4545,10 @@ export function ImagesPage({
         advanced = { ...advanced, engine: engineFor(repoId, opts, advanced) ?? "auto" };
       }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
-      const pickToastId = downloadOnly ? undefined : pickToast.show(opts.displayRepoId ?? repoId);
+      // Label with the repo actually fetched (a vendor id's unsloth mirror), not the picked id.
+      const pickToastId = downloadOnly
+        ? undefined
+        : pickToast.show(downloadRepoIdFor(opts.displayRepoId ?? repoId, IMAGE_CATALOG));
       // Read before the await: a pick made meanwhile replaces quantRevert. Download-only owns no slot.
       const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;
       // Acted on outside the try: a throwing refusal would otherwise fall through to the load.
@@ -4436,6 +4563,7 @@ export function ImagesPage({
         // Only load intents are superseded; accepted downloads keep their own plans.
         if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
           pickToast.dismiss(pickToastId);
+          dropReleasedPick(ownRevert);
           return true;
         }
         if (downloadOnly && plan.plan_failed) {
@@ -4475,11 +4603,13 @@ export function ImagesPage({
           } else {
             pendingLoadEntries.current = entries;
             const pending = pendingStagedLoad.current;
+            // The plan names the repo actually downloaded, which the catalog may not know (a gated row's mirror).
+            const downloadName = stagedDownloadRepoId(entries, opts.displayRepoId ?? repoId);
             if (downloadOnlyPlans.current.length === 0 && pending) {
               stagedPlan.current = { token: pending.token };
-              pickToast.setPhase(pickToastId, "downloading", stage(entries));
+              pickToast.setPhase(pickToastId, "downloading", stage(entries), downloadName);
             } else {
-              pickToast.setPhase(pickToastId, "queued");
+              pickToast.setPhase(pickToastId, "queued", undefined, downloadName);
             }
           }
           return true;
@@ -4491,6 +4621,7 @@ export function ImagesPage({
           if (ownRevert && quantRevert.current === ownRevert) {
             revertPick(ownRevert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
           toast.error(error.message);
           return true;
@@ -4505,6 +4636,7 @@ export function ImagesPage({
       // Re-checked: a plan rejected after a newer pick would otherwise reach the fallback load.
       if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
         pickToast.dismiss(pickToastId);
+        dropReleasedPick(ownRevert);
         return true;
       }
       if (incompatible) {
@@ -4611,6 +4743,7 @@ export function ImagesPage({
         onResolved: (filename) => {
           if (downloadOnly) return;
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(quantHint ?? filename);
           applyImageModelDefaults(repoId, effectiveFamilyOverride, false, filename);
         },
@@ -4618,6 +4751,7 @@ export function ImagesPage({
           if (!downloadOnly && quantRevert.current === revert) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         },
         load: (filename) =>
@@ -4680,6 +4814,7 @@ export function ImagesPage({
       : (quantRevert.current ?? { prev: quant, steps, guidance });
     if (revert) {
       quantRevert.current = revert;
+      setPickInFlight(quantRevert.current !== null);
       setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
       applyImageModelDefaults(
         wanted,
@@ -4692,6 +4827,7 @@ export function ImagesPage({
       if (!started && revert && token !== undefined && pickGuard.holds(token) && quantRevert.current === revert) {
         revertPick(revert);
         quantRevert.current = null;
+        setPickInFlight(quantRevert.current !== null);
       }
     });
   }, [
@@ -4731,33 +4867,77 @@ export function ImagesPage({
     }).then((found) => {
       if (lookup !== routedLookup.current) return;
       if (found) {
-        setSelectedId(routedItem);
+        pickImage(routedItem);
       } else {
         toast(translate("library.toast.imageNotFound"), {
           description: translate("library.toast.notFoundDescription"),
         });
       }
     });
-  }, [routedItem, navigateSelf, loadGallery, loadMore]);
+  }, [routedItem, navigateSelf, loadGallery, loadMore, pickImage]);
 
-  // Reload the current model with the current advanced options.
-  const handleReapply = useCallback(() => {
+  // `keepLoras` carries the selection even when this page did not load the resident model.
+  const reapplyLoad = useCallback((keepLoras: boolean): boolean => {
     // Against the current status: another client may have replaced the model this page last loaded.
     const l = reapplyTarget(lastLoad.current, status);
-    if (!l) return;
+    if (!l) return false;
     const opts = { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId, baseRepo: l.baseRepo };
     // An engine change reads the other engine's companion files: plan and stage them first.
     if (reapplyChangesEngine(engineChoice, status)) {
-      void loadOrStage(l.repoId, opts, reloadSource(l.repoId), undefined, true, undefined, true);
-      return;
+      void loadOrStage(l.repoId, opts, reloadSource(l.repoId), undefined, true, undefined, true).then((started) => {
+        // A stage that never loads must not leave a Generate waiting for some later load.
+        if (!started && pendingRecalledGeneration.current?.load === "next") pendingRecalledGeneration.current = null;
+      });
+      return true;
     }
     const files = pickComponentFiles({ repoId: l.repoId, kind: l.kind, filename: l.filename });
     void handleLoad(l.repoId, opts, {
-      ...currentLoadAdvanced(l.repoId),
+      ...currentLoadAdvanced(l.repoId, true, keepLoras),
       text_encoder_file: files.textEncoderFiles?.length ? files.textEncoderFiles : undefined,
       vae_file: files.vaeFile || undefined,
     });
+    return true;
   }, [currentLoadAdvanced, engineChoice, handleLoad, loadOrStage, pickComponentFiles, status]);
+  const handleReapply = useCallback(() => {
+    reapplyLoad(false);
+  }, [reapplyLoad]);
+
+  // INT8 / FP8 builds take LoRAs only at load: reload via the Reapply path, then generate.
+  const reloadWithLoras = useCallback(
+    (thenGenerate: boolean) => {
+      if (busy !== null || !status?.loaded || !status.repo_id) return;
+      const kind = status.model_kind;
+      const resumable =
+        kind === "pipeline" || ((kind === "gguf" || kind === "single_file") && Boolean(status.gguf_filename));
+      if (thenGenerate && resumable) {
+        const model = withEngagedFamily(
+          lastLoad.current && matchesRememberedModel(lastLoad.current, status)
+            ? lastLoad.current
+            : { repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined },
+          status,
+        );
+        pendingRecalledGeneration.current = {
+          model,
+          load: "next",
+          workflow,
+          allowOversized: oversizedOnce.current,
+        };
+      }
+      if (!reapplyLoad(true)) {
+        pendingRecalledGeneration.current = null;
+        toast.error(LORA_RELOAD_TITLE, { description: "Load the model again with the LoRAs selected." });
+        return;
+      }
+      toast.info("Reloading the model with your LoRAs", {
+        id: "images-lora-reload",
+        description:
+          thenGenerate && resumable
+            ? "Quantized builds take LoRAs only when they load. Generate runs once the model is ready."
+            : "Quantized builds take LoRAs only when they load.",
+      });
+    },
+    [busy, status, workflow, reapplyLoad],
+  );
 
   // The LoRA note's action: the same GGUF pick, on the native engine. A resident model the page did not load
   // reloads from its status, which names the checkpoint.
@@ -4784,6 +4964,7 @@ export function ImagesPage({
     if (quantRevert.current) {
       revertPick(quantRevert.current);
       quantRevert.current = null;
+      setPickInFlight(quantRevert.current !== null);
     }
   }, [revertPick]);
 
@@ -4798,6 +4979,7 @@ export function ImagesPage({
         if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
         pickGuard.cancel();
         pickToast.dismissAll();
@@ -4824,6 +5006,7 @@ export function ImagesPage({
           : (quantRevert.current ?? { prev: quant, steps, guidance });
         if (revert) {
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(null);
           applyImageModelDefaults(id, nextFamilyOverride);
         }
@@ -4836,6 +5019,7 @@ export function ImagesPage({
             if (!started && revert && stillOwnsPick()) {
               revertPick(revert);
               quantRevert.current = null;
+              setPickInFlight(quantRevert.current !== null);
             }
           });
         return;
@@ -4846,6 +5030,7 @@ export function ImagesPage({
           : (quantRevert.current ?? { prev: quant, steps, guidance });
         if (revert) {
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(meta.ggufVariant);
           applyImageModelDefaults(id, nextFamilyOverride, false, meta.ggufFilename);
         }
@@ -4858,6 +5043,7 @@ export function ImagesPage({
           if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         });
         return;
@@ -4882,6 +5068,7 @@ export function ImagesPage({
           : (quantRevert.current ?? { prev: quant, steps, guidance });
         if (revert) {
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(filename);
           applyImageModelDefaults(id, nextFamilyOverride, false, filename);
         }
@@ -4889,6 +5076,7 @@ export function ImagesPage({
           if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         });
         return;
@@ -4904,13 +5092,15 @@ export function ImagesPage({
           : (quantRevert.current ?? { prev: quant, steps, guidance });
         if (revert) {
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(filename);
-          applyImageModelDefaults(id, nextFamilyOverride);
+          applyImageModelDefaults(id, nextFamilyOverride, false, filename);
         }
         void loadOrStage(dir, { kind: "single_file", filename }, meta.source, token).then((started) => {
           if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         });
         return;
@@ -4937,6 +5127,7 @@ export function ImagesPage({
         : (quantRevert.current ?? { prev: quant, steps, guidance });
       if (revert) {
         quantRevert.current = revert;
+        setPickInFlight(quantRevert.current !== null);
         setQuant(null);
         applyImageModelDefaults(id, nextFamilyOverride);
       }
@@ -4944,6 +5135,7 @@ export function ImagesPage({
         if (!started && revert && stillOwnsPick()) {
           revertPick(revert);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
       });
     },
@@ -4965,7 +5157,13 @@ export function ImagesPage({
   );
 
   const handleDeployAdapter = useCallback(
-    (args: { baseRepo: string; family: string; catalogPath: string; trigger: string }) => {
+    (args: {
+      baseRepo: string;
+      family: string;
+      families?: string[];
+      catalogPath: string;
+      trigger: string;
+    }) => {
       if (busy !== null) {
         toast.error("Finish the current model load before deploying the adapter.");
         return;
@@ -4980,24 +5178,49 @@ export function ImagesPage({
       pickGuard.cancel();
       pickToast.dismissAll();
       setExternalModelId(null);
-      pendingDeploy.current = { loraId: stem, family: args.family };
+      pendingDeploy.current = {
+        loraId: stem,
+        family: args.family,
+        families: args.families?.length ? args.families : [args.family],
+      };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
+      setPickInFlight(quantRevert.current !== null);
       setQuant(null);
       applyImageModelDefaults(args.baseRepo, "auto", true);
-      void handleLoad(args.baseRepo, { kind: "pipeline" }).then((started) => {
+      // Sent with the load: an int8 / fp8 build takes adapters only at load time and refuses one picked after.
+      const deployLoras: LoraSpecInput[] = [{ id: stem, weight: 1 }];
+      const prevLoras = loras;
+      setLoras(deployLoras);
+      void handleLoad(args.baseRepo, { kind: "pipeline" }, {
+        ...currentLoadAdvanced(args.baseRepo),
+        loras: deployLoras,
+      }).then((started) => {
         if (!started) {
           pendingDeploy.current = null;
+          setLoras(prevLoras);
           if (quantRevert.current === revert) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         }
       });
     },
-    [applyImageModelDefaults, busy, handleLoad, pickGuard, pickToast, quant, revertPick, setPageMode],
+    [
+      applyImageModelDefaults,
+      busy,
+      currentLoadAdvanced,
+      handleLoad,
+      loras,
+      pickGuard,
+      pickToast,
+      quant,
+      revertPick,
+      setPageMode,
+    ],
   );
   const deployFromVideo = useImageWorkflowStore((s) => s.pendingDeploy);
   useEffect(() => {
@@ -5067,8 +5290,8 @@ export function ImagesPage({
   }, [busy, handleUnload, restoreLoadTracking]);
 
   useEffect(() => {
-    cancelLoadRef.current = () => void handleCancelLoad();
-  }, [handleCancelLoad]);
+    loadToast.setCancel(() => void handleCancelLoad());
+  }, [loadToast, handleCancelLoad]);
 
   const buildKey = status?.loaded
     ? [
@@ -5078,6 +5301,7 @@ export function ImagesPage({
         status.transformer_quant,
         status.resolved?.transformer_quant?.source ?? "",
         (status.conditioning?.reference_resolutions ?? []).join(","),
+        status.conditioning?.edit_output_resolution ?? "",
       ].join("|")
     : null;
   const [seededBuild, setSeededBuild] = useState<string | null>(null);
@@ -5092,17 +5316,60 @@ export function ImagesPage({
       setReferenceResolution(
         seedReferenceResolution(status.conditioning?.reference_resolutions ?? [], tier),
       );
-      setMatchResolution(tier);
+      setMatchResolution(
+        seedMatchResolution(
+          tier,
+          status.conditioning?.edit_output_resolution,
+          sizeLimitsFrom(status.conditioning ?? null).maxSide,
+        ),
+      );
     }
   }
 
+  // Fit before the Reference raise so it starts from the fitted size.
   const limitsKey = `${sizeLimits.multiple}|${sizeLimits.maxSide}|${sizeLimits.maxPixels}`;
   const [fittedLimits, setFittedLimits] = useState(limitsKey);
+  let fittedWidth = width;
+  let fittedHeight = height;
   if (limitsKey !== fittedLimits) {
     setFittedLimits(limitsKey);
     const fitted = fitSize(width, height, sizeLimits);
     if (fitted.width !== width) setWidth(fitted.width);
     if (fitted.height !== height) setHeight(fitted.height);
+    fittedWidth = fitted.width;
+    fittedHeight = fitted.height;
+  }
+
+  // Width / Height are shared with Create: raise once per load on Reference, restore on leaving unless changed.
+  const referenceKey = workflow === "reference" && buildKey ? buildKey : null;
+  if (referenceKey !== null && referenceKey !== referenceRaise?.key) {
+    const raised = raiseToEditResolution(
+      fittedWidth,
+      fittedHeight,
+      status?.conditioning?.edit_output_resolution,
+      sizeLimits,
+    );
+    setReferenceRaise({
+      key: referenceKey,
+      raised: raised ?? undefined,
+      from: raised ? { width: fittedWidth, height: fittedHeight, aspect, portrait } : undefined,
+    });
+    if (raised) {
+      setWidth(raised.width);
+      setHeight(raised.height);
+      const m = matchAspect(raised.width, raised.height);
+      setAspect(m.key);
+      setPortrait(m.portrait);
+    }
+  } else if (referenceKey === null && referenceRaise?.from) {
+    const restore = sizeAfterReference(width, height, referenceRaise);
+    setReferenceRaise(restore ? null : { key: referenceRaise.key });
+    if (restore) {
+      setWidth(restore.width);
+      setHeight(restore.height);
+      setAspect(restore.aspect);
+      setPortrait(restore.portrait);
+    }
   }
 
   const [sourceRead, setSourceRead] = useState<{
@@ -5126,8 +5393,15 @@ export function ImagesPage({
 
   const editSize = useMemo(
     () =>
-      resolveEditSize(editSizing, sourceDims, matchResolution, { width, height }, sizeLimits),
-    [editSizing, sourceDims, matchResolution, width, height, sizeLimits],
+      resolveEditSize(
+        editSizing,
+        sourceDims,
+        matchResolution,
+        { width, height },
+        sizeLimits,
+        status?.family ?? null,
+      ),
+    [editSizing, sourceDims, matchResolution, width, height, sizeLimits, status?.family],
   );
   const loadedFamily = status?.family ?? null;
   const officialPresets = useMemo(
@@ -5304,6 +5578,19 @@ export function ImagesPage({
 
   // toQueue: the runs go to the server queue instead of running here.
   const handleGenerate = useCallback(async (toQueue = false) => {
+    // A model switch in flight replaces the resident model; the backend refuses the run meanwhile (409).
+    if (!external && quantRevert.current) {
+      toast.info("Finish switching models first", { description: "Generate turns back on once the new model has loaded." });
+      return;
+    }
+    // Compare, Vary and Queue land here too: none of them can run a selection the build did not bake.
+    if (!external && loraReload) {
+      toast.error(LORA_RELOAD_TITLE, {
+        description: loraReload,
+        action: { label: LORA_RELOAD_ACTION, onClick: () => reloadWithLoras(false) },
+      });
+      return;
+    }
     const allowOversizedSent = allowOversizedField(allowOversized, oversizedOnce.current) === true;
     oversizedOnce.current = false;
     const vary = sdCaps?.variation_seed ? varyOnce.current : null;
@@ -5510,7 +5797,8 @@ export function ImagesPage({
           const active = loras
             .map((l) => ({ id: l.id.trim(), weight: l.weight }))
             .filter((l) => l.id && l.weight > 0);
-          return active.length ? active : undefined;
+          // [] (not omitted): the server reads an omitted list as the load's adapters, as /v1 does.
+          return active;
         })(),
         // ControlNet: sent only when a model + control image are chosen; v1 conditions plain text-to-image only.
         controlnet:
@@ -5538,6 +5826,7 @@ export function ImagesPage({
     }
     followingJob.current = null;
     localRun.current = true;
+    setPickedDuringRun(false);
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
@@ -5629,7 +5918,7 @@ export function ImagesPage({
         // Deduplicated: a resync may already have fetched the record.
         setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
-        if (res.images[0]) setSelectedId(res.images[0].id);
+        if (res.images[0] && !pickedDuringRunRef.current) setSelectedId(res.images[0].id);
         const runSeed = lastSeedOf(res.images);
         const runAt = Math.max(0, ...res.images.map((image) => image.created_at));
         // A late reply never replaces the seed of a queued run that finished after it.
@@ -5667,6 +5956,12 @@ export function ImagesPage({
           description: `${msg} To run the grid anyway, turn on "${ALLOW_OVERSIZED_LABEL}" and generate it again.`,
           duration: 20_000,
         });
+      } else if (report && err instanceof LoraReloadRefusalError) {
+        toast.error(LORA_RELOAD_TITLE, {
+          description: msg,
+          duration: 20_000,
+          action: { label: LORA_RELOAD_ACTION, onClick: () => reloadWithLoras(false) },
+        });
       } else if (offerAnyway) {
         toast.error(MEMORY_REFUSAL_TITLE, {
           description: msg,
@@ -5696,7 +5991,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
+  }, [external, loraReload, reloadWithLoras, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
 
   // Latch FIRST, so a multi-run request stops even if the POST races the finishing run.
   const handleCancelGenerate = useCallback(async () => {
@@ -5777,6 +6072,17 @@ export function ImagesPage({
   );
   const compareAvailable = !external && Boolean(status?.loaded) && workflow === "create";
   const canQueue = !external && Boolean(status?.loaded);
+  const generateButton = generateGate({
+    busy,
+    presetsHydrated: imagePresets.hydrated,
+    loaded: Boolean(status?.loaded),
+    canRecallModel: Boolean(rememberedModel),
+    external: Boolean(external),
+    switching: pickInFlight,
+    loraReload,
+    queueWaiting,
+    canQueue,
+  });
   const compareSdControls = sdCaps;
   const compareContext = useMemo<CompareContext>(
     () => ({
@@ -5812,6 +6118,10 @@ export function ImagesPage({
     if (busy !== null || !imagePresets.hydrated) return;
     if (external) {
       await handleGenerate();
+      return;
+    }
+    if (status?.loaded && loraReload) {
+      reloadWithLoras(true);
       return;
     }
     if (status?.loaded) {
@@ -5875,7 +6185,9 @@ export function ImagesPage({
     handleGenerate,
     handleLoad,
     imagePresets.hydrated,
+    loraReload,
     prompt,
+    reloadWithLoras,
     rememberedModel,
     status,
     workflow,
@@ -5914,10 +6226,11 @@ export function ImagesPage({
   useEffect(() => {
     const pending = pendingRecalledGeneration.current;
     if (!pending) return;
-    if (!active || pending.load !== loadSeq.current) {
+    if (!active || (pending.load !== "next" && pending.load !== loadSeq.current)) {
       pendingRecalledGeneration.current = null;
       return;
     }
+    if (pending.load === "next") return;
     if (busy !== null || !status?.loaded) return;
     pendingRecalledGeneration.current = null;
     const tab = WORKFLOW_TABS.find(
@@ -5984,14 +6297,16 @@ export function ImagesPage({
         <AdvancedSelect
           label="Engine"
           hint={
-            status?.engine_forced
-              ? `${ENGINE_HINT} The server pins UNSLOTH_DIFFUSION_ENGINE=${status.engine_forced}, which wins over this choice.`
-              : ENGINE_HINT
+            status?.gguf_diffusers_allowed === false
+              ? ENGINE_HINT_CPU_ONLY
+              : status?.engine_forced
+                ? `${ENGINE_HINT} The server pins UNSLOTH_DIFFUSION_ENGINE=${status.engine_forced}, which wins over this choice.`
+                : ENGINE_HINT
           }
           badge={<ResolvedBadge status={status} controlKey="engine" />}
-          value={engineChoice}
+          value={hostEngineChoice(engineChoice, status) ?? "auto"}
           onValueChange={(v) => setEngineChoice(v as EngineChoice)}
-          options={ENGINE_OPTIONS}
+          options={engineOptionsFor(status)}
         />
       )}
       <AdvancedSelect
@@ -6080,7 +6395,7 @@ export function ImagesPage({
       />
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Unsloth fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint={ATTENTION_SELECT_HINT}
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -6092,12 +6407,20 @@ export function ImagesPage({
           ["sage", "SageAttention (INT8)"],
         ]}
       />
+      <AdvancedSelect
+        label={INT8_ATTENTION_LABEL}
+        hint={INT8_ATTENTION_HINT}
+        badge={<ResolvedBadge status={status} controlKey="int8_attention" />}
+        value={int8Attention}
+        onValueChange={(v) => setInt8Attention(v as Int8AttentionChoice)}
+        options={INT8_ATTENTION_OPTIONS}
+      />
       {!external && imageGpuDevices.length > 0 && (
         <VramBudgetControl image modelLoading={busy === "loading"} />
       )}
       <AdvancedSelect
         label="Memory"
-        hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
+        hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram also streams the text encoders and tiles the VAE decode (lowest VRAM, slowest)."
         badge={<ResolvedBadge status={status} controlKey="memory_mode" />}
         value={memoryMode}
         onValueChange={(v) => setMemoryMode(v as typeof memoryMode)}
@@ -6290,6 +6613,9 @@ export function ImagesPage({
                 externalModels={externalModels}
                 value={(external && externalModelId) || selectorModelId}
                 loadedModelIdOverride={selectorModelId}
+                loadedPrecisionOverride={
+                  !external && busy !== "unloading" ? loadedTransformerPrecisionLabel(status) : null
+                }
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}
                 resolveDownloadFootprint={resolveDownloadFootprint}
@@ -6322,6 +6648,9 @@ export function ImagesPage({
                 </TooltipTrigger>
                 <TooltipContent>Stop loading this model</TooltipContent>
               </Tooltip>
+            )}
+            {pageMode !== "train" && busy === "loading" && closedLoad && (
+              <LoadInlineStatus p={closedLoad} />
             )}
           </div>
         </div>
@@ -6362,6 +6691,11 @@ export function ImagesPage({
             }
             onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
             onDeploy={handleDeployAdapter}
+            // Video-family adapters bake into the Video loader, which takes the request on arrival.
+            onDeployVideo={(args) => {
+              useVideoDeployStore.getState().requestDeploy(args);
+              void navigateSelf({ to: "/video" });
+            }}
             familyName={trainFamilyName}
             onFamilyNameChange={setTrainFamilyName}
             baseChoice={trainBaseChoice}
@@ -6845,7 +7179,7 @@ export function ImagesPage({
                         <SelectItem value="custom">Custom</SelectItem>
                       </SelectContent>
                     </Select>
-                    {editSizing === "source" && (
+                    {editSizing === "source" && matchSizeChoosable(status?.family) && (
                       <Select
                         value={String(matchResolution)}
                         onValueChange={(v) => setMatchResolution(Number(v))}
@@ -6921,6 +7255,7 @@ export function ImagesPage({
                 enabled={enhanceOn}
                 onEnabledChange={changeEnhancePrompt}
                 modelKey={`${status?.repo_id ?? ""}|${status?.gguf_filename ?? ""}|${loadEpoch}`}
+                family={status?.family ?? null}
                 prompt={prompt}
                 previewRequest={() => {
                   // Edit and Reference condition on their images, so the caption describes them too.
@@ -6931,6 +7266,7 @@ export function ImagesPage({
                   return {
                     prompt: prompt.trim(),
                     variant: upsamplerVariantFor(status?.family),
+                    ...(status?.family ? { family: status.family } : {}),
                     ...(images.length ? { reference_images: images } : {}),
                   };
                 }}
@@ -7046,6 +7382,12 @@ export function ImagesPage({
                         onAdd={(spec, focusRow) => {
                           setFocusLoraRow(focusRow ? loras.length : null);
                           setLoras((prev) => [...prev, spec]);
+                          // A step-distilled adapter runs its own recipe (e.g. 8 steps at CFG 1).
+                          const preset = loraPresetRecipe([spec], sortedLoras);
+                          if (preset) {
+                            setSteps(preset.steps);
+                            setGuidance(preset.guidance);
+                          }
                         }}
                       />
                     )}
@@ -7128,16 +7470,15 @@ export function ImagesPage({
                   <SliderField
                     label="Steps"
                     hint={
-                      fixedSteps !== null
-                        ? `The loaded model is distilled to exactly ${fixedSteps} steps, one output head per step, so the count is fixed.`
+                      maxSteps !== null
+                        ? `The loaded model is distilled to ${maxSteps} steps, one output head per step: it runs 1 to ${maxSteps}, and the reference workflows use ${maxSteps}.`
                         : "Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
                     }
-                    value={fixedSteps ?? steps}
+                    value={maxSteps !== null ? Math.min(steps, maxSteps) : steps}
                     min={1}
-                    max={stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
+                    max={maxSteps ?? stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
                     step={1}
                     onChange={setSteps}
-                    disabled={fixedSteps !== null}
                   />
                 </div>
                 <SliderField
@@ -7316,6 +7657,11 @@ export function ImagesPage({
                 {HELD_BY_OTHER_ACCOUNT_NOTICE}
               </p>
             )}
+            {generateButton.notice && (
+              <p role="status" data-testid="images-generate-notice" className="w-full text-center text-ui-11 leading-snug text-muted-foreground">
+                {generateButton.notice}
+              </p>
+            )}
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight. Every workflow funnels through the same
                  handler, so one control stops all of them. */
@@ -7339,10 +7685,10 @@ export function ImagesPage({
                 <Button variant="primary"
                   className="relative z-10 h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   // Jobs still waiting: a new one lines up behind them instead of jumping the queue.
-                  onClick={queueWaiting && canQueue ? handleQueue : handleGenerateWithRecall}
-                  disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
+                  onClick={generateButton.action === "queue" ? handleQueue : handleGenerateWithRecall}
+                  disabled={generateButton.disabled}
                 >
-                  {queueWaiting && canQueue ? "Queue" : "Generate"}
+                  {generateButton.label}
                 </Button>
                 {canVary && (
                   <Tooltip>
@@ -7447,9 +7793,9 @@ export function ImagesPage({
             </MediaViewer>
           )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
-            {livePreviewSrc ? (
+            {stagePreviewSrc ? (
               <img
-                src={livePreviewSrc}
+                src={stagePreviewSrc}
                 alt="Live preview of the image being generated"
                 data-testid="images-live-preview"
                 style={{ maxWidth: width, maxHeight: height }}
@@ -7629,20 +7975,27 @@ export function ImagesPage({
               }}
             >
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 ring-2 ring-wash-30">
+                <button
+                  type="button"
+                  data-testid="images-live-tile"
+                  aria-label="Follow the running generation"
+                  title="Follow the running generation"
+                  onClick={() => setPickedDuringRun(false)}
+                  className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 outline-none ring-2 ring-wash-30 focus-visible:ring-ring"
+                >
                   {livePreviewSrc ? (
                     <img src={livePreviewSrc} alt="" className="size-full object-cover" />
                   ) : (
                     <Spinner className="size-5 text-muted-foreground" />
                   )}
-                </div>
+                </button>
               )}
               {images.map((image) => (
                 <GalleryStripTile
                   key={image.id}
                   image={image}
                   src={thumbById[image.id] ?? srcById[image.id]}
-                  selected={image.id === selected?.id}
+                  selected={!stagePreviewSrc && image.id === selected?.id}
                   menuOpen={tileMenuId === image.id}
                   active={active}
                   favorite={isFavorite(`image:${image.id}`)}

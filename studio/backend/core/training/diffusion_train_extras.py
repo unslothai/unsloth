@@ -192,6 +192,15 @@ _CACHE_VERSION = "1"
 _LATENT_CACHE_VERSION = "2"
 
 
+def _latent_cache_salt() -> str:
+    """Windows ROCm keys apart: latents encoded there before its VAE attention was routed to exact math are wrong."""
+    try:
+        from core.inference.diffusion_vae_attn_chunked import windows_rocm
+        return "w" if windows_rocm() else ""
+    except Exception:  # noqa: BLE001 -- unknown keeps the shared key
+        return ""
+
+
 def _file_content_hash(path: str) -> str:
     """return a truncated sha256; renames preserve cache entries while edits invalidate them."""
     h = hashlib.sha256()
@@ -234,7 +243,8 @@ def _hub_cache_roots() -> list[str]:
 
 
 # In-place edits here must change the fingerprint; "connectors" is LTX-2's cached connector.
-_CACHE_SOURCE_SUBDIRS = ("text_encoder", "tokenizer", "vae", "connectors")
+# audio_vae: MiniMax-H3 caches its audio latents, so an edited local audio VAE must miss too.
+_CACHE_SOURCE_SUBDIRS = ("text_encoder", "tokenizer", "vae", "audio_vae", "connectors")
 
 
 def source_revision(ref: Any) -> str:
@@ -281,6 +291,119 @@ def source_revision(ref: Any) -> str:
         return "unresolved"
 
 
+# The persistent training conditioning cache is on by default; these turn the DEFAULT location off
+# (an explicit cond_cache_dir is still honoured) and bound what any cache directory may hold.
+TRAIN_COND_CACHE_ENV = "UNSLOTH_DIFFUSION_TRAIN_COND_CACHE"
+TRAIN_COND_CACHE_MAX_GB_ENV = "UNSLOTH_DIFFUSION_TRAIN_COND_CACHE_MAX_GB"
+_DEFAULT_COND_CACHE_MAX_GB = 20.0
+# cond_cache_dir values meaning "no persistent cache for this run" (blank means the default instead).
+COND_CACHE_OFF_VALUES = frozenset({"off", "none", "false", "0", "no", "disabled"})
+# Under the account workspace (beside the other Studio caches), never the outputs root the run listings scan.
+DEFAULT_COND_CACHE_SUBDIR = "cache/diffusion-train-cond"
+# Only files this cache wrote are ever evicted, so a user directory holding other files is safe: a candidate needs a
+# cache key name (kind, then ``_v`` and a version digit) and the cache's own safetensors header metadata.
+_CACHE_ENTRY_NAME = re.compile(r"^(?:lat|txt|h3clip|h3img)_v\d[^/\\]*\.safetensors$")
+# Written into every entry's header; entries from before the marker carry exactly the legacy metadata keys below.
+_CACHE_OWNER_KEY = "unsloth_cond_cache"
+_CACHE_OWNER_VALUE = "1"
+_CACHE_LEGACY_META_KEYS = frozenset({"version", "family", "none_slots", "count"})
+# Our headers list a handful of tensors; a larger header is not one of ours and is never parsed.
+_CACHE_MAX_HEADER_BYTES = 1 << 20
+# A write that would leave less than this free on the cache's disk is skipped (the run then saves its adapter).
+_COND_CACHE_DISK_RESERVE_BYTES = 2 << 30
+
+
+def cond_cache_is_off(value: Any) -> bool:
+    return str(value or "").strip().lower() in COND_CACHE_OFF_VALUES
+
+
+def default_cond_cache_enabled() -> bool:
+    import os  # noqa: PLC0415
+    return (os.environ.get(TRAIN_COND_CACHE_ENV) or "").strip().lower() not in COND_CACHE_OFF_VALUES
+
+
+def default_cond_cache_dir() -> Optional[Path]:
+    """The default persistent cache directory for the acting account, or None when the default is switched off
+    (or the Studio paths cannot be resolved here, which only ever costs the re-encode)."""
+    if not default_cond_cache_enabled():
+        return None
+    try:
+        from utils.paths.storage_roots import account_path  # noqa: PLC0415
+        return Path(account_path(DEFAULT_COND_CACHE_SUBDIR))
+    except Exception:  # noqa: BLE001 -- the cache is an optimisation, never fatal
+        return None
+
+
+def effective_cond_cache_dir(value: Any) -> Optional[str]:
+    """What a trainer opens for ``cfg.cond_cache_dir``: an off value is None, an explicit directory is itself,
+    unset (None or blank) is the default directory unless the default is switched off."""
+    if cond_cache_is_off(value):
+        return None
+    text = str(value).strip() if value is not None else ""
+    if text:
+        return text
+    default = default_cond_cache_dir()
+    return str(default) if default is not None else None
+
+
+def cond_cache_max_bytes() -> int:
+    """Size cap of one cache directory (oldest entries evicted first); 0 or a negative value means no cap."""
+    import os  # noqa: PLC0415
+
+    raw = (os.environ.get(TRAIN_COND_CACHE_MAX_GB_ENV) or "").strip()
+    try:
+        gb = float(raw) if raw else _DEFAULT_COND_CACHE_MAX_GB
+    except ValueError:
+        gb = _DEFAULT_COND_CACHE_MAX_GB
+    return int(gb * 1024**3) if gb > 0 else 0
+
+
+def compact_cache_namespace(family: str, *parts: str) -> str:
+    """A short, filesystem-safe namespace: the family readable, the rest (repo ids, local paths, revisions) hashed,
+    so a long local base path cannot push a key past the 255-byte file-name limit."""
+    digest = hashlib.sha256("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()[:20]
+    return f"{_sanitize(family)}-{digest}"
+
+
+# Longest readable namespace in a key; longer ones keep a prefix plus a hash of the whole.
+_MAX_FAMILY_CHARS = 96
+
+
+def _is_cache_entry(path: str) -> bool:
+    """True only for a safetensors file PersistentConditioningCache wrote: its header metadata carries the owner marker,
+    or (entries written before the marker) exactly the cache's own metadata keys over ``t<i>`` tensors. Reads the
+    header alone; anything unreadable or unexpected is not ours, so it is never evicted."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8)
+            if len(head) != 8:
+                return False
+            n = int.from_bytes(head, "little")
+            if n <= 0 or n > _CACHE_MAX_HEADER_BYTES:
+                return False
+            raw = f.read(n)
+        if len(raw) != n:
+            return False
+        header = json.loads(raw.decode("utf-8"))
+        if not isinstance(header, dict):
+            return False
+        meta = header.get("__metadata__")
+        if not isinstance(meta, dict):
+            return False
+        if meta.get(_CACHE_OWNER_KEY) == _CACHE_OWNER_VALUE:
+            return True
+        if set(meta) != _CACHE_LEGACY_META_KEYS:
+            return False
+        count = int(meta["count"])
+        slots = json.loads(meta["none_slots"])
+        names = [k for k in header if k != "__metadata__"]
+        if not isinstance(slots, list) or len(names) + len(slots) != count:
+            return False
+        return all(re.fullmatch(r"t\d+", k) for k in names)
+    except Exception:  # noqa: BLE001 -- not provably ours: keep it
+        return False
+
+
 class PersistentConditioningCache:
     """One safetensors file per cached item under ``cache_dir``.
 
@@ -288,36 +411,129 @@ class PersistentConditioningCache:
     version, family, resolution (or explicit bucket shape), the source content
     hash, and -- for latents -- the crop/flip variant. Tensors are stored fp32
     exactly as the trainer's in-memory path holds them, so a reload is
-    bit-identical to a fresh encode."""
+    bit-identical to a fresh encode.
 
-    def __init__(self, cache_dir: str, family: str, resolution: int):
+    The directory is bounded by ``max_bytes`` (``cond_cache_max_bytes()`` by default): a write that takes it over
+    the cap evicts the least recently used entries (mtime, refreshed on every hit). Best-effort, never fatal."""
+
+    def __init__(
+        self,
+        cache_dir: str,
+        family: str,
+        resolution: int,
+        text_encoder: str = "",
+        max_bytes: Optional[int] = None,
+    ):
         self.root = Path(cache_dir).expanduser()
         self.family = _sanitize(family)
+        if len(self.family) > _MAX_FAMILY_CHARS:
+            # A local base path in the namespace would push a key past the 255-byte file-name limit.
+            digest = hashlib.sha256(self.family.encode("utf-8")).hexdigest()[:20]
+            self.family = f"{self.family[:_MAX_FAMILY_CHARS - 21]}-{digest}"
         self.resolution = int(resolution)
+        self.text_encoder = (
+            f"{_sanitize(text_encoder)[:16]}-{hashlib.sha1(text_encoder.encode()).hexdigest()[:10]}"
+            if text_encoder
+            else ""
+        )
         self.root.mkdir(parents = True, exist_ok = True)
+        self.max_bytes = cond_cache_max_bytes() if max_bytes is None else int(max_bytes)
+        # Running size of the directory, read once here and kept current by put(); None until measured.
+        self._bytes: Optional[int] = None
+        # (name, inode, size) of files already confirmed as entries this cache wrote, so a rescan skips the header read.
+        self._owned: set[tuple[str, int, int]] = set()
+
+    def _entries(self) -> list[tuple[float, int, Path]]:
+        import os  # noqa: PLC0415
+
+        out = []
+        with os.scandir(self.root) as it:
+            for e in it:
+                if not (_CACHE_ENTRY_NAME.match(e.name) and e.is_file(follow_symlinks = False)):
+                    continue
+                st = e.stat(follow_symlinks = False)
+                ident = (e.name, st.st_ino, st.st_size)
+                if ident not in self._owned:
+                    if not _is_cache_entry(e.path):
+                        continue
+                    self._owned.add(ident)
+                out.append((st.st_mtime, st.st_size, Path(e.path)))
+        return out
+
+    def _account(self, added: int, keep: Path) -> None:
+        """Evict oldest-first until the directory is under the cap again; ``keep`` (just written) goes last."""
+        if self.max_bytes <= 0:
+            return
+        try:
+            if self._bytes is None:
+                self._bytes = sum(size for _m, size, _p in self._entries())
+            else:
+                self._bytes += added
+            if self._bytes <= self.max_bytes:
+                return
+            entries = sorted(self._entries(), key = lambda t: (t[2] == keep, t[0], t[2].name))
+            total = sum(size for _m, size, _p in entries)
+            # Down to 90% of the cap, so a run writing many entries does not rescan on every put.
+            target = int(self.max_bytes * 0.9)
+            for _mtime, size, path in entries:
+                if total <= target:
+                    break
+                try:
+                    path.unlink()
+                    total -= size
+                except OSError:
+                    pass
+            self._bytes = total
+        except Exception:  # noqa: BLE001 -- eviction is best-effort; the run still trains
+            self._bytes = None
+
+    def _touch(self, path: Path) -> None:
+        try:
+            import os  # noqa: PLC0415
+            os.utime(path)
+        except OSError:
+            pass
+
+    def entry_key(self, kind: str, version: str, source_path: Optional[str], *parts: Any) -> str:
+        """Generic key: ``{kind}_v{version}_{family}_{parts...}_{source content hash}``. Every part is sanitized."""
+        fields = [f"{kind}_v{version}", self.family]
+        fields += [_sanitize(str(p)) for p in parts]
+        if source_path is not None:
+            fields.append(_file_content_hash(source_path))
+        return "_".join(fields)
 
     def latent_key(
         self,
         image_path: str,
         variant: tuple[float, float, bool],
         shape: Optional[tuple[int, int]] = None,
+        content_hash: Optional[str] = None,
     ) -> str:
+        """``content_hash``: ``self.content_hash(image_path)`` read once by a caller keying many variants of one image."""
         u_left, u_top, flip = variant
         geom = f"{shape[0]}x{shape[1]}" if shape else str(self.resolution)
         var = f"{u_left:.6f}_{u_top:.6f}_{int(bool(flip))}"
         return (
-            f"lat_v{_LATENT_CACHE_VERSION}_{self.family}_{geom}_"
-            f"{_file_content_hash(image_path)}_{var}"
+            f"lat_v{_LATENT_CACHE_VERSION}{_latent_cache_salt()}_{self.family}_{geom}_"
+            f"{content_hash or _file_content_hash(image_path)}_{var}"
         )
 
+    @staticmethod
+    def content_hash(image_path: str) -> str:
+        return _file_content_hash(image_path)
+
     def text_key(self, caption: str) -> str:
-        return f"txt_v{_CACHE_VERSION}_{self.family}_{_text_content_hash(caption)}"
+        encoder = f"_{self.text_encoder}" if self.text_encoder else ""
+        return f"txt_v{_CACHE_VERSION}_{self.family}{encoder}_{_text_content_hash(caption)}"
 
     def path_for(self, key: str) -> Path:
         return self.root / f"{key}.safetensors"
 
     def has(self, key: str) -> bool:
-        return self.path_for(key).is_file()
+        try:
+            return self.path_for(key).is_file()
+        except OSError:
+            return False
 
     def put(self, key: str, tensors: Iterable[Any]) -> None:
         """store an ordered tensor tuple with None slots recorded for exact reconstruction."""
@@ -335,18 +551,45 @@ class PersistentConditioningCache:
             "family": self.family,
             "none_slots": json.dumps(none_slots),
             "count": str(len(none_slots) + len(named)),
+            _CACHE_OWNER_KEY: _CACHE_OWNER_VALUE,
         }
-        tmp = self.path_for(key).with_suffix(".tmp")
-        save_file(named, str(tmp), metadata = meta)
-        tmp.replace(self.path_for(key))
+        final = self.path_for(key)
+        tmp = final.with_suffix(".tmp")
+        import shutil  # noqa: PLC0415
+
+        nbytes = sum(t.numel() * t.element_size() for t in named.values())
+        try:
+            if shutil.disk_usage(str(self.root)).free < nbytes + _COND_CACHE_DISK_RESERVE_BYTES:
+                return
+        except OSError:
+            pass
+        try:
+            save_file(named, str(tmp), metadata = meta)
+            tmp.replace(final)
+        except BaseException:
+            # A full disk or a stop mid-write must not leave a partial file the size cap never counts.
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+        try:
+            size = final.stat().st_size
+        except OSError:
+            size = 0
+        self._account(size, final)
 
     def get(self, key: str) -> Optional[tuple]:
         """Load a tuple previously stored with ``put``; None if absent/corrupt."""
         path = self.path_for(key)
-        if not path.is_file():
+        try:
+            if not path.is_file():
+                return None
+        except OSError:  # an unusable name is a miss, never fatal
             return None
         try:
             from safetensors import safe_open
+
             with safe_open(str(path), framework = "pt", device = "cpu") as f:
                 meta = f.metadata() or {}
                 count = int(meta.get("count", "0"))
@@ -354,6 +597,8 @@ class PersistentConditioningCache:
                 out: list[Any] = []
                 for i in range(count):
                     out.append(None if i in none_slots else f.get_tensor(f"t{i}"))
+            # Least recently USED goes first under the size cap, so a hit refreshes the entry.
+            self._touch(path)
             return tuple(out)
         except Exception:  # noqa: BLE001 -- a corrupt entry is re-encoded, never fatal
             return None

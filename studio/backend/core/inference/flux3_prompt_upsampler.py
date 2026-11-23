@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import collections
+import contextvars
 import hashlib
 import http.client
 import io
@@ -62,6 +63,8 @@ ENV_SERVER_LOG = "UNSLOTH_FLUX3_UPSAMPLER_SERVER_LOG"
 
 FLUX3_UPSAMPLER_FAMILIES = {"flux.3-klein": "distilled", "flux.3-klein-base": "base"}
 VARIANTS = ("distilled", "base")
+# Families whose prompt enhancer is another model on the same sidecar (core.inference.h3_image_prompt_enhancer).
+H3_IMAGE_ENHANCER_FAMILIES = frozenset(("minimax-h3-image",))
 
 # ── prompts (ComfyUI FLUX.3 templates; BFL system_prompts.json, verbatim) ───────────────────────────────────────────
 SYSTEM_PROMPTS = {
@@ -272,6 +275,21 @@ _REQUEST_TIMEOUT_SECONDS = 600.0
 _NUM_LAYERS = 32
 # KV cache (8 full-attention layers at 16k), recurrent state and compute buffers on top of the weights.
 _GPU_OVERHEAD_MIB = 2560
+# Qwen3.5-9B's f16 KV cache per context token: 8 full-attention layers x 4 KV heads x 256 dims x (K + V) x 2 bytes.
+_KV_BYTES_PER_TOKEN = 8 * 4 * 256 * 2 * 2
+
+
+def _context_kwargs(context_tokens: Optional[int]) -> dict:
+    """``context_tokens`` as a keyword only when one is asked for, so the default start's arguments are unchanged."""
+    return {} if context_tokens is None else {"context_tokens": context_tokens}
+
+
+def _overhead_mib(context_tokens: Optional[int] = None) -> float:
+    """KV / compute overhead of a server started with ``context_tokens`` (the 16k default when None)."""
+    extra = max(0, int(context_tokens or _CONTEXT_TOKENS) - _CONTEXT_TOKENS)
+    return _GPU_OVERHEAD_MIB + extra * _KV_BYTES_PER_TOKEN / (1024 * 1024)
+
+
 # Fewer layers than this on the GPU is not worth the split.
 _MIN_GPU_LAYERS = 4
 # After a call, keep the server resident only when at least this much accelerator memory stays free; else unload it
@@ -279,6 +297,25 @@ _MIN_GPU_LAYERS = 4
 _TIGHT_FREE_MIB = 6144
 _TIGHT_FREE_FRACTION = 0.20
 _CACHE_ENTRIES = 128
+
+# UNSLOTH_PROMPT_UPSAMPLER_PARTIAL_OFFLOAD=1 lets a generate start with only part of the upsampler
+# on the GPU; by default it is skipped (status unavailable) when free memory is too low for the
+# whole GGUF, since CPU layers decode too slowly to be worth it for a short render.
+ENV_ALLOW_PARTIAL_OFFLOAD = "UNSLOTH_PROMPT_UPSAMPLER_PARTIAL_OFFLOAD"
+# Set by enhance_for_generation: the start (or reuse) has to hold every layer on the accelerator.
+_GENERATE_NEEDS_FULL_OFFLOAD: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "flux3_prompt_upsampler_generate_needs_full_offload", default = False
+)
+
+
+def _partial_offload_allowed() -> bool:
+    return (os.environ.get(ENV_ALLOW_PARTIAL_OFFLOAD) or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
 
 STATUS_APPLIED = "applied"
 STATUS_OFF = "off"
@@ -300,7 +337,12 @@ class UpsamplerCancelledError(RuntimeError):
 
 # ── family defaults ─────────────────────────────────────────────────────────────────────────────────────────────────
 def supports_family(family_name: Optional[str]) -> bool:
-    return family_name in FLUX3_UPSAMPLER_FAMILIES
+    return family_name in FLUX3_UPSAMPLER_FAMILIES or uses_h3_image_enhancer(family_name)
+
+
+def uses_h3_image_enhancer(family_name: Optional[str]) -> bool:
+    """MiniMax-H3-Image: its reference workflow's Qwen3.5-9B enhancer, not the FLUX.3 upsampler."""
+    return family_name in H3_IMAGE_ENHANCER_FAMILIES
 
 
 def variant_for_family(family_name: Optional[str]) -> str:
@@ -309,8 +351,8 @@ def variant_for_family(family_name: Optional[str]) -> str:
 
 
 def resolve_enhance(family_name: Optional[str], enhance_prompt: Optional[bool]) -> bool:
-    """Whether a generate call upsamples: None is the family default (on for every FLUX.3 Klein family), and every
-    other family ignores the flag."""
+    """Whether a generate call upsamples: None is the family default (on for every FLUX.3 Klein family and for
+    MiniMax-H3-Image, as its reference templates ship it), and every other family ignores the flag."""
     if not supports_family(family_name):
         return False
     return True if enhance_prompt is None else bool(enhance_prompt)
@@ -1197,7 +1239,15 @@ def _accelerator_memory_mib(
 
         with diffusion_device_scope(ordinal if device == "cuda" else None):
             snap = snapshot_device_memory(SimpleNamespace(device = device, backend = device))
-        return snap.free_mib, snap.total_mib, device
+            free_mib = snap.free_mib
+            if device == "cuda" and free_mib is not None:
+                from utils.hardware.hardware import rocm_linux_kernel_free_mib
+
+                # Linux ROCm: HIP's free figure misses Vulkan users (this server, sd-server) and the desktop.
+                kernel_free = rocm_linux_kernel_free_mib()
+                if kernel_free is not None:
+                    free_mib = min(free_mib, kernel_free)
+        return free_mib, snap.total_mib, device
     except Exception:  # noqa: BLE001 -- unknown memory leaves the choice to the defaults
         return None, None, "unknown"
 
@@ -1208,6 +1258,7 @@ def plan_gpu_layers(
     mmproj_bytes: int = 0,
     device: str = "cuda",
     training: bool = False,
+    overhead_mib: Optional[float] = None,
 ) -> int:
     """How many layers to offload: all when free memory holds weights + overhead, a share of them when it holds some,
     else none. Unknown memory offloads all (llama.cpp's own default); a CPU-only host and training get none."""
@@ -1216,7 +1267,8 @@ def plan_gpu_layers(
     if device == "mps" or free_mib is None:
         return 99
     model_mib = model_bytes / (1024 * 1024)
-    budget = free_mib - _GPU_OVERHEAD_MIB - mmproj_bytes / (1024 * 1024)
+    overhead = _GPU_OVERHEAD_MIB if overhead_mib is None else overhead_mib
+    budget = free_mib - overhead - mmproj_bytes / (1024 * 1024)
     if budget >= model_mib:
         return 99
     layers = int(_NUM_LAYERS * max(0.0, budget) / max(1.0, model_mib))
@@ -1249,6 +1301,8 @@ class PromptUpsamplerSidecar:
         self._api_key: Optional[str] = None
         self._key: Optional[tuple] = None
         self._gpu_layers: Optional[int] = None
+        # The running server sits partly (or wholly) on the CPU although an accelerator holds the image model.
+        self._split_on_accelerator = False
         self._penalize_prompt_supported = False
         self._loading = False
         self._starting_process: Optional[subprocess.Popen] = None
@@ -1261,6 +1315,8 @@ class PromptUpsamplerSidecar:
         self._stop_epoch = 0
         self._stopping = 0
         self._gpu_ordinal: Optional[int] = None
+        # The context the running server was started with (None = the 16k default).
+        self._context_tokens: Optional[int] = None
         # A warm start owns the load in progress: a teardown, an unenhanced render or a Stop cancels it.
         self._warming = False
 
@@ -1319,7 +1375,9 @@ class PromptUpsamplerSidecar:
             self._api_key = None
             self._key = None
             self._gpu_layers = None
+            self._split_on_accelerator = False
             self._penalize_prompt_supported = False
+            self._context_tokens = None
 
     def unload(self, wait: bool = True) -> None:
         """Stop the server. ``wait=False`` leaves a busy one alone."""
@@ -1371,7 +1429,13 @@ class PromptUpsamplerSidecar:
         finally:
             self._update_in_progress = False
 
-    def _launch(self, binary: str, model: str, mmproj: Optional[str]) -> None:
+    def _launch(
+        self,
+        binary: str,
+        model: str,
+        mmproj: Optional[str],
+        context_tokens: Optional[int] = None,
+    ) -> None:
         """Start llama-server for (model, mmproj). Called under ``_request_lock``."""
         # Published before the training probe: training that starts after it finds a load to cancel.
         self._load_cancel.clear()
@@ -1383,7 +1447,7 @@ class PromptUpsamplerSidecar:
             # request's) has not reached its peak yet, so the start waits for the generation slot, as a warm start
             # holds it. Called ahead of the request's own render, never inside one.
             slot = self._wait_for_render_slot()
-            self._spawn_server(binary, model, mmproj)
+            self._spawn_server(binary, model, mmproj, **_context_kwargs(context_tokens))
         finally:
             if slot is not None:
                 slot.release()
@@ -1421,7 +1485,14 @@ class PromptUpsamplerSidecar:
             raise UpsamplerUnavailableError("The image model is being replaced.")
         return lock
 
-    def _spawn_server(self, binary: str, model: str, mmproj: Optional[str]) -> None:
+    def _spawn_server(
+        self,
+        binary: str,
+        model: str,
+        mmproj: Optional[str],
+        *,
+        context_tokens: Optional[int] = None,
+    ) -> None:
         from core.inference.stt_mtmd_sidecar import (
             MtmdSttSidecar,
             _llama_server_child_env,
@@ -1442,7 +1513,21 @@ class PromptUpsamplerSidecar:
         training = _training_active()
         # Nobody holds the GPU (a CPU image load, no model): offloaded layers would sit outside every eviction.
         cpu_only = training or _gpu_unowned()
-        layers = plan_gpu_layers(free_mib, model_bytes, mmproj_bytes, device, cpu_only)
+        layers = plan_gpu_layers(
+            free_mib,
+            model_bytes,
+            mmproj_bytes,
+            device,
+            cpu_only,
+            overhead_mib = _overhead_mib(context_tokens),
+        )
+        split = not cpu_only and device == "cuda" and free_mib is not None and layers != 99
+        if split and _GENERATE_NEEDS_FULL_OFFLOAD.get() and not _partial_offload_allowed():
+            raise UpsamplerUnavailableError(
+                f"{Path(model).name} does not fit in the {free_mib} MiB the image model leaves free on the GPU "
+                f"(-ngl {layers} of {_NUM_LAYERS}); a partly CPU caption takes minutes, so this render skips it. "
+                f"{ENV_ALLOW_PARTIAL_OFFLOAD}=1 runs it anyway"
+            )
         sock, port = MtmdSttSidecar._reserve_free_port()
         cmd = [
             binary,
@@ -1455,7 +1540,7 @@ class PromptUpsamplerSidecar:
             "--parallel",
             "1",
             "-c",
-            str(_CONTEXT_TOKENS),
+            str(context_tokens or _CONTEXT_TOKENS),
             "-ngl",
             str(layers),
             "--jinja",
@@ -1537,7 +1622,9 @@ class PromptUpsamplerSidecar:
                 self._penalize_prompt_supported = penalize_prompt_supported
                 self._key = (binary, model, mmproj)
                 self._gpu_layers = layers
+                self._split_on_accelerator = split
                 self._gpu_ordinal = ordinal
+                self._context_tokens = context_tokens
                 self._generation += 1
         finally:
             if log_file is not None:
@@ -1552,8 +1639,10 @@ class PromptUpsamplerSidecar:
         model: str,
         mmproj: Optional[str],
         cancel_event: Optional[threading.Event] = None,
+        context_tokens: Optional[int] = None,
     ) -> str:
-        """Run one chat completion and return the raw text, (re)starting the server for these files."""
+        """Run one chat completion and return the raw text, (re)starting the server for these files (and at least
+        ``context_tokens`` of context, the 16k default when None)."""
         if self._update_in_progress:
             raise UpsamplerUnavailableError("llama.cpp is being updated.")
         epoch = self._stop_epoch
@@ -1565,8 +1654,8 @@ class PromptUpsamplerSidecar:
                 current = self._key if self.loaded else None
                 # A server with the vision projector also serves text-only requests, so a t2i after an edit does
                 # not relaunch.
-                if current is not None and not (
-                    current[:2] == (binary, model) and (mmproj is None or current[2] == mmproj)
+                if current is not None and not self._serves_locked(
+                    binary, model, mmproj, context_tokens
                 ):
                     self._release_locked()
                 if self._stopping or epoch != self._stop_epoch:
@@ -1578,13 +1667,24 @@ class PromptUpsamplerSidecar:
                 # Claimed under the same lock: an idle callback already waiting on it then sees the request.
                 self._active_requests += 1
             try:
+                if (
+                    self.loaded
+                    and self._split_on_accelerator
+                    and _GENERATE_NEEDS_FULL_OFFLOAD.get()
+                    and not _partial_offload_allowed()
+                ):
+                    # Started split by a preview or an opt-in: as slow for this render as a fresh split start.
+                    raise UpsamplerUnavailableError(
+                        f"the running server holds only -ngl {self._gpu_layers} of {_NUM_LAYERS} layers on the GPU; "
+                        f"{ENV_ALLOW_PARTIAL_OFFLOAD}=1 uses it anyway"
+                    )
                 if not self.loaded:
                     if not _image_model_owns_gpu():
                         # Chat or video took the GPU after this request read the FLUX.3 status: starting now would
                         # sit beside the new owner for the keep-alive.
                         raise UpsamplerUnavailableError("The image model no longer holds the GPU.")
                     with _forward_cancel(cancel_event, self.cancel_pending_load):
-                        self._launch(binary, model, mmproj)
+                        self._launch(binary, model, mmproj, **_context_kwargs(context_tokens))
                 with self._lock:
                     port, api_key = self._port, self._api_key
                     generated_only = self._penalize_prompt_supported
@@ -1636,15 +1736,31 @@ class PromptUpsamplerSidecar:
         epoch never starts."""
         return self._stop_epoch
 
-    def serves(self, binary: str, model: str, mmproj: Optional[str]) -> bool:
-        """Up for these files (a vision server also serves a text-only ask)."""
-        with self._lock:
-            current = self._key if self.loaded else None
+    def _serves_locked(
+        self,
+        binary: str,
+        model: str,
+        mmproj: Optional[str],
+        context_tokens: Optional[int] = None,
+    ) -> bool:
+        current = self._key if self.loaded else None
         return (
             current is not None
             and current[:2] == (binary, model)
             and (mmproj is None or current[2] == mmproj)
+            and (self._context_tokens or _CONTEXT_TOKENS) >= (context_tokens or _CONTEXT_TOKENS)
         )
+
+    def serves(
+        self,
+        binary: str,
+        model: str,
+        mmproj: Optional[str],
+        context_tokens: Optional[int] = None,
+    ) -> bool:
+        """Up for these files (a vision server also serves a text-only ask, a longer context a shorter one)."""
+        with self._lock:
+            return self._serves_locked(binary, model, mmproj, context_tokens)
 
     def warm(
         self,
@@ -1653,6 +1769,7 @@ class PromptUpsamplerSidecar:
         model: str,
         mmproj: Optional[str],
         expected_epoch: Optional[int] = None,
+        context_tokens: Optional[int] = None,
     ) -> str:
         """Start the server ahead of the first enhanced run, so that run skips the ~20 s start. Never waits on a
         request: one in flight already starts or holds the server. Declines where a call would not keep it resident
@@ -1666,11 +1783,7 @@ class PromptUpsamplerSidecar:
         try:
             with self._lock:
                 current = self._key if self.loaded else None
-                if (
-                    current is not None
-                    and current[:2] == (binary, model)
-                    and (mmproj is None or current[2] == mmproj)
-                ):
+                if self._serves_locked(binary, model, mmproj, context_tokens):
                     # Already up for these files: the toggle counts as use, so the keep-alive restarts.
                     self._schedule_idle_locked()
                     return "loaded"
@@ -1680,7 +1793,14 @@ class PromptUpsamplerSidecar:
                 # Counted as a request while it starts, as generate does: a non-blocking unload leaves it alone.
                 self._active_requests += 1
             try:
-                return self._warm_start(binary, model, mmproj, epoch, replace = current is not None)
+                return self._warm_start(
+                    binary,
+                    model,
+                    mmproj,
+                    epoch,
+                    replace = current is not None,
+                    context_tokens = context_tokens,
+                )
             finally:
                 with self._lock:
                     self._active_requests -= 1
@@ -1692,7 +1812,14 @@ class PromptUpsamplerSidecar:
             self._request_lock.release()
 
     def _warm_start(
-        self, binary: str, model: str, mmproj: Optional[str], epoch: int, *, replace: bool
+        self,
+        binary: str,
+        model: str,
+        mmproj: Optional[str],
+        epoch: int,
+        *,
+        replace: bool,
+        context_tokens: Optional[int] = None,
     ) -> str:
         from core.inference.stt_sidecar import _training_active
 
@@ -1733,11 +1860,16 @@ class PromptUpsamplerSidecar:
             free_mib, total_mib, device = _accelerator_memory_mib(ordinal)
             if free_mib is None or device not in ("cuda", "mps"):
                 return "memory"
-            need_mib = _footprint_mib(model, mmproj)
+            need_mib = _footprint_mib(model, mmproj, context_tokens = context_tokens)
             # A replaced server's memory comes back before the new one loads: free memory already excludes it.
             reclaim_mib = 0.0
             if replace and self._gpu_layers and self._key is not None:
-                reclaim_mib = _footprint_mib(self._key[1], self._key[2], self._gpu_layers)
+                reclaim_mib = _footprint_mib(
+                    self._key[1],
+                    self._key[2],
+                    self._gpu_layers,
+                    context_tokens = self._context_tokens,
+                )
             # The same floor release_if_tight applies after a call: a server that floor would unload is not started.
             if vram_is_tight(int(free_mib + reclaim_mib - need_mib), total_mib):
                 return "tight"
@@ -1747,7 +1879,7 @@ class PromptUpsamplerSidecar:
                 if replace:
                     # Up for other files (text-only, and an edit needs the projector): replaced only once starting.
                     self._release_locked()
-            self._spawn_server(binary, model, mmproj)
+            self._spawn_server(binary, model, mmproj, **_context_kwargs(context_tokens))
             # Revalidate once up: a load published or a handover made while the server came up means it now serves a
             # model that is leaving.
             with self._lock:
@@ -1772,6 +1904,8 @@ def _footprint_mib(
     model: str,
     mmproj: Optional[str],
     gpu_layers: Optional[int] = None,
+    *,
+    context_tokens: Optional[int] = None,
 ) -> float:
     """What a server holds on the accelerator: its share of the GGUF (all of it by default, ``gpu_layers`` of
     _NUM_LAYERS for a partial offload), the projector (offloaded with any GPU layer) and the KV / compute overhead."""
@@ -1784,7 +1918,7 @@ def _footprint_mib(
         return 0
 
     share = 1.0 if gpu_layers is None else min(max(gpu_layers, 0), _NUM_LAYERS) / _NUM_LAYERS
-    return (_size(model) * share + _size(mmproj)) / (1024 * 1024) + _GPU_OVERHEAD_MIB
+    return (_size(model) * share + _size(mmproj)) / (1024 * 1024) + _overhead_mib(context_tokens)
 
 
 def _cuda_device_count() -> int:
@@ -1986,6 +2120,9 @@ def warm_for_family(
     handover or model swap before the worker runs cancels it. Returns ``scheduled`` or why not."""
     if not supports_family(family_name):
         return "unsupported"
+    if uses_h3_image_enhancer(family_name):
+        from core.inference import h3_image_prompt_enhancer as h3pe
+        return h3pe.warm(expected_epoch = expected_epoch, resident = resident)
     binary = find_llama_server_binary()
     model = model_path()
     if binary is None:
@@ -2175,7 +2312,11 @@ def enhance_for_generation(
         return EnhanceOutcome(status = None)
     if not resolve_enhance(family_name, enhance_prompt):
         return EnhanceOutcome(status = STATUS_OFF)
-    if find_llama_server_binary() is None or model_path() is None:
+    h3pe = None
+    if uses_h3_image_enhancer(family_name):
+        from core.inference import h3_image_prompt_enhancer as h3pe
+    resident_model = h3pe.model_path() if h3pe is not None else model_path()
+    if find_llama_server_binary() is None or resident_model is None:
         logger.warning(
             "flux3.prompt_upsampler: unavailable (%s); generating with the prompt as typed",
             "llama-server not found"
@@ -2192,26 +2333,35 @@ def enhance_for_generation(
     bind_generation_cancel(cancel_event)
     outcome = EnhanceOutcome(status = STATUS_APPLIED)
     sidecar = get_sidecar()
+    full_offload = _GENERATE_NEEDS_FULL_OFFLOAD.set(True)
     # On every exit, a Stop included: a retry with enhancement off must not denoise beside a tight server.
     try:
         with _tracking(len(distinct), cancel_event) as tracked:
             for index, prompt in enumerate(distinct):
                 if cancel_event.is_set():
                     raise UpsamplerCancelledError("Cancelled.")
-                if is_finished_layout_caption(prompt):
+                if h3pe is None and is_finished_layout_caption(prompt):
                     # Already an upsampler caption with its box table: rewriting it would only drop the boxes.
                     outcome.statuses[prompt] = STATUS_OFF
                     _advance(tracked)
                     continue
                 systemic = None
                 try:
-                    caption = upsample(
-                        prompt,
-                        variant = variant,
-                        reference_images = reference_images,
-                        cancel_event = cancel_event,
-                        sidecar = sidecar,
-                    )
+                    if h3pe is not None:
+                        caption = h3pe.upsample(
+                            prompt,
+                            reference_images = reference_images,
+                            cancel_event = cancel_event,
+                            sidecar = sidecar,
+                        )
+                    else:
+                        caption = upsample(
+                            prompt,
+                            variant = variant,
+                            reference_images = reference_images,
+                            cancel_event = cancel_event,
+                            sidecar = sidecar,
+                        )
                 except UpsamplerCancelledError:
                     raise
                 except UpsamplerUnavailableError as exc:
@@ -2236,6 +2386,7 @@ def enhance_for_generation(
                     break
                 _advance(tracked)
     finally:
+        _GENERATE_NEEDS_FULL_OFFLOAD.reset(full_offload)
         with suppress(Exception):
             sidecar.release_if_tight()
     if outcome.statuses and not outcome.captions:

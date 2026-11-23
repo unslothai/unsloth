@@ -359,7 +359,8 @@ async def create_chat_generation_run(
     current_subject: str = Depends(get_current_subject),
 ):
     sanitized = _sanitize_request(payload)
-    images = detach_embedded_images(sanitized)
+    # Off the loop: hashing every earlier turn's data URL stalls other requests for tens of ms.
+    images = await asyncio.to_thread(detach_embedded_images, sanitized)
     from routes.inference import _request_used_api_key
 
     sanitized[db.API_MONITOR_ORIGIN_FIELD] = _request_used_api_key(request)
@@ -497,7 +498,7 @@ async def chat_generation_events(
                 return
             if not events:
                 # Carries the progress stamp so followers can detect a wedged run; comment framing keeps
-                # _SSEDecoder ignoring it.
+                # the producer's SSEDecoder ignoring it.
                 yield f": keep-alive {int(snapshot['updatedAt'])}\n\n"
 
     async def stream_while_attended():

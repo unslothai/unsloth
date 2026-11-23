@@ -26,6 +26,9 @@ def _studio_home(tmp_path, monkeypatch):
     monkeypatch.delenv("LLAMA_ARG_SPLIT_MODE", raising = False)
     monkeypatch.setattr(lc, "_metal_capable_host", lambda: False)
     monkeypatch.setattr(B, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0))
+    # These price the sidecar reserve over llama.cpp's own 1024 MiB margin; the small-card
+    # Auto trim of that margin has its own tests (test_auto_fit_target_trim.py).
+    monkeypatch.setattr(lc, "_auto_fit_target_trim_mib", lambda *_a, **_k: 0.0)
 
 
 def _launch_kind(

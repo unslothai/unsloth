@@ -18,9 +18,14 @@ export {
   CONVERSATION_PDF_MIME_TYPE,
 } from "./conversation-html-format.ts";
 
+export type ConversationHtmlMessage = ConversationMarkdownMessage & {
+  readonly images?: readonly string[];
+};
+
 export type NamedConversationHtml = {
   readonly title: string;
-  readonly messages: readonly ConversationMarkdownMessage[];
+  readonly model?: string;
+  readonly messages: readonly ConversationHtmlMessage[];
 };
 
 export function escapeHtml(text: string): string {
@@ -36,6 +41,10 @@ export function escapeHtml(text: string): string {
 const ALLOWED_RAW_TAG_PATTERN = /&lt;(\/?)(details|summary)&gt;/g;
 const DATA_IMAGE_PATTERN =
   /^data:image\/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=\s]+$/i;
+
+export function isDataImage(src: string): boolean {
+  return DATA_IMAGE_PATTERN.test(src);
+}
 
 function safeHref(raw: string): string | null {
   const value = raw.trim();
@@ -65,7 +74,7 @@ const markdown = new Marked({
       return `<a href="${escapeHtml(url)}"${titleAttr} rel="noopener noreferrer">${text}</a>`;
     },
     image({ href, text }: Tokens.Image): string {
-      if (DATA_IMAGE_PATTERN.test(href)) {
+      if (isDataImage(href)) {
         return `<img src="${escapeHtml(href)}" alt="${escapeHtml(text)}">`;
       }
       // A remote image would phone home when the file is opened, so keep it as a link.
@@ -89,14 +98,24 @@ function roleClass(role: string): string {
 }
 
 function renderMessages(
-  messages: readonly ConversationMarkdownMessage[],
+  messages: readonly ConversationHtmlMessage[],
 ): string {
   return messages
-    .filter(({ content }) => content.trim())
-    .map(({ role, content }) => {
+    .map(({ role, content, images = [] }) => ({
+      role,
+      content,
+      pictures: images
+        .filter(isDataImage)
+        .map((src) => `<p><img src="${escapeHtml(src)}" alt=""></p>`)
+        .join(""),
+    }))
+    .filter(({ content, pictures }) => content.trim() || pictures)
+    .map(({ role, content, pictures }) => {
       const html =
-        role === "user" ? escapeHtml(content) : `\n${markdownToHtml(content)}`;
-      return `<section class="message ${roleClass(role)}">\n<h3 class="role">${escapeHtml(roleLabel(role))}</h3>\n<div class="content">${html}</div>\n</section>`;
+        role === "user" || role === "system"
+          ? escapeHtml(content)
+          : `\n${markdownToHtml(content)}`;
+      return `<section class="message ${roleClass(role)}">\n<h3 class="role">${escapeHtml(roleLabel(role))}</h3>\n<div class="content">${pictures}${html}</div>\n</section>`;
     })
     .join("\n");
 }
@@ -105,14 +124,16 @@ export function buildConversationHtmlBody(
   conversations: readonly NamedConversationHtml[],
 ): string {
   const rendered = conversations
-    .map(({ title, messages }) => ({ title, body: renderMessages(messages) }))
+    .map(({ title, model, messages }) => ({ title, model, body: renderMessages(messages) }))
     .filter(({ body }) => body);
   return rendered
-    .map(({ title, body }) =>
-      rendered.length > 1
-        ? `<article class="conversation">\n<h2 class="conversation-title">${escapeHtml(title)}</h2>\n${body}\n</article>`
-        : `<article class="conversation">\n${body}\n</article>`,
-    )
+    .map(({ title, model, body }) => {
+      const heading = rendered.length > 1
+        ? `<h2 class="conversation-title">${escapeHtml(title)}</h2>\n`
+        : "";
+      const metadata = rendered.length > 1 && model ? `<p class="model">Model: ${escapeHtml(model)}</p>\n` : "";
+      return `<article class="conversation">\n${heading}${metadata}${body}\n</article>`;
+    })
     .join("\n<hr>\n");
 }
 
@@ -123,7 +144,7 @@ h1 { font-size: 18pt; margin: 0 0 4pt 0; }
 .conversation-title { font-size: 14pt; margin: 18pt 0 8pt 0; }
 .message { margin: 0 0 14pt 0; padding: 8pt 12pt; border-left: 3pt solid #d0d7de; }
 .message.user { background-color: #f6f8fa; border-left-color: #8c959f; }
-.message.user .content { white-space: pre-wrap; }
+.message.user .content, .message.system .content { white-space: pre-wrap; }
 .message.system { border-left-color: #bf8700; }
 .message.tool { border-left-color: #8250df; }
 .role { font-size: 9pt; text-transform: uppercase; letter-spacing: 0.04em; color: #57606a; margin: 0 0 4pt 0; }

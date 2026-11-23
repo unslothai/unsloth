@@ -208,8 +208,7 @@ class _EmbedQueue:
             self._cond.wait(left)
 
     def _take(self, key) -> list[tuple[_EmbedRequest, int, int]]:
-        # Shared out across requests, so a large document cannot hold back the others' progress and
-        # cancel checks (both run in on_progress) for its whole pass.
+        # Shared across requests: one document cannot stall others' progress or cancel checks.
         requests = [request for request in self._pending if request.key == key]
         room = max(1, _EMBED_BATCH)
         pieces = []

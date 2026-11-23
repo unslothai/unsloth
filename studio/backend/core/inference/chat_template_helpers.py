@@ -82,6 +82,8 @@ _CONTROL_MARKUP = re.compile(
     r"\|/?(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
     # Kimi K2 / Moonshot wrap history in a section and begin/end call pairs; none is the short tool_call spelling, so a paste could fabricate a call.
     r"|tool_calls?(?:_section)?_(?:begin|end)|tool_call_argument_begin"
+    # LFM2 / LFM2.5 open a call list with this; its closer is the Kimi tool_call_end above.
+    r"|tool_call_start"
     r"|end(?:_of_(?:turn|text))?"
     # Document boundaries from reserved vocabulary: a pasted copy is split back to the real token id and becomes a document break.
     r"|begin_of_text|endoftext"
@@ -2970,6 +2972,43 @@ def apply_chat_template_for_generation(
         raise
 
 
+_COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def reviewed_code_revision(source) -> Optional[str]:
+    """Commit the consent scan just read for a Hub repo (its cached refs/main snapshot); None for local paths or no cache."""
+    if not source:
+        return None
+    try:
+        from utils.paths import is_local_path
+        from utils.utils import hf_cache_snapshot_dir_for_repo
+
+        if is_local_path(str(source)):
+            return None
+        snapshot = hf_cache_snapshot_dir_for_repo(str(source))
+    except Exception as exc:
+        logger.debug("Could not read the cached commit for %s: %s", source, exc)
+        return None
+    name = snapshot.name if snapshot is not None else ""
+    return name if _COMMIT_SHA_RE.match(name) else None
+
+
+def reviewed_code_pin(model_info: dict, template_source) -> dict:
+    """Keeps a later trust_remote_code reload on the commit reviewed at load time, never the branch's current tip."""
+    try:
+        from utils.paths import is_local_path
+        if is_local_path(str(template_source)):
+            return {}
+    except Exception:
+        pass
+    pins = model_info.get("remote_code_revisions") or {}
+    revision = pins.get(str(template_source))
+    if revision:
+        return {"revision": revision}
+    # Unknown commit: read only what is already cached rather than fetch new, unreviewed code.
+    return {"local_files_only": True}
+
+
 def resolve_native_chat_template(
     model_info: dict,
     active_model_name,
@@ -2985,12 +3024,14 @@ def resolve_native_chat_template(
         return None
     # Reuse load-time trust_remote_code so a custom-code tokenizer repo can instantiate its class.
     trust_remote_code = bool(model_info.get("trust_remote_code", False))
+    pin_kwargs = reviewed_code_pin(model_info, template_source) if trust_remote_code else {}
     try:
         from transformers import AutoTokenizer
         nt = AutoTokenizer.from_pretrained(
             template_source,
             token = hf_token if hf_token and hf_token.strip() else None,
             trust_remote_code = trust_remote_code,
+            **pin_kwargs,
         )
         native_tpl = nt.chat_template or False
     except Exception as exc:

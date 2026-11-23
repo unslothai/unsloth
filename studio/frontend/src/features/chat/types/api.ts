@@ -77,7 +77,6 @@ export interface LoadModelRequest {
   nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
-  max_seq_length_auto_derived?: boolean;
   load_in_4bit: boolean;
   is_lora: boolean;
   gguf_variant?: string | null;
@@ -93,6 +92,9 @@ export interface LoadModelRequest {
   /** MLX only: share of the PLE tables / routed experts read from disk, "off", or null for Auto. */
   mlx_ple_offload?: "off" | number | null;
   mlx_expert_offload?: "off" | number | null;
+  npu_power_mode?: "powersaver" | "balanced" | "performance" | "turbo";
+  npu_prefill_chunk_len?: number;
+  npu_img_pre_resize?: number;
   /** Speculative decoding mode for GGUF models: "auto" (platform-aware DSpark/DFlash when the model
    *  ships that sidecar, else MTP on MTP GGUFs, ngram-mod for sub-3B), "mtp", "dspark",
    *  "dflash", "ngram", "mtp+ngram", "off". The legacy spellings are still accepted. */
@@ -265,6 +267,7 @@ export interface LoadModelResponse {
   };
   requires_trust_remote_code?: boolean;
   context_length?: number | null;
+  npu_context_fit?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
@@ -361,6 +364,10 @@ export interface InferenceStatusResponse {
   engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   is_npu?: boolean;
+  /** What the resident NPU load asked FastFlowLM for; null is its default. */
+  npu_power_mode?: string | null;
+  npu_prefill_chunk_len?: number | null;
+  npu_img_pre_resize?: number | null;
   active_model: string | null;
   model_identifier?: string | null;
   is_vision: boolean;
@@ -426,6 +433,7 @@ export interface InferenceStatusResponse {
   supports_tools?: boolean;
   chat_template?: string | null;
   context_length?: number | null;
+  npu_context_fit?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
@@ -649,7 +657,7 @@ export interface OpenAIChatCompletionsRequest {
   /** Reasoning-class OpenAI models reject these; caller may omit. */
   temperature?: number;
   top_p?: number;
-  max_tokens: number;
+  max_tokens?: number;
   top_k?: number;
   min_p?: number;
   repetition_penalty?: number;
@@ -783,8 +791,12 @@ export interface OpenAIChatChunk {
     checkpoint_started?: boolean;
     // true while the checkpoint in force was started by /compact
     manual?: boolean;
-    // true when the provider summarized earlier turns instead of Unsloth dropping them
+    // true when earlier turns were summarized rather than dropped
     summarized?: boolean;
+    // "unsloth" when Unsloth asked the model for the summary; absent when the provider wrote it
+    summary_source?: "unsloth";
+    // cloud fits only: turns were dropped, after a summary call failed (true) or could not help (false)
+    summary_failed?: boolean;
     // boundary text lets the count be re-derived after deleting an already evicted prompt
     boundary_anchor?: string;
     // discard a replayed boundary when its trim used more headroom than the current request

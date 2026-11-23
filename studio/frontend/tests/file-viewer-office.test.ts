@@ -89,6 +89,26 @@ test("number formats", () => {
   for (const [value, format, expected] of cases) assert.equal(formatNumber(value, format), expected, format);
 });
 
+test("number formats round a written half up, as Excel does", () => {
+  const cases: [number, string, string][] = [
+    [1.005, "0.00", "1.01"],
+    [2.675, "#,##0.00", "2.68"],
+    [-2.675, "#,##0.00;(#,##0.00)", "(2.68)"],
+    [1.45, "0.0", "1.5"],
+    [0.615, '"$"0.00', "$0.62"],
+    [1234.5675, "#,##0.000", "1,234.568"],
+    [2.674, "0.00", "2.67"],
+    [9.995, "0.00", "10.00"],
+    [1.005, "0.00E+00", "1.01E+00"],
+    [9.995, "0.00E+00", "1.00E+01"],
+    [70865000000, "##0.00E+00", "70.87E+09"],
+    [0.00012, "##0.0E+0", "120.0E-6"],
+    [1000000000000001, "0", "1000000000000001"],
+    [1000000000000001, "#,##0.00", "1,000,000,000,000,001.00"],
+  ];
+  for (const [value, format, expected] of cases) assert.equal(formatNumber(value, format), expected, `${value} ${format}`);
+});
+
 test("xlsx: reads only the parts and rows it keeps", () => {
   let rows = "";
   for (let r = 1; r <= 5200; r++) {
@@ -358,6 +378,32 @@ test("pptx attachments keep speaker notes without the slide number", async () =>
   assert.deepEqual(
     readPptx(zip).slides[0]?.boxes.flatMap((box) => box.paragraphs?.map((p) => p.text) ?? []),
     ["Quarterly plan"],
+  );
+});
+
+test("pptx attachments keep hidden slides and the deck's slide numbers", async () => {
+  const { extractOfficeAttachmentText } = await import("../src/features/chat/attachment-content.ts");
+  const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const ids = [1, 2, 3].map((n) => `<p:sldId id="${255 + n}" r:id="rId${n}"/>`).join("");
+  const links = [1, 2, 3].map((n) => `<Relationship Id="rId${n}" Type="${REL}/slide" Target="slides/slide${n}.xml"/>`).join("");
+  const slide = (t: string, attrs = "") =>
+    strToU8(`<p:sld xmlns:p="${P}" xmlns:a="${A}"${attrs}><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>${t}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`);
+  const zip = zipSync({
+    "ppt/presentation.xml": strToU8(`<p:presentation xmlns:p="${P}" xmlns:r="${REL}"><p:sldIdLst>${ids}</p:sldIdLst></p:presentation>`),
+    "ppt/_rels/presentation.xml.rels": rels(links),
+    "ppt/slides/slide1.xml": slide("Q3 revenue 4.2M"),
+    "ppt/slides/slide2.xml": slide("Appendix: churn rose to 9 percent", ' show="0"'),
+    "ppt/slides/slide3.xml": slide("Next steps"),
+  });
+  const file = new File([zip], "deck.pptx");
+  assert.equal(
+    await extractOfficeAttachmentText(file, "PPTX"),
+    "Slide 1\nQ3 revenue 4.2M\n\nSlide 2\nAppendix: churn rose to 9 percent\n\nSlide 3\nNext steps",
+  );
+  assert.deepEqual(
+    readPptx(zip).slides.map((s) => s.boxes[0]?.paragraphs?.[0]?.text),
+    ["Q3 revenue 4.2M", "Next steps"],
   );
 });
 
