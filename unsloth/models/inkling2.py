@@ -361,7 +361,7 @@ def save_inkling2_merged_16bit(
         )
     index_path = os.path.join(source, "model.safetensors.index.json")
     if os.path.exists(index_path):
-        with open(index_path) as f:
+        with open(index_path, encoding = "utf-8") as f:
             weight_map = json.load(f)["weight_map"]
     else:
         with safe_open(os.path.join(source, "model.safetensors"), "pt") as f:
@@ -529,12 +529,12 @@ def save_inkling2_merged_16bit(
         os.replace(os.path.join(save_directory, filename), os.path.join(save_directory, final))
         new_map.update({k: final for k in keys})
     index_file = os.path.join(save_directory, "model.safetensors.index.json")
-    with open(index_file + ".tmp", "w") as f:
+    with open(index_file + ".tmp", "w", encoding = "utf-8") as f:
         json.dump({"metadata": {}, "weight_map": new_map}, f, indent = 2)
     os.replace(index_file + ".tmp", index_file)
     _remove_stale_inkling2_weights(save_directory, set(new_map.values()))
 
-    with open(os.path.join(source, "config.json")) as f:
+    with open(os.path.join(source, "config.json"), encoding = "utf-8") as f:
         config = json.load(f)
     for cfg in (config, config.get("text_config") or {}):
         cfg.pop("quantization_config", None)
@@ -542,7 +542,7 @@ def save_inkling2_merged_16bit(
             for field in ("dtype", "torch_dtype"):
                 if field in cfg:
                     cfg[field] = "float32"
-    with open(os.path.join(save_directory, "config.json"), "w") as f:
+    with open(os.path.join(save_directory, "config.json"), "w", encoding = "utf-8") as f:
         json.dump(config, f, indent = 2)
     for filename in os.listdir(source):
         if filename in ("config.json", "hf_quant_config.json", "model.safetensors.index.json"):
