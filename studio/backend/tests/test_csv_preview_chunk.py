@@ -34,7 +34,6 @@ def _preview(path: Path):
 
 
 def _default_chunk_preview(path: Path):
-    # What the preview read before: the builder's default chunk under the same string features.
     return local._stream_file_preview_slice(
         path, PREVIEW, dates_as_written = True, **csv_as_text_kwargs([path])
     )
@@ -144,7 +143,6 @@ def test_csv_preview_of_a_header_only_file_still_reports_empty(tmp_path):
 
 
 def test_training_csv_kwargs_keep_the_default_chunk(tmp_path):
-    # Training and the eval split load through csv_as_text_kwargs directly; only the preview narrows the chunk.
     path = tmp_path / "data.csv"
     path.write_text(HEADER + _rows(5))
 
