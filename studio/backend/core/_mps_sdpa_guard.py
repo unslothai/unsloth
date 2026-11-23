@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import functools
 import logging
-import math
 import os
 import sys
 from typing import Any, Optional
@@ -44,13 +43,33 @@ def _prefill_serves(query: Any, key: Any, value: Any, attn_mask: Any) -> bool:
         return False
 
 
+def _compiling() -> bool:
+    try:
+        import torch
+        return bool(torch.compiler.is_compiling())
+    except Exception:  # noqa: BLE001 -- torch without torch.compiler: never tracing
+        return False
+
+
+def _broadcast_lead(a: tuple, b: tuple) -> Any:
+    """Product of Q's and K's broadcast leading (batch, head) dims: SDPA builds that many score matrices (a mask must
+    broadcast to them). Plain loops, no ``int()`` or generator, so Dynamo traces it with sizes kept symbolic."""
+    if len(a) < len(b):
+        a, b = b, a
+    b = (1,) * (len(a) - len(b)) + tuple(b)
+    lead = 1
+    for x, y in zip(a, b):
+        lead = lead * (x if x >= y else y)  # broadcast (one side 1), or GQA (Q has the more heads)
+    return lead
+
+
 def chunk_rows(query: Any, key: Any) -> Optional[int]:
     """Query rows per call when ``query`` x ``key`` exceeds the score cap, else None (one call)."""
     q_shape, k_shape = tuple(query.shape), tuple(key.shape)
     if len(q_shape) < 2 or len(k_shape) < 2:
         return None
-    sq, sk = int(q_shape[-2]), int(k_shape[-2])
-    lead = math.prod(int(d) for d in q_shape[:-2])
+    sq, sk = q_shape[-2], k_shape[-2]
+    lead = _broadcast_lead(q_shape[:-2], k_shape[:-2])
     if sq <= 1 or lead * sq * sk <= MPS_SCORE_ELEMENTS:
         return None
     return max(1, MPS_SCORE_ELEMENTS // max(lead * sk, 1))
@@ -59,10 +78,10 @@ def chunk_rows(query: Any, key: Any) -> Optional[int]:
 def _split(sdpa: Any, query: Any, key: Any, value: Any, rows: int, kwargs: dict) -> Any:
     import torch
 
-    sq, sk = int(query.shape[-2]), int(key.shape[-2])
+    sq, sk = query.shape[-2], key.shape[-2]
     mask = kwargs.pop("attn_mask", None)
     causal = bool(kwargs.pop("is_causal", False))
-    sliced_mask = mask is not None and mask.dim() >= 2 and int(mask.shape[-2]) != 1
+    sliced_mask = mask is not None and mask.dim() >= 2 and mask.shape[-2] != 1
     outputs = []
     for start in range(0, sq, rows):
         end = min(start + rows, sq)
@@ -86,23 +105,27 @@ def guard_sdpa(sdpa: Any) -> Any:
     def guarded(query: Any, key: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
         if not _is_mps(query) or getattr(query, "is_nested", False) or len(args) > len(_ARG_NAMES):
             return sdpa(query, key, value, *args, **kwargs)
+        bound = dict(zip(_ARG_NAMES, args))
+        for name in bound:
+            if name in kwargs:
+                return sdpa(query, key, value, *args, **kwargs)
+        bound.update(kwargs)
+        mask = bound.get("attn_mask")
         rows = chunk_rows(query, key)
         if rows is None:
             return sdpa(query, key, value, *args, **kwargs)
-        bound = dict(zip(_ARG_NAMES, args))
-        if set(bound) & set(kwargs):
-            return sdpa(query, key, value, *args, **kwargs)
-        bound.update(kwargs)
-        mask = bound.get("attn_mask")
         if mask is not None and (
             bool(bound.get("is_causal", False))
             or mask.dim() < 2
-            or int(mask.shape[-2]) not in (1, int(query.shape[-2]))
+            or (mask.shape[-2] != 1 and mask.shape[-2] != query.shape[-2])
         ):
             return sdpa(query, key, value, *args, **kwargs)
         if _prefill_serves(query, key, value, mask):
             return sdpa(query, key, value, *args, **kwargs)
-        stats["chunked_calls"] += 1
+        if (
+            not _compiling()
+        ):  # a traced counter bump becomes a guard on its value: one recompile per call
+            stats["chunked_calls"] += 1
         return _split(sdpa, query, key, value, rows, bound)
 
     setattr(guarded, _GUARD_ATTR, True)
