@@ -28,6 +28,21 @@ def _resume_torch_load(path, **kwargs):
     return torch.load(path, weights_only = True, **kwargs)
 
 
+def _load_full_optimizer_state(path):
+    """The full optimizer.pt on the CPU, memory-mapped: every rank reads the whole file and keeps only its
+    shards, so an eager load costs each rank an anonymous copy of the full state (ranks x file size of host
+    RAM). Mapped pages are file-backed and shared by the ranks through the page cache. A file object, or a
+    file torch cannot map (legacy non-zip serialization), loads eagerly as before."""
+    if not isinstance(path, (str, os.PathLike)):
+        return _resume_torch_load(path, map_location = "cpu")
+    try:
+        return _resume_torch_load(path, map_location = "cpu", mmap = True)
+    except RuntimeError as e:
+        if "mmap can only be used" not in str(e):
+            raise
+    return _resume_torch_load(path, map_location = "cpu")
+
+
 __all__ = [
     "FSDP2Config",
     "STORAGE_DTYPE",
@@ -3107,7 +3122,7 @@ def native_load_optimizer(model, optimizer, path_or_state):
     if isinstance(state, (str, os.PathLike)) and _is_dcp_dir(state):
         return native_load_optimizer_sharded(model, optimizer, state)
     if not isinstance(state, dict):
-        state = _resume_torch_load(state, map_location = "cpu")
+        state = _load_full_optimizer_state(state)
     from .fsdp2_bnb_optim import rename_optimizer_state_for
 
     # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.

@@ -153,8 +153,10 @@ from core.inference.memory_contract import (
 from core.inference.stream_errors import (
     KV_STARVATION_MESSAGE,
     LlamaStreamError,
+    describe_stream_error,
     error_message_from_chunk,
     is_kv_starvation,
+    is_media_failure,
 )
 from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
@@ -359,6 +361,7 @@ _OVERSIZE_TOKENS_RE = _re.compile(
 )
 # 501 is llama-server's not_supported_error (e.g. chat on a decision-only model).
 _LLAMA_CLIENT_ERROR_RE = _re.compile(r"llama-server returned (?:4\d\d|501): (.*)", _re.DOTALL)
+_LLAMA_SERVER_ERROR_RE = _re.compile(r"llama-server returned 5\d\d: (.*)", _re.DOTALL)
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -406,6 +409,15 @@ def _friendly_error(exc: Exception) -> str:
         except ValueError:
             pass
         return _friendly_upstream_error(body[:500])
+    # Other 5xx stay redacted; media/KV failures are fixed strings that name no path.
+    server_error = _LLAMA_SERVER_ERROR_RE.match(msg)
+    if server_error:
+        try:
+            body = error_message_from_chunk(json.loads(server_error.group(1)))
+        except ValueError:
+            body = None
+        if body and (is_media_failure(body) or is_kv_starvation(body)):
+            return describe_stream_error(body[:500])
     return "An internal error occurred"
 
 
@@ -483,6 +495,62 @@ def _clamp_finish_reason(value) -> str:
         )
         else "stop"
     )
+
+
+def _recover_cut_thought(payload) -> Optional[tuple[str, bool, bool]]:
+    """When this thread's previous reply ended in a thought the window cut, do not resume it (it
+    cannot fit): keep it, cut back a few tokens, as a finished thought (the template writes the
+    model's own closing marker), force the reset /compact does, archive it for search_conversation,
+    write a transcript, and add the note. Returns (note, searchable, note_is_a_user_turn), or None."""
+    if getattr(payload, "context_overflow", None) in ("error", "truncate_middle"):
+        return None
+    from core.inference import cut_thought
+    from models.inference import ChatMessage
+
+    thread_id = getattr(payload, "thread_id", None)
+    cut = cut_thought.take(thread_id)
+    if cut is None:
+        return None
+    messages = list(getattr(payload, "messages", None) or [])
+    closed = ChatMessage(role = "assistant", content = "", reasoning_content = cut.thought)
+    resuming = bool(
+        getattr(payload, "continue_final_message", None)
+        and _continue_final_message(payload, thought = True)
+        and not _continue_final_message(payload)
+    )
+    if resuming:
+        # The automatic continuation resends the cut thought to be resumed: finish it instead.
+        messages[-1] = closed
+    else:
+        # A typed next message: the cut reply before it gets its thought back, finished.
+        for index in range(len(messages) - 2, -1, -1):
+            message = messages[index]
+            if getattr(message, "role", None) != "assistant":
+                continue
+            if not getattr(message, "content", None) and not getattr(message, "tool_calls", None):
+                messages[index] = closed
+            break
+    payload.continue_final_message = False
+    payload.compact_context = True
+    payload.context_overflow = "truncate_oldest"
+    from state.tool_policy import conversation_recall_allowed
+
+    searchable = bool(
+        cut_thought.archive(thread_id, cut.thought)
+        and conversation_recall_allowed()
+        and _checkpoint_needs_search(payload)
+    )
+    from core.inference import compaction_transcript
+
+    transcript = compaction_transcript.write(
+        thread_id, [message.model_dump(exclude_none = True) for message in messages]
+    )
+    note = cut_thought.note(searchable, transcript)
+    if resuming:
+        # The first user turn after the reset: the turns before it are compacted away.
+        messages.append(ChatMessage(role = "user", content = note))
+    payload.messages = messages
+    return note, searchable, resuming
 
 
 def _continue_final_message(payload, *, thought: bool = False) -> bool:
@@ -17020,32 +17088,35 @@ async def _unload_llama_before_standard_load(llama_backend) -> None:
     the epoch, so a cleanup still pending sees this load replaced the retired server, and one
     already past its check finishes first."""
 
-    def handoff() -> Optional[float]:
+    def handoff():
         # getattr: a stand-in backend has no load to order against.
         lock = getattr(llama_backend, "_serial_load_lock", None)
         if lock is not None:
             # As the unload would: a recovery reload holding the lock stops instead of finishing.
             llama_backend._cancel_event.set()
         with lock or nullcontext():
-            if not llama_backend.is_loaded:
-                if lock is None:
-                    return None
-                kill_started = time.monotonic()
-                llama_backend.unload_model()
-                # A starting or recovering server was killed: wait for it like a loaded one.
-                last_kill = getattr(llama_backend, "_last_kill_monotonic", 0.0) or 0.0
-                return kill_started if last_kill >= kill_started else None
-            logger.info("Unloading GGUF model before loading Unsloth model")
+            was_loaded = llama_backend.is_loaded
+            if not was_loaded and lock is None:
+                return None, None
+            if was_loaded:
+                logger.info("Unloading GGUF model before loading Unsloth model")
             kill_started = time.monotonic()
             llama_backend.unload_model()
-            return kill_started
+            # Read under the lock: a baseline from an older kill is stale.
+            killed = (getattr(llama_backend, "_last_kill_monotonic", 0.0) or 0.0) >= kill_started
+            if not killed:
+                # A starting or recovering server that was killed is waited for like a loaded one.
+                return (kill_started, None) if was_loaded else (None, None)
+            return kill_started, getattr(llama_backend, "_last_kill_vram_baseline", None)
 
-    kill_started = await asyncio.to_thread(handoff)
+    kill_started, baseline = await asyncio.to_thread(handoff)
     if kill_started is None:
         return
+    # Baseline: wait for the server's VRAM to show freed, not two equal pre-release samples.
     await asyncio.to_thread(
         llama_backend._wait_for_vram_settle,
         since_kill = kill_started,
+        baseline = baseline,
     )
 
 
@@ -17920,9 +17991,28 @@ _NOT_SUPPORTED_HINTS = (
     "does not support",
 )
 
-_NVFP4_INFERENCE_UNSUPPORTED_MESSAGE = (
-    "We are working on supporting NVFP4 inference. For now it is not supported"
+# The frontend keys its "Open settings" button on this wording (model-memory-action.ts).
+_GPU_QUANT_ENGINE_MESSAGE = (
+    "{fmt} models run on the vLLM or SGLang engine.\nInstall one in Settings > System > "
+    "More engines, then choose it as Inference engine in this model's run settings."
 )
+_GPU_QUANT_NO_ENGINE_MESSAGE = (
+    "{fmt} models run on the vLLM or SGLang engine.\nThose need Linux or Windows with an "
+    "NVIDIA GPU. On this computer, try a GGUF or MLX build of this model instead."
+)
+_NVFP4_ENGINE_MESSAGE = _GPU_QUANT_ENGINE_MESSAGE.format(fmt = "NVFP4")
+_NVFP4_NO_ENGINE_MESSAGE = _GPU_QUANT_NO_ENGINE_MESSAGE.format(fmt = "NVFP4")
+
+
+def _gpu_quant_inference_message(fmt: str) -> str:
+    try:
+        from core.inference.engine_install import gpu_platform, support_reason
+        if gpu_platform() != "rocm" and support_reason("vllm", wait = False) is None:
+            return _GPU_QUANT_ENGINE_MESSAGE.format(fmt = fmt)
+    except Exception:
+        pass
+    return _GPU_QUANT_NO_ENGINE_MESSAGE.format(fmt = fmt)
+
 
 # Users cannot pip install into Studio's environment, so give our own message.
 _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE = (
@@ -17954,10 +18044,15 @@ _MANAGED_ENGINE_QUANTIZATIONS = {
     "awq": ("gptqmodel", "awq"),
     "gptq": ("gptqmodel", "auto_gptq"),
     "auto-round": ("auto_round",),
+    # Plain "fp8" and ModelOpt (unsloth rewrites it to native FP8 / NVFP4) stay on Default.
+    "fbgemm_fp8": ("fbgemm_gpu",),
 }
 _OFFERED_ENGINES = ("vllm", "sglang")
 # SGLang registers auto-round too, but only vLLM has been run on it (#7997).
-_OFFERED_ENGINES_FOR = {"auto-round": ("vllm",)}
+_OFFERED_ENGINES_FOR = {
+    "auto-round": ("vllm",),
+    "fbgemm_fp8": ("vllm",),
+}
 
 
 def _managed_engine_offer(
@@ -18028,7 +18123,7 @@ def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
                 # Default (MLX) already loads AWQ; vllm-metal 0.33.0 has no GPTQ, compressed-tensors or auto-round loader.
                 return False
             if gpu_platform() == "rocm":
-                if method == "auto-round":
+                if method in ("auto-round", "fbgemm_fp8"):
                     # Unmeasured on ROCm vLLM; an explicit vLLM load still gets to try (#7997).
                     return False
                 text_config = metadata.get("text_config")
@@ -18079,6 +18174,18 @@ def _is_unsupported_nvfp4_inference_error(msg: str) -> bool:
     return "nvfp4" in lower_msg and "per-module mlx quantization metadata" in lower_msg
 
 
+# The metadata repr names the scheme: compressed-tensors "float-quantized", HF / ModelOpt "fp8".
+_FP8_METADATA_MARKERS = ("fp8", "float-quantized")
+
+
+def _is_unsupported_fp8_inference_error(msg: str) -> bool:
+    """The same MLX error for an FP8 checkpoint; NVFP4 is checked first, as mixed ones carry both."""
+    lower_msg = _diagnosis_text(msg).lower()
+    return "per-module mlx quantization metadata" in lower_msg and any(
+        marker in lower_msg for marker in _FP8_METADATA_MARKERS
+    )
+
+
 # The two transformers sites, reworded in 5.10 to add a version: match only what survived.
 _MISSING_COMPRESSED_TENSORS_SIGNATURES = (
     "is required for compressed-tensors quantization",
@@ -18095,7 +18202,9 @@ def _is_missing_compressed_tensors_error(msg: str) -> bool:
 def _unsupported_quantization_detail(msg: str, engine: Optional[str] = None) -> Optional[str]:
     """The refusal to show for a quantization error, or None; the one place signatures are added."""
     if _is_unsupported_nvfp4_inference_error(msg):
-        return _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE
+        return _gpu_quant_inference_message("NVFP4")
+    if _is_unsupported_fp8_inference_error(msg):
+        return _gpu_quant_inference_message("FP8")
     if _is_missing_compressed_tensors_error(msg):
         return _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE + _vllm_engine_hint(engine)
     return None
@@ -27287,6 +27396,8 @@ async def _transcribe_audio_result(
     )
     if serving_engine == "mtmd":
         transcribe = functools.partial(transcribe, context_length = context_length, prompt = prompt)
+    elif serving_engine == "gguf" and timestamps:
+        transcribe = functools.partial(transcribe, timestamps = True)
     cancel_event = threading.Event() if request is not None or on_progress is not None else None
     disconnect_watcher = (
         asyncio.create_task(_await_stt_disconnect_then_cancel(request, sidecar, cancel_event))
@@ -27304,6 +27415,18 @@ async def _transcribe_audio_result(
         load_options = {"on_phase": on_phase} if on_phase is not None else {}
         if serving_engine == "mtmd":
             load_options["context_length"] = context_length
+            # Decode first so a cold Auto start is sized once, not 4096 then a restart.
+            prepare = getattr(sidecar, "prepare_cold_start", None) if not context_length else None
+            prepared = (
+                await asyncio.to_thread(holds_inference(prepare), raw, model, cancel_event)
+                if prepare
+                else None
+            )
+            if prepared is not None:
+                start_context, decoded_audio = prepared
+                if start_context is not None:
+                    load_options["auto_start_context"] = start_context
+                transcribe = functools.partial(transcribe, decoded_audio = decoded_audio)
         if source_path is not None and timestamps:
             await asyncio.to_thread(
                 holds_inference(sidecar.ensure_aligner), model, on_phase, cancel_event
@@ -27455,8 +27578,10 @@ async def transcribe_audio_raw(
     stream: bool = False,
     title: str = Query("Recording", max_length = 255),
     context_length: Annotated[int, BeforeValidator(_parse_stt_context_length_query)] = 0,
+    timestamps: bool = False,
 ):
-    """Transcribe a raw audio body without base64 or JSON conversion overhead."""
+    """Transcribe a raw audio body without base64 or JSON conversion overhead; ``timestamps``
+    adds whisper.cpp's segments (audio.cpp models that always time their text return them anyway)."""
     chunks: list[bytes] = []
     size = 0
     async for chunk in request.stream():
@@ -27495,6 +27620,7 @@ async def transcribe_audio_raw(
             request,
             device,
             context_length = context_length,
+            timestamps = timestamps,
         )
     )
 
@@ -29939,6 +30065,30 @@ _ANTHROPIC_NATIVE_COMPACT_NOW_TOKENS = 60_000
 _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
+def _compaction_share(payload) -> float:
+    percent = getattr(payload, "compaction_percent", None)
+    return percent / 100 if percent else 1 - _EXTERNAL_COMPACTION_HEADROOM
+
+
+# Max fills what the window leaves after the prompt: unbounded, Ollama context-shifts past num_ctx.
+# Not OpenRouter: a router id or an unloaded catalog overstates the routed endpoint's window.
+_WINDOW_ROOM_REPLY_PROVIDERS = frozenset({"ollama", "custom"})
+_UNKNOWN_WINDOW_MAX_TOKENS = 32_768
+_MIN_WINDOW_ROOM_TOKENS = 256
+
+
+def _window_room_max_tokens(window: int, prompt_tokens: int, compaction_threshold) -> int:
+    # A fit shrinks the prompt to the threshold first.
+    if compaction_threshold:
+        prompt_tokens = min(prompt_tokens, compaction_threshold)
+    if prompt_tokens >= window:
+        # Only a replayed summary or compaction epoch (applied later) can make this fit: guess.
+        return window // 4
+    room = window - prompt_tokens
+    # The floor never passes the room itself: a strict server refuses prompt + reply > window.
+    return min(room, max(_MIN_WINDOW_ROOM_TOKENS, room - window // 32))
+
+
 def _extends_turn(old: Any, new: Any) -> bool:
     """``new`` is ``old`` with text or parts appended, as the loop's ``_append_user_turn`` merges."""
     if isinstance(old, str) and isinstance(new, str):
@@ -30213,6 +30363,7 @@ class _ExternalCompactionPlan:
         "force",
         "summarise",
         "summary_failed",
+        "summary_error",
     )
 
 
@@ -30240,6 +30391,7 @@ def _plan_external_compaction(
     plan.force = force
     plan.summarise = summarise
     plan.summary_failed = None
+    plan.summary_error = None
     plan.to_summarise = []
     plan.body = cloud_compaction.body_messages(messages)
     count = _external_token_counter(payload, tools)
@@ -30338,12 +30490,17 @@ async def _finish_external_compaction(
                         max_tokens = reply_tokens,
                         tool_choice = "none",
                         enable_prompt_caching = False,
+                        enable_thinking = cloud_compaction.summary_thinking(
+                            getattr(client, "provider_type", None),
+                            getattr(client, "api_type", None),
+                        ),
                         thread_id = payload.thread_id,
                     )
                 )
         except cloud_compaction.SummaryFailed as exc:
             logger.warning("external_provider.summary_failed", error = str(exc), model = model)
             summary_failed = True
+            plan.summary_error = cloud_compaction.failure_reason(exc)
             if isinstance(exc, (cloud_compaction.SummaryCutOff, cloud_compaction.SummaryTimedOut)):
                 cloud_compaction.remember_cut_off(thread_id, model)
         else:
@@ -30792,7 +30949,7 @@ async def _proxy_to_external_provider(
             request,
             include_api_key = bool(studio_tool_payloads),
         )
-        cancel_event = threading.Event()
+        cancel_event = _external_cancel_event(request)
         cancel_keys = tuple(
             _account_cancel_key(key) for key in (payload.cancel_id, payload.session_id) if key
         )
@@ -31219,7 +31376,7 @@ async def _proxy_to_external_provider(
         if _served_window and (_loaded_window or not payload.compaction_threshold):
             _threshold = min(
                 _EXTERNAL_COMPACTION_THRESHOLD_MAX,
-                int(_served_window * (1 - _EXTERNAL_COMPACTION_HEADROOM)),
+                int(_served_window * _compaction_share(payload)),
             )
             payload = payload.model_copy(
                 update = {
@@ -31233,6 +31390,49 @@ async def _proxy_to_external_provider(
     async def _tool_result_window() -> Optional[int]:
         served = await client.served_context_window(model)
         return min(served, payload.context_window or served) if served else None
+
+    _reply_room = None
+    if (
+        managed is None
+        and provider_type in _WINDOW_ROOM_REPLY_PROVIDERS
+        and _effective_max_tokens(payload) is None
+    ):
+        from routes.providers import cached_catalog_model_context
+
+        _reply_window = None
+        # Responses endpoints are hosted gateways with their own output caps.
+        if api_type != "responses":
+            # Ollama's loaded num_ctx is often far below the catalogued window.
+            _reply_window = min(
+                filter(None, (payload.context_window, await client.served_context_window(model))),
+                default = None,
+            ) or cached_catalog_model_context(provider_type, model)
+        if _reply_window:
+            _room_threshold = (
+                payload.compaction_threshold
+                if payload.context_overflow == "truncate_oldest"
+                else None
+            )
+            _room_payload = payload
+
+            def _reply_room(
+                messages,
+                tools = _external_fit_tools,
+                threshold = None,
+            ) -> int:
+                # Fitted prompts are counted as sent: an irreducible turn can stay above the threshold.
+                return _window_room_max_tokens(
+                    _reply_window,
+                    _external_token_counter(_room_payload, tools)(messages),
+                    threshold,
+                )
+
+            payload = payload.model_copy(
+                update = {"max_tokens": _reply_room(chat_messages, threshold = _room_threshold)}
+            )
+        elif _ui_stream_events_enabled(request):
+            # Studio's Max with no window to read; an API caller keeps the provider's default.
+            payload = payload.model_copy(update = {"max_tokens": _UNKNOWN_WINDOW_MAX_TOKENS})
 
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
@@ -31447,6 +31647,8 @@ async def _proxy_to_external_provider(
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
             )
+            if plan.force == "manual" and plan.summary_error and not _non_stream_custom_responses:
+                yield cloud_compaction.compaction_failed_sse_line(plan.summary_error)
         _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
         fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
         _last_fit = fitted
@@ -31544,7 +31746,7 @@ async def _proxy_to_external_provider(
             except context_refusal.ContextBudgetExceeded as exc:
                 raise _context_budget_http_error(exc)
 
-    cancel_event = threading.Event()
+    cancel_event = _external_cancel_event(request)
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
     async def _watch_disconnect() -> None:
@@ -31611,6 +31813,7 @@ async def _proxy_to_external_provider(
                     message_fitter = _external_fit_steps if _fit_active else None,
                     overflow_refitter = _external_overflow_refit if _overflow_recovery else None,
                     first_turn_overrides = _first_turn_overrides,
+                    reply_limit = _reply_room,
                     enabled_tools = loop_hosted_tools or None,
                     stream = True,
                     **_provider_kwargs,
@@ -31681,6 +31884,8 @@ async def _proxy_to_external_provider(
                     _sent_messages, overrides["max_tokens"], truncation_line = fit
                     if truncation_line:
                         yield truncation_line
+                if _reply_room is not None:
+                    overrides["max_tokens"] = _reply_room(_sent_messages)
                 async for line in _send_plain(_sent_messages, **overrides):
                     yield line
 
@@ -31692,6 +31897,8 @@ async def _proxy_to_external_provider(
                 if fit is None or fit[0] is None:
                     return None
                 refit_messages, max_tokens, truncation_line = fit
+                if _reply_room is not None:
+                    max_tokens = _reply_room(refit_messages)
 
                 async def _resend():
                     if truncation_line:
@@ -31706,8 +31913,8 @@ async def _proxy_to_external_provider(
                 gen = cloud_compaction.stream_with_overflow_retry(_plain_turn, _recover_plain)
             else:
                 gen = _plain_turn()
-        if managed is not None:
-            # Stopping the read stops FastFlowLM, which a model swap is waiting on.
+        # Stops FastFlowLM for a waiting swap; a durable run has no client disconnect, so this is its only Stop.
+        if managed is not None or getattr(cancel_event, "durable", False):
             gen = _stop_on_cancel(gen, cancel_event)
         disconnect_task = asyncio.create_task(_watch_disconnect()) if run_studio_tool_loop else None
 
@@ -32250,7 +32457,7 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         window = min(filter(None, (payload.context_window, upstream.context_length)))
         threshold = min(
             _EXTERNAL_COMPACTION_THRESHOLD_MAX,
-            int(window * (1 - _EXTERNAL_COMPACTION_HEADROOM)),
+            int(window * _compaction_share(payload)),
         )
         update["context_window"] = window
         update["compaction_threshold"] = min(payload.compaction_threshold or threshold, threshold)
@@ -32726,6 +32933,13 @@ def _chat_cancel_event(request: Request) -> threading.Event:
     """Reuse a durable run's event across auto-load and generation registration."""
     event = getattr(getattr(request, "state", None), "generation_cancel_event", None)
     return event if event is not None else threading.Event()
+
+
+def _external_cancel_event(request: Request) -> threading.Event:
+    """A durable chat run's event, so its Stop reaches the provider stream. Any other caller (a scheduled
+    task) keeps a private one: the proxy sets it in teardown, which would read to that caller as a cancel."""
+    event = _chat_cancel_event(request)
+    return event if getattr(event, "durable", False) else threading.Event()
 
 
 # UI control frames lack `choices` and break strict OpenAI clients; Studio opts in via header.
@@ -34260,6 +34474,11 @@ async def produce_openai_chat_completions(
             raise _reject(exc.status_code, exc.detail)
         _pre_parsed = None
 
+    _cut_recovery = await asyncio.to_thread(_recover_cut_thought, payload) if using_gguf else None
+    if _cut_recovery is not None:
+        # The recovery rewrote the messages an auto-switch may already have parsed.
+        _pre_parsed = None
+
     # ── Parse messages (handles multimodal content parts) ─────
     # Reuse the pre-hook parse when an auto-switch already did it; otherwise parse the messages here.
     if _pre_parsed is not None:
@@ -34271,6 +34490,9 @@ async def produce_openai_chat_completions(
     if using_gguf and not _has_system_turn(payload.messages):
         # Ollama applies a Modelfile SYSTEM only when the request has no system turn of its own.
         system_prompt = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
+    if _cut_recovery is not None and not _cut_recovery[2]:
+        # This request only: the next one rebuilds its system prompt without it.
+        system_prompt = f"{(system_prompt or '').rstrip()}\n\n{_cut_recovery[0]}".strip()
     # applied once so both backends inherit it, with or without tools, and never state it twice.
     _user_system_prompt = system_prompt
     # What renders through the processor template; the MCP scan runs off-loop (12 MB envelope).
@@ -34437,7 +34659,11 @@ async def produce_openai_chat_completions(
             not use_tools
             and not _tool_loop_unusable
             and llama_backend.supports_tools
-            and _checkpoint_recall_may_enable_tools(payload)
+            and (
+                _checkpoint_recall_may_enable_tools(payload)
+                # The cut thought is archived, so the note's search_conversation is there to call.
+                or (_cut_recovery is not None and _cut_recovery[1])
+            )
         ):
             use_tools = True
 
@@ -35555,6 +35781,8 @@ async def produce_openai_chat_completions(
                 # Tell the epoch gate tools are withheld; it cannot see that from process policy.
                 tools_withheld = _tool_loop_unusable,
                 chat_template_kwargs = _extra_chat_template_kwargs(payload),
+                # Once per thread: a recovery whose own thought is cut ends as before.
+                record_cut_thought = _cut_recovery is None,
             )
 
         _gguf_sentinel = object()

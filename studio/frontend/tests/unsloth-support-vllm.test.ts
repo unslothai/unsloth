@@ -126,10 +126,30 @@ test("the vLLM label for AWQ / GPTQ tags does not depend on tag order or GGUF na
   );
 });
 
+test("FBGEMM FP8 runs on vLLM only; plain fp8 and ModelOpt stay on the Default engine", () => {
+  const fbgemm = { modelId: "meta-llama/Llama-3.1-8B-FP8", tags: ["fbgemm"], quantMethod: "fbgemm_fp8", deviceType: "cuda" };
+  assert.equal(
+    classifyUnslothSupport({ modelId: "nvidia/Llama-3.1-8B-Instruct-FP8", quantMethod: "modelopt", deviceType: "cuda" }).status,
+    "supported",
+  );
+  for (const row of [fbgemm]) {
+    assert.equal(classifyUnslothSupport({ ...row, vllmAvailable: true }).supportedIn, "vllm", row.quantMethod);
+    assert.equal(
+      classifyUnslothSupport({ ...row, vllmAvailable: true, vllmPlatform: "rocm" }).supportedIn,
+      undefined,
+      row.quantMethod,
+    );
+  }
+  assert.equal(
+    classifyUnslothSupport({ modelId: "Qwen/Qwen3-8B-FP8", quantMethod: "fp8", deviceType: "cuda" }).status,
+    "supported",
+  );
+});
+
 test("vLLM on Apple Silicon is offered only for AWQ", () => {
   const metal = { modelId: "o/m", deviceType: "mac", vllmAvailable: true, vllmPlatform: "metal" };
   assert.equal(classifyUnslothSupport({ ...metal, quantMethod: "awq" }).supportedIn, "vllm");
-  for (const quantMethod of ["gptq", "compressed-tensors", "auto-round"]) {
+  for (const quantMethod of ["gptq", "compressed-tensors", "auto-round", "fbgemm_fp8"]) {
     assert.equal(classifyUnslothSupport({ ...metal, quantMethod }).supportedIn, undefined, quantMethod);
   }
   assert.equal(classifyUnslothSupport({ ...metal, modelId: "o/m-GPTQ-Int4", tags: ["gptq"] }).supportedIn, undefined);

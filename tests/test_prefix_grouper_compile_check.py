@@ -10,6 +10,7 @@ PrefixGrouper off for the process.
 """
 
 import importlib.util
+import itertools
 import pathlib
 import sys
 import types
@@ -21,24 +22,31 @@ flex = pytest.importorskip("torch.nn.attention.flex_attention")
 
 UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "utils"
 PKG = "_pg_check_pkg_under_test"
+_LOADS = itertools.count()
 
 
-def _load():
-    """prefix_grouper.py + its kernel under a throwaway package (no full unsloth import)."""
-    pkg = types.ModuleType(PKG)
+def _load(monkeypatch):
+    """prefix_grouper.py + its kernel under a throwaway package (no full unsloth import).
+
+    Dynamo resolves a traced function's globals by importing its module by name, and caches that import for
+    the process. So the package stays in sys.modules until the test's teardown (dropping it right after loading
+    makes every torch.compile of the kernel fail with ModuleNotFoundError), and each load gets its own package
+    name (reusing one would let a later test's compile read an earlier test's kernel state)."""
+    pkg_name = f"{PKG}_{next(_LOADS)}"
+    names = (pkg_name, f"{pkg_name}.prefix_grouper_kernel", f"{pkg_name}.prefix_grouper")
+    for n in names:
+        # Record each name as unset so teardown removes it, including the kernel the loader imports on its own.
+        monkeypatch.setitem(sys.modules, n, None)
+        del sys.modules[n]
+    pkg = types.ModuleType(pkg_name)
     pkg.__path__ = [str(UTILS)]
-    names = (PKG, f"{PKG}.prefix_grouper_kernel", f"{PKG}.prefix_grouper")
-    sys.modules[PKG] = pkg
-    try:
-        name = f"{PKG}.prefix_grouper"
-        spec = importlib.util.spec_from_file_location(name, UTILS / "prefix_grouper.py")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module
-        spec.loader.exec_module(module)
-        kernel = sys.modules[f"{PKG}.prefix_grouper_kernel"]
-    finally:
-        for n in names:
-            sys.modules.pop(n, None)
+    monkeypatch.setitem(sys.modules, pkg_name, pkg)
+    name = f"{pkg_name}.prefix_grouper"
+    spec = importlib.util.spec_from_file_location(name, UTILS / "prefix_grouper.py")
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+    spec.loader.exec_module(module)
+    kernel = sys.modules[f"{pkg_name}.prefix_grouper_kernel"]
     return module, kernel
 
 
@@ -67,7 +75,7 @@ def mods(monkeypatch):
         if hasattr(config, name):
             monkeypatch.setattr(config, name, getattr(config, name))
     config.suppress_errors = True  # what unsloth_zoo sets
-    pg, kernel = _load()
+    pg, kernel = _load(monkeypatch)
     calls = {"flex": 0, "strict": [], "mask": 0, "shapes": [], "grad": []}
 
     def eager_flex(
@@ -465,7 +473,7 @@ def test_eager_path_skips_the_check(mods):
 
 def test_kill_switch(monkeypatch):
     monkeypatch.setenv("UNSLOTH_GRPO_PREFIX_GROUPER_COMPILE_CHECK", "0")
-    pg, kernel = _load()
+    pg, kernel = _load(monkeypatch)
     assert kernel._COMPILE_CHECK_ON is False
 
 

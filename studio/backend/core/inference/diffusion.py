@@ -254,7 +254,6 @@ from .diffusion_memory import (
     reference_kv_cache_mib,
     image_activation_verdict,
     ACTIVATION_REFUSE,
-    cuda_graph_held_bytes,
     graph_release_fits,
     guard_release_graphs_enabled,
     raise_on_unified_memory_shortfall,
@@ -377,6 +376,7 @@ from .diffusion_attention import (
     attention_may_run_native,
     begin_attention_run,
     report_attention_run,
+    explicit_pick_fallback,
     select_attention_backend,
     _dit_head_dims,
     _ensure_attention_backend_installed,
@@ -2743,13 +2743,19 @@ def _guard_vae_card(
     return restore, tiled
 
 
-def _guard_layer_cards(pipe: Any, guard_target: Any, guard_kwargs: dict) -> int:
+def _guard_layer_cards(
+    pipe: Any,
+    guard_target: Any,
+    guard_kwargs: dict,
+    handles: tuple = (),
+) -> int:
     """The generate-time check on every other card a layer split runs blocks on. Such a card holds only blocks: no
     text encode, no VAE decode, and one block's activations at a time, so the whole-request estimate the primary is
     checked against does not apply. It needs what the plan reserved there at the default resolution, scaled by how
     much this request's activations grow past that default. ``pipe`` is the LOADED pipeline (a from_pipe workflow
     pipeline carries no split record). Raises the guard's refusal (a ValueError); returns the number of cards
-    checked. Fails open on anything unknown."""
+    checked. Fails open on anything unknown. ``handles``: the pipeline's CUDA graphs, dropped when only their idle
+    pool on that card stands between the request and a fit (as the primary guard does)."""
     from .diffusion_layer_split_plan import applied_layer_split, secondary_block_cards
     from .diffusion_memory import _device_user_budget_reserve_mib, _oversized_generate_override
 
@@ -2783,6 +2789,20 @@ def _guard_layer_cards(pipe: Any, guard_target: Any, guard_kwargs: dict) -> int:
         free = int(free) - _device_user_budget_reserve_mib(card, card.total_mib or free)
         checked += 1
         need = int(working * scale) + reserve
+        if need > int(free) and handles and guard_release_graphs_enabled():
+            try:
+                held = cuda_graph.releasable_pool_bytes(handles, int(ordinal)) // (1024 * 1024)
+                if held > 0 and need <= int(free) + held:
+                    cuda_graph.reset_all(handles)
+                    handles = ()
+                    with diffusion_device_scope(int(ordinal)):
+                        card = reclaimable_snapshot_device_memory(guard_target)
+                    if card.free_mib is not None:
+                        free = int(card.free_mib) - _device_user_budget_reserve_mib(
+                            card, card.total_mib or card.free_mib
+                        )
+            except Exception:  # noqa: BLE001 - the reading above still decides
+                pass
         if need > int(free):
             raise ImageActivationShortfallError(
                 f"Generating at {guard_kwargs.get('width')}x{guard_kwargs.get('height')} needs about "
@@ -3748,12 +3768,8 @@ def _tier_request_peak(
     )
 
 
-def _release_graphs_for_guard(
-    state: Any, guard_kwargs: dict, rebuild: Callable[[], dict], logger: Any
-) -> dict:
-    """The guard leaves the CUDA graph pools uncredited (only their graphs reuse them), so captures an earlier render
-    left can refuse a request that fits without them. Drops them only then, and re-reads the card; any other request
-    keeps its graphs. Returns the guard kwargs to check."""
+def _guard_graph_handles(state: Any) -> tuple:
+    """This pipeline's CUDA graph handles (state and pipe), deduplicated."""
     handles = {
         id(h): h
         for h in (
@@ -3761,14 +3777,26 @@ def _release_graphs_for_guard(
             *(getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()),
         )
     }
+    return tuple(handles.values())
+
+
+def _release_graphs_for_guard(
+    state: Any, guard_kwargs: dict, rebuild: Callable[[], dict], logger: Any
+) -> dict:
+    """The guard leaves the CUDA graph pools uncredited (only their graphs reuse them), so captures an earlier render
+    left can refuse a request that fits without them. Drops them only then, and re-reads the card; any other request
+    keeps its graphs. Returns the guard kwargs to check."""
+    handles = _guard_graph_handles(state)
     if not handles or not guard_release_graphs_enabled():
         return guard_kwargs
     try:
         probe = {k: v for k, v in guard_kwargs.items() if k != "logger"}
-        held = graph_release_fits(probe, cuda_graph_held_bytes)
+        # Only the pools these handles free, on the card the guard read: not another resident's shared pool.
+        device = _peak_device_index(state)
+        held = graph_release_fits(probe, lambda: cuda_graph.releasable_pool_bytes(handles, device))
         if not held:
             return guard_kwargs
-        cuda_graph.reset_all(tuple(handles.values()))
+        cuda_graph.reset_all(handles)
     except Exception as exc:  # noqa: BLE001 - the guard below still decides on its own reading
         logger.warning("diffusion.generate: graph release before the guard skipped (%s)", exc)
         return guard_kwargs
@@ -11824,6 +11852,13 @@ class DiffusionBackend:
                         # granted by the unset-speed rule alone: only SPEED_UNSET_DITS race
                         speed_unset_only = effective_speed == SPEED_OFF,
                         int8_policy = int8_policy,
+                        # an explicit kernel that cannot run keeps the automatic pick, not bare native SDPA
+                        fallback = explicit_pick_fallback(
+                            target,
+                            attention_backend,
+                            speed_active = effective_speed != SPEED_OFF,
+                            family = fam,
+                        ),
                     )
                     self._raise_if_load_cancelled(_load_token)
                     # Step cache drops compile fullgraph; off/fbcache pin it, auto only on max by FBCACHE_MIN_STEPS.
@@ -15544,6 +15579,9 @@ class DiffusionBackend:
             requested = state.attention_request,
             # the load's own policy: a per-load on / off must not revert to the env switch at the 3rd image
             int8_policy = getattr(state, "int8_policy", None),
+            fallback = explicit_pick_fallback(
+                target, state.attention_request, speed_active = True, family = state.family
+            ),
         )
         object.__setattr__(state, "attention_backend", attention_engaged)
         identity = getattr(state.pipe, "_unsloth_peak_identity", None)
@@ -16590,7 +16628,9 @@ class DiffusionBackend:
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
                     if _hires_pass is not None and _hires_pass.preflight is not None:
                         _hires_pass.preflight(guard_kwargs)
-                    _guard_layer_cards(state.pipe, guard_target, guard_kwargs)
+                    _guard_layer_cards(
+                        state.pipe, guard_target, guard_kwargs, _guard_graph_handles(state)
+                    )
                     tiled_before = bool(getattr(getattr(pipe, "vae", None), "use_tiling", False))
                     restore_vae = _tile_for_verdict(
                         pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger

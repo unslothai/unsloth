@@ -22,6 +22,7 @@ from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
 from ._utils import _ignore_block_swap_params_for_ddp
 from ._frozen_prefix import install_frozen_prefix_skip
+from .fused_label_smoothing import output_head_not_fusable
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
@@ -2320,7 +2321,13 @@ def CausalLM_fast_forward(fast_forward_inference):
                 # unsloth_fused_ce_loss calculates the best chunk size to reduce VRAM usage.
                 RETURN_LOGITS = False
 
-            if not RETURN_LOGITS and labels is not None:
+            # A head bias or a live adapter on the head (the fused CE reads lm_head.weight alone) takes the
+            # logits branch. Checked only with labels, so inference never pays for it.
+            if (
+                not RETURN_LOGITS
+                and labels is not None
+                and not output_head_not_fusable(self.lm_head)
+            ):
                 n_items = kwargs.get("num_items_in_batch", None)
                 if n_items is None:
                     n_items = kwargs.get("n_items", None)
@@ -3354,6 +3361,8 @@ def unsloth_fast_generate(self, *args, **kwargs):
     with _decode_graphs.generate_scope():
         graphs = _decode_graphs.enabled()
         plan, token = "graph", None
+        if graphs and not _decode_graphs.default_covers(self):
+            graphs, plan = False, "eager"
         if graphs:
             plan_len = _generation_plan_len(self, args, kwargs)
             try:
@@ -3960,6 +3969,8 @@ class FastLlamaModel:
         **kwargs,
     ):
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
+        # loader.py sends full finetuning to FastModel, so this load is always LoRA. Say so, or load-time readers (packed experts, MXFP4, expert quantization) inherit an earlier full finetuning load's "1".
+        os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
         if trust_remote_code:
             if fast_inference:
                 raise NotImplementedError(
@@ -5156,7 +5167,7 @@ class FastLlamaModel:
                 prefetch_depth = prefetch_depth,
                 **kwargs,
             )
-        if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
+        if _is_full_finetuning(model):
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache.
             _unsloth_install_pretrain_detector(model)

@@ -365,6 +365,7 @@ import {
 } from "./api";
 import { GenerationQueuePanel } from "./generation-queue-panel";
 import { collectGalleryWindow } from "./lib/gallery-window";
+import { promptBoundaryIds } from "./lib/prompt-boundaries";
 import { pickReleased, queueBusy, queuedJobs, runningJob } from "./lib/generation-queue";
 import { useImageQueue } from "./use-image-queue";
 import {
@@ -1722,6 +1723,7 @@ const GalleryStripTile = memo(function GalleryStripTile({
   favorite,
   dragging,
   cueEdge,
+  promptBoundary,
   actions,
 }: {
   image: GalleryImage;
@@ -1732,6 +1734,7 @@ const GalleryStripTile = memo(function GalleryStripTile({
   favorite: boolean;
   dragging: boolean;
   cueEdge: StripDropCue["edge"] | null;
+  promptBoundary: boolean;
   actions: StripTileActionsBox;
 }) {
   const id = image.id;
@@ -1752,6 +1755,9 @@ const GalleryStripTile = memo(function GalleryStripTile({
       }}
       className={cn("group relative size-16 shrink-0", dragging && "opacity-40")}
     >
+      {promptBoundary && (
+        <span data-prompt-boundary aria-hidden="true" className="pointer-events-none absolute -left-1 top-2 bottom-2 w-px bg-border" />
+      )}
       {cueEdge && <StripDropLine edge={cueEdge} />}
       <button
         type="button"
@@ -2170,6 +2176,7 @@ export function ImagesPage({
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [aspectOpen, setAspectOpen] = useState(false);
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
+  const promptBoundaries = useMemo(() => promptBoundaryIds(images), [images]);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
   // A pick made during a run takes the stage from the live preview and is not replaced by finished runs.
@@ -8001,6 +8008,7 @@ export function ImagesPage({
                   favorite={isFavorite(`image:${image.id}`)}
                   dragging={stripReorder.draggingId === image.id}
                   cueEdge={stripReorder.cue?.id === image.id ? stripReorder.cue.edge : null}
+                  promptBoundary={promptBoundaries.has(image.id)}
                   actions={stripTileActions}
                 />
               ))}

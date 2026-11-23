@@ -72,6 +72,17 @@ def test_allow_oversized_request_still_releases_when_short():
     assert dm.graph_release_fits(_kwargs(7_600, allow_oversized = True), lambda: held) == held
 
 
+@pytest.mark.parametrize("value", ["1", "true"])
+def test_env_oversized_override_releases_like_the_request_flag(monkeypatch, value):
+    """UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE must not skip a release the per-request flag performs."""
+    monkeypatch.setenv(dm.OVERSIZED_GENERATE_ENV, value)
+    held = int(3.3 * GIB)
+    assert dm.image_activation_verdict(**_kwargs(7_600)).overridden
+    assert dm.graph_release_fits(_kwargs(7_600), lambda: held) == held
+    assert dm.graph_release_fits(_kwargs(7_600, allow_oversized = True), lambda: held) == held
+    assert dm.graph_release_fits(_kwargs(7_600), lambda: 64 * MP) == 0
+
+
 @pytest.mark.parametrize("held", [0, -5, 64 * MP])
 def test_no_release_when_held_pool_cannot_make_it_fit(held):
     assert dm.graph_release_fits(_kwargs(7_600), lambda: held) == 0
@@ -116,7 +127,12 @@ class _Harness:
         self.resets = []
         self.rebuilds = 0
         monkeypatch.setattr(diff.cuda_graph, "reset_all", lambda h: self.resets.append(tuple(h)))
-        monkeypatch.setattr(diff, "cuda_graph_held_bytes", lambda: held)
+        self.reads = []
+        monkeypatch.setattr(
+            diff.cuda_graph,
+            "releasable_pool_bytes",
+            lambda h, device = None: self.reads.append((tuple(h), device)) or held,
+        )
         self.state = types.SimpleNamespace(
             cuda_graphs = tuple(handles),
             pipe = types.SimpleNamespace(_unsloth_cuda_graphs = tuple(handles)),
@@ -139,6 +155,7 @@ def test_guard_drops_graphs_then_rereads(monkeypatch):
     assert h.run(_kwargs(7_600)) == {"rebuilt": True}
     assert h.resets == [("g",)]  # one handle, deduplicated across state and pipe
     assert h.rebuilds == 1
+    assert [r[0] for r in h.reads] == [("g",)]  # only this pipeline's handles are credited
 
 
 def test_guard_keeps_graphs_when_request_fits(monkeypatch):
@@ -190,3 +207,95 @@ def test_generate_guard_releases_before_the_check():
     check = src.index("verdict = raise_on_image_activation_shortfall(**guard_kwargs)")
     assert call < check
     assert src.count("_release_graphs_for_guard(") == 2  # the definition and the generate call
+
+
+class _Wrapper:
+    def __init__(self, token):
+        self.cache = {"k": types.SimpleNamespace(pool_token = token)}
+
+
+def _segments(monkeypatch, cg, segs):
+    monkeypatch.setattr(cg, "_allocator_segments", lambda: segs)
+
+
+def test_releasable_bytes_skip_a_pool_another_resident_still_records_into(monkeypatch):
+    """The whole-step pool is process-wide: dropping only the image graphs frees nothing while a co-resident video
+    pipeline's graphs still record into it, so that pool is not credited (it used to be, and the image graphs were
+    dropped for no gain)."""
+    import weakref
+
+    from core.inference import diffusion_cuda_graph as cg
+
+    image, video = _Wrapper((7, 1)), _Wrapper((7, 1))
+    live = weakref.WeakSet([image, video])
+    monkeypatch.setattr(cg, "_LIVE_WRAPPERS", live)
+    seg = {"device": 1, "segment_pool_id": (7, 1), "total_size": 4 * GIB, "allocated_size": GIB}
+    _segments(monkeypatch, cg, [seg, {**seg, "device": 0}])
+    assert cg.releasable_pool_bytes((image,), 1) == 0
+    live.discard(video)
+    assert cg.releasable_pool_bytes((image,), 1) == 3 * GIB
+    # Read on the named card only: the same pool's segment on cuda:0 is not this card's memory.
+    assert cg.releasable_pool_bytes((image,), 0) == 3 * GIB
+    _segments(monkeypatch, cg, [seg])
+    assert cg.releasable_pool_bytes((image,), 0) == 0
+    assert cg.releasable_pool_bytes((), 1) == 0
+
+
+def test_releasable_bytes_ignore_a_recording_on_another_card(monkeypatch):
+    """Graph pools are per device: a video pipeline's recording on cuda:1 does not keep the image pool on cuda:0."""
+    import weakref
+
+    from core.inference import diffusion_cuda_graph as cg
+
+    image, video = _Wrapper((7, 1)), _Wrapper((7, 1))
+    image._unsloth_capture_device, video._unsloth_capture_device = 0, 1
+    monkeypatch.setattr(cg, "_LIVE_WRAPPERS", weakref.WeakSet([image, video]))
+    _segments(
+        monkeypatch,
+        cg,
+        [{"device": 0, "segment_pool_id": (7, 1), "total_size": 4 * GIB, "allocated_size": GIB}],
+    )
+    assert cg.releasable_pool_bytes((image,), 0) == 3 * GIB
+    video._unsloth_capture_device = 0
+    assert cg.releasable_pool_bytes((image,), 0) == 0
+
+
+def test_releasable_bytes_count_only_the_handles_own_block_pools(monkeypatch):
+    import weakref
+
+    from core.inference import diffusion_block_graph as bg
+    from core.inference import diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(cg, "_LIVE_WRAPPERS", weakref.WeakSet())
+    monkeypatch.setattr(bg, "_LIVE", weakref.WeakSet())
+    mine, card1, other = bg._Shared(0), bg._Shared(1), bg._Shared(1)
+    mine.pool_bytes, card1.pool_bytes, other.pool_bytes = GIB, 2 * GIB, 5 * GIB
+    handle = types.SimpleNamespace(_all_shared = lambda: [mine, card1])
+    assert cg.releasable_pool_bytes((handle,), 0) == GIB
+    assert cg.releasable_pool_bytes((handle,), 1) == 2 * GIB
+    assert bg.pool_bytes(1) == 7 * GIB  # the process-wide reading the guard used to credit
+
+
+def test_releasable_bytes_include_a_whole_step_graphs_block_fallback(monkeypatch):
+    """A whole-step graph that fell back to per-block graphs keeps them on fallback_handle; reset() frees them."""
+    import weakref
+
+    from core.inference import diffusion_block_graph as bg
+    from core.inference import diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(cg, "_LIVE_WRAPPERS", weakref.WeakSet())
+    monkeypatch.setattr(bg, "_LIVE", weakref.WeakSet())
+    blocks = bg._Shared(0)
+    blocks.pool_bytes = 2 * GIB
+    fallback = types.SimpleNamespace(_all_shared = lambda: [blocks])
+    outer = types.SimpleNamespace(fallback_handle = fallback)
+    assert cg.releasable_pool_bytes((outer,), 0) == 2 * GIB
+    assert cg.releasable_pool_bytes((types.SimpleNamespace(fallback_handle = None),), 0) == 0
+
+
+def test_guard_reads_the_pipelines_own_card(monkeypatch):
+    monkeypatch.delenv(dm.GUARD_RELEASE_GRAPHS_ENV, raising = False)
+    h = _Harness(monkeypatch)
+    h.state.device = "cuda:1"
+    h.run(_kwargs(7_600))
+    assert h.reads == [(("g",), 1)]

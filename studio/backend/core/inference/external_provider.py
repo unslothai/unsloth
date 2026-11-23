@@ -1902,10 +1902,12 @@ class ExternalProviderClient:
             if self.provider_type == "vllm"
             else messages,
             "stream": stream,
-            "temperature": temperature,
             "presence_penalty": presence_penalty,
             **_continue_body,
         }
+        # Omitted, not null: some OpenAI-compatible servers reject a null temperature.
+        if temperature is not None:
+            body["temperature"] = temperature
         if top_p is not None:
             body["top_p"] = top_p
         # Only alongside stream=True: the field is rejected on a non-streaming request.

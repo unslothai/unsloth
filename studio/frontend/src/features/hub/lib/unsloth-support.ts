@@ -134,14 +134,18 @@ const VLLM_QUANT_METHODS: ReadonlySet<string> = new Set([
   "awq",
   "gptq",
   "auto-round",
+  "fbgemm_fp8",
 ]);
-// Not offered on ROCm vLLM, matching /validate: AutoRound is unmeasured there.
-const VLLM_ROCM_REFUSED_QUANT_METHODS: ReadonlySet<string> = new Set(["auto-round"]);
+const VLLM_ROCM_REFUSED_QUANT_METHODS: ReadonlySet<string> = new Set([
+  "auto-round",
+  "fbgemm_fp8",
+]);
 // vllm-metal loads AWQ only (mlx-lm repack).
 const VLLM_METAL_REFUSED_QUANT_METHODS: ReadonlySet<string> = new Set([
   "compressed-tensors",
   "gptq",
   "auto-round",
+  "fbgemm_fp8",
 ]);
 const VLLM_FORMAT_KEYS: ReadonlySet<string> = new Set(["awq", "gptq"]);
 // Chat only: vLLM refuses audio (_reject_unsupported_managed_kind); untagged repos count as chat.

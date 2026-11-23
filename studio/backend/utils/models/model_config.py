@@ -2517,6 +2517,7 @@ from utils.models.drafters import (  # noqa: E402
     _drafter_total_size,
     detect_dflash_file,
     dspark_precision_rank,
+    dspark_preferred_first,
     is_published_drafter_filename,
 )
 from utils.models.drafters import (  # noqa: E402
@@ -2525,7 +2526,7 @@ from utils.models.drafters import (  # noqa: E402
 from utils.paths.path_utils import is_appledouble_metadata
 
 
-def dspark_preference_key(name: str) -> Tuple[int, str]:
+def dspark_preference_key(name: str) -> Tuple[int, int, str]:
     """Delegates instead of re-exporting: repointing routes/inference.py's import trips the lint rule."""
     return _drafters_dspark_preference_key(name)
 
@@ -2658,9 +2659,10 @@ def detect_dspark_file(
 ) -> Optional[str]:
     """Requires a published drafter name even in dspark/, so a parked weight never loads as --model-draft."""
 
-    def _rank(candidate: Path) -> tuple[int, int, int, str]:
-        # Most specific family, then precision, then total size, then name.
+    def _rank(candidate: Path) -> tuple[int, int, int, int, str]:
+        # A model's preferred published drafter, then most specific family, then precision, then total size, then name.
         return (
+            dspark_preferred_first(candidate.name),
             _drafter_stem_rank(candidate.name, kind = "dspark"),
             dspark_precision_rank(candidate.name),
             _drafter_total_size(candidate),

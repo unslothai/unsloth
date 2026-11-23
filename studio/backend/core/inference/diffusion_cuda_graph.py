@@ -1060,6 +1060,61 @@ def live_pool_free_bytes() -> int:
         return live_pool_bytes()
 
 
+def releasable_pool_bytes(handles: Any, device: Optional[int] = None) -> int:
+    """Unused graph-pool bytes on ``device`` (the current card when None) that ``reset_all(handles)`` hands back: the
+    whole-step pools only these handles record into (another live wrapper, such as a co-resident video pipeline's,
+    keeps a shared pool alive) and the block-graph pools these handles own. 0 when unreadable."""
+    handles = tuple(handles or ())
+    # reset() also frees a whole-step graph's per-block fallback, so its block pools count too
+    nested = []
+    pending = list(handles)
+    while pending:
+        h = pending.pop()
+        if h is None or any(h is seen for seen in nested):
+            continue
+        nested.append(h)
+        pending.append(getattr(h, "fallback_handle", None))
+    handles = tuple(nested)
+    own = {id(h) for h in handles}
+    try:
+        if device is None:
+            device = int(_torch().cuda.current_device())
+    except Exception:  # noqa: BLE001 - unknown: release nothing
+        return 0
+    mine: set = set()
+    others: set = set()
+    for w in tuple(_LIVE_WRAPPERS):
+        if id(w) not in own and getattr(w, "_unsloth_capture_device", device) not in (None, device):
+            continue  # graph pools are per device: a recording on another card keeps nothing here alive
+        tokens = {
+            tuple(entry.pool_token)
+            for entry in tuple(w.cache.values())
+            if getattr(entry, "pool_token", None) is not None
+        }
+        (mine if id(w) in own else others).update(tokens)
+    pools = mine - others
+    shared = {
+        id(state)
+        for h in handles
+        if callable(getattr(h, "_all_shared", None))
+        for state in h._all_shared()
+    }
+    try:
+        free = 0
+        if pools:
+            for seg in _allocator_segments():
+                if seg.get("device", device) != device:
+                    continue
+                if tuple(seg.get("segment_pool_id") or ()) in pools:
+                    free += int(seg.get("total_size", 0)) - int(seg.get("allocated_size", 0))
+        if shared:
+            from .diffusion_block_graph import pool_bytes
+            free += int(pool_bytes(device, only = shared))
+        return max(0, free)
+    except Exception:  # noqa: BLE001 - unknown: release nothing
+        return 0
+
+
 def _warn(logger: Any, what: str, exc: Any) -> None:
     if logger is not None:
         logger.warning("diffusion.cuda_graph: %s failed: %s", what, exc)

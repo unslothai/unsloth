@@ -43,7 +43,11 @@ import {
   translatePromptModel,
 } from "./models";
 import { quantOnDisk } from "./quant-on-disk";
-import { parseSubtitles, translateSubtitles } from "./translate-subtitles";
+import {
+  parseSubtitles,
+  translateSubtitles,
+  translateTextList,
+} from "./translate-subtitles";
 import {
   type TranslatePromptOptions,
   restoreChunkWhitespace,
@@ -357,10 +361,16 @@ async function baseRequest(
   };
 }
 
-export async function runTranslation(
-  options: TranslateRunOptions,
-): Promise<{ output: string; model: string }> {
-  const { text, prompt, modelId, signal, onPhase, onOutput } = options;
+type TranslateSetup = Omit<TranslateRunOptions, "text" | "onOutput">;
+
+async function prepareTranslation(options: TranslateSetup): Promise<{
+  complete: (
+    source: string,
+    onText?: (text: string) => void,
+  ) => Promise<string>;
+  model: string;
+}> {
+  const { prompt, modelId, signal, onPhase } = options;
   onPhase({ kind: "preparing" });
   const dedicated = dedicatedTranslateModel(modelId);
   const custom = modelId === CUSTOM_TRANSLATE_MODEL ? options.custom : null;
@@ -412,7 +422,17 @@ export async function runTranslation(
       throw new TranslateRunError("filtered");
     return stripLeadingReasoning(raw);
   };
+  return {
+    complete,
+    model: dedicated?.label ?? custom?.name ?? translateModelName(requestModel),
+  };
+}
 
+export async function runTranslation(
+  options: TranslateRunOptions,
+): Promise<{ output: string; model: string }> {
+  const { text, signal, onPhase, onOutput } = options;
+  const { complete, model } = await prepareTranslation(options);
   const subtitles = parseSubtitles(text);
   let output = "";
   if (subtitles) {
@@ -441,8 +461,16 @@ export async function runTranslation(
       onOutput(output);
     }
   }
-  return {
-    output,
-    model: dedicated?.label ?? custom?.name ?? translateModelName(requestModel),
-  };
+  return { output, model };
+}
+
+/** Each text translated on its own, in numbered batches like subtitle cues. */
+export async function runTextListTranslation(
+  options: TranslateSetup & { texts: readonly string[] },
+): Promise<string[]> {
+  const { complete } = await prepareTranslation(options);
+  return translateTextList(options.texts, complete, {
+    signal: options.signal,
+    onPhase: options.onPhase,
+  });
 }

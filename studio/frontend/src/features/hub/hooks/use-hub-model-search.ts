@@ -158,12 +158,15 @@ function makeHfFetch(signal?: AbortSignal): typeof fetch {
     );
 }
 
+// `firstPageLimit` caps only the first request; an SDK `limit` would end the listing instead.
 function makeSortFetch(
   sortBy: HfSortKey | undefined,
   direction: HfSortDirection,
   signal?: AbortSignal,
   parameterFilter = "",
+  firstPageLimit?: number,
 ): typeof fetch {
+  let pageLimit: string | null = null;
   return (input, init) => {
     const rawUrl =
       typeof input === "string"
@@ -174,6 +177,17 @@ function makeSortFetch(
     const url = new URL(rawUrl);
     if (parameterFilter)
       url.searchParams.set("num_parameters", parameterFilter);
+    if (firstPageLimit) {
+      if (!url.searchParams.has("cursor")) {
+        pageLimit = url.searchParams.get("limit");
+        if (!pageLimit || Number(pageLimit) > firstPageLimit) {
+          url.searchParams.set("limit", String(firstPageLimit));
+        }
+      } else if (pageLimit) {
+        // The Hub's next link repeats the first page's limit.
+        url.searchParams.set("limit", pageLimit);
+      }
+    }
 
     if (sortBy && !url.searchParams.has("sort")) {
       url.searchParams.set("sort", hubListingSort(sortBy));
@@ -395,7 +409,13 @@ async function* mergedModelIterator(
           listModels({
             hubUrl: getHfEndpoint(),
             search: { query, ...(task ? { task } : {}) },
-            fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
+            fetch: makeSortFetch(
+              sortBy,
+              direction,
+              taskSignal,
+              parameterFilter,
+              MAX_RAW_ITEMS_PER_BATCH,
+            ),
             ...common,
           }) as AsyncGenerator<unknown>,
         generalSignal,
@@ -631,7 +651,13 @@ async function* providerUnslothFirstIterator(
       hubUrl: getHfEndpoint(),
       search,
       additionalFields: ALL_FIELDS,
-      fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal, opts.parameterFilter),
+      fetch: makeSortFetch(
+        opts.sortBy,
+        opts.sortDirection,
+        opts.signal,
+        opts.parameterFilter,
+        PROVIDER_POOL,
+      ),
       sort: hubListingSort(opts.sortBy),
       ...(opts.accessToken ? { credentials: { accessToken: opts.accessToken } } : {}),
     }) as AsyncGenerator<unknown>;
@@ -806,6 +832,7 @@ function createChannelIterator(
       opts.sortDirection,
       opts.signal,
       opts.parameterFilter,
+      opts.limit ? undefined : MAX_RAW_ITEMS_PER_BATCH,
     ),
     sort: hubListingSort(opts.sortBy),
     ...(opts.limit ? { limit: opts.limit } : {}),
@@ -1176,7 +1203,13 @@ export function useHubModelSearch(
           hubUrl: getHfEndpoint(),
           search: { query: searchQuery, owner: "unsloth" },
           additionalFields: ALL_FIELDS,
-          fetch: makeSortFetch(sortBy, sortDirection, signal, filterRange),
+          fetch: makeSortFetch(
+            sortBy,
+            sortDirection,
+            signal,
+            filterRange,
+            MAX_RAW_ITEMS_PER_BATCH,
+          ),
           sort: hubListingSort(sortBy),
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;

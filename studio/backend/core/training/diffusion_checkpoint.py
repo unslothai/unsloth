@@ -1849,7 +1849,25 @@ class LoadedCheckpoint:
         path = self._file(role)
         if path is None:
             return None
+        _refuse_pickle_on_old_torch(torch, path)
         return torch.load(str(path), map_location = "cpu", weights_only = True)
+
+
+def _refuse_pickle_on_old_torch(torch: Any, path: Path) -> None:
+    """Same rule as unsloth/import_fixes.py::refuse_pickle_checkpoint_on_old_torch (diffusion never
+    imports unsloth): torch < 2.6 runs code hidden in a .pt even with weights_only = True
+    (CVE-2025-32434), so a resume bundle is refused there instead of loaded."""
+    try:
+        from packaging.version import Version
+        old = Version(str(torch.__version__).split("+")[0]).release[:2] < (2, 6)
+    except Exception:  # noqa: BLE001 -- an unparsable version is a newer build, not an old one
+        return
+    if old:
+        raise ResumeError(
+            f"'{path.name}' is a pickled state file and torch {torch.__version__} can execute code "
+            "hidden in it even with weights_only = True (CVE-2025-32434). Upgrade to torch >= 2.6 "
+            "to resume this run."
+        )
 
 
 def load_checkpoint(path: str | os.PathLike[str]) -> LoadedCheckpoint:

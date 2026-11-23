@@ -1391,7 +1391,8 @@ def graph_release_fits(verdict_kwargs: dict, held: Callable[[], int]) -> int:
     card = verdict_kwargs.get("device_memory")
     if card is None or getattr(card, "free_mib", None) is None:
         return 0
-    plain = {**verdict_kwargs, "allow_oversized": False}
+    # Both overrides off: the env one must release graphs exactly like the per-request one.
+    plain = {**verdict_kwargs, "allow_oversized": False, "env_override": False}
     if image_activation_verdict(**plain).action != ACTIVATION_REFUSE:
         return 0
     held_bytes = int(held() or 0)
@@ -9899,14 +9900,16 @@ def image_activation_verdict(
     measured_activation: Optional["CalibratedImageActivation"] = None,
     persistent_mib: int = 0,
     conditioned_denoise_mib: Optional[int] = None,
+    env_override: bool = True,
 ) -> ImageActivationVerdict:
     """Activations cannot be offloaded, so tile the VAE decode or refuse; refuse here, not in torch, since Windows WDDM spills silently; fail open when unknown.
     ``measured_activation``: the measured row a calibrated placement was sized from; it prices the tiled VAE decode.
     ``persistent_mib``: memory the denoise holds on top of its activations for the whole loop, whatever the decode
     does (``reference_kv_cache_mib``); added to the untiled and the tiled need alike, since tiling cannot shrink it.
     ``conditioned_denoise_mib``: the token-priced denoise of a request with input images (``flux3_conditioned_denoise_mib``);
-    it caps the tiled estimate's flat denoise term and is ignored without input images, so text-to-image is unchanged."""
-    override = bool(allow_oversized) or _oversized_generate_override()
+    it caps the tiled estimate's flat denoise term and is ignored without input images, so text-to-image is unchanged.
+    ``env_override``: False ignores ``UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE`` too (the un-overridden verdict)."""
+    override = bool(allow_oversized) or (env_override and _oversized_generate_override())
     try:
         # Unified memory skips the check: 'free' moves with the OS, and load-time refusal already owns it.
         if getattr(device_memory, "is_unified", False):

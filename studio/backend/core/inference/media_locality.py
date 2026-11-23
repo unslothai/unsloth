@@ -367,7 +367,7 @@ def _cached_snapshot_root(repo_id: str, revision: str = "") -> Optional[Path]:
             return pinned
         try:
             ref = (repo_dir / "refs" / candidate).read_text(encoding = "utf-8").strip()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
         resolved = snapshots / ref if ref else None
         if resolved is not None and resolved.is_dir():

@@ -5705,7 +5705,7 @@ class FastBaseModel:
         # PEFT < 0.21 drops a scalar layer 0 with layers_pattern.
         if isinstance(layers_to_transform, int) and not isinstance(layers_to_transform, bool):
             layers_to_transform = [layers_to_transform]
-        if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
+        if _is_full_finetuning(model):
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
             _unsloth_install_pretrain_detector(model)
@@ -6255,7 +6255,7 @@ class FastBaseModel:
         from ..import_fixes import fix_transformers_voxtral_realtime_inplace_audio_add
 
         fix_transformers_voxtral_realtime_inplace_audio_add()
-        full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
+        full_finetuning = _is_full_finetuning(model)
 
         if type(float32_mixed_precision) is bool:
             pass
