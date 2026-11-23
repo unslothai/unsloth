@@ -126,8 +126,8 @@ test("glass strength repairs malformed persisted data", () => {
 	assert.equal(sanitizeStrength(-4), 0);
 	assert.equal(sanitizeStrength(240), 100);
 	assert.equal(sanitizeStrength(33.6), 34);
-	assert.deepEqual(sanitizeStrengths(50), { light: 40, dark: 15 });
-	assert.deepEqual(sanitizeStrengths({ light: 70, dark: "x" }), { light: 70, dark: 15 });
+	assert.deepEqual(sanitizeStrengths(50), { light: 25, dark: 25 });
+	assert.deepEqual(sanitizeStrengths({ light: 70, dark: "x" }), { light: 70, dark: 25 });
 });
 
 test("composer outline off also drops the glass ring and bevel", () => {
@@ -685,24 +685,28 @@ test("glass strength scales the blur and the fill of every glass surface, with n
 
 test("every glass surface keeps a readable blur floor at any strength, lens copy included", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\] \{\n  --glass-tint: var\(--glass-tint-base\);\n  --glass-on: min\(1, var\(--glass-strength, 1\) \* 100\);\n  --glass-read-blur: calc\(12px \* var\(--glass-on\)\);\n  --glass-blur: calc\(max\(var\(--glass-read-blur\), var\(--glass-blur-base\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
+	assert.match(css, /html\[data-glass\] \{\n  --glass-tint: var\(--glass-tint-base\);\n  --glass-on: min\(1, var\(--glass-level, \.5\) \* 4\);\n  --glass-rise: max\(0, \(var\(--glass-level, \.5\) - \.25\) \/ \.75\);\n  --glass-read-blur: calc\(12px \* var\(--glass-on\)\);\n  --glass-blur: calc\(var\(--glass-read-blur\) \+ var\(--glass-rise\) \* max\(0px, 2 \* var\(--glass-blur-base\) - 12px\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
 	// The open chat's composer redefines --glass-blur, so it carries the floor too.
-	assert.match(css, /--glass-blur: calc\(max\(var\(--glass-read-blur\), \(var\(--glass-blur-base\) \+ 5px\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
+	assert.match(css, /--glass-blur: calc\(var\(--glass-read-blur\) \+ var\(--glass-rise\) \* max\(0px, 2 \* \(var\(--glass-blur-base\) \+ 5px\) - 12px\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
 	// Every other --glass-blur definition goes through the floor.
 	for (const [, value] of css.matchAll(/--glass-blur: ([^;]+);/g)) assert.match(value, /var\(--glass-read-blur\)/, value);
 	// The lens copy blurs with the same variable.
 	assert.match(css, /\.glass-lens-fill \.glass-lens-copy \{\n  filter: blur\(var\(--glass-blur, 12px\)\)/);
 });
 
-// Evaluates a glass blur() argument from index.css at a given --glass-strength (Liquid Glass base 10px, no repaint nudge).
-function glassBlurPx(expr: string, strength: number): number {
-	const on = Math.min(1, strength * 100);
+// Evaluates a glass blur() argument from index.css at a slider value (Liquid Glass base 10px, no repaint nudge).
+function glassBlurPx(expr: string, slider: number): number {
+	const level = slider / 100;
+	const strength = glassStrengthVars(slider).blur;
+	const on = Math.min(1, level * 4);
+	const rise = Math.max(0, (level - 0.25) / 0.75);
 	const read = 12 * on;
 	const js = expr
 		.replaceAll("var(--glass-on)", String(on))
+		.replaceAll("var(--glass-rise)", String(rise))
 		.replaceAll("var(--glass-strength, 1)", String(strength))
 		.replaceAll("var(--glass-read-blur)", `${read}px`)
-		.replaceAll("var(--glass-blur)", `max(${read}px, 10px * ${strength})`)
+		.replaceAll("var(--glass-blur)", `(${read}px + ${rise} * max(0px, 2 * 10px - 12px))`)
 		.replaceAll("var(--glass-blur-base)", "10px")
 		.replaceAll("var(--glass-repaint, 0)", "0")
 		.replaceAll("calc(", "(")
@@ -713,22 +717,30 @@ function glassBlurPx(expr: string, strength: number): number {
 	return Function(`return ${js}`)() as number;
 }
 
-test("glass strength 0% is clear on every surface, and 1% keeps the 12px read floor", () => {
+test("glass strength 0% is clear on every surface, fades in to the 12px read floor by 25%, and keeps rising", () => {
 	assert.deepEqual(glassStrengthVars(0), { blur: 0, opacity: 0.35 });
 	assert.ok(glassStrengthVars(1).blur > 0);
 	assert.equal(glassStrengthVars(50).blur, 1);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /--glass-on: min\(1, var\(--glass-strength, 1\) \* 100\);\n  --glass-read-blur: calc\(12px \* var\(--glass-on\)\);/);
-	assert.match(css, /--glass-blur: calc\(max\(var\(--glass-read-blur\), var\(--glass-blur-base\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
+	assert.match(css, /--glass-on: min\(1, var\(--glass-level, \.5\) \* 4\);/);
+	assert.match(css, /--glass-read-blur: calc\(12px \* var\(--glass-on\)\);/);
+	const material = readFileSync(new URL("../src/features/chat-background/material.ts", import.meta.url), "utf8");
+	assert.match(material, /root\.style\.setProperty\("--glass-level", \(strength \/ 100\)\.toFixed\(2\)\);/);
+	assert.match(material, /root\.style\.removeProperty\("--glass-level"\);/);
 	const blurs = [...css.matchAll(/(?<!-webkit-)backdrop-filter: blur\(((?:[^()]|\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))*)\)/g)]
 		.map((m) => m[1])
 		.filter((arg) => arg.includes("var(--glass-"));
 	assert.ok(blurs.length >= 10, `only ${blurs.length} glass blurs found`);
-	const at1 = glassStrengthVars(1).blur;
 	for (const arg of blurs) {
 		assert.equal(glassBlurPx(arg, 0), 0, `not clear at 0%: blur(${arg})`);
-		assert.ok(glassBlurPx(arg, at1) >= 12, `under the read floor at 1%: blur(${arg})`);
+		assert.ok(glassBlurPx(arg, 25) >= 12, `under the read floor at 25%: blur(${arg})`);
+		// No jump out of 0%: 1% is a small step, not the whole floor.
+		assert.ok(glassBlurPx(arg, 1) <= 1, `jumps at 1%: blur(${arg}) = ${glassBlurPx(arg, 1)}`);
 	}
+	// The shared blur never sits flat: each 5% step moves it.
+	const shared = /html\[data-glass\] \{[^}]*--glass-blur: calc\(([^;]+)\);/.exec(css)?.[1] ?? "";
+	for (let slider = 5; slider <= 100; slider += 5)
+		assert.ok(glassBlurPx(`calc(${shared})`, slider) > glassBlurPx(`calc(${shared})`, slider - 5), `flat at ${slider}%`);
 });
 
 test("at glass strength 0% the lens stays on the composer only, as on main", () => {
