@@ -197,3 +197,28 @@ def test_tfevents_directories_are_skipped(hub, tmp_path, monkeypatch):
     )
 
     assert _tfevents(hub) == ["events.out.tfevents.real"]
+
+
+def test_hidden_tfevents_and_unreadable_dir(hub, tmp_path, monkeypatch):
+    export = tmp_path / "export"
+    export.mkdir()
+    weights = export / "model.gguf"
+    weights.write_bytes(b"GGUF")
+    (export / ".events.out.tfevents.hidden").write_bytes(b"x")
+    (export / "events.out.tfevents.8.host").write_bytes(b"x")
+    monkeypatch.chdir(tmp_path)
+
+    def denied(*a, **kw):
+        raise PermissionError("denied")
+
+    save_mod.upload_to_huggingface(
+        _model(), "owner/repo", "token", "finetuned", file_location = str(weights)
+    )
+    assert _tfevents(hub) == ["events.out.tfevents.8.host"]
+
+    hub.uploads.clear()
+    monkeypatch.setattr(os, "scandir", denied)
+    save_mod.upload_to_huggingface(
+        _model(), "owner/repo", "token", "finetuned", file_location = str(weights)
+    )
+    assert (str(weights), "model.gguf") in hub.uploads

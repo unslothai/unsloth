@@ -3596,14 +3596,14 @@ def upload_to_huggingface(
 
         uploaded_location = os.path.basename(file_location)
 
-        import fnmatch
+        import glob
 
         # Only the export file's own folder, never the whole CWD tree.
         tfevents_dir = os.path.dirname(file_location) or "."
         ftevent_files = sorted(
-            entry.path
-            for entry in os.scandir(tfevents_dir)
-            if entry.is_file() and fnmatch.fnmatch(entry.name, "*out.tfevents*")
+            path
+            for path in glob.glob(os.path.join(glob.escape(tfevents_dir), "*out.tfevents*"))
+            if os.path.isfile(path)
         )
         if len(ftevent_files) > 0:
             print(
