@@ -1049,7 +1049,10 @@ def _resolve_intmm() -> Any:
             module = importlib.import_module(name)
         except ImportError:
             continue
-        if callable(getattr(module, "safe_int_mm", None)):
+        fn = getattr(module, "safe_int_mm", None)
+        if callable(fn) and not isinstance(
+            fn, type
+        ):  # a torchao stub's sentinel class is not the kernel
             return module
     return None
 

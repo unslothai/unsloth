@@ -7,6 +7,7 @@ files return None so the caller falls back to dense quantise"""
 from __future__ import annotations
 
 import contextvars
+import os
 import functools
 import re as _re
 import threading as _threading
@@ -971,21 +972,11 @@ def resolve_prequant_source(
     base_repo: Optional[str] = None,
     task: Optional[str] = None,
 ) -> Optional[PrequantSource]:
-    """Resolve where the checkpoint for ``(fam, scheme)`` comes from.
+    """Resolve where the checkpoint for ``(fam, scheme)`` comes from: ``path_override``, else the
+    hosted repo (variant-specific per ``base_repo``), else None (quantise dense).
 
-    Priority: an explicit local ``path_override``; then the family's hosted repo for ``scheme``
-    (variant-specific when ``base_repo`` names a base with its own baked checkpoint); then None,
-    meaning no pre-quant and the caller quantises dense. No torch; the only IO is the memoised local cache lookup
-    (safetensors headers), reached only when nothing is hosted.
-
-    ``task`` names the workflow / denoiser PARTITION the load is bringing up, for the families that
-    host more than one under a single repo and scheme (MiniMax-H3's keyframe and reference
-    denoisers). It only ever selects a more specific filename: unset, or set to a task the family
-    declares nothing for, resolves exactly what it resolved before.
-
-    Both names are repo-ROOT names. Every hosted prequant repo, image and video alike, keeps its
-    checkpoints at the root, so there is no directory to prepend; a repo that nested them would 404
-    on the primary AND on the fallback and the load would silently fall back to dense.
+    ``task`` only selects a more specific filename (MiniMax-H3 partitions); unset resolves as before.
+    Names are repo-ROOT: a nested checkpoint would 404 on both names and silently go dense.
     """
     if nvfp4_blocked(scheme):
         return None
@@ -1076,13 +1067,14 @@ def resolve_prequant_source(
             names = with_comfy_twins(names, lead = scheme in COMFY_TWIN_LEADS)
         names = without_nvfp4_pickles(scheme, names)
         if names:
-            return PrequantSource(
+            hosted = PrequantSource(
                 kind = "repo",
                 location = repo_id,
                 filename = names[0],
                 fallback_filenames = tuple(names[1:]),
                 declared_filenames = declared,
             )
+            return _offline_local_build(fam, scheme, base_repo, task, hosted) or hosted
         if not (rotated and convrot_drops_plain_hosted(scheme, fam_name)):
             return None
     # Nothing hosted: try this machine's cache of an earlier build; task names the component (MoE transformer_2).
@@ -1099,6 +1091,46 @@ def resolve_prequant_source(
     if cached and not nvfp4_pickle_name(scheme, cached):
         return PrequantSource(kind = "path", location = cached, filename = None)
     return None
+
+
+# "0": an offline load whose hosted checkpoint is not on disk quantises the dense shards again, as before.
+OFFLINE_LOCAL_BUILD_ENV = "UNSLOTH_DIFFUSION_PREQUANT_CACHE_OFFLINE"
+
+
+def _offline_local_build(
+    fam: Any, scheme: str, base_repo: Optional[str], task: Optional[str], hosted: PrequantSource
+) -> Optional[PrequantSource]:
+    """This machine's cached build when the load is offline and ``hosted`` is not on disk, else None. Never raises.
+
+    Offline, a hosted name that is not cached can never be fetched, so the load would quantise the dense shards at
+    runtime: the cache entry is that same runtime build of the same shards, written by an earlier load."""
+    if (os.environ.get(OFFLINE_LOCAL_BUILD_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return None
+    try:
+        if not (_LOCAL_FILES_ONLY.get() or hub_offline()):
+            return None
+        from .diffusion_prequant_cache import CACHEABLE_SCHEMES, lookup
+
+        if scheme not in CACHEABLE_SCHEMES:
+            return None
+        if cached_checkpoint_path(hosted, online = False) is not None:
+            return None
+        cached = lookup(
+            fam,
+            scheme,
+            base_repo = base_repo,
+            component = task if task in ("transformer_2",) else "transformer",
+        )
+        if not cached or nvfp4_pickle_name(scheme, cached):
+            return None
+        return PrequantSource(kind = "path", location = cached, filename = None)
+    except Exception:  # noqa: BLE001 - a cache problem keeps the hosted source, today's behaviour
+        return None
 
 
 def _is_variant_prequant_repo(fam: Any, repo_id: Optional[str]) -> bool:
@@ -2057,31 +2089,13 @@ def usable_prequant_source(
     cache_dir: Optional[str] = None,
     min_features: Optional[int] = None,
 ) -> Optional[PrequantSource]:
-    """``resolve_prequant_source``, but a local path counts only when the loader would accept it:
-    inside the allowlist AND present on disk AND baked for THIS scheme. Otherwise resolves to None
-    so memory planning falls back to dense-fit checks up front, instead of the loader refusing the
-    path only after the resident pipeline was evicted and dense bf16 materialises under a plan that
-    never budgeted for it (evict-then-OOM). Hosted-repo sources are unaffected.
+    """``resolve_prequant_source``, but a local path counts only if the loader would accept it
+    (allowlisted, on disk, baked for THIS scheme); else None, so planning budgets dense up front
+    instead of evict-then-OOM. An unreadable scheme is unusable (``auto`` must not pick it).
 
-    The scheme check matters most under ``auto``, which picks a scheme the user never named: an int8
-    override must not read as an available fp8 pre-quant just because the file exists. A checkpoint
-    whose scheme cannot be read is treated as not usable, matching every other unknown here, since
-    the loader would reject it too.
-
-    An install that cannot restrict the load has no usable source AT ALL, hosted included: the
-    loader refuses every checkpoint there, and a plan that had already dropped the dense shards for
-    one would find that out after the eviction. That question is asked of the RESOLVED names rather
-    than of the scheme alone, because it has different answers for the two containers: a repo whose
-    primary artifact is safetensors is usable on an install that could not open a pickle at all, and
-    resolving first is what lets the source say so. Any one loadable name is enough, since the
-    resolver tries them in order and the first that exists wins.
-
-    ``local_files_only`` / ``hf_token`` / ``cache_dir`` are the load's own, handed to the hosted header
-    probe so planning asks exactly what the loader will: an offline load makes no Hub request here
-    either, and a gated repo is read with the caller's token. ``base_repo`` doubles as the base the
-    probe checks ``base_model_id`` against, as ``load_prequantized_transformer`` does. ``min_features``
-    defaults to ``DEFAULT_MIN_LINEAR_FEATURES``, the Linear filter every loader of these checkpoints
-    enforces, so a header baked under another filter is refused here rather than after its download.
+    An install that cannot restrict the load has no usable source at all; checked on the RESOLVED
+    names, since a safetensors primary is loadable where a pickle is not. Any loadable name suffices.
+    Load kwargs are passed to the header probe so planning asks exactly what the loader will.
     """
     src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
     if src is None:
@@ -2326,26 +2340,13 @@ def load_prequantized_transformer(
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
 
-    ``into``: an already-built DENSE transformer to load the checkpoint into instead of a fresh ``from_config``
-    skeleton (the pipeline-quant path, whose denoiser came with the pipeline). Its key set must equal the
-    checkpoint's; it stays where its weights already are, and on a refusal before assignment it is left dense.
+    ``into``: a built DENSE transformer whose key set equals the checkpoint's; left dense on refusal.
+    ``family`` picks layers for ComfyUI-format artifacts. ``placement_device`` (default ``device``)
+    is where weights land; ``device`` selects kernels. ``cache_dir`` must be the live Hub cache root.
+    ``prepare_model`` runs between ``from_config`` and ``load_state_dict``. A declared rotation is
+    always installed: a miss renders wrong pixels silently.
 
-    ``family`` (the Studio family name) is what a ComfyUI-format artifact needs to pick the layers Studio's
-    own ``scheme`` quantizes; Studio's own checkpoints record it themselves.
-
-    ``placement_device`` (default ``device``) is where the module is materialised; ``device`` selects kernels.
-
-    ``cache_dir`` is the live Hub cache root, as every other loader call pins it: unset, a fetch
-    lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
-    into a root Unsloth no longer reads.
-
-    ``component`` must match the checkpoint's (MoE experts share every other field); ``prepare_model``
-    runs between ``from_config`` and ``load_state_dict``, the one window to reshape the skeleton. A
-    declared activation rotation is installed unconditionally: a miss renders wrong pixels silently.
-
-    Returns the placed transformer, or None on any problem (missing / mismatched / unreadable
-    checkpoint, unsupported meta-init, or a rotation this build cannot apply exactly) so the caller
-    falls back to dense-quantise. Best-effort: never raises for an unavailable artifact.
+    Returns None on any problem so the caller quantises dense; never raises for a missing artifact.
     """
     _LAST_FAILURE.text = None
     try:

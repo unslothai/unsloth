@@ -240,6 +240,8 @@ class _FrozenFp8MM(torch.autograd.Function):
         if not ctx.needs_input_grad[0]:
             return None, None, None, None, None
         q, s_row = ctx.saved_tensors
+        # _scaled_mm needs a row-major mat1; a transposed upstream op can hand back a column-major grad_y.
+        gy = gy.contiguous()
         # The weight scale sits on the reduction dim of grad_y @ W, so it folds into grad_y; mat2 must be column-major.
         gq, sg = _rowwise_quant(gy.float() * s_row)
         if BACKWARD_WEIGHTS.active and _grad_input_mm is not None:
@@ -273,7 +275,8 @@ class FrozenFp8Linear(nn.Module):
             x = x.to(torch.get_autocast_dtype(x.device.type))
         shape = x.shape
         y = _FrozenFp8MM.apply(
-            x.reshape(-1, shape[-1]),
+            # Row-major for _scaled_mm's mat1; the codes keep the input's layout.
+            x.reshape(-1, shape[-1]).contiguous(),
             self.weight,
             self.weight_scale,
             x.dtype,

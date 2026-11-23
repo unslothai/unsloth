@@ -81,6 +81,7 @@ from .models._utils import (
     lora_relative_to_original_base,
 )
 from .models.mistral_format import raise_if_merging_mistral_format_view
+from .models.inkling2 import raise_if_merging_inkling2
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from .device_type import clean_gpu_cache
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
@@ -1707,6 +1708,7 @@ def unsloth_save_model(
     _collect_garbage(before = clean_gpu_cache)
 
     raise_if_merging_mistral_format_view(model, save_method)
+    raise_if_merging_inkling2(model, save_method)
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
             "Unsloth: You must select one of 3 options when saving models:\n"
@@ -5193,6 +5195,7 @@ def unsloth_save_pretrained_gguf(
     "q3_k_xs" : "3-bit extra small quantization",
     """
     raise_if_merging_mistral_format_view(self, "gguf")  # the converter would read Mistral names
+    raise_if_merging_inkling2(self, "gguf")
     _assert_export_target_is_not_base_with_lora_layers(self)
 
     if tokenizer is None:
@@ -5846,6 +5849,7 @@ def unsloth_push_to_hub_gguf(
     `quantization_method` may be an alias -- "not_quantized" (fast conversion, big files), "fast_quantized" (fast conversion, OK size), "quantized" (slow conversion, small files) -- or a llama.cpp ftype: f32, f16, q8_0, q4_0, q4_1, q5_0, q5_1, or a k-quant q2_k / q3_k_s / q3_k_m / q3_k_l / q4_k_s / q4_k_m / q5_k_s / q5_k_m / q6_k. The _m and _l k-quants keep the attention and feed_forward.w2 tensors a level or two above the nominal width; q2_k_l is the Unsloth preset adding --output-tensor-type q8_0 --token-embedding-type q8_0.
     """
     raise_if_merging_mistral_format_view(self, "gguf")  # the converter would read Mistral names
+    raise_if_merging_inkling2(self, "gguf")
     _assert_export_target_is_not_base_with_lora_layers(self)
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
@@ -7346,6 +7350,7 @@ def unsloth_generic_save(
         )
     else:
         raise_if_merging_mistral_format_view(model, save_method)
+        raise_if_merging_inkling2(model, save_method)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
         # An older unsloth_zoo accepts `output_dtype` but still writes the base dtype.

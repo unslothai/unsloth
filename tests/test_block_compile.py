@@ -1335,6 +1335,118 @@ class _TraceableCollector:
         self.value = token
 
 
+def test_non_reentrant_trial_graph_is_freed(monkeypatch):
+    # Qwen3-30B-A3B shape (router aux loss on, so non-reentrant), 4 layers, 32K tokens: every block's
+    # trial graph stayed alive for the whole run, 14 GiB between steps. An identity pack hook saves an
+    # op's output on its own node, a cycle through the C++ graph that gc.collect() cannot break.
+    import gc
+    import weakref
+
+    from torch.utils.checkpoint import checkpoint
+
+    M = _load()
+    if getattr(torch._C._autograd, "_top_saved_tensors_default_hooks", None) is None:
+        pytest.skip("this torch cannot read the active saved-tensor hooks (no non-reentrant trial)")
+    trial_outputs = []
+    calls = [0]
+
+    def fake_compile(fn, **kwargs):
+        def compiled(self, hidden_states, *args, **kw):
+            calls[0] += 1
+            out = fn(self, hidden_states, *args, **kw)
+            if M._IN_TRIAL[0]:
+                trial_outputs.append(weakref.ref(out))
+            return out
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class SigmoidDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+        ):
+            # sigmoid saves its own output for backward
+            return torch.sigmoid(self.proj(hidden_states) + hidden_states)
+
+    original = SigmoidDecoderLayer.forward
+    M._wrap(SigmoidDecoderLayer, {})
+    with torch.random.fork_rng():
+        torch.manual_seed(0)
+        layer, ref = SigmoidDecoderLayer(), SigmoidDecoderLayer()
+        x = torch.randn(2, 4, 8, requires_grad = True)
+    ref.load_state_dict(layer.state_dict())
+    checkpoint(layer, x, use_reentrant = False).square().sum().backward()
+    gc.collect()
+    assert len(trial_outputs) == 1, "the non-reentrant trial did not run"
+    assert trial_outputs[0]() is None, "the trial forward's graph outlived the trial"
+    assert calls[0] == 3, "expected the trial, the real call and the checkpoint recompute"
+    # The real call and its recompute are unchanged.
+    x_ref = x.detach().requires_grad_()
+    original(ref, x_ref).square().sum().backward()
+    torch.testing.assert_close(x.grad, x_ref.grad)
+    torch.testing.assert_close(layer.proj.weight.grad, ref.proj.weight.grad)
+
+
+def test_no_grad_trial_stays_out_of_an_outer_non_reentrant_checkpoint(monkeypatch):
+    # A reentrant-checkpointed layer inside a non-reentrant parent: the layer's no-grad call trials in
+    # grad mode, and without our own hooks those saves landed in the parent's checkpoint frame, so its
+    # recompute (no trial left to run) saved fewer: CheckpointError "A different number of tensors".
+    from torch.utils.checkpoint import checkpoint
+
+    M = _load()
+    if getattr(torch._C._autograd, "_top_saved_tensors_default_hooks", None) is None:
+        pytest.skip("this torch cannot read the active saved-tensor hooks")
+    seen = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(self, hidden_states, *args, **kw):
+            if M._IN_TRIAL[0]:
+                seen.append(M._in_nonreentrant_checkpoint())
+            return fn(self, hidden_states, *args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class SigmoidDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+        ):
+            return torch.sigmoid(self.proj(hidden_states) + hidden_states)
+
+    original = SigmoidDecoderLayer.forward
+    M._wrap(SigmoidDecoderLayer, {})
+    with torch.random.fork_rng():
+        torch.manual_seed(0)
+        layer, ref = SigmoidDecoderLayer(), SigmoidDecoderLayer()
+        x = torch.randn(2, 4, 8, requires_grad = True)
+    ref.load_state_dict(layer.state_dict())
+
+    def parent(h):
+        return checkpoint(layer, h * 1.5, use_reentrant = True).tanh()
+
+    checkpoint(parent, x, use_reentrant = False).square().sum().backward()
+    # The trial ran, and still saw the outer non-reentrant checkpoint (cudagraph eligibility reads it).
+    assert seen == [True]
+    x_ref = x.detach().requires_grad_()
+    original(ref, x_ref * 1.5).tanh().square().sum().backward()
+    torch.testing.assert_close(x.grad, x_ref.grad)
+    torch.testing.assert_close(layer.proj.weight.grad, ref.proj.weight.grad)
+
+
 def test_trial_forward_graph_is_reused_by_the_real_call(monkeypatch):
     # tiny Gemma-4 vision: a trial hidden from the collector (None) compiled graphs no real call matched.
     from torch._dynamo.utils import counters

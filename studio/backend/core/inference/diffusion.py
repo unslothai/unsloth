@@ -235,6 +235,8 @@ from .diffusion_memory import (
     engage_vae_tiling,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
+    flux3_conditioned_denoise_mib,
+    flux3_prompt_tokens,
     estimate_safetensors_dense_mib,
     file_size_mib,
     largest_streamable_companion_mib,
@@ -252,6 +254,9 @@ from .diffusion_memory import (
     reference_kv_cache_mib,
     image_activation_verdict,
     ACTIVATION_REFUSE,
+    cuda_graph_held_bytes,
+    graph_release_fits,
+    guard_release_graphs_enabled,
     raise_on_unified_memory_shortfall,
     scoped_allow_oversized_load,
     UNIFIED_OVERSIZE_REFUSAL_CODE,
@@ -3292,12 +3297,90 @@ def _measured_target(target: Any) -> bool:
         return False
 
 
+def _guard_condition_pixels(
+    fam: Any, has_source: bool, extra_images: int, ref_resolution: Optional[int]
+) -> int:
+    """Weighted condition pixels the request guard charges beside the output canvas (``condition_pixel_weight``)."""
+    weight = getattr(fam, "condition_pixel_weight", 1.0)
+    extra = max(0, int(extra_images or 0))
+    if ref_resolution is not None:
+        return int((1 + extra) * ref_resolution * ref_resolution * weight)
+    if is_flux3_family(fam) and has_source:
+        return int((1 + extra) * FLUX3_REFERENCE_AREA * weight)
+    area = int(getattr(fam, "reference_area", 0) or 0)
+    if area and has_source:
+        return int((1 + extra) * area * weight)
+    return int(extra * EDIT_EXTRA_IMAGE_AREA * weight)
+
+
+def _area_reference_extra_mib(pipe: Any, extra_mib: int, verdict: Any, device: Any) -> int:
+    """Live shortfall of the guard's estimate, capped at ``extra_mib``; ``verdict`` predates the release, so only its figures are used."""
+    if verdict is None or verdict.overridden:
+        return extra_mib
+    need = verdict.tiled_needed_mib if verdict.tiled_needed_mib is not None else verdict.needed_mib
+    if need is None:
+        return extra_mib
+    short = live_reference_shortfall_mib(pipe, int(need), device)
+    if short is None:
+        return extra_mib
+    if verdict.budget_mib is not None:
+        from .diffusion_memory import DEFAULT_BASE_OVERHEAD_MIB
+
+        # the post-release guard admits ``need`` + overhead against its budget
+        short = max(int(short), int(need) + DEFAULT_BASE_OVERHEAD_MIB - int(verdict.budget_mib))
+    return min(int(extra_mib), max(0, int(short)))
+
+
 def _references_unpriced(fam: Any) -> bool:
     """Reference images join the denoiser sequence unpriced by the request guard (FLUX.2 Klein; FLUX.3 charges them)."""
     return bool(
         getattr(fam, "reference", False)
         and not tuple(getattr(fam, "reference_resolutions", ()) or ())
         and not is_flux3_family(fam)
+    )
+
+
+def _flux3_guard_denoise_mib(
+    fam: Any,
+    state: Any,
+    target: Any,
+    has_source: bool,
+    extra_images: int,
+    width: Any,
+    height: Any,
+    batch: int,
+    prompt_bytes: int = 0,
+) -> Optional[int]:
+    """FLUX.3 edit denoise MiB for the request guard, or None when token pricing does not apply."""
+    if not is_flux3_family(fam) or not has_source or getattr(state, "kind", None) == "gguf":
+        return None
+    quant = str(getattr(state, "transformer_quant", None) or "").lower()
+    if quant and not any(scheme in quant for scheme in ("int8", "fp8")):
+        return None
+    # the quantized rate was measured compiled only (speed "off" loads bf16): an eager quantized fallback stays flat
+    if quant and "compiled" not in tuple(getattr(state, "speed_optims", None) or ()):
+        return None
+    try:
+        import torch
+
+        device = getattr(target, "torch_device", None)
+        if getattr(target, "device", None) != "cuda" or not torch.cuda.is_available():
+            return None
+        capability = tuple(torch.cuda.get_device_capability(device))
+        from .rocm_bf16 import is_rocm_torch
+
+        rocm = is_rocm_torch(torch)
+    except Exception:  # noqa: BLE001 - unknown device keeps the flat estimate
+        return None
+    return flux3_conditioned_denoise_mib(
+        width = width,
+        height = height,
+        references = 1 + max(0, int(extra_images or 0)),
+        batch_size = batch,
+        dense = not quant,
+        capability = capability,
+        rocm = rocm,
+        text_tokens = flux3_prompt_tokens(prompt_bytes),
     )
 
 
@@ -3663,6 +3746,38 @@ def _tier_request_peak(
         batch_size = batch_size,
         workflow = workflow,
     )
+
+
+def _release_graphs_for_guard(
+    state: Any, guard_kwargs: dict, rebuild: Callable[[], dict], logger: Any
+) -> dict:
+    """The guard leaves the CUDA graph pools uncredited (only their graphs reuse them), so captures an earlier render
+    left can refuse a request that fits without them. Drops them only then, and re-reads the card; any other request
+    keeps its graphs. Returns the guard kwargs to check."""
+    handles = {
+        id(h): h
+        for h in (
+            *(getattr(state, "cuda_graphs", ()) or ()),
+            *(getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()),
+        )
+    }
+    if not handles or not guard_release_graphs_enabled():
+        return guard_kwargs
+    try:
+        probe = {k: v for k, v in guard_kwargs.items() if k != "logger"}
+        held = graph_release_fits(probe, cuda_graph_held_bytes)
+        if not held:
+            return guard_kwargs
+        cuda_graph.reset_all(tuple(handles.values()))
+    except Exception as exc:  # noqa: BLE001 - the guard below still decides on its own reading
+        logger.warning("diffusion.generate: graph release before the guard skipped (%s)", exc)
+        return guard_kwargs
+    logger.info(
+        "diffusion.generate: released %.2f GB of idle CUDA graph memory so this request fits; "
+        "graphs re-record at the new shape",
+        held / 2**30,
+    )
+    return rebuild()
 
 
 def _hold_captured_release(state: Any, extra_mib: int) -> int:
@@ -11696,6 +11811,12 @@ class DiffusionBackend:
                         )
                     except Exception as exc:  # noqa: BLE001 - optional lever: stock modules stay
                         logger.warning("diffusion.adaln_precompute: not installed: %s", exc)
+                    # FLUX.2 edit references: resize / crop / normalise on the GPU, byte-identical to the CPU path.
+                    try:
+                        from .diffusion_ref_preprocess import install as install_ref_preprocess
+                        install_ref_preprocess(pipe, logger = logger)
+                    except Exception as exc:  # noqa: BLE001 - optional: stock CPU path stays
+                        logger.warning("diffusion.ref_preprocess: not installed: %s", exc)
 
                     self._raise_if_load_cancelled(_load_token)
                     speed_offload = plan.offload_policy != OFFLOAD_NONE and not split_expected
@@ -12143,6 +12264,12 @@ class DiffusionBackend:
                             speed_mode = effective_speed,
                             logger = logger,
                         )
+                    # Device is final once placed: probe the GPU ref preprocess here, not in the first request.
+                    try:
+                        from .diffusion_ref_preprocess import warm as warm_ref_preprocess
+                        warm_ref_preprocess(pipe, logger = logger)
+                    except Exception as exc:  # noqa: BLE001 - the first request probes instead
+                        logger.warning("diffusion.ref_preprocess: warm-up skipped: %s", exc)
                     identity = getattr(pipe, "_unsloth_peak_identity", None)
                     if (
                         isinstance(identity, tuple)
@@ -15006,14 +15133,16 @@ class DiffusionBackend:
 
         if not lora_fuse.enabled() or lora_fuse.fused(pipe):
             return
-        if getattr(state, "offload_policy", None) != OFFLOAD_NONE or getattr(
-            pipe, "_unsloth_loras_baked", False
-        ):
-            return  # offloaded weights move every render; quantised bakes keep their own path
+        if getattr(pipe, "_unsloth_loras_baked", False):
+            return  # quantised bakes keep their own path
         denoisers = [
             m for m in (getattr(pipe, "unet", None), *_lora_fuse_dits(pipe)) if m is not None
         ]
         denoisers = list({id(m): m for m in denoisers}.values())
+        if not lora_fuse.denoisers_resident(
+            getattr(state, "offload_policy", None), getattr(state, "memory_mode", None), denoisers
+        ):
+            return  # offloaded or streamed denoiser weights move every render
         if denoisers and lora_fuse.fuse(pipe, denoisers, logger):
             # graphs recorded the unfused forward; a CFG replica copied the unfused weights
             cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
@@ -16097,29 +16226,8 @@ class DiffusionBackend:
                                 guard_kv_mib,
                                 1 + len(ref_extra),
                             )
-                    guard_condition_pixels = (
-                        int(
-                            (1 + len(ref_extra))
-                            * ref_resolution
-                            * ref_resolution
-                            * getattr(fam, "condition_pixel_weight", 1.0)
-                        )
-                        if ref_resolution is not None
-                        # FLUX.3 resizes every condition image to 1 MP itself (diffusion_flux3.resize_reference).
-                        else (
-                            int(
-                                (1 + len(ref_extra))
-                                * FLUX3_REFERENCE_AREA
-                                * getattr(fam, "condition_pixel_weight", 1.0)
-                            )
-                            if is_flux3_family(fam) and init_pil is not None
-                            # A multi-image edit VAE-encodes each extra image at ~1 MP beside the source.
-                            else int(
-                                len(ref_extra)
-                                * EDIT_EXTRA_IMAGE_AREA
-                                * getattr(fam, "condition_pixel_weight", 1.0)
-                            )
-                        )
+                    guard_condition_pixels = _guard_condition_pixels(
+                        fam, init_pil is not None, len(ref_extra), ref_resolution
                     )
                     # unweighted reference pixels: a measured placement prices them from their token count
                     if ref_resolution is not None and not layer_count:
@@ -16134,13 +16242,14 @@ class DiffusionBackend:
                         guard_cfg = _negative_prompt_engaged(fam, guidance)
                     except Exception:  # noqa: BLE001 - unknown: sized as a CFG request
                         guard_cfg = None
-                    # a reference family's source image joins the denoiser's sequence, and only FLUX.3 and the
-                    # ``reference_resolutions`` families price it in guard_condition_pixels
+                    # a reference family's source image joins the denoiser's sequence, and only FLUX.3, the
+                    # ``reference_area`` and the ``reference_resolutions`` families price it in guard_condition_pixels
                     guard_unpriced_refs = bool(
                         getattr(fam, "reference", False)
                         and init_pil is not None
                         and ref_resolution is None
                         and not is_flux3_family(fam)
+                        and not getattr(fam, "reference_area", 0)
                     )
                     _follow_live_graph_mode(state)
                     guard_quadratic = _quadratic_attention(
@@ -16183,6 +16292,17 @@ class DiffusionBackend:
                     carried_restore, extra_mib = take_deferred_restore(state.pipe, extra_mib)
 
                     # The measured row the placement was sized from: the load's reserve, else the same row the plan read.
+                    guard_flux3_denoise = _flux3_guard_denoise_mib(
+                        fam,
+                        state,
+                        guard_target,
+                        init_pil is not None,
+                        len(ref_extra),
+                        guard_width,
+                        guard_height,
+                        guard_batch,
+                        prompt_bytes = max((len(str(p).encode("utf-8")) for p, _ in jobs), default = 0),
+                    )
                     guard_measured = placement_measured_activation(state.pipe)
                     if guard_measured is None and getattr(state, "calibrated_placement", False):
                         try:
@@ -16214,6 +16334,7 @@ class DiffusionBackend:
                             controlnet = workflow == "controlnet" and control_pil is not None,
                             measured_activation = guard_measured,
                             persistent_mib = guard_kv_mib,
+                            conditioned_denoise_mib = guard_flux3_denoise,
                             logger = logger,
                         )
 
@@ -16243,6 +16364,22 @@ class DiffusionBackend:
                                 )
                                 if fits.action != ACTIVATION_REFUSE:
                                     extra_mib = short
+                    if (
+                        extra_mib > 0
+                        and guard_condition_pixels > 0
+                        and not guard_reference_pixels
+                        and not layer_count
+                        and getattr(fam, "reference_area", 0)
+                    ):
+                        # stream only what the guard's own estimate lacks now, not the placement's flat shortfall
+                        extra_mib = _area_reference_extra_mib(
+                            state.pipe,
+                            extra_mib,
+                            image_activation_verdict(
+                                **{k: v for k, v in _guard_kwargs().items() if k != "logger"}
+                            ),
+                            guard_target.torch_device,
+                        )
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
                         if (
@@ -16259,6 +16396,9 @@ class DiffusionBackend:
                             else chained_restore(carried_restore, restore_resident)
                         )
                     guard_kwargs = _guard_kwargs()
+                    guard_kwargs = _release_graphs_for_guard(
+                        state, guard_kwargs, _guard_kwargs, logger
+                    )
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
                     if _hires_pass is not None and _hires_pass.preflight is not None:
                         _hires_pass.preflight(guard_kwargs)
