@@ -926,6 +926,7 @@ def test_add_structure_tokens_unclosed_long_fence_line_is_linear():
         "```" + " " * 200_000 + "`",
         "```" + " " * 100_000 + "a" * 100_000 + "`",
         "```python\nx = 1\n" * 20_000,
+        "".join("`" * n + "a\n" for n in range(300, 2, -1)) + "x\n" * 200_000,
     ):
         start = time.perf_counter()
         assert TextPreprocessor().add_structure_tokens(text) == text
