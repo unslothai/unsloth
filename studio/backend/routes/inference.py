@@ -17015,13 +17015,6 @@ async def _unload_llama_before_standard_load(llama_backend) -> None:
     the epoch, so a cleanup still pending sees this load replaced the retired server, and one
     already past its check finishes first."""
 
-    def this_kill_baseline(kill_started: float):
-        # Read under the lock: only a kill this handoff ran recorded it; an older one is stale.
-        last_kill = getattr(llama_backend, "_last_kill_monotonic", 0.0) or 0.0
-        if last_kill < kill_started:
-            return None
-        return getattr(llama_backend, "_last_kill_vram_baseline", None)
-
     def handoff():
         # getattr: a stand-in backend has no load to order against.
         lock = getattr(llama_backend, "_serial_load_lock", None)
@@ -17029,20 +17022,19 @@ async def _unload_llama_before_standard_load(llama_backend) -> None:
             # As the unload would: a recovery reload holding the lock stops instead of finishing.
             llama_backend._cancel_event.set()
         with lock or nullcontext():
-            if not llama_backend.is_loaded:
-                if lock is None:
-                    return None, None
-                kill_started = time.monotonic()
-                llama_backend.unload_model()
-                # A starting or recovering server was killed: wait for it like a loaded one.
-                last_kill = getattr(llama_backend, "_last_kill_monotonic", 0.0) or 0.0
-                if last_kill < kill_started:
-                    return None, None
-                return kill_started, this_kill_baseline(kill_started)
-            logger.info("Unloading GGUF model before loading Unsloth model")
+            was_loaded = llama_backend.is_loaded
+            if not was_loaded and lock is None:
+                return None, None
+            if was_loaded:
+                logger.info("Unloading GGUF model before loading Unsloth model")
             kill_started = time.monotonic()
             llama_backend.unload_model()
-            return kill_started, this_kill_baseline(kill_started)
+            # Read under the lock: a baseline from an older kill is stale.
+            killed = (getattr(llama_backend, "_last_kill_monotonic", 0.0) or 0.0) >= kill_started
+            if not killed:
+                # A starting or recovering server that was killed is waited for like a loaded one.
+                return (kill_started, None) if was_loaded else (None, None)
+            return kill_started, getattr(llama_backend, "_last_kill_vram_baseline", None)
 
     kill_started, baseline = await asyncio.to_thread(handoff)
     if kill_started is None:
