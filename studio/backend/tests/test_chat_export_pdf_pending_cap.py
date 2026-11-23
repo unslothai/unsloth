@@ -44,7 +44,6 @@ def test_waiting_exports_are_bounded(monkeypatch):
     assert len(done) <= 16 and all(r.body.startswith(b"%PDF") for r in done)
     assert len(rendered) == len(done)
 
-    # Slots come back: the next export after the burst renders normally.
     release.set()
     response = asyncio.run(chat_export.export_chat_pdf(request, current_subject = "u"))
     assert response.body.startswith(b"%PDF")
