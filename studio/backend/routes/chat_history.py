@@ -1929,12 +1929,8 @@ def _append_messages_json(parts: list[bytes], messages: list[ChatMessage]) -> No
 
 
 def _json_response(parts: list[bytes]) -> Response:
-    """The bytes FastAPI would send for the route's response_model, built in the threadpool.
-
-    FastAPI serializes a sync route's returned model on the event loop in one pydantic call that
-    holds the GIL, so an image chat (tens of MB of data URLs) stalled every stream for hundreds
-    of ms. One dump per message here lets the loop run between messages.
-    """
+    # FastAPI serializes a sync route's model on the event loop in one GIL-holding call; image
+    # chats stalled every stream, so we dump per message in the threadpool instead.
     return Response(content = b"".join(parts), media_type = "application/json")
 
 

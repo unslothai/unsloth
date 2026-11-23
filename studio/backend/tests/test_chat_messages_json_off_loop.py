@@ -258,7 +258,6 @@ def test_fastapi_never_serializes_on_the_event_loop(history, monkeypatch):
         assert calls == []
     with TestClient(_old_app()) as client:
         client.get("/api/chat/threads/text/messages")
-    # The counter itself is live.
     assert len(calls) == 1
 
 
