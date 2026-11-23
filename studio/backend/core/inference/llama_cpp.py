@@ -2254,7 +2254,6 @@ def _archive_and_recall(
             else 0
         )
         counts = {"archived_messages": archived}
-        # Every compacted request: the whole branch as a transcript, linked from the block.
         from core.inference import compaction_transcript
 
         transcript = compaction_transcript.write(thread_id, branch_messages or before)

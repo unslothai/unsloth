@@ -42,7 +42,6 @@ class Cut:
 
 _lock = threading.Lock()
 _pending: dict[str, tuple[float, Cut]] = {}
-# Taken cuts, so the compacted request's transcript can label the thought.
 _taken: dict[str, tuple[float, Cut]] = {}
 
 

@@ -81,9 +81,6 @@ def _plain(backend, **kwargs) -> list:
     )
 
 
-# ── At the cut ──
-
-
 def test_the_cut_reply_ends_with_the_thought_closed_and_nothing_more(monkeypatch, persisted):
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [_thought_cut()], payloads)
@@ -105,18 +102,14 @@ def test_the_cut_thought_is_cut_back_and_held_for_the_threads_next_request(monke
     _plain(backend)
 
     cut = cut_thought.take(THREAD)
-    # The window can stop it mid-word, so the last few tokens go.
     assert cut.thought == " ".join(_LONG_THOUGHT.split()[: -cut_thought.BACKTRACK_TOKENS])
-    # The model's own closing marker, read from its template.
     assert cut.close_marker == _TEMPLATE_CLOSE
-    # Once.
     assert cut_thought.take(THREAD) is None
 
 
 @pytest.mark.parametrize(
     "stream, kwargs",
     [
-        # A clean stop.
         ([_sse({"reasoning_content": "Short."}), _finish("stop"), _done()], {}),
         # An answer the window cut: there is something to continue.
         (
@@ -157,9 +150,6 @@ def test_a_stale_cut_is_dropped(monkeypatch, persisted):
     monkeypatch.setattr(cut_thought.time, "monotonic", lambda: real() + cut_thought._TTL_S + 1)
 
     assert cut_thought.take(THREAD) is None
-
-
-# ── The thread's next request ──
 
 
 def _request(**kwargs):
@@ -214,9 +204,7 @@ def test_the_next_request_finishes_the_thought_instead_of_resuming_it(persisted,
     finished = payload.messages[1]
     assert finished.reasoning_content == thought and not finished.content
     assert payload.continue_final_message is False
-    # The note is the first user turn after the reset.
     assert note_is_a_user_turn and payload.messages[-1].content == note
-    # Forced, as /compact does.
     assert payload.compact_context is True
     assert payload.context_overflow == "truncate_oldest"
     assert archived == [(THREAD, thought)]
@@ -236,7 +224,6 @@ def test_the_note_names_the_search_and_the_transcript(persisted, archived, tmp_p
     )
     transcript = path.read_text()
     assert "Plan the migration" in transcript
-    # The thought ends with the model's own closing marker, once.
     assert (thought + _TEMPLATE_CLOSE) in transcript
     assert transcript.count(thought) == 1
 
@@ -301,9 +288,6 @@ def test_a_caller_that_asked_for_errors_keeps_them(persisted, archived):
     assert payload.compact_context is None
 
 
-# ── The closing marker, read from the template ──
-
-
 @pytest.mark.parametrize(
     "template, close",
     [
@@ -343,9 +327,6 @@ def test_a_template_that_drops_the_thought_gives_no_marker():
         cut_thought.close_marker_from_template(lambda messages: "<|im_start|>assistant\nanswer")
         == ""
     )
-
-
-# ── search_conversation finds the thought ──
 
 
 @pytest.fixture
@@ -411,9 +392,6 @@ def test_the_archive_and_the_marker_agree_on_the_thought_document():
 
     # core.rag cannot import core.inference, so the label is written in both; they must match.
     assert conversation_archive._CUT_THOUGHT_DOCUMENT == cut_thought.THOUGHT_DOCUMENT
-
-
-# ── First line: a thinking budget that leaves the answer room ──
 
 
 @pytest.mark.parametrize(

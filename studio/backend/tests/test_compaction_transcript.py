@@ -43,7 +43,6 @@ def test_the_transcript_holds_the_whole_branch(sandbox):
     text = (sandbox / f"transcript-{THREAD}.md").read_text()
     assert path == str(sandbox / f"transcript-{THREAD}.md")
     assert "Use the 2024 dataset for every chart." in text and "Now the revenue section." in text
-    # The system prompt is not the conversation.
     assert "Be brief." not in text
 
 
@@ -65,7 +64,6 @@ def test_the_link_is_not_carried_into_the_next_epoch_as_an_instruction(sandbox):
     assert checkpoint._block_items(linked[0]["content"]) == [
         "Use the 2024 dataset for every chart."
     ]
-    # And a refit strips the whole block, the line with it.
     assert path not in checkpoint._without_block(linked)[0]["content"]
 
 
@@ -127,9 +125,6 @@ def test_tool_calls_and_their_results_are_in_the_transcript(sandbox):
     text = (sandbox / f"transcript-{THREAD}.md").read_text()
     assert "## assistant called python" in text and "report.md" in text
     assert "## tool result (python)" in text and "Revenue grew 12%." in text
-
-
-# ── Wired into every compacted request ──
 
 
 @pytest.fixture
