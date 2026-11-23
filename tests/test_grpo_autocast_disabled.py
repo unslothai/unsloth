@@ -238,13 +238,13 @@ def test_chunk_sizing_reads_the_model_dtype_when_autocast_is_off():
     block = SRC[SRC.index(line) : SRC.index(line) + 400]
     assert "_autocast_enabled" in block, block
     assert "lm_head.dtype" in block, block
-    assert "dtype_bytes = 2 if forward_dtype in" in block, block
+    assert "dtype_bytes = 16 if forward_dtype in" in block, block
 
 
 def test_chunk_sizing_by_execution():
     """Both cases, evaluated rather than read: pure bfloat16 full finetuning
-    sizes 2 bytes per element, an explicit float32 load 4 (bytes, not bits)."""
-    for head_dtype, expected in ((torch.bfloat16, 2), (torch.float32, 4)):
+    keeps 16, an explicit float32 load gets 32."""
+    for head_dtype, expected in ((torch.bfloat16, 16), (torch.float32, 32)):
         scope = {
             "torch": torch,
             "self": type(
@@ -259,7 +259,7 @@ def test_chunk_sizing_by_execution():
         }
         line = next(l for l in SRC.splitlines() if "forward_dtype = (" in l)
         start = SRC.index(line)
-        end = SRC.index("dtype_bytes = ", start)
+        end = SRC.index("dtype_bytes = 16 if forward_dtype in", start)
         end = SRC.index("\n", end)
         exec(textwrap.dedent(SRC[start:end]), scope)
         assert scope["dtype_bytes"] == expected, (head_dtype, scope["dtype_bytes"])

@@ -4687,7 +4687,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             forward_dtype = (
                 self._autocast_dtype if getattr(self, "_autocast_enabled", True) else lm_head.dtype
             )
-            dtype_bytes = 2 if forward_dtype in [torch.float16, torch.bfloat16] else 4
+            dtype_bytes = 16 if forward_dtype in [torch.float16, torch.bfloat16] else 32
             total_rows = input_ids.shape[0]
             seq_len = input_ids.shape[1]
             hidden_dim = lm_head.shape[1]
@@ -4854,10 +4854,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pg_unsafe = set()
                     if (
                         _pg_layout is not None
-                        and _pg_layout.signature not in _pg_unsafe
-                        # Over one padded mini-batch's tokens: the chunked loop keeps the mini-batch cap.
-                        and _pg_layout.flat_ids.shape[1] <= batch_size * seq_len
+                        and _pg_layout.flat_ids.shape[1] > batch_size * seq_len
                     ):
+                        # Over one padded mini-batch's tokens: the chunked loop keeps the mini-batch cap.
+                        _pg_layout = None
+                    if _pg_layout is not None and _pg_layout.signature not in _pg_unsafe:
                         _pg_sig = _pg_layout.signature
                         _pg_verified = getattr(
                             unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
@@ -5269,6 +5270,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 zipped_inputs = []
             else:
                 _pk_hidden = _pk_sel = _pk_result = _pk_ref = None
+                # A declined PrefixGrouper layout (and the deferred forward bound to it) too.
+                _pg_layout = _pg_forward_fn = None
                 # Index buffers of a declined packed batch would otherwise live through the padded loop.
                 _pk_keep = _pk_len = _pk_flat = _pk_pos = _pk_cmask = None
                 _pk_nz_idx = _pk_within = _pk_cstart = _pk_ctgt = _pk_tgt = _pk_ids = _pk_cm = None

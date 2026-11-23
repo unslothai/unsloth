@@ -707,11 +707,11 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
         if unsloth_grpo_mini_batch is not None:
-            if self.generation_batch_size >= unsloth_grpo_mini_batch:
+            if 1 <= unsloth_grpo_mini_batch <= self.generation_batch_size:
                 self.unsloth_grpo_mini_batch = unsloth_grpo_mini_batch
             else:
                 raise ValueError(
-                    f"Unsloth GRPO mini batch size needs to be less than or equal to the effective generation batch size, "
+                    f"Unsloth GRPO mini batch (the number of splits per batch) needs to be at least 1 and at most the effective generation batch size, "
                     f"which is self.per_device_train_batch_size * gradient_accumulation_steps."
                 )
         self.unsloth_logit_chunk_multiplier = unsloth_logit_chunk_multiplier

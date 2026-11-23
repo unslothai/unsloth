@@ -47,7 +47,7 @@ def _rows_per_forward(total_rows, rows_fit):
         "seq_len": 8,
         "hidden_dim": 4,
         "vocab_dim": 16,
-        "dtype_bytes": 2,
+        "dtype_bytes": 16,
     }
     exec(_sizing_block(), scope)
     # The chunker right below the block: batch_size = ceil(total_samples / B).
@@ -56,7 +56,7 @@ def _rows_per_forward(total_rows, rows_fit):
 
 @pytest.mark.parametrize(
     "total_rows, rows_fit",
-    [(8, 5), (16, 9), (16, 15), (7, 4), (3, 2)],
+    [(8, 5), (16, 9), (16, 15), (7, 4), (3, 2), (2, 4)],
 )
 def test_split_count_rounds_up_so_the_fit_is_honoured(total_rows, rows_fit):
     assert _rows_per_forward(total_rows, rows_fit) <= rows_fit
@@ -65,6 +65,29 @@ def test_split_count_rounds_up_so_the_fit_is_honoured(total_rows, rows_fit):
 @pytest.mark.parametrize("total_rows, rows_fit", [(8, 8), (8, 4), (8, 1), (6, 3)])
 def test_plan_is_unchanged_when_the_fit_divides_the_rows(total_rows, rows_fit):
     assert _rows_per_forward(total_rows, rows_fit) == rows_fit
+
+
+def _validate(splits, generation_batch_size = 8):
+    src = (SOURCE_PATH.parent / "rl.py").read_text(encoding = "utf-8")
+    start = src.index("        if unsloth_grpo_mini_batch is not None:")
+    end = src.index(
+        "        self.unsloth_logit_chunk_multiplier = unsloth_logit_chunk_multiplier", start
+    )
+    config = SimpleNamespace(generation_batch_size = generation_batch_size)
+    exec(textwrap.dedent(src[start:end]), {"self": config, "unsloth_grpo_mini_batch": splits})
+    return config.unsloth_grpo_mini_batch
+
+
+@pytest.mark.parametrize("splits", [0, -1, 9])
+def test_config_rejects_split_counts_outside_one_to_the_batch(splits):
+    # 0 / negative divided by zero or ran no forward in the scoring pass.
+    with pytest.raises(ValueError, match = "at least 1"):
+        _validate(splits)
+
+
+@pytest.mark.parametrize("splits", [1, 8])
+def test_config_keeps_valid_split_counts(splits):
+    assert _validate(splits) == splits
 
 
 if __name__ == "__main__":

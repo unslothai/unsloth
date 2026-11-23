@@ -52,7 +52,11 @@ class _Model(torch.nn.Module):
         return SimpleNamespace(logits = torch.zeros(*input_ids.shape, 4))
 
 
-def _run(tokens, batch_size):
+def _run(
+    tokens,
+    batch_size,
+    verify = False,
+):
     model = _Model()
     layout = SimpleNamespace(
         flat_ids = torch.zeros(1, tokens, dtype = torch.long),
@@ -72,7 +76,7 @@ def _run(tokens, batch_size):
         "unwrapped_model": model,
         "_pg_engage": True,
         "_pg_build_layout": lambda *args, **kwargs: layout,
-        "_pg_verify_on": lambda: False,
+        "_pg_verify_on": lambda: verify,
         "_pg_num_gen": 4,
         "_pg_result": None,
         "_pg_use": False,
@@ -98,20 +102,31 @@ def _run(tokens, batch_size):
         "UNSLOTH_ENABLE_LOGGING": False,
     }
     exec(_pg_block(), ns)
-    return ns["_pg_use"], model.calls
+    return ns, model.calls
 
 
 @pytest.mark.parametrize("batch_size", [1, 2, 4])
 def test_prefix_grouper_over_the_mini_batch_tokens_is_skipped(batch_size):
     # A grouped stream longer than batch_size padded rows would run in one forward.
-    use, calls = _run(tokens = batch_size * L + 1, batch_size = batch_size)
-    assert not use and calls == []
+    ns, calls = _run(tokens = batch_size * L + 1, batch_size = batch_size)
+    assert not ns["_pg_use"] and calls == []
+    # Released at once, not kept alive through the fallback forwards.
+    assert ns["_pg_layout"] is None
+
+
+@pytest.mark.parametrize("batch_size", [1, 2, 4])
+def test_unverified_prefix_grouper_over_the_mini_batch_tokens_defers_nothing(batch_size):
+    ns, calls = _run(tokens = batch_size * L + 1, batch_size = batch_size, verify = True)
+    assert ns["_pg_forward_fn"] is None and ns["_pg_layout"] is None and calls == []
 
 
 @pytest.mark.parametrize("batch_size", [1, 2, ROWS])
 def test_prefix_grouper_within_the_mini_batch_tokens_runs(batch_size):
-    use, calls = _run(tokens = batch_size * L, batch_size = batch_size)
-    assert use and calls == [batch_size * L]
+    ns, calls = _run(tokens = batch_size * L, batch_size = batch_size)
+    assert ns["_pg_use"] and calls == [batch_size * L]
+    # First use defers the forward to the verify site.
+    ns, calls = _run(tokens = batch_size * L, batch_size = batch_size, verify = True)
+    assert ns["_pg_forward_fn"] is not None and calls == []
 
 
 if __name__ == "__main__":
