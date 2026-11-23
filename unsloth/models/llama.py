@@ -1796,8 +1796,9 @@ def LlamaModel_fast_forward(
             kwargs["use_sliding_window"] = use_sliding_window
 
         if gradient_checkpointing and not isinstance(decoder_layer, GradientCheckpointingLayer):
-
-            def create_custom_forward(module):
+            # Bind this layer's values: the reentrant replay runs after the loop, when kwargs
+            # (Gemma2 use_sliding_window) and past_key_value hold the last layer's.
+            def create_custom_forward(module, past_key_value, layer_kwargs):
                 def custom_forward(*inputs):
                     return module(
                         *inputs,
@@ -1805,14 +1806,14 @@ def LlamaModel_fast_forward(
                         output_attentions,
                         padding_mask = padding_mask,
                         position_embeddings = position_embeddings,
-                        **kwargs,
+                        **layer_kwargs,
                     )
 
                 custom_forward._unsloth_checkpoint_module = module
                 return custom_forward
 
             layer_outputs = torch.utils.checkpoint.checkpoint(
-                create_custom_forward(decoder_layer),
+                create_custom_forward(decoder_layer, past_key_value, dict(kwargs)),
                 hidden_states,
                 mask,
                 attention_mask,
