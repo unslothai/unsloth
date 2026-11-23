@@ -8,6 +8,12 @@
       "alt": "Up to 10x faster UI, 5x faster inference, and 3x more file types",
       "title": "Faster everywhere",
       "summary": "The app is up to 10x faster with several chats open, and inference up to 5x faster."
+    },
+    {
+      "image": "/whats-new/v0.1.907-beta/video.webp",
+      "alt": "LTX-2.5 and Wan2.2 video models",
+      "title": "LTX-2.5 and Wan2.2",
+      "summary": "Generate video from text or from an image."
     }
   ],
   "changes": [
@@ -20,10 +26,7 @@
       "Browser use",
       "Models can click, drag, and run approved scripts, with per-site rules."
     ],
-    [
-      "Video",
-      "Generate video with LTX-2.5 and Wan2.2, including image-to-video."
-    ]
+    ["Hardware", "NVIDIA RTX Spark runs with the Windows ARM64 download."]
   ],
-  "more": 138
+  "more": 137
 }

@@ -8,10 +8,15 @@
       "alt": "Two Studio chats with custom backgrounds",
       "title": "Your own chat background",
       "summary": "Use your own image and move the composer to the bottom of a new chat."
+    },
+    {
+      "image": "/whats-new/v0.1.913-beta/languages.webp",
+      "alt": "14 new languages",
+      "title": "14 new languages",
+      "summary": "Use Studio in 14 more languages, picked in Settings."
     }
   ],
   "changes": [
-    ["Languages", "Use Studio in 14 additional languages."],
     [
       "Generation",
       "Render Qwen-Image up to twice as fast under a 16 GB VRAM limit."

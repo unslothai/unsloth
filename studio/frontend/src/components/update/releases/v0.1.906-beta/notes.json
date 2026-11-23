@@ -8,10 +8,15 @@
       "alt": "The chat box + menu with Browser use and Computer use",
       "title": "Browser use",
       "summary": "Let a local model take control of the Unsloth browser from the + menu in the chat box."
+    },
+    {
+      "image": "/whats-new/v0.1.906-beta/qwen-image.webp",
+      "alt": "Qwen-Image-2.1-Turbo",
+      "title": "Qwen-Image-2.1-Turbo",
+      "summary": "Images in 8 steps, 2.5x faster."
     }
   ],
   "changes": [
-    ["Images", "Qwen-Image-2.1-Turbo renders in 8 steps, 2.5x faster."],
     [
       "Training",
       "Train text-diffusion LLMs such as DiffusionGemma, LLaDA, and Dream."

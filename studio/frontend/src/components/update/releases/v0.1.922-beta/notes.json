@@ -8,6 +8,12 @@
       "alt": "Theme files",
       "title": "Theme files",
       "summary": "Export your Appearance settings to a file and import someone else's."
+    },
+    {
+      "image": "/whats-new/v0.1.922-beta/async-grpo.webp",
+      "alt": "AsyncGRPO",
+      "title": "AsyncGRPO",
+      "summary": "Reinforcement learning steps run 1.46x to 2.47x faster on A100."
     }
   ],
   "changes": [
@@ -20,7 +26,7 @@
       "Windows",
       "Desktop no longer gets stuck on an incomplete install on some AMD PCs."
     ],
-    ["Training", "AsyncGRPO steps are 1.46x to 2.47x faster on A100."]
+    ["Video", "Video Restyle re-renders a whole clip in a new style on Mac."]
   ],
-  "more": 19
+  "more": 18
 }

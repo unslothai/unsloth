@@ -8,19 +8,20 @@
       "alt": "Inkling 2 Mini",
       "title": "Inkling 2 Mini",
       "summary": "A 26B model with 5.4B active and a 1M context, the strongest for its size."
+    },
+    {
+      "image": "/whats-new/v0.1.921-beta/leaner.webp",
+      "alt": "66% less RAM, 87% fewer prompt tokens, 2.2x faster MiniMax-H3-Image",
+      "title": "Leaner and faster",
+      "summary": "GGUF image models load with up to 66% less RAM, and MCP chats send up to 87% fewer prompt tokens."
     }
   ],
   "changes": [
-    [
-      "Memory",
-      "GGUF image models load with 52 to 66% less RAM on Linux and macOS."
-    ],
-    ["MCP", "MCP chats process 83 to 87% fewer prompt tokens."],
     [
       "Images",
       "MiniMax-H3-Image renders a new prompt in 36.7 s on 8 GB GPUs, down from 82.7 s."
     ],
     ["Documents", "Scanned PDFs in chat are read with OCR."]
   ],
-  "more": 19
+  "more": 20
 }

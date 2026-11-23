@@ -8,13 +8,15 @@
       "alt": "A tour of Studio’s Halloween themes",
       "title": "Trick or treat",
       "summary": "Eleven seasonal themes brought spooky greetings, bats, and spiders to Studio through October."
+    },
+    {
+      "image": "/whats-new/v0.1.912-beta/multi-lora.webp",
+      "alt": "Multi-LoRA batching",
+      "title": "Multi-LoRA batching",
+      "summary": "Train up to four compatible queued jobs together."
     }
   ],
   "changes": [
-    [
-      "Fine-tuning",
-      "Train up to four compatible jobs together with multi-LoRA."
-    ],
     ["Startup", "Start Studio about twice as fast on first launch."],
     [
       "Browser use",

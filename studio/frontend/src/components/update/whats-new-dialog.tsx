@@ -32,8 +32,6 @@ const RAIL_BG =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(3%*var(--contrast-wash-gain,1)),transparent)]";
 const HAIRLINE =
   "border-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),transparent)]";
-const IMAGE_RING =
-  "ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]";
 
 export function WhatsNewDialog() {
   const { open, offer, close } = useWhatsNew();
@@ -46,7 +44,7 @@ export function WhatsNewDialog() {
       }}
     >
       <DialogContent
-        className="flex h-[min(38rem,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] flex-col gap-0 overflow-hidden p-0 focus:outline-none sm:max-w-[60rem]"
+        className="flex h-[min(41rem,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] flex-col gap-0 overflow-hidden rounded-2xl p-0 focus:outline-none sm:max-w-[60rem]"
         tabIndex={-1}
         onOpenAutoFocus={(event) => {
           event.preventDefault();
@@ -121,13 +119,7 @@ function ReleaseHistory({
 
   return (
     <div className="flex min-h-0 flex-1 max-sm:flex-col">
-      <aside
-        className={cn(
-          "flex min-h-0 shrink-0 flex-col border-b sm:w-64 sm:border-b-0 sm:border-r",
-          RAIL_BG,
-          HAIRLINE,
-        )}
-      >
+      <aside className={cn("flex min-h-0 shrink-0 flex-col sm:w-64", RAIL_BG)}>
         <header className="flex items-center gap-3 px-6 pb-5 pt-7 max-sm:pr-14">
           <img
             src="/circle-logo-small.png"
@@ -233,7 +225,7 @@ function UpdateAction() {
       <Button
         size="sm"
         variant="primary"
-        className="h-auto w-full rounded-full px-4 py-2.5 text-ui-13"
+        className="h-auto w-full rounded-lg px-4 py-2.5 text-ui-13"
         disabled={liveOffer.actionDisabled}
         onClick={() => {
           if (liveOffer.source === "desktop") {
@@ -269,7 +261,7 @@ function RailItem({
       aria-current={selected ? "true" : undefined}
       onClick={onSelect}
       className={cn(
-        "flex shrink-0 cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors",
+        "flex shrink-0 cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left transition-colors",
         "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
         selected &&
           "bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),transparent)] hover:bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),transparent)]",
@@ -354,8 +346,7 @@ function ReleaseBody({ entry }: { entry: Release }) {
               }}
               alt={feature.alt}
               className={cn(
-                "block aspect-[12/5] w-full rounded-xl object-cover",
-                IMAGE_RING,
+                "block aspect-[11/5] w-full rounded-2xl object-cover",
               )}
             />
             <figcaption className="mt-3.5">
@@ -459,8 +450,7 @@ function CatchUp({
                   event.currentTarget.style.display = "none";
                 }}
                 className={cn(
-                  "hidden aspect-[12/5] w-44 shrink-0 self-start rounded-lg object-cover sm:block",
-                  IMAGE_RING,
+                  "hidden aspect-[11/5] w-44 shrink-0 self-start rounded-xl object-cover sm:block",
                 )}
               />
             )}

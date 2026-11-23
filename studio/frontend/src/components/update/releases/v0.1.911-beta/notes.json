@@ -8,10 +8,15 @@
       "alt": "The Scheduled page with daily, weekly, and hourly tasks",
       "title": "Scheduled tasks",
       "summary": "Run a prompt on a schedule with a local model or an API connection."
+    },
+    {
+      "image": "/whats-new/v0.1.911-beta/minimax.webp",
+      "alt": "MiniMax-M3.1-Flash",
+      "title": "MiniMax-M3.1-Flash",
+      "summary": "MiniMax's 428B MoE with 23B active."
     }
   ],
   "changes": [
-    ["Models", "MiniMax-M3.1-Flash: a 428B MoE with 23B active."],
     ["Images", "Edit images with prompts in FLUX.3."],
     ["Presets", "Save Run settings as named presets for each model."],
     ["Performance", "Large gains on Mac, less lag, and smaller binaries."]
