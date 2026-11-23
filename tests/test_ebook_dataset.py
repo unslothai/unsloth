@@ -645,9 +645,7 @@ def test_chunk_inside_a_long_token_is_cut_at_characters(ebooks, long_merge_token
     assert rows[-1] == "ef"
 
 
-def test_chunk_inside_a_trailing_long_token_reaches_the_end(
-    ebooks, long_merge_tokenizer, tmp_path
-):
+def test_chunk_inside_a_trailing_long_token_reaches_the_end(ebooks, long_merge_tokenizer, tmp_path):
     tokenizer = long_merge_tokenizer
     text = "abc " + "c" * 20 + " x"
     book = make_epub(tmp_path / "book.epub", chapters = {"one.xhtml": "<p>" + text + "</p>"})
@@ -670,10 +668,12 @@ def test_tiny_budget_still_rejects_an_incomplete_long_token(ebooks, tmp_path):
         vocab[piece] = len(vocab)
         merges.append((piece[:-1], char))
     backend = Tokenizer(models.BPE(vocab = vocab, merges = merges))
-    backend.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    backend.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space = False)
     backend.decoder = decoders.ByteLevel()
     tokenizer = PreTrainedTokenizerFast(tokenizer_object = backend)
 
-    book = make_epub(tmp_path / "book.epub", chapters = {"one.xhtml": "<p>ab " + "🦥" + "c" * 20 + "</p>"})
+    book = make_epub(
+        tmp_path / "book.epub", chapters = {"one.xhtml": "<p>ab " + "🦥" + "c" * 20 + "</p>"}
+    )
     with pytest.raises(ValueError, match = "complete character"):
         ebooks.load_ebook_dataset(book, tokenizer = tokenizer, chunk_size = 2, overlap = 0)
