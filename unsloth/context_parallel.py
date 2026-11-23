@@ -35,16 +35,6 @@ except ImportError:
     SDPBackend = None
     sdpa_kernel = None
 
-from .utils.ulysses_inkling2 import (
-    INKLING2_LAYER_TYPES,
-    INKLING2_MODEL_TYPES,
-    check_inkling2_heads,
-    is_ulysses_inkling2_attention,
-    is_ulysses_inkling2_conv,
-    wrap_inkling2_attention_forward,
-    wrap_inkling2_conv_forward,
-)
-
 _CP_BACKENDS = ("auto", "ring", "ulysses")
 _ROTATE_METHODS = ("allgather", "alltoall")
 
@@ -140,8 +130,6 @@ def context_parallel_options(config) -> tuple:
 # transformers >= 5.18 renames V3.2's "deepseek_sparse_attention" to "indexed_attention".
 _ULYSSES_OWN_MASK_LAYER_TYPES = {
     "deepseek_v32": ("deepseek_sparse_attention", "indexed_attention"),
-    # Inkling 2: sliding window / full attention with relative bias and sinks (utils/ulysses_inkling2.py).
-    **{model_type: INKLING2_LAYER_TYPES for model_type in INKLING2_MODEL_TYPES},
     "deepseek_v4": (
         "sliding_attention",
         "compressed_sparse_attention",
@@ -380,6 +368,15 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
 
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
+from .utils.ulysses_inkling2 import (
+    INKLING2_LAYER_TYPES,
+    INKLING2_MODEL_TYPES,
+    check_inkling2_heads,
+    is_ulysses_inkling2_attention,
+    is_ulysses_inkling2_conv,
+    wrap_inkling2_attention_forward,
+    wrap_inkling2_conv_forward,
+)
 from .utils.ulysses_deepseek import (
     DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
     wrap_deepseek_attention_forward,
@@ -391,6 +388,11 @@ from .utils.ulysses_hybrid import (
     is_hf_registry_attention,
     is_ulysses_mixer,
     wrap_ulysses_mixer_forward,
+)
+
+# Inkling 2: sliding window / full attention with relative bias and sinks (utils/ulysses_inkling2.py).
+_ULYSSES_OWN_MASK_LAYER_TYPES.update(
+    {model_type: INKLING2_LAYER_TYPES for model_type in INKLING2_MODEL_TYPES}
 )
 
 # shift_labels is built before sharding so each shard's last token keeps its next-token target.
