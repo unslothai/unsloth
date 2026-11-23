@@ -4358,6 +4358,18 @@ def check_and_disable_bitsandbytes_loading(
     """Disable bnb flags for non-bnb quantized checkpoints; returns ``(load_in_4bit, load_in_8bit, quant_method)``.
 
     ``requantize_packed = False`` under fast_inference / full_finetuning: nothing would consume the plan."""
+    # Inkling 2's "modelopt" config describes its own expert layout, decoded by transformers' conversion mapping:
+    # drop it so the generic ModelOpt rewrite stays off and bitsandbytes can quantize the dequantized weights.
+    from .inkling2 import (
+        inkling2_owns_modelopt_quantization,
+        drop_inkling2_quantization_config,
+        register_inkling2_expert_dequantization,
+    )
+
+    if inkling2_owns_modelopt_quantization(model_config):
+        drop_inkling2_quantization_config(model_config, verbose = verbose, load_in_4bit = load_in_4bit)
+        register_inkling2_expert_dequantization()
+        return load_in_4bit, load_in_8bit, None
     quant_method = get_quant_type(model_config)
     if quant_method is None:
         # Also under vLLM: it reads the file itself, but the bitsandbytes flags must still drop.
@@ -4492,6 +4504,10 @@ def _index_weight_map(path):
 
 
 def _bin_dtypes(path):
+    from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    # torch < 2.6 can run code from the pickle even with weights_only (CVE-2025-32434).
+    refuse_pickle_checkpoint_on_old_torch(path)
     # mmap + weights_only reads the pickle and storage metadata, not the tensor bytes.
     state_dict = torch.load(path, map_location = "cpu", mmap = True, weights_only = True)
     return {k: str(v.dtype) for k, v in state_dict.items() if isinstance(v, torch.Tensor)}

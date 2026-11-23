@@ -190,10 +190,15 @@ class DiffusionFamily:
     # (lowercased id substring, max_condition_images) for a family whose checkpoints take different counts; first
     # match wins, none keeps ``max_condition_images``.
     max_condition_images_variants: tuple[tuple[str, int], ...] = field(default_factory = tuple)
+    # (id substring with separators folded, pipeline class) for a checkpoint of this family that needs another
+    # diffusers pipeline than ``pipeline_class``; first match wins. See ``family_pipeline_class``.
+    pipeline_class_variants: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Same config, different weights: a GGUF of one must never get the base's transformer of another.
     checkpoint_variants: tuple[str, ...] = field(default_factory = tuple)
     # Activation-guard cost of one condition pixel relative to one output pixel.
     condition_pixel_weight: float = 1.0
+    # Area each reference (primary included) is resized to; non-zero makes the guard price every reference at it.
+    reference_area: int = 0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
     aliases: tuple[str, ...] = field(default_factory = tuple)
     # True for families whose activations overflow float16 (-> black image); the backend promotes a resolved float16
@@ -252,6 +257,10 @@ class DiffusionFamily:
     # mflux ModelConfig name (None = no MLX); ``_by_base`` maps a lowercase base repo to another config.
     mlx_model_config: Optional[str] = None
     mlx_model_config_by_base: tuple[tuple[str, str], ...] = field(default_factory = tuple)
+    # Configs of an ``fp16_incompatible`` family that render clean in MLX float16; others use bfloat16 on M1 / M2.
+    mlx_fp16_configs: tuple[str, ...] = field(default_factory = tuple)
+    # (mflux config, bits): min bits for requantizing dense GGUF tensors; unlisted configs take the 0 / 8 / 4 ladder.
+    mlx_min_dense_bits: tuple[tuple[str, int], ...] = field(default_factory = tuple)
     # Family-specific sd-cli sampler settings so native output matches the model's supported invocation. None leaves
     # sd-cli defaults.
     sd_cpp_sampling_method: Optional[str] = None
@@ -431,6 +440,7 @@ _SMALL_DIT_LARGE_BASES = frozenset(
     {
         "black-forest-labs/flux.2-klein-9b",
         "black-forest-labs/flux.2-klein-base-9b",
+        "black-forest-labs/flux.2-klein-9b-kv",
     }
 )
 
@@ -628,6 +638,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 hosted_plain = True,
             ),
             preview_factors = "flux2",
+            # The KV checkpoint is no base or variant here (its GGUFs take the 9B's companions), but its own repo
+            # loads as a pipeline and its quantised files tag it as their base.
+            trusted_repos = ("black-forest-labs/flux.2-klein-9b-kv",),
             auto_static_skip = (
                 (
                     "black-forest-labs/flux.2-klein-base-4b",
@@ -671,6 +684,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "black-forest-labs/FLUX.2-klein-base-9B",
             "black-forest-labs/FLUX.2-klein-base-4B",
         ),
+        # FLUX.2 klein 9B KV (same FLUX Non-Commercial licence and gate as klein 9B) is a different model, not a
+        # runtime mode: it was trained with reference tokens that attend only to themselves and are modulated at a
+        # fixed timestep 0, so their K/V do not change across steps and Flux2KleinKVPipeline computes them once, on
+        # step 0. Stock klein 4B / 9B reference tokens attend to the noisy image and take the step's timestep, so
+        # caching them there would change the model. Its weights through Flux2KleinPipeline would run the stock
+        # bidirectional path instead of the one it was trained for. A KV GGUF / single file keeps the 9B as its base on
+        # purpose: config, text encoder, VAE and scheduler are byte-identical, and the 9B's come from the ungated mirror
+        # while the KV repo is gated with no mirror; only the pipeline class follows the file.
+        pipeline_class_variants = (("klein9bkv", "Flux2KleinKVPipeline"),),
         # Train the undistilled bases, then preview their adapters on the matching 4-step models. Both vendor ids
         # resolve through the ungated mirrors at fetch time.
         trainable = True,
@@ -691,6 +713,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Flux2KleinPipeline takes reference image(s) via `image`, so it exposes a "reference" workflow atop
         # text-to-image. Inpaint but no img2img.
         reference = True,
+        reference_area = 1024 * 1024,
+        # References are denoised, never decoded: measured denoise slope x 1.2 margin / 8192 MiB per MP ~= 0.133.
+        condition_pixel_weight = 0.135,
         inpaint_pipeline_class = "Flux2KleinInpaintPipeline",
         # FLUX.2 scales >1MP inputs to ~1MP, so outpaint can't grow.
         inpaint_preserves_size = False,
@@ -1313,6 +1338,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_guard = "rescale_post_norm",
         mlx_model_config = "z-image-turbo",
         mlx_model_config_by_base = (("Tongyi-MAI/Z-Image", "z-image"),),
+        # Turbo renders clean in MLX float16 on M1 / M2; the undistilled base overflows it (NaN, black image).
+        mlx_fp16_configs = ("z-image-turbo",),
+        # Base requantized to 4-bit gives ~16x too large velocity (uniform cyan grid); Turbo is clean at 4 bits.
+        mlx_min_dense_bits = (("z-image", 8),),
         # Z-Image decodes with the FLUX.1 autoencoder: BFL's ae.safetensors, byte-identical to the repack's file.
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         # Z-Image's encoder differs from stock Qwen3-4B only in the LAST layer's MLP, which neither diffusers
@@ -2178,6 +2207,19 @@ def named_variant_base(fam: "DiffusionFamily", *names: Optional[str]) -> Optiona
     return None
 
 
+# A gated base whose every component but the denoiser is byte-identical to another base's (LFS sha256). A GGUF or
+# single file of it brings its own denoiser, so it takes the rest from that base, whose ungated mirror needs no grant.
+_COMPANION_BASES: dict[str, str] = {
+    "black-forest-labs/flux.2-klein-9b-kv": "black-forest-labs/FLUX.2-klein-9B",
+}
+
+
+def companion_base(base: Optional[str]) -> Optional[str]:
+    """The base a GGUF / single file of ``base`` reads its non-denoiser components from; ``base`` itself unless
+    listed in ``_COMPANION_BASES``."""
+    return _COMPANION_BASES.get((base or "").strip().lower(), base)
+
+
 def canonical_base(repo_id: Optional[str]) -> str:
     """A mirror id mapped back to the upstream it copies, else ``repo_id`` unchanged. Base-keyed
     tables hold UPSTREAM ids, so every lookup normalises here: a mirror reaching
@@ -2442,6 +2484,21 @@ def _first_variant(rows: Any, identifiers: tuple[Optional[str], ...]) -> Optiona
     return None
 
 
+def family_pipeline_class(fam: Any, *identifiers: Optional[str]) -> Optional[str]:
+    """The diffusers pipeline class for the checkpoint ``identifiers`` name (repo id, resolved base, file name):
+    the first ``pipeline_class_variants`` key any of them spells with separators folded, else ``pipeline_class``."""
+    default = getattr(fam, "pipeline_class", None)
+    rows = getattr(fam, "pipeline_class_variants", ()) or ()
+    if not rows:
+        return default
+    for identifier in identifiers:
+        needle = "".join(c for c in (identifier or "").lower() if c.isalnum())
+        for key, pipeline_class in rows:
+            if key and key in needle:
+                return pipeline_class
+    return default
+
+
 def family_for_checkpoint(fam: Any, *identifiers: Optional[str]) -> Any:
     """``fam`` with the condition-image limit of the checkpoint ``identifiers`` name (``max_condition_images_variants``),
     so status, admission and both engines read the loaded checkpoint's limit off the family they hold."""
@@ -2497,7 +2554,13 @@ def _first_checkpoint_variant(
 def transformer_variant_differs_from_base(
     fam: Any, base: Optional[str], *identifiers: Optional[str]
 ) -> bool:
-    """Checkpoint and ``base`` name different variants; a base naming none (a local dir) is unknown."""
+    """Checkpoint and ``base`` name different variants; a base naming none (a local dir) is unknown. A checkpoint that
+    runs its own pipeline class (``pipeline_class_variants``: klein 9B KV) differs from any base that does not, even
+    when it borrows that base's companions: its DiT is another model and must never be replaced by the base's."""
+    if getattr(fam, "pipeline_class_variants", ()) and family_pipeline_class(
+        fam, *identifiers
+    ) != family_pipeline_class(fam, base):
+        return True
     keys = getattr(fam, "checkpoint_variants", ())
     if keys:
         base_key = _first_checkpoint_variant(keys, (base,))
@@ -2646,6 +2709,8 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "QwenImageControlNetPipeline": "0.36.0",
     "QwenImageEditPlusPipeline": "0.36.0",
     "Flux2KleinPipeline": "0.37.0",
+    # Absent from the 0.37.1 wheel's diffusers/__init__.py, exported by 0.38.0's.
+    "Flux2KleinKVPipeline": "0.38.0",
     "ZImageInpaintPipeline": "0.37.0",
     "LTX2Pipeline": "0.37.0",
     # Absent from the 0.36.0 wheel's diffusers/__init__.py, exported by 0.37.0's.
@@ -3592,6 +3657,7 @@ _FLUX2_BASE_INNER_DIM = {
     "black-forest-labs/flux.2-klein-base-4b": 3072,
     "black-forest-labs/flux.2-klein-9b": 4096,
     "black-forest-labs/flux.2-klein-base-9b": 4096,
+    "black-forest-labs/flux.2-klein-9b-kv": 4096,
     "black-forest-labs/flux.2-dev": 6144,
 }
 

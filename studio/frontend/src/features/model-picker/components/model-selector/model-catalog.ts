@@ -1179,6 +1179,25 @@ function curatedPerfSuffix(
   );
 }
 
+/** Video Recommended tiers on an accelerated host: the "Fast" rows lead, every GGUF (the "Slow" row there) trails.
+ *  Video only, since its dense rows keep vendor ids and would otherwise sort under the unsloth/* GGUFs; undefined
+ *  for Images, Audio and hosts without the Fast / Slow split, whose orders stay as they are. */
+export function videoRecommendedTierFor(
+  catalog: CatalogGroup[] | undefined,
+  host: HostClass,
+  denseQuantSchemes: readonly string[] = [],
+): ((row: { id: string; isGguf?: boolean }) => "lead" | "trail" | undefined) | undefined {
+  if (!catalog?.length || !catalog.every((g) => g.scope === "video")) return undefined;
+  if (!ggufPerfSuffix(host)) return undefined;
+  return (row) => {
+    const hit = artifactForRepoId(row.id, catalog);
+    if (row.isGguf || hit?.artifact.format === "gguf") return "trail";
+    return hit && curatedPerfSuffix(hit, host, denseQuantSchemes)?.startsWith("Fast")
+      ? "lead"
+      : undefined;
+  };
+}
+
 /** A curated row as name plus chips. Null for unknown ids. */
 export function curatedRowLabelFor(
   repoId: string,

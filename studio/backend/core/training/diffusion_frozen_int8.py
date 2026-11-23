@@ -10,12 +10,24 @@ the weight after load. Forward: per-row (per token) dynamic activation codes, ``
 scales applied in fp32. Backward returns only grad_x: the weight scale sits on the reduction dim of ``grad_y @ W``,
 so it folds into grad_y before grad_y is quantized per row, and the same int8 weight (column-major) is the second
 operand. No weight gradient, and x is not saved. Rows at or below ``torch._int_mm``'s M > 16 floor (AdaLN
-modulation at batch 1) run the dequantized weight in the input dtype instead."""
+modulation at batch 1) run the dequantized weight in the input dtype instead.
+
+That column-major weight is kept by ``BACKWARD_WEIGHTS`` while it fits the trainer's budget, as the fp8 base does
+(``Fp8BackwardWeights``), but keyed by the owning FrozenInt8Linear: an entry is served only while that module's
+weight is still the tensor it was copied from, and a replaced weight rebuilds the module's one entry. int32
+accumulation is exact, so grad_x is bit-identical either way; ``UNSLOTH_DIFFUSION_INT8_BWD_CACHE=0`` keeps the
+inline copy."""
 
 from __future__ import annotations
 
+import sys
+import weakref
+
 import torch
 import torch.nn as nn
+from torch.utils.weak import WeakIdKeyDictionary
+
+from core.training.diffusion_frozen_fp8 import Fp8BackwardWeights, _column_major
 
 _QMAX = 127.0
 _EPS = 1e-12
@@ -44,6 +56,75 @@ def _dequant(q, s_row, dtype):
     return (q.float() * s_row.reshape(-1, 1)).to(dtype)
 
 
+# weight tensor -> its FrozenInt8Linear (weakly, both ways), so the backward can find the owner from the saved weight.
+_OWNERS = WeakIdKeyDictionary()
+
+
+class Int8BackwardWeights(Fp8BackwardWeights):
+    """Column-major int8 weights for grad_x within ``budget`` bytes, one entry per FrozenInt8Linear."""
+
+    ENV = "UNSLOTH_DIFFUSION_INT8_BWD_CACHE"
+    STAT_PREFIX = "int8_bwd"
+
+    def get(self, q):
+        ref = _OWNERS.get(q)
+        owner = ref() if ref is not None else None
+        if owner is None:  # not a FrozenInt8Linear weight: nothing to key on
+            self.misses += 1
+            return _column_major(q)
+        key = id(owner)
+        hit = self.entries.get(key)
+        if hit is not None:
+            owner_ref, src_ref, ptr, version, qcm = hit
+            if (
+                owner_ref() is owner
+                and src_ref() is q
+                and q.data_ptr() == ptr
+                and q._version == version
+            ):
+                self.hits += 1
+                return qcm
+            # The module's weight changed (moved, reloaded, written in place): drop its stale copy.
+            del self.entries[key]
+            self.used -= qcm.numel() * qcm.element_size()
+        self.misses += 1
+        qcm = _column_major(q)
+        nbytes = qcm.numel() * qcm.element_size()
+        if self.used + nbytes <= self.budget:
+            self.entries[key] = (weakref.ref(owner), weakref.ref(q), q.data_ptr(), q._version, qcm)
+            self.used += nbytes
+        return qcm
+
+
+BACKWARD_WEIGHTS = Int8BackwardWeights()
+
+
+def _define_grad_input_op():
+    # Opaque to the compiler, as the fp8 one: the lookup runs on every backward and a cache change never recompiles.
+    try:
+        return getattr(torch.ops.unsloth_studio, "frozen_int8_grad_input")
+    except (AttributeError, RuntimeError):
+        pass
+
+    module = __name__
+
+    @torch.library.custom_op("unsloth_studio::frozen_int8_grad_input", mutates_args = ())
+    def grad_input(gq: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+        return torch._int_mm(gq, sys.modules[module].BACKWARD_WEIGHTS.get(q))
+
+    @grad_input.register_fake
+    def _(gq, q):
+        return gq.new_empty((gq.shape[0], q.shape[1]), dtype = torch.int32)
+
+    return grad_input
+
+
+try:
+    _grad_input_mm = _define_grad_input_op()
+except Exception:  # noqa: BLE001 -- a torch without torch.library.custom_op keeps the inline copy
+    _grad_input_mm = None
+
+
 @torch._dynamo.allow_in_graph
 class _FrozenInt8MM(torch.autograd.Function):
     @staticmethod
@@ -65,7 +146,10 @@ class _FrozenInt8MM(torch.autograd.Function):
             return (gy @ _dequant(q, s_row, gy.dtype)).to(ctx.x_dtype), None, None, None
         gq, sg = _rowwise_int8(gy.float() * s_row)
         # mat2 [out, in] must be column-major for the int8 GEMM.
-        acc = torch._int_mm(gq, q.t().contiguous().t())
+        if BACKWARD_WEIGHTS.active and _grad_input_mm is not None:
+            acc = _grad_input_mm(gq, q)
+        else:
+            acc = torch._int_mm(gq, q.t().contiguous().t())
         return (acc.float() * sg).to(ctx.x_dtype), None, None, None
 
 
@@ -84,6 +168,22 @@ class FrozenInt8Linear(nn.Module):
         self.bias = (
             None if linear.bias is None else nn.Parameter(linear.bias.detach(), requires_grad = False)
         )
+        self._own_weight()
+
+    def _own_weight(self):
+        w = self._buffers.get("weight")
+        if w is not None:
+            _OWNERS[w] = weakref.ref(self)
+
+    def _apply(
+        self,
+        fn,
+        recurse = True,
+    ):
+        # .to() / .cuda() may swap in a new weight tensor: register it, or the backward could not find its entry.
+        out = super()._apply(fn, recurse)
+        self._own_weight()
+        return out
 
     def forward(self, x):
         if torch.is_autocast_enabled(x.device.type):

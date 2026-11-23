@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -182,15 +183,32 @@ def _run_children(index):
     env["AMD_SERIALIZE_KERNEL"] = "3"
     env.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    # `python -c` puts its cwd first on sys.path, so a shared temp dir would let another user's
+    # json.py / torch.py run in the child: give it a private (0700) directory instead.
+    try:
+        workdir = tempfile.mkdtemp(prefix = "unsloth_rocm_sdpa_")
+    except Exception:
+        workdir = None
+    try:
+        return _run_children_in(index, env, flags, workdir)
+    finally:
+        if workdir is not None:
+            shutil.rmtree(workdir, ignore_errors = True)
+
+
+def _run_children_in(index, env, flags, workdir):
     children = {}
     for backend in ("flash", "efficient"):
+        if workdir is None:
+            children[backend] = RuntimeError("no private working directory for the check")
+            continue
         try:
             children[backend] = subprocess.Popen(
                 [sys.executable, "-c", _CHILD, str(index), backend],
                 stdout = subprocess.PIPE,
                 stderr = subprocess.PIPE,
                 stdin = subprocess.DEVNULL,
-                cwd = tempfile.gettempdir(),
+                cwd = workdir,
                 env = env,
                 text = True,
                 encoding = "utf-8",

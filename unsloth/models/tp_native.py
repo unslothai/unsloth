@@ -60,6 +60,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+def _resume_torch_load(path, **kwargs):
+    """Refused on torch < 2.6 like Trainer's check_torch_load_is_safe (CVE-2025-32434)."""
+    from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    refuse_pickle_checkpoint_on_old_torch(path)
+    return torch.load(path, weights_only = True, **kwargs)
+
+
 __all__ = [
     "TPConfig",
     "TPPlan",
@@ -3478,6 +3487,62 @@ def check_tp_dp_composition(model, dp_mesh):
     return tp_mesh
 
 
+# Gradient norms square-sum in slices of this many elements: a whole-tensor .float().square() holds 4x a
+# half-precision gradient's bytes (8x through float64), e.g. 3 GiB for a 3B model's embedding gradient.
+_SQUARE_SUM_CHUNK = 1 << 24
+
+
+def _grad_slices(tensor, chunk):
+    """Views of tensor with at most chunk elements each, covering every element once, never a copy.
+    A contiguous tensor splits its flat view; a strided one narrows its largest dim (recursively)."""
+    if tensor.numel() <= chunk:
+        yield tensor
+        return
+    if tensor.is_contiguous():
+        yield from tensor.view(-1).split(chunk)
+        return
+    dim = max(range(tensor.ndim), key = tensor.size)
+    length = tensor.size(dim)
+    width = max(1, chunk // (tensor.numel() // length))
+    for start in range(0, length, width):
+        yield from _grad_slices(tensor.narrow(dim, start, min(width, length - start)), chunk)
+
+
+def _disjoint_strides(tensor):
+    """No two indices of tensor address the same element, so its slices can be written separately."""
+    span = 1
+    for stride, size in sorted(zip(tensor.stride(), tensor.shape)):
+        if size > 1:
+            if stride < span:
+                return False
+            span += (size - 1) * stride
+    return True
+
+
+def _square_sum(tensor, dtype = torch.float32):
+    """sum(tensor.to(dtype) ** 2) with a transient of at most _SQUARE_SUM_CHUNK elements of dtype.
+    A tensor of at most that many elements is reduced in one call, with the same values as before (bitwise);
+    a larger one adds its slices' square sums in dtype, in order (deterministic, within dtype rounding).
+    Detached: a gradient that requires grad does not make autograd keep every slice alive."""
+    tensor = tensor.detach()
+    chunk = _SQUARE_SUM_CHUNK
+    if tensor.layout != torch.strided:
+        # Sparse: as before; its stored values, not numel, bound the transient.
+        return tensor.to(dtype).square().sum()
+    if tensor.numel() <= chunk:
+        part = tensor.to(dtype)
+        part = part.square() if part is tensor else part.square_()
+        return part.sum()
+    total = None
+    for part in _grad_slices(tensor, chunk):
+        cast = part.to(dtype)
+        cast = cast.square() if cast is part else cast.square_()
+        sq = cast.sum()
+        del cast
+        total = sq if total is None else total + sq
+    return total
+
+
 def tp_clip_grad_norm_(
     parameters,
     max_norm,
@@ -3503,13 +3568,12 @@ def tp_clip_grad_norm_(
             if g is not p.grad:
                 p.grad = g
             group = g.device_mesh.get_group() if group is None else group
-            local = g.to_local().float()
-            sq = local.square().sum()
+            sq = _square_sum(g.to_local())
             if any(pl.is_shard() for pl in g.placements):
                 sharded = sq if sharded is None else sharded + sq
                 continue
         else:
-            sq = g.float().square().sum()
+            sq = _square_sum(g)
         replicated = sq if replicated is None else replicated + sq
     device = (
         params[0].grad.device
@@ -3537,7 +3601,16 @@ def _scale_grads_(params, total, max_norm, eps):
             c = coef.to(device = local.device, dtype = torch.float32)
             if local.dtype in (torch.float16, torch.bfloat16):
                 # A small coefficient rounds to 0 in fp16 (a device tensor is cast to the grad dtype).
-                local.copy_(local.float().mul_(c))
+                # Elementwise, so slicing a contiguous gradient keeps every value and bounds the fp32 copy.
+                # A strided gradient slices along its layout when no two indices share an element.
+                parts = (
+                    _grad_slices(local, _SQUARE_SUM_CHUNK)
+                    if local.layout == torch.strided
+                    and (local.is_contiguous() or _disjoint_strides(local))
+                    else (local,)
+                )
+                for part in parts:
+                    part.copy_(part.float().mul_(c))
             else:
                 local.mul_(c.to(local.dtype))
 
@@ -3567,9 +3640,9 @@ def _clip_over_world(params, max_norm, eps):
             copies = math.prod(
                 mesh.size(i) for i, pl in enumerate(g.placements) if pl.is_replicate()
             ) * (world // mesh.size())
-            sq = g.to_local().float().square().sum() / copies
+            sq = _square_sum(g.to_local()) / copies
         else:
-            sq = g.float().square().sum() / world  # the same on every rank
+            sq = _square_sum(g) / world  # the same on every rank
         total = sq if total is None else total + sq
     dist.all_reduce(total)
     total = total.sqrt()
@@ -5021,7 +5094,7 @@ def _tp_resume_payload(self, checkpoint):
             "have (it was not written by a tensor parallel Trainer, or with save_only_model = True, which saves "
             "no optimizer state to resume from)." + _env_hint()
         )
-    payload = torch.load(path, map_location = "cpu", weights_only = True)
+    payload = _resume_torch_load(path, map_location = "cpu")
     want, got = _tp_layout(self), payload["layout"]
     if want != got:
         diff = {
@@ -5067,7 +5140,7 @@ def _tp_load_optimizer_and_scheduler(self, checkpoint, *args, **kwargs):
 
     path = os.path.join(checkpoint, SCHEDULER_NAME)
     if getattr(self, "lr_scheduler", None) is not None and os.path.isfile(path):
-        self.lr_scheduler.load_state_dict(torch.load(path, weights_only = True))
+        self.lr_scheduler.load_state_dict(_resume_torch_load(path))
     self.__dict__.pop("_unsloth_tp_resume", None)
     return None
 
