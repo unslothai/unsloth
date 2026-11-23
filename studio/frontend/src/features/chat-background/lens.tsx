@@ -28,6 +28,15 @@ function drawsGlass(el: HTMLElement): boolean {
 
 const PREVIEW_HOSTS = ".wallpaper-preview-composer";
 
+// Keyed per host, not by index: a host joining earlier in the list would otherwise remount every later lens.
+const hostKeys = new WeakMap<HTMLElement, number>();
+let nextHostKey = 0;
+function hostKey(host: HTMLElement): number {
+  let key = hostKeys.get(host);
+  if (key === undefined) hostKeys.set(host, (key = ++nextHostKey));
+  return key;
+}
+
 /** A wallpaper copy in every glass surface, since backdrop-filter cannot scale and SVG backdrop filters are Chromium only (not WebKit).
  * `preview` keeps it to a settings preview's own sample composers, over that preview's wallpaper. */
 export function GlassLenses({
@@ -81,11 +90,11 @@ export function GlassLenses({
     };
   }, [workspace, on, material, menus, preview, clear]);
   if (!wallpaper || !on) return null;
-  return hosts.map((host, i) =>
+  return hosts.map((host) =>
     createPortal(
       <Lens host={host} wallpaper={wallpaper} />,
       host,
-      `glass-lens-${i}`,
+      `glass-lens-${hostKey(host)}`,
     ),
   );
 }

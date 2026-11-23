@@ -662,6 +662,12 @@ test("at glass strength 0% the lens stays on the composer only, as on main", () 
 	assert.equal(LENS_CLEAR_HOSTS, ".unsloth-composer-surface, .wallpaper-preview-composer");
 });
 
+test("each lens portal is keyed by its host, so a host joining the list does not remount the others", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /`glass-lens-\$\{hostKey\(host\)\}`/);
+	assert.doesNotMatch(lens, /`glass-lens-\$\{i\}`/);
+});
+
 test("a lens copy drops its blur while its host is moving, instead of falling back to the CSS blur", () => {
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
 	assert.match(lens, /if \(fillCopy\) fillCopy\.style\.filter = blur \|\| "none";/);
