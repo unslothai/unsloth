@@ -112,7 +112,16 @@ def _case(
         )
     ]
     owned_4bit = sum(1 for k in b if k.endswith(".weight.quant_state.bitsandbytes__nf4"))
+    inner = ppn._unwrap(model)
+    embed, head = inner.get_input_embeddings(), inner.get_output_embeddings()
+    tied = {
+        "config": bool(getattr(inner.config.get_text_config(), "tie_word_embeddings", False)),
+        # A stand-in of the shared embedding on the stage that runs it (first: embedding, last: lm_head).
+        "embed_placeholder": pp.is_first and ppl.is_placeholder(embed.weight),
+        "head_placeholder": pp.is_last and ppl.is_placeholder(head.weight),
+    }
     return {
+        "tied": tied,
         "stats": stats,
         "models_loaded": len(state["models"]),
         "full_bytes": full_bytes,
@@ -168,8 +177,25 @@ def checkpoint():
         yield _save_checkpoint("llama", os.path.join(tmp, "ckpt"))
 
 
-@pytest.mark.parametrize("mode,schedule", [("explicit", "gpipe"), ("auto", "1f1b")])
-def test_quantize_on_load_reads_per_stage(checkpoint, mode, schedule):
+@pytest.fixture(scope = "module")
+def tied_checkpoint():
+    # tie_word_embeddings: the checkpoint stores only the embedding; the head is tied to it after the load.
+    with tempfile.TemporaryDirectory() as tmp:
+        yield _save_checkpoint("llama", os.path.join(tmp, "ckpt"), tie = True)
+
+
+@pytest.mark.parametrize(
+    "mode,schedule,tie",
+    [
+        ("explicit", "gpipe", False),
+        ("auto", "1f1b", False),
+        ("explicit", "gpipe", True),
+        ("auto", "1f1b", True),
+    ],
+    ids = ["explicit-gpipe", "auto-1f1b", "explicit-gpipe-tied", "auto-1f1b-tied"],
+)
+def test_quantize_on_load_reads_per_stage(checkpoint, tied_checkpoint, mode, schedule, tie):
+    checkpoint = tied_checkpoint if tie else checkpoint
     if _torch_pipelining_error():
         pytest.skip(_torch_pipelining_error())
     world = 2
@@ -198,7 +224,8 @@ def test_quantize_on_load_reads_per_stage(checkpoint, mode, schedule):
         assert res["placeholders"] > 0 and res["zero_stride"]
         # Each rank keeps only its stages' 4-bit weights, about half of the full quantize-on-load.
         assert 0 < res["kept4"] < 0.75 * res["full4"], (res["kept4"], res["full4"])
-        assert res["loaded_bytes"] < 0.8 * res["full_bytes"], (
+        # (tied: the vocabulary-sized shared embedding stays on both ends, most of this tiny model's bytes)
+        assert tie or res["loaded_bytes"] < 0.8 * res["full_bytes"], (
             res["loaded_bytes"],
             res["full_bytes"],
         )
@@ -208,3 +235,44 @@ def test_quantize_on_load_reads_per_stage(checkpoint, mode, schedule):
         assert res["sharded"] == pytest.approx(res["full"], rel = 1e-5), (res["sharded"], res["full"])
         kept += res["kept4"]
     assert kept == results[0]["full4"]  # the two ranks hold every 4-bit weight exactly once
+    for res in results:
+        if tie:
+            # Both ends hold the real shared weight: no placeholder where the embedding or the head runs.
+            assert res["tied"]["config"], res["tied"]
+        assert not res["tied"]["embed_placeholder"] and not res["tied"]["head_placeholder"], res[
+            "tied"
+        ]
+
+
+@pytest.mark.parametrize(
+    "keys,flag,want",
+    [
+        ({"lm_head.weight": "model.embed_tokens.weight"}, True, True),  # transformers 5.x
+        (["lm_head.weight"], True, True),  # transformers 4.57
+        ({}, True, False),  # a class that never ties (Inkling 2), whatever the config says
+        ({"lm_head.weight": "model.embed_tokens.weight"}, False, False),  # untied config
+    ],
+)
+def test_tied_embedding_detection_reads_config_and_class_keys(keys, flag, want):
+    import types
+
+    import torch.nn as nn
+
+    from test_pp_load_gloo import _pp_load
+
+    ppl = _pp_load()
+
+    class Model(nn.Module):
+        _tied_weights_keys = keys
+
+        def __init__(self):
+            super().__init__()
+            self.config = types.SimpleNamespace(tie_word_embeddings = flag)
+            self.embed_tokens = nn.Embedding(8, 4)
+            self.lm_head = nn.Linear(
+                4, 8, bias = False
+            )  # built untied, as the quantize-on-load model is
+
+    model = Model()
+    parts = types.SimpleNamespace(embed = model.embed_tokens, lm_head = model.lm_head)
+    assert ppl._ties_embeddings(model, parts, ppl._module_names(model)) is want

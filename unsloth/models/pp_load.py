@@ -511,6 +511,44 @@ def _quantized_placeholder(p, module):
     return new
 
 
+def _ties_embeddings(model, parts, names):
+    """Whether the lm_head shares the input embedding's weight once the load finishes. The quantize-on-load model is
+    built with tying off and set_param may already have replaced one end, so the parameter identity alone cannot tell:
+    the config's tie_word_embeddings plus the class's tied-weight declaration naming the head decide
+    (``_tied_weights_keys``: a {target: source} dict on transformers 5.x, a list of names on 4.x)."""
+    weight = getattr(parts.embed, "weight", None)
+    if weight is not None and weight is getattr(parts.lm_head, "weight", None):
+        return True
+    config = getattr(model, "config", None)
+    flags = [getattr(config, "tie_word_embeddings", None)]
+    get_text = getattr(config, "get_text_config", None)
+    if callable(get_text):
+        try:
+            flags.append(getattr(get_text(), "tie_word_embeddings", None))
+        except Exception:
+            pass
+    if not any(flag is True for flag in flags):
+        return False
+    head = names.get(id(parts.lm_head), "") or "lm_head"
+    head_leaf = head.rsplit(".", 1)[-1]
+    for cls in type(model).__mro__:
+        keys = cls.__dict__.get("_tied_weights_keys")
+        if keys is None:
+            continue
+        if isinstance(keys, dict):
+            keys = list(keys)
+        for key in keys or ():
+            key = str(key)
+            if (
+                key.startswith(head + ".")
+                or key.split(".")[0] == head_leaf
+                or f"{head_leaf}." in key
+            ):
+                return True
+        return False  # the most derived declaration wins (an empty one: never tied)
+    return False
+
+
 def _module_names(root):
     return {id(m): name for name, m in root.named_modules(remove_duplicate = False)}
 
@@ -536,9 +574,7 @@ def _load_quantizing(real, cls, name, args, kwargs, state):
         prefixes = [
             names[id(layer)] + "." for i, layer in enumerate(parts.layers) if i not in owned
         ]
-        tied = getattr(parts.embed, "weight", None) is not None and parts.embed.weight is getattr(
-            parts.lm_head, "weight", None
-        )
+        tied = _ties_embeddings(model, parts, names)
         for module, holds in ((parts.embed, holds_first), (parts.lm_head, holds_last)):
             if not (holds or (tied and (holds_first or holds_last))):
                 prefixes.append(names[id(module)] + ".")
