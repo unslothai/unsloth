@@ -166,5 +166,33 @@ def test_an_oom_the_allocator_stats_never_count_is_not_persisted(env, monkeypatc
         raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 MiB")
 
     monkeypatch.setattr(torch, "randint", _full_card)
-    assert cut.probed_tiles(0) == ()  # this process keeps the conservative verdict
+    assert cut.probed_tiles(0) == ()
     assert store.table == {}
+
+
+def test_an_oom_probe_is_not_kept_in_process_either(env, monkeypatch):
+    """A probe that ran out of memory was memoized in _PROBED, so a long-running Studio kept CUTLASS off after the
+    card freed up. The next call probes again and keeps the healthy verdict."""
+    store, probes, verdict = env
+    healthy = cut._probe_tile
+
+    def _full_card(i, fam, t, pairs):
+        probes.append(t)
+        cut._PROBE_OOMS[0] += 1
+        return False
+
+    monkeypatch.setattr(cut, "_probe_tile", _full_card)
+    assert cut.probed_tiles(0) == () and 0 not in cut._PROBED and store.table == {}
+    monkeypatch.setattr(cut, "_probe_tile", healthy)
+    probes.clear()
+    assert cut.probed_tiles(0) == (0, 2, 3) and probes == [0, 1, 2, 3, 1]
+    assert cut._PROBED[0] == (0, 2, 3) and store.table[("cuda:0", "tiles|80")]["ok"] == [0, 2, 3]
+
+
+def test_an_allocator_counted_oom_is_not_kept_in_process(env, monkeypatch):
+    store, probes, _ = env
+    counts = iter([0, 1, 1, 1])
+    monkeypatch.setattr(cut, "_alloc_failures", lambda index: next(counts))
+    assert cut.probed_tiles(0) == (0, 2, 3) and 0 not in cut._PROBED and store.table == {}
+    assert cut.probed_tiles(0) == (0, 2, 3) and cut._PROBED[0] == (0, 2, 3)
+    assert store.table[("cuda:0", "tiles|80")]["ok"] == [0, 2, 3]

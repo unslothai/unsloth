@@ -566,12 +566,13 @@ def probed_tiles(index: int) -> tuple:
                 failed = [t for t in range(len(tiles(fam))) if t not in ok]
                 # a failure persists only when it repeats and nothing around it failed: one transient error, an
                 # out-of-memory on a full card or a broken context must not drop a tile for good
-                if (
-                    not any(_probe_tile(index, fam, t, pairs) for t in failed)
-                    and ooms is not None
-                    and _alloc_failures(index) == ooms
-                    and _PROBE_OOMS[0] == probe_ooms
+                repeated = not any(_probe_tile(index, fam, t, pairs) for t in failed)
+                after = _alloc_failures(index)
+                if _PROBE_OOMS[0] != probe_ooms or (
+                    ooms is not None and after is not None and after != ooms
                 ):
+                    return ok  # out of memory: not kept in this process either, the next call probes again
+                if repeated and ooms is not None and after == ooms:
                     _store_tiles(index, fam, ok)
     except Exception:  # noqa: BLE001
         ok = ()
