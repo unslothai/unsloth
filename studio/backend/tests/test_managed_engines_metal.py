@@ -172,7 +172,9 @@ def test_metal_loads_on_the_apple_gpu_when_studio_sees_none(mac, monkeypatch):
         managed_engine.validate_load("vllm", request)
 
 
-@pytest.mark.parametrize("method", ["gptq", "compressed-tensors", "auto-round"])
+@pytest.mark.parametrize(
+    "method", ["gptq", "compressed-tensors", "auto-round", "fbgemm_fp8", "fp8", "modelopt"]
+)
 def test_metal_refuses_quantizations_vllm_metal_cannot_load(tmp_path, monkeypatch, method):
     monkeypatch.setattr(install, "gpu_platform", lambda: "metal")
     monkeypatch.setattr(managed_engine, "profile", install.profile)
@@ -184,5 +186,9 @@ def test_metal_refuses_quantizations_vllm_metal_cannot_load(tmp_path, monkeypatc
         managed_engine.validate_model(config)
     (tmp_path / "config.json").write_text(
         json.dumps({"quantization_config": {"quant_method": "awq"}})
+    )
+    managed_engine.validate_model(config)
+    (tmp_path / "config.json").write_text(
+        json.dumps({"quantization_config": {"group_size": 64, "bits": 4}})
     )
     managed_engine.validate_model(config)

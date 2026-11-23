@@ -258,12 +258,8 @@ def validate_model(
             f"{ENGINE_NAMES[engine]} on this GPU cannot load BitsAndBytes checkpoints. Choose an unquantized "
             "or AWQ checkpoint."
         )
-    if profile(engine)["platform"] == "metal" and quant.get("quant_method") in (
-        "gptq",
-        "compressed-tensors",
-        "auto-round",
-        "fbgemm_fp8",
-    ):
+    # vllm-metal 0.33.0 loads only AWQ; GPTQ, FP8, NVFP4 and compressed-tensors fail at engine start.
+    if profile(engine)["platform"] == "metal" and quant.get("quant_method") not in (None, "awq"):
         raise ValueError(
             f"{ENGINE_NAMES[engine]} on Apple Silicon cannot load this checkpoint's quantization. Choose an "
             "unquantized, MLX-quantized or AWQ checkpoint."

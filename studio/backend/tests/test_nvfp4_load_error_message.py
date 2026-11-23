@@ -225,12 +225,12 @@ def test_other_per_module_metadata_keeps_its_own_error():
     assert inference_route._unsupported_quantization_detail(msg) is None
 
 
-def test_fp8_on_apple_silicon_still_points_at_vllm():
+def test_fp8_on_apple_silicon_does_not_point_at_vllm():
     inference_route = _load_route_module()
     with (
         patch("core.inference.engine_install.support_reason", return_value = None),
         patch("core.inference.engine_install.gpu_platform", return_value = "metal"),
     ):
         assert inference_route._gpu_quant_inference_message("FP8") == (
-            inference_route._GPU_QUANT_ENGINE_MESSAGE.format(fmt = "FP8")
+            inference_route._GPU_QUANT_NO_ENGINE_MESSAGE.format(fmt = "FP8")
         )

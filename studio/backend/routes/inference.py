@@ -18008,9 +18008,8 @@ def _gpu_quant_inference_message(fmt: str) -> str:
     try:
         from core.inference.engine_install import gpu_platform, support_reason
 
-        # vllm-metal 0.33.0 has no NVFP4 loader.
-        refused = ("rocm", "metal") if fmt == "NVFP4" else ("rocm",)
-        if gpu_platform() not in refused and support_reason("vllm", wait = False) is None:
+        # vllm-metal 0.33.0 loads neither NVFP4 nor FP8.
+        if gpu_platform() not in ("rocm", "metal") and support_reason("vllm", wait = False) is None:
             return _GPU_QUANT_ENGINE_MESSAGE.format(fmt = fmt)
     except Exception:
         pass
