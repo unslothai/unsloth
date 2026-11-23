@@ -102,6 +102,7 @@ from core.training.diffusion_checkpoint import (
     snapshot_checkpoints,
     identity_for_config,
     with_cache_mode,
+    with_int8_kernel,
     with_resolved_base_precision,
     with_world_size,
     with_resolved_dit,
@@ -495,7 +496,7 @@ def _apply_int8_w8a8(
     """Frozen W8A8 int8 base after add_adapter, streamed onto ``device``; False (caller keeps torchao) on failure."""
     import torch
 
-    from core.training.diffusion_frozen_int8 import convert_frozen_int8
+    from core.training.diffusion_frozen_int8 import FrozenInt8Linear, convert_frozen_int8
 
     try:
         dev = torch.device(device) if device is not None else next(transformer.parameters()).device
@@ -518,6 +519,13 @@ def _apply_int8_w8a8(
         )
         return True
     except Exception as exc:  # noqa: BLE001 -- prototype: fall back to the torchao weight-only base
+        if any(isinstance(m, FrozenInt8Linear) for m in transformer.modules()):
+            # Failed partway (a device move OOMs between layers): torchao would quantize only the rest, training a
+            # mixed base that compile, the caches and the checkpoint all treat as weight-only int8.
+            raise ValueError(
+                f"int8 W8A8 failed after converting part of the base ({exc}); "
+                "use base_precision='nf4' or 'auto'."
+            ) from exc
         _emit(on_event, "warning", message = f"int8 W8A8 unavailable, using weight-only int8: {exc}")
         return False
 
@@ -1160,8 +1168,12 @@ def _resolve_base_precision(cfg, spec, device) -> str:
             free_gb = trusted_mem_get_info()[0] / 1e9
             capability = torch.cuda.get_device_capability()
             # The frozen fp8 base runs torch._scaled_mm on NVIDIA sm89+; ROCm reports gfx capabilities that are not.
+            # The cheap gates go first: the probe allocates, runs a GEMM and syncs, and the policy never picks fp8
+            # below sm89 or for an eager run anyway.
             has_fp8 = (
-                hasattr(torch, "float8_e4m3fn")
+                tuple(capability) >= (8, 9)
+                and _auto_run_compiles(cfg)
+                and hasattr(torch, "float8_e4m3fn")
                 and hasattr(torch, "_scaled_mm")
                 and not torch_is_rocm()
                 and not is_stubbed("torchao")
@@ -4417,6 +4429,8 @@ def _train_dit(
     identity = with_cache_mode(identity, latent_cache is not None)
     # base_precision is resolved now (auto, or fp8/mxfp8 fallback to bf16); without this the bundle records a base it never trained on.
     identity = with_resolved_base_precision(identity, base_precision)
+    if base_precision == "int8":
+        identity = with_int8_kernel(identity, w8a8_on)
     if getattr(spec, "dit_source", None) is not None:
         identity = with_resolved_dit(identity, *spec.dit_source(fetch_cfg))
 
