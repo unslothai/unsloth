@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import functools
+import sys
 import threading
 import types
 import weakref
@@ -2252,21 +2253,43 @@ def _rl_decoder_pre_hook(module, args, kwargs):
     selection = getattr(_LAST_HIDDEN, "selection", None)
     if selection is not None and selection.decoder is module:
         selection.decoder = None
+        # The first call claims on every rank (the vote needs all of them), but only the call the audited
+        # forward makes itself may truncate: a helper or callback it runs first that calls the decoder
+        # (and may index its hidden_states) votes for every state instead.
+        if (
+            selection.caller is not None
+            and _direct_caller_code(sys._getframe(1)) is not selection.caller
+        ):
+            selection.allowed = False
     else:
         selection = None
     stack.append((seq_len, selection))
     return args, kwargs
 
 
+def _direct_caller_code(frame):
+    # The code object that called the module: the first frame above torch's own call machinery
+    # (Module._wrapped_call_impl / _call_impl, compile wrappers).
+    while frame is not None:
+        name = frame.f_globals.get("__name__", "")
+        if name != "torch" and not name.startswith("torch."):
+            return frame.f_code
+        frame = frame.f_back
+    return None
+
+
 class _LastHiddenSelection:
-    __slots__ = ("decoder", "allowed", "truncated")
+    __slots__ = ("decoder", "allowed", "truncated", "caller")
 
     def __init__(
         self,
         decoder,
         allowed = True,
+        caller = None,
     ):
         self.decoder = decoder
+        # Code object the claiming decoder call must come from directly (None: any caller).
+        self.caller = caller
         # This rank's own verdict. The decoder call still claims the selection when it is False, so every
         # rank reaches the same vote; the vote then keeps every state on all of them.
         self.allowed = bool(allowed)
@@ -2279,13 +2302,18 @@ _LAST_HIDDEN = threading.local()
 
 
 @contextlib.contextmanager
-def last_hidden_state_only(decoder, allowed = True) -> Iterator[_LastHiddenSelection]:
+def last_hidden_state_only(
+    decoder,
+    allowed = True,
+    caller = None,
+) -> Iterator[_LastHiddenSelection]:
     """For a caller that asks for output_hidden_states only to read the last one (GRPO's hidden-state
     forward): the next call of ``decoder`` on this thread gathers that state alone, not all L + 1 layers
     to full length. ``decoder = None`` selects nothing (and hides an enclosing selection). The yielded
     selection's ``truncated`` says whether the decoder did return only the last state. ``allowed = False``
-    claims the decoder call without truncating: it votes against truncation on every rank."""
-    selection = _LastHiddenSelection(decoder, allowed)
+    claims the decoder call without truncating: it votes against truncation on every rank. With ``caller``
+    (a code object) the claiming call votes against truncation unless that code made it directly."""
+    selection = _LastHiddenSelection(decoder, allowed, caller)
     previous = getattr(_LAST_HIDDEN, "selection", None)
     _LAST_HIDDEN.selection = selection
     try:
@@ -2546,7 +2574,20 @@ def last_hidden_state_scope(
     if decoder is None:
         return last_hidden_state_only(None)
     allowed = not requested and _forward_passthrough(forward, attrs)
-    return last_hidden_state_only(decoder, allowed = allowed)
+    # Bound to the audited function: only the decoder call it makes itself may be the truncated one.
+    caller = _audited_code(forward)
+    return last_hidden_state_only(decoder, allowed = allowed and caller is not None, caller = caller)
+
+
+def _audited_code(forward):
+    # The code object of the innermost function _forward_passthrough audits.
+    function = getattr(forward, "__func__", forward)
+    for _ in range(16):
+        if not hasattr(function, "__wrapped__"):
+            break
+        function = function.__wrapped__
+    function = getattr(function, "__func__", function)
+    return getattr(function, "__code__", None)
 
 
 def _forward_passthrough(forward, attrs) -> bool:

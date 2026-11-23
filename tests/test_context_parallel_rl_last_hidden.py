@@ -291,6 +291,29 @@ def test_scope_does_not_reach_a_nested_decoder():
     _run(_nested_decoder)
 
 
+def _helper_calls_the_same_decoder(env):
+    # A helper the audited forward runs before its own decoder call calls that same decoder and reads an
+    # intermediate state: it gets every state (it must not claim the truncation meant for the direct call),
+    # and the forward's own result stays right.
+    lm, decoder = env.attach(_LM)
+    seen = []
+    lm.before = lambda: seen.append(
+        decoder(input_ids = env.ids, output_hidden_states = True).hidden_states[1]
+    )
+    out = lm(input_ids = env.ids)
+    torch.testing.assert_close(seen[0], env.full.hidden_states[1], rtol = 1e-5, atol = 1e-6)
+    torch.testing.assert_close(out.logits, env.full.last_hidden_state, rtol = 1e-5, atol = 1e-6)
+    # Without the helper the direct call still gathers the last state alone.
+    lm.before = None
+    del env.calls[:]
+    lm(input_ids = env.ids)
+    assert len(env.calls) == 2, env.calls
+
+
+def test_helper_calling_the_same_decoder_first_gets_every_state():
+    _run(_helper_calls_the_same_decoder)
+
+
 def _later_hook(env, ranks):
     # Finding 4: a forward hook registered after the CP hook reads states by index; a hook on one rank only
     # must not make the peers enter different gathers.
