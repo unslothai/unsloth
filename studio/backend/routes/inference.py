@@ -27215,7 +27215,7 @@ async def _transcribe_audio_result(
         load_options = {"on_phase": on_phase} if on_phase is not None else {}
         if serving_engine == "mtmd":
             load_options["context_length"] = context_length
-            # Auto would start at 4096 and restart once the clip is counted; decode first to size it.
+            # Decode first so a cold Auto start is sized once, not 4096 then a restart.
             prepare = getattr(sidecar, "prepare_cold_start", None) if not context_length else None
             prepared = (
                 await asyncio.to_thread(holds_inference(prepare), raw, model, cancel_event)

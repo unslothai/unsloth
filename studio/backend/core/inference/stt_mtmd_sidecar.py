@@ -75,7 +75,7 @@ class MtmdSttModel:
     label: str
     # Qwen3-ASR emits "language English<asr_text>" before the transcript.
     transcript_marker: Optional[str] = None
-    # Audio prompt tokens per second, prompt excluded; only sizes a cold Auto start (0 = unknown).
+    # Audio tokens/s, prompt excluded; sizes a cold Auto start (0 = from the output budget alone, still <= counted size).
     audio_tokens_per_second: float = 0.0
 
 
@@ -87,7 +87,7 @@ MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
         mmproj_file = "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
         label = "Qwen3-ASR 0.6B",
         transcript_marker = "<asr_text>",
-        # qwen3a projector: the bundled runtime counts 13 per whole second, plus the prompt.
+        # qwen3a: the bundled runtime counts 13 per whole second, plus the prompt.
         audio_tokens_per_second = 13.0,
     ),
     "qwen3-asr-1.7b": MtmdSttModel(
@@ -148,13 +148,11 @@ def _transcript_token_budget(audio_seconds: Optional[float]) -> int:
 
 
 def _cold_start_context(model_id: str, audio_seconds: Optional[float]) -> int:
-    """Auto window to start a server at for this clip, never above what the token count picks,
-    so a long clip does not pay a 4096 start and then a resize."""
+    """Lower bound of the counted size, so the existing resize still runs if short and never adds a start."""
     audio_tokens = int((audio_seconds or 0) * MTMD_STT_MODELS[model_id].audio_tokens_per_second)
     try:
         return _auto_context_length(audio_tokens, _transcript_token_budget(audio_seconds))
     except SttContextSizeError:
-        # The count after startup refuses it with the actionable message.
         return _AUTO_CONTEXT_MIN
 
 
@@ -961,8 +959,7 @@ class MtmdSttSidecar:
         auto_start_context: Optional[int] = None,
     ) -> None:
         """``device`` is the user's audio device preference; ``cpu`` starts
-        llama-server at ``-ngl 0``, the same offload training already forces.
-        ``auto_start_context`` sizes an Auto server that has to start anyway; a warm one keeps its window."""
+        llama-server at ``-ngl 0``, the same offload training already forces."""
         _validate_context_length(context_length)
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1240,7 +1237,6 @@ class MtmdSttSidecar:
 
         ``fast`` has no effect: decoding is greedy. A supported ``language``
         prefills the assistant turn; otherwise the model auto-detects it.
-        ``decoded_audio`` is ``audio`` already decoded by ``prepare_cold_start``.
         """
         ensure_engine_available()
         model_id = resolve_mtmd_model_id(model)
@@ -1257,7 +1253,6 @@ class MtmdSttSidecar:
             raise SttAudioDecodeError("Audio is too short (min 1 ms).")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         audio_seconds = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
-        # A fixed context ignores it; Auto starts at the size the count below would choose.
         start_context = 0 if context_length else _cold_start_context(model_id, audio_seconds)
         self.load(
             model_id,
@@ -1356,10 +1351,8 @@ class MtmdSttSidecar:
         model: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> Optional[tuple[Optional[int], object]]:
-        """(auto_start_context, decoded audio) for a server that is not running this model yet, so the
-        first start already has the window the token count picks; the context is None when 4096 fits.
-        None keeps the usual order and errors: a warm server, an undownloaded model (its 409 first)
-        and an undecodable clip all skip this."""
+        """None for a warm server or undownloaded model, so the 409 runs before any decode, and on decode
+        failure, so the old path raises the same 400."""
         try:
             model_id = resolve_mtmd_model_id(model)
             if (self._process_alive() and self._model_id == model_id) or not is_model_downloaded(

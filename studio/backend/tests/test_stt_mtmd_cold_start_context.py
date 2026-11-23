@@ -138,7 +138,6 @@ def studio(monkeypatch):
         decodes.append(audio)
         if audio == b"not audio":
             raise SttAudioDecodeError("Could not decode the audio.")
-        # The clip length in seconds is the payload, so a test names the duration it wants.
         return b"\0" * int(float(audio.decode()) * RATE)
 
     def ensure_downloaded(_self, model_id):
@@ -266,7 +265,6 @@ def test_undecodable_upload_is_the_same_400_after_the_same_start(studio):
         studio.transcribe(180, raw = b"not audio")
     assert exc.value.status_code == 400
     assert exc.value.detail == "Could not decode the audio."
-    # As before the clip could not size anything, so the usual Auto server is what started.
     assert [_context(process) for process in studio.processes] == [4096]
 
 
