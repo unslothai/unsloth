@@ -80,7 +80,6 @@ def test_video_planned_bytes(tmp_path, monkeypatch, ref):
     fields = {f: None for f in getattr(video._PlannedFetch, "__dataclass_fields__", {})}
     fields.update(repo = "org/model", revision = None, files = (("config.json", "", 2),))
     entry = video._PlannedFetch(**fields)
-    # load_progress polls this during a video load
     assert video.VideoBackend._planned_bytes({"k": entry}) == 0
 
 
