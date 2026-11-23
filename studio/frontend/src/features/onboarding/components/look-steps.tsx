@@ -372,7 +372,6 @@ function GlassSegmented({
     { value: true, label: t("onboarding.scene.glassOn") },
   ];
   return (
-    // The dialog is page-coloured, so hub.css's sunk dialog track would vanish into it: use the page's track.
     <div className="hub-tab-toggle inline-flex h-8 shrink-0 items-center rounded-full [--hub-tab-track:color-mix(in_srgb,var(--foreground)_calc(6.5%*var(--contrast-wash-gain,1)),transparent)]">
       {options.map((opt) => {
         const active = glass === opt.value;

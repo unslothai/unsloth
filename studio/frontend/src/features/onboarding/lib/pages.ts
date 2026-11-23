@@ -3,7 +3,6 @@
 
 // Import-free so node:test can load it.
 
-/** Ids are stored per account: a new page needs a new id, and only accounts that never saw it get it. */
 export const ONBOARDING_PAGES = ["welcome", "look", "done"] as const;
 
 export type OnboardingPageId = (typeof ONBOARDING_PAGES)[number];
@@ -34,7 +33,6 @@ export function decideOnboarding(record: OnboardingRecord): OnboardingDecision {
     (page) => !BOOKENDS.has(page) && !seen.has(page),
   );
   if (unseen.length === 0) {
-    // A run closed on the last page before Finish landed: nothing left to say.
     return { kind: "none" };
   }
   const pages: OnboardingPageId[] = seen.has("welcome") ? [] : ["welcome"];
@@ -43,7 +41,6 @@ export function decideOnboarding(record: OnboardingRecord): OnboardingDecision {
 
 export const CHAT_TOUR = "chat";
 
-/** The greeting addresses the first word, as useEffectiveProfile does. */
 export function greetingName(displayName: string): string {
   return displayName.trim().split(/\s+/)[0] ?? "";
 }

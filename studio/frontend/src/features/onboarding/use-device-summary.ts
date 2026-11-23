@@ -56,7 +56,6 @@ function toSummary(
   };
 }
 
-// Detection is deferred until a page asks for it; this step is that ask.
 export function useDeviceSummary(): DeviceSummary {
   const [summary, setSummary] = useState<DeviceSummary>({ status: "checking" });
   useEffect(() => {

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Painted, not shipped: a few soft gradients cost no bundle and become an ordinary uploaded wallpaper.
-
 type Glow = { x: number; y: number; r: number; color: string };
 
 export type WallpaperPreset = {
@@ -75,7 +73,6 @@ export const WALLPAPER_PRESETS: WallpaperPreset[] = [
   },
 ];
 
-/** Hex #rrggbb at alpha 0, so a glow fades to its own colour rather than through grey. */
 function clear(color: string): string {
   return `${color}00`;
 }

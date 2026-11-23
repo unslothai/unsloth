@@ -26,7 +26,6 @@ export async function uploadBackgroundImage(
 	}
 }
 
-/** Stores a painted canvas (an onboarding wallpaper preset) as the background. */
 export async function setBackgroundCanvas(
 	canvas: HTMLCanvasElement,
 ): Promise<void> {

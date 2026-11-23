@@ -104,7 +104,6 @@ export function Row({
   );
 }
 
-/** The chosen ring of a card or tile, drawn over its edge and eased in, never a fill. */
 export function ChosenRing({
   on,
   className,

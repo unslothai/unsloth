@@ -35,7 +35,6 @@ import { DoneStep, WelcomeStep } from "./onboarding-steps";
 
 const EASE_OUT_EXPO = [0.16, 1, 0.3, 1] as const;
 
-// The destination mounts after navigation, so its tour and shortcut answer a few frames later.
 function whenReady(attempt: () => boolean, timeoutMs = 3000): void {
   const deadline = Date.now() + timeoutMs;
   const tick = () => {
@@ -88,7 +87,6 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
 
   const record = useCallback((id: OnboardingPageId, completed = false) => {
     seen.current.add(id);
-    // Best effort: a failed save shows the remaining pages again next time, nothing worse.
     void saveOnboarding([...seen.current], completed).catch(() => {});
   }, []);
 
@@ -156,7 +154,6 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
   const current = pages.indexOf(page);
 
   return (
-    // Clicking outside or Esc closes it as Skip setup, so Chat is always one click away.
     <Dialog open={true} onOpenChange={(open) => !open && skipAll()}>
       <DialogContent
         ref={cardRef}

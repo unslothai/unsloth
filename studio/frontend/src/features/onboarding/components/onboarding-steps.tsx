@@ -71,7 +71,6 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploadError, setUploadError] = useState(false);
   const [uploading, setUploading] = useState(false);
-  // Anything that is not one of the sloths here is the user's own picture (or a sloth picked in Settings).
   const custom =
     avatar !== null && !AVATARS.some((path) => publicAssetUrl(path) === avatar);
   const onUpload = async (file: File | undefined) => {

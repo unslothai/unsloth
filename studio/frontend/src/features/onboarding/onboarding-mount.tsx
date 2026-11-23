@@ -14,7 +14,6 @@ const OnboardingDialog = lazy(() =>
   })),
 );
 
-/** Decides once per auth session, after any forced password change, whether this account sees onboarding. */
 export function OnboardingMount() {
   useRouterState({ select: (s) => s.location.pathname });
   const settled = hasSettledAuthSession();
@@ -36,7 +35,6 @@ export function OnboardingMount() {
           useOnboardingStore.getState().show(decision.pages);
         }
       })
-      // An older backend has no route: no onboarding, and nothing to retry.
       .catch(() => {});
     return () => {
       cancelled = true;

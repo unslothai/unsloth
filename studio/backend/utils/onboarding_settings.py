@@ -29,7 +29,6 @@ def account_has_chat_history() -> bool:
 
 
 def update_onboarding(pages: list[str], completed: bool) -> dict:
-    """Pages are ids the account has seen, so a later build can add a page that only it shows."""
     from storage.studio_db import compare_and_set_app_setting, get_app_setting
     while True:
         previous = get_app_setting(ONBOARDING_KEY, None)
