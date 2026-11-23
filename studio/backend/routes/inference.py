@@ -34223,7 +34223,10 @@ async def produce_openai_chat_completions(
         _pre_parsed = None
 
     # A thought the window cut on this thread's previous reply: compact rather than resume it.
-    _cut_recovery = _recover_cut_thought(payload) if using_gguf else None
+    _cut_recovery = await asyncio.to_thread(_recover_cut_thought, payload) if using_gguf else None
+    if _cut_recovery is not None:
+        # The recovery rewrote the messages an auto-switch may already have parsed.
+        _pre_parsed = None
 
     # ── Parse messages (handles multimodal content parts) ─────
     # Reuse the pre-hook parse when an auto-switch already did it; otherwise parse the messages here.

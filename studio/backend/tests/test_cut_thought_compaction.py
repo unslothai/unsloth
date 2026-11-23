@@ -462,3 +462,26 @@ def test_a_request_with_thinking_off_gets_no_budget(monkeypatch):
     )
 
     assert "thinking_budget_tokens" not in payloads[0]
+
+
+def test_the_route_reparses_and_archives_off_the_event_loop():
+    """The recovery rewrites messages an auto-switch may already have parsed, and its archive embeds a
+    window-sized thought: the route drops that parse and runs the recovery in a thread."""
+    import ast
+    import inspect
+
+    from routes import inference as inference_route
+
+    tree = ast.parse(inspect.getsource(inference_route.produce_openai_chat_completions))
+    source = ast.unparse(tree)
+    assert "await asyncio.to_thread(_recover_cut_thought, payload)" in source
+    guards = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "_cut_recovery is not None"
+    ]
+    assert any(
+        isinstance(stmt, ast.Assign) and ast.unparse(stmt) == "_pre_parsed = None"
+        for guard in guards
+        for stmt in guard.body
+    )
