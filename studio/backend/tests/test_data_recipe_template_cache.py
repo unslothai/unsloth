@@ -145,6 +145,16 @@ def test_filter_change_recompiles(cache_patch) -> None:
     ) == _reference_render(env, by_value, {"a": "X"})
 
 
+def test_test_change_recompiles(cache_patch) -> None:
+    service._apply_data_designer_template_cache_patch()
+    env = UserTemplateSandboxEnvironment(allowed_references = ["a"])
+    template = "{{ 'y' if a is odd else 'n' }}"
+    assert env.safe_render(template, {"a": 3}, skip_template_validation = True) == "y"
+    env.tests["odd"] = jinja2.pass_environment(lambda _env, value: value == 4)
+    assert env.safe_render(template, {"a": 4}, skip_template_validation = True) == "y"
+    assert env.safe_render(template, {"a": 3}, skip_template_validation = True) == "n"
+
+
 def test_failed_compile_is_not_cached_and_errors_match(cache_patch) -> None:
     template = "{{ a | nosuchfilter }}"
     plain = UserTemplateSandboxEnvironment(allowed_references = ["a"])

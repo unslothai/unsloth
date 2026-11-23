@@ -272,7 +272,7 @@ _TEMPLATE_CACHE_MAX = 32
 
 def _apply_data_designer_template_cache_patch() -> None:
     # Jinja2 never caches from_string, so safe_render recompiled every row. The key covers what the compiler
-    # bakes in (source, finalize, filter objects), so a hit runs what a fresh compile would.
+    # bakes in (source, finalize, filter and test objects), so a hit runs what a fresh compile would.
     try:
         from jinja2 import Environment
         from data_designer.engine.processing.ginja.environment import (  # pyright: ignore[reportMissingImports]
@@ -305,7 +305,13 @@ def _apply_data_designer_template_cache_patch() -> None:
         if globals is not None or template_class is not None or not isinstance(source, str):
             return original_from_string(self, source, globals, template_class)
         try:
-            key = (source, self.finalize, self.autoescape, tuple(self.filters.items()))
+            key = (
+                source,
+                self.finalize,
+                self.autoescape,
+                tuple(self.filters.items()),
+                tuple(self.tests.items()),
+            )
             cache = self.__dict__.setdefault(_TEMPLATE_CACHE_ATTR, {})
             template = cache.get(key)
         except (AttributeError, TypeError):
