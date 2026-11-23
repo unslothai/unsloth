@@ -193,16 +193,20 @@ def test_page_break_markers_keep_word_separators(ebooks, html, expected):
 @pytest.mark.parametrize(
     "html, expected",
     [
-        (b'<body><p role="doc-pagebreak">12<p>Actual chapter text</body>', "Actual chapter text"),
-        (b'<body><p role="doc-pagebreak">12<hr>Actual chapter text</body>', "Actual chapter text"),
-        (b'<table><tr><td epub:type="pagebreak">12<td>Cell</table>', "Cell"),
         (
-            b'<body><p>The <span epub:type="pagebreak">12 quick brown fox jumps over the lazy dog</p></body>',
-            "The 12 quick brown fox jumps over the lazy dog",
+            b'<body><p role="doc-pagebreak">12<p>Actual chapter text</body>',
+            "12\n\nActual chapter text",
         ),
+        (
+            b'<body><p role="doc-pagebreak">12<hr>Actual chapter text</body>',
+            "12\n\nActual chapter text",
+        ),
+        (b'<table><tr><td epub:type="pagebreak">12<td>Cell</table>', "12 Cell"),
+        (b'<p>The <span epub:type="pagebreak">12 quick brown fox</p>', "The 12 quick brown fox"),
     ],
 )
-def test_unclosed_page_break_markers_never_drop_prose(ebooks, html, expected):
+def test_unclosed_page_break_markers_keep_their_text(ebooks, html, expected):
+    # An omitted end tag makes the marker's extent ambiguous, so nothing is dropped.
     assert ebooks._html_text(html) == expected
 
 

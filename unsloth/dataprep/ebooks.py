@@ -74,24 +74,6 @@ _VOID = {
 }
 # Ruby annotations (<rt>, <rtc>) and their fallback parentheses (<rp>) are not prose.
 _MAX_PAGE_LABEL = 32
-_PAGE_LABEL_TAGS = {
-    "a",
-    "abbr",
-    "b",
-    "bdi",
-    "bdo",
-    "br",
-    "em",
-    "font",
-    "i",
-    "small",
-    "span",
-    "strong",
-    "sub",
-    "sup",
-    "u",
-    "wbr",
-}
 _IGNORE = {"head", "script", "style", "nav", "svg", "rt", "rp", "rtc"}
 
 
@@ -107,10 +89,6 @@ class _BookTextParser(HTMLParser):
         self.page_marks = []
 
     def handle_starttag(self, tag, attrs):
-        # A page label is inline text: any other start tag ends a marker left open by an omitted end tag.
-        if self.page_marks and tag not in _PAGE_LABEL_TAGS:
-            self._drop_page_number(self.page_marks[0][1])
-            self.page_marks.clear()
         if tag == "body":
             self.handle_endtag("head")
         elif tag in {"rb", "rp", "rt", "rtc"} and any(t == "ruby" for t, _ in self.stack):
@@ -153,14 +131,17 @@ class _BookTextParser(HTMLParser):
 
     def handle_endtag(self, tag):
         hidden = bool(self.stack and self.stack[-1][1])
+        closed = None
         for i in range(len(self.stack) - 1, -1, -1):
             if self.stack[i][0] == tag:
                 del self.stack[i:]
+                closed = i
                 break
-        # Only the outermost marker is collapsed; nested ones are inside its text.
+        # Only the outermost marker, closed by its own end tag, is dropped; an implicitly ended
+        # one (omitted end tag) may hold prose, so its text is kept.
         while self.page_marks and self.page_marks[-1][0] >= len(self.stack):
-            start = self.page_marks.pop()[1]
-            if not self.page_marks:
+            depth, start = self.page_marks.pop()
+            if not self.page_marks and depth == closed:
                 self._drop_page_number(start)
         if not hidden and tag in _BLOCKS:
             self.parts.append("\n\n")
@@ -173,7 +154,7 @@ class _BookTextParser(HTMLParser):
             "".join(self.parts[start:]),
         )
         if len("".join(text.split())) > _MAX_PAGE_LABEL:
-            return  # Not a page label (unclosed marker): keep the text rather than lose prose.
+            return  # Too long for a page label: keep the text rather than lose prose.
         del self.parts[start:]
         if text.strip():
             text = text[: len(text) - len(text.lstrip())] + text[len(text.rstrip()) :]
