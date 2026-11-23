@@ -8,12 +8,9 @@ import base64
 import inspect
 import json
 import os
-import statistics
 import sys
-import time
 
 import fastapi.routing
-import httpx
 import pytest
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -280,69 +277,38 @@ def test_openapi_response_schemas_unchanged():
         assert new["components"]["schemas"][name] == old["components"]["schemas"][name]
 
 
-def _max_loop_lag_ms(
-    app,
-    method,
-    path,
-    body,
-    repeats = 5,
-) -> float:
-    async def run():
-        lags = []
-        transport = httpx.ASGITransport(app = app)
-        async with httpx.AsyncClient(
-            transport = transport, base_url = "http://t", timeout = 120
-        ) as client:
-            for _ in range(repeats + 1):
-                worst = 0.0
-                stop = asyncio.Event()
+def test_each_message_is_dumped_once_off_the_event_loop(history, monkeypatch):
+    """One dump per message, none of them on a running event loop, and the body is just those dumps."""
+    real = chat_history._MESSAGE_JSON
+    dumps = []
 
-                async def ticker():
-                    nonlocal worst
-                    last = time.perf_counter()
-                    while not stop.is_set():
-                        await asyncio.sleep(0.001)
-                        now = time.perf_counter()
-                        worst = max(worst, now - last - 0.001)
-                        last = now
+    class Counting:
+        def dump_json(self, message, **kwargs):
+            try:
+                asyncio.get_running_loop()
+                on_loop = True
+            except RuntimeError:
+                on_loop = False
+            out = real.dump_json(message, **kwargs)
+            dumps.append((message.id, on_loop, out))
+            return out
 
-                task = asyncio.create_task(ticker())
-                await asyncio.sleep(0.02)
-                worst = 0.0
-                r = await client.request(method, path, json = body)
-                stop.set()
-                await task
-                assert r.status_code == 200
-                lags.append(worst * 1000)
-        return statistics.median(lags[1:])
+    monkeypatch.setattr(chat_history, "_MESSAGE_JSON", Counting())
+    expected = {
+        tid: [m["id"] for m in chat_history.list_chat_messages(tid)]
+        for tid in ("text", "images", "odd", "empty")
+    }
+    with TestClient(_new_app()) as client:
+        for tid, ids in expected.items():
+            dumps.clear()
+            r = client.get(f"/api/chat/threads/{tid}/messages")
+            assert r.status_code == 200
+            assert [d[0] for d in dumps] == ids
+            assert not any(d[1] for d in dumps)
+            assert r.content == b'{"messages":[' + b",".join(d[2] for d in dumps) + b"]}"
 
-    return asyncio.run(run())
-
-
-def test_large_image_thread_does_not_stall_the_event_loop(history):
-    """About 96 MB of data URLs: the old path held the loop for one whole dump, the new one per message."""
-    big = "data:image/jpeg;base64," + base64.b64encode(os.urandom(750_000)).decode()
-    _thread("big")
-    studio_db.sync_chat_messages(
-        "big",
-        [
-            {
-                "id": f"b{i}",
-                "threadId": "big",
-                "role": "user",
-                "content": [{"type": "image", "image": big}],
-                "attachments": [
-                    {"id": "a", "type": "image", "content": [{"type": "image", "image": big}]}
-                ],
-                "createdAt": i,
-            }
-            for i in range(48)
-        ],
-    )
-    for method, path, body in (
-        ("GET", "/api/chat/threads/big/messages", None),
-        ("POST", "/api/chat/messages:batch", {"threadIds": ["big"]}),
-    ):
-        old_lag = _max_loop_lag_ms(_old_app(), method, path, body)
-        new_lag = _max_loop_lag_ms(_new_app(), method, path, body)
-        assert new_lag * 2 < old_lag, (path, old_lag, new_lag)
+        dumps.clear()
+        r = client.post("/api/chat/messages:batch", json = {"threadIds": list(expected)})
+        assert r.status_code == 200
+        assert [d[0] for d in dumps] == [i for ids in expected.values() for i in ids]
+        assert not any(d[1] for d in dumps)
