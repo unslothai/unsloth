@@ -50,9 +50,7 @@ CONVERSATIONS = {
 @pytest.mark.parametrize("conversation", list(CONVERSATIONS.values()), ids = list(CONVERSATIONS))
 def test_phi3_render_ends_with_eos(name, conversation):
     tokenizer = _tokenizer(name)
-    out = tokenizer.apply_chat_template(
-        conversation, tokenize = False, add_generation_prompt = False
-    )
+    out = tokenizer.apply_chat_template(conversation, tokenize = False, add_generation_prompt = False)
     assert out.endswith("<|endoftext|>")
 
 
@@ -60,9 +58,7 @@ def test_phi3_render_ends_with_eos(name, conversation):
 def test_phi3_render_matches_official_string(name):
     conversation = CONVERSATIONS["sys"]
     tokenizer = _tokenizer(name)
-    out = tokenizer.apply_chat_template(
-        conversation, tokenize = False, add_generation_prompt = False
-    )
+    out = tokenizer.apply_chat_template(conversation, tokenize = False, add_generation_prompt = False)
     expected = (
         "<|system|>\nBe brief.<|end|>\n"
         "<|user|>\nHi<|end|>\n"
