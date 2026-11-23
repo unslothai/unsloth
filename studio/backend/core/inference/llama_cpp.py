@@ -16304,6 +16304,7 @@ class LlamaCppBackend:
         except Exception:
             return None
         gpus = [] if child_has_no_gpu else list(detected_gpus or ())
+        original_model_bytes = model_bytes  # the carve-out verifier prices the whole file
         # _get_gpu_memory returns [] on a failed probe, which looks like a GPU-less host.
         if not model_bytes or (not gpus and not child_has_no_gpu):
             return None
@@ -16335,18 +16336,49 @@ class LlamaCppBackend:
             logger.debug("Lazy-read discount skipped in the host preflight: %s", e)
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
         heap_free_mib, heap_bytes = self._shared_heap_budget(gpus, shared, model_bytes, argv, _env)
-        offload_bytes = model_bytes - free_vram_mib * 1024 * 1024
-        # Skip card-resident loads so a cgroup budget never applies to a nonpositive need.
-        if 0 < offload_bytes and heap_bytes <= heap_free_mib * 1024 * 1024:
-            # A finite cgroup still limits host-backed GPU allocations.
-            cgroup_mib = self._cgroup_available_memory_mib()
-            if cgroup_mib is None:
-                return None
-            return self._apu_ram_shortfall_message(heap_bytes, cgroup_mib)
-        return self._host_offload_shortfall_message(
-            offload_bytes,
-            self._available_system_memory_mib() if avail_mib is None else avail_mib,
-        )
+        avail = self._available_system_memory_mib() if avail_mib is None else avail_mib
+
+        def shortfall(device_bytes: int) -> Optional[str]:
+            offload_bytes = model_bytes - device_bytes
+            # Skip card-resident loads so a cgroup budget never applies to a nonpositive need.
+            if 0 < offload_bytes and heap_bytes <= heap_free_mib * 1024 * 1024:
+                # A finite cgroup still limits host-backed GPU allocations.
+                cgroup_mib = self._cgroup_available_memory_mib()
+                if cgroup_mib is None:
+                    return None
+                return self._apu_ram_shortfall_message(heap_bytes, cgroup_mib)
+            return self._host_offload_shortfall_message(offload_bytes, avail)
+
+        free_bytes = free_vram_mib * 1024 * 1024
+        message = shortfall(free_bytes)
+        # Windows ROCm APU: verified carve-out and free reading are the same pool, so max, never
+        # sum (#18805). The verifier is slow (WDDM counters), so only a warning load pays for it.
+        if (
+            message
+            and sys.platform == "win32"
+            and not child_has_no_gpu
+            and len(gpus) == 1
+            and not shared
+            and not set(integrated_gpu_ids or ())
+            and self._amd_apu_wants_unified_memory([gpus[0][0]])
+        ):
+            try:
+                carve_out_bytes = int(
+                    self._windows_rocm_apu_carve_out_credit(
+                        original_model_bytes,
+                        model_path = model_path,
+                        caps = self.probe_server_capabilities(argv[0]),
+                        gpu_indices = [gpus[0][0]],
+                        extra_args = argv,
+                        env = _env,
+                    )
+                )
+            except Exception:
+                logger.debug("Windows APU carve-out credit unavailable.", exc_info = True)
+            else:
+                if carve_out_bytes > free_bytes:
+                    message = shortfall(carve_out_bytes)
+        return message
 
     @staticmethod
     def _apu_ram_shortfall_message(
