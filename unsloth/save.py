@@ -5312,8 +5312,7 @@ def unsloth_save_pretrained_gguf(
         (obj, getattr(obj, "chat_template", None)) for obj in _tokenizer_objects(tokenizer)
     ]
 
-    # The BOS-stripped templates are borrowed only until the save writes them to disk: every
-    # exit from here, error or not, hands the caller's tokenizer back with its own template.
+    # The BOS-stripped template is borrowed only until the save writes it; every exit restores the caller's.
     try:
         fix_bos_token, _ = fix_tokenizer_bos_token(tokenizer)
 
@@ -5384,9 +5383,7 @@ def unsloth_save_pretrained_gguf(
                         f"{_offloaded_parameter_hint(self)}"
                     ) from e
     finally:
-        # Unconditional: fix_tokenizer_bos_token may have raised mid-dedupe before fix_bos_token
-        # was set. Skipping unchanged attributes avoids writing to read-only properties or absent
-        # attributes when no dedupe occurred.
+        # Not gated on fix_bos_token (the dedupe can raise midway); unchanged owners are skipped (read-only properties).
         for _template_owner, _old_template in old_chat_templates:
             if getattr(_template_owner, "chat_template", None) != _old_template:
                 _template_owner.chat_template = _old_template
