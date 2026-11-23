@@ -209,7 +209,8 @@ function Lens({
     resize.observe(host);
     resize.observe(wallpaper);
     const motion = new MutationObserver(place);
-    motion.observe(host, { attributes: true, attributeFilter: [GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR] });
+    // "style": dragged panels move by transform, which no resize or scroll event reports.
+    motion.observe(host, { attributes: true, attributeFilter: [GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR, "style"] });
     const mutations = new MutationObserver(recopy);
     mutations.observe(wallpaper, {
       childList: true,

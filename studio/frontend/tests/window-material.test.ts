@@ -704,10 +704,15 @@ test("the composer keeps its lens without a backdrop filter, as on main (Transpa
 	assert.match(css, /html\[data-glass-clear\] #root \* \{\s*-webkit-backdrop-filter: none !important;/);
 });
 
+test("the Appearance preview composers wrap their prompt, so a lens can mount in them", () => {
+	const controls = readFileSync(new URL("../src/features/chat-background/controls.tsx", import.meta.url), "utf8");
+	assert.match(controls, /<div className="wallpaper-preview-composer rounded-xl p-3">\s*<span>\{t\("chatBackground\.prompt"\)\}<\/span>/);
+});
+
 test("a lens copy drops its blur while its host is moving, instead of falling back to the CSS blur", () => {
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
 	assert.match(lens, /if \(fillCopy\) fillCopy\.style\.filter = blur \|\| \(host\.hasAttribute\(GLASS_MOVING_ATTR\) \? "none" : ""\);/);
-	assert.match(lens, /motion\.observe\(host, \{ attributes: true, attributeFilter: \[GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR\] \}\);/);
+	assert.match(lens, /motion\.observe\(host, \{ attributes: true, attributeFilter: \[GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR, "style"\] \}\);/);
 	assert.match(lens, /motion\.disconnect\(\);/);
 });
 
