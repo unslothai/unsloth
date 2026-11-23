@@ -728,9 +728,7 @@ def install_rocm_contiguous_kv(target: Any) -> bool:
     return _install_contiguous_native()
 
 
-# Training (forward + backward) copies q as well: on gfx1151 (torch 2.11 + AOTriton 0.11.2, 24 heads x 128, bf16) q/k/v
-# fwd+bwd is 1.10x at 2,560 tokens, 1.26x at 4,096 and 1.36x at 8,192, where k/v alone gains 0.97x / 1.02x / 1.08x;
-# at 1,024 tokens it is 7% slower, at 2,048 even, hence the token floor. Bit-identical outputs and gradients.
+# gfx1151 training copies q too: fwd+bwd 1.10x-1.36x at 2,560-8,192 tokens, 7% slower at 1,024, hence the floor.
 # 0 disables; a positive integer moves the floor.
 ROCM_CONTIGUOUS_QKV_TRAIN_ENV = "UNSLOTH_DIFFUSION_ROCM_TRAIN_CONTIGUOUS_QKV"
 ROCM_CONTIGUOUS_QKV_TRAIN_MIN_TOKENS = 2560

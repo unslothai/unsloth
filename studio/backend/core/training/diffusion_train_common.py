@@ -2130,7 +2130,7 @@ def _apply_perf_flags(
     except Exception:  # noqa: BLE001 -- perf flags are never fatal
         pass
     try:
-        # gfx1151: diffusers' native backend hands SDPA strided q/k/v; long sequences train faster on contiguous copies.
+        # gfx1151: diffusers hands SDPA strided q/k/v; contiguous copies train faster.
         from core.inference.diffusion_attention import install_rocm_contiguous_qkv_training
         snap["rocm_contiguous_qkv"] = install_rocm_contiguous_qkv_training()
     except Exception:  # noqa: BLE001 -- perf only
