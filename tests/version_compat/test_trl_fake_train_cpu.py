@@ -552,7 +552,18 @@ def test_gkd_trains_text_only_with_a_multimodal_processor(tmp_path, repo):
     assert torch.isfinite(torch.tensor(trainer.train().training_loss))
 
 
-def test_sft_router_aux_loss_keeps_its_gradient_under_gradient_checkpointing(tmp_path):
+def _clear_moe_backend_caches():
+    # zoo caches its MoE backend per module, the unsloth_compiled_cache copy of moe_utils included.
+    for module in list(sys.modules.values()):
+        try:
+            clear = getattr(module, "_clear_selected_moe_backend", None)
+        except Exception:
+            continue
+        if callable(clear):
+            clear()
+
+
+def test_sft_router_aux_loss_keeps_its_gradient_under_gradient_checkpointing(tmp_path, monkeypatch):
     """Reentrant checkpointing records the router logits under no_grad, so the aux loss is logged but adds no
     gradient. Unsloth's config pins use_reentrant = True; with the aux loss on, a plain from_pretrained model
     must still get TRL's gradient. Oracle: the same step in float64 without checkpointing."""
@@ -633,15 +644,21 @@ def test_sft_router_aux_loss_keeps_its_gradient_under_gradient_checkpointing(tmp
     kwargs = batch["kwargs"]
     oracle.train()
     oracle.router_aux_loss_coef = coef
-    out = oracle(
-        input_ids = kwargs["input_ids"],
-        attention_mask = kwargs.get("attention_mask"),
-        labels = kwargs["labels"],
-        num_items_in_batch = kwargs.get("num_items_in_batch"),
-        output_router_logits = True,
-        use_cache = False,
-    )
-    out.loss.backward()
+    # torch._grouped_mm has no float64 kernel: where it exists (a GPU host, recent CPU torch) the float64
+    # oracle runs the per-expert loop instead.
+    with monkeypatch.context() as mp:
+        mp.setenv("UNSLOTH_MOE_BACKEND", "native_torch")
+        _clear_moe_backend_caches()
+        out = oracle(
+            input_ids = kwargs["input_ids"],
+            attention_mask = kwargs.get("attention_mask"),
+            labels = kwargs["labels"],
+            num_items_in_batch = kwargs.get("num_items_in_batch"),
+            output_router_logits = True,
+            use_cache = False,
+        )
+        out.loss.backward()
+    _clear_moe_backend_caches()
     oracle_gates = dict(oracle.named_parameters())
     for n in gates:
         want = oracle_gates[n].grad
