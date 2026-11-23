@@ -54,6 +54,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { type ReactElement, type ReactNode, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartSettingsSheet } from "./charts/chart-settings-sheet";
+import { formatLoss } from "./charts/utils";
 import {
   formatDuration,
   formatNumber,
@@ -403,7 +404,7 @@ export function ProgressSection({
               label={t("studio.progress.loss")}
               valueClassName="text-2xl font-bold tracking-tight"
             >
-              {stoppedLoss != null ? stoppedLoss.toFixed(4) : "--"}
+              {stoppedLoss != null ? formatLoss(stoppedLoss) : "--"}
             </MetricStat>
             <MetricStat label={t("studio.progress.lr")}>{stoppedLr != null ? stoppedLr.toExponential(2) : "--"}</MetricStat>
             <MetricStat label={t("studio.progress.gradNorm")}>

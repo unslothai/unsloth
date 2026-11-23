@@ -48,8 +48,8 @@ test("padding after a decimal point is still trimmed", () => {
 test("negative zero reads as zero", () => {
   assert.equal(formatMetric(-0), "0");
   assert.equal(formatAxisMetric(-0), "0");
-  // toFixed rounds this to "-0" before the trim sees it.
-  assert.equal(formatAxisMetric(-0.000001), "0");
+  // A tiny value keeps its sign in exponent form rather than rounding to "-0".
+  assert.equal(formatAxisMetric(-0.000001), "-1e-6");
 });
 
 test("a non-finite metric is still reported as zero", () => {

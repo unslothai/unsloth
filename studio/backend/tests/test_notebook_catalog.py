@@ -63,18 +63,10 @@ def test_offline_mode_never_fetches(monkeypatch, fresh_cache):
     assert catalog.build_notebook_catalog()
 
 
-@pytest.mark.parametrize(
-    "name, category",
-    [
-        ("Qwen3_(4B)-GRPO.ipynb", "grpo"),
-        ("Qwen2.5_(3B)-GSPO.ipynb", "grpo"),
-        ("Zephyr_(7B)-DPO.ipynb", "preference"),
-        ("Llama3_(8B)-ORPO.ipynb", "preference"),
-    ],
-)
-def test_grpo_and_preference_recipes_stay_colab_only(name, category):
-    assert catalog._category(name) == category
-    assert catalog.STUDIO_TASKS.get(category) is None
+@pytest.mark.parametrize("name", ["Qwen3_(4B)-GRPO.ipynb", "Qwen2.5_(3B)-GSPO.ipynb"])
+def test_grpo_recipes_import_onto_the_fine_tune_node(name):
+    assert catalog._category(name) == "grpo"
+    assert catalog.STUDIO_TASKS.get("grpo") == "text"
 
 
 @pytest.mark.parametrize(
@@ -89,6 +81,12 @@ def test_grpo_and_preference_recipes_stay_colab_only(name, category):
 def test_other_rl_recipes_stay_colab_only(name):
     assert catalog._category(name) == "rl"
     assert catalog.STUDIO_TASKS.get("rl") is None
+
+
+@pytest.mark.parametrize("name", ["Zephyr_(7B)-DPO.ipynb", "Llama3_(8B)-ORPO.ipynb"])
+def test_preference_recipes_import_onto_the_fine_tune_node(name):
+    assert catalog._category(name) == "preference"
+    assert catalog.STUDIO_TASKS.get("preference") == "text"
 
 
 @pytest.mark.parametrize("name", ["Llama3.1_(8B)-Alpaca.ipynb", "Mistral_Nemo_(12B)-Alpaca.ipynb"])
@@ -126,3 +124,43 @@ def test_transient_hf_offline_guard_still_fetches(monkeypatch, fresh_cache):
 def test_continued_pretraining_is_labelled_and_colab_only(name):
     assert catalog._category(name) == "cpt"
     assert catalog.STUDIO_TASKS.get("cpt") is None
+
+
+@pytest.mark.parametrize(
+    "name, importable",
+    [
+        ("Qwen2.5_(3B)-GRPO.ipynb", True),
+        ("Llama3_(8B)-ORPO.ipynb", True),
+        # read_notebook refuses these (an SFT warm-up stage; no Hub dataset it can read).
+        ("Qwen3_(4B)-GRPO.ipynb", False),
+        ("Zephyr_(7B)-DPO.ipynb", False),
+        # Vision GRPO would train on the text and drop the images.
+        ("Qwen2_5_7B_VL_GRPO.ipynb", False),
+    ],
+)
+def test_rl_notebooks_are_importable_only_when_the_importer_accepts_them(name, importable):
+    entry = catalog._entry(name, {}, {}, catalog._load_rl_importable())
+    assert (entry["studio_task"] == "text") is importable
+
+
+def test_the_rl_importable_list_matches_the_importer():
+    """Set UNSLOTH_NOTEBOOKS_DIR to a clone's nb/ folder to re-check the list against it."""
+    import os
+    from pathlib import Path
+
+    from core.flows.notebook_import import NotebookImportError, read_notebook
+
+    folder = os.environ.get("UNSLOTH_NOTEBOOKS_DIR")
+    if not folder:
+        pytest.skip("UNSLOTH_NOTEBOOKS_DIR is not set")
+    accepted = set()
+    for path in Path(folder).glob("*.ipynb"):
+        if catalog._category(path.name) not in ("grpo", "preference"):
+            continue
+        try:
+            doc, _ = read_notebook(path.read_bytes(), path.name)
+        except NotebookImportError:
+            doc = None
+        if doc is not None:
+            accepted.add(path.name)
+    assert accepted == set(catalog._load_rl_importable())

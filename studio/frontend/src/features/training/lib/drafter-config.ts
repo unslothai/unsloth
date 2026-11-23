@@ -3,6 +3,7 @@
 
 import { DEFAULT_HYPERPARAMS } from "@/config/training";
 import type { DrafterTrainingRequest } from "../types/api";
+import { effectiveTrainingObjective } from "./rl-roles";
 import type {
   DrafterDataSource,
   DrafterStrategy,
@@ -112,7 +113,7 @@ export function drafterRequestFrom(
   };
 }
 
-/** Runs the backend's drafter phase cannot take: embeddings, decision models, CPT, and image / audio fine-tunes. */
+/** Runs the backend's drafter phase cannot take: embeddings, decision models, CPT, DPO / ORPO / GRPO, and image / audio fine-tunes. */
 export function drafterEligible(
   config: Pick<
     TrainingConfigState,
@@ -123,9 +124,11 @@ export function drafterEligible(
     | "isDatasetImage"
     | "isAudioModel"
     | "isDatasetAudio"
+    | "trainingObjective"
   >,
 ): boolean {
   return (
+    effectiveTrainingObjective(config) === "sft" &&
     config.modelType !== "decision" &&
     config.modelType !== "embeddings" &&
     !config.isEmbeddingModel &&

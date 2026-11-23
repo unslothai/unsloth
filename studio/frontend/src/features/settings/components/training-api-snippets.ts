@@ -101,6 +101,18 @@ export const TRAINING_FIELD_ROUTE: Record<keyof TrainingStartRequest, "openai" |
   tensorboard_dir: "host",
   resume_from_checkpoint: "host",
   drafter: "host",
+  objective: "extra",
+  rl_beta: "extra",
+  rl_max_prompt_length: "extra",
+  grpo_num_generations: "extra",
+  grpo_max_completion_length: "extra",
+  grpo_temperature: "extra",
+  rl_system_prompt: "extra",
+  grpo_enable_thinking: "extra",
+  grpo_variant: "extra",
+  grpo_mask_truncated_completions: "extra",
+  grpo_epsilon_high: "extra",
+  grpo_rewards: "extra",
 };
 
 /** Extras sent only where they differ from the route's defaults (null = sent whenever set). */
@@ -175,8 +187,30 @@ function trainingExtras(payload: TrainingStartRequest): Record<string, unknown> 
   ) {
     extras.custom_format_mapping = payload.custom_format_mapping;
   }
+  if (payload.objective && payload.objective !== "sft") {
+    for (const key of RL_EXTRAS) {
+      const value = payload[key];
+      if (value != null && value !== "") extras[key] = value;
+    }
+  }
   return extras;
 }
+
+// An RL run's own settings; an SFT example leaves them out so it stays SFT.
+const RL_EXTRAS = [
+  "objective",
+  "rl_beta",
+  "rl_max_prompt_length",
+  "grpo_num_generations",
+  "grpo_max_completion_length",
+  "grpo_temperature",
+  "rl_system_prompt",
+  "grpo_enable_thinking",
+  "grpo_variant",
+  "grpo_mask_truncated_completions",
+  "grpo_epsilon_high",
+  "grpo_rewards",
+] as const satisfies readonly (keyof TrainingStartRequest)[];
 
 /** `payload` is what Start would send; `datasetName` the uploaded file's display name. */
 export function trainingApiRequestFromPayload(

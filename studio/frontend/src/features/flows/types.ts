@@ -141,7 +141,8 @@ export type ParamKind =
   | "asset"
   | "story"
   | "schema"
-  | "lora_list";
+  | "lora_list"
+  | "reward_list";
 
 export interface ParamSpec {
   id: string;

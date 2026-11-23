@@ -41,6 +41,7 @@ _OFFLINE_VALUES = {"1", "true", "yes", "on"}
 _BASED_ON_RE = re.compile(r"#\s*Based on\s+(.+)", re.IGNORECASE)
 _MODEL_RE = re.compile(r"#\s*Model defaults for\s+(\S+)", re.IGNORECASE)
 _CATEGORY_RULES = (
+    # GRPO, DPO and ORPO import onto the Fine-tune node; other RL recipes stay Colab-only.
     ("grpo", ("grpo", "gspo")),
     ("rl", ("reinforcement_learning", "nemo_gym", "_ppo", "_kto")),
     # Decision fine-tunes need the Train page's decision wiring, which a Flow Fine-tune block does not have yet.
@@ -63,6 +64,8 @@ STUDIO_TASKS = {
     "reasoning": "text",
     "code": "text",
     "raft": "text",
+    "grpo": "text",
+    "preference": "text",
     "vision": "vision",
     "audio": "audio",
     "embedding": "embedding",
@@ -112,6 +115,16 @@ def _load_overrides() -> dict[str, dict[str, Any]]:
         for name, fields in overrides.items()
         if isinstance(name, str) and _is_public(name) and isinstance(fields, dict)
     }
+
+
+def _load_rl_importable() -> frozenset[str]:
+    # The GRPO and preference notebooks read_notebook accepts; the rest open in Colab.
+    if not _OVERRIDES_PATH.is_file():
+        return frozenset()
+    with open(_OVERRIDES_PATH, encoding = "utf-8") as handle:
+        data = json.load(handle)
+    names = data.get("rl_importable", []) if isinstance(data, dict) else []
+    return frozenset(n for n in names if isinstance(n, str))
 
 
 def _load_studio_models() -> dict[str, str]:
@@ -204,17 +217,23 @@ def _repo_notebook_files() -> list[str]:
 
 
 def _entry(
-    notebook: str, overrides: dict[str, dict[str, Any]], studio_models: dict[str, str]
+    notebook: str,
+    overrides: dict[str, dict[str, Any]],
+    studio_models: dict[str, str],
+    rl_importable: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     fields = overrides.get(notebook, {})
     stem = notebook.removesuffix(".ipynb")
     category = _text(fields.get("category")) or _category(notebook)
+    studio_task = STUDIO_TASKS.get(category)
+    if category in ("grpo", "preference") and notebook not in rl_importable:
+        studio_task = None
     return {
         "id": re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-"),
         "title": _text(fields.get("title")) or stem.replace("_", " "),
         "notebook_file": notebook,
         "category": category,
-        "studio_task": STUDIO_TASKS.get(category),
+        "studio_task": studio_task,
         "featured": bool(fields.get("featured")),
         "studio_model": _text(fields.get("studio_model")) or studio_models.get(notebook),
         "colab_url": (
@@ -236,7 +255,8 @@ def build_notebook_catalog(query: str | None = None) -> list[dict[str, Any]]:
     overrides = _load_overrides()
     studio_models = _load_studio_models()
     files = _repo_notebook_files() or sorted(overrides.keys() | studio_models.keys())
-    catalog = [_entry(name, overrides, studio_models) for name in files]
+    rl_importable = _load_rl_importable()
+    catalog = [_entry(name, overrides, studio_models, rl_importable) for name in files]
     if query:
         catalog = [entry for entry in catalog if notebook_matches_query(entry, query)]
     return sorted(

@@ -120,6 +120,7 @@ from models import (
     TrainingProgress,
 )
 from models.training import (
+    _normalized_reward_name,
     DiffusionCaptionUpdateRequest,
     DiffusionDatasetExample,
     DiffusionDatasetExamplesResponse,
@@ -229,6 +230,28 @@ class _ModelPreflightResult:
     cached_model_pin: Optional[tuple[str, str]]
     # The base an admitted adapter named at preflight; the worker refuses a different one.
     adapter_base_pin: Optional[str] = None
+
+
+def _refuse_preference_objective_on_vision_model(
+    objective: str, model_preflight: _ModelPreflightResult, hf_token: Optional[str]
+) -> None:
+    """DPO/ORPO on a vision-language model fails only once the weights load; refuse it before."""
+    if objective not in ("dpo", "orpo"):
+        return
+    from utils.models.model_config import is_vision_model_checked
+
+    # A probe that cannot answer falls through to the trainer's own check after the load.
+    vision, _ = is_vision_model_checked(
+        model_preflight.model_local_path or model_preflight.model_name,
+        hf_token or None,
+        local_files_only = bool(model_preflight.model_local_path),
+    )
+    if vision:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"{objective.upper()} is not available for vision-language models yet; "
+            "use SFT or GRPO.",
+        )
 
 
 # ~30 min of 1s polls. Applied only once stepping: model load + tokenization can take far longer.
@@ -1514,6 +1537,30 @@ _RESUME_CACHE_FIELDS = (
     "dataset_local_path",
     "dataset_snapshot_path",
 )
+
+
+def _stored_reward_specs(stored: dict) -> dict[str, dict]:
+    """name -> reward spec stored with a run. A resume scores with these, not the library's
+    current rules, which may have been edited or deleted since."""
+    specs = stored.get("reward_specs")
+    if not isinstance(specs, list):
+        return {}
+    return {
+        spec["name"]: spec
+        for spec in specs
+        if isinstance(spec, dict) and isinstance(spec.get("name"), str) and spec.get("rule")
+    }
+
+
+def _resume_reward_mismatch(stored_specs: dict[str, dict], selections) -> bool:
+    """A resumed GRPO run must keep the source run's rewards and weights: the checkpoint's
+    optimizer state belongs to that summed reward."""
+    if not stored_specs:
+        return False
+    stored = {name: float(spec.get("weight", 1.0)) for name, spec in stored_specs.items()}
+    return stored != {_normalized_reward_name(s.name): float(s.weight) for s in selections}
+
+
 _RESUME_CHECKPOINT_STRUCTURE_FIELDS = (
     "load_in_4bit",
     "use_lora",
@@ -1589,6 +1636,13 @@ def _prepare_resume_resource_provenance(
                 detail = "The training type does not match the source run.",
             )
         request.training_type = stored_training_type
+    # The checkpoint's optimizer and trainer state belong to one loss.
+    stored_objective = stored.get("objective") or "sft"
+    if request.objective != stored_objective:
+        raise HTTPException(
+            status_code = 409,
+            detail = "The training objective does not match the source run.",
+        )
     for field in _RESUME_CHECKPOINT_STRUCTURE_FIELDS:
         if field not in stored:
             continue
@@ -2136,6 +2190,9 @@ async def _admit_training_request(
         resume_actual_model_repo_id,
         hf_token,
     )
+    await asyncio.to_thread(
+        _refuse_preference_objective_on_vision_model, request.objective, model_preflight, hf_token
+    )
     cached_model_pin = model_preflight.cached_model_pin
     training_actual_model_repo_id = resume_actual_model_repo_id
     training_model_snapshot_path = request.model_snapshot_path
@@ -2155,6 +2212,38 @@ async def _admit_training_request(
         # not use. The local paths took their own authorization pass above.
         if not request.dataset_streaming and _hf_dataset_is_the_source(request):
             await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
+
+    reward_specs: list[dict] = []
+    if request.objective != "sft" and _hw.DEVICE == _hw.DeviceType.MLX:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"{request.objective.upper()} is not available on Apple Silicon (MLX) yet.",
+        )
+    if request.objective == "grpo":
+        from core.training.rewards import (
+            RewardError,
+            RewardNotFoundError,
+            get_reward,
+            normalize_reward_name,
+        )
+
+        stored_specs = _stored_reward_specs(training_run_config(resume_run)) if resume_run else {}
+        if resume_run and _resume_reward_mismatch(stored_specs, request.grpo_rewards):
+            raise HTTPException(
+                status_code = 409,
+                detail = "The GRPO rewards do not match the source run.",
+            )
+        # Stored with the run, so later library edits never change what it says it trained with.
+        try:
+            for selection in request.grpo_rewards:
+                spec = stored_specs.get(normalize_reward_name(selection.name)) or get_reward(
+                    selection.name
+                )
+                reward_specs.append({**spec, "weight": selection.weight})
+        except RewardNotFoundError as exc:
+            raise HTTPException(status_code = 404, detail = str(exc)) from exc
+        except RewardError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
     device_backend = getattr(_hw.DEVICE, "value", "") or ""
     training_optimizer = normalize_training_optimizer_for_device(
@@ -2231,7 +2320,21 @@ async def _admit_training_request(
         "use_rslora": request.use_rslora,
         "use_loftq": request.use_loftq,
         "use_dora": request.use_dora,
-        "train_on_completions": request.train_on_completions,
+        "train_on_completions": request.train_on_completions and request.objective == "sft",
+        "objective": request.objective,
+        "rl_settings": {
+            "beta": request.rl_beta,
+            "max_prompt_length": request.rl_max_prompt_length,
+            "num_generations": request.grpo_num_generations,
+            "max_completion_length": request.grpo_max_completion_length,
+            "temperature": request.grpo_temperature,
+            "variant": request.grpo_variant,
+            "enable_thinking": request.grpo_enable_thinking,
+            "system_prompt": (request.rl_system_prompt or "").strip() or None,
+            "mask_truncated_completions": request.grpo_mask_truncated_completions,
+            "epsilon_high": request.grpo_epsilon_high,
+        },
+        "reward_specs": reward_specs,
         "finetune_vision_layers": request.finetune_vision_layers,
         "finetune_language_layers": request.finetune_language_layers,
         "finetune_attention_modules": request.finetune_attention_modules,
@@ -2966,6 +3069,7 @@ def _build_training_status(
             "grad_norm_steps": list(getattr(backend, "grad_norm_step_history", [])),
             "eval_loss": list(backend.eval_loss_history),
             "eval_steps": list(backend.eval_step_history),
+            "rl": list(getattr(backend, "rl_metric_history", [])),
         }
 
     return TrainingStatus(
@@ -3138,6 +3242,7 @@ async def stream_training_progress(
             progress: Optional[Any] = None,
             grad_norm_override: Optional[float] = None,
             eval_loss_override: Optional[float] = None,
+            rl_metrics_override: Optional[dict] = None,
         ) -> TrainingProgress:
             total = max(total_steps, 0)
             if step < 0 or total == 0:
@@ -3155,6 +3260,10 @@ async def stream_training_progress(
             eval_loss = eval_loss_override
             if eval_loss is None and progress:
                 eval_loss = getattr(progress, "eval_loss", None)
+            if rl_metrics_override is not None:
+                rl_metrics = rl_metrics_override or None
+            else:
+                rl_metrics = getattr(progress, "rl_metrics", None) if progress else None
 
             return TrainingProgress(
                 job_id = job_id,
@@ -3170,6 +3279,7 @@ async def stream_training_progress(
                 grad_norm = grad_norm,
                 num_tokens = num_tokens,
                 eval_loss = eval_loss,
+                rl_metrics = rl_metrics,
             )
 
         def format_sse(
@@ -3202,6 +3312,12 @@ async def stream_training_progress(
                     getattr(backend, "grad_norm_history", []),
                 )
             }
+            # Each replayed step carries its own RL numbers, not the latest ones.
+            rl_by_step = {
+                entry["step"]: {k: v for k, v in entry.items() if k != "step"}
+                for entry in getattr(backend, "rl_metric_history", [])
+                if isinstance(entry, dict) and "step" in entry
+            }
             for i, step_val in enumerate(backend.step_history):
                 if not is_current_job():
                     return
@@ -3223,6 +3339,7 @@ async def stream_training_progress(
                         epoch_replay,
                         progress = tp_replay,
                         grad_norm_override = grad_norm_by_step.get(step_val),
+                        rl_metrics_override = rl_by_step.get(step_val, {}),
                     )
                     if not is_current_job():
                         return

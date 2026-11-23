@@ -272,10 +272,8 @@ export function ChartsContent({
 
   const avgRaw =
     metrics.lossHistory.length > 0
-      ? +(
-          metrics.lossHistory.reduce((sum, point) => sum + point.loss, 0) /
-          metrics.lossHistory.length
-        ).toFixed(4)
+      ? metrics.lossHistory.reduce((sum, point) => sum + point.loss, 0) /
+        metrics.lossHistory.length
       : 0;
   const avgDisplay = lossScale === "log" ? toLog1p(avgRaw) : avgRaw;
 

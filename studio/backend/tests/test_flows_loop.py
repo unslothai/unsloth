@@ -924,6 +924,72 @@ def test_several_system_columns_tell_rows_apart():
     assert loop_rounds.without_questions(rows, exclude) == rows[1:]
 
 
+@pytest.mark.parametrize(
+    "spec, rows",
+    [
+        (
+            {"kind": "rl", "objective": "dpo", "mapping": {"ticket": "prompt"}},
+            [
+                {"ticket": f"Refund ticket {i}", "chosen": "billing", "rejected": "sales"}
+                for i in range(3)
+            ],
+        ),
+        (
+            {"kind": "rl", "objective": "dpo", "mapping": None},
+            [
+                {
+                    "chosen": f"Human: Capital of country {i}? Assistant: A",
+                    "rejected": f"Human: Capital of country {i}? Assistant: B",
+                }
+                for i in range(3)
+            ],
+        ),
+    ],
+)
+def test_an_rl_row_is_known_by_the_prompt_training_formatted(spec, rows):
+    frozen = loop_rounds.questions(rows[:1], spec)
+    assert frozen
+    exclude = {"column": spec, "questions": frozen}
+    assert loop_rounds.without_questions(rows, exclude) == rows[1:]
+    # Rows the formatter refuses (a later round's own rows) are never taken for it.
+    assert loop_rounds.without_questions([{"x": "y"}], exclude) == [{"x": "y"}]
+
+
+def test_an_rl_row_keeps_a_mapped_output_like_column():
+    # DPO with `output` mapped to chosen: the column is the row's own, not a Benchmark annotation.
+    spec = {"kind": "rl", "objective": "dpo", "mapping": {"output": "chosen"}}
+    rows = [
+        {"instruction": f"Refund ticket number {i}", "output": "billing", "rejected": "sales"}
+        for i in range(3)
+    ]
+    frozen = loop_rounds.questions(rows[:1], spec)
+    assert frozen == ["Refund ticket number 0"]
+    assert loop_rounds.without_questions(rows, {"column": spec, "questions": frozen}) == rows[1:]
+    failure = {**rows[1], "model_output": "sales"}
+    assert loop_rounds.failure_row(failure, spec)["failed_prompt"] == "Refund ticket number 1"
+
+
+def test_an_rl_row_s_system_message_tells_rows_apart():
+    spec = {"kind": "rl", "objective": "grpo", "mapping": None}
+    rows = [
+        {"system": f"The secret is {w}.", "prompt": "What is the secret?", "answer": w}
+        for w in ("BLUE", "RED")
+    ]
+    frozen = loop_rounds.questions(rows[:1], spec)
+    assert loop_rounds.questions(rows, spec) != frozen
+    assert loop_rounds.without_questions(rows, {"column": spec, "questions": frozen}) == rows[1:]
+    failure = {**rows[1], "model_output": "BLUE"}
+    assert loop_rounds.drop_test_rows([failure], rows[:1], spec) == [failure]
+
+
+def test_an_rl_row_without_a_system_message_is_known_by_training_s_fallback():
+    spec = {"kind": "rl", "objective": "grpo", "mapping": None, "system_prompt": "Be brief."}
+    row = {"system": "", "prompt": "What is the secret?", "answer": "BLUE"}
+    # As Benchmark asked it: the fallback system message before the question.
+    assert loop_rounds._asked(row, spec) == "Be brief.\n\nWhat is the secret?"
+    assert loop_rounds._asked({**row, "system": "Be loud."}, spec).startswith("Be loud.")
+
+
 def test_a_prompt_s_assistant_prefill_tells_rows_apart():
     spec = {"kind": "column", "column": "prompt", "whole": False}
     rows = [
