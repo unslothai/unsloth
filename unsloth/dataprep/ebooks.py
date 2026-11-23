@@ -84,6 +84,8 @@ class _BookTextParser(HTMLParser):
         self.encoding = None
         # <pre> text is kept verbatim and spliced back after whitespace cleanup.
         self.preformatted = []
+        # (stack depth, parts index) of open print page-number markers.
+        self.page_marks = []
 
     def handle_starttag(self, tag, attrs):
         if tag == "body":
@@ -100,17 +102,11 @@ class _BookTextParser(HTMLParser):
                 charset = re.search(r"charset\s*=\s*[\"']?([\w-]+)", attrs.get("content", ""), re.I)
                 if charset:
                     self.encoding = charset[1]
-        parent = self.stack[-1][1] if self.stack else False
         hidden = (
-            tag in _IGNORE
+            bool(self.stack and self.stack[-1][1])
+            or tag in _IGNORE
             or "hidden" in attrs
             or attrs.get("aria-hidden", "").lower() == "true"
-            or parent
-        )
-        # Print page numbers are not prose, but their block breaks and edge whitespace still separate words.
-        page_number = (
-            "pagebreak" in (attrs.get("epub:type") or "").split()
-            or "doc-pagebreak" in (attrs.get("role") or "").split()
         )
         if not hidden:
             if tag in _BLOCKS or tag == "hr":
@@ -120,7 +116,12 @@ class _BookTextParser(HTMLParser):
             elif tag in {"td", "th"}:
                 self.parts.append(" ")
         if tag not in _VOID:
-            self.stack.append((tag, hidden or ("page" if page_number else False)))
+            if not hidden and (
+                "pagebreak" in (attrs.get("epub:type") or "").split()
+                or "doc-pagebreak" in (attrs.get("role") or "").split()
+            ):
+                self.page_marks.append((len(self.stack), len(self.parts)))
+            self.stack.append((tag, hidden))
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -133,16 +134,28 @@ class _BookTextParser(HTMLParser):
             if self.stack[i][0] == tag:
                 del self.stack[i:]
                 break
+        while self.page_marks and self.page_marks[-1][0] >= len(self.stack):
+            self._drop_page_number(self.page_marks.pop()[1])
         if not hidden and tag in _BLOCKS:
             self.parts.append("\n\n")
 
+    def _drop_page_number(self, start):
+        # Keep only the marker's outer whitespace (spaces, <br>), which may be the only word separator.
+        text = re.sub(
+            "\ue000(\\d+)\ue001",
+            lambda m: self.preformatted[int(m[1])],
+            "".join(self.parts[start:]),
+        )
+        del self.parts[start:]
+        if text.strip():
+            text = text[: len(text) - len(text.lstrip())] + text[len(text.rstrip()) :]
+        if text and any(tag == "pre" for tag, _ in self.stack):
+            self.handle_data(text)
+        elif text:
+            self.parts.append(text)
+
     def handle_data(self, data):
-        state = self.stack[-1][1] if self.stack else False
-        if state == "page":
-            if not data.isspace():
-                data = data[: len(data) - len(data.lstrip())] + data[len(data.rstrip()) :]
-            state = not data
-        if not state:
+        if not self.stack or not self.stack[-1][1]:
             if any(tag == "pre" for tag, _ in self.stack):
                 self.parts.append(f"\ue000{len(self.preformatted)}\ue001")
                 self.preformatted.append(data)
