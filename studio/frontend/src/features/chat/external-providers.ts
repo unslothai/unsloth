@@ -8,6 +8,7 @@ import type {
   ProviderAuthStatus,
 } from "./api/providers-api";
 import { modelCatalogSupportsVision } from "./model-catalog.ts";
+import { normalizeProviderBaseUrl } from "./provider-base-url.ts";
 import {
   normalizeAutoCompactTokens,
   normalizeAutoCompactPercent,
@@ -358,7 +359,11 @@ export function providerModelSupportsThinking(
 }
 
 function thinkingBaseUrlKey(baseUrl: string | null | undefined): string {
-  return baseUrl?.trim().replace(/\/+$/, "") ?? "";
+  try {
+    return normalizeProviderBaseUrl(baseUrl ?? "", { appendOpenAiVersionPath: true }) ?? "";
+  } catch {
+    return baseUrl?.trim().replace(/\/+$/, "") ?? "";
+  }
 }
 
 export function learnCatalogModelCapabilities(

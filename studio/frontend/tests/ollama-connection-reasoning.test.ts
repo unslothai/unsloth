@@ -142,3 +142,18 @@ test("a capability saved before per-connection learning still applies", () => {
     true,
   );
 });
+
+test("a refresh from the dialog matches the connection's saved url spelling", () => {
+  learnCatalogModelCapabilities(
+    "ollama",
+    [{ id: "spelled-tag:7b", capabilities: ["completion", "thinking"] }],
+    "http://localhost:11434/v1",
+  );
+  for (const saved of ["http://LOCALHOST:11434", "http://localhost:11434/v1/"]) {
+    assert.equal(
+      getExternalReasoningCapabilities("ollama", "spelled-tag:7b", { baseUrl: saved })
+        .supportsReasoning,
+      true,
+    );
+  }
+});
