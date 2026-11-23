@@ -15,7 +15,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence, Union
 from utils.paths.path_utils import is_appledouble_metadata
 
 from .diffusion_flow_shift import flux_mu_shift
@@ -210,10 +210,13 @@ class DiffusionFamily:
     supports_torch_compile: bool = True
     # False keeps cudnn.benchmark off (as VideoFamily.cudnn_benchmark): its per-process conv pick changes pixels.
     cudnn_benchmark: bool = True
-    # Pin inductor's reduction-config filter on every arch (``filter_reduction_configs``) or only on the listed (major,
-    # minor) archs (``filter_reduction_configs_archs``); both unset = inductor's pick. Same two fields on VideoFamily.
+    # Pin inductor's reduction-config filter on every arch (``filter_reduction_configs``) or only on the listed CUDA
+    # (major, minor) archs / ROCm gfx names (``filter_reduction_configs_archs``); both unset = inductor's pick. Same two
+    # fields on VideoFamily.
     filter_reduction_configs: bool = False
-    filter_reduction_configs_archs: tuple[tuple[int, int], ...] = field(default_factory = tuple)
+    filter_reduction_configs_archs: tuple[Union[tuple[int, int], str], ...] = field(
+        default_factory = tuple
+    )
     # Optional pre-quantized transformer checkpoints as (scheme, repo_id): fetched instead of the dense bf16 (lower
     # load VRAM + download).
     prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)

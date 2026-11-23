@@ -596,7 +596,9 @@
   "wan2.2-ti2v-5b": {
    "cudnn_benchmark": false,
    "filter_reduction_configs": false,
-   "filter_reduction_configs_archs": [],
+   "filter_reduction_configs_archs": [
+    "gfx1151"
+   ],
    "vae_fused_encoder": true
   },
   "z-image": {
