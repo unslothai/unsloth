@@ -529,3 +529,133 @@ def test_the_end_of_a_streamed_forward_never_empties_the_cache_inside_a_capture(
     pf = _CapturingPrefetcher(pf_capturing)
     op._end_stream_forward(pf, release)
     assert pf.ended == 1 and len(calls) == want
+
+
+@pytest.mark.parametrize(
+    "total, count, want",
+    [
+        # the L4 plan: 19 of 50 streamed, every gap 2 or 3 blocks, the first copy behind 2 resident blocks
+        (50, 19, [2, 5, 7, 10, 13, 15, 18, 21, 23, 26, 28, 31, 34, 36, 39, 42, 44, 47, 49]),
+        (6, 2, [2, 5]),
+        (6, 0, []),
+        (6, 6, [0, 1, 2, 3, 4, 5]),
+        (6, 9, [0, 1, 2, 3, 4, 5]),
+    ],
+)
+def test_spread_streamed_blocks_are_evenly_spaced_and_end_on_the_last(total, count, want):
+    assert op.spread_stream_indices(total, count) == want
+
+
+def test_a_spread_demotion_keeps_every_block_already_streamed():
+    for total in range(1, 61):
+        for count in range(total + 1):
+            first = op.spread_stream_indices(total, count)
+            assert len(first) == len(set(first)) == count
+            assert not first or first[-1] == total - 1
+            gaps = [b - a for a, b in zip([-1] + first, first)]
+            assert not gaps or max(gaps) - min(gaps) <= 1 + (total % max(count, 1) != 0)
+            for more in range(count, total + 1):
+                grown = op.spread_stream_indices(total, more, first)
+                assert set(first) <= set(grown) and len(grown) == more
+
+
+def test_the_dit_streamer_spreads_its_blocks_and_the_encoder_does_not(monkeypatch):
+    h3i = _h3()
+    seen = _record_stream_calls(monkeypatch)
+    plan = h3i.plan_placement(vram_gb = 23.46, host_gb = 53.97, dit_gb = 21.9, te_gb = 27.2, inflight = 2)
+    stack = _Stack()
+
+    class _T(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.inp = stack.inp
+            self.transformer_blocks = stack.layers
+
+    class _V(torch.nn.Module):
+        pass
+
+    h3i._place_streamed_dit(_T(), _V(), "cpu", plan).remove()
+    monkeypatch.setenv(h3i.STREAM_SPREAD_ENV, "0")
+    h3i._place_streamed_dit(_T(), _V(), "cpu", plan).remove()
+    monkeypatch.delenv(h3i.STREAM_SPREAD_ENV)
+
+    class _Pipe:
+        pass
+
+    pipe = _Pipe()
+    pipe._unsloth_h3_streamers = []
+    h3i._place_text_encoder(pipe, _Encoder(), plan, "cpu", per_prompt = False)
+    assert [k["spread"] for k in seen] == [True, False, False]
+
+
+def test_the_pageable_streamer_frees_before_it_places(monkeypatch):
+    """Rebuilt after a spread streamer, other blocks become resident: none may land before the streamed ones leave."""
+    h3i = _h3()
+    blocks = torch.nn.ModuleList(torch.nn.Linear(4, 4) for _ in range(4))
+    where = {id(b): i for i, b in enumerate(blocks)}
+    moves = []
+    real = torch.nn.Module.to
+
+    def to(self, *a, **k):
+        moves.append((where.get(id(self)), str(a[0])))
+        return real(self, "cpu")
+
+    monkeypatch.setattr(torch.nn.Module, "to", to)
+    h3i.ModuleListStreamer(blocks, "meta", 2).remove()
+    assert moves == [(2, "cpu"), (3, "cpu"), (0, "meta"), (1, "meta")]
+
+
+@cuda
+@pytest.mark.parametrize("resident", [0, 2, 4])
+def test_a_spread_stack_is_bit_identical_and_streams_the_spread_blocks(monkeypatch, resident):
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 1 << 20)
+    ref = _Stack().cuda().eval()
+    stack = _Stack().eval()
+    stack.inp.cuda()
+    streamer = op.stream_module_list(stack, stack.layers, "cuda", resident, spread = True)
+    want_idx = op.spread_stream_indices(6, 6 - resident)
+    assert streamer is not None and streamer.streamed_indices == want_idx and streamer.spread
+    x = torch.randn(8, 64, device = "cuda")
+    with torch.no_grad():
+        want = ref(x)
+        for _ in range(3):
+            assert torch.equal(stack(x), want)
+    torch.cuda.synchronize()
+    assert streamer.stats()["prefetched"] > 0 and not streamer.prefetcher.ready
+    for i, layer in enumerate(stack.layers):
+        where = {t.device.type for t in list(layer.parameters()) + list(layer.buffers())}
+        assert where == ({"cpu"} if i in want_idx else {"cuda"})
+    # a demotion reuses the pinned groups: the streamed set only grows
+    reuse = streamer.detach()
+    grown = op.stream_module_list(
+        stack,
+        stack.layers,
+        "cuda",
+        max(0, resident - 1),
+        spread = True,
+        reuse = reuse,
+        reuse_arenas = streamer.arenas,
+    )
+    assert grown is not None and set(want_idx) <= set(grown.streamed_indices)
+    with torch.no_grad():
+        for _ in range(2):
+            assert torch.equal(stack(x), want)
+    grown.remove()
+
+
+@pytest.mark.parametrize("spread, want", [("1", [2, 5]), ("0", [4, 5])])
+def test_a_dit_restreamed_after_the_encoder_reserves_the_blocks_it_streams(
+    monkeypatch, spread, want
+):
+    """Blocks of unequal size: the reservation counts the blocks the streamer will pin, spread or tail."""
+    import types
+
+    h3i = _h3()
+    monkeypatch.setenv(h3i.STREAM_SPREAD_ENV, spread)
+    blocks = torch.nn.ModuleList(torch.nn.Linear(4 + i, 1, bias = False) for i in range(6))
+    plan = types.SimpleNamespace(placement = h3i.PLACE_STREAM, dit_resident_blocks = 4)
+    transformer = types.SimpleNamespace(transformer_blocks = blocks)
+    got = h3i.dit_restream_pin_bytes(transformer, plan, None)
+    assert got == sum(blocks[i].weight.numel() * 4 for i in want)

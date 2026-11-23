@@ -30477,31 +30477,66 @@ async def _finish_external_compaction(
         reply_tokens = cloud_compaction.summary_max_tokens(plan.budget)
         # The whole window when it is known: the threshold only says when to compact.
         room = payload.context_window or plan.context_length
+        # A saved summary written by a retry can be up to twice the reply.
+        carried = (
+            estimate_message_tokens_without_unpriced_media(
+                {"role": "user", "content": plan.summary}
+            )
+            if plan.summary
+            else 0
+        )
         chunks = cloud_compaction.summary_chunks(
             plan.to_summarise,
             estimate_message_tokens_without_unpriced_media,
             # Room for the instructions, the summary so far and the reply.
-            max(1_000, room - 2 * reply_tokens - 1_000) if room else None,
+            max(1_000, room - 2 * reply_tokens - max(0, carried - reply_tokens) - 1_000)
+            if room
+            else None,
         )
         summary = plan.summary
+
+        async def _summarise(request: list[dict], limit: int, first_line_timeout: float) -> str:
+            return await cloud_compaction.collect_summary(
+                client.stream_chat_completion(
+                    messages = request,
+                    model = model,
+                    temperature = None,
+                    top_p = None,
+                    max_tokens = limit,
+                    tool_choice = "none",
+                    enable_prompt_caching = False,
+                    enable_thinking = cloud_compaction.summary_thinking(
+                        getattr(client, "provider_type", None),
+                        getattr(client, "api_type", None),
+                    ),
+                    thread_id = payload.thread_id,
+                    # Past collect_summary's own timers, so a stall reads as timed out.
+                    read_timeout = first_line_timeout + cloud_compaction.SUMMARY_IDLE_TIMEOUT_S,
+                ),
+                first_line_timeout = first_line_timeout,
+                total_timeout = cloud_compaction.summary_total_timeout(limit),
+            )
+
         try:
-            for chunk in chunks:
-                summary = await cloud_compaction.collect_summary(
-                    client.stream_chat_completion(
-                        messages = cloud_compaction.summary_request_messages(summary, chunk),
-                        model = model,
-                        temperature = None,
-                        top_p = None,
-                        max_tokens = reply_tokens,
-                        tool_choice = "none",
-                        enable_prompt_caching = False,
-                        enable_thinking = cloud_compaction.summary_thinking(
-                            getattr(client, "provider_type", None),
-                            getattr(client, "api_type", None),
-                        ),
-                        thread_id = payload.thread_id,
-                    )
+            for index, chunk in enumerate(chunks):
+                request = cloud_compaction.summary_request_messages(summary, chunk)
+                request_tokens = sum(
+                    estimate_message_tokens_without_unpriced_media(m) for m in request
                 )
+                first_line_timeout = cloud_compaction.summary_first_line_timeout(request_tokens)
+                try:
+                    summary = await _summarise(request, reply_tokens, first_line_timeout)
+                except cloud_compaction.SummaryCutOff:
+                    # One retry with twice the room, on the last call only: an earlier one would carry
+                    # the longer summary into a chunk sized for a reply-length one.
+                    if index < len(chunks) - 1:
+                        raise
+                    retry_tokens = 2 * reply_tokens
+                    if room:
+                        retry_tokens = min(retry_tokens, room - request_tokens - 1_000)
+                    if retry_tokens <= reply_tokens:
+                        raise
+                    summary = await _summarise(request, retry_tokens, first_line_timeout)
         except cloud_compaction.SummaryFailed as exc:
             logger.warning("external_provider.summary_failed", error = str(exc), model = model)
             summary_failed = True
