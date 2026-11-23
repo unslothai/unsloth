@@ -9,8 +9,8 @@ card idle. Step 1 measures the first block of each class; afterwards free memory
 recompute (same kernels, same inputs, so loss and gradients are unchanged). An out-of-memory error halves the kept set
 (every block checkpointed once nothing is left) and reruns the step from the same inputs.
 
-``UNSLOTH_DIFFUSION_GC_MODE``: unset or ``auto`` uses this plan on CUDA and ROCm; ``plain`` checkpoints every block
-and ``partial`` every Nth, as before.
+``UNSLOTH_DIFFUSION_GC_MODE``: unset or ``auto`` uses this plan on CUDA and ROCm (unset leaves it off on a discrete
+Windows ROCm card, see rocm_windows_discrete); ``plain`` checkpoints every block and ``partial`` every Nth, as before.
 
 The blocks that stay checkpointed keep their long attention outputs (a selective checkpoint policy), so the backward
 recompute skips those kernels: a few percent of the card buys most of the attention forward. The plan charges every
@@ -55,6 +55,27 @@ def _is_rocm() -> bool:
         return bool(getattr(torch.version, "hip", None))
     except Exception:  # noqa: BLE001
         return True
+
+
+def rocm_windows_discrete(device = "cuda") -> bool:
+    """A discrete (not APU) Radeon card under Windows ROCm. WDDM shows these budgets the whole card as free (blind to
+    other processes) and satisfies an overflow from host RAM instead of raising, so the OOM step-down never fires;
+    the budgets were measured only on a unified-memory gfx1151. Never raises: unknown answers False."""
+    import sys
+
+    if sys.platform != "win32":
+        return False
+    try:
+        import torch
+        from core.inference.rocm_bf16 import is_rocm_torch
+
+        if not is_rocm_torch(torch):
+            return False
+        from core.inference.host_pinning import device_is_integrated
+
+        return not device_is_integrated(device)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _owner(function: Any) -> Any:
@@ -617,6 +638,11 @@ def enable_budgeted_checkpointing(model: Any, device: str) -> Optional[BudgetedC
     """Install the budgeted checkpoint on a diffusers model; None when the mode, device or model does not allow it
     (the caller then checkpoints every block as before)."""
     if gc_budget_mode() != "auto" or device != "cuda":
+        return None
+    # Off on a discrete Windows ROCm card until measured; UNSLOTH_DIFFUSION_GC_MODE=auto (set explicitly) opts in.
+    if (os.environ.get(GC_MODE_ENV, "") or "").strip().lower() != "auto" and rocm_windows_discrete(
+        device
+    ):
         return None
     enable = getattr(model, "enable_gradient_checkpointing", None)
     if not callable(enable):

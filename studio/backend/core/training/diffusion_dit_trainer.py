@@ -5037,12 +5037,22 @@ def _dequant_cache_wanted(
     """nf4 / int8 dequant cache on CUDA and ROCm; off on the fp16 path, whose 16 GB cards it shares with the checkpointing budget
     (on a T4 both planned from step 1's free memory and step 2 OOMed). int8 runs eager, so the cache is its only
     relief from torchao's per-call weight cast."""
+    from core.training.diffusion_gc_budget import rocm_windows_discrete
     from core.training.diffusion_lora_fast import dequant_cache_enabled, int8_dequant_cache_enabled
+
+    # Off on a discrete Windows ROCm card until measured (rocm_windows_discrete); UNSLOTH_DIFFUSION_DEQUANT_CACHE=1 opts in.
+    opted_in = os.environ.get("UNSLOTH_DIFFUSION_DEQUANT_CACHE", "").strip().lower() in (
+        "1",
+        "true",
+        "on",
+        "yes",
+    )
     return (
         (base_is_bnb or (int8_base and int8_dequant_cache_enabled()))
         and device == "cuda"
         and not fp16_amp
         and dequant_cache_enabled()
+        and (opted_in or not rocm_windows_discrete(device))
     )
 
 
