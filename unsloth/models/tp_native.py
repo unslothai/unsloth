@@ -4335,17 +4335,24 @@ def _text_config_quantized(config):
     )
 
 
-def _whole_load_exceeds_device(name, kwargs, mesh, device):
-    """Collective over `mesh`: whether the checkpoint's files exceed 90% of the free memory of some rank's GPU
-    (a whole load there would not fit)."""
+def _whole_load_exceeds_device(
+    name,
+    kwargs,
+    mesh,
+    device,
+    nbytes = None,
+):
+    """Collective over `mesh`: whether the checkpoint's files (or `nbytes`, the loaded size when it differs)
+    exceed 90% of the free memory of some rank's GPU (a whole load there would not fit)."""
     import os
 
     if device.type != "cuda":
         return False
-    try:
-        nbytes = sum(os.path.getsize(p) for p in set(_checkpoint_index(name, kwargs).values()))
-    except Exception:
-        nbytes = 0
+    if nbytes is None:
+        try:
+            nbytes = sum(os.path.getsize(p) for p in set(_checkpoint_index(name, kwargs).values()))
+        except Exception:
+            nbytes = 0
     free = torch.cuda.mem_get_info(device)[0]
     flag = torch.tensor([int(nbytes > 0.9 * free)], device = device)
     import torch.distributed as dist
@@ -4384,9 +4391,36 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
         quantized = None
     if state.get("prequantized_only") and quantized is None:
         return original(cls, name, *args, **original_kwargs)
+    # Native FSDP2: a bitsandbytes 4-bit quantize-on-load keeps each tensor's chunk right after transformers
+    # quantizes it (fsdp2_load._load_quantizing) instead of the whole model on every rank.
+    chunked = state.get("quantize_on_load")
+    if chunked is not None and quantized is None and not other:
+        from .fsdp2_load import bnb4_on_load, quantized_load_bytes
+        if bnb4_on_load(original_kwargs):
+            mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
+            if mesh.ndim != 1:
+                if state.get("auto"):
+                    return original(cls, name, *args, **original_kwargs)
+                raise ValueError(
+                    state.get("mesh_hint", "Unsloth: sharded loading takes a 1-D mesh.")
+                )
+            if state.get("auto"):
+                # Only a checkpoint whose 4-bit load does not fit this GPU (the full load stays the default).
+                try:
+                    nbytes = quantized_load_bytes(
+                        _checkpoint_index(name, original_kwargs), original_kwargs
+                    )
+                except Exception:
+                    nbytes = 0
+                device = _load_device(original_kwargs.get("device_map"), mesh)
+                if not _whole_load_exceeds_device(
+                    name, original_kwargs, mesh, device, nbytes = nbytes
+                ):
+                    return original(cls, name, *args, **original_kwargs)
+            return chunked(original, cls, name, args, original_kwargs, mesh, state)
     if state.get("auto"):
         # Only a checkpoint too large for a whole load on this GPU loads sharded (the full load stays the
-        # default); quantizing on load keeps the full load, which quantizes layer by layer.
+        # default); quantizing on load (other than the bitsandbytes 4-bit case above) keeps the full load.
         mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
         on_load = other or (
             quantized is None
