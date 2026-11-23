@@ -193,7 +193,8 @@ def quant_cublas_env(
     return {QUANT_CUBLAS_ENV: str(rows.pop())}
 
 
-# Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only.
+# Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only
+# (Metal keeps direct conv for the VAE on builds with the implicit GEMM kernel).
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -221,7 +222,7 @@ def native_speed_flags(
                 return [
                     "--diffusion-fa",
                     "--conv-direct",
-                    rejected_conv_direct_mode(args, accelerator),
+                    rejected_conv_direct_mode(args, accelerator, binary),
                 ]
             return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
@@ -268,15 +269,20 @@ def _vae_backend(backend_args: Sequence[str], accelerator: Optional[str]) -> Opt
 
 
 def rejected_conv_direct_mode(
-    backend_args: Sequence[str] = (), accelerator: Optional[str] = None
+    backend_args: Sequence[str] = (),
+    accelerator: Optional[str] = None,
+    binary: Optional[str] = None,
 ) -> str:
-    """``off,vae=auto`` for a Vulkan denoiser with a Vulkan/CPU VAE, else ``off`` (also kill switch / Metal).
+    """``off,vae=auto`` for a Vulkan denoiser with a Vulkan/CPU VAE, ``off,vae=on`` for a Metal VAE on a build with the
+    implicit GEMM Metal CONV_2D (``_metal_vae_conv_direct``), else ``off`` (also the kill switch).
     Module syntax shipped with ``--conv-direct`` itself (sd.cpp #2134)."""
     import os
 
     forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
-    if forced in ("0", "off", "false", "no") or _runs_on_apple_metal(backend_args):
+    if forced in ("0", "off", "false", "no"):
         return "off"
+    if _runs_on_apple_metal(backend_args):
+        return "off,vae=on" if _metal_vae_conv_direct(backend_args, binary) else "off"
     args = list(backend_args)
     diffusion = _diffusion_backend(
         [args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"]
@@ -286,6 +292,52 @@ def rejected_conv_direct_mode(
     if diffusion == "vulkan" and vae in _VAE_CONV_DIRECT_AUTO_BACKENDS:
         return "off,vae=auto"
     return "off"
+
+
+# Metal VAE direct conv: unslothai/stable-diffusion.cpp#103 (ggml patches 0072 / 0073) gives ggml-metal an implicit GEMM
+# CONV_2D. Measured on a macos-15 M1 runner, SD-Turbo VAE decode: 512 px 12.3 -> 5.4 s and 1664 -> 640 MB of VAE compute
+# buffer; 1024 px decodes untiled in 2.56 GB (im2col asks for 8.5 GB and tiles), 55.8 -> 20.5 s. Older builds run the
+# scalar direct kernel (5x slower than im2col), so only Unsloth prebuilts past these tags get it. The denoiser keeps
+# im2col. ``UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT`` = 0 keeps the VAE on im2col, 1 forces direct conv on any build.
+METAL_VAE_CONV_DIRECT_ENV = "UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT"
+METAL_IMPLICIT_GEMM_CONV_MIN_BUILD = 982
+_METAL_SCALAR_CONV_TAGS = frozenset(
+    {
+        "master-982-0518b34-u27b9ddc",
+        "master-982-0518b34-u2217753",
+        "master-982-0518b34-ub627f20",
+        "master-982-0518b34-u67cba2c",
+        "master-982-0518b34-ueb0e729",
+        "master-982-0518b34-ua575c4b",
+        "master-982-0518b34-uba6ac30",
+        "master-982-0518b34-uaba3a1c",
+        "master-982-0518b34-ud331c66",
+    }
+)
+
+
+def metal_implicit_gemm_conv(binary: Optional[str]) -> bool:
+    """True when ``binary`` is an Unsloth prebuilt (``-u<id>`` tag recorded by the installer) carrying the implicit GEMM
+    Metal CONV_2D. Fails closed on an unrecorded binary (``SD_CLI_PATH``, PATH, a source build) or an upstream tag."""
+    import re
+
+    tag = _installed_sd_cpp_tag(str(binary)) if binary else None
+    if not tag or not re.search(r"-u[0-9a-f]+$", tag) or tag in _METAL_SCALAR_CONV_TAGS:
+        return False
+    build = sd_cpp_build_number(tag)
+    return build is not None and build >= METAL_IMPLICIT_GEMM_CONV_MIN_BUILD
+
+
+def _metal_vae_conv_direct(backend_args: Sequence[str], binary: Optional[str]) -> bool:
+    """True when the VAE runs on Metal (not ``--vae-on-cpu`` / ``vae=cpu``) and should take direct conv."""
+    import os
+
+    forced = (os.environ.get(METAL_VAE_CONV_DIRECT_ENV) or "").strip().lower()
+    if forced in ("0", "off", "false", "no"):
+        return False
+    if (_vae_backend(backend_args, None) or "").strip().lower() == "cpu":
+        return False
+    return forced in ("1", "on", "true", "yes") or metal_implicit_gemm_conv(binary)
 
 
 def sd_cpp_supports_conv_direct_mode(binary: str) -> bool:
@@ -399,7 +451,7 @@ def _diffusion_backend(specs: Sequence[str]) -> Optional[str]:
 
 def _runs_on_apple_metal(backend_args: Sequence[str] = ()) -> bool:
     """True when sd.cpp runs diffusion on Apple Metal (an explicit --backend decides, else Apple
-    Silicon not paravirtual); direct conv stays off since CONV_2D trips the GPU watchdog."""
+    Silicon not paravirtual); the denoiser keeps im2col, since the scalar CONV_2D tripped the GPU watchdog."""
     import sys
 
     if sys.platform != "darwin":
