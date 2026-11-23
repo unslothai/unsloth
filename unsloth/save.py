@@ -7427,9 +7427,15 @@ def unsloth_generic_save(
             state_dict = model.state_dict()
         _cast_shards = None
         if "16bit" in save_method:
+            # The model's own 16-bit dtype is what its saved config names: fp16 cast to bf16 rounds
+            # 65504 to 65536 (inf when reloaded as fp16), bf16 cast to fp16 writes inf outright.
+            # Only a float32 model falls back to what the hardware supports.
+            _model_dtype = getattr(model, "dtype", None)
             _target_dtype = (
                 torch.float32
                 if _requests_float32(dtype)
+                else _model_dtype
+                if _model_dtype in (torch.float16, torch.bfloat16)
                 else (torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16)
             )
             if (
