@@ -649,6 +649,7 @@ def test_cudnn_benchmark_opt_out_image_families():
         "z-image",
         "sdxl",
         "moss-image",
+        "krea-2",
     }
 
 
