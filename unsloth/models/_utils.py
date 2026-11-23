@@ -10510,7 +10510,57 @@ def _nvfp4_qat_linear_op():
         )
 
     forward.register_autograd(backward, setup_context = setup_context)
+    _register_nvfp4_qat_linear_v1(forward, backward_op, forward_schema)
     _NVFP4_QAT_LINEAR.append(forward)
+    return forward
+
+
+def _register_nvfp4_qat_linear_v1(forward_v2, backward_v2, forward_schema):
+    """Keep the pre-versioning names `unsloth::nvfp4_qat_linear` (+ `_backward`) resolvable.
+
+    torch.export archives and compile caches store the qualified op name, so graphs saved before the `_v2`
+    bump still call the v1 ops. Both forward to the v2 kernels; the v1 backward keeps its original schema and
+    always computes both grads, and the v1 autograd saves every payload, exactly as before the bump."""
+    name = "unsloth::nvfp4_qat_linear"
+    backward_schema = (
+        "(Tensor grad, Tensor x_qdata, Tensor x_scale, Tensor x_per_tensor_scale, Tensor w_qdata, "
+        "Tensor w_scale, Tensor w_per_tensor_scale, ScalarType x_dtype, ScalarType w_dtype, "
+        "bool act_per_tensor, bool w_per_tensor, bool w_swizzled, ScalarType? mm_dtype) -> (Tensor, Tensor)"
+    )
+
+    @torch.library.custom_op(name, mutates_args = (), schema = forward_schema)
+    def forward(x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, w_triton, mm_dtype):
+        return forward_v2(
+            x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, w_triton, mm_dtype
+        )
+
+    @forward.register_fake
+    def _(x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, w_triton, mm_dtype):
+        return forward_v2(
+            x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, w_triton, mm_dtype
+        )
+
+    @torch.library.custom_op(name + "_backward", mutates_args = (), schema = backward_schema)
+    def backward_op(grad, *saved_and_args):
+        return backward_v2(grad, *saved_and_args, True, True)
+
+    @backward_op.register_fake
+    def _(grad, *saved_and_args):
+        return backward_v2(grad, *saved_and_args, True, True)
+
+    def setup_context(ctx, inputs, output):
+        x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, _, mm_dtype = inputs
+        saved = output[1:]
+        ctx.save_for_backward(*saved)
+        ctx.mark_non_differentiable(*saved)
+        ctx.args = (x.dtype, weight.dtype, act_per_tensor, w_per_tensor, w_swizzled, mm_dtype)
+
+    def backward(ctx, grad, *_):
+        grad_x, grad_w = backward_op(grad, *ctx.saved_tensors, *ctx.args)
+        grad_bias = grad.sum(0) if ctx.needs_input_grad[2] else None
+        return grad_x, grad_w, grad_bias, None, None, None, None, None
+
+    forward.register_autograd(backward, setup_context = setup_context)
     return forward
 
 

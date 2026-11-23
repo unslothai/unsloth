@@ -621,6 +621,11 @@ def test_counter_counts_the_real_nvfp4_qat_linear_op():
         op(x, w, None, False, False, False, False, None)
     # The public key survives the op's versioned dispatch name.
     assert c["unsloth::nvfp4_qat_linear"] == 1 and "unsloth::nvfp4_qat_linear_v2" not in c
+    # Failing before: the public tuple held the `_v2` dispatch name, absent from the counter dict.
+    assert sum(c[name] for name in P.engage.LOWP_GEMM_CUSTOM_OPS) == 1
+    with P.count_lowp_gemms() as c:  # the v1 name, kept for old archives, counts under the same key
+        torch.ops.unsloth.nvfp4_qat_linear(x, w, None, False, False, False, False, None)
+    assert c["unsloth::nvfp4_qat_linear"] == 1
 
 
 def test_counter_hears_eager_fp8_triton_launchers_and_not_the_fp16_gemv():

@@ -81,7 +81,7 @@ LOWP_GEMM_OPS = ("_scaled_mm", "_scaled_mm_v2", "_scaled_grouped_mm", "_scaled_g
 # Dequantize-then-matmul ops (mxfp4_bounded_dense_matmul, fp8 weight dequant, fp8_block_gemv, which upcasts
 # the weight before its dot) are not low-precision GEMMs.
 LOWP_GEMM_CUSTOM_OPS = (
-    "unsloth::nvfp4_qat_linear_v2",
+    "unsloth::nvfp4_qat_linear",
     "unsloth::fp8_block_matmul_triton",
     "unsloth::fp8_block_matmul_torchao",
     "unsloth::fp8_block_small_m_linear",
@@ -97,9 +97,9 @@ LOWP_GEMM_CUSTOM_OPS = (
     "fbgemm::f8f8bf16_cublas",
 )
 
-# Counter key of a dispatch name whose op was versioned (compile caches key on the op name): the public key
-# stays stable across schema bumps.
-_LOWP_GEMM_COUNTER_KEYS = {"unsloth::nvfp4_qat_linear_v2": "unsloth::nvfp4_qat_linear"}
+# Versioned dispatch names (compile caches key on the op name) counted under their public key, so the keys,
+# LOWP_GEMM_CUSTOM_OPS and the counter dict stay the same across schema bumps.
+_LOWP_GEMM_DISPATCH_ALIASES = {"unsloth::nvfp4_qat_linear_v2": "unsloth::nvfp4_qat_linear"}
 
 
 # Per thread, like torch's dispatch-mode stack: the counters open on this thread, and the ids of those already
@@ -172,7 +172,10 @@ def count_lowp_gemms():
         if getattr(torch.ops.aten, name, None) is not None:
             names[f"aten::{name}"] = name
     for name in LOWP_GEMM_CUSTOM_OPS:
-        names[name] = _LOWP_GEMM_COUNTER_KEYS.get(name, name)
+        names[name] = name
+    for name, key in _LOWP_GEMM_DISPATCH_ALIASES.items():
+        if key in LOWP_GEMM_CUSTOM_OPS:
+            names[name] = key
     counts = {key: 0 for key in names.values()}
 
     class _Counter(TorchDispatchMode):

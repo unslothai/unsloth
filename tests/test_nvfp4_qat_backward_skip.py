@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import warnings
 
 import pytest
 import torch
@@ -17,20 +19,19 @@ pytestmark = pytest.mark.skipif(
 import unsloth.models._utils as qat_utils
 
 
-@pytest.fixture(scope = "module")
-def op():
-    # Skip only on the optional dependency; a broken op factory or kernel registration fails setup.
-    try:
-        from torchao.prototype.mx_formats.nvfp4_tensor import (
-            NVFP4Tensor,
-            per_tensor_amax_to_scale,
-        )
-    except ImportError as e:
-        pytest.skip(f"torchao NVFP4 internals unavailable: {e!r}")
-    op = qat_utils._nvfp4_qat_linear_op()
+def _has_cpu_kernel(qualname):
+    return torch._C._dispatch_has_kernel_for_dispatch_key(qualname, "CPU")
 
-    # No FP4 GEMM on CPU: the forward runs the same quantizer with a dequantized matmul. The real op
-    # only ever sees CUDA inputs, so this CPU kernel does not touch it.
+
+@contextlib.contextmanager
+def _cpu_forward_kernel(op):
+    """No FP4 GEMM on CPU: run the same quantizer with a dequantized matmul on the CPU dispatch key, from a
+    test-owned library destroyed on exit, so the production op gets back its previous registration."""
+    from torchao.prototype.mx_formats.nvfp4_tensor import (
+        NVFP4Tensor,
+        per_tensor_amax_to_scale,
+    )
+
     def cpu_forward(x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, w_triton, mm_dtype):
         def q(t, per_tensor, swizzled):
             scale = None
@@ -51,8 +52,30 @@ def op():
 
         return (out.to(x.dtype), x_q.qdata, x_q.scale, pt(x_q), w_q.qdata, w_q.scale, pt(w_q))
 
-    op.register_kernel("cpu", cpu_forward)  # bound to the op object, not a hard-coded name
-    return op
+    lib = torch.library.Library(
+        op._namespace, "IMPL"
+    )  # bound to the op object, not a hard-coded name
+    try:
+        with (
+            warnings.catch_warnings()
+        ):  # an outer CPU kernel (nested use) is overridden, then restored
+            warnings.simplefilter("ignore", UserWarning)
+            lib.impl(op._name, cpu_forward, "CPU")
+        yield op
+    finally:
+        lib._destroy()
+
+
+@pytest.fixture(scope = "module")
+def op():
+    # Skip only on the optional dependency; a broken op factory or kernel registration fails setup.
+    try:
+        import torchao.prototype.mx_formats.nvfp4_tensor  # noqa: F401
+    except ImportError as e:
+        pytest.skip(f"torchao NVFP4 internals unavailable: {e!r}")
+    op = qat_utils._nvfp4_qat_linear_op()
+    with _cpu_forward_kernel(op):
+        yield op
 
 
 def _run(
@@ -234,3 +257,66 @@ def test_backward_fake_matches_requested_grads(op):
             gx, gw = backward(grad, *xs, *ws, *dtypes, True, True, False, None, need_x, need_w)
             assert gx.shape == ((64, 128) if need_x else (0,))
             assert gw.shape == ((96, 128) if need_w else (0,))
+
+
+def test_cpu_forward_kernel_is_restored_on_exit(op):
+    # Failing before: the fixture registered its CPU matmul on the production op and never removed it.
+    name = op._qualname
+    before = _has_cpu_kernel(name)
+    with _cpu_forward_kernel(op):
+        assert _has_cpu_kernel(name)
+    assert _has_cpu_kernel(name) == before
+
+
+_V1_FORWARD_SCHEMA = (
+    "unsloth::nvfp4_qat_linear(Tensor x, Tensor weight, Tensor? bias, bool act_per_tensor, "
+    "bool w_per_tensor, bool w_swizzled, bool w_triton, ScalarType? mm_dtype) -> "
+    "(Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)"
+)
+_V1_BACKWARD_SCHEMA = (
+    "unsloth::nvfp4_qat_linear_backward(Tensor grad, Tensor x_qdata, Tensor x_scale, "
+    "Tensor x_per_tensor_scale, Tensor w_qdata, Tensor w_scale, Tensor w_per_tensor_scale, "
+    "ScalarType x_dtype, ScalarType w_dtype, bool act_per_tensor, bool w_per_tensor, bool w_swizzled, "
+    "ScalarType? mm_dtype) -> (Tensor, Tensor)"
+)
+
+
+def test_v1_op_names_keep_their_schema(op):
+    # Failing before: the `_v2` bump dropped the v1 names, so archives and caches that call them broke.
+    assert str(torch.ops.unsloth.nvfp4_qat_linear.default._schema) == _V1_FORWARD_SCHEMA
+    assert str(torch.ops.unsloth.nvfp4_qat_linear_backward.default._schema) == _V1_BACKWARD_SCHEMA
+
+
+def test_v1_export_archive_loads_and_matches_v2(op, tmp_path):
+    # A .pt2 saved before the `_v2` bump names `unsloth.nvfp4_qat_linear.default`; it must still load + run.
+    v1 = torch.ops.unsloth.nvfp4_qat_linear.default
+
+    class M(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            g = torch.Generator().manual_seed(0)
+            w = torch.randn(96, 128, generator = g, dtype = torch.bfloat16)
+            self.w = torch.nn.Parameter(w, requires_grad = False)
+
+        def forward(self, x):
+            return v1(x, self.w, None, True, True, False, False, None)[0]
+
+    x = torch.randn(64, 128, generator = torch.Generator().manual_seed(1), dtype = torch.bfloat16)
+    path = tmp_path / "nvfp4_qat_v1.pt2"
+    torch.export.save(torch.export.export(M(), (x,)), path)
+    loaded = torch.export.load(path)
+    targets = [str(n.target) for n in loaded.graph.nodes if n.op == "call_function"]
+    assert "unsloth.nvfp4_qat_linear.default" in targets
+    want = op(x, M().w, None, True, True, False, False, None)[0]
+    assert torch.equal(loaded.module()(x), want)
+
+
+@pytest.mark.parametrize("need_x, need_w", [(True, False), (False, True), (True, True)])
+def test_v1_autograd_matches_v2(op, need_x, need_w):
+    # The v1 op keeps its pre-bump autograd (both grads computed); requested grads equal v2's bitwise.
+    v1 = torch.ops.unsloth.nvfp4_qat_linear
+    full = _run(op, True, True, bias_grad = True)
+    _, gx, gw, gb, _ = _run(v1, need_x, need_w, bias_grad = True)
+    assert (gx is not None) == need_x and (gw is not None) == need_w
+    for got, want in ((gx, full[1]), (gw, full[2]), (gb, full[3])):
+        assert got is None or torch.equal(got, want)
