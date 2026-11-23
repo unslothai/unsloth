@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
 
-"""Every early return of unsloth_compile_transformers must stay a (model_types, compiled)
-pair: unsloth/models/loader.py unpacks `model_types, supports_sdpa = ...`, so a bare
-`return` on the torch < 2.4 path was a TypeError before the model ever loaded."""
+# loader.py unpacks `model_types, supports_sdpa = ...`: every early return must be a pair.
 
 import pytest
 
