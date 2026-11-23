@@ -554,15 +554,19 @@ async def unload_llm(
     else:
         # The route unloads by checkpoint id, listed in the same order as serving.
         target = dict(zip(serving, checkpoints)).get(model, model)
+        # Two loaded quants of one repo share its id: the first listed is the one the id reaches.
+        copies = [c for s, c in zip(serving, checkpoints) if s == model and c.startswith(f"{model}:")]
+        if len(copies) > 1:
+            target = copies[0]
     await route_json(
         "POST", "/api/inference/unload", caller = caller, json_body = {"model_path": target}
     )
     # An id that matches nothing still answers success, so compare what is resident before and after.
     _serving, _checkpoints, after = await _llm_resident(caller)
     was_loaded = bool({model, target} & before)
-    return UnloadResult(
-        kind = kind, model = model, unloaded = was_loaded and not ({model, target} & after)
-    )
+    # The other quant of its repo keeps the id resident, so only the copy's own name tells.
+    gone = {target} if model is not None and target.startswith(f"{model}:") else {model, target}
+    return UnloadResult(kind = kind, model = model, unloaded = was_loaded and not (gone & after))
 
 
 MEDIA_ROUTES = {

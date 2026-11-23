@@ -49,6 +49,11 @@ STT_ENGINES = ("transformers", "mtmd", "gguf", "audiocpp")
 
 def _chat(payload: dict) -> ChatSlot:
     active = payload.get("model_identifier")
+    # Beside another quant of its repo the active model is named repo:QUANT; ``loaded`` lists the repo.
+    quant = payload.get("gguf_variant")
+    if isinstance(active, str) and quant and active.endswith(f":{quant}"):
+        repo = active[: -len(quant) - 1]
+        active = repo if repo in (payload.get("loaded") or []) else active
     options = audio_options(payload.get("audio_options"))
     music = ChatModel.music_modes(payload.get("audio_music"))
     loaded = [
