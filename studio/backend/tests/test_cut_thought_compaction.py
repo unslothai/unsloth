@@ -411,3 +411,54 @@ def test_the_archive_and_the_marker_agree_on_the_thought_document():
 
     # core.rag cannot import core.inference, so the label is written in both; they must match.
     assert conversation_archive._CUT_THOUGHT_DOCUMENT == cut_thought.THOUGHT_DOCUMENT
+
+
+# ── First line: a thinking budget that leaves the answer room ──
+
+
+@pytest.mark.parametrize(
+    "context_length, prompt_tokens, max_tokens, requested, expected",
+    [
+        # Small window: half the room thinks, half answers.
+        (1024, 0, None, None, 512),
+        # Large window: a quarter of the room is kept for the answer.
+        (32768, 768, None, None, 24000),
+        # The caller's own budget still wins when it is smaller.
+        (32768, 768, None, 2000, 2000),
+        # A max_tokens below the room stops the reply first: nothing to add.
+        (32768, 768, 4000, None, None),
+        # No window or a prompt already over it: leave the request as it was.
+        (0, 100, None, None, None),
+        (1024, 2000, None, 300, 300),
+    ],
+)
+def test_the_window_budget(context_length, prompt_tokens, max_tokens, requested, expected):
+    assert (
+        cut_thought.window_budget(context_length, prompt_tokens, max_tokens, requested) == expected
+    )
+
+
+def test_a_thinking_request_asks_llama_server_to_close_the_thought_in_time(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [_thought_cut()], payloads)
+    backend._effective_context_length = 1024
+
+    _plain(backend)
+
+    budget = payloads[0]["thinking_budget_tokens"]
+    assert 0 < budget <= 512
+
+
+def test_a_request_with_thinking_off_gets_no_budget(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [_thought_cut()], payloads)
+
+    list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "Plan the migration"}],
+            enable_thinking = False,
+            thread_id = THREAD,
+        )
+    )
+
+    assert "thinking_budget_tokens" not in payloads[0]

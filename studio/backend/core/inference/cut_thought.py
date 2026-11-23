@@ -134,6 +134,24 @@ def note(searchable: bool, transcript_path: Optional[str]) -> str:
     return f"The previous model stopped thinking, so {' or '.join(where)} and continue work."
 
 
+def window_budget(
+    context_length: Optional[int],
+    prompt_tokens: Optional[int],
+    max_tokens: Optional[int] = None,
+    requested: Optional[int] = None,
+) -> Optional[int]:
+    """thinking_budget_tokens that leaves the answer room in the window, so llama-server closes the
+    thought with the model's own end tag instead of the window cutting it. None: send nothing."""
+    if not context_length or prompt_tokens is None:
+        return requested
+    room = context_length - prompt_tokens
+    # A smaller max_tokens stops the reply first; the window cannot cut the thought then.
+    if room <= 0 or (max_tokens is not None and 0 < max_tokens < room):
+        return requested
+    budget = room - max(room // 4, min(room // 2, 1024))
+    return budget if requested is None or requested < 0 else min(budget, requested)
+
+
 def _persisted(thread_id: str) -> bool:
     try:
         from core.rag import conversation_archive

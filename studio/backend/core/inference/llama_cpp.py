@@ -39228,6 +39228,11 @@ class LlamaCppBackend:
                     yield {"type": "context_truncated", **truncation}
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
+        _budget = self._window_thinking_budget(
+            openai_messages, None, max_tokens, thinking_budget_tokens, enable_thinking
+        )
+        if _budget is not None:
+            payload["thinking_budget_tokens"] = _budget
         if stop:
             payload["stop"] = stop
         _apply_seeded_llama_request(payload, seed)
@@ -39494,6 +39499,30 @@ class LlamaCppBackend:
             return resp.json() if resp.status_code == 200 else None
         except Exception:
             return None
+
+    def _window_thinking_budget(
+        self,
+        messages: list[dict],
+        tools: Optional[list],
+        max_tokens: Optional[int],
+        requested: Optional[int],
+        enable_thinking: Optional[bool],
+    ) -> Optional[int]:
+        if enable_thinking is False or not self._supports_reasoning:
+            return requested
+        from core.inference import cut_thought
+
+        server_budget = getattr(self, "_reasoning_budget", -1)
+        if requested is None and server_budget >= 0:
+            requested = server_budget
+        try:
+            prompt = estimate_messages_tokens_dense(self._countable_messages(messages))
+            prompt += estimate_messages_tokens_dense(tools or [])
+        except Exception:
+            return requested
+        return cut_thought.window_budget(
+            self._effective_context_length, prompt, max_tokens, requested
+        )
 
     def _close_cut_thought(self, thought: str) -> tuple[str, str]:
         """The cut thought minus its last few tokens, and this model's own thought-closing marker
@@ -40574,6 +40603,15 @@ class LlamaCppBackend:
                                     _prompt_now,
                                     _reply_target,
                                 )
+                _budget = self._window_thinking_budget(
+                    conversation,
+                    safe_tools,
+                    _iteration_max_tokens,
+                    thinking_budget_tokens,
+                    enable_thinking,
+                )
+                if _budget is not None:
+                    payload["thinking_budget_tokens"] = _budget
 
                 with self._open_chat_stream_with_respawn_retry(
                     payload,
