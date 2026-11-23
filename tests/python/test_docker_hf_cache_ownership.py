@@ -102,7 +102,6 @@ def _recording_chown(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     calls = tmp_path / "chown.calls"
-    # Unprivileged chown cannot change owners, so record the calls a root container would make.
     _stub(str(bindir / "id"), "echo 0\n")
     _stub(str(bindir / "chown"), f'echo "$*" >> "{calls}"\n')
     return bindir, calls
