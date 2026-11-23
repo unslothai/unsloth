@@ -58,8 +58,38 @@ def test_resume_under_another_expert_lora_b_layout_is_refused(
         tpn._tp_load_from_checkpoint(_trainer(model), str(tmp_path))
         torch.testing.assert_close(_experts(model, x), trained, rtol = 0, atol = 0)
     else:
-        with pytest.raises(RuntimeError, match = LAYOUT):
+        with pytest.raises(
+            RuntimeError, match = f"{LAYOUT}={saved} and this run reads them as {resumed}"
+        ):
             tpn._tp_load_from_checkpoint(_trainer(model), str(tmp_path))
+
+
+def test_same_layout_resume_ignores_the_measured_per_wrapper_layout(monkeypatch, tmp_path):
+    # zoo measures on the first forward whether a wrapper's experts read the grouped stash; one that does not
+    # (an unpatched stacked-expert family) reports rank_major after training but grouped_by_expert before.
+    moe_utils = pytest.importorskip("unsloth_zoo.temporary_patches.moe_utils")
+    record = getattr(moe_utils, "_record_moe_lora_forward_verdict", None)
+    if record is None:
+        pytest.skip("unsloth_zoo without the measured per-wrapper lora_B layout")
+    model = _fresh(monkeypatch, "grouped_by_expert")
+    x = torch.randn(12, 16)
+    trained = _experts(model, x)
+    wrappers = [m for m in model.modules() if hasattr(m, "parameter_name") and hasattr(m, "lora_B")]
+    assert wrappers
+    for wrapper in wrappers:
+        record(wrapper.get_base_layer(), wrapper.parameter_name, False)
+    assert {moe_utils.moe_lora_b_layout_for_wrapper(w, "default") for w in wrappers} == {
+        "rank_major"
+    }
+    tpn._tp_save_optimizer_and_scheduler(_trainer(model), str(tmp_path))
+
+    model = _fresh(monkeypatch, "grouped_by_expert")
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if "lora_" in name:
+                p.zero_()
+    tpn._tp_load_from_checkpoint(_trainer(model), str(tmp_path))
+    torch.testing.assert_close(_experts(model, x), trained, rtol = 0, atol = 0)
 
 
 def test_checkpoint_without_the_recorded_layout_still_resumes(monkeypatch, tmp_path):
@@ -67,6 +97,6 @@ def test_checkpoint_without_the_recorded_layout_still_resumes(monkeypatch, tmp_p
     tpn._tp_save_optimizer_and_scheduler(_trainer(model), str(tmp_path))
     path = tpn._ckpt_path(str(tmp_path), 0)
     payload = torch.load(path)
-    payload["layout"].pop("lora_b", None)
+    assert payload.pop("expert_lora_b") == "grouped_by_expert"
     torch.save(payload, path)
     tpn._tp_load_from_checkpoint(_trainer(model), str(tmp_path))
