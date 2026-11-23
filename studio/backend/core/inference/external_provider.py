@@ -1634,6 +1634,14 @@ class ExternalProviderClient:
         # same guaranteed 400 on every provider turn.
         self._responses_compaction_rejected = False
 
+    def _stream_timeout_for(self, read_timeout: Optional[float]) -> httpx.Timeout:
+        if read_timeout is None:
+            return self._stream_timeout
+        t = self._stream_timeout
+        return httpx.Timeout(
+            connect = t.connect, read = max(t.read or 0.0, read_timeout), write = t.write, pool = t.pool
+        )
+
     def set_header_context(self, thread_id: Optional[str], model: Optional[str]) -> None:
         """Values for ``{{VAR}}`` in extra headers; set before any request of a chat turn."""
         session = (thread_id or "").strip()
@@ -1857,6 +1865,7 @@ class ExternalProviderClient:
                 compaction_fallback = compaction_fallback,
                 thread_id = thread_id,
                 compaction_uncapped = compaction_uncapped,
+                read_timeout = read_timeout,
             ):
                 yield line
             return
@@ -2074,16 +2083,7 @@ class ExternalProviderClient:
                 url,
                 body,
                 headers = self._chat_headers(thread_id),
-                timeout = (
-                    self._stream_timeout
-                    if read_timeout is None
-                    else httpx.Timeout(
-                        connect = self._stream_timeout.connect,
-                        read = max(self._stream_timeout.read or 0.0, read_timeout),
-                        write = self._stream_timeout.write,
-                        pool = self._stream_timeout.pool,
-                    )
-                ),
+                timeout = self._stream_timeout_for(read_timeout),
             ) as response:
                 if response.status_code != 200:
                     error_body = await response.aread()
@@ -5672,6 +5672,7 @@ class ExternalProviderClient:
         compaction_fallback: Optional[CompactionFallback] = None,
         thread_id: Optional[str] = None,
         compaction_uncapped: bool = False,
+        read_timeout: Optional[float] = None,
     ) -> AsyncGenerator[str, None]:
         """Responses takes input and instructions, not messages; presence_penalty and top_k are dropped."""
         import json as _json
@@ -6210,7 +6211,7 @@ class ExternalProviderClient:
                     url,
                     json = attempt_body,
                     headers = self._chat_headers(thread_id),
-                    timeout = self._stream_timeout,
+                    timeout = self._stream_timeout_for(read_timeout),
                 ) as response:
                     if response.status_code != 200:
                         error_body = await response.aread()

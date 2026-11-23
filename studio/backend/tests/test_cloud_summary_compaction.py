@@ -18,6 +18,7 @@ from starlette.requests import Request
 import routes.inference as ri
 from core.inference import cloud_compaction
 from core.inference import external_provider as ep_mod
+from core.inference.context_window import estimate_message_tokens_without_unpriced_media
 from core.inference.providers import PROVIDER_REGISTRY
 from storage import studio_db
 
@@ -98,6 +99,12 @@ class _CutOffOnce(_SummarisingHandler):
         self.summary_finish_reason = "length" if cut == 0 else "stop"
         self.server.summary_cut_offs = cut + 1  # type: ignore[attr-defined]
         super().do_POST()
+
+
+class _LongSummaryAfterCutOff(_CutOffOnce):
+    """The retry writes a summary near its doubled limit, which the next call carries."""
+
+    summary_text = "word " * 2_200
 
 
 class _StalledSummary(_SummarisingHandler):
@@ -340,6 +347,40 @@ def test_a_summary_cut_off_once_is_retried_with_twice_the_room():
     [truncation] = _truncations(chunks)
     assert truncation["summarized"] is True and not truncation.get("summary_failed")
 
+
+def test_a_long_retried_summary_still_leaves_the_next_compaction_inside_the_window():
+    window = 16_000
+    thread = _saved_thread("thread-retry-window")
+    options = dict(
+        thread_id = thread,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 6_000,
+        context_window = window,
+    )
+    chat = _long_chat(turns = 12)
+    _, first, _ = _bodies(_LongSummaryAfterCutOff, messages = chat, **options)
+    assert first[-1]["max_tokens"] == 2 * first[0]["max_tokens"]
+    grown = list(chat)
+    for index in range(30):
+        grown.append({"role": "assistant", "content": f"more answer {index} " + "word " * 400})
+        grown.append({"role": "user", "content": f"more question {index} " + "word " * 400})
+    _, summaries, _ = _bodies(_SummarisingHandler, messages = grown, **options)
+    assert "word word" in summaries[0]["messages"][1]["content"]
+    for body in summaries:
+        prompt = sum(estimate_message_tokens_without_unpriced_media(m) for m in body["messages"])
+        assert prompt + body["max_tokens"] <= window
+
+
+def test_an_earlier_summary_call_cut_off_is_not_retried():
+    _, summaries, _ = _bodies(
+        _LongSummaryAfterCutOff,
+        messages = _long_chat(turns = 30),
+        thread_id = _saved_thread("thread-early-cut-off"),
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 6_000,
+        context_window = 16_000,
+    )
+    assert len(summaries) == 1
 
 def test_a_summary_still_streaming_past_the_idle_timeout_is_kept(monkeypatch):
     # #18306: the whole summary took longer than the timeout, but the provider never went quiet.
@@ -596,6 +637,32 @@ def test_a_long_summary_prompt_widens_the_provider_read_timeout(monkeypatch):
     _bodies(_SummarisingHandler, thread_id = _saved_thread("thread-read-timeout"), **_SMALL_TRIGGER)
     widened = [t for t in seen if t is not None]
     assert widened and min(widened) > 300.0 + cloud_compaction.SUMMARY_IDLE_TIMEOUT_S
+
+
+def test_a_responses_connection_gets_the_widened_read_timeout_too(monkeypatch):
+    seen = []
+
+    class _Recorder:
+        def stream(self, *args, timeout = None, **kwargs):
+            seen.append(timeout)
+            raise RuntimeError("recorded")
+
+    monkeypatch.setattr(ep_mod, "_client", lambda: _Recorder())
+    client = ep_mod.ExternalProviderClient(
+        provider_type = "custom", base_url = "http://127.0.0.1:9/v1", api_key = "x", api_type = "responses"
+    )
+
+    async def drain():
+        try:
+            async for _ in client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}], model = "m", read_timeout = 4_000.0
+            ):
+                pass
+        except RuntimeError:
+            pass
+
+    asyncio.run(drain())
+    assert seen and seen[0].read == 4_000.0
 
 
 def test_a_long_prompt_read_under_keep_alives_does_not_count_against_the_total(monkeypatch):
