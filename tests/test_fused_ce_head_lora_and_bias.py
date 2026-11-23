@@ -19,6 +19,7 @@ from transformers.modeling_outputs import BaseModelOutputWithPast
 peft_lora = pytest.importorskip("peft.tuners.lora.layer")
 from peft import LoraConfig
 
+import unsloth.models.fused_label_smoothing as fls_module
 import unsloth.models.llama as llama_module
 import unsloth.models.mistral as mistral_module
 from unsloth.models._utils import EMPTY_LOGITS
@@ -36,7 +37,7 @@ class _Backbone:
 
 
 def _head(kind):
-    if kind != "lora":
+    if kind not in ("lora", "dora"):
         head = torch.nn.Linear(HIDDEN, VOCAB, bias = kind == "bias", device = DEVICE)
         if kind == "bias":
             with torch.no_grad():
@@ -45,7 +46,12 @@ def _head(kind):
     base = torch.nn.Linear(HIDDEN, VOCAB, bias = False, device = DEVICE)
     base.weight.requires_grad_(False)
     head = peft_lora.Linear(
-        base, "default", config = LoraConfig(r = 2, lora_alpha = 2), r = 2, lora_alpha = 2
+        base,
+        "default",
+        config = LoraConfig(r = 2, lora_alpha = 2, use_dora = kind == "dora"),
+        r = 2,
+        lora_alpha = 2,
+        use_dora = kind == "dora",
     ).to(DEVICE)
     with torch.no_grad():
         head.lora_B["default"].weight.copy_(
@@ -151,3 +157,45 @@ def test_modules_to_save_head_stays_fused_and_trains_its_copy(monkeypatch, modul
     output.loss.backward()
     grad = stub.lm_head.modules_to_save["default"].weight.grad
     assert grad is not None and grad.abs().sum() > 0
+
+
+def _assert_exact_and_trained(stub, hidden, output, labels):
+    logits = stub.lm_head(hidden.detach())[:, :-1]
+    expected = F.cross_entropy(logits.reshape(-1, VOCAB).double(), labels[:, 1:].reshape(-1))
+    assert output.loss.item() == pytest.approx(expected.item(), rel = 1e-4)
+    output.loss.backward()
+    trained = {n: p.grad for n, p in stub.lm_head.named_parameters() if p.requires_grad}
+    assert trained
+    for name, grad in trained.items():
+        assert grad is not None and grad.abs().sum() > 0, name
+
+
+@pytest.mark.parametrize("module_name", ["llama", "mistral"])
+def test_lora_head_follows_the_zoo_fold(monkeypatch, module_name):
+    # A zoo that folds the adapter in ([x, s * A(x)] @ [W, B]^T) keeps the loss fused; one that asks for the
+    # head's forward gets the logits branch. Exact either way.
+    if fls_module._zoo_head_needs_module_forward is None:
+        pytest.skip("this unsloth_zoo does not build fused CE inputs for an adapter head")
+    stub, hidden = _stub("lora")
+    folds = not fls_module._zoo_head_needs_module_forward(stub.lm_head)
+    output, labels = _loss(monkeypatch, module_name, stub)
+    assert (output.logits is EMPTY_LOGITS) is folds
+    _assert_exact_and_trained(stub, hidden, output, labels)
+
+
+@pytest.mark.parametrize("module_name", ["llama", "mistral"])
+def test_lora_head_takes_the_logits_branch_on_an_older_zoo(monkeypatch, module_name):
+    monkeypatch.setattr(fls_module, "_zoo_head_needs_module_forward", None)
+    stub, hidden = _stub("lora")
+    output, labels = _loss(monkeypatch, module_name, stub)
+    assert output.logits is not EMPTY_LOGITS
+    _assert_exact_and_trained(stub, hidden, output, labels)
+
+
+@pytest.mark.parametrize("module_name", ["llama", "mistral"])
+def test_dora_head_takes_the_logits_branch(monkeypatch, module_name):
+    # DoRA rescales the whole column norm: no fused equivalent, so the head's own forward runs.
+    stub, hidden = _stub("dora")
+    output, labels = _loss(monkeypatch, module_name, stub)
+    assert output.logits is not EMPTY_LOGITS
+    _assert_exact_and_trained(stub, hidden, output, labels)
