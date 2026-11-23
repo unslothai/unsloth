@@ -544,7 +544,11 @@ export function ChatSettingsPanel({
         frame.style.removeProperty(CHAT_SETTINGS_DOCKED_WIDTH_VAR);
       }
       frame = next;
-      frame?.style.setProperty(CHAT_SETTINGS_DOCKED_WIDTH_VAR, `${panel.offsetWidth}px`);
+      // Unrounded: offsetWidth would leave a sub-pixel seam beside a fractional panel width.
+      frame?.style.setProperty(
+        CHAT_SETTINGS_DOCKED_WIDTH_VAR,
+        `${panel.getBoundingClientRect().width}px`,
+      );
     };
     apply();
     const observer = new ResizeObserver(apply);

@@ -616,7 +616,6 @@ export function WindowTitlebar({
             focused ? "text-foreground" : "text-muted-foreground",
           )}
           data-wallpaper-chrome-controls=""
-          data-window-controls=""
           role="toolbar"
           aria-label={t("desktopShell.windowControls")}
         >

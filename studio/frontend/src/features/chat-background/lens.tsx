@@ -23,11 +23,20 @@ function glassLayer(el: HTMLElement): CSSStyleDeclaration | null {
 const textOnly = (el: HTMLElement) =>
   [...el.childNodes].every((n) => n.nodeType === Node.TEXT_NODE || (n as Element).classList?.contains("glass-lens"));
 
+// Beside the pinned strip, docked Run settings has no glass of its own: the strip draws it, so its lens takes the strip's.
+const STRIP_PANEL =
+  'html[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready]:not(.webkit-legacy-compositor) aside[data-slot="chat-settings-panel"]';
+const glassSource = (host: HTMLElement): HTMLElement =>
+  (host.matches(STRIP_PANEL) &&
+    document.querySelector<HTMLElement>('[data-slot="sidebar-container"][data-windows-glass-frame]')) ||
+  host;
+
 // Only surfaces drawing glass right now: Glass menus off, an opaque sheet or a split card has no backdrop filter.
 // The composer keeps its lens without one, as on main (Transparent forces backdrop-filter off).
 function drawsGlass(el: HTMLElement): boolean {
   const { width, height } = el.getBoundingClientRect();
   if (width < 8 || height < 8 || textOnly(el)) return false;
+  if (el.matches(STRIP_PANEL)) return true;
   return el.matches(LENS_CLEAR_HOSTS) || el.hasAttribute(GLASS_MOVING_ATTR) || glassLayer(el) !== null;
 }
 
@@ -146,8 +155,9 @@ function Lens({
       const w = wallpaper.getBoundingClientRect();
       const h = host.getBoundingClientRect();
       const opacity = getComputedStyle(wallpaper).opacity;
-      const glass = glassLayer(host);
-      const own = getComputedStyle(host);
+      const source = glassSource(host);
+      const glass = glassLayer(source);
+      const own = getComputedStyle(source);
       // Settings and layered panels blur on ::before but keep their fill on the host.
       const fill = !glass || painted(own) ? own : glass;
       // The copy takes the surface's own blur: menus and dialogs blur more than the shared --glass-blur.

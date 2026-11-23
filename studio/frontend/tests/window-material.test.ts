@@ -181,24 +181,28 @@ test("the pinned caption strip stops at docked Run settings, whose glass runs to
 	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
 	const frame = /\[data-slot="sidebar-container"\]\[data-windows-glass-frame\]::before \{([^}]*)\}/.exec(css)?.[1] ?? "";
 	assert.ok(frame.includes("left top / calc(100% - var(--studio-chat-settings-docked-width, 0px)) var(--studio-custom-titlebar-height)"));
-	const glassFrame = 'html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready]';
+	const glassFrame = 'html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor)[data-chat-wallpaper-workspace-ready]';
 	const panel = new RegExp(glassFrame.replace(/[[\]()|]/g, "\\$&") + ' aside\\[data-slot="chat-settings-panel"\\] \\{([^}]*)\\}').exec(css)?.[1] ?? "";
 	assert.ok(panel.includes("--chat-settings-top: 0px;"), panel);
 	assert.ok(panel.includes("padding-top: var(--studio-custom-titlebar-height, 0px);"), panel);
 	assert.ok(css.includes(glassFrame + ' [data-slot="chat-settings-resize-handle"] {\n  top: var(--studio-custom-titlebar-height, 0px);'));
 	assert.ok(frame.includes("linear-gradient(black 0 0) right top / var(--studio-chat-settings-docked-width, 0px) 100% no-repeat"), frame);
 	assert.ok(frame.includes("background-attachment: fixed;"), frame);
-	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {\n  background: transparent;\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;\n  box-shadow: none;'));
-	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"]::before {\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;'));
+	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor)[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {\n  background: transparent;\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;\n  box-shadow: none;'));
+	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor)[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"]::before {\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;'));
 	assert.ok(frame.includes("radial-gradient(circle at left bottom, transparent calc(var(--studio-run-settings-fillet) - 1px), black var(--studio-run-settings-fillet))"), frame);
 	assert.ok(frame.includes("calc(100vw - var(--studio-chat-settings-docked-width, 0px) - var(--studio-run-settings-fillet)) var(--studio-custom-titlebar-height)"), frame);
 	assert.ok(frame.includes("--studio-run-settings-fillet: min(var(--radius-md), var(--studio-chat-settings-docked-width, 0px));"), frame);
-	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > div:last-child {\n  border-left-color: transparent;'));
+	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor)[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > div:last-child {\n  border-left-color: transparent;'));
 	assert.ok(sheet.includes('"var(--chat-settings-top, var(--studio-custom-titlebar-height, 0px))"'));
 	assert.match(sheet, /marginTop: CHAT_SETTINGS_TOP,/);
 	// Written on the strip, never <html>: an inherited root var restyles the whole thread per drag frame.
 	assert.match(sheet, /'\[data-slot="sidebar-container"\]\[data-windows-glass-frame\]'/);
-	assert.match(sheet, /frame\?\.style\.setProperty\(CHAT_SETTINGS_DOCKED_WIDTH_VAR, `\$\{panel\.offsetWidth\}px`\)/);
+	assert.match(sheet, /frame\?\.style\.setProperty\(\n\s*CHAT_SETTINGS_DOCKED_WIDTH_VAR,\n\s*`\$\{panel\.getBoundingClientRect\(\)\.width\}px`,/);
+	// Its lens stays, tinted and blurred like the strip it shows through.
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /if \(el\.matches\(STRIP_PANEL\)\) return true;/);
+	assert.match(lens, /const source = glassSource\(host\);/);
 	assert.match(sheet, /attributeFilter: \["data-sidebar-glass-frame"\]/);
 	assert.doesNotMatch(sheet, /documentElement\.style\.setProperty\(CHAT_SETTINGS_DOCKED_WIDTH_VAR/);
 	assert.doesNotMatch(sheet, /root\.setProperty\(CHAT_SETTINGS_DOCKED_WIDTH_VAR/);
@@ -323,20 +327,6 @@ test("glass gives the chat header's icon buttons the model picker's glass, not a
 	const titlebar = readFileSync(new URL("../src/components/tauri/window-titlebar.tsx", import.meta.url), "utf8");
 	assert.match(titlebar, /role="toolbar"\n\s*aria-label=\{t\("desktopShell\.navigation"\)\}\n\s*data-titlebar-nav=""/);
 	assert.match(page, /aria-label="New chat"\n\s*data-chat-new-chat=""\n\s*onClick=\{handleDesktopNewChat\}/);
-});
-
-test("the window buttons get an inset glass pill off the pinned strip, keeping the full caption hit area", () => {
-	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	const win = String.raw`html\[data-glass\]\[data-chat-wallpaper-ready\]:not\(\[data-sidebar-glass-frame\]\) \[data-window-controls\] > button`;
-	assert.match(css, new RegExp(String.raw`${win}::before,\nhtml\[data-glass\]\[data-chat-wallpaper-ready\] :is\(\[data-chat-header-actions\] > button`));
-	assert.match(css, new RegExp(String.raw`html\[data-glass\^="liquid"\]\[data-chat-wallpaper-ready\]:not\(\[data-sidebar-glass-frame\]\) \[data-window-controls\] > button::before,\n`));
-	assert.match(css, new RegExp(String.raw`${win}:hover::before,\n`));
-	assert.match(css, new RegExp(String.raw`${win} \{\n  background-color: transparent !important;\n\}`));
-	assert.match(css, new RegExp(String.raw`${win}::before \{\n  content: "";\n  position: absolute;\n  inset: 2px 4px;\n  z-index: -1;`));
-	assert.match(css, new RegExp(String.raw`${win}:last-child:hover::before \{\n  background-color: #c42b1c !important;`));
-	const titlebar = readFileSync(new URL("../src/components/tauri/window-titlebar.tsx", import.meta.url), "utf8");
-	assert.match(titlebar, /data-wallpaper-chrome-controls=""\n\s*data-window-controls=""\n\s*role="toolbar"\n\s*aria-label=\{t\("desktopShell\.windowControls"\)\}/);
-	assert.match(titlebar, /label=\{t\("desktopShell\.close"\)\}[\s\S]*?<CaptionGlyph kind="close" \/>\n\s*<\/WindowControlButton>\n\s*<\/div>/);
 });
 
 test("docked Run settings rounds its top corner only while no pinned sidebar strip meets it", () => {
