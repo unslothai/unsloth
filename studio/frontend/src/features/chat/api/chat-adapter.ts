@@ -380,8 +380,10 @@ import {
 } from "../utils/image-input-support";
 import {
   appendCompactionMarker,
+  COMPACTION_FAILURE_TEXT,
   COMPACTION_NOTICE_LABEL,
   COMPACTION_NOTICE_TEXT,
+  type CompactionFailureReason,
   type CompactionMarker,
   compactionAnchorToolCallId,
   compactionNoticeKind,
@@ -6066,6 +6068,7 @@ export function createOpenAIStreamAdapter(
       let compactionMarkers: CompactionMarker[] | undefined;
       // A /compact whose summary failed already got the dropped warning; it stands for the no-op notice.
       let droppedHistoryWarned = false;
+      let compactionFailure: CompactionFailureReason | null = null;
       let providerCompaction: ProviderCompactionContentPart | undefined =
         continuationCompaction ?? undefined;
       let providerCompactionAfterToolCalls: number | undefined =
@@ -7575,6 +7578,9 @@ export function createOpenAIStreamAdapter(
                   runtime.setLiveDecode(liveThreadKey(serverCancel), update.decode);
                 } else if (update?.phase === "compacting") {
                   runtime.setLiveCompacting(liveThreadKey(serverCancel), true);
+                } else if (update?.phase === "compaction_failed") {
+                  runtime.setLiveCompacting(liveThreadKey(serverCancel), false);
+                  compactionFailure = update.reason;
                 }
                 continue;
               }
@@ -9077,15 +9083,22 @@ export function createOpenAIStreamAdapter(
               marker.truncation.checkpoint_started === true,
           )
         ) {
-          toast.info("This chat was not compacted", {
-            description: !isCloudForCompaction
-              ? "Compaction needs the conversation archive and the default checkpoint policy."
-              : externalProvider?.compactionMode === "rolling"
-                ? "Drop oldest turns only drops turns once the chat is full. Pick Reset to latest turn or Summarize older turns for this connection to compact on demand."
-                : externalProvider?.compactionMode === "checkpoint"
-                  ? "Compaction needs the conversation archive and a model that can use Studio's tools."
-                  : "There was nothing before your latest message to summarize.",
-          });
+          if (compactionFailure) {
+            toast.warning("This chat was not compacted", {
+              description: `${COMPACTION_FAILURE_TEXT[compactionFailure]} Your message was sent with the full conversation. Try Compact again, or pick another compaction mode for this connection.`,
+              duration: 8000,
+            });
+          } else {
+            toast.info("This chat was not compacted", {
+              description: !isCloudForCompaction
+                ? "Compaction needs the conversation archive and the default checkpoint policy."
+                : externalProvider?.compactionMode === "rolling"
+                  ? "Drop oldest turns only drops turns once the chat is full. Pick Reset to latest turn or Summarize older turns for this connection to compact on demand."
+                  : externalProvider?.compactionMode === "checkpoint"
+                    ? "Compaction needs the conversation archive and a model that can use Studio's tools."
+                    : "There was nothing before your latest message to summarize.",
+            });
+          }
         }
         const finalTiming = withPriorTiming(
           buildTiming(

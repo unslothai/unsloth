@@ -30275,6 +30275,7 @@ class _ExternalCompactionPlan:
         "force",
         "summarise",
         "summary_failed",
+        "summary_error",
     )
 
 
@@ -30302,6 +30303,7 @@ def _plan_external_compaction(
     plan.force = force
     plan.summarise = summarise
     plan.summary_failed = None
+    plan.summary_error = None
     plan.to_summarise = []
     plan.body = cloud_compaction.body_messages(messages)
     count = _external_token_counter(payload, tools)
@@ -30400,12 +30402,17 @@ async def _finish_external_compaction(
                         max_tokens = reply_tokens,
                         tool_choice = "none",
                         enable_prompt_caching = False,
+                        enable_thinking = cloud_compaction.summary_thinking(
+                            getattr(client, "provider_type", None),
+                            getattr(client, "api_type", None),
+                        ),
                         thread_id = payload.thread_id,
                     )
                 )
         except cloud_compaction.SummaryFailed as exc:
             logger.warning("external_provider.summary_failed", error = str(exc), model = model)
             summary_failed = True
+            plan.summary_error = cloud_compaction.failure_reason(exc)
             if isinstance(exc, (cloud_compaction.SummaryCutOff, cloud_compaction.SummaryTimedOut)):
                 cloud_compaction.remember_cut_off(thread_id, model)
         else:
@@ -31509,6 +31516,8 @@ async def _proxy_to_external_provider(
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
             )
+            if plan.force == "manual" and plan.summary_error and not _non_stream_custom_responses:
+                yield cloud_compaction.compaction_failed_sse_line(plan.summary_error)
         _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
         fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
         _last_fit = fitted
