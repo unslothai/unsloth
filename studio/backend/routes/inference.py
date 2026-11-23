@@ -23102,10 +23102,7 @@ async def get_api_monitor_entry(
     return entry
 
 
-def _decode_and_resize_image(backend, encoded: str):
-    """Off the event loop. The decode is forced so a truncated picture is a bad request here, and
-    the result is flattened RGB: CMYK, PA, F and LAB decode and none can be saved back, and a plain
-    convert would turn a transparent background black under dark ink."""
+def _decoded_resized_image(backend, encoded: str):
     from PIL import Image
     from io import BytesIO
 
@@ -23115,6 +23112,69 @@ def _decode_and_resize_image(backend, encoded: str):
     image = exif_upright(image)
     # After the resize: converting first resamples interpolated RGB, a different picture.
     return _mcp_flattened_rgb(backend.resize_image(image))
+
+
+# Every turn resends earlier pictures; re-decoding a 12 MP photo costs hundreds of ms each.
+_HISTORY_IMAGE_MEMO: "collections.OrderedDict[tuple, tuple]" = collections.OrderedDict()
+_HISTORY_IMAGE_MEMO_MAX_BYTES = 96 * 1024 * 1024
+_HISTORY_IMAGE_MEMO_MAX_ENTRIES = 64
+_history_image_memo_bytes = 0
+_history_image_memo_lock = threading.Lock()
+
+
+def _history_image_memo_side(backend):
+    """The side the backend resizes to, or None when it does not say (nothing is memoized)."""
+    side_of = getattr(backend, "image_max_side", None)
+    return side_of() if callable(side_of) else None
+
+
+def _stamped_copy(image, png_b64: str):
+    """A private copy for the caller, carrying the PNG so the orchestrator need not encode it."""
+    from core.inference.orchestrator import PNG_B64_STAMP
+
+    copy = image.copy()
+    setattr(copy, PNG_B64_STAMP, ((copy.mode, copy.size), png_b64))
+    return copy
+
+
+def _decode_and_resize_image(backend, encoded: str):
+    """Off the event loop. The decode is forced so a truncated picture is a bad request here, and
+    the result is flattened RGB: CMYK, PA, F and LAB decode and none can be saved back, and a plain
+    convert would turn a transparent background black under dark ink. Successful results are
+    remembered per payload and resize side; failures raise each time."""
+    global _history_image_memo_bytes
+    side = _history_image_memo_side(backend)
+    if side is None:
+        return _decoded_resized_image(backend, encoded)
+    key = (_hashlib.sha256(encoded.encode("utf-8", "surrogatepass")).digest(), side)
+    with _history_image_memo_lock:
+        kept = _HISTORY_IMAGE_MEMO.get(key)
+        if kept is not None:
+            _HISTORY_IMAGE_MEMO.move_to_end(key)
+    if kept is not None:
+        return _stamped_copy(kept[0], kept[1])
+    from core.inference.orchestrator import PNG_B64_STAMP, InferenceOrchestrator
+
+    image = _decoded_resized_image(backend, encoded)
+    png_b64 = InferenceOrchestrator._pil_to_base64(image)
+    setattr(image, PNG_B64_STAMP, ((image.mode, image.size), png_b64))
+    # A model switch mid-decode resized for another side; that result is not this key's.
+    if _history_image_memo_side(backend) != side:
+        return image
+    kept = image.copy()
+    # Pillow stores RGB at 4 bytes per pixel.
+    size = len(png_b64) + 4 * kept.size[0] * kept.size[1]
+    with _history_image_memo_lock:
+        if key not in _HISTORY_IMAGE_MEMO and size <= _HISTORY_IMAGE_MEMO_MAX_BYTES:
+            _HISTORY_IMAGE_MEMO[key] = (kept, png_b64, size)
+            _history_image_memo_bytes += size
+            while (
+                _history_image_memo_bytes > _HISTORY_IMAGE_MEMO_MAX_BYTES
+                or len(_HISTORY_IMAGE_MEMO) > _HISTORY_IMAGE_MEMO_MAX_ENTRIES
+            ):
+                _, dropped = _HISTORY_IMAGE_MEMO.popitem(last = False)
+                _history_image_memo_bytes -= dropped[2]
+    return image
 
 
 # Caps retained rasters: ~4.8 KB base64 can decode to 1.92 MB (391x amplification).
