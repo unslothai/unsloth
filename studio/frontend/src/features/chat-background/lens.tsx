@@ -23,7 +23,7 @@ function glassLayer(el: HTMLElement): CSSStyleDeclaration | null {
 const textOnly = (el: HTMLElement) =>
   [...el.childNodes].every((n) => n.nodeType === Node.TEXT_NODE || (n as Element).classList?.contains("glass-lens"));
 
-// Beside the pinned strip, docked Run settings has no glass of its own: the strip draws it, so its lens takes the strip's.
+// Beside the pinned strip the panel's glass is the strip's, so its lens reads the strip.
 const STRIP_PANEL =
   'html[data-glass][data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready]:not(.webkit-legacy-compositor) aside[data-slot="chat-settings-panel"]';
 const glassSource = (host: HTMLElement): HTMLElement =>

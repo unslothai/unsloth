@@ -7367,7 +7367,7 @@ html[data-glass-clear][data-chat-wallpaper-workspace-ready] [data-windows-glass-
 html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-slot="sidebar-container"][data-windows-glass-frame]::before {
   content: "";
   position: absolute;
-  /* Window-anchored so the sheen continues unbroken into docked Run settings. */
+  /* So the sheen runs on into docked Run settings. */
   background-attachment: fixed;
   /* Keep the corner above the scrolled conversation canvas. */
   z-index: 1;
@@ -7512,7 +7512,7 @@ html[data-glass="macos"] [data-slot="chat-settings-panel"] {
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
-/* Not on WebKitGTK < 2.54 glass: its strip mask keeps only the caption, so the panel keeps its own. */
+/* Not WebKitGTK < 2.54 glass: its strip mask keeps only the caption. */
 html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
   --chat-settings-top: 0px;
   padding-top: var(--studio-custom-titlebar-height, 0px);

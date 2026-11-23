@@ -534,7 +534,7 @@ export function ChatSettingsPanel({
   useEffect(() => {
     const panel = asideRef.current;
     if (!open || isCompact || !panel) return;
-    // On the strip, its only consumer: on <html> the inherited var restyles the thread every drag frame.
+    // On the strip, not <html>: an inherited root var restyles the thread every drag frame.
     let frame: HTMLElement | null = null;
     const apply = () => {
       const next = document.querySelector<HTMLElement>(
@@ -544,7 +544,7 @@ export function ChatSettingsPanel({
         frame.style.removeProperty(CHAT_SETTINGS_DOCKED_WIDTH_VAR);
       }
       frame = next;
-      // Unrounded: offsetWidth would leave a sub-pixel seam beside a fractional panel width.
+      // Unrounded: offsetWidth leaves a sub-pixel seam.
       frame?.style.setProperty(
         CHAT_SETTINGS_DOCKED_WIDTH_VAR,
         `${panel.getBoundingClientRect().width}px`,
@@ -553,7 +553,6 @@ export function ChatSettingsPanel({
     apply();
     const observer = new ResizeObserver(apply);
     observer.observe(panel);
-    // Pinning mounts the strip after the panel opened.
     const pinObserver = new MutationObserver(apply);
     pinObserver.observe(document.documentElement, {
       attributeFilter: ["data-sidebar-glass-frame"],

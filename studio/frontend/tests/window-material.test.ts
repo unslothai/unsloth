@@ -196,16 +196,12 @@ test("the pinned caption strip stops at docked Run settings, whose glass runs to
 	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > [data-chat-settings-content] {\n  border-left-color: transparent;'));
 	assert.ok(sheet.includes('"var(--chat-settings-top, var(--studio-custom-titlebar-height, 0px))"'));
 	assert.match(sheet, /marginTop: CHAT_SETTINGS_TOP,/);
-	// Written on the strip, never <html>: an inherited root var restyles the whole thread per drag frame.
 	assert.match(sheet, /'\[data-slot="sidebar-container"\]\[data-windows-glass-frame\]'/);
 	assert.match(sheet, /frame\?\.style\.setProperty\(\n\s*CHAT_SETTINGS_DOCKED_WIDTH_VAR,\n\s*`\$\{panel\.getBoundingClientRect\(\)\.width\}px`,/);
-	// Its lens stays, tinted and blurred like the strip it shows through.
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
 	assert.match(lens, /if \(el\.matches\(STRIP_PANEL\)\) return true;/);
 	assert.match(lens, /const source = glassSource\(host\);/);
-	// Glass only: Transparent blurs neither the strip nor the panel.
 	assert.match(lens, /'html\[data-glass\]\[data-sidebar-glass-frame\]/);
-	// By attribute, not :last-child: the lens portals in after the content wrapper.
 	assert.match(sheet, /data-chat-settings-content=""\n\s*className=\{cn\(\n\s*"h-full w-full overflow-hidden",\n\s*open && "border-l border-panel-edge"/);
 	assert.doesNotMatch(css, /chat-settings-panel"\] > div:last-child/);
 	assert.match(sheet, /attributeFilter: \["data-sidebar-glass-frame"\]/);
