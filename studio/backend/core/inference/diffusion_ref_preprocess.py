@@ -3,7 +3,8 @@
 
 """GPU FLUX.2 edit-reference preprocessing (Lanczos resize + crop + normalise), byte-identical to the CPU path.
 
-`install(pipe)` patches the pipe's image processor; a per-device probe against Pillow gates it. NVIDIA CUDA only
+`install(pipe)` patches the pipe's image processor; a per-device probe against Pillow gates it, run at load by
+`warm(pipe)` after placement (lazily on the first request for a device warm() did not see). NVIDIA CUDA only
 (kernel not validated on ROCm). `UNSLOTH_DIFFUSION_GPU_REF_PREPROCESS=0` turns it off.
 """
 
@@ -16,6 +17,7 @@ from typing import Any, Optional
 
 ENV = "UNSLOTH_DIFFUSION_GPU_REF_PREPROCESS"
 _MARK = "_unsloth_gpu_ref_preprocess"
+_STOCK = "_unsloth_gpu_ref_preprocess_stock"
 STATS = {"gpu": 0, "fallback": 0}
 _PROBED: dict = {}
 _TABLES: dict = {}
@@ -196,6 +198,50 @@ def _device_of(pipe: Any):
     return dev if dev is not None and getattr(dev, "type", "") == "cuda" else None
 
 
+def _probed(
+    proc: Any,
+    stock_area,
+    stock_pre,
+    device,
+    logger: Any = None,
+) -> bool:
+    """The device's probe verdict, running the probe (Triton compile + two images) once per device."""
+    key = str(device)
+    ok = _PROBED.get(key)
+    if ok is None:
+        with _LOCK:
+            ok = _PROBED.get(key)
+            if ok is None:
+                try:
+                    ok = _probe(proc, stock_area, stock_pre, device)
+                except Exception as exc:  # noqa: BLE001 - probe failure: CPU path for this device
+                    ok = False
+                    if logger is not None:
+                        logger.warning("diffusion.ref_preprocess: probe failed on %s: %s", key, exc)
+                _PROBED[key] = ok
+                if logger is not None:
+                    logger.info(
+                        "diffusion.ref_preprocess: GPU reference preprocessing %s on %s",
+                        "on" if ok else "off (probe mismatch)",
+                        key,
+                    )
+    return ok
+
+
+def warm(pipe: Any, logger: Any = None) -> Optional[bool]:
+    """Run the device probe at load, after placement, so the first edit request skips the Triton compile.
+
+    None when the pipe has no installed GPU reference preprocess or no CUDA execution device yet."""
+    proc = getattr(pipe, "image_processor", None)
+    stock = getattr(proc, _STOCK, None) if proc is not None else None
+    if stock is None or not enabled() or not _config_ok(proc):
+        return None
+    device = _device_of(pipe)
+    if device is None:
+        return None
+    return _probed(proc, stock[0], stock[1], device, logger)
+
+
 def install(pipe: Any, logger: Any = None) -> bool:
     if not enabled() or not _cuda_ok():
         return False
@@ -238,27 +284,8 @@ def install(pipe: Any, logger: Any = None) -> bool:
             and not kwargs
             and _config_ok(proc)
         ):
-            key = str(device)
-            ok = _PROBED.get(key)
-            if ok is None:
-                with _LOCK:
-                    ok = _PROBED.get(key)
-                    if ok is None:
-                        try:
-                            ok = _probe(proc, stock_area, stock_pre, device)
-                        except Exception as exc:  # noqa: BLE001 - probe failure: CPU path for this device
-                            ok = False
-                            if logger is not None:
-                                logger.warning(
-                                    "diffusion.ref_preprocess: probe failed on %s: %s", key, exc
-                                )
-                        _PROBED[key] = ok
-                        if logger is not None:
-                            logger.info(
-                                "diffusion.ref_preprocess: GPU reference preprocessing %s on %s",
-                                "on" if ok else "off (probe mismatch)",
-                                key,
-                            )
+            # Normally probed at load by warm(); a device first seen here probes now.
+            ok = _probed(proc, stock_area, stock_pre, device, logger)
             if ok:
                 try:
                     out = _gpu_preprocess(proc, image, height, width, device)
@@ -275,6 +302,7 @@ def install(pipe: Any, logger: Any = None) -> bool:
     proc._resize_to_target_area = _resize_to_target_area
     proc.preprocess = preprocess
     setattr(proc, _MARK, True)
+    setattr(proc, _STOCK, (stock_area, stock_pre))
     if logger is not None:
         logger.info("diffusion.ref_preprocess: installed on %s", type(pipe).__name__)
     return True

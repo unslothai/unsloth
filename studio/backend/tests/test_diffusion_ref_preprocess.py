@@ -207,3 +207,66 @@ def test_pass_order_matches_installed_pillow(src, dst):
     ref = np.asarray(Image.fromarray(arr, "RGB").resize((w, h), Image.Resampling.LANCZOS))
     got = _emulate(arr, w, h, rp._pillow_vertical_first(sw, sh, w, h))
     assert np.array_equal(got, ref)
+
+
+def _flux2_request(pipe, img):
+    w, h = img.size
+    proc = pipe.image_processor
+    img = proc._resize_to_target_area(img, 512 * 512)
+    w, h = img.size
+    return proc.preprocess(img, height = h // 16 * 16, width = w // 16 * 16, resize_mode = "crop")
+
+
+def test_warm_probes_at_load_not_on_the_first_request(monkeypatch):
+    """warm() after placement runs the device probe; the first edit request then pays no probe / Triton compile."""
+    monkeypatch.setattr(rp, "_cuda_ok", lambda: True)
+    monkeypatch.setattr(rp, "_PROBED", {})
+    calls = []
+    monkeypatch.setattr(rp, "_probe", lambda proc, a, p, device: calls.append(str(device)) or True)
+    sentinel = torch.zeros(1, 3, 16, 16)
+    monkeypatch.setattr(rp, "_gpu_preprocess", lambda *a, **k: sentinel)
+    pipe = _Pipe(device = None)
+    assert rp.install(pipe) is True
+    assert rp.warm(pipe) is None and calls == []  # not placed yet: nothing to probe
+    pipe._execution_device = torch.device("cuda:0")
+    assert rp.warm(pipe) is True
+    assert calls == ["cuda:0"] and rp._PROBED == {"cuda:0": True}
+
+    def _no_probe(*a, **k):
+        raise AssertionError("probe ran on the request path")
+
+    monkeypatch.setattr(rp, "_probe", _no_probe)
+    assert _flux2_request(pipe, _img(1500, 900, 3)) is sentinel
+    assert rp.warm(pipe) is True  # a second warm is a dict hit
+
+
+def test_request_on_an_unwarmed_device_still_probes(monkeypatch):
+    monkeypatch.setattr(rp, "_cuda_ok", lambda: True)
+    monkeypatch.setattr(rp, "_PROBED", {})
+    calls = []
+    monkeypatch.setattr(rp, "_probe", lambda proc, a, p, device: calls.append(str(device)) or False)
+    pipe = _Pipe(device = torch.device("cuda:1"))
+    stock = flux2_ip.Flux2ImageProcessor(vae_scale_factor = 16)
+    assert rp.install(pipe) is True
+    img = _img(1500, 900, 4)
+    got = _flux2_request(pipe, img)
+    assert calls == ["cuda:1"] and rp._PROBED == {"cuda:1": False}
+    ref = _flux2_request(type("P", (), {"image_processor": stock})(), img)
+    assert torch.equal(got, ref)
+
+
+def test_warm_is_a_no_op_without_the_install(monkeypatch):
+    monkeypatch.setattr(rp, "_PROBED", {})
+    monkeypatch.setattr(
+        rp, "_probe", lambda *a, **k: (_ for _ in ()).throw(AssertionError("probed"))
+    )
+    assert rp.warm(_Pipe(device = torch.device("cuda:0"))) is None
+    assert rp.warm(object()) is None
+
+
+def test_load_warms_after_placement():
+    src = (BACKEND / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8")
+    install_at = src.index("install_ref_preprocess(pipe, logger = logger)")
+    placed_at = src.index("cuda_graph.arm_block_graphs(", install_at)
+    warm_at = src.index("warm_ref_preprocess(pipe, logger = logger)")
+    assert install_at < placed_at < warm_at
