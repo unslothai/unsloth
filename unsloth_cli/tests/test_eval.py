@@ -943,3 +943,97 @@ def test_gpu_memory_utilization_says_it_only_applies_to_vllm(env, monkeypatch, t
     assert result.exit_code == 0, result.output
     assert "--gpu-memory-utilization applies to --backend vllm" in result.output
     assert "gpu_memory_utilization" not in (env["model_args"] or {})
+
+
+def _scored_by_model(env, monkeypatch, scores):
+    """simple_evaluate that scores whichever model was loaded last; returns the call log."""
+    seen = []
+
+    def _simple_evaluate(model = None, model_args = None, **kw):
+        name = (model_args or {}).get("peft") or (model_args or {}).get("pretrained")
+        name = name or env["model_name"]
+        seen.append(name)
+        return {
+            "results": {
+                "gsm8k": {
+                    "alias": "gsm8k",
+                    "exact_match,strict": scores[name],
+                    "exact_match_stderr,strict": 0.01,
+                }
+            }
+        }
+
+    monkeypatch.setattr(sys.modules["lm_eval"], "simple_evaluate", _simple_evaluate)
+    return seen
+
+
+def test_compare_base_scores_adapter_then_base(env, tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path)
+    seen = _scored_by_model(env, monkeypatch, {str(adapter): 0.75, "org/base": 0.5})
+    loads = []
+    flm = sys.modules["unsloth"].FastLanguageModel
+    original = flm.from_pretrained.__func__
+    monkeypatch.setattr(
+        flm,
+        "from_pretrained",
+        classmethod(lambda cls, **kw: loads.append(dict(kw)) or original(cls, **kw)),
+    )
+    out = tmp_path / "out"
+    result = _run(str(adapter), "--tasks", "gsm8k", "--compare-base", "-o", str(out))
+    assert result.exit_code == 0, result.output
+    assert seen == [str(adapter), "org/base"]
+    assert [load["model_name"] for load in loads] == [str(adapter), "org/base"]
+    # both runs load at the same precision, so the delta reflects the adapter only
+    assert loads[0]["load_in_4bit"] == loads[1]["load_in_4bit"]
+    assert json.loads((out / "results.json").read_text())["results"]["gsm8k"][
+        "exact_match,strict"
+    ] == 0.75
+    assert json.loads((out / "base_results.json").read_text())["results"]["gsm8k"][
+        "exact_match,strict"
+    ] == 0.5
+    (row,) = json.loads((out / "comparison.json").read_text())
+    assert row["task"] == "gsm8k" and row["metric"] == "exact_match,strict"
+    assert row["base"] == 0.5 and row["fine_tuned"] == 0.75 and row["delta"] == pytest.approx(0.25)
+    csv_lines = (out / "comparison.csv").read_text(encoding = "utf-8").splitlines()
+    assert csv_lines[0] == "task,metric,base,base_stderr,fine_tuned,fine_tuned_stderr,delta"
+    assert csv_lines[1].startswith("gsm8k,\"exact_match,strict\",0.5,0.01,0.75,0.01,0.25")
+    assert "Base vs fine-tuned" in result.output
+
+
+def test_compare_base_hf_backend_drops_the_adapter_for_the_base_run(env, tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path)
+    seen = _scored_by_model(env, monkeypatch, {str(adapter): 0.4, "org/base": 0.6})
+    out = tmp_path / "out"
+    result = _run(
+        str(adapter), "--tasks", "gsm8k", "--backend", "hf", "--compare-base", "-o", str(out)
+    )
+    assert result.exit_code == 0, result.output
+    assert seen == [str(adapter), "org/base"]
+    (row,) = json.loads((out / "comparison.json").read_text())
+    assert row["delta"] == pytest.approx(-0.2)
+
+
+def test_compare_base_without_an_adapter_is_refused(env, tmp_path):
+    result = _run("fake/model", "--tasks", "gsm8k", "--compare-base", "-o", str(tmp_path))
+    assert result.exit_code == 2
+    assert "--compare-base needs a LoRA adapter" in result.output
+    assert "tasks" not in env
+
+
+def test_compare_base_refuses_vllm(env, tmp_path):
+    adapter = _adapter(tmp_path)
+    result = _run(str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "--compare-base")
+    assert result.exit_code == 2
+    assert "--compare-base is not supported with --backend vllm" in result.output
+
+
+def test_compare_results_keeps_metrics_only_one_run_reports():
+    base = {"results": {"a": {"acc,none": 0.5}, "b": {"acc,none": 0.1}}}
+    tuned = {"results": {"a": {"acc,none": 0.7, "acc_stderr,none": 0.02}, "c": {"f1,none": 0.3}}}
+    rows = {(r["task"], r["metric"]): r for r in evalmod.compare_results(base, tuned)}
+    assert list(rows) == [("a", "acc,none"), ("c", "f1,none"), ("b", "acc,none")]
+    assert rows[("a", "acc,none")]["delta"] == pytest.approx(0.2)
+    assert rows[("a", "acc,none")]["fine_tuned_stderr"] == 0.02
+    assert rows[("a", "acc,none")]["base_stderr"] is None
+    assert rows[("c", "f1,none")]["base"] is None and rows[("c", "f1,none")]["delta"] is None
+    assert rows[("b", "acc,none")]["fine_tuned"] is None
