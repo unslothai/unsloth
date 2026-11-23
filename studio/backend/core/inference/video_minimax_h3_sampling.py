@@ -30,6 +30,13 @@ H3_VISION_MIN_FRAMES = 5
 # The shifted sigma table the ``simple`` schedule indexes.
 H3_SIGMA_TABLE_SIZE = 1000
 
+# The pi-H3 4-step grid (LakonLab FlowEulerODEScheduler): raw t = linspace(0.96, 0.96 * 0.6 / (n - 1 + 0.6), n).
+H3_GRID_SIMPLE = "simple"
+H3_GRID_PI = "pi_h3"
+H3_PI_STEPS = 4
+H3_PI_MAX_RAW_T = 0.96
+H3_PI_FINAL_STEP_SCALE = 0.6
+
 
 def h3_sampler(pdd: bool) -> str:
     """The sampler for a render: Euler for PDD (turbo) banks, which are distilled for it, else res_multistep."""
@@ -71,6 +78,22 @@ def h3_simple_sigmas(shift: float, steps: int) -> Any:
     stride = len(table) / int(steps)
     values = [float(table[-(1 + int(x * stride))]) for x in range(int(steps))] + [0.0]
     return torch.tensor(values, dtype = torch.float32)
+
+
+def h3_pi_sigmas(shift: float, steps: int) -> Any:
+    """The pi-H3 student's sigmas plus 0. Only its distilled 4-step grid exists."""
+    import numpy as np
+    import torch
+
+    if int(steps) != H3_PI_STEPS:
+        raise ValueError(f"The pi-H3 fast mode runs exactly {H3_PI_STEPS} steps, not {int(steps)}.")
+    n, top = int(steps), H3_PI_MAX_RAW_T
+    raw = np.linspace(
+        top, top * H3_PI_FINAL_STEP_SCALE / (n - 1 + H3_PI_FINAL_STEP_SCALE), n, dtype = np.float32
+    )
+    raw = torch.from_numpy(raw)
+    sigmas = time_snr_shift(float(shift), raw)
+    return torch.cat([sigmas, torch.zeros(1)]).to(torch.float32)
 
 
 def h3_model_sigma(sigmas: Any) -> Any:
@@ -155,7 +178,8 @@ def _scheduler_class(base: type) -> type:
                 self.sigmas = grid.to(device = device)
                 self.timesteps = (1.0 - model_sigma).to(device = device)
             else:
-                raw = h3_simple_sigmas(float(self._shift), int(num_inference_steps) - 1)
+                grid = h3_pi_sigmas if state.get("grid") == H3_GRID_PI else h3_simple_sigmas
+                raw = grid(float(self._shift), int(num_inference_steps) - 1)
                 state.update(sigmas_cpu = raw)
                 self.sigmas = raw.to(device = device)
                 self.timesteps = (1.0 - h3_model_sigma(raw[:-1])).to(device = device)
@@ -223,8 +247,12 @@ def _scheduler_class(base: type) -> type:
     return StudioMiniMaxH3Scheduler
 
 
-def install_h3_schedulers(pipe: Any, sampler: str) -> bool:
-    """Puts both schedulers on the reference grid with sampler; False without an H3 pair."""
+def install_h3_schedulers(
+    pipe: Any,
+    sampler: str,
+    grid: str = H3_GRID_SIMPLE,
+) -> bool:
+    """Puts both schedulers on the reference (or pi-H3) grid with sampler; False without an H3 pair."""
     try:
         from diffusers.schedulers.scheduling_minimax_h3 import MiniMaxH3Scheduler
     except Exception:  # noqa: BLE001 - diffusers wraps a failed lazy import in RuntimeError
@@ -240,6 +268,8 @@ def install_h3_schedulers(pipe: Any, sampler: str) -> bool:
         state = scheduler.__dict__.setdefault("_studio", {})
         state.clear()
         state.update(stream = stream, sampler = sampler)
+        if grid == H3_GRID_PI:
+            state["grid"] = grid
     audio.__dict__["_studio"]["video"] = video
     return True
 
@@ -661,8 +691,14 @@ def _swap_blocks(pipe: Any, swaps: dict) -> dict:
     return counts
 
 
-def install_h3_reference_recipe(pipe: Any, *, pdd: bool = False) -> dict:
-    """Put a MiniMax-H3 pipeline on the reference recipe. Idempotent; returns block class -> count plus the sampler."""
+def install_h3_reference_recipe(
+    pipe: Any,
+    *,
+    pdd: bool = False,
+    pi: bool = False,
+) -> dict:
+    """Put a MiniMax-H3 pipeline on the reference recipe. Idempotent; returns block class -> count plus the sampler.
+    ``pi``: the pi-H3 4-step student, Euler on its own grid."""
     try:
         from diffusers.modular_pipelines.minimax_h3 import before_denoise, encoders
     except Exception:  # noqa: BLE001 - diffusers wraps a failed lazy import in RuntimeError
@@ -688,8 +724,11 @@ def install_h3_reference_recipe(pipe: Any, *, pdd: bool = False) -> dict:
         ),
     }
     report: dict = dict(_swap_blocks(pipe, swaps))
-    sampler = h3_sampler(pdd)
-    report["sampler"] = sampler if install_h3_schedulers(pipe, sampler) else None
+    sampler = h3_sampler(pdd or pi)
+    grid = H3_GRID_PI if pi else H3_GRID_SIMPLE
+    report["sampler"] = sampler if install_h3_schedulers(pipe, sampler, grid) else None
+    if pi:
+        report["sigma_grid"] = grid
     report["output_truncated"] = install_h3_output_truncation(pipe)
     from .video_minimax_h3_adaln import install_h3_reference_temb
 

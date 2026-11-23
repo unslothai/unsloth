@@ -11,6 +11,7 @@ import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
 import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
 import type { RestyleStatusLike } from "./restyle-setup";
+import type { H3FastAvailability, H3FastStatus } from "./h3-fast-mode";
 
 // `requested` null = left to the backend; `source` is "auto" or "explicit"; `reason` is the tooltip.
 export interface VideoResolvedControl {
@@ -110,6 +111,8 @@ export interface VideoStatus {
   supports_references?: boolean;
   supports_video_continuation?: boolean;
   h3_task?: string | null;
+  // MiniMax-H3 4-step fast mode (pi-H3) of the loaded build; null when off, absent on an older backend.
+  h3_fast?: H3FastStatus | null;
   defaults?: VideoGenerationDefaults | null;
   // One or two sentences on how the loaded model reads prompts; null when it has no tip.
   prompt_hint?: string | null;
@@ -184,6 +187,8 @@ export interface VideoLoadRequest {
   // Omit for the hardware ladder; "none" pins bf16. GGUF / single-file carry their own.
   transformer_quant?: "none" | "fp8" | "int8" | "nvfp4" | "mxfp8";
   h3_task?: "fl2va" | "ref2va";
+  // MiniMax-H3 only: merge the pi-H3 4-step adapter at load. Omitted when off, so a plain load is unchanged.
+  h3_fast_4step?: boolean;
   // Omit for automatic. Neither engine shards, so several cards resolve to the one with most free VRAM.
   gpu_ids?: number[];
   // Text-encoder precision. Omit for the family default (the hosted quantized encoder ComfyUI's template matches);
@@ -304,6 +309,10 @@ export async function getVideoLoadProgress(
 
 export async function getVideoGenerateProgress(): Promise<VideoGenerateProgress> {
   return parseJson(await authFetch("/api/inference/video/generate-progress"));
+}
+
+export async function getVideoH3FastAvailability(signal?: AbortSignal): Promise<H3FastAvailability> {
+  return parseJson(await authFetch("/api/inference/video/h3-fast-4step", { signal }));
 }
 
 export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatus> {

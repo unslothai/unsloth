@@ -7766,6 +7766,14 @@ class VideoLoadRequest(BaseModel):
         "separate ~62 GB partitions, so a load serves one of them. Ignored for a GGUF pick, "
         "whose filename already names the partition; rejected if it contradicts that filename.",
     )
+    h3_fast_4step: bool = Field(
+        False,
+        description = "MiniMax-H3 only: the opt-in 4-step fast mode. Merges the pi-H3 4-step adapter "
+        "(unsloth/pi-H3) into the hosted pruned fl2va denoiser at load; renders then run 4 Euler "
+        "steps on the pi-H3 grid without CFG (text-to-video, image-to-video, first/last-frame). "
+        "Refused for ref2va, GGUF, PDD files, user LoRAs and the dense released denoiser, and when "
+        "the adapter repo cannot be reached. Turning it off is a reload.",
+    )
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = "CUDA / ROCm physical indices this load may use, or null for automatic. "
@@ -8421,6 +8429,12 @@ class VideoStatusResponse(BaseModel):
         None,
         description = "The MiniMax-H3 denoiser partition that is up: fl2va | ref2va, or null "
         "for any other family",
+    )
+    h3_fast: Optional[dict] = Field(
+        None,
+        description = "MiniMax-H3 4-step fast mode, null when off: steps, sampler, sigma_grid, "
+        "guidance, adapter_repo, lora_layers, overwrites, weight_kinds, merge_s, levers (the "
+        "speed optimisations engaged with it) and restore (reload)",
     )
     supports_cfg: bool = Field(
         True, description = "Whether guidance and negative prompts apply to this family"

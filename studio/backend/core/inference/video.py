@@ -1951,6 +1951,8 @@ class _VideoLoadState:
     h3_residency: Any = None
     resolved: Optional[dict] = None
     bg_compile: Any = None
+    # MiniMax-H3 4-step fast mode: the pi-H3 merge report, None when off.
+    h3_fast: Optional[dict] = None
 
 
 @dataclass(frozen = True)
@@ -6511,6 +6513,7 @@ class VideoBackend:
         nvfp4_route: Any = None,
         loras: Any = None,
         int8_attention: Optional[str] = None,
+        h3_fast_4step: bool = False,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once.
 
@@ -6589,6 +6592,18 @@ class VideoBackend:
             )
             if lora_refusal:
                 raise ValueError(lora_refusal)
+        if h3_fast_4step:
+            from .video_minimax_h3_pi import h3_pi_static_refusal
+            refusal = h3_pi_static_refusal(
+                fam,
+                resolve_video_model_kind(gguf_filename, model_kind),
+                h3_task = h3_task,
+                gguf_filename = gguf_filename,
+                transformer_quant = transformer_quant,
+                has_loras = video_lora.has_active(loras),
+            )
+            if refusal:
+                raise ValueError(refusal)
         # Network, so after the cheap checks; before the worker, whose first step downloads the weights.
         refuse_without_guardrail_access(
             fam,
@@ -6687,6 +6702,7 @@ class VideoBackend:
                 _nvfp4_route = nvfp4_route,
                 # Only when sent, so a plain load runs exactly as before.
                 **({"loras": loras} if video_lora.has_active(loras) else {}),
+                **({"h3_fast_4step": True} if h3_fast_4step else {}),
             ),
             daemon = True,
         ).start()
@@ -10036,6 +10052,7 @@ class VideoBackend:
         _video_native_hosted_planned: Optional[str] = None,
         _denoiser_prequant_skipped: tuple[str, ...] = (),
         loras: Any = None,
+        h3_fast_4step: bool = False,
     ) -> dict[str, Any]:
         from .diffusion_int8_attention import Int8Policy, normalize_int8_attention, resolve_policy
 
@@ -10077,6 +10094,24 @@ class VideoBackend:
                 cancel_event = self._cancel_event if _load_token is not None else None,
                 local_files_only = local_files_only,
                 expert_pair = bool(getattr(fam, "is_moe", False)),
+            )
+        h3_pi_adapter = None
+        if h3_fast_4step:
+            from .video_minimax_h3_pi import h3_pi_static_refusal, resolve_h3_pi_adapter
+
+            refusal = h3_pi_static_refusal(
+                fam,
+                kind,
+                h3_task = h3_task,
+                gguf_filename = gguf_filename,
+                transformer_quant = transformer_quant,
+                has_loras = bool(lora_specs),
+            )
+            if refusal:
+                raise ValueError(refusal)
+            # Before teardown, so a missing mirror leaves the resident model alone.
+            h3_pi_adapter = resolve_h3_pi_adapter(
+                hf_token, local_files_only = local_files_only, cache_dir = hub_cache_dir()
             )
         from .video_minimax_h3 import is_h3_native
 
@@ -10268,7 +10303,10 @@ class VideoBackend:
                 transformer_cache = transformer_cache,
                 baked_loras = baked_loras,
                 lora_specs = lora_specs,
+                **({"h3_pi_adapter": h3_pi_adapter} if h3_pi_adapter else {}),
             )
+        if h3_pi_adapter:
+            raise ValueError("The 4-step fast mode is a MiniMax-H3 option.")
 
         transformer_quant_requested = transformer_quant
         # Unset/auto: hardware ladder; none/off: dense bf16; a scheme pins it. Pipeline kind only.
@@ -12750,6 +12788,7 @@ class VideoBackend:
         gguf_filename: Optional[str] = None,
         baked_loras: tuple = (),
         lora_specs: Any = None,
+        h3_pi_adapter: Optional[str] = None,
     ) -> dict[str, Any]:
         """Load MiniMax-H3 through its official Modular Diffusers workflow.
 
@@ -14001,6 +14040,20 @@ class VideoBackend:
                 if block_pinner is not None:
                     block_pinner.join()
                 keep_h3_te_resident(getattr(pipe, "text_encoder", None), logger = logger)
+        h3_fast = None
+        if h3_pi_adapter:
+            from .video_minimax_h3_pi import apply_h3_pi_adapter, h3_pi_static_refusal
+
+            refusal = h3_pi_static_refusal(fam, kind, h3_task = workflow)
+            if refusal is None and denoiser_streamed:
+                refusal = (
+                    "The 4-step fast mode merges into a denoiser resident on the GPU; this load streams it "
+                    "block by block. Use a card that holds the denoiser."
+                )
+            if refusal:
+                raise ValueError(refusal)
+            h3_fast = apply_h3_pi_adapter(pipe, h3_pi_adapter, logger = logger)
+            h3_fast["levers"] = list(speed_optims)
         resolved = build_resolved_record(
             {
                 "family_override": _family_override_resolved(family_override, fam),
@@ -14161,6 +14214,7 @@ class VideoBackend:
                 te_streamed = bool(te_streamed),
                 h3_residency = residency,
                 resolved = resolved,
+                h3_fast = h3_fast,
             )
             commit_load_budget_fraction("video")
             self._precommit_globals = None
@@ -14831,6 +14885,7 @@ class VideoBackend:
                     default_steps,
                     default_guidance,
                 )
+                requested_steps, requested_guidance = steps, guidance
                 steps = int(steps or default_steps)
                 guidance = float(default_guidance if guidance is None else guidance)
                 # Guidance-free families ignore CFG and negative prompt on both engines; record the family
@@ -14863,6 +14918,20 @@ class VideoBackend:
                             len(dmd_ts),
                         )
                     steps, guidance, negative_prompt = len(dmd_ts), 1.0, None
+                h3_fast = getattr(state, "h3_fast", None)
+                if h3_fast:
+                    # The pi-H3 student is distilled for its 4 Euler steps without CFG, as the DMD one above.
+                    pi_steps, pi_guidance = int(h3_fast["steps"]), float(h3_fast["guidance"])
+                    if (requested_steps or pi_steps) != pi_steps or (
+                        requested_guidance is not None and float(requested_guidance) != pi_guidance
+                    ):
+                        logger.info(
+                            "video.h3_pi: %d steps / CFG %s requested; the 4-step fast mode runs %d steps at CFG 1",
+                            steps,
+                            guidance,
+                            pi_steps,
+                        )
+                    steps, guidance, negative_prompt = pi_steps, pi_guidance, None
                 if state.engine == "sd_cpp":
                     return self._generate_h3_native(
                         state = state,
@@ -15288,10 +15357,19 @@ class VideoBackend:
                     if h3_pdd:
                         kwargs["num_inference_steps"] = h3_pdd_num_inference_steps(steps)
                         request_shape["pdd"] = True
+                    h3_pi = bool(getattr(state, "h3_fast", None))
+                    if h3_pi:
+                        # Its own grid, which holds the terminal 0 whatever the kill switch says.
+                        kwargs["num_inference_steps"] = steps + 1
+                        request_shape["h3_fast"] = True
                     from .video_minimax_h3_sampling import install_h3_reference_recipe
 
                     # Reference grid, sampler, noise layout and vision input; Euler stays for PDD.
-                    request_shape["h3_recipe"] = install_h3_reference_recipe(pipe, pdd = h3_pdd)
+                    request_shape["h3_recipe"] = (
+                        install_h3_reference_recipe(pipe, pdd = h3_pdd, pi = True)
+                        if h3_pi
+                        else install_h3_reference_recipe(pipe, pdd = h3_pdd)
+                    )
 
                 # What the clip records; LTX-2.5's two-stage render reports its stage-2 steps in the progress below.
                 recorded_steps = steps
@@ -16801,6 +16879,7 @@ class VideoBackend:
                 "supports_references": False,
                 "supports_video_continuation": False,
                 "h3_task": None,
+                "h3_fast": None,
                 "defaults": None,
                 "resolved": None,
             }
@@ -16828,6 +16907,9 @@ class VideoBackend:
         default_steps, default_guidance = video_lora.recommended_params(
             getattr(state, "pipe", None)
         ) or (default_steps, default_guidance)
+        h3_fast = getattr(state, "h3_fast", None)
+        if h3_fast:
+            default_steps, default_guidance = int(h3_fast["steps"]), float(h3_fast["guidance"])
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -16886,6 +16968,7 @@ class VideoBackend:
             "supports_references": fam.supports_references and state.h3_task == H3_TASK_REFERENCES,
             "supports_video_continuation": fam.supports_video_continuation,
             "h3_task": state.h3_task,
+            "h3_fast": dict(h3_fast) if h3_fast else None,
             "defaults": {
                 "steps": default_steps,
                 "guidance": default_guidance,

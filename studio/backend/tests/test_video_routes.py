@@ -2251,3 +2251,86 @@ def test_video_download_plan_forwards_the_lora_selection(client, monkeypatch):
     assert [dict(s) if isinstance(s, dict) else s.model_dump() for s in seen["loras"]] == [
         {"id": "my-ltx", "weight": 1.0}
     ]
+
+
+# ── MiniMax-H3 4-step fast mode ──
+
+
+def _h3_fast_pick(monkeypatch, backend, available):
+    import types
+
+    from core.inference import video_minimax_h3_pi as PI
+
+    monkeypatch.setattr(
+        backend, "validate_load_request", lambda *a, **k: types.SimpleNamespace(name = "minimax-h3")
+    )
+    monkeypatch.setattr(
+        video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
+    )
+    reason = (
+        None
+        if available
+        else "The 4-step fast mode is unavailable: unsloth/pi-H3 is not available."
+    )
+    seen = []
+
+    def _availability(*a, **k):
+        seen.append(k)
+        return {"available": available, "reason": reason, "repo": "unsloth/pi-H3", "cached": False}
+
+    monkeypatch.setattr(PI, "h3_pi_availability", _availability)
+    return seen
+
+
+def test_h3_fast_load_is_refused_before_the_gpu_when_the_mirror_is_missing(client, monkeypatch):
+    backend = video_module.get_video_backend()
+    seen = _h3_fast_pick(monkeypatch, backend, available = False)
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "MiniMaxAI/MiniMax-H3", "h3_fast_4step": True},
+    )
+    assert resp.status_code == 400
+    assert "unsloth/pi-H3" in resp.json()["detail"]
+    assert seen and not backend.loaded
+
+
+def test_h3_fast_load_refuses_ref2va_and_other_families(client, monkeypatch):
+    backend = video_module.get_video_backend()
+    seen = _h3_fast_pick(monkeypatch, backend, available = True)
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "MiniMaxAI/MiniMax-H3", "h3_task": "ref2va", "h3_fast_4step": True},
+    )
+    assert resp.status_code == 400 and "reference-to-video" in resp.json()["detail"]
+    assert not seen and not backend.loaded
+    monkeypatch.setattr(backend, "validate_load_request", lambda *a, **k: object())
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "q.gguf",
+            "h3_fast_4step": True,
+        },
+    )
+    assert resp.status_code == 400 and "MiniMax-H3 option" in resp.json()["detail"]
+
+
+def test_h3_fast_flag_reaches_the_backend_only_when_on(client, monkeypatch):
+    backend = video_module.get_video_backend()
+    _h3_fast_pick(monkeypatch, backend, available = True)
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "MiniMaxAI/MiniMax-H3", "h3_fast_4step": True},
+    )
+    assert resp.status_code == 200, resp.json()
+    assert backend.last_load_kwargs.get("h3_fast_4step") is True
+    resp = client.post("/api/inference/video/load", json = {"model_path": "MiniMaxAI/MiniMax-H3"})
+    assert resp.status_code == 200, resp.json()
+    assert "h3_fast_4step" not in backend.last_load_kwargs
+
+
+def test_h3_fast_availability_route(client, monkeypatch):
+    backend = video_module.get_video_backend()
+    _h3_fast_pick(monkeypatch, backend, available = False)
+    body = client.get("/api/inference/video/h3-fast-4step").json()
+    assert body["available"] is False and "unsloth/pi-H3" in body["reason"]

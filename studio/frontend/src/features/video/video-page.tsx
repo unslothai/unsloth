@@ -328,12 +328,21 @@ import {
   getVideoGenerateProgress,
   getVideoLoadProgress,
   getVideoDownloadPlan,
+  getVideoH3FastAvailability,
   getVideoStatus,
   loadVideoModel,
   unloadVideoModel,
   fetchCosmosGuardrailStatus,
   startCosmosGuardrailInstall,
 } from "./api";
+import {
+  H3_FAST_STEPS,
+  type H3FastAvailability,
+  h3FastEngaged,
+  h3FastLoadFields,
+  h3FastNeedsReload,
+  h3FastToggleState,
+} from "./h3-fast-mode";
 import { isGuardrailInstallRefusal, runGuardrailInstall } from "./cosmos-guardrail";
 import { isAccountOwner } from "@/features/auth";
 import { stopButtonLabel } from "@/features/images/lib/generation-stop";
@@ -1189,6 +1198,13 @@ type PendingH3Load = {
 
 const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
 
+/** The fast-mode field rides only on an H3 load: a pipeline pick, an H3 single file, or an H3 family override. */
+function isH3Load(repoId: string, opts: VideoLoadOptions, familyOverride?: string): boolean {
+  if (opts.h3Task) return true;
+  if (isH3PipelinePick(repoId, opts.kind, familyOverride)) return true;
+  return opts.kind === "single_file" && /minimax[_-]?h3/i.test(`${repoId}/${opts.filename ?? ""}`);
+}
+
 /** Both entry points need this. On-device copies are matched on the last path segment or an
  * explicit family, since a Hub-id equality test misses them. */
 function isH3PipelinePick(repoId: string, kind: VideoLoadOptions["kind"], familyOverride?: string): boolean {
@@ -1225,6 +1241,7 @@ type VideoLoadAdvanced = Pick<
   | "family_override"
   | "gpu_ids"
   | "allow_oversized_load"
+  | "h3_fast_4step"
 >;
 
 function VideoGate({ children }: { children: ReactNode }) {
@@ -1437,6 +1454,9 @@ function VideoGenerator({
   >("auto");
   const [int8Attention, setInt8Attention] = useState<Int8AttentionChoice>("auto");
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
+  // MiniMax-H3 4-step fast mode: applied at load, so a change takes a Reapply.
+  const [h3Fast, setH3Fast] = useState(false);
+  const [h3FastAvailability, setH3FastAvailability] = useState<H3FastAvailability | null>(null);
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
@@ -1459,6 +1479,25 @@ function VideoGenerator({
   // Background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<VideoStatus | null>(null);
+  const h3FastFamily = status?.family === "minimax-h3";
+  useEffect(() => {
+    if (!h3FastFamily || h3FastAvailability) return;
+    const ctl = new AbortController();
+    getVideoH3FastAvailability(ctl.signal)
+      .then(setH3FastAvailability)
+      .catch((err: unknown) => {
+        if (ctl.signal.aborted) return;
+        setH3FastAvailability({ available: false, reason: err instanceof Error ? err.message : String(err) });
+      });
+    return () => ctl.abort();
+  }, [h3FastFamily, h3FastAvailability]);
+  // A load (this page's or another client's) sets the switch to what is resident.
+  const h3FastResident = status?.loaded && h3FastFamily ? h3FastEngaged(status) : null;
+  const [h3FastSeen, setH3FastSeen] = useState<boolean | null>(null);
+  if (h3FastResident !== h3FastSeen) {
+    setH3FastSeen(h3FastResident);
+    if (h3FastResident != null) setH3Fast(h3FastResident);
+  }
   const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
   // Controlled so the body-portaled selector force-closes when off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
@@ -2986,6 +3025,7 @@ function VideoGenerator({
     familyOverride,
     selectedGpu,
     gpuChoices,
+    h3Fast,
   });
   loadControlsRef.current = {
     memoryMode,
@@ -2997,6 +3037,7 @@ function VideoGenerator({
     familyOverride,
     selectedGpu,
     gpuChoices,
+    h3Fast,
   };
   const currentLoadAdvanced = useCallback(
     (kind: "gguf" | "single_file" | "pipeline", familyOverrideRequired = true): VideoLoadAdvanced => {
@@ -3023,6 +3064,7 @@ function VideoGenerator({
             : undefined,
         // Only a confirmed Load anyway retry sets it, around the one loadOrStage call that snapshots this.
         allow_oversized_load: oversizedLoadOnce.current ? true : undefined,
+        h3_fast_4step: controls.h3Fast ? true : undefined,
       };
     },
     [],
@@ -3118,6 +3160,10 @@ function VideoGenerator({
           family_override: advanced.family_override,
           // Not an Advanced control: the partition is chosen per pick.
           h3_task: opts.h3Task,
+          // Absent unless on, for an H3 fl2va pick only.
+          ...(isH3Load(repoId, opts, advanced.family_override)
+            ? h3FastLoadFields(advanced.h3_fast_4step === true, opts.kind, opts.h3Task)
+            : {}),
           // Absent unless a pipeline load names an adapter, so a plain load sends what it did before.
           ...(opts.kind === "pipeline" && videoLoraSpecs(opts.loras) ? { loras: videoLoraSpecs(opts.loras) } : {}),
           gpu_ids: advanced.gpu_ids,
@@ -4099,6 +4145,13 @@ function VideoGenerator({
     resyncAfterGenerateRefusal,
   ]);
 
+  const h3FastToggle = h3FastToggleState({
+    isH3: status?.family === "minimax-h3",
+    kind: status?.model_kind === "gguf" || status?.model_kind === "single_file" ? status.model_kind : "pipeline",
+    h3Task: status?.h3_task,
+    availability: h3FastAvailability,
+  });
+
   const advancedControls = (
     <>
       <AdvancedSelect {...familySelect} badge={<ResolvedBadge status={status} controlKey="family_override" />} />
@@ -4216,6 +4269,31 @@ function VideoGenerator({
           ["static", "Static skip"],
         ]}
       />
+      {h3FastToggle.visible && (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center justify-between">
+            <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+              4-step fast mode
+              <InfoHint>
+                MiniMax-H3 text-to-video, image-to-video and first/last-frame video in {H3_FAST_STEPS} steps with
+                the pi-H3 adapter (unsloth/pi-H3), merged into the denoiser at load. Steps and guidance are fixed
+                ({H3_FAST_STEPS} steps, no CFG). Takes effect on the next load: Reapply to turn it on or off.
+              </InfoHint>
+            </span>
+            <Switch
+              checked={h3Fast}
+              disabled={h3FastToggle.disabled && !h3Fast}
+              onCheckedChange={setH3Fast}
+              aria-label="4-step fast mode"
+            />
+          </div>
+          {h3FastToggle.reason ? (
+            <span className="text-ui-11 text-muted-foreground">{h3FastToggle.reason}</span>
+          ) : h3FastNeedsReload(h3Fast, status) ? (
+            <span className="text-ui-11 text-muted-foreground">Reapply to switch the fast mode.</span>
+          ) : null}
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
           Live preview
@@ -5075,7 +5153,11 @@ function VideoGenerator({
 
           <SliderField
             label="Steps"
-            hint="Denoising steps. Distilled models want very few (8); the full base model wants more (40)."
+            hint={
+              h3FastEngaged(status)
+                ? `Fixed at ${H3_FAST_STEPS} by the 4-step fast mode; Reapply with it off for other step counts.`
+                : "Denoising steps. Distilled models want very few (8); the full base model wants more (40)."
+            }
             value={steps}
             min={1}
             max={100}

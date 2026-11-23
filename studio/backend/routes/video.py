@@ -434,6 +434,33 @@ async def load_video_model_gated(
                 video_lora.normalize_specs(request.loras),
                 getattr(fam, "name", None),
             )
+        if request.h3_fast_4step:
+            from core.inference import video_lora
+            from core.inference.video_minimax_h3_pi import (
+                h3_pi_availability,
+                h3_pi_static_refusal,
+            )
+
+            refusal = h3_pi_static_refusal(
+                fam,
+                kind,
+                h3_task = request.h3_task,
+                gguf_filename = request.gguf_filename,
+                transformer_quant = request.transformer_quant,
+                has_loras = video_lora.has_active(request.loras),
+            )
+            if refusal is None:
+                # Before the GPU is touched: no mirror means no fast mode, never another repo.
+                from core.inference.diffusion import hub_cache_dir
+                availability = await asyncio.to_thread(
+                    h3_pi_availability,
+                    request.hf_token,
+                    local_files_only = not user_initiated,
+                    cache_dir = hub_cache_dir(),
+                )
+                refusal = None if availability["available"] else availability["reason"]
+            if refusal:
+                raise ValueError(refusal)
         # Refuse while training runs, BEFORE the precision check, whose GPU probe opens a CUDA context.
         _guard_video_load_against_training()
         # begin_load repeats this check, but inside acquire_for after chat is evicted. `auto` never refused.
@@ -505,6 +532,7 @@ async def load_video_model_gated(
                 allow_oversized_load = request.allow_oversized_load,
                 # Only when sent, so a plain load passes exactly what it did before.
                 **({"loras": request.loras} if request.loras else {}),
+                **({"h3_fast_4step": True} if request.h3_fast_4step else {}),
                 **_nvfp4_route_kwarg(backend.begin_load, nvfp4_route),
             )
             media_load_ids.admitted("video", backend, request.load_token, prior)
@@ -1005,6 +1033,22 @@ async def cancel_video_generation(
         # Hidden and foreign renders answer the same, so this reveals nothing about them.
         raise HTTPException(status_code = 409, detail = "That video is not rendering.")
     return {"cancelled": cancelled}
+
+
+@router.get("/video/h3-fast-4step")
+async def video_h3_fast_4step(current_subject: str = Depends(get_current_subject)):
+    """Whether the MiniMax-H3 4-step fast mode can be loaded here: ``{available, reason, repo, cached}``. Reads
+    only the unsloth/pi-H3 metadata, never the weights."""
+    from core.inference import hub_reachability
+    from core.inference.diffusion import hub_cache_dir
+    from core.inference.video_minimax_h3_pi import h3_pi_availability
+
+    return await asyncio.to_thread(
+        h3_pi_availability,
+        None,
+        local_files_only = hub_reachability.offline_mode(),
+        cache_dir = hub_cache_dir(),
+    )
 
 
 @router.get("/video/status", response_model = VideoStatusResponse)
