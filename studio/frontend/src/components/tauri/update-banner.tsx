@@ -79,7 +79,6 @@ export function UpdateBanner({
     showAvailable && Boolean(info),
   );
   const pillHosted = usePillHosted();
-  // A top-right pill carries the offer; the card stays for failures and pill-less routes.
   const show = showFailure || (offerOpen && !pillHosted);
   const isManualLinuxPackage = updatePolicyMode === "manual_linux_package";
   const isExternalServer = externalServerPort !== null;

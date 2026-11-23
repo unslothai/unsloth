@@ -30,7 +30,6 @@ import {
 } from "./update-offer-store";
 import { useWhatsNew } from "./whats-new-store";
 
-/** "Update available" pill for the top-right of the shell; opens a compact offer. */
 export function UpdatePill({
   slot,
   className,
@@ -41,7 +40,6 @@ export function UpdatePill({
   const t = useT();
   usePillHost(slot);
   const offer = useUpdateOffer((s) => s.offer);
-  // The titlebar pill is on every route, so the header one would only repeat it.
   const covered = useUpdateOffer(
     (s) => slot === "header" && s.hosts.titlebar > 0,
   );
@@ -164,7 +162,7 @@ export function UpdatePill({
             {t("desktopUpdate.banner.later")}
           </Button>
         </div>
-        {/* A disabled button takes no hover or focus, so its reason is shown as text. */}
+        {/* A disabled button gets no hover or focus, so show its reason. */}
         {offer.actionDisabled && offer.note && (
           <p
             className="mt-3 text-xs leading-relaxed text-muted-foreground"
@@ -178,7 +176,6 @@ export function UpdatePill({
   );
 }
 
-/** The offered release's first highlights, so the notes are read before updating. */
 function Highlights({ release }: { release: (typeof releases)[number] }) {
   const t = useT();
   const items = [

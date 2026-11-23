@@ -25,29 +25,24 @@ interface Release {
   date: string;
   features: {
     image: string;
-    // Artwork for the dark theme; falls back to `image`.
     imageDark?: string;
     alt: string;
     title: string;
     summary: string;
-    // Docs page, and where the card's button goes (a route, or `settings:<tab>`) with its label.
+    // `open` is a route or `settings:<tab>`.
     link?: string;
     open?: string;
     action?: string;
   }[];
   changes: Partial<Record<"new" | "improved" | "fixed", Row[]>>;
-  // Changes the release page lists beyond the ones shown here.
   more?: number;
-  // Docs pages for change rows, keyed by the row's label.
   guides?: Record<string, string>;
 }
 
-// Artwork lives outside the frontend bundle and is requested only for the selected release.
 export function releaseImageUrl(version: string, filename: string): string {
   return `https://raw.githubusercontent.com/unslothai/unsloth/main/images/releases/v${encodeURIComponent(version)}/${encodeURIComponent(filename)}`;
 }
 
-// Newest first.
 export const releases = [
   release922,
   release921,

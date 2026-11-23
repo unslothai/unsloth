@@ -3,7 +3,6 @@ import { create } from "zustand";
 interface ReleaseOffer {
   version: string;
   url?: string | null;
-  // The version the user came from, which opens the catch-up view.
   since?: string;
 }
 

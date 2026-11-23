@@ -49,11 +49,10 @@ export function WebUpdateBanner({
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const t = useT();
   const pillHosted = usePillHosted();
-  // Hidden, not unmounted, while release history is open so the dialog is not covered.
+  // Hidden, not unmounted, so the open dialog is not covered.
   const notesOpen = useWhatsNew((state) => state.open);
   const copied = status != null && copiedVersion === status.latestVersion;
 
-  // The same offer drives the top-right pill; this card is the fallback where none is mounted.
   usePublishUpdateOffer(
     status && open && !isTauri
       ? {
@@ -114,15 +113,7 @@ export function WebUpdateBanner({
           )}
           data-testid="web-update-banner"
         >
-          {/* Paint the full floor.
-              No min-h-0 and no overflow-hidden here on purpose: both of them
-              set this box's automatic minimum size to zero, which is what made
-              the card need a hand-written floor at all. Left alone it floors
-              itself at header + notes + actions, and the notes panel carries
-              its own min-h-0 and clipping, so it stays the one part that
-              yields. That is the floor the constant was approximating, except
-              it is measured rather than guessed and it holds at every type
-              size. */}
+          {/* No min-h-0 or overflow-hidden: either one zeroes this box's minimum size. */}
           <div className="toast-surface relative flex max-h-[calc(100dvh_-_2rem)] grow flex-col rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
             <button
               type="button"

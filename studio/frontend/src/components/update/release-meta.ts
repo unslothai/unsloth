@@ -20,7 +20,7 @@ function parts(version: string): number[] | null {
   return match ? match.slice(1).map(Number) : null;
 }
 
-/** Null when either side is not an x.y.z tag, as PyPI date versions are not. */
+/** Null unless both are x.y.z tags (PyPI date versions are not). */
 export function compareVersions(a: string, b: string): number | null {
   const left = parts(a);
   const right = parts(b);
@@ -35,7 +35,6 @@ export function compareVersions(a: string, b: string): number | null {
   return 0;
 }
 
-/** Bundled releases after `current` up to and including `latest`, newest first. */
 export function releasesBetween(current: string, latest: string): Release[] {
   return releases.filter((release) => {
     const afterCurrent = compareVersions(release.version, current);
@@ -51,7 +50,6 @@ export function releasesBetween(current: string, latest: string): Release[] {
 
 const DAY_MS = 86_400_000;
 
-/** "today", "3 days ago", "2 wk. ago": release dates are whole UTC days. */
 export function releaseAge(
   date: string,
   locale: Locale,

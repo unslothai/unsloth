@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Drafts src/components/update/releases/<tag>/notes.json from a published GitHub release,
-// so the app's What's New reads the same highlights as the release page.
+// Drafts releases/<tag>/notes.json from a GitHub release; cards and artwork are added by hand.
 // Usage: node scripts/draft-release-notes.mjs v0.1.923-beta [--force]
-// The draft has no feature cards: add one or two with artwork, then trim to the brief in
-// releases/README.md.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -85,7 +82,6 @@ const rows = section("Highlights")
   .map(highlight)
   .filter(Boolean)
   .slice(0, MAX_CHANGES);
-// The dialog reads rows grouped as new / improved / fixed; the drafted split is a starting guess.
 const IMPROVED = /faster|less |fewer|smoother|lower|down from|more accurate/i;
 const FIXED = /no longer|works again|now works|fixed/i;
 const changes = {};
@@ -98,7 +94,6 @@ for (const row of rows) {
   changes[key] = [...(changes[key] ?? []), row];
 }
 
-// The rest: merged PRs under What's Changed, else bullets in the themed sections.
 let total = (section("What's Changed").match(/^\* /gm) ?? []).length;
 if (total === 0) {
   for (const part of body.split(/^## /m).slice(1)) {

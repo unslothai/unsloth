@@ -68,10 +68,8 @@ export function WhatsNewDialog() {
   );
 }
 
-// The rail entry that gathers every release between the installed and offered versions.
 const SINCE = "since";
 
-/** What the rail lists and whether it leads with the catch-up entry. */
 function planHistory(target: string | undefined, from: string | undefined) {
   const bundled = target
     ? releases.find((r) => sameVersion(r.version, target))
@@ -321,7 +319,6 @@ function ExternalLink({ href, children }: { href: string; children: string }) {
 
 type Feature = Release["features"][number];
 
-/** The artwork drawn for the app's current theme, light when a release ships only one. */
 function useFeatureImage(): (version: string, feature: Feature) => string {
   const dark = useTheme().resolved === "dark";
   return (version, feature) =>
@@ -337,7 +334,6 @@ const CHANGE_SECTIONS = [
   { key: "fixed", label: "updateNotes.fixed" },
 ] as const;
 
-/** The release's change rows in New, Improved, Fixed order. */
 function changeRows(entry: Release): [string, string][] {
   return CHANGE_SECTIONS.flatMap(({ key }) => entry.changes[key] ?? []);
 }
@@ -500,7 +496,6 @@ function ReleaseBody({ entry }: { entry: Release }) {
   );
 }
 
-/** Every release since the installed one, as one compact list: the catch-up view. */
 function CatchUp({
   current,
   list,

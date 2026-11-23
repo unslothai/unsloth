@@ -60,7 +60,6 @@ for (const [name, source] of CARDS) {
       !/\bmin-h-0\b/.test(stacked),
       "min-h-0 lets the rail squeeze the card to nothing",
     );
-    // Neither card hosts release notes any more (What's new opens a dialog), so neither names a floor.
     if (name === "web") {
       const surface = classes(source, "relative flex max-h-[");
       for (const zeroesTheFloor of ["min-h-0", "overflow-hidden"]) {

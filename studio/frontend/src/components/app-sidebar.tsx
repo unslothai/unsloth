@@ -1377,7 +1377,6 @@ export function AppSidebar() {
   const imagesPageMode = useImageWorkflowStore((s) => s.pageMode);
 
   const { status: webUpdate } = useWebUpdateCheck();
-  // The top-right pill already carries this offer wherever it is on screen.
   const pillCarriesOffer = useUpdateOffer((s) => s.offer != null);
   const pillHosted = usePillHosted();
   const showUpdateCard = Boolean(webUpdate) && !(pillCarriesOffer && pillHosted);

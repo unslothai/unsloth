@@ -615,7 +615,6 @@ export function WindowTitlebar({
           style={{ right: "calc(var(--studio-window-control-inset,138px) + 6px)" }}
           data-wallpaper-chrome-controls=""
         >
-          {/* On every route, so the chat header does not repeat it. */}
           <UpdatePill slot="titlebar" className="h-[26px] text-ui-12" />
         </div>
         <div

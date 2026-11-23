@@ -24,13 +24,11 @@ function storage(): Storage | null {
   }
 }
 
-/** Called when the user starts an update, so the next launch can tell if it applied. */
 export function rememberUpdateTarget(version: string): void {
-  // Best effort: a full or read-only store must not block the update itself.
+  // A full or read-only store must not block the update.
   try {
     storage()?.setItem(TARGET_KEY, version);
   } catch {
-    // The post-update notice is skipped for this update.
   }
 }
 
@@ -41,7 +39,7 @@ function appVersion(): Promise<string | null> {
   if (typeof e2e === "string") {
     return Promise.resolve(e2e);
   }
-  // Web installs report PyPI versions, which the bundled release tags cannot be matched to.
+  // Web installs report PyPI versions, which no bundled tag matches.
   return isTauri ? loadDesktopAppVersion() : Promise.resolve(null);
 }
 
@@ -50,7 +48,6 @@ type Outcome =
   | { kind: "not-applied" }
   | { kind: "updated"; since: string };
 
-/** Reads and advances the stored versions for this launch. */
 function settle(store: Storage, version: string): Outcome {
   const seen = store.getItem(SEEN_KEY);
   const target = store.getItem(TARGET_KEY);
@@ -65,7 +62,6 @@ function settle(store: Storage, version: string): Outcome {
   return { kind: "none" };
 }
 
-/** After an update: "Updated to x" with a link to the catch-up, or a note that it did not apply. */
 export function UpdatedNotice() {
   const t = useT();
   useEffect(() => {
