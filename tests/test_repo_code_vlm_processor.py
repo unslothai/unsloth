@@ -108,6 +108,7 @@ def _select(
         "trust_remote_code": True,
         "kwargs": {},
         "_tokenizer_revision": "abc123",
+        "_resolved_revision": lambda name, revision, *args, **kwargs: revision,
         "model_type_arch": "remote_vlm",
         "get_auto_processor": lambda *a, **k: None,
         "_construct_vlm_processor_fallback": lambda *a, **k: (None, None),

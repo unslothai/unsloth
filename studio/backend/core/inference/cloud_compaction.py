@@ -27,8 +27,7 @@ TAIL_TOKENS = 15_000
 TAIL_BUDGET_SHARE = 0.3
 SUMMARY_MAX_TOKENS = 4_096
 SUMMARY_MIN_TOKENS = 1_024
-# A slow but streaming provider (a local server, a large backlog) is waited for; one that goes
-# silent is not. The total cap only bounds a stream that never ends.
+# Slow streaming is waited for; a silent one is not; the total cap only bounds endless streams.
 SUMMARY_IDLE_TIMEOUT_S = 120.0
 SUMMARY_TIMEOUT_S = 600.0
 SUMMARY_MAX_CALLS = 8

@@ -47,9 +47,36 @@ def test_fold_gate_needs_a_resident_denoiser(
 ):
     from core.inference import diffusion_lora_fuse as lora_fuse
 
+    monkeypatch.setenv(lora_fuse.LORA_FUSE_ENV, "1")
     monkeypatch.setattr(lora_fuse, "_on_card", lambda module: on_card)
     denoiser = _hooked(torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4)), hook)
     assert lora_fuse.denoisers_resident(policy, memory_mode, [denoiser]) is expected
+
+
+@pytest.mark.parametrize(
+    "env, group_expected",
+    [
+        (None, False),
+        ("", False),
+        ("auto", False),
+        ("0", False),
+        ("1", True),
+        ("on", True),
+        ("true", True),
+    ],
+)
+def test_group_fold_is_opt_in(monkeypatch, env, group_expected):
+    """Unset keeps group offload unfused (PEFT's branch is closer to fp32); no offload folds as before."""
+    from core.inference import diffusion_lora_fuse as lora_fuse
+
+    if env is None:
+        monkeypatch.delenv(lora_fuse.LORA_FUSE_ENV, raising = False)
+    else:
+        monkeypatch.setenv(lora_fuse.LORA_FUSE_ENV, env)
+    monkeypatch.setattr(lora_fuse, "_on_card", lambda module: True)
+    denoiser = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    assert lora_fuse.denoisers_resident("group", "auto", [denoiser]) is group_expected
+    assert lora_fuse.denoisers_resident("none", "auto", [denoiser]) is True
 
 
 def test_on_card_refuses_host_and_meta():

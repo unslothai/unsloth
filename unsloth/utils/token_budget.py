@@ -374,9 +374,8 @@ def _supervised_count(
     assistant_mask,
     seq_lengths = None,
 ):
-    # Positions the shifted loss reads (1..n) that survive every mask the collator applies; in a packed row the first
-    # token of each later document is masked too (packing._mask_padding_free_boundary_labels).
-    # A dataset under set_format("torch") / ("numpy") hands back arrays: compare plain lists instead.
+    # Shifted-loss positions surviving the collator masks; packed rows mask each later document's
+    # first token (packing._mask_padding_free_boundary_labels); set_format arrays need tolist().
     labels, completion_mask, assistant_mask, seq_lengths = (
         value.tolist() if hasattr(value, "tolist") else value
         for value in (labels, completion_mask, assistant_mask, seq_lengths)

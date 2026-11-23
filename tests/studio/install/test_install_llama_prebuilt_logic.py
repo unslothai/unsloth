@@ -7441,8 +7441,7 @@ def test_a_release_with_a_standalone_visual_server_keeps_its_retry_path(tmp_path
 def test_a_second_update_on_a_bundle_without_the_visual_server_downloads_nothing(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The first install records the absence after activation, so the second update takes
-    the already-matches skip instead of re-extracting the same bundle."""
+    """First install records the absence, so the second update takes the already-matches skip."""
     M = INSTALL_LLAMA_PREBUILT
     host = macos_host()
     choice = _published_mac_choice()

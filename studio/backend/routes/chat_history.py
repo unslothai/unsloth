@@ -2155,6 +2155,7 @@ def save_thread_message(
 def replace_thread_messages(
     thread_id: str,
     payload: ChatMessageSyncRequest,
+    echo_messages: Annotated[bool, Query(alias = "echoMessages")] = True,
     current_subject: str = Depends(get_current_subject),
     response: Response = None,
 ):
@@ -2176,6 +2177,7 @@ def replace_thread_messages(
                 messages,
                 prune_missing = payload.pruneMissing,
                 deleted_message_ids = payload.deletedMessageIds,
+                return_rows = echo_messages,
             )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
@@ -2192,7 +2194,7 @@ def replace_thread_messages(
         ) from exc
     chat_originals.sweep()
     _set_revision_header(response, probe)
-    return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced])
+    return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced or ()])
 
 
 @router.get("/count", response_model = ChatCountResponse)

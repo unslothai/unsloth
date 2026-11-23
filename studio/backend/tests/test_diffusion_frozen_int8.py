@@ -250,3 +250,98 @@ def test_conversion_keeps_the_fp32_island_on_an_untargeted_layer():
     assert y.dtype == torch.float32 and yq.dtype == torch.bfloat16
     y.sum().backward()
     assert x64.grad is not None and torch.isfinite(x64.grad).all()
+
+
+@pytest.mark.parametrize("fp16, refused", [(True, False), (False, True)])
+def test_preflight_needs_torchao_for_int8_only_where_the_trainer_does(monkeypatch, fp16, refused):
+    """The fp16 path's W8A8 base runs torch._int_mm and raises instead of falling back to torchao, so a missing
+    torchao must not refuse it; the bf16 path keeps torchao weight-only int8 as its fallback and still needs it."""
+    import core.training.diffusion_train_common as tc
+
+    monkeypatch.setattr(tc, "bf16_unsupported_reason", lambda fam: None)
+    monkeypatch.setattr(tc, "dit_accelerator_missing_reason", lambda fam: None)
+    monkeypatch.setattr(tc, "dit_fp16_fallback", lambda fam: fp16)
+    monkeypatch.setattr(tc, "has_functional_torchao", lambda: False)
+    monkeypatch.setattr(tc, "torch_is_rocm", lambda: False)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "w8a8")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (7, 5))
+    reason = tc.training_precision_preflight_error("flux.2-klein", "int8")
+    assert ("torchao" in (reason or "")) is refused
+    if not refused:
+        assert reason is None
+
+
+def test_a_partial_w8a8_conversion_does_not_fall_back_to_a_mixed_base(monkeypatch):
+    """A device move that fails after some layers converted must not hand the half-W8A8 base to the torchao
+    weight-only fallback (the trainer would compile, cache and record it as weight-only int8)."""
+
+    class _B(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.to_q = nn.Linear(32, 32, bias = False)
+            self.to_k = nn.Linear(32, 32, bias = False)
+            self.to(torch.bfloat16).requires_grad_(False)
+
+    model = nn.Module()
+    model.blocks = nn.ModuleList([_B()])
+    moves = []
+    real_to = nn.Module.to
+
+    def to(self, *a, **k):
+        if type(self) is nn.Linear:
+            moves.append(1)
+            if len(moves) == 2:
+                raise torch.OutOfMemoryError("injected OOM on the second move")
+        return real_to(self, *a, **k)
+
+    monkeypatch.setattr(nn.Module, "to", to)
+    events = []
+    with pytest.raises(ValueError, match = "partway|part of the base"):
+        dit._apply_int8_w8a8(model, events.append, None, device = "meta")
+    kinds = {type(m) for m in model.blocks[0].children()}
+    assert kinds == {
+        fi8.FrozenInt8Linear,
+        nn.Linear,
+    }  # the mixed state the fallback would have trained
+
+
+def test_a_w8a8_failure_before_any_layer_still_falls_back(monkeypatch):
+    model = nn.Module()
+    model.lin = nn.Linear(32, 32, bias = False).to(torch.bfloat16).requires_grad_(False)
+
+    def boom(*a, **k):
+        raise RuntimeError("no int8 GEMM")
+
+    monkeypatch.setattr(fi8, "convert_frozen_int8", boom)
+    events = []
+    assert dit._apply_int8_w8a8(model, events.append, None, device = "meta") is False
+    assert "weight-only" in events[-1]["message"]
+
+
+def test_a_resume_cannot_switch_between_w8a8_and_weight_only_int8():
+    """Both int8 bases record base_precision_effective='int8'; flipping UNSLOTH_DIFFUSION_INT8_TRAIN across a resume
+    would continue the adapter and optimizer on different base math. Older bundles (no record) stay resumable."""
+    import dataclasses
+
+    from core.training import diffusion_checkpoint as ck
+
+    base = ck.CheckpointIdentity(
+        family = "flux.2-klein",
+        base_model = "m",
+        lora_target_modules = ("to_q",),
+        lora_rank = 4,
+        lora_alpha = 4,
+        precision = "bf16",
+        base_precision = "int8",
+        resolution = 512,
+        base_precision_effective = "int8",
+    )
+    record = getattr(ck, "with_int8_kernel", None)
+    assert record is not None
+    w8a8 = ck.CheckpointIdentity.from_dict(record(base, True).as_dict())
+    weight_only = record(base, False)
+    assert "int8 base kernel" in (w8a8.mismatch_reason(weight_only) or "")
+    assert weight_only.mismatch_reason(record(base, False)) is None
+    legacy = dataclasses.replace(base, base_int8_kernel = None)
+    assert legacy.mismatch_reason(w8a8) is None and legacy.mismatch_reason(weight_only) is None

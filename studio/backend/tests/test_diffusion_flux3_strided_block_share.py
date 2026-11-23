@@ -125,9 +125,8 @@ def test_gate_accepts_the_strided_processor(env):
 @pytest.mark.parametrize("kind", ["mode", "single"])
 @pytest.mark.parametrize("compiled", [False, True])
 def test_strided_block_shares_one_quant_and_matches(env, kind, route, compiled):
-    """One quant of the block input for Q / K / V and the MLP input (before: Q / K / V, then the MLP input alone),
-    attention through the strided processor's own method (the INT8 kernel on the INT8 route), output bit for bit the
-    unpatched block's."""
+    """One quant of the block input serves Q, K, V and the MLP input; attention runs through the
+    strided processor's own method, and output matches the unpatched block bit for bit."""
     calls = env
     cls, call = _case(kind)
     block = _block(cls, route)

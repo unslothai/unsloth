@@ -856,9 +856,7 @@ COMPOSER_SEARCH_SECTIONS = (
 
 
 def run_composer_search(page) -> None:
-    """The controls moved out of Appearance must be reachable through search in the Chat tab section
-    that now holds them (chat-tab.tsx): width, position and outline in Customization, sent-message
-    attachments in Chat defaults."""
+    """Composer controls moved from Appearance must stay searchable in the Chat tab (chat-tab.tsx)."""
     results = []
     for key, section_key in COMPOSER_SEARCH_SECTIONS:
         label = en_string(key)

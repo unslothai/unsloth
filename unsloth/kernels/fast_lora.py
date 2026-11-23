@@ -525,6 +525,9 @@ def _mlp_output_unobserved(layer, mlp):
         return False
     if "_hf_hook" in slots or "_old_forward" in slots or hasattr(mlp, "_unsloth_forward"):
         return False
+    if type(mlp).__call__ is not torch.nn.Module.__call__:
+        # An overridden __call__ wraps forward and can read or transform mlp(x) outside it.
+        return False
     forward = slots.get("forward")
     if getattr(forward, "__self__", None) is not mlp:
         return False
@@ -563,12 +566,40 @@ def block_skip_down_eligible(layer, layer_forward):
     """True when a compiled replay of `layer` may skip its down projection: the layer runs a tagged forward
     whose MLP output only feeds `residual + mlp(x)` and nothing outside the layer can observe mlp(x)
     (_mlp_output_unobserved). The caller still checks that the checkpoint replays exactly this layer
-    (_replay_module). LoRA dropout / bias take LoRA_MLP's other branch, which always runs the projection."""
+    (_replay_module). LoRA dropout / bias take LoRA_MLP's other branch, which always runs the projection, so
+    they are not eligible: the block would count a skip that never happened and compile a replay graph for it."""
     if not (_SKIP_DOWN_ENABLED and TRACE_LORA_FUNCTIONS):
         return False
     if not getattr(layer_forward, "_unsloth_mlp_output_unread", False):
         return False
-    return _mlp_output_unobserved(layer, getattr(layer, "mlp", None))
+    mlp = getattr(layer, "mlp", None)
+    if not _mlp_output_unobserved(layer, mlp):
+        return False
+    return all(
+        _no_lora_dropout_or_bias(getattr(mlp, name, None))
+        for name in ("gate_proj", "up_proj", "down_proj")
+    )
+
+
+def _no_lora_dropout_or_bias(proj):
+    """False when the active adapter of `proj` has a dropout module or a lora_B bias, which send LoRA_MLP down
+    the branch that always runs the down projection (_lora_dropout_and_bias)."""
+    if proj is None:
+        return False
+    if _is_plain_lora(proj):
+        return True
+    adapter = _active_lora_adapter(proj)
+    if adapter is None:  # disabled, merged or no adapter: the base matmul alone
+        return True
+    dropout = getattr(proj, "lora_dropout", None)
+    if (
+        dropout is not None
+        and adapter in dropout
+        and type(dropout[adapter]) is not torch.nn.Identity
+    ):
+        return False
+    lora_B = getattr(proj, "lora_B", None)
+    return not (lora_B is not None and adapter in lora_B and lora_B[adapter].bias is not None)
 
 
 def _take_skip_down(mlp):

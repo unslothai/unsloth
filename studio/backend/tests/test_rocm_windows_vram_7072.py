@@ -1903,8 +1903,7 @@ def test_a_linked_adapters_hidden_nodes_are_not_this_devices_engines(win_rocm, m
 
 
 def test_a_known_luid_reads_in_process_not_through_powershell(win_rocm, monkeypatch):
-    """#18005: a standard user's Get-Counter overran its timeout; the LUID match here still decides,
-    which the longer-LUID and high-half tests cover."""
+    """Ref 18005: a standard user's Get-Counter overran its timeout; the LUID match here still decides."""
     _solo_host(monkeypatch, (0x15369, 0))
 
     _, query = _engine_query(monkeypatch, SOLO_ADAPTERS, FOREIGN_ENGINES)

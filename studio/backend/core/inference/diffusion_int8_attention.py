@@ -289,6 +289,10 @@ def kernel_variant(config: dict, sinks: bool) -> dict:
     return chosen
 
 
+# Read when a plan picks its kernels; keyed raw by _plan_key (a spelling change only rebuilds the plan).
+_KERNEL_SWITCHES = (RESID_FOLD_ENV, SINK_ORDER_ENV, NATIVE_P_ENV)
+
+
 def resid_fold_enabled() -> bool:
     """Whether the sink-path attention kernel adds the clipped keys back itself (``RESID_FOLD_ENV``)."""
     return (os.environ.get(RESID_FOLD_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
@@ -643,11 +647,10 @@ def _raw_stream(index: int) -> int:
 _PLAN_LIMIT = 512
 RESID_THREADS = 256  # NTR of the quantiser source
 RESID_BLOCKS = 128
-# A plan's calls before SINK_DECIDE_AT record whether a head clipped V (attention sink); it decides at SINK_DECIDE_AT
-# (the bucket's verdict of this load, else a race). Undecided, a plan runs the sink path, which a graph records. A
-# verdict other than the sink path is taken only where no call whose output was used (not a thrown-away graph
-# warm-up) clipped on the sink path: else the plan keeps it for the load, so the first render repeats. The verdict
-# stays the bucket's for the load; the next load races again.
+# Calls before SINK_DECIDE_AT record whether a head clipped V; the plan decides there (bucket
+# verdict or race) and runs the sink path (graphs record it); a non-sink verdict needs no used
+# (non-warm-up) clipping call, else the sink path is kept; the verdict lasts this load, then races
+# again.
 SINK_LEARN_CALLS = 32
 SINK_DECIDE_AT = 48
 # A race verdict is shared per shape, DECIDE_BUCKET token bucket and sinks flag (never across sinks / no sinks).
@@ -814,7 +817,13 @@ def _plan_key(
         scale,
         (K_MEAN_STEP, K_MEAN_KEYS, V_RANGE_STEP, V_RANGE_CHUNKS, GRID_LIMIT),
         int(mode),
+        # kernel switches: a plan built before one flips must not keep serving the old kernel
+        _kernel_switches(),
     )
+
+
+def _kernel_switches() -> tuple:
+    return tuple(os.environ.get(name) for name in _KERNEL_SWITCHES)
 
 
 def _plan(
@@ -845,6 +854,8 @@ def _plan(
         q.shape[1] // DECIDE_BUCKET,
         k.shape[1] // DECIDE_BUCKET,
         int(mode),
+        # the race verdict is the kernel's: a flipped switch must not inherit the old kernel's verdict
+        _kernel_switches(),
     )
     B, Sq, H, D = q.shape
     Sk = k.shape[1]

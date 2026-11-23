@@ -134,9 +134,8 @@ def hardware_plan(
     devices: Any = "probe",
     working_set: Any = "probe",
 ) -> dict[str, Any]:
-    """{weights: "bf16" | "q8_0" | None, refusal: str | None, vram_gib}. ``devices`` is
-    utils.hardware.nvidia.get_cuda_device_info()'s answer: [] no CUDA device, None unknown (not refused).
-    On a Mac, ``working_set`` is Metal's recommended working set in bytes, None without Apple Silicon."""
+    """Returns {weights: bf16 | q8_0 | None, refusal, vram_gib}; devices from get_cuda_device_info()
+    ([] no CUDA; None unknown, not refused); working_set is Metal's bytes, else None."""
     platform = sys.platform if platform is None else platform
     if platform == "darwin":
         if working_set == "probe":

@@ -2816,8 +2816,7 @@ def test_a_frontend_bounded_replay_keeps_the_loop_cut():
 
 
 def test_a_parallel_batch_past_the_cap_replays_what_the_loop_admitted():
-    """The live loop admits at most the cap per parallel batch; the replay count must too, or a
-    follow-up steps from a count the loop never held."""
+    """Replay must cap each parallel batch like the live loop, or a follow-up steps from an unheld count."""
     results = [[_distinct_image(3 * r + i) for i in range(3)] for r in range(3)]
     call = {
         "role": "assistant",
@@ -2846,8 +2845,7 @@ def test_a_parallel_batch_past_the_cap_replays_what_the_loop_admitted():
 
 
 def test_a_full_history_replay_keeps_the_tail_of_a_partly_trimmed_result():
-    """Results of 1, 4 and 8 pictures keep the middle result's last picture live; the replay must
-    keep that one, not its first."""
+    """A trimmed middle result keeps its last picture live, so the replay keeps that one, not its first."""
     history = [{"role": "user", "content": "go"}]
     conversation = [{"role": "user", "content": "go"}]
     owned: list = []
