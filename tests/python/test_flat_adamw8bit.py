@@ -79,29 +79,37 @@ def _same(pa, pb, oa, ob):
             assert torch.equal(sa[key], sb[key]), key
 
 
+def _fused(opt):
+    return opt.__dict__.get("_unsloth_flat_fused_steps", 0)
+
+
 def _engaged(opt):
+    return _fused(opt) > 0
+
+
+def _multi_chunks(opt):
     plans = opt.__dict__.get("_unsloth_flat_plans", {})
-    return bool(plans) and all(p is not None and p["flat"] is not None for p in plans.values())
+    return any(e - s > 1 for plan in plans.values() for s, e in plan["segments"])
 
 
-@pytest.mark.parametrize("cls_name", ["AdamW", "AdamW8bit", "Adam8bit"])
-@pytest.mark.parametrize("chunk", [None, "4096"])
+@pytest.mark.parametrize("cls_name", ["Adam", "AdamW", "AdamW8bit", "Adam8bit"])
+@pytest.mark.parametrize("chunk", [None, "4096", "65536"])
 def test_bitwise_equal_to_stock(monkeypatch, cls_name, chunk):
     if chunk is not None:
         monkeypatch.setenv("UNSLOTH_FLAT_ADAMW8BIT_CHUNK", chunk)
     cls = getattr(bnb.optim, cls_name)
-    kw = {} if cls_name.endswith("8bit") else {}
     pa, pb = _params(_SHAPES), _params(_SHAPES)
     if cls_name.endswith("8bit"):
-        oa = cls([{"params": pa[:9], "weight_decay": 0.01}, {"params": pa[9:]}], lr = 2e-4, **kw)
-        ob = cls([{"params": pb[:9], "weight_decay": 0.01}, {"params": pb[9:]}], lr = 2e-4, **kw)
+        oa = cls([{"params": pa[:9], "weight_decay": 0.01}, {"params": pa[9:]}], lr = 2e-4)
+        ob = cls([{"params": pb[:9], "weight_decay": 0.01}, {"params": pb[9:]}], lr = 2e-4)
     else:
         oa, ob = _make(pa, cls), _make(pb, cls)
     assert flat.install_flat_adamw8bit(ob) is ob
     assert type(ob).__name__ == cls.__name__ and "bitsandbytes" in str(type(ob))
     _run(oa, pa, 6)
     _run(ob, pb, 6)
-    assert _engaged(ob)
+    assert _fused(ob) == 6
+    assert _multi_chunks(ob) == (chunk != "4096")  # 4096: every LoRA tensor is its own chunk
     _same(pa, pb, oa, ob)
 
 
@@ -116,12 +124,14 @@ def test_fallbacks_match_stock(monkeypatch):
     assert not _engaged(ob)
     _same(pa, pb, oa, ob)
 
-    # A missing gradient on one step runs that step stock, the rest fused.
+    # A missing gradient runs that step stock; the skipped tensor's step counter then lags, so
+    # every later step stays stock too.
     pa, pb = _params(_SHAPES), _params(_SHAPES)
     oa, ob = _make(pa), _make(pb)
     flat.install_flat_adamw8bit(ob)
     _run(oa, pa, 5, none_at = 2)
     _run(ob, pb, 5, none_at = 2)
+    assert _fused(ob) == 2
     _same(pa, pb, oa, ob)
 
     # A per-parameter override (Trainer's 32-bit embedding state) runs stock.
@@ -217,3 +227,26 @@ def test_step_hooks_fire_once_and_closure():
     assert opt.step(closure = lambda: torch.tensor(3.0)).item() == 3.0
     assert calls == ["pre", "post"]
     assert _engaged(opt)
+
+
+def test_side_stream_runs_stock():
+    # bitsandbytes launches on the legacy default stream: off it the fused gather / copy-back would
+    # race the update, so every step taken under a side stream is the stock one.
+    pa, pb = _params(_SHAPES), _params(_SHAPES)
+    oa, ob = _make(pa), _make(pb)
+    flat.install_flat_adamw8bit(ob)
+    side = torch.cuda.Stream()
+    for opt, params in ((oa, pa), (ob, pb)):
+        for s in range(4):
+            _grads(params, s)
+            torch.cuda.synchronize()
+            if s % 2:
+                with torch.cuda.stream(side):
+                    opt.step()
+                side.synchronize()
+            else:
+                opt.step()
+            opt.zero_grad(set_to_none = True)
+    torch.cuda.synchronize()
+    assert _fused(ob) == 2
+    _same(pa, pb, oa, ob)

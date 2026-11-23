@@ -6920,7 +6920,10 @@ def patch_gradient_accumulation_fix(Trainer):
             from ._ddp_defaults import install_unsloth_ddp_comm_defaults
 
             install_unsloth_ddp_comm_defaults(self)
-            if os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0") != "0":
+            # Same parse as state_offload.optimizer_state_offload_enabled (not imported here: the
+            # optimizers package pulls in unsloth_zoo).
+            offload = os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0")
+            if offload.strip().lower() in ("1", "true", "yes", "on"):
                 from ..optimizers.state_offload import install_optimizer_state_offload
                 install_optimizer_state_offload(self)
             else:

@@ -1091,6 +1091,10 @@ def _park_optimizer_to_host(trainer):
                 grads.append((param, park(grad, (id(param), ".grad"))))
     if not states and not grads:
         return None
+    # The fused 8-bit AdamW (flat_adamw8bit) runs stock once state is parked between steps: drop its
+    # packed chunk buffers with the state.
+    optimizer.__dict__.pop("_unsloth_flat_plans", None)
+    optimizer.__dict__["_unsloth_flat_disabled"] = "rollout parking"
     for state, name, host in states:
         state[name] = host
     for param, _ in grads:
