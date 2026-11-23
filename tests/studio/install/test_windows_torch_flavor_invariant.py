@@ -304,8 +304,8 @@ class TestStepTotals:
             ({"IS_MACOS": True, "IS_MAC_ARM": True}, 18),  # Apple Silicon
             (
                 {"IS_MACOS": True, "IS_MAC_ARM": True, "NO_TORCH": True},
-                17,
-            ),  # Apple Silicon, GGUF-only
+                19,
+            ),  # Apple Silicon, GGUF-only: the MLX slots plus the no-torch runtime step
             ({"IS_MACOS": True}, 15),  # Intel Mac
         ],
     )

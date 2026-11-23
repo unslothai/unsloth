@@ -85,8 +85,14 @@ def patched_sft(_cpu_only_torch):
 
 @pytest.fixture(scope = "module")
 def trl_has_guard(patched_sft):
+    # Whether Unsloth generates the padding-free cap block: TRL 1.0 - 1.17 refuse padding-free with max_length set;
+    # TRL >= 1.18 dropped the refusal, but Zoo's prep still leaves pre-tokenized rows for Unsloth to cap.
+    import trl
+    from packaging.version import Version
     from trl.trainer import sft_trainer
-    return "`max_length` is not enforced" in inspect.getsource(sft_trainer)
+
+    source = inspect.getsource(sft_trainer)
+    return "`max_length` is not enforced" in source or Version(trl.__version__) >= Version("1.18.0")
 
 
 def _load_plain(model_max_seq_length = _MODEL_MAX_SEQ_LENGTH):

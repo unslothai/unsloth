@@ -3,8 +3,8 @@
 
 """Attention backend: auto picks cuDNN on NVIDIA with a speed profile (Blackwell stays native if
 torch picks cuDNN, unless UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN=0); native, cudnn,
-flash/flash3/flash4, sage, xformers, aiter; unavailable falls back to native; torch/diffusers
-lazy."""
+flash/flash3/flash4, sage, xformers, aiter; unavailable falls back to native (aiter on ROCm without diffusers' local
+backend: the auto pick); torch/diffusers lazy."""
 
 from __future__ import annotations
 
@@ -725,6 +725,8 @@ def select_attention_backend(
     if alias == "unsloth_int8":
         alias = ATTN_AUTO
         speed_active = True
+    if alias == "aiter" and _is_cuda_rocm(target) and not _diffusers_aiter_usable():
+        alias = ATTN_AUTO
     if alias != ATTN_AUTO:
         backend = _ALIASES[alias]
         if backend == "native":
@@ -751,6 +753,22 @@ def select_attention_backend(
     if (speed_active or speed_unset) and _rocm_auto_flash(target, family):
         return ROCM_FLASH_CANDIDATE
     return None
+
+
+def _diffusers_aiter_usable() -> bool:
+    """Local diffusers ``aiter`` backend present and importable (0.41+ has only the unfetched hub kernel)."""
+    try:
+        from diffusers.models import attention_dispatch as dispatch
+        names = {getattr(m, "value", None) for m in getattr(dispatch, "AttentionBackendName", ())}
+        return "aiter" in names and bool(getattr(dispatch, "_CAN_USE_AITER_ATTN", False))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_AITER_MISSING_REASON = (
+    "this diffusers build has no usable local AITER backend (0.41+ ships only the hub-downloaded aiter_fa2_hub, "
+    "which Studio does not fetch), so Studio's automatic pick runs"
+)
 
 
 def auto_attention_reason(engaged: Optional[str]) -> str:
@@ -945,7 +963,7 @@ def explicit_attention_decline(target: Any, requested: Any) -> Optional[tuple[st
     label = _backend_label(backend)
     if backend == "aiter":
         if getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target):
-            return None
+            return None if _diffusers_aiter_usable() else (_AITER_MISSING_REASON, _STATUS_FELL_BACK)
         return (
             f"AITER is the ROCm attention kernel and this load runs on {_platform_name(target)}",
             (_STATUS_UNSUPPORTED),
@@ -2256,7 +2274,7 @@ _ROCM_FLASH_MISSING_LOGGED: list[bool] = []
 _ROCM_FLASH_HINT = (
     "the PyPI flash-attn wheel is the NVIDIA CUDA build; on ROCm install the DAO-AILab flash-attention ROCm build "
     "(github.com/Dao-AILab/flash-attention, CK backend, or FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE for Triton) "
-    "or use attention_backend=aiter"
+    "or leave attention_backend on auto"
 )
 
 
@@ -4122,6 +4140,9 @@ def _apply_attention_backend_impl(
         except Exception as exc:
             _warn(logger, "ROCm fused SDPA check", exc)
         install_rocm_contiguous_kv(target)
+        if _target_device(target).split(":")[0] == "mps":
+            from core._mps_sdpa_guard import install_mps_large_attention_guard
+            install_mps_large_attention_guard(logger)
     setters = [
         s
         for s in (getattr(t, "set_attention_backend", None) for t in _attention_dits(pipe))

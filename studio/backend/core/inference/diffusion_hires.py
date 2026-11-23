@@ -630,6 +630,8 @@ def run_hires(
                     "source_driven": False,
                     "condition_pixels": 0,
                     "controlnet": False,
+                    # the refine pass carries no reference images, so no reference K/V cache
+                    "persistent_mib": 0,
                 }
             )
         except ImageActivationShortfallError as exc:

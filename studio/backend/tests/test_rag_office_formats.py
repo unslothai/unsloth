@@ -976,6 +976,44 @@ def test_mhtml_reads_the_page_and_skips_resources(tmp_path):
     assert "PNG" not in text
 
 
+def test_mhtml_saved_by_chrome_keeps_non_ascii_text(tmp_path):
+    path = tmp_path / "page.mhtml"
+    path.write_bytes(
+        b"From: <Saved by Blink>\r\n"
+        b"Subject: Cafe\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/related;\r\n\ttype="text/html";\r\n\tboundary="----MultipartBoundary--x----"\r\n'
+        b"\r\n------MultipartBoundary--x----\r\n"
+        b"Content-Type: text/html\r\n"
+        b"Content-ID: <frame-1@mhtml.blink>\r\n"
+        b"Content-Transfer-Encoding: quoted-printable\r\n\r\n"
+        b"<html><body><p>Caf=C3=A9 =E6=9D=B1=E4=BA=AC =E2=80=9Cquoted=E2=80=9D</p></body></html>\r\n"
+        b"------MultipartBoundary--x------\r\n"
+    )
+    assert "Café 東京 “quoted”" in _text(path)
+
+
+@pytest.mark.parametrize(
+    "content_type, body, expected",
+    [
+        (b"text/plain", "Café 東京".encode(), "Café 東京"),
+        (b"text/plain", "Café résumé naïve".encode("cp1252"), "Café résumé naïve"),
+        (b"text/plain; charset=x-bogus", "Café 東京".encode(), "Café 東京"),
+        (b"text/html; charset=x-bogus", "<p>Café 東京</p>".encode(), "Café 東京"),
+    ],
+)
+def test_eml_without_a_usable_charset_sniffs_the_bytes(tmp_path, content_type, body, expected):
+    path = tmp_path / "mail.eml"
+    path.write_bytes(
+        b"Subject: Hi\r\nMIME-Version: 1.0\r\nContent-Type: "
+        + content_type
+        + b"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+        + body
+        + b"\r\n"
+    )
+    assert expected in _text(path)
+
+
 def test_xhtml_reads_visible_text(tmp_path):
     text = _text(build_xhtml(tmp_path / "page.xhtml"))
     assert "Zebramarker résumé" in text and "p{}" not in text

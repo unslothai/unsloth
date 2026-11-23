@@ -1010,6 +1010,8 @@ def _gdn_chunk_adapter(original):
         if (
             _GDN_OP[0]
             and torch.compiler.is_compiling()
+            # A prefix-trie row (TRL AsyncGRPO) scans along each sample's path, not the packed order.
+            and "tree_segment_parents" not in kwargs
             and kwargs.get("use_qk_l2norm_in_kernel") is True
             # Only the self-checked default; packed batches only if their self-check passed.
             and (cu_seqlens is None or (_GDN_VARLEN[0] and q.shape[0] == 1))
@@ -1122,6 +1124,7 @@ def _causal_conv1d_adapter(original, depthwise_conv):
             and weight.dim() == 2
             and activation in (None, "silu", "swish")
             and all(kwargs.get(key) is None for key in ("seq_idx", "cu_seqlens", "initial_states"))
+            and "tree_segment_parents" not in kwargs
             and not kwargs.get("return_final_states")
         ):
             out = depthwise_conv(hidden_states.to(weight.dtype), weight)
@@ -2049,19 +2052,15 @@ def _wrap(
         kwargs,
         mode,
         skip_down = False,
+        trial = False,
     ):
         kwargs, shared = _shared_kv_scratch(self, kwargs)
         if skip_down:
-            # A guarded global the traced LoRA_MLP reads: the replay graph drops the down projection.
-            previous = _fast_lora().set_block_skip_down(True)
-            try:
-                out = _run(self, hidden_states, args, kwargs, mode)
-            finally:
-                _fast_lora().set_block_skip_down(previous)
-            if _IN_TRIAL[0] is not True:
-                _fast_lora().MLP_DOWN_SKIP_STATS["skipped"] += 1
-        else:
-            out = _run(self, hidden_states, args, kwargs, mode)
+            # Call scoped: only this call's tagged layer forward and fused MLP see it (no global, no thread).
+            kwargs = {**kwargs, "_unsloth_skip_down": True}
+        out = _run(self, hidden_states, args, kwargs, mode)
+        if skip_down and not trial:
+            _fast_lora().MLP_DOWN_SKIP_STATS["skipped"] += 1
         if shared is not None:
             shared[0].update(shared[1])
         return out
@@ -2152,6 +2151,8 @@ def _wrap(
 
     @functools.wraps(original)
     def forward(self, hidden_states, *args, **kwargs):
+        # Set only on the grad-mode trial call below: it compiles the skip graph the replay will use.
+        trial = kwargs.pop("_unsloth_skip_trial", False)
         tracing = torch.compiler.is_compiling()
         mode = self.__dict__.get("_unsloth_block_mode")
         if mode is None:
@@ -2220,7 +2221,7 @@ def _wrap(
         # checkpointed forward) of an eligible layer trials the graph its replay will use.
         skip_down = _skip_down_eligible(self, original)
         if torch.is_grad_enabled():
-            skip_down = skip_down and (_IN_TRIAL[0] is True or _replays(self))
+            skip_down = skip_down and (trial or _replays(self))
             bit = 4 if skip_down else 2
         else:
             bit = 1
@@ -2246,7 +2247,13 @@ def _wrap(
             ):
                 _IN_TRIAL[0] = "nonreentrant" if nonreentrant else True
                 try:
-                    forward(self, hidden_states.detach().requires_grad_(), *args, **kwargs)
+                    forward(
+                        self,
+                        hidden_states.detach().requires_grad_(),
+                        *args,
+                        _unsloth_skip_trial = not nonreentrant,
+                        **kwargs,
+                    )
                 finally:
                     _IN_TRIAL[0] = False
             mode = self.__dict__["_unsloth_block_mode"]
@@ -2255,11 +2262,11 @@ def _wrap(
             checked = self.__dict__.get("_unsloth_block_checked", 0)
         skip_down = bit == 4
         if checked & bit:
-            return run(self, hidden_states, args, kwargs, mode, skip_down)
+            return run(self, hidden_states, args, kwargs, mode, skip_down, trial)
         while True:
             try:
                 with _strict_dynamo():
-                    out = run(self, hidden_states, args, kwargs, mode, skip_down)
+                    out = run(self, hidden_states, args, kwargs, mode, skip_down, trial)
                 self.__dict__["_unsloth_block_checked"] = checked | bit
                 return out
             except torch.OutOfMemoryError:
@@ -2544,6 +2551,21 @@ def _install_router_capture_hooks(model):
     return installed
 
 
+def _rebind_hooked_instances(model, cls, before):
+    """accelerate's device-map hooks (a model split over GPUs) call the forward bound at load, `_old_forward`, not
+    the class attribute. Left there, transformers' >= 5.23 checkpoint wrapper sees it is no longer the class forward
+    and runs the stock layer with neither checkpointing nor the compiled block: point them at the installed forward."""
+    rebound = 0
+    for module in model.modules():
+        if type(module) is not cls:
+            continue
+        old = module.__dict__.get("_old_forward")
+        if old is not None and getattr(old, "__func__", None) is before:
+            module._old_forward = types.MethodType(cls.forward, module)
+            rebound += 1
+    return rebound
+
+
 def patch_block_compile(model):
     """Compile every decoder-layer class of `model` as one region. Returns the classes wrapped."""
     # getattr: PeftModel delegates. The env fills only unstamped layers, so a re-patch keeps the stamp.
@@ -2609,8 +2631,10 @@ def patch_block_compile(model):
     for cls in classes:
         if getattr(cls.forward, _MARK, False):
             continue
+        before = cls.forward
         _wrap(cls, _COMPILE_OPTIONS, len(kinds.get(cls, ())) or 1)
         wrapped.append(cls.__name__)
+        _rebind_hooked_instances(model, cls, before)
     for layer in compiled_layers:
         if not any(m.__dict__.get("_unsloth_fp8_lora") is not None for m in layer.modules()):
             continue

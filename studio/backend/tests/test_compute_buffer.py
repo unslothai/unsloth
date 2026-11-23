@@ -878,7 +878,10 @@ class TestPipelineParallelPredicate:
 
         src = inspect.getsource(LlamaCppBackend.load_model)
         compact = "".join(src.split())
-        assert "_pipeline_parallel_disabled_by_args(extra_args,n_layers=self._n_layers)" in compact
+        assert (
+            "_pipeline_parallel_disabled_by_args(extra_args,n_layers=self.n_weight_layers)"
+            in compact
+        )
         assert "layer_split = n_gpus > 1 and not _pipeline_parallel_off" in src
         assert src.index("_read_gguf_metadata(model_path)") < src.index(
             "_pipeline_parallel_disabled_by_args("
@@ -1618,8 +1621,10 @@ class TestComputeBufferInkling2:
 
     @pytest.mark.parametrize("ctx,ub,slots,measured", _BANDED)
     def test_banded_estimate_tracks_measured_buffer(self, ctx, ub, slots, measured):
+        # These are the load-time reserves; the buffer can regrow past them once the prompt runs.
         est = self._total_mib(self._inkling2_mini(), ctx, ub, "f16", True, slots)
-        assert measured <= est <= measured * 1.2
+        runtime = LlamaCppBackend._INKLING2_RUNTIME_BYTES_PER_UB * ub / MIB
+        assert measured <= est <= measured * 1.2 + runtime
 
     @pytest.mark.parametrize("ctx,ct,fa,measured", _DENSE)
     def test_dense_estimate_stays_above_the_chunked_buffer(self, ctx, ct, fa, measured):

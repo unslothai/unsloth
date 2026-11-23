@@ -2825,6 +2825,7 @@ export function ModelConfigPage({
   // Wording only ("Unified" vs "Shared"); not the capacity signal, see hasUnifiedMemory.
   const isAppleUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const platformMlxInference = usePlatformStore((s) => s.mlxInference);
   const mlxKvQuantReason = useChatRuntimeStore((s) => s.mlxKvQuantReason);
   const chatTemplateOverrideReason = useChatRuntimeStore(
     (s) => s.chatTemplateOverrideReason,
@@ -3004,6 +3005,7 @@ export function ModelConfigPage({
     target.isGguf,
     platformDeviceType,
     platformChatOnlyReason,
+    platformMlxInference,
   );
   const prefillOptionPath =
     servedByMlx &&

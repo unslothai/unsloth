@@ -1828,6 +1828,7 @@ export const es419 = {
       memoryLabel: "Límite de memoria",
       memoryDescription:
         "Memoria máxima que puede reservar una llamada de Python o Terminal en el sandbox. Se aplica desde la próxima llamada. El valor predeterminado es {defaultSize} GB.",
+      memoryAuto: "Automático",
       memoryLocked: "Definido por UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Ingresa un número entero de {min} a {max}.",
       restored: "Se quitó el acceso a {count} carpetas.",
@@ -6330,7 +6331,7 @@ export const es419 = {
     checking: "Verificando...",
     installPrompt: "Para instalar Unsloth, haz clic en Empezar.",
     getStarted: "Empezar",
-    chatOnly: "Solo chat (GGUF): instalación más ligera, sin entrenamiento",
+    chatOnly: "Solo chat: instalación más ligera, sin entrenamiento",
     installLocation: "Ubicación de instalación:",
     changeLocation: "Cambiar",
     useDefaultLocation: "Usar predeterminada",

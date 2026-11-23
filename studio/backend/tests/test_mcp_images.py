@@ -525,6 +525,33 @@ def test_an_mcp_named_result_is_still_promoted_on_replay():
     assert out[1]["content"][1]["type"] == "image_url"
 
 
+def test_an_imported_claude_code_read_image_reaches_the_model():
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "toolu_1",
+                    "type": "function",
+                    "function": {"name": "Read", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "toolu_1",
+            "name": "Read",
+            "content": _envelope('{"result":""}', _image()),
+        },
+    ]
+
+    out = promote_history(history, vision = True)
+
+    assert out[1]["content"] == '{"result":""}'
+    assert out[2]["content"][1]["type"] == "image_url"
+
+
 def test_an_unnamed_tool_result_keeps_working():
     """Older turns carry no name; an absent name is no evidence against a genuine envelope."""
     history = [{"role": "tool", "content": _envelope("[1 image returned]", _image())}]

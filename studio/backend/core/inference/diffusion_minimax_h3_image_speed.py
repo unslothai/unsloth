@@ -285,7 +285,9 @@ def _install(
         from .video_minimax_h3_rowmod import install as install_row_mod
         if install_row_mod(transformer, logger = logger):
             levers.append("h3_row_mod")
-    if "h3_int8_gemm" in levers:
+    # the streamed GEMM keeps the swapped Linears and their parameters (the pinned streamer copies into them), so the
+    # fused SwiGLU serves there too; per call it runs stock while a weight is off the card (producer_linear)
+    if "h3_int8_gemm" in levers or "h3_int8_gemm_streamed" in levers:
         from .video_minimax_h3_ffn import install as install_ffn
         if install_ffn(transformer, device = dev, logger = logger):
             levers.append("h3_fused_swiglu")
