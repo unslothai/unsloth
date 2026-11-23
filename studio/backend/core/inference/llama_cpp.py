@@ -8969,8 +8969,7 @@ class LlamaCppBackend:
     ) -> "tuple[Optional[dict[int, float]], Optional[dict[int, float]]]":
         model: dict[int, float] = {}
         total: dict[int, float] = {}
-        # Each reserve reprints its compute buffer: keep the peak per logging allocator
-        # (sched_reserve, mtmd_context) and GPU, so the projector's buffer adds to the model's.
+        # Reserves reprint compute buffers: peak per (allocator, GPU), so mtmd_context adds to sched_reserve.
         compute: dict[tuple[str, int], float] = {}
         for line in list(self._stdout_lines):
             match = _GPU_BUFFER_RE.search(line)
