@@ -189,7 +189,11 @@ function ReleaseHistory({
                 {entry.features.map((feature) => (
                   <figure
                     key={feature.title}
-                    className={cn("overflow-hidden rounded-lg", WASH)}
+                    className={cn(
+                      "overflow-hidden rounded-lg",
+                      WASH,
+                      entry.features.length === 1 && "sm:flex sm:items-center",
+                    )}
                   >
                     <img
                       src={feature.image}
@@ -199,7 +203,9 @@ function ReleaseHistory({
                       alt={feature.alt}
                       className={cn(
                         "block w-full object-cover",
-                        entry.features.length > 1 ? "h-[7.5rem]" : "h-52",
+                        entry.features.length > 1
+                          ? "h-[7.5rem]"
+                          : "aspect-[20/7] sm:w-[58%] sm:shrink-0",
                       )}
                     />
                     <figcaption className="p-3">
