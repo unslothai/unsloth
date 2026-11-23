@@ -355,8 +355,7 @@ class TextPreprocessor:
     _MULTIPLE_SPACES_PATTERN = re.compile(r"[ ]{2,}")
     _NEWLINE_SPACES_PATTERN = re.compile(r" *\n *")
     _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n\n\n+")
-    # Fence and heading lines, found in one linear scan. A fence opens on a line of its own with a
-    # backtick-free info string (first word = language), so an inline ```span``` is none.
+    # A fence fills its line (an inline ```span``` is none); info string = backtick-free, word 1 = language.
     _STRUCTURE_PATTERN = re.compile(
         r"^([^\S\n]*)(```+)[^\S\n]*([^\s`]*)([^\n]*)$|^(#{1,3}) (.+)$",
         re.MULTILINE,
@@ -386,9 +385,8 @@ class TextPreprocessor:
         """Add special tokens for structure (chapters, sections)"""
 
         found = [(m.start(), m.end(), *m.groups()) for m in self._STRUCTURE_PATTERN.finditer(text)]
-        # A fence stops at the next fence line with at least as many backticks (CommonMark), so a
-        # longer block can show a shorter one. It closes there if that line is bare; one with an
-        # info string leaves the opener as text. Next-greater-or-equal via a stack keeps it linear.
+        # Each opener stops at the next fence with >= as many backticks (CommonMark); a bare one closes
+        # it, one with an info string leaves it as text. The stack finds that line in linear time.
         stop = [None] * len(found)
         stack = []
         for k in range(len(found) - 1, -1, -1):
