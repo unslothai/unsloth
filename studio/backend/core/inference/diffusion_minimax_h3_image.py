@@ -2842,6 +2842,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             return (images,)
         return _image_output(images)
 
+    @torch_no_grad
     def _render_together(
         self,
         jobs: list,
@@ -2883,22 +2884,26 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
 
         done, out = 0, []
         while len(jobs) - done >= 2:
-            group = [setup(done)]
-            room = self._lockstep_room(group[0])
-            while room is not None and done + len(group) < len(jobs):
-                nxt = setup(done + len(group))
-                if not self._lockstep_fits(group + [nxt], room):
-                    del nxt  # over the room: set up again when its turn comes
-                    break
-                group.append(nxt)
-            if len(group) < 2:
-                logger.info(
-                    "diffusion.minimax_h3_image: no room to denoise %d images together: one after another",
-                    len(jobs) - done,
-                )
-                return done, out
+            group: list = []
             oom = None
+            pixels = None
             try:
+                # set-up (prompt / reference encode, per-image state) can run out of memory too: same fallback
+                group.append(setup(done))
+                room = self._lockstep_room(group[0])
+                while room is not None and done + len(group) < len(jobs):
+                    nxt = setup(done + len(group))
+                    if not self._lockstep_fits(group + [nxt], room):
+                        del nxt  # over the room: set up again when its turn comes
+                        break
+                    group.append(nxt)
+                if len(group) < 2:
+                    logger.info(
+                        "diffusion.minimax_h3_image: no room to denoise %d images together: one after another",
+                        len(jobs) - done,
+                    )
+                    del group
+                    return done, out
                 pixels = self._render_lockstep(
                     group, callback, callback_inputs, output_type, height, width
                 )
@@ -3061,6 +3066,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             "lw": lw,
             "rows": rows,
             "n_ref": n_ref,
+            "ref_images": len(vae_refs),
             "image_idx": image_idx,
             "seq": seq,
             "text_rows": int(text_idx.numel()),
@@ -3208,7 +3214,8 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
     def _lockstep_room(self, job: dict) -> Optional[float]:
         """GB the plan leaves for more images beside ``job`` (set up), None = not priced."""
         canvas_w, canvas_h = job["stats"]["canvas"]
-        return lockstep_room_gb(self._unsloth_h3_plan, canvas_w, canvas_h, job["n_ref"])
+        # the plan prices whole reference images; n_ref counts their packed patch rows
+        return lockstep_room_gb(self._unsloth_h3_plan, canvas_w, canvas_h, job["ref_images"])
 
     def _lockstep_fits(self, jobs: list, room: float) -> bool:
         """Whether every image past the first of ``jobs`` (set up) fits ``room``, each priced as the largest."""

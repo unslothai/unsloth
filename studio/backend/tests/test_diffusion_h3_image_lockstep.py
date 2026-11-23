@@ -307,6 +307,60 @@ def test_out_of_memory_together_falls_back_to_separate_renders(h3i, pipe, stream
     assert h3i.LOCKSTEP_GATE_ATTR not in pipe.transformer.__dict__
 
 
+def test_out_of_memory_in_group_setup_falls_back_to_separate_renders(
+    h3i, pipe, streamed, monkeypatch
+):
+    import torch
+
+    streamer, _calls = streamed
+    monkeypatch.setenv(h3i.LOCKSTEP_ENV, "0")
+    alone = _render(pipe, [41, 42])
+    monkeypatch.delenv(h3i.LOCKSTEP_ENV)
+    real = h3i.MiniMaxH3ImagePipeline._render_setup
+    seen = []
+
+    def setup(self, *args, **kwargs):
+        seen.append(1)
+        # the second image's set-up inside the group runs out of memory; separate renders set up again
+        if len(seen) == 2:
+            raise torch.OutOfMemoryError("CUDA out of memory (test setup)")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(h3i.MiniMaxH3ImagePipeline, "_render_setup", setup)
+    streamer.onloads = 0
+    again = _render(pipe, [41, 42])
+    assert all(torch.equal(a, b) for a, b in zip(alone, again))
+    assert streamer.onloads == 2 * h3i.H3_IMAGE_STEPS
+    assert "lockstep" not in pipe._unsloth_h3_last_stats
+
+
+def test_group_setup_records_no_autograd_graph(h3i, pipe, streamed, monkeypatch):
+    import torch
+
+    real = h3i.MiniMaxH3ImagePipeline._render_setup
+    grad_on = []
+
+    def setup(self, *args, **kwargs):
+        grad_on.append(torch.is_grad_enabled())
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(h3i.MiniMaxH3ImagePipeline, "_render_setup", setup)
+    with torch.enable_grad():
+        _render(pipe, [51, 52])
+    assert pipe._unsloth_h3_last_stats["lockstep"] == 2
+    assert grad_on and not any(grad_on)
+
+
+def test_the_room_is_priced_by_reference_images_not_their_patch_rows(h3i, pipe, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        h3i, "lockstep_room_gb", lambda plan, w, h, references = 0: seen.append(references) or 1.0
+    )
+    job = {"stats": {"canvas": (256, 256)}, "n_ref": 4096, "ref_images": 1}
+    assert pipe._lockstep_room(job) == 1.0
+    assert seen == [1]
+
+
 def test_cancel_stops_both_images_and_the_callback_runs_once_per_step(h3i, pipe, streamed):
     streamer, _calls = streamed
     steps_seen = []
