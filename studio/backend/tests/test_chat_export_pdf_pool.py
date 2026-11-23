@@ -18,6 +18,8 @@ def test_queued_exports_leave_the_default_executor_free(monkeypatch):
         return subprocess.CompletedProcess([], 0, stdout = b"%PDF-1.7 ok", stderr = b"")
 
     monkeypatch.setattr(chat_export.subprocess, "run", slow_render)
+    # More queued exports than the default executor has threads; the waiting cap is tested on its own.
+    monkeypatch.setattr(chat_export, "MAX_PENDING_EXPORTS", 1000, raising = False)
     request = chat_export.ChatPdfRequest(title = "t", html = "<p>x</p>")
 
     async def scenario():
