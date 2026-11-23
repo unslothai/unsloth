@@ -236,8 +236,9 @@ def test_the_note_names_the_search_and_the_transcript(persisted, archived, tmp_p
     )
     transcript = path.read_text()
     assert "Plan the migration" in transcript
-    # The thought ends with the model's own closing marker.
+    # The thought ends with the model's own closing marker, once.
     assert (thought + _TEMPLATE_CLOSE) in transcript
+    assert transcript.count(thought) == 1
 
 
 def test_a_typed_next_message_keeps_it_and_gets_the_note_in_the_system_prompt(persisted, archived):
@@ -268,7 +269,9 @@ def test_without_search_or_a_transcript_the_note_names_neither(persisted, monkey
     from routes import inference as inference_route
 
     monkeypatch.setattr(cut_thought, "archive", lambda thread_id, thought: False)
-    monkeypatch.setattr(cut_thought, "write_transcript", lambda *args: None)
+    from core.inference import compaction_transcript
+
+    monkeypatch.setattr(compaction_transcript, "write", lambda *args: None)
     _marked()
 
     note, searchable, _ = inference_route._recover_cut_thought(_continuation())

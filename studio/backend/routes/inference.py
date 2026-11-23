@@ -528,11 +528,10 @@ def _recover_cut_thought(payload) -> Optional[tuple[str, bool, bool]]:
         and conversation_recall_allowed()
         and _checkpoint_needs_search(payload)
     )
-    transcript = cut_thought.write_transcript(
-        getattr(payload, "session_id", None),
-        thread_id,
-        [message.model_dump(exclude_none = True) for message in messages],
-        cut,
+    from core.inference import compaction_transcript
+
+    transcript = compaction_transcript.write(
+        thread_id, [message.model_dump(exclude_none = True) for message in messages]
     )
     note = cut_thought.note(searchable, transcript)
     if resuming:

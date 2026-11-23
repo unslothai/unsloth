@@ -7,8 +7,8 @@ The reply ends there. The thread's next request (the chat's automatic continuati
 next message) does not resume the thought, which cannot fit: the thought, cut back a few tokens, is
 kept in the conversation as a finished thought (the model's own chat template writes its closing
 marker), the request is compacted as /compact does, the thought is archived where
-search_conversation finds it, a transcript is written to the chat's sandbox folder, and the
-compacted request starts with a note saying the previous model stopped thinking.
+search_conversation finds it, and the compacted request starts with a note saying the previous
+model stopped thinking and where the transcript is (core.inference.compaction_transcript).
 
 One-shot, held in memory: a restart in between leaves today's behavior.
 """
@@ -16,8 +16,6 @@ One-shot, held in memory: a restart in between leaves today's behavior.
 from __future__ import annotations
 
 import dataclasses
-import os
-import re
 import threading
 import time
 from typing import Callable, Optional
@@ -44,6 +42,8 @@ class Cut:
 
 _lock = threading.Lock()
 _pending: dict[str, tuple[float, Cut]] = {}
+# Taken cuts, so the compacted request's transcript can label the thought.
+_taken: dict[str, tuple[float, Cut]] = {}
 
 
 def mark(
@@ -66,6 +66,18 @@ def take(thread_id: Optional[str]) -> Optional[Cut]:
         return None
     with _lock:
         entry = _pending.pop(thread_id, None)
+        if entry is None or time.monotonic() - entry[0] > _TTL_S:
+            return None
+        _taken[thread_id] = (time.monotonic(), entry[1])
+    return entry[1]
+
+
+def recent(thread_id: Optional[str]) -> Optional[Cut]:
+    """The cut this thread's recovery took, while its requests still run."""
+    if not thread_id:
+        return None
+    with _lock:
+        entry = _taken.get(thread_id)
     if entry is None or time.monotonic() - entry[0] > _TTL_S:
         return None
     return entry[1]
@@ -108,41 +120,6 @@ def archive(thread_id: str, thought: str) -> bool:
         return False
 
 
-def write_transcript(
-    session_id: Optional[str], thread_id: str, messages: list[dict], cut: Cut
-) -> Optional[str]:
-    """This chat's branch as plain text in its sandbox folder (where the python and terminal tools
-    read), ending with the cut thought and its closing marker. Returns the path, or None."""
-    try:
-        from core.inference.tools import _get_workdir
-
-        folder = _get_workdir(session_id or thread_id)
-        name = "transcript-" + re.sub(r"[^A-Za-z0-9_.-]", "_", thread_id)[:120] + ".md"
-        path = os.path.join(folder, name)
-        lines = [f"# Chat transcript ({thread_id})", ""]
-        for message in messages:
-            role = str(message.get("role") or "")
-            if role in ("system", "developer"):
-                continue
-            text = _text(message.get("content"))
-            reasoning = message.get("reasoning_content")
-            if isinstance(reasoning, str) and reasoning.strip():
-                lines += [f"## {role} (thinking)", "", reasoning.strip(), ""]
-            if text:
-                lines += [f"## {role}", "", text, ""]
-        lines += [
-            "## assistant (thinking, stopped by the context window)",
-            "",
-            cut.thought + (cut.close_marker or ""),
-            "",
-        ]
-        with open(path, "w", encoding = "utf-8") as handle:
-            handle.write("\n".join(lines))
-        return path
-    except Exception:  # noqa: BLE001 -- the search still works without it
-        return None
-
-
 def note(searchable: bool, transcript_path: Optional[str]) -> str:
     where = []
     if searchable:
@@ -157,18 +134,6 @@ def note(searchable: bool, transcript_path: Optional[str]) -> str:
     return f"The previous model stopped thinking, so {' or '.join(where)} and continue work."
 
 
-def _text(content) -> str:
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        return "\n".join(
-            str(part.get("text") or "")
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
-        ).strip()
-    return ""
-
-
 def _persisted(thread_id: str) -> bool:
     try:
         from core.rag import conversation_archive
@@ -180,3 +145,4 @@ def _persisted(thread_id: str) -> bool:
 def _reset_for_tests() -> None:
     with _lock:
         _pending.clear()
+        _taken.clear()
