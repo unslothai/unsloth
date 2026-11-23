@@ -466,3 +466,43 @@ def test_batched_grouped_decode_core_compiles_once_at_a_fixed_shape(monkeypatch,
         torch.testing.assert_close(out, eager)
     torch._dynamo.reset()
     assert counter.frame_count == 1, counter.frame_count
+
+
+@pytest.mark.parametrize(
+    "dtype, amp, value",
+    [(torch.bfloat16, torch.float16, 70144.0), (torch.float16, torch.bfloat16, 257.0)],
+    ids = ["bf16_under_fp16_autocast", "fp16_under_bf16_autocast"],
+)
+def test_compiled_grouped_decode_keeps_the_eager_dtype_under_autocast(
+    monkeypatch, dtype, amp, value
+):
+    # Eager writes with out=, which autocast skips; the compiled branch's functional matmul / bmm
+    # must not pick up the ambient autocast dtype either. Zero keys give uniform weights, so every
+    # output equals the constant value: 70144 fits bf16 but overflows fp16, 257 is exact in fp16
+    # but rounds to 256 in bf16.
+    from torch._dynamo.testing import CompileCounter
+
+    monkeypatch.setattr(llama, "GROUPED_DECODE", "1")
+    bsz, kv_len, rows = 3, 13, 32
+    attn = _attention(bsz, dtype)
+    attn.paged_attention = torch.zeros(rows, 2, bsz, N_KV, HEAD_DIM, dtype = dtype)
+    attn.paged_attention_K = attn.paged_attention[:, 0]
+    attn.paged_attention_V = attn.paged_attention[:, 1]
+    attn.paged_attention_V.fill_(value)
+    attn.attention = torch.empty(bsz, N_HEADS, 1, rows, dtype = dtype)
+    attn.scalar = 1.0 / HEAD_DIM**0.5
+    keep = _keep_mask(bsz, kv_len)
+    keep[:] = True
+    Q = torch.randn(bsz, 1, N_HEADS, HEAD_DIM, dtype = dtype).transpose(1, 2)
+
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    core = torch.compile(llama._decode_attention_core, backend = counter, fullgraph = True)
+    with torch.autocast("cpu", dtype = amp):
+        eager = llama._decode_attention_core(attn, Q.clone(), kv_len, keep, bsz, True)[0].clone()
+        compiled = core(attn, Q.clone(), kv_len, keep, bsz, True)[0].clone()
+    torch._dynamo.reset()
+    assert counter.frame_count == 1, counter.frame_count
+    assert torch.isfinite(eager).all() and (eager.float() == value).all()
+    assert compiled.dtype == eager.dtype
+    torch.testing.assert_close(compiled, eager, rtol = 0, atol = 0)

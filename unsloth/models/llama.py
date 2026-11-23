@@ -629,7 +629,10 @@ def _gqa_decode_scores(Qn, Kn, out):
     out_g = out.view(bsz, n_kv_heads, n_groups, cached_len)
     if torch.compiler.is_compiling():
         # Dynamo graph-breaks on out= into a strided view (the scratch is sliced to cached_len).
-        out_g.copy_(torch_matmul(Qg, Kn.transpose(2, 3)))
+        # out= is exempt from autocast and the functional matmul is not, so keep autocast off:
+        # an fp16 autocast over bf16 Q / K would overflow scores that eager keeps finite.
+        with torch.autocast(Qn.device.type, enabled = False):
+            out_g.copy_(torch_matmul(Qg, Kn.transpose(2, 3)))
     else:
         torch_matmul(Qg, Kn.transpose(2, 3), out = out_g)
     return out
@@ -647,7 +650,9 @@ def _gqa_decode_values(A, Vn, out):
     O = out.view(bsz * n_kv_heads, n_groups, head_dim)
     aligned = cached_len - cached_len % 8
     if torch.compiler.is_compiling():
-        O.copy_(torch.bmm(A, V))
+        # Autocast off for the same reason as _gqa_decode_scores: match the eager out= dtype.
+        with torch.autocast(A.device.type, enabled = False):
+            O.copy_(torch.bmm(A, V))
     elif aligned == 0 or aligned == cached_len:
         torch.bmm(A, V, out = O)
     else:
