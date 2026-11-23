@@ -152,7 +152,12 @@ def _live_cache_dir() -> str:
     return active_hf_hub_cache()
 
 
-def _read_index(repo_id: str, hf_token: Optional[str], local_files_only: bool) -> dict:
+def _read_index(
+    repo_id: str,
+    hf_token: Optional[str],
+    local_files_only: bool,
+    revision: Optional[str] = None,
+) -> dict:
     try:
         root = Path(repo_id).expanduser()
         if root.is_dir():
@@ -171,6 +176,7 @@ def _read_index(repo_id: str, hf_token: Optional[str], local_files_only: bool) -
         token = hf_token or None,
         local_files_only = local_files_only,
         cache_dir = _live_cache_dir(),
+        **({"revision": revision} if revision else {}),
     )
     payload = json.loads(Path(path).read_text(encoding = "utf-8-sig"))
     return payload if isinstance(payload, dict) else {}
@@ -660,7 +666,10 @@ def _stored_float_mib(files: list) -> int:
 
 
 def widened_transformer_exceeds_host(
-    repo_id: str, hf_token: Optional[str], local_files_only: bool
+    repo_id: str,
+    hf_token: Optional[str],
+    local_files_only: bool,
+    revision: Optional[str] = None,
 ) -> Optional[str]:
     """Reason a widened transformer load would not fit host RAM, else None (unreadable sizes keep widening)."""
     if dense_storage_disabled():
@@ -672,7 +681,7 @@ def widened_transformer_exceeds_host(
     total, available = host_ram_mib()
     if total is None or available is None:
         return None
-    files = _component_files(repo_id, "transformer", hf_token, local_files_only)
+    files = _component_files(repo_id, "transformer", hf_token, local_files_only, revision = revision)
     stored = _stored_float_mib(files) if files else 0
     if stored <= 0:
         return None
@@ -689,12 +698,13 @@ def transformer_load_storage(
     repo_id: str,
     hf_token: Optional[str],
     local_files_only: bool,
+    revision: Optional[str] = None,
 ) -> Any:
     """``transformer_storage_dtype``, but by default a same-width transformer reads as stored when widening won't fit."""
     picked = transformer_storage_dtype(storage_dtype, dtype, transformer_storage)
     if picked is not None or transformer_storage is not None or storage_dtype is None:
         return picked
-    why = widened_transformer_exceeds_host(repo_id, hf_token, local_files_only)
+    why = widened_transformer_exceeds_host(repo_id, hf_token, local_files_only, revision = revision)
     if why is None:
         return None
     logger.info("diffusion.flux3: transformer reads as stored: %s", why)
@@ -702,7 +712,11 @@ def transformer_load_storage(
 
 
 def _component_files(
-    repo_id: str, subfolder: str, hf_token: Optional[str], local_files_only: bool
+    repo_id: str,
+    subfolder: str,
+    hf_token: Optional[str],
+    local_files_only: bool,
+    revision: Optional[str] = None,
 ) -> list[Path]:
     """Safetensors files from_pretrained reads for ``subfolder``; empty when unresolvable."""
     from .diffusion_small_host import _weight_files
@@ -718,6 +732,8 @@ def _component_files(
         "local_files_only": local_files_only,
         "cache_dir": _live_cache_dir(),
     }
+    if revision:
+        kwargs["revision"] = revision
     stem = "model" if subfolder.startswith("text_encoder") else "diffusion_pytorch_model"
     try:
         index = Path(
@@ -741,12 +757,13 @@ def _stored_as(
     storage_dtype: Any,
     hf_token: Optional[str],
     local_files_only: bool,
+    revision: Optional[str] = None,
 ) -> bool:
     """True when every float tensor of ``subfolder`` is stored as ``storage_dtype`` (lossless load)."""
     from .diffusion_small_host import _safetensors_bytes_by_dtype
 
     want = str(storage_dtype).replace("torch.", "")
-    files = _component_files(repo_id, subfolder, hf_token, local_files_only)
+    files = _component_files(repo_id, subfolder, hf_token, local_files_only, revision = revision)
     if not files:
         return False
     seen = False
@@ -772,10 +789,11 @@ def _manual_cast_load(
     storage_dtype: Any,
     hf_token: Optional[str],
     local_files_only: bool,
+    revision: Optional[str] = None,
 ) -> Any:
     """Load at ``storage_dtype`` with per-op upcast to ``dtype`` if stored exactly so; else the widened load."""
     if storage_dtype is None or not _stored_as(
-        repo_id, name, storage_dtype, hf_token, local_files_only
+        repo_id, name, storage_dtype, hf_token, local_files_only, revision = revision
     ):
         if storage_dtype is not None:
             logger.info(
@@ -878,13 +896,16 @@ def load_flux3_pipeline(
         "storage_dtype": str(storage_dtype),
         "transformer_storage": transformer_storage,
     }
-    cached = (
-        not local_files_only
-        and snap.current_snapshot(
+    # The validated commit: every cache-only read below pins it, so a concurrent download that moves the cache's
+    # refs/main mid-load cannot hand this load another snapshot's files.
+    commit = (
+        None
+        if local_files_only
+        else snap.current_snapshot(
             repo_id, components, token = token, cache_dir = common["cache_dir"], logger = logger
         )
-        is not None
     )
+    cached = commit is not None
 
     def cache_first(load: Callable[[bool], Any], *, name: str) -> Any:
         return snap.cache_first(
@@ -895,11 +916,17 @@ def load_flux3_pipeline(
             on_fallback = lambda: snap.forget(repo_id, components, cache_dir = common["cache_dir"]),
         )
 
+    def _rev(local: bool) -> Optional[str]:
+        return commit if local and cached else None
+
     def _kw(local: bool) -> dict[str, Any]:
-        return dict(common, local_files_only = local_files_only or local)
+        kw = dict(common, local_files_only = local_files_only or local)
+        if _rev(local):
+            kw["revision"] = commit
+        return kw
 
     index = cache_first(
-        lambda local: _read_index(repo_id, token, local_files_only or local),
+        lambda local: _read_index(repo_id, token, local_files_only or local, revision = _rev(local)),
         name = FLUX3_INDEX,
     )
     check_cancelled()
@@ -922,6 +949,7 @@ def load_flux3_pipeline(
                 storage_dtype = storage_dtype,
                 hf_token = token,
                 local_files_only = local_files_only or local,
+                revision = _rev(local),
             ),
             name = "the text encoder",
         )
@@ -931,7 +959,13 @@ def load_flux3_pipeline(
 
         def _transformer(local: bool) -> Any:
             transformer_storage_at = transformer_load_storage(
-                storage_dtype, dtype, transformer_storage, repo_id, token, local_files_only or local
+                storage_dtype,
+                dtype,
+                transformer_storage,
+                repo_id,
+                token,
+                local_files_only or local,
+                revision = _rev(local),
             )
             return _manual_cast_load(
                 lambda load_dtype: diffusers.Flux3Transformer2DModel.from_pretrained(
@@ -943,6 +977,7 @@ def load_flux3_pipeline(
                 storage_dtype = transformer_storage_at,
                 hf_token = token,
                 local_files_only = local_files_only or local,
+                revision = _rev(local),
             )
 
         transformer = cache_first(_transformer, name = "the transformer")

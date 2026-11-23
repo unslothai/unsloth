@@ -179,30 +179,44 @@ def _loader_env(
     cached,
     fail = (),
 ):
-    """load_flux3_pipeline with every component loader stubbed: records each read's local_files_only. A loader class
-    the installed library lacks (diffusers before the FLUX.3 classes still meets the declared floor) gets a stand-in."""
+    """load_flux3_pipeline with every component loader stubbed: records each read's local_files_only (and, in
+    ``reads.revisions``, the revision it pinned). The loaders are stand-in classes, so a diffusers without the FLUX.3
+    classes (any release before them still meets the declared floor) runs these too."""
     torch = pytest.importorskip("torch")
     diffusers = pytest.importorskip("diffusers")
     transformers = pytest.importorskip("transformers")
     from core.inference import diffusion_flux3 as f3
 
-    reads = []
+    class _Reads(list):
+        revisions: dict
+
+    reads = _Reads()
+    reads.revisions = {}
 
     def stub(name, value):
         def from_pretrained(*a, **kw):
             reads.append((name, kw.get("local_files_only")))
+            reads.revisions.setdefault(name, []).append(kw.get("revision"))
             if kw.get("local_files_only") and name in fail:
                 raise OSError(f"{name} not cached")
             return value
 
         return types.SimpleNamespace(from_pretrained = from_pretrained)
 
+    def read_index(
+        repo,
+        token,
+        local,
+        revision = None,
+    ):
+        reads.append(("index", local))
+        reads.revisions.setdefault("index", []).append(revision)
+        return {}
+
     module = torch.nn.Linear(2, 2)
     monkeypatch.setattr(f3, "flux3_available", lambda: True)
     monkeypatch.setattr(f3, "_live_cache_dir", lambda: "/nonexistent")
-    monkeypatch.setattr(
-        f3, "_read_index", lambda repo, token, local: reads.append(("index", local)) or {}
-    )
+    monkeypatch.setattr(f3, "_read_index", read_index)
     for owner, attr, name, value in (
         (transformers, "AutoProcessor", "processor", object()),
         (diffusers, "Flux3Transformer2DModel", "transformer", module),
@@ -213,7 +227,7 @@ def _loader_env(
             monkeypatch.setattr(owner, attr, stub(name, value), raising = False)
         else:
             monkeypatch.setattr(cls, "from_pretrained", stub(name, value).from_pretrained)
-    monkeypatch.setattr(f3, "transformer_load_storage", lambda *a: None)
+    monkeypatch.setattr(f3, "transformer_load_storage", lambda *a, **k: None)
     monkeypatch.setattr(f3, "_pin_compute_dtype", lambda *a: None)
     monkeypatch.setattr(f3, "flux3_blocks_class", lambda index, tr: "blocks")
     monkeypatch.setattr(f3, "flux3_family_blocks_mismatch", lambda *a: None)
@@ -260,3 +274,37 @@ def test_a_cache_only_load_never_asks_the_hub(monkeypatch):
     monkeypatch.setattr(hs, "current_snapshot", lambda *a, **k: asked.append(1) or C1)
     f3.load_flux3_pipeline(REPO, torch.bfloat16, text_encoder = object(), local_files_only = True)
     assert asked == [] and noted == [] and all(local for _n, local in reads)
+
+
+def test_cache_only_reads_pin_the_validated_commit(monkeypatch):
+    """A concurrent download can move the shared cache's refs/main between the check and a component read: every
+    cache-only read pins the commit the check validated, so none can open another snapshot's files."""
+    f3, reads, noted, forgot, torch = _loader_env(monkeypatch, cached = True)
+    f3.load_flux3_pipeline(REPO, torch.bfloat16, text_encoder = object())
+    assert reads.revisions == {"index": [C1], "processor": [C1], "transformer": [C1], "vae": [C1]}
+
+
+def test_a_revalidating_read_stays_unpinned(monkeypatch):
+    f3, reads, noted, forgot, torch = _loader_env(monkeypatch, cached = True, fail = ("processor",))
+    f3.load_flux3_pipeline(REPO, torch.bfloat16, text_encoder = object())
+    # the cache-only attempt pinned C1; its Hub fallback resolves main as before
+    assert reads.revisions["processor"] == [C1, None]
+    f3, reads, noted, forgot, torch = _loader_env(monkeypatch, cached = False)
+    f3.load_flux3_pipeline(REPO, torch.bfloat16, text_encoder = object())
+    assert set(sum(reads.revisions.values(), [])) == {None}
+
+
+def test_a_pinned_cache_read_opens_the_validated_snapshot_after_refs_main_moves(tmp_path):
+    """The real huggingface_hub cache reader: refs/main moved to B after A was validated. Unpinned reads B; pinned A."""
+    from huggingface_hub import hf_hub_download
+
+    for commit in (C1, C2):
+        _snapshot(tmp_path, commit, files = ("model_index.json",))
+        path = tmp_path / "models--org--model" / "snapshots" / commit / "model_index.json"
+        path.write_text(commit)
+    (tmp_path / "models--org--model" / "refs" / "main").write_text(C2)
+    read = lambda **kw: open(  # noqa: E731
+        hf_hub_download(REPO, "model_index.json", cache_dir = tmp_path, local_files_only = True, **kw)
+    ).read()
+    assert read() == C2
+    assert read(revision = C1) == C1
