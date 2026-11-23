@@ -56,6 +56,8 @@ _BLOCKS = {
     "details",
     "summary",
 }
+# Never displayed by a reader supporting the element. Not <canvas>: its fallback shows without scripting.
+_UNRENDERED = {"template", "annotation", "annotation-xml", "audio", "video"}
 _VOID = {
     "area",
     "base",
@@ -103,6 +105,7 @@ class _BookTextParser(HTMLParser):
         hidden = (
             bool(self.stack and self.stack[-1][1])
             or tag in _IGNORE
+            or tag in _UNRENDERED
             or "hidden" in attrs
             or attrs.get("aria-hidden", "").lower() == "true"
         )
