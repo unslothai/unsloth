@@ -4,6 +4,7 @@
 import contextlib
 import functools
 import json
+import math
 import os
 import re
 import shutil
@@ -247,6 +248,31 @@ def _adapter_rank(adapter_dir: str) -> int:
     config = _read_config(Path(adapter_dir) / "adapter_config.json") or {}
     ranks = [config.get("r")] + list((config.get("rank_pattern") or {}).values())
     return max((r for r in ranks if isinstance(r, int)), default = 0)
+
+
+def _mixed_lora_scale(adapter_dir: str) -> bool:
+    """True when rank_pattern / alpha_pattern give a module a scale other than lora_alpha / r.
+
+    vLLM (PEFTHelper) applies that one scale to every module, so such an adapter scores wrong.
+    """
+    config = _read_config(Path(adapter_dir) / "adapter_config.json") or {}
+    ranks, alphas = config.get("rank_pattern") or {}, config.get("alpha_pattern") or {}
+    if not isinstance(ranks, dict) or not isinstance(alphas, dict):
+        return False
+    norm = math.sqrt if config.get("use_rslora") else float
+
+    def scale(rank, alpha):
+        ok = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (rank, alpha))
+        return alpha / norm(rank) if ok and rank > 0 else None
+
+    default = scale(config.get("r"), config.get("lora_alpha"))
+    if default is None:
+        return False
+    for key in set(ranks) | set(alphas):
+        module = scale(ranks.get(key, config["r"]), alphas.get(key, config["lora_alpha"]))
+        if module is not None and not math.isclose(module, default):
+            return True
+    return False
 
 
 def _base_vocab_size(model: str) -> int:
@@ -705,11 +731,21 @@ def evaluate(
                 model_args["pretrained"] = _vllm_base(effective_base)
                 model_args["lora_local_path"] = _local_adapter(model)
                 rank = _adapter_rank(model_args["lora_local_path"])
+                merge_hint = (
+                    "Use --backend unsloth or --backend hf to evaluate it, or merge it with "
+                    "`unsloth export <adapter> <output_dir> --format merged-16bit` "
+                    "and evaluate the merged model with --backend vllm."
+                )
                 if rank > _VLLM_LORA_RANKS[-1]:
                     _fail(
                         f"--backend vllm supports LoRA ranks up to {_VLLM_LORA_RANKS[-1]}, "
-                        f"but this adapter was trained with rank {rank}. "
-                        "Use --backend unsloth or --backend hf to evaluate it."
+                        f"but this adapter was trained with rank {rank}. {merge_hint}"
+                    )
+                if _mixed_lora_scale(model_args["lora_local_path"]):
+                    _fail(
+                        "--backend vllm scales every LoRA module by lora_alpha / r and ignores "
+                        "rank_pattern / alpha_pattern, so this adapter would be scored with the "
+                        f"wrong weights. {merge_hint}"
                     )
                 if rank > 16:
                     model_args["max_lora_rank"] = next(r for r in _VLLM_LORA_RANKS if r >= rank)

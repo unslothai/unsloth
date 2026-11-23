@@ -903,7 +903,58 @@ def test_vllm_backend_rejects_adapter_rank_above_its_limit(vllm_env, tmp_path, c
     assert result.exit_code == 2, result.output
     assert f"rank {rank}" in result.output and "512" in result.output
     assert "--backend unsloth" in result.output and "--backend hf" in result.output
+    assert "--format merged-16bit" in result.output
     assert "model" not in vllm_env
+
+
+@pytest.mark.parametrize(
+    "config, ok",
+    [
+        ({"r": 16, "lora_alpha": 32, "rank_pattern": {}, "alpha_pattern": {}}, True),
+        ({"r": 16, "lora_alpha": 32, "rank_pattern": {"v_proj": 16}}, True),
+        (
+            {
+                "r": 16,
+                "lora_alpha": 32,
+                "rank_pattern": {"v_proj": 64},
+                "alpha_pattern": {"v_proj": 128},
+            },
+            True,
+        ),
+        ({"r": 16, "rank_pattern": {"v_proj": 64}}, True),
+        ({"r": 16, "lora_alpha": 32, "rank_pattern": {"v_proj": 64}}, False),
+        ({"r": 16, "lora_alpha": 32, "alpha_pattern": {"q_proj": 64}}, False),
+        ({"r": 16, "lora_alpha": 32, "use_rslora": True, "rank_pattern": {"v_proj": 64}}, False),
+        (
+            {
+                "r": 16,
+                "lora_alpha": 32,
+                "use_rslora": True,
+                "rank_pattern": {"v_proj": 64},
+                "alpha_pattern": {"v_proj": 64},
+            },
+            True,
+        ),
+    ],
+)
+def test_vllm_backend_rejects_per_module_lora_scale(vllm_env, tmp_path, config, ok):
+    # vLLM applies lora_alpha / r to every module, so rank_pattern / alpha_pattern that change a module's scale score wrong
+    result = _run(
+        str(_rank_adapter(tmp_path, **config)),
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    if ok:
+        assert result.exit_code == 0, result.output
+        assert vllm_env["model"] == "vllm"
+    else:
+        assert result.exit_code == 2, result.output
+        assert "rank_pattern / alpha_pattern" in result.output and "--backend hf" in result.output
+        assert "model" not in vllm_env
 
 
 def test_vllm_backend_refuses_multi_process(vllm_env, monkeypatch):
