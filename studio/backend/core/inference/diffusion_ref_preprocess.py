@@ -122,6 +122,12 @@ def _gpu_preprocess(
         raise ValueError("crop larger than the image")
     # Flux2ImageProcessor._resize_and_crop is a pure centre crop (no second resize).
     left, top = (w1 - width) // 2, (h1 - height) // 2
+    if isinstance(image, DeferredResize):
+        from .diffusion_lanczos_triton import fits_int32
+        sw, sh = src.size
+        if not fits_int32(sh, sw, h1, w1):
+            # Checked before the upload: the caller falls back to the CPU path for this image.
+            raise ValueError("reference image too large for the GPU resize's 32-bit offsets")
     host = torch.from_numpy(np.asarray(src, dtype = np.uint8))
     device = torch.device(device)
     px = (

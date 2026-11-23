@@ -270,3 +270,49 @@ def test_load_warms_after_placement():
     placed_at = src.index("cuda_graph.arm_block_graphs(", install_at)
     warm_at = src.index("warm_ref_preprocess(pipe, logger = logger)")
     assert install_at < placed_at < warm_at
+
+
+def test_lanczos_refuses_sizes_past_int32_offsets():
+    """The kernels use 32-bit flat offsets per image: any buffer of 2**31 elements or more must be refused."""
+    pytest.importorskip("triton")
+    from core.inference import diffusion_lanczos_triton as K
+
+    assert K.fits_int32(4000, 6000, 1024, 1536)
+    side = 26755  # 3 * 26755**2 = 2147490075 >= 2**31
+    assert not K.fits_int32(side, side, 1024, 1024)
+    assert not K.fits_int32(1024, 1024, side, side)  # an upscale's output counts too
+    assert not K.fits_int32(side, 100, 100, side)  # either pass order's intermediate
+    assert K.fits_int32(26754, 26754, 1024, 1024)  # 3 * 26754**2 = 2147329548 < 2**31
+
+    class _Huge:
+        is_cuda = True
+        dtype = torch.uint8
+        ndim = 3
+        shape = (side, side, 3)
+        device = "cuda:0"
+
+    from core.inference import rocm_bf16
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rocm_bf16, "is_rocm_torch", lambda _t: False)
+        mp.setattr(K, "_launch", lambda *a, **k: pytest.fail("launched a wrapping kernel"))
+        with pytest.raises(ValueError, match = "32-bit"):
+            K.lanczos_resize(_Huge(), 1024, 1024)
+
+
+def test_huge_reference_is_refused_before_the_upload():
+    """A > 715 MP reference takes the CPU path: _gpu_preprocess raises before it copies the pixels to the GPU."""
+    pytest.importorskip("triton")
+    side = 26755
+
+    class _Src:
+        mode = "RGB"
+        size = (side, side)
+
+        def __array__(self, *a, **k):
+            raise AssertionError("uploaded a reference the kernels cannot index")
+
+    proc = flux2_ip.Flux2ImageProcessor(vae_scale_factor = 16)
+    img = rp.DeferredResize(_Src(), 1024, 1024)
+    with pytest.raises(ValueError, match = "32-bit"):
+        rp._gpu_preprocess(proc, img, 1024, 1024, "cpu")
