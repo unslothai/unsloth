@@ -201,7 +201,6 @@ interface ExportRuntimeState {
   } | null;
   error: string | null;
   cancelRequested: boolean;
-  /** Id sent with the op being dispatched, so a cancel stops (or pre-refuses) exactly that op. */
   opId: string | null;
   hasHydrated: boolean;
   backendActive: boolean;

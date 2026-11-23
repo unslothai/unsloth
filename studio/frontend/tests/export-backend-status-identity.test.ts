@@ -191,7 +191,6 @@ test("an uncanceled run dispatches every operation", async () => {
   }
 });
 
-// Models the backend: an op whose id was cancelled before it began is refused.
 function refusingBackend() {
   const cancelledIds = new Set<unknown>();
   const begun: string[] = [];
