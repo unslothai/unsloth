@@ -490,3 +490,53 @@ def test_planner_and_loader_share_one_convrot_candidate_list(planner_host, monke
     )
     assert RH.load_rocm_hosted_transformer(fam, object, QWEN21[0], source) is not None
     assert fetched == list(probed[0]) and read == [str(staged)]
+
+
+_COMFY_AND_CONVROT = (
+    "Qwen-Image-2.1-INT8-ConvRot-ComfyUI.safetensors",
+    "Qwen-Image-2.1-INT8-ConvRot.safetensors",
+)
+
+
+def _queued_plan_entry(monkeypatch, listing):
+    from core.inference import diffusion_prequant as pq
+
+    fam = _fam(QWEN21)
+    source = pq.resolve_prequant_source(fam, "int8", base_repo = QWEN21[0])
+    monkeypatch.setattr(D, "denoiser_prequant_source", lambda *a, **k: source)
+    siblings = [types.SimpleNamespace(rfilename = n, size = 7) for n in listing]
+    monkeypatch.setattr(
+        D.hub_reachability, "model_info", lambda *a, **k: types.SimpleNamespace(siblings = siblings)
+    )
+    monkeypatch.setattr(pq, "prefer_cached_pickle_twins", lambda repo, names, readable: list(names))
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
+    planner = types.SimpleNamespace(
+        _target_for_ordinal = lambda fam, ordinal: GPU_BF16,
+        _prequant_source_hub_entry = D.DiffusionBackend._prequant_source_hub_entry,
+    )
+    kwargs = {
+        "_pipeline_prequant_planned": tq.TQ_INT8,
+        "base_repo": QWEN21[0],
+        "transformer_quant": "int8",
+    }
+    entry = D.DiffusionBackend._dit_prequant_plan_source(planner, fam, "pipeline", None, kwargs)
+    return entry[1] if entry else None
+
+
+@pytest.mark.parametrize(
+    "listing, staged",
+    [
+        (("Qwen-Image-2.1-INT8.safetensors",), None),
+        (_COMFY_AND_CONVROT, "Qwen-Image-2.1-INT8-ConvRot.safetensors"),
+    ],
+)
+def test_download_plan_stages_only_the_convrot_file_the_rocm_load_reads(
+    rocm, monkeypatch, listing, staged
+):
+    # The seed can be accepted without a listing check (UNSLOTH_PREQUANT_HEADER_PROBE=0); the queued plan must then
+    # stage the ConvRot file the loader resolves, else nothing, never a name the native reader refuses.
+    assert _queued_plan_entry(monkeypatch, listing) == staged
+
+
+def test_cuda_download_plan_keeps_the_resolver_order(nvidia, monkeypatch):
+    assert _queued_plan_entry(monkeypatch, _COMFY_AND_CONVROT) == _COMFY_AND_CONVROT[0]

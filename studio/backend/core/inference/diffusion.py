@@ -7295,6 +7295,16 @@ class DiffusionBackend:
                         hf_token = hf_token,
                         cache_dir = hub_cache_dir(),
                     )
+                    # ROCm seeds only via the hosted ConvRot read: stage that file or none, never one it refuses.
+                    if (
+                        source is not None
+                        and planned == TQ_INT8
+                        and not dense_transformer_supported(
+                            self._target_for_ordinal(fam, kwargs.get("gpu_ordinal"))
+                        )
+                    ):
+                        from .diffusion_rocm_hosted_int8 import rocm_convrot_source
+                        source = rocm_convrot_source(source)
                 return self._prequant_source_hub_entry(source, hf_token, scheme = planned)
             raw = kwargs.get("transformer_quant")
             auto = raw is None or str(raw).strip().lower() in ("", "auto")
