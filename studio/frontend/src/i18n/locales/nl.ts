@@ -3478,7 +3478,7 @@ export const nl = {
       rememberParamsPerModelHint:
         "Als dit uit staat, worden voor elk model dezelfde instellingen gebruikt.",
       autoCompactHint:
-        "Lokale GGUF- en MLX-chats: verwijderde beurten worden geïndexeerd zodat het model ze terug kan zoeken, en bij een reset worden de vaste instructies die passen woordelijk teruggeplaatst, waarbij de oudste en nieuwste voorrang krijgen boven het midden. Archiveren vereist een opgeslagen chat en de vectorindex; zonder die worden oudere beurten weggelaten. Gebruikt de contextlengte die je hebt ingesteld, niet het beschikbare VRAM. API-modellen: de provider vat oudere beurten samen waar mogelijk, anders worden de oudste beurten weggelaten wanneer de chat het gepubliceerde contextvenster van het model nadert.",
+        "Lokale GGUF- en MLX-chats: verwijderde beurten worden geïndexeerd zodat het model ze terug kan zoeken, en bij een reset worden de vaste instructies die passen woordelijk teruggeplaatst, waarbij de oudste en nieuwste voorrang krijgen boven het midden. Archiveren vereist een opgeslagen chat en de vectorindex; zonder die worden oudere beurten weggelaten. Gebruikt de contextlengte die je hebt ingesteld, niet het beschikbare VRAM. API-modellen: de provider vat oudere beurten samen waar mogelijk, anders gaan de oudste beurten uit de context wanneer de chat het gepubliceerde contextvenster van het model nadert, en worden ze op dezelfde manier geïndexeerd.",
       pastedTextShortDescription:
         "Geplakte tekst van {count} tekens of meer wordt een .txt-bijlage.",
       pastedTextOffDescription:

@@ -3223,7 +3223,7 @@ export const es = {
       rememberParamsPerModelHint:
         "Al desactivarlo, todos los modelos usan los mismos ajustes.",
       autoCompactHint:
-        "Chats GGUF y MLX locales: Los turnos expulsados se indexan para que el modelo pueda recuperarlos, y un reinicio cita palabra por palabra las instrucciones permanentes que quepan, dando prioridad a las más antiguas y a las más recientes frente a las intermedias. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto configurada, no la VRAM disponible. Modelos de API: el proveedor resume los turnos antiguos cuando lo admite; si no, se descartan los más antiguos cuando el chat se acerca a la ventana de contexto publicada del modelo.",
+        "Chats GGUF y MLX locales: Los turnos expulsados se indexan para que el modelo pueda recuperarlos, y un reinicio cita palabra por palabra las instrucciones permanentes que quepan, dando prioridad a las más antiguas y a las más recientes frente a las intermedias. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto configurada, no la VRAM disponible. Modelos de API: el proveedor resume los turnos antiguos cuando lo admite; si no, los más antiguos salen del contexto cuando el chat se acerca a la ventana de contexto publicada del modelo y se indexan de la misma forma.",
       pastedTextShortDescription:
         "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt.",
       pastedTextOffDescription:

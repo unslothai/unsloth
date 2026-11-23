@@ -3454,7 +3454,7 @@ export const cs = {
       rememberParamsPerModelHint:
         "Když je vypnuto, používá se pro všechny modely stejné nastavení.",
       autoCompactHint:
-        "Místní chaty GGUF a MLX: vyřazené výměny se indexují, aby je model mohl vyhledáním vrátit zpět, a reset doslovně ocituje trvalé pokyny, které se vejdou, přičemž nejstarší a nejnovější mají přednost před prostředními. Archivace vyžaduje uložený chat a vektorový index; bez nich se starší výměny zahodí. Používá délku kontextu, kterou jste nastavili, ne dostupnou VRAM. Modely API: poskytovatel starší výměny shrne, kde to jde, jinak se nejstarší výměny zahodí, když se chat blíží zveřejněnému kontextovému oknu modelu.",
+        "Místní chaty GGUF a MLX: vyřazené výměny se indexují, aby je model mohl vyhledáním vrátit zpět, a reset doslovně ocituje trvalé pokyny, které se vejdou, přičemž nejstarší a nejnovější mají přednost před prostředními. Archivace vyžaduje uložený chat a vektorový index; bez nich se starší výměny zahodí. Používá délku kontextu, kterou jste nastavili, ne dostupnou VRAM. Modely API: poskytovatel starší výměny shrne, kde to jde, jinak se nejstarší výměny vyřadí z kontextu, když se chat blíží zveřejněnému kontextovému oknu modelu, a stejně se zaindexují.",
       pastedTextShortDescription:
         "Vložený text o délce alespoň {count} znaků se změní na přílohu .txt.",
       pastedTextOffDescription: "Vložený text vždy zůstane v poli zprávy.",

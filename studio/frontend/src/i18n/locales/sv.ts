@@ -3352,7 +3352,7 @@ export const sv = {
       rememberParamsPerModelHint:
         "När det är av används samma inställningar för alla modeller.",
       autoCompactHint:
-        "Endast lokala GGUF- och MLX-chattar. Borttagna turer indexeras så att modellen kan söka fram dem igen, och en återställning citerar de stående instruktioner som får plats ordagrant, där de äldsta och nyaste prioriteras före mitten. Arkivering kräver en sparad chatt och vektorindexet; utan dem tas äldre turer bort. Använder den kontextlängd du har angett, inte tillgängligt VRAM.",
+        "Lokala GGUF- och MLX-chattar: borttagna turer indexeras så att modellen kan söka fram dem igen, och en återställning citerar de stående instruktioner som får plats ordagrant, där de äldsta och nyaste prioriteras före mitten. Arkivering kräver en sparad chatt och vektorindexet; utan dem tas äldre turer bort. Använder den kontextlängd du har angett, inte tillgängligt VRAM. API-modeller: leverantören sammanfattar äldre turer där den kan, annars tas de äldsta turerna bort ur kontexten när chatten närmar sig modellens publicerade kontextfönster och indexeras på samma sätt.",
       pastedTextShortDescription:
         "Inklistringar på {count} tecken eller fler blir .txt-bilagor.",
       pastedTextOffDescription:
