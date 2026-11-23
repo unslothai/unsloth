@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF -> transformers handoff: the settle waits for the stopped llama-server's VRAM to show
-freed, and a transformers worker shutdown skips the GPU cache work its exit makes redundant."""
+"""GGUF -> transformers handoff VRAM settle and exit-time unload."""
 
 from __future__ import annotations
 
@@ -18,7 +17,7 @@ import routes.inference as inf
 from core.inference import worker as worker_module
 from core.inference.llama_cpp import LlamaCppBackend
 
-try:  # needs peft and torch, which some CPU-only CI legs (macOS) do not install
+try:  # peft/torch absent on some CPU-only CI legs
     from core.inference import inference as inference_module
 except ImportError:
     inference_module = None
@@ -27,15 +26,13 @@ needs_inference = pytest.mark.skipif(
     inference_module is None, reason = "core.inference.inference needs peft and torch"
 )
 
-_HELD = 16000.0  # MiB of weights the stopped server held on GPU 0
-_BEFORE = [(0, 4000)]  # free while it still holds them (WDDM / slow reclaim)
-_AFTER = [(0, 20000)]  # free once the driver reports the release
+_HELD = 16000.0
+_BEFORE = [(0, 4000)]
+_AFTER = [(0, 20000)]
 _BASELINE = {0: (4000, _HELD)}
 
 
 class _Server:
-    """A loaded llama-server stand-in whose kill records a baseline, as _kill_process_body does."""
-
     _wait_for_vram_settle = staticmethod(LlamaCppBackend._wait_for_vram_settle)
 
     def __init__(
@@ -86,7 +83,6 @@ def test_a_release_already_reported_costs_the_same_two_polls():
 
 
 def test_no_baseline_from_the_kill_keeps_the_plain_settle():
-    # The kill could not read a baseline (CPU-only reading, Windows ROCm): two equal samples end it.
     assert _handoff(_Server(baseline = None), [_BEFORE, _BEFORE, _AFTER]) == 2
 
 
@@ -112,9 +108,6 @@ def test_nothing_killed_still_skips_the_wait():
     server._wait_for_vram_settle = lambda **kw: waits.append(kw)
     asyncio.run(inf._unload_llama_before_standard_load(server))
     assert waits == []
-
-
-# Worker shutdown: os._exit frees the CUDA context, so the cache clear is not run first.
 
 
 def _backend_with(model):

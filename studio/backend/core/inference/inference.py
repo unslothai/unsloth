@@ -1659,8 +1659,7 @@ class InferenceBackend:
             raise Exception(error_msg)
 
     def unload_model_for_exit(self, model_name: str) -> bool:
-        """unload_model for a worker that exits next: process exit returns the CUDA context and its
-        allocations, so the GPU cache clear and decode-graph release would be thrown away."""
+        """unload_model for an exiting worker: os._exit frees the CUDA context, so skip the cache clear."""
         return self.unload_model(model_name, process_exiting = True)
 
     @_invalidates_gpu_memory("transformers unload")

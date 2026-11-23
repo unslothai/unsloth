@@ -17047,8 +17047,7 @@ async def _unload_llama_before_standard_load(llama_backend) -> None:
     kill_started, baseline = await asyncio.to_thread(handoff)
     if kill_started is None:
         return
-    # The baseline makes the settle wait for the server's VRAM to show freed (WDDM and some
-    # drivers reclaim late), not just for two equal samples read before the release.
+    # Baseline: wait for the server's VRAM to show freed, not two equal pre-release samples.
     await asyncio.to_thread(
         llama_backend._wait_for_vram_settle,
         since_kill = kill_started,
