@@ -284,11 +284,18 @@ def test_cache_only_reads_pin_the_validated_commit(monkeypatch):
     assert reads.revisions == {"index": [C1], "processor": [C1], "transformer": [C1], "vae": [C1]}
 
 
-def test_a_revalidating_read_stays_unpinned(monkeypatch):
+def test_a_hub_repair_pins_the_validated_commit_and_a_revalidating_load_stays_unpinned(monkeypatch):
+    """A component missing from the validated snapshot is fetched from the Hub at that same commit: an unpinned
+    repair after main moved would pair the new commit's processor with the old commit's transformer and VAE."""
     f3, reads, noted, forgot, torch = _loader_env(monkeypatch, cached = True, fail = ("processor",))
     f3.load_flux3_pipeline(REPO, torch.bfloat16, text_encoder = object())
-    # the cache-only attempt pinned C1; its Hub fallback resolves main as before
-    assert reads.revisions["processor"] == [C1, None]
+    assert reads.revisions == {
+        "index": [C1],
+        "processor": [C1, C1],
+        "transformer": [C1],
+        "vae": [C1],
+    }
+    assert ("processor", False) in reads and len(forgot) == 1
     f3, reads, noted, forgot, torch = _loader_env(monkeypatch, cached = False)
     f3.load_flux3_pipeline(REPO, torch.bfloat16, text_encoder = object())
     assert set(sum(reads.revisions.values(), [])) == {None}

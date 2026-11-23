@@ -896,8 +896,8 @@ def load_flux3_pipeline(
         "storage_dtype": str(storage_dtype),
         "transformer_storage": transformer_storage,
     }
-    # The validated commit: every cache-only read below pins it, so a concurrent download that moves the cache's
-    # refs/main mid-load cannot hand this load another snapshot's files.
+    # The validated commit: every read below pins it, so a concurrent download that moves the cache's refs/main
+    # mid-load, or a Hub repair of one missing component after main moved, cannot mix in another commit's files.
     commit = (
         None
         if local_files_only
@@ -916,17 +916,14 @@ def load_flux3_pipeline(
             on_fallback = lambda: snap.forget(repo_id, components, cache_dir = common["cache_dir"]),
         )
 
-    def _rev(local: bool) -> Optional[str]:
-        return commit if local and cached else None
-
     def _kw(local: bool) -> dict[str, Any]:
         kw = dict(common, local_files_only = local_files_only or local)
-        if _rev(local):
+        if commit:
             kw["revision"] = commit
         return kw
 
     index = cache_first(
-        lambda local: _read_index(repo_id, token, local_files_only or local, revision = _rev(local)),
+        lambda local: _read_index(repo_id, token, local_files_only or local, revision = commit),
         name = FLUX3_INDEX,
     )
     check_cancelled()
@@ -949,7 +946,7 @@ def load_flux3_pipeline(
                 storage_dtype = storage_dtype,
                 hf_token = token,
                 local_files_only = local_files_only or local,
-                revision = _rev(local),
+                revision = commit,
             ),
             name = "the text encoder",
         )
@@ -965,7 +962,7 @@ def load_flux3_pipeline(
                 repo_id,
                 token,
                 local_files_only or local,
-                revision = _rev(local),
+                revision = commit,
             )
             return _manual_cast_load(
                 lambda load_dtype: diffusers.Flux3Transformer2DModel.from_pretrained(
@@ -977,7 +974,7 @@ def load_flux3_pipeline(
                 storage_dtype = transformer_storage_at,
                 hf_token = token,
                 local_files_only = local_files_only or local,
-                revision = _rev(local),
+                revision = commit,
             )
 
         transformer = cache_first(_transformer, name = "the transformer")
