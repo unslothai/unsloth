@@ -522,3 +522,26 @@ def test_safetensors_notice_extends_the_streamed_prefix():
     )
     shown = _route_shown(events)
     assert "The model asked for another tool" in shown, repr(shown)
+
+
+def test_safetensors_notice_stays_after_a_prefilled_reasoning_close():
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    def _gen(_messages):
+        yield "Need more sources.</think>"
+        yield "Need more sources.</think>" + CALL
+
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "Research LFM2.5."}],
+            tools = [{"type": "function", "function": {"name": "web_fetch"}}],
+            execute_tool = lambda name, arguments, **_: "RESULT",
+            max_tool_iterations = 1,
+            reasoning_prefilled = True,
+        )
+    )
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    # The prefilled extractor needs the closer in the snapshot that carries the notice.
+    last = contents[-1]
+    assert "</think>" in last and last.index("</think>") < last.index("The model asked"), contents

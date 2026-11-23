@@ -1324,14 +1324,12 @@ def run_safetensors_tool_loop(
             if tool_calls and not _reprompt_intent_text(
                 content_text, reasoning_prefilled = reasoning_prefilled, visible_only = True
             ):
-                # As for a truncated call: reset the cursor, send only what was not streamed, then the notice.
+                # Extend the shown snapshot, never restart it: a prefilled turn needs its </think> in the same snapshot.
                 display = _strip_streaming_display(cumulative_display)
-                yield {"type": "status", "text": ""}
+                sep = "\n\n" if display.strip() else ""
                 yield {
                     "type": "content",
-                    "text": display[len(last_emitted) :]
-                    + ("\n\n" if display.strip() else "")
-                    + _FINAL_ANSWER_TOOL_LIMIT_MESSAGE,
+                    "text": f"{display}{sep}{_FINAL_ANSWER_TOOL_LIMIT_MESSAGE}",
                 }
                 yield {"type": "status", "text": ""}
                 return
