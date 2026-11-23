@@ -302,8 +302,7 @@ def _sanitize_request(
         )
     if (request.n or 1) != 1:
         raise HTTPException(status_code = 400, detail = "Durable chat runs require n=1")
-    # A connection forwards only the sampling fields the client set; a dumped default would read as
-    # set once the run is replayed (top_k=20 to a provider that never asked for it).
+    # Only the client's own sampling: a dumped default replays as set (top_k=20 to any provider).
     sanitized = request.model_dump(mode = "json", exclude_none = True, exclude_unset = external)
     if request.permission_mode == "off" and not request._off_confirm_opt_out:
         # Persisted False would read as an explicit opt-out and skip the no-sandbox confirm gate.

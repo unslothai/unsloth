@@ -172,7 +172,6 @@ def test_a_connection_run_keeps_only_the_sampling_the_client_sent(thread):
     sanitized = run_routes._sanitize_request(_payload(temperature = 0.3), _ui_request())
 
     assert sanitized["temperature"] == 0.3
-    # Persisted defaults would be forwarded as if chosen: top_k=20 to a provider that rejects it.
     for field in ("top_p", "top_k", "min_p", "repetition_penalty"):
         assert field not in sanitized
     replayed = run_routes.ChatCompletionRequest.model_validate(sanitized)
