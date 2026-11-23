@@ -170,6 +170,10 @@ def test_print_page_numbers_are_not_inlined_into_the_text(ebooks, marker):
         (b'<p>exam<span epub:type="pagebreak">12</span>ple</p>', "example"),
         (b'<p>exam<span role="doc-pagebreak"><span hidden>12 </span></span>ple</p>', "example"),
         (b'<pre>x=1<span role="doc-pagebreak">\n</span>y=2</pre>', "x=1\ny=2"),
+        (
+            b'<pre>return<span role="doc-pagebreak"> 12<span aria-hidden="true"><img src="x"/></span></span>None</pre>',
+            "return None",
+        ),
         (b'<p>quick<span epub:type="pagebreak"><br/></span>brown</p>', "quick\nbrown"),
         (b'<p>exam<span epub:type="pagebreak">Page <b>12</b></span>ple</p>', "example"),
         (
