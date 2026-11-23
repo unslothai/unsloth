@@ -915,6 +915,8 @@ _RACE_SOURCES = {
         "_PROBE_SHAPES",
         "_scale_dtypes",
         "_probe_tile",
+        # the probe's out-of-memory check
+        "_is_oom",
         "probed_tiles",
         # the switches the race and the pick read (their env values are keyed by _cut_cache_key / race_points)
         "mode",

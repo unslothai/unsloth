@@ -66,16 +66,22 @@ def _cpu_forward_kernel(op):
         lib._destroy()
 
 
-@pytest.fixture(scope = "module")
-def op():
-    # Skip only on the optional dependency; a broken op factory or kernel registration fails setup.
+@pytest.fixture
+def raw_op():
+    # Skip only on the optional dependency; a broken op factory fails setup.
     try:
         import torchao.prototype.mx_formats.nvfp4_tensor  # noqa: F401
     except ImportError as e:
         pytest.skip(f"torchao NVFP4 internals unavailable: {e!r}")
-    op = qat_utils._nvfp4_qat_linear_op()
-    with _cpu_forward_kernel(op):
-        yield op
+    return qat_utils._nvfp4_qat_linear_op()
+
+
+@pytest.fixture
+def op(raw_op):
+    # Per test, not per module: torch 2.10 refuses a second Python CPU kernel on the same op, so a module-wide
+    # registration would leave no clean op for the restore check.
+    with _cpu_forward_kernel(raw_op):
+        yield raw_op
 
 
 def _run(
@@ -259,8 +265,9 @@ def test_backward_fake_matches_requested_grads(op):
             assert gw.shape == ((96, 128) if need_w else (0,))
 
 
-def test_cpu_forward_kernel_is_restored_on_exit(op):
+def test_cpu_forward_kernel_is_restored_on_exit(raw_op):
     # Failing before: the fixture registered its CPU matmul on the production op and never removed it.
+    op = raw_op
     name = op._qualname
     before = _has_cpu_kernel(name)
     with _cpu_forward_kernel(op):

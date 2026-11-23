@@ -1014,6 +1014,80 @@ def test_beam_size_matches_fast_flag(monkeypatch, fake_whisper_server):
     assert b'name="temperature"\r\n\r\n0.0' in seen[0]
 
 
+def _capturing_server(monkeypatch, reply: dict) -> list[bytes]:
+    seen: list[bytes] = []
+
+    def capture_post(handler):
+        length = int(handler.headers.get("Content-Length", "0"))
+        seen.append(handler.rfile.read(length))
+        payload = json.dumps(reply).encode()
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(payload)))
+        handler.end_headers()
+        handler.wfile.write(payload)
+
+    monkeypatch.setattr(_FakeWhisperHandler, "do_POST", capture_post)
+    return seen
+
+
+def _served_sidecar(monkeypatch, port) -> GgmlSttSidecar:
+    _available(monkeypatch)
+    monkeypatch.setattr(ggml_module, "_cached_model_path", lambda model_id: "/tmp/ggml.bin")
+    sidecar = GgmlSttSidecar()
+
+    def fake_load(model = None):
+        sidecar._port = port
+        sidecar._model_id = ggml_module.resolve_ggml_model_id(model)
+
+    monkeypatch.setattr(sidecar, "load", fake_load)
+    return sidecar
+
+
+def test_timestamps_request_verbose_json_segments(monkeypatch, fake_whisper_server):
+    seen = _capturing_server(
+        monkeypatch,
+        {
+            "text": " Hello there.\n General Kenobi.\n",
+            "segments": [
+                {"id": 0, "text": " Hello there.", "start": 0.0, "end": 1.5},
+                {"id": 1, "text": " General Kenobi.", "start": 1.5, "end": 3.25},
+                {"id": 2, "text": "  ", "start": 3.25, "end": 4.0},
+                {"id": 3, "text": " no timing"},
+            ],
+        },
+    )
+    sidecar = _served_sidecar(monkeypatch, fake_whisper_server)
+    result = sidecar.transcribe(b"RIFF", model = "small", language = "en", timestamps = True)
+    assert b'name="response_format"\r\n\r\nverbose_json' in seen[0]
+    assert b'name="no_language_probabilities"\r\n\r\ntrue' in seen[0]
+    assert result["text"] == "Hello there. General Kenobi."
+    assert result["segments"] == [
+        {"start": 0.0, "end": 1.5, "text": "Hello there."},
+        {"start": 1.5, "end": 3.25, "text": "General Kenobi."},
+    ]
+
+
+def test_default_request_and_result_have_no_segments(monkeypatch, fake_whisper_server):
+    seen = _capturing_server(
+        monkeypatch,
+        {"text": "Hi.", "segments": [{"text": "Hi.", "start": 0.0, "end": 1.0}]},
+    )
+    sidecar = _served_sidecar(monkeypatch, fake_whisper_server)
+    result = sidecar.transcribe(b"RIFF", model = "small", language = "en")
+    assert b'name="response_format"\r\n\r\njson' in seen[0]
+    assert b"no_language_probabilities" not in seen[0]
+    assert set(result) == {"text", "language", "duration", "model"}
+
+
+def test_timestamps_without_segments_returns_text_only(monkeypatch, fake_whisper_server):
+    _capturing_server(monkeypatch, {"text": "Only text."})
+    sidecar = _served_sidecar(monkeypatch, fake_whisper_server)
+    result = sidecar.transcribe(b"RIFF", model = "small", language = "en", timestamps = True)
+    assert result["text"] == "Only text."
+    assert "segments" not in result
+
+
 def test_download_rejects_custom_ids():
     with pytest.raises(SttModelIdError):
         ggml_module.start_model_download("owner/model")

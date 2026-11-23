@@ -63,9 +63,10 @@ def rocm_windows_discrete(device = "cuda") -> bool:
 
         if not is_rocm_torch(torch):
             return False
-        from core.inference.host_pinning import device_is_integrated
+        from core.inference.host_pinning import device_integrated_status
 
-        return not device_is_integrated(device)
+        # Positive discrete evidence only: an unreadable property must not turn an APU's budgets off.
+        return device_integrated_status(device) is False
     except Exception:  # noqa: BLE001
         return False
 
@@ -122,8 +123,7 @@ def _attention_ops() -> frozenset:
 
 
 def _attention_bytes(args: tuple) -> int:
-    """Bytes an attention kernel's kept outputs hold: the output (query shape, value head size) and an fp32
-    logsumexp per query row."""
+    """Kept output bytes: query shape with value head size, plus fp32 logsumexp per query row."""
     q = args[0] if args else None
     v = args[2] if len(args) > 2 else None
     if getattr(q, "ndim", 0) < 2:

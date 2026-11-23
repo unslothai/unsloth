@@ -4302,6 +4302,20 @@ def test_probe_routed_vulkan_bundle_that_lists_a_gpu_is_kept(tmp_path, monkeypat
     assert _run_vulkan_device_gate(monkeypatch, tmp_path, required = True, listed = True) == [True]
 
 
+def test_sycl_bundle_that_lists_no_sycl_gpu_falls_back(tmp_path, monkeypatch):
+    with pytest.raises(PrebuiltFallback, match = "lists no SYCL GPU"):
+        _run_vulkan_device_gate(
+            monkeypatch, tmp_path, required = False, listed = False, install_kind = "linux-sycl"
+        )
+
+
+def test_sycl_bundle_that_lists_a_sycl_gpu_is_kept(tmp_path, monkeypatch):
+    listings = _run_vulkan_device_gate(
+        monkeypatch, tmp_path, required = False, listed = True, install_kind = "linux-sycl"
+    )
+    assert listings == [True]
+
+
 @pytest.mark.parametrize(
     "required, install_kind",
     [(False, "linux-vulkan"), (True, "linux-arm64")],
@@ -7441,8 +7455,7 @@ def test_a_release_with_a_standalone_visual_server_keeps_its_retry_path(tmp_path
 def test_a_second_update_on_a_bundle_without_the_visual_server_downloads_nothing(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The first install records the absence after activation, so the second update takes
-    the already-matches skip instead of re-extracting the same bundle."""
+    """First install records the absence, so the second update takes the already-matches skip."""
     M = INSTALL_LLAMA_PREBUILT
     host = macos_host()
     choice = _published_mac_choice()

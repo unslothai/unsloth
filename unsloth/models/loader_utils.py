@@ -1887,10 +1887,91 @@ def _copy_error(error):
     return clone
 
 
+try:
+    # transformers >= 5.18: each from_pretrained sends a repo_info request to resolve its revision.
+    from transformers.utils.hub import resolve_revision as _hub_resolve_revision
+    from huggingface_hub import ResolvedRevision as _ResolvedRevision
+except ImportError:
+    _hub_resolve_revision = None
+    _ResolvedRevision = None
+
+
+def _resolved_revision(
+    model_name,
+    revision,
+    token = None,
+    local_files_only = False,
+    cache_dir = None,
+):
+    """Resolve once per load, only for transformers `revision =` args: a ResolvedRevision equals "main", not None."""
+    memo = _LOAD_PROBE_MEMO.get()
+    if (
+        memo is None
+        or _hub_resolve_revision is None
+        or not isinstance(model_name, str)
+        or not model_name
+        or isinstance(revision, _ResolvedRevision)
+        or os.path.exists(model_name)
+    ):
+        return revision
+    try:
+        key = (
+            "resolved_revision",
+            model_name,
+            revision,
+            token,
+            bool(local_files_only),
+            _env_says_offline(),
+            None if cache_dir is None else os.fspath(cache_dir),
+        )
+        hash(key)
+    except TypeError:
+        return revision
+    if key not in memo:
+        try:
+            resolved = _hub_resolve_revision(
+                model_name,
+                revision,
+                token = token,
+                local_files_only = bool(local_files_only),
+                cache_dir = cache_dir,
+            )
+        except Exception:
+            resolved = revision
+        memo[key] = resolved if isinstance(resolved, _ResolvedRevision) else revision
+    return memo[key]
+
+
+_TOKEN_FROM_KWARGS = object()
+
+
+def _kwargs_with_resolved_revision(
+    model_name,
+    kwargs,
+    token = _TOKEN_FROM_KWARGS,
+):
+    revision = kwargs.get("revision")
+    resolved = _resolved_revision(
+        model_name,
+        revision,
+        token = kwargs.get("token") if token is _TOKEN_FROM_KWARGS else token,
+        local_files_only = kwargs.get("local_files_only", False),
+        cache_dir = kwargs.get("cache_dir"),
+    )
+    if resolved is revision:
+        return kwargs
+    return {**kwargs, "revision": resolved}
+
+
 def _memo_config_probe(loader, model_name, **kwargs):
     memo = _LOAD_PROBE_MEMO.get()
+    # Keyed on the owning class: import_fixes wraps AutoConfig.from_pretrained; PeftConfig keeps the plain ref.
+    owner = getattr(loader, "__self__", loader)
+    pin = (getattr(owner, "__module__", None) or "").startswith("transformers.")
     if memo is None or kwargs.get("trust_remote_code") or not isinstance(model_name, str):
-        return loader(model_name, **kwargs)
+        return loader(
+            model_name, **(_kwargs_with_resolved_revision(model_name, kwargs) if pin else kwargs)
+        )
     if kwargs.get("cache_dir", 0) is None:
         kwargs.pop("cache_dir")
     try:
@@ -1905,7 +1986,9 @@ def _memo_config_probe(loader, model_name, **kwargs):
             raise _copy_error(error)
         return copy.deepcopy(result)
     try:
-        result = loader(model_name, **kwargs)
+        result = loader(
+            model_name, **(_kwargs_with_resolved_revision(model_name, kwargs) if pin else kwargs)
+        )
     except ImportError:
         raise
     except Exception as error:
@@ -4804,6 +4887,18 @@ def sync_unsloth_model_name_bnb_flags(
     os.environ["UNSLOTH_MODEL_NAME"] = name
 
 
+def _allow_torchao_perblock_safetensors():
+    """torchao's safetensors loader allow-lists PerRow but not PerBlock, and transformers 5 always saves safetensors, so a `load_in_fp8 = "block"` artifact failed to reload with `Failed to find class PerBlock`."""
+    try:
+        from torchao.prototype.safetensors import safetensors_utils
+        from torchao.quantization import PerBlock
+    except Exception:
+        return
+    allowed = getattr(safetensors_utils, "ALLOWED_CLASSES", None)
+    if isinstance(allowed, dict):
+        allowed.setdefault("PerBlock", PerBlock)
+
+
 def _get_fp8_mode_and_check_settings(
     load_in_fp8: Union[bool, str],
     fast_inference: bool,
@@ -4812,7 +4907,7 @@ def _get_fp8_mode_and_check_settings(
     load_in_8bit: bool = False,
     load_in_16bit: bool = False,
 ) -> str:
-    """Validate `load_in_fp8` settings/environment and return the fp8 mode ("row" or "block"). Requires H100+, torchao 0.15.0+, torch 2.9.0+, and fbgemm_gpu_genai 1.4.1+ if installed."""
+    """Validate `load_in_fp8` settings/environment and return the fp8 mode ("row" or "block"). Requires torch 2.9.0+ and either H100+ with torchao 0.15.0+, or Intel XPU with torchao 0.18.0+ and fast_inference = False. fbgemm_gpu_genai 1.4.1+ is used if installed."""
     assert load_in_fp8 is not False
     if load_in_fp8 is True:
         fp8_mode = "row"  # default
@@ -4828,7 +4923,14 @@ def _get_fp8_mode_and_check_settings(
             "Unsloth: `load_in_fp8` is not compatible with `load_in_4bit`, `load_in_8bit` or `load_in_16bit`",
         )
 
-    if not (
+    min_torchao = "0.15.0"
+    if DEVICE_TYPE_TORCH == "xpu":
+        if fast_inference:
+            raise ValueError(
+                "Unsloth: On the fly `load_in_fp8` on Intel XPU needs `fast_inference = False`."
+            )
+        min_torchao = "0.18.0"
+    elif not (
         torch.cuda.is_available()
         and torch.version.cuda
         and torch.cuda.get_device_capability() >= (9, 0)
@@ -4842,20 +4944,21 @@ def _get_fp8_mode_and_check_settings(
             "Unsloth: On the fly `load_in_fp8` requires torch 2.9.0+. Try `unsloth/Qwen3-8B` instead."
         )
 
-    # Check if torchao has pytorch/ao#3158, released in 0.15.0.
+    # CUDA needs pytorch/ao#3158 (0.15.0); XPU was validated on 0.18.0.
     if importlib.util.find_spec("torchao") is None:
         raise ValueError(
             "Unsloth: Please install torchao for on the fly float8 to work! Try `unsloth/Qwen3-8B` instead."
         )
     import torchao
 
-    error_message = (
-        "Unsloth: `load_in_fp8` requires torchao 0.15.0+ (or nightly).\n"
-        f"You have torchao version={torchao.__version__}\n"
-        "Use `pip install --upgrade --force-reinstall torchao`"
-    )
-    if Version(torchao.__version__) < Version("0.15.0"):
-        raise ValueError(error_message)
+    if Version(torchao.__version__) < Version(min_torchao):
+        on_xpu = " on Intel XPU" if DEVICE_TYPE_TORCH == "xpu" else ""
+        raise ValueError(
+            f"Unsloth: `load_in_fp8`{on_xpu} requires torchao {min_torchao}+ (or nightly).\n"
+            f"You have torchao version={torchao.__version__}\n"
+            "Use `pip install --upgrade --force-reinstall torchao`"
+        )
+    _allow_torchao_perblock_safetensors()
 
     # If fbgemm_gpu_genai is installed and old, disable FBGEMM and use Triton kernels instead.
     if (

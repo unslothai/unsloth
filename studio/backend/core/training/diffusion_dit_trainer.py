@@ -761,6 +761,12 @@ def _apply_fp8_training(
             if not _bf16_fallback_fits(transformer, device):
                 # The host-first load fits where the bf16 base never did; the caller reloads nf4 instead.
                 raise Fp8FallbackDoesNotFit(str(exc)) from exc
+        if any(getattr(m, "_studio_lowp", None) == "fp8" for m in transformer.modules()):
+            # Failed partway (an OOM between or inside layers): the caller would record this mixed base as bf16.
+            raise ValueError(
+                f"fp8 failed after converting part of the base ({exc}); use base_precision='nf4' or 'auto'."
+            ) from exc
+        if device is not None:
             transformer.to(device)
         _emit(on_event, "warning", message = f"fp8 training unavailable, using bf16 compute: {exc}")
         return False
@@ -1592,10 +1598,9 @@ def _krea2_encode_prompts(pipe, captions, device):
 
 
 def _krea2_text_rows(pe, mask):
-    """The valid text rows of one Krea 2 prompt, as (pe [1, L, layers, D], all-true mask [1, L]). Exact: every text
-    token sits at the rotary origin and the text fusion has no positions, so a padded row is only ever a masked key
-    whose own output is sliced away; dropping it (wherever the template put it) leaves every kept row unchanged.
-    It cut the joint sequence by 512 - L rows per step (a third of it at 512 px)."""
+    """Returns valid rows of a Krea 2 prompt as (pe [1, L, layers, D], all-true mask [1, L]);
+    dropping padded rows is exact (text at rotary origin, no fusion positions, padded row only a
+    masked key sliced away wherever placed); cuts 512 - L rows per step (a third at 512 px)."""
     import torch
 
     if mask is None:
@@ -2685,9 +2690,8 @@ def _ltx25_start_encoder(cfg, device):
 
 
 def _ltx25_worker_resident(worker_device: str, te_quant) -> bool:
-    """Keep Gemma 4 on the card only when it fits beside what this process already holds there (the connectors). A
-    resident worker never falls back on an out of memory; a non-resident one onloads whole, streams layers or encodes
-    on the CPU, per encode, by the room it reads then."""
+    """Keep Gemma 4 on the card only if it fits beside the connectors already there; a resident
+    worker never falls back on OOM, while others onload, stream or encode on CPU per encode."""
     kind = str(worker_device).split(":", 1)[0]
     if kind not in ("cuda", "xpu"):
         return False
@@ -3371,10 +3375,16 @@ def _build_latent_cache(
     for i, path in enumerate(image_paths):
         variants = []
         resized = None
+        digest = pcache.content_hash(path) if pcache is not None and plan[i] else None
         for u_left, u_top, flip in plan[i]:
             canvas = cfg.resolution if canvases is None else canvases[i]
             key = (
-                pcache.latent_key(path, (u_left, u_top, flip), None if canvases is None else canvas)
+                pcache.latent_key(
+                    path,
+                    (u_left, u_top, flip),
+                    None if canvases is None else canvas,
+                    content_hash = digest,
+                )
                 if pcache is not None
                 else None
             )
@@ -3511,9 +3521,15 @@ def _load_warm_conditioning(
     cache: list[list[tuple]] = []
     for i, path in enumerate(image_paths):
         variants = []
+        digest = pcache.content_hash(path) if plan[i] else None
         for variant in plan[i]:
             entry = pcache.get(
-                pcache.latent_key(path, variant, None if canvases is None else canvases[i])
+                pcache.latent_key(
+                    path,
+                    variant,
+                    None if canvases is None else canvases[i],
+                    content_hash = digest,
+                )
             )
             if entry is None:
                 return None, None
@@ -4296,9 +4312,12 @@ def _train_dit(
     ):
         base_precision = "bf16"
     if ddp is not None:
+        from core.training.diffusion_ddp import lowp_layers_digest
+
         # The conversion fallbacks above ran per rank: refuse on every rank if they left different bases.
         ddp.check_effective_precision(
-            "int8_w8a8" if base_precision == "int8" and w8a8_on else base_precision
+            "int8_w8a8" if base_precision == "int8" and w8a8_on else base_precision,
+            layers = lowp_layers_digest(transformer),
         )
         # Same seed, so already equal; the broadcast makes the replicas identical whatever the load consumed.
         ddp.broadcast_params(lora_params)
@@ -4714,8 +4733,7 @@ def _train_dit(
                 if ddp is not None:
                     latents = latents[ddp.batch_slice(batch_size)]
             else:
-                # Data parallel: only this rank's slice is decoded and encoded; the rest only advance the crop / flip
-                # stream, which every rank shares.
+                # Only this rank encodes its slice; others advance the shared crop/flip stream.
                 own = (
                     range(len(idxs))
                     if ddp is None

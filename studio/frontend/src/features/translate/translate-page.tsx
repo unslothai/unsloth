@@ -104,6 +104,7 @@ import {
   ArrowLeftRightIcon,
   Cancel01Icon,
   Download01Icon,
+  ImageIcon,
   Message01Icon,
   RemoveCircleIcon,
   Search01Icon,
@@ -128,6 +129,11 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import { chatAboutTranslations } from "./chat-handoff";
 import { TranslateHistoryList } from "./history-list";
+import {
+  ImageOverlayDialog,
+  type ImageOverlaySource,
+} from "./image-overlay-dialog";
+import { isImageTextBlock } from "./translate-image-overlay";
 import { transcribeAudioFile } from "./translate-audio";
 import { parseSubtitles, subtitleFileName } from "./translate-subtitles";
 import { detectTranslateLanguage } from "./detect-language";
@@ -250,6 +256,9 @@ function serverUpload(file: File): File {
       })
     : file;
 }
+
+// Images a browser canvas can draw, so the translation can be painted over them.
+const OVERLAY_IMAGE = /\.(png|jpe?g|webp|gif|bmp)$/i;
 
 // The STT server decodes the audio track of these containers.
 const VIDEO_FILE_EXTENSIONS = ".mp4,.m4v,.webm,.mkv,.mov";
@@ -1291,6 +1300,11 @@ export function TranslatePage() {
   const [downloaded, setDownloaded] = useState<Downloaded>({});
   // Names a downloaded subtitle file after the one it came from.
   const [sourceFile, setSourceFile] = useState<string | null>(null);
+  // An image Tesseract read, while the box still holds its text.
+  const [imageSource, setImageSource] = useState<
+    (ImageOverlaySource & { text: string }) | null
+  >(null);
+  const [overlayOpen, setOverlayOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const outputRef = useRef<HTMLDivElement>(null);
   const sourceScrollRef = useRef<HTMLDivElement>(null);
@@ -1436,10 +1450,12 @@ export function TranslatePage() {
     audioAbort.current = controller;
     setReadingFile(file.name);
     const before = useTranslateStore.getState().source;
+    // A video's transcript becomes subtitles when the model times its segments.
+    const video = !isAudioAttachmentFile(file);
     try {
-      const text = await transcribeAudioFile(file, controller.signal, t);
+      const text = await transcribeAudioFile(file, controller.signal, t, video);
       if (text && useTranslateStore.getState().source === before) {
-        loadText(text);
+        loadText(text, video ? file.name : null);
       }
     } finally {
       if (audioAbort.current === controller) audioAbort.current = null;
@@ -1474,16 +1490,27 @@ export function TranslatePage() {
     // Read-only meanwhile; a swap or history pick still wins.
     const before = useTranslateStore.getState().source;
     try {
-      const { text, warning } = await extractDocumentText(
+      const { text, warning, blocks } = await extractDocumentText(
         upload,
         undefined,
         TRANSLATE_SOURCE_MAX_CHARS,
+        OVERLAY_IMAGE.test(file.name),
       );
       if (useTranslateStore.getState().source !== before) {
         return;
       }
       if (text.trim()) {
         loadText(text);
+        const found = (blocks ?? []).filter(isImageTextBlock);
+        setImageSource(
+          found.length > 0
+            ? {
+                file,
+                blocks: found,
+                text: useTranslateStore.getState().source,
+              }
+            : null,
+        );
         if (warning) toast.warning(warning);
       } else toast.error(t("translate.fileNotText"));
     } catch (error) {
@@ -1944,6 +1971,18 @@ export function TranslatePage() {
                       onClick={chatAboutResult}
                     />
                   )}
+                  {result &&
+                    !stale &&
+                    !busy &&
+                    imageSource?.text === source && (
+                      <IconAction
+                        className={FOOTER_ICON}
+                        iconClassName="size-5"
+                        icon={ImageIcon}
+                        label={t("translate.imageOverlay.show")}
+                        onClick={() => setOverlayOpen(true)}
+                      />
+                    )}
                   {subtitleFormat && (
                     <IconAction
                       className={FOOTER_ICON}
@@ -2081,6 +2120,12 @@ export function TranslatePage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <ImageOverlayDialog
+        source={overlayOpen ? imageSource : null}
+        prefs={prefs}
+        onOpenChange={setOverlayOpen}
+      />
 
       <TranslateHistoryList />
     </main>

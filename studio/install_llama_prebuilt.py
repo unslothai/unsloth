@@ -83,6 +83,10 @@ from backend.utils.prebuilt.llama_backend import (  # noqa: E402
     marker_backend_request,
     normalize_backend_request,
 )
+from backend.utils.prebuilt.runtime_libs import (
+    oneapi_lib_dirs,
+    venv_oneapi_lib_dirs as oneapi_runtime_lib_dirs,
+)
 
 # Core functions resolve collaborators through this module's globals at call time,
 # so tests that monkeypatch names here keep working.
@@ -3801,9 +3805,15 @@ def published_asset_choice_for_kind(
     install_kind: str,
     *,
     host: HostInfo | None = None,
+    runtime_line: str | None = None,
 ) -> AssetChoice | None:
     candidates = sorted(
-        (artifact for artifact in release.artifacts if artifact.install_kind == install_kind),
+        (
+            artifact
+            for artifact in release.artifacts
+            if artifact.install_kind == install_kind
+            and (runtime_line is None or artifact.runtime_line == runtime_line)
+        ),
         key = lambda artifact: (artifact.rank, artifact.asset_name),
     )
     for artifact in candidates:
@@ -4712,6 +4722,7 @@ def runtime_patterns_for_install_kind(
         "linux-arm64-cuda",
         "linux-rocm",
         "linux-arm64",
+        "linux-sycl",
         "linux-vulkan",
     }:
         return [
@@ -5395,6 +5406,8 @@ def install_from_archives(
         source_dir = extract_dir
         overlay_dir = overlay_directory_for_choice(install_dir, choice, host)
         copy_globs(source_dir, overlay_dir, runtime_patterns_for_choice(choice), required = True)
+        if choice.install_kind == "linux-sycl" and not oneapi_runtime_lib_dirs():
+            raise PrebuiltFallback("no oneAPI runtime found for the SYCL prebuilt")
         for _subdir in runtime_subdirs_for_choice(choice):
             _src_subdir = source_dir / _subdir
             if _src_subdir.is_dir():
@@ -6286,6 +6299,28 @@ def scrubbed_environ() -> dict[str, str]:
     return env
 
 
+def _sycl_candidate_host(host: HostInfo) -> bool:
+    return (
+        host.is_linux
+        and host.is_x86_64
+        and host.has_intel_gpu
+        # _vulkan_only_host sets has_intel_gpu on AMD hosts it routes to Vulkan.
+        and not host.vulkan_routed
+        and not (host.has_usable_nvidia or host.has_physical_nvidia or host.has_rocm)
+        and not host.has_amd_gpu_without_rocm
+    )
+
+
+def oneapi_runtime_line(lib_dirs: Iterable[str]) -> str | None:
+    majors = {
+        int(match.group(1))
+        for directory in lib_dirs
+        for path in Path(directory).glob("libsycl.so.*")
+        if (match := re.fullmatch(r"libsycl\.so\.(\d+)", path.name))
+    }
+    return f"sycl{max(majors)}" if majors else None
+
+
 def binary_env(
     binary_path: Path,
     install_dir: Path,
@@ -6308,6 +6343,7 @@ def binary_env(
             str(binary_path.parent),
             str(install_dir),
             *linux_runtime_dirs(binary_path),
+            *oneapi_lib_dirs(binary_path.parent),
         ]
         # WSL: system HIP before the bundle's (which segfaults on /dev/dxg).
         _wsl_rocm = _wsl_system_rocm_lib_dirs()
@@ -6398,6 +6434,7 @@ def validate_server(
             "linux-cuda",
             "linux-arm64-cuda",
             "linux-rocm",
+            "linux-sycl",
             "linux-vulkan",
             "windows-cuda",
             "windows-arm64-cuda",
@@ -6928,6 +6965,17 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
                 )
                 attempts.append(vulkan_choice)
     else:
+        # Exact libsycl line only: an unlabelled bundle could not notice the venv's ABI moving.
+        sycl_line = (
+            oneapi_runtime_line(oneapi_runtime_lib_dirs()) if _sycl_candidate_host(host) else None
+        )
+        sycl_choice = (
+            published_asset_choice_for_kind(bundle, "linux-sycl", runtime_line = sycl_line)
+            if sycl_line
+            else None
+        )
+        if sycl_choice is not None:
+            attempts.append(sycl_choice)
         if (host.has_intel_gpu or host.has_amd_gpu_without_rocm) and not host.has_physical_nvidia:
             vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
             if vulkan_choice is not None:
@@ -7235,6 +7283,12 @@ def host_profile(host: HostInfo) -> dict[str, Any]:
         "has_amd_gpu_without_rocm": bool(host.has_amd_gpu_without_rocm),
         "macos_version": list(host.macos_version) if host.macos_version else None,
         "cuda_runtime_lines": _detected_cuda_runtime_lines(host),
+        # Only on SYCL candidates with a venv oneAPI runtime, so other hosts keep their profile.
+        **(
+            {"oneapi_runtime": oneapi_runtime_line(_dirs) or "libsycl"}
+            if _sycl_candidate_host(host) and (_dirs := oneapi_runtime_lib_dirs())
+            else {}
+        ),
     }
 
 
@@ -7824,6 +7878,16 @@ def runtime_payload_health_groups(
             ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
             ["libggml-hip.so*"],
+        ] + _linux_split_entrypoint_groups(source_label, tag)
+    if install_kind == "linux-sycl":
+        return [
+            ["libllama-common.so*"],
+            ["libllama.so*"],
+            ["libggml.so*"],
+            ["libggml-base.so*"],
+            ["libggml-cpu*.so*"],
+            ["libmtmd.so*"],
+            ["libggml-sycl.so*"],
         ] + _linux_split_entrypoint_groups(source_label, tag)
     if install_kind == "linux-vulkan":
         groups = [
@@ -9302,10 +9366,16 @@ def existing_install_matches_plan(
 
 
 _LISTED_VULKAN_DEVICE_RE = re.compile(r"^\s*Vulkan\d+:", re.MULTILINE)
+_LISTED_SYCL_DEVICE_RE = re.compile(r"^\s*SYCL\d+:", re.MULTILINE)
 
 
-def bundle_lists_vulkan_device(server_path: Path, install_dir: Path, host: HostInfo) -> bool:
-    """Whether llama.cpp itself, from the installed bundle, enumerates a Vulkan GPU."""
+def bundle_lists_vulkan_device(
+    server_path: Path,
+    install_dir: Path,
+    host: HostInfo,
+    device_re: "re.Pattern[str]" = _LISTED_VULKAN_DEVICE_RE,
+) -> bool:
+    """Whether llama.cpp itself, from the installed bundle, enumerates a GPU matching ``device_re``."""
     try:
         result = subprocess.run(
             [str(server_path), "--list-devices"],
@@ -9321,7 +9391,7 @@ def bundle_lists_vulkan_device(server_path: Path, install_dir: Path, host: HostI
     except Exception as exc:
         log(f"llama-server --list-devices failed: {exc}")
         return False
-    return result.returncode == 0 and bool(_LISTED_VULKAN_DEVICE_RE.search(result.stdout or ""))
+    return result.returncode == 0 and bool(device_re.search(result.stdout or ""))
 
 
 def validate_prebuilt_choice(
@@ -9391,6 +9461,11 @@ def validate_prebuilt_choice(
         raise PrebuiltFallback(
             f"{choice.name} lists no Vulkan GPU on this host; using the CPU bundle instead"
         )
+    # Picked from "Intel GPU + libsycl in the venv" alone; with no SYCL device it would run on CPU.
+    if choice.install_kind == "linux-sycl" and not bundle_lists_vulkan_device(
+        server_path, install_dir, host, _LISTED_SYCL_DEVICE_RE
+    ):
+        raise PrebuiltFallback(f"{choice.name} lists no SYCL GPU on this host")
     write_prebuilt_metadata(
         install_dir,
         host = host,
@@ -10488,10 +10563,9 @@ def diffusion_visual_server_backfill_needed(
     return not _visual_server_absence_recorded(load_prebuilt_metadata(install_dir), choice.name)
 
 
-# The bundle asset whose extraction left no visual-server. A release can ship a bundle
-# without it (b12540's macOS bundles do), and re-extracting that same bundle can never
-# backfill it, so every update would re-download and re-validate an install that is
-# already complete. Keyed on the asset name: a later bundle that carries it backfills.
+# Keyed on asset name: a bundle without the visual-server (b12540 macOS) never backfills by
+# re-extraction, so record its absence to stop per-update re-download; a later bundle carrying it
+# backfills.
 MARKER_VISUAL_SERVER_ABSENT = "diffusion_visual_server_absent_from"
 
 
@@ -10508,14 +10582,9 @@ def record_visual_server_absence(
     choice: AssetChoice,
     approved_checksums: ApprovedReleaseChecksums,
 ) -> None:
-    """After activation, note a bundle that shipped without the visual-server.
-
-    Only when the backfill check would otherwise keep firing for this exact bundle, so a
-    complete install or an upstream bundle leaves the marker untouched. Not when the
-    release also approves a standalone visual-server: a failed fetch of that is
-    transient, and the next update's backfill is what retries it. Best-effort: the
-    install is already valid, and a missed write only costs one more re-extract.
-    """
+    """Best-effort marker after activation for a bundle shipped without the visual-server, only when
+    backfill would keep firing; skipped if a standalone visual-server is approved (transient
+    fetch, next backfill retries); a missed write costs one re-extract."""
     if _standalone_visual_server_artifacts(host, approved_checksums):
         return
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"

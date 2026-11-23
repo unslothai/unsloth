@@ -73,7 +73,7 @@ class _Pipe(types.SimpleNamespace):
 
 @pytest.fixture
 def engine(monkeypatch):
-    monkeypatch.delenv(FUSE_ENV, raising = False)
+    monkeypatch.setenv(FUSE_ENV, "1")  # folding is opt-in; these tests exercise the folded path
     from core.inference import diffusion_memory
     from core.inference.diffusion_small_host import HOST_RAM_LIMIT_ENV
 
@@ -158,6 +158,13 @@ def test_changed_output_equals_a_never_folded_model(engine):
 
 def test_kill_switch_never_folds(engine, monkeypatch):
     monkeypatch.setenv(FUSE_ENV, "0")
+    engine.apply(1.0)
+    assert _merged_layers(engine.unet) == 0
+
+
+def test_resident_denoiser_stays_unfolded_by_default(engine, monkeypatch):
+    monkeypatch.delenv(FUSE_ENV, raising = False)
+    engine.apply(1.0)
     engine.apply(1.0)
     assert _merged_layers(engine.unet) == 0
 
@@ -371,9 +378,24 @@ def test_power_of_two_packing_kill_switch_keeps_the_exact_slabs(monkeypatch):
     )
 
 
-def test_group_policy_with_a_resident_denoiser_folds(engine, monkeypatch):
+def test_group_policy_stays_unfused_unless_opted_in(engine, monkeypatch):
     from core.inference import diffusion_lora_fuse as lora_fuse
 
+    monkeypatch.delenv(FUSE_ENV, raising = False)
+    monkeypatch.setattr(lora_fuse, "_on_card", lambda module: True)
+    engine.state.offload_policy = dmod.OFFLOAD_GROUP
+    engine.state.memory_mode = "auto"
+    before = _base_weights(engine.unet)
+    engine.apply(1.0)
+    assert _merged_layers(engine.unet) == 0
+    assert not lora_fuse.fused(engine.pipe)
+    assert all(torch.equal(before[k], v) for k, v in _base_weights(engine.unet).items())
+
+
+def test_group_policy_with_a_resident_denoiser_folds_when_opted_in(engine, monkeypatch):
+    from core.inference import diffusion_lora_fuse as lora_fuse
+
+    monkeypatch.setenv(FUSE_ENV, "1")
     monkeypatch.setattr(lora_fuse, "_on_card", lambda module: True)
     engine.state.offload_policy = dmod.OFFLOAD_GROUP
     engine.state.memory_mode = "auto"
@@ -396,6 +418,7 @@ def test_group_policy_with_a_streamed_denoiser_is_not_folded(engine, monkeypatch
 
     from .test_diffusion_lora_fold_gate import _hooked
 
+    monkeypatch.setenv(FUSE_ENV, "1")
     monkeypatch.setattr(lora_fuse, "_on_card", lambda module: True)
     engine.state.offload_policy = dmod.OFFLOAD_GROUP
     engine.state.memory_mode = "auto"

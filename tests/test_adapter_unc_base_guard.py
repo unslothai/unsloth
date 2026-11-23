@@ -92,7 +92,10 @@ def test_both_loaders_check_before_the_base_is_used():
     calls = [
         i
         for i in range(len(source))
-        if source.startswith("    _refuse_network_share_adapter_base(model_name, peft_config)", i)
+        if source.startswith(
+            "    _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)",
+            i,
+        )
     ]
     uses = [
         i
@@ -116,3 +119,27 @@ def test_older_unsloth_zoo_still_refuses_plain_unc(monkeypatch):
         guard("someone/adapter", _config(r"\\evil.example\share\model"))
     guard("someone/adapter", _config("unsloth/Llama-3.2-1B-Instruct"))
     guard("someone/adapter", _config(r"\\wsl$\Ubuntu\models\base"))
+
+
+def test_text_diffusion_loader_refuses_a_hub_adapter_with_unc_base(monkeypatch):
+    # FastModel hands text-diffusion repos to FastDiffusionModel, which resolves the adapter itself.
+    pytest.importorskip("torch")
+    peft = pytest.importorskip("peft")
+    import unsloth.models.diffusion as diffusion
+    import unsloth_zoo.vision_utils as vision_utils
+
+    monkeypatch.setattr(vision_utils, "_WINDOWS", True)
+    adapter = types.SimpleNamespace(
+        base_model_name_or_path = r"\\evil.example\share\model", revision = None
+    )
+    monkeypatch.setattr(peft.PeftConfig, "from_pretrained", lambda *args, **kwargs: adapter)
+    opened = []
+
+    def load_config(name, *args, **kwargs):
+        opened.append(name)
+        raise RuntimeError("base opened")
+
+    monkeypatch.setattr(diffusion, "_load_diffusion_config", load_config)
+    with pytest.raises(ValueError, match = "network share"):
+        diffusion.FastDiffusionModel.from_pretrained("someone/adapter")
+    assert opened == []

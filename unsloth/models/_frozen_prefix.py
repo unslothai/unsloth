@@ -83,9 +83,8 @@ def _plan(model, stacks, heads):
     if any(
         getattr(layer, "_unsloth_pipeline_stand_in", False) for stack in stacks for layer in stack
     ):
-        # Pipeline parallel: a later stage's first layers are pass-throughs returning the previous stage's
-        # activations (cutting there trains no earlier stage), and a non-last stage exits its forward by raising,
-        # past the hooks' cleanup. Off on every stage and every stack.
+        # Pipeline parallel: later stages' first layers are pass-throughs (cutting there trains no
+        # earlier stage) and non-last stages raise past hook cleanup; off everywhere.
         return None
     for stack in stacks:
         # Runs on every training forward: a stack that trains its first layer (adapters everywhere) or
@@ -135,9 +134,8 @@ def _input_leaves(args, kwargs):
 
 
 def _leaf(hidden):
-    """Layer k's input: requires grad (reentrant checkpointing needs one), but is not a leaf, so code
-    between layers may still write into it in place (Qwen3-VL DeepStack on transformers 4.57). Subtracting
-    a zero that requires grad is exact for every value (-0.0 and NaN included) and allocates nothing."""
+    """Input requires grad (reentrant checkpointing) but is not a leaf, so inter-layer code
+    (Qwen3-VL DeepStack, transformers 4.57) may write in place; x - zero is exact, no copy."""
     hidden = hidden.detach()
     zero = torch.zeros((), device = hidden.device, dtype = hidden.dtype, requires_grad = True)
     try:

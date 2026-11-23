@@ -2460,8 +2460,7 @@ def test_batch_sizes_reach_an_api_load_through_the_server_mirror():
     assert "n_ubatch = payload.n_ubatch," in route
     store = _read_backend("utils/openai_auto_switch_settings.py")
     assert '("n_batch", "n_ubatch")' in store
-    # Read through the builder rather than its source: the fields may be copied for GGUF alone or
-    # for GGUF and MLX alike (#18426).
+    # Read through the builder: fields may be copied for GGUF alone or for GGUF and MLX (ref 18426).
     assert _override_load_kwargs({"n_batch": 1024, "n_ubatch": 256}, is_gguf = True) == {
         "n_batch": 1024,
         "n_ubatch": 256,

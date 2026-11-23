@@ -161,8 +161,7 @@ def test_other_moe_archs_keep_the_default_micro_batch(tmp_path, _inkling_host, a
     assert backend._moe_spill_batch_restore is None
 
 
-# 8 GiB of weights on a 16 GB card with 12,000 MiB free: the default launch fits under the
-# 97% cap, but a 4 GiB larger compute buffer at -ub 1024 does not.
+# 16 GB card, 12,000 MiB free, 8 GiB weights: default fits 97%; +4 GiB at -ub 1024 does not.
 _TIGHT = dict(size_gib = 8, memory = [(0, 12_000, 16_000)], raise_cost_mib = 4096)
 
 

@@ -14,9 +14,28 @@ import weakref
 
 import torch
 
+try:
+    from peft.tuners.tuners_utils import BaseTunerLayer as _BaseTunerLayer
+except Exception:
+    _BaseTunerLayer = None
+try:
+    # The same live-adapter check the unsloth_zoo fused forwards use (also catches merged-then-disabled heads and
+    # PEFT's per-example adapter_names hook). Older zoo: the module walk below.
+    from unsloth_zoo.fused_losses.forward_adapter import (
+        lm_head_needs_module_forward as _zoo_head_needs_module_forward,
+    )
+except Exception:
+    _zoo_head_needs_module_forward = None
+
 __all__ = ["fused_label_smoothing_compute_loss"]
 
-_OFF = os.environ.get("UNSLOTH_FUSED_LABEL_SMOOTHING", "1") == "0"
+
+def _off():
+    # Read per call: llama.py imports this module with unsloth, so an import-time read would miss
+    # UNSLOTH_FUSED_LABEL_SMOOTHING=0 set after `import unsloth` but before training.
+    return os.environ.get("UNSLOTH_FUSED_LABEL_SMOOTHING", "1") == "0"
+
+
 # Models whose forward did not reach the fused CE once; they keep the stock LabelSmoother.
 _FALLBACK_MODELS = weakref.WeakSet()
 STATS = {"fused": 0, "fallback": 0}
@@ -74,23 +93,19 @@ def _output_head(model):
     return None
 
 
-def _head_not_fusable(model):
-    # The fused CE projects with lm_head.weight (llama.py, the compiled forwards) and llama.py passes no bias, so an
-    # active unmerged adapter on the head (PEFT LoRA layer: .weight is the base weight) would get no gradient and a
-    # head bias would leave the loss. The stock path calls lm_head(hidden) and keeps both.
-    head = _output_head(model)
-    if head is None:
-        return False
-    if getattr(head, "bias", None) is not None:
-        return True
-    try:
-        from peft.tuners.tuners_utils import BaseTunerLayer
-    except Exception:
+def _head_has_live_adapter(head):
+    # An active, unmerged, enabled PEFT tuner layer anywhere in the head: its forward adds what .weight lacks.
+    if not head._modules or _BaseTunerLayer is None:
         return False
     for module in head.modules():
-        if not isinstance(module, BaseTunerLayer) or getattr(module, "disable_adapters", False):
+        if not isinstance(module, _BaseTunerLayer):
             continue
         merged = set(getattr(module, "merged_adapters", None) or ())
+        if getattr(module, "disable_adapters", False):
+            # A disabled forward unmerges first, so a merged weight is not what it computes with.
+            if merged:
+                return True
+            continue
         held = set()
         for layer_name in getattr(module, "adapter_layer_names", None) or ():
             held.update(getattr(module, layer_name, None) or ())
@@ -101,10 +116,34 @@ def _head_not_fusable(model):
     return False
 
 
+def output_head_not_fusable(head):
+    # The fused CE projects with lm_head.weight (llama.py, the compiled forwards) and llama.py passes no bias, so a
+    # live adapter on the head (PEFT LoRA layer: .weight is the base weight) would get no gradient and a head bias
+    # would leave the loss: both take lm_head(hidden). A tuner head asks unsloth_zoo's check when it has one, so both
+    # repos route the same heads; an older zoo, or a tuner nested inside a wrapper, uses the module walk. Runs every
+    # labelled forward: a plain nn.Linear head (no children, so no tuner layer) returns before any walk.
+    if getattr(head, "bias", None) is not None:
+        return True
+    if not head._modules:
+        return False
+    if (
+        _zoo_head_needs_module_forward is not None
+        and _BaseTunerLayer is not None
+        and isinstance(head, _BaseTunerLayer)
+    ):
+        return bool(_zoo_head_needs_module_forward(head))
+    return _head_has_live_adapter(head)
+
+
+def _head_not_fusable(model):
+    head = _output_head(model)
+    return head is not None and output_head_not_fusable(head)
+
+
 def _skip_reason(trainer, model, inputs, return_outputs):
     """None when the fused path applies, else why not (counted in STATS)."""
     smoother = getattr(trainer, "label_smoother", None)
-    if _OFF or smoother is None:
+    if _off() or smoother is None:
         return "off"
     # Evaluation (prediction_step asks for outputs, under no_grad) keeps the stock smoother and its logits.
     if return_outputs or not torch.is_grad_enabled():

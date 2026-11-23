@@ -1066,6 +1066,18 @@ def _without_runtime_truncation(
             )
 
 
+@contextmanager
+def _left_padding_side(tokenizer):
+    # Restore even when the write raises: a caught save error must not leave training left-padded.
+    source_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    old_padding_side = source_tokenizer.padding_side
+    source_tokenizer.padding_side = "left"
+    try:
+        yield
+    finally:
+        source_tokenizer.padding_side = old_padding_side
+
+
 def _capture_source_tokenizer_class(
     tokenizer,
     *,
@@ -1788,14 +1800,9 @@ def unsloth_save_model(
         _model_push = getattr(model, "original_push_to_hub", model.push_to_hub)
         _model_push(**_filter_push_to_hub_kwargs(_model_push, _push_kwargs))
         if tokenizer is not None:
-            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-            old_padding_side = _tokenizer.padding_side
-            _tokenizer.padding_side = "left"
-
-            _tokenizer_push = getattr(tokenizer, "original_push_to_hub", tokenizer.push_to_hub)
-            _tokenizer_push(**_filter_push_to_hub_kwargs(_tokenizer_push, _push_kwargs))
-
-            _tokenizer.padding_side = old_padding_side
+            with _left_padding_side(tokenizer):
+                _tokenizer_push = getattr(tokenizer, "original_push_to_hub", tokenizer.push_to_hub)
+                _tokenizer_push(**_filter_push_to_hub_kwargs(_tokenizer_push, _push_kwargs))
 
         if hasattr(model, "config"):
             print(f"Saved {save_method} model to https://huggingface.co/" + save_directory)
@@ -1866,18 +1873,13 @@ def unsloth_save_model(
         if tokenizer is not None:
             print("Unsloth: Saving tokenizer...", end = "")
 
-            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-            old_padding_side = _tokenizer.padding_side
-            _tokenizer.padding_side = "left"
-
-            with _without_runtime_truncation(
-                tokenizer,
-                tokenizer_save_settings["save_directory"],
-                tokenizer_save_settings.get("filename_prefix"),
-            ):
-                tokenizer.save_pretrained(**tokenizer_save_settings)
-
-            _tokenizer.padding_side = old_padding_side
+            with _left_padding_side(tokenizer):
+                with _without_runtime_truncation(
+                    tokenizer,
+                    tokenizer_save_settings["save_directory"],
+                    tokenizer_save_settings.get("filename_prefix"),
+                ):
+                    tokenizer.save_pretrained(**tokenizer_save_settings)
 
             print(" Done.")
         else:
@@ -2141,35 +2143,30 @@ def unsloth_save_model(
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
 
-        _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-        old_padding_side = _tokenizer.padding_side
-        _tokenizer.padding_side = "left"
-
-        with _without_runtime_truncation(
-            tokenizer,
-            tokenizer_save_settings["save_directory"],
-            tokenizer_save_settings.get("filename_prefix"),
-        ):
-            tokenizer.save_pretrained(**tokenizer_save_settings)
-        _preserve_tokenizer_eos_token(
-            tokenizer,
-            tokenizer_save_settings["save_directory"],
-            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
-        )
-        _restore_source_tokenizer_class(
-            tokenizer,
-            tokenizer_save_settings["save_directory"],
-            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
-            token = tokenizer_save_settings.get("token"),
-            source_class = source_tokenizer_class,
-        )
-        _preserve_repaired_tokenizer_class(
-            tokenizer,
-            tokenizer_save_settings["save_directory"],
-            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
-        )
-
-        _tokenizer.padding_side = old_padding_side
+        with _left_padding_side(tokenizer):
+            with _without_runtime_truncation(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                tokenizer_save_settings.get("filename_prefix"),
+            ):
+                tokenizer.save_pretrained(**tokenizer_save_settings)
+            _preserve_tokenizer_eos_token(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+            )
+            _restore_source_tokenizer_class(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+                token = tokenizer_save_settings.get("token"),
+                source_class = source_tokenizer_class,
+            )
+            _preserve_repaired_tokenizer_class(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+            )
 
         print(" Done.")
     else:
@@ -3892,7 +3889,7 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
     return modelfile.rstrip()
 
 
-def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path: str):
+def _check_ollama_server():
     try:
         init_check = subprocess.run(
             ["curl", "http://localhost:11434"],
@@ -3902,14 +3899,53 @@ def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path
             errors = "replace",
             timeout = 3,
         )
-        if init_check.returncode == 0:
-            print(init_check.stdout.strip())
-        else:
-            print("Ollama Server is not Running")
+    except FileNotFoundError:
+        # No curl (minimal containers): skip the advisory check, `ollama` may still work.
+        return
     except subprocess.TimeoutExpired:
-        return "Ollama Request Timeout"
+        raise RuntimeError(
+            "Unsloth: Timed out reaching the Ollama server at http://localhost:11434. "
+            "Check that `ollama serve` is running and responsive, then try again."
+        ) from None
+    if init_check.returncode == 0:
+        print(init_check.stdout.strip())
+    else:
+        print("Ollama Server is not Running")
 
-    process = subprocess.Popen(
+
+def _run_ollama_command(args: list, description: str):
+    try:
+        process = subprocess.Popen(
+            args,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            bufsize = 1,
+            encoding = "utf-8",
+            errors = "replace",
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"Unsloth: `ollama` is not installed or not on PATH, so `{description}` cannot run. "
+            "Install Ollama and start `ollama serve`, then try again."
+        ) from None
+
+    with process:
+        for line in iter(process.stdout.readline, ""):
+            print(line, end = "")
+            sys.stdout.flush()
+        return_code = process.wait()
+
+    if return_code != 0:
+        raise RuntimeError(
+            f"Unsloth: `{description}` failed with exit code {return_code}; "
+            "see its output above for the reason."
+        )
+
+
+def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path: str):
+    _check_ollama_server()
+    _run_ollama_command(
         [
             "ollama",
             "create",
@@ -3917,65 +3953,18 @@ def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path
             "-f",
             f"{modelfile_path}",
         ],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        bufsize = 1,
-        universal_newlines = True,
-        encoding = "utf-8",
-        errors = "replace",
+        f"ollama create {username}/{model_name}:{tag}",
     )
-
-    for line in iter(process.stdout.readline, ""):
-        print(line, end = "")
-        sys.stdout.flush()
-
-    return_code = process.wait()
-
-    if return_code != 0:
-        print(f"\nMODEL CREATED FAILED WITH RETURN CODE {return_code}")
-    else:
-        print("\nMODEL CREATED SUCCESSFULLY")
+    print("\nMODEL CREATED SUCCESSFULLY")
 
 
 def push_to_ollama_hub(username: str, model_name: str, tag: str):
-    try:
-        init_check = subprocess.run(
-            ["curl", "http://localhost:11434"],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 3,
-        )
-        if init_check.returncode == 0:
-            print(init_check.stdout.strip())
-        else:
-            print("Ollama Server is not Running")
-    except subprocess.TimeoutExpired:
-        return "Ollama Request Timeout"
-
-    process = subprocess.Popen(
+    _check_ollama_server()
+    _run_ollama_command(
         ["ollama", "push", f"{username}/{model_name}:{tag}"],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        bufsize = 1,
-        universal_newlines = True,
-        encoding = "utf-8",
-        errors = "replace",
+        f"ollama push {username}/{model_name}:{tag}",
     )
-
-    for line in iter(process.stdout.readline, ""):
-        print(line, end = "")
-        sys.stdout.flush()
-
-    return_code = process.wait()
-
-    if return_code != 0:
-        print(f"\nMODEL PUBLISHED FAILED WITH RETURN CODE {return_code}")
-    else:
-        print("\nMODEL PUBLISHED SUCCESSFULLY")
+    print("\nMODEL PUBLISHED SUCCESSFULLY")
 
 
 def push_to_ollama(
@@ -7522,11 +7511,8 @@ def unsloth_generic_save(
         except ImportError:
             pass
         if tokenizer is not None:
-            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-            old_padding_side = _tokenizer.padding_side
-            _tokenizer.padding_side = "left"
-            tokenizer.save_pretrained(save_directory)
-            _tokenizer.padding_side = old_padding_side
+            with _left_padding_side(tokenizer):
+                tokenizer.save_pretrained(save_directory)
 
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
     elif _is_adapter_save_method(save_method):

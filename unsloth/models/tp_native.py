@@ -3016,11 +3016,10 @@ def vocab_parallel_cross_entropy(
     shift = True,
     chunk_tokens = None,
 ):
-    """Causal LM cross entropy from a vocab-parallel lm_head, never building the whole-vocabulary logits.
-    Global max / log-sum-exp and the target logit come from all-reduces over tp; each chunk of tokens is
-    recomputed in backward (activation checkpointing), so a rank holds one chunk of its 1 / tp logits at a time.
-    Returns the sum over valid tokens / n_items (mean over valid tokens when n_items is None), the same on
-    every tp rank. hidden_states [..., hidden], labels [...] (shift = True: labels are the inputs, shifted here)."""
+    """Vocab-parallel CE, no full logits: max, log-sum-exp, target logit all-reduced over tp; chunks
+    recomputed in backward (one 1/tp chunk per rank); returns sum over valid tokens / n_items
+    (mean if None), same on all tp ranks; hidden_states [..., hidden], labels [...]; shift=True
+    shifts labels here."""
     from torch.utils.checkpoint import checkpoint
 
     group = head.__dict__["_unsloth_tp_group"]

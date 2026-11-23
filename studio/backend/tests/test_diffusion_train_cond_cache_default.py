@@ -310,8 +310,7 @@ def _h3_cfg(**kw):
 
 
 class _H3Fakes:
-    """Counts conditioner loads and encodes; every encode returns fresh random tensors, so a cache hit is the only
-    way two runs can hand back equal tensors."""
+    """Counts loads and encodes; random encodes differ, so only a cache hit can match."""
 
     def __init__(self, monkeypatch, num_audio):
         from core.training import diffusion_h3_trainer as h3

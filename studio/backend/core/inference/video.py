@@ -4191,6 +4191,8 @@ def _video_rocm_hosted_scheme(
             return None
         if int(int8_rotation_group() or 0) <= 0:
             return None
+        if not _video_hosted_int8_is_convrot(fam):
+            return None
         return TQ_INT8
     except Exception:  # noqa: BLE001 -- unanswerable: the dense shards and runtime build, as before
         return None
@@ -4231,8 +4233,19 @@ def _video_hosted_int8_fit_enabled() -> bool:
     return raw not in ("0", "off", "false", "no")
 
 
-def _safetensors_name(name: Any) -> bool:
-    return str(name or "").lower().endswith(".safetensors")
+def _convrot_safetensors_name(name: Any) -> bool:
+    """The hosted int8 ConvRot file (``LTX-2.5-INT8-ConvRot.safetensors``): the only one the native read accepts."""
+    return str(name or "").lower().endswith("-convrot.safetensors")
+
+
+def _video_hosted_int8_is_convrot(fam: Any) -> bool:
+    """Whether ``fam``'s hosted int8 pick is its ConvRot file. ``UNSLOTH_DIFFUSION_INT8_CONVROT=0`` resolves the
+    unrotated file, which the native read refuses (its activation rotation is not the native build's). Never raises."""
+    try:
+        from .diffusion_transformer_quant import int8_convrot_enabled
+        return bool(int8_convrot_enabled(getattr(fam, "name", None)))
+    except Exception:  # noqa: BLE001 - unanswerable: not the native read
+        return False
 
 
 def _video_native_hosted_reads_without_torchao(fam: Any, transformer_quant: Optional[str]) -> bool:
@@ -4246,6 +4259,8 @@ def _video_native_hosted_reads_without_torchao(fam: Any, transformer_quant: Opti
         from .diffusion_native_hosted import native_hosted_family, native_hosted_pickle
 
         if not native_hosted_family(fam) or native_hosted_pickle(fam):
+            return False
+        if not _video_hosted_int8_is_convrot(fam):
             return False
         from safetensors import safe_open  # noqa: F401
 
@@ -8129,8 +8144,8 @@ class VideoBackend:
                     transformer_quant,
                 )
                 return False
-            # No usable torchao (the Windows ROCm stub): only the safetensors file the native read opens counts.
-            readable = _safetensors_name
+            # No usable torchao (the Windows ROCm stub): only the ConvRot safetensors file the native read opens counts.
+            readable = _convrot_safetensors_name
             logger.info(
                 "video.denoiser_prequant: this install cannot deserialize a torchao checkpoint, but the hosted "
                 "%s safetensors file is read as native Linears without torchao",
@@ -9907,7 +9922,7 @@ class VideoBackend:
                                 best,
                                 blob_bytes_present(path) - (baseline or {}).get(str(path), 0),
                             )
-                    except OSError:
+                    except (OSError, UnicodeDecodeError):
                         continue
                 total += min(best, size) if size else best
         return int(total)

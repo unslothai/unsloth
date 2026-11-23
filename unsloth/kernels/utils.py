@@ -722,6 +722,16 @@ _USE_NF4_KERNELS = False
 _TRITON_GEMV_EAGER = False
 _GEMV_MAX_ROWS = 1
 _is_compiling = torch.compiler.is_compiling
+_ROCM_SKINNY_LINEAR = False
+if torch.version.hip is not None and os.environ.get("UNSLOTH_ROCM_SKINNY_LINEAR", "1") != "0":
+    try:
+        from . import rocm_skinny_linear as _rocm_skinny
+        if _rocm_skinny.triton is not None:
+            _rocm_skinny_decode_linear = _rocm_skinny.skinny_decode_linear
+            _rocm_skinny_supported = _rocm_skinny.skinny_linear_supported
+            _ROCM_SKINNY_LINEAR = True
+    except Exception:
+        pass
 _current_device = torch.cuda.current_device
 if (
     DEVICE_TYPE in ("cuda", "hip")
@@ -1856,6 +1866,27 @@ def fast_linear_forward(
             X, W, W_quant, lora_A, lora_B, lora_S, fused = not _has_lora_dropout_module(proj)
         )
 
+    lora_cast = None
+    if W_quant is None and _ROCM_SKINNY_LINEAR and not _is_compiling():
+        # gfx11 ROCm: base GEMM + LoRA in one launch (rocBLAS skinny GEMMs are slow there). Decided before the
+        # LoRA cast: other devices cast once below, and trainable adapters under grad keep the path below
+        # (the cached cast is detached).
+        A = B = None
+        take = _rocm_skinny_supported(X.device)
+        if take and lora_A is not None:
+            take = lora_B is not None and not (
+                torch.is_grad_enabled() and (lora_A.requires_grad or lora_B.requires_grad)
+            )
+            if take:
+                A, B = _fast_lora_weights(lora_A, lora_B, X.dtype)
+                # A rejected call reuses this cast below instead of looking it up again.
+                lora_cast = (A, B)
+        fused = _rocm_skinny_decode_linear(X, W, A, B, lora_S, out) if take else None
+        if fused is not None:
+            if bias is not None:
+                fused += bias
+            return fused
+
     if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
     elif type(W_quant) is NVFP4QuantState:
@@ -1905,7 +1936,9 @@ def fast_linear_forward(
         out_dim = out.shape[2]
         dtype = X.dtype
 
-        if _is_compiling():
+        if lora_cast is not None:
+            A, B = lora_cast
+        elif _is_compiling():
             A, B = lora_A.to(dtype), lora_B.to(dtype)
         else:
             A, B = _fast_lora_weights(lora_A, lora_B, dtype)

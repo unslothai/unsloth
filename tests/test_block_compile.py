@@ -2955,3 +2955,152 @@ def test_block_keeps_checkpointing_under_accelerate_device_map_hooks(monkeypatch
     assert M._rebind_hooked_instances(holder, cls, before) == 0
     plain(x)
     assert plain_calls == [1]
+
+
+def _like_transformers_5_24(forward):
+    """transformers >= 5.24: checkpoint only under grad, and clear the renamed `cache` keyword first."""
+
+    @functools.wraps(forward)
+    def forward_with_checkpointing(self, *args, **kwargs):
+        if (
+            self.gradient_checkpointing
+            and self.training
+            and torch.is_grad_enabled()
+            and type(self).forward is forward_with_checkpointing
+        ):
+            kwargs["use_cache"] = False
+            kwargs["cache"] = None
+            return self._gradient_checkpointing_func(
+                functools.partial(forward, self, **kwargs), *args
+            )
+        return forward(self, *args, **kwargs)
+
+    return forward_with_checkpointing
+
+
+def _cache_writing_class():
+    class CacheDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            cache = None,
+            use_cache = False,
+        ):
+            if cache is not None:  # stands in for DynamicCache.update
+                cache.append(hidden_states.shape[1])
+            return self.proj(hidden_states) + hidden_states
+
+    return CacheDecoderLayer
+
+
+def test_block_checkpoint_shim_keeps_the_5_24_cache_contract(monkeypatch):
+    # transformers 5.24 renamed `past_key_values` to `cache` and runs a training-mode layer as is without grad.
+    # The shim checkpointed under no_grad and passed `cache` into the block, which wrote it on each run.
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    cls = _cache_writing_class()
+    cls.forward = _like_transformers_5_24(cls.forward)
+    M._wrap(cls, {})
+    layer, calls = _checkpointed_layer(cls)
+    layer.train()
+    x = torch.randn(1, 4, 8, requires_grad = True)
+    cache = []
+    with torch.no_grad():  # generate() from a model left in training mode
+        out = layer(x, cache = cache, use_cache = True)
+    torch.testing.assert_close(out, layer.proj(x) + x)
+    assert calls == [] and cache == [4]
+    cache = []
+    out = layer(x, cache = cache, use_cache = True)  # a training forward handed a cache
+    out.sum().backward()
+    assert calls == [1] and cache == []
+    assert M._has_cache(
+        (), {"cache": []}
+    )  # cache calls keep the stock forward, as `past_key_values` does
+
+
+def _like_transformers_5_23_cache(forward):
+    """transformers 5.23: checkpoint a training-mode layer even without grad, clearing `past_key_values`."""
+
+    @functools.wraps(forward)
+    def forward_with_checkpointing(self, *args, **kwargs):
+        if (
+            self.gradient_checkpointing
+            and self.training
+            and type(self).forward is forward_with_checkpointing
+        ):
+            kwargs["use_cache"] = False
+            if kwargs.get("past_key_values") is not None:
+                kwargs["past_key_values"] = None
+            return self._gradient_checkpointing_func(
+                functools.partial(forward, self, **kwargs), *args
+            )
+        return forward(self, *args, **kwargs)
+
+    return forward_with_checkpointing
+
+
+def test_block_checkpoint_shim_keeps_the_5_23_cache_contract(monkeypatch):
+    # The 5.24 no-grad rule is read off the installed wrapper: on 5.23 a training-mode layer under no_grad is
+    # still checkpointed with its cache cleared, so the shim must not write a cache stock 5.23 drops.
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+
+    class PastDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            past_key_values = None,
+            use_cache = False,
+        ):
+            if past_key_values is not None:
+                past_key_values.append(hidden_states.shape[1])
+            return self.proj(hidden_states) + hidden_states
+
+    stock_cls = type("StockLayer", (PastDecoderLayer,), {})
+    stock_cls.forward = _like_transformers_5_23_cache(PastDecoderLayer.forward)
+    PastDecoderLayer.forward = _like_transformers_5_23_cache(PastDecoderLayer.forward)
+    M._wrap(PastDecoderLayer, {})
+    x = torch.randn(1, 4, 8)
+    for cls in (stock_cls, PastDecoderLayer):
+        layer, calls = _checkpointed_layer(cls)
+        layer.train()
+        cache = []
+        with torch.no_grad():
+            out = layer(x, past_key_values = cache, use_cache = True)
+        torch.testing.assert_close(out, layer.proj(x) + x)
+        assert (calls, cache) == ([1], []), cls.__name__
+
+
+def test_block_rebinds_hooked_layers_of_a_second_model(monkeypatch):
+    # Two models of one layer class, both dispatched (accelerate hooks bound) before either was patched: the
+    # class was wrapped for the first, so the second's rebind was skipped and it ran with no checkpointing.
+    hooks = pytest.importorskip("accelerate.hooks")
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch, "__version__", "2.7.1+cu126")
+    cls = _toy_class()
+    cls.forward = _like_transformers_5_23(cls.forward)
+    models, counts = [], []
+    for _ in range(2):
+        layer, calls = _checkpointed_layer(cls)
+        hooks.add_hook_to_module(layer, hooks.ModelHook())
+        model = torch.nn.Module()
+        model.layers = torch.nn.ModuleList([layer])
+        models.append(model)
+        counts.append(calls)
+    assert M.patch_block_compile(models[0]) == [cls.__name__]
+    assert M.patch_block_compile(models[1]) == []  # already wrapped
+    x = torch.randn(1, 4, 8, requires_grad = True)
+    for model, calls in zip(models, counts):
+        layer = model.layers[0].train()
+        torch.testing.assert_close(layer(x), layer.proj(x) + x)
+        assert calls == [1]

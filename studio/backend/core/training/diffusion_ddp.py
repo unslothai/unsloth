@@ -1,18 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Data-parallel DiT LoRA training across the visible GPUs of one host: one process per GPU.
-
-The trainer child is rank 0; it starts ranks 1..N-1 as plain subprocesses (the child is a daemonic multiprocessing
-process, which may not have multiprocessing children). Every rank builds the same GLOBAL micro-batch from the same
-seeded streams (sampler order, crop / variant picks, noise, timesteps, caption dropout) and trains on its own slice,
-so a run on N GPUs at batch b is the run on one GPU at batch N*b, with the batch split across cards. After the
-micro-steps, one all-reduce averages the LoRA gradients (and the step loss) before clipping, so compile, the
-checkpointing budget, OOM reruns and fp16 loss scaling run per rank unchanged and the replicas stay identical.
-
-Rank 0 alone emits events, writes checkpoints, previews and the adapter. Ranks 1..N-1 wait until rank 0 has
-encoded the conditioning (so they read it warm from the on-disk cache) and loaded its transformer (so they load from
-page cache, one at a time), then join the first collective."""
+"""Rank 0 spawns 1..N-1 as subprocesses (daemonic processes cannot have children); ranks share the
+seeded global micro-batch (N GPUs at batch b = one at N*b) and all-reduce LoRA grads before
+clipping; only rank 0 writes outputs; ranks 1..N-1 wait for its cache, weights, then join the
+collective."""
 
 from __future__ import annotations
 
@@ -197,19 +189,28 @@ class DistContext:
     # The base every rank actually trains once its conversions ran (their fallbacks are rank-local).
     _EFFECTIVE_PRECISIONS = ("nf4", "int8", "int8_w8a8", "fp8", "mxfp8", "bf16")
 
-    def check_effective_precision(self, effective: str) -> None:
+    def check_effective_precision(
+        self,
+        effective: str,
+        layers: Optional[tuple] = None,
+    ) -> None:
         """Refuse on every rank when the ranks ended on different bases. agree_precision fixes the pick, but the fp8 /
         W8A8 conversions fall back per rank (bf16, an nf4 reload, torchao weight-only int8); a mixed run would
-        all-reduce LoRA grads taken through different base numerics without any error. One int64 per rank."""
+        all-reduce LoRA grads taken through different base numerics without any error. One int64 per rank (three with
+        ``layers``).
+        ``layers``: ``lowp_layers_digest`` of the converted base; a layer that failed on one rank only stays bf16
+        there under the same label, so the converted set is compared too."""
         import torch
         import torch.distributed as dist
 
         names = self._EFFECTIVE_PRECISIONS
         code = names.index(effective) if effective in names else len(names)
-        mine = torch.tensor([code], dtype = torch.int64, device = self._device())
+        values = [code] if layers is None else [code, int(layers[0]), int(layers[1])]
+        mine = torch.tensor(values, dtype = torch.int64, device = self._device())
         out = [torch.empty_like(mine) for _ in range(self.world)]
         dist.all_gather(out, mine)
-        codes = [int(t.item()) for t in out]
+        rows = [[int(v) for v in t.reshape(-1).tolist()] for t in out]
+        codes = [row[0] for row in rows]
         if len(set(codes)) > 1:
             picks = ", ".join(
                 f"rank {r}: {names[c] if c < len(names) else 'unknown'}"
@@ -218,6 +219,13 @@ class DistContext:
             raise RuntimeError(
                 "Multi-GPU training stopped: the GPUs ended up training different base precisions after "
                 f"conversion ({picks}). Set base_precision to one of them explicitly, or train on one GPU."
+            )
+        if layers is not None and len({tuple(row[1:]) for row in rows}) > 1:
+            counts = ", ".join(f"rank {r}: {row[2]}" for r, row in enumerate(rows))
+            raise RuntimeError(
+                f"Multi-GPU training stopped: the GPUs converted different layers to {effective} (layers converted: "
+                f"{counts}; a layer that fails on one GPU stays bf16 there). Use base_precision='bf16' or 'nf4', "
+                "or train on one GPU."
             )
 
     def params_checksum(self, params) -> float:
@@ -269,6 +277,19 @@ class DistContext:
             t.join(timeout = 30)
         if _CURRENT is self:
             _CURRENT = None
+
+
+def lowp_layers_digest(model) -> tuple[int, int]:
+    """(signed int64 digest, count) of the sorted name and format of every low-precision layer in ``model``."""
+    import hashlib
+
+    rows = sorted(
+        f"{fqn}={mode}"
+        for fqn, mod in model.named_modules()
+        if (mode := getattr(mod, "_studio_lowp", None))
+    )
+    digest = hashlib.sha256("\n".join(rows).encode()).digest()[:8]
+    return int.from_bytes(digest, "little", signed = True), len(rows)
 
 
 def plan_world(cfg, device: str) -> tuple[int, Optional[str]]:
@@ -434,8 +455,7 @@ def launch(
     try:
         dist.init_process_group("nccl", store = store, rank = 0, world_size = world, timeout = _timeout())
     except BaseException:
-        # The caller never gets ctx, so stop the started ranks and the watcher (which would os._exit this process
-        # once they die) here.
+        # Caller never gets ctx: stop ranks and the watcher here, else the watcher os._exit()s.
         ctx.close(failed = True)
         raise
     _CURRENT = ctx
