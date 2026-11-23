@@ -1703,9 +1703,7 @@ class TestHipRocrSegfaultRetriesBundleOnly:
     symbol-lookup error, so there is no output line for the mismatch check to
     catch. The prepended dirs themselves are the evidence the retry can undo."""
 
-    def test_startup_segfault_drops_the_prepended_system_dirs(
-        self, monkeypatch, tmp_path
-    ):
+    def test_startup_segfault_drops_the_prepended_system_dirs(self, monkeypatch, tmp_path):
         launches, loaded, error = _run_full_offload_spawns(
             monkeypatch,
             tmp_path,
@@ -1723,9 +1721,7 @@ class TestHipRocrSegfaultRetriesBundleOnly:
         assert _fit_mode(cmd0) == _fit_mode(cmd1)
         assert LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")
 
-    def test_an_oom_kill_does_not_spend_the_bundle_only_retry(
-        self, monkeypatch, tmp_path
-    ):
+    def test_an_oom_kill_does_not_spend_the_bundle_only_retry(self, monkeypatch, tmp_path):
         """SIGKILL means the OOM killer, not a library mix; the system dirs stay."""
         launches, loaded, error = _run_full_offload_spawns(
             monkeypatch,
