@@ -82,3 +82,12 @@ def test_video_planned_bytes(tmp_path, monkeypatch, ref):
     entry = video._PlannedFetch(**fields)
     # load_progress polls this during a video load
     assert video.VideoBackend._planned_bytes({"k": entry}) == 0
+
+
+@pytest.mark.parametrize("ref", [None, BAD], ids = ["missing_ref", "undecodable_ref"])
+def test_gguf_header_delta(tmp_path, ref):
+    from hub.utils.gguf_header_delta import prepare_media_gguf
+
+    _repo(tmp_path, "org/model", ref)
+    result = prepare_media_gguf("org/model", "model.gguf", None, cache_dir = str(tmp_path))
+    assert result.reason == "no older copy"
