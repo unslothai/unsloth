@@ -19,7 +19,6 @@ def get_onboarding() -> dict:
 
 def account_has_chat_history() -> bool:
     from storage.studio_db import get_connection
-
     conn = get_connection()
     try:
         return conn.execute("SELECT EXISTS(SELECT 1 FROM chat_threads)").fetchone()[0] == 1
