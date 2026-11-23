@@ -778,7 +778,6 @@ def test_codex_without_a_zstd_decoder_warns_instead_of_failing(codex_home, monke
 
 
 def _fake_zstandard(monkeypatch, stream_reader):
-    """A ``zstandard`` stand-in whose decompressor streams via ``stream_reader``."""
     import sys
     import types
 
@@ -792,9 +791,7 @@ def _fake_zstandard(monkeypatch, stream_reader):
 
 
 def _ends_badly(head: bytes, error: Exception):
-    """A stream that serves ``head`` and then fails like a truncated archive."""
     import io
-
     class EndsBadly(io.BytesIO):
         def read(self, size = -1):
             return super().read(size) or self._fail()

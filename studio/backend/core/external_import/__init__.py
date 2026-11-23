@@ -171,7 +171,6 @@ def read_jsonl(path: Path) -> Iterator[dict]:
                 if isinstance(record, dict):
                     yield record
         except corrupt as exc:
-            # Corrupt or truncated archive: the decoded prefix is all there is.
             logger.warning("external_import_corrupt_archive", path = str(path), error = str(exc))
 
 
