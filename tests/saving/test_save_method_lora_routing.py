@@ -478,8 +478,7 @@ def test_an_unknown_save_method_is_refused_before_the_full_save(monkeypatch, tmp
     ["merged_16bti", "merged_4bit_gguf", "fp8", "nvfp4", "int8", None],
 )
 def test_an_unknown_save_method_never_reaches_the_merge(monkeypatch, tmp_path, save_method):
-    """On a PeftModel the fallthrough ran the zoo merge, which merged to 16bit and
-    skipped config.json for a method it did not know. Refuse instead."""
+    """The zoo merge wrote 16-bit weights without config.json for a method it did not know."""
     model = _PeftModel()
     generic_save, calls = _routing_environment(monkeypatch, model)
     with pytest.raises(RuntimeError, match = "must select"):
@@ -510,7 +509,6 @@ def test_an_unknown_save_method_is_refused_before_a_hub_push(monkeypatch, tmp_pa
     ["lora", "merged_16bit", "merged_4bit_forced", "forced_merged_4bit", "mxfp4"],
 )
 def test_every_real_save_method_still_writes_a_full_finetune(monkeypatch, tmp_path, save_method):
-    """The non-PEFT fallback stays: these methods are valid, there is just no adapter."""
     model = _FullModel()
     generic_save, calls = _routing_environment(monkeypatch, model)
     generic_save(model, None, save_directory = str(tmp_path), save_method = save_method)
@@ -519,8 +517,7 @@ def test_every_real_save_method_still_writes_a_full_finetune(monkeypatch, tmp_pa
 
 
 def test_unsloth_save_model_accepts_the_zoo_spelling_of_a_forced_4bit_merge(monkeypatch, tmp_path):
-    """unsloth_zoo's error tells users `forced_merged_4bit`; the three-option gate
-    must not refuse it after the alias folds to `merged_4bit`."""
+    """unsloth_zoo's own error tells users to pass `forced_merged_4bit`."""
     namespace, _ = _adapter_save_environment(monkeypatch)
     model = _AdapterModel(lambda sink: (lambda **kwargs: sink.append(kwargs)))
     namespace["unsloth_save_model"](model, None, str(tmp_path), save_method = "forced_merged_4bit")
