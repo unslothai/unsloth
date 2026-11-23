@@ -144,36 +144,22 @@ def file_times_ms(path: Path) -> tuple[int, int]:
 
 
 def _zstd_reader(raw):
+    """(stream, mid-read decode errors): each backend has its own ZstdError; a truncated frame is EOFError."""
     try:
         # novermin -- 3.14; the ImportError fallback to zstandard below is the guard, which vermin cannot see.
         from compression import zstd  # novermin
-        return zstd.ZstdFile(raw)
+        return zstd.ZstdFile(raw), (EOFError, zstd.ZstdError)
     except ImportError:
         import zstandard  # ImportError here means the caller skips the file
-        return zstandard.ZstdDecompressor().stream_reader(raw)
-
-
-def _zstd_errors() -> tuple[type[BaseException], ...]:
-    """Decode failures a .zst stream can raise mid-read; each backend names its own ZstdError."""
-    errors: list[type[BaseException]] = [EOFError]
-    try:
-        from compression import zstd  # novermin -- 3.14
-        errors.append(zstd.ZstdError)
-    except ImportError:
-        pass
-    try:
-        import zstandard
-        errors.append(zstandard.ZstdError)
-    except ImportError:
-        pass
-    return tuple(errors)
+        return zstandard.ZstdDecompressor().stream_reader(raw), (EOFError, zstandard.ZstdError)
 
 
 def read_jsonl(path: Path) -> Iterator[dict]:
     """Records of a JSONL(.zst) file; a half-written last line is normal for a live session."""
     with path.open("rb") as raw:
+        # Plain files catch nothing: the except clause also runs on GeneratorExit for every early close.
+        stream, corrupt = _zstd_reader(raw) if path.suffix == ".zst" else (raw, ())
         try:
-            stream = _zstd_reader(raw) if path.suffix == ".zst" else raw
             for line in io.TextIOWrapper(stream, encoding = "utf-8", errors = "replace"):
                 try:
                     record = json.loads(line)
@@ -181,7 +167,7 @@ def read_jsonl(path: Path) -> Iterator[dict]:
                     continue
                 if isinstance(record, dict):
                     yield record
-        except _zstd_errors() as exc:
+        except corrupt as exc:
             # Corrupt or truncated archive: the decoded prefix is all there is.
             logger.warning("external_import_corrupt_archive", path = str(path), error = str(exc))
 
