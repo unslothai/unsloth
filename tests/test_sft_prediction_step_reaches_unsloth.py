@@ -98,3 +98,38 @@ def test_trl_115_prediction_step_reaches_the_unsloth_step(prediction_loss_only):
 
 def test_trl_114_prediction_step_is_left_alone():
     assert _patched(TRL_114_PREDICTION_STEP) == TRL_114_PREDICTION_STEP
+
+
+def _skip_check():
+    rl_path = SOURCE_PATH.with_name("rl.py")
+    tree = ast.parse(rl_path.read_text(encoding = "utf-8"))
+    node = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_sft_prediction_step_skips_unsloth"
+    )
+    namespace = {"inspect": inspect}
+    exec(compile(ast.Module(body = [node], type_ignores = []), str(rl_path), "exec"), namespace)
+    return namespace["_sft_prediction_step_skips_unsloth"]
+
+
+def test_skip_check_names_a_base_class_that_shadows_the_unsloth_step():
+    transformers = pytest.importorskip("transformers")
+    skips = _skip_check()
+
+    class ReachesTrainer(transformers.Trainer):
+        def prediction_step(self, *args, **kwargs):
+            return super().prediction_step(*args, **kwargs)
+
+    class Shadows(transformers.Trainer):
+        def prediction_step(self, *args, **kwargs):
+            return None, None, None
+
+    class Generated(Shadows):
+        def compute_loss(self, *args, **kwargs):
+            return None
+
+    assert skips(ReachesTrainer) is None
+    assert skips(type("Plain", (transformers.Trainer,), {})) is None
+    assert skips(Generated).endswith("Shadows")
+    assert skips(type("Wrapper", (ReachesTrainer, Shadows), {})).endswith("Shadows")

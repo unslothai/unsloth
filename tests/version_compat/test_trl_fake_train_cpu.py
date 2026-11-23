@@ -550,7 +550,10 @@ def test_sft_eval_reaches_the_unsloth_prediction_step(tmp_path):
     from trl import SFTConfig, SFTTrainer
 
     from unsloth.models._utils import EMPTY_LOGITS
+    from unsloth.models.rl import _sft_prediction_step_skips_unsloth
 
+    # Fails on the next TRL that shadows Trainer.prediction_step in a way the source edit misses.
+    assert _sft_prediction_step_skips_unsloth(SFTTrainer) is None
     model, tok = _load_plain()
 
     # Unsloth's fused CE: labels without UNSLOTH_RETURN_LOGITS=1 give EMPTY_LOGITS. zoo's requires_grad_post_hook
