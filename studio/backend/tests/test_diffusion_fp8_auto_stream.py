@@ -305,6 +305,49 @@ def test_a_failing_fp8_probe_keeps_auto_off_fp8(monkeypatch):
     assert calls == ["cuda:0"]  # cached per device
 
 
+@pytest.mark.parametrize(
+    "cap, compiles, probed, expected",
+    [
+        ((8, 0), True, False, "int8"),  # A100: no fp8 GEMM, int8 as before
+        ((8, 9), False, False, "int8"),  # eager run: fp8 never picked
+        ((8, 9), True, True, "fp8"),
+    ],
+)
+def test_auto_runs_the_fp8_probe_only_when_fp8_could_be_picked(
+    monkeypatch, cap, compiles, probed, expected
+):
+    """The probe allocates, runs a GEMM and syncs (and logs a failure warning on sm80); the policy drops fp8 below
+    sm89 and for an eager run, so those runs must not pay for it. The pick itself is unchanged."""
+
+    class _FakeCuda:
+        @staticmethod
+        def mem_get_info():
+            return (int(1.3 * dit._SPECS["z-image"].dense_bf16_gb * 1e9), int(80 * 1e9))
+
+        @staticmethod
+        def get_device_capability():
+            return cap
+
+    calls = []
+
+    def probe(device):
+        calls.append(device)
+        return True
+
+    monkeypatch.delenv("UNSLOTH_DIT_AUTO_FP8", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIT_BLOCK_SWAP", raising = False)
+    monkeypatch.setattr(torch, "cuda", _FakeCuda)
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+    monkeypatch.setattr(dit, "repo_is_prequantized", lambda repo: False)
+    monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: compiles)
+    monkeypatch.setattr(dit, "_auto_fp8_probe_ok", probe)
+    cfg = types.SimpleNamespace(
+        base_precision = "auto", base_model = "some/dense-base", mixed_precision = "bf16"
+    )
+    assert dit._resolve_base_precision(cfg, dit._SPECS["z-image"], "cuda") == expected
+    assert bool(calls) is probed
+
+
 def test_a_failed_conversion_that_cannot_fall_back_to_bf16_asks_for_nf4(monkeypatch):
     """Below the bf16 fit the fp8 base streams host-first; a failed conversion must not move the bf16 rest onto a
     card it never fit (main trained nf4 there), so the caller reloads nf4."""

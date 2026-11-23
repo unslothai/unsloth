@@ -1149,8 +1149,12 @@ def _resolve_base_precision(cfg, spec, device) -> str:
             free_gb = trusted_mem_get_info()[0] / 1e9
             capability = torch.cuda.get_device_capability()
             # The frozen fp8 base runs torch._scaled_mm on NVIDIA sm89+; ROCm reports gfx capabilities that are not.
+            # The cheap gates go first: the probe allocates, runs a GEMM and syncs, and the policy never picks fp8
+            # below sm89 or for an eager run anyway.
             has_fp8 = (
-                hasattr(torch, "float8_e4m3fn")
+                tuple(capability) >= (8, 9)
+                and _auto_run_compiles(cfg)
+                and hasattr(torch, "float8_e4m3fn")
                 and hasattr(torch, "_scaled_mm")
                 and not torch_is_rocm()
                 and not is_stubbed("torchao")
