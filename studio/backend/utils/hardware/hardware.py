@@ -1868,7 +1868,7 @@ def _detect_hardware_locked() -> DeviceType:
             or (not _mlx_distribution_installed() and _no_torch_mac_without_mlx_wheels())
         )
     ):
-        # Train/Export are off by request. A Mac that can install MLX stays mlx_unavailable until the self-heal has run, since Chat only serves MLX models too; the sidebar keeps polling until settle_the_no_torch_verdict() lands.
+        # Train/Export off by request. A Mac that can install MLX stays mlx_unavailable until the self-heal ran (Chat only serves MLX too).
         CHAT_ONLY_REASON = "no_torch"
         _MLX_BLOCKERS_MEASURED = None
         logger.info(

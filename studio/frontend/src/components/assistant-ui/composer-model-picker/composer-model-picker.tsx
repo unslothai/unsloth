@@ -2137,7 +2137,6 @@ export function ComposerModelPicker({
       ) {
         continue;
       }
-      // Same rule as cached repos: a Chat only host runs GGUF, plus checkpoints where it serves MLX.
       const format = loraFormat(lora);
       if (
         lora.source === "local" &&

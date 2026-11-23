@@ -6222,8 +6222,7 @@ export function HubModelPicker({
         .filter(
           (id) =>
             !chatOnly ||
-            // Task pickers (Transcribe) keep the Mac rule: Transformers Whisper runs there without MLX. A chat picker on a
-            // Mac guesses Chat only until measured; a measured one runs GGUF, plus checkpoints where MLX is served.
+            // Task pickers (Transcribe) keep the Mac rule: Whisper runs without MLX. An unmeasured Chat only guess narrows nothing.
             isRecommendableFormat(
               id,
               isKnownGgufRepo(id),

@@ -482,7 +482,7 @@ def start_mlx_autorepair_if_needed() -> bool:
         return False
     from utils.hardware import hardware as _hw
 
-    # Opting out declines a reinstall, not a correct verdict, so the overturn still runs, but only when one waits on it: under the warm's kill switch it would be a first MLX import for no one. A Chat only (--no-torch) install serves chat with MLX, so it is repaired, but only when the verdict blames the stack: one that cannot have MLX settled as no_torch.
+    # Opting out declines a reinstall, not a correct verdict, so the overturn still runs, but only when one waits on it. A Chat only install is repaired only when the verdict blames the MLX stack.
     no_torch = _installed_without_torch()
     opted_out = os.environ.get(DISABLE_ENV_VAR) == "1"
     if (opted_out or no_torch) and not _hw.verdict_blames_the_mlx_stack():
