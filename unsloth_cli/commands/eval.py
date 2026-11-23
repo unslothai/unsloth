@@ -589,11 +589,9 @@ def _write_comparison(rows: List[dict], output_dir: Path) -> Tuple[Path, Path]:
 
 def _free_accelerator_memory() -> None:
     import gc
-
     gc.collect()
     try:
         import torch
-
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     except Exception:
@@ -803,7 +801,6 @@ def evaluate(
 
         if backend == "hf":
             import torch
-
             if device is None:
                 mps = getattr(torch.backends, "mps", None)
                 device = (
@@ -825,7 +822,9 @@ def evaluate(
             typer.echo("Note: bitsandbytes is not installed, loading in full precision.")
             load_in_4bit = False
 
-        def _model_kwargs(model: str, effective_base: Optional[str], base_model: Optional[str]) -> dict:
+        def _model_kwargs(
+            model: str, effective_base: Optional[str], base_model: Optional[str]
+        ) -> dict:
             """simple_evaluate's model arguments for `model`, an adapter on `effective_base` when set."""
             if backend == "hf":
                 model_args = {"pretrained": model}
@@ -839,7 +838,9 @@ def evaluate(
                     if find_spec("bitsandbytes") is not None:
                         model_args["load_in_4bit"] = True
                     else:
-                        typer.echo("Note: bitsandbytes is not installed, loading in full precision.")
+                        typer.echo(
+                            "Note: bitsandbytes is not installed, loading in full precision."
+                        )
                 if model_args.get("load_in_4bit"):
                     with _silence():
                         return {
@@ -906,7 +907,10 @@ def evaluate(
                 FastLanguageModel.for_inference(lmodel)
                 return {
                     "model": HFLM(
-                        pretrained = lmodel, tokenizer = tokenizer, batch_size = bs, max_length = max_seq_length
+                        pretrained = lmodel,
+                        tokenizer = tokenizer,
+                        batch_size = bs,
+                        max_length = max_seq_length,
                     )
                 }
 
@@ -921,7 +925,9 @@ def evaluate(
                 # vLLM's engine runs in its own process and logs the real cause there, not in the traceback
                 if engine_log is not None and engine_log.exists():
                     lines = engine_log.read_text(encoding = "utf-8", errors = "replace").splitlines()
-                    typer.echo("\n".join(line.rsplit("\r", 1)[-1] for line in lines[-40:]), err = True)
+                    typer.echo(
+                        "\n".join(line.rsplit("\r", 1)[-1] for line in lines[-40:]), err = True
+                    )
                 raise
 
         results = _run(_model_kwargs(model, effective_base, base_model))

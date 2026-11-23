@@ -949,7 +949,11 @@ def _scored_by_model(env, monkeypatch, scores):
     """simple_evaluate that scores whichever model was loaded last; returns the call log."""
     seen = []
 
-    def _simple_evaluate(model = None, model_args = None, **kw):
+    def _simple_evaluate(
+        model = None,
+        model_args = None,
+        **kw,
+    ):
         name = (model_args or {}).get("peft") or (model_args or {}).get("pretrained")
         name = name or env["model_name"]
         seen.append(name)
@@ -985,18 +989,22 @@ def test_compare_base_scores_adapter_then_base(env, tmp_path, monkeypatch):
     assert [load["model_name"] for load in loads] == [str(adapter), "org/base"]
     # both runs load at the same precision, so the delta reflects the adapter only
     assert loads[0]["load_in_4bit"] == loads[1]["load_in_4bit"]
-    assert json.loads((out / "results.json").read_text())["results"]["gsm8k"][
-        "exact_match,strict"
-    ] == 0.75
-    assert json.loads((out / "base_results.json").read_text())["results"]["gsm8k"][
-        "exact_match,strict"
-    ] == 0.5
+    assert (
+        json.loads((out / "results.json").read_text())["results"]["gsm8k"]["exact_match,strict"]
+        == 0.75
+    )
+    assert (
+        json.loads((out / "base_results.json").read_text())["results"]["gsm8k"][
+            "exact_match,strict"
+        ]
+        == 0.5
+    )
     (row,) = json.loads((out / "comparison.json").read_text())
     assert row["task"] == "gsm8k" and row["metric"] == "exact_match,strict"
     assert row["base"] == 0.5 and row["fine_tuned"] == 0.75 and row["delta"] == pytest.approx(0.25)
     csv_lines = (out / "comparison.csv").read_text(encoding = "utf-8").splitlines()
     assert csv_lines[0] == "task,metric,base,base_stderr,fine_tuned,fine_tuned_stderr,delta"
-    assert csv_lines[1].startswith("gsm8k,\"exact_match,strict\",0.5,0.01,0.75,0.01,0.25")
+    assert csv_lines[1].startswith('gsm8k,"exact_match,strict",0.5,0.01,0.75,0.01,0.25')
     assert "Base vs fine-tuned" in result.output
 
 
