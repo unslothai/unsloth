@@ -1358,6 +1358,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         comfy_shift_node = "flux",
         label = "Krea 2",
         pipeline_class = "Krea2Pipeline",
+        # Every arch: a cold compile cache benchmarks near-tied reduction configs and keeps the winner, so fresh Studio
+        # homes rendered one seed two ways (A100 INT8 1024 px, 12 prompts, LPIPS 0.146 mean); the filter pins one.
+        filter_reduction_configs = True,
+        # cudnn.benchmark's per-process VAE conv pick decoded one fixed latent 3 ways over 3 fresh L4 homes; off, all
+        # matched, and the first render skips ~1.5 s of conv benchmarking.
+        cudnn_benchmark = False,
         transformer_class = "Krea2Transformer2DModel",
         base_repo = "krea/Krea-2-Turbo",
         prequant_repos = (
