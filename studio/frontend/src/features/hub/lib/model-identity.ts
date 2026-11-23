@@ -80,14 +80,18 @@ export function ggufVariantsMatch(
   );
 }
 
+const HUB_REPO_ID_RE = /^[^/:\\\s]+\/[^/:\\\s]+$/;
+
 // Status names each of two loaded quants of a repo repo:QUANT; settings and loads key on the repo.
 export function withoutNamedQuant(
   id: string,
   quant: string | null | undefined,
 ): string {
-  return quant && id.toLowerCase().endsWith(`:${quant.toLowerCase()}`)
-    ? id.slice(0, -quant.length - 1)
-    : id;
+  if (!(quant && id.toLowerCase().endsWith(`:${quant.toLowerCase()}`))) {
+    return id;
+  }
+  const repo = id.slice(0, -quant.length - 1);
+  return HUB_REPO_ID_RE.test(repo) ? repo : id;
 }
 
 export function servedCheckpoint(

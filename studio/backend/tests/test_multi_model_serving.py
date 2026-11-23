@@ -974,9 +974,72 @@ def test_a_load_or_validate_naming_its_own_quant_names_the_repo():
     named = {"model_path": "org/A-GGUF:Q8_0", "gguf_variant": "Q8_0"}
     assert LoadRequest(**named).model_path == "org/A-GGUF"
     assert ValidateModelRequest(**named).model_path == "org/A-GGUF"
-    assert LoadRequest(model_path = "ollama/llama3:8b").model_path == "ollama/llama3:8b"
+    assert LoadRequest(model_path = "org/A-GGUF:q8_0", gguf_variant = "Q8_0").model_path == "org/A-GGUF"
     other = LoadRequest(model_path = "org/A-GGUF:Q8_0", gguf_variant = "Q4_K_M")
     assert other.model_path == "org/A-GGUF:Q8_0"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ollama/llama3:8b",
+        "ollama-manifest:library/qwen3:Q8_0",
+        "hf.co/org/A-GGUF:Q8_0",
+        "llama3:Q8_0",
+        "/models/org/A-GGUF:Q8_0",
+        "C:\\models\\A:Q8_0",
+        "/models/a.Q8_0.gguf",
+        "/hub/models--org--A-GGUF/snapshots/abc123",
+    ],
+)
+def test_only_a_hub_repo_loses_a_named_quant(name):
+    for model in (LoadRequest, ValidateModelRequest):
+        assert model(model_path = name, gguf_variant = "Q8_0").model_path == name
+        assert model(model_path = name).model_path == name
+
+
+def _other_quant(monkeypatch, short_fits, model = "org/A-GGUF", variant = "Q8_0"):
+    def never(*args, **kwargs):
+        raise AssertionError("another model was unloaded to keep two quants of one repo")
+
+    for name in ("evict_these", "eviction_victims"):
+        monkeypatch.setattr(model_slots, name, never)
+    loaded = LoadResponse.model_construct(status = "loaded", model = model, display_name = "A")
+    _gated_load_fakes(monkeypatch, short_fits = short_fits, response = loaded)
+    request = LoadRequest(model_path = model, gguf_variant = variant, alongside = True)
+    return asyncio.run(inf.load_model_gated(request, None, "s"))
+
+
+def _loaded():
+    return [(s.llama.model_identifier, s.llama.hf_variant) for s in model_slots.slots]
+
+
+@pytest.mark.parametrize("mode", ["fit", "always"])
+def test_another_quant_that_fits_stays_beside_its_repo(backends, monkeypatch, mode):
+    primary, extra = backends
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: mode)
+    _other_quant(monkeypatch, short_fits = [])
+    assert (primary.model_identifier, primary.hf_variant) == ("org/A-GGUF", "Q4_K_M")
+    assert _loaded() == [("org/B-GGUF", "Q8_0"), ("org/A-GGUF", "Q8_0")]
+    _other_quant(monkeypatch, short_fits = ["capped"], model = "org/B-GGUF", variant = "Q4_K_M")
+    assert _loaded()[2] == ("org/B-GGUF", "Q4_K_M") and model_slots.slots[2].request.force_alongside
+
+
+@pytest.mark.parametrize("mode", ["fit", "always"])
+def test_another_quant_that_does_not_fit_replaces_its_repo_and_nothing_else(
+    backends, monkeypatch, mode
+):
+    primary, extra = backends
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: mode)
+    older = _slot("org/D-GGUF", "Q4_K_M", last_used = 1.0)
+    model_slots.slots.append(older)
+    _other_quant(monkeypatch, short_fits = [1])
+    assert (primary.model_identifier, primary.hf_variant) == ("org/A-GGUF", "Q8_0")
+    assert model_slots.slots == [extra, older] and extra.llama.is_active and older.llama.is_active
+    _other_quant(monkeypatch, short_fits = [1], model = "org/B-GGUF", variant = "Q4_K_M")
+    assert model_slots.slots == [extra, older] and older.llama.is_active
+    assert _loaded()[0] == ("org/B-GGUF", "Q4_K_M")
+    assert (primary.model_identifier, primary.hf_variant) == ("org/A-GGUF", "Q8_0")
 
 
 def test_an_alongside_load_counts_as_activity(backends, monkeypatch):

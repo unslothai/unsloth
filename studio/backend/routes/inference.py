@@ -19165,6 +19165,16 @@ async def load_model_gated(
                             # Only a primary beside an image or video model refuses a partial fit.
                             request = await _make_room_for_primary(request, exc, evicted)
                             continue
+                        if (
+                            new_slot
+                            and request.gguf_variant
+                            and await asyncio.to_thread(_repo_loaded_beside, request.model_path, extra)
+                        ):
+                            if exc.capped and not request.force_alongside:
+                                request = request.model_copy(update = {"force_alongside": True})
+                                continue
+                            # Nothing else is unloaded to keep two quants of one repo.
+                            raise _QuantShortBesideItsRepo() from exc
                         from utils.multi_model_settings import get_multi_model_mode
 
                         if await asyncio.to_thread(get_multi_model_mode) == "always":
@@ -19319,6 +19329,8 @@ async def load_model_gated(
     except MultiModelAlwaysRefusal as exc:
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
         raise exc.as_http_exception(path) from exc
+    except _QuantShortBesideItsRepo:
+        pass
     finally:
         if sink_token is not None:
             eviction_sink.reset(sink_token)
@@ -19336,6 +19348,31 @@ async def load_model_gated(
             with _scoped_load_attempts_lock:
                 _pending_load_attempts.pop(attempt.token, None)
             _finish_load_attempt(attempt)
+    token = _replaces_its_repo.set(True)
+    try:
+        return await load_model_gated(
+            request.model_copy(update = {"force_alongside": False}),
+            fastapi_request,
+            current_subject,
+            user_initiated = user_initiated,
+            current_request_counted = current_request_counted,
+            impl_kwargs = impl_kwargs,
+            background = background,
+        )
+    finally:
+        _replaces_its_repo.reset(token)
+
+
+class _QuantShortBesideItsRepo(Exception):
+    pass
+
+
+def _repo_loaded_beside(repo: str, exclude) -> bool:
+    return any(
+        model_slots.in_slot(slot, lambda: _loaded_satisfies(repo))
+        for slot in (None, *model_slots.visible())
+        if slot is not exclude
+    )
 
 
 def _refuse_oom_beside_media_under_always() -> None:
@@ -19510,6 +19547,10 @@ def chat_eviction_reports() -> list[dict]:
 
 # The serving primary an ordinary load replaces, reported in ``evicted_slots`` only: the legacy
 # ``evicted`` list drives the "to make room" toast, which an ordinary switch must not show.
+# Set for the retry of a quant that did not fit beside its repo's loaded quant: it replaces that one.
+_replaces_its_repo: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_replaces_its_repo", default = False
+)
 _replaced_primary_sink: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
     "replaced_primary_sink", default = None
 )
@@ -19597,8 +19638,9 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     keeps = await asyncio.to_thread(get_multi_model_enabled)
     requested = _model_key(request)
     slot = await _route_to_extra_slot(requested)
-    if slot is None and request.gguf_variant and not (keeps and request.alongside):
-        # Another quant replaces its repo in place unless models are kept loaded and it loads beside it.
+    beside = keeps and request.alongside and not _replaces_its_repo.get()
+    if slot is None and request.gguf_variant and not beside:
+        # Another quant replaces its repo in place unless models are kept loaded and it fits beside it.
         slot = await _route_to_extra_slot(request.model_path)
         if slot is not None or await asyncio.to_thread(_loaded_satisfies, request.model_path):
             return slot
@@ -23649,7 +23691,7 @@ async def get_status(current_subject: str, model: Optional[str] = None):
             f"{c}:{q}" if q and names.count(c) > 1 else c for c, q in served
         ]
         response.serving_quants = [q for _, q in served]
-        if response.model_identifier and response.serving_checkpoints:
+        if active and response.model_identifier:
             response.model_identifier = response.serving_checkpoints[0]
     return response
 

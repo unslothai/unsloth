@@ -51,7 +51,11 @@ def strip_named_quant(request):
     # Status names each of two loaded quants of a repo repo:QUANT; the repo is what loads.
     variant = request.gguf_variant
     if variant and request.model_path.lower().endswith(f":{variant.lower()}"):
-        request.model_path = request.model_path[: -len(variant) - 1]
+        from hub.utils.paths import is_valid_repo_id
+
+        repo = request.model_path[: -len(variant) - 1]
+        if "/" in repo and is_valid_repo_id(repo):
+            request.model_path = repo
     return request
 
 

@@ -79,6 +79,19 @@ test("only a model's own quant is taken off its name", () => {
   assert.equal(withoutNamedQuant(OLLAMA, null), OLLAMA);
   assert.equal(withoutNamedQuant(OLLAMA, "Q4_K_M"), OLLAMA);
   assert.equal(withoutNamedQuant(EXTERNAL, null), EXTERNAL);
+  for (const name of [
+    "ollama/llama3:Q8_0:Q8_0",
+    "ollama-manifest:library/qwen3:Q8_0",
+    "hf.co/org/A-GGUF:Q8_0",
+    "llama3:Q8_0",
+    "/models/org/A-GGUF:Q8_0",
+    "C:\\models\\A:Q8_0",
+    "ref:Q8_0",
+  ]) {
+    assert.equal(withoutNamedQuant(name, "Q8_0"), name);
+    state().setCheckpoint(name, "Q8_0");
+    assert.equal(state().params.checkpoint, name);
+  }
   state().setCheckpoint(OLLAMA, null);
   assert.equal(state().params.checkpoint, OLLAMA);
   state().setCheckpoint(EXTERNAL);
