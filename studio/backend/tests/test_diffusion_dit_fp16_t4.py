@@ -1050,8 +1050,9 @@ def test_trainer_reports_scaled_mm_installs_and_calls(scaled_mm):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA GPU")
 def test_cuda_real_nf4_scaled_mm_matches_fp32_island(monkeypatch):
-    """A real bitsandbytes nf4 w2 (10240 -> 3840) under a PEFT LoRA: the scaled fp16 GEMM installs, runs and lands
-    at the fp32 island's numbers with inputs past fp16 range."""
+    """A real bitsandbytes nf4 w2 (10240 -> 3840) under a PEFT LoRA, inputs past fp16 range: the scaled fp16 GEMM
+    installs, runs, and matches an fp32 GEMM on the weights it multiplies; end to end it stays within the weight
+    rounding of the fp32 island."""
     bnb = pytest.importorskip("bitsandbytes")
     from peft import LoraConfig, inject_adapter_in_model
 
@@ -1117,14 +1118,35 @@ def test_cuda_real_nf4_scaled_mm_matches_fp32_island(monkeypatch):
         finally:
             base.forward = patched
 
-    c0 = f16.scaled_mm_stats()["calls"]
-    y, dx, ga = run(False)
-    assert f16.scaled_mm_stats()["calls"] == c0 + 1
-    y_ref, dx_ref, ga_ref = run(True)
-    assert f16.scaled_mm_stats()["calls"] == c0 + 1
     rel = lambda a, b: float((a.double() - b.double()).norm() / b.double().norm())  # noqa: E731
+    c0 = f16.scaled_mm_stats()["calls"]
+    y, dx, _ga = run(False)
+    assert f16.scaled_mm_stats()["calls"] == c0 + 1
+    y_ref, dx_ref, _ga_ref = run(True)
+    assert f16.scaled_mm_stats()["calls"] == c0 + 1
     assert y.dtype is torch.float32 and torch.isfinite(y).all() and torch.isfinite(dx).all()
-    assert rel(y, y_ref) < 3e-5, rel(y, y_ref)
-    # dx takes one fp16 rounding of the incoming grad (~2e-4 rel-L2 by itself), the forward two terms.
+    # The GEMM itself: against an fp32 GEMM on the same dequantised weights (the quant state's dtype, exact in fp16).
+    w = f16._dequant_4bit(base).float()
+    xb = x.clone().requires_grad_(True)
+    yb = base(xb)
+    yb.backward(g)
+    assert f16.scaled_mm_stats()["calls"] == c0 + 2
+    assert rel(yb, x @ w.t()) < 3e-5, rel(yb, x @ w.t())  # hi + lo input: T4 1.6e-5
+    # dx takes one fp16 rounding of the incoming grad: T4 2.1e-4.
+    assert rel(xb.grad, g @ w) < 5e-4, rel(xb.grad, g @ w)
+    # End to end vs the fp32 island. Forward: bitsandbytes' fp32 forward dequantises straight to fp32, dequantize_4bit
+    # rounds to the quant state's bf16, so y differs by that weight rounding (T4: 1.5e-3 for 1.6e-3), not the GEMM.
+    # Backward: the island's own input grad dequantises to bf16 too, so dx differs by the fp16 grad rounding only.
+    w_err = rel(w, _dequant_fp32(base))
+    assert rel(y, y_ref) < 1.5 * w_err + 3e-5, (rel(y, y_ref), w_err)
     assert rel(dx, dx_ref) < 5e-4, rel(dx, dx_ref)
-    assert rel(ga, ga_ref) < 3e-5, rel(ga, ga_ref)
+
+
+def _dequant_fp32(layer):
+    import copy
+
+    import bitsandbytes.functional as bnbf
+
+    qs = copy.copy(layer.weight.quant_state)
+    qs.dtype = torch.float32
+    return bnbf.dequantize_4bit(layer.weight.data, qs)
