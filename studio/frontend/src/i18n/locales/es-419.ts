@@ -5358,6 +5358,14 @@ export const es419 = {
     copied: "Copiado",
     useAsSource: "Traducir este texto",
     downloadSubtitles: "Descargar subtítulos",
+    imageOverlay: {
+      show: "Mostrar en la imagen",
+      title: "Traducción sobre la imagen",
+      description: "El texto traducido se dibuja sobre la imagen donde estaba el texto original.",
+      working: "Traduciendo el texto de la imagen…",
+      download: "Descargar imagen",
+      failed: "No se pudo dibujar la traducción sobre la imagen.",
+    },
     stale:
       "El texto o la configuración cambiaron. Vuelve a traducir para actualizar.",
     stopped: "Se detuvo antes del final. Traduce de nuevo para obtener el resto.",
