@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import pytest
 import torch
-from diffusers.hooks import HookRegistry, ModelHook
+
+hooks = pytest.importorskip("diffusers.hooks", reason = "diffusers is not importable here")
+HookRegistry, ModelHook = hooks.HookRegistry, hooks.ModelHook
 
 from core.inference import diffusion_cuda_graph as cg
 from core.inference import diffusion_multigpu as mg
