@@ -10283,11 +10283,15 @@ def _microscaling_qat_filter(
         )
     # Only a trainable bias needs the backward's bias gradient. LoRA freezes the base bias (bias = "none"),
     # and skipping those layers left Qwen2-style q / k / v projections out of QAT while the export still
-    # quantizes them.
+    # quantizes them. Opted-in adapters are quantized too, so a trainable lora_B bias (lora_bias = True)
+    # needs the gradient as much as a base one.
+    with_adapters = os.environ.get("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "0") == "1"
     biased = [
         name
         for name, module in model.named_modules()
-        if not _is_lora_adapter_name(name) and candidates(module, name) and _trainable_bias(module)
+        if (with_adapters or not _is_lora_adapter_name(name))
+        and candidates(module, name)
+        and _trainable_bias(module)
     ]
     if biased and not all(_qat_bias_grad_supported(base_config, d, t) for d, t in placements):
         warnings.warn(
@@ -10309,8 +10313,12 @@ def _trainable_bias(module) -> bool:
 def _mx_autocast_forward(self, x):
     # torchao's MX QAT matmul returns bfloat16 under autocast and asserts it matches x, whatever the weight dtype.
     from torchao.prototype.qat import MXFakeQuantizedLinear
+
     if x.dtype != torch.bfloat16 and torch.is_autocast_enabled(x.device.type):
         x = x.to(torch.bfloat16)
+    # torchao flattens the input with .view, which raises on a strided (e.g. transposed) activation.
+    if not x.is_contiguous():
+        x = x.contiguous()
     return MXFakeQuantizedLinear.forward(self, x)
 
 

@@ -621,3 +621,54 @@ def test_nvfp4_float16_activations_under_bfloat16_autocast_return_bfloat16(monke
     with torch.autocast("cpu", dtype = torch.bfloat16):
         out = model(x)
     assert out.dtype == torch.bfloat16 and out.shape == (2, 3, 128)
+
+
+@pytest.mark.parametrize("scheme", ["nvfp4", "mxfp8"])
+def test_opted_in_adapter_with_trainable_bias_keeps_its_bias_grad(monkeypatch, scheme):
+    # UNSLOTH_QAT_FAKE_QUANTIZE_LORA=1 quantizes the adapters as well, and PEFT's lora_bias = True gives
+    # lora_B a trainable bias. A backward without a bias gradient would silently stop training it, so
+    # lora_B must stay in full precision like any other layer with a trainable bias.
+    from peft import LoraConfig, get_peft_model
+
+    _probe_ok(monkeypatch, bias_grad = False)
+    monkeypatch.setenv("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "1")
+    linear_cls = _nvfp4_linear() if scheme == "nvfp4" else _mx_linear()
+    base = _tiny_qwen3()
+    base.model.layers[0].self_attn.q_proj = torch.nn.Linear(128, 128, bias = True).to(torch.bfloat16)
+    model = get_peft_model(
+        base,
+        LoraConfig(r = 32, target_modules = ["q_proj"], lora_bias = True),
+        autocast_adapter_dtype = False,
+    )
+    q_proj = model.base_model.model.model.layers[0].self_attn.q_proj
+    lora_B = q_proj.lora_B["default"]
+    assert lora_B.bias is not None and lora_B.bias.requires_grad
+    assert not q_proj.base_layer.bias.requires_grad
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        model = _prepare_model_for_qat(model, scheme)
+    # quantize_ swaps the module, so look it up again.
+    lora_B = q_proj.lora_B["default"]
+    assert not isinstance(lora_B, linear_cls)
+    assert lora_B.bias.requires_grad
+    assert any("no bias" in str(w.message) and "lora_B" in str(w.message) for w in caught)
+    # The frozen-bias base layer is still fake quantized (#18823).
+    assert isinstance(q_proj.base_layer, linear_cls)
+
+
+def test_mx_forward_accepts_strided_activations():
+    # torchao's MX QAT forward flattens the input with .view: a transposed activation raised
+    # "view size is not compatible with input tensor's size and stride".
+    model = torch.nn.Sequential(torch.nn.Linear(128, 128, bias = True)).to(torch.bfloat16)
+    model[0].bias.requires_grad_(False)  # a LoRA base layer: frozen bias, so it is converted
+    model = _prepare_model_for_qat(model, _mx_torchao_config())
+    q_proj = model[0]
+    assert isinstance(q_proj, _mx_linear())
+    torch.manual_seed(0)
+    x = torch.randn(2, 3, 128, dtype = torch.bfloat16).transpose(0, 1).requires_grad_()
+    assert not x.is_contiguous()
+    out = q_proj(x)
+    ref = q_proj(x.detach().contiguous())
+    torch.testing.assert_close(out, ref, rtol = 0, atol = 0)
+    out.float().sum().backward()
+    assert x.grad is not None and x.grad.shape == x.shape
