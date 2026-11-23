@@ -63,12 +63,12 @@ if triton is not None:
         stride_yn,
         k_per_split,
         scale,
-        HAS_LORA: tl.constexpr,
-        SPLIT_K: tl.constexpr,
-        BLOCK_M: tl.constexpr,
-        BLOCK_N: tl.constexpr,
-        BLOCK_K: tl.constexpr,
-        BLOCK_R: tl.constexpr,
+        HAS_LORA: tl.constexpr,  # add scale * (X @ A^T) @ B^T
+        SPLIT_K: tl.constexpr,  # K splits; > 1 writes fp32 partials for the reduce kernel
+        BLOCK_M: tl.constexpr,  # all decode rows (MAX_ROWS) in one tile
+        BLOCK_N: tl.constexpr,  # output columns per program
+        BLOCK_K: tl.constexpr,  # reduction step
+        BLOCK_R: tl.constexpr,  # LoRA rank padded to a power of 2 (>= 16)
     ):
         pid_n = tl.program_id(0)
         pid_k = tl.program_id(1)
@@ -130,9 +130,9 @@ if triton is not None:
         N,
         stride_ym,
         stride_yn,
-        SPLIT_K: tl.constexpr,
-        BLOCK_M: tl.constexpr,
-        BLOCK_N: tl.constexpr,
+        SPLIT_K: tl.constexpr,  # partial slices to sum
+        BLOCK_M: tl.constexpr,  # rows per partial slice (MAX_ROWS)
+        BLOCK_N: tl.constexpr,  # output columns per program
     ):
         pid_n = tl.program_id(0)
         rm = tl.arange(0, BLOCK_M)
@@ -297,6 +297,7 @@ def _launch(
         BLOCK_R = block_r,
         num_warps = nw,
         num_stages = stages,
+        enable_fp_fusion = True,
     )
     if sk > 1:
         _splitk_reduce_kernel[(triton.cdiv(N, 128),)](
@@ -310,6 +311,7 @@ def _launch(
             BLOCK_M = MAX_ROWS,
             BLOCK_N = 128,
             num_warps = 4,
+            enable_fp_fusion = True,
         )
     return out
 
