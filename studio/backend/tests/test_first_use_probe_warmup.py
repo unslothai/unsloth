@@ -165,26 +165,14 @@ _TEMPLATES = {
 
 
 class _CompileEveryRender:
-    """The previous renderer: a fresh environment and compile for every render."""
+    """The previous behaviour: a fresh environment and compile for every render, errors included."""
 
-    def __init__(self, chat_template, today):
-        self._chat_template = chat_template
-        self._today = today
+    def __init__(self, compile_probe, chat_template, today):
+        self._args = (compile_probe, chat_template, today)
 
-    def __call__(
-        self,
-        messages,
-        tools = None,
-        controls = None,
-    ):
-        return cdps._compile_probe(self._chat_template, self._today).render(
-            messages = messages,
-            tools = tools,
-            documents = None,
-            add_generation_prompt = False,
-            **cdps._PROBE_SPECIAL_TOKENS,
-            **(controls or {}),
-        )
+    def render(self, **kwargs):
+        compile_probe, chat_template, today = self._args
+        return compile_probe(chat_template, today).render(**kwargs)
 
 
 def _probe(template, tools, controls):
@@ -198,7 +186,8 @@ class TestDateProbeCompilesOnce:
     def test_result_matches_compiling_on_every_render(self, monkeypatch, name, tools, controls):
         template = _TEMPLATES[name]
         head = _probe(template, tools, controls)
-        monkeypatch.setattr(cdps, "_ProbeRenderer", _CompileEveryRender)
+        real = cdps._compile_probe
+        monkeypatch.setattr(cdps, "_compile_probe", lambda t, d: _CompileEveryRender(real, t, d))
         assert _probe(template, tools, controls) == head
 
     def test_known_results(self):
@@ -222,10 +211,3 @@ class TestDateProbeCompilesOnce:
         monkeypatch.setattr(cdps, "_compile_probe", _counting)
         _probe(_TEMPLATES[name], True, ())
         assert len(compiles) == 1
-
-    def test_a_compile_error_is_raised_on_every_render(self):
-        from jinja2.exceptions import TemplateSyntaxError
-        render = cdps._ProbeRenderer(_TEMPLATES["broken_syntax"], _TODAY)
-        for _ in range(3):
-            with pytest.raises(TemplateSyntaxError):
-                render([])

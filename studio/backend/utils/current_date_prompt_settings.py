@@ -183,39 +183,15 @@ def _compile_probe(chat_template: str, today: date):
     return env.from_string(chat_template)
 
 
-class _ProbeRenderer:
-    """Compiles once; a compile error is re-raised on every render, as before."""
-
-    __slots__ = ("_chat_template", "_today", "_template", "_error")
-
-    def __init__(self, chat_template: str, today: date):
-        self._chat_template = chat_template
-        self._today = today
-        self._template = None
-        self._error = None
-
-    def __call__(
-        self,
-        messages: list[dict],
-        tools: list | None = None,
-        controls: dict | None = None,
-    ) -> str:
-        if self._template is None:
-            if self._error is not None:
-                raise self._error
-            try:
-                self._template = _compile_probe(self._chat_template, self._today)
-            except Exception as exc:
-                self._error = exc
-                raise
-        return self._template.render(
-            messages = messages,
-            tools = tools,
-            documents = None,
-            add_generation_prompt = False,
-            **_PROBE_SPECIAL_TOKENS,
-            **(controls or {}),
-        )
+def _render_probe(template, messages: list[dict], tools: list | None, controls: dict) -> str:
+    return template.render(
+        messages = messages,
+        tools = tools,
+        documents = None,
+        add_generation_prompt = False,
+        **_PROBE_SPECIAL_TOKENS,
+        **controls,
+    )
 
 
 def _is_whitespace_normalized_substring(value: str, container: str) -> bool:
@@ -237,14 +213,17 @@ def template_system_turn(
     kwargs = dict(controls)
     renders_chat = False
     prefix = None
-    probe = _ProbeRenderer(chat_template, today)
+    try:
+        template = _compile_probe(chat_template, today)
+    except Exception:
+        return True, ""
     # some templates read message text only from content parts, as a vision processor sends it.
     for content in (lambda text: text, lambda text: [{"type": "text", "text": text}]):
         user = {"role": "user", "content": content(_PROBE_USER)}
 
         def render(system: str | None) -> str:
             turns = [{"role": "system", "content": content(system)}] if system is not None else []
-            return probe([*turns, user], catalog, kwargs)
+            return _render_probe(template, [*turns, user], catalog, kwargs)
 
         try:
             bare = render(None)
@@ -263,7 +242,7 @@ def template_system_turn(
             return True, ""
         if prefix is None:
             try:
-                prefix = probe([], catalog, kwargs)
+                prefix = _render_probe(template, [], catalog, kwargs)
             except Exception:
                 prefix = ""
         # what the template writes before any message, like BOS or GLM's [gMASK]<sop>, is no turn.
