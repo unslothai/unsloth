@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { usePlatformStore } from "@/config/env";
+import { isServedByMlx } from "@/features/model-picker";
 import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import { useT } from "@/i18n";
 import { type ReactElement, useState } from "react";
@@ -27,6 +28,7 @@ export function FullInstallDialog({
 }): ReactElement {
   const t = useT();
   const cpuTraining = usePlatformStore((s) => s.cpuTraining);
+  const servesMlx = useServesMlx();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
@@ -36,7 +38,9 @@ export function FullInstallDialog({
             {t(
               cpuTraining
                 ? "settings.general.fullInstall.confirmDescriptionCpu"
-                : "settings.general.fullInstall.confirmDescription",
+                : servesMlx
+                  ? "settings.general.fullInstall.confirmDescriptionMlx"
+                  : "settings.general.fullInstall.confirmDescription",
             )}
           </DialogDescription>
         </DialogHeader>
@@ -63,6 +67,7 @@ export function DesktopInstallTypeControl(): ReactElement | null {
   const t = useT();
   const controller = useFullInstallUpgrade();
   const cpuTraining = usePlatformStore((s) => s.cpuTraining);
+  const servesMlx = useServesMlx();
   const [confirmOpen, setConfirmOpen] = useState(false);
   if (!controller) return null;
 
@@ -73,7 +78,9 @@ export function DesktopInstallTypeControl(): ReactElement | null {
         description={t(
           cpuTraining
             ? "settings.general.fullInstall.descriptionCpu"
-            : "settings.general.fullInstall.description",
+            : servesMlx
+              ? "settings.general.fullInstall.descriptionMlx"
+              : "settings.general.fullInstall.description",
         )}
       >
         <Button size="sm" onClick={() => setConfirmOpen(true)}>
@@ -86,5 +93,11 @@ export function DesktopInstallTypeControl(): ReactElement | null {
         onConfirm={() => void controller.repairInstall()}
       />
     </>
+  );
+}
+
+function useServesMlx(): boolean {
+  return usePlatformStore((s) =>
+    isServedByMlx(false, s.deviceType, s.chatOnlyReason, s.mlxInference),
   );
 }

@@ -2405,12 +2405,16 @@ export const de = {
         label: "Installationstyp",
         description:
           "Nur Chat (GGUF). Die vollständige Installation ergänzt Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung.",
+        descriptionMlx:
+          "Nur Chat (GGUF/MLX). Die vollständige Installation ergänzt Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung.",
         descriptionCpu:
           "Nur Chat (GGUF). Es wurde keine unterstützte GPU gefunden, daher ergänzt die vollständige Installation Training auf der CPU.",
         action: "Auf vollständige Installation upgraden",
         confirmTitle: "Auf die vollständige Installation upgraden?",
         confirmDescription:
           "Diese Nur-Chat-Installation führt GGUF-Modelle aus. Die vollständige Installation ergänzt PyTorch für die GPU dieses Rechners und ermöglicht damit Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung. Sie lädt mehrere Gigabyte herunter (mindestens 5 GB Speicherplatz) und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
+        confirmDescriptionMlx:
+          "Diese Nur-Chat-Installation führt GGUF/MLX-Modelle aus. Die vollständige Installation ergänzt PyTorch für die GPU dieses Rechners und ermöglicht damit Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung. Sie lädt mehrere Gigabyte herunter (mindestens 5 GB Speicherplatz) und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
         confirmDescriptionCpu:
           "Diese Nur-Chat-Installation führt GGUF-Modelle aus. Auf diesem Rechner wurde keine unterstützte GPU gefunden, daher ergänzt die vollständige Installation PyTorch für die CPU und ermöglicht damit Training auf der CPU. CPU-Training ist deutlich langsamer als GPU-Training. Sie benötigt mindestens 5 GB Speicherplatz und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
         confirmAction: "Upgraden",

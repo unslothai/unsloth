@@ -50,10 +50,6 @@ import {
   loadedContextFields,
   resolveInitialConfig,
 } from "@/features/model-picker/model-config/per-model-config";
-import {
-  cachedRepoIsMlx,
-  localRowIsMlx,
-} from "@/features/model-picker/components/model-selector/recommended-fit";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
@@ -3030,22 +3026,25 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
   if (isGgufLocalRow(row)) {
     return true;
   }
-  return (
-    platform.deviceType === "mac" &&
-    // null is an older backend that does not report it.
-    platform.mlxInference !== false &&
-    localRowIsMlx(row)
-  );
+  // MLX loads plain checkpoints too, as on a full install.
+  return platformServesMlx(platform);
 }
 
-/** Chat-only lists no cached non-GGUF repo except MLX on an MLX-serving Mac; same wait-for-the-server rule as above. */
-function cachedModelRunsOnThisPlatform(repo: CachedModelRepo): boolean {
+/** Chat-only lists no cached non-GGUF repo unless the Mac serves MLX; same wait-for-the-server rule as above. */
+function cachedModelRunsOnThisPlatform(): boolean {
   const platform = usePlatformStore.getState();
   if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;
-  return (
-    platform.deviceType === "mac" &&
-    platform.mlxInference === true &&
-    cachedRepoIsMlx(repo)
+  return platformServesMlx(platform);
+}
+
+function platformServesMlx(
+  platform: ReturnType<typeof usePlatformStore.getState>,
+): boolean {
+  return isServedByMlx(
+    false,
+    platform.deviceType,
+    platform.chatOnlyReason,
+    platform.mlxInference,
   );
 }
 
@@ -4207,7 +4206,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       buildAutoLoadSources(
         allGgufRepos.filter(isChattableCachedRepo),
         allModelRepos.filter(
-          (repo) => isChattableCachedRepo(repo) && cachedModelRunsOnThisPlatform(repo),
+          (repo) => isChattableCachedRepo(repo) && cachedModelRunsOnThisPlatform(),
         ),
         localRows.filter((row) =>
           isAutoLoadableLocalRow(row, cachedInventoryFailed),

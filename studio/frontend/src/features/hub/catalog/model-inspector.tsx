@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
+import {
+  isServedByMlx,
+  useVllmAvailable,
+  useVllmPlatform,
+} from "@/features/model-picker";
 import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   Tooltip,
@@ -486,6 +490,7 @@ export const ModelInspector = memo(function ModelInspector({
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
   const mlxInference = usePlatformStore((s) => s.mlxInference);
+  const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const hfToken = useHfTokenStore((s) => s.token);
   const datasetRepoId = isDataset && model?.hubRepoId ? model.hubRepoId : null;
   const datasetSize = useDatasetSize(datasetRepoId, {
@@ -611,7 +616,8 @@ export const ModelInspector = memo(function ModelInspector({
         omlx: model.localSource === "omlx",
       }));
   const mlxRunsHere =
-    runsAsMlx && deviceType === "mac" && mlxInference === true;
+    runsAsMlx &&
+    isServedByMlx(false, deviceType, chatOnlyReason, mlxInference);
   const runEligible = isHubModelRunEligible({
     model,
     isDataset,

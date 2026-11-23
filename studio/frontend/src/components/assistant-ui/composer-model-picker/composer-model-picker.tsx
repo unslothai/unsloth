@@ -107,6 +107,7 @@ import {
   isMediaCatalogRepo,
   isOverBudget,
   isRecommendableFormat,
+  isServedByMlx,
   loadStampId,
   loadedAt,
   loraOptionLabel,
@@ -1940,6 +1941,9 @@ export function ComposerModelPicker({
   const chatOnlyKnown = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
+  const servesMlx = usePlatformStore((s) =>
+    isServedByMlx(false, s.deviceType, s.chatOnlyReason, s.mlxInference),
+  );
   const recommended = useMemo<ModelOption[]>(() => {
     // The header picker's runtime gate; vLLM loads compressed-tensors checkpoints the gate refuses.
     const supported = (r: (typeof hubResults)[number]) =>
@@ -1970,6 +1974,8 @@ export function ComposerModelPicker({
               formatFilter,
               chatOnly,
               isMlxId(r.id, hasMlxCardTag(r)),
+              servesMlx,
+              chatOnlyKnown,
             ) &&
               isRecommendableFormat(r.id, r.isGguf, true, r.quantMethod) &&
               matchesRecommendedBrowse(
@@ -1999,6 +2005,8 @@ export function ComposerModelPicker({
     source?.models,
     formatFilter,
     chatOnly,
+    servesMlx,
+    chatOnlyKnown,
   ]);
   // Hub results marked MLX only by their card, which the ModelOption rows drop.
   const mlxTaggedHub = useMemo(
@@ -2093,6 +2101,9 @@ export function ComposerModelPicker({
       ) {
         continue;
       }
+      if (!audio && chatOnlyKnown && !servesMlx) {
+        continue;
+      }
       device.push({
         media: audio ? "audio" : undefined,
         key: `cached:${repo.repo_id}`,
@@ -2126,6 +2137,17 @@ export function ComposerModelPicker({
       ) {
         continue;
       }
+      // Same rule as cached repos: a Chat only host runs GGUF, plus checkpoints where it serves MLX.
+      const format = loraFormat(lora);
+      if (
+        lora.source === "local" &&
+        !lora.audioType &&
+        chatOnlyKnown &&
+        format !== "gguf" &&
+        !servesMlx
+      ) {
+        continue;
+      }
       device.push({
         media:
           mediaPageForTask(loraMeta(lora).pipelineTag) === "audio"
@@ -2138,7 +2160,7 @@ export function ComposerModelPicker({
         tab: DEVICE_TAB,
         kind: loraNeedsQuant(lora) ? "localGguf" : "local",
         section: localSection(lora.source, lora.baseModel),
-        format: loraFormat(lora),
+        format,
         sizeBytes: lora.sizeBytes ?? undefined,
         updatedAt: lora.updatedAt,
         lora,
@@ -2253,6 +2275,8 @@ export function ComposerModelPicker({
     externalModels,
     mediaTaskById,
     listsAudio,
+    chatOnlyKnown,
+    servesMlx,
   ]);
   routeMediaPick.current = (id, meta) => {
     if (!listsAudio) {
@@ -3816,7 +3840,12 @@ export function ComposerModelPicker({
       formatFilter === "safetensors" &&
       chatOnlyKnown
     ) {
-      return { title: "No models", hint: "This device runs GGUF models only." };
+      return {
+        title: "No models",
+        hint: servesMlx
+          ? "This device runs GGUF and MLX models only."
+          : "This device runs GGUF models only.",
+      };
     }
     return { title: "No models" };
   };
