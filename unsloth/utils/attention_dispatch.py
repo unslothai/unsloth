@@ -1799,6 +1799,15 @@ def _saved_attention_frames_possible() -> bool:
     return not torch.compiler.is_compiling() or _in_unsloth_compiled_region()
 
 
+def _may_cross_into_saved_attention() -> bool:
+    # Eager code, Unsloth's own blocks and a compile that may graph break all cross compiler.disable,
+    # so both checkpoint passes route alike even when only one is traced (zoo matches replay calls by
+    # position). Only a compile where a graph break is fatal stays in the graph.
+    if not torch.compiler.is_compiling() or _in_unsloth_compiled_region():
+        return True
+    return not _graph_break_is_fatal()
+
+
 def _in_unsloth_compiled_region() -> bool:
     # Unsloth's own per-layer compile (fullgraph=False, a graph break is legal); not set when the block
     # is inlined into a user's torch.compile, which may be fullgraph=True.
@@ -1806,17 +1815,32 @@ def _in_unsloth_compiled_region() -> bool:
     return bool(flag) and bool(flag[0])
 
 
+def _graph_break_is_fatal_now() -> bool:
+    # The tracing root's fullgraph=True / error_on_graph_break. Unknown (no tracer API): assume fatal.
+    try:
+        from torch._dynamo.symbolic_convert import InstructionTranslator
+        tx = InstructionTranslator.current_tx()
+    except Exception:
+        return True
+    if tx is None:
+        return True
+    return bool(getattr(tx, "one_graph", True)) or bool(getattr(tx, "error_on_graph_break", False))
+
+
+# Read once per traced graph: fullgraph is fixed per torch.compile call.
+_graph_break_is_fatal = _constant_probe(_graph_break_is_fatal_now)
+
+
 def _explicit_saves_attention() -> bool:
     # UNSLOTH_GC_SAVE_ATTENTION=1 / offload. ROCm: zoo makes a frame only for a checkpoint on a device
     # whose SDPA keeps an attention kernel, so a call outside a frame stays in the caller's graph instead
     # of crossing compiler.disable (Unsupported under fullgraph=True). Dynamo guards on the frame read.
-    # Inside a frame, only eager code and Unsloth's own blocks may cross it: any other compile may be
-    # fullgraph=True, and both checkpoint passes then stay in the graph alike (nothing kept or looked up).
+    # Inside a frame, a fullgraph=True compile stays in the graph (nothing kept for that call).
     if not _ROCM_SDPA_GUARD:
         return True
     if not _saved_attention_active():
         return False
-    return not torch.compiler.is_compiling() or _in_unsloth_compiled_region()
+    return _may_cross_into_saved_attention()
 
 
 def _select_rocm_saved_sdpa(q):

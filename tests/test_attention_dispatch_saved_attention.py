@@ -430,6 +430,76 @@ def test_rocm_explicit_routing_inside_an_unsloth_block_still_reuses(monkeypatch,
     assert SA.SAVED_ATTENTION_STATS["stored"] >= 1 and SA.SAVED_ATTENTION_STATS["reused"] >= 1
 
 
+def test_rocm_explicit_routing_inside_a_frame_user_compile_may_break_the_graph(
+    monkeypatch, checkpointing
+):
+    """A user's fullgraph=False compile inside a frame may graph break, so it keeps the first pass's
+    kernel output like eager code does and the replay reuses it."""
+    _rocm_explicit_routing(monkeypatch)
+    q = torch.randn(1, H, S, D, requires_grad = True)
+    k = torch.randn(1, KV, S, D, requires_grad = True)
+    frame = SA.new_saved_attention_frame([q])
+    torch._dynamo.reset()
+    try:
+        compiled = torch.compile(_attend(), backend = "eager", fullgraph = False)
+        with SA.saved_attention_scope(frame, False), torch.no_grad():
+            compiled(q, k, k)
+        with SA.saved_attention_scope(frame, True):
+            out = compiled(q, k, k)
+    finally:
+        torch._dynamo.reset()
+    torch.testing.assert_close(out, _attend()(q, k, k))
+    assert SA.SAVED_ATTENTION_STATS["stored"] >= 1 and SA.SAVED_ATTENTION_STATS["reused"] >= 1
+
+
+def test_rocm_explicit_routing_first_pass_compiled_replay_eager(monkeypatch, checkpointing):
+    """A checkpoint whose first pass is traced by a fullgraph=False compile and whose replay runs eager
+    (two same-shaped calls): both passes must route alike, or the replay of the first call consumes
+    the second call's kept output (zoo matches by position) and the gradients are wrong."""
+    _rocm_explicit_routing(monkeypatch)
+    attend = _attend()
+    compiled = torch.compile(attend, backend = "eager", fullgraph = False)
+
+    def layer(q, k, v):
+        first = (attend if torch.is_grad_enabled() else compiled)(q, k, v)
+        second = attend(q + 0.7, k * 0.4, v + 3.0)
+        return (first + 2 * second).square().mean()
+
+    g = torch.Generator().manual_seed(0)
+    inputs = (
+        torch.randn(1, H, S, D, generator = g),
+        torch.randn(1, KV, S, D, generator = g),
+        torch.randn(1, KV, S, D, generator = g),
+    )
+    ref_args = [x.clone().requires_grad_() for x in inputs]
+    layer(*ref_args).backward()
+    args = [x.clone().requires_grad_() for x in inputs]
+    torch._dynamo.reset()
+    try:
+        G.UnslothCheckpointFunction.apply(layer, True, *args).backward()
+    finally:
+        torch._dynamo.reset()
+    for got, ref in zip(args, ref_args):
+        torch.testing.assert_close(got.grad, ref.grad, rtol = 1e-4, atol = 1e-6)
+
+
+def test_graph_break_is_fatal_reads_the_compile_mode():
+    seen = []
+
+    def probe(x):
+        seen.append(ad._graph_break_is_fatal())
+        return x + 1
+
+    x = torch.randn(4)
+    for fullgraph in (True, False):
+        torch._dynamo.reset()
+        try:
+            torch.compile(probe, backend = "eager", fullgraph = fullgraph)(x)
+        finally:
+            torch._dynamo.reset()
+    assert seen == [True, False]
+
+
 def test_rocm_saved_attention_selector_applies_the_sdpa_check(monkeypatch):
     from torch.nn.attention import SDPBackend
 
