@@ -199,7 +199,6 @@ def _admit_saved_connection(raw: dict[str, Any], request: Request | None) -> Non
         or not provider["is_enabled"]
         or answers_decisions_only(provider["provider_type"], provider.get("api_type"))
     ):
-        # The live stream reports a missing or disabled connection in the chat.
         raise HTTPException(status_code = 400, detail = EXTERNAL_LEGACY_DETAIL)
     # The proxy's subscription gate is narrower than the saved-key one: an `unsloth start` key passes the latter.
     if (

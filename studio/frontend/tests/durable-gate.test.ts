@@ -127,7 +127,6 @@ for (const [name, override, why] of legacyCases) {
 }
 
 test("a connection turn whose key the server holds is a durable-run candidate", () => {
-  // The producer resolves the saved key itself, so the reply outlives a sleeping phone.
   assert.equal(isDurableRunCandidate({ ...durableTurn, externalKeyInBrowser: false }), true);
 });
 

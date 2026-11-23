@@ -286,7 +286,6 @@ async def test_stop_reaches_a_connection_run_and_closes_the_upstream(thread):
         while not _chunk_text() and time.monotonic() < deadline:
             await asyncio.sleep(0.05)
         assert _chunk_text()
-        # Registered as external, so a local model swap neither waits for nor cancels it.
         assert active_generations.count(None) == 1
         assert active_generations.count(None, include_external = False) == 0
         run_routes.cancel_chat_generation_run("run-1", _ui_request(supervisor), "alice")
