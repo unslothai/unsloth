@@ -815,11 +815,68 @@ def test_the_connection_stores_its_auto_compact_trigger(tmp_path, monkeypatch):
 
     assert ProviderUpdate(auto_compact_tokens = 400_000).auto_compact_tokens == 400_000
     assert ProviderUpdate(auto_compact_tokens = None).auto_compact_tokens is None
-    for rejected in (999, 2_000_001):
+    for rejected in (999, 1_200_001):
         with pytest.raises(ValidationError):
             ProviderCreate(
                 provider_type = "openrouter", display_name = "x", auto_compact_tokens = rejected
             )
+
+
+def test_the_connection_stores_its_auto_compact_percent(tmp_path, monkeypatch):
+    from models.providers import ProviderCreate, ProviderUpdate
+    from pydantic import ValidationError
+    from storage import providers_db
+
+    monkeypatch.setattr(providers_db, "studio_db_path", lambda: tmp_path / "studio.db")
+    monkeypatch.setattr(providers_db, "_schema_ready", set())
+    providers_db.create_provider(
+        id = "ollama",
+        provider_type = "ollama",
+        display_name = "Ollama",
+        base_url = "http://127.0.0.1:11434/v1",
+        auto_compact_percent = 80,
+        auto_compact_percent_by_model = {"qwen3:32b": 50},
+    )
+    row = providers_db.get_provider("ollama")
+    assert row["auto_compact_percent"] == 80
+    assert row["auto_compact_percent_by_model"] == {"qwen3:32b": 50}
+    assert providers_db.update_provider(id = "ollama", display_name = "Renamed")
+    assert providers_db.get_provider("ollama")["auto_compact_percent_by_model"] == {"qwen3:32b": 50}
+    assert providers_db.update_provider(
+        id = "ollama", auto_compact_percent = None, auto_compact_percent_by_model = {}
+    )
+    row = providers_db.get_provider("ollama")
+    assert row["auto_compact_percent"] is None and row["auto_compact_percent_by_model"] == {}
+
+    update = ProviderUpdate(auto_compact_percent_by_model = {" gpt-oss:20b ": 60})
+    assert update.auto_compact_percent_by_model == {"gpt-oss:20b": 60}
+    assert "auto_compact_percent" not in ProviderUpdate(display_name = "x").model_fields_set
+    for rejected in (9, 101, True, 50.0):
+        with pytest.raises(ValidationError):
+            ProviderCreate(provider_type = "ollama", display_name = "x", auto_compact_percent = rejected)
+    for rejected in ({"m": 9}, {"m": 101}, {"m": True}, {"": 50}, ["m"]):
+        with pytest.raises(ValidationError):
+            ProviderCreate(
+                provider_type = "ollama", display_name = "x", auto_compact_percent_by_model = rejected
+            )
+
+
+def test_a_percent_applies_to_the_window_a_self_hosted_server_reports(monkeypatch):
+    async def served(self, model):
+        return 40_000
+
+    monkeypatch.setattr(ep_mod.ExternalProviderClient, "served_context_window", served)
+    seen = {}
+    real = ri._fit_external_context
+
+    def spy(messages, payload, **kwargs):
+        seen["threshold"] = payload.compaction_threshold
+        return real(messages, payload, **kwargs)
+
+    monkeypatch.setattr(ri, "_fit_external_context", spy)
+    chat = [{"role": "user", "content": "hello"}]
+    _proxy("vllm", chat, context_overflow = "truncate_oldest", compaction_percent = 50)
+    assert seen["threshold"] == 20_000
 
 
 def test_a_prompt_squeezed_by_fixed_overhead_summarises_up_to_the_newest_turn():
