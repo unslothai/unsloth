@@ -898,6 +898,8 @@ _RACE_SOURCES = {
         "_PROBE_SHAPES",
         "_scale_dtypes",
         "_probe_tile",
+        # the probe's out-of-memory check
+        "_is_oom",
         "probed_tiles",
     ),
     # the sm_8x prefetch fix's version: bumped with any change to what it does to the Triton kernel's codegen
