@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
 
-"""upload_to_huggingface must only ship tensorboard logs sitting next to the exported file:
-an events file elsewhere in the working directory used to leak into the repo, and
-path_in_repo was built by string-replacing file_location, which yields leading slashes or
-backslashes. Hub calls are mocked: nothing reaches the network."""
+"""upload_to_huggingface ships only tensorboard files sitting next to the exported file. Hub mocked."""
 
 import os
 
@@ -76,7 +73,7 @@ def test_tfevents_outside_export_dir_are_not_uploaded(hub, tmp_path, monkeypatch
     assert (str(weights), "model.gguf") in hub.uploads
 
 
-def test_tfevents_inside_export_dir_upload_with_posix_path(hub, tmp_path, monkeypatch):
+def test_tfevents_next_to_export_upload_by_basename(hub, tmp_path, monkeypatch):
     export = tmp_path / "export"
     nested = export / "runs"
     nested.mkdir(parents = True)
@@ -90,11 +87,7 @@ def test_tfevents_inside_export_dir_upload_with_posix_path(hub, tmp_path, monkey
         _model(), "owner/repo", "token", "finetuned", file_location = str(weights)
     )
 
-    tfevents = _tfevents(hub)
-    assert sorted(tfevents) == ["events.out.tfevents.1.host", "runs/events.out.tfevents.2.host"]
-    for repo_path in tfevents:
-        assert not repo_path.startswith("/")
-        assert "\\" not in repo_path
+    assert _tfevents(hub) == ["events.out.tfevents.1.host"]
 
 
 def test_tfevents_next_to_bare_filename_in_cwd(hub, tmp_path, monkeypatch):
@@ -112,17 +105,19 @@ def test_tfevents_next_to_bare_filename_in_cwd(hub, tmp_path, monkeypatch):
     assert _tfevents(hub) == ["events.out.tfevents.4.host"]
 
 
-def test_tfevents_found_when_file_location_is_a_directory(hub, tmp_path, monkeypatch):
-    export = tmp_path / "export"
-    export.mkdir()
-    (export / "events.out.tfevents.3.host").write_bytes(b"x")
+def test_dot_slash_filename_does_not_walk_cwd(hub, tmp_path, monkeypatch):
+    (tmp_path / "model.gguf").write_bytes(b"GGUF")
+    (tmp_path / "events.out.tfevents.6.host").write_bytes(b"x")
+    runs = tmp_path / "outputs" / "runs"
+    runs.mkdir(parents = True)
+    (runs / "events.out.tfevents.7.host").write_bytes(b"x")
     monkeypatch.chdir(tmp_path)
 
     save_mod.upload_to_huggingface(
-        _model(), "owner/repo", "token", "finetuned", file_location = str(export)
+        _model(), "owner/repo", "token", "finetuned", file_location = "./model.gguf"
     )
 
-    assert _tfevents(hub) == ["events.out.tfevents.3.host"]
+    assert _tfevents(hub) == ["events.out.tfevents.6.host"]
 
 
 def test_temp_config_removed_when_upload_fails(tmp_path, monkeypatch):

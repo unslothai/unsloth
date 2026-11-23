@@ -3598,39 +3598,22 @@ def upload_to_huggingface(
 
         import fnmatch
 
-        if os.path.isdir(file_location):
-            tfevents_dir = file_location
-        else:
-            tfevents_dir = os.path.dirname(file_location)
-
-        if tfevents_dir == "":
-            tfevents_dir = "."
-            ftevent_files = sorted(
-                os.path.join(tfevents_dir, filename)
-                for filename in os.listdir(tfevents_dir)
-                if os.path.isfile(os.path.join(tfevents_dir, filename))
-                and fnmatch.fnmatch(filename, "*out.tfevents*")
-            )
-        else:
-            ftevent_files = []
-            for root, dirnames, filenames in os.walk(tfevents_dir):
-                dirnames[:] = [name for name in dirnames if not name.startswith(".")]
-                ftevent_files.extend(
-                    os.path.join(root, filename)
-                    for filename in filenames
-                    if fnmatch.fnmatch(filename, "*out.tfevents*")
-                )
-            ftevent_files.sort()
+        # Only the export file's own folder, never the whole CWD tree.
+        tfevents_dir = os.path.dirname(file_location) or "."
+        ftevent_files = sorted(
+            entry.path
+            for entry in os.scandir(tfevents_dir)
+            if entry.is_file() and fnmatch.fnmatch(entry.name, "*out.tfevents*")
+        )
         if len(ftevent_files) > 0:
             print(
                 "Unsloth: Uploading tensorboard files... Please wait...",
                 os.path.join(tfevents_dir, "*out.tfevents*"),
             )
             for ftevent_file in ftevent_files:
-                path_in_repo = os.path.relpath(ftevent_file, tfevents_dir).replace(os.sep, "/")
                 hf_api.upload_file(
                     path_or_fileobj = ftevent_file,
-                    path_in_repo = path_in_repo,
+                    path_in_repo = os.path.basename(ftevent_file),
                     repo_id = save_directory,
                     repo_type = "model",
                     commit_message = "(Trained with Unsloth)",
