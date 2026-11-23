@@ -8,6 +8,7 @@ are checked against) with the device check lifted. The kernels themselves are co
 import importlib.util
 import pathlib
 import re
+import sys
 
 import pytest
 
@@ -31,6 +32,9 @@ def fx(monkeypatch):
         spec.loader.exec_module(mod)
         _MODULE.append(mod)
     mod = _MODULE[0]
+    # Registered while a test runs: code dynamo compiles from it (flex, the whole-model trace) re-imports the module
+    # by name for its guards.
+    monkeypatch.setitem(sys.modules, mod.__name__, mod)
     if not mod.available():
         pytest.skip("flex_attention with captured-buffer gradients needs torch >= 2.7")
     monkeypatch.setattr(flex_mod, "_validate_device", lambda *a, **k: None)
@@ -322,6 +326,8 @@ def test_changed_modeling_code_keeps_eager(fx, monkeypatch):
 )
 def test_auto_policy(fx, monkeypatch, capability, mode, min_length, expected):
     monkeypatch.setattr(fx, "_capability", lambda device: capability)
+    # NVIDIA capabilities: on a ROCm build torch.version.hip is set and auto keeps eager (test_auto_policy_keeps_rocm_eager).
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
     if mode is None:
         monkeypatch.delenv(fx.ENV, raising = False)
     else:
