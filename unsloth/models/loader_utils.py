@@ -4895,7 +4895,7 @@ def _get_fp8_mode_and_check_settings(
     load_in_8bit: bool = False,
     load_in_16bit: bool = False,
 ) -> str:
-    """Validate `load_in_fp8` settings/environment and return the fp8 mode ("row" or "block"). Requires H100+, torchao 0.15.0+, torch 2.9.0+, and fbgemm_gpu_genai 1.4.1+ if installed."""
+    """Validate `load_in_fp8` settings/environment and return the fp8 mode ("row" or "block"). Requires torch 2.9.0+ and either H100+ with torchao 0.15.0+, or Intel XPU with torchao 0.18.0+ and fast_inference = False (block also needs transformers < 5). fbgemm_gpu_genai 1.4.1+ is used if installed."""
     assert load_in_fp8 is not False
     if load_in_fp8 is True:
         fp8_mode = "row"  # default
@@ -4911,7 +4911,24 @@ def _get_fp8_mode_and_check_settings(
             "Unsloth: `load_in_fp8` is not compatible with `load_in_4bit`, `load_in_8bit` or `load_in_16bit`",
         )
 
-    if not (
+    if DEVICE_TYPE_TORCH == "xpu":
+        if fast_inference:
+            raise ValueError(
+                "Unsloth: On the fly `load_in_fp8` on Intel XPU needs `fast_inference = False`."
+            )
+        if fp8_mode == "block" and Version(transformers_version) >= Version("5.0.0"):
+            raise ValueError(
+                "Unsloth: On the fly `load_in_fp8 = 'block'` on Intel XPU needs transformers < 5. "
+                "Use `load_in_fp8 = True` instead."
+            )
+        if importlib.util.find_spec("torchao") is not None:
+            import torchao
+            if Version(torchao.__version__) < Version("0.18.0"):
+                raise ValueError(
+                    "Unsloth: On the fly `load_in_fp8` on Intel XPU requires torchao 0.18.0+. "
+                    f"You have torchao version={torchao.__version__}"
+                )
+    elif not (
         torch.cuda.is_available()
         and torch.version.cuda
         and torch.cuda.get_device_capability() >= (9, 0)
