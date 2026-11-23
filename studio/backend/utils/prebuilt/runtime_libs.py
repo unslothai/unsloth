@@ -221,8 +221,7 @@ ONEAPI_LIB_DIRS_FILENAME = "UNSLOTH_ONEAPI_LIB_DIRS"
 
 
 def oneapi_lib_dirs(binary_dir: str | Path) -> list[str]:
-    """oneAPI runtime dirs the installer recorded in a SYCL build.
-    It links libsycl, MKL, and the compiler runtime."""
+    """oneAPI runtime dirs (libsycl, MKL, compiler runtime) the installer recorded for a SYCL build."""
     try:
         text = (Path(binary_dir) / ONEAPI_LIB_DIRS_FILENAME).read_text(encoding = "utf-8")
     except OSError:
