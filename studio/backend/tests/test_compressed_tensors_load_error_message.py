@@ -52,9 +52,12 @@ VLLM_HINT = " Or run it with vLLM: open this model's run settings and set Infere
 @pytest.fixture(autouse = True)
 def _host_without_vllm():
     """The hint depends on the GPU; pin "no vLLM" so results do not depend on the machine."""
-    with patch(
-        "core.inference.engine_install.support_reason",
-        return_value = "Requires an NVIDIA GPU with compute capability 8.0 or newer.",
+    with (
+        patch(
+            "core.inference.engine_install.support_reason",
+            return_value = "Requires an NVIDIA GPU with compute capability 8.0 or newer.",
+        ),
+        patch("core.inference.engine_install.gpu_platform", return_value = "cuda"),
     ):
         yield
 
@@ -352,3 +355,12 @@ def test_the_vllm_hint_never_touches_other_refusals():
         assert (
             inference_route._unsupported_quantization_detail("Network connection timed out") is None
         )
+
+
+def test_no_hint_on_apple_silicon_where_vllm_cannot_load_it():
+    inference_route = _load_route_module()
+    with (
+        patch("core.inference.engine_install.support_reason", return_value = None),
+        patch("core.inference.engine_install.gpu_platform", return_value = "metal"),
+    ):
+        assert inference_route._unsupported_quantization_detail(CONFIG_IMPORT_ERROR) == EXPECTED

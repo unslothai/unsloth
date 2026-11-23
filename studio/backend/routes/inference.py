@@ -18007,7 +18007,10 @@ _NVFP4_NO_ENGINE_MESSAGE = _GPU_QUANT_NO_ENGINE_MESSAGE.format(fmt = "NVFP4")
 def _gpu_quant_inference_message(fmt: str) -> str:
     try:
         from core.inference.engine_install import gpu_platform, support_reason
-        if gpu_platform() != "rocm" and support_reason("vllm", wait = False) is None:
+
+        # vllm-metal 0.33.0 has no NVFP4 loader.
+        refused = ("rocm", "metal") if fmt == "NVFP4" else ("rocm",)
+        if gpu_platform() not in refused and support_reason("vllm", wait = False) is None:
             return _GPU_QUANT_ENGINE_MESSAGE.format(fmt = fmt)
     except Exception:
         pass
@@ -18032,7 +18035,10 @@ def _vllm_engine_hint(engine: Optional[str]) -> str:
     if engine not in (None, "auto"):
         return ""
     try:
-        from core.inference.engine_install import support_reason
+        from core.inference.engine_install import gpu_platform, support_reason
+        if gpu_platform() == "metal":
+            # vllm-metal 0.33.0 has no compressed-tensors loader.
+            return ""
         return _COMPRESSED_TENSORS_VLLM_HINT if support_reason("vllm", wait = False) is None else ""
     except Exception:
         return ""
