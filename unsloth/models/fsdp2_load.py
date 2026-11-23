@@ -339,6 +339,9 @@ def _keep_chunk(module, p, world, rank, ranks):
     return new
 
 
+_ASYNC_LOAD_ENV = "HF_DEACTIVATE_ASYNC_LOAD"
+
+
 def _shard_allocator_warmup(world):
     """transformers 5 reserves the whole (quantized) model on each GPU before loading (caching_allocator_warmup,
     capped by total, not free, memory), which can OOM a rank that only keeps 1/world of it. For the chunked load
@@ -414,9 +417,16 @@ def _load_quantizing(original, cls, name, args, kwargs, mesh, state):
     loading.set_param_for_module = set_and_chunk
     state["active"] = True
     restore_warmup = _shard_allocator_warmup(world)
+    # transformers 5.0-5.3 materializes tensors on worker threads ahead of the setter loop even when quantizing
+    # on the fly, so the Futures hold whole full-precision tensors on the card; load synchronously instead.
+    forced_sync = _ASYNC_LOAD_ENV not in os.environ
+    if forced_sync:
+        os.environ[_ASYNC_LOAD_ENV] = "1"
     try:
         loaded = original(cls, name, *args, **kwargs)
     finally:
+        if forced_sync:
+            os.environ.pop(_ASYNC_LOAD_ENV, None)
         loading.set_param_for_module = set_param
         restore_warmup()
         state["active"] = False

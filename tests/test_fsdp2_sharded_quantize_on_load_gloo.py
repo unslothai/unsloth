@@ -315,3 +315,30 @@ def test_chunked_quantize_on_load_skips_the_warmup_without_get_total_byte_count(
     _load_with_warmup(calls)
     assert calls == []
     assert mu.caching_allocator_warmup is warmup  # restored after the load
+
+
+def _async_env_during_chunked_load():
+    from unsloth.models.fsdp2_load import _load_quantizing
+
+    seen = []
+
+    def original(cls, name, *args, **kwargs):
+        seen.append(os.environ.get("HF_DEACTIVATE_ASYNC_LOAD"))
+        return torch.nn.Linear(4, 4)
+
+    state = {"active": False, "models": []}
+    _load_quantizing(original, None, "m", (), {}, _FakeMesh(), state)
+    return seen
+
+
+def test_chunked_quantize_on_load_forces_synchronous_materialization(monkeypatch):
+    # transformers 5.0-5.3 queue full-precision GPU copies on worker threads before the setter loop.
+    monkeypatch.delenv("HF_DEACTIVATE_ASYNC_LOAD", raising = False)
+    assert _async_env_during_chunked_load() == ["1"]
+    assert "HF_DEACTIVATE_ASYNC_LOAD" not in os.environ  # restored after the load
+
+
+def test_chunked_quantize_on_load_keeps_a_user_async_setting(monkeypatch):
+    monkeypatch.setenv("HF_DEACTIVATE_ASYNC_LOAD", "0")
+    assert _async_env_during_chunked_load() == ["0"]
+    assert os.environ["HF_DEACTIVATE_ASYNC_LOAD"] == "0"
