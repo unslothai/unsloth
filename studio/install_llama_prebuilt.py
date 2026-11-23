@@ -19,7 +19,6 @@ import os
 import platform
 import random
 import re
-import shlex
 import shutil
 import signal
 import site
@@ -5475,21 +5474,6 @@ def install_from_archives(
         create_exec_entrypoint(build_server, source_server)
     if source_quantize != build_quantize:
         create_exec_entrypoint(build_quantize, source_quantize)
-    if choice.install_kind == "linux-sycl":
-        oneapi_dirs = shlex.quote(os.pathsep.join(oneapi_lib_dirs(build_bin)))
-        script = "\n".join(
-            [
-                "#!/bin/sh",
-                f"LD_LIBRARY_PATH={oneapi_dirs}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}",
-                "export LD_LIBRARY_PATH",
-                f'exec "$(dirname "$0")/{os.path.relpath(source_quantize, install_dir)}" "$@"',
-                "",
-            ]
-        )
-        if root_quantize.exists() or root_quantize.is_symlink():
-            root_quantize.unlink()
-        atomic_write_bytes(root_quantize, script.encode("utf-8"))
-        os.chmod(root_quantize, 0o755)
 
     return source_server, source_quantize
 
@@ -9384,10 +9368,16 @@ def existing_install_matches_plan(
 
 
 _LISTED_VULKAN_DEVICE_RE = re.compile(r"^\s*Vulkan\d+:", re.MULTILINE)
+_LISTED_SYCL_DEVICE_RE = re.compile(r"^\s*SYCL\d+:", re.MULTILINE)
 
 
-def bundle_lists_vulkan_device(server_path: Path, install_dir: Path, host: HostInfo) -> bool:
-    """Whether llama.cpp itself, from the installed bundle, enumerates a Vulkan GPU."""
+def bundle_lists_vulkan_device(
+    server_path: Path,
+    install_dir: Path,
+    host: HostInfo,
+    device_re: "re.Pattern[str]" = _LISTED_VULKAN_DEVICE_RE,
+) -> bool:
+    """Whether llama.cpp itself, from the installed bundle, enumerates a GPU matching ``device_re``."""
     try:
         result = subprocess.run(
             [str(server_path), "--list-devices"],
@@ -9403,7 +9393,7 @@ def bundle_lists_vulkan_device(server_path: Path, install_dir: Path, host: HostI
     except Exception as exc:
         log(f"llama-server --list-devices failed: {exc}")
         return False
-    return result.returncode == 0 and bool(_LISTED_VULKAN_DEVICE_RE.search(result.stdout or ""))
+    return result.returncode == 0 and bool(device_re.search(result.stdout or ""))
 
 
 def validate_prebuilt_choice(
@@ -9473,6 +9463,11 @@ def validate_prebuilt_choice(
         raise PrebuiltFallback(
             f"{choice.name} lists no Vulkan GPU on this host; using the CPU bundle instead"
         )
+    # Picked from "Intel GPU + libsycl in the venv" alone; with no SYCL device it would run on CPU.
+    if choice.install_kind == "linux-sycl" and not bundle_lists_vulkan_device(
+        server_path, install_dir, host, _LISTED_SYCL_DEVICE_RE
+    ):
+        raise PrebuiltFallback(f"{choice.name} lists no SYCL GPU on this host")
     write_prebuilt_metadata(
         install_dir,
         host = host,
