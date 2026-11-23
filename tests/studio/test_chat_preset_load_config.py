@@ -542,7 +542,7 @@ def test_a_preset_records_a_self_sizing_load_s_pin_and_not_its_window():
     assert not re.search(r"LlamaCpp\(\{[^}]*?(\w+): (?!store\.[\w.]*\1,)", body), body
     assert (
         "isServedByMlx(\n    isGguf,\n    platform.deviceType,\n    platform.chatOnlyReason,\n"
-        "    platform.mlxInference,\n  )" in body
+        "    platform.mlxInference,\n    store.loadedEngine,\n  )" in body
     ), body
     compare = source[source.index("function toComparablePerModelConfig(") :]
     compare = compare[: compare.index("\n}\n")]
