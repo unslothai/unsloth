@@ -805,9 +805,17 @@ def _join_enabled(ddp):
 
 
 def _auto_ddp_pre_forward(module, args):
-    # Registered on ddp.module; a plain function so torch.save(ddp) can pickle the hook. Under a
-    # torch.compile around the DDP model this frame is traced or runs under the compiler's callback.
-    _auto_ddp_step(module, torch.compiler.is_compiling() or _dynamo_callback_active())
+    # Registered on ddp.module; a plain function so torch.save(ddp) can pickle the hook. A user
+    # torch.compile of the DDP model, of ddp.module or of a function calling either traces this hook:
+    # it traces to nothing (no call into the compiler-disabled step, so fullgraph=True still works and
+    # fullgraph=False gets no graph break), and a forward that runs a compiled graph never runs it.
+    # Run eagerly under the compiler's callback (a recompile or cache-limit fallback, which can differ
+    # by rank), it only vetoes locally. So no compiled forward counts or votes on any rank, whether
+    # that rank traced, replayed or fell back, and the ranks keep one schedule; the local veto reaches
+    # the other ranks at the next eager vote, if there is one.
+    if torch.compiler.is_compiling():
+        return
+    _auto_ddp_step(module, _dynamo_callback_active())
 
 
 @_DISABLE_DYNAMO
@@ -829,9 +837,14 @@ def _auto_ddp_step(module, compiling):
         return
     if not (torch.is_grad_enabled() and ddp.require_backward_grad_sync):
         return
+    if compiling:
+        # No vote and no count: another rank may be replaying a graph that never runs this hook.
+        if live:
+            _auto_ddp_veto(auto, "torch.compile around the DDP model")
+        return
     session["count"] += 1
     if session["count"] >= session["next"]:
-        _auto_ddp_agree(auto, session, ddp, live, compiling)
+        _auto_ddp_agree(auto, session, ddp, live)
 
 
 def _auto_ddp_veto(auto, why):
@@ -843,7 +856,7 @@ def _auto_ddp_veto(auto, why):
         _auto_off(auto, why)
 
 
-def _auto_ddp_agree(auto, session, ddp, live, compiling):
+def _auto_ddp_agree(auto, session, ddp, live):
     import torch.distributed as dist
 
     count = session["count"]
@@ -851,8 +864,6 @@ def _auto_ddp_agree(auto, session, ddp, live, compiling):
     if live:
         try:
             why = session["why"] or _auto_cp_reason()
-            if why is None and compiling:
-                why = "torch.compile around the DDP model"
             if why is not None:
                 _auto_ddp_veto(auto, why)
         except Exception:

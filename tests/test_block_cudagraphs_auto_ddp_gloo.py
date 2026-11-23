@@ -282,6 +282,59 @@ def _run_join_active(rank, res, bc):
     bc._AUTO_DDP_RECHECK = 1
 
 
+def _run_compiled(rank, res, bc):
+    # A user torch.compile of the wrapped module (no Unsloth blocks inside, so its session refuses
+    # graphs): compiled after an eager step, before any step, fullgraph off, and a compiled function
+    # calling ddp.module directly. The agreement hook must trace away (no graph break, no
+    # collective in a graph) and every rank must keep the same vote schedule.
+    _real_compile = torch.compile
+    votes = [0]
+
+    def all_reduce_spy(*args, **kwargs):
+        if sys._getframe(1).f_globals.get("__name__") == bc.__name__:
+            votes[0] += 1
+        return _ALL_REDUCE(*args, **kwargs)
+
+    dist.all_reduce = all_reduce_spy
+    from torch._dynamo.utils import counters
+
+    def train(model, call = None):
+        x = torch.randn(4, 8, requires_grad = True)
+        ((call or model)(x)).sum().backward()
+
+    for name, eager_first, fullgraph, direct in (
+        ("after_eager", True, True, False),
+        ("before_any", False, True, False),
+        ("graph_break_free", False, False, False),
+        ("direct_module", True, True, True),
+    ):
+        torch._dynamo.reset()
+        counters.clear()
+        torch.manual_seed(0)
+        model = torch.nn.parallel.DistributedDataParallel(torch.nn.Linear(8, 8))
+        session = bc._AUTO_DDP_SESSIONS.get(model)
+        if eager_first:
+            train(model)
+        votes[0] = 0
+        error = None
+        try:
+            if direct:
+                fn = _real_compile(lambda x: model.module(x), backend = "eager", fullgraph = True)
+                train(model, fn)
+            model.module.compile(backend = "eager", fullgraph = fullgraph, dynamic = True)
+            for _ in range(3):
+                train(model)
+        except Exception as e:
+            error = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
+        res[name] = {
+            "error": error,
+            "votes": votes[0],
+            "graph_breaks": sum(counters["graph_break"].values()),
+            "schedule": (session["count"], session["next"], session["done"]) if session else None,
+        }
+    dist.all_reduce = _ALL_REDUCE
+
+
 def _worker(
     rank,
     world,
@@ -313,6 +366,8 @@ def _worker(
             _run_nosync_first(rank, res, bc)
         elif group == "join_active":
             _run_join_active(rank, res, bc)
+        elif group == "compiled":
+            _run_compiled(rank, res, bc)
         else:
             _run_main(rank, res, bc)
         dist.barrier()
@@ -553,3 +608,14 @@ def test_rank_that_never_finishes_probing_keeps_graphs_off_everywhere():
         assert s["phase"] == "off", s
         assert "still probing" in (s["why"] or ""), s
         assert _all_plain(s), s
+
+
+@pytest.mark.parametrize("name", ["after_eager", "before_any", "graph_break_free", "direct_module"])
+def test_user_compile_of_the_ddp_module_traces_the_hook_away(name):
+    r = _results("compiled")
+    s0, s1 = r[0][name], r[1][name]
+    for s in (s0, s1):
+        assert s["error"] is None, s
+        assert s["graph_breaks"] == 0, s
+        assert s["votes"] == 0, s  # no collective of ours in or around a compiled forward
+    assert s0["schedule"] == s1["schedule"], (s0, s1)
