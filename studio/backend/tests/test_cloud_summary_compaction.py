@@ -961,7 +961,6 @@ def test_max_asks_for_the_room_the_window_leaves_after_the_prompt():
     assert ri._window_room_max_tokens(64_000, 10_000, None) == 64_000 - 10_000 - 2_000
     assert ri._window_room_max_tokens(64_000, 70_000, 6_000) == 64_000 - 6_000 - 2_000
     assert ri._window_room_max_tokens(64_000, 63_000, None) == ri._MIN_WINDOW_ROOM_TOKENS
-    # Past the window with auto-compact off: a replayed summary shortens it later, so not 256.
     assert ri._window_room_max_tokens(64_000, 200_000, None) == 16_000
 
 

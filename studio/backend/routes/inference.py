@@ -29931,15 +29931,14 @@ _ANTHROPIC_NATIVE_COMPACT_NOW_TOKENS = 60_000
 _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
-# Without max_tokens Ollama context-shifts past num_ctx and a gateway applies its own default,
-# so Max asks for what the model's window leaves after the prompt (llama.cpp and vLLM stop there).
+# Max fills what the window leaves after the prompt: unbounded, Ollama context-shifts past num_ctx.
 _WINDOW_ROOM_REPLY_PROVIDERS = frozenset({"ollama", "custom", "openrouter"})
 _UNKNOWN_WINDOW_MAX_TOKENS = 32_768
 _MIN_WINDOW_ROOM_TOKENS = 256
 
 
 def _window_room_max_tokens(window: int, prompt_tokens: int, compaction_threshold) -> int:
-    # A fit will shrink the prompt to the threshold first, so leave room for that prompt, not this one.
+    # A fit shrinks the prompt to the threshold first.
     if compaction_threshold:
         prompt_tokens = min(prompt_tokens, compaction_threshold)
     if prompt_tokens >= window:
@@ -31248,16 +31247,15 @@ async def _proxy_to_external_provider(
         managed is None
         and provider_type in _WINDOW_ROOM_REPLY_PROVIDERS
         and _effective_max_tokens(payload) is None
-        # OpenRouter models publish output caps below the window; only Studio's Max (which knows
-        # them and sends a number where one applies) opts into the window there.
+        # OpenRouter output caps sit below the window; only Studio's Max, which knows them, opts in.
         and (provider_type != "openrouter" or _ui_stream_events_enabled(request))
     ):
         from routes.providers import cached_catalog_model_context
 
         _reply_window = None
-        # A Responses endpoint is a hosted gateway with its own output caps: it keeps the old limit.
+        # Responses endpoints are hosted gateways with their own output caps.
         if api_type != "responses":
-            # Ollama's loaded num_ctx is usually far below the catalogued window: the smaller wins.
+            # Ollama's loaded num_ctx is often far below the catalogued window.
             _reply_window = min(
                 filter(None, (payload.context_window, await client.served_context_window(model))),
                 default = None,

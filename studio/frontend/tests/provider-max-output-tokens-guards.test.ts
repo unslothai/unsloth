@@ -192,7 +192,6 @@ test("the dated Anthropic ids carry their documented cap", () => {
 });
 
 test("a model with no documented cap takes the connection override", () => {
-  // Models the catalog has no window for, so the range has no better top.
   const undocumented: Array<[string, string | null]> = [
     ["openrouter", "unlisted/some-model"],
     ["openai", "o3"],
@@ -216,14 +215,12 @@ test("a model with no documented cap takes the connection override", () => {
 });
 
 test("Max Tokens reaches a catalogued window where the backend takes the prompt off it", () => {
-  // OpenRouter lists a window but no output limit for this model.
   const model = "qwen/qwen3-235b-a22b-2507";
   const window = catalog.resolveModelCatalogEntry("openrouter", model)?.contextLength;
   assert.equal(window, 262144);
   assert.equal(getExternalMaxOutputTokens("openrouter", model), 262144);
   assert.equal(externalRequestMaxTokens("openrouter", model, null, 262144), null);
   assert.equal(externalRequestMaxTokens("openrouter", model, null, 100_000), 100_000);
-  // A hosted API with no published limit keeps the fallback even when its window is known.
   assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k2.6"), EXTERNAL_MAX_OUTPUT_TOKENS);
 });
 
