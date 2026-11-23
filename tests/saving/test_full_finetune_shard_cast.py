@@ -48,6 +48,7 @@ def _generic_save():
         os = os,
         json = json,
         torch = torch,
+        is_bfloat16_supported = torch.cuda.is_bf16_supported,
         re = re,
         threading = __import__("threading"),
         nullcontext = contextlib.nullcontext,
@@ -109,7 +110,7 @@ def _read(directory):
 def _expected(namespace, model, export_dtype):
     if export_dtype == "float32":
         return {k: v.float() if v.is_floating_point() else v for k, v in model.state_dict().items()}
-    target = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    target = torch.bfloat16 if namespace["is_bfloat16_supported"]() else torch.float16
     return namespace["_cast_state_dict_16bit"](model, model.state_dict(), target)
 
 

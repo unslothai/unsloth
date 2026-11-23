@@ -2084,7 +2084,7 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
         # Without bf16 the preflight lowers a bf16 first conversion to f16, which adds a quantize pass.
-        monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+        monkeypatch.setattr(S, "is_bfloat16_supported", lambda *a, **k: True)
         state["directory"] = str(tmp_path / "model")
         return state
 
@@ -2965,7 +2965,7 @@ class TestTheGgufPreflightIsToldTheModelDtype:
 
     @pytest.fixture(autouse = True)
     def bf16_hardware(self, monkeypatch):
-        monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", lambda: True)
+        monkeypatch.setattr(S, "is_bfloat16_supported", lambda: True)
 
     def test_a_bfloat16_model_reports_bf16(self):
         import torch
@@ -2978,7 +2978,7 @@ class TestTheGgufPreflightIsToldTheModelDtype:
 
     def test_hardware_without_bf16_falls_back_like_the_exporter(self, monkeypatch):
         import torch
-        monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", lambda: False)
+        monkeypatch.setattr(S, "is_bfloat16_supported", lambda: False)
         assert S._gguf_source_dtype(self._Model(self._Config(torch.bfloat16))) == "f16"
 
     def test_an_unreadable_model_reports_the_exporters_own_fallback(self):
@@ -3174,13 +3174,13 @@ class TestAnUnsupportedBF16IsNormalizedBeforeEstimating:
     @pytest.mark.parametrize("first_conversion", ["bf16", None])
     def test_hardware_without_bf16_is_priced_at_f16(self, sized, monkeypatch, first_conversion):
         """None goes through `_choose_first_conversion`, which returns "bf16" too."""
-        monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", lambda: False)
+        monkeypatch.setattr(S, "is_bfloat16_supported", lambda: False)
         self._run(first_conversion)
         assert sized == ["f16"]
 
     @pytest.mark.parametrize("first_conversion", ["bf16", None])
     def test_hardware_with_bf16_is_left_alone(self, sized, monkeypatch, first_conversion):
-        monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", lambda: True)
+        monkeypatch.setattr(S, "is_bfloat16_supported", lambda: True)
         self._run(first_conversion)
         assert sized == ["bf16"]
 
@@ -3188,7 +3188,7 @@ class TestAnUnsupportedBF16IsNormalizedBeforeEstimating:
         def boom():
             raise RuntimeError("no CUDA here")
 
-        monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", boom)
+        monkeypatch.setattr(S, "is_bfloat16_supported", boom)
         self._run("bf16")
         assert sized == ["f16"]
 
@@ -3205,7 +3205,7 @@ class TestAnUnsupportedBF16IsNormalizedBeforeEstimating:
         import inspect
 
         source = inspect.getsource(S.save_to_gguf)
-        assert 'first_conversion == "bf16" and not torch.cuda.is_bf16_supported()' in source
+        assert 'first_conversion == "bf16" and not is_bfloat16_supported()' in source
         assert 'first_conversion = "f16"' in source
 
 

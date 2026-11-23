@@ -79,6 +79,7 @@ from .models._utils import (
     _peft_untied_lm_head,
     _strip_torchao_fake_quantization,
     lora_relative_to_original_base,
+    is_bfloat16_supported,
 )
 from .models.mistral_format import raise_if_merging_mistral_format_view
 from .models.inkling2 import raise_if_merging_inkling2
@@ -2941,7 +2942,7 @@ def save_to_gguf(
     else:
         raise TypeError("Unsloth: quantization_method can only be a string or a list of strings")
 
-    if model_dtype == "bf16" and not torch.cuda.is_bf16_supported():
+    if model_dtype == "bf16" and not is_bfloat16_supported():
         logger.warning(
             "Unsloth: Cannot convert to bf16 GGUF since your computer doesn't support it.\n"
             "We shall switch instead to f16."
@@ -3000,7 +3001,7 @@ def save_to_gguf(
             has_imatrix = has_imatrix,
         )
 
-    if first_conversion == "bf16" and not torch.cuda.is_bf16_supported():
+    if first_conversion == "bf16" and not is_bfloat16_supported():
         logger.warning("Unsloth: Switching bf16 to f16 due to hardware limitations")
         first_conversion = "f16"
 
@@ -4790,7 +4791,7 @@ def _gguf_source_dtype(model):
         return "f16"
     if dtype == "bf16":
         try:
-            if not torch.cuda.is_bf16_supported():
+            if not is_bfloat16_supported():
                 return "f16"
         except Exception:
             # save_to_gguf calls this unguarded, so a raise means no export at all and the figure is never used. "f16" is the same width either way; only the name has to match.
@@ -4827,7 +4828,7 @@ def _preflight_gguf_disk(
         # save_to_gguf drops a bf16 initial conversion to f16 on hardware without bf16 AFTER resolving one, so the drop must be applied after both branches, not only in the resolver. The estimate omits an output equal to the initial conversion, so ["bf16"] at first_conversion "bf16" was priced as one file while a T4 writes f16 plus bf16: 15.3GB missing on Qwen3-8B.
         if first_conversion == "bf16":
             try:
-                if not torch.cuda.is_bf16_supported():
+                if not is_bfloat16_supported():
                     first_conversion = "f16"
             except Exception:
                 # save_to_gguf asks unguarded, so a raise means no export runs and this is never used. f16 is the wider of the two readings, never the narrower.
@@ -7441,7 +7442,7 @@ def unsloth_generic_save(
             _target_dtype = (
                 torch.float32
                 if _requests_float32(dtype)
-                else (torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16)
+                else (torch.bfloat16 if is_bfloat16_supported() else torch.float16)
             )
             if (
                 os.environ.get("UNSLOTH_SAVE_EAGER_CAST", "0") != "1"
