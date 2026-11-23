@@ -319,6 +319,14 @@ def test_a_timed_out_summary_is_not_asked_for_again_until_compact(monkeypatch):
     assert studio_db.list_chat_thread_summaries(thread)
 
 
+def test_a_summary_call_omits_temperature_instead_of_sending_null():
+    _, [summary_call], [chat] = _bodies(
+        _SummarisingHandler, temperature = 0.6, **_SMALL_TRIGGER
+    )
+    assert "temperature" not in summary_call
+    assert chat["temperature"] == 0.6
+
+
 def test_a_summary_still_streaming_past_the_idle_timeout_is_kept(monkeypatch):
     # #18306: the whole summary took longer than the timeout, but the provider never went quiet.
     monkeypatch.setattr(cloud_compaction, "SUMMARY_IDLE_TIMEOUT_S", 0.3)
