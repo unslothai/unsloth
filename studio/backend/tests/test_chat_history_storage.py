@@ -518,6 +518,41 @@ def test_a_stale_window_delete_drops_replies_it_never_saw(
     assert parents == {"u1": None, "a1": "u1"}
 
 
+def test_a_stale_full_save_does_not_restore_deleted_turns(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3), _turn("a2", "u2", 4)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u2", "a2"]
+    )
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1", turns + [_turn("u3", "a2", 5), _turn("a3", "u3", 6)]
+    )
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "a1": "u1", "u3": "a1", "a3": "u3"}
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(turns[2])
+    assert [m["id"] for m in studio_db.list_chat_messages("thread-1")] == ["u1", "a1", "u3", "a3"]
+
+
+def test_a_recreated_thread_can_reuse_deleted_message_ids(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages("thread-1", [], prune_missing = True, deleted_message_ids = ["u1"])
+    studio_db.delete_chat_threads(["thread-1"])
+    studio_db.lift_chat_thread_tombstones(["thread-1"])
+    studio_db.upsert_chat_thread(_thread())
+
+    messages = studio_db.sync_chat_messages("thread-1", turns)
+
+    assert [m["id"] for m in messages] == ["u1", "a1"]
+
+
 def test_a_prune_does_not_walk_the_chain_of_rows_it_deletes(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())

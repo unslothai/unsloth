@@ -543,6 +543,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS chat_message_tombstones (
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            message_id TEXT NOT NULL,
+            parent_id TEXT,
+            PRIMARY KEY(thread_id, message_id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS chat_clear_operations (
             id TEXT NOT NULL PRIMARY KEY,
             active_research_run_ids_json TEXT NOT NULL,
@@ -4597,6 +4607,10 @@ def upsert_chat_message(
             raise ChatMessageProtectedError(
                 "deleted server-managed generation messages cannot be restored"
             )
+        deleted_parents = _deleted_chat_message_parents(conn, message["threadId"])
+        if message["id"] in deleted_parents:
+            raise ChatMessageProtectedError("deleted chat messages cannot be restored")
+        message = _with_surviving_parent(message, deleted_parents)
         if allow_generation_edit:
             _detach_terminal_generation_for_edit(conn, message["threadId"], message)
         _guard_server_managed_messages(
@@ -4676,6 +4690,27 @@ def upsert_chat_message(
         conn.close()
 
 
+def _deleted_chat_message_parents(
+    conn: sqlite3.Connection, thread_id: str
+) -> dict[str, str | None]:
+    rows = conn.execute(
+        "SELECT message_id, parent_id FROM chat_message_tombstones WHERE thread_id = ?",
+        (thread_id,),
+    ).fetchall()
+    return {str(row["message_id"]): row["parent_id"] for row in rows}
+
+
+def _with_surviving_parent(message: dict, deleted_parents: dict[str, str | None]) -> dict:
+    parent = message.get("parentId")
+    if parent not in deleted_parents:
+        return message
+    seen = set()
+    while parent in deleted_parents and parent not in seen:
+        seen.add(parent)
+        parent = deleted_parents[parent]
+    return {**message, "parentId": parent}
+
+
 class ExternalImportMark(NamedTuple):
     source: str
     session_id: str
@@ -4705,7 +4740,12 @@ def sync_chat_messages(
             for message in messages
             if _references_tombstoned_generation(conn, message)
         }
-        messages = [message for message in messages if str(message["id"]) not in tombstoned_ids]
+        deleted_parents = _deleted_chat_message_parents(conn, thread_id)
+        messages = [
+            _with_surviving_parent(message, deleted_parents)
+            for message in messages
+            if str(message["id"]) not in tombstoned_ids | deleted_parents.keys()
+        ]
         # Generation-linked messages are server-managed: keep them rather than reject on client drift; the single-message upsert still guards edits.
         research_ids = _research_message_ids(conn, thread_id)
         generation_ids = _generation_message_ids(conn, thread_id)
@@ -4831,6 +4871,12 @@ def sync_chat_messages(
             )
         if prune_missing:
             missing_ids = sorted(pruned)
+            if explicitly_deleted_ids:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO chat_message_tombstones (thread_id, message_id, parent_id) "
+                    "SELECT thread_id, id, parent_id FROM chat_messages WHERE thread_id = ? AND id = ?",
+                    [(thread_id, message_id) for message_id in missing_ids],
+                )
             for start in range(0, len(missing_ids), _SQLITE_IN_CHUNK_SIZE):
                 chunk = missing_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
                 placeholders = ",".join("?" for _ in chunk)
