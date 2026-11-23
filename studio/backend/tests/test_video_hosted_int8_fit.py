@@ -28,6 +28,7 @@ if str(BACKEND) not in sys.path:
 from core.inference import diffusion_native_hosted as NH  # noqa: E402
 from core.inference import diffusion_prequant as PQ  # noqa: E402
 from core.inference import diffusion_transformer_quant as tq  # noqa: E402
+from core.inference import rocm_bf16  # noqa: E402
 from core.inference import video as V  # noqa: E402
 from core.inference.diffusion_device import DiffusionDeviceTarget  # noqa: E402
 from core.inference.diffusion_memory import (  # noqa: E402
@@ -67,6 +68,8 @@ def _host(monkeypatch, *, rocm: bool):
     monkeypatch.setattr(tq, "is_stubbed", lambda name: False)
     monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda ordinal = None: True)
     monkeypatch.setattr(tq, "_rdna_compile_tier_proven", lambda target: True)
+    # the measured RDNA arch (rdna_explicit_w8a8_reason reads the target card's gfx arch)
+    monkeypatch.setattr(rocm_bf16, "_device_gfx_arch", lambda _torch, _ordinal: "gfx1151")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
