@@ -5114,7 +5114,7 @@ export function ChatPage({
             ) : null}
           </div>
           <div data-wallpaper-chrome-controls="" data-chat-header-actions="" className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
-            <UpdatePill slot="header" className="mr-[calc(4px*var(--ui-space-scale,1))]" />
+            {active && <UpdatePill slot="header" className="mr-[calc(4px*var(--ui-space-scale,1))]" />}
             {showContextWindowUsage &&
             (view.mode === "single" ||
               (view.mode === "project" && activeThreadId != null)) &&

@@ -26,7 +26,12 @@ function storage(): Storage | null {
 
 /** Called when the user starts an update, so the next launch can tell if it applied. */
 export function rememberUpdateTarget(version: string): void {
-  storage()?.setItem(TARGET_KEY, version);
+  // Best effort: a full or read-only store must not block the update itself.
+  try {
+    storage()?.setItem(TARGET_KEY, version);
+  } catch {
+    // The post-update notice is skipped for this update.
+  }
 }
 
 function appVersion(): Promise<string | null> {

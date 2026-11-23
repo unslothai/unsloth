@@ -80,11 +80,23 @@ function highlight(line) {
   return [match[1].trim(), /[.!?]$/.test(sentence) ? sentence : `${sentence}.`];
 }
 
-const changes = section("Highlights")
+const rows = section("Highlights")
   .split("\n")
   .map(highlight)
   .filter(Boolean)
   .slice(0, MAX_CHANGES);
+// The dialog reads rows grouped as new / improved / fixed; the drafted split is a starting guess.
+const IMPROVED = /faster|less |fewer|smoother|lower|down from|more accurate/i;
+const FIXED = /no longer|works again|now works|fixed/i;
+const changes = {};
+for (const row of rows) {
+  const key = FIXED.test(row[1])
+    ? "fixed"
+    : IMPROVED.test(row[1])
+      ? "improved"
+      : "new";
+  changes[key] = [...(changes[key] ?? []), row];
+}
 
 // The rest: merged PRs under What's Changed, else bullets in the themed sections.
 let total = (section("What's Changed").match(/^\* /gm) ?? []).length;
@@ -102,7 +114,7 @@ const notes = {
   date: String(release.published_at ?? "").slice(0, 10),
   features: [],
   changes,
-  more: Math.max(0, total - changes.length),
+  more: Math.max(0, total - rows.length),
 };
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, `${JSON.stringify(notes, null, 2)}\n`);
@@ -123,4 +135,4 @@ if (!source.includes(`./${tag}/notes.json`)) {
     ),
   );
 }
-console.log(`wrote ${out} (${changes.length} highlights, ${notes.more} more)`);
+console.log(`wrote ${out} (${rows.length} highlights, ${notes.more} more)`);
