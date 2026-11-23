@@ -19,9 +19,7 @@
       "ComfyUI",
       "Load ComfyUI image and video models, text encoders, and VAEs directly."
     ],
-    [
-      "Diffusion",
-      "Generate faster and more accurately with INT8 ConvRot."
-    ]
-  ]
+    ["Diffusion", "Generate faster and more accurately with INT8 ConvRot."]
+  ],
+  "more": 148
 }

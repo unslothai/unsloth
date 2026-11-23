@@ -23,13 +23,11 @@
       "MiniMax-H3-Image",
       "GGUF for CPU, Mac, and AMD, plus FP8 and INT8 on NVIDIA."
     ],
-    [
-      "Connections",
-      "Live connection status and 9 new providers."
-    ],
+    ["Connections", "Live connection status and 9 new providers."],
     [
       "Projects",
       "Browse files, search folders, and see Git changes in the new Files tab."
     ]
-  ]
+  ],
+  "more": 15
 }

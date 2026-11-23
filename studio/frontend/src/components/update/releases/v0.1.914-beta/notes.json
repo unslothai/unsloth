@@ -19,5 +19,6 @@
   "changes": [
     ["Chat navigation", "Bookmark a turn and jump back to an earlier message."],
     ["Training", "Fine-tune text models on CPU from the Train page."]
-  ]
+  ],
+  "more": 315
 }

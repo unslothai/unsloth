@@ -7,17 +7,24 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  isTrainingRunActive,
+  useTrainingRuntimeStore,
+} from "@/features/training/stores/training-runtime-store";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Alert02Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
+import { sameVersion } from "./release-meta";
+import { releases } from "./releases";
 import {
   type UpdatePillSlot,
   displayVersion,
   usePillHost,
   useUpdateOffer,
 } from "./update-offer-store";
+import { rememberUpdateTarget } from "./updated-notice";
 import { useWhatsNew } from "./whats-new-store";
 
 /** "Update available" pill for the top-right of the shell; opens a compact offer. */
@@ -36,7 +43,11 @@ export function UpdatePill({
     (s) => slot === "header" && s.hosts.titlebar > 0,
   );
   const [open, setOpen] = useState(false);
+  const training = useTrainingRuntimeStore(isTrainingRunActive);
   if (!offer || covered) return null;
+  const release = releases.find((r) =>
+    sameVersion(r.version, offer.latestVersion),
+  );
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -88,6 +99,18 @@ export function UpdatePill({
             </p>
           </div>
         </div>
+        {release && <Highlights release={release} />}
+        {training && (
+          <p className="mt-3 flex items-start gap-2 rounded-md bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] px-2.5 py-2 text-xs leading-relaxed">
+            <HugeiconsIcon
+              icon={Alert02Icon}
+              className="mt-px size-3.5 shrink-0 text-amber-500"
+              strokeWidth={2}
+              aria-hidden="true"
+            />
+            {t("updateNotes.stopsTraining")}
+          </p>
+        )}
         <div className="mt-4 flex items-center gap-1">
           <Button
             size="sm"
@@ -97,6 +120,7 @@ export function UpdatePill({
             title={offer.note ?? undefined}
             aria-description={offer.note ?? undefined}
             onClick={() => {
+              rememberUpdateTarget(offer.latestVersion);
               offer.runAction();
               if (offer.source === "desktop") setOpen(false);
             }}
@@ -134,5 +158,28 @@ export function UpdatePill({
         </div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+/** The offered release's first highlights, so the notes are read before updating. */
+function Highlights({ release }: { release: (typeof releases)[number] }) {
+  const t = useT();
+  const items = [
+    ...release.features.map((f) => [f.title, f.summary] as const),
+    ...release.changes.map(([label, text]) => [label, text] as const),
+  ].slice(0, 3);
+  return (
+    <div className="mt-4">
+      <p className="text-ui-11 font-medium uppercase tracking-wide text-muted-foreground">
+        {t("updateNotes.inThisUpdate")}
+      </p>
+      <ul className="mt-1.5 flex list-disc flex-col gap-1 pl-4 text-xs leading-relaxed marker:text-muted-foreground">
+        {items.map(([label, text]) => (
+          <li key={label}>
+            <strong className="font-semibold">{label}.</strong> {text}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

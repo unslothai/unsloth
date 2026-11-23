@@ -19,13 +19,8 @@
       "Models",
       "Qwen3.8-Flash Dynamic v3.1 uses 50% fewer tokens and is 15% more accurate."
     ],
-    [
-      "Memory",
-      "Unified memory offloading works for big models."
-    ],
-    [
-      "Chats",
-      "Search and delete chats much faster."
-    ]
-  ]
+    ["Memory", "Unified memory offloading works for big models."],
+    ["Chats", "Search and delete chats much faster."]
+  ],
+  "more": 177
 }

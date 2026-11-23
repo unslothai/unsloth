@@ -11,21 +11,10 @@
     }
   ],
   "changes": [
-    [
-      "Browser use",
-      "Models can click, read, and edit HTML, files, and pages."
-    ],
-    [
-      "Chat",
-      "Chat context is kept when you switch between GGUF models."
-    ],
-    [
-      "Glass",
-      "Glass themes reach pages, menus, the sidebar, and the browser."
-    ],
-    [
-      "Training",
-      "FP8 LoRA training uses less GPU memory."
-    ]
-  ]
+    ["Browser use", "Models can click, read, and edit HTML, files, and pages."],
+    ["Chat", "Chat context is kept when you switch between GGUF models."],
+    ["Glass", "Glass themes reach pages, menus, the sidebar, and the browser."],
+    ["Training", "FP8 LoRA training uses less GPU memory."]
+  ],
+  "more": 79
 }

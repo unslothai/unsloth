@@ -19,9 +19,7 @@
       "Engram",
       "Swap the Engram table for Qwen3.8-Flash-Next and DeepSeek-V4.1."
     ],
-    [
-      "Training",
-      "Gemma 4 12B trains 1.4 to 2.6x faster."
-    ]
-  ]
+    ["Training", "Gemma 4 12B trains 1.4 to 2.6x faster."]
+  ],
+  "more": 17
 }

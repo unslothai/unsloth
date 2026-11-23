@@ -11,21 +11,10 @@
     }
   ],
   "changes": [
-    [
-      "Models",
-      "MiniMax-M3.1-Flash: a 428B MoE with 23B active."
-    ],
-    [
-      "Images",
-      "Edit images with prompts in FLUX.3."
-    ],
-    [
-      "Presets",
-      "Save Run settings as named presets for each model."
-    ],
-    [
-      "Performance",
-      "Large gains on Mac, less lag, and smaller binaries."
-    ]
-  ]
+    ["Models", "MiniMax-M3.1-Flash: a 428B MoE with 23B active."],
+    ["Images", "Edit images with prompts in FLUX.3."],
+    ["Presets", "Save Run settings as named presets for each model."],
+    ["Performance", "Large gains on Mac, less lag, and smaller binaries."]
+  ],
+  "more": 376
 }

@@ -11,10 +11,7 @@
     }
   ],
   "changes": [
-    [
-      "Inkling 2 Mini",
-      "Uses less memory and runs faster."
-    ],
+    ["Inkling 2 Mini", "Uses less memory and runs faster."],
     [
       "Chat",
       "A reasoning model that runs out of tokens while thinking now offers Retry."
@@ -23,9 +20,7 @@
       "Windows",
       "Desktop no longer gets stuck on an incomplete install on some AMD PCs."
     ],
-    [
-      "Training",
-      "AsyncGRPO steps are 1.46x to 2.47x faster on A100."
-    ]
-  ]
+    ["Training", "AsyncGRPO steps are 1.46x to 2.47x faster on A100."]
+  ],
+  "more": 19
 }

@@ -11,21 +11,13 @@
     }
   ],
   "changes": [
-    [
-      "Training",
-      "Train LoRAs for LTX-2.5 and MOSS-Image."
-    ],
-    [
-      "Diffusion LoRA",
-      "Up to 42% faster per step, and now on T4 GPUs too."
-    ],
-    [
-      "Strix Halo",
-      "FLUX.3 Klein up to 28% faster per step on Windows."
-    ],
+    ["Training", "Train LoRAs for LTX-2.5 and MOSS-Image."],
+    ["Diffusion LoRA", "Up to 42% faster per step, and now on T4 GPUs too."],
+    ["Strix Halo", "FLUX.3 Klein up to 28% faster per step on Windows."],
     [
       "Scheduled tasks",
       "Schedule a task inside a chat and get replies right there."
     ]
-  ]
+  ],
+  "more": 28
 }

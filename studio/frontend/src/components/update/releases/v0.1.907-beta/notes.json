@@ -11,10 +11,7 @@
     }
   ],
   "changes": [
-    [
-      "Compaction",
-      "Compaction works with every API connection."
-    ],
+    ["Compaction", "Compaction works with every API connection."],
     [
       "Files",
       "Drag and drop works again on Desktop, with over 3x more file types."
@@ -27,5 +24,6 @@
       "Video",
       "Generate video with LTX-2.5 and Wan2.2, including image-to-video."
     ]
-  ]
+  ],
+  "more": 138
 }

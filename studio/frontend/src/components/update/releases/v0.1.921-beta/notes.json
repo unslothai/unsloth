@@ -15,17 +15,12 @@
       "Memory",
       "GGUF image models load with 52 to 66% less RAM on Linux and macOS."
     ],
-    [
-      "MCP",
-      "MCP chats process 83 to 87% fewer prompt tokens."
-    ],
+    ["MCP", "MCP chats process 83 to 87% fewer prompt tokens."],
     [
       "Images",
       "MiniMax-H3-Image renders a new prompt in 36.7 s on 8 GB GPUs, down from 82.7 s."
     ],
-    [
-      "Documents",
-      "Scanned PDFs in chat are read with OCR."
-    ]
-  ]
+    ["Documents", "Scanned PDFs in chat are read with OCR."]
+  ],
+  "more": 19
 }
