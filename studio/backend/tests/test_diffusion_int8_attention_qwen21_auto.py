@@ -171,7 +171,7 @@ def test_the_load_stamps_the_resolved_base_before_the_attention_pick():
     the deferred re-apply reuses that pipeline, so render 3 reads the same base."""
     src = (
         pathlib.Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
     tree = ast.parse(src)
     stamp = apply = None
     for node in ast.walk(tree):
