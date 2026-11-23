@@ -473,10 +473,17 @@ def main() -> None:
         if not CHECKPOINT_CACHED:
             assert "Model file" in panel_text
         assert page.get_by_text("Downloading model requirements", exact = False).count() == 0
-        # The pick toast names the picked repo (#15335).
-        pick_toast = page.locator("[data-sonner-toast]").filter(has_text = f"Downloading {REPO_ID}…")
+        # The pick toast names the repo the download manager is fetching (#15335, #18970): the picked repo
+        # when it downloads itself, else (its checkpoint already cached) the companion, the only download.
+        toast_repo = COMPANION_REPO if CHECKPOINT_CACHED else REPO_ID
+        pick_toast = page.locator("[data-sonner-toast]").filter(
+            has_text = f"Downloading {toast_repo}…"
+        )
         if DOWNLOAD_ONLY:
-            assert pick_toast.count() == 0
+            # Download-only opens no pick toast, under either name.
+            for repo in (REPO_ID, COMPANION_REPO):
+                toast = page.locator("[data-sonner-toast]").filter(has_text = f"Downloading {repo}…")
+                assert toast.count() == 0, repo
         else:
             expect(pick_toast).to_contain_text("of 8.2 GB" if CHECKPOINT_CACHED else "of 11 GB")
         assert page.get_by_text("Loading to GPU…", exact = True).count() == 0
