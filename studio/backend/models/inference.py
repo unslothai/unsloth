@@ -52,7 +52,6 @@ def strip_named_quant(request):
     variant = request.gguf_variant
     if variant and request.model_path.lower().endswith(f":{variant.lower()}"):
         from hub.utils.paths import is_valid_repo_id
-
         repo = request.model_path[: -len(variant) - 1]
         if "/" in repo and is_valid_repo_id(repo):
             request.model_path = repo

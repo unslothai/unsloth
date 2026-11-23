@@ -925,7 +925,9 @@ def test_training_frees_the_kept_models_before_the_active_one(backends, monkeypa
     assert model_slots.slots == [] and primary.is_active
 
 
-def test_another_quant_of_a_loaded_model_loads_beside_it_when_models_are_kept(backends, monkeypatch):
+def test_another_quant_of_a_loaded_model_loads_beside_it_when_models_are_kept(
+    backends, monkeypatch
+):
     _, extra = backends
     primary_quant = LoadRequest(model_path = "org/A-GGUF", gguf_variant = "Q8_0", alongside = True)
     assert _selected(primary_quant) not in (None, extra)
@@ -998,7 +1000,12 @@ def test_only_a_hub_repo_loses_a_named_quant(name):
         assert model(model_path = name).model_path == name
 
 
-def _other_quant(monkeypatch, short_fits, model = "org/A-GGUF", variant = "Q8_0"):
+def _other_quant(
+    monkeypatch,
+    short_fits,
+    model = "org/A-GGUF",
+    variant = "Q8_0",
+):
     def never(*args, **kwargs):
         raise AssertionError("another model was unloaded to keep two quants of one repo")
 

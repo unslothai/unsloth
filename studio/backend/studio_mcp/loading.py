@@ -555,7 +555,9 @@ async def unload_llm(
         # The route unloads by checkpoint id, listed in the same order as serving.
         target = dict(zip(serving, checkpoints)).get(model, model)
         # Two loaded quants of one repo share its id: the first listed is the one the id reaches.
-        copies = [c for s, c in zip(serving, checkpoints) if s == model and c.startswith(f"{model}:")]
+        copies = [
+            c for s, c in zip(serving, checkpoints) if s == model and c.startswith(f"{model}:")
+        ]
         if len(copies) > 1:
             target = copies[0]
     await route_json(

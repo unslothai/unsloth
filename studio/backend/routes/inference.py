@@ -19168,7 +19168,9 @@ async def load_model_gated(
                         if (
                             new_slot
                             and request.gguf_variant
-                            and await asyncio.to_thread(_repo_loaded_beside, request.model_path, extra)
+                            and await asyncio.to_thread(
+                                _repo_loaded_beside, request.model_path, extra
+                            )
                         ):
                             if exc.capped and not request.force_alongside:
                                 request = request.model_copy(update = {"force_alongside": True})
