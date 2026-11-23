@@ -54,7 +54,10 @@ TOOL_FLOW = [
         "role": "assistant",
         "content": None,
         "tool_calls": [
-            {"type": "function", "function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+            {
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": {"city": "Paris"}},
+            }
         ],
     },
     {"role": "tool", "content": "sunny"},
@@ -73,7 +76,9 @@ PLAIN = [
 def test_tool_flow_matches_official(name, add_generation_prompt):
     tokenizer = _tokenizer(name)
     out = tokenizer.apply_chat_template(
-        TOOL_FLOW, tokenize = False, add_generation_prompt = add_generation_prompt,
+        TOOL_FLOW,
+        tokenize = False,
+        add_generation_prompt = add_generation_prompt,
         tools = TOOLS,
     )
     expected = (
