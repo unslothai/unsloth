@@ -2201,6 +2201,33 @@ def test_load_refuses_loras_on_a_gguf_pick(client, monkeypatch, tmp_path):
     assert backend.last_load_kwargs == {}
 
 
+@pytest.mark.parametrize("lora_id", ["someone/wan-lora", "my_untagged"])
+def test_a_single_lora_on_a_two_expert_model_is_refused_before_the_gpu_is_touched(
+    client, monkeypatch, tmp_path, lora_id
+):
+    """Wan2.2-A14B takes catalog high / low-noise pairs only. A single adapter (a Hub id, or an untagged local file the
+    A14B picker lists) is a 400 at the route, before the arbiter evicts the resident model, not inside begin_load."""
+    _lora_catalog(monkeypatch, tmp_path, my_untagged = "")
+    backend = _real_family_validation(monkeypatch, "wan2.2-t2v-a14b")
+
+    def no_gpu(*_a, **_k):
+        raise AssertionError("the GPU arbiter must not run for a refused LoRA pick")
+
+    monkeypatch.setattr(gpu_arbiter, "acquire_for_request", no_gpu)
+    monkeypatch.setattr(gpu_arbiter, "acquire_for", no_gpu)
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {
+            "model_path": "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            "loras": [{"id": lora_id, "weight": 1}],
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "needs a pair" in resp.json()["detail"]
+    assert backend.last_load_kwargs == {}
+    assert gpu_arbiter._owner is None
+
+
 def test_video_download_plan_forwards_the_lora_selection(client, monkeypatch):
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     backend = video_module.get_video_backend()

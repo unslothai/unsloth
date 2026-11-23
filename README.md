@@ -353,7 +353,7 @@ unsloth studio -p 8888
 
 #### Advanced launch options
 
-Skip PyTorch (GGUF-only mode):
+Skip PyTorch (Chat only mode: GGUF models, plus MLX models on Apple Silicon):
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
 ```
@@ -441,7 +441,7 @@ Set the PyTorch index family.
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_TORCH_INDEX_FAMILY=cpu sh   # or a family like rocm7.2
 ```
-For GGUF-only chat, skip PyTorch.
+For chat only (GGUF models, plus MLX models on Apple Silicon), skip PyTorch.
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
 ```

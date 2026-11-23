@@ -3309,7 +3309,10 @@ def _adapter_fits_text_model(
             else:
                 import torch
 
-                # An adapter is small; weights_only never runs pickled code.
+                from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+                # weights_only is only safe on torch >= 2.6 (CVE-2025-32434).
+                refuse_pickle_checkpoint_on_old_torch(path)
                 names = list(torch.load(path, map_location = "cpu", weights_only = True))
             break
         except Exception:
@@ -5296,20 +5299,87 @@ def _download_statistics(names):
         try:
             time_limited_stats_check()
         except TimeoutError:
-            raise TimeoutError(
-                "Unsloth: HuggingFace seems to be down after trying for 120 seconds :(\n"
-                "Check https://status.huggingface.co/ for more details.\n"
-                "As a temporary measure, use modelscope with the same model name ie:\n"
-                "```\n"
-                "pip install modelscope\n"
-                "import os; os.environ['UNSLOTH_USE_MODELSCOPE'] = '1'\n"
-                "from unsloth import FastLanguageModel\n"
-                "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"
-                "```"
-            )
+            raise TimeoutError(_HF_DOWN_MESSAGE)
         except Exception:
             logger.debug("Unsloth: stats_check failed with an exception.")
             # Do not retry without a time limit: it would freeze offline.
+
+
+_STATISTICS_LIMIT_S = 120
+_HF_DOWN_MESSAGE = (
+    "Unsloth: HuggingFace seems to be down after trying for 120 seconds :(\n"
+    "Check https://status.huggingface.co/ for more details.\n"
+    "As a temporary measure, use modelscope with the same model name ie:\n"
+    "```\n"
+    "pip install modelscope\n"
+    "import os; os.environ['UNSLOTH_USE_MODELSCOPE'] = '1'\n"
+    "from unsloth import FastLanguageModel\n"
+    "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"
+    "```"
+)
+
+
+def _statistics_child(names):
+    # Runs in the forked child: the 8.8.8.8 probe (up to 3 s when filtered) and the downloads both stay off the load.
+    import tempfile
+    from concurrent.futures import ThreadPoolExecutor
+    from huggingface_hub import snapshot_download
+
+    if not has_internet():
+        return
+
+    def download(statistics):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
+            snapshot_download(
+                f"unslothai/{statistics}",
+                force_download = True,
+                cache_dir = f,
+                local_dir = f,
+            )
+
+    with ThreadPoolExecutor(max_workers = len(names)) as pool:
+        futures = [pool.submit(download, name) for name in names]
+    for future in futures:
+        future.result()
+
+
+def _reap_statistics(proc, limit_s):
+    proc.join(limit_s)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(1.0)
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+        # The model load already went ahead; a real Hub outage also surfaces from its own requests.
+        logger.warning(_HF_DOWN_MESSAGE)
+    elif proc.exitcode:
+        logger.debug("Unsloth: stats_check failed with an exception.")
+
+
+def _download_statistics_background(names):
+    """Fork the statistics child on the caller's thread (same fork point as the blocking path), then reap it on a
+    daemon thread, so from_pretrained no longer waits on the four Hub round trips. Returns the child, or None when
+    this platform has no fork start method and the caller should use the blocking path."""
+    import multiprocessing as mp
+    import sys
+
+    if sys.platform != "linux" or "fork" not in mp.get_all_start_methods():
+        return None
+    proc = mp.get_context("fork").Process(target = _statistics_child, args = (names,), daemon = True)
+    try:
+        proc.start()
+    except Exception:
+        # e.g. inside a daemonic multiprocessing worker ("daemonic processes are not allowed to have children"):
+        # the blocking path starts its child inside its own try, so statistics never fail the load.
+        return None
+    threading.Thread(
+        target = _reap_statistics,
+        args = (proc, _STATISTICS_LIMIT_S),
+        daemon = True,
+        name = "unsloth-statistics",
+    ).start()
+    return proc
 
 
 def get_statistics(local_files_only = False):
@@ -5363,14 +5433,18 @@ def get_statistics(local_files_only = False):
         vram = 80
     else:
         vram = 96
-    _download_statistics(
-        [
-            _statistics_environment(),
-            "repeat",
-            f"vram-{vram}",
-            f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}",
-        ]
-    )
+    names = [
+        _statistics_environment(),
+        "repeat",
+        f"vram-{vram}",
+        f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}",
+    ]
+    # UNSLOTH_STATISTICS_BLOCKING=1 keeps the old wait (and the raised HF-down TimeoutError) on the load path.
+    if (
+        os.environ.get("UNSLOTH_STATISTICS_BLOCKING", "0") == "1"
+        or _download_statistics_background(names) is None
+    ):
+        _download_statistics(names)
     if disabled:
         enable_progress_bars()
 
@@ -9975,6 +10049,9 @@ def _default_qat_linear_filter(module, fqn):
         from torchao.quantization.quant_api import _is_linear
     except Exception:
         return isinstance(module, torch.nn.Linear)
+    if not callable(_is_linear) or isinstance(_is_linear, type):
+        # A torchao stub (unsloth_zoo's sentinel classes when torchao is absent) is not the filter.
+        return isinstance(module, torch.nn.Linear)
     return _is_linear(module, fqn)
 
 
@@ -10204,10 +10281,13 @@ def _microscaling_qat_filter(
         candidates = lambda m, fqn, _c = candidates, _bad = frozenset(bad_widths): (
             _c(m, fqn) and m.out_features not in _bad
         )
+    # Only a trainable bias needs the backward's bias gradient. LoRA freezes the base bias (bias = "none"),
+    # and skipping those layers left Qwen2-style q / k / v projections out of QAT while the export still
+    # quantizes them.
     biased = [
         name
         for name, module in model.named_modules()
-        if not _is_lora_adapter_name(name) and candidates(module, name) and module.bias is not None
+        if not _is_lora_adapter_name(name) and candidates(module, name) and _trainable_bias(module)
     ]
     if biased and not all(_qat_bias_grad_supported(base_config, d, t) for d, t in placements):
         warnings.warn(
@@ -10217,8 +10297,13 @@ def _microscaling_qat_filter(
             + (f", ... ({len(biased) - 8} more)" if len(biased) > 8 else ""),
             stacklevel = 3,
         )
-        return lambda m, fqn, _c = candidates: _c(m, fqn) and m.bias is None
+        return lambda m, fqn, _c = candidates: _c(m, fqn) and not _trainable_bias(m)
     return candidates
+
+
+def _trainable_bias(module) -> bool:
+    bias = getattr(module, "bias", None)
+    return isinstance(bias, torch.Tensor) and bias.requires_grad
 
 
 def _mx_autocast_forward(self, x):
@@ -10833,10 +10918,21 @@ def _fp8_checkpoint_dequantizes_below_sm89():
 
 def verify_fp8_support_if_applicable(model_config, fast_inference = False):
     quant_method = get_quant_type(model_config)
-    if quant_method in ["fbgemm_fp8", "fp8"] and DEVICE_TYPE not in ("cuda", "xpu"):
-        # In case of block quantized, we allow L4 because we fall back to torchao kernels.
+    if quant_method == "fbgemm_fp8" and DEVICE_TYPE not in ("cuda", "xpu"):
         raise ValueError(
-            f"Unsloth: FP8 quantization is only supported on CUDA and XPU GPUs. You are using {DEVICE_TYPE}."
+            f"Unsloth: FBGEMM FP8 quantization is only supported on CUDA and XPU GPUs. You are using {DEVICE_TYPE}."
+        )
+    # ROCm: Unsloth's FP8 kernels pick the Triton fp8e4nv path, the gfx11 byte decoder or the torch dequant
+    # per device (unsloth/kernels/fp8.py), so a fine-grained FP8 checkpoint loads like on an Ada / Hopper GPU.
+    if quant_method == "fp8" and DEVICE_TYPE not in ("cuda", "xpu", "hip"):
+        raise ValueError(
+            f"Unsloth: FP8 quantization is only supported on CUDA, ROCm and XPU GPUs. You are using {DEVICE_TYPE}."
+        )
+    if quant_method == "fp8" and DEVICE_TYPE == "hip" and fast_inference:
+        # The vLLM handoff (weight export, FNUZ scales, MoE preflight) is CUDA-only for FP8 checkpoints today.
+        raise ValueError(
+            "Unsloth: FP8 checkpoints load on AMD ROCm GPUs with fast_inference = False; "
+            "fast_inference (vLLM) with FP8 weights is not supported on ROCm yet."
         )
 
     if DEVICE_TYPE == "cuda":

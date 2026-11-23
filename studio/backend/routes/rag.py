@@ -1079,8 +1079,14 @@ def _image_text(path: str, filename: str) -> tuple[str, str | None]:
     return text, " ".join(notes) or None
 
 
-def _page_text(page, scanned_text: dict[int, str]) -> str:
-    original = page.text.strip()
+def _page_text(
+    page,
+    scanned_text: dict[int, str],
+    *,
+    raw: bool = False,
+) -> str:
+    # raw: leading whitespace is content (an empty TSV cell, a code block).
+    original = page.text if raw else page.text.strip()
     scanned = scanned_text.get(page.page_number, "")
     return scanned if original in scanned else "\n\n".join(filter(None, [original, scanned]))
 
@@ -1202,8 +1208,10 @@ def extract_text(
     parts: list[bytes] = []
     room = _EXTRACT_TEXT_MAX_BYTES
     truncated = kept < len(pages)
+    ext = os.path.splitext(filename)[1].lower()
+    raw = ext in (".txt", ".md", ".markdown") or ext in config.SOURCE_TEXT_EXTS
     for page in pages[:kept]:
-        chunk = _page_text(page, scanned_text).encode("utf-8")
+        chunk = _page_text(page, scanned_text, raw = raw).encode("utf-8")
         if not chunk:
             continue
         if parts:

@@ -32,7 +32,7 @@ import math
 import os
 import random
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -41,6 +41,7 @@ from core.training.diffusion_block_swap import (
     block_swap_error,
     block_swap_explicit_off,
     block_swap_request,
+    swap_lowp_mode,
     compile_swapped_blocks,
     install_dit_block_swap,
     reset_block_swaps,
@@ -102,9 +103,11 @@ from core.training.diffusion_checkpoint import (
     identity_for_config,
     with_cache_mode,
     with_resolved_base_precision,
+    with_world_size,
     with_resolved_dit,
     with_resolved_revision,
     preflight_resume,
+    recorded_base_precision,
 )
 from core.training.diffusion_samples import (
     discard_samples,
@@ -120,6 +123,7 @@ from core.training.diffusion_train_extras import (
     accumulate_loss,
     cover_resize_dims,
     loss_value,
+    oriented_image_size,
     PersistentConditioningCache,
     save_ema_adapter,
 )
@@ -413,8 +417,8 @@ def _load_dit_transformer(
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     )
-    # int8 stays on host: _int8_quantize_base streams Linears to device so the bf16 base is never whole in VRAM.
-    return transformer if base_precision == "int8" else transformer.to(device)
+    # int8 / fp8 stay on host: their conversions stream Linears to device so the bf16 base is never whole in VRAM.
+    return transformer if base_precision in ("int8", "fp8") else transformer.to(device)
 
 
 def _load_fp8_prequant_transformer(transformer_cls, cfg, device):
@@ -472,6 +476,50 @@ def _int8_quantize_base(
         transformer.to(device)
         gc.collect()
         _empty_device_cache(device)
+
+
+INT8_TRAIN_ENV = "UNSLOTH_DIFFUSION_INT8_TRAIN"
+
+
+def _int8_w8a8() -> bool:
+    """PROTOTYPE gate: int8 trains on the frozen W8A8 base (``diffusion_frozen_int8``) instead of torchao weight-only."""
+    return os.environ.get(INT8_TRAIN_ENV, "").strip().lower() == "w8a8"
+
+
+def _apply_int8_w8a8(
+    transformer,
+    on_event,
+    family: Optional[str] = None,
+    device = None,
+) -> bool:
+    """Frozen W8A8 int8 base after add_adapter, streamed onto ``device``; False (caller keeps torchao) on failure."""
+    import torch
+
+    from core.training.diffusion_frozen_int8 import convert_frozen_int8
+
+    try:
+        dev = torch.device(device) if device is not None else next(transformer.parameters()).device
+        if dev.type == "cuda":
+            # _int_mm probe: an arch / build without int8 GEMMs must fall back before any layer is touched.
+            a = torch.ones((32, 32), dtype = torch.int8, device = dev)
+            torch._int_mm(a, a.t())
+        names = {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)}
+        done, failed = convert_frozen_int8(transformer, names, device = device)
+        if not done:
+            raise RuntimeError("no eligible linear layers")
+        if device is not None:
+            transformer.to(device)
+        gc.collect()
+        _empty_device_cache(dev.type)
+        _emit(
+            on_event,
+            "warning",
+            message = f"int8 W8A8 prototype: {done} frozen linears ({failed} kept)",
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 -- prototype: fall back to the torchao weight-only base
+        _emit(on_event, "warning", message = f"int8 W8A8 unavailable, using weight-only int8: {exc}")
+        return False
 
 
 # Small-M linears stay bf16 (casts outweigh GEMM); final_layer is Krea 2's output projection.
@@ -540,27 +588,41 @@ def _require_lowp_modules(transformer, mode: str) -> bool:
     return True
 
 
-def _convert_fp8(transformer, family: Optional[str] = None) -> bool:
+def _convert_fp8(
+    transformer,
+    family: Optional[str] = None,
+    device = None,
+) -> bool:
     """Frozen base linears to weight-cached fp8 (``diffusion_frozen_fp8``): rowwise float scales, as DiT activation
-    outliers (Z-Image ~2.7e6) crush a tensorwise one."""
+    outliers (Z-Image ~2.7e6) crush a tensorwise one. With ``device``, host Linears are quantized on it one at a time."""
     from core.training.diffusion_frozen_fp8 import convert_frozen_fp8
 
     _, failed = convert_frozen_fp8(
-        transformer, {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)}
+        transformer,
+        {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)},
+        device = device,
     )
     transformer._studio_fp8_failed = failed
     return _require_lowp_modules(transformer, "fp8")
 
 
-def _probe_lowp(convert, transformer) -> None:
-    """Tiny fwd+bwd probe on 48 unaligned rows: an unverified arch falls back to bf16 at load."""
+def _probe_lowp(
+    convert,
+    transformer,
+    device = None,
+) -> None:
+    """Tiny fwd+bwd probe on 48 unaligned rows: an unverified arch falls back to bf16 at load. ``device`` is where
+    the base will train when it is still on the host."""
     import torch
     import torch.nn as nn
 
-    try:
-        device = next(transformer.parameters()).device
-    except StopIteration:
-        return
+    if device is not None:
+        device = torch.device(device)
+    else:
+        try:
+            device = next(transformer.parameters()).device
+        except StopIteration:
+            return
     if device.type != "cuda":
         return
 
@@ -585,16 +647,86 @@ def _probe_lowp(convert, transformer) -> None:
         raise RuntimeError("probe GEMM returned non-finite values")
 
 
+def _lowp_swap_spec(
+    transformer, mode: Optional[str], family: Optional[str], device
+) -> Optional[dict]:
+    """install_dit_block_swap's ``lowp`` for a frozen fp8 / W8A8 base, after the GEMM probe the resident path runs.
+    No fallback: the run asked for this base and block swap together, so a probe failure refuses the run."""
+    if mode is None:
+        return None
+    import torch
+
+    if mode == "fp8":
+        from core.training.diffusion_fp8_prequant import dequantize_placeholders
+        from core.training.diffusion_frozen_fp8 import convert_frozen_fp8 as convert
+
+        probe = lambda: _probe_lowp(_convert_fp8, None, device)  # noqa: E731
+        finish = dequantize_placeholders
+    else:
+        from core.training.diffusion_frozen_int8 import convert_frozen_int8 as convert
+        def probe():
+            a = torch.ones((32, 32), dtype = torch.int8, device = device)
+            torch._int_mm(a, a.t())
+
+        finish = None
+    try:
+        probe()
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(
+            f"block_swap with base_precision={'fp8' if mode == 'fp8' else 'int8'}: this GPU's {mode} GEMM probe "
+            f"failed ({exc}). Use base_precision='bf16' with block_swap."
+        ) from exc
+    targets = {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)}
+
+    def _convert(model, names, dev):
+        done, failed = convert(model, names, device = dev)
+        return done, failed
+
+    return {"mode": mode, "targets": targets, "convert": _convert, "finish": finish}
+
+
+class Fp8FallbackDoesNotFit(RuntimeError):
+    """The fp8 conversion failed and the rest of the base, still on the host in bf16, does not fit the card."""
+
+
+# Headroom the bf16 fallback must leave on the card beyond the host-resident weights (activations, optimizer).
+_FP8_FALLBACK_MARGIN = 1.15
+_FP8_FALLBACK_RESERVE = 1 << 30
+
+
+def _host_bytes(module) -> int:
+    return sum(
+        t.numel() * t.element_size()
+        for t in (*module.parameters(), *module.buffers())
+        if t.device.type == "cpu"
+    )
+
+
+def _bf16_fallback_fits(transformer, device) -> bool:
+    """Whether moving the host-resident rest of the base onto ``device`` leaves headroom to train; unknown: yes."""
+    try:
+        import torch
+        if torch.device(device).type != "cuda":
+            return True
+        free = torch.cuda.mem_get_info(torch.device(device))[0]
+    except Exception:  # noqa: BLE001
+        return True
+    return _host_bytes(transformer) * _FP8_FALLBACK_MARGIN + _FP8_FALLBACK_RESERVE <= free
+
+
 def _apply_fp8_training(
     transformer,
     on_event,
     family: Optional[str] = None,
+    device = None,
 ) -> bool:
-    """fp8 compute + storage for the frozen base, after add_adapter. Never fatal: falls back to bf16."""
+    """fp8 compute + storage for the frozen base, after add_adapter. Never fatal: falls back to bf16. With ``device``
+    a host-resident base is quantized onto it Linear by Linear (peak: the fp8 base plus one bf16 Linear), then the
+    rest (norms, embedders, excluded Linears, the adapter) follows."""
     from core.training.diffusion_fp8_prequant import dequantize_placeholders
     try:
-        _probe_lowp(_convert_fp8, transformer)
-        converted = _convert_fp8(transformer, family)
+        _probe_lowp(_convert_fp8, transformer, device)
+        converted = _convert_fp8(transformer, family, device)
         # A prequant base's fp8 layers the conversion did not take stay bf16, as on the dense path.
         dequantize_placeholders(transformer)
         failed = getattr(transformer, "_studio_fp8_failed", 0)
@@ -606,14 +738,22 @@ def _apply_fp8_training(
             )
         import torch
 
-        device = next(transformer.parameters()).device.type
-        if device == "cuda":
+        if device is not None:
+            transformer.to(device)
+            gc.collect()
+        kind = next(transformer.parameters()).device.type
+        if kind == "cuda":
             torch.cuda.empty_cache()
-        elif device == "xpu":
+        elif kind == "xpu":
             torch.xpu.empty_cache()
         return converted
     except Exception as exc:  # noqa: BLE001 -- fp8 is an optimisation, never fatal
         dequantize_placeholders(transformer)
+        if device is not None:
+            if not _bf16_fallback_fits(transformer, device):
+                # The host-first load fits where the bf16 base never did; the caller reloads nf4 instead.
+                raise Fp8FallbackDoesNotFit(str(exc)) from exc
+            transformer.to(device)
         _emit(on_event, "warning", message = f"fp8 training unavailable, using bf16 compute: {exc}")
         return False
 
@@ -739,6 +879,79 @@ def _apply_mxfp8_training(
         return False
 
 
+AUTO_FP8_ENV = "UNSLOTH_DIT_AUTO_FP8"
+# Free VRAM (x the dense bf16 size) above which Auto trains a streamed frozen fp8 base instead of nf4.
+AUTO_FP8_MIN_FREE_RATIO = 0.9
+# Where Auto's fp8 pick departs from the plain bands, from L4 runs at 512 px (150 steps, 3 seeds, held-out denoising
+# MSE on a bf16 base inside the bf16 seed spread for all three). Above 1.5x, fp8 replaces compiled bf16 only where it
+# measured faster: z-image 1.45x on L4 and 1.32x on RTX PRO 6000, flux.2-klein 1.32x. wan2.2-ti2v-5b packs a 512 px
+# frame into 256 tokens, where fp8's activation quantisation costs more than it saves (0.78x of bf16), so its
+# 1.15x-1.5x band keeps the bf16 block swap / int8 pick.
+_AUTO_FP8_OVER_BF16 = frozenset({"z-image", "flux.2-klein"})
+_AUTO_FP8_NOT_OVER_SWAP = frozenset({"wan2.2-ti2v-5b"})
+
+
+def _auto_fp8_enabled() -> bool:
+    return os.environ.get(AUTO_FP8_ENV, "1").strip().lower() not in ("0", "off", "false", "no")
+
+
+def _auto_run_compiles(cfg) -> bool:
+    """Whether the run will take the regional compile (Triton present, compile not switched off)."""
+    if (getattr(cfg, "compile_transformer", None) or "auto").strip().lower() == "off":
+        return False
+    try:
+        import importlib.util
+        return importlib.util.find_spec("triton") is not None
+    except Exception:  # noqa: BLE001 -- unknown: assume eager
+        return False
+
+
+def _auto_fp8_family_ok(spec, base_model) -> bool:
+    """Auto never picks fp8 for a family whose explicit fp8 training is refused (qwen-image, moss-image)."""
+    family = getattr(spec, "family", None)
+    if not family:
+        return False
+    try:
+        from core.inference.diffusion_transformer_quant import _family_train_denied
+        return not _family_train_denied(family, "fp8", base_model)
+    except Exception:  # noqa: BLE001 -- unknown: keep the previous picks
+        return False
+
+
+def _auto_fp8_run_ok(cfg) -> bool:
+    """Run settings Auto's fp8 pick must respect: a requested block swap streams a bf16 base only, and a resume
+    continues the base its bundle trained on (one that predates the record trained without Auto fp8)."""
+    from core.training.diffusion_block_swap import block_swap_request
+
+    if block_swap_request(cfg) is not None:
+        return False
+    if getattr(cfg, "resume_from_checkpoint", None):
+        found, recorded = recorded_base_precision(cfg.resume_from_checkpoint)
+        if found and recorded != "fp8":
+            return False
+    return True
+
+
+_FP8_PROBE_OK: dict[str, bool] = {}
+
+
+def _auto_fp8_probe_ok(device) -> bool:
+    """Run the fp8 GEMM probe before Auto picks fp8, so a card where it fails gets the nf4 / int8 pick at decision
+    time instead of a bf16 fallback that may not fit. Cached per device."""
+    key = str(device)
+    if key not in _FP8_PROBE_OK:
+        try:
+            _probe_lowp(_convert_fp8, None, device)
+            _FP8_PROBE_OK[key] = True
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "auto base precision: fp8 probe failed (%s); fp8 is not picked", exc
+            )
+            _FP8_PROBE_OK[key] = False
+    return _FP8_PROBE_OK[key]
+
+
 def _pick_auto_precision(
     prequant,
     device,
@@ -747,26 +960,33 @@ def _pick_auto_precision(
     capability,
     has_fp8,
     has_torchao = True,
+    family: Optional[str] = None,
+    compiled: bool = True,
 ) -> str:
     """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the fastest
     dense mode whose weights + headroom (activations, optimizer, cache) fit the free VRAM at
-    decision time. bf16 + regional compile is the measured speed winner (2.3-2.6x over nf4 on
-    B200); fp8 stays an explicit opt-in: it trades e4m3 rounding (~0.5% loss vs bf16) for ~half the base weight
-    memory and only ~7% speed at LoRA-training shapes. int8 must still
-    materialise the full bf16 transformer before ``quantize_`` shrinks it module-by-module, so
-    its band requires the dense-load transient (1.15x dense) to fit -- what int8 buys in that
-    band is steady-state headroom for activations and the latent cache, not load-time memory.
-    int8 also needs torchao at runtime (``_int8_quantize_base`` has no fallback, unlike fp8), so
-    auto only picks it when torchao is importable and drops to nf4 otherwise.
-    ``capability``/``has_fp8`` remain parameters so the policy can be revisited per GPU
-    generation without changing callers."""
-    _ = capability, has_fp8
+    decision time. ``has_fp8`` is the caller's NVIDIA frozen-fp8 check; fp8 is only picked on sm89+.
+    - free > 1.5x dense: compiled bf16, or the frozen fp8 base for the families in _AUTO_FP8_OVER_BF16 when the run
+      compiles (``compiled``: the gain was measured compiled against compiled).
+    - 1.15x-1.5x: the frozen fp8 base (about 2x eager int8 and 1.8x the bf16 block swap Auto picked here before, at
+      the same held-out loss), else int8, else nf4 without torchao (``_int8_quantize_base`` has no fallback).
+    - AUTO_FP8_MIN_FREE_RATIO-1.15x: the fp8 base streams onto the card Linear by Linear (never whole in bf16), so it
+      fits where only nf4 did; nf4 trained a worse adapter (held-out MSE above the bare base on Z-Image) 1.75x slower.
+    Every fp8 pick needs ``compiled``: eager fp8 lost to the eager picks it would replace (L4, Z-Image 512 px: 1.41
+    s/step vs bf16 + block swap 1.25-1.36 at 1.33x, 1.69-1.70 vs nf4 1.30-1.34 at 0.93x), so an eager run keeps them.
+    UNSLOTH_DIT_AUTO_FP8=0 restores the int8 / nf4 picks."""
     if prequant or device != "cuda" or not free_gb or not dense_gb:
         return "nf4"
+    fp8 = has_fp8 and capability is not None and tuple(capability) >= (8, 9)
+    fam = str(family or "").strip().lower()
     if free_gb > dense_gb * 1.5:
-        return "bf16"
+        return "fp8" if fp8 and compiled and fam in _AUTO_FP8_OVER_BF16 else "bf16"
     if free_gb > dense_gb * 1.15:
+        if fp8 and compiled and fam not in _AUTO_FP8_NOT_OVER_SWAP:
+            return "fp8"
         return "int8" if has_torchao else "nf4"
+    if fp8 and compiled and free_gb > dense_gb * AUTO_FP8_MIN_FREE_RATIO:
+        return "fp8"
     return "nf4"
 
 
@@ -928,7 +1148,17 @@ def _resolve_base_precision(cfg, spec, device) -> str:
 
             free_gb = trusted_mem_get_info()[0] / 1e9
             capability = torch.cuda.get_device_capability()
-            has_fp8 = hasattr(torch, "float8_e4m3fn")
+            # The frozen fp8 base runs torch._scaled_mm on NVIDIA sm89+; ROCm reports gfx capabilities that are not.
+            has_fp8 = (
+                hasattr(torch, "float8_e4m3fn")
+                and hasattr(torch, "_scaled_mm")
+                and not torch_is_rocm()
+                and not is_stubbed("torchao")
+                and _auto_fp8_enabled()
+                and _auto_fp8_family_ok(spec, cfg.base_model)
+                and _auto_fp8_run_ok(cfg)
+                and _auto_fp8_probe_ok(device)
+            )
         except Exception:  # noqa: BLE001 -- probe failure -> the safe mode
             pass
     return _pick_auto_precision(
@@ -939,6 +1169,8 @@ def _resolve_base_precision(cfg, spec, device) -> str:
         capability,
         has_fp8,
         has_torchao,
+        getattr(spec, "family", None),
+        _auto_run_compiles(cfg),
     )
 
 
@@ -1318,7 +1550,8 @@ def _krea2_encode_prompts(pipe, captions, device):
     out = []
     with torch.no_grad():
         for cap in captions:
-            # encode_prompt pads to max_sequence_length, so embeds keep static shapes and the mask is [1, 512].
+            # encode_prompt pads to max_sequence_length ([1, 512] mask). Kept padded: the persistent text cache is
+            # shared with older builds, whose collate concatenates fixed 512-row entries; _krea2_collate trims.
             pe, mask = pipe.encode_prompt(
                 prompt = cap,
                 device = device,
@@ -1327,6 +1560,22 @@ def _krea2_encode_prompts(pipe, captions, device):
             )
             out.append((pe.cpu(), mask.cpu()))
     return out
+
+
+def _krea2_text_rows(pe, mask):
+    """The valid text rows of one Krea 2 prompt, as (pe [1, L, layers, D], all-true mask [1, L]). Exact: every text
+    token sits at the rotary origin and the text fusion has no positions, so a padded row is only ever a masked key
+    whose own output is sliced away; dropping it (wherever the template put it) leaves every kept row unchanged.
+    It cut the joint sequence by 512 - L rows per step (a third of it at 512 px)."""
+    import torch
+
+    if mask is None:
+        return pe, torch.ones(pe.shape[:2], dtype = torch.bool)
+    keep = mask[0].to(device = pe.device, dtype = torch.bool)
+    if bool(keep.all()) or not bool(keep.any()):
+        return pe, mask.to(torch.bool)
+    pe = pe[:, keep]
+    return pe, torch.ones(pe.shape[:2], dtype = torch.bool, device = pe.device)
 
 
 # Krea 2 uses the Qwen-Image VAE normalisation (latents_mean/latents_std), so encoding is shared.
@@ -1340,10 +1589,28 @@ def _krea2_collate(
     weight_dtype,
     pad_to = None,
 ):
-    # Fixed-length embeds, so collation is a plain concat with the mask riding along; ``pad_to`` is moot.
-    pe_b = _to_device_cat([e[0] for e in entries], device).to(dtype = weight_dtype)
-    mask_b = _to_device_cat([e[1] for e in entries], device)
-    return (pe_b, mask_b)
+    import torch
+    import torch.nn.functional as F
+
+    # Valid rows only (older caches still hold the 512-row padded form), padded back to the batch's longest prompt
+    # or the compile pin ``pad_to``; no padding at all means no mask, so attention runs unmasked.
+    rows = [_krea2_text_rows(pe, mask) for pe, mask in entries]
+    target = max(pad_to or 0, max(pe.shape[1] for pe, _ in rows))
+    # Decided on the host (the rows come from host-pinned embeds): a device .all() would sync every step.
+    padded = any(pe.shape[1] < target or not bool(mask.all()) for pe, mask in rows)
+    pes, masks = [], []
+    for pe, mask in rows:
+        n = pe.shape[1]
+        pe = pe.to(device, non_blocking = True)
+        mask = mask.to(device = device, dtype = torch.bool, non_blocking = True)
+        if n < target:
+            pe = F.pad(pe, (0, 0, 0, 0, 0, target - n))
+            mask = F.pad(mask, (0, target - n), value = False)
+        pes.append(pe)
+        masks.append(mask)
+    pe_b = (pes[0] if len(pes) == 1 else torch.cat(pes)).to(dtype = weight_dtype)
+    mask_b = masks[0] if len(masks) == 1 else torch.cat(masks)
+    return (pe_b, mask_b if padded else None)
 
 
 def _krea2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
@@ -2959,6 +3226,51 @@ def _load_pixel_tensor(path, resolution, center_crop, random_flip, rng):
     return _to_unit_tensor(img)
 
 
+def _precision_agreement_warning(own, agreed, picks) -> Optional[str]:
+    """Data parallel: every rank trains the base the tightest card resolved. Say so when that is not this card's pick
+    (another card was busier, so Auto settled lower), naming every rank's pick."""
+    if not picks or len(set(picks)) == 1:
+        return None
+    per_rank = ", ".join(f"GPU {i}: {p}" for i, p in enumerate(picks))
+    if own == agreed:
+        return f"multi-GPU: the cards resolved different base precisions ({per_rank}); every GPU trains {agreed}."
+    return (
+        f"multi-GPU: this GPU resolved base_precision {own}, but another card has less free memory, so every GPU "
+        f"trains {agreed} ({per_rank}). Free the other card for {own}."
+    )
+
+
+def _skip_pixel_draws(path, resolution, center_crop, random_flip, rng):
+    """Advance ``rng`` exactly as ``_load_pixel_tensor`` would, from the image header alone: a data-parallel rank
+    skips decoding the images outside its slice and every rank's stream stays in step."""
+    if center_crop and not random_flip:
+        return
+    cw, ch = _canvas(resolution)
+    if not center_crop:
+        rw, rh = cover_resize_dims(*oriented_image_size(path), cw, ch)
+        rng.randint(0, max(0, rw - cw))
+        rng.randint(0, max(0, rh - ch))
+    if random_flip:
+        rng.random()
+
+
+@contextmanager
+def _rank_private_rng(device, seed):
+    """Run the block on a private generator seeded ``seed``; the shared stream every rank draws from is left as it was."""
+    import torch
+
+    dev = torch.device(device)
+    if dev.type == "cuda":
+        index = dev.index if dev.index is not None else torch.cuda.current_device()
+        with torch.random.fork_rng(devices = [index]), torch.cuda.device(index):
+            torch.cuda.manual_seed(seed)
+            yield
+    else:
+        with torch.random.fork_rng(devices = []):
+            torch.manual_seed(seed)
+            yield
+
+
 def _load_pixel_tensor_planned(
     path,
     resolution,
@@ -3252,9 +3564,9 @@ def _should_compile(
     mode = (cfg.compile_transformer or "auto").strip().lower()
     if device != "cuda" or mode == "off":
         return False
-    # torch.compile cannot trace the torchao int8 subclass in training, so int8 runs eager.
+    # torch.compile cannot trace the torchao int8 subclass in training, so int8 runs eager; the W8A8 base traces.
     if base_precision == "int8":
-        return False
+        return _int8_w8a8() and mode != "off"
     if mode == "on":
         return True
     if base_precision == "nf4":
@@ -3475,7 +3787,7 @@ def run_dit_lora_training(
         # Residual stream stays fp32; only autocast matmuls run fp16.
         weight_dtype = torch.float32
         mode = (cfg.base_precision or "nf4").strip().lower()
-        if mode not in ("nf4", "auto"):
+        if mode not in ("nf4", "auto") and not (mode == "int8" and _int8_w8a8()):
             raise ValueError(dit_fp16_dense_reason(mode))
 
     # A local FLUX.3 pipeline is modular (modular_model_index.json, no model_index.json).
@@ -3487,10 +3799,22 @@ def run_dit_lora_training(
     pairs = discover_image_caption_pairs(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )
+    # num_gpus > 1: plan the world (after its fallbacks) before resolving epochs, since every micro-step draws
+    # train_batch_size images per rank. A started rank already received the resolved step count (num_epochs = 0).
+    from core.training import diffusion_ddp
+
+    ddp = diffusion_ddp.current()
+    world, world_why = 1, None
+    if ddp is None and int(getattr(cfg, "num_gpus", 1) or 1) > 1:
+        world, world_why = diffusion_ddp.plan_world(cfg, device)
     # Resolve num_epochs to train_steps now the size is known; rebind cfg so all reads agree.
     cfg = replace(
         cfg,
-        train_steps = resolve_train_steps(cfg, len(pairs), [p for p, _ in pairs]),
+        train_steps = resolve_train_steps(
+            replace(cfg, train_batch_size = max(1, cfg.train_batch_size) * max(1, world)),
+            len(pairs),
+            [p for p, _ in pairs],
+        ),
         num_epochs = 0,
     )
     # Validate a resume against this run's identity BEFORE the multi-GB phased load, using the RESOLVED LoRA targets
@@ -3500,6 +3824,7 @@ def run_dit_lora_training(
         dataset_pairs = pairs,
         resolved_targets = _select_lora_targets(cfg.lora_target_modules, spec.lora_targets),
     )
+    identity = with_world_size(identity, ddp.world if ddp is not None else world)
     if cfg.resume_from_checkpoint:
         preflight_resume(
             cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
@@ -3525,10 +3850,22 @@ def run_dit_lora_training(
         )
         return str(out_dir)
 
+    # num_gpus > 1: this process is rank 0 of a data-parallel run (diffusion_ddp); a started rank finds its context.
+    launched = None
+    if ddp is None and int(getattr(cfg, "num_gpus", 1) or 1) > 1:
+        if world_why:
+            _emit(on_event, "warning", message = world_why)
+        if world > 1:
+            launched = ddp = diffusion_ddp.launch(
+                cfg,
+                world,
+                on_failure = lambda msg: _emit(on_event, "error", message = msg, error = msg),
+            )
     # Restore TF32 / cudnn.benchmark on exit, so in-process callers see no lasting change.
     perf_snap = _apply_perf_flags(cfg, device)
+    failed = True
     try:
-        return _train_dit(
+        out = _train_dit(
             cfg,
             spec,
             pairs,
@@ -3540,9 +3877,14 @@ def run_dit_lora_training(
             lambda: save_on_stop,
             identity,
             fp16_amp = fp16_amp,
+            **({"ddp": ddp} if ddp is not None else {}),
         )
+        failed = False
+        return out
     finally:
         _restore_perf_flags(perf_snap)
+        if launched is not None:
+            launched.close(failed = failed)
 
 
 def _train_dit(
@@ -3557,9 +3899,10 @@ def _train_dit(
     _save_on_stop,
     identity,
     fp16_amp = False,
+    ddp = None,
 ):
     """The body of ``run_dit_lora_training``, split out so the backend perf flags are
-    snapshot/restored around it in exactly one place."""
+    snapshot/restored around it in exactly one place. ``ddp``: this rank's diffusion_ddp context (None = one device)."""
     import torch
     import torch.nn.functional as F
     from diffusers import FlowMatchEulerDiscreteScheduler
@@ -3589,6 +3932,10 @@ def _train_dit(
     to_encode = uniq + ([""] if cfg_dropout > 0 and "" not in uniq else [])
     # Own dict: caption_embeds sizes the qwen compile pad bucket, which a long preview prompt must not grow.
     sample_plan = plan_samples(cfg, spec.family, captions) if spec.decode_latents else None
+    if ddp is not None and not ddp.is_main:
+        # Previews are rank 0's; the conditioning is read warm once rank 0 has written it and loaded its base.
+        sample_plan = None
+        ddp.wait_for("conditioning")
     sample_texts = sample_plan.encode_texts if sample_plan is not None else []
     sample_embeds: dict = {}
     # Kept past a failed round (which drops sample_plan) so a discard still removes what was written.
@@ -3737,12 +4084,29 @@ def _train_dit(
     variant_rng = random.Random(cfg.seed + 1)
     caption_embeds = _pin_caption_embeds(caption_embeds, device)
 
+    if ddp is not None:
+        ddp.release("conditioning")
     # Transformer loads last, at resolved precision: nf4 by default, 'auto' picks from free VRAM.
-    base_precision = "nf4" if fp16_amp else _resolve_base_precision(cfg, spec, device)
+    if fp16_amp:
+        # The W8A8 int8 base computes in the autocast dtype, so the fp16 path can take it too (prototype gate).
+        w8a8_fp16 = (cfg.base_precision or "").strip().lower() == "int8" and _int8_w8a8()
+        base_precision = "int8" if w8a8_fp16 else "nf4"
+    else:
+        base_precision = _resolve_base_precision(cfg, spec, device)
+    if ddp is not None:
+        own = base_precision
+        base_precision = ddp.agree_precision(base_precision)
+        message = _precision_agreement_warning(
+            own, base_precision, getattr(ddp, "precision_picks", None)
+        )
+        if message and ddp.is_main:
+            _emit(on_event, "warning", message = message)
+        ddp.wait_for("transformer")
     swap_request = block_swap_request(cfg)
     # auto's int8 band: bf16 with as many blocks swapped as needed (often none) trains faster at bf16 accuracy.
     auto_swap = (
         swap_request is None
+        and ddp is None
         and not block_swap_explicit_off(cfg)
         and _auto_block_swap_wanted(cfg, base_precision, device, spec)
     )
@@ -3763,29 +4127,39 @@ def _train_dit(
         cfg.gradient_checkpointing,
         integrated = bool(swap_request) and _device_is_integrated(device),
     )
+    if swap_request and fp16_amp:
+        swap_error = "block_swap needs a GPU with bf16: this one trains the fp16 fallback. Turn block_swap off."
     if swap_error:
         raise ValueError(swap_error)
+    # A swapped fp8 / W8A8 base converts inside install_dit_block_swap; the conversions below are skipped.
+    lowp_swap = swap_lowp_mode(base_precision) if swap_request else None
     with report_model_load_progress(on_event):
-        # A swapped bf16 base loads on the host: install_dit_block_swap places everything but the swapped blocks.
         transformer = spec.load_transformer(
             fetch_cfg, "cpu" if swap_request else device, weight_dtype, base_precision
         )
+    if ddp is not None:
+        ddp.release("transformer")
     base_is_bnb = base_precision == "nf4"
     fp16_report = None
     if fp16_amp:
         from core.training.diffusion_dit_fp16 import install_fp32_islands, prepare_fp16_base
-        fp16_report = prepare_fp16_base(transformer)
+
+        # The W8A8 int8 base is still bf16 on the host here: cast what remains after it lands on the device.
+        fp16_report = {} if base_precision == "int8" else prepare_fp16_base(transformer)
 
     transformer.requires_grad_(False)
-    transformer.add_adapter(
-        LoraConfig(
+
+    def _lora_config():
+        # Fresh per attach: PEFT rewrites a config's target_modules in place.
+        return LoraConfig(
             r = cfg.lora_rank,
             lora_alpha = cfg.lora_alpha,
             lora_dropout = cfg.lora_dropout,
             init_lora_weights = "gaussian",
             target_modules = list(use_lora_targets),
         )
-    )
+
+    transformer.add_adapter(_lora_config())
     if fp16_amp:
         # After the adapter, so the island wraps the PEFT layer.
         fp16_report["fp32_islands"] = len(install_fp32_islands(transformer, spec.family, device))
@@ -3798,6 +4172,7 @@ def _train_dit(
                 swap_request,
                 tokens = _block_swap_tokens(spec, cfg),
                 batch = cfg.train_batch_size,
+                lowp = _lowp_swap_spec(transformer, lowp_swap, cfg.resolved_family, device),
             )
         except ValueError as exc:
             if not auto_swap:
@@ -3836,18 +4211,64 @@ def _train_dit(
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
     # Convert AFTER the LoRA attaches so the adapter modules stay high precision.
-    if base_precision == "int8":
+    w8a8_on = lowp_swap == "int8_w8a8" or (
+        base_precision == "int8"
+        and _int8_w8a8()
+        and _apply_int8_w8a8(transformer, on_event, cfg.resolved_family, device = device)
+    )
+    if base_precision == "int8" and not w8a8_on:
+        if fp16_amp:
+            raise ValueError(
+                "int8 W8A8 could not be built on this GPU; use base_precision='nf4' or 'auto'."
+            )
         _int8_quantize_base(transformer, cfg.resolved_family, device = device)
+    if fp16_amp and w8a8_on:
+        fp16_report.update(prepare_fp16_base(transformer))
+    if base_precision == "int8":
         # Re-collect: the move to device must not leave the optimizer holding host tensors.
         lora_params = [p for p in transformer.parameters() if p.requires_grad]
-    if base_precision == "fp8" and not _apply_fp8_training(
-        transformer, on_event, cfg.resolved_family
-    ):
-        base_precision = "bf16"
+    if base_precision == "fp8" and lowp_swap != "fp8":
+        reload_nf4 = None
+        try:
+            if not _apply_fp8_training(transformer, on_event, cfg.resolved_family, device = device):
+                base_precision = "bf16"
+        except Fp8FallbackDoesNotFit as exc:
+            reload_nf4 = str(exc)
+        if reload_nf4 is not None:
+            # Below the bf16 fit the base only trains quantized: reload it as nf4 (no fp8 here, and no block swap
+            # either: Auto never picks fp8 with one), with the same adapter and checkpointing. Outside the handler,
+            # so the exception's traceback no longer holds the conversion frame's reference to the old base.
+            _emit(
+                on_event,
+                "warning",
+                message = f"fp8 training unavailable ({reload_nf4}); the bf16 base does not fit, training nf4 instead.",
+            )
+            transformer = None
+            lora_params = None
+            gc.collect()
+            _empty_device_cache(device)
+            with report_model_load_progress(on_event):
+                transformer = spec.load_transformer(fetch_cfg, device, weight_dtype, "nf4")
+            base_precision, base_is_bnb = "nf4", True
+            transformer.requires_grad_(False)
+            transformer.add_adapter(_lora_config())
+            gc_budget = None
+            if cfg.gradient_checkpointing:
+                gc_budget = enable_budgeted_checkpointing(transformer, device)
+                if gc_budget is None:
+                    enable_diffusion_gradient_checkpointing(
+                        transformer, mode = _checkpoint_mode(False)
+                    )
+            cast_training_params(transformer, dtype = torch.float32)
+        # Re-collect: a host-resident fp8 load just moved, so the optimizer must not hold host tensors.
+        lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if base_precision == "mxfp8" and not _apply_mxfp8_training(
         transformer, on_event, cfg.resolved_family
     ):
         base_precision = "bf16"
+    if ddp is not None:
+        # Same seed, so already equal; the broadcast makes the replicas identical whatever the load consumed.
+        ddp.broadcast_params(lora_params)
 
     # LoRA EMA shadows ONLY the trainable adapter params; initialised after the precision conversions so it tracks the final fp32 objects.
     ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
@@ -3858,7 +4279,8 @@ def _train_dit(
         _warn_fp16_compile_declined(cfg, on_event)
     compiled = (
         False
-        if fp16_amp
+        # The torchao weight-only int8 fallback cannot trace in training, whatever the W8A8 setting asked for.
+        if fp16_amp or (base_precision == "int8" and not w8a8_on)
         else _maybe_compile_transformer(
             transformer,
             cfg,
@@ -3870,10 +4292,12 @@ def _train_dit(
             block_swap = swapping,
         )
     )
-    # Compiled Qwen graphs need one fixed text length across steps.
+    # Compiled Qwen / Krea 2 graphs need one fixed text length across steps (Krea 2: its longest valid prompt).
     qwen_pad_to = None
     if compiled and spec.family == "qwen-image":
         qwen_pad_to = max(e[0].shape[1] for e in caption_embeds.values())
+    elif compiled and spec.family == "krea-2":
+        qwen_pad_to = max(_krea2_text_rows(*e)[0].shape[1] for e in caption_embeds.values())
 
     optimizer = _make_optimizer(
         lora_params, cfg.learning_rate, recorded_optimizer_class(cfg, identity)
@@ -3928,7 +4352,7 @@ def _train_dit(
     fast_lora_layers = 0
     fast_lora_hooks = ()
     if not compiled and device in ("cuda", "xpu") and fast_lora_enabled():
-        int8_cache = base_precision == "int8"
+        int8_cache = base_precision == "int8" and not w8a8_on
         if _dequant_cache_wanted(base_is_bnb, device, fp16_amp, int8_base = int8_cache):
             dequant_cache = Nf4DequantCache()
         fast_lora_layers = install_fast_lora(transformer, dequant_cache, int8 = int8_cache)
@@ -4210,9 +4634,13 @@ def _train_dit(
     # Host copies of the step's inputs and RNG states, only while a budgeted step could still need a rerun.
     replay = StepReplay(device) if gc_budget is not None else None
     fp8_backward = None
-    if base_precision == "fp8" and gc_budget is not None:
-        from core.training.diffusion_frozen_fp8 import BACKWARD_WEIGHTS, fp8_backward_vram_handler
+    if (base_precision == "fp8" or w8a8_on) and gc_budget is not None:
+        from core.training.diffusion_frozen_fp8 import fp8_backward_vram_handler
 
+        if base_precision == "fp8":
+            from core.training.diffusion_frozen_fp8 import BACKWARD_WEIGHTS
+        else:  # the W8A8 int8 base keeps its column-major weights the same way, in its own module-keyed cache
+            from core.training.diffusion_frozen_int8 import BACKWARD_WEIGHTS
         fp8_backward = BACKWARD_WEIGHTS
         fp8_backward.clear()
         fp8_backward.active = fp8_backward.enabled()
@@ -4223,6 +4651,13 @@ def _train_dit(
     train_peak = TrainingPeakMemory(device)
     compile_watch = _dynamo_compile_counters() if compiled else None
     consecutive_skips = 0
+    # Data parallel: every rank draws the global batch from the same streams and trains its own slice.
+    draw_size = batch_size * (ddp.world if ddp is not None else 1)
+    if ddp is not None:
+        # A stop seen during the opening preview (rank 0 only) must end every rank together.
+        stop_latched = ddp.any_flag(stop_latched)
+        # A resume restored each card's generator from rank 0's save; the noise stream must continue from rank 0's.
+        ddp.sync_rng()
     # while, not range: an fp16 overflow step applies no update and is not counted.
     opt_step = resumed
     while opt_step < cfg.train_steps:
@@ -4234,31 +4669,50 @@ def _train_dit(
         if replay is not None:
             replay.clear()
         for _ in range(cfg.gradient_accumulation_steps):
-            idxs = index_sampler.next_batch(batch_size)
+            idxs = index_sampler.next_batch(draw_size)
             if canvases is not None:
                 idxs = idxs[1]
             if latent_cache is not None:
                 latents = _sample_cached_latents(
                     latent_cache, idxs, variant_rng, device, weight_dtype
                 )
+                if ddp is not None:
+                    latents = latents[ddp.batch_slice(batch_size)]
             else:
-                px = torch.stack(
-                    [
-                        _load_pixel_tensor(
+                # Data parallel: only this rank's slice is decoded and encoded; the rest only advance the crop / flip
+                # stream, which every rank shares.
+                own = (
+                    range(len(idxs))
+                    if ddp is None
+                    else range(len(idxs))[ddp.batch_slice(batch_size)]
+                )
+                px = []
+                for j, i in enumerate(idxs):
+                    load = _load_pixel_tensor if j in own else _skip_pixel_draws
+                    px.append(
+                        load(
                             image_paths[i],
                             cfg.resolution if canvases is None else canvases[i],
                             cfg.center_crop,
                             cfg.random_flip,
                             rng,
                         )
-                        for i in idxs
-                    ]
-                ).to(device)
-                latents = spec.encode_latents(vae, px).to(weight_dtype)
+                    )
+                px = torch.stack([px[j] for j in own]).to(device)
+                if ddp is None:
+                    latents = spec.encode_latents(vae, px).to(weight_dtype)
+                else:
+                    # The posterior sample draws a rank-private stream, so the shared one (noise, timesteps) stays in
+                    # step across ranks and no two ranks reuse one posterior draw.
+                    with _rank_private_rng(device, rng.getrandbits(62) + ddp.rank):
+                        latents = spec.encode_latents(vae, px).to(weight_dtype)
 
-            noise = torch.randn_like(latents)
+            # Noise and timesteps are drawn for the whole global batch (1 GPU: the batch), then sliced to this rank.
+            noise = torch.randn(
+                (draw_size, *latents.shape[1:]), dtype = latents.dtype, device = latents.device
+            )
             timesteps, t_indices = _sample_timesteps(
-                scheduler, latents.shape[0], device, spec.timestep_density
+                scheduler, draw_size, device, spec.timestep_density
             )
             sigmas = _gather_sigmas(sigma_table, t_indices, device, weight_dtype, latents.ndim)
             if shift_active:
@@ -4270,15 +4724,19 @@ def _train_dit(
                     .flatten()
                     * num_train_ts
                 )
+            picked = [
+                caption_embeds[""]
+                if cfg_dropout > 0 and rng.random() < cfg_dropout
+                else caption_embeds[captions[i]]
+                for i in idxs
+            ]
+            if ddp is not None:
+                mine = ddp.batch_slice(batch_size)
+                noise, timesteps, sigmas = (t[mine] for t in (noise, timesteps, sigmas))
+                picked = picked[mine]
             noisy = (1.0 - sigmas) * latents + sigmas * noise
-
             embeds = spec.collate(
-                [
-                    caption_embeds[""]
-                    if cfg_dropout > 0 and rng.random() < cfg_dropout
-                    else caption_embeds[captions[i]]
-                    for i in idxs
-                ],
+                picked,
                 device,
                 weight_dtype,
                 pad_to = qwen_pad_to,
@@ -4305,6 +4763,9 @@ def _train_dit(
             else:
                 step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
 
+        if ddp is not None:
+            # Before unscale / clip: every rank then sees the same averaged (still loss-scaled) gradients.
+            step_acc = ddp.all_reduce_grads(lora_params, step_acc)
         if fp16_amp:
             scaler.unscale_(optimizer)
         grad_norm = None
@@ -4322,7 +4783,10 @@ def _train_dit(
             consecutive_skips += 1
             if consecutive_skips >= FP16_MAX_CONSECUTIVE_SKIPS:
                 raise RuntimeError(_fp16_overflow_message(spec, consecutive_skips, step_loss))
-            if _check_stop():
+            stop_skip = _check_stop()
+            if ddp is not None:
+                stop_skip = ddp.any_flag(stop_skip)
+            if stop_skip:
                 stopped = True
                 break
             continue
@@ -4358,7 +4822,7 @@ def _train_dit(
                 compile_watch = None
         if done % cfg.log_every == 0 or done == cfg.train_steps:
             peak_gb = train_peak.gb()
-            per_step = batch_size * cfg.gradient_accumulation_steps
+            per_step = draw_size * cfg.gradient_accumulation_steps
             if t_steady is not None and ran_here > 1:
                 sps = round((ran_here - 1) * per_step / max(now - t_steady, 1e-6), 3)
             else:
@@ -4387,9 +4851,14 @@ def _train_dit(
             _sample(done)
             train_peak.resume()
             stop_now = stop_latched
-        # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
+        if ddp is not None:
+            stop_now = ddp.any_flag(stop_now)
+        # Skipped on the final step and when stopping, since the stop path writes one at the exact step. Data
+        # parallel: rank 0 alone saves. Its RNG state is every rank's (all ranks draw the global batch from the same
+        # streams), so a resume restores it on every rank and ddp.sync_rng() hands rank 0's card generator to the rest.
         if (
             not stop_now
+            and (ddp is None or ddp.is_main)
             and cfg.save_steps
             and done % cfg.save_steps == 0
             and done < cfg.train_steps
@@ -4402,7 +4871,7 @@ def _train_dit(
     if fp8_backward is not None:
         import logging
 
-        logging.getLogger(__name__).info("fp8 backward weights: %s", fp8_backward.stats())
+        logging.getLogger(__name__).info("frozen backward weights: %s", fp8_backward.stats())
         if dequant_cache is None:
             set_vram_request_handler(None)
         fp8_backward.clear()
@@ -4418,6 +4887,29 @@ def _train_dit(
             handle.remove()
         # Saving and any later reuse of this transformer see PEFT's own modules again.
         uninstall_fast_lora(transformer)
+
+    ddp_report = None
+    if ddp is not None:
+        # Every rank leaves the loop at the same step; the checksum proves the replicas never drifted apart.
+        rows = ddp.gather(
+            {
+                "rank": ddp.rank,
+                "steps": done,
+                "peak_gib": train_peak.gb() or None,
+                "max_alloc_gib": round(torch.cuda.max_memory_allocated() / (1 << 30), 3)
+                if device == "cuda"
+                else None,
+                "lora_checksum": ddp.params_checksum(lora_params),
+            }
+        )
+        ddp.finished = True
+        if not ddp.is_main:
+            return str(out_dir)
+        ddp_report = {
+            **ddp.stats(),
+            "ranks": rows,
+            "params_in_sync": len({r["lora_checksum"] for r in rows}) == 1,
+        }
 
     lora_path: Optional[str] = None
     catalog_path: Optional[str] = None
@@ -4469,6 +4961,7 @@ def _train_dit(
         wall_seconds = round(time.time() - t_start, 1),
         resumed_from_step = resumed or None,
         **({"mixed_precision": "fp16", "skipped_steps": skipped_steps} if fp16_amp else {}),
+        **({"multi_gpu": ddp_report} if ddp_report is not None else {}),
         # Stop without saving discards the run, so its periodic checkpoints must not keep offering a resume.
         discarded = bool(stopped and not _save_on_stop()),
     )
@@ -4523,7 +5016,7 @@ def _dequant_cache_wanted(
     fp16_amp,
     int8_base = False,
 ) -> bool:
-    """nf4 / int8 dequant cache on CUDA; off on the fp16 path, whose 16 GB cards it shares with the checkpointing budget
+    """nf4 / int8 dequant cache on CUDA and ROCm; off on the fp16 path, whose 16 GB cards it shares with the checkpointing budget
     (on a T4 both planned from step 1's free memory and step 2 OOMed). int8 runs eager, so the cache is its only
     relief from torchao's per-call weight cast."""
     from core.training.diffusion_lora_fast import dequant_cache_enabled, int8_dequant_cache_enabled
@@ -4531,7 +5024,6 @@ def _dequant_cache_wanted(
         (base_is_bnb or (int8_base and int8_dequant_cache_enabled()))
         and device == "cuda"
         and not fp16_amp
-        and not torch_is_rocm()
         and dequant_cache_enabled()
     )
 

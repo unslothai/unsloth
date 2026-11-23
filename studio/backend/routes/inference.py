@@ -183,7 +183,9 @@ from core.inference.http_stream import SSE_LINE_END, aiter_sse_lines
 from core.inference.sse import SSELineDecoder, iter_sse_lines
 from core.inference import model_slots
 from core.inference.llama_cpp import (
+    _DEVICE_FLAGS,
     _TERMINAL_RETIREMENT_HOOKS,
+    _extra_args_set_any_flag,
     _llama_chunk_has_generated_output,
     _local_ssl_context,
     register_serving_backend,
@@ -3756,6 +3758,7 @@ from core.inference.tool_call_parser import (
     _strip_function_xml_calls,
     _strip_gemma_wrapperless_calls,
     _strip_glm_calls,
+    _strip_lfm_calls,
     _strip_minimax_calls,
     _strip_mistral_closed_calls,
 )
@@ -6337,6 +6340,7 @@ async def _select_request_tools(
         ALL_TOOLS,
         apply_full_access_tool_descriptions,
         get_enabled_mcp_tools,
+        set_mcp_project_scope,
     )
 
     if not tools_on:
@@ -6430,7 +6434,9 @@ async def _select_request_tools(
         )
     if mcp_allowed:
         from core.inference.media_chat_tools import remember_server_loop
+
         remember_server_loop(asyncio.get_running_loop())
+        await set_mcp_project_scope(getattr(payload, "session_id", None))
         tools = tools + await get_enabled_mcp_tools()
     # Some callers pass lighter payloads that may lack deep_research_armed, so read it with getattr.
     if getattr(payload, "deep_research_armed", None):
@@ -6922,6 +6928,7 @@ def _strip_tool_xml_for_display(
         seg = _strip_mistral_closed_calls(seg)
         # llama-server leaves MiniMax blocks in content when tool_choice is "none".
         seg = _strip_minimax_calls(seg, final = is_last)
+        seg = _strip_lfm_calls(seg, final = is_last)
         seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
         if is_last:
             seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
@@ -8522,6 +8529,10 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     if any(name in sent for name in _PLACEMENT_FIELDS):
         for name in _PLACEMENT_FIELDS:
             fill.pop(name, None)
+    # A filled gpu_ids would strip the sent --device / --main-gpu (_gpu_ids_own_placement).
+    if _extra_args_set_any_flag(request.llama_extra_args, _DEVICE_FLAGS):
+        fill.pop("gpu_ids", None)
+        fill.pop("tensor_split", None)
     if fill.get("llama_extra_args"):
         fill["llama_extra_args"] = _strip_inherited_extras(request, fill["llama_extra_args"])
     if fill.get("gpu_ids") and not await _override_gpu_ids_still_resolve(
@@ -14045,9 +14056,7 @@ def _gguf_runtime_bytes(
         except Exception as _rows_exc:
             logger.debug("llama-server build probe failed: %s", _rows_exc)
         # Keep block_count even when the cache is unsized, or --gpu-layers 0 prices as fully GPU-resident.
-        unknown = _GGUF_RUNTIME_UNKNOWN._replace(
-            layer_count = getattr(probe, "_n_layers", None) or None
-        )
+        unknown = _GGUF_RUNTIME_UNKNOWN._replace(layer_count = _probe_offload_layers(probe) or None)
         if not probe._can_estimate_kv():
             return unknown
         try:
@@ -14201,7 +14210,7 @@ def _gguf_runtime_bytes(
             n_ctx = ctx,
             cache_type_kv = cache_type_for_budget,
             n_parallel = slots,
-            layer_count = getattr(probe, "_n_layers", None) or None,
+            layer_count = _probe_offload_layers(probe) or None,
             swa_full = swa_full,
             kv_unified = kv_unified,
             n_ubatch = effective_ubatch,
@@ -14230,7 +14239,7 @@ def _gguf_runtime_bytes(
             # layer_split follows the loader: -ot, -ncmoe, --no-kv-offload disable pipeline parallelism.
             from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
             pipeline_parallel_off = _pipeline_parallel_disabled_by_args(
-                llama_extra_args, n_layers = getattr(probe, "_n_layers", None)
+                llama_extra_args, n_layers = _probe_offload_layers(probe)
             )
             compute = (
                 _flat_buffer(False)
@@ -15918,6 +15927,11 @@ def _guard_device_count(
     return max(1, LlamaCppBackend._effective_gpu_count(requested_gpu_ids))
 
 
+def _probe_offload_layers(probe) -> Optional[int]:
+    """The -ngl unit of a read GGUF: block_count, or a looped GGUF's physical layers (KV keeps the slots)."""
+    return getattr(probe, "_n_weight_layers", None) or getattr(probe, "_n_layers", None)
+
+
 def _gguf_layer_count(config: ModelConfig) -> Optional[int]:
     """Total block count from a local GGUF header, or None (remote / unreadable)."""
     try:
@@ -15931,7 +15945,7 @@ def _gguf_layer_count(config: ModelConfig) -> Optional[int]:
         if main and Path(main).is_file():
             probe = _probe_backend()
             probe._read_gguf_metadata(str(main))
-            return getattr(probe, "_n_layers", None) or None
+            return _probe_offload_layers(probe) or None
     except Exception as e:
         logger.debug("Could not read GGUF layer count for training guard: %s", e)
     return None
@@ -30735,6 +30749,7 @@ async def _proxy_to_external_provider(
                 continue_final_message = _continue_final_message(payload),
                 supports_vision = model_supports_vision,
                 promoted_image_parts = tuple(_codex_promoted_parts),
+                max_tokens = _effective_max_tokens(payload),
             )
             policy = (
                 CodexToolPolicy(
@@ -30808,6 +30823,7 @@ async def _proxy_to_external_provider(
                         tools = tool_payloads,
                         tool_choice = payload.tool_choice,
                         cancel_event = cancel_event,
+                        continue_final_message = run.continue_final_message,
                     )
                 )
                 async for line in generator:
@@ -44577,8 +44593,13 @@ async def _mlx_count_chat_tokens(
         _mcp_tools: list[dict] = []
         if _mcp_on:
             from core.inference.mcp_client import mcp_server_snapshot_guard
-            from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
+            from core.inference.tools import (
+                cached_mcp_tools,
+                set_mcp_listing_context_tokens,
+                set_mcp_project_scope,
+            )
 
+            await set_mcp_project_scope(getattr(payload, "session_id", None))
             set_mcp_listing_context_tokens(
                 _monitor_context_length(),
                 getattr(payload, "thread_id", None),
@@ -45149,8 +45170,13 @@ async def chat_count_tokens(
     _mcp_allowed = False
     _mcp_tools: list[dict] = []
     if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
-        from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
+        from core.inference.tools import (
+            cached_mcp_tools,
+            set_mcp_listing_context_tokens,
+            set_mcp_project_scope,
+        )
 
+        await set_mcp_project_scope(getattr(payload, "session_id", None))
         set_mcp_listing_context_tokens(
             getattr(llama_backend, "context_length", None),
             getattr(payload, "thread_id", None),
@@ -47401,6 +47427,8 @@ class _AnthropicToolEventRules:
             # Unsloth ran the tool server-side, so the response no longer ends on a pending
             # client action; otherwise stop_reason "tool_use" tells the client to run it again.
             self._ends_on_tool_use = False
+        elif etype == "status" and event.get("new_pass"):
+            self._span_guard.tool_end()
         elif etype == "content" and event.get("text"):
             self._ends_on_tool_use = False
         return released + self._emitter.feed(event)
@@ -47775,16 +47803,23 @@ def _anthropic_tool_response_from_events(
     _block_wrap: dict = {}
     turn_event = None
 
+    new_block = False
+
     def _add_text(clean: str) -> None:
-        nonlocal prev_text, ends_on_tool_use
+        nonlocal prev_text, ends_on_tool_use, new_block
         new = clean[len(prev_text) :]
         prev_text = clean
         if new:
             ends_on_tool_use = False
-            if content_blocks and isinstance(content_blocks[-1], AnthropicResponseTextBlock):
+            if (
+                not new_block
+                and content_blocks
+                and isinstance(content_blocks[-1], AnthropicResponseTextBlock)
+            ):
                 content_blocks[-1].text += new
             else:
                 content_blocks.append(AnthropicResponseTextBlock(text = new))
+                new_block = False
                 # The wrap belongs to the block that OPENS this turn's span (a client tool_use can interrupt it).
                 if _span_guard.claimed and new.startswith("<think>"):
                     _block_wrap[len(content_blocks) - 1] = _span_guard.claimed_wrap
@@ -47820,6 +47855,10 @@ def _anthropic_tool_response_from_events(
         elif etype == "status" and not event.get("text"):
             _release_held_mention()
             prev_text = ""
+            if event.get("new_pass"):
+                # A fresh pass reopens its own leading wrap in its own block, as after tool_end.
+                _span_guard.tool_end()
+                new_block = True
         elif etype == "tool_start":
             # Text ahead of the tool_use block, while prev_text still holds the turn.
             _release_held_mention()
@@ -51738,6 +51777,13 @@ async def load_diffusion_model_gated(
             fit_kwargs = await asyncio.to_thread(
                 media_fit_kwargs, DIFFUSION, request, gpu_ordinal, multi_model_mode
             )
+            from core.inference.ensure_model import chat_kept_refusal, media_load_spares_chat
+            from core.inference.gpu_arbiter import GpuOwnerBusyError
+
+            # A chat's own tools key loads beside the chat model, never in its place.
+            spare_chat = await asyncio.to_thread(
+                media_load_spares_chat, DIFFUSION, "image", request.model_path, multi_model_mode
+            )
 
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
@@ -51761,8 +51807,18 @@ async def load_diffusion_model_gated(
                                 DIFFUSION, multi_model_mode, media_names, _begin_load
                             ),
                             admit = _admit,
+                            **({"spare_chat": True} if spare_chat else {}),
                             **fit_kwargs,
                         )
+                except GpuOwnerBusyError as exc:
+                    if not spare_chat:
+                        raise
+                    raise chat_kept_refusal(
+                        "image",
+                        request.model_path,
+                        multi_model_mode,
+                        priced = fit_kwargs.get("need_mib") is not None,
+                    ) from exc
                 finally:
                     if admitted:
                         preflight.lock.release()

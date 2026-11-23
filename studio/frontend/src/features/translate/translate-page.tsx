@@ -184,7 +184,9 @@ const SERVER_FILE_EXTENSIONS = [
 ].join(",");
 const OPEN_FILE_EXTENSIONS = `${TEXT_FILE_EXTENSIONS},${SERVER_FILE_EXTENSIONS}`;
 
-function readsInBrowser(file: File): boolean {
+const TEXT_READ_BYTES = TRANSLATE_SOURCE_MAX_CHARS * 4 + 4;
+
+function isTextFile(file: File): boolean {
   const name = file.name.toLowerCase();
   if (SERVER_FILE_EXTENSIONS.split(",").some((ext) => name.endsWith(ext))) {
     return false;
@@ -193,6 +195,52 @@ function readsInBrowser(file: File): boolean {
     file.type.startsWith("text/") ||
     TEXT_FILE_EXTENSIONS.split(",").some((ext) => name.endsWith(ext))
   );
+}
+
+const HTML_NAME = /\.html?$/i;
+const META_CHARSET = /<meta[^>]*charset\s*=\s*["']?\s*([\w.:-]+)/i;
+
+// The server ignores <meta charset> once the upload is renamed to .txt.
+function declaredHtmlCharset(file: File, bytes: ArrayBuffer): string | null {
+  if (!HTML_NAME.test(file.name) && file.type !== "text/html") {
+    return null;
+  }
+  const head = new TextDecoder("latin1").decode(bytes.slice(0, 1024));
+  const label = META_CHARSET.exec(head)?.[1];
+  if (!label) {
+    return null;
+  }
+  try {
+    const { encoding } = new TextDecoder(label);
+    return encoding === "utf-8" || encoding.startsWith("utf-16") ? null : label;
+  } catch {
+    return null;
+  }
+}
+
+async function readTextPrefix(file: File): Promise<string | null> {
+  const bytes = await file.slice(0, TEXT_READ_BYTES).arrayBuffer();
+  const stream = file.size > TEXT_READ_BYTES;
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes, { stream });
+  } catch {
+    const charset = declaredHtmlCharset(file, bytes);
+    if (!charset) {
+      return null;
+    }
+    text = new TextDecoder(charset).decode(bytes, { stream });
+  }
+  return text.includes("\u0000") ? null : text;
+}
+
+function serverUpload(file: File): File {
+  return isTextFile(file)
+    ? // .txt: decoded as is (HTML keeps its markup), and any text name is accepted.
+      new File([file.slice(0, TEXT_READ_BYTES)], `${file.name}.txt`, {
+        type: "text/plain",
+      })
+    : file;
 }
 
 const IS_MAC =
@@ -1338,17 +1386,21 @@ export function TranslatePage() {
   const [readingFile, setReadingFile] = useState<string | null>(null);
   const openFile = async (file: File | undefined) => {
     if (!file) return;
-    if (readsInBrowser(file)) {
+    if (isTextFile(file)) {
+      let text: string | null;
       try {
-        loadText(
-          await file.slice(0, TRANSLATE_SOURCE_MAX_CHARS * 4 + 4).text(),
-        );
+        text = await readTextPrefix(file);
       } catch {
         toast.error(t("translate.fileNotText"));
+        return;
       }
-      return;
+      if (text !== null) {
+        loadText(text);
+        return;
+      }
     }
-    if (file.size > MAX_SERVER_DOCUMENT_BYTES) {
+    const upload = serverUpload(file);
+    if (upload.size > MAX_SERVER_DOCUMENT_BYTES) {
       toast.error(t("translate.fileNotText"));
       return;
     }
@@ -1357,7 +1409,7 @@ export function TranslatePage() {
     const before = useTranslateStore.getState().source;
     try {
       const { text, warning } = await extractDocumentText(
-        file,
+        upload,
         undefined,
         TRANSLATE_SOURCE_MAX_CHARS,
       );

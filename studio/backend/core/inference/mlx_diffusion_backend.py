@@ -151,15 +151,17 @@ _VAE_TILING_OFF = ("0", "off", "false", "no")
 
 
 def decode_headroom_bytes(runtime: Any) -> int:
-    """Headroom for the decode path ``runtime`` takes: the tiled peak only when it can tile (``vae_tiled``) and tiling
-    is not forced off, else the untiled 1024x1024 peak."""
+    """Low-memory decode peak when ``runtime`` can take it (``vae_tiled``, not forced off), else the 1024x1024 peak."""
     can_tile = callable(getattr(runtime, "vae_tiled", None))
     forced_off = (
         os.environ.get("UNSLOTH_DIFFUSION_MLX_VAE_TILING", "").strip().lower() in _VAE_TILING_OFF
     )
+    strips = getattr(runtime, "decodes_in_strips", None)
+    strips = callable(strips) and bool(strips())
     if can_tile and not forced_off:
-        return ACTIVATION_HEADROOM_BYTES
-    return max(ACTIVATION_HEADROOM_BYTES, UNTILED_DECODE_HEADROOM_BYTES)
+        return max(ACTIVATION_HEADROOM_BYTES, strip_decode_bytes(1024, 1024) if strips else 0)
+    whole = full_decode_bytes(1024, 1024) if strips else UNTILED_DECODE_HEADROOM_BYTES
+    return max(ACTIVATION_HEADROOM_BYTES, whole)
 
 
 @dataclass(frozen = True)
@@ -344,13 +346,35 @@ _VAE_DECODE_BYTES_PER_PIXEL = 6350
 VAE_TILING_ENV = "UNSLOTH_DIFFUSION_MLX_VAE_TILING"
 
 
+# mflux >= 0.24 decode above weights: ``full_precision`` measured 2.07 / 4.61 / 6.30 GiB at 512 / 768 / 1024 (line is an
+# upper bound); ``low_memory`` 128-row strips, whole-image GroupNorm (no seams, ~50 dB from untiled).
+_FULL_DECODE_FIXED_BYTES = int(1.40 * 1024**3)
+_FULL_DECODE_BYTES_PER_PIXEL = 5875
+_STRIP_DECODE_FIXED_BYTES = int(0.15 * 1024**3)
+_STRIP_DECODE_BYTES_PER_PIXEL = 1188
+
+
 def untiled_decode_bytes(width: int, height: int) -> int:
     return _VAE_DECODE_FIXED_BYTES + _VAE_DECODE_BYTES_PER_PIXEL * int(width) * int(height)
 
 
-def vae_tiling_needed(width: int, height: int, free_bytes: Optional[int]) -> bool:
-    """Tile the decode only when the untiled one would not fit what the working set has left, as ComfyUI tiles only
-    after an out-of-memory decode; unified memory pages instead of failing, so the check comes first.
+def full_decode_bytes(width: int, height: int) -> int:
+    return _FULL_DECODE_FIXED_BYTES + _FULL_DECODE_BYTES_PER_PIXEL * int(width) * int(height)
+
+
+def strip_decode_bytes(width: int, height: int) -> int:
+    return _STRIP_DECODE_FIXED_BYTES + _STRIP_DECODE_BYTES_PER_PIXEL * int(width) * int(height)
+
+
+def vae_tiling_needed(
+    width: int,
+    height: int,
+    free_bytes: Optional[int],
+    whole_image_bytes: Optional[int] = None,
+) -> bool:
+    """Take the low-memory decode (tiles, or mflux >= 0.24's strips) only when the whole-image one would not fit what
+    the working set has left, as ComfyUI tiles only after an out-of-memory decode; unified memory pages instead of
+    failing, so the check comes first. ``whole_image_bytes`` defaults to the untiled decode's peak.
     ``UNSLOTH_DIFFUSION_MLX_VAE_TILING=1`` / ``0`` forces it on / off."""
     raw = os.environ.get(VAE_TILING_ENV, "").strip().lower()
     if raw in ("1", "on", "true", "yes"):
@@ -359,7 +383,19 @@ def vae_tiling_needed(width: int, height: int, free_bytes: Optional[int]) -> boo
         return False
     if free_bytes is None:
         return False
-    return untiled_decode_bytes(width, height) > free_bytes
+    if whole_image_bytes is None:
+        whole_image_bytes = untiled_decode_bytes(width, height)
+    return whole_image_bytes > free_bytes
+
+
+def _mflux_decodes_in_strips() -> bool:
+    """mflux >= 0.24 (VAEBlockDecoder), read from metadata so planning never imports mflux."""
+    try:
+        from importlib.metadata import version
+        major, minor = (int(part) for part in version("mflux").split(".")[:2])
+    except Exception:  # noqa: BLE001 -- not installed, or a version it cannot parse
+        return False
+    return (major, minor) >= (0, 24)
 
 
 def release_buffer_cache(mx: Any) -> None:
@@ -539,15 +575,32 @@ class MfluxRuntime:
         return free if shared is None else min(free, shared)
 
     def _plan_vae_tiling(self, model: Any, width: int, height: int) -> None:
-        from mflux.models.common.vae.tiling_config import TilingConfig
-
         try:
             from core.inference.gpu_residency import metal_media_priced
 
-            # Price reserved the tiled decode; a chat model may join mid-generation on it.
+            # A chat model may join mid-generation on the reserved low-memory headroom.
             priced = metal_media_priced()
         except Exception:  # noqa: BLE001
             priced = False
+        vae = getattr(model, "vae", None)
+        if isinstance(getattr(vae, "decode_mode", None), str):
+            # mflux >= 0.24 ignores tiling; decode_mode picks whole image or strips.
+            from mflux.models.common.vae.block_decoder import VAEBlockDecoder
+
+            strips = vae_tiling_needed(
+                width,
+                height,
+                0 if priced else self.free_working_set_bytes(),
+                whole_image_bytes = full_decode_bytes(width, height),
+            )
+            vae.decode_mode = (
+                VAEBlockDecoder.LOW_MEMORY if strips else VAEBlockDecoder.FULL_PRECISION
+            )
+            model.tiling_config = None
+            self.last_vae_tiled = strips
+            return
+        from mflux.models.common.vae.tiling_config import TilingConfig
+
         tiled = TilingConfig.may_tile_implicitly(model) and vae_tiling_needed(
             width, height, 0 if priced else self.free_working_set_bytes()
         )
@@ -556,6 +609,9 @@ class MfluxRuntime:
 
     def vae_tiled(self) -> bool:
         return bool(getattr(self, "last_vae_tiled", False))
+
+    def decodes_in_strips(self) -> bool:
+        return _mflux_decodes_in_strips()
 
     def cache_text_encodings(
         self,

@@ -1468,6 +1468,27 @@ def rdna_explicit_int8_reason(target: Any, family: Optional[str]) -> Optional[st
     return "an explicit int8 request on RDNA is measured compiled"
 
 
+# "0" keeps an explicit int8 video DiT on ROCm weight-only and quantised from the dense shards at load.
+ROCM_VIDEO_HOSTED_INT8_ENV = "UNSLOTH_ROCM_VIDEO_HOSTED_INT8"
+
+
+def rocm_video_hosted_int8_enabled() -> bool:
+    raw = (_os.environ.get(ROCM_VIDEO_HOSTED_INT8_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def rdna_video_explicit_w8a8_reason(
+    target: Any, family: Optional[str], requested: Optional[str]
+) -> Optional[str]:
+    """Why an EXPLICIT int8 video request runs W8A8 on this ROCm RDNA card (the family's ``rdna_explicit_w8a8``),
+    else None. AUTO is never changed. Kill switches UNSLOTH_ROCM_VIDEO_HOSTED_INT8=0, UNSLOTH_NATIVE_INT8_ACT=0."""
+    if normalize_transformer_quant(requested) != TQ_INT8 or not rocm_video_hosted_int8_enabled():
+        return None
+    if not _rocm_cuda(target):
+        return None
+    return rdna_explicit_w8a8_reason(target, family)
+
+
 def select_transformer_quant_scheme(
     target: Any,
     requested: Optional[str],
