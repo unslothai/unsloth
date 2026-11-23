@@ -653,6 +653,14 @@ def _zimage_toy():
     return m
 
 
+def _real_scaled_mm_supported():
+    from core.training import diffusion_dit_fp16 as f16
+    return f16.scaled_mm_supported
+
+
+_REAL_SCALED_MM_SUPPORTED = _real_scaled_mm_supported()
+
+
 @pytest.fixture
 def scaled_mm(monkeypatch):
     """CPU stand-ins: exact fp16-operand / fp32-accumulate GEMM, the fake nf4 weight as its own dequant."""
@@ -739,14 +747,70 @@ def test_scaled_mm_forward_split_keeps_fp32_input_precision(scaled_mm):
     assert two.dtype is torch.float32 and two.shape == (16, 32)
 
 
+def test_scaled_mm_split_without_an_fp32_copy_matches_the_copy(scaled_mm):
+    """hi / lo formed in-kernel equal the fp32 x * s copy formulation (NaN payloads aside), fp16 operands and output."""
+    from core.training import diffusion_dit_fp16 as f16
+
+    def copy_split(x2, w16t):
+        s = f16._pow2_scale(x2)
+        m = x2.shape[0]
+        x16 = torch.empty((2 * m, x2.shape[1]), dtype = torch.float16)
+        xs = x2 * s
+        x16[:m].copy_(xs)
+        x16[m:].copy_(xs.sub_(x16[:m]))
+        y = f16._mm_fp32_out(x16, w16t)
+        return torch.add(y[:m], y[m:]).div_(s), x16
+
+    seen = []
+    orig = f16._mm_fp32_out
+    f16_mm = lambda a, b: seen.append(a.clone()) or orig(a, b)  # noqa: E731
+    for i in range(200):
+        g = torch.Generator().manual_seed(i)
+        m, k = (
+            int(torch.randint(1, 24, (1,), generator = g)),
+            int(torch.randint(1, 48, (1,), generator = g)),
+        )
+        sc = 10.0 ** float(torch.empty(1).uniform_(-30, 30, generator = g))
+        x = torch.randn(m, k, generator = g, dtype = torch.float64) * sc
+        x = (x * torch.logspace(-4, 4, k, dtype = torch.float64)).float()
+        if i % 5 == 0:
+            x[0, 0] = 0.0
+        if i % 9 == 0:
+            x[-1, :] = -0.0
+        if i % 13 == 0:
+            x[0, -1] = float("nan")
+        w = torch.randn(7, k, generator = g).to(torch.float16).t()
+        want, x16 = copy_split(x, w)
+        f16._mm_fp32_out, seen[:] = f16_mm, []
+        try:
+            got = f16._scaled_fp32_mm(x, w, split = True)
+        finally:
+            f16._mm_fp32_out = orig
+        nan = x16.isnan()
+        assert torch.equal(seen[0].isnan(), nan) and torch.equal(
+            seen[0].view(torch.int16)[~nan], x16.view(torch.int16)[~nan]
+        ), i
+        assert torch.equal(got.isnan(), want.isnan()) and torch.equal(
+            got.view(torch.int32)[~want.isnan()], want.view(torch.int32)[~want.isnan()]
+        ), i
+
+
 def test_pow2_scale_is_exact_and_lands_under_fp16_max():
     from core.training import diffusion_dit_fp16 as f16
 
-    for amax in (3.0e-6, 0.7, 1.0, 65504.0, 8.7e5, 3.0e9):
+    fmax = torch.finfo(torch.float32).max
+    for amax in (1.0e-29, 3.0e-6, 0.7, 1.0, 65504.0, 8.7e5, 3.0e9, 1.0e30, fmax):
         t = torch.tensor([amax, -amax / 3])
         s = f16._pow2_scale(t)
-        assert 2.0**14 < float((t * s).abs().max()) <= 2.0**15
+        assert 2.0**14 < float((t * s).abs().max()) <= 2.0**15, amax
         assert float(torch.log2(s)).is_integer()
+        assert torch.isfinite((t * s).half()).all()
+    # Below the exponent bound the scale stops growing: smaller, never past fp16 max, never zero for a normal.
+    for amax in (1.0e-35, torch.finfo(torch.float32).tiny, 1.0e-45):
+        t = torch.tensor([amax])
+        hi = (t * f16._pow2_scale(t)).half()
+        assert torch.isfinite(hi).all() and float(hi) <= 2.0**15
+    assert float((torch.tensor([1.0e-35]) * f16._pow2_scale(torch.tensor([1.0e-35]))).half()) > 0
     assert float(f16._pow2_scale(torch.zeros(4))) > 0
     for bad in (float("inf"), float("nan")):
         assert not torch.isfinite(
@@ -777,10 +841,33 @@ def test_scaled_mm_skips_weights_past_fp16_and_honours_the_kill_switch(scaled_mm
     assert "_unsloth_scaled_mm_orig" not in m.layers[0].feed_forward.w2.base_layer.__dict__
     y = m.layers[0].feed_forward.w2(torch.randn(2, 64))
     assert m.layers[0].feed_forward.w2.base_layer.calls == ["orig"] and y.dtype is torch.float32
-    monkeypatch.undo()
+    assert f16.scaled_mm_supported("cpu") is not False  # still the fixture's stand-in here
+
+
+def test_scaled_mm_kill_switch_installs_nothing(scaled_mm, monkeypatch):
+    """SCALED_MM_ENV=0 through the real probe: every island keeps the fp32 nf4 path, nothing is patched or called."""
+    from core.training import diffusion_dit_fp16 as f16
+
+    # The real probe, with a CUDA card that would pass it: only the kill switch can say no.
+    monkeypatch.setattr(f16, "scaled_mm_supported", _REAL_SCALED_MM_SUPPORTED)
+    monkeypatch.setattr(f16, "_MM_FP32_OUT_OK", {("cuda", 0): True})
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setenv(f16.SCALED_MM_ENV, "0")
-    assert f16.scaled_mm_supported("cuda") is False
+    m = _zimage_toy()
+    rep = {}
+    names = f16.install_fp32_islands(m, "z-image", "cuda", report = rep)
+    assert names == ["layers.0.attention.to_out.0", "layers.0.feed_forward.w2"]
+    assert rep["fp16_scaled_mm"] == 0
+    assert not any("_unsloth_scaled_mm_orig" in mod.__dict__ for mod in m.modules())
+    calls = f16.scaled_mm_stats()["calls"]
+    y = m.layers[0].feed_forward.w2(torch.randn(2, 64))
+    assert m.layers[0].feed_forward.w2.base_layer.calls == ["orig"] and y.dtype is torch.float32
+    assert scaled_mm == [] and f16.scaled_mm_stats()["calls"] == calls
+    for off in ("false", "OFF", " no "):
+        monkeypatch.setenv(f16.SCALED_MM_ENV, off)
+        assert f16.scaled_mm_supported("cuda") is False
     monkeypatch.delenv(f16.SCALED_MM_ENV)
+    assert f16.scaled_mm_supported("cuda") is True
     assert f16.scaled_mm_supported("cpu") is False
 
 
@@ -799,6 +886,7 @@ def test_scaled_mm_needs_tensor_cores_and_mm_out_dtype(monkeypatch):
     monkeypatch.setattr(
         torch, "ones", lambda *a, **k: torch.full((16, 16), 1.0, dtype = k.get("dtype"))
     )
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     for cap, want in (((6, 1), False), ((7, 5), True)):
         monkeypatch.setattr(f16, "_MM_FP32_OUT_OK", {})
         monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, cap = cap: cap)
@@ -831,9 +919,212 @@ def test_scaled_mm_recomputes_identically_under_gradient_checkpointing(scaled_mm
     assert torch.equal(y1, y2) and torch.equal(g1, x.grad)
 
 
-def test_trainer_reports_scaled_mm_layers_in_model_load_event():
-    import inspect
+def test_scaled_mm_probe_is_per_device(monkeypatch):
+    """A Pascal cuda:0 next to a Turing cuda:1: each card gets its own capability read, probe tensor and verdict."""
+    from core.training import diffusion_dit_fp16 as f16
 
-    src = inspect.getsource(dit._train_dit)
-    assert "install_fp32_islands(transformer, spec.family, device, report = fp16_report)" in src
-    assert '"fp16_scaled_mm": fp16_report.get("fp16_scaled_mm", 0)' in src
+    monkeypatch.delenv(f16.SCALED_MM_ENV, raising = False)
+    caps = {0: (6, 1), 1: (7, 5)}
+    asked, probed = [], []
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+
+    def cap(dev = None):
+        asked.append(dev)
+        return caps[torch.device(dev).index]
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", cap)
+
+    def ones(*a, **k):
+        probed.append(k.get("device"))
+        return torch.full((16, 16), 1.0, dtype = k.get("dtype"))
+
+    monkeypatch.setattr(torch, "ones", ones)
+    monkeypatch.setattr(f16, "_mm_fp32_out", lambda a, b: a.float() @ b.float())
+    monkeypatch.setattr(f16, "_MM_FP32_OUT_OK", {})
+    assert f16.scaled_mm_supported("cuda") is False  # current device 0: Pascal
+    assert f16.scaled_mm_supported("cuda:1") is True
+    assert f16.scaled_mm_supported(torch.device("cuda", 1)) is True  # cached
+    assert f16.scaled_mm_supported(torch.device("cuda", 0)) is False
+    assert f16._MM_FP32_OUT_OK == {("cuda", 0): False, ("cuda", 1): True}
+    assert asked == [torch.device("cuda", 0), torch.device("cuda", 1)]
+    assert probed == [torch.device("cuda", 1)]
+    assert f16.scaled_mm_supported("cpu") is False and f16.scaled_mm_supported("xpu:0") is False
+
+
+def test_scaled_mm_probe_oom_propagates_and_is_not_cached(monkeypatch):
+    from core.training import diffusion_dit_fp16 as f16
+
+    monkeypatch.delenv(f16.SCALED_MM_ENV, raising = False)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (7, 5))
+    monkeypatch.setattr(
+        torch, "ones", lambda *a, **k: torch.full((16, 16), 1.0, dtype = k.get("dtype"))
+    )
+    monkeypatch.setattr(f16, "_MM_FP32_OUT_OK", {})
+
+    def oom(a, b):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(f16, "_mm_fp32_out", oom)
+    with pytest.raises(torch.cuda.OutOfMemoryError):
+        f16.scaled_mm_supported("cuda")
+    assert f16._MM_FP32_OUT_OK == {}
+    monkeypatch.setattr(f16, "_mm_fp32_out", lambda a, b: a.float() @ b.float())
+    assert f16.scaled_mm_supported("cuda") is True
+
+
+def test_install_scaled_mm_dequant_oom_propagates(scaled_mm, monkeypatch):
+    from core.training import diffusion_dit_fp16 as f16
+
+    def oom(layer):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(f16, "_dequant_4bit", oom)
+    with pytest.raises(torch.cuda.OutOfMemoryError):
+        f16.install_fp32_islands(_zimage_toy(), "z-image", "cpu")
+    # Any other dequant failure still leaves the layer on its fp32 path.
+    monkeypatch.setattr(
+        f16, "_dequant_4bit", lambda layer: (_ for _ in ()).throw(ValueError("no state"))
+    )
+    rep = {}
+    f16.install_fp32_islands(_zimage_toy(), "z-image", "cpu", report = rep)
+    assert rep["fp16_scaled_mm"] == 0
+
+
+def test_install_probes_the_device_the_nf4_weights_live_on(scaled_mm, monkeypatch):
+    from core.training import diffusion_dit_fp16 as f16
+
+    seen = []
+    monkeypatch.setattr(f16, "scaled_mm_supported", lambda dev: seen.append(dev) or True)
+    f16.install_fp32_islands(_zimage_toy(), "z-image", "cpu")
+    # CPU toy weights: the weight's own device; a "cuda" request with weights elsewhere probes the request.
+    f16.install_fp32_islands(_zimage_toy(), "z-image", "cuda")
+    assert seen == [torch.device("cpu"), "cuda"]
+    # No scaled-GEMM island in the family: no probe at all.
+    f16.install_fp32_islands(_zimage_toy(), "flux.2-klein", "cuda")
+    assert len(seen) == 2
+
+
+def test_scaled_mm_counts_the_forwards_it_takes(scaled_mm):
+    from core.training import diffusion_dit_fp16 as f16
+
+    m = _zimage_toy()
+    f16.install_fp32_islands(m, "z-image", "cpu")
+    blk = m.layers[0]
+    c0 = f16.scaled_mm_stats()["calls"]
+    blk.feed_forward.w2(torch.randn(3, 64))
+    blk.attention.to_out[0](torch.randn(3, 32))
+    assert f16.scaled_mm_stats()["calls"] == c0 + 2
+    # The original-forward fallbacks (trainable weight here) are not counted.
+    w2 = blk.feed_forward.w2.base_layer
+    w2.weight.requires_grad_(True)
+    blk.feed_forward.w2(torch.randn(3, 64))
+    w2.weight.requires_grad_(False)
+    assert f16.scaled_mm_stats()["calls"] == c0 + 2 and w2.calls == ["orig"]
+    # A copy, so callers cannot reset the module counter.
+    f16.scaled_mm_stats()["calls"] = -1
+    assert f16.scaled_mm_stats()["calls"] == c0 + 2
+
+
+def test_trainer_reports_scaled_mm_installs_and_calls(scaled_mm):
+    """model_load_completed carries the install count; the end-of-run stats add the forwards this run took."""
+    from core.training import diffusion_dit_fp16 as f16
+
+    m = _zimage_toy()
+    rep = f16.prepare_fp16_base(m)
+    rep["fp32_islands"] = len(f16.install_fp32_islands(m, "z-image", "cpu", report = rep))
+    assert dit._fp16_load_fields(rep) == {
+        "mixed_precision": "fp16",
+        "fp16_islands": 2,
+        "fp16_linear4bit": 3,
+        "fp16_scaled_mm": 2,
+    }
+    assert dit._fp16_load_fields(None) == {} and dit._fp16_run_stats(None, 0) == {}
+    c0 = f16.scaled_mm_stats()["calls"]
+    assert dit._fp16_run_stats(rep, c0) == {"fp16_scaled_mm": 2, "fp16_scaled_mm_calls": 0}
+    with torch.autocast("cpu", dtype = torch.float16):
+        for _ in range(3):
+            m.layers[0].feed_forward.w2(torch.randn(2, 64))
+    assert dit._fp16_run_stats(rep, c0) == {"fp16_scaled_mm": 2, "fp16_scaled_mm_calls": 3}
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA GPU")
+def test_cuda_real_nf4_scaled_mm_matches_fp32_island(monkeypatch):
+    """A real bitsandbytes nf4 w2 (10240 -> 3840) under a PEFT LoRA: the scaled fp16 GEMM installs, runs and lands
+    at the fp32 island's numbers with inputs past fp16 range."""
+    bnb = pytest.importorskip("bitsandbytes")
+    from peft import LoraConfig, inject_adapter_in_model
+
+    from core.training import diffusion_dit_fp16 as f16
+
+    monkeypatch.delenv(f16.SCALED_MM_ENV, raising = False)
+    dev = torch.device("cuda", torch.cuda.current_device())
+    assert f16.scaled_mm_supported("cuda") is (torch.cuda.get_device_capability(dev) >= (7, 0))
+    if torch.cuda.get_device_capability(dev) >= (7, 5):
+        assert f16.scaled_mm_supported(dev) is True
+    if not f16.scaled_mm_supported(dev):
+        pytest.skip("no fp16 -> fp32 GEMM on this card / torch")
+    torch.manual_seed(0)
+    lin = bnb.nn.Linear4bit(10240, 3840, bias = False, compute_dtype = torch.float16, quant_type = "nf4")
+    lin.weight = bnb.nn.Params4bit(
+        (torch.randn(3840, 10240) * 0.02).to(torch.bfloat16),
+        requires_grad = False,
+        quant_type = "nf4",
+    )
+    blk = torch.nn.Module()
+    blk.feed_forward = torch.nn.Module()
+    blk.feed_forward.w2 = lin
+    m = torch.nn.Module()
+    m.layers = torch.nn.ModuleList([blk])
+    m = m.to(dev)
+    f16.prepare_fp16_base(m)
+    m = inject_adapter_in_model(
+        LoraConfig(r = 8, lora_alpha = 8, target_modules = ["w2"], init_lora_weights = "gaussian"), m
+    )
+    w2 = m.layers[0].feed_forward.w2
+    torch.nn.init.normal_(w2.lora_B["default"].weight, std = 0.02)
+    rep = {}
+    probed = []
+    real = f16.scaled_mm_supported
+    monkeypatch.setattr(f16, "scaled_mm_supported", lambda d: probed.append(d) or real(d))
+    assert f16.install_fp32_islands(m, "z-image", "cuda", report = rep) == [
+        "layers.0.feed_forward.w2"
+    ]
+    assert rep["fp16_scaled_mm"] > 0 and probed == [dev]
+    base = w2.base_layer
+    assert (
+        "_unsloth_scaled_mm_orig" in base.__dict__ and "_unsloth_scaled_mm_orig" not in w2.__dict__
+    )
+    x = torch.randn(64, 10240, device = dev) * 2.0e4
+    x[3, 5] = 2.3e5
+    assert not torch.isfinite(x.half()).all()
+    g = torch.randn(64, 3840, device = dev) * 1024.0
+
+    patched = base.forward
+
+    def run(fp32_island):
+        # The fp32 island reference: the same layer through its own bnb forward (compute dtype fp32).
+        base.forward = base.__dict__["_unsloth_scaled_mm_orig"] if fp32_island else patched
+        try:
+            xr = x.clone().requires_grad_(True)
+            with torch.autocast("cuda", dtype = torch.float16):
+                y = w2(xr)
+            y.backward(g)
+            ga = w2.lora_A["default"].weight.grad.clone()
+            w2.lora_A["default"].weight.grad = None
+            w2.lora_B["default"].weight.grad = None
+            return y.detach(), xr.grad, ga
+        finally:
+            base.forward = patched
+
+    c0 = f16.scaled_mm_stats()["calls"]
+    y, dx, ga = run(False)
+    assert f16.scaled_mm_stats()["calls"] == c0 + 1
+    y_ref, dx_ref, ga_ref = run(True)
+    assert f16.scaled_mm_stats()["calls"] == c0 + 1
+    rel = lambda a, b: float((a.double() - b.double()).norm() / b.double().norm())  # noqa: E731
+    assert y.dtype is torch.float32 and torch.isfinite(y).all() and torch.isfinite(dx).all()
+    assert rel(y, y_ref) < 3e-5, rel(y, y_ref)
+    # dx takes one fp16 rounding of the incoming grad (~2e-4 rel-L2 by itself), the forward two terms.
+    assert rel(dx, dx_ref) < 5e-4, rel(dx, dx_ref)
+    assert rel(ga, ga_ref) < 3e-5, rel(ga, ga_ref)

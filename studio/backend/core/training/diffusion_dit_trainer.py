@@ -4201,11 +4201,15 @@ def _train_dit(
         )
 
     transformer.add_adapter(_lora_config())
+    scaled_mm_calls0 = 0
     if fp16_amp:
+        from core.training.diffusion_dit_fp16 import scaled_mm_stats
+
         # After the adapter, so the island wraps the PEFT layer.
         fp16_report["fp32_islands"] = len(
             install_fp32_islands(transformer, spec.family, device, report = fp16_report)
         )
+        scaled_mm_calls0 = scaled_mm_stats()["calls"]
     swapping = False
     if swap_request:
         try:
@@ -4427,16 +4431,7 @@ def _train_dit(
         compiled = compiled,
         base_precision = base_precision,
         fast_lora_layers = fast_lora_layers,
-        **(
-            {
-                "mixed_precision": "fp16",
-                "fp16_islands": fp16_report["fp32_islands"],
-                "fp16_linear4bit": fp16_report["linear4bit_fp16"],
-                "fp16_scaled_mm": fp16_report.get("fp16_scaled_mm", 0),
-            }
-            if fp16_amp
-            else {}
-        ),
+        **(_fp16_load_fields(fp16_report) if fp16_amp else {}),
     )
     # Read the commit after the base is on disk: an earlier identity says unresolved, so resume cannot detect a moved repo. Record the repo actually fetched.
     identity = with_resolved_revision(identity, fetch_cfg.base_model)
@@ -4926,8 +4921,15 @@ def _train_dit(
             set_vram_request_handler(None)
         fp8_backward.clear()
         fp8_backward.active = False
+    # Layers installed next to the scaled-GEMM forwards actually taken: an install the forward never reaches shows 0.
+    fp16_stats = _fp16_run_stats(fp16_report, scaled_mm_calls0) if fp16_amp else {}
+    if fp16_stats:
+        import logging
+        logging.getLogger(__name__).info("fp16 scaled GEMM: %s", fp16_stats)
+        if not fast_lora_layers:
+            _emit(on_event, "fp16_stats", **fp16_stats)
     if fast_lora_layers:
-        stats = fast_lora_stats()
+        stats = {**fast_lora_stats(), **fp16_stats}
         if dequant_cache is not None:
             stats["dequant"] = dequant_cache.stats()
             set_vram_request_handler(None)
@@ -5047,6 +5049,30 @@ FP16_COMPILE_DECLINED = (
     "torch.compile is not used on the fp16 path (GPUs without bf16); compile_transformer='on' is "
     "ignored and this run trains eager."
 )
+
+
+def _fp16_load_fields(fp16_report) -> dict:
+    """``model_load_completed`` fields of the fp16 path: islands, nf4 linears, scaled-GEMM layers installed."""
+    if fp16_report is None:
+        return {}
+    return {
+        "mixed_precision": "fp16",
+        "fp16_islands": fp16_report["fp32_islands"],
+        "fp16_linear4bit": fp16_report["linear4bit_fp16"],
+        "fp16_scaled_mm": fp16_report.get("fp16_scaled_mm", 0),
+    }
+
+
+def _fp16_run_stats(fp16_report, calls_at_start: int) -> dict:
+    """End-of-run fp16 stats: scaled-GEMM layers installed and the scaled-GEMM forwards this run actually took."""
+    if fp16_report is None:
+        return {}
+    from core.training.diffusion_dit_fp16 import scaled_mm_stats
+
+    return {
+        "fp16_scaled_mm": fp16_report.get("fp16_scaled_mm", 0),
+        "fp16_scaled_mm_calls": scaled_mm_stats()["calls"] - calls_at_start,
+    }
 
 
 def _warn_fp16_compile_declined(cfg, on_event) -> bool:

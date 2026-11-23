@@ -48,6 +48,10 @@ FP16_SCALED_MM_MODULES: dict[str, tuple[str, ...]] = {
 SCALED_MM_ENV = "UNSLOTH_STUDIO_DIT_FP16_SCALED_MM"
 # Per-tensor amax after the scale lands in (2^14, 2^15]: 2x under fp16 max, subnormals start 2^29 below.
 _SCALE_TARGET = 2.0**15
+# Scale exponent bound: fp32 max is just under 2^128, so 2^-113 still takes it to 2^15 (2^-112 would not).
+_SCALE_EXP_MAX = 113
+# Scaled-GEMM forwards actually taken (``scaled_mm_stats``); the trainer reports the per-run delta.
+SCALED_MM_STATS: dict[str, int] = {"calls": 0}
 
 # This many skips in a row means the forward itself overflows (loss scaling cannot fix it): stop the run.
 MAX_CONSECUTIVE_SKIPS = 30
@@ -91,7 +95,8 @@ def make_fp32_island(module, device_type: str = "cuda") -> None:
     module._unsloth_fp32_island = True
 
 
-_MM_FP32_OUT_OK: dict[str, bool] = {}
+# Probe verdict per device, keyed (type, index): one process can drive cards of different generations.
+_MM_FP32_OUT_OK: dict[tuple, bool] = {}
 
 
 def _mm_fp32_out(a, b):
@@ -99,28 +104,47 @@ def _mm_fp32_out(a, b):
     return torch.mm(a, b, out_dtype = torch.float32)
 
 
-def scaled_mm_supported(device_type: str) -> bool:
-    """fp16 x fp16 -> fp32 cuBLAS GEMM (``torch.mm(out_dtype=)``) runs on this device and torch, on tensor cores."""
+def scaled_mm_supported(device) -> bool:
+    """fp16 x fp16 -> fp32 cuBLAS GEMM (``torch.mm(out_dtype=)``) runs on ``device`` (``"cuda"``, ``"cuda:1"``,
+    a ``torch.device``) and this torch, on tensor cores."""
     import os
 
     import torch
 
     if os.environ.get(SCALED_MM_ENV, "").strip().lower() in ("0", "false", "off", "no"):
         return False
-    if device_type != "cuda":
+    try:
+        dev = torch.device(device)
+    except (TypeError, RuntimeError):
         return False
-    if device_type not in _MM_FP32_OUT_OK:
+    if dev.type != "cuda":
+        return False
+    if dev.index is None:
+        try:
+            dev = torch.device("cuda", torch.cuda.current_device())
+        except Exception:  # noqa: BLE001 -- no usable CUDA device
+            return False
+    key = (dev.type, dev.index)
+    if key not in _MM_FP32_OUT_OK:
         try:
             # Tensor cores (sm70+) only: on Pascal an fp16 GEMM is no faster than the fp32 one it replaces.
-            if tuple(torch.cuda.get_device_capability()) < (7, 0):
-                _MM_FP32_OUT_OK[device_type] = False
+            if tuple(torch.cuda.get_device_capability(dev)) < (7, 0):
+                _MM_FP32_OUT_OK[key] = False
                 return False
-            a = torch.ones(16, 16, device = device_type, dtype = torch.float16)
+            a = torch.ones(16, 16, device = dev, dtype = torch.float16)
             y = _mm_fp32_out(a, a)
-            _MM_FP32_OUT_OK[device_type] = bool(y.dtype == torch.float32 and float(y[0, 0]) == 16.0)
+            ok = bool(y.dtype == torch.float32 and float(y[0, 0]) == 16.0)
+        except torch.cuda.OutOfMemoryError:
+            # A full card says nothing about the GEMM: never cache it as unsupported.
+            raise
         except Exception:  # noqa: BLE001 -- older torch: no out_dtype
-            _MM_FP32_OUT_OK[device_type] = False
-    return _MM_FP32_OUT_OK[device_type]
+            ok = False
+        _MM_FP32_OUT_OK[key] = ok
+    return _MM_FP32_OUT_OK[key]
+
+
+def scaled_mm_stats() -> dict:
+    return dict(SCALED_MM_STATS)
 
 
 def _dequant_4bit(layer):
@@ -133,7 +157,8 @@ def _pow2_scale(t):
     import torch
 
     amax = torch.linalg.vector_norm(t, float("inf")).float()
-    return torch.exp2(torch.floor(torch.log2(_SCALE_TARGET / amax)).clamp(-64, 64))
+    e = torch.floor(torch.log2(_SCALE_TARGET / amax)).clamp(-_SCALE_EXP_MAX, _SCALE_EXP_MAX)
+    return torch.exp2(e)
 
 
 def _scaled_fp32_mm(
@@ -150,9 +175,13 @@ def _scaled_fp32_mm(
     if not split:
         torch.mul(x2, s, out = x16)
         return _mm_fp32_out(x16, w16t).div_(s)
-    xs = x2 * s
-    x16[:m].copy_(xs)
-    x16[m:].copy_(xs.sub_(x16[:m]))
+    # hi = fp16(x2 * s); lo = fp16(x2 * s - hi), with x2 * s exact (power of two) and formed inside each kernel:
+    # no fp32 copy of the input. -hi + x2 * s rounds like x2 * s - hi, so +0 lands where hi is exact.
+    hi, lo = x16[:m], x16[m:]
+    torch.mul(x2, s, out = hi)
+    hi.neg_()
+    torch.addcmul(hi, x2, s, out = lo)
+    hi.neg_()
     y = _mm_fp32_out(x16, w16t)
     return torch.add(y[:m], y[m:]).div_(s)
 
@@ -190,6 +219,7 @@ def _scaled_mm_forward(self, x, *args, **kwargs):
         return self.__dict__["_unsloth_scaled_mm_orig"](x, *args, **kwargs)
     if _SCALED_MM_FN is None:
         _SCALED_MM_FN = _make_scaled_mm_fn()
+    SCALED_MM_STATS["calls"] += 1
     y = _SCALED_MM_FN.apply(x, self)
     if self.bias is not None:
         y = y + self.bias.to(torch.float32)
@@ -209,6 +239,8 @@ def install_scaled_mm(module) -> int:
         try:
             if not bool(torch.isfinite(_dequant_4bit(sub).to(torch.float16)).all()):
                 continue
+        except torch.cuda.OutOfMemoryError:
+            raise
         except Exception:  # noqa: BLE001 -- not a dequantisable 4-bit weight: leave it fp32
             continue
         sub.__dict__["_unsloth_scaled_mm_orig"] = sub.forward
@@ -253,6 +285,19 @@ def prepare_fp16_base(model) -> dict[str, Any]:
     return {"linear4bit_fp16": n4, "params_to_fp32": up}
 
 
+def _weight_device(modules, device_type):
+    """The card the routed nf4 weights live on (``cuda:N``), else ``device_type``: the probe must run there."""
+    import torch
+
+    want = torch.device(device_type).type
+    for mod in modules:
+        for sub in mod.modules():
+            w = getattr(sub, "weight", None) if _is_bnb_4bit(sub) else None
+            if w is not None and w.device.type == want:
+                return w.device
+    return device_type
+
+
 def install_fp32_islands(
     model,
     family: str,
@@ -261,14 +306,20 @@ def install_fp32_islands(
     report: Optional[dict] = None,
 ) -> list[str]:
     """Call AFTER the LoRA attaches, so the island wraps the PEFT wrapper and its adapter branch runs fp32 too."""
+    import torch
+
     names = island_names(model, family, extra)
     mods = dict(model.named_modules())
     scaled = [re.compile(p) for p in FP16_SCALED_MM_MODULES.get(family, ())]
-    use_scaled = bool(scaled) and scaled_mm_supported(device_type)
+    targets = {n for n in names if any(p.search(n) for p in scaled)}
+    use_scaled = bool(targets) and scaled_mm_supported(
+        _weight_device([mods[n] for n in names if n in targets], device_type)
+    )
+    autocast_type = torch.device(device_type).type
     n_scaled = 0
     for n in names:
-        make_fp32_island(mods[n], device_type)
-        if use_scaled and any(p.search(n) for p in scaled):
+        make_fp32_island(mods[n], autocast_type)
+        if use_scaled and n in targets:
             n_scaled += install_scaled_mm(mods[n])
     if report is not None:
         report["fp16_scaled_mm"] = n_scaled
