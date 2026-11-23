@@ -818,8 +818,7 @@ def _plan_key(
         scale,
         (K_MEAN_STEP, K_MEAN_KEYS, V_RANGE_STEP, V_RANGE_CHUNKS, GRID_LIMIT),
         int(mode),
-        # the switches that pick the plan's compiled kernels (_functions / kernel_variant), as set: a warm plan
-        # built before one flips in this process must not keep serving the other kernel
+        # kernel switches: a plan built before one flips must not keep serving the old kernel
         tuple(os.environ.get(name) for name in _KERNEL_SWITCHES),
     )
 
