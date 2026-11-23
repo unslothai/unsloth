@@ -612,6 +612,51 @@ def test_quant_plan_shrinks_monotonically_with_the_budget(monkeypatch):
     assert seen == {(8, 0), (8, 8), (8, 4), (4, 0), (4, 8), (4, 4)}
 
 
+def test_dense_bit_ladder_per_config(monkeypatch):
+    _clear_quant_env(monkeypatch)
+    assert ZIMAGE.mlx_min_dense_bits == (("z-image", 8),)
+    # The undistilled base never drops its dense tensors to 4 bits.
+    assert mb.dense_bit_options(ZIMAGE, "z-image-turbo") == (0, 8, 4)
+    assert mb.dense_bit_options(None, "z-image") == (0, 8, 4)
+    assert mb.dense_bit_options(ZIMAGE, "z-image") == (0, 8)
+    base = mb.dense_bit_options(ZIMAGE, "z-image")
+    seen = set()
+    for tenth in range(220, 40, -1):
+        plan = mb.plan_quantization(
+            budget_bytes = int(tenth / 10 * GIB),
+            transformer_bytes = ZIMAGE_Q4_0,
+            text_encoder_bf16_bytes = ZIMAGE_TE_BF16,
+            vae_bytes = ZIMAGE_VAE,
+            dense_options = base,
+        )
+        seen.add((plan.te_bits, plan.dense_bits))
+    assert seen == {(8, 0), (8, 8), (4, 0), (4, 8)}
+    assert mb.dense_bits(8 * GIB) == 4 and mb.dense_bits(8 * GIB, options = base) == 8
+    assert mb.dense_bits(64 * GIB, options = base) == 0
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_DENSE_BITS", "4")
+    assert mb.dense_bits(8 * GIB, options = base) == 4
+    plan = mb.plan_quantization(
+        budget_bytes = int(5.33 * GIB),
+        transformer_bytes = ZIMAGE_Q4_0,
+        text_encoder_bf16_bytes = ZIMAGE_TE_BF16,
+        dense_options = base,
+    )
+    assert plan.dense_bits == 4
+
+
+@pytest.mark.parametrize(
+    "base_repo, dense",
+    [("Tongyi-MAI/Z-Image-Turbo", 4), ("Tongyi-MAI/Z-Image", 8)],
+)
+def test_load_keeps_base_dense_tensors_above_4_bits(env, monkeypatch, base_repo, dense):
+    backend, runtime, calls = env
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_DENSE_BITS", raising = False)
+    monkeypatch.setattr(mb, "_total_ram_bytes", lambda: 8 * GIB)
+    assert _load(backend, base_repo = base_repo)["phase"] == "ready"
+    assert calls["dense_bits"] == dense
+    assert backend.status()["mlx"]["dense_bits"] == dense
+
+
 def test_quant_plan_env_pins_one_axis(monkeypatch):
     _clear_quant_env(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_TE_BITS", "16")
@@ -801,6 +846,57 @@ def test_policy_helpers(monkeypatch):
     assert mb.compute_precision_name("Apple M3 Pro") == "bfloat16"
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_PRECISION", "bf16")
     assert mb.compute_precision_name("Apple M1") == "bfloat16"
+
+
+@pytest.mark.parametrize(
+    "chip, model_config, expected",
+    [
+        # Turbo keeps M1 / M2 float16 (mflux's float16 headroom holds it); the undistilled base overflows it.
+        ("Apple M1 (Virtual)", "z-image-turbo", "float16"),
+        ("Apple M2 Max", "z-image-turbo", "float16"),
+        ("Apple M1 (Virtual)", "z-image", "bfloat16"),
+        ("Apple M2 Max", "z-image", "bfloat16"),
+        ("Apple M3 Pro", "z-image", "bfloat16"),
+        ("Apple M4", "z-image-turbo", "bfloat16"),
+    ],
+)
+def test_precision_honours_fp16_incompatible(monkeypatch, chip, model_config, expected):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_PRECISION", raising = False)
+    assert ZIMAGE.fp16_incompatible and ZIMAGE.mlx_fp16_configs == ("z-image-turbo",)
+    assert mb.compute_precision_name(chip, ZIMAGE, model_config) == expected
+
+
+def test_precision_fp16_flag_scope(monkeypatch):
+    import dataclasses
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_PRECISION", raising = False)
+    assert mb.compute_precision_name("Apple M1") == "float16"
+    plain = dataclasses.replace(ZIMAGE, fp16_incompatible = False, mlx_fp16_configs = ())
+    assert mb.compute_precision_name("Apple M1", plain, "z-image") == "float16"
+    # Flagged with nothing measured clean: every config computes in bfloat16.
+    strict = dataclasses.replace(ZIMAGE, mlx_fp16_configs = ())
+    assert mb.compute_precision_name("Apple M2", strict, "z-image-turbo") == "bfloat16"
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_PRECISION", "fp16")
+    assert mb.compute_precision_name("Apple M1", ZIMAGE, "z-image") == "float16"
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_PRECISION", "bf16")
+    assert mb.compute_precision_name("Apple M1", ZIMAGE, "z-image-turbo") == "bfloat16"
+
+
+@pytest.mark.parametrize(
+    "base_repo, config, precision",
+    [
+        ("Tongyi-MAI/Z-Image-Turbo", "z-image-turbo", "float16"),
+        ("Tongyi-MAI/Z-Image", "z-image", "bfloat16"),
+    ],
+)
+def test_load_picks_precision_per_config_on_m1(env, monkeypatch, base_repo, config, precision):
+    backend, runtime, _calls = env
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_PRECISION", raising = False)
+    monkeypatch.setattr(mb, "_chip_name", lambda: "Apple M1 (Virtual)")
+    assert _load(backend, base_repo = base_repo)["phase"] == "ready"
+    assert runtime.builds[-1]["model_config"] == config
+    assert runtime.builds[-1]["precision"] == precision
+    assert backend.status()["mlx"]["precision"] == precision
 
 
 _GIB = 1024**3

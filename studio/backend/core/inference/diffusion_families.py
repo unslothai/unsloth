@@ -257,6 +257,10 @@ class DiffusionFamily:
     # mflux ModelConfig name (None = no MLX); ``_by_base`` maps a lowercase base repo to another config.
     mlx_model_config: Optional[str] = None
     mlx_model_config_by_base: tuple[tuple[str, str], ...] = field(default_factory = tuple)
+    # Configs of an ``fp16_incompatible`` family that render clean in MLX float16; others use bfloat16 on M1 / M2.
+    mlx_fp16_configs: tuple[str, ...] = field(default_factory = tuple)
+    # (mflux config, bits): min bits for requantizing dense GGUF tensors; unlisted configs take the 0 / 8 / 4 ladder.
+    mlx_min_dense_bits: tuple[tuple[str, int], ...] = field(default_factory = tuple)
     # Family-specific sd-cli sampler settings so native output matches the model's supported invocation. None leaves
     # sd-cli defaults.
     sd_cpp_sampling_method: Optional[str] = None
@@ -1334,6 +1338,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_guard = "rescale_post_norm",
         mlx_model_config = "z-image-turbo",
         mlx_model_config_by_base = (("Tongyi-MAI/Z-Image", "z-image"),),
+        # Turbo renders clean in MLX float16 on M1 / M2; the undistilled base overflows it (NaN, black image).
+        mlx_fp16_configs = ("z-image-turbo",),
+        # Base requantized to 4-bit gives ~16x too large velocity (uniform cyan grid); Turbo is clean at 4 bits.
+        mlx_min_dense_bits = (("z-image", 8),),
         # Z-Image decodes with the FLUX.1 autoencoder: BFL's ae.safetensors, byte-identical to the repack's file.
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         # Z-Image's encoder differs from stock Qwen3-4B only in the LAST layer's MLP, which neither diffusers
