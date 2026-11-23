@@ -160,3 +160,47 @@ def test_tool_loop_final_pass_sends_the_budget(monkeypatch, budget):
 
     [payload] = payloads
     _assert_budget(payload.get("thinking_budget_tokens"), budget)
+
+
+def _gemma4_prompt_tokens(
+    messages,
+    _system = None,
+    _tools = None,
+    **kwargs,
+) -> int:
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    template = (Path(_BACKEND_DIR) / "assets" / "chat_templates" / "gemma-4.jinja").read_text()
+    env = ImmutableSandboxedEnvironment(
+        trim_blocks = True, lstrip_blocks = True, extensions = ["jinja2.ext.loopcontrols"]
+    )
+    rendered = env.from_string(template).render(
+        messages = messages,
+        add_generation_prompt = True,
+        bos_token = "<bos>",
+        **(kwargs.get("chat_template_kwargs") or {}),
+    )
+    return len(rendered) // 4
+
+
+def test_earlier_thoughts_the_template_drops_leave_the_budget_alone(monkeypatch):
+    payloads: list[dict] = []
+    backend = _backend(monkeypatch, [[_sse({"content": "hi"}), _done()]], payloads)
+    backend._effective_context_length = 16384
+    monkeypatch.setattr(backend, "count_chat_tokens", _gemma4_prompt_tokens)
+    messages = []
+    for turn in range(6):
+        messages.append({"role": "user", "content": f"Question {turn}?"})
+        messages.append(
+            {
+                "role": "assistant",
+                "content": f"Answer {turn}.",
+                "reasoning_content": "Working it out step by step. " * 300,
+            }
+        )
+    messages.append({"role": "user", "content": "And the last one?"})
+
+    list(backend.generate_chat_completion(messages = messages, enable_thinking = True, max_tokens = 8192))
+
+    [payload] = payloads
+    assert "thinking_budget_tokens" not in payload
