@@ -1692,6 +1692,7 @@ def LlamaModel_fast_forward(
                 self.GA_mask = create_flex_attention_causal_mask(self.max_seq_length)
             else:
                 n = self.max_seq_length
+                # On the embeddings' card: the current device is cuda:0 for a model placed on cuda:1.
                 # masked_fill makes things slower.
                 self.SWA_mask = (
                     Gemma2AttentionMaskConverter(
@@ -1703,7 +1704,7 @@ def LlamaModel_fast_forward(
                         n,
                         n,
                         dtype = inputs_embeds.dtype,
-                        device = DEVICE_TYPE_TORCH,
+                        device = inputs_embeds.device,
                     )
                     .squeeze(0)
                     .squeeze(0)
@@ -1718,7 +1719,7 @@ def LlamaModel_fast_forward(
                         n,
                         n,
                         dtype = inputs_embeds.dtype,
-                        device = DEVICE_TYPE_TORCH,
+                        device = inputs_embeds.device,
                     )
                     .squeeze(0)
                     .squeeze(0)

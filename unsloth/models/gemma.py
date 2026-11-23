@@ -92,7 +92,7 @@ def GemmaDecoderLayer_fast_forward(
         out_weight = torch.empty(
             self.input_layernorm.weight.shape,
             dtype = torch.float32,
-            device = f"{DEVICE_TYPE_TORCH}:0",
+            device = hidden_states.device,
         )
 
         residual = hidden_states
