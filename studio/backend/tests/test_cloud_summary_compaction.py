@@ -1245,3 +1245,36 @@ def test_each_tool_loop_round_gets_the_room_its_own_prompt_leaves():
     asyncio.run(run([{"role": "user", "content": "a"}]))
     asyncio.run(run([{"role": "user", "content": "a"}] * 3))
     assert sent == [9_000, 7_000]
+
+
+def test_a_replayed_summary_gives_the_reply_the_room_it_frees():
+    from core.inference.external_tool_transport import OAICompatTransport
+
+    sent = []
+
+    class _Client:
+        provider_type = "custom"
+        api_type = "chat_completions"
+
+        async def stream_chat_completion(self, **kwargs):
+            sent.append(kwargs.get("max_tokens"))
+            yield 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}'
+
+    async def fitter(messages, tools):
+        # The saved summary replaces every earlier turn; the cap it carries was sized before that.
+        yield (messages[-1:], 256, "")
+
+    transport = OAICompatTransport(
+        _Client(),
+        model = "m",
+        max_tokens = 256,
+        message_fitter = fitter,
+        reply_limit = lambda messages, tools: 10_000 - 1_000 * len(messages),
+    )
+
+    async def run(messages):
+        async for _ in transport._stream_provider(messages, None, None):
+            pass
+
+    asyncio.run(run([{"role": "user", "content": "a"}] * 9))
+    assert sent == [9_000]

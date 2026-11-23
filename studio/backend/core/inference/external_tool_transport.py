@@ -59,7 +59,8 @@ class OAICompatTransport:
         """message_fitter may be coroutine or async generator yielding progress lines then
         (messages, max_tokens, line); overflow_refitter same shape, runs once per request when
         provider refuses as too long before output; first_turn_overrides replace kwargs on turn 1
-        only; reply_limit bounds max_tokens by what each round's prompt leaves of the window"""
+        only; reply_limit (only when the caller set no max_tokens) sizes each round's max_tokens from
+        what its fitted prompt leaves of the window"""
         self._client = client
         self._model = model
         self._continue_final_message = continue_final_message
@@ -140,10 +141,8 @@ class OAICompatTransport:
             if truncation_line:
                 yield truncation_line
         if self._reply_limit is not None:
-            # Tool results grow the prompt each round; a strict server refuses prompt + reply > window.
-            room = self._reply_limit(messages, tools)
-            current = request_kwargs.get("max_tokens")
-            request_kwargs["max_tokens"] = room if current is None else min(current, room)
+            # Sized from this round's fitted prompt: a replayed summary shrinks it, tool results grow it.
+            request_kwargs["max_tokens"] = self._reply_limit(messages, tools)
         self.sent_messages = messages
 
         def _send(messages: list[dict[str, Any]], request_kwargs: dict[str, Any]):
@@ -174,8 +173,7 @@ class OAICompatTransport:
             refit_messages, max_tokens, truncation_line = fit
             if self._reply_limit is not None:
                 # The refit sizes the reply from the request's window, not the smaller one served.
-                room = self._reply_limit(refit_messages, tools)
-                max_tokens = room if max_tokens is None else min(max_tokens, room)
+                max_tokens = self._reply_limit(refit_messages, tools)
             self.sent_messages = refit_messages
 
             async def _resend():
