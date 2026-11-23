@@ -106,7 +106,7 @@ def test_call_only_final_answer_is_retried_once(monkeypatch):
     )
     assert len(payloads) == 3 and "tools" not in payloads[2]
     shown = _route_shown(events)
-    assert "tool call limit" in shown and "tool_call_start" not in shown, shown
+    assert "its tools ran out" in shown and "tool_call_start" not in shown, shown
 
 
 def test_reasoning_then_call_final_answer_is_retried(monkeypatch):
@@ -225,7 +225,7 @@ def test_a_call_only_answer_with_no_budget_left_says_so(monkeypatch):
     )
     assert len(payloads) == 2
     shown = _route_shown(events)
-    assert "tool call limit" in shown and "tool_call_start" not in shown, shown
+    assert "its tools ran out" in shown and "tool_call_start" not in shown, shown
 
 
 def test_safetensors_loop_runs_lfm_calls_and_explains_a_call_only_final_turn():
@@ -247,7 +247,9 @@ def test_safetensors_loop_runs_lfm_calls_and_explains_a_call_only_final_turn():
     )
     assert calls == [("web_fetch", {"url": "https://example.com/lfm"})]
     contents = [e["text"] for e in events if e["type"] == "content"]
-    assert contents and "tool call limit" in contents[-1] and "tool_call_start" not in contents[-1]
+    assert (
+        contents and "its tools ran out" in contents[-1] and "tool_call_start" not in contents[-1]
+    )
 
 
 def test_a_bare_json_call_from_the_retry_still_gets_the_notice(monkeypatch):
@@ -278,7 +280,7 @@ def test_a_bare_json_call_from_the_retry_still_gets_the_notice(monkeypatch):
     )
     assert len(payloads) == 3
     shown = _route_shown(events)
-    assert "tool call limit" in shown and '"parameters"' not in shown, shown
+    assert "its tools ran out" in shown and '"parameters"' not in shown, shown
 
 
 def test_the_limit_notice_survives_a_split_call_from_the_retry(monkeypatch):
@@ -309,7 +311,7 @@ def test_the_limit_notice_survives_a_split_call_from_the_retry(monkeypatch):
     )
     assert len(payloads) == 3
     shown = _route_shown(events)
-    assert "tool call limit" in shown and "<tool_call>" not in shown, shown
+    assert "its tools ran out" in shown and "<tool_call>" not in shown, shown
 
 
 def test_safetensors_loop_explains_a_reasoning_then_call_final_turn():
@@ -330,6 +332,103 @@ def test_safetensors_loop_explains_a_reasoning_then_call_final_turn():
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert (
         contents
-        and contents[-1].endswith("or ask again.")
+        and contents[-1].endswith("if it hit that limit.")
         and "tool_call_start" not in contents[-1]
     ), contents
+
+
+def _search_call():
+    return _sse(
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": json.dumps({"query": "q"})},
+                }
+            ]
+        }
+    )
+
+
+def test_the_retry_keeps_a_trailing_image_turn_image_only(monkeypatch):
+    from core.inference.mcp_images import SENTINEL, is_synthetic_image_turn
+
+    png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    view = _sse(
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "view_image",
+                        "arguments": json.dumps({"path": "chart.png"}),
+                    },
+                }
+            ]
+        }
+    )
+    qwen_call = (
+        '<tool_call>\n{"name": "view_image", "arguments": {"path": "more.png"}}\n</tool_call>'
+    )
+
+    def _pair(i):
+        calls = [("call_n%d" % i, "new%d.png" % i), ("call_d%d" % i, "chart.png")]
+        return _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": k,
+                        "id": cid,
+                        "type": "function",
+                        "function": {"name": "view_image", "arguments": json.dumps({"path": path})},
+                    }
+                    for k, (cid, path) in enumerate(calls)
+                ]
+            }
+        )
+
+    # The repeated call trips the duplicate guard, so synthesis starts right after the image turn.
+    streams = [
+        *[[_pair(i), _done()] for i in range(3)],
+        [_sse({"content": qwen_call}), _done()],
+        [_sse({"content": "A bar chart."}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    backend._is_vision = backend._mmproj_accepts_image = True
+    _record_tool_calls(
+        monkeypatch, "chart\n" + SENTINEL + json.dumps([{"data": png, "mimeType": "image/png"}])
+    )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Describe the chart."}],
+        [{"type": "function", "function": {"name": "view_image"}}],
+        max_tool_iterations = 10,
+    )
+    final = next(i for i, p in enumerate(payloads) if p.get("tool_choice") == "none")
+    assert is_synthetic_image_turn(payloads[final]["messages"][-1]), payloads[final]["messages"][-1]
+    assert "tools" not in payloads[final + 1]
+    # Ministral's alternation fix only recognises an image-only synthetic turn.
+    assert is_synthetic_image_turn(payloads[final + 1]["messages"][-1]), payloads[final + 1][
+        "messages"
+    ][-1]
+    assert _route_shown(events).strip() == "A bar chart."
+
+
+def test_a_reasoning_only_final_answer_is_not_called_a_tool_call(monkeypatch):
+    streams = [
+        [_search_call(), _done()],
+        [_sse({"content": "[THINK]Weighing the results.[/THINK]"}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "result")
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Research LFM2.5."}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+    )
+    assert len(payloads) == 2, "no retry without a call in the answer"
+    assert "its tools ran out" not in _route_shown(events)

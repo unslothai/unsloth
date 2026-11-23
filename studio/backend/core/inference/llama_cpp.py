@@ -461,6 +461,7 @@ from core.inference.tool_call_parser import (
     RAG_SEARCH_CAP_NUDGE,
     RAG_SEARCH_TOOLS,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
+    has_tool_signal,
     strip_leading_bare_json_call,
     strip_llama3_leading_sentinels,
     strip_tool_markup as _shared_strip_tool_markup,
@@ -504,6 +505,7 @@ from core.inference.mcp_images import (
     MAX_TOTAL_MODEL_IMAGES as MCP_MAX_TOTAL_MODEL_IMAGES,
     append_image_turn as append_mcp_image_turn,
     is_image_tool as mcp_is_image_tool,
+    is_synthetic_image_turn as mcp_is_synthetic_image_turn,
     mentions_images as mcp_images_mentioned_in,
 )
 from core.inference.tool_facts import STEPWISE, repeatable
@@ -2458,8 +2460,8 @@ _MAX_LENGTH_CONTINUATIONS = 2
 _CONTINUE_AFTER_LENGTH_STATUS = "Continuing after a long thought..."
 _CONTINUE_TRUNCATED_ANSWER_STATUS = "Continuing the answer..."
 _FINAL_ANSWER_TOOL_LIMIT_MESSAGE = (
-    "The model asked for another tool after reaching the tool call limit, so it gave no answer. "
-    "Raise Max Tool Calls Per Message or ask again."
+    "The model asked for another tool after its tools ran out, so it gave no answer. "
+    "Ask again, or raise Max Tool Calls Per Message if it hit that limit."
 )
 _FINAL_ANSWER_RETRY_NUDGE = (
     "Tools are no longer available. Write your answer now from the results above, in plain text."
@@ -40121,6 +40123,13 @@ class LlamaCppBackend:
             """Only calls, judged as the display strips them: markup and a leading Llama 3 bare-JSON call."""
             if not auto_heal_tool_calls or not answer.strip():
                 return False
+            # The strip also drops non-call text (a raw [THINK] block), so require a call to have been there.
+            lead = answer.lstrip()
+            if not has_tool_signal(answer) and not (
+                _enabled_names_gate
+                and strip_leading_bare_json_call(lead, _enabled_names_gate) != lead
+            ):
+                return False
             kept = _strip_tool_markup(answer, final = True)
             if _enabled_names_gate:
                 kept = strip_leading_bare_json_call(kept, _enabled_names_gate)
@@ -43909,7 +43918,12 @@ class LlamaCppBackend:
                         _last_t = (
                             stream_payload["messages"][-1] if stream_payload["messages"] else None
                         )
-                        if _last_t is not None and _last_t.get("role") in ("tool", "user"):
+                        # A synthetic image turn must stay image-only, or the Ministral alternation fix skips it.
+                        if (
+                            _last_t is not None
+                            and _last_t.get("role") in ("tool", "user")
+                            and not mcp_is_synthetic_image_turn(_last_t)
+                        ):
 
                             def _noted(message):
                                 return {
