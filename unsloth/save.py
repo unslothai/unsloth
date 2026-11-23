@@ -7355,11 +7355,12 @@ def unsloth_generic_save(
         "mxfp4",
     ):
         raise RuntimeError(
-            "Unsloth: You must select one of these options when saving models:\n"
+            f"Unsloth: save_method = {save_method!r} is not recognised. You must select one of these options when saving models:\n"
             '"lora"               ==> This is the fastest and easiest. Just saves LoRA modules.\n'
             '"merged_16bit"       ==> This merges LoRA weights and saves to float16. Needed for llama.cpp / GGUF.\n'
             '"merged_4bit_forced" ==> This merges LoRA weights and saves to 4bit. Useful for DPO / inference.\n'
-            '"mxfp4"              ==> This merges LoRA weights into the mxfp4 GPT-OSS base.'
+            '"mxfp4"              ==> This merges LoRA weights into the mxfp4 GPT-OSS base.\n'
+            "save_pretrained_merged also takes the compressed exports, e.g. fp8, nvfp4, torchao_fp8."
         )
     _refuse_unsaveable_text_core(model, save_method)
 
