@@ -148,8 +148,16 @@ def scaled_mm_stats() -> dict:
 
 
 def _dequant_4bit(layer):
+    """The nf4 weight dequantised straight to fp16 (one rounding of the exact value), like bitsandbytes' own fp16
+    forward. The quant state's dtype is bf16 on Z-Image: 8 mantissa bits, 1.6e-3 off the fp32 island's weights."""
+    import copy
+
     import bitsandbytes.functional as bnbf
-    return bnbf.dequantize_4bit(layer.weight.data, layer.weight.quant_state)
+    import torch
+
+    qs = copy.copy(layer.weight.quant_state)
+    qs.dtype = torch.float16
+    return bnbf.dequantize_4bit(layer.weight.data, qs)
 
 
 def _pow2_scale(t):

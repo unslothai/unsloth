@@ -1125,28 +1125,72 @@ def test_cuda_real_nf4_scaled_mm_matches_fp32_island(monkeypatch):
     y_ref, dx_ref, _ga_ref = run(True)
     assert f16.scaled_mm_stats()["calls"] == c0 + 1
     assert y.dtype is torch.float32 and torch.isfinite(y).all() and torch.isfinite(dx).all()
-    # The GEMM itself: against an fp32 GEMM on the same dequantised weights (the quant state's dtype, exact in fp16).
-    w = f16._dequant_4bit(base).float()
+    # The GEMM itself: against an fp32 GEMM on the same dequantised weights (fp16, exact in the fp16 operand).
+    w = f16._dequant_4bit(base)
+    assert w.dtype is torch.float16
+    w = w.float()
+    w32 = _dequant_fp32(base)
     xb = x.clone().requires_grad_(True)
     yb = base(xb)
     yb.backward(g)
     assert f16.scaled_mm_stats()["calls"] == c0 + 2
     assert rel(yb, x @ w.t()) < 3e-5, rel(yb, x @ w.t())  # hi + lo input: T4 1.6e-5
-    # dx takes one fp16 rounding of the incoming grad: T4 2.1e-4.
+    # dx takes one fp16 rounding of the incoming grad: T4 2.1e-4 on its own weights, 2.9e-4 on the exact ones.
     assert rel(xb.grad, g @ w) < 5e-4, rel(xb.grad, g @ w)
-    # End to end vs the fp32 island. Forward: bitsandbytes' fp32 forward dequantises straight to fp32, dequantize_4bit
-    # rounds to the quant state's bf16, so y differs by that weight rounding (T4: 1.5e-3 for 1.6e-3), not the GEMM.
-    # Backward: the island's own input grad dequantises to bf16 too, so dx differs by the fp16 grad rounding only.
-    w_err = rel(w, _dequant_fp32(base))
+    assert rel(xb.grad, g @ w32) < 5e-4, rel(xb.grad, g @ w32)
+    # End to end vs the fp32 island, whose forward dequantises straight to fp32: the one fp16 rounding of the
+    # weights (T4: 2.1e-4; bf16 via the quant state's dtype was 1.6e-3).
+    w_err = rel(w, w32)
+    assert w_err < 4e-4, w_err
     assert rel(y, y_ref) < 1.5 * w_err + 3e-5, (rel(y, y_ref), w_err)
-    assert rel(dx, dx_ref) < 5e-4, rel(dx, dx_ref)
+    assert rel(dx, dx_ref) < 1.5 * rel(_dequant_bf16(base), w32) + 5e-4, rel(dx, dx_ref)
+    # The island's own input grad dequantises to the quant state's bf16 (T4: 1.6e-3 off exact), the scaled one to fp16.
+    xi = x.clone().requires_grad_(True)
+    base.__dict__["_unsloth_scaled_mm_orig"](xi).backward(g)
+    assert rel(xb.grad, g @ w32) <= rel(xi.grad, g @ w32), (
+        rel(xb.grad, g @ w32),
+        rel(xi.grad, g @ w32),
+    )
 
 
-def _dequant_fp32(layer):
+def test_dequant_4bit_asks_bitsandbytes_for_fp16_directly(monkeypatch):
+    """One rounding of the exact nf4 value: never the quant state's bf16 first. The layer's own state is untouched."""
+    bnbf = pytest.importorskip("bitsandbytes.functional")
+    from core.training import diffusion_dit_fp16 as f16
+
+    seen = []
+
+    def fake(data, qs):
+        seen.append((data, qs))
+        return torch.zeros(2, 2, dtype = qs.dtype)
+
+    monkeypatch.setattr(bnbf, "dequantize_4bit", fake)
+    qs = type("QS", (), {"dtype": torch.bfloat16, "shape": (2, 2)})()
+    layer = type("L", (), {})()
+    layer.weight = type("W", (), {"data": object(), "quant_state": qs})()
+    out = f16._dequant_4bit(layer)
+    assert out.dtype is torch.float16
+    assert (
+        seen[0][0] is layer.weight.data
+        and seen[0][1] is not qs
+        and seen[0][1].dtype is torch.float16
+    )
+    assert layer.weight.quant_state is qs and qs.dtype is torch.bfloat16
+
+
+def _dequant_as(layer, dtype):
     import copy
 
     import bitsandbytes.functional as bnbf
 
     qs = copy.copy(layer.weight.quant_state)
-    qs.dtype = torch.float32
+    qs.dtype = dtype
     return bnbf.dequantize_4bit(layer.weight.data, qs)
+
+
+def _dequant_fp32(layer):
+    return _dequant_as(layer, torch.float32)
+
+
+def _dequant_bf16(layer):
+    return _dequant_as(layer, torch.bfloat16)
