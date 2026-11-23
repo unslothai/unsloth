@@ -4296,9 +4296,12 @@ def _train_dit(
     ):
         base_precision = "bf16"
     if ddp is not None:
+        from core.training.diffusion_ddp import lowp_layers_digest
+
         # The conversion fallbacks above ran per rank: refuse on every rank if they left different bases.
         ddp.check_effective_precision(
-            "int8_w8a8" if base_precision == "int8" and w8a8_on else base_precision
+            "int8_w8a8" if base_precision == "int8" and w8a8_on else base_precision,
+            layers = lowp_layers_digest(transformer),
         )
         # Same seed, so already equal; the broadcast makes the replicas identical whatever the load consumed.
         ddp.broadcast_params(lora_params)

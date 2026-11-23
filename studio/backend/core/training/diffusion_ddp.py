@@ -197,19 +197,28 @@ class DistContext:
     # The base every rank actually trains once its conversions ran (their fallbacks are rank-local).
     _EFFECTIVE_PRECISIONS = ("nf4", "int8", "int8_w8a8", "fp8", "mxfp8", "bf16")
 
-    def check_effective_precision(self, effective: str) -> None:
+    def check_effective_precision(
+        self,
+        effective: str,
+        layers: Optional[tuple] = None,
+    ) -> None:
         """Refuse on every rank when the ranks ended on different bases. agree_precision fixes the pick, but the fp8 /
         W8A8 conversions fall back per rank (bf16, an nf4 reload, torchao weight-only int8); a mixed run would
-        all-reduce LoRA grads taken through different base numerics without any error. One int64 per rank."""
+        all-reduce LoRA grads taken through different base numerics without any error. One int64 per rank (three with
+        ``layers``).
+        ``layers``: ``lowp_layers_digest`` of the converted base; a layer that failed on one rank only stays bf16
+        there under the same label, so the converted set is compared too."""
         import torch
         import torch.distributed as dist
 
         names = self._EFFECTIVE_PRECISIONS
         code = names.index(effective) if effective in names else len(names)
-        mine = torch.tensor([code], dtype = torch.int64, device = self._device())
+        values = [code] if layers is None else [code, int(layers[0]), int(layers[1])]
+        mine = torch.tensor(values, dtype = torch.int64, device = self._device())
         out = [torch.empty_like(mine) for _ in range(self.world)]
         dist.all_gather(out, mine)
-        codes = [int(t.item()) for t in out]
+        rows = [[int(v) for v in t.reshape(-1).tolist()] for t in out]
+        codes = [row[0] for row in rows]
         if len(set(codes)) > 1:
             picks = ", ".join(
                 f"rank {r}: {names[c] if c < len(names) else 'unknown'}"
@@ -218,6 +227,13 @@ class DistContext:
             raise RuntimeError(
                 "Multi-GPU training stopped: the GPUs ended up training different base precisions after "
                 f"conversion ({picks}). Set base_precision to one of them explicitly, or train on one GPU."
+            )
+        if layers is not None and len({tuple(row[1:]) for row in rows}) > 1:
+            counts = ", ".join(f"rank {r}: {row[2]}" for r, row in enumerate(rows))
+            raise RuntimeError(
+                f"Multi-GPU training stopped: the GPUs converted different layers to {effective} (layers converted: "
+                f"{counts}; a layer that fails on one GPU stays bf16 there). Use base_precision='bf16' or 'nf4', "
+                "or train on one GPU."
             )
 
     def params_checksum(self, params) -> float:
@@ -269,6 +285,19 @@ class DistContext:
             t.join(timeout = 30)
         if _CURRENT is self:
             _CURRENT = None
+
+
+def lowp_layers_digest(model) -> tuple[int, int]:
+    """(signed int64 digest, count) of the sorted name and format of every low-precision layer in ``model``."""
+    import hashlib
+
+    rows = sorted(
+        f"{fqn}={mode}"
+        for fqn, mod in model.named_modules()
+        if (mode := getattr(mod, "_studio_lowp", None))
+    )
+    digest = hashlib.sha256("\n".join(rows).encode()).digest()[:8]
+    return int.from_bytes(digest, "little", signed = True), len(rows)
 
 
 def plan_world(cfg, device: str) -> tuple[int, Optional[str]]:
