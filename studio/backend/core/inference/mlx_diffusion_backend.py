@@ -136,7 +136,6 @@ def dense_bits(ram_bytes: Optional[int] = None, options: Optional[tuple[int, ...
     ram = _total_ram_bytes() if ram_bytes is None else ram_bytes
     pick = 4 if 0 < ram <= _LOW_RAM_BYTES else 0
     if options and pick not in options:
-        # The smallest rung the config allows (the options run most to least accurate).
         return options[-1]
     return pick
 

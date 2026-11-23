@@ -615,7 +615,7 @@ def test_quant_plan_shrinks_monotonically_with_the_budget(monkeypatch):
 def test_dense_bit_ladder_per_config(monkeypatch):
     _clear_quant_env(monkeypatch)
     assert ZIMAGE.mlx_min_dense_bits == (("z-image", 8),)
-    # Turbo and unknown configs keep the whole ladder; the undistilled base never drops its dense tensors to 4 bits.
+    # The undistilled base never drops its dense tensors to 4 bits.
     assert mb.dense_bit_options(ZIMAGE, "z-image-turbo") == (0, 8, 4)
     assert mb.dense_bit_options(None, "z-image") == (0, 8, 4)
     assert mb.dense_bit_options(ZIMAGE, "z-image") == (0, 8)
@@ -631,10 +631,8 @@ def test_dense_bit_ladder_per_config(monkeypatch):
         )
         seen.add((plan.te_bits, plan.dense_bits))
     assert seen == {(8, 0), (8, 8), (4, 0), (4, 8)}
-    # The size-free RAM rule takes the smallest allowed rung on an 8 GB Mac.
     assert mb.dense_bits(8 * GIB) == 4 and mb.dense_bits(8 * GIB, options = base) == 8
     assert mb.dense_bits(64 * GIB, options = base) == 0
-    # An explicit pin still wins (diagnostics).
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_DENSE_BITS", "4")
     assert mb.dense_bits(8 * GIB, options = base) == 4
     plan = mb.plan_quantization(
@@ -872,14 +870,12 @@ def test_precision_fp16_flag_scope(monkeypatch):
     import dataclasses
 
     monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_PRECISION", raising = False)
-    # No family, or a family without the flag: the chip rule alone, as before.
     assert mb.compute_precision_name("Apple M1") == "float16"
     plain = dataclasses.replace(ZIMAGE, fp16_incompatible = False, mlx_fp16_configs = ())
     assert mb.compute_precision_name("Apple M1", plain, "z-image") == "float16"
     # Flagged with nothing measured clean: every config computes in bfloat16.
     strict = dataclasses.replace(ZIMAGE, mlx_fp16_configs = ())
     assert mb.compute_precision_name("Apple M2", strict, "z-image-turbo") == "bfloat16"
-    # The env override still wins both ways.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_PRECISION", "fp16")
     assert mb.compute_precision_name("Apple M1", ZIMAGE, "z-image") == "float16"
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_PRECISION", "bf16")
