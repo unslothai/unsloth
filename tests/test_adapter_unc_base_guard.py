@@ -92,7 +92,10 @@ def test_both_loaders_check_before_the_base_is_used():
     calls = [
         i
         for i in range(len(source))
-        if source.startswith("    _refuse_network_share_adapter_base(model_name, peft_config)", i)
+        if source.startswith(
+            "    _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)",
+            i,
+        )
     ]
     uses = [
         i
