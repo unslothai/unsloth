@@ -432,3 +432,35 @@ def test_a_reasoning_only_final_answer_is_not_called_a_tool_call(monkeypatch):
     )
     assert len(payloads) == 2, "no retry without a call in the answer"
     assert "its tools ran out" not in _route_shown(events)
+
+
+def test_a_wrapperless_gemma_call_is_a_call_only_answer(monkeypatch):
+    gemma = [_sse({"content": 'call:web_search{query:"next"}'}), _done()]
+    backend, payloads = _backend_and_payloads(
+        monkeypatch, [[_search_call(), _done()], gemma, gemma]
+    )
+    _record_tool_calls(monkeypatch, "result")
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Research LFM2.5."}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+    )
+    assert len(payloads) == 3 and "tools" not in payloads[2]
+    shown = _route_shown(events)
+    assert "its tools ran out" in shown and "call:web_search" not in shown, shown
+
+
+def test_a_marker_quoted_in_raw_reasoning_is_not_a_call(monkeypatch):
+    think = [
+        _sse({"content": "[THINK]I should use <tool_call> if more search is needed.[/THINK]"}),
+        _done(),
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, [[_search_call(), _done()], think])
+    _record_tool_calls(monkeypatch, "result")
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Research LFM2.5."}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+    )
+    assert len(payloads) == 2
+    assert "its tools ran out" not in _route_shown(events)

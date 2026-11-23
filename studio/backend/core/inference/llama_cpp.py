@@ -2468,6 +2468,7 @@ _FINAL_ANSWER_RETRY_NUDGE = (
 )
 # Below this a tool result carries only the cut notice; the floor catches a collapse to zero.
 _MIN_USEFUL_RESULT_TOKENS = 64
+_LEAD_RAW_THINK_RE = re.compile(r"\A\s*(?:\[THINK\].*?\[/THINK\]|<think>.*?</think>)", re.DOTALL)
 # llama.cpp's default per-image embedding cap plus mtmd's delimiters, when the admission figure is out of reach.
 _FALLBACK_IMAGE_TOKENS = 4096 + 128
 
@@ -40123,11 +40124,15 @@ class LlamaCppBackend:
             """Only calls, judged as the display strips them: markup and a leading Llama 3 bare-JSON call."""
             if not auto_heal_tool_calls or not answer.strip():
                 return False
-            # The strip also drops non-call text (a raw [THINK] block), so require a call to have been there.
-            lead = answer.lstrip()
-            if not has_tool_signal(answer) and not (
-                _enabled_names_gate
-                and strip_leading_bare_json_call(lead, _enabled_names_gate) != lead
+            # The strip also drops non-call text (a raw [THINK] block), so require a call outside the reasoning.
+            lead = _LEAD_RAW_THINK_RE.sub("", answer[_lead_think_span(answer) :], count = 1).lstrip()
+            gate = _enabled_names_gate
+            if not has_tool_signal(lead) and not (
+                gate
+                and (
+                    strip_leading_bare_json_call(lead, gate) != lead
+                    or leading_bare_gemma_call_is_promotable(lead, gate)
+                )
             ):
                 return False
             kept = _strip_tool_markup(answer, final = True)
