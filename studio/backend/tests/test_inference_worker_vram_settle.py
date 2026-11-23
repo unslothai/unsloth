@@ -62,8 +62,7 @@ def test_pre_kill_sample_without_a_release_still_waits(settle):
 
 
 def test_pre_kill_sample_waits_for_a_late_release_to_settle(settle):
-    # A small gain before the first poll may be partial: the bulk landing later is still waited for,
-    # exactly as without the pre-kill sample.
+    # An early partial gain is not final: the later bulk release is still waited for.
     sequence = [{0: 31_000}, {0: 31_000}, {0: 39_000}, {0: 40_000}, {0: 40_000}]
     assert settle(sequence, before_kill_free_mib = {0: 30_000}) == (True, 1.0, 5)
     assert settle(sequence) == (True, 1.0, 5)

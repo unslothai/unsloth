@@ -1661,7 +1661,7 @@ function GeneralCompareHeader({
   return (
     <div
       className={cn(
-        "pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+        "pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)] compare-pane-header",
         side === "left"
           ? pinned
             ? "pl-12 pr-3 md:pl-2"
@@ -3042,6 +3042,7 @@ export function ChatPage({
   const platformChatOnlyReason = usePlatformStore(
     (state) => state.chatOnlyReason,
   );
+  const platformMlxInference = usePlatformStore((state) => state.mlxInference);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
@@ -5016,6 +5017,7 @@ export function ChatPage({
                 size="icon-sm"
                 title="New chat"
                 aria-label="New chat"
+                data-chat-new-chat=""
                 onClick={handleDesktopNewChat}
                 className="!size-[calc(30px*var(--ui-space-scale,1))] shrink-0 rounded-[10px] text-muted-foreground"
               >
@@ -5111,7 +5113,7 @@ export function ChatPage({
               </div>
             ) : null}
           </div>
-          <div data-wallpaper-chrome-controls="" className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
+          <div data-wallpaper-chrome-controls="" data-chat-header-actions="" className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
             <UpdatePill slot="header" className="mr-[calc(4px*var(--ui-space-scale,1))]" />
             {showContextWindowUsage &&
             (view.mode === "single" ||
@@ -5136,6 +5138,7 @@ export function ChatPage({
                   Boolean(loadedIsGguf),
                   platformDeviceType,
                   platformChatOnlyReason,
+                  platformMlxInference,
                 )}
                 contextEnforced={loadedContextEnforced}
                 contextUnboundedWhenBatched={loadedContextUnboundedWhenBatched}

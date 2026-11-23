@@ -298,7 +298,7 @@ def _text_backend(monkeypatch, tokenizer, ids):
         raising = False,
     )
     monkeypatch.setattr(
-        backend, "_prepare_prompt_cache", lambda _p, _a: ([1, 2], None, None, [1, 2], 0)
+        backend, "_prepare_prompt_cache", lambda _p, _a, **_k: ([1, 2], None, None, [1, 2], 0)
     )
     return backend
 

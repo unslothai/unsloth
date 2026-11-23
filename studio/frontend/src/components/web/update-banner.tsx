@@ -107,13 +107,11 @@ export function WebUpdateBanner({
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
               : cn(
                   "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] shrink-0 flex-col",
-                  // Only rendered notes may shrink; the floor is the surface's own content, not a constant.
-                  "has-[[data-slot=update-release-notes]]:shrink",
                 ),
           )}
           data-testid="web-update-banner"
         >
-          {/* Paint the full floor even when the notes content is short.
+          {/* Paint the full floor.
               No min-h-0 and no overflow-hidden here on purpose: both of them
               set this box's automatic minimum size to zero, which is what made
               the card need a hand-written floor at all. Left alone it floors

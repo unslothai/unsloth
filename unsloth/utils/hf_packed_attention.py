@@ -455,6 +455,19 @@ def _sdpa_policy_requested(device, dtype, head_dim, n_heads, n_kv_heads) -> bool
     return not flash or choice == math
 
 
+def _eager_varlen_rejects(module, kwargs, head_dim) -> bool:
+    """The layer-level conditions under which _static_window refuses every call of this layer (no tensors
+    needed): leaving a compiled block for such a layer only adds a graph break before the dense path."""
+    dropout = getattr(module, "attention_dropout", 0) if getattr(module, "training", False) else 0
+    return bool(
+        head_dim % 8 != 0
+        or dropout
+        or getattr(module, "is_causal", True) is False
+        or kwargs.get("position_bias") is not None
+        or _softcapped(module, kwargs)
+    )
+
+
 def _static_window(module, query, key, value, dropout, is_causal, kwargs):
     """The window for a call a varlen kernel can take (shapes, dtypes, masking), else _NO_WINDOW.
     Only shapes, dtypes and attributes: also safe while tracing."""
@@ -940,8 +953,14 @@ def _no_saved_tensor_hooks():
     # Only the innermost pair applies. Pushing raises while torch has hooks disabled: keep the ambient state.
     enabled = getattr(torch._C._autograd, "_saved_tensors_hooks_is_enabled", lambda: True)
     if enabled():
-        return torch.autograd.graph.saved_tensors_hooks(_identity, _identity)
+        return torch.autograd.graph.saved_tensors_hooks(_detach_saved, _identity)
     return contextlib.nullcontext()
+
+
+def _detach_saved(tensor):
+    # A pack hook returning its input saves an op's output on that op's own node, a cycle gc cannot
+    # break: a probe graph whose backward never runs (aborted, or the ROCm check's error terms) leaks.
+    return tensor.detach()
 
 
 def _identity(tensor):
@@ -1021,7 +1040,14 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
     attention = getattr(layer, "self_attn", None)
     # Layers of one forward (and its checkpoint recompute) share the lengths and their window's mask.
     window = _sliding_window(attention, kwargs) if attention is not None else None
-    entry = _BLOCK_PREP.get(window)
+    # Per-layer eligibility (head_dim, dropout, sinks, softcap) changes the result on ROCm: key on it too.
+    head_dim = getattr(attention, "head_dim", None)
+    key = (
+        window,
+        head_dim,
+        isinstance(head_dim, int) and _eager_varlen_rejects(attention, kwargs, head_dim),
+    )
+    entry = _BLOCK_PREP.get(key)
     if (
         entry is not None
         # Live tensors only: a dead weakref is None, and so is a missing mask.
@@ -1048,7 +1074,7 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
         and not _disabled()
     ):
         # Weak: the T x T mask must not outlive its step.
-        _BLOCK_PREP[window] = (
+        _BLOCK_PREP[key] = (
             weakref.ref(seq_lengths),
             weakref.ref(mask),
             (hidden_states.device, seq_lengths._version, mask._version),
@@ -1155,7 +1181,8 @@ def _block_varlen_prepare(
     ):
         # ROCm builds whose flash varlen disagrees with its fake kernel (gfx1151, torch 2.11) cannot run it
         # in the graph, and a traced call would attend over the dense mask: the eager wrapper runs varlen.
-        return _LEAVE_BLOCK
+        # A layer the eager wrapper rejects anyway (_static_window) keeps the dense path inside the graph.
+        return None if _eager_varlen_rejects(attention, kwargs, head_dim) else _LEAVE_BLOCK
     _, cu_seqlens, max_seqlen = seq_info
     # The segment count changes every step: one graph for all of them.
     torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)

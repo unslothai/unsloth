@@ -5120,13 +5120,13 @@ class PersonalizationImportedFont(BaseModel):
         return value
 
 
-# Boolean is each optional user-menu item's default visibility; Settings-tab shortcuts ship hidden.
+# Boolean is each optional user-menu item's default visibility; Settings-tab shortcuts except Appearance ship hidden.
 SIDEBAR_MENU_ITEM_DEFAULTS = {
     "api": True,
     "darkMode": True,
     "guidedTour": True,
     "profile": False,
-    "appearance": False,
+    "appearance": True,
     "resources": False,
     "chat": False,
     "connections": False,
@@ -5854,6 +5854,8 @@ class SandboxMemoryStatus(BaseModel):
     limit_gb: Optional[int] = None
     saved_gb: int
     default_gb: int
+    # True: no saved value, so the limit follows half of this machine's RAM.
+    auto: bool = True
     min_gb: int
     max_gb: int
     locked_by_environment: bool
@@ -5865,7 +5867,7 @@ class SandboxStatusResponse(BaseModel):
     terminal: SandboxToolStatus
     terminal_shell: Optional[str] = None
     windows: Optional[SandboxWindowsStatus] = None
-    # None off Linux, where the rlimit never applied.
+    # None only if the status could not be built.
     memory: Optional[SandboxMemoryStatus] = None
     setup: Optional[SandboxSetupStatus] = None
     checked_at: float
@@ -5882,6 +5884,7 @@ class SandboxSettingsPayload(BaseModel):
         ge = sandbox_memory_limit.MIN_MEMORY_LIMIT_GB,
         le = sandbox_memory_limit.MAX_MEMORY_LIMIT_GB,
     )
+    memory_limit_auto: Optional[Literal[True]] = None
 
 
 class SandboxSetupPayload(BaseModel):
@@ -6075,16 +6078,11 @@ def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
 
 
 def _sandbox_memory_status() -> Optional[SandboxMemoryStatus]:
-    import sys
-
-    # Linux only: Windows never set this rlimit, and on macOS setrlimit(RLIMIT_AS) fails once the forked child
-    # already maps more than the cap, so tool runs there were never capped.
-    if sys.platform != "linux":
-        return None
     return SandboxMemoryStatus(
         limit_gb = sandbox_memory_limit.effective_memory_limit_gb(),
         saved_gb = sandbox_memory_limit.saved_memory_limit_gb(),
-        default_gb = sandbox_memory_limit.DEFAULT_MEMORY_LIMIT_GB,
+        default_gb = sandbox_memory_limit.default_memory_limit_gb(),
+        auto = sandbox_memory_limit.is_auto(),
         min_gb = sandbox_memory_limit.MIN_MEMORY_LIMIT_GB,
         max_gb = sandbox_memory_limit.MAX_MEMORY_LIMIT_GB,
         locked_by_environment = sandbox_memory_limit.locked_by_environment(),
@@ -6137,6 +6135,9 @@ def _sandbox_apply(payload: SandboxSettingsPayload) -> Optional[int]:
     from core.inference import mxc_policy, mxc_read_grants
     from utils import mxc_isolation_settings as saved
 
+    if payload.memory_limit_auto:
+        sandbox_memory_limit.use_auto_memory_limit()
+        return None
     if payload.memory_limit_gb is not None:
         sandbox_memory_limit.set_memory_limit_gb(payload.memory_limit_gb)
         # The route refuses it beside the Windows switches, so the MXC state below is untouched.
@@ -6186,7 +6187,7 @@ async def update_sandbox_settings(
     # Host policy: changed at the console, never by an API key the owner happens to hold.
     _ui_session: None = Depends(_require_ui_session),
 ) -> SandboxStatusResponse:
-    """Save the Windows MXC opt-in, the persistent read grant choice, or the Linux memory limit. Applies to the next
+    """Save the Windows MXC opt-in, the persistent read grant choice, or the memory limit. Applies to the next
     launch."""
     import sys
 
@@ -6196,17 +6197,17 @@ async def update_sandbox_settings(
     windows_fields = (
         payload.allow_dacl_fallback is not None or payload.persistent_read_grants is not None
     )
-    if payload.memory_limit_gb is not None:
-        if sys.platform != "linux":
-            raise HTTPException(
-                status_code = 409, detail = "The sandbox memory limit only applies on Linux."
-            )
-        if sandbox_memory_limit.locked_by_environment():
-            raise HTTPException(
-                status_code = 409,
-                detail = f"{sandbox_memory_limit.MEMORY_LIMIT_ENV} is set in the environment Unsloth runs in, which decides this.",
-            )
-    if sys.platform != "win32" and (windows_fields or payload.memory_limit_gb is None):
+    memory_fields = payload.memory_limit_gb is not None or payload.memory_limit_auto is not None
+    if payload.memory_limit_gb is not None and payload.memory_limit_auto:
+        raise HTTPException(status_code = 422, detail = "Send a memory limit or auto, not both.")
+    if memory_fields and windows_fields:
+        raise HTTPException(status_code = 422, detail = "Save the memory limit on its own.")
+    if memory_fields and sandbox_memory_limit.locked_by_environment():
+        raise HTTPException(
+            status_code = 409,
+            detail = f"{sandbox_memory_limit.MEMORY_LIMIT_ENV} is set in the environment Unsloth runs in, which decides this.",
+        )
+    if sys.platform != "win32" and not memory_fields:
         raise HTTPException(status_code = 409, detail = "These settings only apply on Windows.")
     locks = (
         (payload.allow_dacl_fallback, mxc_policy.DACL_FALLBACK_ENV),
@@ -6230,11 +6231,12 @@ async def update_sandbox_settings(
             log = logger,
         ) from exc
     logger.info(
-        "settings.sandbox_updated subject=%s dacl=%s grants=%s memory_gb=%s",
+        "settings.sandbox_updated subject=%s dacl=%s grants=%s memory_gb=%s memory_auto=%s",
         current_subject,
         payload.allow_dacl_fallback,
         payload.persistent_read_grants,
         payload.memory_limit_gb,
+        payload.memory_limit_auto,
     )
     status = await asyncio.to_thread(_for_request, status, request)
     return status.model_copy(update = {"grants_restored": restored})

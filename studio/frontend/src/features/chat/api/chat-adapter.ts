@@ -21,6 +21,7 @@ import {
 import { llamaServerLoadFields } from "../lib/load-request";
 import {
   clearedServerTuningState,
+  committedMlxServerTuningState,
   committedServerTuningState,
 } from "../lib/server-tuning-fields";
 import { authFetch, getAuthToken } from "@/features/auth";
@@ -49,7 +50,10 @@ import {
   loadedContextFields,
   resolveInitialConfig,
 } from "@/features/model-picker/model-config/per-model-config";
-import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
+import {
+  cachedRepoIsMlx,
+  localRowIsMlx,
+} from "@/features/model-picker/components/model-selector/recommended-fit";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
@@ -441,6 +445,8 @@ import {
 import {
   generateAudio,
   GenerationLengthError,
+  createReasoningOnlyLengthCheck,
+  offersKvCacheHint,
   fetchGgufStagedMetadata,
   getChatAgentsMd,
   getInferenceStatus,
@@ -1029,6 +1035,11 @@ function toOpenAIImageEditReferenceMessage(
   return { role: "assistant", content };
 }
 
+function messageImportedFrom(message: RunMessage): unknown {
+  return (message as { metadata?: { custom?: Record<string, unknown> } }).metadata?.custom
+    ?.importedFrom;
+}
+
 // Use metadata, not spoofable text: Anthropic keeps refusing while refusals stay in context.
 function isAnthropicRefusalMessage(message: RunMessage): boolean {
   if (message.role !== "assistant") return false;
@@ -1235,6 +1246,7 @@ export function isMcpImageToolResult(val: unknown): val is McpImageToolResult {
 
 function serializeToolResultPart(
   part: ToolCallMessagePart,
+  importedFrom?: unknown,
 ): SerializedToolResult | null {
   const tc = part as ToolCallMessagePart;
   const result = (tc as { result?: unknown }).result;
@@ -1265,7 +1277,7 @@ function serializeToolResultPart(
     content = replayText.length > 0 ? replayText : JSON.stringify({ result: "" });
     // Gated on the image tool name, not shape: a client tool may return {text, images}, and
     // appending the envelope would hand its bytes to the model as image input.
-    if (isMcpImageToolResult(result) && isImageToolName(tc.toolName)) {
+    if (isMcpImageToolResult(result) && isImageToolName(tc.toolName, importedFrom)) {
       content += mcpImagesEnvelope(result.images);
     } else if (isMcpToolName(tc.toolName)) {
       const uiImages = mcpUiReplayImages(result, tc.toolName ?? "");
@@ -1692,7 +1704,7 @@ function serializeAssistantReplayMessages(
       const toolCall = serializeAssistantToolCallPart(toolPart);
       if (!toolCall) continue;
 
-      const toolResult = serializeToolResultPart(toolPart);
+      const toolResult = serializeToolResultPart(toolPart, messageImportedFrom(message));
       if (!toolResult && !canReplayToolCallWithoutRoleTool(toolPart)) {
         continue;
       }
@@ -2145,7 +2157,7 @@ function boundMcpImageResults(
     const byExchange = new Map<number, Carrier[]>();
     toolParts.forEach(({ index, part }, k) => {
       const tc = part as { toolName?: string; result?: unknown };
-      if (!isMcpImageToolResult(tc.result) || !isImageToolName(tc.toolName)) return;
+      if (!isMcpImageToolResult(tc.result) || !isImageToolName(tc.toolName, messageImportedFrom(message))) return;
       const carrier = { message: m, part: index, images: tc.result.images };
       const batch = byExchange.get(exchanges[k]) ?? [];
       batch.push(carrier);
@@ -3020,16 +3032,21 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
   }
   return (
     platform.deviceType === "mac" &&
-    (isMlxId(row.id) ||
-      isMlxId(row.display_name ?? "") ||
-      isMlxId(row.model_id ?? ""))
+    // null is an older backend that does not report it.
+    platform.mlxInference !== false &&
+    localRowIsMlx(row)
   );
 }
 
-/** The picker hides cached non-GGUF rows outright on a chat-only install; same wait-for-the-server rule as above. */
-function cachedModelsRunOnThisPlatform(): boolean {
+/** Chat-only lists no cached non-GGUF repo except MLX on an MLX-serving Mac; same wait-for-the-server rule as above. */
+function cachedModelRunsOnThisPlatform(repo: CachedModelRepo): boolean {
   const platform = usePlatformStore.getState();
-  return platform.capabilitiesUnknown() || !platform.isChatOnly();
+  if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;
+  return (
+    platform.deviceType === "mac" &&
+    platform.mlxInference === true &&
+    cachedRepoIsMlx(repo)
+  );
 }
 
 /** One loadable thing on this device; `listVariants` is lazy, so only the repos the cascade reaches are scanned. */
@@ -3734,6 +3751,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         candidate.kind === "gguf",
         platform.deviceType,
         platform.chatOnlyReason,
+        platform.mlxInference,
       ),
       pinnedMaxSeqLength: config.maxSeqLength,
       defaultMaxSeqLength: candidate.maxSeqLength,
@@ -3841,6 +3859,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       candidate.kind === "gguf",
       platform.deviceType,
       platform.chatOnlyReason,
+      platform.mlxInference,
     );
     // MLX falls back to the standing preference: the live store may hold another model's settings.
     const standingSpec = candidateIsMlx
@@ -3884,7 +3903,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       // Remembered pass-through args: nothing is resident at startup to inherit them from.
       ...llamaServerLoadFields(
         { ...config, llamaExtraArgs: resolvedExtraArgs },
-        { isGguf: candidate.kind === "gguf", isDiffusion },
+        { isGguf: candidate.kind === "gguf", isDiffusion, isMlx: candidateIsMlx },
       ),
       // GGUF-only. A remembered manual DiffusionGemma split (0 especially) must not be refused as a
       // full-GGUF occupant.
@@ -3914,6 +3933,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         candidate.kind === "gguf",
         platform.deviceType,
         platform.chatOnlyReason,
+        platform.mlxInference,
       ),
       // What the load asked for, so a pin carried in either field is kept.
       requestedContextLength: fitMaxSeqLength,
@@ -4067,6 +4087,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...resolveLoadedSpeculativeSettings(loadResp),
         });
       } else {
+        // An MLX load applied the remembered settings, so mirror them; other loads reset.
+        const mlx = candidateIsMlx && !(loadResp.is_diffusion ?? false);
+        const budget = mlx ? (loadResp.reasoning_budget ?? config.reasoningBudget ?? -1) : -1;
+        const budgetMessage = mlx
+          ? (loadResp.reasoning_budget_message ?? config.reasoningBudgetMessage ?? "")
+          : "";
+        const nBatch = mlx ? (config.nBatch ?? null) : null;
+        const nUbatch = mlx ? (config.nUbatch ?? null) : null;
         useChatRuntimeStore.setState({
           supportsReasoning: loadResp.supports_reasoning ?? false,
           reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
@@ -4082,24 +4110,24 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...mlxRuntimeStateFrom(loadResp),
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
-          reasoningBudget: -1,
-          loadedReasoningBudget: -1,
-          loadedReasoningBudgetRequested: -1,
-          reasoningBudgetMessage: "",
-          loadedReasoningBudgetMessage: "",
-          loadedReasoningBudgetMessageRequested: "",
-          nBatch: null,
-          loadedNBatch: null,
-          nUbatch: null,
-          loadedNUbatch: null,
-          ...clearedServerTuningState(),
+          reasoningBudget: budget,
+          loadedReasoningBudget: budget,
+          loadedReasoningBudgetRequested: budget,
+          reasoningBudgetMessage: budgetMessage,
+          loadedReasoningBudgetMessage: budgetMessage,
+          loadedReasoningBudgetMessageRequested: budgetMessage,
+          nBatch,
+          loadedNBatch: nBatch,
+          nUbatch,
+          loadedNUbatch: nUbatch,
+          ...(mlx ? committedMlxServerTuningState(config) : clearedServerTuningState()),
           // Clear the baseline so a rollback to this model does not resend a GGUF's arguments.
           loadedLlamaExtraArgs: null,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           loadedDisableVision: loadResp.disable_vision ?? false,
           // Safetensors loads have no projector; a stale true would carry to the next model.
-          disableVision: false,
+          disableVision: mlx ? (loadResp.disable_vision ?? false) : false,
           loadedVisionDisabledByUser:
             loadResp.vision_disabled_by_user ?? false,
           // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU GGUF load left.
@@ -4178,9 +4206,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const sources = orderAutoLoadSources(
       buildAutoLoadSources(
         allGgufRepos.filter(isChattableCachedRepo),
-        cachedModelsRunOnThisPlatform()
-          ? allModelRepos.filter(isChattableCachedRepo)
-          : [],
+        allModelRepos.filter(
+          (repo) => isChattableCachedRepo(repo) && cachedModelRunsOnThisPlatform(repo),
+        ),
         localRows.filter((row) =>
           isAutoLoadableLocalRow(row, cachedInventoryFailed),
         ),
@@ -7338,7 +7366,15 @@ export function createOpenAIStreamAdapter(
               }
             }
 
+            const kvCacheHint =
+              !isExternalRequest &&
+              offersKvCacheHint(runtime.loadedIsGguf, runtime.loadedKvCacheDtype);
             const durableStream = async function* () {
+              const lengthCheck = createReasoningOnlyLengthCheck({
+                cap: requestPayload.max_tokens ?? null,
+                contextLength: servedContextLength,
+                kvCacheHint,
+              });
               try {
                 for await (const update of followChatGenerationRun(
                   generationRunId!,
@@ -7360,6 +7396,7 @@ export function createOpenAIStreamAdapter(
                           generationFirstChunkAt ??= update.event.createdAt;
                         }
                       }
+                      lengthCheck.observe(chunk);
                       yield chunk;
                     }
                   }
@@ -7384,6 +7421,9 @@ export function createOpenAIStreamAdapter(
                   "Generation was cancelled.",
                 );
               }
+              if (generationStatus === "completed") {
+                lengthCheck.throwIfReasoningOnlyLength();
+              }
             };
             // The window lets a length-stop tell user Max Tokens from the backend's stand-in for Max.
             const sourceStream =
@@ -7393,6 +7433,7 @@ export function createOpenAIStreamAdapter(
                     requestPayload,
                     runSignal,
                     servedContextLength,
+                    kvCacheHint,
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();

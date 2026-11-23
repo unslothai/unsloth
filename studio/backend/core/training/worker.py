@@ -56,6 +56,7 @@ from utils.hf_dataset_options import hf_dataset_split_instruction_names
 
 # Light module: the MLX branch runs on torch-less hosts.
 from core.training.dataset_bounds import (
+    ROW_BOUND_MARKER_FILE,
     bound_dataset_rows,
     max_train_rows_for_config,
     record_row_bound,
@@ -2579,9 +2580,8 @@ def _mlx_audio_rows(
     image_col = _RESOLVE_IMAGE_COLUMN,
     warn = None,
 ) -> tuple:
-    """The CUDA transcription rows, with each clip left decoded so zoo can check its rate, and
-    the row's images (a mixed audio + image dataset) beside them. Returns (rows, image column);
-    an eval split takes the train split's image column, None for none."""
+    """CUDA transcription rows with clips left decoded for the zoo rate check, plus row images
+    beside them; returns (rows, image column); eval takes the train image column, None for none."""
     from datasets import Audio
     from unsloth_zoo.mlx.utils import audio_extractor_sampling_rate
 
@@ -2807,6 +2807,21 @@ def _normalize_mlx_studio_optimizer(value):
                 f"Supported optimizers: {supported}."
             )
         return opt
+
+
+def _mlx_drop_vision_kwargs(use_lora: bool, text_dataset: bool) -> dict:
+    """Skip reading a VLM's vision tower for text-only LoRA, on a zoo that trains and saves adapters without it."""
+    if not (use_lora and text_dataset):
+        return {}
+    try:
+        from unsloth_zoo.mlx import loader
+    except ImportError:
+        return {}
+
+    # Older zoos accept drop_vision_weights but refuse LoRA on the result, so check the marker, not the kwarg.
+    if getattr(loader, "DROP_VISION_WEIGHTS_TRAINS_LORA", False) is not True:
+        return {}
+    return {"drop_vision_weights": True}
 
 
 def _mlx_dora_peft_kwargs(config, get_peft_model):
@@ -3156,12 +3171,32 @@ def _synchronize_mlx_before_final_save(trainer, synchronize):
     raise_distributed_failure(error is not None, "final synchronization", error)
 
 
+def _remove_untrained_mlx_output_dir(output_dir):
+    try:
+        if os.listdir(output_dir) == [ROW_BOUND_MARKER_FILE]:
+            os.remove(os.path.join(output_dir, ROW_BOUND_MARKER_FILE))
+            os.rmdir(output_dir)
+    except OSError:
+        pass
+
+
 def _finalize_mlx_training(
-    trainer, snapshot_stop, output_dir, synchronize, send, write_stop_checkpoint
+    trainer,
+    snapshot_stop,
+    output_dir,
+    synchronize,
+    send,
+    write_stop_checkpoint,
+    owns_output_dir = False,
 ):
     stopped, cancelled = _mlx_worker_finalization_state(trainer, snapshot_stop)
     if cancelled:
         send("complete", output_dir = None, status_message = "Training cancelled")
+        return
+    if stopped and getattr(trainer, "_global_step", None) == 0:
+        if owns_output_dir and bool(trainer.is_main_process):
+            _remove_untrained_mlx_output_dir(output_dir)
+        send("complete", output_dir = None, saved = False, status_message = "Training stopped")
         return
 
     if stopped:
@@ -3425,7 +3460,11 @@ def _run_mlx_training(
                 else:
                     s3_download.cleanup()
         except S3DownloadCancelled:
-            _send("complete", output_dir = None, status_message = "Training cancelled")
+            _send(
+                "complete",
+                output_dir = None,
+                status_message = "Training stopped" if _stop_save[0] else "Training cancelled",
+            )
             return
     else:
         raise ValueError("No dataset specified")
@@ -3438,10 +3477,17 @@ def _run_mlx_training(
         eval_dataset = _load_local(config["local_eval_datasets"], EVAL_SPLITS)
 
     if _is_stop_requested():
-        _send("complete", output_dir = None, status_message = "Training cancelled")
+        _send(
+            "complete",
+            output_dir = None,
+            status_message = "Training stopped" if _stop_save[0] else "Training cancelled",
+        )
         return
 
     _send("status", status_message = f"Loading {model_name}...")
+    drop_vision_kwargs = _mlx_drop_vision_kwargs(
+        use_lora, not (is_dataset_image or is_dataset_audio)
+    )
     try:
         model, tokenizer = FastMLXModel.from_pretrained(
             model_load_name,
@@ -3452,6 +3498,7 @@ def _run_mlx_training(
             trust_remote_code = bool(config.get("trust_remote_code", False)),
             random_state = model_random_state,
             revision = model_revision,
+            **drop_vision_kwargs,
         )
     except Exception as error:
         if not model_local_only:
@@ -3487,6 +3534,7 @@ def _run_mlx_training(
             trust_remote_code = bool(config.get("trust_remote_code", False)),
             random_state = model_random_state,
             revision = model_revision,
+            **drop_vision_kwargs,
         )
 
     from utils.models.model_identity import restore_hf_cache_repo_identity
@@ -3744,6 +3792,8 @@ def _run_mlx_training(
                     model_name = model_name,
                     tokenizer = tokenizer,
                     is_vlm = True,
+                    # Per-row eval questions stay; the training prompt is only the fallback.
+                    vlm_fallback_instruction = vlm_info.get("vlm_instruction"),
                     dataset_name = hf_dataset or "local",
                     dataset_revision = config.get("dataset_revision"),
                     custom_format_mapping = custom_format_mapping,
@@ -4008,6 +4058,8 @@ def _run_mlx_training(
         warmup_ratio = warmup_ratio if warmup_uses_ratio else None,
         eval_steps_ratio = eval_steps_ratio,
     )
+    # A step-0 stop may remove only a folder this run created, never one that already existed.
+    owns_output_dir = not os.path.exists(output_dir)
     _prepare_mlx_output_dir(trainer, output_dir, ensure_dir, event_queue)
 
     def _record_mlx_row_bound():
@@ -4205,6 +4257,7 @@ def _run_mlx_training(
             mx.synchronize,
             _send,
             lambda: _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir),
+            owns_output_dir = owns_output_dir,
         )
     finally:
         _finish_tracking()

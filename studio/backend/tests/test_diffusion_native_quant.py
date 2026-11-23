@@ -15,6 +15,7 @@ torch = pytest.importorskip("torch")
 
 import core.inference.diffusion_native_quant as nq
 import core.inference.diffusion_transformer_quant as tq
+import core.inference.rocm_bf16 as rocm_bf16
 
 
 def _target(device = "cuda", dtype = None):
@@ -25,6 +26,8 @@ def _target(device = "cuda", dtype = None):
 def rocm(monkeypatch):
     monkeypatch.setattr(tq, "torch_is_rocm", lambda: True)
     monkeypatch.setattr(tq, "is_stubbed", lambda name: False)
+    # the measured RDNA arch (rdna_explicit_w8a8_reason reads the target card's gfx arch)
+    monkeypatch.setattr(rocm_bf16, "_device_gfx_arch", lambda _torch, _ordinal: "gfx1151")
 
 
 @pytest.fixture
@@ -1436,8 +1439,7 @@ def test_blocked_torchao_holds_after_peft_cached_it_available(monkeypatch):
 
 @pytest.mark.parametrize("scheme", [nq.NATIVE_FP8, nq.NATIVE_INT8])
 def test_the_eager_stored_widen_allocates_no_full_float32_matrix(scheme):
-    """A stored fp8 / int8 layer's eager widen: the same bf16 weight, with no float32 temporary the size of the
-    whole layer (the old widen held two)."""
+    """Stored fp8/int8 eager widen: no full-layer float32 temporary (the old widen held two)."""
     from torch.utils._python_dispatch import TorchDispatchMode
 
     rows, cols = 2048, 4096

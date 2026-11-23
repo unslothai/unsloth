@@ -408,7 +408,19 @@ def test_gemini3_pro_passes_medium_through(monkeypatch):
         assert tc == {"thinkingLevel": "medium", "includeThoughts": True}, (model, tc)
 
 
-@pytest.mark.parametrize("model", ["gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon"])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-3.7-flash",
+        "gemini-3.8-flash",
+        "gemini-4-argon",
+        "gemini-4-carbon",
+        "gemini-4-neon",
+        "gemini-4-hydrogen",
+        "gemini-4-pro",
+        "gemini-4.1-flash",
+    ],
+)
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -422,7 +434,19 @@ def test_new_gemini_thinking_floor(monkeypatch, model, kwargs):
     assert body["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "low"
 
 
-@pytest.mark.parametrize("model", ["gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon"])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-3.7-flash",
+        "gemini-3.8-flash",
+        "gemini-4-argon",
+        "gemini-4-carbon",
+        "gemini-4-neon",
+        "gemini-4-hydrogen",
+        "gemini-4-pro",
+        "gemini-4.1-flash",
+    ],
+)
 def test_new_gemini_rejects_presence_penalty(monkeypatch, model):
     body = _capture_body(monkeypatch, model = model, presence_penalty = 0.5)["body"]
     assert "presencePenalty" not in body["generationConfig"]

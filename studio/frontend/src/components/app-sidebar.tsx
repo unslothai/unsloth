@@ -1350,6 +1350,13 @@ export function AppSidebar() {
     setOpenMobile,
     state: sidebarState,
   } = useSidebar();
+  // On <html>, not a :has() over the thread, which would restyle it on every change.
+  const glassFrame = pinned && usesCustomTitlebar;
+  useEffect(() => {
+    const el = document.documentElement;
+    el.toggleAttribute("data-sidebar-glass-frame", glassFrame);
+    return () => el.removeAttribute("data-sidebar-glass-frame");
+  }, [glassFrame]);
   const navigate = useNavigate();
   const router = useRouter();
   const [rowNavigation] = useState(() =>

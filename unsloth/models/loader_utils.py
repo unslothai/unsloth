@@ -1887,10 +1887,91 @@ def _copy_error(error):
     return clone
 
 
+try:
+    # transformers >= 5.18: each from_pretrained sends a repo_info request to resolve its revision.
+    from transformers.utils.hub import resolve_revision as _hub_resolve_revision
+    from huggingface_hub import ResolvedRevision as _ResolvedRevision
+except ImportError:
+    _hub_resolve_revision = None
+    _ResolvedRevision = None
+
+
+def _resolved_revision(
+    model_name,
+    revision,
+    token = None,
+    local_files_only = False,
+    cache_dir = None,
+):
+    """Resolve once per load, only for transformers `revision =` args: a ResolvedRevision equals "main", not None."""
+    memo = _LOAD_PROBE_MEMO.get()
+    if (
+        memo is None
+        or _hub_resolve_revision is None
+        or not isinstance(model_name, str)
+        or not model_name
+        or isinstance(revision, _ResolvedRevision)
+        or os.path.exists(model_name)
+    ):
+        return revision
+    try:
+        key = (
+            "resolved_revision",
+            model_name,
+            revision,
+            token,
+            bool(local_files_only),
+            _env_says_offline(),
+            None if cache_dir is None else os.fspath(cache_dir),
+        )
+        hash(key)
+    except TypeError:
+        return revision
+    if key not in memo:
+        try:
+            resolved = _hub_resolve_revision(
+                model_name,
+                revision,
+                token = token,
+                local_files_only = bool(local_files_only),
+                cache_dir = cache_dir,
+            )
+        except Exception:
+            resolved = revision
+        memo[key] = resolved if isinstance(resolved, _ResolvedRevision) else revision
+    return memo[key]
+
+
+_TOKEN_FROM_KWARGS = object()
+
+
+def _kwargs_with_resolved_revision(
+    model_name,
+    kwargs,
+    token = _TOKEN_FROM_KWARGS,
+):
+    revision = kwargs.get("revision")
+    resolved = _resolved_revision(
+        model_name,
+        revision,
+        token = kwargs.get("token") if token is _TOKEN_FROM_KWARGS else token,
+        local_files_only = kwargs.get("local_files_only", False),
+        cache_dir = kwargs.get("cache_dir"),
+    )
+    if resolved is revision:
+        return kwargs
+    return {**kwargs, "revision": resolved}
+
+
 def _memo_config_probe(loader, model_name, **kwargs):
     memo = _LOAD_PROBE_MEMO.get()
+    # Keyed on the owning class: import_fixes wraps AutoConfig.from_pretrained; PeftConfig keeps the plain ref.
+    owner = getattr(loader, "__self__", loader)
+    pin = (getattr(owner, "__module__", None) or "").startswith("transformers.")
     if memo is None or kwargs.get("trust_remote_code") or not isinstance(model_name, str):
-        return loader(model_name, **kwargs)
+        return loader(
+            model_name, **(_kwargs_with_resolved_revision(model_name, kwargs) if pin else kwargs)
+        )
     if kwargs.get("cache_dir", 0) is None:
         kwargs.pop("cache_dir")
     try:
@@ -1905,7 +1986,9 @@ def _memo_config_probe(loader, model_name, **kwargs):
             raise _copy_error(error)
         return copy.deepcopy(result)
     try:
-        result = loader(model_name, **kwargs)
+        result = loader(
+            model_name, **(_kwargs_with_resolved_revision(model_name, kwargs) if pin else kwargs)
+        )
     except ImportError:
         raise
     except Exception as error:
@@ -4268,6 +4351,18 @@ def check_and_disable_bitsandbytes_loading(
     """Disable bnb flags for non-bnb quantized checkpoints; returns ``(load_in_4bit, load_in_8bit, quant_method)``.
 
     ``requantize_packed = False`` under fast_inference / full_finetuning: nothing would consume the plan."""
+    # Inkling 2's "modelopt" config describes its own expert layout, decoded by transformers' conversion mapping:
+    # drop it so the generic ModelOpt rewrite stays off and bitsandbytes can quantize the dequantized weights.
+    from .inkling2 import (
+        inkling2_owns_modelopt_quantization,
+        drop_inkling2_quantization_config,
+        register_inkling2_expert_dequantization,
+    )
+
+    if inkling2_owns_modelopt_quantization(model_config):
+        drop_inkling2_quantization_config(model_config, verbose = verbose, load_in_4bit = load_in_4bit)
+        register_inkling2_expert_dequantization()
+        return load_in_4bit, load_in_8bit, None
     quant_method = get_quant_type(model_config)
     if quant_method is None:
         # Also under vLLM: it reads the file itself, but the bitsandbytes flags must still drop.
@@ -4402,6 +4497,10 @@ def _index_weight_map(path):
 
 
 def _bin_dtypes(path):
+    from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    # torch < 2.6 can run code from the pickle even with weights_only (CVE-2025-32434).
+    refuse_pickle_checkpoint_on_old_torch(path)
     # mmap + weights_only reads the pickle and storage metadata, not the tensor bytes.
     state_dict = torch.load(path, map_location = "cpu", mmap = True, weights_only = True)
     return {k: str(v.dtype) for k, v in state_dict.items() if isinstance(v, torch.Tensor)}

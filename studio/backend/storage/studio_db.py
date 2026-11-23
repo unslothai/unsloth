@@ -21,6 +21,7 @@ import stat
 import threading
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -434,6 +435,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             id TEXT NOT NULL PRIMARY KEY,
             name TEXT NOT NULL,
             instructions TEXT,
+            mcp_server_ids TEXT,
             root_path TEXT,
             archived INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
@@ -446,6 +448,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "root_path" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN root_path TEXT")
+    if "mcp_server_ids" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN mcp_server_ids TEXT")
     # The user's folder, never deleted; only root_path (Studio's own) is removed on project delete.
     if "working_folder" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder TEXT")
@@ -2242,6 +2246,7 @@ def _chat_project_from_row(row: sqlite3.Row) -> dict:
         "id": data["id"],
         "name": data["name"],
         "instructions": data.get("instructions") or "",
+        "mcpServerIds": _json_loads(data.get("mcp_server_ids"), None),
         "rootPath": root_path or None,
         "sandboxPath": os.path.join(root_path, "sandbox") if root_path else None,
         "workingFolder": data.get("working_folder") or None,
@@ -2284,12 +2289,78 @@ def _raise_if_chat_thread_deleted(conn: sqlite3.Connection, thread_id: str) -> N
         raise ChatThreadDeletedError(thread_id)
 
 
+def _chat_thread_upsert_values(thread: dict) -> dict:
+    """The INSERT values of upsert_chat_thread, keyed by column, in its column order."""
+    return {
+        "id": thread["id"],
+        "title": thread.get("title") or "New Chat",
+        "model_type": thread["modelType"],
+        "model_id": thread.get("modelId") or "",
+        "model_gguf_variant": thread.get("modelGgufVariant"),
+        "pair_id": thread.get("pairId"),
+        "project_id": thread.get("projectId"),
+        "archived": 1 if thread.get("archived") else 0,
+        "created_at": int(thread["createdAt"]),
+        "updated_at": int(thread["updatedAt"]) if thread.get("updatedAt") is not None else None,
+        "openai_code_exec_container_id": thread.get("openaiCodeExecContainerId"),
+        "anthropic_code_exec_container_id": thread.get("anthropicCodeExecContainerId"),
+        "forked_from_thread_id": thread.get("forkedFromThreadId"),
+        "forked_from_message_id": thread.get("forkedFromMessageId"),
+        "fork_boundary_message_id": thread.get("forkBoundaryMessageId"),
+        "fork_title_base": thread.get("forkTitleBase"),
+        "settings_json": json.dumps(thread["settings"])
+        if thread.get("settings") is not None
+        else None,
+        "scheduled_task_id": thread.get("scheduledTaskId"),
+    }
+
+
+def _same_value(a, b) -> bool:
+    # Type-strict: 1 == 1.0 == True in Python, but SQLite stores and compares them apart.
+    return type(a) is type(b) and a == b
+
+
+def _coalesce(*values):
+    return next((value for value in values if value is not None), None)
+
+
+def chat_thread_upsert_is_noop(thread: dict, stored: dict) -> bool:
+    """True if upsert_chat_thread(thread) would leave ``stored`` (the raw row) exactly as it is.
+
+    Mirrors the ON CONFLICT clause; any doubt answers False, so the caller just writes.
+    """
+    new = _chat_thread_upsert_values(thread)
+    if not _same_value(new["id"], stored.get("id")):
+        return False
+    for column in ("title", "model_id"):
+        # The CASE branches below compare these with SQL '='; only plain text matches Python's.
+        if not isinstance(new[column], str) or not isinstance(stored.get(column), str):
+            return False
+    same_model = new["model_id"] == stored["model_id"]
+    after = {
+        **{column: new[column] for column in new if column != "fork_boundary_message_id"},
+        "model_gguf_variant": _coalesce(new["model_gguf_variant"], stored.get("model_gguf_variant"))
+        if same_model
+        else new["model_gguf_variant"],
+        "updated_at": _coalesce(new["updated_at"], stored.get("updated_at")),
+        "fork_title_base": stored.get("fork_title_base")
+        if new["title"] == stored["title"]
+        else None,
+        "settings_json": _coalesce(new["settings_json"], stored.get("settings_json")),
+        "scheduled_task_id": _coalesce(stored.get("scheduled_task_id"), new["scheduled_task_id"]),
+    }
+    return all(
+        column in stored and _same_value(value, stored[column]) for column, value in after.items()
+    )
+
+
 def upsert_chat_thread(
     thread: dict, *, external_import_session: Optional[tuple[str, str]] = None
 ) -> dict:
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        _probe_chat_revisions(conn, thread["id"], end = False)
         _raise_if_chat_thread_deleted(conn, thread["id"])
         if external_import_session is not None:
             conn.execute(
@@ -2338,27 +2409,9 @@ def upsert_chat_thread(
                 -- Set by the scheduler when it makes the chat; no later writer changes it.
                 scheduled_task_id = COALESCE(chat_threads.scheduled_task_id, excluded.scheduled_task_id)
             """,
-            (
-                thread["id"],
-                thread.get("title") or "New Chat",
-                thread["modelType"],
-                thread.get("modelId") or "",
-                thread.get("modelGgufVariant"),
-                thread.get("pairId"),
-                thread.get("projectId"),
-                1 if thread.get("archived") else 0,
-                int(thread["createdAt"]),
-                int(thread["updatedAt"]) if thread.get("updatedAt") is not None else None,
-                thread.get("openaiCodeExecContainerId"),
-                thread.get("anthropicCodeExecContainerId"),
-                thread.get("forkedFromThreadId"),
-                thread.get("forkedFromMessageId"),
-                thread.get("forkBoundaryMessageId"),
-                thread.get("forkTitleBase"),
-                json.dumps(thread["settings"]) if thread.get("settings") is not None else None,
-                thread.get("scheduledTaskId"),
-            ),
+            tuple(_chat_thread_upsert_values(thread).values()),
         )
+        _probe_chat_revisions(conn, thread["id"], end = True)
         conn.commit()
         return get_chat_thread(thread["id"]) or thread
     except Exception:
@@ -2454,6 +2507,7 @@ def update_chat_thread(
     try:
         # Same transaction as the guarded write, or a 409 leaves the settings change committed.
         conn.execute("BEGIN IMMEDIATE")
+        _probe_chat_revisions(conn, id, end = False)
         # Guards ride in the WHERE clause, so check and write are one statement.
         where = ["id = ?"]
         guard: list = [id]
@@ -2480,6 +2534,7 @@ def update_chat_thread(
             if _write_chat_thread_settings_in_conn(conn, id, **settings_write) is None:
                 conn.rollback()
                 return None
+        _probe_chat_revisions(conn, id, end = True)
         conn.commit()
         row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
         if row is None:
@@ -2583,6 +2638,16 @@ def get_chat_thread(id: str) -> Optional[dict]:
         conn.close()
 
 
+def get_chat_thread_with_row(id: str) -> tuple[Optional[dict], Optional[dict]]:
+    """get_chat_thread plus the raw stored columns, from one read; (None, None) if absent."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
+        return (_chat_thread_from_row(row), dict(row)) if row is not None else (None, None)
+    finally:
+        conn.close()
+
+
 # Scope '' counts every chat write, a thread id that thread's; triggers catch every writer.
 _CHAT_HISTORY_REVISION_ALL = ""
 
@@ -2643,6 +2708,51 @@ def _ensure_chat_history_revision_triggers(conn: sqlite3.Connection) -> None:
         END
         """
     )
+
+
+_chat_revision_probe: ContextVar[Optional[dict]] = ContextVar("chat_revision_probe", default = None)
+
+
+@contextmanager
+def chat_revision_probe(thread_id: str) -> Iterator[dict]:
+    """Records the thread's and the history's revision around each write transaction for it in this context."""
+    probe = {"thread_id": thread_id, "spans": []}
+    token = _chat_revision_probe.set(probe)
+    try:
+        yield probe
+    finally:
+        _chat_revision_probe.reset(token)
+
+
+def _probe_chat_revisions(conn: sqlite3.Connection, thread_id: str, end: bool) -> None:
+    # Read inside the write transaction, so no other writer can land between the two reads.
+    probe = _chat_revision_probe.get()
+    if probe is None or probe["thread_id"] != thread_id:
+        return
+    found = {
+        row[0]: int(row[1])
+        for row in conn.execute(
+            "SELECT scope, revision FROM chat_history_revisions WHERE scope IN (?, ?)",
+            (_CHAT_HISTORY_REVISION_ALL, thread_id),
+        ).fetchall()
+    }
+    pair = (found.get(thread_id, 0), found.get(_CHAT_HISTORY_REVISION_ALL, 0))
+    if end:
+        if probe["spans"] and probe["spans"][-1][1] is None:
+            probe["spans"][-1][1] = pair
+    else:
+        probe["spans"].append([pair, None])
+
+
+def chat_revision_span(probe: dict) -> Optional[tuple[tuple[int, int], tuple[int, int]]]:
+    """(before, after) (thread, history) revisions, or None if the writes were not back to back."""
+    spans = probe["spans"]
+    if not spans or any(after is None for _, after in spans):
+        return None
+    for (_, previous_after), (before, _) in zip(spans, spans[1:]):
+        if before != previous_after:
+            return None
+    return spans[0][0], spans[-1][1]
 
 
 def get_chat_history_revisions(thread_ids: list[str]) -> tuple[int, dict[str, int]]:
@@ -3347,8 +3457,8 @@ def upsert_chat_project(
         conn.execute(
             """
             INSERT INTO chat_projects
-                (id, name, instructions, root_path, archived, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (id, name, instructions, mcp_server_ids, root_path, archived, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 instructions = excluded.instructions,
@@ -3361,6 +3471,7 @@ def upsert_chat_project(
                 project["id"],
                 project["name"],
                 project.get("instructions") or "",
+                json.dumps(project.get("mcpServerIds")),
                 root_path,
                 1 if project.get("archived") else 0,
                 int(project["createdAt"]),
@@ -3385,6 +3496,7 @@ def update_chat_project(id: str, patch: dict) -> Optional[dict]:
     allowed = {
         "name": ("name", patch.get("name")),
         "instructions": ("instructions", patch.get("instructions")),
+        "mcpServerIds": ("mcp_server_ids", json.dumps(patch.get("mcpServerIds"))),
         "archived": ("archived", 1 if patch.get("archived") else 0),
         "createdAt": ("created_at", patch.get("createdAt")),
         "updatedAt": ("updated_at", patch.get("updatedAt")),
@@ -3728,13 +3840,14 @@ def _stored_chat_message_values(
 def _bump_chat_thread_updated_at(
     conn: sqlite3.Connection, thread_id: str, message_created_at: int
 ) -> None:
+    # A no-op UPDATE still fires the revision triggers, making other devices re-read the chat.
     conn.execute(
         """
         UPDATE chat_threads
         SET updated_at = MAX(COALESCE(updated_at, created_at), ?)
-        WHERE id = ?
+        WHERE id = ? AND updated_at IS NOT MAX(COALESCE(updated_at, created_at), ?)
         """,
-        (message_created_at, thread_id),
+        (message_created_at, thread_id, message_created_at),
     )
 
 
@@ -4461,6 +4574,7 @@ def upsert_chat_message(
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        _probe_chat_revisions(conn, message["threadId"], end = False)
         if expected_research_run_id is not None:
             if expected_research_attempt is None:
                 raise ValueError("expected_research_attempt is required with a research run")
@@ -4552,6 +4666,7 @@ def upsert_chat_message(
             int(reconciled["createdAt"]),
         )
         _mark_chat_attachment_inventory_clean(conn)
+        _probe_chat_revisions(conn, message["threadId"], end = True)
         conn.commit()
         return reconciled
     except Exception:
@@ -4576,10 +4691,13 @@ def sync_chat_messages(
     allow_research_update: bool = False,
     deleted_message_ids: Iterable[str] = (),
     external_import_mark: Optional[ExternalImportMark] = None,
-) -> list[dict]:
+    return_rows: bool = True,
+) -> Optional[list[dict]]:
+    """The thread's rows after the write, or None with return_rows=False (skips re-reading them)."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        _probe_chat_revisions(conn, thread_id, end = False)
         _ensure_chat_attachment_inventory_current(conn)
         # Dropping a message of a tombstoned run is a content decision, not a delete: its run row is gone, so nothing else holds it back from the prune.
         tombstoned_ids = {
@@ -4736,8 +4854,9 @@ def sync_chat_messages(
         _mark_chat_attachment_inventory_clean(conn)
         if external_import_mark is not None:
             _record_external_import_mark(conn, external_import_mark)
+        _probe_chat_revisions(conn, thread_id, end = True)
         conn.commit()
-        return list_chat_messages(thread_id)
+        return list_chat_messages(thread_id) if return_rows else None
     except (ChatMessageConflictError, ChatMessageProtectedError):
         conn.rollback()
         raise
@@ -6168,8 +6287,7 @@ def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) ->
         if isinstance(held, dict) and any(held.values()):
             merged["presetEditedKeys"] = {key: False for key in PRESET_EDITED_KEYS}
     elif "activePresetSource" in updates and "presetEditedKeys" not in updates:
-        # Current clients send the map with every source change, so this `modified` comes from an
-        # older client or a legacy import, where it kept every key.
+        # Current clients send the map each time; a legacy modified flag keeps every key.
         merged["presetEditedKeys"] = {key: True for key in PRESET_EDITED_KEYS}
     return merged
 

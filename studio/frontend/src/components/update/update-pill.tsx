@@ -69,7 +69,7 @@ export function UpdatePill({
         >
           <HugeiconsIcon
             icon={Download01Icon}
-            className="size-[15px] text-primary"
+            className="size-[calc(15px*var(--ui-space-scale,1))] text-primary"
             strokeWidth={2}
             aria-hidden="true"
           />
@@ -86,7 +86,7 @@ export function UpdatePill({
           <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)]">
             <HugeiconsIcon
               icon={Download01Icon}
-              className="size-[18px] text-foreground"
+              className="size-[calc(18px*var(--ui-space-scale,1))] text-foreground"
               strokeWidth={1.75}
               aria-hidden="true"
             />

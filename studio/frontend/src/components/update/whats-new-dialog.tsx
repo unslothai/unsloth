@@ -49,7 +49,7 @@ export function WhatsNewDialog() {
       }}
     >
       <DialogContent
-        className="flex h-[min(41rem,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] flex-col gap-0 overflow-hidden rounded-2xl p-0 focus:outline-none sm:max-w-[60rem]"
+        className="flex h-[min(41rem,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] flex-col gap-0 overflow-hidden rounded-2xl p-0 focus:outline-none sm:max-w-[calc(60rem*var(--ui-space-scale,1))]"
         tabIndex={-1}
         onOpenAutoFocus={(event) => {
           event.preventDefault();

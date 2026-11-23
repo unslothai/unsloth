@@ -19,6 +19,30 @@ from typing import Callable, Optional, Union
 import torch
 import torch.nn as nn
 
+
+def _resume_torch_load(path, **kwargs):
+    """Refused on torch < 2.6 like Trainer's check_torch_load_is_safe (CVE-2025-32434)."""
+    from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    refuse_pickle_checkpoint_on_old_torch(path)
+    return torch.load(path, weights_only = True, **kwargs)
+
+
+def _load_full_optimizer_state(path):
+    """The full optimizer.pt on the CPU, memory-mapped: every rank reads the whole file and keeps only its
+    shards, so an eager load costs each rank an anonymous copy of the full state (ranks x file size of host
+    RAM). Mapped pages are file-backed and shared by the ranks through the page cache. A file object, or a
+    file torch cannot map (legacy non-zip serialization), loads eagerly as before."""
+    if not isinstance(path, (str, os.PathLike)):
+        return _resume_torch_load(path, map_location = "cpu")
+    try:
+        return _resume_torch_load(path, map_location = "cpu", mmap = True)
+    except RuntimeError as e:
+        if "mmap can only be used" not in str(e):
+            raise
+    return _resume_torch_load(path, map_location = "cpu")
+
+
 __all__ = [
     "FSDP2Config",
     "STORAGE_DTYPE",
@@ -2019,9 +2043,8 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         qlora = infos.get("bnb_qlora")
         ignored, _ = _unify_dtypes(
             model,
-            # Root only: every trainable param is in the root group. Otherwise the split root
-            # embedding tables are units of their own, not part of the root's dtype group; so are the
-            # frozen ones kept whole (never upcast with the root).
+            # Root only: every trainable param is in the root group. Otherwise split root embedding
+            # tables are their own units; frozen ones stay whole, never upcast with the root.
             ([] if layout.root_only else units + list(extra_units)) + frozen_split + io_tables,
             param_dtype,
             can_ignore = config.replicate_minority_dtype and _supports_ignored_params(fully_shard),
@@ -2496,6 +2519,17 @@ def _unit_gathered_bytes(unit):
     return total
 
 
+def _synchronized_empty_cache():
+    """`torch.cuda.empty_cache()` after a device synchronize. Under expandable segments every stream owns its own
+    segment and releasing a page waits only on THAT stream, while FSDP2 allocates gathered weights and reduced
+    gradients on its side streams and the default stream reads them. A grad freed by `zero_grad()` (or a weight
+    freed by `reshard()`) while an optimizer / decode kernel reading it is still queued on the default stream
+    (no host sync since the step, e.g. `logging_steps > 1`) could be unmapped under that kernel. Only called
+    where an empty_cache runs anyway, so it adds no per-step sync."""
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+
+
 def _generate_streams_blocks(model):
     """Collective on CUDA in "auto" mode: True when generate should gather decoder blocks one at a
     time. Gathering every unit at once needs the whole model's weights on each rank next to its
@@ -2523,7 +2557,7 @@ def _generate_streams_blocks(model):
     need = (
         sum(sizes) + max(sizes) + (1 << 30)
     )  # gathered weights + one all-gather buffer + decode scratch
-    torch.cuda.empty_cache()
+    _synchronized_empty_cache()  # follows the last step's zero_grad() with no host sync in between
     free = torch.cuda.mem_get_info(device)[0]
     fits = _agree_over_ranks(dist, device, [free >= need], getattr(mesh_info, "mesh", None))[0]
     return not fits
@@ -2689,7 +2723,7 @@ def native_fsdp2_unsharded(model, stream_blocks = False):
             if id(unit) in saved:
                 _reshard_after_forward_restore(unit, saved[id(unit)])
         if streams and torch.cuda.is_available():
-            torch.cuda.empty_cache()  # the next whole-root gather needs its buffer in one piece
+            _synchronized_empty_cache()  # the next whole-root gather needs its buffer in one piece
         if errors:
             raise errors[0]
 
@@ -3088,7 +3122,7 @@ def native_load_optimizer(model, optimizer, path_or_state):
     if isinstance(state, (str, os.PathLike)) and _is_dcp_dir(state):
         return native_load_optimizer_sharded(model, optimizer, state)
     if not isinstance(state, dict):
-        state = torch.load(state, map_location = "cpu", weights_only = True)
+        state = _load_full_optimizer_state(state)
     from .fsdp2_bnb_optim import rename_optimizer_state_for
 
     # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.
@@ -3112,6 +3146,7 @@ def native_load_optimizer(model, optimizer, path_or_state):
             param.requires_grad_(True)
     for param in unstepped:
         inner.state.pop(param, None)
+    _repack_legacy_lora_b_optimizer(inner)
     return state
 
 
@@ -3274,6 +3309,7 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     # As the optimizer.pt path: torch Adam keys to the local-shard bitsandbytes keys, or back.
     rename_optimizer_state_for(optimizer, state)
     set_optimizer_state_dict(root, optimizer, state, options = options)
+    _repack_legacy_lora_b_optimizer(optimizer)
     return state
 
 
@@ -3538,7 +3574,7 @@ def _read_checkpoint_weights(checkpoint):
         if path.endswith(".safetensors"):
             from safetensors.torch import load_file
             return load_file(path, device = "cpu")
-        return torch.load(path, map_location = "cpu", weights_only = True)
+        return _resume_torch_load(path, map_location = "cpu")
 
     for name in _WEIGHT_FILES:
         path = os.path.join(checkpoint, name)
@@ -3651,6 +3687,82 @@ def _peft_trained_layout(root, saved, adapter):
     return _from_vanilla(root, saved, adapter)
 
 
+def _legacy_lora_b_configs(root, directories):
+    """Collective: {adapter: adapter_config.json} for fused expert LoRA adapters, so a grouped_by_expert
+    lora_B can be repacked after load as Zoo's PEFT path does. Unreadable config raises on every rank."""
+    try:
+        from unsloth_zoo.temporary_patches.moe_utils import (
+            _has_fused_expert_lora,
+            convert_legacy_lora_b,  # noqa: F401
+        )
+    except Exception:  # noqa: BLE001 - Zoo before the rank_major lora_B packing has one layout
+        return {}
+    if os.environ.get("UNSLOTH_MOE_LORA_B_LAYOUT"):
+        return {}
+    import json
+
+    configs, error = {}, None
+    directories = [(a, d) for a, d in directories if _has_fused_expert_lora(root, a)]
+    if not directories:
+        return {}
+    for adapter, directory in directories:
+        path = os.path.join(directory, "adapter_config.json")
+        try:
+            with open(path, "r", encoding = "utf-8") as f:
+                configs[adapter] = json.load(f)
+        except Exception as exc:  # noqa: BLE001
+            error = (
+                f"Unsloth: native FSDP2 resume cannot read {path} ({type(exc).__name__}: {exc}), so "
+                f"the fused MoE expert lora_B layout of adapter {adapter!r} is unknown; set "
+                f"UNSLOTH_MOE_LORA_B_LAYOUT to the layout it was saved in."
+            )
+            break
+    group, usable = _dcp_group(root)
+    if usable and not _all_ranks_agree(error is None, group):
+        raise ValueError(
+            error or "Unsloth: another rank could not read this checkpoint's expert LoRA layout."
+        )
+    if error is not None:
+        raise ValueError(error)
+    return configs
+
+
+def _repack_legacy_lora_b(root, configs):
+    """Repack loaded grouped_by_expert lora_B to rank_major in place; returns tensors moved."""
+    if not configs:
+        return 0
+    from torch.distributed.tensor.experimental import implicit_replication
+    from unsloth_zoo.temporary_patches.moe_utils import convert_legacy_lora_b
+
+    with implicit_replication():  # Zoo's plain permutation index against the sharded lora_B
+        return sum(
+            convert_legacy_lora_b(root, adapter, config) for adapter, config in configs.items()
+        )
+
+
+def _repack_legacy_lora_b_optimizer(optimizer):
+    """Permute restored optimizer state of repacked lora_B to match (the native hook bypasses Zoo's
+    Trainer resume wrapper). Consumes the marker, so a second call is a no-op. Returns (moved, reset)."""
+    if not any(
+        getattr(p, "_unsloth_lora_b_repacked", None) is not None
+        for group in getattr(optimizer, "param_groups", ())
+        for p in group["params"]
+    ):
+        return 0, 0
+    from torch.distributed.tensor.experimental import implicit_replication
+    from unsloth_zoo.temporary_patches.moe_utils import repack_optimizer_state_for_legacy_lora_b
+
+    with implicit_replication():
+        moved, reset = repack_optimizer_state_for_legacy_lora_b(optimizer)
+    if moved or reset:
+        _print_rank0(
+            f"Unsloth: native FSDP2 resume moved the optimizer state of {moved} repacked fused MoE "
+            f"expert lora_B tensors to the rank_major column order"
+            + (f"; {reset} reset (8-bit state cannot be permuted)." if reset else ".")
+        )
+    return moved, reset
+
+
 def _check_checkpoint_tables(root, checkpoint):
     """Collective: the frozen table provenance of a Trainer checkpoint's adapters (frozen_tables.json at the
     checkpoint for "default", in <checkpoint>/<name> for the others) against the model's tables, before anything is
@@ -3711,7 +3823,7 @@ def native_load_model_checkpoint(model, checkpoint):
         # the keys. Active adapters first, so shared tensors (resized embeddings) come from them.
         active_names = [a for a in adapters if a in peft_config]
         adapters = active_names + [a for a in peft_config if a not in active_names]
-        sources = []
+        sources, directories = [], []
         for adapter in adapters:
             directory = checkpoint if adapter == "default" else os.path.join(checkpoint, adapter)
             if adapter not in active_names and not _has_checkpoint_weights(directory):
@@ -3719,10 +3831,13 @@ def native_load_model_checkpoint(model, checkpoint):
                 continue
             saved = _read_checkpoint_weights(directory)[0]
             sources.append((adapter, _peft_trained_layout(root, saved, adapter)))
+            directories.append((adapter, directory))
+        legacy_lora_b = _legacy_lora_b_configs(root, directories)
         is_adapter = True
     else:
         saved, is_adapter = _read_checkpoint_weights(checkpoint)
         sources = [(adapter, saved) for adapter in adapters] or [(None, saved)]
+        legacy_lora_b = {}
     owner_of = _adapter_owner(root, adapters)
     loaded = {adapter for adapter, _ in sources}
     save_keys = (
@@ -3774,6 +3889,12 @@ def native_load_model_checkpoint(model, checkpoint):
         mapped,
         options = StateDictOptions(full_state_dict = True, strict = False),
     )
+    repacked = _repack_legacy_lora_b(root, legacy_lora_b)
+    if repacked:
+        _print_rank0(
+            f"Unsloth: native FSDP2 resume repacked {repacked} fused MoE expert lora_B tensors saved "
+            f"grouped_by_expert to PEFT's rank_major layout."
+        )
     _print_rank0(
         f"Unsloth: native FSDP2 resumed {n_loaded} {'adapter ' if is_adapter else ''}tensors from "
         f"{checkpoint}."
@@ -4008,7 +4129,7 @@ def _install_trainer_hooks():
             os.path.join(checkpoint, _OPTIMIZER_DCP_DIR if sharded else _OPTIMIZER_NAME),
         )
         self.lr_scheduler.load_state_dict(
-            torch.load(os.path.join(checkpoint, _SCHEDULER_NAME), weights_only = True)
+            _resume_torch_load(os.path.join(checkpoint, _SCHEDULER_NAME))
         )
 
     original_load_from_checkpoint = Trainer._load_from_checkpoint
@@ -4347,6 +4468,8 @@ def _swap_bnb_optimizer(training_args, cpu_shards = False):
             f"'adamw_torch' (or 'adamw_torch_fused'), or build a DTensor-compatible optimizer after "
             f"`unsloth.models.fsdp2_native.shard_model(model)` and pass it to the Trainer."
         )
+    if cpu_shards and _fused_cpu_adamw(training_args, name):
+        return True
     target = _BNB_OPTIMS.get(name)
     if target is None:
         return False
@@ -4357,7 +4480,8 @@ def _swap_bnb_optimizer(training_args, cpu_shards = False):
             "torch's AdamW)."
         )
         return False
-    if target == "adamw_torch_fused" and not torch.cuda.is_available():
+    # Fused AdamW steps CPU shards fine; a non-CUDA accelerator mesh keeps adamw_torch.
+    if target == "adamw_torch_fused" and not torch.cuda.is_available() and not cpu_shards:
         target = "adamw_torch"
     _print_rank0(
         f"Unsloth: native FSDP2 shards parameters as DTensors, which bitsandbytes' optimizers cannot "
@@ -4368,6 +4492,38 @@ def _swap_bnb_optimizer(training_args, cpu_shards = False):
         training_args.optim = OptimizerNames(target)
     except Exception:
         training_args.optim = target
+    return True
+
+
+def _fused_cpu_adamw(
+    training_args,
+    name,
+    label = "native FSDP2",
+):
+    """optim = 'adamw_torch' leaves torch's AdamW to pick foreach / fused itself, and foreach only covers
+    accelerator tensors: CPU shards (UNSLOTH_FSDP2_CPU_OFFLOAD, a CPU mesh) step one tensor at a time,
+    2.6-4.9x slower than the fused CPU kernel (torch >= 2.4) for the same update (fp32, within 1 ulp).
+    Switch to adamw_torch_fused, unless optim_args is set (FlashAdamW keys off it) or
+    UNSLOTH_CPU_FUSED_ADAMW=0. True when switched."""
+    if name != "adamw_torch" or getattr(training_args, "optim_args", None):
+        return False
+    if os.environ.get("UNSLOTH_CPU_FUSED_ADAMW", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    _print_rank0(
+        f"Unsloth: {label} keeps the trainable shards on the CPU, where torch's AdamW would step one "
+        "tensor at a time. Switching optim = 'adamw_torch' to 'adamw_torch_fused' (fused CPU kernel, same "
+        "update; UNSLOTH_CPU_FUSED_ADAMW=0 keeps adamw_torch)."
+    )
+    try:
+        from transformers.training_args import OptimizerNames
+        training_args.optim = OptimizerNames("adamw_torch_fused")
+    except Exception:
+        training_args.optim = "adamw_torch_fused"
     return True
 
 

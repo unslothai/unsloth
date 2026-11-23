@@ -98,8 +98,7 @@ function writeGeometry(next: Geometry): void {
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
-/** The whole chat, header included: the window goes wherever it is dragged. `headerGap`: where
- *  it opens, below the chat header's controls. */
+/** Room is the whole chat, header included; headerGap places the window below header controls. */
 function roomFor(surface: HTMLElement): Room | null {
   const split = surface.closest<HTMLElement>(".chat-artifact-split");
   if (!split) return null;

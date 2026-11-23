@@ -5,7 +5,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 LOCALE_STORE = REPO / "studio/frontend/src/i18n/locale-store.ts"
-MESSAGES = REPO / "studio/frontend/src/i18n/messages.ts"
+I18N = REPO / "studio/frontend/src/i18n"
 SONNER = REPO / "studio/frontend/src/components/ui/sonner.tsx"
 
 
@@ -18,10 +18,24 @@ def test_locale_changes_do_not_force_document_direction():
     )
 
 
+def _locales_block():
+    """The `LOCALES` table's source, from whichever i18n module defines it (messages.ts re-exports it)."""
+    marker = "export const LOCALES = {"
+    owners = [
+        path for path in sorted(I18N.rglob("*.ts")) if marker in path.read_text(encoding = "utf-8")
+    ]
+    assert len(owners) == 1, f"expected one module defining LOCALES under {I18N}, found {owners}"
+    src = owners[0].read_text(encoding = "utf-8")
+    start = src.index(marker)
+    end = src.find("} as const;", start)
+    assert end != -1, f"LOCALES in {owners[0]} no longer ends with `}} as const;`"
+    return src[start:end]
+
+
 def test_locale_metadata_does_not_advertise_unused_layout_direction():
-    src = MESSAGES.read_text(encoding = "utf-8")
-    locales_block = src[src.index("export const LOCALES") : src.index("export type Locale")]
-    assert "dir:" not in locales_block
+    block = _locales_block()
+    assert '"en"' in block or "en:" in block, "the LOCALES block was not read"
+    assert "dir:" not in block
 
 
 def test_toast_close_position_does_not_inherit_root_direction():

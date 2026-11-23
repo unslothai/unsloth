@@ -60,6 +60,7 @@ for (const [name, source] of CARDS) {
       !/\bmin-h-0\b/.test(stacked),
       "min-h-0 lets the rail squeeze the card to nothing",
     );
+    // Neither card hosts release notes any more (What's new opens a dialog), so neither names a floor.
     if (name === "web") {
       const surface = classes(source, "relative flex max-h-[");
       for (const zeroesTheFloor of ["min-h-0", "overflow-hidden"]) {
@@ -73,13 +74,12 @@ for (const [name, source] of CARDS) {
         /min-h-\[/,
         "the card names a height again, which goes stale at the next type size",
       );
-    } else {
-      assert.match(
-        source,
-        /min-h-\[calc\(\d+px\+\d+px\*var\(--ui-font-scale,1\)\)\]/,
-        "the floor does not track the type size in the shape index.css uses",
-      );
     }
+    assert.doesNotMatch(
+      source,
+      /min-h-\[/,
+      "the card names a height again, which goes stale at the next type size",
+    );
     assert.ok(
       !/12rem\*var\(--ui-font-scale/.test(source),
       "the whole box is being scaled again, which over-reserves the floor",
@@ -100,17 +100,10 @@ test("a card with no notes panel does not shrink at all", () => {
       /["\s]min-h-\[calc\(/,
       `the ${name} card floors unconditionally again, around a card that may paint none of it`,
     );
-    if (name !== "web") {
-      assert.match(
-        source,
-        /has-\[\[data-slot=update-release-notes\]\]:min-h-\[calc\(/,
-        `the ${name} card's floor is not gated on its notes panel`,
-      );
-    }
-    assert.match(
+    assert.doesNotMatch(
       source,
-      /has-\[\[data-slot=update-release-notes\]\]:shrink\b/,
-      `the ${name} card cannot give up its notes' height once it has them`,
+      /data-slot=update-release-notes/,
+      `the ${name} card reserves room for a notes panel it no longer shows`,
     );
   }
   assert.match(NOTES, /data-slot="update-release-notes"/);
@@ -170,13 +163,10 @@ test("the llama.cpp card takes the desktop updater's floor only with its changel
     LLAMA.indexOf('data-testid="llama-update-banner"'),
   );
   // the details toggle adds 22px; each extra bundled component adds an 18px row.
-  for (const [base, text, llamaText] of [
+  for (const [base, , llamaText] of [
     ["117px", "93px", "115px"],
     ["24px", "224px", "246px"],
   ]) {
-    assert.ok(
-      TAURI.includes(`min-h-[calc(${base}+${text}*var(--ui-font-scale,1))]`),
-    );
     assert.ok(
       slot.includes(
         `min-h-[calc(${base}+(${llamaText}+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))]`,

@@ -155,8 +155,7 @@ def _unless_failed_buffer(error):
 
 
 def _no_replay(*_args, **_kwargs):
-    """zoo's head-replay and lazy-verify helpers (unsloth_zoo #2474) need Metal and a QSA cache;
-    the stub answers as if no replay can be bound."""
+    """Stub for unsloth_zoo head-replay helpers, which need Metal and a QSA cache; no replay binds."""
     return None
 
 
@@ -659,12 +658,16 @@ def test_experts_on_disk_prefill_every_text_and_batch_path_in_the_planned_step(
     with monkeypatch.context() as patch:
         patch.setitem(sys.modules, "mlx_lm.generate", generate)
         mlx_inference._TextBatchSession(backend, width = 2).close()
+        backend._prefill_batch = 8192  # one step's worth: the batch prefills a reply at a time
+        mlx_inference._TextBatchSession(backend, width = 2).close()
+        backend._prefill_batch = None
         generate.BatchGenerator = (
             lambda model, stop_tokens, completion_batch_size, prefill_batch_size: (
                 built.append({}) or SimpleNamespace(close = lambda: None)
             )
         )
         mlx_inference._TextBatchSession(backend, width = 2).close()
+    assert [k["prefill_batch_size"] for k in built[:2]] == [2, 1]
     assert built[-2]["prefill_step_size"] == 8192 and built[-1] == {}
 
     @dataclass
@@ -3389,6 +3392,47 @@ def test_mlx_prompt_cache_never_returns_empty_remainder(monkeypatch):
     assert rest == tokens, "untrimmable entry must not be reused"
 
 
+def _kv_cache(rows, *layer):
+    import mlx.core as mx
+
+    layer = (*layer, pytest.importorskip("mlx_lm.models.cache").KVCache())[0]
+    layer.update_and_fetch(mx.zeros((1, 1, rows, 4)), mx.zeros((1, 1, rows, 4)))
+    return [layer]
+
+
+def test_mlx_single_stream_borrows_its_prefix_and_puts_back_only_its_rows(monkeypatch):
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    upstream = pytest.importorskip("mlx_lm.models.cache")
+    _install_fake_prompt_cache_api(monkeypatch)
+    history, turn = _MLXPromptCacheHistory(6, 10_000), list(range(10))
+    history._lru = upstream.LRUPromptCache(max_size = 6)
+    for key in ("k", "o"):
+        history.insert(key, turn, _kv_cache(10))
+    before, charged = list(history._lru._lru._lrus["assistant"]), history._lru.nbytes
+    cache, rest = history.fetch(object(), "k", turn + [10, 11], lend = True)
+    assert rest == [10, 11] and history._lru._trie.search("k", turn).exact is None
+    _kv_cache(300, cache[0])  # decoded, then stopped before its insert
+    history.fetch(object(), "o", turn + [10])
+    assert list(history._lru._lru._lrus["assistant"]) == before and history._newest[0] == "o"
+    assert (
+        history._lru.nbytes == charged and history._lru._trie.get("k", turn).prompt_cache == cache
+    )
+    assert history.fetch(object(), "o", turn, lend = True)[1] == turn[-1:]
+    cache, _rest = history.fetch(object(), "k", turn + [10, 11], lend = True)
+    _kv_cache(300, cache[0])
+    history.insert("k", turn + list(range(10, 310)), cache)
+    kept, held = history._lru._trie.get("k", turn).prompt_cache[0], cache[0]
+    assert history._oversized[2] == cache and kept is not held and kept.offset == 10
+    for key, layer in (("c", upstream.ChunkedKVCache(256)), ("r", upstream.RotatingKVCache(16))):
+        history.insert(key, turn, _kv_cache(10, layer))
+        assert history.fetch(object(), key, turn + [10], lend = True)[0][0] is not layer
+    history.insert("b", turn + [20, 21, 22], _kv_cache(13))
+    history.insert("b", turn, _kv_cache(10))
+    cache, rest = history.fetch(object(), "b", turn + [20, 21, 99], lend = True)
+    assert (cache[0].offset, rest, held.offset) == (12, [99], 310)
+
+
 def test_mlx_prompt_cache_key_isolates_adapter_state(monkeypatch):
     from core.inference.mlx_inference import MLXInferenceBackend
 
@@ -3579,7 +3623,7 @@ def test_an_image_turn_through_mlx_lm_feeds_its_embeddings_outside_the_prompt_ca
 def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypatch):
     from core.inference import mlx_inference
 
-    inserted, rendered = [], []
+    inserted, rendered, steps = [], [], []
     generator = SimpleNamespace(
         insert = lambda prompts, **kw: inserted.append((prompts, kw)) or [len(inserted)],
         remove = lambda *_a, **_k: {},
@@ -3587,7 +3631,8 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
     )
     generate = types.ModuleType("mlx_lm.generate")
     generate.BatchGenerator = lambda *_a, **_k: generator
-    _zoo_image_prefill(monkeypatch, prefill_image_prompt = lambda *_a: [1, 5, 5, 2])
+    prefill = lambda *_a, **step: steps.append(step) or [1, 5, 5, 2]
+    _zoo_image_prefill(monkeypatch, prefill_image_prompt = prefill)
     backend = mlx_inference.MLXInferenceBackend()
     backend._model, backend._tokenizer = SimpleNamespace(), SimpleNamespace(eos_token_ids = [2])
     backend._is_vlm, backend._reads_vision = False, True
@@ -3603,7 +3648,9 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
     image, messages = object(), [{"role": "user", "content": "hi"}]
     backend._unset_generation_budget = lambda prompt, tokens: 100 - len(tokens)
     session.admit({"messages": messages}, 0)
+    backend._prefill_step = 64  # the load's Micro-batch Size
     session.admit({"messages": messages, "image": image, "max_new_tokens": None}, 1)
+    assert steps == [{"prefill_step_size": 64}]
     assert rendered[0] == messages and {"type": "image"} in rendered[1][-1]["content"]
     assert [kw["max_tokens"] for _prompts, kw in inserted] == [[4], [96]]
     assert [(prompts, kw["caches"], kw["all_tokens"]) for prompts, kw in inserted] == [
@@ -4023,7 +4070,7 @@ def test_a_raw_vision_prompt_decodes_on_its_own_even_when_zoo_could_batch_it(mon
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.generate", engine)
     sys.modules["unsloth_zoo"].mlx = package
     monkeypatch.setattr(mlx_inference, "_batched_vision_engine_gap", lambda _e: None)
-    monkeypatch.setattr(mlx_inference, "_row_processor_gap", lambda _e, _r: None)
+    monkeypatch.setattr(mlx_inference, "_row_processor_gap", lambda _e, _r, **_k: None)
     backend = mlx_inference.MLXInferenceBackend()
     backend._model = SimpleNamespace(_is_vlm_model = True)
     assert backend._vlm_batch_unavailable_reason([{}, {}]) is None
@@ -4928,11 +4975,13 @@ def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
     assert list(backend.generate_audio_input_response(**args)) == ["H", "e", "l"]
     assert calls["kwargs"]["audio"] == [audio] and calls["kwargs"]["temperature"] == 0.0
     assert calls["audios"] == 1 and backend.last_generation_stats is not None
-    assert "prefill_step_size" not in calls["kwargs"]
+    assert "prefill_step_size" not in calls["kwargs"] and "logits_processors" not in calls["kwargs"]
     backend._prefill_step = 8192
     list(backend.generate_audio_input_response(**args))
     assert calls["kwargs"]["prefill_step_size"] == 8192
-    backend._prefill_step = None
+    backend._prefill_step, backend._reasoning_budget_processor = None, lambda prompt, _m: prompt
+    list(backend.generate_audio_input_response(**args))
+    assert calls["kwargs"]["logits_processors"] == ["P<audio>"]
     assert calls["messages"][-1]["content"][1:] == [{"type": "text", "text": "what is said?"}]
 
     args["messages"] = [{"role": "user", "content": "  "}]
@@ -5141,6 +5190,8 @@ def _text_family_backend(
     monkeypatch.setattr(
         model_config, "_read_raw_config_json", lambda name, token: configs.get(name)
     )
+    # The stub loader builds families no installed mlx-vlm / mlx-lm ships (mm_family).
+    monkeypatch.setattr(mlx_inference, "_mlx_unsupported_model_type", lambda *a: None)
     monkeypatch.setattr(mlx_inference, "_classify_mlx_audio_type", lambda *a, **k: None)
     monkeypatch.setattr(mlx_inference, "_row_quantized_cache_gap", lambda: None)
     monkeypatch.setattr(
@@ -5696,7 +5747,7 @@ def test_a_vision_checkpoint_served_through_mlx_lm_reads_images_only_where_zoo_p
 ):
     """unsloth-zoo builds an image checkpoint mlx-vlm lacks (Muse Spark) through mlx-lm."""
     pytest.importorskip("mlx.core")
-    from core.inference import mlx_inference
+    from core.inference import mlx_inference, mlx_memory
 
     attempts, built_by_mlx_vlm, reads_images = [], [], []
 
@@ -5705,6 +5756,9 @@ def test_a_vision_checkpoint_served_through_mlx_lm_reads_images_only_where_zoo_p
         def from_pretrained(name, **kwargs):
             attempts.append(kwargs["text_only"])
             model = SimpleNamespace(config = {}, _is_vlm_model = bool(built_by_mlx_vlm))
+            model.priced_cache_mib = mlx_memory._PROMPT_CACHE_MIB.get()
+            if kwargs.get("drop_vision_weights") and mlx_memory._DROPS_VISION.get():
+                model._unsloth_vision_freed = 5 * (kwargs["text_only"] is False)
             if reads_images:
                 model._unsloth_supports_images = True
             return model, SimpleNamespace(tokenizer = "inner")
@@ -5751,6 +5805,30 @@ def test_a_vision_checkpoint_served_through_mlx_lm_reads_images_only_where_zoo_p
     backend.load_model(vision)
     assert backend._is_vlm is True and backend._reads_vision_input() is True
     assert backend.models["org/vision"]["is_vision"] is True
+
+    # Vision off builds the text model alone where that drops the tower; otherwise it only stops images.
+    plain = SimpleNamespace(identifier = "org/vision", is_vision = True, is_lora = False)
+    loader.release_vision_weights = lambda _model: 7
+    for config, drops, text_only, off in (
+        (plain, True, True, True),
+        (plain, False, False, True),
+        (vision, True, False, False),
+    ):
+        monkeypatch.setattr(mlx_inference, "_text_load_drops_the_tower", lambda *a: drops)
+        attempts.clear()
+        backend = mlx_inference.MLXInferenceBackend()
+        backend.load_model(config, disable_vision = True)
+        assert attempts == [text_only] and backend._reads_vision_input() is not off
+        assert backend.models["org/vision"]["vision_disabled_by_user"] is off
+        # Where the load read the tower anyway (mlx-lm builds it), it is freed after.
+        freed = backend.models["org/vision"]["vision_weights_freed"]
+        assert freed == ((7 if text_only else 5) if off else 0)
+    backend.load_model(plain, prefill_step = 512, prompt_cache_mib = 0)
+    assert (backend._prefill_step, backend._grid_step()) == (512, 512)
+    assert backend.models["org/vision"]["n_ubatch"] == 512
+    # The load is priced and served with the chosen prompt cache.
+    assert backend._model.priced_cache_mib == backend.models["org/vision"]["cache_ram"] == 0
+    assert backend._prompt_cache_bytes() == 0
 
 
 def test_a_uniformly_quantized_text_load_goes_through_mlx_vlm_only_when_that_batches(monkeypatch):
@@ -6987,9 +7065,7 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
 
 
 def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
-    """The pinned mlx-vlm has no seed parameter, and a newer one ignores it at
-    Unsloth's default min_p/top_k -- so the seed must ride on the sampler, built
-    with the whole filtering chain the runtime would otherwise have built."""
+    """Older mlx-vlm has no seed and newer ignores it at default min_p/top_k, so it rides on the sampler."""
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend
 
@@ -7376,11 +7452,6 @@ def test_the_speculative_decoding_stream_is_drained_too(monkeypatch):
     mlx_inference._drain_generation_streams(mx)
 
     assert events == ["synchronize:speculative", "synchronize:default"]
-
-
-def test_a_runtime_without_synchronize_is_not_an_error():
-    from core.inference import mlx_inference
-    mlx_inference._drain_generation_streams(types.SimpleNamespace())
 
 
 @pytest.mark.parametrize("name", ["n_ctx", "original_max_position_embeddings", "model_max_length"])
@@ -11209,7 +11280,7 @@ def test_mlx_vlm_prompt_cache_session_prefills_on_mlx_vlm_default_step(monkeypat
     zoo = types.SimpleNamespace(wide_prefill_step = lambda model: 1234 if model == "wide" else None)
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.offload", zoo)
     probe = [
-        mlx_inference._prefill_layer_step(*args)
+        mlx_inference._prefill_layer_step(*args, 1234)
         for args in (("wide", 4936), ("wide", 8192), ("whole", 4936))
     ]
     assert probe == [1234, None, None]
@@ -11219,6 +11290,10 @@ def test_mlx_vlm_prompt_cache_session_prefills_on_mlx_vlm_default_step(monkeypat
     assert grid() == (1234, 1234)
     backend._kv_runtime_quant_kwargs, backend._kv_cache_window = lambda: {}, 4096
     assert grid() == (1234, 1234)
+    # A chosen micro-batch is the grid every request of the load prefills and banks on.
+    backend._prefill_grid, backend._prefill_step, backend._prefill_layer_step = 512, 512, None
+    assert grid() == (512, 512) and backend._vlm_batch_row_cache("base", ())._step == 512
+    assert backend._prefill_step_kwargs(grid = True) == {"prefill_step_size": 512}
 
 
 _BUDGET_WINDOW = 2048
@@ -11288,7 +11363,7 @@ def _run_text_budget(
         monkeypatch.setattr(
             backend,
             "_prepare_prompt_cache",
-            lambda _p, _a: ("TAIL", object(), "k", cached, len(cached) - 4),
+            lambda _p, _a, **_k: ("TAIL", object(), "k", cached, len(cached) - 4),
         )
     list(backend._generate_text(_TEXT_TURN, 0.0, 1.0, 0, 0.0, max_new_tokens, 1.0, None))
     return seen["max_tokens"]
@@ -11467,8 +11542,6 @@ def _require_video_stack_module():
 
 
 def _require_video_stack():
-    """Both halves: guarding on one alone let a test needing both run on a runner with only the
-    other, and the decoder lands in 0.5.0 while the install floor is 0.4.4."""
     utils = pytest.importorskip("mlx_vlm.utils")
     if not callable(getattr(utils, "load_video", None)):
         pytest.skip("the installed mlx-vlm predates the 0.5.0 clip decoder")
@@ -11973,7 +12046,6 @@ def test_mlx_generate_chat_response_attaches_the_video_part_and_forwards_the_cli
 
 
 def test_mlx_vlm_decodes_video_only_with_its_clip_decoder(monkeypatch):
-    """The declared mlx-vlm range starts before load_video existed."""
     from core.inference import mlx_inference
 
     mlx_vlm = _require_video_stack_module()
@@ -12887,3 +12959,129 @@ def test_a_flushed_tail_releases_its_text_before_a_stop_it_completes():
     plain = _RowStream(sequences = ("HALT",))
     plain.feed(text = "all ")
     assert plain.flush("of it") == ["all of it"] and plain.settle() == []
+
+
+class _BudgetTokenizer:
+    VOCAB = {"<think>": [1], "</think>": [2], "Wrap up.": [3, 4], "<ch>": [5, 6], "</ch>": [7]}
+
+    def encode(self, text, **_kwargs):
+        return list(self.VOCAB[text])
+
+
+# The model prefers wants[i] at step i (1 opens a block itself); -n: a grammar allows only n.
+@pytest.mark.parametrize(
+    "budget,message,markers,prompt,wants,expected",
+    [
+        (2, "Wrap up.", None, "user<think>\n", [9] * 6, [9, 9, 3, 4, 2, 9]),
+        (0, "", None, "user<think>", [9] * 6, [2, 9, 9, 9, 9, 9]),
+        (1, "", ("<ch>", "</ch>"), "user<ch>", [9] * 6, [9, 7, 9, 9, 9, 9]),
+        (3, "", None, "user", [9] * 6, [9] * 6),
+        (1, "", None, "user", [1, 9, 9, 9, 9], [1, 9, 2, 9, 9]),
+        (0, "Wrap up.", None, "user<think>", [-2, 9, 9], [2, 9, 9]),
+    ],
+)
+def test_a_reasoning_budget_forces_the_closer_once_spent(
+    budget, message, markers, prompt, wants, expected
+):
+    mx = pytest.importorskip("mlx.core")
+    from core.inference.mlx_reasoning_budget import make_reasoning_budget_processor
+
+    make = lambda b, m: make_reasoning_budget_processor(_BudgetTokenizer(), b, message, m, prompt)
+    processor, tokens = make(budget, markers), [10, 11, 12]
+    for want in wants:
+        logits = mx.zeros((1, 16)) if want > 0 else mx.full((1, 16), -float("inf"))
+        logits[:, abs(want)] = 1.0
+        tokens.append(int(mx.argmax(processor(mx.array(tokens), logits), axis = -1).item()))
+    assert tokens[3:] == expected
+    # Muse Glimmer's markers name block recipients; "user" is no closer to force.
+    assert make(-1, markers) is None and make(budget, ("self", "user")) is None
+
+
+def test_a_reasoning_budget_runs_last_on_a_text_reply_and_a_change_reloads(monkeypatch):
+    from core.inference import mlx_inference, mlx_reasoning_budget
+    from models.inference import LoadRequest
+    from routes.inference import _mlx_runtime_settings_match, _unsloth_serving_fields
+
+    budget, captured, made = (lambda _tokens, logits: logits), [], []
+    for window in (None, 0):
+        kwargs = dict(presence_penalty = 0.5, penalty_window = window, reasoning_budget = budget)
+        assert mlx_inference._mlx_sampling_processors(**kwargs)[-1] is budget
+    backend = _install_fake_text_stack(monkeypatch, {"generated": [7]}, captured)
+    monkeypatch.setattr(
+        mlx_reasoning_budget,
+        "make_reasoning_budget_processor",
+        lambda _tok, n, message, _markers, prompt: made.append((n, message)) or budget,
+    )
+    for n in (-1, 3):
+        backend._reasoning_budget, backend._reasoning_budget_message = n, "Wrap up."
+        list(backend.generate_chat_response(messages = [{"role": "user", "content": "p"}]))
+    assert captured[0].get("logits_processors") in (None, [])
+    assert captured[1]["logits_processors"][-1] is budget and made == [(3, "Wrap up.")]
+    # A document-only grammar forbids the closer a spent budget would force.
+    document = SimpleNamespace(allows_reasoning = False)
+    assert backend._reasoning_budget_processor("p", None, document) is None
+
+    entry = {
+        "mlx_kv_quant_requested": "auto",
+        "reasoning_budget": 64,
+        "reasoning_budget_message": "x",
+    }
+    be = SimpleNamespace(active_model_name = "m", models = {"m": entry})
+    req = lambda **knobs: LoadRequest(model = "m", model_path = "m", **knobs)
+    assert _mlx_runtime_settings_match(be, req(reasoning_budget = 64, reasoning_budget_message = "x"))
+    assert not _mlx_runtime_settings_match(be, req(reasoning_budget = 64))
+    assert not _mlx_runtime_settings_match(be, req(reasoning_budget_message = "x"))
+    assert _unsloth_serving_fields(entry)["requested_reasoning_budget"] == 64
+
+
+def test_a_chosen_micro_batch_caps_at_the_offload_chunk_and_a_change_reloads():
+    from core.inference import mlx_inference
+    from models.inference import LoadRequest
+    from routes.inference import (
+        _mlx_runtime_settings_match,
+        _unsloth_serving_fields,
+        _with_chosen_prefill_chunk,
+    )
+
+    req = lambda **knobs: LoadRequest(model = "m", model_path = "m", **knobs)
+    planned = {"offload": (None, 0.5), "prefill_chunk": 256}
+    assert _with_chosen_prefill_chunk({}, req(n_ubatch = 512)) == {"prefill_chunk": 512}
+    assert _with_chosen_prefill_chunk(planned, req(n_ubatch = 512))["prefill_chunk"] == 256
+    assert _with_chosen_prefill_chunk(planned, req()) is planned
+    assert mlx_inference._prefill_choice(256, 128) == (128, 128)
+    assert mlx_inference._prefill_choice(256, 512) == (256, None)
+
+    for key in ("n_ubatch", "n_batch", "cache_ram"):
+        entry = {"mlx_kv_quant_requested": "auto", key: 512}
+        be = SimpleNamespace(active_model_name = "m", models = {"m": entry})
+        assert _mlx_runtime_settings_match(be, req(**{key: 512}))
+        assert not _mlx_runtime_settings_match(be, req())
+        assert _unsloth_serving_fields(entry)[f"requested_{key}"] == 512
+    # MLX has no unlimited prompt cache: -1 is the default, as blank is.
+    be.models["m"]["cache_ram"] = None
+    assert _mlx_runtime_settings_match(be, req(cache_ram = -1))
+
+
+def test_a_chosen_prompt_cache_size_replaces_the_default_share(monkeypatch):
+    from core.inference import mlx_inference
+    from core.inference.mlx_memory import mlx_prompt_cache_chosen
+
+    monkeypatch.setenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", "7")
+    for mib, expected in ((None, 7), (-1, 7), (0, 0), (512, 512 << 20)):
+        with mlx_prompt_cache_chosen(mib):
+            assert mlx_inference._prompt_cache_max_bytes(10.0) == expected
+    # A cache that takes the whole budget leaves nothing to fit, rather than an unpriced load.
+    if pytest.importorskip("mlx.core").metal.is_available():
+        with mlx_prompt_cache_chosen(1 << 30):
+            assert mlx_inference.mlx_memory_budget() == 0
+
+
+def test_a_chosen_batch_size_caps_the_replies_one_batched_prefill_takes():
+    from core.inference import mlx_inference
+
+    backend = mlx_inference.MLXInferenceBackend()
+    assert backend._prefill_rows(6) == 6
+    backend._prefill_batch, backend._prefill_step, backend._prefill_grid = 4096, 1024, 1024
+    assert [backend._prefill_rows(width) for width in (1, 3, 6)] == [1, 3, 4]
+    backend._prefill_step, backend._prefill_grid = 256, None  # the grid's default step is wider
+    assert backend._prefill_rows(6) == max(1, 4096 // mlx_inference.vlm_prefill_step())

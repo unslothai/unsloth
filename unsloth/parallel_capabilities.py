@@ -293,6 +293,17 @@ RULES = (
         "drop tp (DDP, or UNSLOTH_FSDP2=1, over the dp axis)",
     ),
     Rule(
+        "tp / pp x model",
+        "tensor / pipeline parallel on Inkling 2 (inkling2, inkling2_loop)",
+        lambda q: (q.tp > 1 or q.pp > 1) and q.family in ("inkling2", "inkling2_loop"),
+        "tensor parallel has no sharding rule for its wrapper attention projections (L2 clips, key / value "
+        "short convolutions, output gate) and per-head sink / relative position bias projections; a pipeline "
+        "stage boundary would cut its block attention residual stack and Inkling-2-Mini's looped layers "
+        "(models/inkling2.py refuses both at from_pretrained, before any weight loads)",
+        'drop tp / pp: UNSLOTH_PARALLEL="dp=N" (DDP) or "fsdp=1" (native FSDP2), or device_map = "balanced" '
+        "in one process",
+    ),
+    Rule(
         "pp / tp x vLLM",
         "pipeline / tensor parallel with vLLM (fast_inference)",
         lambda q: (q.pp > 1 or q.tp > 1) and q.vllm,
@@ -909,15 +920,13 @@ _MOE_PP_MM_CASES = {
 # fp64 against one process, the idle-expert hook and one AdamW step. HF checkpointing only (no Unsloth checkpoint run).
 _KIMI_MOE = "tests/test_ulysses_kimi.py::test_kimi_moe_under_ulysses_matches_one_process"
 _KIMI_EAGER = "eager: remote code, no compiled region"
-# MiniMax (transformers' MiniMaxForCausalLM / MiniMaxM2ForCausalLM, fused experts): M1 Lightning + full attention
-# layers, M2 full attention through the generic route, the MoE block with routed / unrouted experts, right padded
-# rows, fp64 against one process, every gradient and one AdamW step. HF checkpointing only.
+# MiniMax M1 (Lightning + full attention) and M2 (generic route) MoE parity: fp64 vs one process,
+# every gradient, one AdamW step, right padded rows. HF checkpointing only.
 _MINIMAX = "tests/test_ulysses_minimax_parity.py::test_minimax_model_matches_upstream"
 _MINIMAX_EAGER = "eager: block compile not measured for this family"
-# DeepSeek (transformers' DeepseekV2 / V3 / V32 / V4ForCausalLM, fused experts): V2 / V3 MLA (YaRN softmax scale,
-# narrower value heads) on the generic route, V3.2's global DSA indexer top-k and V4's sliding / CSA / HCA sink
-# attention on their own Ulysses forwards; right padded rows, fp64 against one process, every gradient (None vs
-# zero) and one AdamW step. HF checkpointing only. V4 runs eager attention only.
+# DeepSeek V2/V3 MLA (YaRN softmax scale, narrower value heads) on the generic route; V3.2 DSA
+# indexer and V4 sliding / CSA / HCA sink attention on own Ulysses forwards; fp64 parity, all grads,
+# one AdamW step, right padded rows; HF checkpointing only; V4 runs eager attention only.
 _DEEPSEEK = "tests/test_ulysses_deepseek_reference.py::test_deepseek_cp_matches_fp64_reference"
 _DEEPSEEK_EAGER = "eager: block compile not measured for this family"
 _DEEPSEEK_CASES = {

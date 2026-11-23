@@ -6777,6 +6777,42 @@ def test_attention_trim_installed_on_every_speed_tier(fake_runtime, monkeypatch,
     assert "hunyuan_attn_trim" in status["speed_optims"]
 
 
+def _ltx2_mask_spy(monkeypatch):
+    """Record every LTX-2.x full-mask install the load makes and report one DiT hooked."""
+    from core.inference import video_ltx2
+
+    calls: list = []
+
+    def _fake(pipe, logger = None):
+        calls.append(pipe)
+        return 1
+
+    # raising=False: a tree without the hook never calls it, so the load-path assertions below fail on it
+    monkeypatch.setattr(video_ltx2, "install_ltx2_full_mask_drop", _fake, raising = False)
+    return calls
+
+
+@pytest.mark.parametrize("mode", ["eager", "default", "max"])
+def test_ltx2_full_mask_drop_installed_and_reported(fake_runtime, monkeypatch, mode):
+    calls = _ltx2_mask_spy(monkeypatch)
+    status = VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = mode
+    )
+    assert status["loaded"] is True
+    assert len(calls) == 1
+    assert "ltx2_full_mask_drop" in status["speed_optims"]
+
+
+def test_ltx2_full_mask_drop_skipped_on_the_off_tier(fake_runtime, monkeypatch):
+    calls = _ltx2_mask_spy(monkeypatch)
+    status = VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "off"
+    )
+    assert status["loaded"] is True
+    assert calls == []
+    assert "ltx2_full_mask_drop" not in status["speed_optims"]
+
+
 def test_every_video_fetch_resolves_both_cache_roots():
     """Every video load fetch must resolve both cache roots, or planner-skipped files get re-pulled."""
     # Every module on the video load path, including video_ltx2.py.
@@ -11586,9 +11622,7 @@ def _patch_events(
     done: bool = False,
     run_ahead: bool = True,
 ):
-    """Hand out fake CUDA events, optionally already complete. Returns the list they land in.
-
-    ``run_ahead`` lets the host outrun events that never finish, as it does when the hold is skipped."""
+    """Fake CUDA events, optionally done; run_ahead lets the host outrun events that never finish."""
     import core.inference.video as video_mod
 
     if run_ahead:

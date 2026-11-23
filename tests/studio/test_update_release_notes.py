@@ -1620,10 +1620,8 @@ def _assert_floors_itself(source: str, card: str) -> None:
     assert not re.search(
         r"(?<![\w-])min-h-\[", surface + root
     ), f"the {card} card names a height again, which goes stale at the next type size"
-    assert _only_under(root, "shrink-0"), f"the rail can squeeze the {card} card with no notes open"
-    assert _only_under(
-        root, "shrink", _NOTES_GATE
-    ), f"the {card} card cannot give up its notes' height, so the rail clips its buttons"
+    assert _only_under(root, "shrink-0"), f"the rail can squeeze the {card} card"
+    assert _NOTES_GATE not in root, f"the {card} card reserves room for a notes panel it no longer shows"
     assert not _applies(
         root, "min-h-0"
     ), f"min-h-0 lets the rail squeeze the {card} card past its floor"

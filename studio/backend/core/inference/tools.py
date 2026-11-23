@@ -33,6 +33,7 @@ import random
 import re
 import sqlite3
 import shlex
+import select
 import posixpath
 import shutil
 import ssl
@@ -154,6 +155,19 @@ EMPTY_SEARCH_RESULTS = (
     "No results found.",
     "No results found within the website access limits.",
 )
+EMPTY_PAGE_TEXT = "(page returned no readable text)"
+_UNREADABLE_PAGE = re.compile(
+    r"\((?:PDF contains no extractable text[^()]*|PDF content could not be read as text"
+    r"|[^()]*; not readable as text)\)"
+)
+
+
+def is_unreadable_page(text: str) -> bool:
+    """A fetch that succeeded but yielded no text (empty page, image, binary, textless PDF)."""
+    text = text.strip()
+    return text == EMPTY_PAGE_TEXT or bool(_UNREADABLE_PAGE.fullmatch(text))
+
+
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
 # While text engines fail, no early image lookup: its answer is discarded and adds to rate limiting.
@@ -7268,8 +7282,7 @@ _PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVR?")
 
 
 def _quote_end(line: str, i: int) -> int:
-    """Index of the quote closing the one at ``i``; a `$(` or backtick inside double quotes opens a
-    fresh quoting context, as in bash. -1 when unterminated."""
+    """Index of the closing quote or -1; $( and backticks in double quotes open a new context."""
     quote, j, n = line[i], i + 1, len(line)
     while j < n and line[j] != quote:
         if quote == '"' and line[j] == "\\":
@@ -10057,7 +10070,122 @@ _sandbox_as_bytes = 8 * 1024 * 1024 * 1024
 
 def _refresh_sandbox_memory_limit() -> None:
     global _sandbox_as_bytes
-    _sandbox_as_bytes = sandbox_memory_limit.memory_limit_bytes()
+    # RLIMIT_AS only works on Linux; Windows and macOS get the limit from _cap_tool_memory.
+    _sandbox_as_bytes = (
+        sandbox_memory_limit.memory_limit_bytes() if sys.platform == "linux" else None
+    )
+
+
+_MEMORY_WATCHDOG_POLL_S = 1.0
+
+
+_darwin_libproc = None
+
+
+def _darwin_footprint_bytes(pid: int) -> int:
+    """phys_footprint (what Activity Monitor shows): unlike RSS it still counts compressed and swapped pages."""
+    global _darwin_libproc
+    import ctypes
+
+    if _darwin_libproc is None:
+        _darwin_libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno = True)
+    # rusage_info_v0: a 16 byte uuid, then ten uint64 fields; phys_footprint is the eighth.
+    info = (ctypes.c_uint64 * 12)()
+    if _darwin_libproc.proc_pid_rusage(ctypes.c_int(pid), ctypes.c_int(0), ctypes.byref(info)) != 0:
+        return 0
+    return int(info[9])
+
+
+def _tree_processes(pid: int) -> list:
+    import psutil
+    try:
+        root = psutil.Process(pid)
+        return [root, *root.children(recursive = True)]
+    except psutil.Error:
+        return []
+
+
+def _tree_memory_bytes(processes: list) -> int:
+    import psutil
+
+    total = 0
+    for process in processes:
+        used = 0
+        try:
+            info = process.memory_info()
+            # Windows vms is the commit charge, what a job memory limit counts; untouched pages miss rss.
+            used = max(info.rss, info.vms) if sys.platform == "win32" else info.rss
+        except psutil.Error:
+            pass
+        if sys.platform == "darwin":
+            try:
+                used = max(used, _darwin_footprint_bytes(process.pid))
+            except Exception:  # noqa: BLE001 - RSS alone still counts
+                pass
+        total += used
+    return total
+
+
+def _memory_watchdog(
+    proc,
+    limit_bytes: int,
+    pgid,
+    poll_s: float = _MEMORY_WATCHDOG_POLL_S,
+) -> None:
+    try:
+        while proc.poll() is None:
+            processes = _tree_processes(proc.pid)
+            if _tree_memory_bytes(processes) > limit_bytes:
+                proc._unsloth_memory_exceeded = limit_bytes
+                # A descendant in its own session is outside the group, so kill what was measured too.
+                for process in reversed(processes[1:]):
+                    try:
+                        process.kill()
+                    except Exception:  # noqa: BLE001 - already gone, or a pid psutil saw reused
+                        pass
+                _killpg_captured(pgid)
+                _kill_process_tree(proc)
+                return
+            time.sleep(poll_s)
+    except Exception:  # noqa: BLE001 - an uncapped run, not a failed tool call
+        logger.debug("sandbox memory watchdog stopped", exc_info = True)
+
+
+def _cap_tool_memory(proc, pgid, sandboxed: bool) -> None:
+    """The sandbox memory limit where RLIMIT_AS does not work: a job memory limit on Windows, a watchdog elsewhere."""
+    if not sandboxed or sys.platform == "linux":
+        return
+    limit_bytes = sandbox_memory_limit.memory_limit_bytes()
+    if limit_bytes is None:
+        return
+    if (
+        isinstance(pgid, tuple)
+        and pgid[0] == "windows-job"
+        and pgid[1].set_memory_limit(limit_bytes)
+    ):
+        return
+    threading.Thread(target = _memory_watchdog, args = (proc, limit_bytes, pgid), daemon = True).start()
+
+
+def _completion_reason(proc, timed_out: bool, cancel_event) -> str:
+    if timed_out:
+        return "timed_out"
+    # A watchdog kill is forced like a cancel, so MXC still replays its DACL journal.
+    if (cancel_event is not None and cancel_event.is_set()) or getattr(
+        proc, "_unsloth_memory_exceeded", None
+    ):
+        return "cancelled"
+    return "finished"
+
+
+def _memory_exceeded_note(proc) -> str:
+    limit_bytes = getattr(proc, "_unsloth_memory_exceeded", None)
+    if not limit_bytes:
+        return ""
+    return (
+        f"Stopped: this call used more than the {limit_bytes // (1024**3)} GB sandbox memory limit "
+        "(Settings > Security > Memory limit).\n"
+    )
 
 
 def _sandbox_preexec():
@@ -12907,9 +13035,8 @@ def _edit_file_created_sentinel(target: str, workdir: str) -> str:
 def _edit_file_parent(
     target: str, workdir: "str | None", create_dirs: bool
 ) -> "tuple[int | None, str]":
-    """(folder fd or None, name to use with it). Confined POSIX writes open every parent below the
-    workdir without following links, so a folder swapped for a link mid-call fails instead of
-    carrying the write outside; unconfined calls and Windows keep the path."""
+    """(folder fd or None, name); confined POSIX writes open each parent below workdir without
+    following links, so a swapped link fails; unconfined calls and Windows keep the path."""
     if workdir is None or not file_history.DIR_FD_WALK:
         if create_dirs:
             os.makedirs(os.path.dirname(target) or ".", exist_ok = True)
@@ -13854,12 +13981,13 @@ _MCP_TOOL_SEARCH_LIMIT = 5
 # window: small models often answer that a tool is unavailable rather than search for it (#10997).
 _MCP_TOOL_PRELOAD = 5
 _MCP_TOOL_PRELOAD_SHARE = 0.33
+# A later message's matches, sent after it as a search, get their own share: the listing may fill the preload one.
+_MCP_TOOL_MATCH_SHARE = 0.15
 _MCP_TOOL_LOAD_SHARE = 0.5
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
 _MCP_TOOL_SEARCH_MAX_NAMES = 200
-# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds; its
-# ranked tools hold until a message's best match is listable and not among them.
+# A thread keeps its first MCP listing: the tool block heads the prompt, so changing it re-reads the whole chat.
 _MCP_LOADED_PER_THREAD = 8
 _MCP_LOADED_THREADS_MAX = 512
 MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
@@ -13869,10 +13997,15 @@ _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
 _MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
+_MCP_PROJECT_SERVER_IDS: ContextVar[frozenset[str] | None] = ContextVar(
+    "mcp_project_server_ids", default = None
+)
+# A dict set per request, so the listing can fill it from a thread running in a copy of the request's context.
+_MCP_LISTING_MATCHES: ContextVar = ContextVar("mcp_listing_matches", default = None)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
-# (account, thread) -> (held ranked tools, the last listing's order).
-_MCP_HELD_THREADS: "OrderedDict[tuple, tuple[list[str], list[str]]]" = OrderedDict()
+# (account, thread) -> the MCP tools the thread lists, in order.
+_MCP_HELD_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
 # Digest of the catalog's searchable text -> its in-memory FTS5 index, rebuilt only when that text changes.
 _MCP_SEARCH_INDEXES: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
@@ -13901,6 +14034,7 @@ def set_mcp_listing_context_tokens(
     _MCP_LISTING_QUERY.set(last_user_text(dicts) if valid else "")
     _MCP_LISTING_FORCED.set(forced_tool_name(tool_choice))
     _MCP_LISTING_REMEMBER.set(bool(remember))
+    _MCP_LISTING_MATCHES.set({})
     last_user = next(
         (m for m in reversed(dicts) if isinstance(m, dict) and m.get("role") == "user"), None
     )
@@ -14102,24 +14236,54 @@ def mcp_record_loaded_tools(thread_id, names) -> None:
             _MCP_LOADED_THREADS.popitem(last = False)
 
 
-def _mcp_held(by_name: dict) -> tuple[list[str], list[str]]:
+def _mcp_held(by_name: dict) -> list[str] | None:
     key = _mcp_thread_key()
     if key is None:
-        return [], []
+        return None
     with _MCP_LOADED_LOCK:
-        ranked, listed = _MCP_HELD_THREADS.get(key, ((), ()))
-    return [n for n in ranked if n in by_name], list(listed)
+        listed = _MCP_HELD_THREADS.get(key)
+    return None if listed is None else [n for n in listed if n in by_name]
 
 
-def _mcp_hold(ranked: list[str], listed: list[str]) -> None:
+def _mcp_hold(listed: list[str]) -> None:
     key = _mcp_thread_key()
     if key is None or not _MCP_LISTING_REMEMBER.get():
         return
     with _MCP_LOADED_LOCK:
         _MCP_HELD_THREADS.pop(key, None)
-        _MCP_HELD_THREADS[key] = (ranked, listed)
+        _MCP_HELD_THREADS[key] = listed
         while len(_MCP_HELD_THREADS) > _MCP_LOADED_THREADS_MAX:
             _MCP_HELD_THREADS.popitem(last = False)
+
+
+def _mcp_ran(by_name: dict) -> list[str]:
+    return [name for name in reversed(_mcp_loaded_names()) if name in by_name]
+
+
+def _mcp_best(specs: list[dict]) -> list[str]:
+    ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
+    return ranked[:_MCP_TOOL_PRELOAD]
+
+
+def _mcp_fill(
+    listing: list[dict],
+    names: list[str],
+    by_name: dict,
+    ctx: int,
+    share: float | None = None,
+) -> list[dict]:
+    chosen = list(listing)
+    left = ctx * (_MCP_TOOL_PRELOAD_SHARE if share is None else share) - _text_token_cost(
+        json.dumps(listing, separators = (",", ":")), ctx
+    )
+    for name in names:
+        if by_name[name] in chosen:
+            continue
+        cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
+        if cost <= left:
+            chosen.append(by_name[name])
+            left -= cost
+    return chosen
 
 
 def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict]:
@@ -14170,41 +14334,105 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
         search = _mcp_tool_search_spec(catalog, max_chars)
     listing = [search]
     listing += [by_name[name] for name in dict.fromkeys(pinned) if name in by_name]
-    # Opt-in: a fixed tool block keeps the prompt cache warm across topic changes.
     if os.environ.get("UNSLOTH_STUDIO_MCP_SEARCH_ONLY") == "1":
         return listing
-    room = ctx * _MCP_TOOL_PRELOAD_SHARE - _text_token_cost(
-        json.dumps(listing, separators = (",", ":")), ctx
+    held = _mcp_held(by_name)
+    if held is None:
+        wanted = list(dict.fromkeys(_mcp_ran(by_name) + _mcp_best(specs)))
+        names = [spec["function"]["name"] for spec in _mcp_fill(listing, wanted, by_name, ctx)[1:]]
+    else:
+        # A new pin goes last and stays: the block changes once for it, not on every image or forced turn.
+        names = list(dict.fromkeys(held + [spec["function"]["name"] for spec in listing[1:]]))
+        held_cost = _text_token_cost(
+            json.dumps(listing[:1] + [by_name[name] for name in names], separators = (",", ":")), ctx
+        )
+        # Past the share (a smaller window, a grown schema, piled-up pins): the block changes anyway, so re-fit.
+        if held_cost > ctx * _MCP_TOOL_PRELOAD_SHARE:
+            names = [
+                spec["function"]["name"] for spec in _mcp_fill(listing, held, by_name, ctx)[1:]
+            ]
+    _mcp_hold(names)
+    _mcp_note_matches(specs, by_name, names, ctx)
+    return listing[:1] + [by_name[name] for name in names]
+
+
+def _mcp_note_matches(specs: list[dict], by_name: dict, listed: list[str], ctx: int) -> None:
+    box = _MCP_LISTING_MATCHES.get()
+    if box is None or _mcp_thread_key() is None:
+        return
+    best = [name for name in _mcp_best(specs) if name not in listed]
+    # The exchange sits in the protected tail with the message, so it only gets the room the listing, the message
+    # and a reply leave (as _whole_doc_budget); else it ate the reply on a near-full window (#18529).
+    room = (
+        ctx
+        - max(1024, ctx // 4)
+        - 512
+        - _text_token_cost(
+            json.dumps([by_name[name] for name in listed], separators = (",", ":")), ctx
+        )
+        - _text_token_cost(_MCP_LISTING_QUERY.get(), ctx)
     )
-    ran = [name for name in reversed(_mcp_loaded_names()) if name in by_name]
-    ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
-    ranked = ranked[:_MCP_TOOL_PRELOAD]
+    matches = _mcp_fill([], best, by_name, ctx, min(_MCP_TOOL_MATCH_SHARE, max(0, room) / ctx))
+    names = [spec["function"]["name"] for spec in matches]
+    names += [name for name in _mcp_ran(by_name) if name not in listed]
+    box.update(matches = matches, names = list(dict.fromkeys(names)))
 
-    def filled(names: list[str]) -> list[dict]:
-        chosen = list(listing)
-        left = room
-        for name in dict.fromkeys(ran + names):
-            if by_name[name] in chosen:
-                continue
-            cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
-            if cost <= left:
-                chosen.append(by_name[name])
-                left -= cost
-        return chosen
 
-    held, listed_before = _mcp_held(by_name)
-    chosen = filled(held)
-    held = [name for name in held if by_name[name] in chosen]
-    if ranked and (not held or by_name[ranked[0]] not in chosen):
-        fresh = filled(ranked)
-        # A best match too big to list is not worth dropping the held tools for.
-        if not held or by_name[ranked[0]] in fresh:
-            chosen, held = fresh, [name for name in ranked if by_name[name] in fresh]
-    # Listed tools keep their places, new ones go last: a reorder in the tool block reprocesses the whole chat.
-    names = [spec["function"]["name"] for spec in chosen[1:]]
-    order = list(dict.fromkeys([name for name in listed_before if name in names] + names))
-    _mcp_hold(held, order)
-    return chosen[:1] + [by_name[name] for name in order]
+def mcp_match_exchange(messages: list[dict], tools) -> dict | None:
+    """The latest message's matches as a mcp_tool_search exchange after it, like the forced knowledge-base
+    search; ``names`` is what the loop accepts beyond the listing: the matches, the tools the thread ran,
+    and every tool an earlier search in ``messages`` gave the model the schema of."""
+    tool_names = {(t.get("function") or {}).get("name") for t in tools or [] if isinstance(t, dict)}
+    box = _MCP_LISTING_MATCHES.get()
+    if MCP_TOOL_SEARCH_NAME not in tool_names or not messages or not box:
+        return None
+    matches = box.get("matches") or []
+    names = list(dict.fromkeys([*(box.get("names") or []), *_mcp_searched_names(messages)]))
+    if not names:
+        return None
+    exchange = {"events": [], "messages": []}
+    # A resumed reply ends past the message: no search to add, but the names stay callable.
+    if matches and messages[-1].get("role") == "user":
+        exchange = build_synthetic_search_exchange(
+            tool_name = MCP_TOOL_SEARCH_NAME,
+            call_prefix = "mcp_auto_",
+            status_label = "Finding MCP tools",
+            query = _mcp_summary(_last_user_text(messages), _MCP_TOOL_SEARCH_SUMMARY_CHARS),
+            text = _mcp_search_result(matches),
+            sources = None,
+        )
+    return {**exchange, "names": names}
+
+
+def _mcp_searched_names(messages: list[dict]) -> list[str]:
+    """Names only: the tool loop checks each against the catalog once."""
+    search_ids = {
+        call.get("id")
+        for message in messages
+        if isinstance(message, dict)
+        for call in message.get("tool_calls") or []
+        if isinstance(call, dict)
+        and (call.get("function") or {}).get("name") == MCP_TOOL_SEARCH_NAME
+    }
+    names = {}
+    for message in messages:
+        if not (
+            isinstance(message, dict)
+            and message.get("role") == "tool"
+            and isinstance(message.get("content"), str)
+            and (
+                message.get("name") == MCP_TOOL_SEARCH_NAME
+                or message.get("tool_call_id") in search_ids
+            )
+        ):
+            continue
+        for line in message["content"].splitlines():
+            if line.startswith("  schema: "):
+                try:
+                    names[json.loads(line[len("  schema: ") :])["function"]["name"]] = None
+                except (ValueError, TypeError, KeyError):
+                    continue
+    return list(names)
 
 
 def _runs_local_mcp(server: dict) -> bool:
@@ -14234,14 +14462,22 @@ def mcp_loadable_specs(tools) -> list[dict]:
     return _cached_mcp_catalog() if MCP_TOOL_SEARCH_NAME in names else []
 
 
+def mcp_tool_specs(names) -> dict[str, dict]:
+    """The full specs of cached MCP tools by name, from one catalog build however many are asked for."""
+    wanted = {name for name in names if isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX)}
+    if not wanted:
+        return {}
+    found: dict[str, dict] = {}
+    for spec in _cached_mcp_catalog():
+        name = spec["function"]["name"]
+        if name in wanted:
+            found.setdefault(name, spec)
+    return found
+
+
 def mcp_tool_spec(name) -> dict | None:
     """The full spec of a cached MCP tool, for loading it into a running tool loop."""
-    if not isinstance(name, str) or not name.startswith(MCP_TOOL_PREFIX):
-        return None
-    for spec in _cached_mcp_catalog():
-        if spec["function"]["name"] == name:
-            return spec
-    return None
+    return mcp_tool_specs([name]).get(name) if isinstance(name, str) else None
 
 
 def _mcp_search_text(spec: dict) -> tuple[str, str, str]:
@@ -14644,14 +14880,41 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     return specs
 
 
+def _mcp_project_server_ids(session_id: str | None) -> frozenset[str] | None:
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return None
+    from storage.studio_db import get_chat_project
+
+    project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+    selected = project.get("mcpServerIds") if project else None
+    return frozenset(selected) if selected is not None else None
+
+
+def mcp_project_excludes(server_id: str, session_id: str | None) -> bool:
+    selected = _mcp_project_server_ids(session_id)
+    return selected is not None and server_id not in selected
+
+
+async def set_mcp_project_scope(session_id: str | None) -> None:
+    selected = (
+        await asyncio.to_thread(_mcp_project_server_ids, session_id)
+        if session_id and session_id.startswith(_PROJECT_SESSION_PREFIX)
+        else None
+    )
+    _MCP_PROJECT_SERVER_IDS.set(selected)
+
+
 def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
     from core.inference.studio_tools_mcp import keyless_caller
 
     keyless = keyless_caller(current_account())
+    selected = _MCP_PROJECT_SERVER_IDS.get()
     enabled = [
         server
         for server in servers
-        if server.get("is_enabled") and not (keyless and is_studio_tools(server["url"]))
+        if server.get("is_enabled")
+        and (selected is None or server["id"] in selected)
+        and not (keyless and is_studio_tools(server["url"]))
     ]
     if not any(is_studio_decisions(server["url"]) for server in enabled):
         return enabled
@@ -14745,14 +15008,18 @@ async def get_enabled_mcp_tools(
                 continue
             cache_tools(server["id"], payload)
 
-    listed: list[tuple[dict, list[dict], list[dict]]] = []
-    for server in servers:
-        payload = get_cached_tools(server["id"])
-        if payload is None:
-            continue
-        payload = [public_tool(server, tool) for tool in payload]
-        listed.append((server, payload, _mcp_specs_for_server(server, payload)))
-    return _mcp_listing(listed)
+    def _listing() -> list[dict]:
+        listed: list[tuple[dict, list[dict], list[dict]]] = []
+        for server in servers:
+            payload = get_cached_tools(server["id"])
+            if payload is None:
+                continue
+            payload = [public_tool(server, tool) for tool in payload]
+            listed.append((server, payload, _mcp_specs_for_server(server, payload)))
+        return _mcp_listing(listed)
+
+    # Off the loop: pricing the listing can make several synchronous token-count calls to llama-server.
+    return await asyncio.to_thread(_listing)
 
 
 def mcp_search_argument(name: str, tool: dict) -> str | None:
@@ -15036,6 +15303,8 @@ def execute_tool(
         display = server.get("display_name") or server_id
         if not server.get("is_enabled"):
             return f"Error: MCP server '{display}' is disabled"
+        if mcp_project_excludes(server_id, session_id):
+            return f"Error: MCP server '{display}' is not enabled for this project"
         if _runs_local_mcp(server) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"
         mcp_scope = mcp_session_scope(session_id, thread_id)
@@ -15089,6 +15358,7 @@ def execute_tool(
                 and parse_server_headers(row) == headers
                 and bool(row.get("use_oauth")) == use_oauth
                 and _image_still_approved(row)
+                and not mcp_project_excludes(server_id, session_id)
             )
 
         if tool_name == MCP_RESOURCE_TOOL and _mcp_listed_resources(server):
@@ -15604,15 +15874,20 @@ def build_synthetic_search_exchange(
     status_label: str,
     query: str,
     text: str,
-    sources: list[dict],
+    sources: list[dict] | None,
 ) -> dict:
-    """Renders a forced retrieval as a normal tool exchange: messages for the model, events for the UI."""
+    """Renders a forced retrieval as a normal tool exchange: messages for the model, events for the UI.
+    ``sources`` None sends no source map, for a tool whose replay does not strip one."""
     import json as _json
     import uuid as _uuid
 
     call_id = call_prefix + _uuid.uuid4().hex[:12]
     args = {"query": query}
-    full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    full_result = (
+        text
+        if sources is None
+        else text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    )
     # Local and round-less: the client replays it as its own exchange.
     provenance = {"source": "local"}
     events = [
@@ -17573,8 +17848,8 @@ def _result_char_budget(cap: int) -> int:
 def _tool_result_char_budget() -> int:
     """The terminal/python cap, sized to the window. See `_result_char_budget`."""
     cap = _tool_result_max_chars()
-    if not _request_context_tokens():
-        # Unknown window (an external provider, possibly a small local server): a raised setting is not applied blind.
+    if not _request_context_tokens() and _request_result_room() is None:
+        # No window and no priced room (a hosted provider, a server reporting none): a raised setting is not applied blind.
         cap = min(cap, _MAX_OUTPUT_CHARS)
     return _result_char_budget(cap)
 
@@ -17947,7 +18222,7 @@ def _dense_char_limit(
 
 def _truncate_page_text(text: str, max_chars: int) -> str:
     if not text:
-        return "(page returned no readable text)"
+        return EMPTY_PAGE_TEXT
     max_chars = _dense_char_limit(text, max_chars)
     if len(text) > max_chars:
         return text[:max_chars] + f"\n\n... (truncated, {len(text)} chars total)"
@@ -19208,9 +19483,8 @@ def _check_signal_escape_patterns(code: str):
             return self._cache[key]
 
         def _converged(self, query, node):
-            # A self-referential binding (d = d["system"]) reads the previous pass's answer, so repeat
-            # until no answer grows (they are finite sets, so this ends); keep only converged answers.
-            # Each pass writes a fresh layer over _final: copying _final per query made scans quadratic.
+            # Self-referential bindings need repeats until no answer grows; keep only converged
+            # answers.
             previous, self._guess = None, {}
             while True:
                 self._cache, self._cyclic = {}, False
@@ -22144,6 +22418,45 @@ class _WindowsToolJob:
             return False
         return bool(self._kernel32.TerminateJobObject(self._handle, 1))
 
+    def set_memory_limit(self, limit_bytes: int) -> bool:
+        if not self._handle:
+            return False
+        import ctypes
+        from ctypes import wintypes
+
+        class _BasicLimits(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _ExtendedLimits(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimits),
+                ("IoInfo", ctypes.c_uint64 * 6),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        info = _ExtendedLimits()
+        info.BasicLimitInformation.LimitFlags = 0x200  # JOB_OBJECT_LIMIT_JOB_MEMORY
+        info.JobMemoryLimit = limit_bytes
+        # 9 = JobObjectExtendedLimitInformation
+        return bool(
+            self._kernel32.SetInformationJobObject(
+                self._handle, 9, ctypes.byref(info), ctypes.sizeof(info)
+            )
+        )
+
     def active_processes(self) -> "int | None":
         """JOBOBJECT_BASIC_ACCOUNTING_INFORMATION.ActiveProcesses; None when the query fails."""
         if not self._handle:
@@ -22207,6 +22520,13 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
             ctypes.c_void_p,
         ]
         kernel32.QueryInformationJobObject.restype = BOOL
+        kernel32.SetInformationJobObject.argtypes = [
+            H,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = BOOL
         kernel32.CloseHandle.argtypes = [H]
         kernel32.CloseHandle.restype = BOOL
 
@@ -23424,6 +23744,118 @@ _BACKGROUND_STOPPED_NOTE = (
 )
 
 
+# Huge timeouts overflow the C conversion (CPython gh-154836).
+_EXIT_WAIT_MAX_SLICE_S = 24 * 3600.0
+# Left to Popen.wait so timeouts fire as before: Linux poll() may wake up to 0.1% (max 100 ms) late.
+_EXIT_WAIT_TAIL_S = 0.05
+
+
+def _open_exit_waiter(proc):
+    """pidfd (Linux) or kqueue (macOS) ready on exit, else None. Opened under Popen's waitpid lock so the pid cannot be
+    reaped and reused first; Python 3.15+ does this inside Popen.wait."""
+    if sys.platform == "win32" or not isinstance(proc, subprocess.Popen):
+        return None
+    if hasattr(subprocess.Popen, "_wait_pidfd"):
+        return None
+    lock = getattr(proc, "_waitpid_lock", None)
+    if lock is None or not lock.acquire(False):
+        return None
+    try:
+        if proc.returncode is not None:
+            return None
+        pidfd_open = getattr(os, "pidfd_open", None)
+        if pidfd_open is not None:
+            try:
+                fd = pidfd_open(proc.pid, 0)
+            except OSError:
+                return None
+            try:
+                # An outside waitpid(-1) may have reaped it, freeing the pid for reuse.
+                os.waitid(os.P_PIDFD, fd, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            except (OSError, AttributeError):
+                os.close(fd)
+                return None
+            return ("pidfd", fd)
+        kqueue = getattr(select, "kqueue", None)
+        if kqueue is None or not hasattr(select, "KQ_NOTE_EXIT"):
+            return None
+        try:
+            kq = kqueue()
+        except OSError:
+            return None
+        try:
+            kq.control(
+                [
+                    select.kevent(
+                        proc.pid,
+                        filter = select.KQ_FILTER_PROC,
+                        flags = select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                        fflags = select.KQ_NOTE_EXIT,
+                    )
+                ],
+                0,
+                0,
+            )
+        except OSError:
+            # ESRCH: already exited.
+            kq.close()
+            return None
+        return ("kqueue", kq)
+    finally:
+        lock.release()
+
+
+def _wait_exit_event(waiter, deadline: float) -> bool:
+    """True once the exit fires, False on reaching the tail before *deadline*."""
+    kind, handle = waiter
+    try:
+        if kind == "pidfd":
+            poller = select.poll()
+            poller.register(handle, select.POLLIN)
+        while True:
+            lead = deadline - _EXIT_WAIT_TAIL_S - time.monotonic()
+            if lead <= 0:
+                return False
+            wait_s = min(lead, max(lead / 2, _EXIT_WAIT_TAIL_S), _EXIT_WAIT_MAX_SLICE_S)
+            if kind == "pidfd":
+                ready = poller.poll(wait_s * 1000)
+            else:
+                ready = handle.control(None, 1, wait_s)
+            if ready:
+                return True
+    finally:
+        if kind == "pidfd":
+            os.close(handle)
+        else:
+            handle.close()
+
+
+def _wait_process(proc, timeout) -> None:
+    """proc.wait(timeout) woken by the exit event, not Python <= 3.14's 1-50 ms sleep loop; falls back to proc.wait."""
+    if timeout is None:
+        proc.wait(timeout = timeout)
+        return
+    deadline = time.monotonic() + timeout
+    waiter = None
+    if timeout > _EXIT_WAIT_TAIL_S:
+        try:
+            waiter = _open_exit_waiter(proc)
+        except Exception:  # noqa: BLE001 - the stdlib wait below is always correct
+            logger.debug("exit waiter unavailable", exc_info = True)
+            waiter = None
+    if waiter is None:
+        proc.wait(timeout = timeout)
+        return
+    try:
+        _wait_exit_event(waiter, deadline)
+    except Exception:  # noqa: BLE001 - fall through to the stdlib wait for what is left
+        logger.debug("exit wait failed", exc_info = True)
+    try:
+        proc.wait(timeout = max(deadline - time.monotonic(), 0.0))
+    except subprocess.TimeoutExpired:
+        raise subprocess.TimeoutExpired(proc.args, timeout) from None
+
+
 def _drain_process_output(
     proc,
     timeout,
@@ -23477,14 +23909,14 @@ def _drain_process_output(
     started_at = time.monotonic()
     timed_out = False
     try:
-        proc.wait(timeout = timeout)
+        _wait_process(proc, timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
         _kill_process_tree(proc)
         # Also kill the pre-captured group in case the leader was reaped first.
         _killpg_captured(pgid)
         try:
-            proc.wait(timeout = 5)
+            _wait_process(proc, 5)
         except subprocess.TimeoutExpired:
             pass
     # A grandchild holding the inherited stdout outlives the leader: stop the group once the reader has
@@ -24112,6 +24544,7 @@ def _python_exec(
 
         # Capture the group before any watcher can reap the leader (see _capture_process_group); None on Windows.
         pgid = _capture_process_group(proc)
+        _cap_tool_memory(proc, pgid, not disable_sandbox)
         _adopt_tool_pid(proc.pid)
 
         if cancel_event is not None:
@@ -24127,15 +24560,7 @@ def _python_exec(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
         if prepared is not None:
-            proc._unsloth_completion_reason = (
-                "timed_out"
-                if timed_out
-                else (
-                    "cancelled"
-                    if cancel_event is not None and cancel_event.is_set()
-                    else "finished"
-                )
-            )
+            proc._unsloth_completion_reason = _completion_reason(proc, timed_out, cancel_event)
         if prepared is not None:
             completion = os_sandbox.verify_prepared_completion(prepared, proc)
             if completion is not None and completion.get("timedOut"):
@@ -24157,7 +24582,7 @@ def _python_exec(
                 else ""
             )
 
-        result = output or ""
+        result = _memory_exceeded_note(proc) + (output or "")
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
         # Detect on full output (truncation may hide it), append after truncation; use the real workdir.
@@ -24395,6 +24820,7 @@ def _bash_exec(
 
         # Capture the group before any watcher can poll/reap the leader (see _python_exec); None on Windows.
         pgid = _capture_process_group(proc)
+        _cap_tool_memory(proc, pgid, not disable_sandbox)
         _adopt_tool_pid(proc.pid)
 
         if cancel_event is not None:
@@ -24410,15 +24836,7 @@ def _bash_exec(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
         if prepared is not None:
-            proc._unsloth_completion_reason = (
-                "timed_out"
-                if timed_out
-                else (
-                    "cancelled"
-                    if cancel_event is not None and cancel_event.is_set()
-                    else "finished"
-                )
-            )
+            proc._unsloth_completion_reason = _completion_reason(proc, timed_out, cancel_event)
         if prepared is not None:
             completion = os_sandbox.verify_prepared_completion(prepared, proc)
             if completion is not None and completion.get("timedOut"):
@@ -24440,7 +24858,7 @@ def _bash_exec(
                 else ""
             )
 
-        result = output or ""
+        result = _memory_exceeded_note(proc) + (output or "")
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
         # Same missing-path healing as _python_exec.

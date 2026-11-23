@@ -71,14 +71,20 @@ jobs:
         env:
           # Index by name: a ternary would hand over the other account's token when this one is empty.
           KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+          # Through env, never ${{ }} in the script: the dispatch input is free text beside the token.
+          MAX_AGE_HOURS: ${{ inputs.max_age_hours || '3' }}
         # --require-auth: a broken token here must be red; an EMPTY token (single-account repo) only warns.
         # --no-delete: the last step releases kernels after statuses post.
         run: |
+          if ! printf '%s' "$MAX_AGE_HOURS" | grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+            echo "::error::max_age_hours must be a number of hours, got '$MAX_AGE_HOURS'"
+            exit 1
+          fi
           python .github/scripts/kaggle_t4_ci/collect.py \
             --outdir kaggle_collected \
             --require-auth \
             --no-delete \
-            --max-age-hours '${{ inputs.max_age_hours || '3' }}' \
+            --max-age-hours "$MAX_AGE_HOURS" \
             --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       # Post first, delete second, so a failed post leaves the kernel for the next pass.

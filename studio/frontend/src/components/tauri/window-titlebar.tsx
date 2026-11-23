@@ -233,6 +233,7 @@ export function DesktopTitlebarNavigation({
       )}
       role="toolbar"
       aria-label={t("desktopShell.navigation")}
+      data-titlebar-nav=""
     >
       {showSidebarToggle ? (
         <button

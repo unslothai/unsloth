@@ -613,6 +613,40 @@ def test_no_room_for_the_huge_race_keeps_todays_path_there(monkeypatch):
     assert g8._CUT_PLAN[0][key] == {512: None, 4096: 1, 16384: None}
 
 
+def test_a_huge_race_skipped_for_memory_is_raced_again_on_a_later_load(monkeypatch):
+    """No room for the 16384-row race is not a lost race: the next load (memory back) races that point alone."""
+    rec, key, raced = _plan_env(monkeypatch, False)
+    table = {"ck": {}}
+    monkeypatch.setattr(g8, "_cut_cache_read", lambda: {k_: dict(v) for k_, v in table.items()})
+    monkeypatch.setattr(g8, "_cut_cache_write", lambda t: table.update(t))
+    g8._cutlass_plan(0, [rec], True)
+    assert raced == [512, 4096]
+    assert g8._CUT_PLAN[0][key] == {512: None, 4096: 1, 16384: None}
+    # a fresh process with the room back
+    g8._CUT_PLAN.clear()
+    g8._CUT_DONE.clear()
+    g8._CUT_RACES.clear()
+    monkeypatch.setattr(g8, "_huge_race_fits", lambda *a_: True)
+    del raced[:]
+    g8._cutlass_plan(0, [rec], True)
+    assert raced == [16384]
+    assert g8._CUT_PLAN[0][key] == {512: None, 4096: 1, 16384: 2}
+    # the completed race is what the next load reads
+    g8._CUT_PLAN.clear()
+    g8._CUT_DONE.clear()
+    del raced[:]
+    g8._cutlass_plan(0, [rec], True)
+    assert not raced and g8._CUT_PLAN[0][key] == {512: None, 4096: 1, 16384: 2}
+
+
+def test_a_lost_huge_race_is_still_read_from_the_cache(monkeypatch):
+    rec, key, raced = _plan_env(monkeypatch, True)
+    table = {"ck": {repr(key): {"512": None, "4096": 1, "16384": None}}}
+    monkeypatch.setattr(g8, "_cut_cache_read", lambda: table)
+    g8._cutlass_plan(0, [rec], True)
+    assert not raced and g8._CUT_PLAN[0][key] == {512: None, 4096: 1, 16384: None}
+
+
 def test_the_kernel_sources_do_not_shadow_the_kernels_package():
     # CI and Studio put studio/ on sys.path, where a studio/kernels folder imports as the HF ``kernels`` package.
     studio = Path(__file__).resolve().parents[2]

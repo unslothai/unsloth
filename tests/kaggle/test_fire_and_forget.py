@@ -1151,9 +1151,7 @@ def test_the_collector_installs_the_client_the_gpu_workflows_install():
 
 
 def test_every_kaggle_client_install_also_installs_six():
-    """kaggle 2.2.x imports six in kaggle/models/upload_file.py without declaring
-    it. python-dateutil < 4 brought it in; 4.0 dropped it, and every collector
-    pass then died on ModuleNotFoundError before it reached the token."""
+    """kaggle 2.2.x imports six undeclared; python-dateutil 4.0 dropped it, so install six too."""
     for path in (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF):
         lines = re.findall(r"pip install [^\n]*'kaggle==[^\n]*", path.read_text(encoding = "utf-8"))
         assert lines, f"{path.name} pins no kaggle client"
@@ -1162,8 +1160,7 @@ def test_every_kaggle_client_install_also_installs_six():
 
 
 def test_a_client_that_cannot_import_is_not_reported_as_a_bad_token(tmp_path, monkeypatch, capsys):
-    """An ImportError means the token was never tried; blaming it sends the
-    reader to rotate a secret that is fine while the install stays broken."""
+    """An ImportError means the token was never tried; do not rotate a secret for it."""
 
     def _no(*a, **k):
         raise ModuleNotFoundError("No module named 'six'", name = "six")
@@ -1666,6 +1663,22 @@ def test_a_notebook_kernel_without_its_expected_count_is_never_a_pass(tmp_path, 
     )
 
 
+def _collector_default_max_age(source):
+    """The default behind --max-age-hours, passed inline or (since #18969) through an env var set from the input."""
+    inline = re.search(r"--max-age-hours '\$\{\{ inputs\.max_age_hours \|\| '(\d+)' \}\}'", source)
+    if inline:
+        return inline.group(1)
+    via_env = re.search(
+        r"^\s*(\w+): \$\{\{ inputs\.max_age_hours \|\| '(\d+)' \}\}\s*$", source, re.M
+    )
+    assert via_env, "the collector's default age ceiling is not readable from the workflow"
+    name, default = via_env.groups()
+    assert re.search(
+        rf'--max-age-hours "?\$\{{?{name}\b', source
+    ), f"{name} never reaches --max-age-hours"
+    return default
+
+
 def test_every_gate_budget_covers_the_reaper_window():
     """A gate budget shorter than the reaper window lets a wedged kernel bill into the reserve."""
     collect_wf = _wf(COLLECT_WF)
@@ -1676,9 +1689,7 @@ def test_every_gate_budget_covers_the_reaper_window():
     minutes = sorted(int(m) for m in crons[0].split()[0].split(","))
     interval_min = max(b - a for a, b in zip(minutes, minutes[1:])) if len(minutes) > 1 else 60
     source = COLLECT_WF.read_text(encoding = "utf-8")
-    m = re.search(r"--max-age-hours '\$\{\{ inputs\.max_age_hours \|\| '(\d+)' \}\}'", source)
-    assert m, "the collector's default age ceiling is not readable from the workflow"
-    max_age = float(m.group(1))
+    max_age = float(_collector_default_max_age(source))
     assert max_age == collect.DEFAULT_MAX_AGE_HOURS
     window = max_age + (interval_min + job["timeout-minutes"]) / 60
     for path in (NOTEBOOK_WF, STUDIO_WF):

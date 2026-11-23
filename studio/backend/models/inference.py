@@ -379,7 +379,9 @@ class LoadRequest(BaseModel):
         description = (
             "Logical prompt batch size for llama-server (--batch-size) for "
             f"this load ({BATCH_MIN}..{BATCH_MAX}). Omit for the llama.cpp "
-            "default (2048). Ignored for non-GGUF models."
+            "default (2048). On MLX it caps the tokens one batched prefill forward "
+            "takes across replies (never below one reply); omit to prefill every "
+            "waiting reply together. Ignored for other non-GGUF models."
         ),
     )
     n_ubatch: Optional[int] = Field(
@@ -394,7 +396,9 @@ class LoadRequest(BaseModel):
             "2048 for a projector whose family cannot be read. Every other "
             "vision model keeps the 512 default. "
             "llama.cpp caps it at the batch size. Larger values speed up prompt "
-            "processing at the cost of compute-buffer VRAM. Ignored for "
+            "processing at the cost of compute-buffer VRAM. On MLX it is the "
+            "prefill step, tokens per prefill forward (default 2048); an "
+            "expert-offload plan's own chunk caps it. Ignored for other "
             "non-GGUF models."
         ),
     )
@@ -443,7 +447,9 @@ class LoadRequest(BaseModel):
             "Host memory in MiB llama-server may spend caching prompt state it "
             "has evicted from a slot (--cache-ram). Omit for the llama.cpp "
             "default (8192); 0 disables the cache and -1 lifts the limit. "
-            "Ignored for non-GGUF models."
+            "On MLX it sizes the prompt cache, which shares memory with the model: "
+            "omit (or -1) for 15% of the GPU working set, 0 disables it. "
+            "Ignored for other non-GGUF models."
         ),
     )
     tensor_parallel: bool = Field(
@@ -461,8 +467,9 @@ class LoadRequest(BaseModel):
             "Load a vision-capable GGUF without its multimodal projector, as a "
             "text-only model. Frees the VRAM the projector would hold, at the cost "
             "of image input, which is off for the session; text generation is "
-            "unaffected. Ignored for models with no vision projector, and for "
-            "non-GGUF models."
+            "unaffected. On MLX, stops image input and frees the vision weights "
+            "(an adapter or audio-input model keeps them). Ignored for models with no "
+            "vision input, and for other non-GGUF models."
         ),
     )
     engram_precision: Optional[str] = Field(
@@ -1172,6 +1179,12 @@ class EstimateMemoryRequest(BaseModel):
     n_batch: Optional[int] = Field(None, ge = BATCH_MIN, le = BATCH_MAX)
     n_ubatch: Optional[int] = Field(None, ge = BATCH_MIN, le = BATCH_MAX)
     ctx_checkpoints: Optional[int] = Field(None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    cache_ram: Optional[int] = Field(
+        None,
+        ge = -1,
+        le = CACHE_RAM_MAX_MIB,
+        description = "MLX prompt cache in MiB, as on /load; it comes out of what the context fits in.",
+    )
     speculative_type: Optional[str] = Field(
         None, description = "Speculative mode; decides which drafter's weights are charged."
     )
@@ -1247,7 +1260,13 @@ class EstimateMemoryRequest(BaseModel):
     )
 
     _no_booleans = field_validator(
-        "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", "max_seq_length", mode = "before"
+        "n_batch",
+        "n_ubatch",
+        "ctx_checkpoints",
+        "cache_ram",
+        "n_ctx",
+        "max_seq_length",
+        mode = "before",
     )(LoadRequest._no_booleans.__func__)
     # Unresolved, the handle reads as a Hub id and the panel is told the estimate is unavailable.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
@@ -2367,9 +2386,10 @@ class LoadProgressResponse(BaseModel):
     phase: Optional[str] = Field(
         None,
         description = (
-            "Load phase: 'mmap' (weights paging into RAM via mmap), "
-            "'ready' (llama-server reported healthy), or null when no "
-            "load is in flight."
+            "Load phase: 'fit' (llama-server's --fit is searching for a layer "
+            "placement and reads no weights yet), 'mmap' (weights paging into "
+            "RAM via mmap), 'ready' (llama-server reported healthy), or null "
+            "when no load is in flight."
         ),
     )
     bytes_loaded: int = Field(
@@ -5055,7 +5075,8 @@ class DiffusionLoadRequest(BaseModel):
         "speed=off). native (alias sdpa) forces default SDPA; cudnn/flash/flash3/flash4 are exact "
         "(kernel/arch-gated); sage is INT8 attention (a small quality cost, consumer "
         "friendly); unsloth_int8 is Studio's own INT8 attention kernel on the families with "
-        "strided attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
+        "strided attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm (aiter needs "
+        "diffusers' local AITER backend, gone in 0.41+; without it ROCm runs the auto pick). An "
         "unavailable kernel falls back to the default.",
     )
     int8_attention: Optional[Literal["auto", "on", "off"]] = Field(
@@ -6285,6 +6306,21 @@ class DiffusionResolvedControl(BaseModel):
         '{"step", "status": "engaged" | "declined" | "failed", "reason"} (why a step did not engage, or the '
         "error it failed with). Null on every other control.",
     )
+    engaged: Any = Field(
+        None,
+        description = "attention_backend: the backend the attention modules actually run (a string). "
+        "int8_attention: whether Studio's INT8 attention kernel engaged (a boolean). Null on every other control.",
+    )
+    modules: Optional[int] = Field(
+        None,
+        description = "attention_backend / int8_attention: how many attention modules run the engaged backend; "
+        "null when the pipeline has no countable processors and on every other control.",
+    )
+    routed: Optional[Dict[str, int]] = Field(
+        None,
+        description = "attention_backend only: how many attention modules route to each backend. Null on every "
+        "other control.",
+    )
 
 
 class DiffusionDownloadPlanEntry(BaseModel):
@@ -6465,10 +6501,20 @@ class DiffusionStatusResponse(BaseModel):
         description = "Adapter ids baked into the transformer at load time, as GalleryImage.baked_loras "
         "records them; empty when the load baked none",
     )
+    baked_lora_specs: list[dict] = Field(
+        default_factory = list,
+        description = "The baked adapters as the load requested them, [{id, weight}]; empty when none. The "
+        "Images page compares a LoRA selection against it to tell whether Generate needs a reload first",
+    )
     transformer_cache_stats: Optional[dict] = Field(
         None,
         description = "Static step skip only: mode, schedule and the last generation's "
         "calls / computed / skipped transformer calls; null for any other cache",
+    )
+    render_engagement: Optional[dict] = Field(
+        None,
+        description = "What the last generation actually ran: fbcache = {computed, skipped} head-block "
+        "decisions of First-Block-Cache (null when it is not installed). null before the first generation.",
     )
     workflows: list[str] = Field(
         default_factory = list,
@@ -7648,7 +7694,8 @@ class VideoLoadRequest(BaseModel):
         "is active; native SDPA elsewhere and when speed=off). native (alias sdpa) forces "
         "default SDPA; cudnn/flash/flash3/flash4 are exact (kernel/arch-gated); sage is INT8 "
         "attention; unsloth_int8 is Studio's own INT8 attention kernel on the families with strided "
-        "attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
+        "attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm (aiter needs diffusers' "
+        "local AITER backend, gone in 0.41+; without it ROCm runs the auto pick). An unavailable "
         "kernel falls back to the default.",
     )
     int8_attention: Optional[Literal["auto", "on", "off"]] = Field(
@@ -7806,6 +7853,13 @@ class VideoGenerateRequest(BaseModel):
         None,
         description = "Stream a small live preview of the first frame while the clip denoises "
         "(generate-progress 'preview'). Null = the server default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).",
+    )
+    draft_decode: Optional[bool] = Field(
+        None,
+        description = "Wan families only: decode the finished latent with the tiny Wan VAE instead of the full one "
+        "(much faster and lighter, visibly softer; for drafts on CPU, Apple Silicon or small GPUs). Falls back to the "
+        "full decode when the tiny decoder is unavailable. Null = the server default (off unless "
+        "UNSLOTH_VIDEO_DRAFT_DECODE=1).",
     )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds
     # stay a COARSE family-agnostic outer guard: the enforced rule is the LOADED family's own
@@ -8289,6 +8343,12 @@ class VideoStatusResponse(BaseModel):
         description = "Static step skip only: the schedule (mode, head, tail, every, "
         "planned_skips) and the denoiser call counts (calls, computed, skipped) of the clip in "
         "flight, else of the last one. null for any other step cache.",
+    )
+    render_engagement: Optional[dict] = Field(
+        None,
+        description = "What the last clip actually ran: vae_decode = {untiled, tiled, wide, oom_fallback} "
+        "decodes of the untiled-when-fits VAE wrapper (null when it is not installed), fbcache = "
+        "{computed, skipped} First-Block-Cache decisions (null when it is not installed). null before the first clip.",
     )
     transformer_quant: Optional[str] = Field(
         None,
