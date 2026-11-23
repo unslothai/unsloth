@@ -53,7 +53,7 @@ test("only a browser-executed tool forces the legacy stream", () => {
 });
 
 const durableTurn = {
-  externalProvider: false,
+  externalKeyInBrowser: false,
   modelIsAudio: false,
   loadedIsDiffusion: false,
   turnCarriesMedia: false,
@@ -70,9 +70,9 @@ test("a plain text turn on a persisted thread is a durable-run candidate", () =>
 
 const legacyCases: [string, Record<string, unknown>, string][] = [
   [
-    "an external-provider turn",
-    { externalProvider: true },
-    "its own client owns that stream, so there is no server run to reattach to",
+    "a connection turn whose key lives only in this browser",
+    { externalKeyInBrowser: true },
+    "a run persists its request, so it cannot carry the browser's key",
   ],
   [
     "an audio model",
@@ -125,6 +125,10 @@ for (const [name, override, why] of legacyCases) {
     );
   });
 }
+
+test("a connection turn whose key the server holds is a durable-run candidate", () => {
+  assert.equal(isDurableRunCandidate({ ...durableTurn, externalKeyInBrowser: false }), true);
+});
 
 test("the gate reads the turn's own media, never the thread's history", () => {
   assert.equal(isDurableRunCandidate({ ...durableTurn, turnCarriesMedia: false }), true);

@@ -364,6 +364,18 @@ test("credential-safe durable admission errors select the legacy stream", async 
   );
 });
 
+test("a connection the server cannot replay selects the legacy stream", async () => {
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({ detail: "This connection's chat runs use the legacy streaming path" }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+  await assert.rejects(
+    createChatGenerationRun(createInput()),
+    (error: unknown) => isLegacyFallbackChatGenerationAdmissionError(error),
+  );
+});
+
 test("an older backend's unknown-field refusal selects the legacy stream", async () => {
   globalThis.fetch = (async () =>
     new Response(
