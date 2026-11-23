@@ -848,7 +848,12 @@ def test_narrowing_is_refused_on_rocm_and_other_non_cuda_targets():
     for device in ("rocm", "mps", "cpu"):
         d = _decide(ZIMAGE, dtype = torch.bfloat16, device = device, total = MINT_TOTAL, available = 10719)
         assert not d.engaged and d.refuse and "float32" in d.refuse, device
-    assert _decide(ZIMAGE, dtype = torch.bfloat16, device = "rocm", total = 32 * 1024, available = 28000).refuse is None
+    assert (
+        _decide(
+            ZIMAGE, dtype = torch.bfloat16, device = "rocm", total = 32 * 1024, available = 28000
+        ).refuse
+        is None
+    )
     assert _decide(ZIMAGE, dtype = torch.bfloat16, total = MINT_TOTAL, available = None).refuse is None
 
 
