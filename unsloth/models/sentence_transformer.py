@@ -106,6 +106,11 @@ def fsdp2_st_usage_snippet(model):
         print(f"Unsloth: FSDP2 save: model card usage snippet not computed ({exc}).")
     finally:
         model.__dict__.pop("to", None)
+        # Through train(), not only the flag: Int4PackedLinear syncs its quant_state there and
+        # PreTrainedModel re-kernelizes under use_kernels. modules() is parent-first, so the children's
+        # own calls undo each recursion; the flags then cover a child shared by two parents.
+        for module, training in modes:
+            module.train(training)
         for module, training in modes:
             module.training = training
     card.__dict__["run_usage_snippet"] = lambda *args, **kwargs: None
@@ -1523,6 +1528,21 @@ class FastSentenceTransformer(FastModel):
     _MAX_SUB_MODULE_DEPTH = 8
 
     @staticmethod
+    def _folder_escapes_model(folder):
+        """A module folder that leaves the model: rooted, a drive, a UNC share, or above it once normalized.
+        modules/../1_Pooling stays inside."""
+        if not isinstance(folder, str):
+            return False
+        normalized = posixpath.normpath(folder.replace("\\", "/"))
+        return (
+            os.path.isabs(folder)
+            or folder.startswith(("/", "\\"))
+            or folder[1:2] == ":"
+            or normalized == ".."
+            or normalized.startswith("../")
+        )
+
+    @staticmethod
     def _is_transformer_module_ref(class_ref):
         """Match the ST Transformer by name without importing it, since importing is the execution
         the gate refuses; other spellings or subclasses are caught by issubclass after gating."""
@@ -1663,7 +1683,17 @@ class FastSentenceTransformer(FastModel):
 
         # Router.load runs the same unchecked loaders one folder down for each route, so
         # each route is checked the way this module was, where the loader will read it.
+        try:
+            is_local = os.path.isdir(model_name)
+        except (OSError, TypeError, ValueError):
+            is_local = False
         for route, value in routes:
+            # A Hub repo's UNC / rooted route would reach a host the repo chose (SMB, NTLM on Windows).
+            if not is_local and FastSentenceTransformer._folder_escapes_model(route):
+                raise ValueError(
+                    f"Unsloth: {model_name} names the {class_ref} route folder {route!r}, which is "
+                    f"outside the model. Module folders must stay inside the model folder."
+                )
             if depth >= FastSentenceTransformer._MAX_SUB_MODULE_DEPTH:
                 raise ValueError(
                     f"Unsloth: The model {model_name} nests its {class_ref} modules more than "
@@ -1995,17 +2025,7 @@ class FastSentenceTransformer(FastModel):
             if not isinstance(module_config, dict):
                 continue
             folder = module_config.get("path")
-            # modules/../1_Pooling stays inside: only a folder that normalizes above the model escapes.
-            normalized = (
-                posixpath.normpath(folder.replace("\\", "/")) if isinstance(folder, str) else ""
-            )
-            if isinstance(folder, str) and (
-                os.path.isabs(folder)
-                or folder.startswith(("/", "\\"))
-                or folder[1:2] == ":"
-                or normalized == ".."
-                or normalized.startswith("../")
-            ):
+            if FastSentenceTransformer._folder_escapes_model(folder):
                 raise ValueError(
                     f"Unsloth: {model_name} names the module folder {folder!r}, which is "
                     f"outside the model. Module folders must stay inside the model folder."

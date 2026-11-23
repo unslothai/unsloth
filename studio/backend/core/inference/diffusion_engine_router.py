@@ -454,7 +454,7 @@ def _mlx_host_refusal() -> Optional[str]:
 # mflux's own darwin mlx range plus the light deps install_python_stack.py installs beside it (mflux goes in --no-deps).
 _MLX_RUNTIME_REQUIREMENTS: tuple[str, ...] = (
     "mlx>=0.32.0,<0.33.0",
-    # Pillow 13.0.0 breaks every mflux import (PIL._typing), so it is refused here, not at load.
+    # Pillow 13.0.0 breaks every mflux 0.22 import (PIL._typing), so it is refused here, not at load.
     "pillow>=12.3.0,<13",
     "piexif>=1.1.3,<2",
     "platformdirs>=4,<5",
@@ -475,11 +475,14 @@ def _mlx_runtime_refusal() -> Optional[str]:
     missing = [name for name in ("mlx", "mflux") if importlib.util.find_spec(name) is None]
     if missing:
         return f"{' and '.join(missing)} not installed"
-    from core.inference.mlx_diffusion_convert import MFLUX_VERSION
+    from core.inference.mlx_diffusion_convert import MFLUX_COMPATIBLE_VERSIONS, MFLUX_VERSION
 
+    installed_mflux = _installed_version("mflux")
+    if installed_mflux not in MFLUX_COMPATIBLE_VERSIONS:
+        return f"the MLX engine needs mflux=={MFLUX_VERSION} (found {installed_mflux or 'none'})"
     try:
         from packaging.requirements import Requirement
-        for spec in (f"mflux=={MFLUX_VERSION}", *_MLX_RUNTIME_REQUIREMENTS):
+        for spec in _MLX_RUNTIME_REQUIREMENTS:
             requirement = Requirement(spec)
             installed = _installed_version(requirement.name)
             if installed is None or not requirement.specifier.contains(installed, prereleases = True):

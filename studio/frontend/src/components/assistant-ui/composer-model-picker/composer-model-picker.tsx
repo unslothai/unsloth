@@ -74,7 +74,11 @@ import {
   useOnlineStatus,
 } from "@/features/hub";
 import { useAvatarImageUrl } from "@/features/hub/catalog/owner-avatar";
-import { hasMlxCardTag, isMlxId } from "@/features/hub/lib/format-filters";
+import {
+  hasMlxCardTag,
+  isMlxId,
+  localRowIsMlx,
+} from "@/features/hub/lib/format-filters";
 import {
   hfCacheRepoId,
   isStandaloneGgufPath,
@@ -103,6 +107,7 @@ import {
   isMediaCatalogRepo,
   isOverBudget,
   isRecommendableFormat,
+  isServedByMlx,
   loadStampId,
   loadedAt,
   loraOptionLabel,
@@ -383,7 +388,8 @@ function loraFormat(lora: LoraModelOption): FormatTone {
   if (lora.source !== "local" && lora.exportType !== "merged") {
     return "adapter";
   }
-  return MLX_PATH_SEGMENT.test(lora.id) || isMlxId(lora.id)
+  return MLX_PATH_SEGMENT.test(lora.id) ||
+    localRowIsMlx({ id: lora.id, display_name: lora.name, source: lora.localSource })
     ? "mlx"
     : "checkpoint";
 }
@@ -1935,6 +1941,13 @@ export function ComposerModelPicker({
   const chatOnlyKnown = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
+  const servesMlx = usePlatformStore((s) =>
+    isServedByMlx(false, s.deviceType, s.chatOnlyReason, s.mlxInference),
+  );
+  // A CPU training host has torch, so it loads checkpoints without MLX.
+  const hidesCheckpoints = usePlatformStore(
+    (s) => chatOnlyKnown && !servesMlx && !s.isCpuTrainingHost(),
+  );
   const recommended = useMemo<ModelOption[]>(() => {
     // The header picker's runtime gate; vLLM loads compressed-tensors checkpoints the gate refuses.
     const supported = (r: (typeof hubResults)[number]) =>
@@ -1965,6 +1978,8 @@ export function ComposerModelPicker({
               formatFilter,
               chatOnly,
               isMlxId(r.id, hasMlxCardTag(r)),
+              servesMlx,
+              chatOnlyKnown,
             ) &&
               isRecommendableFormat(r.id, r.isGguf, true, r.quantMethod) &&
               matchesRecommendedBrowse(
@@ -1994,6 +2009,8 @@ export function ComposerModelPicker({
     source?.models,
     formatFilter,
     chatOnly,
+    servesMlx,
+    chatOnlyKnown,
   ]);
   // Hub results marked MLX only by their card, which the ModelOption rows drop.
   const mlxTaggedHub = useMemo(
@@ -2088,6 +2105,9 @@ export function ComposerModelPicker({
       ) {
         continue;
       }
+      if (!audio && hidesCheckpoints) {
+        continue;
+      }
       device.push({
         media: audio ? "audio" : undefined,
         key: `cached:${repo.repo_id}`,
@@ -2121,6 +2141,15 @@ export function ComposerModelPicker({
       ) {
         continue;
       }
+      const format = loraFormat(lora);
+      if (
+        lora.source === "local" &&
+        !lora.audioType &&
+        hidesCheckpoints &&
+        format !== "gguf"
+      ) {
+        continue;
+      }
       device.push({
         media:
           mediaPageForTask(loraMeta(lora).pipelineTag) === "audio"
@@ -2133,7 +2162,7 @@ export function ComposerModelPicker({
         tab: DEVICE_TAB,
         kind: loraNeedsQuant(lora) ? "localGguf" : "local",
         section: localSection(lora.source, lora.baseModel),
-        format: loraFormat(lora),
+        format,
         sizeBytes: lora.sizeBytes ?? undefined,
         updatedAt: lora.updatedAt,
         lora,
@@ -2248,6 +2277,7 @@ export function ComposerModelPicker({
     externalModels,
     mediaTaskById,
     listsAudio,
+    hidesCheckpoints,
   ]);
   routeMediaPick.current = (id, meta) => {
     if (!listsAudio) {
@@ -3811,7 +3841,12 @@ export function ComposerModelPicker({
       formatFilter === "safetensors" &&
       chatOnlyKnown
     ) {
-      return { title: "No models", hint: "This device runs GGUF models only." };
+      return {
+        title: "No models",
+        hint: servesMlx
+          ? "This device runs GGUF and MLX models only."
+          : "This device runs GGUF models only.",
+      };
     }
     return { title: "No models" };
   };
@@ -5331,7 +5366,9 @@ export function ComposerModelPicker({
                       )}
                     >
                       <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
-                        <RowMark row={chosenMark} />
+                        <span className="composer-chip-mark flex shrink-0">
+                          <RowMark row={chosenMark} />
+                        </span>
                       </span>
                       <HugeiconsIcon
                         icon={RemoveCircleIcon}
@@ -5341,7 +5378,9 @@ export function ComposerModelPicker({
                     </span>
                   </Hint>
                 ) : chosenName ? (
-                  <RowMark row={chosenMark} />
+                  <span className="composer-chip-mark flex shrink-0">
+                    <RowMark row={chosenMark} />
+                  </span>
                 ) : null}
                 <span className="unsloth-thinking-label composer-model-chip-name truncate">
                   {chipLabel}
@@ -5408,7 +5447,9 @@ export function ComposerModelPicker({
                   )}
                 >
                   <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
-                    <RowMark row={chosenMark} />
+                    <span className="composer-chip-mark flex shrink-0">
+                      <RowMark row={chosenMark} />
+                    </span>
                   </span>
                   <HugeiconsIcon
                     icon={RemoveCircleIcon}
@@ -5418,7 +5459,9 @@ export function ComposerModelPicker({
                 </span>
               </Hint>
             ) : chosenName ? (
-              <RowMark row={chosenMark} />
+              <span className="composer-chip-mark flex shrink-0">
+                <RowMark row={chosenMark} />
+              </span>
             ) : null}
             <span className="unsloth-thinking-label composer-model-chip-name truncate">
               {chipLabel}

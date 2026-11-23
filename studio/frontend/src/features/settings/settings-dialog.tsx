@@ -39,7 +39,12 @@ import {
   UserCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { ShieldCogIcon } from "@/lib/shield-cog-icon";
-import { ChipIcon, MessageCircleIcon, Settings01Icon } from "@/lib/hugeicons-derived";
+import {
+  ChipIcon,
+  FileSearchIcon,
+  MessageCircleIcon,
+  Settings01Icon,
+} from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -99,6 +104,8 @@ const TAB_LOADERS = {
   library: () =>
     import("./tabs/library-tab").then((m) => ({ default: m.LibraryTab })),
   data: () => import("./tabs/data-tab").then((m) => ({ default: m.DataTab })),
+  knowledge: () =>
+    import("./tabs/knowledge-tab").then((m) => ({ default: m.KnowledgeTab })),
   "keyboard-shortcuts": () =>
     import("./tabs/keyboard-shortcuts-tab").then((m) => ({
       default: m.KeyboardShortcutsTab,
@@ -332,6 +339,11 @@ const TABS: TabDef[] = [
     icon: LibrariesIcon,
   },
   {
+    id: "knowledge",
+    labelKey: "settings.tabs.knowledge",
+    icon: FileSearchIcon,
+  },
+  {
     id: "debugging",
     labelKey: "settings.tabs.debugging",
     icon: ComputerTerminal01Icon,
@@ -364,7 +376,7 @@ export const SETTINGS_NAV_GROUPS: {
   },
   {
     headingKey: "settings.navGroups.dataAccess",
-    ids: ["sandbox", "accounts", "data", "library"],
+    ids: ["sandbox", "accounts", "data", "library", "knowledge"],
   },
   { headingKey: null, ids: ["debugging", "about"] },
 ];
@@ -676,6 +688,7 @@ export function SettingsDialog() {
     "keyboard-shortcuts": null,
     library: null,
     data: null,
+    knowledge: null,
     "api-keys": null,
     "remote-lan": null,
     agents: null,

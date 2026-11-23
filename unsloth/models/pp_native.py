@@ -1377,6 +1377,9 @@ class _PPPassThrough(_CheckpointLayer):
     pinned off), so the hidden states it hands out stay in this stage's autograd graph."""
 
     gradient_checkpointing = property(lambda self: False, lambda self, value: None)
+    # Read by _frozen_prefix: the hidden states this layer hands out come from the previous stage and carry its
+    # gradient, so they must never become the cut's detached leaf.
+    _unsloth_pipeline_stand_in = True
 
     def __init__(self, index, ctx, source):
         nn.Module.__init__(self)
@@ -2723,6 +2726,8 @@ class PipelineParallel:
         divided by the ranks holding a copy of it, summed over every rank)."""
         import torch.distributed as dist
 
+        from .tp_native import _square_sum
+
         self._check_unscaled()
         params = self.parameters() if parameters is None else list(parameters)
         params = [p for p in params if p.grad is not None]
@@ -2734,7 +2739,7 @@ class PipelineParallel:
             if full is not p.grad:
                 p.grad = full
             grads.append(local)
-            part = local.detach().double().square().sum().to(device)
+            part = _square_sum(local.detach(), torch.float64).to(device)
             sq = sq + (part / copies if copies != 1 else part)
         if self.composed:
             dist.all_reduce(sq)  # the meshes cover the world (checked by step)

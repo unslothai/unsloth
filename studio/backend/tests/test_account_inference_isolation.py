@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import threading
 from types import SimpleNamespace
 
@@ -679,9 +680,22 @@ def test_media_adapter_catalogs_and_selection_do_not_reveal_owner_files(
     from core.inference import diffusion_lora, diffusion_controlnet
 
     module = diffusion_lora if kind == "loras" else diffusion_controlnet
-    entry = SimpleNamespace(
-        id = "private-adapter", local_path = str(tmp_path / "private-weights"), repo_id = None
+    # The real catalog entry type, so a field the route starts reading cannot make this fake raise instead.
+    entry_type = (
+        diffusion_lora.LoraCatalogEntry
+        if kind == "loras"
+        else diffusion_controlnet.ControlNetCatalogEntry
     )
+    fields = {f.name for f in dataclasses.fields(entry_type)}
+    values = {
+        "id": "private-adapter",
+        "display_name": "Private adapter",
+        "source": "local",
+        "fmt": "diffusers",
+        "local_path": str(tmp_path / "private-weights"),
+        "repo_id": None,
+    }
+    entry = entry_type(**{k: v for k, v in values.items() if k in fields})
     monkeypatch.setattr(module, "list_" + kind, lambda **kwargs: [entry])
     with client_for(BOB) as client:
         response = client.get("/api/models/diffusion-" + kind)

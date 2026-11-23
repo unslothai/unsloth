@@ -72,7 +72,8 @@ def _route(monkeypatch, tmp_path, family):
         dit, "discover_image_caption_pairs", lambda *a, **k: [(str(tmp_path / "a.png"), "c")]
     )
     monkeypatch.setattr(dit, "resolve_train_steps", lambda cfg, *a, **k: 3)
-    monkeypatch.setattr(dit, "identity_for_config", lambda *a, **k: None)
+    # The real checkpoint identity: the trainer rewrites it with dataclasses.replace (world size, cache mode), so a None
+    # stand-in raises before the dtype route this file checks.
     monkeypatch.setattr(dit, "_apply_perf_flags", lambda *a, **k: None)
     monkeypatch.setattr(dit, "_restore_perf_flags", lambda *a, **k: None)
     monkeypatch.setattr(dit, "training_fetch_repo", lambda *a, **k: "x")
@@ -570,9 +571,11 @@ def test_dequant_cache_stays_off_on_the_fp16_path(monkeypatch):
     assert not dit._dequant_cache_wanted(True, "xpu", False)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_DEQUANT_CACHE", "0")
     assert not fl.dequant_cache_enabled() and not dit._dequant_cache_wanted(True, "cuda", False)
+    # ROCm keeps the cache too (gfx1151 nf4 klein LoRA 1.68x Linux / 1.63x Windows); the fp16 path still declines it
     monkeypatch.setattr(dit, "torch_is_rocm", lambda: True)
     monkeypatch.delenv("UNSLOTH_DIFFUSION_DEQUANT_CACHE")
-    assert not dit._dequant_cache_wanted(True, "cuda", False)
+    assert dit._dequant_cache_wanted(True, "cuda", False)
+    assert not dit._dequant_cache_wanted(True, "cuda", True)
 
 
 @pytest.mark.parametrize(

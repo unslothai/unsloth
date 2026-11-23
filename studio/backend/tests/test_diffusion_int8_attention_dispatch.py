@@ -336,6 +336,25 @@ def test_speed_off_keeps_the_automatic_route_off(card, monkeypatch):
     assert D.install(pipe, _TARGET, speed_active = False) == 4
 
 
+def test_auto_leaves_a_two_expert_wan_alone_and_keeps_a_one_expert_wan(card, monkeypatch):
+    """Wan 2.2 A14B (``transformer`` + ``transformer_2``): the unset switch races neither expert (A100: 10% per step
+    for a visibly different clip); an explicit On or the name still routes both, and Wan 2.2 5B keeps its race."""
+    pipe = _Pipe(_wan_dit())
+    pipe.transformer_2 = _wan_dit()
+    for dit in (pipe.transformer, pipe.transformer_2):
+        dit.set_attention_backend("native")
+    one = _Pipe(_wan_dit())
+    one.transformer.set_attention_backend("native")
+    seen = _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": 0})
+    assert D.install(pipe, _TARGET) == 0 and not seen
+    assert D.routed_count(pipe) == 0
+    assert D.install(pipe, _TARGET, requested = I.BACKEND) == 8
+    assert D.install(pipe, _TARGET, policy = "on") == 8
+    assert D.install(one, _TARGET) == 4
+    assert "WanTransformer3DModel" in D.AUTO_SINGLE_EXPERT_ONLY
+    assert D.two_expert_pipeline(pipe) and not D.two_expert_pipeline(one)
+
+
 def test_the_unset_speed_rule_leaves_wan_as_on_base(card, monkeypatch):
     """Speed unset with no profile to follow races only SPEED_UNSET_DITS (the image families measured that way): Wan
     keeps base's behaviour there, no race until a speed profile engages; a request by name still routes it."""

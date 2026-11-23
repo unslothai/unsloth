@@ -714,8 +714,7 @@ def editable_source_roots() -> tuple[str, ...]:
 
 
 def model_library_roots() -> tuple[str, ...]:
-    """Registered model folders and the owner's trusted tool folders, which the approval gate reads silently;
-    NOT the whole read-silent set, which has /etc."""
+    """Model and trusted tool folders, read silently; not the whole read-silent set (/etc)."""
     try:
         from . import tool_path_approval
         from utils.paths.storage_roots import well_known_model_dirs

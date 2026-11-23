@@ -755,11 +755,12 @@ export async function getDatasetDownloadProgress(
   return parseJsonOrThrow(response);
 }
 
-export type ModelLoadPhase = "mmap" | "ready" | null;
+export type ModelLoadPhase = "fit" | "mmap" | "ready" | null;
 
 export interface LoadProgressResponse {
-  /** Load phase: "mmap" while llama-server pages weight shards into RAM, "ready" once healthy, or
-   *  null when no load is in flight. */
+  /** Load phase: "fit" while llama-server's --fit searches for a layer placement (no weights read
+   *  yet), "mmap" while it pages weight shards into RAM, "ready" once healthy, or null when no
+   *  load is in flight. */
   phase: ModelLoadPhase | "starting" | "loading_weights" | "warming_up";
   bytes_loaded: number;
   bytes_total: number;
@@ -1689,10 +1690,19 @@ export async function saveChatMessage(
 export async function syncChatMessages(
   threadId: string,
   messages: MessageRecord[],
-  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
+  options: {
+    pruneMissing?: boolean;
+    deletedMessageIds?: string[];
+    echo?: boolean;
+  } = {},
 ): Promise<MessageRecord[]> {
+  // Deletes always echo: publishForkBoundary reads the stored rows back.
+  const skipEcho =
+    options.echo === false &&
+    options.pruneMissing !== true &&
+    (options.deletedMessageIds?.length ?? 0) === 0;
   const response = await threadWriteFetch(
-    `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages${skipEcho ? "?echoMessages=false" : ""}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1707,7 +1717,8 @@ export async function syncChatMessages(
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
   // Pruning deletes messages, which other tabs must see immediately, so it does not coalesce.
   notifyChatHistoryUpdated({ coalesce: options.pruneMissing !== true });
-  return data.messages;
+  // An older backend ignores the flag and echoes as before; either answer resolves the same.
+  return skipEcho ? messages : data.messages;
 }
 
 export async function countBackendChats(): Promise<number> {

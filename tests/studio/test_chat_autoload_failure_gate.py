@@ -103,6 +103,27 @@ def _local_cache_snapshot_source() -> str:
     return path_source + "\n" + match.group(0)
 
 
+# Inlined, not stubbed: every Chat only MLX gate in auto-load asks this rule, and a hand copy
+# drifted once already (it ignored the mlx_inference argument added in #19040).
+PER_MODEL_CONFIG = _source_path(
+    "studio/frontend/src/features/model-picker/model-config/per-model-config.ts"
+)
+
+
+def _is_served_by_mlx_source() -> str:
+    """NO_MLX_REASONS and isServedByMlx, as shipped."""
+    source = PER_MODEL_CONFIG.read_text(encoding = "utf-8")
+    parts = []
+    for pattern, what in (
+        (r"^const NO_MLX_REASONS = new Set\(\[.*?^\]\);\n", "const NO_MLX_REASONS"),
+        (r"^export function isServedByMlx\(.*?^}\n", "function isServedByMlx"),
+    ):
+        match = re.search(pattern, source, re.S | re.M)
+        assert match, f"{what} is no longer top-level in per-model-config.ts"
+        parts.append(match.group(0))
+    return "\n".join(parts)
+
+
 # Short so no scenario waits out the real 30s cap; the shipped value is asserted in
 # tests/studio/test_chat_mount_cli_load_adoption.py.
 PONYFILLS = """
@@ -167,6 +188,8 @@ export type Scenario = {
   platformFetched: boolean;
   /** true = the backend answered but deferred hardware detection. */
   detectionDeferred: boolean;
+  /** /api/health mlx_inference; unset is an older backend. */
+  mlxInference?: boolean | null;
   /** What a detectHardware read measures; unset keeps chatOnly. */
   detectedChatOnly?: boolean;
   /** Health reads after the detectHardware read before the verdict lands (a busy host). */
@@ -357,10 +380,6 @@ function loadedContextFields(resp: any) {
     loadedIsGguf: isGguf,
     loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
   };
-}
-const NO_MLX_REASONS = new Set(["mlx_unavailable", "intel_mac", "detection_failed"]);
-function isServedByMlx(isGguf: boolean, deviceType: string, reason: unknown) {
-  return !isGguf && deviceType === "mac" && !NO_MLX_REASONS.has((reason ?? "") as string);
 }
 function retainedContextPin(args: any) {
   if (args.isGguf) {
@@ -651,6 +670,7 @@ const usePlatformStore = {
   getState: () => ({
     deviceType: SCENARIO.platform?.deviceType ?? SCENARIO.deviceType ?? "linux",
     chatOnlyReason: SCENARIO.platform?.chatOnlyReason ?? null,
+    mlxInference: SCENARIO.mlxInference ?? null,
     // Server-reported unless a scenario says the probe has not landed.
     fetched: SCENARIO.platformFetched !== false,
     isChatOnly: () => SCENARIO.chatOnly === true,
@@ -687,6 +707,19 @@ async function fetchDeviceType(options?: any) {
 }
 function isMlxId(value: string) {
   return typeof value === "string" && value.toLowerCase().includes("mlx");
+}
+function localRowIsMlx(row: any) {
+  return (
+    row?.source === "omlx" ||
+    [row?.id, row?.display_name, row?.model_id, row?.path].some((name) => isMlxId(name ?? ""))
+  );
+}
+function cachedRepoIsMlx(repo: any) {
+  return (
+    isMlxId(repo?.repo_id) ||
+    String(repo?.library_name ?? "").toLowerCase() === "mlx" ||
+    (repo?.tags ?? []).some((tag: string) => tag.toLowerCase() === "mlx")
+  );
 }
 
 // --- Hub download manager -------------------------------------------------
@@ -993,6 +1026,7 @@ def _build_harness(run_dir: Path):
         + _wait_gate_source()
         + _load_request_source()
         + _local_cache_snapshot_source()
+        + _is_served_by_mlx_source()
         + _auto_load_remembered_source()
     )
     missing = sorted(
@@ -1627,6 +1661,48 @@ def test_a_mac_chat_only_install_still_auto_loads_a_local_mlx_model():
     )
     out = _run(f"scenario({{ chatOnly: true, deviceType: 'mac', localModels: [{mlx}] }})")
     assert _loaded_paths(out) == ["/models/mlx"]
+
+
+_QWEN_MLX = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+_TAGGED_MLX = "FluidVoice-Labs/Qwen3.5-9B-4bit"
+
+
+@pytest.mark.parametrize(
+    "repo_id, extra",
+    # The second is MLX by its card alone, as the Downloaded picker reads it.
+    [(_QWEN_MLX, ""), (_TAGGED_MLX, ", tags: ['mlx']"), (_TAGGED_MLX, ", library_name: 'mlx'")],
+)
+def test_a_chat_only_mac_that_serves_mlx_auto_loads_its_cached_mlx_repo(repo_id, extra):
+    """Its only model is a cached MLX repo, so it loads instead of downloading the default GGUF."""
+    repo = f"{{ repo_id: '{repo_id}', load_id: '{repo_id}', size_bytes: 1{extra} }}"
+    out = _run(
+        f"scenario({{ chatOnly: true, deviceType: 'mac', mlxInference: true, modelRepos: [{repo}] }})"
+    )
+    assert _loaded_paths(out) == [repo_id]
+
+
+@pytest.mark.parametrize("mlx_inference, loads_it", [("true", True), ("false", False)])
+def test_a_chat_only_mac_auto_loads_an_omlx_folder_with_a_plain_name(mlx_inference, loads_it):
+    """The Hub marks an oMLX folder MLX by its source; a plain name must not send auto-load to the
+    default GGUF download instead."""
+    omlx = (
+        "{ ...LOCAL_GGUF, id: 'Qwen3-8B-4bit', display_name: 'Qwen3-8B-4bit',"
+        " load_id: '/omlx/Qwen3-8B-4bit', path: '/omlx/Qwen3-8B-4bit',"
+        " model_format: 'safetensors', source: 'omlx' }"
+    )
+    out = _run(
+        f"scenario({{ chatOnly: true, deviceType: 'mac', mlxInference: {mlx_inference},"
+        f" localModels: [{omlx}] }})"
+    )
+    assert _loaded_paths(out) == (["/omlx/Qwen3-8B-4bit"] if loads_it else [DEFAULT_MODEL])
+
+
+def test_a_chat_only_mac_without_mlx_skips_its_cached_mlx_repo():
+    repo = f"{{ repo_id: '{_QWEN_MLX}', load_id: '{_QWEN_MLX}', size_bytes: 1 }}"
+    out = _run(
+        f"scenario({{ chatOnly: true, deviceType: 'mac', mlxInference: false, modelRepos: [{repo}] }})"
+    )
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
 
 
 def test_an_image_generation_row_is_never_auto_loaded_for_chat():

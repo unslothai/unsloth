@@ -100,13 +100,16 @@ globalThis.window = { setTimeout, clearTimeout } as unknown as Window &
 const KB = { id: "kb-1", name: "Product docs", documentCount: 0 };
 const ITEM = { kind: "native", token: "tok-notes", name: "notes.md" };
 
-function harness(rows: Array<typeof KB> = [KB]) {
+function harness(
+  rows: Array<typeof KB> = [KB],
+  lister: () => Promise<Array<typeof KB>> = async () => rows,
+) {
   const state = { uploading: false };
   const uploads: unknown[][] = [];
   const abandoned: unknown[][] = [];
   const errors: string[] = [];
-  const { KnowledgeBaseDialog } = loadWithStubs<{
-    KnowledgeBaseDialog: (props: Record<string, unknown>) => StubElement;
+  const { KnowledgeBaseManager } = loadWithStubs<{
+    KnowledgeBaseManager: (props: Record<string, unknown>) => StubElement;
   }>(
     new URL(
       "../src/features/rag/components/knowledge-base-dialog.tsx",
@@ -139,7 +142,7 @@ function harness(rows: Array<typeof KB> = [KB]) {
       },
       "@/lib/utils": { cn: () => "" },
       "../api/rag-api": {
-        listKnowledgeBases: async () => rows,
+        listKnowledgeBases: () => lister(),
         listKnowledgeBaseDocuments: async () => [],
       },
       "../api/rag-availability": {
@@ -155,6 +158,7 @@ function harness(rows: Array<typeof KB> = [KB]) {
       "./document-status-chip": {},
       "./linked-folders-manager": {},
       "./source-drop-policy": { RAG_SOURCE_UPLOAD_ACCEPT: "" },
+      "./source-folder-copy": { embeddedSummary: () => "" },
       "./use-rag-documents": {
         // Like the real hook: a fresh `upload` every render, and unmount abandons running uploads.
         useRagDocuments: () => {
@@ -231,7 +235,12 @@ function harness(rows: Array<typeof KB> = [KB]) {
   function render() {
     current = dialog;
     dialog.begin();
-    tree = KnowledgeBaseDialog(props);
+    // The props KnowledgeBaseDialog passes; the manager's hooks sit at Dialog level, outside the content.
+    tree = KnowledgeBaseManager({
+      ...props,
+      frame: (content: unknown) => (props.open ? content : null),
+      renderHeader: (title: string) => ({ type: "DialogTitle", props: { children: title } }),
+    });
     dialog.flushEffects();
     const view = documentsView();
     if (!view) {
@@ -280,6 +289,18 @@ function harness(rows: Array<typeof KB> = [KB]) {
     },
     set uploading(value: boolean) {
       state.uploading = value;
+    },
+    get rowCount() {
+      let count = 0;
+      const walk = (node: unknown): void => {
+        if (Array.isArray(node)) return node.forEach(walk);
+        if (!node || typeof node !== "object" || !("props" in node)) return;
+        const element = node as StubElement;
+        if (element.props.title === "Open to add or remove documents") count += 1;
+        walk(element.props.children);
+      };
+      walk(tree);
+      return count;
     },
     openRow() {
       const row = find(tree, (e) => e.props.title === "Open to add or remove documents");
@@ -385,4 +406,50 @@ test("a handoff into the knowledge base on screen waits for its running upload w
   await app.settle();
   assert.deepEqual(app.uploads, [[ITEM], [LATER]]);
   assert.deepEqual(app.abandoned, []);
+});
+
+test("an older list answer never replaces a newer one", async () => {
+  const OTHER = { ...KB, id: "kb-2", name: "Old notes" };
+  const answers: Array<(rows: Array<typeof KB>) => void> = [];
+  const app = harness([KB], () => new Promise((resolve) => answers.push(resolve)));
+  const openWith = app.open(null);
+  answers.shift()!([KB, OTHER]);
+  await openWith;
+  assert.equal(app.rowCount, 2);
+
+  app.openRow();
+  await app.settle();
+  app.back();
+  const stale = answers.shift()!;
+  await app.settle();
+  app.openRow();
+  await app.settle();
+  app.back();
+  answers.shift()!([KB]);
+  await app.settle();
+  stale([KB, OTHER]);
+  await app.settle();
+  assert.equal(app.rowCount, 1);
+});
+
+test("a failed progress poll still schedules the next one", async () => {
+  const embedding = { ...KB, documentCount: 2, indexedCount: 1, indexingCount: 1 };
+  const answers = [
+    async () => [embedding],
+    async () => {
+      throw new Error("network");
+    },
+    async () => [{ ...embedding, indexedCount: 2, indexingCount: 0 }],
+  ];
+  let calls = 0;
+  const realTimeout = window.setTimeout;
+  window.setTimeout = ((fn: () => void) => realTimeout(fn, 0)) as typeof window.setTimeout;
+  try {
+    const app = harness([KB], () => (answers[Math.min(calls++, answers.length - 1)])());
+    await app.open(null);
+    for (let i = 0; i < 6 && calls < 3; i++) await app.settle();
+    assert.equal(calls, 3);
+  } finally {
+    window.setTimeout = realTimeout;
+  }
 });

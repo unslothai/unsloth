@@ -540,7 +540,10 @@ def test_a_preset_records_a_self_sizing_load_s_pin_and_not_its_window():
     assert "requestableContextLength(\n    capturedContextLength(" in body, body
     assert "isServedByLlamaCpp({\n    loadedIsGguf: store.loadedIsGguf," in body, body
     assert not re.search(r"LlamaCpp\(\{[^}]*?(\w+): (?!store\.[\w.]*\1,)", body), body
-    assert "isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason)" in body, body
+    assert (
+        "isServedByMlx(\n    isGguf,\n    platform.deviceType,\n    platform.chatOnlyReason,\n"
+        "    platform.mlxInference,\n  )" in body
+    ), body
     compare = source[source.index("function toComparablePerModelConfig(") :]
     compare = compare[: compare.index("\n}\n")]
     assert "const pin = savedContextPin(config);" in compare, compare

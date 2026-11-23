@@ -27,6 +27,7 @@ import {
   sanitizeScope,
   sanitizeStrength,
   sanitizeStrengths,
+  glassStrengthVars,
 } from "./model";
 import { startGlassMotion } from "./glass-motion";
 import { softwareCompositing } from "./software-compositing";
@@ -210,10 +211,7 @@ export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
   }, [shown, here]);
   useEffect(() => {
     const root = document.documentElement;
-    const blur =
-      strength <= 50 ? 0.2 + (0.8 * strength) / 50 : 1 + (strength - 50) / 50;
-    const opacity =
-      strength <= 50 ? 0.35 + (0.65 * strength) / 50 : 1 + (strength - 50) / 50;
+    const { blur, opacity } = glassStrengthVars(strength);
     if (material === "solid" || strength === 50) {
       root.style.removeProperty("--glass-strength");
       root.style.removeProperty("--glass-opacity");

@@ -7,6 +7,7 @@ from core.training.account_jobs import account_path, managed_account, validate_r
 import base64
 import functools
 import hashlib
+import inspect
 import io
 import json
 import logging
@@ -263,6 +264,68 @@ def _apply_data_designer_expression_blank_patch() -> None:
 
     ExpressionColumnGenerator.prepare_jinja2_template_renderer = _patched_prepare
     setattr(ExpressionColumnGenerator, "_unsloth_expression_blank_patch_applied", True)
+
+
+_TEMPLATE_CACHE_ATTR = "_unsloth_compiled_templates"
+_TEMPLATE_CACHE_MAX = 32
+
+
+def _apply_data_designer_template_cache_patch() -> None:
+    # Jinja2 never caches from_string, so safe_render recompiled every row. The key covers what the compiler
+    # bakes in (source, finalize, filter and test objects), so a hit runs what a fresh compile would.
+    try:
+        from jinja2 import Environment
+        from data_designer.engine.processing.ginja.environment import (  # pyright: ignore[reportMissingImports]
+            UserTemplateSandboxEnvironment,
+        )
+    except ImportError:
+        return
+
+    if getattr(UserTemplateSandboxEnvironment, "_unsloth_template_cache_patch_applied", False):
+        return
+    original_from_string = getattr(UserTemplateSandboxEnvironment, "from_string", None)
+    if original_from_string is not Environment.from_string or not callable(
+        getattr(UserTemplateSandboxEnvironment, "safe_render", None)
+    ):
+        return
+    try:
+        params = list(inspect.signature(original_from_string).parameters)
+    except (TypeError, ValueError):
+        return
+    if params != ["self", "source", "globals", "template_class"]:
+        return
+
+    @functools.wraps(original_from_string)
+    def _cached_from_string(
+        self: Any,
+        source: Any,
+        globals: Any = None,
+        template_class: Any = None,
+    ) -> Any:
+        if globals is not None or template_class is not None or not isinstance(source, str):
+            return original_from_string(self, source, globals, template_class)
+        try:
+            key = (
+                source,
+                self.finalize,
+                self.autoescape,
+                tuple(self.filters.items()),
+                tuple(self.tests.items()),
+            )
+            cache = self.__dict__.setdefault(_TEMPLATE_CACHE_ATTR, {})
+            template = cache.get(key)
+        except (AttributeError, TypeError):
+            return original_from_string(self, source, globals, template_class)
+        if template is None:
+            # A failed compile is not stored, so a broken template errors the same way every row.
+            template = original_from_string(self, source, globals, template_class)
+            if len(cache) >= _TEMPLATE_CACHE_MAX:
+                cache.clear()
+            cache[key] = template
+        return template
+
+    UserTemplateSandboxEnvironment.from_string = _cached_from_string
+    setattr(UserTemplateSandboxEnvironment, "_unsloth_template_cache_patch_applied", True)
 
 
 def _is_missing_cell(value: Any) -> bool:
@@ -831,6 +894,7 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     _apply_data_designer_image_context_patch()
     _apply_data_designer_prompt_blank_patch()
     _apply_data_designer_expression_blank_patch()
+    _apply_data_designer_template_cache_patch()
     _apply_data_designer_mixed_type_parquet_patch()
     _apply_data_designer_seed_uri_quote_patch()
     _apply_data_designer_sql_inline_config_patch()

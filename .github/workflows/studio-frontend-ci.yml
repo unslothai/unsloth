@@ -41,6 +41,7 @@ on:
       - 'tests/studio/playwright_code_block_flicker.py'
       - 'tests/studio/playwright_link_definition_probe.py'
       - 'tests/studio/playwright_user_message_time.py'
+      - 'tests/studio/playwright_message_timing_card.py'
       - 'tests/studio/playwright_progressive_rows.py'
       - 'tests/studio/playwright_long_chat_renders.py'
       - 'tests/studio/playwright_thread_window.py'
@@ -111,6 +112,7 @@ on:
       - 'tests/studio/playwright_code_block_flicker.py'
       - 'tests/studio/playwright_link_definition_probe.py'
       - 'tests/studio/playwright_user_message_time.py'
+      - 'tests/studio/playwright_message_timing_card.py'
       - 'tests/studio/playwright_progressive_rows.py'
       - 'tests/studio/playwright_long_chat_renders.py'
       - 'tests/studio/playwright_thread_window.py'
@@ -612,6 +614,11 @@ jobs:
         working-directory: ${{ github.workspace }}
         timeout-minutes: 5
         run: python3 tests/studio/playwright_user_message_time.py
+
+      - name: Browser check for the reply stats card
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_message_timing_card.py
 
       # the node suite runs no effects, so only this browser check covers the observer, re-arming, and cleanup.
       - name: Browser check for paged sidebar lists

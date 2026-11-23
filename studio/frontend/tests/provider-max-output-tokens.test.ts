@@ -50,7 +50,7 @@ test("the connection editor exposes a bounded optional cap and warning", () => {
   assert.match(dialog, /Max Tokens limit/);
   assert.match(
     dialog,
-    /Caps Max Tokens for this connection\. Blank uses the model's\s+limit, or 32,768 without one\./,
+    /Caps Max Tokens for this connection\. Blank uses the model's published output limit, or 32,768 when it has none\./,
   );
   assert.match(
     dialog,

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The not NO_TORCH guard stops unsloth studio update reinstalling MLX into a --no-torch venv."""
+"""A Chat only (--no-torch) install on Apple Silicon still gets the MLX stack: MLX needs no torch,
+and without it the Mac cannot run MLX models."""
 
 from __future__ import annotations
 
@@ -10,7 +11,6 @@ import pathlib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 STACK = REPO_ROOT / "studio" / "install_python_stack.py"
-STUDIO_CLI = REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 
 MLX_STEP_LABEL = "Installing MLX stack"
 
@@ -45,19 +45,26 @@ def _guards_of_calls_mentioning(source: str, needle: str) -> list[str]:
     return [chain[0] for chain in _guard_chains_of_calls_mentioning(source, needle) if chain]
 
 
-def test_the_mlx_install_step_is_gated_on_no_torch():
+def test_the_mlx_install_step_runs_on_no_torch_installs():
     guards = _guards_of_calls_mentioning(_source(), MLX_STEP_LABEL)
     assert guards, f"no call carrying {MLX_STEP_LABEL!r} found in {STACK.name}"
     for guard in guards:
-        assert "NO_TORCH" in guard and "not NO_TORCH" in guard, (
-            f"the MLX install step is guarded by `{guard}`, which does not exclude a "
-            f"--no-torch install. The updater clears SKIP_STUDIO_BASE, so without this the "
-            f"next `unsloth studio update` reinstalls the stack the user declined."
+        assert guard == "IS_MAC_ARM", (
+            f"the MLX install step is guarded by `{guard}`. Every Apple Silicon install needs "
+            f"the stack, a --no-torch one included."
         )
-        assert "IS_MAC_ARM" in guard, (
-            f"the MLX install step is guarded by `{guard}`, which no longer scopes to "
-            f"Apple Silicon"
-        )
+
+
+def test_the_re_resolve_and_health_report_share_the_step_gate():
+    """A narrower gate leaves a --no-torch Mac with a stale MLX range or an unexplained chat-only."""
+    source = _source()
+    for needle in ("_report_mlx_stack_health(", "_mlx_vlm_spec_now = "):
+        guards = [
+            line.strip()
+            for line, following in zip(source.splitlines(), source.splitlines()[1:])
+            if line.strip().startswith("if ") and needle in following
+        ]
+        assert guards == ["if IS_MAC_ARM:"], (needle, guards)
 
 
 def test_the_progress_total_uses_the_same_gate_as_the_step():
@@ -79,29 +86,4 @@ def test_the_progress_total_uses_the_same_gate_as_the_step():
     assert total_guards == step_guards, (
         f"the MLX step runs under {step_guards} but is counted under {total_guards}; "
         f"they have to be the same expression"
-    )
-
-
-def test_the_updater_still_clears_skip_studio_base():
-    """The premise: stop clearing this and the test above passes vacuously."""
-    assert 'os.environ.pop("SKIP_STUDIO_BASE", None)' in STUDIO_CLI.read_text(encoding = "utf-8")
-
-
-def test_no_torch_is_resolved_from_the_manifest_not_only_from_the_environment():
-    """No UNSLOTH_NO_TORCH is injected, so the manifest tier is what fires the gate on update."""
-    source = _source()
-    tree = ast.parse(source)
-    infer = next(
-        (
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and node.name == "_infer_no_torch"
-        ),
-        None,
-    )
-    assert infer is not None, "_infer_no_torch is gone; NO_TORCH now comes from somewhere else"
-    body = ast.get_source_segment(source, infer) or ""
-    assert "recorded_no_torch" in body, (
-        "_infer_no_torch no longer consults the install manifest, so an update would run "
-        "with NO_TORCH False in a GGUF-only venv and reinstall the MLX stack"
     )

@@ -20,6 +20,7 @@ import pytest
 SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_replacements.py"
 NAMES = (
     "_unsloth_rollout_scope",
+    "_unsloth_tail_cut_scope",
     "_unsloth_wrap_generate_in_rollout_scope",
     "_unsloth_patch_grpo_truncation_check",
     "_guard_vllm_sync_reload_for_shared_weights",

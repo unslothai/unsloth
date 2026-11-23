@@ -32,13 +32,14 @@ const {
   externalRequestMaxTokens,
   resolveExternalMaxTokensClamp,
 } = await import("../src/features/chat/provider-capabilities.ts");
+const catalog = await import("../src/features/chat/model-catalog.ts");
 
-test("Max on llama.cpp and vLLM sends no limit; the server stops at its window", () => {
-  for (const providerType of ["llama_cpp", "vllm"]) {
+test("Max on a self-hosted connection sends no limit; the window bounds it", () => {
+  for (const providerType of ["llama_cpp", "vllm", "ollama", "custom", "sglang"]) {
     assert.equal(
       externalRequestMaxTokens(
         providerType,
-        "qwen3",
+        "unlisted/local-model",
         null,
         EXTERNAL_MAX_OUTPUT_TOKENS,
       ),
@@ -46,26 +47,27 @@ test("Max on llama.cpp and vLLM sends no limit; the server stops at its window",
     );
     // A value carried over from a local model's Max is clamped to the top, which is Max too.
     assert.equal(
-      externalRequestMaxTokens(providerType, "qwen3", null, 262144),
+      externalRequestMaxTokens(providerType, "unlisted/local-model", null, 262144),
       null,
     );
     assert.equal(
-      externalRequestMaxTokens(providerType, "qwen3", null, 8192),
+      externalRequestMaxTokens(providerType, "unlisted/local-model", null, 8192),
       8192,
     );
     assert.equal(
-      externalRequestMaxTokens(providerType, "qwen3", 65536, 65536),
+      externalRequestMaxTokens(providerType, "unlisted/local-model", 65536, 65536),
       65536,
     );
     assert.equal(
-      externalRequestMaxTokens(providerType, "qwen3", 65536, 1e6),
+      externalRequestMaxTokens(providerType, "unlisted/local-model", 65536, 1e6),
       65536,
     );
   }
 });
 
-test("Ollama, Custom and hosted providers keep a numeric limit at the top", () => {
-  for (const providerType of ["ollama", "custom", "openrouter"]) {
+test("hosted providers without a published limit keep a numeric limit at the top", () => {
+  // OpenRouter too: only router ids or an unloaded catalog lack a cap, and the window overstates both.
+  for (const providerType of ["mistral", "xai", "openai", "openrouter"]) {
     assert.equal(
       externalRequestMaxTokens(providerType, "some-model", null, 1e6),
       EXTERNAL_MAX_OUTPUT_TOKENS,
@@ -185,7 +187,7 @@ test("the dated Anthropic ids carry their documented cap", () => {
 
 test("a model with no documented cap takes the connection override", () => {
   const undocumented: Array<[string, string | null]> = [
-    ["openrouter", "minimax/minimax-m3"],
+    ["openrouter", "unlisted/some-model"],
     ["openai", "o3"],
     ["vllm", "some/local-model"],
     ["ollama", null],
@@ -204,6 +206,23 @@ test("a model with no documented cap takes the connection override", () => {
       EXTERNAL_MAX_OUTPUT_TOKENS,
     );
   }
+});
+
+test("Max Tokens reaches a catalogued window where the backend takes the prompt off it", () => {
+  const model = "gemma4:31b";
+  const window = catalog.resolveModelCatalogEntry("ollama", model)?.contextLength;
+  assert.equal(window, 262144);
+  assert.equal(getExternalMaxOutputTokens("ollama", model), 262144);
+  assert.equal(externalRequestMaxTokens("ollama", model, null, 262144), null);
+  assert.equal(externalRequestMaxTokens("ollama", model, null, 100_000), 100_000);
+  for (const routed of ["qwen/qwen3-235b-a22b-2507", "openrouter/auto"]) {
+    assert.equal(getExternalMaxOutputTokens("openrouter", routed), EXTERNAL_MAX_OUTPUT_TOKENS);
+    assert.equal(
+      externalRequestMaxTokens("openrouter", routed, null, 1e6),
+      EXTERNAL_MAX_OUTPUT_TOKENS,
+    );
+  }
+  assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k2.6"), EXTERNAL_MAX_OUTPUT_TOKENS);
 });
 
 /** Kimi's own 16,000 output floor must outrank a lower override, or slider max < min. */

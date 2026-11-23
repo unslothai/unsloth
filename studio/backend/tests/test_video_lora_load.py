@@ -259,7 +259,7 @@ def test_a_lora_for_the_loaded_family_resolves_through_the_catalog(catalog):
     resolved = video_lora.resolve(
         [("my-wan", 0.75), ("ignored", 0.0)], family = "wan2.2-ti2v-5b", hf_token = None
     )
-    assert resolved == (("my-wan", str(path), 0.75),)
+    assert resolved == (("my-wan", str(path), 0.75, None),)
 
 
 def test_load_refusal_by_family_and_path():
@@ -281,7 +281,9 @@ def test_load_refusal_by_family_and_path():
     assert video_lora.dense_transformer_quant(h3, None, None) is None
     assert video_lora.dense_transformer_quant(h3, None, [("x", 0.0)]) is None
     moe = types.SimpleNamespace(name = "wan2.2-t2v-a14b", label = "Wan2.2 A14B", is_moe = True)
-    assert "two-expert" in video_lora.load_refusal(moe, "pipeline", None)
+    # Structural status refusal: none, a two-expert model takes catalog pairs; a single adapter is refused.
+    assert video_lora.load_refusal(moe, "pipeline", None) is None
+    assert "two-expert" in video_lora.load_refusal(moe, "pipeline", None, [("a", 1.0)])
 
 
 def test_backend_bake_records_the_adapters_for_status(tmp_path):
@@ -402,7 +404,7 @@ def test_a_cache_only_load_resolves_hub_adapters_without_the_network(monkeypatch
     out = video_lora.resolve(
         [("someone/wan-lora", 1.0)], family = "wan2.2-ti2v-5b", hf_token = None, local_files_only = True
     )
-    assert out == (("wan-lora", str(snapshot / "my_lora.safetensors"), 1.0),)
+    assert out == (("wan-lora", str(snapshot / "my_lora.safetensors"), 1.0, None),)
     assert snapshots == [("someone/wan-lora", True)]
     assert downloads == [("someone/wan-lora", "my_lora.safetensors", True)]
 

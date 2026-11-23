@@ -160,12 +160,15 @@ def ulysses_packing_blocker(model, model_types = ()) -> Optional[str]:
                 return DEEPSEEK_ULYSSES_MODEL_TYPES[model_type]
             if model_type in _ULYSSES_HYBRID_PACKING_MODEL_TYPES:
                 return _ULYSSES_HYBRID_PACKING_MODEL_TYPES[model_type]
+            if model_type in INKLING2_MODEL_TYPES:
+                return INKLING2_MODEL_TYPES[model_type]
         return None
     for module in model.modules():
         if (
             type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
             or is_ulysses_kimi_delta(module)
             or is_ulysses_lightning(module)
+            or is_ulysses_inkling2_attention(module)
         ):
             return type(module).__name__
     return None
@@ -365,6 +368,15 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
 
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
+from .utils.ulysses_inkling2 import (
+    INKLING2_LAYER_TYPES,
+    INKLING2_MODEL_TYPES,
+    check_inkling2_heads,
+    is_ulysses_inkling2_attention,
+    is_ulysses_inkling2_conv,
+    wrap_inkling2_attention_forward,
+    wrap_inkling2_conv_forward,
+)
 from .utils.ulysses_deepseek import (
     DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
     wrap_deepseek_attention_forward,
@@ -376,6 +388,11 @@ from .utils.ulysses_hybrid import (
     is_hf_registry_attention,
     is_ulysses_mixer,
     wrap_ulysses_mixer_forward,
+)
+
+# Inkling 2: sliding window / full attention with relative bias and sinks (utils/ulysses_inkling2.py).
+_ULYSSES_OWN_MASK_LAYER_TYPES.update(
+    {model_type: INKLING2_LAYER_TYPES for model_type in INKLING2_MODEL_TYPES}
 )
 
 # shift_labels is built before sharding so each shard's last token keeps its next-token target.
@@ -612,6 +629,8 @@ def _supports_context_parallel(
         return not _stateful_mixers(model)
     if backend != "ulysses" or _hybrid_config_blocker(model) is not None:
         return False
+    if _inkling2_model(model):
+        return _inkling2_ulysses_ready(model)
     mixers = _stateful_mixers(model)
     if mixers:
         # Hybrids: the family-specific linear attention forwards, and their HF full attention layers.
@@ -624,9 +643,57 @@ def _supports_context_parallel(
     return generic and _generic_hf_attention(model)
 
 
+def _inkling2_model(model) -> bool:
+    return isinstance(model, torch.nn.Module) and any(
+        is_ulysses_inkling2_attention(m) for m in model.modules()
+    )
+
+
+def _inkling2_loss_takes_kwargs(model) -> bool:
+    """The Inkling 2 CausalLM / ConditionalGeneration forward passes its **kwargs to self.loss_function."""
+    import inspect
+
+    seen = set()
+    while model is not None and id(model) not in seen:
+        seen.add(id(model))
+        if type(model).__name__.startswith("Inkling2") and _inkling2_model(model):
+            try:
+                source = inspect.getsource(inspect.unwrap(type(model).forward))
+            except (OSError, TypeError):
+                return False
+            return any(
+                "self.loss_function(" in line and "**kwargs)" in line
+                for line in source.splitlines()
+            )
+        getter = getattr(model, "get_base_model", None)
+        model = getter() if callable(getter) else getattr(model, "module", None)
+    return False
+
+
+def _inkling2_ulysses_ready(model) -> bool:
+    """Inkling 2: every text attention layer is the Inkling 2 attention (Ulysses forward over head shards) and
+    every stateful mixer is one of its short convolutions (halo exchange on the sequence shard)."""
+    modules = _attention_modules(model)
+    return (
+        bool(modules)
+        and all(is_ulysses_inkling2_attention(m) for m in modules)
+        and all(is_ulysses_inkling2_conv(m) for m, _ in _stateful_mixers(model))
+    )
+
+
 def _check_stateful_mixers(model, backend, size) -> None:
     mixers = _stateful_mixers(model)
     if not mixers:
+        return
+    if backend == "ulysses" and _inkling2_model(model):
+        unsupported = sorted(
+            {type(m).__name__ for m, _ in mixers if not is_ulysses_inkling2_conv(m)}
+        )
+        if unsupported:
+            raise NotImplementedError(
+                f"Unsloth: Ulysses context parallelism on Inkling 2 does not support {unsupported}."
+            )
+        check_inkling2_heads(model, size)
         return
     if backend != "ulysses":
         kinds = sorted({type(m).__name__ for m, _ in mixers})
@@ -716,6 +783,11 @@ class ContextParallelManager:
             for module, _ in _stateful_mixers(model):
                 if is_ulysses_mixer(module):
                     wrap_ulysses_mixer_forward(module, get_cp_manager)
+            # Inkling 2's short convolutions (attention k / v and the residual stream) take a halo from the
+            # previous shard; nested ones inside a key / value projection are walked too.
+            for name, module in model.named_modules():
+                if not _in_media_tower(name) and is_ulysses_inkling2_conv(module):
+                    wrap_inkling2_conv_forward(module, get_cp_manager)
             # Fast forwards exchange inside run_attention; other HF layers run their attention after the exchange.
             generic = not _uses_unsloth_attention(model)
             for name, module in model.named_modules() if generic else ():
@@ -726,7 +798,9 @@ class ContextParallelManager:
             for name, module in model.named_modules():
                 if _in_media_tower(name):
                     continue
-                if (
+                if name.endswith("self_attn") and is_ulysses_inkling2_attention(module):
+                    wrap_inkling2_attention_forward(module, get_cp_manager)
+                elif (
                     name.endswith("self_attn")
                     and type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
                 ):
@@ -1946,6 +2020,12 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 "Unsloth: context parallelism needs loss_type = 'nll' without "
                 "label_smoothing_factor or compute_loss_func."
             )
+        if getattr(
+            self, "model_accepts_loss_kwargs", True
+        ) is False and _inkling2_loss_takes_kwargs(getattr(self, "model", None)):
+            # Inkling 2 declares accepts_loss_kwargs = False but hands **kwargs (num_items_in_batch, shift_labels)
+            # to its loss_function: the sharded loss must be a sum over the global token count.
+            self.model_accepts_loss_kwargs = True
         if getattr(self, "model_accepts_loss_kwargs", True) is False:
             raise NotImplementedError(
                 "Unsloth: context parallelism needs a model whose forward accepts loss kwargs "
@@ -2349,9 +2429,11 @@ class _OnDevice:
 
 def _broadcast_from_group_root(obj, manager, device):
     """CP rank 0 sends its object (tensors through CPU) so every peer scores the same samples."""
-    payload = [_map_leaves(obj, _OnDevice)]
     group = manager.group
-    dist.broadcast_object_list(payload, src = dist.get_global_rank(group, 0), group = group)
+    src = dist.get_global_rank(group, 0)
+    # Peers overwrite their payload with the root's, so only the root copies its tensors to the host.
+    payload = [_map_leaves(obj, _OnDevice) if dist.get_rank() == src else None]
+    dist.broadcast_object_list(payload, src = src, group = group)
     return _map_leaves(
         payload[0],
         lambda x: x.restore(device),

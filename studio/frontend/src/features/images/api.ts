@@ -223,7 +223,8 @@ export interface DiffusionLoadRequest {
     | "flash4"
     | "sage"
     | "xformers"
-    | "aiter";
+    | "aiter"
+    | "flash_sdpa";
   int8_attention?: "auto" | "on" | "off";
   memory_mode?: "auto" | "fast" | "balanced" | "low_vram";
   // Neither engine shards, so several cards resolve to the one with the most free VRAM.
@@ -326,6 +327,11 @@ export interface DiffusionLoraInfo {
   size_bytes: number;
   weight_default: number;
   fine_tuned?: boolean;
+  /** Step-distilled adapters: the publisher's steps / guidance, applied when the adapter is picked. */
+  recommended_steps?: number | null;
+  recommended_guidance?: number | null;
+  /** A two-expert pair (high- and low-noise files) for a two-expert video model. */
+  expert_pair?: boolean;
 }
 
 export interface GalleryImage {

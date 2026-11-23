@@ -587,6 +587,35 @@ def _delete_gguf_variant_from_repos(
     return {"status": "deleted", "repo_id": repo_id, "variant": variant}
 
 
+def _has_unprotected_snapshot(
+    hub_cache: Path, repo_id: str, protected_revisions: frozenset[str]
+) -> bool:
+    """True unless every model dir for *repo_id* (any case) in *hub_cache* holds only protected snapshots. Errors answer True so the caller keeps its full scan."""
+    wanted = repo_id.lower()
+    try:
+        entries = list(hub_cache.iterdir())
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    for entry in entries:
+        # mirror scan_cache_dir's repo id derivation from the folder name.
+        repo_type, sep, name = entry.name.partition("--")
+        if not sep or repo_type[:-1] != "model" or name.replace("--", "/").lower() != wanted:
+            continue
+        try:
+            if not entry.is_dir():
+                continue
+            snapshots = entry / "snapshots"
+            if not snapshots.exists():
+                continue
+            if any(snap.name not in protected_revisions for snap in snapshots.iterdir()):
+                return True
+        except OSError:
+            return True
+    return False
+
+
 def reclaim_replaced_gguf_variant(
     repo_id: str,
     variant: str,
@@ -621,6 +650,28 @@ def reclaim_replaced_gguf_variant(
             "reason": "invalid_target",
         }
 
+    if hub_cache is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        hub_cache = get_hf_cache_paths().hub_cache
+    try:
+        target_hub_cache = Path(hub_cache).expanduser().resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        target_hub_cache = Path(hub_cache).expanduser()
+
+    # every mutation below is confined to unprotected snapshot dirs, so skip the all-roots scan when none exist.
+    if not _has_unprotected_snapshot(target_hub_cache, repo_id, protected_revisions):
+        logger.debug(
+            "Skipping stale GGUF reclaim for %s [%s]: no unprotected snapshots",
+            repo_id,
+            variant,
+        )
+        return {
+            "status": "skipped",
+            "repo_id": repo_id,
+            "variant": variant,
+            "reason": "nothing_to_reclaim",
+        }
+
     failures: list[str] = []
     removed_snapshots = 0
     deleted_blobs = 0
@@ -642,14 +693,6 @@ def reclaim_replaced_gguf_variant(
             "variant": variant,
             "reason": "scan_failed",
         }
-
-    if hub_cache is None:
-        from utils.hf_cache_settings import get_hf_cache_paths
-        hub_cache = get_hf_cache_paths().hub_cache
-    try:
-        target_hub_cache = Path(hub_cache).expanduser().resolve(strict = False)
-    except (OSError, RuntimeError, ValueError):
-        target_hub_cache = Path(hub_cache).expanduser()
 
     candidate_repos = [
         repo_info

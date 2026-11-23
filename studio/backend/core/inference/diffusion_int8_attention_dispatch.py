@@ -58,6 +58,18 @@ AUTO_DITS = frozenset(
 # AUTO_DITS members raced only when their own weights are quantized (an INT8 / FP8 checkpoint): measured against its
 # INT8-ConvRot default only, so a bf16 load (the accuracy reference) keeps its attention.
 AUTO_QUANTIZED_ONLY = frozenset({"MOSSImageTransformer"})
+# AUTO_DITS members the unset switch leaves alone in a two-expert pipeline (a ``transformer_2``): Wan 2.2 A14B on A100
+# (hosted INT8 pair, 832x480x33, 10 steps) ran 10% faster per step with the kernel, but the clip drifts step over step
+# through both experts (latent rel L2 0.20 / 0.39 at the end, LPIPS 0.135 / 0.277 against the kernel off, whose own
+# fresh-process repeat is bit-identical): a different clip, not a near copy. Wan 2.2 5B (one expert) keeps its race.
+AUTO_SINGLE_EXPERT_ONLY = frozenset({"WanTransformer3DModel"})
+
+
+def two_expert_pipeline(pipe: Any) -> bool:
+    """Whether ``pipe`` denoises with a second expert (Wan 2.2 A14B's ``transformer_2``)."""
+    return getattr(pipe, "transformer_2", None) is not None
+
+
 # Also race with speed unset and no profile (e.g. offloaded INT8 DiT on T4): only the families measured that way.
 SPEED_UNSET_DITS = frozenset(
     {
@@ -152,9 +164,8 @@ def _race_name(
     card: Optional[int] = None,
     dtype: Any = None,
 ) -> str:
-    """Verdict-cache name; a strided cuDNN pin runs a different call, so it is cached apart. With ``card`` / ``dtype``
-    the strided name is kept only where the pin takes the strided call (a probed card, its probed dtype): elsewhere
-    the race times diffusers' call and shares that verdict."""
+    """Verdict-cache name; a strided cuDNN pin is cached apart, but only on a probed card and dtype
+    where it takes the strided call; elsewhere it shares diffusers' verdict."""
     name = f"dispatch:{_backend_name(incumbent)}"
     if not isinstance(incumbent, _Q21.StridedCudnn):
         return name
@@ -805,6 +816,7 @@ def _install(
             type(dit).__name__ not in auto_dits
             or (speed_unset_only and type(dit).__name__ not in SPEED_UNSET_DITS)
             or (type(dit).__name__ in AUTO_QUANTIZED_ONLY and not quantized_weights(dit))
+            or (type(dit).__name__ in AUTO_SINGLE_EXPERT_ONLY and two_expert_pipeline(pipe))
         ):
             continue
         native = set() if forced else native_block_modules(dit)

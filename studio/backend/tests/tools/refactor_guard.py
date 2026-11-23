@@ -186,6 +186,9 @@ _FRAGMENTS = (
     '<minimax:tool_call>\n<invoke name="get_weather">\n<parameter name="city">Paris</parameter>\n'
     "</invoke>\n</minimax:tool_call>",
     '<minimax:tool_call>\n<invoke name="get_weather">\n<parameter name="city">Par',
+    "<|tool_call_start|>[get_weather(city='Paris'), get_weather(city=\"Ly, on\")]<|tool_call_end|>",
+    "<|tool_call_start|>[get_weather(city='Par",
+    "<|tool_call_start|>[get_weather(city='Paris's')]<|tool_call_end|>",
     # Cross-format markup, so an arm swap inside strip_segment is visible.
     "<function=x><tool_call> txt <arg_key>c</arg_key></function><parameter=p>",
     '<tool_call>{"name": "search", "arguments": {"q": "<function=get_weather>"}}</tool_call>',
@@ -278,6 +281,9 @@ _BOTH_WAYS = ("final", "seg_final", "with_spans", "allow_incomplete", "gemma_quo
 
 _TEXT_ADAPTERS = {
     "_gemma_arguments_to_json": lambda text: _gemma_argument_body(text),
+    # The LFM body readers take what sits between the block markers, not a whole corpus entry.
+    "_lfm_pythonic_calls": lambda text: _lfm_block_body(text),
+    "_lfm_one_string_call": lambda text: _lfm_block_body(text),
     # The corpus holds no backticked tags; backtick each one so the spans vary with the text.
     "tag_mention_spans": lambda text: re.sub(r"<[^<>`\n]+>|\[/?TOOL_CALLS\]", r"`\g<0>`", text),
 }
@@ -298,6 +304,15 @@ def _gemma_argument_body(text: str) -> str:
         if end is not None:
             return text[brace + 1 : end]
     return "city:Paris, n:2, tags:[a, b]"
+
+
+def _lfm_block_body(text: str) -> str:
+    start = text.find("<|tool_call_start|>")
+    if start < 0:
+        return text
+    body = text[start + len("<|tool_call_start|>") :]
+    end = body.find("<|tool_call_end|>")
+    return body if end < 0 else body[:end]
 
 
 def _parser_first_sentinel(text: str):

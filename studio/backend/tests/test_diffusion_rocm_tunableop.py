@@ -336,3 +336,23 @@ def test_tune_hooks_survive_a_whole_module_fullgraph_compile(fake, monkeypatch):
     pipe.unet(x)
     pipe.unet(x)
     assert ("tuning", True) in fake.calls and not fake.tuning
+
+
+def test_windows_and_linux_gfx1151_builds_each_get_their_own_table():
+    """Windows Studio ships torch 2.11.0+rocm7.14.0 (multi-arch index), Linux 2.11.0+rocm7.13.0 (gfx1151 index):
+    hipBLASLt differs, so each build reads only the table measured on it and never the other's solution ids."""
+    from pathlib import Path
+
+    root = Path(rt.__file__).resolve().parent.joinpath("rocm_gemm_tables")
+    by_hip = {}
+    for path in sorted(root.glob("gfx1151_*.csv")):
+        validators = rt._validators(path.read_text(encoding = "utf-8"))
+        by_hip[validators["HIP_VERSION"]] = (path, validators)
+    assert {"713", "714"} <= set(by_hip)
+    for hip, (path, validators) in by_hip.items():
+        assert rt.shipped_tables("gfx1151", validators) == [path]
+        for other, (other_path, _) in by_hip.items():
+            if other != hip:
+                assert other_path not in rt.shipped_tables("gfx1151", validators)
+    windows = by_hip["714"][1]
+    assert windows["PT_VERSION"] == "2.11.0" and windows["HIPBLASLT_VERSION"].startswith("100401-")

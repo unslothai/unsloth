@@ -23,8 +23,11 @@ FLAG = "_unsloth_windows_rocm_wide_head_guard"  # Studio's #17960 module checks 
 
 @pytest.fixture
 def stock_sdpa(monkeypatch):
-    """Restore whatever F.scaled_dot_product_attention was, whatever a test installs."""
+    """Restore whatever F.scaled_dot_product_attention was, whatever a test installs. On a real
+    Windows ROCm box unsloth already wrapped it at import, so peel guards carrying FLAG first."""
     stock = F.scaled_dot_product_attention
+    while getattr(stock, FLAG, False) and getattr(stock, "__wrapped__", None) is not None:
+        stock = stock.__wrapped__
     monkeypatch.setattr(F, "scaled_dot_product_attention", stock)
     monkeypatch.delenv("UNSLOTH_ALLOW_ROCM_WIDE_HEAD_FUSED_SDPA", raising = False)
     return stock

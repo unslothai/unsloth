@@ -492,6 +492,15 @@ async def get_moe_info(
             from utils.models.model_config import get_base_model_from_lora_identifier
 
             base = await asyncio.to_thread(get_base_model_from_lora_identifier, model, probe_token)
+            from utils.datasets.remote_images import is_network_share
+
+            if isinstance(base, str) and is_network_share(base):
+                # The Hub repo picked this path; probing it on Windows authenticates to that host (NTLM).
+                raise HTTPException(
+                    status_code = 400,
+                    detail = f"The adapter '{model}' names a base model on a network share. "
+                    "Download the base model and export from a local folder instead.",
+                )
             if hub_adapter and not base:
                 # A confirmed adapter whose base could not be read (a failed download after its
                 # retries): unknown, not dense.

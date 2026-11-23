@@ -1661,7 +1661,7 @@ class TestCustomCodeRouting:
     def test_no_offer_when_the_513_sidecar_fits(self, tmp_path: Path, monkeypatch):
         calls = _no_network(monkeypatch)
         assert check_upgrade_for_model(_custom_code_model(tmp_path, "5.12.0.dev0")) is None
-        assert check_upgrade_for_model(_custom_code_model(tmp_path, "5.13.1")) is None
+        assert check_upgrade_for_model(_custom_code_model(tmp_path, "5.15.1")) is None
         assert calls["n"] == 0
 
     def test_no_offer_when_pypi_too_old(self, tmp_path: Path, monkeypatch):
@@ -1687,6 +1687,8 @@ class TestCustomCodeRouting:
 
     def test_main_offered_when_pypi_is_behind(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
+        # Highest sidecar below the fake main release, whatever the live pin is.
+        monkeypatch.setattr("utils.transformers_version.TRANSFORMERS_510_VERSION", "5.13.0")
         result = check_upgrade_for_model(_custom_code_model(tmp_path, "5.14.0.dev0"))
         assert result is not None
         assert result["supported_in_pypi"] is False and result["supported_in_main"] is True
