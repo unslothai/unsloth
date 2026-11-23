@@ -293,14 +293,13 @@ RULES = (
         "drop tp (DDP, or UNSLOTH_FSDP2=1, over the dp axis)",
     ),
     Rule(
-        "tp / pp x model",
-        "tensor / pipeline parallel on Inkling 2 (inkling2, inkling2_loop)",
-        lambda q: (q.tp > 1 or q.pp > 1) and q.family in ("inkling2", "inkling2_loop"),
+        "tp x model",
+        "tensor parallel on Inkling 2 (inkling2, inkling2_loop)",
+        lambda q: q.tp > 1 and q.family in ("inkling2", "inkling2_loop"),
         "tensor parallel has no sharding rule for its wrapper attention projections (L2 clips, key / value "
-        "short convolutions, output gate) and per-head sink / relative position bias projections; a pipeline "
-        "stage boundary would cut its block attention residual stack and Inkling-2-Mini's looped layers "
-        "(models/inkling2.py refuses both at from_pretrained, before any weight loads)",
-        'drop tp / pp: UNSLOTH_PARALLEL="dp=N" (DDP) or "fsdp=1" (native FSDP2), or device_map = "balanced" '
+        "short convolutions, output gate) and per-head sink / relative position bias projections "
+        "(models/inkling2.py refuses it at from_pretrained, before any weight loads)",
+        'drop tp: UNSLOTH_PARALLEL="dp=N" (DDP), "fsdp=1" (native FSDP2) or "pp=N", or device_map = "balanced" '
         "in one process",
     ),
     Rule(
@@ -897,6 +896,7 @@ _GPT_OSS_PP = (
     "tests/test_pp_moe_aux_off_gloo.py::"
     "test_pp2_uncarried_moe_with_aux_off_matches_gradient_accumulation"
 )
+_INKLING2_PP = "tests/test_pp_inkling2_gloo.py (pp2 gpipe / 1f1b vs one-process gradient accumulation, bitwise)"
 _GPT_OSS_PP_CASES = {
     "lora": "gpt_oss_lora_logits_off_1f1b|gpt_oss_lora_logits_off_gpipe_gc",
     "lora+experts": "gpt_oss_lora_experts_logits_off_gpipe|gpt_oss_lora_experts_logits_off_1f1b_gc_reentrant",
@@ -1258,6 +1258,33 @@ CELLS = (
     CELLS
     + _moe_cells()
     + (
+        # Inkling 2 (no router auxiliary loss): the stage boundary carries hidden states plus the block attention
+        # residual stack, Inkling-2-Mini's looped layers stay on one stage (models/inkling2.py
+        # Inkling2PipelineAdapter); pp-only mesh, text only.
+        Cell(
+            "Inkling 2 x pp",
+            {
+                "family": ("inkling2", "inkling2_loop"),
+                "moe": (True,),
+                "pp": (2, 4, 8),
+                "pp_schedule": ("gpipe", "1f1b"),
+                "dp": _ONE,
+                "tp": _ONE,
+                "cp": _ONE,
+                "fsdp2": (False,),
+                "mode": ("lora", "qlora"),
+                "router_aux_loss": (False,),
+                "packing": (False,),
+                "vllm": (False,),
+                "block_swap": (False,),
+                "compile": ("eager",),
+                "memory": ("none", "gc", "unsloth_gc", "unsloth_offload"),
+            },
+            _INKLING2_PP,
+            _INKLING2_PP
+            + " (stage forward calls counted per micro-batch; block stack 1 / 2 / 3 entries)",
+            "eager: Inkling 2 trains with UNSLOTH_COMPILE_DISABLE=partial",
+        ),
         Cell(
             "block swap x tp",
             {"block_swap": (True,), "tp": _AboveOne()},

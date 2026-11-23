@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Inkling 2 under the parallel axes: tensor / pipeline parallel are refused from the config (before any weight
-loads) and by the capability table, with the reason and the data parallel alternatives; DDP / FSDP2 stay allowed."""
+"""Inkling 2 under the parallel axes: tensor parallel is refused from the config (before any weight loads) and by
+the capability table, with the reason and the data parallel alternatives; DDP / FSDP2 / pipeline parallel stay
+allowed."""
 
 import ast
 import importlib.util
@@ -51,16 +52,8 @@ def _config(model_type):
             ["tensor parallel (UNSLOTH_TP_SIZE=2)", "wrapper modules", "UNSLOTH_TP_SIZE"],
         ),
         (
-            {"UNSLOTH_PP_SIZE": "2"},
-            [
-                "pipeline parallel (UNSLOTH_PP_SIZE=2)",
-                "block attention residuals",
-                "UNSLOTH_PP_SIZE",
-            ],
-        ),
-        (
             {"UNSLOTH_TP_SIZE": "2", "UNSLOTH_PP_SIZE": "2"},
-            ["tensor parallel", "pipeline parallel", "UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE"],
+            ["tensor parallel (UNSLOTH_TP_SIZE=2)", "UNSLOTH_TP_SIZE"],
         ),
     ],
 )
@@ -94,6 +87,11 @@ def test_data_parallel_and_other_models_pass(monkeypatch):
     monkeypatch.setenv("UNSLOTH_TP_SIZE", "1")
     monkeypatch.setenv("UNSLOTH_PP_SIZE", "1")
     ink.raise_if_inkling2_parallel_unsupported(_config("inkling2"))
+    monkeypatch.setenv(
+        "UNSLOTH_PP_SIZE", "2"
+    )  # pipeline parallel: models/inkling2.py Inkling2PipelineAdapter
+    ink.raise_if_inkling2_parallel_unsupported(_config("inkling2_loop"))
+    monkeypatch.setenv("UNSLOTH_PP_SIZE", "1")
     monkeypatch.setenv("UNSLOTH_TP_SIZE", "2")
     ink.raise_if_inkling2_parallel_unsupported(_config("qwen3_moe"), ["qwen3_moe"])
 
@@ -122,10 +120,26 @@ def test_loader_refuses_in_the_inkling2_branch_before_loading():
 @pytest.mark.parametrize("family", ["inkling2", "inkling2_loop"])
 def test_capability_table_refuses_tp_pp(monkeypatch, family):
     cap = _capabilities(monkeypatch)
-    for layout in (dict(tp = 2), dict(pp = 2), dict(pp = 2, pp_schedule = "gpipe")):
+    for layout in (dict(tp = 2), dict(tp = 2, pp = 2)):
         with pytest.raises(Exception) as info:
             cap.check(cap.Query(family = family, moe = True, expert_lora = True, **layout))
         assert "Inkling 2" in str(info.value) and "fsdp=1" in str(info.value)
+    # pipeline parallel alone has its cell (tests/test_pp_inkling2_gloo.py)
+    for schedule in ("gpipe", "1f1b"):
+        for mode in ("lora", "qlora"):
+            query = cap.Query(
+                family = family,
+                moe = True,
+                expert_lora = True,
+                pp = 2,
+                pp_schedule = schedule,
+                mode = mode,
+                trainer = "sft",
+                attention = "eager",
+                memory = "unsloth_offload",
+            )
+            cap.check(query)
+            assert cap.cell_status(query)[0] == "supported", cap.cell_status(query)
     # data parallel (DDP / FSDP2) is not refused by the rule
     for layout in (dict(dp = 2), dict(dp = 2, fsdp2 = True)):
         rules = [r for r in cap.RULES if r.applies(cap.Query(family = family, **layout))]

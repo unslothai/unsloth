@@ -30,6 +30,7 @@ __all__ = [
     "INKLING2_TP_REASON",
     "INKLING2_PP_REASON",
     "INKLING2_PARALLEL_ALTERNATIVE",
+    "inkling2_pipeline_adapter",
 ]
 
 INKLING2_MODEL_TYPES = frozenset(
@@ -139,10 +140,9 @@ def raise_if_inkling2_parallel_unsupported(config, model_types = ()) -> None:
         except ValueError:
             return 1  # parallel_env reports the malformed value itself
 
-    tp, pp = size("UNSLOTH_TP_SIZE"), size("UNSLOTH_PP_SIZE")
+    tp = size("UNSLOTH_TP_SIZE")
     asked = [
         (f"tensor parallel (UNSLOTH_TP_SIZE={tp})", INKLING2_TP_REASON) if tp > 1 else None,
-        (f"pipeline parallel (UNSLOTH_PP_SIZE={pp})", INKLING2_PP_REASON) if pp > 1 else None,
     ]
     asked = [x for x in asked if x is not None]
     if not asked:
@@ -537,3 +537,291 @@ def patch_inkling2_model(model) -> bool:
         cls.unsloth_lora_target_modules = _unsloth_lora_target_modules
     checkpoint_inkling2_message_inputs(model)
     return True
+
+
+# ------------------------------------------------------------------------------------------- pipeline parallel
+
+
+class Inkling2PipelineAdapter:
+    """How pipeline parallelism (models/pp_native.py) splits an Inkling 2 text model.
+
+    Every decoder layer reads ``block_states`` (block attention residuals: the inputs of the block boundary layers,
+    ``layer_idx % n_layers_per_attn_res_block == 0``) beside ``hidden_states``, the final norm reads them through
+    ``final_input``, and Inkling-2-Mini runs layers ``[loop_layer_index_start, loop_layer_index_end)`` several times,
+    each later pass restarting from the pre-loop states with messages (``message_input``) from the previous pass.
+    So a stage boundary carries two tensors, ``hidden_states`` [batch, seq, hidden] and ``block_states``
+    [batch, seq, blocks, hidden] (the block count is fixed by the cut), the looped layers stay on one stage (a
+    stage starts at or before the loop start or at or after the loop end), ``final_input`` lives with the last
+    stage and ``message_input`` with the stage holding the loop. The text model's forward runs only this stage's
+    layers (``stage_forward``, the transformers 5.24 forward restricted to ``[start, end)``)."""
+
+    def __init__(self, decoder):
+        self.config = decoder.config
+        config = self.config
+        self.num_layers = int(config.num_hidden_layers)
+        self.block = int(getattr(config, "n_layers_per_attn_res_block", 0) or 0)
+        start = getattr(config, "loop_layer_index_start", None)
+        end = getattr(config, "loop_layer_index_end", None)
+        passes = getattr(config, "loop_num_passes", None)
+        self.loop = None
+        if hasattr(decoder, "message_input") and None not in (start, end, passes):
+            self.loop = (int(start), int(end), int(passes))
+        # Decoder children beside embed / layers / norm, with the layer whose stage owns them (None = the last).
+        self.extra_modules = {"final_input": None}
+        if self.loop is not None:
+            self.extra_modules["message_input"] = self.loop[0]
+
+    def cut_points(self):
+        """Layer indices where a stage may start: anywhere but strictly inside the looped layers."""
+        points = range(1, self.num_layers)
+        if self.loop is None:
+            return list(points)
+        start, end, _ = self.loop
+        return [i for i in points if not start < i < end]
+
+    def blocks_before(self, cut):
+        """Entries of block_states when the stage starting at ``cut`` begins (the boundary layers before it)."""
+        return sum(1 for i in range(min(cut, self.num_layers)) if i % self.block == 0)
+
+    def carry(self, cut):
+        """Tensors crossing the boundary before layer ``cut``: [(trailing shape, dtype)], dtype None = the activation
+        dtype (both stay in the model's hidden dtype in transformers' forward)."""
+        hidden = int(self.config.hidden_size)
+        return [((hidden,), None), ((self.blocks_before(cut), hidden), None)]
+
+    def owner_layer(self, name):
+        return self.extra_modules.get(name)
+
+    def install(self, decoder, ctx, stage_output):
+        install_inkling2_stage_forward(decoder, ctx, stage_output)
+
+
+def inkling2_pipeline_adapter(decoder):
+    """An Inkling2PipelineAdapter for an Inkling 2 text model whose forward is the one stage_forward mirrors, else None
+    (not Inkling 2). Raises ValueError for an Inkling 2 text model whose layout it does not know."""
+    if decoder is None or not type(decoder).__name__.startswith("Inkling2"):
+        return None
+    if not is_inkling2_config(getattr(decoder, "config", None)):
+        return None
+    config = decoder.config
+    layers = getattr(decoder, "layers", None)
+    missing = [
+        name
+        for name in ("embed_tokens", "layers", "norm", "final_input")
+        if getattr(decoder, name, None) is None
+    ]
+    block = getattr(config, "n_layers_per_attn_res_block", None)
+    if (
+        missing
+        or not isinstance(block, int)
+        or block < 1
+        or len(layers) != config.num_hidden_layers
+    ):
+        raise ValueError(
+            f"Unsloth: pipeline parallelism does not know this Inkling 2 text model layout ({type(decoder).__name__}"
+            f"{', missing ' + str(missing) if missing else ''}); it mirrors transformers 5.24's."
+        )
+    adapter = Inkling2PipelineAdapter(decoder)
+    if adapter.loop is None and getattr(config, "loop_layer_index_start", None) is not None:
+        raise ValueError(
+            f"Unsloth: pipeline parallelism found Inkling 2 loop settings without a message_input module in "
+            f"{type(decoder).__name__}; this layout is not supported."
+        )
+    if adapter.loop is not None:
+        start, end, passes = adapter.loop
+        if not (0 < start < end <= adapter.num_layers) or passes < 1:
+            raise ValueError(
+                f"Unsloth: pipeline parallelism does not support the Inkling 2 loop [{start}, {end}) x {passes}."
+            )
+    return adapter
+
+
+def _modeling(decoder):
+    import sys
+    return sys.modules[type(decoder).__module__]
+
+
+def inkling2_stage_layers(decoder, start, end, hidden_states, block_states, layer_kwargs):
+    """Decoder layers ``[start, end)`` of an Inkling 2 text model on (hidden_states, block_states), as transformers
+    5.24's text forward runs them (Mini: the looped layers' passes and messages when the loop starts here)."""
+    import torch
+
+    config = decoder.config
+    layers = decoder.layers
+    loop = None
+    if (
+        hasattr(decoder, "message_input")
+        and getattr(config, "loop_layer_index_start", None) is not None
+    ):
+        loop = (config.loop_layer_index_start, config.loop_layer_index_end, config.loop_num_passes)
+
+    def run(layer, h, b, *extra, **more):
+        new = layer(h, b, *extra, **layer_kwargs[layer.attention_type], **more)
+        if layer.is_block_boundary:
+            b = torch.cat([b.to(h.device), h.unsqueeze(-2)], dim = -2)
+        return new, b
+
+    h, b = hidden_states, block_states
+    i = start
+    while i < end:
+        if loop is not None and loop[0] < i < loop[1]:
+            raise RuntimeError(
+                f"Unsloth: an Inkling 2 pipeline stage starts at layer {i}, inside the looped layers "
+                f"[{loop[0]}, {loop[1]})."
+            )
+        if loop is None or i != loop[0]:
+            h, b = run(layers[i], h, b)
+            i += 1
+            continue
+        loop_start, loop_end, passes = loop
+        if end < loop_end:
+            raise RuntimeError(
+                f"Unsloth: an Inkling 2 pipeline stage ends at layer {end}, inside the looped layers "
+                f"[{loop_start}, {loop_end})."
+            )
+        num_loop_layers = loop_end - loop_start
+        pre_h, pre_b = h, b
+        num_pre_loop_blocks = pre_b.shape[-2]
+        for layer in layers[loop_start:loop_end]:
+            h, b = run(layer, h, b)
+        for loop_idx in range(1, passes):
+            previous_b = b[..., num_pre_loop_blocks + 1 :, :]
+            previous_h = h
+            h, b = pre_h, pre_b
+            cache_offset = config.num_hidden_layers + (loop_idx - 1) * num_loop_layers - loop_start
+            for loop_layer_idx, layer in enumerate(layers[loop_start:loop_end]):
+                messages = decoder.message_input(previous_b, previous_h, loop_layer_idx)
+                h, b = run(layer, h, b, messages, cache_offset = cache_offset)
+        i = loop_end
+    return h, b
+
+
+# Model-level flags the text forward's output recorder consumes; never handed to the layers.
+_STAGE_DROPPED_KWARGS = (
+    "output_attentions",
+    "output_hidden_states",
+    "output_router_logits",
+    "return_dict",
+)
+
+
+def _stage_text_forward(
+    decoder, ctx, stage_output, input_ids, attention_mask, position_ids, inputs_embeds, kwargs
+):
+    import torch
+
+    modeling = _modeling(decoder)
+    if inputs_embeds is None:
+        inputs_embeds = decoder.embed_tokens(input_ids)
+    if position_ids is None:
+        position_ids = torch.arange(inputs_embeds.shape[1], device = inputs_embeds.device).unsqueeze(
+            0
+        )
+    for key in _STAGE_DROPPED_KWARGS:
+        kwargs.pop(key, None)
+    if ctx.is_first:
+        hidden_states = inputs_embeds
+        block_states = inputs_embeds.new_zeros(
+            *inputs_embeds.shape[:-1], 0, inputs_embeds.shape[-1]
+        )
+    else:
+        hidden_states, block_states = ctx.stage_input
+    mapping = attention_mask
+    if not isinstance(mapping, dict):
+        mask_kwargs = {
+            "config": decoder.config,
+            "inputs_embeds": inputs_embeds,
+            "attention_mask": attention_mask,
+            "cache": None,
+            "position_ids": position_ids,
+        }
+        mapping = {
+            "full_attention": modeling.create_causal_mask(**mask_kwargs),
+            "sliding_attention": modeling.create_sliding_window_causal_mask(**mask_kwargs),
+            "linear_attention": modeling.create_recurrent_attention_mask(**mask_kwargs),
+        }
+    distance = {
+        "full_attention": modeling.get_relative_distance(inputs_embeds, None, is_sliding = False),
+        "sliding_attention": modeling.get_relative_distance(inputs_embeds, None, is_sliding = True),
+    }
+    layer_kwargs = {
+        kind: dict(
+            attention_mask = mapping[kind],
+            relative_distance = distance[kind],
+            conv_mask = mapping["linear_attention"],
+            cache = None,
+            position_ids = position_ids,
+            **kwargs,
+        )
+        for kind in ("full_attention", "sliding_attention")
+    }
+    hidden_states, block_states = inkling2_stage_layers(
+        decoder, ctx.start, ctx.end, hidden_states, block_states, layer_kwargs
+    )
+    if not ctx.is_last:
+        # The layers' short convolutions hand out time-major (transposed) outputs; the wire needs dense rows.
+        hidden_states, block_states = hidden_states.contiguous(), block_states.contiguous()
+        if torch.is_grad_enabled() and not block_states.requires_grad:
+            # Only frozen embeddings in it (a cut before the second block): a leaf, so the next stage's gradient has
+            # somewhere to go.
+            block_states = block_states.detach().requires_grad_()
+        raise stage_output((hidden_states, block_states))
+    hidden_states = decoder.final_input(block_states, hidden_states)[0]
+    hidden_states = decoder.norm(hidden_states).to(inputs_embeds.dtype)
+    return modeling.MoeModelOutputWithPast(last_hidden_state = hidden_states, cache = None)
+
+
+def install_inkling2_stage_forward(decoder, ctx, stage_output):
+    """Run only this pipeline stage's layers in the text model's forward while ``ctx`` is active (a pipeline step);
+    the stock forward otherwise (a replica put back for generate / exports). ``stage_output`` is the exception a
+    stage before the last raises with (hidden_states, block_states)."""
+    import functools
+
+    original = decoder.__dict__.get("forward")
+    stock = type(decoder).forward
+
+    def stage(
+        self,
+        input_ids = None,
+        attention_mask = None,
+        position_ids = None,
+        cache = None,
+        inputs_embeds = None,
+        use_cache = None,
+        **kwargs,
+    ):
+        return _stage_text_forward(
+            self, ctx, stage_output, input_ids, attention_mask, position_ids, inputs_embeds, kwargs
+        )
+
+    try:  # FlexAttention keeps a per-forward block mask cache (inkling2_flex)
+        from .inkling2_flex import _wrap_text_forward
+        stage = _wrap_text_forward(stage)
+    except Exception:
+        pass
+
+    @functools.wraps(stock)
+    def forward(*args, **kwargs):
+        if not ctx.active:
+            if original is not None:
+                return original(*args, **kwargs)
+            return stock(decoder, *args, **kwargs)
+        if args:
+            raise RuntimeError(
+                "Unsloth: the Inkling 2 pipeline stage forward takes keyword arguments only "
+                f"(got {len(args)} positional)."
+            )
+        if (
+            kwargs.get("cache") is not None
+            or kwargs.get("past_key_values") is not None
+            or kwargs.get("use_cache")
+        ):
+            raise RuntimeError(
+                "Unsloth: the Inkling 2 pipeline stage forward trains without a KV cache."
+            )
+        kwargs.pop("past_key_values", None)
+        return stage(decoder, **kwargs)
+
+    forward._unsloth_inkling2_pipeline_stage = True
+    decoder.forward = forward
+    return forward
