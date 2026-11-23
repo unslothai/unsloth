@@ -4671,9 +4671,8 @@ def _scaler_for_native(trainer):
             # Same race for a fused optimizer's grad_scale / found_inf on CPU parameters: use host copies.
             if not (
                 self.is_enabled()
-                and self._device != "cpu"
                 and getattr(optimizer, "_step_supports_amp_scaling", False)
-                and _has_cpu_tensors(optimizer)
+                and (self._device == "cpu" or _has_cpu_tensors(optimizer))
             ):
                 return super().step(optimizer, *args, **kwargs)
             had = "step" in optimizer.__dict__
@@ -4685,6 +4684,13 @@ def _scaler_for_native(trainer):
                     t = getattr(optimizer, name, None)
                     if isinstance(t, torch.Tensor) and t.device.type != "cpu":
                         setattr(optimizer, name, t.cpu())
+                # GradScaler calls a fused optimizer's step on inf grads too (the kernel skips), so
+                # accelerate counts a step and the Trainer advances the lr schedule; a foreach
+                # optimizer is not called. Skip here as well (found_inf is a host tensor, no sync):
+                # CPU offload switches adamw_torch to fused and would run one lr step ahead.
+                found_inf = getattr(optimizer, "found_inf", None)
+                if isinstance(found_inf, torch.Tensor) and bool(found_inf.sum() > 0):
+                    return None
                 return real(*a, **k)
 
             optimizer.step = step_with_host_flags
