@@ -212,6 +212,11 @@ def saving(monkeypatch, tmp_path):
         "_push_lfm3_audio_release_config",
         # Real code: a private push into an existing public repo is refused before any upload.
         "_refuse_private_push_to_public_repo",
+        # Real code: a non-Gemma model leaves the merged config.json alone.
+        "_gemma_live_linear_rope",
+        "_gemma_rope_the_zoo_export_drops",
+        "_write_trained_gemma_rope",
+        "_is_main_rank",
     }
     nodes = []
     for node in tree.body:
