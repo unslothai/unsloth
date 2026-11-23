@@ -271,9 +271,8 @@ _TEMPLATE_CACHE_MAX = 32
 
 
 def _apply_data_designer_template_cache_patch() -> None:
-    # safe_render calls from_string per row, and Jinja2 never caches from_string, so every row lexes, parses and
-    # compiles the same template again. Keep each environment's compiled Template, keyed on everything the compiler
-    # bakes in (source, finalize, filter objects), so a cached hit runs the code a fresh compile would produce.
+    # Jinja2 never caches from_string, so safe_render recompiled every row. The key covers what the compiler
+    # bakes in (source, finalize, filter objects), so a hit runs what a fresh compile would.
     try:
         from jinja2 import Environment
         from data_designer.engine.processing.ginja.environment import (  # pyright: ignore[reportMissingImports]
@@ -312,7 +311,7 @@ def _apply_data_designer_template_cache_patch() -> None:
         except (AttributeError, TypeError):
             return original_from_string(self, source, globals, template_class)
         if template is None:
-            # A failed compile raises here and is not stored, so a broken template errors the same way every row.
+            # A failed compile is not stored, so a broken template errors the same way every row.
             template = original_from_string(self, source, globals, template_class)
             if len(cache) >= _TEMPLATE_CACHE_MAX:
                 cache.clear()

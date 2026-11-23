@@ -31,7 +31,6 @@ RECORD = {
 
 @pytest.fixture(name = "cache_patch")
 def fixture_cache_patch(monkeypatch):
-    # Start from the unpatched class and undo the class-level patch after each test.
     monkeypatch.setattr(
         UserTemplateSandboxEnvironment, "from_string", jinja2.Environment.from_string
     )
@@ -112,7 +111,6 @@ def test_studio_finalize_and_wrapped_filters_still_apply_on_cache_hits(cache_pat
             prompt_type = PromptType.USER_PROMPT,
         )
 
-    # Rendered several times so the later calls are cache hits on the same environment.
     for _ in range(3):
         assert render(None) == "<||>"
         assert render(float("nan")) == "<||>"
@@ -130,8 +128,7 @@ def test_finalize_change_recompiles(cache_patch) -> None:
 
 
 def test_filter_change_recompiles(cache_patch) -> None:
-    # The compiler folds constant filter calls and bakes each filter's pass_arg into the code, so a swapped
-    # filter must not reuse a template compiled against the old one.
+    # Compiled code bakes in filters, so a swapped filter must not reuse the old template.
     service._apply_data_designer_template_cache_patch()
     env = UserTemplateSandboxEnvironment(allowed_references = ["a"])
     folded = "{{ 'ABC' | lower }}"
