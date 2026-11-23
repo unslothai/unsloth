@@ -105,7 +105,7 @@ async function downloadRecord(
   format: TranscriptExportFormat,
 ): Promise<void> {
   let full = record;
-  if ((record.segment_count ?? 0) > 0) {
+  if (record.segment_count || record.has_words) {
     try {
       full = await getTranscript(record.id);
     } catch (error) {

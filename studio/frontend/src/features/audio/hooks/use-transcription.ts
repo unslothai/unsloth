@@ -389,19 +389,34 @@ export function useTranscription({
   const handleDownloadTranscript = useCallback(
     async (format: TranscriptExportFormat) => {
       const version = transcriptVersion.current;
+      let details = transcriptDetails;
+      if (
+        format === "json" &&
+        transcriptRecord &&
+        (transcriptRecord.segment_count || transcriptRecord.has_words) &&
+        !details.segments.length &&
+        !details.words.length
+      ) {
+        try {
+          details = detailsFrom(await getTranscript(transcriptRecord.id));
+        } catch (error) {
+          toastFailure("Could not load this transcript's timing", error);
+          return;
+        }
+      }
       if (
         (await downloadTranscript(format, {
           title: transcribedName ?? "transcript",
           text: transcript,
           model: transcriptModel,
-          details: transcriptDetails,
+          details,
           names: speakerNames,
         })) &&
         transcriptVersion.current === version
       )
         setTranscriptExported(true);
     },
-    [transcript, transcribedName, transcriptModel, transcriptDetails, speakerNames],
+    [transcript, transcribedName, transcriptModel, transcriptDetails, transcriptRecord, speakerNames],
   );
 
   return {
