@@ -196,8 +196,12 @@ test("the pinned caption strip stops at docked Run settings, whose glass runs to
 	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > div:last-child {\n  border-left-color: transparent;'));
 	assert.ok(sheet.includes('"var(--chat-settings-top, var(--studio-custom-titlebar-height, 0px))"'));
 	assert.match(sheet, /marginTop: CHAT_SETTINGS_TOP,/);
-	assert.match(sheet, /root\.setProperty\(CHAT_SETTINGS_DOCKED_WIDTH_VAR, `\$\{panel\.offsetWidth\}px`\)/);
-	assert.match(sheet, /root\.removeProperty\(CHAT_SETTINGS_DOCKED_WIDTH_VAR\)/);
+	// Written on the strip, never <html>: an inherited root var restyles the whole thread per drag frame.
+	assert.match(sheet, /'\[data-slot="sidebar-container"\]\[data-windows-glass-frame\]'/);
+	assert.match(sheet, /frame\?\.style\.setProperty\(CHAT_SETTINGS_DOCKED_WIDTH_VAR, `\$\{panel\.offsetWidth\}px`\)/);
+	assert.match(sheet, /attributeFilter: \["data-sidebar-glass-frame"\]/);
+	assert.doesNotMatch(sheet, /documentElement\.style\.setProperty\(CHAT_SETTINGS_DOCKED_WIDTH_VAR/);
+	assert.doesNotMatch(sheet, /root\.setProperty\(CHAT_SETTINGS_DOCKED_WIDTH_VAR/);
 });
 
 test("other pages under glass read over one tinted pane with the sidebar's floor", () => {

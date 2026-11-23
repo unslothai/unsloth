@@ -534,15 +534,30 @@ export function ChatSettingsPanel({
   useEffect(() => {
     const panel = asideRef.current;
     if (!open || isCompact || !panel) return;
-    const root = document.documentElement.style;
-    const apply = () =>
-      root.setProperty(CHAT_SETTINGS_DOCKED_WIDTH_VAR, `${panel.offsetWidth}px`);
+    // On the strip, its only consumer: on <html> the inherited var restyles the thread every drag frame.
+    let frame: HTMLElement | null = null;
+    const apply = () => {
+      const next = document.querySelector<HTMLElement>(
+        '[data-slot="sidebar-container"][data-windows-glass-frame]',
+      );
+      if (frame && frame !== next) {
+        frame.style.removeProperty(CHAT_SETTINGS_DOCKED_WIDTH_VAR);
+      }
+      frame = next;
+      frame?.style.setProperty(CHAT_SETTINGS_DOCKED_WIDTH_VAR, `${panel.offsetWidth}px`);
+    };
     apply();
     const observer = new ResizeObserver(apply);
     observer.observe(panel);
+    // Pinning mounts the strip after the panel opened.
+    const pinObserver = new MutationObserver(apply);
+    pinObserver.observe(document.documentElement, {
+      attributeFilter: ["data-sidebar-glass-frame"],
+    });
     return () => {
       observer.disconnect();
-      root.removeProperty(CHAT_SETTINGS_DOCKED_WIDTH_VAR);
+      pinObserver.disconnect();
+      frame?.style.removeProperty(CHAT_SETTINGS_DOCKED_WIDTH_VAR);
     };
   }, [open, isCompact]);
   const currentCheckpoint = params.checkpoint;
