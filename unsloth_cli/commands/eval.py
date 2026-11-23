@@ -244,20 +244,44 @@ def _local_adapter(model: str) -> str:
     return snapshot_download(model)
 
 
-def _adapter_rank(adapter_dir: str) -> int:
-    config = _read_config(Path(adapter_dir) / "adapter_config.json") or {}
-    ranks = [config.get("r")] + list((config.get("rank_pattern") or {}).values())
-    return max((r for r in ranks if isinstance(r, int)), default = 0)
-
-
-def _adapter_module_names(adapter_dir: str) -> List[str]:
-    """LoRA module names from the adapter_model.safetensors header (no tensor reads)."""
+def _adapter_header(adapter_dir: str) -> dict:
+    """The adapter_model.safetensors header (names, shapes; no tensor reads), {} if unreadable."""
     file = Path(adapter_dir) / "adapter_model.safetensors"
     try:
         with open(file, "rb") as f:
             header = json.loads(f.read(int.from_bytes(f.read(8), "little")))
     except (OSError, ValueError):
-        return []
+        return {}
+    return header if isinstance(header, dict) else {}
+
+
+def _adapter_rank(adapter_dir: str) -> int:
+    config = _read_config(Path(adapter_dir) / "adapter_config.json") or {}
+    ranks = [config.get("r")]
+    # the rank each saved module really has: rows of its lora_A (lora_embedding_A for embeddings)
+    for key, info in _adapter_header(adapter_dir).items():
+        shape = info.get("shape") if isinstance(info, dict) else None
+        if re.search(r"\.lora_(embedding_)?A(\.|$)", key) and isinstance(shape, list) and shape:
+            ranks.append(shape[0])
+    if len(ranks) == 1:
+        # no readable weights: count only rank_pattern entries that can match a target module
+        patterns = config.get("rank_pattern") or {}
+        targets = config.get("target_modules")
+        if isinstance(patterns, dict):
+            for key, rank in patterns.items():
+                if not isinstance(targets, list) or any(
+                    _pattern_value({key: rank}, t, None) is not None
+                    or re.search(rf"(^|\.){re.escape(t)}$", key)
+                    for t in targets
+                    if isinstance(t, str)
+                ):
+                    ranks.append(rank)
+    return max((r for r in ranks if isinstance(r, int) and not isinstance(r, bool)), default = 0)
+
+
+def _adapter_module_names(adapter_dir: str) -> List[str]:
+    """LoRA module names from the adapter_model.safetensors header (no tensor reads)."""
+    header = _adapter_header(adapter_dir)
     names = set()
     for key in header:
         name, sep, _ = key.partition(".lora_")

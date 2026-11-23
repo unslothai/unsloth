@@ -957,12 +957,16 @@ def test_vllm_backend_rejects_per_module_lora_scale(vllm_env, tmp_path, config, 
         assert "model" not in vllm_env
 
 
-def _write_lora_header(adapter, modules):
-    # safetensors header only: _adapter_module_names never reads tensor data
+def _write_lora_header(
+    adapter,
+    modules,
+    rank = 1,
+):
+    # safetensors header only: _adapter_module_names / _adapter_rank never read tensor data
     header = {
         f"base_model.model.{m}.lora_{ab}.weight": {
             "dtype": "F32",
-            "shape": [1],
+            "shape": [rank, 8] if ab == "A" else [8, rank],
             "data_offsets": [0, 4],
         }
         for m in modules
@@ -1005,6 +1009,27 @@ def test_vllm_backend_resolves_lora_patterns_per_module(vllm_env, tmp_path, patt
         assert result.exit_code == 2, result.output
         assert "rank_pattern / alpha_pattern" in result.output
         assert "model" not in vllm_env
+
+
+@pytest.mark.parametrize(
+    "config, header_rank, expected",
+    [
+        # no adapted module matches the pattern: every saved module keeps r
+        ({"target_modules": ["q_proj"], "rank_pattern": {"down_proj": 640}}, 16, None),
+        ({"target_modules": ["q_proj"], "rank_pattern": {"down_proj": 640}}, None, None),
+        # an earlier matching key shadows the higher-rank one, as in PEFT
+        ({"rank_pattern": {"q_proj": 32, "self_attn.q_proj": 640}}, 32, 32),
+        # the saved lora_A rows are what vLLM loads
+        ({"rank_pattern": {"q_proj": 64}}, 64, 64),
+    ],
+)
+def test_vllm_backend_reads_the_saved_lora_rank(vllm_env, tmp_path, config, header_rank, expected):
+    adapter = _rank_adapter(tmp_path, r = 16, **config)
+    if header_rank is not None:
+        _write_lora_header(adapter, [m for m in _ATTN if m.endswith("q_proj")], header_rank)
+    result = _run(str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path / "o"))
+    assert result.exit_code == 0, result.output
+    assert vllm_env["model_args"].get("max_lora_rank") == expected
 
 
 def test_vllm_backend_refuses_multi_process(vllm_env, monkeypatch):
