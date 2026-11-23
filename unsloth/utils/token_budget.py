@@ -76,6 +76,17 @@ def karmarkar_karp(
     return [sorted(s[1]) for s in heap[0][2]]
 
 
+def _more_even(regrouped, given, weights, size):
+    """Karmarkar-Karp is a heuristic: True unless `given` already has the smaller spread of
+    per-group sums over consecutive `size` chunks, so a regroup never ends up less even."""
+
+    def spread(order):
+        sums = [sum(weights[i] for i in order[s : s + size]) for s in range(0, len(order), size)]
+        return max(sums) - min(sums)
+
+    return spread(regrouped) <= spread(given)
+
+
 def balance_step_indices(
     indices,
     lengths,
@@ -97,21 +108,23 @@ def balance_step_indices(
         raise ValueError(f"expected {window} indices, got {len(indices)}")
     if ga * ws == 1:
         return list(indices)
+    rank_rows = [
+        [indices[(g * ws + r) * bs + j] for g in range(ga) for j in range(bs)] for r in range(ws)
+    ]
     if cross_rank and ws > 1:
         groups = karmarkar_karp([lengths[i] for i in indices], ws, equal_size = True)
-        rank_rows = [[indices[p] for p in group] for group in groups]
-    else:
-        rank_rows = [
-            [indices[(g * ws + r) * bs + j] for g in range(ga) for j in range(bs)]
-            for r in range(ws)
-        ]
+        regrouped = [[indices[p] for p in group] for group in groups]
+        if _more_even(sum(regrouped, []), sum(rank_rows, []), lengths, ga * bs):
+            rank_rows = regrouped
     out = [None] * window
     for r, rows in enumerate(rank_rows):
         slots = karmarkar_karp([lengths[i] for i in rows], ga, equal_size = True)
+        slots = [[rows[p] for p in slot] for slot in slots]
+        if not _more_even(sum(slots, []), rows, lengths, bs):
+            slots = [rows[g * bs : (g + 1) * bs] for g in range(ga)]
         for g, slot in enumerate(slots):
             base = (g * ws + r) * bs
-            for j, p in enumerate(slot):
-                out[base + j] = rows[p]
+            out[base : base + bs] = slot
     return out
 
 
@@ -130,16 +143,7 @@ def balance_label_steps(indices, label_counts, step_size):
     groups = karmarkar_karp([label_counts[i] for i in indices], steps, equal_size = True)
     groups.sort(key = lambda group: group[0])
     out = [indices[p] for group in groups for p in group]
-
-    def spread(order):
-        sums = [
-            sum(label_counts[i] for i in order[s : s + step_size])
-            for s in range(0, len(order), step_size)
-        ]
-        return max(sums) - min(sums)
-
-    # Karmarkar-Karp is a heuristic: keep the sampler's order when that was already more even.
-    return out if spread(out) <= spread(indices) else list(indices)
+    return out if _more_even(out, indices, label_counts, step_size) else list(indices)
 
 
 class TokenBalancedSampler(torch.utils.data.Sampler):

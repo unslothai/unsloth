@@ -769,6 +769,29 @@ def test_label_steps_are_never_less_even_than_the_order_given():
         assert max(after) - min(after) <= max(before) - min(before)
 
 
+@pytest.mark.parametrize("ws,ga,bs", [(1, 2, 4), (2, 2, 2), (2, 1, 4), (1, 4, 2)])
+def test_step_balance_is_never_less_even_than_the_order_given(ws, ga, bs):
+    rng = random.Random(ws * 100 + ga * 10 + bs)
+    n = ws * ga * bs
+
+    def spreads(order, lengths):
+        layout = _layout(order, bs, ga, ws)
+        ranks = [sum(lengths[i] for b in r for i in b) for r in layout]
+        slots = [[sum(lengths[i] for i in b) for b in r] for r in layout]
+        return max(ranks) - min(ranks), [max(r) - min(r) for r in slots]
+
+    for _ in range(500):
+        lengths = [int(rng.lognormvariate(5, 1)) for _ in range(n)]
+        order = list(range(n))
+        out = tb.balance_step_indices(order, lengths, bs, ga, ws, True)
+        assert sorted(out) == order
+        rank_after, slots_after = spreads(out, lengths)
+        rank_before, slots_before = spreads(order, lengths)
+        assert rank_after <= rank_before
+        if ws == 1:
+            assert slots_after[0] <= slots_before[0]
+
+
 @pytest.mark.parametrize("n", [61, 64, 100, 131])
 @pytest.mark.parametrize("keep_first_window", [False, True])
 def test_label_sampler_keeps_the_multiset_and_regroups_only_inside_windows(n, keep_first_window):
