@@ -186,6 +186,22 @@ def test_resident_counts_kv_and_each_contexts_compute_peak():
     assert backend.reclaimable_gpu_memory_gb() == pytest.approx({0: (1407.73 + 78.25) / 1024})
 
 
+def test_drafter_with_the_targets_compute_size_still_counts():
+    backend = _backend(_Alive())
+    backend._child_gpu_physical_ids = (0,)
+    backend._stdout_lines = [
+        "load_tensors:        CUDA0 model buffer size =  1000.00 MiB",
+        "llama_context: constructing llama_context",
+        "sched_reserve:      CUDA0 compute buffer size =    64.00 MiB",
+        "load_tensors:        CUDA0 model buffer size =   100.00 MiB",
+        "llama_context: constructing llama_context",
+        "sched_reserve:      CUDA0 compute buffer size =    64.00 MiB",
+        "sched_reserve:      CUDA0 compute buffer size =    64.00 MiB",
+        "sched_reserve:      CUDA0 compute buffer size =    64.00 MiB",
+    ]
+    assert backend.gpu_footprint_gb() == {0: (1000 + 100 + 64 + 64) / 1024}
+
+
 def test_footprint_without_gpu_model_buffers_is_none():
     backend = _backend(_Alive())
     backend._child_gpu_physical_ids = (0,)
