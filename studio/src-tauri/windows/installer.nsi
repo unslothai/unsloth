@@ -534,13 +534,16 @@ Function .onInit
 
   ; The native downloads also run directly, outside the universal installer.
   !if "${ARCH}" == "arm64"
-    ${If} ${IsNativeAMD64}
+    !define UNSLOTH_WRONG_HOST `${IsNativeAMD64}`
   !else if "${ARCH}" == "x64"
-    ${If} ${IsNativeARM64}
-    ; Existing emulated x64 installations receive an x64 in-app update.
-    ${AndIf} $UpdateMode != 1
+    !define UNSLOTH_WRONG_HOST `${IsNativeARM64}`
   !endif
-  !if "${ARCH}" == "arm64" || "${ARCH}" == "x64"
+  !ifdef UNSLOTH_WRONG_HOST
+    ${If} ${UNSLOTH_WRONG_HOST}
+    !if "${ARCH}" == "x64"
+      ; Existing emulated x64 installations receive an x64 in-app update.
+      ${AndIf} $UpdateMode != 1
+    !endif
       ${If} $PassiveMode != 1
         MessageBox MB_OK 'This installer is for a different processor. To install Unsloth on this PC, download Unsloth-Desktop-Windows.exe.$\r$\n$\r$\nhttps://unsloth.ai/download/windows' /SD IDOK
       ${EndIf}
