@@ -326,9 +326,11 @@ def install_fp32_islands(
     autocast_type = torch.device(device_type).type
     n_scaled = 0
     for n in names:
-        make_fp32_island(mods[n], autocast_type)
+        # Scaled GEMM first: when the island root is the bare nf4 linear, the island must wrap the scaled forward
+        # (fp32 input, fp32 output), not be replaced by it.
         if use_scaled and n in targets:
             n_scaled += install_scaled_mm(mods[n])
+        make_fp32_island(mods[n], autocast_type)
     if report is not None:
         report["fp16_scaled_mm"] = n_scaled
     return names

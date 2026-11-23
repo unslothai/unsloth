@@ -731,6 +731,30 @@ def test_zimage_scaled_mm_stays_finite_past_fp16_range_and_matches_fp32(scaled_m
     assert len(scaled_mm) == 2  # forward + dx
 
 
+def test_scaled_mm_on_a_bare_nf4_root_keeps_the_fp32_island(scaled_mm):
+    """A Q/K/V-only adapter leaves w2 a bare nf4 linear: the island must still promote the fp16 input and keep the
+    scaled GEMM's fp32 output, or outputs past 65504 overflow again."""
+    from core.training import diffusion_dit_fp16 as f16
+
+    m = _zimage_toy()
+    blk = m.layers[0]
+    blk.feed_forward.w2 = blk.feed_forward.w2.base_layer
+    blk.feed_forward.w2.weight.data.fill_(0.5)
+    rep = {}
+    assert "layers.0.feed_forward.w2" in f16.install_fp32_islands(m, "z-image", "cpu", report = rep)
+    w2 = blk.feed_forward.w2
+    assert "_unsloth_scaled_mm_orig" in w2.__dict__ and w2._unsloth_fp32_island
+    x = torch.full((8, 64), 3.0e4).half()  # fp16-finite input, 9.6e5 outputs
+    with torch.autocast("cpu", dtype = torch.float16):
+        y = w2(x)
+    ref = torch.nn.functional.linear(x.float(), w2.weight.float())
+    assert ref.abs().max() > 65504
+    assert y.dtype is torch.float32 and torch.isfinite(y).all()
+    assert ((y - ref).norm() / ref.norm()) < 2e-3
+    assert w2.calls == [], "the fp32 nf4 forward did not run"
+    assert len(scaled_mm) == 1
+
+
 def test_scaled_mm_forward_split_keeps_fp32_input_precision(scaled_mm):
     """One fp16 rounding of the input costs ~1e-4; the hi + lo split must land at fp32 level, the dx term at fp16."""
     from core.training import diffusion_dit_fp16 as f16
