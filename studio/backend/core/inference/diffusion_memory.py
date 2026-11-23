@@ -1364,6 +1364,48 @@ def cuda_reclaimable_bytes(device: Optional[int] = None) -> Optional[int]:
     return reclaimable - _graph_held_cache_bytes(pool_device)
 
 
+def cuda_graph_held_bytes(device: Optional[int] = None) -> int:
+    """Unused bytes this process's CUDA graph pools hold on ``device`` (the current card when None): what
+    ``cuda_reclaimable_bytes`` leaves uncredited and dropping the graphs hands back. 0 when unreadable."""
+    if device is None:
+        try:
+            import torch
+            device = int(torch.cuda.current_device())
+        except Exception:  # noqa: BLE001 - no current CUDA device: nothing to credit
+            return 0
+    return max(0, int(_graph_held_cache_bytes(device)))
+
+
+# Studio's own idle CUDA graphs may be dropped so a request the guard would otherwise refuse fits; "0" keeps them.
+GUARD_RELEASE_GRAPHS_ENV = "UNSLOTH_DIFFUSION_GUARD_RELEASE_GRAPHS"
+
+
+def guard_release_graphs_enabled() -> bool:
+    return not _env_off(GUARD_RELEASE_GRAPHS_ENV)
+
+
+def graph_release_fits(verdict_kwargs: dict, held: Callable[[], int]) -> int:
+    """The idle CUDA graph bytes to release, or 0: nonzero only when the activation guard falls short at
+    ``verdict_kwargs`` (refused, or admitted only by 'allow oversized') and crediting ``held()`` (read only then: an
+    allocator snapshot) as free makes it fit."""
+    card = verdict_kwargs.get("device_memory")
+    if card is None or getattr(card, "free_mib", None) is None:
+        return 0
+    plain = {**verdict_kwargs, "allow_oversized": False}
+    if image_activation_verdict(**plain).action != ACTIVATION_REFUSE:
+        return 0
+    held_bytes = int(held() or 0)
+    if held_bytes <= 0:
+        return 0
+    free = int(card.free_mib) + int(held_bytes) // (1024 * 1024)
+    if card.total_mib is not None:
+        free = min(free, int(card.total_mib))
+    credited = replace(card, free_mib = free)
+    if image_activation_verdict(**{**plain, "device_memory": credited}).action == ACTIVATION_REFUSE:
+        return 0
+    return held_bytes
+
+
 def cuda_reusable_cache_bytes(device: Any = None) -> int:
     """``cuda_reclaimable_bytes`` (excludes CUDA graph pools) floored at 0 for any device form; resolved to an int
     index because ``_graph_held_cache_bytes`` would silently skip the graph-pool count for a torch.device."""
