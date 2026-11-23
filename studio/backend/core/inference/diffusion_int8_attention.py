@@ -289,6 +289,10 @@ def kernel_variant(config: dict, sinks: bool) -> dict:
     return chosen
 
 
+# Read when a plan picks its kernels; keyed raw by _plan_key (a spelling change only rebuilds the plan).
+_KERNEL_SWITCHES = (RESID_FOLD_ENV, SINK_ORDER_ENV, NATIVE_P_ENV)
+
+
 def resid_fold_enabled() -> bool:
     """Whether the sink-path attention kernel adds the clipped keys back itself (``RESID_FOLD_ENV``)."""
     return (os.environ.get(RESID_FOLD_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
@@ -814,6 +818,8 @@ def _plan_key(
         scale,
         (K_MEAN_STEP, K_MEAN_KEYS, V_RANGE_STEP, V_RANGE_CHUNKS, GRID_LIMIT),
         int(mode),
+        # kernel switches: a plan built before one flips must not keep serving the old kernel
+        tuple(os.environ.get(name) for name in _KERNEL_SWITCHES),
     )
 
 

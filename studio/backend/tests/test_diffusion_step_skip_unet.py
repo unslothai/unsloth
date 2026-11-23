@@ -96,6 +96,28 @@ def test_sdxl_auto_row_skips_every_other_step_at_25_on_max():
     assert pipe.unet.calls == 20
 
 
+@pytest.mark.parametrize("by_keyword", [False, True])
+def test_a_skipped_step_never_returns_another_latent_shape(by_keyword):
+    """The reuse key reads the latent whether it comes positionally or as ``sample=`` (UNet2DConditionModel's
+    keyword): a step whose latent changed shape computes instead of returning the last step's output."""
+    plan = dcache.auto_static_skip_plan((SDXL,), "max", 25, env = {})
+    pipe = _sdxl_pipe()
+    ss.install_static_step_skip(pipe, settings = ss.auto_static_settings(plan, env = {}))
+    steps = 25
+    skipped = [i for i, on in enumerate(ss.static_schedule(steps, every = 2)) if not on]
+    ss.reset_static_step_skip(pipe, steps, step_signal = True)
+    for i in range(steps):
+        width = 12 if i >= skipped[1] else 8
+        latent, t = torch.zeros(2, 4, 8, width), torch.tensor([1000.0 * (1 - i / steps)])
+        if by_keyword:
+            out = pipe.unet(sample = latent, timestep = t, return_dict = False)
+        else:
+            out = pipe.unet(latent, t, return_dict = False)
+        assert out[0].shape == latent.shape, (i, by_keyword)
+        ss.mark_step_end(pipe)
+    assert ss.static_skip_stats(pipe)["stats"]["skipped"] >= 1
+
+
 def test_skip_survives_diffusers_model_offload_reattach():
     """Studio installs the skip before placement; model offload then wraps it, and diffusers removes and re-adds
     its hooks around every call (maybe_free_model_hooks -> enable_model_cpu_offload). The layer must stay in the
