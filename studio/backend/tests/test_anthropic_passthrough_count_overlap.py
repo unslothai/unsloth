@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import threading
+import time
 
 import httpx
 import pytest
@@ -74,10 +75,14 @@ def _install_upstream(
     return bodies
 
 
-async def _stream_text(backend, **kwargs):
+async def _stream_text(
+    backend,
+    cancel_event = None,
+    **kwargs,
+):
     response = await _anthropic_passthrough_stream(
         _Request(),
-        threading.Event(),
+        cancel_event or threading.Event(),
         backend,
         [{"role": "user", "content": "hello"}],
         [],
@@ -229,29 +234,17 @@ def test_a_cancel_during_a_slow_count_is_not_held_by_it(monkeypatch):
     _install_upstream(monkeypatch, on_request = cancel.set)
 
     async def _run():
-        response = await _anthropic_passthrough_stream(
-            _Request(),
-            cancel,
-            _Backend(count),
-            [{"role": "user", "content": "hello"}],
-            [],
-            0.7,
-            0.95,
-            20,
-            16,
-            "msg_1",
-            "test-model",
-        )
-        chunks = []
-        async for chunk in response.body_iterator:
-            chunks.append(chunk.decode() if isinstance(chunk, (bytes, bytearray)) else chunk)
-        return "".join(chunks)
+        started = time.monotonic()
+        try:
+            text = await asyncio.wait_for(_stream_text(_Backend(count), cancel), timeout = 10)
+        finally:
+            # Before asyncio.run joins the executor, which would otherwise wait out the count.
+            release.set()
+        return text, time.monotonic() - started
 
-    try:
-        text = asyncio.run(asyncio.wait_for(_run(), timeout = 10))
-    finally:
-        release.set()
+    text, elapsed = asyncio.run(_run())
 
+    assert elapsed < 5
     events = _events(text)
     assert events[0][0] == "message_start"
     assert events[0][1]["message"]["usage"]["input_tokens"] == 0
