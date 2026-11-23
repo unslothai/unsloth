@@ -482,18 +482,12 @@ def _json_default(value):
         return str(value)
 
 
-def _render_results(results: dict) -> None:
-    from rich.console import Console
-    from rich.table import Table
-
-    table = Table(title = "Evaluation results")
-    table.add_column("Task", style = "cyan")
-    table.add_column("Metric")
-    table.add_column("Value", justify = "right")
-    table.add_column("± stderr", justify = "right")
+def _metric_rows(results: dict) -> Dict[Tuple[str, str], Tuple[float, Optional[float]]]:
+    """{(task, metric): (value, stderr)} for every numeric metric, groups included."""
     rows = dict(results.get("results") or {})
     for task, metrics in (results.get("groups") or {}).items():
         rows.setdefault(task, metrics)
+    out: Dict[Tuple[str, str], Tuple[float, Optional[float]]] = {}
     for task, metrics in rows.items():
         for key, raw_value in metrics.items():
             value = _metric_number(raw_value)
@@ -503,8 +497,105 @@ def _render_results(results: dict) -> None:
             stderr = _metric_number(
                 metrics.get(f"{metric}_stderr,{flt}" if flt else f"{metric}_stderr")
             )
-            table.add_row(task, key, f"{value:.4f}", f"{stderr:.4f}" if stderr is not None else "—")
+            out[(task, key)] = (value, stderr)
+    return out
+
+
+def _render_results(results: dict) -> None:
+    from rich.console import Console
+    from rich.table import Table
+
+    table = Table(title = "Evaluation results")
+    table.add_column("Task", style = "cyan")
+    table.add_column("Metric")
+    table.add_column("Value", justify = "right")
+    table.add_column("± stderr", justify = "right")
+    for (task, key), (value, stderr) in _metric_rows(results).items():
+        table.add_row(task, key, f"{value:.4f}", f"{stderr:.4f}" if stderr is not None else "—")
     Console().print(table)
+
+
+_COMPARISON_COLUMNS = (
+    "task",
+    "metric",
+    "base",
+    "base_stderr",
+    "fine_tuned",
+    "fine_tuned_stderr",
+    "delta",
+)
+
+
+def compare_results(base: dict, tuned: dict) -> List[dict]:
+    """One row per (task, metric) either run reported; delta = fine-tuned - base."""
+    base_rows, tuned_rows = _metric_rows(base), _metric_rows(tuned)
+    keys = list(tuned_rows) + [k for k in base_rows if k not in tuned_rows]
+    rows = []
+    for task, metric in keys:
+        b, b_err = base_rows.get((task, metric), (None, None))
+        t, t_err = tuned_rows.get((task, metric), (None, None))
+        rows.append(
+            {
+                "task": task,
+                "metric": metric,
+                "base": b,
+                "base_stderr": b_err,
+                "fine_tuned": t,
+                "fine_tuned_stderr": t_err,
+                "delta": t - b if t is not None and b is not None else None,
+            }
+        )
+    return rows
+
+
+def _render_comparison(rows: List[dict]) -> None:
+    from rich.console import Console
+    from rich.table import Table
+
+    def fmt(value, signed = False):
+        return "—" if value is None else (f"{value:+.4f}" if signed else f"{value:.4f}")
+
+    table = Table(title = "Base vs fine-tuned")
+    table.add_column("Task", style = "cyan")
+    table.add_column("Metric")
+    table.add_column("Base", justify = "right")
+    table.add_column("Fine-tuned", justify = "right")
+    table.add_column("Delta", justify = "right")
+    for row in rows:
+        delta = row["delta"]
+        style = None if not delta else ("green" if delta > 0 else "red")
+        table.add_row(
+            row["task"],
+            row["metric"],
+            fmt(row["base"]),
+            fmt(row["fine_tuned"]),
+            fmt(delta, signed = True),
+            style = style,
+        )
+    Console().print(table)
+
+
+def _write_comparison(rows: List[dict], output_dir: Path) -> Tuple[Path, Path]:
+    import csv
+
+    json_path, csv_path = output_dir / "comparison.json", output_dir / "comparison.csv"
+    json_path.write_text(json.dumps(rows, indent = 2), encoding = "utf-8")
+    with csv_path.open("w", newline = "", encoding = "utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames = _COMPARISON_COLUMNS)
+        writer.writeheader()
+        writer.writerows({k: "" if v is None else v for k, v in row.items()} for row in rows)
+    return json_path, csv_path
+
+
+def _free_accelerator_memory() -> None:
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def _run_dir_name(model: str) -> str:
@@ -588,6 +679,12 @@ def evaluate(
         "-o",
         help = "Directory for results.json. Default: a new eval_results/<model>_<time> folder per run.",
     ),
+    compare_base: bool = typer.Option(
+        False,
+        "--compare-base",
+        help = "Also evaluate the adapter's base model on the same tasks and save a "
+        "side-by-side comparison (comparison.json/.csv) next to results.json.",
+    ),
     confirm_run_unsafe_code: bool = typer.Option(
         False,
         "--confirm-run-unsafe-code",
@@ -617,6 +714,11 @@ def evaluate(
         limit = int(limit) if limit >= 1 else limit
     if max_seq_length <= 0:
         _fail("--max-seq-length must be a positive integer.")
+    if compare_base and backend == "vllm":
+        _fail(
+            "--compare-base is not supported with --backend vllm. Use --backend unsloth or hf, "
+            "or run unsloth eval once on the adapter and once on its base model."
+        )
     if output_dir is None:
         run_name, stamp = _run_dir_name(model), int(time.time())
     # find_spec, not import: lm_eval imports transformers, which must come after unsloth
@@ -655,6 +757,11 @@ def evaluate(
     effective_base = base_model or resolve_base_model(model)
     if not base_model:
         _refuse_network_share_adapter_base(model, effective_base)
+    if compare_base and not effective_base:
+        _fail(
+            "--compare-base needs a LoRA adapter (its adapter_config.json names the base "
+            "model) or --base-model."
+        )
     if backend == "vllm":
         if load_in_4bit:
             typer.echo("Note: --backend vllm loads 16-bit weights; --load-in-4bit has no effect.")
@@ -694,7 +801,6 @@ def evaluate(
 
         if backend == "hf":
             import torch
-
             if device is None:
                 mps = getattr(torch.backends, "mps", None)
                 device = (
@@ -711,51 +817,59 @@ def evaluate(
                     "Note: batch size 'auto' is slow on CPU/MPS, using 1 (override with --batch-size)."
                 )
                 bs = 1
-            model_args = {"pretrained": model}
-            if effective_base:
-                model_args = {"pretrained": effective_base, "peft": model}
-                if _has_tokenizer_files(model):
-                    model_args["tokenizer"] = model
-                typer.echo(f"Evaluating adapter '{model}' on base '{effective_base}'.")
-            model_args["max_length"] = max_seq_length
-            if load_in_4bit and device.startswith("cuda"):
-                if find_spec("bitsandbytes") is not None:
-                    model_args["load_in_4bit"] = True
+
+        if backend == "unsloth" and load_in_4bit and find_spec("bitsandbytes") is None:
+            typer.echo("Note: bitsandbytes is not installed, loading in full precision.")
+            load_in_4bit = False
+
+        def _model_kwargs(
+            model: str, effective_base: Optional[str], base_model: Optional[str]
+        ) -> dict:
+            """simple_evaluate's model arguments for `model`, an adapter on `effective_base` when set."""
+            if backend == "hf":
+                model_args = {"pretrained": model}
+                if effective_base:
+                    model_args = {"pretrained": effective_base, "peft": model}
+                    if _has_tokenizer_files(model):
+                        model_args["tokenizer"] = model
+                    typer.echo(f"Evaluating adapter '{model}' on base '{effective_base}'.")
+                model_args["max_length"] = max_seq_length
+                if load_in_4bit and device.startswith("cuda"):
+                    if find_spec("bitsandbytes") is not None:
+                        model_args["load_in_4bit"] = True
+                    else:
+                        typer.echo(
+                            "Note: bitsandbytes is not installed, loading in full precision."
+                        )
+                if model_args.get("load_in_4bit"):
+                    with _silence():
+                        return {
+                            "model": _hflm_4bit(HFLM)(**model_args, batch_size = bs, device = device)
+                        }
+                return dict(model = "hf", model_args = model_args, batch_size = bs, device = device)
+            if backend == "vllm":
+                model_args = {"pretrained": model, "max_model_len": max_seq_length}
+                if effective_base:
+                    model_args["pretrained"] = _vllm_base(effective_base)
+                    model_args["lora_local_path"] = _local_adapter(model)
+                    rank = _adapter_rank(model_args["lora_local_path"])
+                    if rank > 16:
+                        model_args["max_lora_rank"] = next(
+                            (r for r in _VLLM_LORA_RANKS if r >= rank), _VLLM_LORA_RANKS[-1]
+                        )
+                    if _has_tokenizer_files(model):
+                        model_args["tokenizer"] = model_args["lora_local_path"]
+                    typer.echo(
+                        f"Evaluating adapter '{model}' on base '{model_args['pretrained']}' with vLLM."
+                    )
                 else:
-                    typer.echo("Note: bitsandbytes is not installed, loading in full precision.")
-            if model_args.get("load_in_4bit"):
-                with _silence():
-                    eval_kwargs["model"] = _hflm_4bit(HFLM)(
-                        **model_args, batch_size = bs, device = device
-                    )
-            else:
-                eval_kwargs.update(model = "hf", model_args = model_args, batch_size = bs, device = device)
-        elif backend == "vllm":
-            model_args = {"pretrained": model, "max_model_len": max_seq_length}
-            if effective_base:
-                model_args["pretrained"] = _vllm_base(effective_base)
-                model_args["lora_local_path"] = _local_adapter(model)
-                rank = _adapter_rank(model_args["lora_local_path"])
-                if rank > 16:
-                    model_args["max_lora_rank"] = next(
-                        (r for r in _VLLM_LORA_RANKS if r >= rank), _VLLM_LORA_RANKS[-1]
-                    )
-                if _has_tokenizer_files(model):
-                    model_args["tokenizer"] = model_args["lora_local_path"]
-                typer.echo(
-                    f"Evaluating adapter '{model}' on base '{model_args['pretrained']}' with vLLM."
-                )
-            else:
-                model_args["pretrained"] = _vllm_base(model)
-            if gpu_memory_utilization is not None:
-                model_args["gpu_memory_utilization"] = gpu_memory_utilization
-            eval_kwargs.update(model = "vllm", model_args = model_args, batch_size = bs)
-        else:
+                    model_args["pretrained"] = _vllm_base(model)
+                if gpu_memory_utilization is not None:
+                    model_args["gpu_memory_utilization"] = gpu_memory_utilization
+                return dict(model = "vllm", model_args = model_args, batch_size = bs)
+
             from unsloth import FastLanguageModel
 
-            if load_in_4bit and find_spec("bitsandbytes") is None:
-                typer.echo("Note: bitsandbytes is not installed, loading in full precision.")
-                load_in_4bit = False
             load_kwargs = dict(
                 max_seq_length = max_seq_length, load_in_4bit = load_in_4bit, token = hf_token or None
             )
@@ -791,22 +905,38 @@ def evaluate(
                     from peft import PeftModel
                     lmodel = PeftModel.from_pretrained(lmodel, model)
                 FastLanguageModel.for_inference(lmodel)
-                eval_kwargs["model"] = HFLM(
-                    pretrained = lmodel, tokenizer = tokenizer, batch_size = bs, max_length = max_seq_length
-                )
+                return {
+                    "model": HFLM(
+                        pretrained = lmodel,
+                        tokenizer = tokenizer,
+                        batch_size = bs,
+                        max_length = max_seq_length,
+                    )
+                }
 
-        engine_log = tmp_dir / "vllm.log" if backend == "vllm" else None
-        try:
-            with _silence(engine_log) as ui:
-                from rich.status import Status
-                with Status(f"Evaluating {', '.join(task_names)}…", console = ui, spinner = "dots"):
-                    results = lm_eval.simple_evaluate(**eval_kwargs)
-        except Exception:
-            # vLLM's engine runs in its own process and logs the real cause there, not in the traceback
-            if engine_log is not None and engine_log.exists():
-                lines = engine_log.read_text(encoding = "utf-8", errors = "replace").splitlines()
-                typer.echo("\n".join(line.rsplit("\r", 1)[-1] for line in lines[-40:]), err = True)
-            raise
+        def _run(model_kwargs: dict) -> Optional[dict]:
+            engine_log = tmp_dir / "vllm.log" if backend == "vllm" else None
+            try:
+                with _silence(engine_log) as ui:
+                    from rich.status import Status
+                    with Status(f"Evaluating {', '.join(task_names)}…", console = ui, spinner = "dots"):
+                        return lm_eval.simple_evaluate(**eval_kwargs, **model_kwargs)
+            except Exception:
+                # vLLM's engine runs in its own process and logs the real cause there, not in the traceback
+                if engine_log is not None and engine_log.exists():
+                    lines = engine_log.read_text(encoding = "utf-8", errors = "replace").splitlines()
+                    typer.echo(
+                        "\n".join(line.rsplit("\r", 1)[-1] for line in lines[-40:]), err = True
+                    )
+                raise
+
+        results = _run(_model_kwargs(model, effective_base, base_model))
+        base_results = None
+        if compare_base and results is not None:
+            # drop the fine-tuned model before loading the base, so both fit where one did
+            _free_accelerator_memory()
+            typer.echo(f"Evaluating base model '{effective_base}' for comparison.")
+            base_results = _run(_model_kwargs(effective_base, None, None))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors = True)
 
@@ -832,3 +962,13 @@ def evaluate(
     results_path = output_dir / "results.json"
     results_path.write_text(json.dumps(results, indent = 2, default = _json_default), encoding = "utf-8")
     typer.echo(f"Saved results to: {results_path}")
+    if base_results is not None:
+        base_path = output_dir / "base_results.json"
+        base_path.write_text(
+            json.dumps(base_results, indent = 2, default = _json_default), encoding = "utf-8"
+        )
+        rows = compare_results(base_results, results)
+        _render_comparison(rows)
+        json_path, csv_path = _write_comparison(rows, output_dir)
+        typer.echo(f"Saved base model results to: {base_path}")
+        typer.echo(f"Saved comparison to: {json_path} and {csv_path}")
