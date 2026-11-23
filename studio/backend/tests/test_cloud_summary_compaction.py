@@ -320,9 +320,7 @@ def test_a_timed_out_summary_is_not_asked_for_again_until_compact(monkeypatch):
 
 
 def test_a_summary_call_omits_temperature_instead_of_sending_null():
-    _, [summary_call], [chat] = _bodies(
-        _SummarisingHandler, temperature = 0.6, **_SMALL_TRIGGER
-    )
+    _, [summary_call], [chat] = _bodies(_SummarisingHandler, temperature = 0.6, **_SMALL_TRIGGER)
     assert "temperature" not in summary_call
     assert chat["temperature"] == 0.6
 
