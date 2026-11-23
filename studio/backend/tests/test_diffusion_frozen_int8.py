@@ -185,3 +185,23 @@ def test_conversion_keeps_the_fp32_island_on_an_untargeted_layer():
     assert y.dtype == torch.float32 and yq.dtype == torch.bfloat16
     y.sum().backward()
     assert x64.grad is not None and torch.isfinite(x64.grad).all()
+
+
+@pytest.mark.parametrize("fp16, refused", [(True, False), (False, True)])
+def test_preflight_needs_torchao_for_int8_only_where_the_trainer_does(monkeypatch, fp16, refused):
+    """The fp16 path's W8A8 base runs torch._int_mm and raises instead of falling back to torchao, so a missing
+    torchao must not refuse it; the bf16 path keeps torchao weight-only int8 as its fallback and still needs it."""
+    import core.training.diffusion_train_common as tc
+
+    monkeypatch.setattr(tc, "bf16_unsupported_reason", lambda fam: None)
+    monkeypatch.setattr(tc, "dit_accelerator_missing_reason", lambda fam: None)
+    monkeypatch.setattr(tc, "dit_fp16_fallback", lambda fam: fp16)
+    monkeypatch.setattr(tc, "has_functional_torchao", lambda: False)
+    monkeypatch.setattr(tc, "torch_is_rocm", lambda: False)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "w8a8")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (7, 5))
+    reason = tc.training_precision_preflight_error("flux.2-klein", "int8")
+    assert ("torchao" in (reason or "")) is refused
+    if not refused:
+        assert reason is None

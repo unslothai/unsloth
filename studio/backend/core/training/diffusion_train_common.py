@@ -1061,7 +1061,12 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
                 f"base_precision={mode!r} is a torchao NVIDIA tensor-core path (int8 sm_80+, fp8 "
                 "sm_89+, mxfp8 sm_100+) and this is a ROCm/AMD GPU. Use 'nf4', 'bf16', or 'auto'."
             )
-        if mode == "int8" and not has_functional_torchao():
+        # The fp16 path's W8A8 base runs torch._int_mm and never falls back to torchao (the trainer raises instead).
+        if (
+            mode == "int8"
+            and not (w8a8 and dit_fp16_fallback(fam))
+            and not has_functional_torchao()
+        ):
             return (
                 "base_precision='int8' needs a functional torchao install; this host's torchao is "
                 "missing or the non-functional Windows-ROCm stub. Use 'nf4', 'bf16', or 'auto'."
