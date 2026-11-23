@@ -216,3 +216,65 @@ def test_the_real_sources_key_is_stable_across_processes(monkeypatch):
     first = g8._cut_cache_key(0)
     _new_process()
     assert first and g8._cut_cache_key(0) == first
+
+
+def _race_call_closure():
+    """Per keyed module: functions that keyed code reaches (same-module names and ``cut.x`` / ``prefetch.x``
+    attributes across the keyed modules, transitively) that are neither keyed nor deliberately unkeyed."""
+    import ast
+
+    mods = {m.__name__.rsplit(".", 1)[-1]: m for m in (g8, cut, prefetch)}
+    trees, fns = {}, {}
+    for name, module in mods.items():
+        trees[name] = ast.parse(open(module.__file__, "rb").read())
+        fns[name] = {
+            n.name: n
+            for n in trees[name].body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        }
+    keyed = {m: set(names) for m, names in g8._RACE_SOURCES.items()}
+    unkeyed = {m: set(names) for m, names in g8._RACE_UNKEYED.items()}
+    todo = [(m, n) for m, names in keyed.items() for n in names if n in fns[m]]
+    seen, missing = set(), {}
+    while todo:
+        mod, name = todo.pop()
+        if (mod, name) in seen:
+            continue
+        seen.add((mod, name))
+        node = fns[mod][name]
+        aliases = {}
+        for x in ast.walk(trees[mod]):
+            if isinstance(x, ast.ImportFrom) and x.level == 1:
+                for a in x.names:
+                    if a.name in mods:
+                        aliases[a.asname or a.name] = a.name
+        for x in ast.walk(node):
+            hit = None
+            if isinstance(x, ast.Name) and x.id in fns[mod] and x.id != name:
+                hit = (mod, x.id)
+            elif (
+                isinstance(x, ast.Attribute)
+                and isinstance(x.value, ast.Name)
+                and x.value.id in aliases
+                and x.attr in fns[aliases[x.value.id]]
+            ):
+                hit = (aliases[x.value.id], x.attr)
+            if hit is None or hit[1] in unkeyed.get(hit[0], ()):
+                continue
+            if hit[1] not in keyed.get(hit[0], ()):
+                missing.setdefault(hit, set()).add(f"{mod}.{name}")
+            todo.append(hit)
+    return missing
+
+
+def test_every_function_keyed_code_calls_is_keyed():
+    """An edit to a helper the race calls (the activation-scale dtype, the weight payload, ...) must re-race; a helper
+    left out on purpose goes in _RACE_UNKEYED."""
+    missing = _race_call_closure()
+    assert not missing, {f"{m}.{n}": sorted(v) for (m, n), v in sorted(missing.items())}
+
+
+def test_unkeyed_names_still_exist():
+    for module in (g8, cut, prefetch):
+        names = g8._RACE_UNKEYED[module.__name__.rsplit(".", 1)[-1]]
+        assert not [n for n in names if not hasattr(module, n)], module.__name__

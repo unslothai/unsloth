@@ -169,6 +169,17 @@ def _normalize_rgb(src, dst, normalization, count, block: tl.constexpr):
     tl.store(dst + index, value, index < count)
 
 
+# The kernels index one image with 32-bit flat offsets (only the batch offset is 64-bit).
+MAX_FLAT = 2**31
+
+
+def fits_int32(source_h: int, source_w: int, height: int, width: int) -> bool:
+    """Whether every per-image buffer a resize of ``source_h x source_w`` to ``height x width`` touches (source,
+    either pass order's intermediate, output) has fewer than 2**31 elements, so the kernels' int32 offsets cannot wrap.
+    """
+    return 3 * max(source_h, height) * max(source_w, width) < MAX_FLAT
+
+
 def lanczos_resize(
     image: torch.Tensor,
     height: int,
@@ -193,6 +204,8 @@ def lanczos_resize(
         raise ValueError("Lanczos RGB input must be uint8 with shape [H, W, 3] or [N, H, W, 3]")
     if height <= 0 or width <= 0 or any(size <= 0 for size in image.shape):
         raise ValueError("Lanczos RGB input and output dimensions must be positive")
+    if not fits_int32(image.shape[-3], image.shape[-2], height, width):
+        raise ValueError("Lanczos RGB image too large for the kernels' 32-bit offsets")
     if crop is None:
         top, left, output_h, output_w = 0, 0, height, width
     else:

@@ -854,6 +854,20 @@ _RACE_SOURCES = {
         "_MIN_ROWS",
         # the probe input that admits a tile to the race
         "tie_operands",
+        # what the race is handed: the weight payload, the activation-scale dtype and the act quant it is read off
+        "_payload",
+        "_xs_dtype",
+        "_act_quant_v1",
+        "_act_quant_v2",
+        "_cut_key",
+        "cutlass_wanted",
+        "int8_gemm_mode",
+        # which row buckets the next load races, and how a cached entry is written and read back
+        "_note_rows",
+        "_rows_cache_key",
+        "_cut_cache_path",
+        "_cut_cache_read",
+        "_cut_cache_write",
     ),
     "diffusion_int8_cutlass": (
         "ABI_VERSION",
@@ -899,9 +913,34 @@ _RACE_SOURCES = {
         "_scale_dtypes",
         "_probe_tile",
         "probed_tiles",
+        # the switches the race and the pick read (their env values are keyed by _cut_cache_key / race_points)
+        "mode",
+        "fill_ties_enabled",
+        "huge_race_enabled",
+        "row_race_enabled",
+        "sustained_mode",
+        "_native_cache_key",
+        "_native_cache_get",
+        "_native_cache_put",
     ),
     # the sm_8x prefetch fix's version: bumped with any change to what it does to the Triton kernel's codegen
     "diffusion_triton_prefetch": ("_TRITON_PREFETCH_SALT",),
+}
+# Called by keyed code but deliberately unkeyed (call-closure test fails on any other): key builders, the library
+# loader (file hashed by bytes) and tile-probe persistence (keyed by diffusion_probe_cache's file fingerprint).
+_RACE_UNKEYED = {
+    "diffusion_int8_gemm": ("_code", "_sources_digest", "_cut_cache_key", "_today_tiles"),
+    "diffusion_int8_cutlass": (
+        "library",
+        "library_path",
+        "_candidate_paths",
+        "_store_tiles",
+        "_stored_tiles",
+        "_probe_store",
+        "_probe_extra",
+        "_alloc_failures",
+    ),
+    "diffusion_triton_prefetch": (),
 }
 # Bump to re-race every card on purpose: a change outside the code above that moves race results.
 _RACE_FORMAT = 1
