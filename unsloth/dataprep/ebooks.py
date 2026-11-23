@@ -106,7 +106,7 @@ class _BookTextParser(HTMLParser):
             or "hidden" in attrs
             or attrs.get("aria-hidden", "").lower() == "true"
         )
-        # A print page number is not prose, but a block-level marker still separates the text around it.
+        # Print page numbers are not prose; a block-level marker still breaks the text.
         page_number = (
             "pagebreak" in (attrs.get("epub:type") or "").split()
             or "doc-pagebreak" in (attrs.get("role") or "").split()
