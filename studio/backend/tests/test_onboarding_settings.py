@@ -28,7 +28,6 @@ def settings_db(monkeypatch, tmp_path):
         connection.row_factory = sqlite3.Row
         return connection
 
-    # The real schema, so a renamed history table fails here rather than 500 in production.
     with connect() as connection:
         studio_db._ensure_schema(connection)
     monkeypatch.setattr("storage.studio_db.get_connection", connect)
