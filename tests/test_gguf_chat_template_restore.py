@@ -14,7 +14,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Every GGUF export exit path hands the tokenizer back with its own chat_template."""
+"""A GGUF export borrows the caller's chat_template for the save it writes: every exit path,
+success or failure, must hand the tokenizer back with its own template."""
 
 from __future__ import annotations
 
@@ -89,6 +90,7 @@ def _strip_bos_templates(tokenizer):
 
 
 def _stub_gguf_internals(monkeypatch):
+    """Everything around the save/write section under test."""
     monkeypatch.setattr(save_mod, "_is_vlm", lambda _model: False)
     monkeypatch.setattr(save_mod, "_is_gpt_oss", lambda _model: False)
     monkeypatch.setattr(save_mod, "fix_tokenizer_bos_token", _strip_bos_templates)
