@@ -333,3 +333,17 @@ def test_auto_policy(fx, monkeypatch, capability, mode, min_length, expected):
     assert fx._wants_flex(1024, 1024, 0, 0, "cuda") is expected
     # Decode steps and cached continuations never take flex.
     assert fx._wants_flex(1, 1025, 1024, 0, "cuda") is False
+
+
+@pytest.mark.parametrize("mode,expected", [("auto", False), (None, False), ("1", True)])
+def test_auto_policy_keeps_rocm_eager(fx, monkeypatch, mode, expected):
+    # ROCm reports gfx numbers as capability (gfx1151 = (11, 5)); the dynamic-shape compiled flex is unmeasured there and
+    # gave NaN LoRA gradients on gfx1151 after a recompile (unsloth-zoo#2663), so only an explicit "1" takes it.
+    monkeypatch.setattr(fx, "_capability", lambda device: (11, 5))
+    monkeypatch.setattr(torch.version, "hip", "6.4.0", raising = False)
+    monkeypatch.delenv(fx.MIN_LEN_ENV, raising = False)
+    if mode is None:
+        monkeypatch.delenv(fx.ENV, raising = False)
+    else:
+        monkeypatch.setenv(fx.ENV, mode)
+    assert fx._wants_flex(1024, 1024, 0, 0, "cuda") is expected

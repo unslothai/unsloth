@@ -321,6 +321,11 @@ def _auto_min_length(device):
             return int(override)
         except ValueError:
             pass
+    # ROCm reports gfx numbers as capability (gfx1151 = (11, 5)), so the sm80 rule would take every AMD card. This
+    # path compiles flex with dynamic shapes, which gave inf / NaN LoRA gradients on gfx1151 after a recompile
+    # (unsloth-zoo#2663); AMD stays eager unless forced.
+    if getattr(torch.version, "hip", None):
+        return None
     capability = _capability(device)
     if capability is None:
         return None
