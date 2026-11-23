@@ -12240,6 +12240,13 @@ class VideoBackend:
                 if install_untiled_decode(pipe, fam.name, logger = logger):
                     speed_optims += ("vae_untiled_when_fits",)
             install_frame_pad_fix(pipe, target, logger = logger)
+            # Windows ROCm: decoder Conv3d calls over 2 GiB run as per-tap Conv2d (stock Conv3d falls off a cliff there).
+            try:
+                from .video_vae_rocm_pertap import install_on_pipe as install_vae_rocm_pertap
+                if install_vae_rocm_pertap(pipe, target, logger = logger):
+                    speed_optims += ("vae_rocm_pertap_conv",)
+            except Exception as exc:  # noqa: BLE001 - the stock Conv3d decode stays
+                logger.warning("video.vae_rocm_pertap: not installed: %s", exc)
             if vae_tiling and target.device == "cuda":
                 # Tiled Wan decodes share their spatial tiles with the selection's second card (bitwise the stock tiles).
                 try:
