@@ -148,6 +148,9 @@ export function isLegacyFallbackChatGenerationAdmissionError(
     (error instanceof ChatGenerationApiError &&
       error.status === 400 &&
       error.message === "Credentials cannot be persisted") ||
+    (error instanceof ChatGenerationApiError &&
+      error.status === 400 &&
+      error.message === "This connection's chat runs use the legacy streaming path") ||
     // A media payload rejection is a policy signal to use the legacy stream, not an error.
     (error instanceof ChatGenerationApiError &&
       error.status === 400 &&

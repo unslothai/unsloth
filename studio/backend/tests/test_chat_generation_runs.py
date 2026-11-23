@@ -685,7 +685,8 @@ def test_an_explicit_delete_still_removes_a_detached_generated_assistant(chat_ho
 @pytest.mark.parametrize(
     "override,detail",
     [
-        ({"provider_id": "external"}, "only for local"),
+        # No caller to check the saved-key gate against, so it stays on the live stream.
+        ({"provider_id": "external"}, "legacy streaming path"),
         ({"rag_scope": {"access_token": "secret"}}, "Credentials"),
         ({"rag_scope": {"signing_key": "secret"}}, "Credentials"),
         ({"rag_scope": {"ssh_key": "secret"}}, "Credentials"),

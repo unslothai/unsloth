@@ -84,6 +84,7 @@ def test_trainer_checks_after_the_conversions_and_before_the_broadcast():
 
 
 _CHILD = """
+import os
 import sys
 from datetime import timedelta
 import torch.distributed as dist
@@ -101,6 +102,15 @@ try:
     print("SAME")
 except RuntimeError as exc:
     print("REFUSED", exc)
+sys.stdout.flush()
+# Leave together, then skip interpreter teardown: a rank whose peer had already exited could hang in the Gloo
+# group's destructor (CI: both verdicts printed, rank 0 exited, rank 1 never did). DistContext.close() bounds the
+# same teardown in the trainer.
+dist.barrier()
+dist.destroy_process_group()
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(0)
 """
 
 

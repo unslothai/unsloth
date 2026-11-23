@@ -10,7 +10,11 @@ import {
   parseAssistantContent,
 } from "./parse-assistant-content";
 import type { ContextUsageMarkers } from "./saved-context-usage";
-import { isExternalModelId } from "../external-providers";
+import {
+  isExternalModelId,
+  loadExternalProviders,
+  parseExternalModelId,
+} from "../external-providers";
 import { createWakeDedupe } from "../../../lib/wake-dedupe";
 import { contextUsageReasoningKey, type ContextUsageReasoningFields } from "./context-usage-reasoning";
 
@@ -185,7 +189,12 @@ export function recoveredGenerationFinalMetadata(options: {
   current: Record<string, unknown>;
   run: {
     id: string;
-    requestPayload: { model?: unknown } & ContextUsageReasoningFields;
+    requestPayload: {
+      model?: unknown;
+      provider_id?: unknown;
+      provider_type?: unknown;
+      external_model?: unknown;
+    } & ContextUsageReasoningFields;
     createdAt: number;
     startedAt: number | null;
     completedAt: number | null;
@@ -260,10 +269,7 @@ export function recoveredGenerationFinalMetadata(options: {
   if (next.responseDetails === undefined) {
     next.responseDetails = {
       modelId,
-      modelLabel: modelId,
-      responseModelId: modelId,
-      providerName: "Local model",
-      providerType: "local",
+      ...recoveredProviderDetails(modelId, run.requestPayload),
       startedAt,
       finishedAt,
       durationMs: Math.max(0, finishedAt - startedAt),
@@ -284,6 +290,38 @@ export function recoveredGenerationFinalMetadata(options: {
     };
   }
   return next;
+}
+
+/** A connection run names its connection as the live stream does, not "Local model". */
+function recoveredProviderDetails(
+  modelId: string,
+  payload: { provider_id?: unknown; provider_type?: unknown; external_model?: unknown },
+): Record<string, unknown> {
+  const selection = parseExternalModelId(modelId);
+  const providerId =
+    typeof payload.provider_id === "string" ? payload.provider_id : selection?.providerId;
+  if (!providerId) {
+    return {
+      modelLabel: modelId,
+      responseModelId: modelId,
+      providerName: "Local model",
+      providerType: "local",
+    };
+  }
+  const connection = loadExternalProviders().find((provider) => provider.id === providerId);
+  const responseModelId =
+    typeof payload.external_model === "string"
+      ? payload.external_model
+      : (selection?.modelId ?? modelId);
+  return {
+    modelLabel: responseModelId,
+    responseModelId,
+    providerId,
+    providerName: connection?.name ?? "External provider",
+    providerType:
+      connection?.providerType ??
+      (typeof payload.provider_type === "string" ? payload.provider_type : "external"),
+  };
 }
 
 // Keep offsets aligned with parseAssistantContent's tags.

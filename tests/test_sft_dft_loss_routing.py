@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import inspect
+import os
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,7 +49,7 @@ def _trainer_class():
             return ("super", num_items_in_batch)
 
     # Compiled into a class body, as in the generated trainer, so the zero-argument super() resolves.
-    generated = {"torch": torch, "Base": Base}
+    generated = {"os": os, "torch": torch, "Base": Base}
     exec("class Generated(Base):\n" + textwrap.indent(textwrap.dedent(source), "    "), generated)
 
     class Trainer(generated["Generated"]):
@@ -71,13 +72,16 @@ class _FusedModel:
         self.calls = []
         self.log_probs = torch.tensor([[-0.5, -2.0, 0.0], [-1.0, 0.0, 0.0]], requires_grad = True)
         self.mask = torch.tensor([[True, True, False], [True, False, False]])
+        self.aux_loss = None
 
     def __call__(self, **kwargs):
         self.calls.append(kwargs)
         if not kwargs.get("fused_lm_head"):
             assert "labels" not in kwargs
             return SimpleNamespace(logits = torch.zeros(2, 3, 5))
-        return SimpleNamespace(log_probs = self.log_probs, label_mask = self.mask, aux_loss = None)
+        return SimpleNamespace(
+            log_probs = self.log_probs, label_mask = self.mask, aux_loss = self.aux_loss
+        )
 
 
 def _dft(lp, denom):
@@ -98,7 +102,9 @@ def test_dft_runs_on_the_fused_head_not_the_nll_loss():
     assert torch.allclose(model.log_probs.grad, expected)
 
 
-def test_dft_eval_outputs_carry_logits():
+def test_dft_eval_outputs_carry_logits(monkeypatch):
+    # Unsloth's prediction_step sets this only when compute_metrics / predict keep the logits.
+    monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
     Trainer = _trainer_class()
     model = _FusedModel()
     loss, outputs = Trainer("dft").compute_loss(
@@ -107,6 +113,29 @@ def test_dft_eval_outputs_carry_logits():
     assert loss.item() == pytest.approx(_dft(model.log_probs.detach(), 3))
     assert outputs.logits.shape == (2, 3, 5)
     assert [bool(c.get("fused_lm_head")) for c in model.calls] == [True, False]
+
+
+def test_dft_loss_only_eval_stays_on_the_fused_head(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
+    model = _FusedModel()
+    loss, _ = _trainer_class()("dft").compute_loss(
+        model, {"input_ids": None, "labels": None}, return_outputs = True, num_items_in_batch = 3
+    )
+    assert loss.item() == pytest.approx(_dft(model.log_probs.detach(), 3))
+    assert [bool(c.get("fused_lm_head")) for c in model.calls] == [True]
+
+
+def test_dft_eval_adds_the_whole_router_aux_loss():
+    trainer = _trainer_class()("dft")
+    trainer.aux_loss_enabled, trainer.router_aux_loss_coef = True, 0.5
+    model = _FusedModel()
+    model.aux_loss, model.training = torch.tensor(0.4), False
+    # No current_gradient_accumulation_steps: Trainer sets it only inside the training loop.
+    loss = trainer.compute_loss(model, {"input_ids": None}, num_items_in_batch = 3)
+    assert loss.item() == pytest.approx(_dft(model.log_probs.detach(), 3) + 0.5 * 0.4)
+    model.training, trainer.current_gradient_accumulation_steps = True, 4
+    loss = trainer.compute_loss(model, {"input_ids": None}, num_items_in_batch = 3)
+    assert loss.item() == pytest.approx(_dft(model.log_probs.detach(), 3) + 0.5 * 0.4 / 4)
 
 
 def test_dft_refuses_a_qat_lm_head():
