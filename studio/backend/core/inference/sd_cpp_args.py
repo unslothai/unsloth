@@ -932,13 +932,10 @@ CPU_VAE_DECODE_MIB_PER_MPX = 5120
 VAE_TILE_PIXELS_HELP = "tile size for vae encode and decode in image pixels"
 
 
-# A tile at least as large as the image decodes it in one piece: the same pixels as an untiled decode, and faster. A
-# smaller tile normalises each tile's GroupNorm on its own statistics, which shifts tone tile by tile on FLUX.2
-# (klein 4B vs untiled: 31.3 dB at 1536 px and 25.9 dB at 2048 px with 1024 px tiles). sd-server fixes the tile at
-# launch, so a family whose whole decode was measured first gets a tile covering its largest output (2048 px, then
-# 1536 px) when the budget holds that decode, then the per-tile ladder below. VAE compute buffer (ggml, MiB) of one
-# whole 2048 / 1536 px decode, pinned build on an L4. The FLUX VAEs grow faster than the area past 1536 px, so
-# nothing is extrapolated beyond 2048.
+# A tile covering the image decodes it whole: untiled pixels, faster. Smaller tiles run GroupNorm per tile and shift
+# tone on FLUX.2 (klein 4B: 31.3 dB at 1536 px, 25.9 dB at 2048 px vs untiled). sd-server fixes the tile at launch, so a
+# measured family gets the largest whole tile the budget holds, then the ladder below. Values: ggml VAE buffer (MiB)
+# of one whole decode on an L4; FLUX VAEs grow faster than area past 1536 px, so nothing past 2048 is extrapolated.
 _FLUX2_VAE_WHOLE_MIB = ((2048, 17040), (1536, 6336))
 _FLUX1_VAE_WHOLE_MIB = ((2048, 17028), (1536, 6336))
 _QWEN21_VAE_WHOLE_MIB = ((2048, 15552), (1536, 8748))
