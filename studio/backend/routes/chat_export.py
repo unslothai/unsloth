@@ -8,6 +8,8 @@ import json
 import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 from typing import Optional
 
@@ -29,6 +31,8 @@ RENDER_TIMEOUT_S = 300
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 # A thread semaphore, taken in the worker thread: an asyncio one binds to a single event loop.
 _render_slots = threading.BoundedSemaphore(2)
+# Own pool: queued exports wait here instead of holding the shared default executor other routes use.
+_render_pool = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "chat-pdf")
 
 
 class ChatPdfTooLong(Exception):
@@ -69,8 +73,9 @@ async def export_chat_pdf(
     request: ChatPdfRequest, current_subject: str = Depends(get_current_subject)
 ) -> Response:
     try:
-        content = await asyncio.to_thread(
-            render_chat_pdf_in_child, request.title, request.html, request.model
+        content = await asyncio.get_running_loop().run_in_executor(
+            _render_pool,
+            partial(render_chat_pdf_in_child, request.title, request.html, request.model),
         )
     except ChatPdfTooLong as error:
         raise log_and_http_error(
