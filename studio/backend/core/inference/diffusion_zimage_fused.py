@@ -20,6 +20,10 @@ _QKV_ATTR = "_unsloth_fused_qkv"
 # FeedForward.forward: stock diffusers bodies the shared w1 / w3 quant replaces (0.40 / 0.42 annotate differently)
 _FF_FINGERPRINTS = frozenset({"5afbdd7ffeae3f76", "8da1c726cda22eb3"})
 _FF_MARK = "__unsloth_zimage_shared_ff__"
+# stock FeedForward._forward_silu_gating (``F.silu(x1) * x3``), the product the fused SwiGLU rotation + quant computes
+_GATING_FINGERPRINTS = frozenset({"a1b4d9c056bd0362"})
+ZIMAGE_SWIGLU_ENV = "UNSLOTH_DIFFUSION_ZIMAGE_SWIGLU"
+_SWIGLU_OK: dict = {"on": False}
 
 _LOCK = threading.Lock()
 _STATE: dict = {}
@@ -29,6 +33,10 @@ _FUSION: dict = {}
 
 def zimage_fused_disabled() -> bool:
     return (os.environ.get(ZIMAGE_FUSED_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def zimage_swiglu_disabled() -> bool:
+    return (os.environ.get(ZIMAGE_SWIGLU_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
 def _stock_digest(cls: Any) -> Optional[str]:
@@ -187,6 +195,11 @@ def _make_ff_forward(stock: Any) -> Any:
             pair = gemm.shared_rotq_linears(x, (self.w1, self.w3))
         if pair is None:
             return stock(self, x)
+        if _SWIGLU_OK["on"] and "_forward_silu_gating" not in self.__dict__:
+            # w2 reads silu(x1) * x3 straight from x1 / x3 in its rotation + act quant (Inductor's rounding)
+            y = gemm._swiglu_down(self.w2, pair[0], pair[1])
+            if y is not None:
+                return y
         return self.w2(self._forward_silu_gating(pair[0], pair[1]))
 
     functools.update_wrapper(
@@ -202,11 +215,17 @@ def _patch_ff(logger: Any = None) -> bool:
         cls = importlib.import_module(_MODULE).FeedForward
     except Exception:  # noqa: BLE001
         return False
+    from .diffusion_qwenimage21_rope import _digest
+
     with _LOCK:
+        # per load (the kill switch may change between loads); read before the first compile traces the forward
+        _SWIGLU_OK["on"] = (
+            not zimage_swiglu_disabled()
+            and _digest(cls.__dict__.get("_forward_silu_gating")) in _GATING_FINGERPRINTS
+        )
         current = cls.__dict__.get("forward")
         if getattr(current, _FF_MARK, False):
             return True
-        from .diffusion_qwenimage21_rope import _digest
 
         digest = _digest(current)
         if digest not in _FF_FINGERPRINTS:
@@ -518,9 +537,11 @@ def uninstall(transformer: Any = None) -> None:
         if "ff_stock" in _STATE:
             try:
                 import importlib
+
                 ff = importlib.import_module(_MODULE).FeedForward
                 if getattr(ff.__dict__.get("forward"), _FF_MARK, False):
                     ff.forward = _STATE.pop("ff_stock")
+                _SWIGLU_OK["on"] = False
             except Exception:  # noqa: BLE001
                 pass
         if transformer is not None:

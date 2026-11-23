@@ -349,6 +349,12 @@ def _shared_as_modules(monkeypatch, calls):
 
     monkeypatch.setattr(g8, "shared_rotq_linears", shared)
 
+    def swiglu_down(down, gate, value):
+        calls.append("swiglu")
+        return down(torch.nn.functional.silu(gate) * value)
+
+    monkeypatch.setattr(g8, "_swiglu_down", swiglu_down)
+
 
 @pytest.mark.parametrize("compiled", [False, True])
 def test_shared_qkv_and_w1_w3_match_stock(monkeypatch, compiled):
@@ -375,7 +381,7 @@ def test_shared_qkv_and_w1_w3_match_stock(monkeypatch, compiled):
             out = blk(x, mask, freqs, adaln)
     assert torch.equal(out, ref)
     # traced: the attention processor and the MLP; eager: the MLP only (the processor runs stock eager)
-    assert sorted(calls) == ([2, 3] if compiled else [2])
+    assert sorted(map(str, calls)) == (["2", "3", "swiglu"] if compiled else ["2", "swiglu"])
     zf.uninstall()
     assert not getattr(zmod.FeedForward.__dict__["forward"], zf._FF_MARK, False)
 
@@ -402,3 +408,20 @@ def test_shared_count_skips_densely_fused_and_unswapped(monkeypatch):
     assert zf._shared_count(blk, cls) == 1
     blk.attention.__dict__[zf._QKV_ATTR] = object()  # the dense fused QKV took this module
     assert zf._shared_count(blk, cls) == 0
+
+
+def test_swiglu_kill_switch_keeps_the_separate_w2_quant(monkeypatch):
+    calls: list = []
+    _shared_as_modules(monkeypatch, calls)
+    monkeypatch.setenv(zf.ZIMAGE_SWIGLU_ENV, "0")
+    assert zf._patch_ff()
+    ff = zmod.FeedForward(16, 32)
+    x = torch.randn(3, 16)
+    with torch.no_grad():
+        assert torch.equal(ff(x), ff.w2(torch.nn.functional.silu(ff.w1(x)) * ff.w3(x)))
+    assert calls == [2]
+    monkeypatch.delenv(zf.ZIMAGE_SWIGLU_ENV)
+    assert zf._patch_ff()  # a later load re-reads the switch
+    with torch.no_grad():
+        ff(x)
+    assert calls == [2, 2, "swiglu"]
