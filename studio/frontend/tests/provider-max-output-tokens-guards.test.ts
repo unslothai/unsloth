@@ -34,15 +34,8 @@ const {
 } = await import("../src/features/chat/provider-capabilities.ts");
 const catalog = await import("../src/features/chat/model-catalog.ts");
 
-test("Max on a self-hosted or OpenRouter connection sends no limit; the window bounds it", () => {
-  for (const providerType of [
-    "llama_cpp",
-    "vllm",
-    "ollama",
-    "custom",
-    "sglang",
-    "openrouter",
-  ]) {
+test("Max on a self-hosted connection sends no limit; the window bounds it", () => {
+  for (const providerType of ["llama_cpp", "vllm", "ollama", "custom", "sglang"]) {
     assert.equal(
       externalRequestMaxTokens(
         providerType,
@@ -73,7 +66,8 @@ test("Max on a self-hosted or OpenRouter connection sends no limit; the window b
 });
 
 test("hosted providers without a published limit keep a numeric limit at the top", () => {
-  for (const providerType of ["mistral", "xai", "openai"]) {
+  // OpenRouter too: only router ids or an unloaded catalog lack a cap, and the window overstates both.
+  for (const providerType of ["mistral", "xai", "openai", "openrouter"]) {
     assert.equal(
       externalRequestMaxTokens(providerType, "some-model", null, 1e6),
       EXTERNAL_MAX_OUTPUT_TOKENS,
@@ -215,12 +209,20 @@ test("a model with no documented cap takes the connection override", () => {
 });
 
 test("Max Tokens reaches a catalogued window where the backend takes the prompt off it", () => {
-  const model = "qwen/qwen3-235b-a22b-2507";
-  const window = catalog.resolveModelCatalogEntry("openrouter", model)?.contextLength;
+  const model = "gemma4:31b";
+  const window = catalog.resolveModelCatalogEntry("ollama", model)?.contextLength;
   assert.equal(window, 262144);
-  assert.equal(getExternalMaxOutputTokens("openrouter", model), 262144);
-  assert.equal(externalRequestMaxTokens("openrouter", model, null, 262144), null);
-  assert.equal(externalRequestMaxTokens("openrouter", model, null, 100_000), 100_000);
+  assert.equal(getExternalMaxOutputTokens("ollama", model), 262144);
+  assert.equal(externalRequestMaxTokens("ollama", model, null, 262144), null);
+  assert.equal(externalRequestMaxTokens("ollama", model, null, 100_000), 100_000);
+  // A router id's catalogued window (2M for openrouter/auto) is not the routed endpoint's limit.
+  for (const routed of ["qwen/qwen3-235b-a22b-2507", "openrouter/auto"]) {
+    assert.equal(getExternalMaxOutputTokens("openrouter", routed), EXTERNAL_MAX_OUTPUT_TOKENS);
+    assert.equal(
+      externalRequestMaxTokens("openrouter", routed, null, 1e6),
+      EXTERNAL_MAX_OUTPUT_TOKENS,
+    );
+  }
   assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k2.6"), EXTERNAL_MAX_OUTPUT_TOKENS);
 });
 

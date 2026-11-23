@@ -217,7 +217,6 @@ const SERVER_WINDOW_BOUNDED_PROVIDERS = new Set([
   "custom",
   // Saved as custom on the backend.
   "sglang",
-  "openrouter",
 ]);
 
 /** A documented cap bounds the override rather than replacing it; output floor wins. */
@@ -239,8 +238,6 @@ export function getExternalMaxOutputTokens(
       : (override ?? window ?? EXTERNAL_MAX_OUTPUT_TOKENS);
   return Math.max(resolved, getExternalMinOutputTokens(providerType));
 }
-
-
 
 /** Max Tokens at the top of its range sends no limit here, as "Max" does on a local model. */
 export function externalMaxTokensUnboundedAtMax(

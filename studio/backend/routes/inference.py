@@ -29932,7 +29932,9 @@ _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
 # Max fills what the window leaves after the prompt: unbounded, Ollama context-shifts past num_ctx.
-_WINDOW_ROOM_REPLY_PROVIDERS = frozenset({"ollama", "custom", "openrouter"})
+# Not OpenRouter: Max sends no limit there only for router ids (openrouter/auto) or an unloaded
+# catalog, where the catalogued window overstates the routed endpoint's output cap and context.
+_WINDOW_ROOM_REPLY_PROVIDERS = frozenset({"ollama", "custom"})
 _UNKNOWN_WINDOW_MAX_TOKENS = 32_768
 _MIN_WINDOW_ROOM_TOKENS = 256
 
@@ -31247,8 +31249,6 @@ async def _proxy_to_external_provider(
         managed is None
         and provider_type in _WINDOW_ROOM_REPLY_PROVIDERS
         and _effective_max_tokens(payload) is None
-        # OpenRouter output caps sit below the window; only Studio's Max, which knows them, opts in.
-        and (provider_type != "openrouter" or _ui_stream_events_enabled(request))
     ):
         from routes.providers import cached_catalog_model_context
 
