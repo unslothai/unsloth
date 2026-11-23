@@ -522,12 +522,30 @@ def test_float_weights_count_at_the_loaded_dtype(clean):
     assert auto.checkpoint_estimate(packed, dtype_bytes = 2)[0] == 1024 + 4 * 256
 
 
+def _loader_unc_guard_module():
+    """unsloth.models.loader with only the real network-share guard: importing the whole loader would need the
+    _utils module _auto_env stubs out, so the guard is taken from the loader's source instead."""
+    import ast
+
+    source = open(os.path.join(REPO, "unsloth", "models", "loader.py"), encoding = "utf-8").read()
+    fn = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "_refuse_network_share_adapter_base"
+    )
+    module = types.ModuleType("unsloth.models.loader")
+    module.os = os
+    exec(compile(ast.Module(body = [fn], type_ignores = []), "loader.py", "exec"), module.__dict__)
+    return module
+
+
 def _auto_env(mp, auto, budget_mib):
     mp.setattr(auto, "_world", lambda environ: 2)
     mp.setattr(auto, "_gather", lambda entry: [entry, entry])
     utils = types.ModuleType("unsloth.models._utils")
     utils.patch_gradient_accumulation_fix = lambda cls: None
     mp.setitem(sys.modules, "unsloth.models._utils", utils)
+    mp.setitem(sys.modules, "unsloth.models.loader", _loader_unc_guard_module())
     for key in ("UNSLOTH_FSDP2", "UNSLOTH_PARALLEL_AUTO_RESOLVED"):
         mp.setenv(key, "")
         mp.delenv(key)
