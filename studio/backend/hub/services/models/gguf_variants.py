@@ -69,6 +69,7 @@ from hub.services.models.common import (
     _is_mtp_drafter_path,
     _iter_gguf_paths,
 )
+from hub.utils.gguf_alternates import repo_alternate_blobs
 from hub.utils.gguf_plan import (
     GgufVariantPlan as _GgufVariantRequirement,
     build_gguf_variant_plans,
@@ -581,7 +582,10 @@ def _size_identity_matches(local_set: set[str], remote_size: int) -> bool:
 
 
 def _variant_update_available_from_requirement(
-    local_blobs: dict[str, set[str]], requirement: Optional[_GgufVariantRequirement], variant: str
+    local_blobs: dict[str, set[str]],
+    requirement: Optional[_GgufVariantRequirement],
+    variant: str,
+    alternates: Optional[dict[str, frozenset[str]]] = None,
 ) -> bool:
     if requirement is None or not local_blobs:
         return False
@@ -601,6 +605,9 @@ def _variant_update_available_from_requirement(
         if not local_set:
             return True
         if remote_blob in local_set:
+            continue
+        # An earlier blob the repo declares equivalent (unsloth_alternates.json) is current too.
+        if alternates and local_set & alternates.get(path, frozenset()):
             continue
         if _size_identity_matches(local_set, expected.size):
             continue
@@ -2539,6 +2546,9 @@ async def get_gguf_variants_answer(
             if cache_reads_authorized
             else {}
         )
+        alternates = (
+            repo_alternate_blobs(repo_id, hf_token, siblings) if local_blobs_by_quant else {}
+        )
 
         def _engram_ready(
             requirement: Optional[_GgufVariantRequirement], downloaded: bool
@@ -2603,6 +2613,7 @@ async def get_gguf_variants_answer(
                     local_blobs_by_quant.get(v.quant.lower(), {}),
                     requirement,
                     v.quant,
+                    alternates,
                 ),
                 partial = is_partial,
                 partial_transport = (partial_quant_transports.get(v.quant) if is_partial else None),
