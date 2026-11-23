@@ -51,25 +51,43 @@ def _compiling() -> bool:
         return False
 
 
-def _broadcast_lead(a: tuple, b: tuple) -> Any:
-    """Product of Q's and K's broadcast leading (batch, head) dims: SDPA builds that many score matrices (a mask must
-    broadcast to them). Plain loops, no ``int()`` or generator, so Dynamo traces it with sizes kept symbolic."""
+def _broadcast_dims(a: tuple, b: tuple) -> tuple:
+    """Per-dim broadcast of two leading (batch, head) shapes. Plain loops, no ``int()`` or generator, so Dynamo
+    traces it with sizes kept symbolic."""
     if len(a) < len(b):
         a, b = b, a
     b = (1,) * (len(a) - len(b)) + tuple(b)
-    lead = 1
+    dims = []
     for x, y in zip(a, b):
-        lead = lead * (x if x >= y else y)  # broadcast (one side 1), or GQA (Q has the more heads)
+        dims.append(x if x >= y else y)  # broadcast (one side 1), or GQA (Q has the more heads)
+    return tuple(dims)
+
+
+def _broadcast_lead(a: tuple, b: tuple) -> Any:
+    """Product of Q's and K's broadcast leading (batch, head) dims: SDPA builds that many score matrices (a mask must
+    broadcast to them)."""
+    lead = 1
+    for x in _broadcast_dims(a, b):
+        lead = lead * x
     return lead
 
 
-def chunk_rows(query: Any, key: Any) -> Optional[int]:
+def chunk_rows(
+    query: Any,
+    key: Any,
+    value: Any = None,
+) -> Optional[int]:
     """Query rows per call when ``query`` x ``key`` exceeds the score cap, else None (one call)."""
     q_shape, k_shape = tuple(query.shape), tuple(key.shape)
     if len(q_shape) < 2 or len(k_shape) < 2:
         return None
     sq, sk = q_shape[-2], k_shape[-2]
-    lead = _broadcast_lead(q_shape[:-2], k_shape[:-2])
+    kv_lead = k_shape[:-2]
+    v_shape = tuple(value.shape) if value is not None else ()
+    if len(v_shape) > 2:
+        # a wider V batch broadcasts Q and K too: MPS builds that many score matrices
+        kv_lead = _broadcast_dims(kv_lead, v_shape[:-2])
+    lead = _broadcast_lead(q_shape[:-2], kv_lead)
     if sq <= 1 or lead * sq * sk <= MPS_SCORE_ELEMENTS:
         return None
     return max(1, MPS_SCORE_ELEMENTS // max(lead * sk, 1))
@@ -111,7 +129,7 @@ def guard_sdpa(sdpa: Any) -> Any:
                 return sdpa(query, key, value, *args, **kwargs)
         bound.update(kwargs)
         mask = bound.get("attn_mask")
-        rows = chunk_rows(query, key)
+        rows = chunk_rows(query, key, value)
         if rows is None:
             return sdpa(query, key, value, *args, **kwargs)
         if mask is not None and (
