@@ -31,7 +31,6 @@ import {
 import { ReleaseNotesPanel } from "./release-notes-panel";
 import { releaseImageUrl, releases } from "./releases";
 import { displayVersion, useUpdateOffer } from "./update-offer-store";
-import { rememberUpdateTarget } from "./updated-notice";
 import { useWhatsNew } from "./whats-new-store";
 
 const RAIL_BG =
@@ -237,7 +236,6 @@ function UpdateAction() {
           if (liveOffer.source === "desktop") {
             close();
           }
-          rememberUpdateTarget(liveOffer.latestVersion);
           liveOffer.runAction();
         }}
         data-testid="whats-new-update"

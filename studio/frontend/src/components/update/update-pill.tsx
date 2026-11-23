@@ -28,7 +28,6 @@ import {
   usePillHost,
   useUpdateOffer,
 } from "./update-offer-store";
-import { rememberUpdateTarget } from "./updated-notice";
 import { useWhatsNew } from "./whats-new-store";
 
 /** "Update available" pill for the top-right of the shell; opens a compact offer. */
@@ -146,7 +145,6 @@ export function UpdatePill({
             title={offer.note ?? undefined}
             aria-description={offer.note ?? undefined}
             onClick={() => {
-              rememberUpdateTarget(offer.latestVersion);
               offer.runAction();
               if (offer.source === "desktop") setOpen(false);
             }}

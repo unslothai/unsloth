@@ -49,6 +49,8 @@ export function WebUpdateBanner({
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const t = useT();
   const pillHosted = usePillHosted();
+  // Hidden, not unmounted, while release history is open so the dialog is not covered.
+  const notesOpen = useWhatsNew((state) => state.open);
   const copied = status != null && copiedVersion === status.latestVersion;
 
   // The same offer drives the top-right pill; this card is the fallback where none is mounted.
@@ -108,6 +110,7 @@ export function WebUpdateBanner({
               : cn(
                   "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] shrink-0 flex-col",
                 ),
+            notesOpen && "invisible",
           )}
           data-testid="web-update-banner"
         >
