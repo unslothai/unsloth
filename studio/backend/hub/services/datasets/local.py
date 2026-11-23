@@ -446,7 +446,7 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
     if suffix in (".json", ".jsonl", ".csv"):
         load_kwargs = csv_as_text_kwargs([dataset_path])
         if "features" in load_kwargs:
-            # String features fix every column type; csv_as_text_kwargs already parsed the first 10k rows.
+            # String features fix every column type; csv_as_text_kwargs already parsed 10k rows, so bad rows still raise.
             load_kwargs["chunksize"] = max(1, preview_size)
         preview = _stream_file_preview_slice(
             dataset_path,
