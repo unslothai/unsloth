@@ -185,6 +185,15 @@ def test_idle_l4_decodes_klein_whole_on_the_card(tmp_path, card, policy):
         assert _tile(flags) == "1024"
 
 
+def test_a_vulkan_card_keeps_the_tile_ladder(tmp_path, card):
+    """AMD Vulkan (gfx1151) puts a whole klein decode partly in host RAM: 2.0-3.3x slower than 1024 px tiles."""
+    card(L4_FREE_MIB)
+    flags = backend_mod._offload_vae_flags(
+        OFFLOAD_MODEL, _files(tmp_path), "/bin/sd-server", "vulkan", 0, family = "flux.2-klein"
+    )
+    assert "--vae-on-cpu" not in flags and _tile(flags) == "1024"
+
+
 def test_cpu_vae_and_cpu_restart_take_the_family_tile(tmp_path, card, monkeypatch):
     """A card too small for any GPU tile keeps the CPU VAE, sized for the family; a restart onto the CPU backend
     re-sizes the RAM tile for the family too."""

@@ -3386,8 +3386,11 @@ def _offload_vae_flags(
             vae = file_mib(getattr(files, "vae", None))
         except Exception:  # noqa: BLE001
             vae = None
+        # whole decodes were measured on CUDA ggml; AMD Vulkan spills one to host RAM and runs it 2-3x slower
         gpu_tile = sd_cpp_args_mod.gpu_vae_tile_size(
-            limit, vae, whole_tiles = sd_cpp_args_mod.whole_vae_tiles(family)
+            limit,
+            vae,
+            whole_tiles = sd_cpp_args_mod.whole_vae_tiles(family) if klass == "cuda" else (),
         )
     te_gpu = bool(gpu_tile) and sd_cpp_args_mod.gpu_te_fits(limit)
     logger.info(
