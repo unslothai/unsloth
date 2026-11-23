@@ -15,6 +15,8 @@ const { applyExecutionStatusSnapshot, createBaseExecutionRecord } =
   await import("../src/features/recipe-studio/executions/runtime.ts");
 
 const STARTED_AT_SEC = 1_763_000_010;
+const STARTED_AT_SEC_FLOAT = 1_763_000_010.3045754;
+const FINISHED_AT_SEC_FLOAT = 1_763_000_052.00544;
 const FINISHED_AT_SEC = 1_763_000_052;
 
 function baseExecution() {
@@ -98,4 +100,17 @@ test("server timestamps are seconds, not milliseconds", (t) => {
     (failed.finishedAt ?? 0) - failed.createdAt,
     (FINISHED_AT_SEC - STARTED_AT_SEC) * 1000,
   );
+});
+
+test("fractional server seconds land as integer milliseconds", (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  t.mock.timers.setTime(STARTED_AT_SEC * 1000);
+  const done = applyExecutionStatusSnapshot(baseExecution(), {
+    job_id: "job-1",
+    status: "completed",
+    started_at: STARTED_AT_SEC_FLOAT,
+    finished_at: FINISHED_AT_SEC_FLOAT,
+  });
+  assert.equal(done.createdAt, 1_763_000_010_305);
+  assert.equal(done.finishedAt, 1_763_000_052_005);
 });

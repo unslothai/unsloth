@@ -22,7 +22,8 @@ export function toEpochMs(ts: unknown): number | null {
   if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) {
     return null;
   }
-  return ts > 10_000_000_000 ? ts : ts * 1000;
+  // Integer ms: the server's execution record types createdAt as int.
+  return Math.round(ts > 10_000_000_000 ? ts : ts * 1000);
 }
 
 function formatEventTime(ts: unknown): string {
