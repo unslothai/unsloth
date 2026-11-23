@@ -248,3 +248,41 @@ def test_large_pixels_tree_digest_is_exact():
     b[-1] = 1
     assert ref_cache._pixel_digest(a) == ref_cache._pixel_digest(a.clone())
     assert ref_cache._pixel_digest(a) != ref_cache._pixel_digest(b)
+
+
+def test_decode_bookkeeping_between_renders_still_hits(encode):
+    # Studio's decode side writes counters / last-tile / canvas state on the shared VAE every render
+    vae = _vae()
+    counted = _Counted(vae)
+    with torch.no_grad():
+        first = encode(vae, _pixels(22))
+        n = counted.n
+        vae._unsloth_vae_full_map_calls = vae.__dict__.get("_unsloth_vae_full_map_calls", 0) + 1
+        vae._unsloth_last_decode_tile = (256, 256, 65536)
+        vae._unsloth_canvas_graphs = False
+        vae._unsloth_vae_oom_active = False
+        second = encode(vae, _pixels(22))
+    assert counted.n == n and torch.equal(first, second)
+
+
+def test_encoder_fallback_flag_misses_with_reason(encode):
+    lines = []
+
+    class _Log:
+        def info(self, msg, *args):
+            lines.append(msg % args)
+
+    vae, pixels = _vae(), _pixels(1)
+    recipe = ("mean", False, 0)
+    with torch.no_grad():
+        ref_cache.cached_encode(
+            lambda: torch.zeros(1), vae, pixels, _MEAN, _STD, 42, recipe, logger = _Log()
+        )
+        vae.encoder._unsloth_fast_failed = (
+            True  # the fused encoder fell back to stock: other numerics
+        )
+        ref_cache.cached_encode(
+            lambda: torch.ones(1), vae, pixels, _MEAN, _STD, 42, recipe, logger = _Log()
+        )
+    assert lines[0].startswith("video.h3_ref_latent_cache: miss")
+    assert "miss" in lines[1] and "encoder_attrs['_unsloth_fast_failed']" in lines[1], lines

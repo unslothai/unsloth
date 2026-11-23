@@ -96,10 +96,21 @@ def _plain(value: Any) -> Any:
 _SKIP = object()
 
 
-def _attrs(obj: Any) -> tuple:
+# Bookkeeping the decode side writes on the shared VAE object every render (counters, last tile, canvas / OOM
+# state): never read by the encode, so keying on them would make every render miss. Anything else is keyed.
+_UNKEYED_VAE_ATTR_PARTS = ("decode", "canvas", "_calls", "_stats", "oom_active", "logger", "strips")
+
+
+def _attrs(obj: Any, *, skip_bookkeeping: bool = False) -> tuple:
     out = []
     for name, value in sorted(getattr(obj, "__dict__", {}).items()):
         if name in ("_parameters", "_buffers", "_modules"):
+            continue
+        if (
+            skip_bookkeeping
+            and name.startswith("_")
+            and any(p in name for p in _UNKEYED_VAE_ATTR_PARTS)
+        ):
             continue
         plain = _plain(value)
         if plain is not _SKIP:
@@ -130,7 +141,7 @@ def _vae_fingerprint(vae: Any) -> tuple:
         methods,
         config_items,
         param_dtypes,
-        _attrs(vae),
+        _attrs(vae, skip_bookkeeping = True),
         _attrs(encoder) if encoder is not None else (),
     )
 
@@ -251,14 +262,70 @@ def cached_encode(
                 keyed - started,
             )
         return hit
+    why = _miss_reason(key) if logger is not None else ""
     latents = encode()
     kept = store(key, vae, latents)
     if logger is not None:
         logger.info(
-            "video.h3_ref_latent_cache: miss frames=%d key %.3f s encode %.3f s%s",
+            "video.h3_ref_latent_cache: miss frames=%d key %.3f s encode %.3f s%s%s",
             int(pixels.shape[2]) if pixels.ndim == 5 else 1,
             keyed - started,
             time.perf_counter() - keyed,
             "" if kept else " (not kept)",
+            why,
         )
     return latents
+
+
+_KEY_FIELDS = (
+    "vae",
+    "vae_state",
+    "shape",
+    "device",
+    "pixels",
+    "pixel_mean",
+    "pixel_std",
+    "encode_seed",
+    "recipe",
+)
+_FINGERPRINT_FIELDS = (
+    "module",
+    "class",
+    "methods",
+    "config",
+    "dtypes",
+    "vae_attrs",
+    "encoder_attrs",
+)
+
+
+def _diff_names(old: Any, new: Any) -> list:
+    if (
+        isinstance(old, tuple)
+        and isinstance(new, tuple)
+        and all(isinstance(x, tuple) and len(x) == 2 and isinstance(x[0], str) for x in old + new)
+    ):
+        a, b = dict(old), dict(new)
+        return sorted(k for k in set(a) | set(b) if a.get(k, _SKIP) != b.get(k, _SKIP))
+    return []
+
+
+def _miss_reason(key: tuple) -> str:
+    """Which part of the key changed, when the same pixels were encoded before (a diagnostic only)."""
+    with _LOCK:
+        same = [k for k in _ENTRIES if len(k) == len(key) and k[4] == key[4]]
+    if not same:
+        return ""
+    old = same[-1]
+    parts = []
+    for i, name in enumerate(_KEY_FIELDS):
+        if old[i] == key[i]:
+            continue
+        if name == "vae_state":
+            for j, sub in enumerate(_FINGERPRINT_FIELDS):
+                if old[1][j] != key[1][j]:
+                    names = _diff_names(old[1][j], key[1][j])
+                    parts.append(f"{sub}{names}" if names else sub)
+        else:
+            parts.append(name)
+    return f" (same pixels, changed: {', '.join(parts)})"
