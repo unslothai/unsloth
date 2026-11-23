@@ -2605,6 +2605,19 @@ def _forward_prefetch_depth(units):
     return depth
 
 
+def _unsloth_fast_decode(model):
+    """The model decodes through Unsloth's paged fast path (pre_patch runs it only on marked modules)."""
+    if getattr(model, "_unsloth_fast_path", False):
+        return True
+    modules = getattr(model, "modules", None)
+    if not callable(modules):
+        return False
+    try:
+        return any(getattr(m, "_unsloth_fast_path", False) for m in modules())
+    except Exception:
+        return True  # cannot tell: count the larger, two-cache peak
+
+
 def _generate_request_bytes(model, args, kwargs):
     """Upper estimate of the device memory one generate call allocates besides the weights: the KV cache
     as Unsloth's decode allocator sizes it (KV_CACHE_INCREMENT rows past the prompt even for a short
@@ -2612,7 +2625,8 @@ def _generate_request_bytes(model, args, kwargs):
     also covers HF generate's prompt + max_new_tokens cache) and the per-layer attention score buffer
     for batch x beams x return sequences, one decoder layer's prefill activations and the last-token
     logits (plus any scores / logits generate returns per token), times 1.25. A supplied past_key_values
-    counts toward the cache length. Prefill extras the call can trigger are counted too: full prompt logits
+    counts toward the cache length. On Unsloth's fast decode path the prefill cache, still held while the
+    first decode step fills the paged one, is counted next to it. Prefill extras the call can trigger are counted too: full prompt logits
     for an explicit logits_to_keep=0 (or a model that cannot slice them), the [batch, heads, prompt, keys]
     score matrices of eager attention (also requested by output_attentions), and the routed token copies of
     a mixture-of-experts layer. None when the request's shape, the cache length, the retained outputs or
@@ -2690,6 +2704,12 @@ def _generate_request_bytes(model, args, kwargs):
         # Per layer: the paged K / V cache [rows, 2, batch, kv_heads, head_dim] and the scores
         # [batch, heads, 1, rows] alloc_decode_buffers allocates next to it.
         kv = layers * batch * rows * (2 * kv_heads * head_dim + heads) * width
+        # Unsloth's fast decode path (modules marked _unsloth_fast_path) copies the prefill cache into the
+        # paged one layer by layer on the first decode step while generate still holds the prefill
+        # cache [batch, kv_heads, history + prompt, head_dim] per layer, so both are live at once there.
+        # HF's own decode path keeps a single cache, already covered by the paged size.
+        if _unsloth_fast_decode(model):
+            kv += layers * batch * (cached + prompt) * 2 * kv_heads * head_dim * width
         act = batch * prompt * (4 * hidden + 3 * inter) * width
         # Prefill logits rows: generate passes logits_to_keep = 1 unless the caller set it (0 = every
         # prompt position) or the model cannot slice them. One row is inside the 2 below.

@@ -395,6 +395,52 @@ def test_request_estimate_covers_the_decode_allocator(monkeypatch, prompt, new_t
     assert after[1] < before[1], (before, after)
 
 
+def _llama2_7b(fast_path):
+    config = types.SimpleNamespace(
+        num_hidden_layers = 32,
+        hidden_size = 4096,
+        num_attention_heads = 32,
+        num_key_value_heads = 32,
+        head_dim = 128,
+        intermediate_size = 11008,
+        vocab_size = 32000,
+        torch_dtype = torch.float16,
+    )
+    model = types.SimpleNamespace(config = config, generation_config = None)
+    if fast_path:
+        model._unsloth_fast_path = True
+    return model
+
+
+def test_request_estimate_counts_prefill_and_paged_cache_on_the_fast_path():
+    """Unsloth's fast decode path copies the prefill cache into a paged cache on the first decode step while
+    generate still holds the prefill cache, so a long MHA prompt holds two full caches at once. Llama-2-7B,
+    batch 1, an 8192-token prompt and 4 new tokens: ~4 GiB prefill cache next to the ~4.25 GiB paged one."""
+    from unsloth.models import _decode_graphs as G
+
+    batch, prompt, new = 1, 8192, 4
+    ids = torch.zeros(batch, prompt, dtype = torch.long)
+    call = {"max_new_tokens": new}
+    layers, kv_heads, head_dim, heads, width = 32, 32, 128, 32, 2
+    prefill_cache = layers * batch * prompt * 2 * kv_heads * head_dim * width
+    rows = G.decode_cache_rows(prompt, new)
+    paged = layers * batch * rows * (2 * kv_heads * head_dim + heads) * width
+    assert prefill_cache == 4 * GIB
+    fast = F._generate_request_bytes(_llama2_7b(True), (ids,), call)
+    assert fast >= prefill_cache + paged, (fast / GIB, (prefill_cache + paged) / GIB)
+    # A model off the fast path (HF decode) keeps one cache: the paged size alone covers it.
+    hf = F._generate_request_bytes(_llama2_7b(False), (ids,), call)
+    assert hf < prefill_cache + paged
+    # A marker on an inner module (PEFT / FSDP wrapper roots) counts as well.
+    inner = torch.nn.Module()
+    inner._unsloth_fast_path = True
+    wrapped = torch.nn.Module()
+    wrapped.inner = inner
+    wrapped.config = _llama2_7b(False).config
+    wrapped.generation_config = None
+    assert F._generate_request_bytes(wrapped, (ids,), call) == fast
+
+
 def test_offloaded_stream_does_not_advertise_device_weights():
     unit = torch.nn.Module()
     group = types.SimpleNamespace(fsdp_params = [types.SimpleNamespace(offload_to_cpu = True)])
