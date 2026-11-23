@@ -179,7 +179,11 @@ test("the pinned Windows glass frame rounds the corner with either an image or a
 test("the pinned caption strip stops at docked Run settings, whose glass runs to the window top", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
-	const frame = /\[data-slot="sidebar-container"\]\[data-windows-glass-frame\]::before \{([^}]*)\}/.exec(css)?.[1] ?? "";
+	const before = /\[data-slot="sidebar-container"\]\[data-windows-glass-frame\]::before \{([^}]*)\}/.exec(css)?.[1] ?? "";
+	assert.ok(before.includes("mask: var(--studio-glass-strip-mask);"), before);
+	assert.ok(before.includes("background-attachment: fixed;"), before);
+	// The shape lives on the frame, so the frame's lens can take it too.
+	const frame = /\[data-slot="sidebar-container"\]\[data-windows-glass-frame\] \{([^}]*)\}/.exec(css)?.[1] ?? "";
 	assert.ok(frame.includes("left top / calc(100% - var(--studio-chat-settings-docked-width, 0px)) var(--studio-custom-titlebar-height)"));
 	const glassFrame = 'html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready]';
 	const panel = new RegExp(glassFrame.replace(/[[\]()|]/g, "\\$&") + ' aside\\[data-slot="chat-settings-panel"\\] \\{([^}]*)\\}').exec(css)?.[1] ?? "";
@@ -187,7 +191,6 @@ test("the pinned caption strip stops at docked Run settings, whose glass runs to
 	assert.ok(panel.includes("padding-top: var(--studio-custom-titlebar-height, 0px);"), panel);
 	assert.ok(css.includes(glassFrame + ' [data-slot="chat-settings-resize-handle"] {\n  top: var(--studio-custom-titlebar-height, 0px);'));
 	assert.ok(frame.includes("linear-gradient(black 0 0) right top / var(--studio-chat-settings-docked-width, 0px) 100% no-repeat"), frame);
-	assert.ok(frame.includes("background-attachment: fixed;"), frame);
 	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {\n  background: transparent;\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;\n  box-shadow: none;'));
 	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"]::before {\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;'));
 	assert.ok(frame.includes("radial-gradient(circle at left bottom, transparent calc(var(--studio-run-settings-fillet) - 1px), black var(--studio-run-settings-fillet))"), frame);
@@ -649,7 +652,7 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 	// The lens paints at z-index -1, so each host is its own stacking context.
 	assert.match(css, /\[data-glass-lens-host\] \{\n  isolation: isolate;\n\}\n\[data-glass-lens-host="static"\] \{\n  position: relative;\n\}/);
 	// The frame's ::before (z-index 1) draws its glass, so its lens sits above that and below the sidebar, without isolation.
-	assert.match(css, /\[data-windows-glass-frame\]\[data-glass-lens-host\] \{\n  isolation: auto;\n\}\n\[data-windows-glass-frame\] > \.glass-lens \{\n  z-index: 1;\n\}/);
+	assert.match(css, /\[data-windows-glass-frame\]\[data-glass-lens-host\] \{\n  isolation: auto;\n\}\n\[data-windows-glass-frame\] > \.glass-lens \{\n  z-index: 1;\n  inset: 0 auto 0 0;\n  width: 100vw;\n  border-radius: 0;\n  mask: var\(--studio-glass-strip-mask\);\n\}/);
 	assert.match(css, /\[data-windows-glass-frame\]\[data-glass-lens-host\] > \[data-slot="sidebar-inner"\] \{\n  z-index: 2;\n\}/);
 	assert.doesNotMatch(css, /:has\(> \.glass-lens\)/);
 	for (const file of ["background.tsx", "backdrop.tsx"]) {
@@ -762,7 +765,11 @@ test("a lens stays on the visible box of a host that scrolls itself", () => {
 test("legacy WebKitGTK's sidebar glass takes the lens instead of the masked frame, never both", () => {
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
 	assert.match(lens, /const FRAME_SIDEBAR = '\[data-windows-glass-frame\] > \[data-slot="sidebar-inner"\]';/);
-	assert.match(lens, /document\.documentElement\.classList\.contains\("webkit-legacy-compositor"\) \? inner\.map\(\(h\) => h\.parentElement\) : inner/);
+	assert.match(lens, /const drop = new Set<Element \| null>\(legacy \? inner\.map\(\(h\) => h\.parentElement\) : inner\);/);
+	// Elsewhere the frame's lens covers the whole strip, docked Run settings included, so the panel takes none of its own.
+	assert.match(lens, /const stripLens = !legacy && found\.some\(\(h\) => h\.matches\(FRAME\)\);/);
+	assert.match(lens, /!\(stripLens && h\.matches\(STRIP_PANEL\)\)/);
+	assert.match(lens, /const h = \(host\.matches\(FRAME\) \? el : host\)\.getBoundingClientRect\(\);/);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /webkit-legacy-compositor\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-windows-glass-frame\] > \[data-slot="sidebar-inner"\] \{[^}]*backdrop-filter: blur/);
 });

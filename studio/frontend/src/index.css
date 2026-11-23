@@ -7387,7 +7387,12 @@ html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [
   width: 100vw;
   pointer-events: none;
   box-shadow: none;
-  mask:
+  mask: var(--studio-glass-strip-mask);
+}
+/* On the frame, not its ::before, so the frame's lens (one copy for the whole strip) takes the same shape. */
+html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-slot="sidebar-container"][data-windows-glass-frame] {
+  --studio-run-settings-fillet: min(var(--radius-md), var(--studio-chat-settings-docked-width, 0px));
+  --studio-glass-strip-mask:
     linear-gradient(black 0 0) left top / var(--sidebar-width) 100% no-repeat,
     linear-gradient(black 0 0) left top / calc(100% - var(--studio-chat-settings-docked-width, 0px)) var(--studio-custom-titlebar-height) no-repeat,
     radial-gradient(circle at right bottom, transparent calc(var(--radius-md) - 1px), black var(--radius-md))
@@ -7395,7 +7400,6 @@ html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [
     linear-gradient(black 0 0) right top / var(--studio-chat-settings-docked-width, 0px) 100% no-repeat,
     radial-gradient(circle at left bottom, transparent calc(var(--studio-run-settings-fillet) - 1px), black var(--studio-run-settings-fillet))
       calc(100vw - var(--studio-chat-settings-docked-width, 0px) - var(--studio-run-settings-fillet)) var(--studio-custom-titlebar-height) / var(--studio-run-settings-fillet) var(--studio-run-settings-fillet) no-repeat;
-  --studio-run-settings-fillet: min(var(--radius-md), var(--studio-chat-settings-docked-width, 0px));
 }
 html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-windows-glass-frame] > [data-slot="sidebar-inner"] {
   position: relative;
@@ -7411,7 +7415,9 @@ html.tauri.render-linux.webkit-legacy-compositor[data-glass][data-chat-wallpaper
   mask:
     linear-gradient(black 0 0) var(--sidebar-width) top / 100% var(--studio-custom-titlebar-height) no-repeat,
     radial-gradient(circle at right bottom, transparent calc(var(--radius-md) - 1px), black var(--radius-md))
-      var(--sidebar-width) var(--studio-custom-titlebar-height) / var(--radius-md) var(--radius-md) no-repeat;
+      var(--sidebar-width) var(--studio-custom-titlebar-height) / var(--radius-md) var(--radius-md) no-repeat,
+    radial-gradient(circle at left bottom, transparent calc(var(--studio-run-settings-fillet) - 1px), black var(--studio-run-settings-fillet))
+      calc(100vw - var(--studio-chat-settings-docked-width, 0px) - var(--studio-run-settings-fillet)) var(--studio-custom-titlebar-height) / var(--studio-run-settings-fillet) var(--studio-run-settings-fillet) no-repeat;
 }
 html.tauri.render-linux.webkit-legacy-compositor[data-glass][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame] > [data-slot="sidebar-inner"] {
   background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
@@ -8237,6 +8243,10 @@ html:not(.dark) .glass-lens-rim .glass-lens-copy {
 }
 [data-windows-glass-frame] > .glass-lens {
   z-index: 1;
+  inset: 0 auto 0 0;
+  width: 100vw;
+  border-radius: 0;
+  mask: var(--studio-glass-strip-mask);
 }
 html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-windows-glass-frame][data-glass-lens-host] > [data-slot="sidebar-inner"] {
   z-index: 2;
