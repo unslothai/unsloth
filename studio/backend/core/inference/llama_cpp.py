@@ -8969,11 +8969,14 @@ class LlamaCppBackend:
     ) -> "tuple[Optional[dict[int, float]], Optional[dict[int, float]]]":
         model: dict[int, float] = {}
         total: dict[int, float] = {}
-        # Reserves reprint compute buffers: peak per (allocator, GPU), so mtmd_context adds to sched_reserve.
-        compute: dict[tuple[str, int], float] = {}
+        # Peak compute per (allocator, GPU) per llama_context (target, drafter); a later reserve
+        # reprints an earlier context's exact size without naming it, so an equal size is that reprint.
+        contexts: list[dict[tuple[str, int], float]] = [{}]
         for line in list(self._stdout_lines):
             match = _GPU_BUFFER_RE.search(line)
             if match is None:
+                if "constructing llama_context" in line:
+                    contexts.append({})
                 continue
             ordinal = int(match.group(1))
             if ordinal >= len(physical_ids):
@@ -8983,13 +8986,15 @@ class LlamaCppBackend:
             gb = float(match.group(3)) / 1024.0
             if kind == "compute":
                 key = ("".join(line[: match.start()].split()[-1:]), physical)
-                compute[key] = max(compute.get(key, 0.0), gb)
+                if not any(ctx.get(key) == gb for ctx in contexts[:-1]):
+                    contexts[-1][key] = max(contexts[-1].get(key, 0.0), gb)
                 continue
             if kind == "model":
                 model[physical] = model.get(physical, 0.0) + gb
             total[physical] = total.get(physical, 0.0) + gb
-        for (_, physical), gb in compute.items():
-            total[physical] = total.get(physical, 0.0) + gb
+        for ctx in contexts:
+            for (_, physical), gb in ctx.items():
+                total[physical] = total.get(physical, 0.0) + gb
         return model or None, total or None
 
     @property

@@ -167,6 +167,7 @@ _GEMMA4_MMPROJ_MTP = [
     "0.01.861.577 I sched_reserve:      CUDA0 compute buffer size =   109.78 MiB",
     "0.01.861.602 I sched_reserve:  CUDA_Host compute buffer size =    62.79 MiB",
     "0.02.100.000 I load_tensors:        CUDA0 model buffer size =    78.25 MiB",
+    "0.02.105.000 I llama_context: constructing llama_context",
     "0.02.110.000 I sched_reserve:      CUDA0 compute buffer size =    51.00 MiB",
     "0.02.900.000 I load_hparams: model size:         939.89 MiB",
     "0.03.000.000 I mtmd_context:      CUDA0 compute buffer size =   143.65 MiB",
@@ -176,12 +177,12 @@ _GEMMA4_MMPROJ_MTP = [
 ]
 
 
-def test_resident_counts_kv_and_each_allocators_compute_peak():
+def test_resident_counts_kv_and_each_contexts_compute_peak():
     backend = _backend(_Alive())
     backend._child_gpu_physical_ids = (0,)
     backend._healthy = True
     backend._stdout_lines = list(_GEMMA4_MMPROJ_MTP)
-    assert backend.resident_memory_mib() == round(1407.73 + 192 + 12 + 78.25 + 109.78 + 143.65)
+    assert backend.resident_memory_mib() == round(1407.73 + 192 + 12 + 78.25 + 109.78 + 51 + 143.65)
     assert backend.reclaimable_gpu_memory_gb() == pytest.approx({0: (1407.73 + 78.25) / 1024})
 
 
