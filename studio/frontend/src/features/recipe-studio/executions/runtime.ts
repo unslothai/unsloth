@@ -18,14 +18,6 @@ import {
 
 const MAX_LOG_LINES = 1500;
 
-export function toEpochMs(ts: unknown): number | null {
-  if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) {
-    return null;
-  }
-  // Integer ms: the server's execution record types createdAt as int.
-  return Math.round(ts > 10_000_000_000 ? ts : ts * 1000);
-}
-
 function formatEventTime(ts: unknown): string {
   if (typeof ts !== "number" || !Number.isFinite(ts)) {
     return new Date().toLocaleTimeString(undefined, withTimeFormat());
@@ -103,7 +95,17 @@ function terminalFinishedAt(
   if (!terminal) {
     return null;
   }
-  return toEpochMs(status.finished_at) ?? execution.finishedAt ?? Date.now();
+  const { started_at: started, finished_at: finished } = status;
+  if (
+    typeof started === "number" &&
+    typeof finished === "number" &&
+    Number.isFinite(started) &&
+    finished >= started
+  ) {
+    // Server duration on the browser clock: the two clocks can differ on a remote Studio.
+    return execution.createdAt + Math.round((finished - started) * 1000);
+  }
+  return execution.finishedAt ?? Date.now();
 }
 
 export function applyExecutionStatusSnapshot(
@@ -138,7 +140,6 @@ export function applyExecutionStatusSnapshot(
     model_usage: normalizeObject(status.model_usage),
     artifact_path: status.artifact_path ?? execution.artifact_path,
     error: status.error ?? null,
-    createdAt: toEpochMs(status.started_at) ?? execution.createdAt,
     finishedAt: terminalFinishedAt(execution, status, mappedStatus),
   };
 }
