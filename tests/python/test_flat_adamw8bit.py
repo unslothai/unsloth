@@ -12,7 +12,10 @@ import pytest
 import torch
 
 bnb = pytest.importorskip("bitsandbytes")
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device"),
+]
 
 _PATH = pathlib.Path(__file__).resolve().parents[2] / "unsloth" / "optimizers" / "flat_adamw8bit.py"
 _spec = importlib.util.spec_from_file_location("_unsloth_flat_adamw8bit_under_test", _PATH)
@@ -134,7 +137,9 @@ def test_fallbacks_match_stock(monkeypatch):
     assert _fused(ob) == 2
     _same(pa, pb, oa, ob)
 
-    # A per-parameter override (Trainer's 32-bit embedding state) runs stock.
+    # A per-parameter override (Trainer's 32-bit embedding state) runs stock. Made after
+    # construction it reaches pid2config only; recent bitsandbytes honours that in get_config,
+    # older ones (0.45.5) read index2config alone and keep 8-bit state, so compare with stock.
     pa, pb = _params(_SHAPES), _params(_SHAPES)
     mng = bnb.optim.GlobalOptimManager.get_instance()
     oa, ob = _make(pa), _make(pb)
@@ -145,11 +150,25 @@ def test_fallbacks_match_stock(monkeypatch):
         _run(oa, pa, 3)
         _run(ob, pb, 3)
         assert not _engaged(ob)
-        assert ob.state[pb[0]]["state1"].dtype == torch.float32
+        assert ob.state[pb[0]]["state1"].dtype == oa.state[pa[0]]["state1"].dtype
         _same(pa, pb, oa, ob)
     finally:
         mng.pid2config.pop(id(pa[0]), None)
         mng.pid2config.pop(id(pb[0]), None)
+
+    # The same override registered by index (index2config, read by every release) is fp32.
+    pa, pb = _params(_SHAPES), _params(_SHAPES)
+    mng.index2config[(0, 0)] = {"optim_bits": 32}
+    try:
+        oa, ob = _make(pa), _make(pb)
+        flat.install_flat_adamw8bit(ob)
+        _run(oa, pa, 3)
+        _run(ob, pb, 3)
+        assert not _engaged(ob)
+        assert ob.state[pb[0]]["state1"].dtype == torch.float32
+        _same(pa, pb, oa, ob)
+    finally:
+        mng.index2config.pop((0, 0), None)
 
     # Kill switch.
     monkeypatch.setenv("UNSLOTH_FLAT_ADAMW8BIT", "0")

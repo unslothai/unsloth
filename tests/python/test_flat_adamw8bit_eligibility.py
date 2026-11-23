@@ -282,12 +282,12 @@ def test_row9_ineligible_later_group_allocates_nothing(cpu):
     _same(pa, pb, oa, ob)
 
 
-@needs_cpu_kernels
 def _multi_segments(opt, gindex = 0):
     plan = opt.__dict__["_unsloth_flat_plans"][gindex]
     return [(s, e) for s, e in plan["segments"] if e - s > 1]
 
 
+@needs_cpu_kernels
 def test_row5_pack_oom_falls_back_untouched(cpu, monkeypatch):
     pa, pb, oa, ob = _pair()
     _run(oa, pa, 1)
@@ -336,6 +336,100 @@ def test_row21_chunk_failure_keeps_counters_consistent(cpu, monkeypatch):
     failing = _multi_segments(ob)[1][0]
     assert all(ob.state[p]["step"] == 2 for p in pb[:failing])
     assert all(ob.state[p]["step"] == 1 for p in pb[failing:])
+
+
+def _raise_oom_in(monkeypatch, when):
+    """torch.empty / torch.cat called from the module raise OOM when they would allocate and
+    when(frame) holds (torch.cat with out= writes into an existing buffer and is let through)."""
+    import sys
+
+    real_empty, real_cat, raised = torch.empty, torch.cat, []
+
+    def guard(real, allocates):
+        def fn(*args, **kwargs):
+            frame = sys._getframe(1)
+            if frame.f_globals is vars(flat) and allocates(kwargs) and when(frame):
+                raised.append(frame.f_code.co_name)
+                raise flat._OOM("simulated")
+            return real(*args, **kwargs)
+
+        return fn
+
+    monkeypatch.setattr(flat.torch, "empty", guard(real_empty, lambda kw: True))
+    monkeypatch.setattr(flat.torch, "cat", guard(real_cat, lambda kw: kw.get("out") is None))
+    return raised
+
+
+@needs_cpu_kernels
+def test_oom_after_first_update_cannot_happen(cpu, monkeypatch):
+    # Any allocation the fused step makes once a parameter has been updated fails: the step must
+    # still complete, bitwise the stock one, with every counter advanced once.
+    pa, pb, oa, ob = _pair()
+    _run(oa, pa, 2)
+    _run(ob, pb, 1)
+    updated = []
+    real_update = bnb.optim.optimizer.Optimizer2State.update_step
+
+    def update_step(self, *args, **kwargs):
+        updated.append(1)
+        return real_update(self, *args, **kwargs)
+
+    monkeypatch.setattr(bnb.optim.optimizer.Optimizer2State, "update_step", update_step)
+    raised = _raise_oom_in(monkeypatch, lambda frame: bool(updated))
+    _run(ob, pb, 1, start = 1)
+    assert raised == []
+    assert _fused(ob) == 2
+    assert all(ob.state[p]["step"] == 2 for p in pb)
+    _same(pa, pb, oa, ob)
+
+
+@needs_cpu_kernels
+def test_scratch_oom_runs_the_step_stock(cpu):
+    pa, pb, oa, ob = _pair()
+    _run(oa, pa, 2)
+    _run(ob, pb, 1)
+    with pytest.MonkeyPatch.context() as mp:
+        raised = _raise_oom_in(mp, lambda frame: frame.f_code.co_name == "_scratch")
+        _run(ob, pb, 1, start = 1)
+    assert raised == ["_scratch"]
+    assert _fused(ob) == 1
+    assert all(ob.state[p]["step"] == 2 for p in pb)
+    _same(pa, pb, oa, ob)
+    _run(oa, pa, 2, start = 2)
+    _run(ob, pb, 2, start = 2)
+    assert _fused(ob) == 3
+    _same(pa, pb, oa, ob)
+
+
+@needs_cpu_kernels
+def test_gradient_sharing_a_parameter_runs_stock(cpu):
+    # pb[1] and pb[0] share a chunk; stock updates pb[0] before reading pb[1].grad.
+    def alias(s, opt, params):
+        if s == 1:
+            params[1].grad = params[0].detach().view(params[1].shape)
+
+    pa, pb, oa, ob = _pair()
+    _run(oa, pa, 3, before = alias)
+    _run(ob, pb, 3, before = alias)
+    assert (0, 2) in _multi_segments(ob)
+    assert _fused(ob) == 2
+    _same(pa, pb, oa, ob)
+
+
+@needs_cpu_kernels
+def test_noncontiguous_gradient_runs_stock(cpu):
+    pa, pb, oa, ob = _pair()
+    for params, opt in ((pa, oa), (pb, ob)):
+        for s in range(3):
+            _grads(params, s)
+            if s == 1:
+                params[1].grad = params[1].grad.t().contiguous().t()
+            opt.step()
+            if s == 1:
+                assert params[1].grad.is_contiguous()  # stock replaces it with a contiguous copy
+            opt.zero_grad(set_to_none = True)
+    assert _fused(ob) == 2
+    _same(pa, pb, oa, ob)
 
 
 @needs_cpu_kernels
@@ -699,7 +793,11 @@ def _single_rank_gloo():
 
 def test_install_refuses_dtensor_params(cpu, _single_rank_gloo):
     from torch.distributed.device_mesh import init_device_mesh
-    from torch.distributed.tensor import Shard, distribute_tensor
+
+    try:
+        from torch.distributed.tensor import Shard, distribute_tensor
+    except ImportError:  # torch < 2.5
+        from torch.distributed._tensor import Shard, distribute_tensor
 
     mesh = init_device_mesh("cpu", (1,))
     p = torch.nn.Parameter(distribute_tensor(torch.zeros(4096), mesh, [Shard(0)]))

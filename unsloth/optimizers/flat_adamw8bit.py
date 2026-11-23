@@ -17,8 +17,10 @@ device on its default stream (bitsandbytes launches on the legacy default stream
 DTensor / FSDP / DeepSpeed); no state offload or instance-level update_step / step wrappers; no
 GlobalOptimManager overrides; blockwise 8-bit state with no per-tensor options (percentile_clipping,
 max_unorm, skip_zeros); no duplicate or storage-sharing parameters; contiguous parameters whose sizes
-are multiples of 256; gradients for every parameter; complete on-device state with int step counters.
-UNSLOTH_FLAT_ADAMW8BIT=0 turns it off.
+are multiples of 256; contiguous gradients for every parameter, none sharing a parameter's storage;
+complete on-device state with int step counters. Every buffer the fused step needs is allocated
+before the first parameter is updated, so an allocation failure runs that step stock instead of
+leaving it half applied. UNSLOTH_FLAT_ADAMW8BIT=0 turns it off.
 """
 
 import copyreg
@@ -210,6 +212,8 @@ def _param_ok(p, device, dtype, min_8bit):
         and g.dtype == p.dtype
         and g.device == p.device
         and g.shape == p.shape
+        # Stock replaces a non-contiguous .grad with a contiguous copy; the gather would not.
+        and g.is_contiguous()
     )
 
 
@@ -241,7 +245,7 @@ def _live_plans(optimizer):
     mng = optimizer.mng
     min_8bit = getattr(optimizer.args, "min_8bit_size", 4096)
     plans = optimizer.__dict__.setdefault(_PLANS, {})
-    ready, storages, device = [], set(), None
+    ready, storages, grads, device = [], set(), [], None
     for gindex, group in enumerate(optimizer.param_groups):
         params = group["params"]
         if not params:
@@ -261,6 +265,7 @@ def _live_plans(optimizer):
             if key in storages:
                 return None
             storages.add(key)
+            grads.append(p.grad)
         states = [optimizer.state.get(p) for p in params]
         fresh = not any(states)
         if not fresh:
@@ -285,6 +290,10 @@ def _live_plans(optimizer):
                 "packed": {},
             }
         ready.append((gindex, group, plan, fresh))
+    # Stock updates parameter by parameter, so a gradient sharing a parameter's storage (its own or
+    # another's) is read after that parameter changed; the gather would read it before.
+    if any(g.untyped_storage().data_ptr() in storages for g in grads):
+        return None
     return ready or None
 
 
@@ -362,7 +371,32 @@ def _materialize(optimizer, ready):
     return True
 
 
-def _fused_group(optimizer, gindex, group, plan):
+def _scratch(ready):
+    """The gather buffers (parameter values and gradients) for the largest packed chunk of each dtype,
+    allocated before any parameter or state is updated so an OOM leaves the step untouched (the
+    caller then runs it stock). None on OOM."""
+    sizes = {}
+    for _, group, plan, _ in ready:
+        dtype = plan["params"][0].dtype
+        for start, end in plan["segments"]:
+            if end - start > 1:
+                total = sum(p.numel() for p in plan["params"][start:end])
+                sizes[dtype] = max(sizes.get(dtype, 0), total)
+    device = ready[0][2]["params"][0].device
+    try:
+        return {
+            dtype: (
+                torch.empty(n, dtype = dtype, device = device),
+                torch.empty(n, dtype = dtype, device = device),
+            )
+            for dtype, n in sizes.items()
+        }
+    except _OOM:
+        return None
+
+
+def _fused_group(optimizer, gindex, group, plan, scratch):
+    """Allocates nothing: every chunk is gathered into the step's scratch buffers."""
     params = plan["params"]
     for si, (start, end) in enumerate(plan["segments"]):
         seg = params[start:end]
@@ -372,8 +406,13 @@ def _fused_group(optimizer, gindex, group, plan):
             continue
         flat = plan["packed"][si]["flat"]
         first = optimizer.state[seg[0]]
-        values = torch.cat([p.detach().reshape(-1) for p in seg])
-        values.grad = torch.cat([p.grad.reshape(-1) for p in seg])
+        total = sum(p.numel() for p in seg)
+        value_buf, grad_buf = scratch[seg[0].dtype]
+        values = value_buf[:total]
+        torch.cat([p.detach().view(-1) for p in seg], out = values)
+        grad = grad_buf[:total]
+        torch.cat([p.grad.view(-1) for p in seg], out = grad)
+        values.grad = grad
         state = {"step": first["step"], **flat, "qmap1": first["qmap1"], "qmap2": first["qmap2"]}
         # bitsandbytes' own update_step (its kernel call for the installed version) on the chunk.
         optimizer.state[values] = state
@@ -427,11 +466,14 @@ def _flat_class(base):
             self.to_gpu()
             self.initialized = True
         ready = _live_plans(self)
-        if ready is None or not _materialize(self, ready):
+        scratch = None
+        if ready is not None and _materialize(self, ready):
+            scratch = _scratch(ready)
+        if scratch is None:
             stock_step(self)
             return loss
         for gindex, group, plan, _ in ready:
-            _fused_group(self, gindex, group, plan)
+            _fused_group(self, gindex, group, plan, scratch)
         steps = self.__dict__[_FUSED_STEPS] = self.__dict__.get(_FUSED_STEPS, 0) + 1
         if steps == 1:
             _announce(ready)
