@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Inkling 2 under the parallel axes: tensor / pipeline parallel are refused from the config (before any weight
-loads) and by the capability table, with the reason and the data parallel alternatives; DDP / FSDP2 stay allowed."""
+"""Inkling 2 under the parallel axes: pipeline parallel is refused from the config (before any weight loads) and by
+the capability table, with the reason and the data parallel alternatives; tensor parallel only for a tp size that
+does not divide the attention head counts; DDP / FSDP2 / tensor parallel stay allowed."""
 
 import ast
 import importlib.util
@@ -47,10 +48,6 @@ def _config(model_type):
     "env, words",
     [
         (
-            {"UNSLOTH_TP_SIZE": "2"},
-            ["tensor parallel (UNSLOTH_TP_SIZE=2)", "wrapper modules", "UNSLOTH_TP_SIZE"],
-        ),
-        (
             {"UNSLOTH_PP_SIZE": "2"},
             [
                 "pipeline parallel (UNSLOTH_PP_SIZE=2)",
@@ -60,11 +57,11 @@ def _config(model_type):
         ),
         (
             {"UNSLOTH_TP_SIZE": "2", "UNSLOTH_PP_SIZE": "2"},
-            ["tensor parallel", "pipeline parallel", "UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE"],
+            ["pipeline parallel (UNSLOTH_PP_SIZE=2)", "UNSLOTH_PP_SIZE"],
         ),
     ],
 )
-def test_tp_pp_refused_from_the_config(monkeypatch, model_type, env, words):
+def test_pp_refused_from_the_config(monkeypatch, model_type, env, words):
     ink = _inkling2(monkeypatch)
     for key in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE"):
         monkeypatch.delenv(key, raising = False)
@@ -82,6 +79,45 @@ def test_tp_pp_refused_from_the_config(monkeypatch, model_type, env, words):
     # Known only by model type (an adapter load resolves the base's types, not its config).
     with pytest.raises(NotImplementedError):
         ink.raise_if_inkling2_parallel_unsupported(None, [model_type])
+
+
+def _headed_config(
+    model_type,
+    heads = 24,
+    kv_heads = 8,
+):
+    text = types.SimpleNamespace(
+        model_type = model_type + "_text",
+        num_attention_heads = heads,
+        num_key_value_heads = kv_heads,
+        swa_num_attention_heads = heads,
+        swa_num_key_value_heads = kv_heads,
+    )
+    return types.SimpleNamespace(model_type = model_type, text_config = text)
+
+
+@pytest.mark.parametrize("model_type", ["inkling2", "inkling2_loop"])
+def test_tp_allowed_when_it_divides_the_heads(monkeypatch, model_type):
+    ink = _inkling2(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_PP_SIZE", raising = False)
+    for tp in ("2", "4", "8"):  # Mini / Small: 24 / 48 query heads, 8 key / value heads
+        monkeypatch.setenv("UNSLOTH_TP_SIZE", tp)
+        ink.raise_if_inkling2_parallel_unsupported(_headed_config(model_type))
+        ink.raise_if_inkling2_parallel_unsupported(
+            _config(model_type)
+        )  # sizes unknown: tp_native checks them
+        ink.raise_if_inkling2_parallel_unsupported(None, [model_type])
+    monkeypatch.setenv("UNSLOTH_TP_SIZE", "3")
+    with pytest.raises(NotImplementedError) as info:
+        ink.raise_if_inkling2_parallel_unsupported(_headed_config(model_type))
+    message = str(info.value)
+    for word in (
+        "UNSLOTH_TP_SIZE=3",
+        "num_key_value_heads = 8",
+        "Choose a tp size",
+        'UNSLOTH_PARALLEL="fsdp=1"',
+    ):
+        assert word in message, (word, message)
 
 
 def test_data_parallel_and_other_models_pass(monkeypatch):
@@ -120,14 +156,14 @@ def test_loader_refuses_in_the_inkling2_branch_before_loading():
 
 
 @pytest.mark.parametrize("family", ["inkling2", "inkling2_loop"])
-def test_capability_table_refuses_tp_pp(monkeypatch, family):
+def test_capability_table_refuses_pp(monkeypatch, family):
     cap = _capabilities(monkeypatch)
-    for layout in (dict(tp = 2), dict(pp = 2), dict(pp = 2, pp_schedule = "gpipe")):
+    for layout in (dict(pp = 2), dict(pp = 2, pp_schedule = "gpipe")):
         with pytest.raises(Exception) as info:
             cap.check(cap.Query(family = family, moe = True, expert_lora = True, **layout))
         assert "Inkling 2" in str(info.value) and "fsdp=1" in str(info.value)
-    # data parallel (DDP / FSDP2) is not refused by the rule
-    for layout in (dict(dp = 2), dict(dp = 2, fsdp2 = True)):
+    # data parallel (DDP / FSDP2) and tensor parallel are not refused by the rule
+    for layout in (dict(dp = 2), dict(dp = 2, fsdp2 = True), dict(tp = 2)):
         rules = [r for r in cap.RULES if r.applies(cap.Query(family = family, **layout))]
         assert not rules, [r.when for r in rules]
     assert "Inkling 2" in cap.markdown_table("rules")

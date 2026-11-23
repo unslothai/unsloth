@@ -2304,12 +2304,16 @@ export const it = {
         label: "Tipo di installazione",
         description:
           "Solo chat (GGUF). L'installazione completa aggiunge addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini.",
+        descriptionMlx:
+          "Solo chat (GGUF/MLX). L'installazione completa aggiunge addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini.",
         descriptionCpu:
           "Solo chat (GGUF). Non è stata trovata una GPU supportata, quindi l'installazione completa aggiunge l'addestramento sulla CPU.",
         action: "Passa all'installazione completa",
         confirmTitle: "Passare all'installazione completa?",
         confirmDescription:
           "Questa installazione solo chat esegue modelli GGUF. L'installazione completa aggiunge PyTorch per la GPU di questa macchina, abilitando addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini. Scarica diversi gigabyte (almeno 5 GB di spazio su disco) e riavvia il server. Le chat, i modelli e le impostazioni vengono mantenuti. L'operazione può richiedere alcuni minuti.",
+        confirmDescriptionMlx:
+          "Questa installazione solo chat esegue modelli GGUF/MLX. L'installazione completa aggiunge PyTorch per la GPU di questa macchina, abilitando addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini. Scarica diversi gigabyte (almeno 5 GB di spazio su disco) e riavvia il server. Le chat, i modelli e le impostazioni vengono mantenuti. L'operazione può richiedere alcuni minuti.",
         confirmDescriptionCpu:
           "Questa installazione solo chat esegue modelli GGUF. Su questa macchina non è stata trovata una GPU supportata, quindi l'installazione completa aggiunge PyTorch per la CPU, abilitando l'addestramento sulla CPU. L'addestramento su CPU è molto più lento che su GPU. Richiede almeno 5 GB di spazio su disco e riavvia il server. Le chat, i modelli e le impostazioni vengono mantenuti. L'operazione può richiedere alcuni minuti.",
         confirmAction: "Aggiorna",

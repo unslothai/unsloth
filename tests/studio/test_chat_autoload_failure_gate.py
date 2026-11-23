@@ -103,6 +103,27 @@ def _local_cache_snapshot_source() -> str:
     return path_source + "\n" + match.group(0)
 
 
+# Inlined, not stubbed: every Chat only MLX gate in auto-load asks this rule, and a hand copy
+# drifted once already (it ignored the mlx_inference argument added in #19040).
+PER_MODEL_CONFIG = _source_path(
+    "studio/frontend/src/features/model-picker/model-config/per-model-config.ts"
+)
+
+
+def _is_served_by_mlx_source() -> str:
+    """NO_MLX_REASONS and isServedByMlx, as shipped."""
+    source = PER_MODEL_CONFIG.read_text(encoding = "utf-8")
+    parts = []
+    for pattern, what in (
+        (r"^const NO_MLX_REASONS = new Set\(\[.*?^\]\);\n", "const NO_MLX_REASONS"),
+        (r"^export function isServedByMlx\(.*?^}\n", "function isServedByMlx"),
+    ):
+        match = re.search(pattern, source, re.S | re.M)
+        assert match, f"{what} is no longer top-level in per-model-config.ts"
+        parts.append(match.group(0))
+    return "\n".join(parts)
+
+
 # Short so no scenario waits out the real 30s cap; the shipped value is asserted in
 # tests/studio/test_chat_mount_cli_load_adoption.py.
 PONYFILLS = """
@@ -359,10 +380,6 @@ function loadedContextFields(resp: any) {
     loadedIsGguf: isGguf,
     loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
   };
-}
-const NO_MLX_REASONS = new Set(["mlx_unavailable", "intel_mac", "detection_failed"]);
-function isServedByMlx(isGguf: boolean, deviceType: string, reason: unknown) {
-  return !isGguf && deviceType === "mac" && !NO_MLX_REASONS.has((reason ?? "") as string);
 }
 function retainedContextPin(args: any) {
   if (args.isGguf) {
@@ -1009,6 +1026,7 @@ def _build_harness(run_dir: Path):
         + _wait_gate_source()
         + _load_request_source()
         + _local_cache_snapshot_source()
+        + _is_served_by_mlx_source()
         + _auto_load_remembered_source()
     )
     missing = sorted(

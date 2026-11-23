@@ -2294,6 +2294,12 @@ def _archive_and_recall(
             else 0
         )
         counts = {"archived_messages": archived}
+        from core.inference import compaction_transcript
+
+        transcript = compaction_transcript.write(thread_id, branch_messages or before)
+        if transcript:
+            conversation = compaction_transcript.link_in_block(conversation, transcript)
+            result["conversation"] = conversation
 
         if recall_done or (cancel_check is not None and cancel_check()):
             result["counts"] = counts
@@ -16790,18 +16796,40 @@ class LlamaCppBackend:
 
     @staticmethod
     def _paged_fit_headroom_mib(
-        detected_gpus: Iterable[tuple], vulkan_igpu_ids: Collection[int]
+        detected_gpus: Iterable[tuple],
+        vulkan_igpu_ids: Collection[int],
+        *,
+        is_vulkan_backend: bool = False,
     ) -> float:
-        """The paging headroom, capped at what a lone Vulkan iGPU reads above its free carve-out.
-        The headroom keeps the fit out of shared memory; a flat 15 GiB also starves a carve-out
-        smaller than that (#18001). Unreadable carve-out or usage keeps the flat headroom."""
+        """Limit paging headroom on a single Windows iGPU with a known memory budget."""
         rows = list(detected_gpus or ())
-        if (
-            not _paged_load_needs_fit_headroom()
-            or len(rows) != 1
-            or rows[0][0] not in set(vulkan_igpu_ids or ())
-        ):
+        if not _paged_load_needs_fit_headroom() or len(rows) != 1:
             return _IGPU_PAGED_FIT_HEADROOM_MIB
+
+        idx, usable_mib = rows[0][:2]
+        if idx not in set(vulkan_igpu_ids or ()):
+            if (
+                not is_vulkan_backend
+                and usable_mib > 0
+                and idx
+                in LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+                    LlamaCppBackend._integrated_cuda_mask_key(), ()
+                )
+                and (
+                    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False
+                    or (
+                        (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper() == "PCI_BUS_ID"
+                        and not LlamaCppBackend._visibility_mask_is_unmappable()
+                    )
+                )
+            ):
+                # The base fit target already reserves memory. Bound the extra room for
+                # page-in by a tenth of the CUDA budget so it cannot consume a small pool.
+                free_mib = usable_mib + _IGPU_HOST_RESERVE_MIB
+                return float(min(_IGPU_PAGED_FIT_HEADROOM_MIB, math.ceil(free_mib / 10)))
+            return _IGPU_PAGED_FIT_HEADROOM_MIB
+
+        # Keep the Vulkan fit inside the free carve-out when both readings are available.
         try:
             carve_out = LlamaCppBackend._igpu_dedicated_memory_bytes(
                 [rows[0][0]], ordinals_are_vulkan = True
@@ -32765,7 +32793,7 @@ class LlamaCppBackend:
                 )
                 _paged_headroom = []
                 _paged_headroom_mib = self._paged_fit_headroom_mib(
-                    _reachable_gpus, _vulkan_igpu_ids
+                    _reachable_gpus, _vulkan_igpu_ids, is_vulkan_backend = is_vulkan_backend
                 )
                 cmd, _pageable_note = self._page_an_oversized_unmapped_load(
                     cmd,
@@ -34458,7 +34486,7 @@ class LlamaCppBackend:
                             _paged_headroom = []
                         _retry_headroom: list = []
                         _retry_headroom_mib = self._paged_fit_headroom_mib(
-                            _retry_rows, _vulkan_igpu_ids
+                            _retry_rows, _vulkan_igpu_ids, is_vulkan_backend = is_vulkan_backend
                         )
                         cmd, _retry_pageable_note = self._page_an_oversized_unmapped_load(
                             cmd,
@@ -39605,6 +39633,7 @@ class LlamaCppBackend:
         _allow_respawn_retry: bool = True,
         compact_context: bool = False,
         chat_template_kwargs: Optional[dict] = None,
+        record_cut_thought: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """Streams a chat completion via /v1/chat/completions (llama-server applies template and vision); yields cumulative text like InferenceBackend."""
         if not self.is_loaded:
@@ -39771,6 +39800,11 @@ class LlamaCppBackend:
                     yield {"type": "context_truncated", **truncation}
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
+        _budget = self._window_thinking_budget(
+            openai_messages, None, max_tokens, thinking_budget_tokens, enable_thinking
+        )
+        if _budget is not None:
+            payload["thinking_budget_tokens"] = _budget
         if stop:
             payload["stop"] = stop
         _apply_seeded_llama_request(payload, seed)
@@ -39963,6 +39997,26 @@ class LlamaCppBackend:
                     _metadata_usage = _backfill_usage_from_timings(
                         _metadata_usage, _metadata_timings
                     )
+                    # The window cut the thought (no EOS, no answer): the thread's next request
+                    # compacts and searches it instead of resuming a thought that cannot fit.
+                    _spent = (_metadata_usage or {}).get("completion_tokens") or 0
+                    if (
+                        record_cut_thought
+                        and _metadata_finish_reason == "length"
+                        and reasoning_text.strip()
+                        and not answer_text.strip()
+                        and not (cancel_event is not None and cancel_event.is_set())
+                        and (max_tokens is None or _spent < max_tokens)
+                    ):
+                        from core.inference import cut_thought
+                        _kept, _close = self._close_cut_thought(resumed_reasoning + reasoning_text)
+                        if cut_thought.mark(thread_id, _kept, _close):
+                            logger.info(
+                                "Thought cut by the context window (%d chars); closed with %r and "
+                                "the thread's next request compacts",
+                                len(_kept),
+                                _close,
+                            )
                     yield {
                         "type": "metadata",
                         # Never None: consumers call usage.get(...).
@@ -40003,6 +40057,77 @@ class LlamaCppBackend:
             # Died mid-generation: recover MTP, re-raise unchanged for this request.
             self._maybe_recover_from_mtp_crash(e)
             raise
+
+    def _llama_post_json(self, path: str, body: dict) -> Optional[dict]:
+        """A small JSON call to llama-server; None on any failure."""
+        try:
+            with httpx.Client(
+                timeout = httpx.Timeout(30.0, connect = 10),
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client:
+                resp = client.post(f"{self.base_url}{path}", json = body)
+            return resp.json() if resp.status_code == 200 else None
+        except Exception:
+            return None
+
+    def _window_thinking_budget(
+        self,
+        messages: list[dict],
+        tools: Optional[list],
+        max_tokens: Optional[int],
+        requested: Optional[int],
+        enable_thinking: Optional[bool],
+    ) -> Optional[int]:
+        if enable_thinking is False or not self._supports_reasoning:
+            return requested
+        from core.inference import cut_thought
+
+        server_budget = getattr(self, "_reasoning_budget", -1)
+        if requested is None and server_budget >= 0:
+            requested = server_budget
+        try:
+            prompt = estimate_messages_tokens_dense(self._countable_messages(messages))
+            prompt += estimate_messages_tokens_dense(tools or [])
+        except Exception:
+            return requested
+        return cut_thought.window_budget(
+            self._effective_context_length, prompt, max_tokens, requested
+        )
+
+    def _close_cut_thought(self, thought: str) -> tuple[str, str]:
+        """The cut thought minus its last few tokens, and this model's own thought-closing marker
+        read from its chat template (cached per load). Falls back to the whole thought and no marker."""
+        from core.inference import cut_thought
+
+        kept = thought.strip()
+        tokens = (
+            self._llama_post_json("/tokenize", {"content": kept, "add_special": False}) or {}
+        ).get("tokens")
+        if isinstance(tokens, list) and len(tokens) > cut_thought.BACKTRACK_TOKENS:
+            text = (
+                self._llama_post_json(
+                    "/detokenize", {"tokens": tokens[: -cut_thought.BACKTRACK_TOKENS]}
+                )
+                or {}
+            ).get("content")
+            if isinstance(text, str) and text.strip():
+                kept = text.strip()
+        cache_key = getattr(self, "_model_identifier", None) or self.base_url
+        cached = getattr(self, "_thought_close_marker", None)
+        if cached is not None and cached[0] == cache_key:
+            return kept, cached[1]
+        close = cut_thought.close_marker_from_template(
+            lambda messages: (
+                self._llama_post_json(
+                    "/apply-template", {"messages": messages, "add_generation_prompt": False}
+                )
+                or {}
+            ).get("prompt")
+        )
+        self._thought_close_marker = (cache_key, close)
+        return kept, close
 
     # ── Tool-calling agentic loop ──────────────────────────────
 
@@ -41120,6 +41245,15 @@ class LlamaCppBackend:
                                     _prompt_now,
                                     _reply_target,
                                 )
+                _budget = self._window_thinking_budget(
+                    conversation,
+                    safe_tools,
+                    _iteration_max_tokens,
+                    thinking_budget_tokens,
+                    enable_thinking,
+                )
+                if _budget is not None:
+                    payload["thinking_budget_tokens"] = _budget
 
                 with self._open_chat_stream_with_respawn_retry(
                     payload,
@@ -43553,8 +43687,11 @@ class LlamaCppBackend:
                 stream_payload["logit_bias"] = _with_banned_token(logit_bias, _final_opener_id)
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
-        if thinking_budget_tokens is not None:
-            stream_payload["thinking_budget_tokens"] = thinking_budget_tokens
+        _budget = self._window_thinking_budget(
+            conversation, _final_tools, _final_max_tokens, thinking_budget_tokens, enable_thinking
+        )
+        if _budget is not None:
+            stream_payload["thinking_budget_tokens"] = _budget
         stream_payload["max_tokens"] = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop

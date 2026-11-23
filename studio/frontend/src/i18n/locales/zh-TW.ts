@@ -2469,12 +2469,16 @@ export const zhTW = {
         label: "安裝類型",
         description:
           "僅聊天（GGUF）。完整安裝會加入訓練、匯出、影片、safetensors 模型及更多圖片生成功能。",
+        descriptionMlx:
+          "僅聊天（GGUF/MLX）。完整安裝會加入訓練、匯出、影片、safetensors 模型及更多圖片生成功能。",
         descriptionCpu:
           "僅聊天（GGUF）。找不到支援的 GPU，因此完整安裝會加入 CPU 訓練。",
         action: "升級為完整安裝",
         confirmTitle: "要升級為完整安裝嗎？",
         confirmDescription:
           "此「僅聊天」安裝可執行 GGUF 模型。完整安裝會為這台電腦的 GPU 加入 PyTorch，以啟用訓練、匯出、影片、safetensors 模型及更多圖片生成功能。這會下載數 GB 的資料（至少需要 5 GB 磁碟空間）並重新啟動伺服器。聊天、模型和設定都會保留。此程序可能需要幾分鐘。",
+        confirmDescriptionMlx:
+          "此「僅聊天」安裝可執行 GGUF/MLX 模型。完整安裝會為這台電腦的 GPU 加入 PyTorch，以啟用訓練、匯出、影片、safetensors 模型及更多圖片生成功能。這會下載數 GB 的資料（至少需要 5 GB 磁碟空間）並重新啟動伺服器。聊天、模型和設定都會保留。此程序可能需要幾分鐘。",
         confirmDescriptionCpu:
           "此「僅聊天」安裝可執行 GGUF 模型。這台電腦找不到支援的 GPU，因此完整安裝會加入 CPU 版的 PyTorch，以啟用 CPU 訓練。CPU 訓練比 GPU 訓練慢得多。這需要至少 5 GB 磁碟空間，並會重新啟動伺服器。聊天、模型和設定都會保留。此程序可能需要幾分鐘。",
         confirmAction: "升級",

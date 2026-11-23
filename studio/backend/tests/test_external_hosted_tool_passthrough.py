@@ -32,6 +32,9 @@ class FakeExternalClient:
     last: dict = {}
     served_template = None
 
+    async def served_context_window(self, model):
+        return None
+
     def __init__(self, **kwargs):
         FakeExternalClient.last = {"ctor": kwargs, "passthrough": None}
         self.provider_type = kwargs.get("provider_type")

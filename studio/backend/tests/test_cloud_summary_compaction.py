@@ -18,6 +18,7 @@ from starlette.requests import Request
 import routes.inference as ri
 from core.inference import cloud_compaction
 from core.inference import external_provider as ep_mod
+from core.inference.context_window import estimate_message_tokens_without_unpriced_media
 from core.inference.providers import PROVIDER_REGISTRY
 from storage import studio_db
 
@@ -88,6 +89,22 @@ class _SummarisingHandler(_Handler):
 
 class _CutOffSummary(_SummarisingHandler):
     summary_finish_reason = "length"
+
+
+class _CutOffOnce(_SummarisingHandler):
+    """Cuts the first summary call off at its token limit and finishes the next one."""
+
+    def do_POST(self) -> None:  # noqa: N802
+        cut = getattr(self.server, "summary_cut_offs", 0)
+        self.summary_finish_reason = "length" if cut == 0 else "stop"
+        self.server.summary_cut_offs = cut + 1  # type: ignore[attr-defined]
+        super().do_POST()
+
+
+class _LongSummaryAfterCutOff(_CutOffOnce):
+    """The retry writes a summary near its doubled limit, which the next call carries."""
+
+    summary_text = "word " * 2_200
 
 
 class _StalledSummary(_SummarisingHandler):
@@ -297,6 +314,7 @@ def test_a_cut_off_summary_is_not_asked_for_again_until_compact():
 def test_a_timed_out_summary_is_not_asked_for_again_until_compact(monkeypatch):
     monkeypatch.setattr(cloud_compaction, "SUMMARY_IDLE_TIMEOUT_S", 0.2)
     monkeypatch.setattr(cloud_compaction, "SUMMARY_FIRST_LINE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_MIN_PREFILL_TOKENS_PER_S", 1e9)
     thread = _saved_thread("thread-timed-out-summary")
     chat = _long_chat()
     options = dict(thread_id = thread, **_SMALL_TRIGGER)
@@ -320,6 +338,51 @@ def test_a_timed_out_summary_is_not_asked_for_again_until_compact(monkeypatch):
     assert studio_db.list_chat_thread_summaries(thread)
 
 
+def test_a_summary_cut_off_once_is_retried_with_twice_the_room():
+    thread = _saved_thread("thread-cut-off-retry")
+    chunks, [first, retry], [sent] = _bodies(_CutOffOnce, thread_id = thread, **_SMALL_TRIGGER)
+    assert retry["max_tokens"] == 2 * first["max_tokens"]
+    assert retry["messages"] == first["messages"]
+    assert _SUMMARY in _system_text(sent)
+    [truncation] = _truncations(chunks)
+    assert truncation["summarized"] is True and not truncation.get("summary_failed")
+
+
+def test_a_long_retried_summary_still_leaves_the_next_compaction_inside_the_window():
+    window = 16_000
+    thread = _saved_thread("thread-retry-window")
+    options = dict(
+        thread_id = thread,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 6_000,
+        context_window = window,
+    )
+    chat = _long_chat(turns = 12)
+    _, first, _ = _bodies(_LongSummaryAfterCutOff, messages = chat, **options)
+    assert first[-1]["max_tokens"] == 2 * first[0]["max_tokens"]
+    grown = list(chat)
+    for index in range(30):
+        grown.append({"role": "assistant", "content": f"more answer {index} " + "word " * 400})
+        grown.append({"role": "user", "content": f"more question {index} " + "word " * 400})
+    _, summaries, _ = _bodies(_SummarisingHandler, messages = grown, **options)
+    assert "word word" in summaries[0]["messages"][1]["content"]
+    for body in summaries:
+        prompt = sum(estimate_message_tokens_without_unpriced_media(m) for m in body["messages"])
+        assert prompt + body["max_tokens"] <= window
+
+
+def test_an_earlier_summary_call_cut_off_is_not_retried():
+    _, summaries, _ = _bodies(
+        _LongSummaryAfterCutOff,
+        messages = _long_chat(turns = 30),
+        thread_id = _saved_thread("thread-early-cut-off"),
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 6_000,
+        context_window = 16_000,
+    )
+    assert len(summaries) == 1
+
+
 def test_a_summary_call_omits_temperature_instead_of_sending_null():
     _, [summary_call], [chat] = _bodies(_SummarisingHandler, temperature = 0.6, **_SMALL_TRIGGER)
     assert "temperature" not in summary_call
@@ -337,6 +400,24 @@ def test_a_summary_still_streaming_past_the_idle_timeout_is_kept(monkeypatch):
     assert truncation["summarized"] is True and not truncation.get("summary_failed")
     [record] = studio_db.list_chat_thread_summaries(thread)
     assert record["summary"] == _SUMMARY
+
+
+class _VerySlowlyStreamedSummary(_SlowlyStreamedSummary):
+    gap_s = 0.15
+
+
+def test_a_slow_decoder_gets_a_total_limit_sized_to_the_reply(monkeypatch):
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_MIN_DECODE_TOKENS_PER_S", 1_000.0)
+    thread = _saved_thread("thread-slow-decoder")
+    chunks, summaries, [sent] = _bodies(
+        _VerySlowlyStreamedSummary, thread_id = thread, **_SMALL_TRIGGER
+    )
+    assert summaries and _SUMMARY in _system_text(sent)
+    [truncation] = _truncations(chunks)
+    assert truncation["summarized"] is True and not truncation.get("summary_failed")
+    assert cloud_compaction.summary_total_timeout(None) == 0.3
+    assert cloud_compaction.summary_total_timeout(4_096) == pytest.approx(4.096)
 
 
 def test_a_summary_that_never_ends_hits_the_total_limit_and_closes_the_stream(monkeypatch):
@@ -487,9 +568,12 @@ _COMPACT_CUSTOM = dict(
 def test_a_failed_compact_tells_the_client_why(handler, reason, monkeypatch):
     monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
     monkeypatch.setattr(cloud_compaction, "SUMMARY_FIRST_LINE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_MIN_PREFILL_TOKENS_PER_S", 1e9)
     thread = _saved_thread(f"thread-compact-fails-{reason}")
     chat = _long_chat()
-    chunks, [_], [sent] = _bodies(handler, messages = chat, thread_id = thread, **_COMPACT_CUSTOM)
+    chunks, summaries, [sent] = _bodies(handler, messages = chat, thread_id = thread, **_COMPACT_CUSTOM)
+    # A cut-off summary is asked for once more with twice the room.
+    assert len(summaries) == (2 if reason == "cut_off" else 1)
     assert [f["reason"] for f in _progress_frames(chunks, "compaction_failed")] == [reason]
     assert _truncations(chunks) == []
     assert len(sent["messages"]) == len(chat)
@@ -557,6 +641,58 @@ def test_a_server_still_reading_the_prompt_is_waited_for(monkeypatch):
     assert asyncio.run(cloud_compaction.collect_summary(stream(0.4, 0.0))) == "the summary"
     with pytest.raises(cloud_compaction.SummaryTimedOut):
         asyncio.run(cloud_compaction.collect_summary(stream(0.0, 0.4)))
+
+
+def test_the_wait_for_a_first_line_grows_with_the_prompt():
+    assert cloud_compaction.summary_first_line_timeout(None) == 300.0
+    assert cloud_compaction.summary_first_line_timeout(5_000) == 300.0
+    assert cloud_compaction.summary_first_line_timeout(200_000) == 4_000.0
+
+
+def test_a_long_summary_prompt_widens_the_provider_read_timeout(monkeypatch):
+    seen = []
+    real = ep_mod.ExternalProviderClient.stream_chat_completion
+
+    def spy(self, *args, **kwargs):
+        seen.append(kwargs.get("read_timeout"))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(ep_mod.ExternalProviderClient, "stream_chat_completion", spy)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_MIN_PREFILL_TOKENS_PER_S", 1.0)
+    _bodies(_SummarisingHandler, thread_id = _saved_thread("thread-read-timeout"), **_SMALL_TRIGGER)
+    widened = [t for t in seen if t is not None]
+    assert widened and min(widened) > 300.0 + cloud_compaction.SUMMARY_IDLE_TIMEOUT_S
+
+
+def test_a_responses_connection_gets_the_widened_read_timeout_too(monkeypatch):
+    seen = []
+
+    class _Recorder:
+        def stream(
+            self,
+            *args,
+            timeout = None,
+            **kwargs,
+        ):
+            seen.append(timeout)
+            raise RuntimeError("recorded")
+
+    monkeypatch.setattr(ep_mod, "_client", lambda: _Recorder())
+    client = ep_mod.ExternalProviderClient(
+        provider_type = "custom", base_url = "http://127.0.0.1:9/v1", api_key = "x", api_type = "responses"
+    )
+
+    async def drain():
+        try:
+            async for _ in client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}], model = "m", read_timeout = 4_000.0
+            ):
+                pass
+        except RuntimeError:
+            pass
+
+    asyncio.run(drain())
+    assert seen and seen[0].read == 4_000.0
 
 
 def test_a_long_prompt_read_under_keep_alives_does_not_count_against_the_total(monkeypatch):
@@ -1124,3 +1260,189 @@ def test_the_summary_request_keeps_embedded_instructions_out_of_the_summary():
     assert "never repeated" in system["content"]
     # Repeated at the end, where small models weigh it most.
     assert user["content"].rstrip().endswith("that it was not followed.")
+
+
+def test_max_asks_for_the_room_the_window_leaves_after_the_prompt():
+    assert ri._window_room_max_tokens(64_000, 10_000, None) == 64_000 - 10_000 - 2_000
+    assert ri._window_room_max_tokens(64_000, 70_000, 6_000) == 64_000 - 6_000 - 2_000
+    assert ri._window_room_max_tokens(64_000, 63_000, None) == ri._MIN_WINDOW_ROOM_TOKENS
+    assert ri._window_room_max_tokens(64_000, 200_000, None) == 16_000
+    # Less room than the floor: the reply gets what is left, never prompt + reply > window.
+    assert ri._window_room_max_tokens(8_192, 8_000, None) == 192
+
+
+def test_a_request_without_max_tokens_gets_the_windows_room(monkeypatch):
+    monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
+    chat = [{"role": "user", "content": "hello"}]
+    _, sent = _proxy("custom", chat, max_tokens = None, context_window = 64_000)
+    assert 64_000 - 2_000 - 200 < sent["max_tokens"] < 64_000 - 2_000
+
+
+def test_studio_max_without_a_known_window_keeps_the_old_ceiling(monkeypatch):
+    chat = [{"role": "user", "content": "hello"}]
+    _, sent = _proxy("custom", chat, max_tokens = None)
+    assert "max_tokens" not in sent  # An API caller keeps the provider's own default.
+    monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
+    _, sent = _proxy("custom", chat, max_tokens = None)
+    assert sent["max_tokens"] == ri._UNKNOWN_WINDOW_MAX_TOKENS
+
+
+def test_window_bounded_servers_and_explicit_limits_are_left_alone():
+    chat = [{"role": "user", "content": "hello"}]
+    _, sent = _proxy("llama_cpp", chat, max_tokens = None, context_window = 64_000)
+    assert "max_tokens" not in sent
+    _, sent = _proxy("custom", chat, max_tokens = 512, context_window = 64_000)
+    assert sent["max_tokens"] == 512
+
+
+def test_studio_max_on_a_custom_responses_connection_keeps_the_old_ceiling(monkeypatch):
+    monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
+    seen = {}
+    real = ep_mod.ExternalProviderClient.stream_chat_completion
+
+    def spy(self, *args, **kwargs):
+        seen["max_tokens"] = kwargs.get("max_tokens")
+        seen["api_type"] = self.api_type
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(ep_mod.ExternalProviderClient, "stream_chat_completion", spy)
+    chat = [{"role": "user", "content": "hello"}]
+    _proxy("custom", chat, max_tokens = None, context_window = 64_000, provider_api_type = "responses")
+    assert seen == {"max_tokens": ri._UNKNOWN_WINDOW_MAX_TOKENS, "api_type": "responses"}
+
+
+@pytest.mark.parametrize("ui", [False, True])
+def test_openrouter_without_max_tokens_keeps_the_provider_default(ui, monkeypatch):
+    # openrouter/auto catalogues 2M; the routed endpoint's own context and output cap are smaller.
+    monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: ui)
+    chat = [{"role": "user", "content": "hello"}]
+    _, sent = _proxy("openrouter", chat, max_tokens = None, context_window = 2_000_000)
+    assert "max_tokens" not in sent
+
+
+def test_an_overflow_retry_still_gets_the_room_its_refit_prompt_leaves():
+    from core.inference.external_tool_transport import OAICompatTransport
+
+    sent = []
+    overflow = (
+        'data: {"error":{"message":"This model\'s maximum context length is 8192 tokens",'
+        '"code":"context_length_exceeded"}}'
+    )
+
+    class _Client:
+        provider_type = "custom"
+        api_type = "chat_completions"
+
+        async def stream_chat_completion(self, **kwargs):
+            sent.append(kwargs.get("max_tokens"))
+            if len(sent) == 1:
+                yield overflow
+                return
+            yield 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}'
+
+    async def refitter(messages, tools):
+        # The fitter only knows the request's (larger) window, so its reply cap is too generous.
+        yield (messages[-2:], 50_000, "")
+
+    transport = OAICompatTransport(
+        _Client(),
+        model = "m",
+        max_tokens = 9_000,
+        overflow_refitter = refitter,
+        reply_limit = lambda messages, tools: 10_000 - 1_000 * len(messages),
+    )
+
+    async def run(messages):
+        async for _ in transport._stream_provider(messages, None, None):
+            pass
+
+    asyncio.run(run([{"role": "user", "content": "a"}] * 5))
+    assert sent == [5_000, 8_000]
+
+
+def test_each_tool_loop_round_gets_the_room_its_own_prompt_leaves():
+    from core.inference.external_tool_transport import OAICompatTransport
+
+    sent = []
+
+    class _Client:
+        provider_type = "custom"
+        api_type = "chat_completions"
+
+        async def stream_chat_completion(self, **kwargs):
+            sent.append(kwargs.get("max_tokens"))
+            yield 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}'
+
+    transport = OAICompatTransport(
+        _Client(),
+        model = "m",
+        max_tokens = 9_000,
+        reply_limit = lambda messages, tools: 10_000 - 1_000 * len(messages),
+    )
+
+    async def run(messages):
+        async for _ in transport._stream_provider(messages, None, None):
+            pass
+
+    asyncio.run(run([{"role": "user", "content": "a"}]))
+    asyncio.run(run([{"role": "user", "content": "a"}] * 3))
+    assert sent == [9_000, 7_000]
+
+
+def test_a_replayed_summary_gives_the_reply_the_room_it_frees():
+    from core.inference.external_tool_transport import OAICompatTransport
+
+    sent = []
+
+    class _Client:
+        provider_type = "custom"
+        api_type = "chat_completions"
+
+        async def stream_chat_completion(self, **kwargs):
+            sent.append(kwargs.get("max_tokens"))
+            yield 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}'
+
+    async def fitter(messages, tools):
+        # The saved summary replaces every earlier turn; the cap it carries was sized before that.
+        yield (messages[-1:], 256, "")
+
+    transport = OAICompatTransport(
+        _Client(),
+        model = "m",
+        max_tokens = 256,
+        message_fitter = fitter,
+        reply_limit = lambda messages, tools: 10_000 - 1_000 * len(messages),
+    )
+
+    async def run(messages):
+        async for _ in transport._stream_provider(messages, None, None):
+            pass
+
+    asyncio.run(run([{"role": "user", "content": "a"}] * 9))
+    assert sent == [9_000]
+
+
+def test_a_summarised_plain_chat_gets_the_room_its_fitted_prompt_leaves(monkeypatch):
+    # No Studio tool loop: the reply is sized from the prompt actually sent, not the pre-fit one.
+    monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
+    _, summaries, [sent] = _bodies(
+        _SummarisingHandler, provider_type = "custom", max_tokens = None, **_SMALL_TRIGGER
+    )
+    assert summaries
+    room = ri._window_room_max_tokens(
+        64_000,
+        ri._external_token_counter(ri.ChatCompletionRequest(messages = sent["messages"]), None)(
+            sent["messages"]
+        ),
+        None,
+    )
+    assert abs(sent["max_tokens"] - room) < 256
+
+
+def test_a_prompt_the_fit_cannot_shrink_below_the_threshold_still_fits_with_its_reply(monkeypatch):
+    monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
+    chat = [{"role": "user", "content": "word " * 12_000}]
+    _, sent = _proxy("custom", chat, max_tokens = None, **_SMALL_TRIGGER)
+    prompt = ri._external_token_counter(ri.ChatCompletionRequest(messages = chat), None)(chat)
+    assert prompt > _SMALL_TRIGGER["compaction_threshold"]
+    assert prompt + sent["max_tokens"] <= _SMALL_TRIGGER["context_window"]
