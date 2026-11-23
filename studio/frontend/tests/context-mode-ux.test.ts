@@ -55,10 +55,9 @@ test("the Auto number editor opens at the fitted or safe offload context", () =>
     panelCode,
     /activeLoadedContext \?\? AUTO_OFFLOAD_CONTEXT_LENGTH/,
   );
-  // A changed setting refits at load, so the loaded window stops standing in for Auto.
   assert.match(
     panelCode,
-    /const autoLoadedContext = atBaseline \? activeLoadedContext : fixedLayerPin;/,
+    /activeLoadedContext=\{autoQuote\.loaded\} refitsLoadedContext=\{autoQuote\.refits\}/,
   );
   assert.match(panelCode, /const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;/);
 });
@@ -128,4 +127,18 @@ test("Reset all reads in the same color as Save", () => {
     panelCode,
     /className="text-muted-foreground" disabled=\{ \(pinnedSet !== null/,
   );
+});
+
+test("Auto quotes the loaded window only when the next load keeps it", async () => {
+  const { autoContextQuote } = await import(
+    "../src/features/model-picker/model-config/estimate-context.ts"
+  );
+  const quote = (atBaseline: boolean, active: number | null, pin: number | null) =>
+    autoContextQuote({ atBaseline, activeLoadedContext: active, fixedLayerPin: pin });
+  assert.deepEqual(quote(true, 262144, null), { loaded: 262144, refits: null });
+  // A changed KV cache dtype refits at load.
+  assert.deepEqual(quote(false, 82176, null), { loaded: null, refits: 82176 });
+  // Manual fixed layers reload at the pinned resident window.
+  assert.deepEqual(quote(false, 82176, 82176), { loaded: 82176, refits: null });
+  assert.deepEqual(quote(false, null, null), { loaded: null, refits: null });
 });

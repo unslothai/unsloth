@@ -137,6 +137,7 @@ import {
 import { type MemoryEstimate, type MlxOffloadablePart } from "../api/memory-estimate";
 import { fetchMlxDrafters } from "../api/mlx-drafters";
 import {
+  autoContextQuote,
   fixedLayerContextPin,
   resolveEstimateContext,
   resolveMlxServedWindow,
@@ -590,7 +591,6 @@ function GgufContextLengthSetting({
   max: number;
   nativeContextLength: number | null;
   activeLoadedContext: number | null;
-  /** The loaded window when it was fitted to other settings, so the next load fits again. */
   refitsLoadedContext?: number | null;
   inputRef?: Ref<NumericValueInputHandle>;
   onChange: (value: number) => void;
@@ -3600,9 +3600,7 @@ export function ModelConfigPage({
     customContextLength: loadableConfig.customContextLength,
     activeLoadedContext,
   });
-  // The loaded window answers for Auto while nothing changed, or when fixed layers keep it on
-  // reload; any other change fits again at load.
-  const autoLoadedContext = atBaseline ? activeLoadedContext : fixedLayerPin;
+  const autoQuote = autoContextQuote({ atBaseline, activeLoadedContext, fixedLayerPin });
   const runtimeConfig =
     fixedLayerPin != null
       ? { ...loadableConfig, customContextLength: fixedLayerPin }
@@ -4573,8 +4571,8 @@ export function ModelConfigPage({
               min={minContext}
               max={maxContext}
               nativeContextLength={nativeContextLength}
-              activeLoadedContext={autoLoadedContext}
-              refitsLoadedContext={autoLoadedContext == null ? activeLoadedContext : null}
+              activeLoadedContext={autoQuote.loaded}
+              refitsLoadedContext={autoQuote.refits}
               inputRef={contextInputRef}
               onChange={(v) => update({ customContextLength: v === 0 ? null : v })}
               stacked={variant === "sidebar"}
