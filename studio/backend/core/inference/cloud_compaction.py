@@ -27,10 +27,8 @@ TAIL_TOKENS = 15_000
 TAIL_BUDGET_SHARE = 0.3
 SUMMARY_MAX_TOKENS = 4_096
 SUMMARY_MIN_TOKENS = 1_024
-# Only silence ends a summary call early. The total cap starts with the reply, so reading a long
-# prompt (llama.cpp sends a keep-alive every 30 s) does not count against it.
+# The total cap starts with the reply: llama.cpp sends keep-alives while it reads a long prompt.
 SUMMARY_IDLE_TIMEOUT_S = 120.0
-# The chat stream's read timeout: some self-hosted servers send nothing while reading.
 SUMMARY_FIRST_LINE_TIMEOUT_S = 300.0
 SUMMARY_TIMEOUT_S = 600.0
 SUMMARY_MAX_CALLS = 8
