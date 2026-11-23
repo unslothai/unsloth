@@ -320,6 +320,7 @@ _PLAIN = (torch.Tensor, torch.nn.Parameter)
 _STRIDED = torch.strided
 _functorch_active = getattr(torch._C, "_are_functorch_transforms_active", lambda: False)
 _forward_ad = torch.autograd.forward_ad
+_increment_version = torch.autograd.graph.increment_version
 
 
 def _autocast_changes(dtype):
@@ -337,8 +338,11 @@ def skinny_decode_linear(X, W, A, B, scale, out):
     The kernel reads X / W / A / B through raw pointers with int32 offsets, so every operand must be a plain
     dense tensor (the exact type: a wrapper subclass such as TorchAO's NF4Tensor reports a float dtype and a
     2D shape over packed storage and only dequantizes through its own dispatch), and out must not overlap
-    itself or any operand. Forward-mode AD, torch.func transforms and a different autocast dtype need the
-    dispatched ops. This runs per projection per token in eager decode, so the checks stay arithmetic."""
+    itself or any operand. Lazily negated views (is_neg) keep the dispatched ops: the raw storage holds the
+    un-negated values. Forward-mode AD, torch.func transforms and a different autocast dtype need the
+    dispatched ops. A supplied out gets its version counter bumped like an out= op, so a tensor autograd saved
+    for backward still raises when backward reads it. This runs per projection per token in eager decode, so
+    the checks stay arithmetic."""
     if triton is None or _BROKEN:
         return None
     if type(X) is not torch.Tensor or X.dim() != 3 or X.shape[1] != 1:
@@ -352,7 +356,7 @@ def skinny_decode_linear(X, W, A, B, scale, out):
     N = W.shape[0]
     if W.dtype != dtype or K < 1 or N < 1 or W.shape[1] != K or N * MAX_ROWS * 64 >= _INT32:
         return None
-    if X.layout != _STRIDED or W.layout != _STRIDED:
+    if X.layout != _STRIDED or W.layout != _STRIDED or X.is_neg() or W.is_neg():
         return None
     if not routed(N, K):
         return None
@@ -388,6 +392,8 @@ def skinny_decode_linear(X, W, A, B, scale, out):
             or B.dim() != 2
             or A.layout != _STRIDED
             or B.layout != _STRIDED
+            or A.is_neg()
+            or B.is_neg()
             or A.device != device
             or B.device != device
         ):
@@ -401,6 +407,7 @@ def skinny_decode_linear(X, W, A, B, scale, out):
         bs0, bs1 = B.stride()
         spans.append((A, (R - 1) * as0 + (K - 1) * as1 + 1))
         spans.append((B, (N - 1) * bs0 + (R - 1) * bs1 + 1))
+    supplied = False
     if out is None:
         out = torch.empty((bsz, 1, N), dtype = dtype, device = device)
     else:
@@ -409,6 +416,7 @@ def skinny_decode_linear(X, W, A, B, scale, out):
             or out.shape != (bsz, 1, N)
             or out.dtype != dtype
             or out.layout != _STRIDED
+            or out.is_neg()
             or out.device != device
             or (grad and out.requires_grad)
             or (out.is_inference() and not torch.is_inference_mode_enabled())
@@ -431,6 +439,8 @@ def skinny_decode_linear(X, W, A, B, scale, out):
             t_start = t.data_ptr()
             if t_start < o_end and o_start < t_start + span * size:
                 return None
+        # Inference tensors have no version counter.
+        supplied = not out.is_inference()
     for _, span in spans:
         if span >= _INT32:
             # The kernel's pointer offsets are int32.
@@ -444,5 +454,8 @@ def skinny_decode_linear(X, W, A, B, scale, out):
         # before it writes out: the rocBLAS path takes this and every later call.
         _BROKEN.append(1)
         return None
+    if supplied:
+        # The raw-pointer write is invisible to autograd: bump the version as torch.matmul(out = out) does.
+        _increment_version(out)
     STATS["calls"] += 1
     return out

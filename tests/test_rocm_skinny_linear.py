@@ -229,6 +229,33 @@ _INTERP = textwrap.dedent(
         y = m.skinny_decode_linear(X3, W, A, B, 2.0, out)
     assert y is out and m.STATS["calls"] == 1 and (buf[0] == 0).all()
     assert torch.equal(y[:, 0], m.skinny_linear(X3[:, 0], W, A, B, 2.0))
+    # A buffer autograd saved for backward: the raw write must bump its version so backward refuses it,
+    # exactly like torch.matmul(out = saved).
+    a = torch.ones(4, 1, 96, dtype = dt, requires_grad = True)
+    saved = torch.zeros(4, 1, 96, dtype = dt)
+    loss = (a * saved).sum()
+    v0 = saved._version
+    with torch.no_grad():
+        assert m.skinny_decode_linear(X3, W, None, None, None, saved) is saved
+    assert m.STATS["calls"] == 2 and saved._version > v0 and saved.abs().sum() > 0
+    try:
+        loss.backward()
+    except RuntimeError as e:
+        assert "modified by an inplace operation" in str(e), e
+    else:
+        raise AssertionError("backward read an overwritten saved tensor")
+    # Lazily negated views keep PyTorch's path (the raw storage holds the un-negated values).
+    def neg(t):
+        v = torch.complex(torch.zeros_like(t), t).conj().imag
+        assert v.is_neg() and torch.equal(v, -t)
+        return v
+
+    with torch.no_grad():
+        X3n = neg(X3[:, 0]).unsqueeze(1)
+        for args in ((X3n, W, A, B), (X3, neg(W), A, B), (X3, W, neg(A), B), (X3, W, A, neg(B))):
+            assert m.skinny_decode_linear(*args, 2.0, None) is None
+        assert m.skinny_decode_linear(X3, W, None, None, None, neg(torch.zeros(4, 1, 96, dtype = dt))) is None
+    assert m.STATS["calls"] == 2
     print("INTERP_OK")
     """
 )
@@ -477,6 +504,43 @@ def test_unsafe_out_buffers_fall_back(monkeypatch):
     with torch.enable_grad():
         tracked = torch.zeros(2, 1, 8, dtype = bf, requires_grad = True)
         assert mod.skinny_decode_linear(X, W, None, None, None, tracked) is None
+    assert len(ran) == 2
+
+
+def test_supplied_out_bumps_its_version_and_negated_views_fall_back(monkeypatch):
+    # The kernel writes out through a raw pointer: a buffer autograd saved for backward must still be seen as
+    # modified (torch.matmul(out = out) bumps the version), and lazily negated operands / outputs keep the
+    # dispatched path because the raw storage holds the un-negated values.
+    mod, ran = _gated(monkeypatch)
+    fp = torch.float16
+    X, W, A, B = (t.to(fp) for t in _operands(N = 8, K = 8))
+    w = torch.ones(2, 1, 8, dtype = fp, requires_grad = True)
+    saved = torch.zeros(2, 1, 8, dtype = fp)
+    loss = (w * saved).sum()
+    v0 = saved._version
+    with torch.no_grad():
+        assert mod.skinny_decode_linear(X, W, A, B, 2.0, saved) is saved
+    assert len(ran) == 1 and saved._version > v0
+    with pytest.raises(RuntimeError, match = "modified by an inplace operation"):
+        loss.backward()
+    # A fresh output and an inference tensor (no version counter) need no bump.
+    with torch.inference_mode():
+        frozen = torch.zeros(2, 1, 8, dtype = fp)
+        assert mod.skinny_decode_linear(X, W, None, None, None, frozen) is frozen
+    assert len(ran) == 2
+
+    def neg(t):
+        v = torch.complex(torch.zeros_like(t), t).conj().imag
+        assert v.is_neg() and torch.equal(v, -t)
+        return v
+
+    with torch.no_grad():
+        for args in ((neg(X), W, A, B), (X, neg(W), A, B), (X, W, neg(A), B), (X, W, A, neg(B))):
+            assert mod.skinny_decode_linear(*args, 2.0, None) is None
+        assert (
+            mod.skinny_decode_linear(X, W, None, None, None, neg(torch.zeros(2, 1, 8, dtype = fp)))
+            is None
+        )
     assert len(ran) == 2
 
 
