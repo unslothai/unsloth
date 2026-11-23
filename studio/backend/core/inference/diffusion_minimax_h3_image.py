@@ -4483,7 +4483,14 @@ def dit_restream_pin_bytes(transformer: Any, plan: "H3ImagePlan", early_streamer
         return 0
     from .diffusion_memory import _storage_nbytes
 
-    blocks = list(transformer.transformer_blocks)[max(0, resident) :]
+    blocks = list(transformer.transformer_blocks)
+    if stream_spread_enabled():
+        from .diffusion_offload_prefetch import spread_stream_indices
+        blocks = [
+            blocks[i] for i in spread_stream_indices(len(blocks), len(blocks) - max(0, resident))
+        ]
+    else:
+        blocks = blocks[max(0, resident) :]
     return int(
         sum(
             sum(_storage_nbytes(t))

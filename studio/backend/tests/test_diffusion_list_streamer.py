@@ -643,3 +643,19 @@ def test_a_spread_stack_is_bit_identical_and_streams_the_spread_blocks(monkeypat
         for _ in range(2):
             assert torch.equal(stack(x), want)
     grown.remove()
+
+
+@pytest.mark.parametrize("spread, want", [("1", [2, 5]), ("0", [4, 5])])
+def test_a_dit_restreamed_after_the_encoder_reserves_the_blocks_it_streams(
+    monkeypatch, spread, want
+):
+    """Blocks of unequal size: the reservation counts the blocks the streamer will pin, spread or tail."""
+    import types
+
+    h3i = _h3()
+    monkeypatch.setenv(h3i.STREAM_SPREAD_ENV, spread)
+    blocks = torch.nn.ModuleList(torch.nn.Linear(4 + i, 1, bias = False) for i in range(6))
+    plan = types.SimpleNamespace(placement = h3i.PLACE_STREAM, dit_resident_blocks = 4)
+    transformer = types.SimpleNamespace(transformer_blocks = blocks)
+    got = h3i.dit_restream_pin_bytes(transformer, plan, None)
+    assert got == sum(blocks[i].weight.numel() * 4 for i in want)
