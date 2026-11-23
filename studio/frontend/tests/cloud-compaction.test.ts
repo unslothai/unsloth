@@ -181,7 +181,6 @@ test("the connection form stores Auto-compact at with the connection", () => {
   const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
   assert.match(dialog, /id="provider-auto-compact-tokens"/);
   assert.match(dialog, /parseAutoCompactPercent\(autoCompactPercentDraft\)/);
-  // A percent clears tokens saved before it; older token limits still load.
   assert.match(dialog, /autoCompactPercent != null \? \{ autoCompactTokens: null \} : \{\}/);
   assert.match(dialog, /autoCompactTokens: updated\.auto_compact_tokens \?\? undefined/);
   const api = readSrc("features/chat/api/providers-api.ts");

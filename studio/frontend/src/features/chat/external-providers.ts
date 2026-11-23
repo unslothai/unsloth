@@ -37,7 +37,7 @@ export interface ExternalProviderConfig {
   maxOutputTokens?: number;
   /** Tokens after which chats on this connection compact; unset uses 75% of the model's window. */
   autoCompactTokens?: number;
-  /** "Auto-compact at", as a percent of the model's window; replaces autoCompactTokens. */
+  /** Percent of the model's window; replaces autoCompactTokens. */
   autoCompactPercent?: number;
   autoCompactPercentByModel?: Record<string, number>;
   compactionMode?: ProviderCompactionMode;

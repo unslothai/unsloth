@@ -61,11 +61,10 @@ export function normalizeAutoCompactTokens(value: unknown): number | undefined {
   ) {
     return undefined;
   }
-  // A value saved before the ceiling dropped from 2M keeps the closest limit it can.
+  // Older saves may exceed the ceiling.
   return Math.min(value, AUTO_COMPACT_TOKENS_MAX);
 }
 
-// "Auto-compact at": a share of each model's own window, so one setting suits every window size.
 export const AUTO_COMPACT_PERCENT_MIN = 10;
 export const AUTO_COMPACT_PERCENT_MAX = 100;
 export const AUTO_COMPACT_PERCENT_STEP = 5;
@@ -80,7 +79,6 @@ export function normalizeAutoCompactPercent(value: unknown): number | undefined 
     : undefined;
 }
 
-/** Model ID to percent; drops entries out of range, and is undefined when none are left. */
 export function normalizeAutoCompactPercentByModel(
   value: unknown,
 ): Record<string, number> | undefined {
@@ -110,7 +108,6 @@ export function autoCompactPercentForModel(
   return own ?? provider?.autoCompactPercent;
 }
 
-/** Blank clears the setting; anything else is a whole percent in range, with or without "%". */
 export function parseAutoCompactPercent(input: string): number | null {
   const trimmed = input.trim().replace(/[%\s]/g, "");
   if (!trimmed) return null;
@@ -127,7 +124,6 @@ export function formatAutoCompactPercent(percent: number): string {
   return `${percent}%`;
 }
 
-/** Saves the per-model drafts of the listed models; blank ones fall back to the connection. */
 export function parseAutoCompactPercentByModel(
   drafts: Record<string, string>,
   models: readonly string[],
@@ -172,7 +168,6 @@ export function parseAutoCompactTokens(input: string): number | null {
   return value;
 }
 
-/** The threshold a request carries: the connection's percent or (older saves) tokens, else 75%. */
 function requestedCompactionThreshold(
   contextLength: number | null | undefined,
   autoCompactTokens: number | null | undefined,
@@ -235,9 +230,8 @@ export function cloudCompactionTrigger(options: {
 export function apiCompactionRequestFields(options: {
   autoCompactEnabled: boolean;
   contextLength: number | null | undefined;
-  /** A connection's "Auto-compact after" from before the percent setting; the percent wins. */
+  /** Pre-percent setting; the percent wins. */
   autoCompactTokens?: number | null;
-  /** The model's or connection's "Auto-compact at", which replaces the 75% default. */
   autoCompactPercent?: number | null;
   compactionMode?: ProviderCompactionMode | null;
   // /compact: asked for by the user, so it applies with auto-compaction off too

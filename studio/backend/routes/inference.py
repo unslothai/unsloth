@@ -29932,7 +29932,6 @@ _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
 def _compaction_share(payload) -> float:
-    """The connection's "Auto-compact at" percent, else the 75% default."""
     percent = getattr(payload, "compaction_percent", None)
     return percent / 100 if percent else 1 - _EXTERNAL_COMPACTION_HEADROOM
 

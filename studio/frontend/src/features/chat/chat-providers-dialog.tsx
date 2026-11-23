@@ -407,7 +407,7 @@ export function ChatProvidersSettings({
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
   const [apiType, setApiType] = useState<ConnectionApiType>("chat_completions");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
-  // Tokens saved before the percent setting; kept until a percent replaces it.
+  // A pre-percent token limit, kept until a percent replaces it.
   const [legacyAutoCompactTokens, setLegacyAutoCompactTokens] = useState<
     number | null
   >(null);
@@ -1618,7 +1618,6 @@ export function ChatProvidersSettings({
         maxOutputTokens,
         autoCompactPercent,
         autoCompactPercentByModel,
-        // A percent replaces tokens saved before it existed.
         ...(autoCompactPercent != null ? { autoCompactTokens: null } : {}),
         // null clears the column back to the default summary.
         compactionMode: supportsAutoCompactTokens

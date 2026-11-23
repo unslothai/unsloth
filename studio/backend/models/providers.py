@@ -105,14 +105,12 @@ def normalize_provider_extra_headers(value) -> dict[str, str]:
 
 AUTO_COMPACT_TOKENS_MIN = 1_000
 AUTO_COMPACT_TOKENS_MAX = 1_200_000
-# Share of the model's context window filled before a chat compacts.
 AUTO_COMPACT_PERCENT_MIN = 10
 AUTO_COMPACT_PERCENT_MAX = 100
 _MAX_AUTO_COMPACT_MODELS = 500
 
 
 def normalize_auto_compact_percent_by_model(value) -> dict[str, int]:
-    """Per-model overrides of a connection's auto-compact percent. Empty or absent becomes {}."""
     if value is None:
         return {}
     if not isinstance(value, dict):

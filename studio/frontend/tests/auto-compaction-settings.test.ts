@@ -411,7 +411,6 @@ test("Auto-compact at is a whole percent of the window, typed with or without %"
   for (const bad of ["5", "101", "50.5", "lots", "-20"]) {
     assert.throws(() => parseAutoCompactPercent(bad), /Auto-compact at/);
   }
-  // A token limit saved before the percent setting still reads, capped at 1.2M.
   assert.equal(normalizeAutoCompactTokens(2_000_000), 1_200_000);
 });
 
@@ -432,7 +431,6 @@ test("a percent becomes that share of whichever window the model has", () => {
       },
     );
   }
-  // No catalogued window (a self-hosted server): the backend applies it to the served window.
   assert.deepEqual(
     apiCompactionRequestFields({
       autoCompactEnabled: true,
@@ -441,7 +439,6 @@ test("a percent becomes that share of whichever window the model has", () => {
     }),
     { context_overflow: "truncate_oldest", compaction_percent: 60 },
   );
-  // The percent wins over tokens saved before it existed.
   assert.equal(
     cloudCompactionTrigger({
       providerType: "openrouter",
