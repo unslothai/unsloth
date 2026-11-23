@@ -381,6 +381,18 @@ def save_inkling2_merged_16bit(
 
     final_directory = save_directory
     if push_to_hub:
+        from huggingface_hub import HfApi
+
+        from unsloth.save import _refuse_private_push_to_public_repo
+
+        # create_repo(private = True) leaves an existing public repo public: refuse before merging or uploading.
+        api = HfApi(token = token)
+        final_directory = getattr(
+            api.create_repo(final_directory, private = private, exist_ok = True),
+            "repo_id",
+            final_directory,
+        )
+        _refuse_private_push_to_public_repo(final_directory, private, api = api)
         save_directory = tempfile.mkdtemp(prefix = "unsloth_inkling2_merge_")
     os.makedirs(save_directory, exist_ok = True)
     if os.path.samefile(save_directory, source):
@@ -544,10 +556,6 @@ def save_inkling2_merged_16bit(
     )
 
     if push_to_hub:
-        from huggingface_hub import HfApi
-
-        api = HfApi(token = token)
-        api.create_repo(final_directory, private = private, exist_ok = True)
         api.upload_folder(folder_path = save_directory, repo_id = final_directory)
         shutil.rmtree(save_directory, ignore_errors = True)
         print(f"Unsloth: Uploaded the merged model to https://huggingface.co/{final_directory}")

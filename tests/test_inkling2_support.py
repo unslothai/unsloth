@@ -921,3 +921,30 @@ def test_message_checkpoint_follows_a_deepcopy_and_pickles(monkeypatch):
             assert torch.equal(a, b)
         original, _ = _residual_grads(model, monkeypatch, enabled = True)
         assert not torch.equal(got, original)
+
+
+@pytest.mark.parametrize("public", [True, False])
+def test_private_push_refuses_an_existing_public_repo(tmp_path, monkeypatch, public):
+    # create_repo(private = True) leaves an existing public repo public, so the merged Inkling 2 upload must refuse
+    # before merging or uploading anything, as the staged Hub export does.
+    import types
+    import unittest.mock
+
+    import huggingface_hub
+
+    model = _export_setup(tmp_path, target_parameters = ["mlp.experts.gate_up_proj"])
+    api = unittest.mock.MagicMock()
+    api.create_repo.return_value = types.SimpleNamespace(repo_id = "someone/inkling-merged")
+    api.repo_info.return_value = types.SimpleNamespace(private = not public)
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda *a, **k: api)
+    save = lambda: _inkling2().save_inkling2_merged_16bit(
+        model, None, "inkling-merged", push_to_hub = True, token = "hf_x", private = True
+    )
+    if public:
+        with pytest.raises(RuntimeError, match = "already exists and is public"):
+            save()
+        api.upload_folder.assert_not_called()
+    else:
+        save()
+        api.upload_folder.assert_called_once()
+        assert api.upload_folder.call_args.kwargs["repo_id"] == "someone/inkling-merged"
