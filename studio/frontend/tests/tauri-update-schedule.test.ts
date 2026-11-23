@@ -312,6 +312,9 @@ function hookHarness(
         Boolean(left) && left === right,
     },
     "@/lib/toast": { toast: { error: () => undefined } },
+    "@/components/update/updated-notice": {
+      rememberUpdateTarget: () => undefined,
+    },
     "@tauri-apps/api/core": {
       invoke: async (command: string) => {
         if (command === "desktop_update_policy") {
