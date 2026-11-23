@@ -9107,8 +9107,7 @@ class DiffusionBackend:
             _checkpoint_base = _checkpoint_base or _checkpoint_base_of(
                 repo_id, base_repo, gguf_filename
             )
-        # The checkpoint's identity: the base it was named for (klein 9B KV), which ``base`` may have swapped for its
-        # companion base; else the caller's base_repo.
+        # The base the checkpoint was named for (klein 9B KV), not the companion ``base``; else base_repo.
         checkpoint_base = _checkpoint_base or base_repo
         # ``base`` is the upstream id for reports; ``fetch_base`` is the only id handed to downloads.
         fetch_base = _fetch_base or prefer_ungated_mirror(base, hf_token)
