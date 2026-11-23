@@ -246,11 +246,19 @@ def _normalize(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+_pins_seen: dict[Path, tuple[tuple | None, dict[str, tuple[str, str]]]] = {}
+
+
 def _pins(engine: str) -> dict[str, tuple[str, str]]:
     """{name: (version, requirement line with its hashes)} from a uv-compiled lock."""
+    path = requirements(engine)
+    identity = _file_identity(path)
+    seen = _pins_seen.get(path)
+    if identity is not None and seen is not None and seen[0] == identity:
+        return dict(seen[1])
     entries: dict[str, tuple[str, str]] = {}
     name = None
-    for line in requirements(engine).read_text(encoding = "utf-8").splitlines(keepends = True):
+    for line in path.read_text(encoding = "utf-8").splitlines(keepends = True):
         match = re.match(r"([A-Za-z0-9][A-Za-z0-9_.\-]*)==([^\s;\\]+)", line)
         if match:
             name = _normalize(match.group(1))
@@ -259,7 +267,8 @@ def _pins(engine: str) -> dict[str, tuple[str, str]]:
             entries[name] = (entries[name][0], entries[name][1] + line)
         else:
             name = None
-    return entries
+    _pins_seen[path] = (identity, entries)
+    return dict(entries)
 
 
 def _studio_site() -> list[str]:

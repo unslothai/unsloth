@@ -98,3 +98,25 @@ def test_the_install_itself_never_reads_the_memo():
     source = inspect.getsource(install._install)
     assert "install_plan(engine)" in source
     assert "_priced_plan" not in source
+
+
+def test_lock_pins_parse_once_per_file_identity(monkeypatch, tmp_path):
+    real = install.requirements("vllm")
+    lock = tmp_path / real.name
+    lock.write_bytes(real.read_bytes())
+    monkeypatch.setattr(install, "requirements", lambda engine: lock)
+    monkeypatch.setattr(install, "_pins_seen", {})
+    reads = []
+    read_text = type(lock).read_text
+    monkeypatch.setattr(
+        type(lock),
+        "read_text",
+        lambda self, *a, **k: reads.append(self) or read_text(self, *a, **k),
+    )
+    first = install._pins("vllm")
+    first.clear()
+    assert install._pins("vllm") and reads == [lock]
+    lock.write_text("numpy==2.3.0\n", encoding = "utf-8")
+    os.utime(lock, ns = (1, 1))
+    assert install._pins("vllm") == {"numpy": ("2.3.0", "numpy==2.3.0\n")}
+    assert len(reads) == 2
