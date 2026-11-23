@@ -18097,6 +18097,12 @@ def _maybe_unsupported_message(msg: str) -> str:
     """Rewrite a load/validate error into the friendly "not supported yet"
     message when it matches a known unsupported-model signature; otherwise
     return ``msg`` unchanged."""
+    from core.inference.mlx_model_support import upstream_unsupported_message
+
+    # mlx-vlm / mlx-lm lacking the architecture: say so, without their registry's import error.
+    mlx_refusal = upstream_unsupported_message(_diagnosis_text(msg))
+    if mlx_refusal is not None:
+        return mlx_refusal
     hay = _diagnosis_text(msg).lower()
     if any(h.lower() in hay for h in _NOT_SUPPORTED_HINTS):
         return f"This model is not supported yet. Try a different model. (Original error: {msg})"
