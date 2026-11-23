@@ -22,6 +22,7 @@ from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
 from ._utils import _ignore_block_swap_params_for_ddp
 from ._frozen_prefix import install_frozen_prefix_skip
+from .fused_label_smoothing import output_head_not_fusable
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
@@ -2320,7 +2321,13 @@ def CausalLM_fast_forward(fast_forward_inference):
                 # unsloth_fused_ce_loss calculates the best chunk size to reduce VRAM usage.
                 RETURN_LOGITS = False
 
-            if not RETURN_LOGITS and labels is not None:
+            # A head bias or a live adapter on the head (the fused CE reads lm_head.weight alone) takes the
+            # logits branch. Checked only with labels, so inference never pays for it.
+            if (
+                not RETURN_LOGITS
+                and labels is not None
+                and not output_head_not_fusable(self.lm_head)
+            ):
                 n_items = kwargs.get("num_items_in_batch", None)
                 if n_items is None:
                     n_items = kwargs.get("n_items", None)
