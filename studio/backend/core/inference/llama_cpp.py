@@ -8969,14 +8969,18 @@ class LlamaCppBackend:
     ) -> "tuple[Optional[dict[int, float]], Optional[dict[int, float]]]":
         model: dict[int, float] = {}
         total: dict[int, float] = {}
-        # Peak compute per (allocator, GPU) per llama_context (target, drafter). A context's first size is
-        # its constructor's own reserve; a later reserve can reprint an earlier context's exact size unnamed.
+        # Peak compute per (allocator, GPU) per llama_context (target, drafter). Sizes in a context's first
+        # reserve block are its own; later blocks can reprint an earlier context's exact size unnamed.
         contexts: list[dict[tuple[str, int], float]] = [{}]
+        reserves = 0
         for line in list(self._stdout_lines):
             match = _GPU_BUFFER_RE.search(line)
             if match is None:
                 if "constructing llama_context" in line:
                     contexts.append({})
+                    reserves = 0
+                elif "reserving ..." in line:
+                    reserves += 1
                 continue
             ordinal = int(match.group(1))
             if ordinal >= len(physical_ids):
@@ -8987,10 +8991,10 @@ class LlamaCppBackend:
             if kind == "compute":
                 key = ("".join(line[: match.start()].split()[-1:]), physical)
                 own = contexts[-1]
-                if key not in own:
+                if reserves <= 1 and key not in own:
                     own[key] = gb
                 elif not any(ctx.get(key) == gb for ctx in contexts[:-1]):
-                    own[key] = max(own[key], gb)
+                    own[key] = max(own.get(key, 0.0), gb)
                 continue
             if kind == "model":
                 model[physical] = model.get(physical, 0.0) + gb
