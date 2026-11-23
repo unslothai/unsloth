@@ -80,7 +80,12 @@ def test_offload_flags_carry_the_size_only_for_the_cpu_vae():
         assert flags[-2:] == ["--vae-tile-size", "1024"]
         assert flags.count("--vae-tiling") == 1 and "--vae-on-cpu" in flags
         assert offload_flags(policy, vae_tile_size = None) == flags[:-2]
-        assert "--vae-tile-size" not in offload_flags(policy, vae_on_cpu = False, vae_tile_size = 1024)
+        # A GPU VAE takes the size it is given too (gpu_vae_tile_size); without one it keeps 256 px.
+        assert offload_flags(policy, vae_on_cpu = False, vae_tile_size = 512)[-2:] == [
+            "--vae-tile-size",
+            "512",
+        ]
+        assert "--vae-tile-size" not in offload_flags(policy, vae_on_cpu = False)
     for policy in (OFFLOAD_NONE, OFFLOAD_GROUP):
         assert "--vae-tile-size" not in offload_flags(policy, vae_tile_size = 1024)
 

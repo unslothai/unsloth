@@ -3772,6 +3772,8 @@ def _run_mlx_training(
                     model_name = model_name,
                     tokenizer = tokenizer,
                     is_vlm = True,
+                    # Per-row eval questions stay; the training prompt is only the fallback.
+                    vlm_fallback_instruction = vlm_info.get("vlm_instruction"),
                     dataset_name = hf_dataset or "local",
                     dataset_revision = config.get("dataset_revision"),
                     custom_format_mapping = custom_format_mapping,

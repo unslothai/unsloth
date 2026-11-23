@@ -113,3 +113,90 @@ def test_without_sinks_nothing_changes():
     seen: list = []
     I._launch_attention(_plan(True, seen), 0, 77, 0, False)
     assert [s[0] for s in seen] == ["attn0"]
+
+
+def test_a_warm_plan_follows_the_kill_switch(monkeypatch):
+    """The switch flipped in a running process reaches the next call on a shape that already has a plan: the plan
+    lookup is keyed on it (the kernel cache always was), so a warm shape does not keep the folded kernel."""
+    torch = pytest.importorskip("torch")
+    built: list = []
+
+    def functions(
+        index,
+        head_dim,
+        config,
+        sinks = False,
+        fold = None,
+    ):
+        built.append((sinks, fold))
+        kernels = {
+            name: name for name in ("unsloth_i8stats_q", "unsloth_i8quant_kv", "unsloth_i8resid")
+        }
+        return ("attn", kernels, 4096)
+
+    monkeypatch.setattr(I, "_functions", functions)
+    monkeypatch.delenv(I.RESID_FOLD_ENV, raising = False)
+    I.forget_plans()
+    config = next(iter(I.KERNEL_CONFIGS.values()))[128]
+    q, k, v = (torch.zeros(1, 256, 2, 128, dtype = torch.bfloat16) for _ in range(3))
+    try:
+        on = I._find_plan(q, k, v, config, None, 0, I.MODE_KERNELS)[0]
+        assert on["fold"] and I._find_plan(q, k, v, config, None, 0, I.MODE_KERNELS)[0] is on
+        monkeypatch.setenv(I.RESID_FOLD_ENV, "0")
+        off = I._find_plan(q, k, v, config, None, 0, I.MODE_KERNELS)[0]
+        assert off is not on and not off["fold"]
+        monkeypatch.delenv(I.RESID_FOLD_ENV)
+        assert I._find_plan(q, k, v, config, None, 0, I.MODE_KERNELS)[0] is on
+        assert [f for s, f in built if s] == [True, False]
+    finally:
+        I.forget_plans()
+
+
+def test_a_flipped_switch_races_its_own_kernel(monkeypatch):
+    """The plan's sink-path verdict (accuracy + timing) belongs to its kernel: after the fold switch flips, the new
+    plan races again instead of inheriting the folded kernel's verdict."""
+    import contextlib
+
+    torch = pytest.importorskip("torch")
+
+    def functions(
+        index,
+        head_dim,
+        config,
+        sinks = False,
+        fold = None,
+    ):
+        kernels = {
+            name: name for name in ("unsloth_i8stats_q", "unsloth_i8quant_kv", "unsloth_i8resid")
+        }
+        return ("attn", kernels, 4096)
+
+    class _Done:
+        def synchronize(self):
+            pass
+
+    def decide(plan, verdict, races):
+        plan["calls"] = I.SINK_DECIDE_AT
+        plan["checks"] = [(_Done(), torch.ones(2, dtype = torch.int32), False)]
+        return I._choose_path(plan, race = lambda: races.append(verdict) or verdict)[0]
+
+    monkeypatch.setattr(I, "_functions", functions)
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(I, "_drop_routes", lambda plan: None)
+    monkeypatch.setattr(I, "_GRAPHED", [False])
+    monkeypatch.delenv(I.RESID_FOLD_ENV, raising = False)
+    I.forget_plans()
+    config = next(iter(I.KERNEL_CONFIGS.values()))[128]
+    q, k, v = (torch.zeros(1, 256, 2, 128, dtype = torch.bfloat16) for _ in range(3))
+    races: list = []
+    try:
+        on = I._find_plan(q, k, v, config, None, 0, I.MODE_KERNELS)[0]
+        assert on["fold"] and decide(on, True, races) is True
+        monkeypatch.setenv(I.RESID_FOLD_ENV, "0")
+        off = I._find_plan(q, k, v, config, None, 0, I.MODE_KERNELS)[0]
+        assert not off["fold"] and off["decision"] != on["decision"]
+        assert decide(off, False, races) is False
+        assert races == [True, False]
+    finally:
+        I.forget_plans()

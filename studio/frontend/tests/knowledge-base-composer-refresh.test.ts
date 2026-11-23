@@ -77,6 +77,7 @@ function harness() {
       "@/lib/hugeicons-derived": {},
       "@/lib/chevron-icons": {},
       "@/components/ui/dropdown-menu": {},
+      "@/features/settings": { useSettingsDialogStore: { getState: () => ({ openDialog() {} }) } },
       "@/features/chat/hooks/use-rag-tool-disabled": {
         useRagToolDisabled: () => false,
       },

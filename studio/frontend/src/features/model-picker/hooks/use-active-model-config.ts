@@ -97,11 +97,13 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   });
   const deviceType = usePlatformStore((s) => s.deviceType);
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const mlxInference = usePlatformStore((s) => s.mlxInference);
   const isMlx = residentIsServedByMlx(
     isGguf,
     deviceType,
     chatOnlyReason,
     loadedIsMlx,
+    mlxInference,
   );
 
   // Null off MLX, or the model compares unequal to its own defaults.

@@ -990,6 +990,7 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
                     "createdAt": answered_at,
                 },
             ],
+            return_rows = False,
         )
     except Exception:
         # Never leave an empty chat behind.

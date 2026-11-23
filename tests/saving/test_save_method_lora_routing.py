@@ -38,6 +38,8 @@ def _load(*names, **env):
     # GGUF path; none of these fixtures is a Mistral-format view, so it never refuses here.
     namespace = {
         "raise_if_merging_mistral_format_view": lambda model, save_method: None,
+        # Same for the Inkling 2 merge refusal: no fixture is an Inkling 2 model.
+        "raise_if_merging_inkling2": lambda model, save_method: None,
         "lora_relative_to_original_base": lambda model: contextlib.nullcontext(),
         # Unmerges FSDP2 streamed layers when a save raises; these fixtures never stream.
         "_unmerge_flags_on_error": lambda streamed: contextlib.nullcontext(),
@@ -204,6 +206,10 @@ _GENERIC_SAVE_REAL_HELPERS = (
     "_cast_state_dict_16bit",
     "_requests_float32",
     "_stamp_saved_config_float32",
+    # A non-Gemma model leaves the merged config.json alone.
+    "_gemma_rope_the_zoo_export_drops",
+    "_write_trained_gemma_rope",
+    "_is_main_rank",
 )
 _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
     {
@@ -245,6 +251,8 @@ def _routing_environment(monkeypatch, model):
 
     namespace = _load(
         *_GENERIC_SAVE_REAL_HELPERS,
+        # Called by _gemma_rope_the_zoo_export_drops, not by the save itself.
+        "_gemma_live_linear_rope",
         "_collect_garbage",
         "unsloth_generic_save",
         os = os,
@@ -969,3 +977,100 @@ def test_every_helper_the_generic_save_calls_is_loaded_or_stubbed():
     assert (
         covered <= called
     ), f"{sorted(covered - called)} are no longer called by unsloth_generic_save"
+
+
+class GemmaFixedRotaryEmbedding:
+    """Named as unsloth's Gemma rotary: `scaling_factor` is set only when it applied linear RoPE."""
+
+
+def _gemma_model(scaling_factor = None):
+    model = _PeftModel()
+    model.config = types.SimpleNamespace(
+        _name_or_path = "base/gemma",
+        model_type = "gemma",
+        # What the loader leaves on the in-memory config past the native window.
+        rope_scaling = {"type": "linear", "factor": 2.0},
+        max_position_embeddings = 16384,
+    )
+    rotary = GemmaFixedRotaryEmbedding()
+    if scaling_factor is not None:
+        rotary.scaling_factor = scaling_factor
+    model.modules = lambda: iter([model, rotary])
+    return model
+
+
+# config.json as a zoo export without the RoPE carry-over writes it: the base checkpoint's.
+_BASE_GEMMA_CONFIGS = {
+    "transformers4": {"model_type": "gemma", "max_position_embeddings": 8192, "rope_scaling": None},
+    "transformers5": {
+        "model_type": "gemma",
+        "max_position_embeddings": 8192,
+        "rope_parameters": {"rope_type": "default", "rope_theta": 10000.0},
+    },
+}
+
+
+def _merge_writing(base_config, carries_rope = False):
+    zoo = sys.modules["unsloth_zoo.saving_utils"]
+    if carries_rope:
+        zoo._carry_over_rope_scaling = lambda *args: []
+
+    def merge(*args, **kwargs):
+        with open(os.path.join(kwargs["save_directory"], "config.json"), "w") as f:
+            json.dump(base_config, f)
+
+    zoo.merge_and_overwrite_lora = merge
+
+
+@pytest.mark.parametrize("layout", sorted(_BASE_GEMMA_CONFIGS))
+def test_a_merged_gemma_keeps_the_linear_rope_it_trained_with_on_an_older_zoo(
+    monkeypatch, tmp_path, layout
+):
+    """Gemma / Gemma 2 apply the loader's linear RoPE past the native window; an unsloth_zoo
+    without the RoPE carry-over writes the base config, so the merge reloaded unscaled."""
+    model = _gemma_model(scaling_factor = 2.0)
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    _merge_writing(_BASE_GEMMA_CONFIGS[layout])
+    generic_save(model, None, save_directory = str(tmp_path), save_method = "merged_16bit")
+    saved = json.loads((tmp_path / "config.json").read_text())
+    key = "rope_parameters" if layout == "transformers5" else "rope_scaling"
+    assert saved[key]["rope_type"] == "linear" and saved[key]["factor"] == 2.0
+    assert saved["max_position_embeddings"] == 16384
+    if layout == "transformers5":
+        # transformers 5 reads rope_theta from rope_parameters.
+        assert saved[key]["rope_theta"] == 10000.0
+
+
+@pytest.mark.parametrize(
+    "scaling_factor, carries_rope", [(None, False), (2.0, True)], ids = ["unscaled", "zoo_carries"]
+)
+def test_a_merged_gemma_config_is_left_alone_when_nothing_was_dropped(
+    monkeypatch, tmp_path, scaling_factor, carries_rope
+):
+    """An unscaled rotary trained unscaled, and a newer zoo writes the trained RoPE itself."""
+    model = _gemma_model(scaling_factor = scaling_factor)
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    _merge_writing(_BASE_GEMMA_CONFIGS["transformers5"], carries_rope = carries_rope)
+    generic_save(model, None, save_directory = str(tmp_path), save_method = "merged_16bit")
+    assert (
+        json.loads((tmp_path / "config.json").read_text()) == _BASE_GEMMA_CONFIGS["transformers5"]
+    )
+
+
+def test_a_merged_upload_of_a_scaled_gemma_on_an_older_zoo_is_refused_before_merging(
+    monkeypatch, tmp_path
+):
+    """The streamed upload leaves no local config.json to fix, so refuse rather than upload a
+    model whose RoPE differs from the trained one."""
+    model = _gemma_model(scaling_factor = 2.0)
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    with pytest.raises(RuntimeError, match = "linear RoPE scaling"):
+        generic_save(
+            model,
+            None,
+            save_directory = "owner/model",
+            save_method = "merged_16bit",
+            push_to_hub = True,
+            token = "fixture-token",
+        )
+    assert calls["merge"] == [] and calls["prewarm"] == []

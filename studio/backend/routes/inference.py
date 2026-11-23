@@ -183,7 +183,9 @@ from core.inference.http_stream import SSE_LINE_END, aiter_sse_lines
 from core.inference.sse import SSELineDecoder, iter_sse_lines
 from core.inference import model_slots
 from core.inference.llama_cpp import (
+    _DEVICE_FLAGS,
     _TERMINAL_RETIREMENT_HOOKS,
+    _extra_args_set_any_flag,
     _llama_chunk_has_generated_output,
     _local_ssl_context,
     register_serving_backend,
@@ -1862,6 +1864,8 @@ class _LlamaStreamKeepalive:
 
 
 _LLAMA_STREAM_KEEPALIVE = _LlamaStreamKeepalive()
+# Yielded once by stream_response(announce_dispatch = True) right after the request is sent.
+_LLAMA_STREAM_DISPATCHED = object()
 # Lets a client tell "queued" from "backend silent"; SSE comments, so readers ignore both.
 _OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
 # Paired with the above: the slot is ours, so a suspended client clock starts now.
@@ -3756,6 +3760,7 @@ from core.inference.tool_call_parser import (
     _strip_function_xml_calls,
     _strip_gemma_wrapperless_calls,
     _strip_glm_calls,
+    _strip_lfm_calls,
     _strip_minimax_calls,
     _strip_mistral_closed_calls,
 )
@@ -5493,6 +5498,8 @@ async def _passthrough_retry_url(
 
 # Retain recovery tasks after their requests leave; asyncio holds only weak references.
 _LLAMA_RESPAWN_TASKS: set = set()
+# Strong refs: a message_start count outlives a response that never starts streaming.
+_PENDING_INPUT_TOKEN_COUNTS: set = set()
 
 
 class _LlamaUpstream:
@@ -5564,10 +5571,21 @@ class _LlamaUpstream:
     def dispatch_stream(self, client: httpx.AsyncClient, body, cancel_event, request, **kwargs):
         return asyncio.create_task(self.send_stream(client, body, cancel_event, request, **kwargs))
 
-    async def stream_response(self, client: httpx.AsyncClient, body, cancel_event, request):
-        """Yield recovery heartbeats, then the caller-owned response; close before the client."""
+    async def stream_response(
+        self,
+        client: httpx.AsyncClient,
+        body,
+        cancel_event,
+        request,
+        *,
+        announce_dispatch: bool = False,
+    ):
+        """Yield recovery heartbeats, then the caller-owned response; close before the client.
+        ``announce_dispatch`` first yields _LLAMA_STREAM_DISPATCHED once the send is under way."""
         send_task = self.dispatch_stream(client, body, cancel_event, request)
         try:
+            if announce_dispatch:
+                yield _LLAMA_STREAM_DISPATCHED
             while not send_task.done():
                 done, _ = await asyncio.wait(
                     {send_task}, timeout = _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S
@@ -6337,6 +6355,7 @@ async def _select_request_tools(
         ALL_TOOLS,
         apply_full_access_tool_descriptions,
         get_enabled_mcp_tools,
+        set_mcp_project_scope,
     )
 
     if not tools_on:
@@ -6430,7 +6449,9 @@ async def _select_request_tools(
         )
     if mcp_allowed:
         from core.inference.media_chat_tools import remember_server_loop
+
         remember_server_loop(asyncio.get_running_loop())
+        await set_mcp_project_scope(getattr(payload, "session_id", None))
         tools = tools + await get_enabled_mcp_tools()
     # Some callers pass lighter payloads that may lack deep_research_armed, so read it with getattr.
     if getattr(payload, "deep_research_armed", None):
@@ -6922,6 +6943,7 @@ def _strip_tool_xml_for_display(
         seg = _strip_mistral_closed_calls(seg)
         # llama-server leaves MiniMax blocks in content when tool_choice is "none".
         seg = _strip_minimax_calls(seg, final = is_last)
+        seg = _strip_lfm_calls(seg, final = is_last)
         seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
         if is_last:
             seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
@@ -8522,6 +8544,10 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     if any(name in sent for name in _PLACEMENT_FIELDS):
         for name in _PLACEMENT_FIELDS:
             fill.pop(name, None)
+    # A filled gpu_ids would strip the sent --device / --main-gpu (_gpu_ids_own_placement).
+    if _extra_args_set_any_flag(request.llama_extra_args, _DEVICE_FLAGS):
+        fill.pop("gpu_ids", None)
+        fill.pop("tensor_split", None)
     if fill.get("llama_extra_args"):
         fill["llama_extra_args"] = _strip_inherited_extras(request, fill["llama_extra_args"])
     if fill.get("gpu_ids") and not await _override_gpu_ids_still_resolve(
@@ -18110,6 +18136,12 @@ def _maybe_unsupported_message(msg: str) -> str:
     """Rewrite a load/validate error into the friendly "not supported yet"
     message when it matches a known unsupported-model signature; otherwise
     return ``msg`` unchanged."""
+    from core.inference.mlx_model_support import upstream_unsupported_message
+
+    # mlx-vlm / mlx-lm lacking the architecture: say so, without their registry's import error.
+    mlx_refusal = upstream_unsupported_message(_diagnosis_text(msg))
+    if mlx_refusal is not None:
+        return mlx_refusal
     hay = _diagnosis_text(msg).lower()
     if any(h.lower() in hay for h in _NOT_SUPPORTED_HINTS):
         return f"This model is not supported yet. Try a different model. (Original error: {msg})"
@@ -23115,10 +23147,7 @@ async def get_api_monitor_entry(
     return entry
 
 
-def _decode_and_resize_image(backend, encoded: str):
-    """Off the event loop. The decode is forced so a truncated picture is a bad request here, and
-    the result is flattened RGB: CMYK, PA, F and LAB decode and none can be saved back, and a plain
-    convert would turn a transparent background black under dark ink."""
+def _decoded_resized_image(backend, encoded: str):
     from PIL import Image
     from io import BytesIO
 
@@ -23128,6 +23157,69 @@ def _decode_and_resize_image(backend, encoded: str):
     image = exif_upright(image)
     # After the resize: converting first resamples interpolated RGB, a different picture.
     return _mcp_flattened_rgb(backend.resize_image(image))
+
+
+# Every turn resends earlier pictures; re-decoding a 12 MP photo costs hundreds of ms each.
+_HISTORY_IMAGE_MEMO: "collections.OrderedDict[tuple, tuple]" = collections.OrderedDict()
+_HISTORY_IMAGE_MEMO_MAX_BYTES = 96 * 1024 * 1024
+_HISTORY_IMAGE_MEMO_MAX_ENTRIES = 64
+_history_image_memo_bytes = 0
+_history_image_memo_lock = threading.Lock()
+
+
+def _history_image_memo_side(backend):
+    """The side the backend resizes to, or None when it does not say (nothing is memoized)."""
+    side_of = getattr(backend, "image_max_side", None)
+    return side_of() if callable(side_of) else None
+
+
+def _stamped_copy(image, png_b64: str):
+    """A private copy for the caller, carrying the PNG so the orchestrator need not encode it."""
+    from core.inference.orchestrator import PNG_B64_STAMP
+
+    copy = image.copy()
+    setattr(copy, PNG_B64_STAMP, ((copy.mode, copy.size), png_b64))
+    return copy
+
+
+def _decode_and_resize_image(backend, encoded: str):
+    """Off the event loop. The decode is forced so a truncated picture is a bad request here, and
+    the result is flattened RGB: CMYK, PA, F and LAB decode and none can be saved back, and a plain
+    convert would turn a transparent background black under dark ink. Successful results are
+    remembered per payload and resize side; failures raise each time."""
+    global _history_image_memo_bytes
+    side = _history_image_memo_side(backend)
+    if side is None:
+        return _decoded_resized_image(backend, encoded)
+    key = (_hashlib.sha256(encoded.encode("utf-8", "surrogatepass")).digest(), side)
+    with _history_image_memo_lock:
+        kept = _HISTORY_IMAGE_MEMO.get(key)
+        if kept is not None:
+            _HISTORY_IMAGE_MEMO.move_to_end(key)
+    if kept is not None:
+        return _stamped_copy(kept[0], kept[1])
+    from core.inference.orchestrator import PNG_B64_STAMP, InferenceOrchestrator
+
+    image = _decoded_resized_image(backend, encoded)
+    png_b64 = InferenceOrchestrator._pil_to_base64(image)
+    setattr(image, PNG_B64_STAMP, ((image.mode, image.size), png_b64))
+    # A model switch mid-decode resized for another side; that result is not this key's.
+    if _history_image_memo_side(backend) != side:
+        return image
+    kept = image.copy()
+    # Pillow stores RGB at 4 bytes per pixel.
+    size = len(png_b64) + 4 * kept.size[0] * kept.size[1]
+    with _history_image_memo_lock:
+        if key not in _HISTORY_IMAGE_MEMO and size <= _HISTORY_IMAGE_MEMO_MAX_BYTES:
+            _HISTORY_IMAGE_MEMO[key] = (kept, png_b64, size)
+            _history_image_memo_bytes += size
+            while (
+                _history_image_memo_bytes > _HISTORY_IMAGE_MEMO_MAX_BYTES
+                or len(_HISTORY_IMAGE_MEMO) > _HISTORY_IMAGE_MEMO_MAX_ENTRIES
+            ):
+                _, dropped = _HISTORY_IMAGE_MEMO.popitem(last = False)
+                _history_image_memo_bytes -= dropped[2]
+    return image
 
 
 # Caps retained rasters: ~4.8 KB base64 can decode to 1.92 MB (391x amplification).
@@ -30777,6 +30869,7 @@ async def _proxy_to_external_provider(
                 continue_final_message = _continue_final_message(payload),
                 supports_vision = model_supports_vision,
                 promoted_image_parts = tuple(_codex_promoted_parts),
+                max_tokens = _effective_max_tokens(payload),
             )
             policy = (
                 CodexToolPolicy(
@@ -30850,6 +30943,7 @@ async def _proxy_to_external_provider(
                         tools = tool_payloads,
                         tool_choice = payload.tool_choice,
                         cancel_event = cancel_event,
+                        continue_final_message = run.continue_final_message,
                     )
                 )
                 async for line in generator:
@@ -44619,8 +44713,13 @@ async def _mlx_count_chat_tokens(
         _mcp_tools: list[dict] = []
         if _mcp_on:
             from core.inference.mcp_client import mcp_server_snapshot_guard
-            from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
+            from core.inference.tools import (
+                cached_mcp_tools,
+                set_mcp_listing_context_tokens,
+                set_mcp_project_scope,
+            )
 
+            await set_mcp_project_scope(getattr(payload, "session_id", None))
             set_mcp_listing_context_tokens(
                 _monitor_context_length(),
                 getattr(payload, "thread_id", None),
@@ -45191,8 +45290,13 @@ async def chat_count_tokens(
     _mcp_allowed = False
     _mcp_tools: list[dict] = []
     if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
-        from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
+        from core.inference.tools import (
+            cached_mcp_tools,
+            set_mcp_listing_context_tokens,
+            set_mcp_project_scope,
+        )
 
+        await set_mcp_project_scope(getattr(payload, "session_id", None))
         set_mcp_listing_context_tokens(
             getattr(llama_backend, "context_length", None),
             getattr(payload, "thread_id", None),
@@ -47443,6 +47547,8 @@ class _AnthropicToolEventRules:
             # Unsloth ran the tool server-side, so the response no longer ends on a pending
             # client action; otherwise stop_reason "tool_use" tells the client to run it again.
             self._ends_on_tool_use = False
+        elif etype == "status" and event.get("new_pass"):
+            self._span_guard.tool_end()
         elif etype == "content" and event.get("text"):
             self._ends_on_tool_use = False
         return released + self._emitter.feed(event)
@@ -47817,16 +47923,23 @@ def _anthropic_tool_response_from_events(
     _block_wrap: dict = {}
     turn_event = None
 
+    new_block = False
+
     def _add_text(clean: str) -> None:
-        nonlocal prev_text, ends_on_tool_use
+        nonlocal prev_text, ends_on_tool_use, new_block
         new = clean[len(prev_text) :]
         prev_text = clean
         if new:
             ends_on_tool_use = False
-            if content_blocks and isinstance(content_blocks[-1], AnthropicResponseTextBlock):
+            if (
+                not new_block
+                and content_blocks
+                and isinstance(content_blocks[-1], AnthropicResponseTextBlock)
+            ):
                 content_blocks[-1].text += new
             else:
                 content_blocks.append(AnthropicResponseTextBlock(text = new))
+                new_block = False
                 # The wrap belongs to the block that OPENS this turn's span (a client tool_use can interrupt it).
                 if _span_guard.claimed and new.startswith("<think>"):
                     _block_wrap[len(content_blocks) - 1] = _span_guard.claimed_wrap
@@ -47862,6 +47975,10 @@ def _anthropic_tool_response_from_events(
         elif etype == "status" and not event.get("text"):
             _release_held_mention()
             prev_text = ""
+            if event.get("new_pass"):
+                # A fresh pass reopens its own leading wrap in its own block, as after tool_end.
+                _span_guard.tool_end()
+                new_block = True
         elif etype == "tool_start":
             # Text ahead of the tool_use block, while prev_text still holds the turn.
             _release_held_mention()
@@ -48393,18 +48510,28 @@ async def _anthropic_passthrough_stream(
         or openai_tools
     )
 
-    # count_chat_tokens blocks on HTTP, so off the loop; pass tools and reasoning kwargs so the
-    # count matches the rendered prompt.
-    input_tokens = await asyncio.to_thread(
-        lambda: llama_backend.count_chat_tokens(
-            openai_messages,
-            None,
-            _count_tools,
-            chat_template_kwargs = _reasoning_template_kwargs(
-                llama_backend, enable_thinking, reasoning_effort, preserve_thinking
-            ),
-        )
-    )
+    # Off the loop (blocking HTTP), with tools + reasoning kwargs to match the rendered prompt;
+    # awaited only after the upstream send, so it overlaps prefill.
+    async def _count_input_tokens() -> int:
+        try:
+            return await asyncio.to_thread(
+                lambda: llama_backend.count_chat_tokens(
+                    openai_messages,
+                    None,
+                    _count_tools,
+                    chat_template_kwargs = _reasoning_template_kwargs(
+                        llama_backend, enable_thinking, reasoning_effort, preserve_thinking
+                    ),
+                )
+            )
+        except Exception:
+            # Non-strict, as count_chat_tokens itself: an uncounted prompt reports 0.
+            logger.debug("Prompt count for message_start failed", exc_info = True)
+            return 0
+
+    input_tokens_task = asyncio.ensure_future(_count_input_tokens())
+    _PENDING_INPUT_TOKEN_COUNTS.add(input_tokens_task)
+    input_tokens_task.add_done_callback(_PENDING_INPUT_TOKEN_COUNTS.discard)
 
     # cancel_id mirrors the OpenAI passthrough; registered so a reload cannot yank llama-server.
     _tracker = _TrackedCancel(
@@ -48440,13 +48567,24 @@ async def _anthropic_passthrough_stream(
                 _healing_tools,
                 disable_parallel_tool_use = disable_parallel_tool_use,
             )
-        # Outside the teardown try: a disconnect here would strand the tracker; __exit__ is idempotent.
-        try:
-            for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
-                yield line
-        except BaseException:
-            _tracker.__exit__(None, None, None)
-            raise
+        _started = False
+
+        async def _message_start_lines() -> list:
+            # Once, before any other event: right after dispatch, or ahead of a pre-dispatch error.
+            nonlocal _started
+            _started = True
+            if not input_tokens_task.done():
+                # The send's pre-header watcher stops at headers, and the response watchers start only
+                # after this; race the count so a cancel or disconnect still reaches upstream promptly.
+                watcher = asyncio.ensure_future(_wait_preheader_cancel(cancel_event, request))
+                try:
+                    await asyncio.wait(
+                        {input_tokens_task, watcher}, return_when = asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    await _stop_local_disconnect_cancel_watcher(watcher)
+            input_tokens = input_tokens_task.result() if input_tokens_task.done() else 0
+            return list(emitter.start(message_id, model_name, input_tokens = input_tokens))
 
         # Manage the httpx client, response, AND the aiter_lines() async
         # generator MANUALLY -- no `async with`, no anonymous iterator.
@@ -48499,10 +48637,16 @@ async def _anthropic_passthrough_stream(
             upstream = _LlamaUpstream(llama_backend, "/v1/chat/completions")
             while True:
                 async with aclosing(
-                    upstream.stream_response(client, body, cancel_event, request)
+                    upstream.stream_response(
+                        client, body, cancel_event, request, announce_dispatch = True
+                    )
                 ) as opening:
                     async for opened in opening:
-                        if opened is _LLAMA_STREAM_KEEPALIVE:
+                        if opened is _LLAMA_STREAM_DISPATCHED:
+                            if not _started:
+                                for line in await _message_start_lines():
+                                    yield line
+                        elif opened is _LLAMA_STREAM_KEEPALIVE:
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         else:
                             resp = opened
@@ -48588,6 +48732,9 @@ async def _anthropic_passthrough_stream(
                 if failed:
                     return
         except Exception as e:
+            if not _started:
+                for line in await _message_start_lines():
+                    yield line
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
@@ -51780,6 +51927,13 @@ async def load_diffusion_model_gated(
             fit_kwargs = await asyncio.to_thread(
                 media_fit_kwargs, DIFFUSION, request, gpu_ordinal, multi_model_mode
             )
+            from core.inference.ensure_model import chat_kept_refusal, media_load_spares_chat
+            from core.inference.gpu_arbiter import GpuOwnerBusyError
+
+            # A chat's own tools key loads beside the chat model, never in its place.
+            spare_chat = await asyncio.to_thread(
+                media_load_spares_chat, DIFFUSION, "image", request.model_path, multi_model_mode
+            )
 
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
@@ -51803,8 +51957,18 @@ async def load_diffusion_model_gated(
                                 DIFFUSION, multi_model_mode, media_names, _begin_load
                             ),
                             admit = _admit,
+                            **({"spare_chat": True} if spare_chat else {}),
                             **fit_kwargs,
                         )
+                except GpuOwnerBusyError as exc:
+                    if not spare_chat:
+                        raise
+                    raise chat_kept_refusal(
+                        "image",
+                        request.model_path,
+                        multi_model_mode,
+                        priced = fit_kwargs.get("need_mib") is not None,
+                    ) from exc
                 finally:
                     if admitted:
                         preflight.lock.release()

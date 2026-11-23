@@ -43,16 +43,22 @@ def _content_stream(text: str, step: int = 3) -> list[str]:
     ]
 
 
+RETRY_ANSWER = "The search found RESULT_OK."
+
+
 def _final_pass(
     monkeypatch,
     final_text: str,
     tools = None,
     step: int = 3,
+    payloads: list[dict] | None = None,
 ):
-    payloads: list[dict] = []
+    payloads = [] if payloads is None else payloads
+    # A call-only final answer is re-asked once without tools (#18820), so the third stream is that retry's answer.
     streams = [
         [_tool_call_sse("web_search", {"query": "a"}, "c1"), _finish("tool_calls"), _done()],
         _content_stream(final_text, step),
+        _content_stream(RETRY_ANSWER, step),
     ]
     backend = _make_backend(monkeypatch, streams, payloads)
     _record_tool_calls(monkeypatch, "RESULT_OK")
@@ -62,7 +68,7 @@ def _final_pass(
         tools or [_web_search_tool()],
         max_tool_iterations = 1,
     )
-    assert payloads[-1].get("tool_choice") == "none"
+    assert payloads[1].get("tool_choice") == "none"
     return [e["text"] for e in events if e.get("type") == "content"]
 
 
@@ -77,9 +83,13 @@ def _final_pass(
 )
 @pytest.mark.parametrize("step", [1, 3])
 def test_final_pass_does_not_show_a_bare_json_call(monkeypatch, text, step):
-    shown = _final_pass(monkeypatch, text, step = step)
+    payloads: list[dict] = []
+    shown = _final_pass(monkeypatch, text, step = step, payloads = payloads)
     # No fragment either: a chained peer whose name has not arrived yet must not stream.
     assert not any("{" in s or "web_search" in s for s in shown), shown
+    # The call-only answer is re-asked without tools, and that answer is what the user sees.
+    assert len(payloads) == 3 and "tools" not in payloads[2], payloads
+    assert "".join(shown).endswith(RETRY_ANSWER), shown
 
 
 @pytest.mark.parametrize(
@@ -91,8 +101,10 @@ def test_final_pass_does_not_show_a_bare_json_call(monkeypatch, text, step):
     ],
 )
 def test_final_pass_answers_are_unchanged(monkeypatch, text):
-    shown = _final_pass(monkeypatch, text)
+    payloads: list[dict] = []
+    shown = _final_pass(monkeypatch, text, payloads = payloads)
     assert shown[-1] == text
+    assert len(payloads) == 2, "a real answer must not be re-asked"
 
 
 def test_final_pass_keeps_blocked_execution_call_visible(monkeypatch):

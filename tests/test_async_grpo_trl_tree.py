@@ -62,6 +62,11 @@ NAMES = (
     "_hold_peft_requires_grad",
     "_allow_moe_parameter_lora",
     "_check_async_grpo_adapter_servable",
+    "_async_grpo_tensor_save",
+    "_async_grpo_tensor_sync_scope",
+    "_tree_gdn_callers",
+    "_patch_tree_gdn_namespace",
+    "_unsloth_patch_tree_gdn",
     "_async_grpo_masked_compute_loss",
     "_import_trl_async_grpo_module",
     "patch_trl_async_grpo",
@@ -152,16 +157,20 @@ def _load():
         "importlib": importlib,
         "warnings": warnings,
         "weakref": __import__("weakref"),
+        "contextvars": __import__("contextvars"),
         "logger": _Logger(),
         "Version": __import__("packaging.version", fromlist = ["Version"]).Version,
         "importlib_version": __import__("importlib.metadata", fromlist = ["version"]).version,
     }
     for node in ast.parse(src).body:
         is_constant = isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id.startswith("_ASYNC_GRPO_") for t in node.targets
+            isinstance(t, ast.Name)
+            and (t.id.startswith("_ASYNC_GRPO_") or t.id == "_TREE_GDN_NAMES")
+            for t in node.targets
         )
         if is_constant or (isinstance(node, ast.FunctionDef) and node.name in NAMES):
             exec(compile(ast.Module([node], []), RL_SOURCE_PATH, "exec"), ns)
+    assert all(n in ns for n in NAMES), [n for n in NAMES if n not in ns]
     ns["_is_unsloth_fast_backbone"] = lambda b: isinstance(b, FakeUnslothBackbone)
     ns["_prefix_grouper_kernel"] = _pg_kernel
     return ns
@@ -203,10 +212,12 @@ def patched(monkeypatch):
         "patch_chunked_lm_head",
         "AsyncRolloutWorker",
         "validate_lora_for_vllm_sync",
+        "save_lora_adapter",
+        "patch_tree_gdn",
     ):
         if hasattr(module, name):
             monkeypatch.setattr(module, name, getattr(module, name))
-    for name in ("__init__", "train"):
+    for name in ("__init__", "train", "_sync_weight_lora"):
         if name in vars(trainer):
             monkeypatch.setattr(trainer, name, vars(trainer)[name])
     ns = _load()

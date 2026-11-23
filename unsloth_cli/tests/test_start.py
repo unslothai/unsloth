@@ -11825,6 +11825,26 @@ def test_require_gguf_for_agent_accepts_an_mlx_model(monkeypatch, capsys):
             {"device_type": "mac", "apple_silicon": True, "chat_only_reason": "mlx_unavailable"},
             False,
         ),
+        (
+            {
+                "device_type": "mac",
+                "apple_silicon": True,
+                "chat_only_reason": "no_torch",
+                "mlx_inference": True,
+            },
+            True,
+        ),
+        (
+            {
+                "device_type": "mac",
+                "apple_silicon": True,
+                "chat_only_reason": "no_torch",
+                "mlx_inference": False,
+            },
+            False,
+        ),
+        # An older server sends no mlx_inference: no_torch never had MLX there.
+        ({"device_type": "mac", "apple_silicon": True, "chat_only_reason": "no_torch"}, False),
         ({"device_type": "mac", "apple_silicon": False}, False),
         ({"device_type": "linux", "apple_silicon": False}, False),
         ({"status": "healthy"}, False),

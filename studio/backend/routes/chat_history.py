@@ -324,6 +324,8 @@ class ChatProject(BaseModel):
     id: str
     name: str
     instructions: str = ""
+    # None inherits account defaults. An empty selection disables MCP servers in this project.
+    mcpServerIds: Optional[list[str]] = None
     rootPath: Optional[str] = None
     sandboxPath: Optional[str] = None
     # Read only: a saved record cannot set the folder.
@@ -410,6 +412,7 @@ class ChatProjectDeleted(ChatProject):
 class ChatProjectPatch(BaseModel):
     name: Optional[str] = None
     instructions: Optional[str] = None
+    mcpServerIds: Optional[list[str]] = None
     archived: Optional[bool] = None
     createdAt: Optional[SqliteInt] = None
     updatedAt: Optional[SqliteInt] = None
@@ -2152,6 +2155,7 @@ def save_thread_message(
 def replace_thread_messages(
     thread_id: str,
     payload: ChatMessageSyncRequest,
+    echo_messages: Annotated[bool, Query(alias = "echoMessages")] = True,
     current_subject: str = Depends(get_current_subject),
     response: Response = None,
 ):
@@ -2173,6 +2177,7 @@ def replace_thread_messages(
                 messages,
                 prune_missing = payload.pruneMissing,
                 deleted_message_ids = payload.deletedMessageIds,
+                return_rows = echo_messages,
             )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
@@ -2189,7 +2194,7 @@ def replace_thread_messages(
         ) from exc
     chat_originals.sweep()
     _set_revision_header(response, probe)
-    return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced])
+    return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced or ()])
 
 
 @router.get("/count", response_model = ChatCountResponse)

@@ -32,6 +32,7 @@ class CodexRunContext:
     continue_final_message: bool = False
     supports_vision: bool = False
     promoted_image_parts: tuple = ()
+    max_tokens: int | None = None
 
 
 @dataclass(frozen = True)
@@ -75,12 +76,13 @@ class CodexTransport:
             thread_id = self._run.thread_id,
             messages = messages,
             model = self._run.model,
-            max_tokens = None,
+            max_tokens = self._run.max_tokens,
             reasoning_effort = self._run.reasoning_effort,
             response_format = self._run.response_format,
             tools = tools,
             tool_choice = tool_choice,
             cancel_event = cancel_event,
+            continue_final_message = self._run.continue_final_message,
         )
 
 

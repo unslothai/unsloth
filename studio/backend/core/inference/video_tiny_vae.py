@@ -8,10 +8,9 @@
 # copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 
-"""Tiny Wan video decoder (TAEHV layout, ~11M params): sharp live previews for every Wan family and an opt-in draft
-decode of the final latent. Reads the denoiser's own (normalised) latents, no ``latents_mean`` / ``latents_std``.
-Weights: ``lightx2v/Autoencoders`` (Apache-2.0), fetched once in the background; until they are cached the
-previews keep their linear map (or none) and the full VAE decodes, so nothing here can fail a render."""
+"""Tiny Wan decoder (TAEHV, ~11M params) for previews and opt-in draft decode; reads normalised
+latents, no latents_mean / latents_std; weights lightx2v/Autoencoders fetch in background; until
+cached, previews keep their linear map or none and the full VAE decodes, so no render fails."""
 
 from __future__ import annotations
 

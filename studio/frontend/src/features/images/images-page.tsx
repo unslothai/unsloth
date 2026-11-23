@@ -109,6 +109,7 @@ import {
   IMAGE_CATALOG,
   catalogToModelOptions,
   curatedArtifactTakesDenseQuant,
+  downloadRepoIdFor,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import {
@@ -238,7 +239,11 @@ import {
   int8AttentionSelection,
   type Int8AttentionChoice,
 } from "@/lib/int8-attention";
-import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
+import {
+  diffusionPipelineLoadTarget,
+  diffusionStagingEntries,
+  stagedDownloadRepoId,
+} from "@/lib/diffusion-pipeline-load-target";
 import {
   routedImageFilename,
   routedGgufLabel,
@@ -360,6 +365,7 @@ import {
 } from "./api";
 import { GenerationQueuePanel } from "./generation-queue-panel";
 import { collectGalleryWindow } from "./lib/gallery-window";
+import { promptBoundaryIds } from "./lib/prompt-boundaries";
 import { pickReleased, queueBusy, queuedJobs, runningJob } from "./lib/generation-queue";
 import { useImageQueue } from "./use-image-queue";
 import {
@@ -1717,6 +1723,7 @@ const GalleryStripTile = memo(function GalleryStripTile({
   favorite,
   dragging,
   cueEdge,
+  promptBoundary,
   actions,
 }: {
   image: GalleryImage;
@@ -1727,6 +1734,7 @@ const GalleryStripTile = memo(function GalleryStripTile({
   favorite: boolean;
   dragging: boolean;
   cueEdge: StripDropCue["edge"] | null;
+  promptBoundary: boolean;
   actions: StripTileActionsBox;
 }) {
   const id = image.id;
@@ -1747,6 +1755,9 @@ const GalleryStripTile = memo(function GalleryStripTile({
       }}
       className={cn("group relative size-16 shrink-0", dragging && "opacity-40")}
     >
+      {promptBoundary && (
+        <span data-prompt-boundary aria-hidden="true" className="pointer-events-none absolute -left-1 top-2 bottom-2 w-px bg-border" />
+      )}
       {cueEdge && <StripDropLine edge={cueEdge} />}
       <button
         type="button"
@@ -2165,6 +2176,7 @@ export function ImagesPage({
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [aspectOpen, setAspectOpen] = useState(false);
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
+  const promptBoundaries = useMemo(() => promptBoundaryIds(images), [images]);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
   // A pick made during a run takes the stage from the live preview and is not replaced by finished runs.
@@ -4540,7 +4552,10 @@ export function ImagesPage({
         advanced = { ...advanced, engine: engineFor(repoId, opts, advanced) ?? "auto" };
       }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
-      const pickToastId = downloadOnly ? undefined : pickToast.show(opts.displayRepoId ?? repoId);
+      // Label with the repo actually fetched (a vendor id's unsloth mirror), not the picked id.
+      const pickToastId = downloadOnly
+        ? undefined
+        : pickToast.show(downloadRepoIdFor(opts.displayRepoId ?? repoId, IMAGE_CATALOG));
       // Read before the await: a pick made meanwhile replaces quantRevert. Download-only owns no slot.
       const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;
       // Acted on outside the try: a throwing refusal would otherwise fall through to the load.
@@ -4595,11 +4610,13 @@ export function ImagesPage({
           } else {
             pendingLoadEntries.current = entries;
             const pending = pendingStagedLoad.current;
+            // The plan names the repo actually downloaded, which the catalog may not know (a gated row's mirror).
+            const downloadName = stagedDownloadRepoId(entries, opts.displayRepoId ?? repoId);
             if (downloadOnlyPlans.current.length === 0 && pending) {
               stagedPlan.current = { token: pending.token };
-              pickToast.setPhase(pickToastId, "downloading", stage(entries));
+              pickToast.setPhase(pickToastId, "downloading", stage(entries), downloadName);
             } else {
-              pickToast.setPhase(pickToastId, "queued");
+              pickToast.setPhase(pickToastId, "queued", undefined, downloadName);
             }
           }
           return true;
@@ -7991,6 +8008,7 @@ export function ImagesPage({
                   favorite={isFavorite(`image:${image.id}`)}
                   dragging={stripReorder.draggingId === image.id}
                   cueEdge={stripReorder.cue?.id === image.id ? stripReorder.cue.edge : null}
+                  promptBoundary={promptBoundaries.has(image.id)}
                   actions={stripTileActions}
                 />
               ))}
