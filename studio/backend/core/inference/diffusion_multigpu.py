@@ -837,6 +837,51 @@ def stream_exposure(
     return transfer, compute, exposed
 
 
+# Integer / fp8 code buffers a fused quantized module multiplies through; float buffers are scales or tables.
+_QUANT_CODE_DTYPES = frozenset(
+    ("int8", "uint8", "float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2", "float8_e5m2fnuz")
+)
+
+
+def logical_weight_elements(module: Any) -> int:
+    """Weights a forward multiplies through, at their logical size: the ``params`` of the ``2 x params x tokens`` price.
+
+    ``parameters()`` misses quantized layouts: native int8 / fp8 and NVFP4 linears keep their codes in buffers
+    (``weight_q``, ``wq``, ``weight_packed``), GGUF and bnb 4-bit pack several weights per element. A leaf module with
+    ``in_features`` / ``out_features`` counts ``in x out`` plus its bias, so a dense ``nn.Linear`` reads as before; any
+    other module counts its own parameters and integer / fp8 code buffers."""
+    seen: set[int] = set()
+    total = 0
+    for sub in module.modules():
+        in_f, out_f = getattr(sub, "in_features", None), getattr(sub, "out_features", None)
+        linear_like = (
+            isinstance(in_f, int)
+            and isinstance(out_f, int)
+            and in_f > 0
+            and out_f > 0
+            and next(sub.children(), None) is None
+        )
+        if linear_like:
+            own = [*sub.parameters(recurse = False), *sub.buffers(recurse = False)]
+            if any(id(t) in seen for t in own):
+                continue  # tied to a layer already counted
+            seen.update(id(t) for t in own)
+            total += int(in_f) * int(out_f)
+            bias = getattr(sub, "bias", None)
+            if bias is not None and hasattr(bias, "numel"):
+                total += int(bias.numel())
+            continue
+        for t in sub.parameters(recurse = False):
+            if id(t) not in seen:
+                seen.add(id(t))
+                total += int(t.numel())
+        for t in sub.buffers(recurse = False):
+            if id(t) not in seen and str(t.dtype).replace("torch.", "") in _QUANT_CODE_DTYPES:
+                seen.add(id(t))
+                total += int(t.numel())
+    return total
+
+
 def _hidden_stream_reason(pipe: Any, plan: Any, sizes: dict, selection: Any) -> Optional[str]:
     """Why Automatic keeps the one-card streamed plan instead of a layer split, or None (try the split as before).
 
@@ -878,7 +923,7 @@ def _hidden_stream_reason(pipe: Any, plan: Any, sizes: dict, selection: Any) -> 
         dit = _denoiser_mib(sizes)
         resident = int(getattr(plan, "resident_transformer_mib", None) or 0)
         streamed = max(0, dit - resident)
-        params = sum(p.numel() for p in denoiser.parameters())
+        params = logical_weight_elements(denoiser)
         transfer, compute, exposed = stream_exposure(
             streamed, params, h2d_gib_s = measured[0], tflops = tflops, side_px = _COST_CANVAS_PX
         )
@@ -1298,7 +1343,7 @@ def replica_layout(
         )
     h2d = float(measured[0])
     tokens = int(request.tokens or (_COST_CANVAS_PX // _DIT_PIXELS_PER_TOKEN) ** 2)
-    params = float(sum(p.numel() for p in denoiser.parameters()))
+    params = float(logical_weight_elements(denoiser))
     compute = denoiser_compute_s(params, tokens, tflops)
     dit = int(sizes.get("transformer", (0, "dit"))[0] or _denoiser_mib(dict(sizes)))
     streamed = 0
