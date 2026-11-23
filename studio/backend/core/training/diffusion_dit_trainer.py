@@ -962,6 +962,7 @@ def _pick_auto_precision(
     has_torchao = True,
     family: Optional[str] = None,
     compiled: bool = True,
+    fp8_host_ok: bool = True,
 ) -> str:
     """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the fastest
     dense mode whose weights + headroom (activations, optimizer, cache) fit the free VRAM at
@@ -972,6 +973,8 @@ def _pick_auto_precision(
       the same held-out loss), else int8, else nf4 without torchao (``_int8_quantize_base`` has no fallback).
     - AUTO_FP8_MIN_FREE_RATIO-1.15x: the fp8 base streams onto the card Linear by Linear (never whole in bf16), so it
       fits where only nf4 did; nf4 trained a worse adapter (held-out MSE above the bare base on Z-Image) 1.75x slower.
+      That fp8 load holds the dense bf16 base in host RAM first, where the nf4 load it replaces streams to the card,
+      so it also needs ``fp8_host_ok`` (the caller's _auto_swap_host_ram_ok check); without it the band keeps nf4.
     Every fp8 pick needs ``compiled``: eager fp8 lost to the eager picks it would replace (L4, Z-Image 512 px: 1.41
     s/step vs bf16 + block swap 1.25-1.36 at 1.33x, 1.69-1.70 vs nf4 1.30-1.34 at 0.93x), so an eager run keeps them.
     UNSLOTH_DIT_AUTO_FP8=0 restores the int8 / nf4 picks."""
@@ -985,7 +988,7 @@ def _pick_auto_precision(
         if fp8 and compiled and fam not in _AUTO_FP8_NOT_OVER_SWAP:
             return "fp8"
         return "int8" if has_torchao else "nf4"
-    if fp8 and compiled and free_gb > dense_gb * AUTO_FP8_MIN_FREE_RATIO:
+    if fp8 and compiled and fp8_host_ok and free_gb > dense_gb * AUTO_FP8_MIN_FREE_RATIO:
         return "fp8"
     return "nf4"
 
@@ -1161,16 +1164,22 @@ def _resolve_base_precision(cfg, spec, device) -> str:
             )
         except Exception:  # noqa: BLE001 -- probe failure -> the safe mode
             pass
+    dense_gb = _dense_bf16_gb(spec, cfg.base_model)
+    # Below 1.15x the fp8 base replaces nf4, whose load streams to the card; fp8 loads the bf16 base on the host.
+    fp8_host_ok = True
+    if has_fp8 and free_gb and dense_gb and free_gb <= dense_gb * 1.15:
+        fp8_host_ok = _auto_swap_host_ram_ok(spec, cfg)
     return _pick_auto_precision(
         prequant,
         device,
         free_gb,
-        _dense_bf16_gb(spec, cfg.base_model),
+        dense_gb,
         capability,
         has_fp8,
         has_torchao,
         getattr(spec, "family", None),
         _auto_run_compiles(cfg),
+        fp8_host_ok,
     )
 
 

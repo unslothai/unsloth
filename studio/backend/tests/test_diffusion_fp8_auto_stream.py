@@ -341,3 +341,52 @@ def test_the_bf16_fallback_fit_counts_only_host_bytes(monkeypatch):
     _FakeCuda.free = need - (1 << 20)
     assert dit._bf16_fallback_fits(model, "cuda:0") is False
     assert dit._bf16_fallback_fits(model, "cpu") is True
+
+
+def _resolve_auto(monkeypatch, family, ratio, host_avail_gb):
+    """_resolve_base_precision for Auto with free VRAM at ``ratio`` x the family's dense size and ``host_avail_gb``
+    of available host RAM (None: unreadable)."""
+    import core.inference.diffusion_prequant_cache as pc
+
+    dense = dit._SPECS[family].dense_bf16_gb
+
+    class _FakeCuda:
+        @staticmethod
+        def mem_get_info():
+            return (int(ratio * dense * 1e9), int(80 * 1e9))
+
+        @staticmethod
+        def get_device_capability():
+            return (8, 9)
+
+    avail = None if host_avail_gb is None else int(host_avail_gb * (1 << 30))
+    monkeypatch.delenv("UNSLOTH_DIT_AUTO_FP8", raising = False)
+    monkeypatch.setattr(torch, "cuda", _FakeCuda)
+    monkeypatch.setattr(pc, "_host_memory_bytes", lambda: (avail, avail))
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+    monkeypatch.setattr(dit, "repo_is_prequantized", lambda repo: False)
+    monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
+    monkeypatch.setattr(dit, "_auto_fp8_probe_ok", lambda device: True)
+    cfg = types.SimpleNamespace(
+        base_precision = "auto", base_model = "some/dense-base", mixed_precision = "bf16"
+    )
+    return dit._resolve_base_precision(cfg, dit._SPECS[family], "cuda")
+
+
+@pytest.mark.parametrize("host_avail_gb", [8.0, None])
+def test_auto_fp8_below_1_15x_needs_host_ram_for_the_bf16_load(monkeypatch, host_avail_gb):
+    # The fp8 base loads the dense bf16 base on the host; the nf4 load it replaces streams to the card.
+    assert _resolve_auto(monkeypatch, "z-image", 1.0, host_avail_gb) == "nf4"
+
+
+def test_auto_fp8_below_1_15x_with_host_ram_still_picks_fp8(monkeypatch):
+    assert _resolve_auto(monkeypatch, "z-image", 1.0, 512.0) == "fp8"
+    # The 1.15x-1.5x band replaced int8, which already loaded host-first: no new host-RAM gate there.
+    assert _resolve_auto(monkeypatch, "z-image", 1.3, 8.0) == "fp8"
+
+
+def test_pick_auto_precision_fp8_host_ok_gates_only_the_low_band():
+    p = dit._pick_auto_precision
+    assert p(False, "cuda", 10.0, 10.0, (8, 9), True, True, "z-image", True, False) == "nf4"
+    assert p(False, "cuda", 10.0, 10.0, (8, 9), True, True, "z-image", True, True) == "fp8"
+    assert p(False, "cuda", 13.0, 10.0, (8, 9), True, True, "z-image", True, False) == "fp8"
