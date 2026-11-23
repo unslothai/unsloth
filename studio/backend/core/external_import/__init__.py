@@ -146,12 +146,15 @@ def file_times_ms(path: Path) -> tuple[int, int]:
 def _zstd_reader(raw):
     """(stream, mid-read decode errors): each backend has its own ZstdError; a truncated frame is EOFError."""
     try:
-        # novermin -- 3.14; the ImportError fallback to zstandard below is the guard, which vermin cannot see.
+        # novermin -- 3.14; the ImportError fallbacks below are the guard, which vermin cannot see.
         from compression import zstd  # novermin
-        return zstd.ZstdFile(raw), (EOFError, zstd.ZstdError)
     except ImportError:
-        import zstandard  # ImportError here means the caller skips the file
-        return zstandard.ZstdDecompressor().stream_reader(raw), (EOFError, zstandard.ZstdError)
+        try:
+            from backports import zstd  # what Studio installs below 3.14
+        except ImportError:
+            import zstandard  # ImportError here means the caller skips the file
+            return zstandard.ZstdDecompressor().stream_reader(raw), (EOFError, zstandard.ZstdError)
+    return zstd.ZstdFile(raw), (EOFError, zstd.ZstdError)
 
 
 def read_jsonl(path: Path) -> Iterator[dict]:

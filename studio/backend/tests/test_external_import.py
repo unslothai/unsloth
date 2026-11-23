@@ -767,7 +767,7 @@ def test_codex_without_a_zstd_decoder_warns_instead_of_failing(codex_home, monke
     real_import = builtins.__import__
 
     def no_zstd(name, *args, **kwargs):
-        if name in ("zstandard", "compression"):
+        if name in ("zstandard", "compression", "backports"):
             raise ImportError(name)
         return real_import(name, *args, **kwargs)
 
@@ -786,6 +786,7 @@ def _fake_zstandard(monkeypatch, stream_reader):
     fake.ZstdError = type("ZstdError", (Exception,), {})
     fake.ZstdDecompressor = lambda: types.SimpleNamespace(stream_reader = stream_reader)
     monkeypatch.setitem(sys.modules, "compression", None)
+    monkeypatch.setitem(sys.modules, "backports", None)
     monkeypatch.setitem(sys.modules, "zstandard", fake)
     return fake
 
@@ -840,6 +841,29 @@ def test_codex_a_truncated_zst_rollout_keeps_its_decoded_prefix(codex_home, monk
     assert _messages(codex.SOURCE, "019a")[0]["content"] == [
         {"type": "text", "text": "List the files"}
     ]
+
+
+def _real_zstd():
+    for name in ("compression.zstd", "backports.zstd"):
+        try:
+            return __import__(name, fromlist = ["zstd"])
+        except ImportError:
+            pass
+    pytest.skip("no stdlib-style zstd module")
+
+
+@pytest.mark.parametrize("cut", [None, 0.5])
+def test_codex_a_real_zst_rollout_imports_with_the_installed_decoder(codex_home, cut):
+    zstd = _real_zstd()
+    path = _rollout(codex_home)
+    blob = zstd.compress(path.read_bytes())
+    path.with_name(path.name + ".zst").write_bytes(blob[: int(len(blob) * cut)] if cut else blob)
+    path.unlink()
+
+    summary = run_import(codex.SOURCE)
+
+    assert summary.warnings == []
+    assert summary.new_chats == (0 if cut else 1)
 
 
 def test_codex_a_valid_zst_rollout_still_imports(codex_home, monkeypatch):
