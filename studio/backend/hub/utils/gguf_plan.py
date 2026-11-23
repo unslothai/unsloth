@@ -477,14 +477,13 @@ def _legacy_layout_main_hashes(siblings: Sequence) -> dict[str, frozenset[str]]:
 
 def _build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     # Family grouping keeps the family holding the lexicographically first name, which is the "._" one, so the plan fetched the sidecar and marked the variant complete, leaving header-based local discovery no main GGUF to load.
-    from utils.gguf_legacy_layout import is_legacy_layout_path
+    from utils.gguf_legacy_layout import legacy_layout_alias, shadowed_legacy_layout
 
-    # A previous layout kept under Unsloth_Layout/ is an alternate of the root quants, not more quants.
-    siblings = [
-        s
-        for s in drop_shadowed_appledouble_siblings(list(siblings))
-        if not is_legacy_layout_path(getattr(s, "rfilename", "") or "")
-    ]
+    # A previous-layout copy under Unsloth_Layout/ whose current file is listed is an alternate of that quant, not
+    # another quant; one with no current counterpart is planned like any other file.
+    siblings = drop_shadowed_appledouble_siblings(list(siblings))
+    shadowed = shadowed_legacy_layout(getattr(s, "rfilename", "") or "" for s in siblings)
+    siblings = [s for s in siblings if (getattr(s, "rfilename", "") or "") not in shadowed]
     package_plans = _audio_cpp_package_plans(siblings)
     if package_plans is not None:
         return package_plans
@@ -509,7 +508,9 @@ def _build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         # Keep companions out of the quant grouping so a drafter never lands in a variant's main files: the root mtp-*.gguf carries a quant label. An imatrix leaves entirely rather than joining companions_expected, since no variant needs llama-quantize's calibration data downloaded.
         if is_mmproj_filename(name) or is_mtp_drafter_path(name) or is_imatrix_filename(name):
             continue
-        quant = gguf_variant_key(name).lower()
+        # A legacy-folder file left here has no current counterpart (shadowed copies were dropped above): it plans
+        # under its root name, the key the listings use.
+        quant = gguf_variant_key(legacy_layout_alias(name) or name).lower()
         # The endian predicate reads a quant TOKEN, so a qualified key would make it misread the path and drop the file from every plan.
         if is_big_endian_gguf_path(name, extract_quant_label(name)):
             continue

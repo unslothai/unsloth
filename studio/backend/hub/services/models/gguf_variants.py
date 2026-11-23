@@ -603,8 +603,10 @@ def _variant_update_available_from_requirement(
         remote_blob = expected.sha256
         if not remote_blob:
             continue
-        local_set = local_by_posix.get(path) or set().union(
-            *(blobs for p, blobs in local_by_posix.items() if legacy_layout_alias(p) == path)
+        # Both the root copy and any legacy-layout copy count: a withdrawn root blob must not hide a published legacy one.
+        local_set = set().union(
+            local_by_posix.get(path, ()),
+            *(blobs for p, blobs in local_by_posix.items() if legacy_layout_alias(p) == path),
         )
         if not local_set:
             return True
@@ -2232,6 +2234,11 @@ async def get_gguf_variants_answer(
 
         # snapshot totals keep shard sets intact, take maximum sizes, and compare keys case-insensitively
         cached_snapshots: list[tuple[dict[str, int], dict[str, int]]] = []
+        # Main-GGUF blob identities per cached snapshot (parallel to cached_snapshots): a quant's previous-layout
+        # copy only counts when one snapshot holds every shard, which is what the loader can open.
+        snapshot_main_blobs: list[set[str]] = []
+        from utils.gguf_legacy_layout import cached_blob_sha256
+
         # public listings do not authorize exposing a caller's cached download and partial state
         if _is_valid_repo_id(repo_id) and cache_reads_authorized:
             # pinned rows resolve inside one snapshot and ignore other cached copies
@@ -2248,6 +2255,7 @@ async def get_gguf_variants_answer(
                     continue
                 by_filename: dict[str, int] = {}
                 by_quant: dict[str, int] = {}
+                main_blobs: set[str] = set()
                 for f in gguf_paths:
                     try:
                         rel = f.relative_to(snap).as_posix()
@@ -2268,6 +2276,10 @@ async def get_gguf_variants_answer(
                         continue
                     q = q.lower()
                     by_quant[q] = by_quant.get(q, 0) + size
+                    if size > 0:
+                        blob = cached_blob_sha256(str(f))
+                        if blob:
+                            main_blobs.add(blob)
                 # Standalone Engram tables are not .gguf, so the walk above skips them.
                 for f in cached_engram_tables(snap):
                     try:
@@ -2276,6 +2288,7 @@ async def get_gguf_variants_answer(
                         continue
                 if by_filename or by_quant:
                     cached_snapshots.append((by_filename, by_quant))
+                    snapshot_main_blobs.append(main_blobs)
 
         requirements_by_quant = {
             v.quant.lower(): _variant_requirement_cache_get(
@@ -2423,9 +2436,11 @@ async def get_gguf_variants_answer(
             have = set().union(*_local_blobs().get(quant, {}).values())
             if not wanted <= have:
                 return False
-            return not companions or any(
-                _snapshot_has_companions(by_filename, companions)
-                for by_filename, _by_quant in cached_snapshots
+            # Every shard in one snapshot: two partial snapshots must not vouch for a set the loader cannot open.
+            return any(
+                wanted <= blobs
+                and (not companions or _snapshot_has_companions(by_filename, companions))
+                for (by_filename, _by_quant), blobs in zip(cached_snapshots, snapshot_main_blobs)
             )
 
         def _is_fully_downloaded(variant) -> bool:

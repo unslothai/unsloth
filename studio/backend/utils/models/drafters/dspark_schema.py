@@ -17,7 +17,9 @@ carries ``markov_w2``, loads on every DSpark build and is never filtered here.
 
 from __future__ import annotations
 
+import logging
 import os
+import struct
 import sys
 import threading
 import time
@@ -25,6 +27,8 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from utils.models.gguf_metadata import read_gguf_header_summary
+
+logger = logging.getLogger(__name__)
 
 DSPARK_SCHEMA_FUSED = "fused"
 DSPARK_SCHEMA_MARKOV2 = "markov2"
@@ -53,7 +57,8 @@ _RELEASE_TAG_SCHEMAS: dict[str, frozenset[str]] = {
     "b12631-mix-acc0843": frozenset({DSPARK_SCHEMA_FUSED}),
 }
 
-# A custom LLAMA_SERVER_PATH build the scan cannot read: comma-separated schema names ("fused,markov2").
+# A custom LLAMA_SERVER_PATH build the release table and the scan cannot read: comma-separated schema names
+# ("fused,markov2", or "none"). Ignored, with a warning, when it contradicts what the launch binary shows.
 DSPARK_SCHEMAS_ENV = "UNSLOTH_DSPARK_DRAFTER_SCHEMAS"
 
 _SCAN_CHUNK = 8 << 20
@@ -190,24 +195,41 @@ def _release_tag_of(binary: str) -> Optional[str]:
     return str(tag) if tag else None
 
 
+_env_conflict_warned: set[tuple] = set()
+
+
 def binary_dspark_schemas(binary: Optional[str]) -> Optional[frozenset[str]]:
     """The Inkling 2 drafter schemas ``binary`` loads, or None when that cannot be told (then nothing is filtered).
 
-    Order: ``UNSLOTH_DSPARK_DRAFTER_SCHEMAS``, the published release table, then a scan of every llama library and
-    the binary for the loaders' tensor names. Never raises.
+    Order: the published release table, then a scan of every llama library and the binary for the loaders' tensor
+    names, then ``UNSLOTH_DSPARK_DRAFTER_SCHEMAS``. The variable is an escape hatch for a build neither can read (a
+    custom ``LLAMA_SERVER_PATH`` build, a stripped library); it never overrides what the launch binary itself shows,
+    which would hand llama-server a drafter it refuses. Never raises.
     """
     env = _env_schemas()
-    if env is not None:
+    conclusive: Optional[frozenset[str]] = None
+    if binary:
+        try:
+            tag = _release_tag_of(binary)
+            conclusive = _RELEASE_TAG_SCHEMAS.get(tag) if tag else None
+            if conclusive is None:
+                conclusive = _scan_build(binary)
+        except Exception:
+            conclusive = None
+    if conclusive is None:
         return env
-    if not binary:
-        return None
-    try:
-        tag = _release_tag_of(binary)
-        if tag in _RELEASE_TAG_SCHEMAS:
-            return _RELEASE_TAG_SCHEMAS[tag]
-        return _scan_build(binary)
-    except Exception:
-        return None
+    if env is not None and env != conclusive:
+        key = (binary, env, conclusive)
+        if key not in _env_conflict_warned:
+            _env_conflict_warned.add(key)
+            logger.warning(
+                "%s=%s ignored: %s loads %s (release table or library scan)",
+                DSPARK_SCHEMAS_ENV,
+                ",".join(sorted(env)) or "none",
+                binary,
+                ",".join(sorted(conclusive)) or "no Inkling 2 DSpark drafter",
+            )
+    return conclusive
 
 
 _default_binary_lock = threading.Lock()
@@ -243,9 +265,6 @@ _UNSET = object()
 def supported_dspark_schemas(binary: object = _UNSET) -> Optional[frozenset[str]]:
     """``binary_dspark_schemas`` of ``binary``, or of the llama-server Studio would launch when not given."""
     if binary is _UNSET:
-        env = _env_schemas()
-        if env is not None:
-            return env
         binary = _default_llama_server_binary()
     return binary_dspark_schemas(binary if isinstance(binary, str) else None)
 
@@ -315,13 +334,29 @@ def dspark_schema_rank(schema: Optional[str]) -> int:
     return 0 if schema == PREFERRED_INKLING_DSPARK_SCHEMA else 1
 
 
-# (repo, filename, size) -> schema read from a ranged header fetch.
-# Keyed by name, which a repo move can point at another layout: kept briefly, like the published-hash listing.
+# (repo, commit, filename) -> schema read from a ranged header fetch. Only a probe pinned to a commit is memoized:
+# a name on a moving ref (main) can be pointed at another layout by a repo move, so those are read fresh each time.
 _REMOTE_TTL_S = 600.0
-_remote_cache: dict[tuple[str, str, int], tuple[float, str]] = {}
+_remote_cache: dict[tuple[str, str, str], tuple[float, str]] = {}
 _remote_lock = threading.Lock()
 _REMOTE_FIRST_RANGE = 16 << 20
 _REMOTE_CAP = 64 << 20
+
+
+_MARKOV_CONTEXT_KV = "dflash.has_markov_context"
+_GGUF_BOOL = 7
+
+
+def _header_bool_kv(header: bytes, key: str) -> Optional[bool]:
+    """A boolean KV from raw GGUF header bytes (u64 key length, key, u32 type, value), or None if absent."""
+    needle = struct.pack("<Q", len(key)) + key.encode()
+    at = header.find(needle)
+    if at < 0:
+        return None
+    pos = at + len(needle)
+    if pos + 5 > len(header) or struct.unpack_from("<I", header, pos)[0] != _GGUF_BOOL:
+        return None
+    return header[pos + 4] != 0
 
 
 def remote_dspark_drafter_schema(
@@ -334,26 +369,31 @@ def remote_dspark_drafter_schema(
 ) -> Optional[str]:
     """The schema of a Hub drafter from its header alone (Range requests, ~12 MB for Inkling 2), or None on any
     failure. Only called when the build loads one Inkling 2 layout, so a download it could not load is skipped."""
-    key = (repo_id, filename, int(size or 0))
-    with _remote_lock:
-        hit = _remote_cache.get(key)
-        if hit is not None and time.monotonic() - hit[0] < _REMOTE_TTL_S:
-            return hit[1]
+    key = (repo_id, revision, filename) if revision else None
+    if key is not None:
+        with _remote_lock:
+            hit = _remote_cache.get(key)
+            if hit is not None and time.monotonic() - hit[0] < _REMOTE_TTL_S:
+                return hit[1]
     schema: Optional[str] = None
     try:
         from hub.utils.gguf_header_delta import _layout_of_remote, hub_range_fetcher
 
         fetch = hub_range_fetcher(repo_id, filename, token, revision = revision)
         total = int(size) if size else _REMOTE_CAP
-        layout, _ = _layout_of_remote(fetch, total, _REMOTE_CAP, _REMOTE_FIRST_RANGE)
+        layout, header = _layout_of_remote(fetch, total, _REMOTE_CAP, _REMOTE_FIRST_RANGE)
         names = [
             (t[0].decode("utf-8", "replace") if isinstance(t[0], bytes) else str(t[0]))
             for t in layout.tensors
         ]
-        schema = dspark_schema_from_tensors(names)
+        kvs = {}
+        markov_context = _header_bool_kv(header, _MARKOV_CONTEXT_KV)
+        if markov_context is not None:
+            kvs[_MARKOV_CONTEXT_KV] = markov_context
+        schema = dspark_schema_from_tensors(names, kvs)
     except Exception:
         schema = None
-    if schema is not None:
+    if schema is not None and key is not None:
         with _remote_lock:
             _remote_cache[key] = (time.monotonic(), schema)
     return schema

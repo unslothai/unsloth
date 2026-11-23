@@ -15326,8 +15326,18 @@ def _estimate_draft_n_max(
     if depth is not None:
         return max(0, int(depth))
     dspark = getattr(config, "gguf_dspark_file", None)
-    if dspark and str(dspark) == drafter_path:
-        return 3
+    if dspark:
+        # The launch default: per Inkling 2 drafter layout, of the file the child opens (an extras --model-draft
+        # replaces Studio's sidecar), else 3. Must match _emit_dspark and the fit, or the estimate misprices it.
+        from core.inference.llama_cpp import _dspark_default_draft_n_max
+        from utils.models.gguf_metadata import read_gguf_architecture
+
+        weight = getattr(config, "gguf_file", None)
+        try:
+            arch = read_gguf_architecture(str(weight)) if weight else None
+        except Exception:
+            arch = None
+        return _dspark_default_draft_n_max(arch, drafter_path or str(dspark))
     try:
         gpus = LlamaCppBackend._effective_gpu_count() > 0
     except Exception:

@@ -220,12 +220,30 @@ def test_published_release_tag_wins_over_the_scan(tmp_path):
     assert ds.binary_dspark_schemas(binary) is None
 
 
-def test_env_override_wins_and_can_say_none(tmp_path, monkeypatch):
-    binary = _server(tmp_path, b"markov_w1\0dspark_hidden_out\0")
+def test_env_override_is_only_an_escape_hatch(tmp_path, monkeypatch, caplog):
+    """The env setting names schemas for a build neither the release table nor the scan can read; it never overrides
+    what the launch binary itself shows (that would hand llama-server a drafter it refuses)."""
+    readable = _server(tmp_path / "a", b"markov_w1\0dspark_hidden_out\0")
     monkeypatch.setenv(ds.DSPARK_SCHEMAS_ENV, "markov2")
-    assert ds.binary_dspark_schemas(binary) == frozenset({"markov2"})
+    with caplog.at_level("WARNING"):
+        assert ds.binary_dspark_schemas(readable) == frozenset({"fused"})
+    assert any("ignored" in r.getMessage() for r in caplog.records)
+    unreadable = _server(tmp_path / "b", b"markov_w1\0")
+    assert ds.binary_dspark_schemas(unreadable) == frozenset({"markov2"})
     monkeypatch.setenv(ds.DSPARK_SCHEMAS_ENV, "none")
-    assert ds.binary_dspark_schemas(binary) == frozenset()
+    assert ds.binary_dspark_schemas(unreadable) == frozenset()
+    assert ds.binary_dspark_schemas(None) == frozenset()
+
+
+def test_a_known_release_beats_the_env_setting(tmp_path, monkeypatch):
+    binary = _server(tmp_path, b"markov_w1\0")
+    marker = Path(binary).parent.parent.parent / "UNSLOTH_PREBUILT_INFO.json"
+    marker.write_text(json.dumps({"release_tag": "b12631-mix-acc0843"}))
+    from utils import llama_cpp_freshness
+
+    getattr(llama_cpp_freshness, "_marker_cache", {}).clear()
+    monkeypatch.setenv(ds.DSPARK_SCHEMAS_ENV, "markov2")
+    assert ds.binary_dspark_schemas(binary) == frozenset({"fused"})
 
 
 def test_scan_never_raises(tmp_path):
@@ -501,6 +519,48 @@ def test_launch_depth_follows_the_drafter(monkeypatch, tmp_path, fixture, reques
     assert flags[i + 1] == expected
 
 
+@pytest.mark.parametrize(
+    "studio, extras, expected",
+    [
+        ("inkling2_fused_q8_0", "inkling2_markov2_q8_0", "3"),
+        ("inkling2_markov2_q8_0", "inkling2_fused_q8_0", "2"),
+    ],
+)
+def test_launch_depth_follows_an_extras_drafter(monkeypatch, tmp_path, studio, extras, expected):
+    """An extras --model-draft replaces Studio's sidecar on the child (last wins): the default depth is the one for
+    the file the child opens."""
+    fake = {
+        "found": True,
+        "mtp_token": "draft-mtp",
+        "supports_mtp": True,
+        "supports_dspark": True,
+        "mtp_probe_inconclusive": False,
+        "ngram_mod_flavor": "new",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    monkeypatch.setattr(
+        LlamaCppBackend, "probe_server_capabilities", classmethod(lambda cls, binary = None: fake)
+    )
+    backend = LlamaCppBackend()
+    backend._nextn_predict_layers = None
+    backend._architecture = "inkling2"
+    sidecar = _drafter(tmp_path / "dspark-Inkling-2-Mini-Q8_0.gguf", studio)
+    mine = _drafter(tmp_path / "mine" / "dspark-mine.gguf", extras)
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = ["--model-draft", str(mine)],
+        model_identifier = "unsloth/Inkling-2-Mini-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+    )
+    i = flags.index("--spec-draft-n-max")
+    assert flags[i + 1] == expected
+
+
 # ---- a drafter cached at another revision, after the repo moved -----------------------
 
 
@@ -602,7 +662,7 @@ def test_online_cached_drafter_no_longer_published_is_not_reused(tmp_path, monke
 
 
 def test_remote_schema_answers_expire(monkeypatch):
-    """A repo move can point a name at the other layout: a header read is kept for a while, not for the process."""
+    """A header read pinned to a commit is kept for a while, not for the process."""
     calls = []
 
     def _layout(fetch, total, cap, first):
@@ -611,7 +671,7 @@ def test_remote_schema_answers_expire(monkeypatch):
         class L:
             tensors = [(b"markov_ctx_norm.weight",)]
 
-        return L(), None
+        return L(), b""
 
     import hub.utils.gguf_header_delta as ghd
 
@@ -619,12 +679,66 @@ def test_remote_schema_answers_expire(monkeypatch):
     monkeypatch.setattr(ghd, "hub_range_fetcher", lambda *a, **k: None)
     clock = [1000.0]
     monkeypatch.setattr(ds.time, "monotonic", lambda: clock[0])
-    assert ds.remote_dspark_drafter_schema("o/r", "d.gguf") == "markov2"
-    assert ds.remote_dspark_drafter_schema("o/r", "d.gguf") == "markov2"
+    assert ds.remote_dspark_drafter_schema("o/r", "d.gguf", revision = "c1") == "markov2"
+    assert ds.remote_dspark_drafter_schema("o/r", "d.gguf", revision = "c1") == "markov2"
     assert len(calls) == 1
     clock[0] += ds._REMOTE_TTL_S + 1
-    assert ds.remote_dspark_drafter_schema("o/r", "d.gguf") == "markov2"
+    assert ds.remote_dspark_drafter_schema("o/r", "d.gguf", revision = "c1") == "markov2"
     assert len(calls) == 2
+
+
+def test_remote_schema_on_a_moving_ref_is_never_reused(monkeypatch):
+    """A name on main can be replaced by the other layout (a repo move): without a pinned commit every probe reads
+    the header again, and a different commit never sees another commit's answer."""
+    answers = [
+        [(b"dspark_hidden_out.weight",)],
+        [(b"markov_ctx_norm.weight",)],
+        [(b"dspark_fuse.weight",)],
+    ]
+    calls = []
+
+    def _layout(fetch, total, cap, first):
+        tensors = answers[len(calls)]
+        calls.append(1)
+
+        class L:
+            pass
+
+        L.tensors = tensors
+        return L(), b""
+
+    import hub.utils.gguf_header_delta as ghd
+
+    monkeypatch.setattr(ghd, "_layout_of_remote", _layout)
+    monkeypatch.setattr(ghd, "hub_range_fetcher", lambda *a, **k: None)
+    assert ds.remote_dspark_drafter_schema("o/r", "d.gguf") == "fused"
+    assert ds.remote_dspark_drafter_schema("o/r", "d.gguf") == "markov2"
+    assert ds.remote_dspark_drafter_schema("o/r", "d.gguf", revision = "c2") == "fused"
+    assert len(calls) == 3
+
+
+def test_remote_schema_reads_the_markov_context_flag(monkeypatch):
+    """A drafter marked markov2 only by dflash.has_markov_context (no markov_ctx_* tensor names) is classified the same
+    from a ranged header read as from the local header."""
+    import struct as _st
+
+    key = b"dflash.has_markov_context"
+    header = b"GGUF" + b"\x00" * 20 + _st.pack("<Q", len(key)) + key + _st.pack("<I", 7) + b"\x01"
+
+    def _layout(fetch, total, cap, first):
+        class L:
+            tensors = [(b"markov_w1.weight",), (b"markov_w2.weight",)]
+
+        return L(), header
+
+    import hub.utils.gguf_header_delta as ghd
+
+    monkeypatch.setattr(ghd, "_layout_of_remote", _layout)
+    monkeypatch.setattr(ghd, "hub_range_fetcher", lambda *a, **k: None)
+    assert ds.remote_dspark_drafter_schema("o/r", "m.gguf") == "markov2"
+    off = header[:-1] + b"\x00"
+    monkeypatch.setattr(ghd, "_layout_of_remote", lambda *a: (_layout(*a)[0], off))
+    assert ds.remote_dspark_drafter_schema("o/r", "m.gguf") == "generic"
 
 
 def test_a_kept_listing_from_before_the_move_is_refreshed(tmp_path, monkeypatch):
@@ -661,3 +775,26 @@ def test_measured_defaults():
     sampling defaults, and markov2 at 5 trails no drafter at temperature 1.0."""
     assert ds.PREFERRED_INKLING_DSPARK_SCHEMA == ds.DSPARK_SCHEMA_FUSED
     assert lc._INKLING2_DSPARK_DEPTH == {"fused": 2, "markov2": 3}
+
+
+@pytest.mark.parametrize(
+    "fixture, depth", [("inkling2_fused_q8_0", 2), ("inkling2_markov2_q8_0", 3)]
+)
+def test_the_public_memory_estimate_prices_the_launch_depth(tmp_path, fixture, depth):
+    """The /memory estimate charges the depth the launch emits for an Inkling 2 sidecar (fused 2, markov2 3), not a
+    flat 3; a non-Inkling DSpark target keeps 3."""
+    from types import SimpleNamespace
+
+    import routes.inference as ri
+
+    target = _write_gguf(
+        tmp_path / "Inkling-2-Mini-UD-Q4_K_XL.gguf",
+        {"general.architecture": "inkling2", "inkling2.embedding_length": 2304},
+        {"token_embd.weight": (2304, PADDED)},
+    )
+    drafter = str(_drafter(tmp_path / "dspark-Inkling-2-Mini-Q8_0.gguf", fixture))
+    config = SimpleNamespace(gguf_file = str(target), gguf_dspark_file = drafter)
+    assert ri._estimate_draft_n_max(config, drafter, requested = None, extras = []) == depth
+    other = _write_gguf(tmp_path / "qwen.gguf", {"general.architecture": "qwen3"}, {})
+    config = SimpleNamespace(gguf_file = str(other), gguf_dspark_file = drafter)
+    assert ri._estimate_draft_n_max(config, drafter, requested = None, extras = []) == 3

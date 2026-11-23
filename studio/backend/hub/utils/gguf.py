@@ -163,12 +163,15 @@ def is_h3_bundle_repo(repo_id: str) -> bool:
 _H3_DENOISER_PARTITIONS = ("minimax_h3_fl2va", "minimax_h3_ref2va")
 
 
-def _is_selectable_repo_gguf(repo_id: str, filename: str) -> bool:
-    """Hide auxiliary GGUFs from repos that bundle several model roles, and a previous layout
-    kept under Unsloth_Layout/ (alternates of the root quants, used when already cached)."""
-    from utils.gguf_legacy_layout import is_legacy_layout_path
-
-    if is_legacy_layout_path(filename):
+def _is_selectable_repo_gguf(
+    repo_id: str,
+    filename: str,
+    shadowed: frozenset[str] = frozenset(),
+) -> bool:
+    """Hide auxiliary GGUFs from repos that bundle several model roles, and a previous-layout copy kept under
+    Unsloth_Layout/ whose current file is listed too (``shadowed``: an alternate, used when already cached). A
+    legacy-folder file with no current counterpart stays listed."""
+    if filename in shadowed:
         return False
     if is_h3_bundle_repo(repo_id):
         name = Path(filename).name.lower()
@@ -1476,12 +1479,18 @@ def list_gguf_variants(
     has_vision = False
     main_files: list[tuple[str, int]] = []
 
+    from utils.gguf_legacy_layout import shadowed_legacy_layout
+
+    listed = drop_shadowed_appledouble_siblings(list(info.siblings))
+    shadowed = shadowed_legacy_layout(
+        n for n in (getattr(s, "rfilename", None) for s in listed) if isinstance(n, str)
+    )
     # Sidecars in the listing would otherwise be advertised as the variant, at their own size.
-    for sibling in drop_shadowed_appledouble_siblings(list(info.siblings)):
+    for sibling in listed:
         filename = getattr(sibling, "rfilename", None)
         if not isinstance(filename, str) or not is_gguf_filename(filename):
             continue
-        if not _is_selectable_repo_gguf(repo_id, filename):
+        if not _is_selectable_repo_gguf(repo_id, filename, shadowed):
             continue
         if is_mtp_drafter_path(filename) or is_imatrix_filename(filename):
             continue
@@ -1495,9 +1504,20 @@ def list_gguf_variants(
             continue
         main_files.append((filename, int(getattr(sibling, "size", 0) or 0)))
 
+    from utils.gguf_legacy_layout import legacy_layout_alias
+
+    # A legacy-folder quant with no current counterpart is listed under its root name, the key every cached listing
+    # and plan uses for it, so a cache merge never adds a second row for it.
+    layout_keys = {
+        name: gguf_variant_key(alias)
+        for name, _size in main_files
+        if (alias := legacy_layout_alias(name)) is not None
+    }
     variants = [
         GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
-        for quant, (filename, size) in group_gguf_variant_files(main_files).items()
+        for quant, (filename, size) in group_gguf_variant_files(
+            main_files, layout_keys or None
+        ).items()
     ]
 
     variants.sort(key = lambda variant: -variant.size_bytes)
@@ -1589,6 +1609,21 @@ def list_local_gguf_variants(
             continue
         main_files.append((rel, size))
 
+    from utils.gguf_legacy_layout import fold_legacy_layout_files
+
+    # Both layouts on disk list one row (the complete current family first); a kept legacy copy is listed under its
+    # root name, as the Hub listing and the plans key it.
+    def _usable(rel: str) -> bool:
+        try:
+            return (root / rel).stat().st_size > 0
+        except OSError:
+            return False
+
+    layout_dropped, layout_canonical = fold_legacy_layout_files(
+        (rel for rel, _size in main_files), _usable
+    )
+    if layout_dropped:
+        main_files = [(rel, size) for rel, size in main_files if rel not in layout_dropped]
     # custom folders split shared-quant builds; HF caches keep remote keys, and the first keeps the bare key
     keys = (
         None
@@ -1600,9 +1635,14 @@ def list_local_gguf_variants(
         )
         else gguf_variant_keys_by_checkpoint(rel for rel, _size in main_files)
     )
+    group_keys = keys
+    if layout_canonical:
+        group_keys = dict(keys or {})
+        for rel, canon in layout_canonical.items():
+            group_keys[rel] = (keys or {}).get(canon) or gguf_variant_key(canon)
     variants = [
         GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
-        for quant, (filename, size) in group_gguf_variant_files(main_files, keys).items()
+        for quant, (filename, size) in group_gguf_variant_files(main_files, group_keys).items()
     ]
     variants.sort(key = lambda variant: -variant.size_bytes)
     _apply_gguf_display_labels(variants, directory, model_root, name_tails = keys is not None)

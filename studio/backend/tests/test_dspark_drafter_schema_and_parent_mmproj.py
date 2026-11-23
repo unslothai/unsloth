@@ -267,12 +267,34 @@ def test_a_projector_beside_the_weight_still_wins(tmp_path):
         {"name": "Qwen3-VL-8B"},  # another model's projector in a shared models folder
         {"name": None},  # no identity at all: a wildcard name is not enough one folder up
         {"projection_dim": 4096},  # same name, but llama-server would refuse the width
+        # A matching general.basename (identity score) must not override a known width mismatch.
+        {"projection_dim": 4096, **{"general.basename": "Inkling-2-Mini"}},
     ],
 )
 def test_unrelated_parent_mmproj_is_ignored(tmp_path, kwargs):
     weight = _quant_subfolder(tmp_path)
     _mmproj(tmp_path / "repo" / "mmproj-F16.gguf", **kwargs)
     assert mc.detect_mmproj_file(weight) is None
+
+
+def test_a_fitting_projector_of_another_model_one_folder_up_is_ignored(tmp_path, monkeypatch):
+    """Type and width that happen to fit are compatibility, not identity: in a shared parent folder the projector
+    must also name this model."""
+    weight = _quant_subfolder(tmp_path)
+    _mmproj(tmp_path / "repo" / "mmproj-F16.gguf", name = "Other-Model")
+    monkeypatch.setattr(mc, "mmproj_functional_match", lambda *a, **k: (True, "type and width"))
+    assert mc.detect_mmproj_file(weight) is None
+
+
+def test_the_matching_width_projector_wins_over_a_same_name_wrong_width_one(tmp_path):
+    weight = _quant_subfolder(tmp_path)
+    _mmproj(
+        tmp_path / "repo" / "mmproj-F16.gguf",
+        projection_dim = 4096,
+        **{"general.basename": "Inkling-2-Mini"},
+    )
+    good = _mmproj(tmp_path / "repo" / "mmproj-BF16.gguf")
+    assert mc.detect_mmproj_file(weight) == str(good.resolve())
 
 
 def test_parent_lookup_is_one_level_only(tmp_path):

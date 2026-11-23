@@ -250,12 +250,15 @@ def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
     )
 
     from hub.utils.gguf import drop_shadowed_appledouble_siblings
+    from utils.gguf_legacy_layout import shadowed_legacy_layout
 
+    listed = drop_shadowed_appledouble_siblings(list(siblings or []))
+    shadowed = shadowed_legacy_layout(getattr(s, "rfilename", "") or "" for s in listed)
     # Plans and advertised variants are derived separately, so both are filtered here.
     siblings = [
         sibling
-        for sibling in drop_shadowed_appledouble_siblings(list(siblings or []))
-        if _is_selectable_repo_gguf(repo_id, getattr(sibling, "rfilename", "") or "")
+        for sibling in listed
+        if _is_selectable_repo_gguf(repo_id, getattr(sibling, "rfilename", "") or "", shadowed)
     ]
     plans = build_gguf_variant_plans(siblings)
     sizes: dict[str, int] = {}

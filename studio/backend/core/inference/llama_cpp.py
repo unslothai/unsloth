@@ -3652,12 +3652,9 @@ def _cached_variant_candidates(
             cached_gguf_source_partial,
         )
 
-        pending_downloads = []
-        for snap in _cached_gguf_snapshots(repo_id):
-            cached_files = _gguf_snapshot_files(snap)
-            matches = _gguf_files_for_variant(cached_files, hf_variant)
-            if not matches:
-                continue
+        from utils.gguf_legacy_layout import is_legacy_layout_path
+
+        def _whole(snap: Path, matches: list[str]) -> Optional[tuple[str, str, list[str], Path]]:
             main = matches[0]
             shards = _gguf_extra_shards(matches, main)
             split = _SHARD_FULL_RE.match(main)
@@ -3668,15 +3665,32 @@ def _cached_variant_candidates(
                     if (match := _SHARD_FULL_RE.match(path))
                 }
                 if numbers != set(range(1, int(split.group(3)) + 1)):
-                    continue
+                    return None
             main_path = snap.joinpath(*main.replace("\\", "/").split("/"))
             if not main_path.is_file() or not _snapshot_has_all_shards(
                 str(main_path), main, shards, {}
             ):
+                return None
+            return (str(main_path), main, shards, snap)
+
+        pending_downloads = []
+        for snap in _cached_gguf_snapshots(repo_id):
+            cached_files = _gguf_snapshot_files(snap)
+            # The current layout first, then a previous-layout copy (Unsloth_Layout/) in the same snapshot: a torn
+            # current download must not hide a complete previous copy.
+            candidate = None
+            for group in (
+                [f for f in cached_files if not is_legacy_layout_path(f)],
+                [f for f in cached_files if is_legacy_layout_path(f)],
+            ):
+                matches = _gguf_files_for_variant(group, hf_variant) if group else []
+                candidate = _whole(snap, matches) if matches else None
+                if candidate is not None:
+                    break
+            if candidate is None:
                 continue
             if require_mmproj and not _pick_mmproj(cached_files):
                 continue
-            candidate = (str(main_path), main, shards, snap)
             if not cached_gguf_manifest_complete(
                 repo_id, hf_variant, snap
             ) or cached_gguf_source_partial(repo_id, hf_variant, snap):
@@ -4001,11 +4015,13 @@ def _pick_mmproj(
     from utils.gguf_legacy_layout import is_legacy_layout_path
 
     candidates = drop_shadowed_appledouble_names(list(candidates))
-    # A previous-layout copy (Unsloth_Layout/) sorts last, so the current layout's projector wins.
     mmproj_files = sorted(
-        (f for f in candidates if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()),
-        key = lambda f: (is_legacy_layout_path(f), f),
+        f for f in candidates if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()
     )
+    # A previous-layout copy (Unsloth_Layout/) is only an alternate: with a current-layout projector listed it is
+    # out of the running, so no precision order can pick it over the current one.
+    current = [f for f in mmproj_files if not is_legacy_layout_path(f)]
+    mmproj_files = current or mmproj_files
     if not mmproj_files:
         return None
     if order:
@@ -8642,13 +8658,18 @@ def _cached_published_companion(
         return None
     if not candidates:
         return None
-    published = _published_still_listing(hf_repo, hf_token, [str(c) for c in candidates])
-    if not published:
-        return None
-    for candidate in candidates:
-        sha = cached_blob_sha256(str(candidate))
-        if sha in published and candidate.is_file() and _drafter_split_is_complete(candidate):
-            return str(candidate)
+    # An optimisation over the download path: any failure here (an unreadable cache entry, a Hub error) falls back
+    # to the normal fetch instead of failing the load.
+    try:
+        published = _published_still_listing(hf_repo, hf_token, [str(c) for c in candidates])
+        if not published:
+            return None
+        for candidate in candidates:
+            sha = cached_blob_sha256(str(candidate))
+            if sha in published and candidate.is_file() and _drafter_split_is_complete(candidate):
+                return str(candidate)
+    except Exception as e:
+        logger.debug("Cached companion revalidation failed for %s: %s", hf_repo, e)
     return None
 
 
@@ -21761,10 +21782,13 @@ class LlamaCppBackend:
         cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
         reuse_snapshot_sibling: bool = True,
+        reuse_published_companion: bool = False,
         outcome: Optional[dict] = None,
         on_transient_failure: Optional[Callable[[], None]] = None,
     ) -> Optional[str]:
-        """Split companion fetched whole (llama-server needs siblings); on_transient_failure only on retryable drops; reuse_snapshot_sibling=False skips snapshot reuse."""
+        """Split companion fetched whole (llama-server needs siblings); on_transient_failure only on retryable drops; reuse_snapshot_sibling=False skips snapshot reuse.
+        reuse_published_companion: a copy cached at another revision whose bytes the repo still publishes wins over
+        the live pick (opt-in: MTP / DFlash keep their live-listing preference)."""
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
         if cancel_event.is_set():
             return None
@@ -21791,7 +21815,12 @@ class LlamaCppBackend:
         )
 
         # Fetched at another revision, still published: reuse it rather than fetch the current pick.
-        if near_path and reuse_snapshot_sibling and not _hf_env_offline():
+        if (
+            near_path
+            and reuse_snapshot_sibling
+            and reuse_published_companion
+            and not _hf_env_offline()
+        ):
             cached = _cached_published_companion(hf_repo, hf_token, pick, companion_cache_dir)
             if cached:
                 logger.info("Reusing cached %s from an earlier revision: %s", label, cached)
@@ -21970,6 +21999,7 @@ class LlamaCppBackend:
             cancel_event = cancel_event,
             near_path = near_path,
             reuse_snapshot_sibling = not f16_unsafe,
+            reuse_published_companion = not f16_unsafe,
             outcome = outcome,
         )
         if resolved is not None:
@@ -22301,7 +22331,12 @@ class LlamaCppBackend:
             local = self._cached_repo_dspark_drafter(
                 hf_repo, cache_dir = repo_cache, near_path = near_path, supported = supported
             )
-            published = _published_still_listing(hf_repo, hf_token, [local]) if local else None
+            try:
+                published = _published_still_listing(hf_repo, hf_token, [local]) if local else None
+            except Exception as exc:
+                # Only an optimisation over the download below; never fail the load on it.
+                logger.debug("Published-hash check failed for %s: %s", hf_repo, exc)
+                published = None
             if published:
                 cached = self._cached_repo_dspark_drafter(
                     hf_repo,
@@ -25741,6 +25776,30 @@ class LlamaCppBackend:
                 binary = self._exec_path_for_launch(binary)
                 self._binary_revision_pending = self._binary_revision(binary)
 
+            # A drafter resolved earlier (route discovery, a resident load) was judged against the llama-server known
+            # then; recheck it against the one this launch uses, so an Inkling 2 layout it refuses is never emitted.
+            if dspark_draft_path:
+                try:
+                    from utils.models.drafters import (
+                        dspark_drafter_schema,
+                        schema_incompatibility,
+                        supported_dspark_schemas,
+                    )
+                    _carried_reason = schema_incompatibility(
+                        dspark_drafter_schema(dspark_draft_path),
+                        supported_dspark_schemas(binary) if binary else supported_dspark_schemas(),
+                    )
+                except Exception as exc:
+                    logger.debug("DSpark drafter recheck failed for %s: %s", dspark_draft_path, exc)
+                    _carried_reason = None
+                if _carried_reason is not None:
+                    logger.info(
+                        "Dropping DSpark drafter %s for this launch: %s",
+                        dspark_draft_path,
+                        _carried_reason,
+                    )
+                    dspark_draft_path = None
+
             # Accumulated, not sampled: a later probe success must not erase an earlier guess.
             _launch_probe_inconclusive = False
             # Set when FA ends up off without the argv saying so.
@@ -27303,7 +27362,9 @@ class LlamaCppBackend:
                         # _detected_gpus, not gpus: manual empties gpus but still uses the GPU draft depth.
                         _mtp_eff_n_max = (
                             _dspark_default_draft_n_max(
-                                getattr(self, "_architecture", None), mtp_draft_path
+                                getattr(self, "_architecture", None),
+                                # The file the child opens: an extras --model-draft (last wins) replaces Studio's.
+                                _extra_args_mtp_draft_path(extra_args, env = {}) or mtp_draft_path,
                             )
                             if _mtp_effective == "dspark"
                             else (2 if _detected_gpus else 3)
@@ -36040,7 +36101,9 @@ class LlamaCppBackend:
                 int(spec_draft_n_max)
                 if spec_draft_n_max is not None
                 else _dspark_default_draft_n_max(
-                    getattr(self, "_architecture", None), dspark_draft_path
+                    getattr(self, "_architecture", None),
+                    # Same file as the fit prices: an extras --model-draft (last wins) replaces Studio's.
+                    _extra_args_mtp_draft_path(extra_args, env = {}) or dspark_draft_path,
                 )
             )
             if spec_draft_n_max is not None:

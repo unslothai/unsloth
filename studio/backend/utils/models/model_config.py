@@ -2357,8 +2357,9 @@ def _local_gguf_load_path(path: Path) -> Path:
 def _parent_mmproj_identity(weight: Path, candidate: Path) -> Optional[str]:
     """Positive evidence that a projector one folder up belongs to this weight, else None.
 
-    A parent folder can be a shared models directory, so a filename wildcard (``mmproj-F16.gguf``)
-    is not enough there: the projector must say in its own header that it serves this model.
+    A parent folder can be a shared models directory, so neither a filename wildcard (``mmproj-F16.gguf``) nor a
+    projector type and width that happen to fit is enough there: the projector's own header must name this model
+    (``general.*`` identity, or the same ``general.name``), and a known width mismatch always rejects it.
     """
     weight_meta = read_gguf_general_metadata(str(weight))
     cand_meta = read_gguf_general_metadata(str(candidate))
@@ -2370,23 +2371,26 @@ def _parent_mmproj_identity(weight: Path, candidate: Path) -> Optional[str]:
     score = pairing_score(weight_meta, cand_meta)
     if score == -1:
         return None
-    if functional_match is True:
-        return "projector type and width"
-    if score >= 60:
-        return "general.* identity metadata"
-    # Many converters write only general.name on the projector; pair on it plus the width check llama-server applies.
-    w_name = ((weight_meta or {}).get("general.name") or "").strip().lower()
-    c_name = ((cand_meta or {}).get("general.name") or "").strip().lower()
-    if not w_name or w_name != c_name:
-        return None
     weight_summary = read_gguf_header_summary(str(weight))
     cand_summary = read_gguf_header_summary(str(candidate))
-    if not weight_summary or not cand_summary:
+    n_embd = projection_dim = None
+    if weight_summary:
+        arch = weight_summary[0].get("general.architecture")
+        n_embd = (
+            weight_summary[0].get(f"{arch}.embedding_length") if isinstance(arch, str) else None
+        )
+    if cand_summary:
+        projection_dim = cand_summary[0].get("clip.vision.projection_dim")
+    width_known = isinstance(n_embd, int) and isinstance(projection_dim, int)
+    # The width check llama-server applies: a known mismatch can never load, whatever the names say.
+    if width_known and n_embd != projection_dim:
         return None
-    arch = weight_summary[0].get("general.architecture")
-    n_embd = weight_summary[0].get(f"{arch}.embedding_length") if isinstance(arch, str) else None
-    projection_dim = cand_summary[0].get("clip.vision.projection_dim")
-    if not isinstance(n_embd, int) or n_embd != projection_dim:
+    if score >= 60:
+        return "general.* identity metadata"
+    # Many converters write only general.name on the projector; pair on it plus a known matching width.
+    w_name = ((weight_meta or {}).get("general.name") or "").strip().lower()
+    c_name = ((cand_meta or {}).get("general.name") or "").strip().lower()
+    if not w_name or w_name != c_name or not width_known:
         return None
     return f"general.name {w_name!r} and projection_dim {projection_dim}"
 
@@ -3298,15 +3302,17 @@ def list_gguf_variants(
     main_files: list[tuple[str, str, int]] = []
 
     from hub.utils.gguf import drop_shadowed_appledouble_siblings
-    from utils.gguf_legacy_layout import is_legacy_layout_path
+    from utils.gguf_legacy_layout import shadowed_legacy_layout
 
+    listed = drop_shadowed_appledouble_siblings(list(info.siblings))
+    shadowed = shadowed_legacy_layout(s.rfilename for s in listed)
     # Sidecars in the listing would otherwise be advertised as the variant, at their own size.
-    for sibling in drop_shadowed_appledouble_siblings(list(info.siblings)):
+    for sibling in listed:
         fname = sibling.rfilename
         if not fname.lower().endswith(".gguf"):
             continue
-        # A previous layout kept under Unsloth_Layout/ backs the root quants of the same name.
-        if is_legacy_layout_path(fname):
+        # A previous-layout copy under Unsloth_Layout/ backs the root quant of the same name.
+        if fname in shadowed:
             continue
         size = sibling.size or 0
 
@@ -3406,6 +3412,31 @@ def list_local_gguf_variants(
         if _is_big_endian_gguf_path(rel, label):
             continue
         main_files.append((rel, _qualified_variant_name(rel, label), size))
+
+    from utils.gguf_legacy_layout import fold_legacy_layout_files
+
+    # Same rule as the Hub cache listing: one row per quant when a previous layout sits beside the current one.
+    def _usable(rel: str) -> bool:
+        try:
+            return (p / rel).stat().st_size > 0
+        except OSError:
+            return False
+
+    layout_dropped, layout_canonical = fold_legacy_layout_files((m[0] for m in main_files), _usable)
+    if layout_dropped or layout_canonical:
+        main_files = [
+            (
+                rel,
+                _qualified_variant_name(
+                    layout_canonical[rel], _extract_quant_label(layout_canonical[rel])
+                )
+                if rel in layout_canonical
+                else qualified,
+                size,
+            )
+            for rel, qualified, size in main_files
+            if rel not in layout_dropped
+        ]
 
     variants = [
         GgufVariantInfo(
