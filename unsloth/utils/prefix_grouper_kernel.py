@@ -85,13 +85,18 @@ _flex_attention_static = (
 )
 
 
-def _flex_attention_compiled(query, key, value, **kwargs):
-    if (
+def _uses_static_flex(query, key, value) -> bool:
+    """ROCm GPU call whose backward runs: compiled per padded length (always False on CUDA builds)."""
+    return (
         _flex_attention_static is not None
         and query.device.type == "cuda"
         and torch.is_grad_enabled()
         and (query.requires_grad or key.requires_grad or value.requires_grad)
-    ):
+    )
+
+
+def _flex_attention_compiled(query, key, value, **kwargs):
+    if _uses_static_flex(query, key, value):
         return _flex_attention_static(query, key, value, **kwargs)
     return _flex_attention_dynamic(query, key, value, **kwargs)
 
@@ -639,6 +644,10 @@ def flex_shared_prefix_attention(
         if _COMPILE_FAILURE is not None:
             raise PrefixGrouperCompileError(_COMPILE_FAILURE)
         key = (str(device), q.dtype, n_heads, n_kv, q.shape[3], scale)
+        # ROCm static flex compiles a new kernel per padded length, each of which can fail and fall back to
+        # eager T x T flex: check every length. The dynamic kernel (CUDA, no-grad calls) is checked once.
+        if _uses_static_flex(q, k, v):
+            key = key + (T_pad,)
         if _COMPILE_CHECK_ON and key not in _COMPILE_CHECKED:
             out = _checked_first_call(
                 q, k, v, prefix_seg_info, block_mask, enable_gqa, scale, T, T_pad, key
