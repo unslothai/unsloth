@@ -49,3 +49,11 @@ export const CHAT_TOUR = "chat";
 export function greetingName(displayName: string): string {
   return displayName.trim().split(/\s+/)[0] ?? "";
 }
+
+/** Video is gated on its own verdict, which a CPU host can pass (experimental CPU video) while chat-only. */
+export function mediaAvailable(
+  chatOnly: boolean,
+  videoSupported: boolean | null,
+): boolean {
+  return !chatOnly || videoSupported === true;
+}

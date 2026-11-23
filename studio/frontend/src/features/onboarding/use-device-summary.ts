@@ -8,6 +8,7 @@ import {
   refreshHardwareInfo,
 } from "@/hooks/use-hardware-info";
 import { useEffect, useState } from "react";
+import { mediaAvailable } from "./lib/pages";
 
 export type DeviceSummary =
   | { status: "checking" }
@@ -51,7 +52,7 @@ function toSummary(
     appleSilicon: platform.appleSilicon,
     ramGb,
     train: !platform.isTrainUnavailable(),
-    media: !platform.isChatOnly(),
+    media: mediaAvailable(platform.isChatOnly(), hardware.videoSupported),
   };
 }
 
