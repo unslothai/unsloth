@@ -105,9 +105,10 @@ class _BookTextParser(HTMLParser):
             closes = {"rb", "rp", "rt", "rtc"} if tag in {"rb", "rtc"} else {"rb", "rp", "rt"}
             while self.stack and self.stack[-1][0] in closes:
                 self.stack.pop()
-        attrs = dict(attrs)
+        attrs = {name: value or "" for name, value in attrs}
         if tag == "meta" and self.encoding is None:
-            self.encoding = attrs.get("charset")
+            # An empty <meta charset> must not stop a later meta from declaring it.
+            self.encoding = attrs.get("charset") or None
             if not self.encoding and attrs.get("http-equiv", "").lower() == "content-type":
                 charset = re.search(r"charset\s*=\s*[\"']?([\w-]+)", attrs.get("content", ""), re.I)
                 if charset:
