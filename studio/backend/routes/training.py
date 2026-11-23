@@ -1329,6 +1329,15 @@ def _reject_untrainable_model_request(
 def _validate_training_platform(request: TrainingStartRequest) -> None:
     from utils.hardware import hardware
 
+    if hardware.chat_only_mac_install():
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "This install was set up without the training stack (Chat only), so training is "
+                "disabled. Reinstall Unsloth Studio without --no-torch, or use Upgrade to full "
+                "install in Settings, to enable training."
+            ),
+        )
     if hardware.DEVICE == hardware.DeviceType.CPU and hardware.trains_on_cpu(
         hardware.current_chat_only_verdict()[0]
     ):
@@ -1352,15 +1361,6 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
         )
     if hardware.DEVICE != hardware.DeviceType.MLX:
         return
-    if hardware.mlx_serves_chat_only():
-        raise HTTPException(
-            status_code = 400,
-            detail = (
-                "This install was set up without the training stack (Chat only), so training is "
-                "disabled. Reinstall Unsloth Studio without --no-torch, or use Upgrade to full "
-                "install in Settings, to enable training."
-            ),
-        )
     if request.is_embedding:
         raise HTTPException(
             status_code = 400,

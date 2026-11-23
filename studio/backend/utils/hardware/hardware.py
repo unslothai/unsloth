@@ -1517,6 +1517,11 @@ def mlx_serves_chat_only() -> bool:
     return DEVICE == DeviceType.MLX and bool(CHAT_ONLY) and CHAT_ONLY_REASON == "no_torch"
 
 
+def chat_only_mac_install() -> bool:
+    """An Apple Silicon --no-torch (Chat only) install, which never trains whatever the state of its MLX stack."""
+    return is_apple_silicon() and _installed_without_torch()
+
+
 def verdict_blames_the_mlx_stack() -> bool:
     """Unlocked deliberately: _DETECT_LOCK spans a whole detection pass, imports included, so taking it would park the post-warm worker behind an early request's first import. The overturn re-reads under the lock, so a straddling read costs one needless measurement."""
     return bool(CHAT_ONLY) and CHAT_ONLY_REASON == "mlx_unavailable"
