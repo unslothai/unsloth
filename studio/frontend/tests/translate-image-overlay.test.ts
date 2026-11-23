@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+
 import test from "node:test";
 
 import {
@@ -12,7 +13,10 @@ import {
   readableTextColor,
   wrapWords,
 } from "../src/features/translate/translate-image-overlay.ts";
-import { translateTexts } from "../src/features/translate/translate-subtitles.ts";
+import {
+  translateTextList,
+  translateTexts,
+} from "../src/features/translate/translate-subtitles.ts";
 
 import { readSrc } from "./helpers/kit.ts";
 
@@ -125,4 +129,23 @@ test("text too long for its box at the smallest size is cut to the box with an e
   assert.equal(fitted.size, 4);
   assert.ok(fitted.lines.length * fitted.size * 1.2 <= 10);
   assert.ok(fitted.lines[fitted.lines.length - 1].endsWith("\u2026"));
+});
+
+test("a block longer than one passage is split before it reaches the model", async () => {
+  const sentence =
+    "This sentence is part of a very long paragraph on a poster. ";
+  const long = sentence.repeat(60).trim();
+  const sent: string[] = [];
+  const out = await translateTextList(
+    ["Exit here", long],
+    async (source) => {
+      sent.push(source);
+      return source.replace(/^1\. /m, "1. ").toUpperCase();
+    },
+    { signal: new AbortController().signal, onPhase: () => {} },
+  );
+  assert.ok(sent.every((source) => source.length <= 1000));
+  assert.ok(sent.length >= 4);
+  assert.equal(out[0], "EXIT HERE");
+  assert.equal(out[1], long.toUpperCase());
 });

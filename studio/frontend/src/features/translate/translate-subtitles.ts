@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { TRANSLATE_CHUNK_CHARS } from "./translate-text.ts";
+import {
+  TRANSLATE_CHUNK_CHARS,
+  restoreChunkWhitespace,
+  splitForTranslation,
+} from "./translate-text.ts";
 
 export type SubtitleFormat = "srt" | "vtt";
 
@@ -243,4 +247,35 @@ export function subtitleFileName(
 ): string {
   const base = sourceName?.replace(EXTENSION, "").trim() || "subtitles";
   return `${base}.${target}.${format}`;
+}
+
+/** Like `translateTexts`, but a text longer than one passage is split like any text, never sent whole. */
+export async function translateTextList(
+  texts: readonly string[],
+  complete: (source: string) => Promise<string>,
+  options: Parameters<typeof translateTexts>[2],
+): Promise<string[]> {
+  const long = texts.map((text) => text.length > TRANSLATE_CHUNK_CHARS);
+  const short = await translateTexts(
+    texts.filter((_, i) => !long[i]),
+    complete,
+    options,
+  );
+  let next = 0;
+  const out: string[] = [];
+  for (const [i, text] of texts.entries()) {
+    if (!long[i]) {
+      out.push(short[next++]);
+      continue;
+    }
+    let joined = "";
+    for (const chunk of splitForTranslation(text)) {
+      options.signal.throwIfAborted();
+      joined += chunk.text
+        ? restoreChunkWhitespace(chunk, await complete(chunk.text))
+        : chunk.after;
+    }
+    out.push(joined.trim());
+  }
+  return out;
 }

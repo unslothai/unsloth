@@ -46,7 +46,7 @@ import { quantOnDisk } from "./quant-on-disk";
 import {
   parseSubtitles,
   translateSubtitles,
-  translateTexts,
+  translateTextList,
 } from "./translate-subtitles";
 import {
   type TranslatePromptOptions,
@@ -469,7 +469,7 @@ export async function runTextListTranslation(
   options: TranslateSetup & { texts: readonly string[] },
 ): Promise<string[]> {
   const { complete } = await prepareTranslation(options);
-  return translateTexts(options.texts, complete, {
+  return translateTextList(options.texts, complete, {
     signal: options.signal,
     onPhase: options.onPhase,
   });
