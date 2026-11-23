@@ -2132,6 +2132,10 @@ def _replace_outputs_logits(outputs, hidden_states):
 # Sticky per model: its head input is not hidden_states[-1] in a way we can reproduce, so every call returns real logits.
 _UNSLOTH_GRPO_HIDDEN_STATES_UNSAFE_ATTR = "_unsloth_grpo_hidden_states_unsafe"
 _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR = "_unsloth_grpo_hidden_states_verified"
+# Set once the fallback saw the forward return the head input itself (see wrapped_forward).
+_UNSLOTH_GRPO_HIDDEN_STATES_RETURNS_HEAD_INPUT_ATTR = (
+    "_unsloth_grpo_hidden_states_returns_head_input"
+)
 
 
 def _grpo_pre_head_hidden_divisor(model):
@@ -2263,21 +2267,27 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         # A forward that honours UNSLOTH_RETURN_HIDDEN_STATES itself, behind a wrapper the capability check does not
         # know, already returns the head input as .logits: nothing to verify, and with a square head the check below
         # would compare hidden states with hidden states, call the input unsafe and degrade every later call.
-        native = getattr(outputs, "logits", None)
-        returned_head_input = (
-            isinstance(native, torch.Tensor)
-            and native.ndim == hidden_states.ndim
-            and native.shape[-1] == hidden_states.shape[-1]
-            and native.shape[-2] >= 1
-            and torch.equal(
-                native[..., -1:, :], hidden_states[..., -1:, :].to(device = native.device)
-            )
+        # The comparison reads its result back to the host (a sync on CUDA, a data-dependent branch under
+        # Dynamo), so it only runs until this model has a verdict: either answer is then kept per model.
+        verified = getattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR, None)
+        returned_head_input = getattr(
+            target_model, _UNSLOTH_GRPO_HIDDEN_STATES_RETURNS_HEAD_INPUT_ATTR, False
         )
+        if verified is None and not returned_head_input:
+            native = getattr(outputs, "logits", None)
+            returned_head_input = (
+                isinstance(native, torch.Tensor)
+                and native.ndim == hidden_states.ndim
+                and native.shape[-1] == hidden_states.shape[-1]
+                and native.shape[-2] >= 1
+                and torch.equal(
+                    native[..., -1:, :], hidden_states[..., -1:, :].to(device = native.device)
+                )
+            )
+            if returned_head_input:
+                setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_RETURNS_HEAD_INPUT_ATTR, True)
         # Once per model: a head input we do not reproduce (another pre-head transform) would silently train a different objective.
-        if (
-            not returned_head_input
-            and getattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR, None) is None
-        ):
+        if not returned_head_input and verified is None:
             verdict = _grpo_hidden_states_reproduce_logits(
                 target_model, hidden_states, getattr(outputs, "logits", None)
             )

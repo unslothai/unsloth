@@ -15,6 +15,7 @@ import os
 import pytest
 
 torch = pytest.importorskip("torch")
+from torch.utils._python_dispatch import TorchDispatchMode  # noqa: E402
 
 import unsloth  # noqa: F401,E402  (must be imported before transformers)
 from transformers import MistralConfig, Qwen2Config  # noqa: E402
@@ -506,3 +507,54 @@ def test_fallback_over_an_unrecognised_wrapper_keeps_its_hidden_states(family):
     assert getattr(fast, "_unsloth_grpo_hidden_states_warning_issued", False) is False
     assert scored.shape == (1, 5, _CONFIG["hidden_size"])
     assert torch.equal(scored, native)
+
+
+class _CountEqual(TorchDispatchMode):
+    """Counts aten::equal: on CUDA each one reads its result back to the host."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def __torch_dispatch__(
+        self,
+        func,
+        types,
+        args = (),
+        kwargs = None,
+    ):
+        if func is torch.ops.aten.equal.default:
+            self.calls += 1
+        return func(*args, **(kwargs or {}))
+
+
+def _equal_calls_over_three_scoring_calls(model):
+    ids = torch.arange(10).unsqueeze(0)
+    counter = _CountEqual()
+    with torch.no_grad(), _return_hidden_states("1"):
+        for _ in range(3):
+            with counter:
+                scored = model(input_ids = ids, logits_to_keep = 5).logits
+            assert scored.shape == (1, 5, _CONFIG["hidden_size"])
+    return counter.calls
+
+
+@pytest.mark.parametrize("wrapper", ["verified_stock", "unrecognised_fast"])
+def test_fallback_compares_head_input_once_per_model(wrapper):
+    """The fallback's head-input comparison is a host read per call; once the model has a verdict
+    (verified head, or a forward that returns the head input itself) later calls must skip it."""
+    stock, fast = _square_pair()
+    if wrapper == "verified_stock":
+        model = stock
+    else:
+        model = fast
+        original = fast.forward
+
+        def other_forward(*args, **kwargs):
+            return original(*args, **kwargs)
+
+        fast.forward = other_forward
+    assert rl._install_grpo_hidden_states_forward_wrapper(model) is True
+    assert _equal_calls_over_three_scoring_calls(model) == 1
+    assert _unsloth_grpo_hidden_states_signal(model) is True
+    assert getattr(model, "_unsloth_grpo_hidden_states_unsafe", False) is False
