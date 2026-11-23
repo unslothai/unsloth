@@ -1688,8 +1688,7 @@ class FastSentenceTransformer(FastModel):
         except (OSError, TypeError, ValueError):
             is_local = False
         for route, value in routes:
-            # A Hub repo's route is joined onto the folder and probed: a UNC or rooted one would reach a host
-            # the repo chose (SMB, NTLM on Windows), like a top-level modules.json path. Local folders unchanged.
+            # A Hub repo's UNC / rooted route would reach a host the repo chose (SMB, NTLM on Windows).
             if not is_local and FastSentenceTransformer._folder_escapes_model(route):
                 raise ValueError(
                     f"Unsloth: {model_name} names the {class_ref} route folder {route!r}, which is "
