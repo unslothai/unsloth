@@ -40,7 +40,7 @@ import { AutoReadAloud } from "@/components/assistant-ui/auto-read-aloud";
 import { CompactionDivider } from "@/components/assistant-ui/compaction-divider";
 import {
   type ComposerSendAttempt,
-  type ComposerSendObservable,
+  ComposerAttachmentPreparationError,
   observeComposerSend,
 } from "@/components/assistant-ui/composer-send-lifecycle";
 import {
@@ -6180,10 +6180,15 @@ const Composer: FC<{
         if (releaseReservation) {
           preStreamRunReservationRef.current = null;
         }
-        toast.error("Could not prepare attachments", {
-          description:
-            error instanceof Error ? error.message : "Please retry the send.",
-        });
+        toast.error(
+          error instanceof ComposerAttachmentPreparationError
+            ? "Could not prepare attachments"
+            : "Could not send message",
+          {
+            description:
+              error instanceof Error ? error.message : "Please retry the send.",
+          },
+        );
       };
 
       try {
@@ -6236,7 +6241,7 @@ const Composer: FC<{
           }
         }
         const registration = observeComposerSend(
-          aui.composer() as unknown as ComposerSendObservable,
+          aui.composer(),
           preStreamThreadIds,
           reservationToken,
           {
@@ -6260,22 +6265,24 @@ const Composer: FC<{
                 : (dispatch as QuoteDispatch).contextId,
           },
         );
-        if (registration.kind !== "observing") {
-          const busyOwnsReservation =
-            registration.kind === "busy" &&
-            registration.activeToken === reservationToken;
+        if (registration.kind === "busy") {
           failSend(
-            new Error(
-              registration.kind === "busy"
-                ? "A composer send is already in flight."
-                : "The composer has nothing to send.",
-            ),
-            !busyOwnsReservation,
+            new Error("A composer send is already in flight."),
+            registration.activeToken !== reservationToken,
           );
           return;
         }
-        sendObserver = registration.attempt;
-        composerSendObserverRef.current = sendObserver;
+        if (registration.kind === "ignored") {
+          failSend(new Error("The composer has nothing to send."));
+          return;
+        }
+        if (registration.kind === "observing") {
+          sendObserver = registration.attempt;
+          composerSendObserverRef.current = sendObserver;
+        }
+        // `unavailable` still sends through the public store accessor. There
+        // is no observer to settle, but history and the attachment adapter
+        // keep their own reservation/acceptance paths.
         // Public ComposerRuntimeImpl.send() returns void. The installed core
         // reports success through the send event and failure through the
         // attachment adapter; never inspect this return value.

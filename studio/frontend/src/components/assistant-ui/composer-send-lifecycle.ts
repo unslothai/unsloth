@@ -28,12 +28,18 @@ export class ComposerAttachmentPreparationError extends Error {
   }
 }
 
-export type ComposerSendObservable = {
+/** The actual runtime object that owns the send event. */
+export type ComposerSendRuntime = {
   unstable_on(event: "send", callback: (payload: unknown) => void): () => void;
+};
+
+/** `aui.composer()` returns this store accessor, not the runtime itself. */
+export type ComposerSendAccessor = {
   getState(): {
     readonly isEmpty?: boolean;
     readonly dictation?: unknown;
   };
+  __internal_getRuntime?: () => ComposerSendRuntime | undefined;
 };
 
 type SendCallbacks = {
@@ -54,10 +60,11 @@ export type ComposerSendRegistration =
   | {
       readonly kind: "ignored";
       readonly reason: "empty" | "dictating";
-    };
+    }
+  | { readonly kind: "unavailable"; readonly reason: "runtime" };
 
 type SendAttempt = {
-  readonly composer: ComposerSendObservable;
+  readonly runtime: ComposerSendRuntime;
   readonly token: symbol | null;
   readonly threadIds: ReadonlySet<string>;
   readonly expectedContextId: string | null;
@@ -178,7 +185,7 @@ export type ObserveComposerSendOptions = {
 };
 
 export function observeComposerSend(
-  composer: ComposerSendObservable,
+  composer: ComposerSendAccessor,
   threadIds: readonly string[],
   token: symbol | null,
   callbacks: SendCallbacks,
@@ -187,7 +194,12 @@ export function observeComposerSend(
   // BaseComposerRuntimeCore.send() returns before emitting `send` when the
   // composer is empty or dictation is active. Do not occupy the composer with
   // an observer that can never receive a terminal signal.
-  const state = composer.getState();
+  let state: ReturnType<ComposerSendAccessor["getState"]>;
+  try {
+    state = composer.getState();
+  } catch {
+    return { kind: "unavailable", reason: "runtime" };
+  }
   if (state.isEmpty === true) {
     return { kind: "ignored", reason: "empty" };
   }
@@ -195,7 +207,19 @@ export function observeComposerSend(
     return { kind: "ignored", reason: "dictating" };
   }
 
-  const active = activeByComposer.get(composer);
+  // `aui.composer()` is a store accessor. The event emitter lives on the
+  // runtime it owns, not on the accessor itself.
+  let runtime: ComposerSendRuntime | undefined;
+  try {
+    runtime = composer.__internal_getRuntime?.();
+  } catch {
+    return { kind: "unavailable", reason: "runtime" };
+  }
+  if (runtime === undefined || typeof runtime.unstable_on !== "function") {
+    return { kind: "unavailable", reason: "runtime" };
+  }
+
+  const active = activeByComposer.get(runtime);
   if (active !== undefined) {
     // A second send must not be attributed to the first one's event. The
     // caller's reservation normally prevents this before it reaches here.
@@ -203,7 +227,7 @@ export function observeComposerSend(
   }
 
   const attempt: SendAttempt = {
-    composer,
+    runtime,
     token,
     threadIds: new Set(threadIds),
     expectedContextId: options.expectedContextId,
@@ -217,13 +241,6 @@ export function observeComposerSend(
     fail: () => undefined,
     maybeSent: () => undefined,
   };
-  attempt.removeRejectionGuard = installRejectionGuard(attempt);
-  activeByComposer.set(composer, attempt);
-  if (token !== null) {
-    attemptsByToken.set(token, attempt);
-  }
-  rememberThreadAttempt(attempt);
-  rememberContextAttempt(attempt);
 
   const cleanup = (): void => {
     if (token !== null && attemptsByToken.get(token) === attempt) {
@@ -231,8 +248,8 @@ export function observeComposerSend(
     }
     forgetThreadAttempt(attempt);
     forgetContextAttempt(attempt);
-    if (activeByComposer.get(composer) === attempt) {
-      activeByComposer.delete(composer);
+    if (activeByComposer.get(runtime) === attempt) {
+      activeByComposer.delete(runtime);
     }
     attempt.sendUnsubscribe?.();
     attempt.sendUnsubscribe = null;
@@ -281,12 +298,51 @@ export function observeComposerSend(
     }
   };
 
-  attempt.sendUnsubscribe = composer.unstable_on("send", () => {
-    attempt.sendEventSeen = true;
-    maybeSent();
-  });
+  // The callbacks must be complete before an unusual runtime can emit during
+  // subscription. An event seen before the unsubscribe handle exists is
+  // replayed after registration, so it is neither lost nor leaked.
   attempt.fail = failed;
   attempt.maybeSent = maybeSent;
+  let subscriptionReady = false;
+  let earlySendEvent = false;
+
+  try {
+    const unsubscribe = runtime.unstable_on("send", () => {
+      if (!subscriptionReady) {
+        earlySendEvent = true;
+        return;
+      }
+      attempt.sendEventSeen = true;
+      maybeSent();
+    });
+    if (typeof unsubscribe !== "function") {
+      throw new Error("Composer runtime returned no unsubscribe function");
+    }
+    attempt.sendUnsubscribe = unsubscribe;
+    subscriptionReady = true;
+    attempt.removeRejectionGuard = installRejectionGuard(attempt);
+    activeByComposer.set(runtime, attempt);
+    if (token !== null) {
+      attemptsByToken.set(token, attempt);
+    }
+    rememberThreadAttempt(attempt);
+    rememberContextAttempt(attempt);
+
+    if (earlySendEvent) {
+      attempt.sendEventSeen = true;
+      maybeSent();
+      if (!attempt.active) {
+        // A synchronous event already closed this attempt. The message send
+        // still proceeds; there is no observer left to own.
+        return { kind: "unavailable", reason: "runtime" };
+      }
+    }
+  } catch {
+    attempt.active = false;
+    cleanup();
+    releaseGuard();
+    return { kind: "unavailable", reason: "runtime" };
+  }
 
   const stop = (): void => {
     if (!attempt.active) {

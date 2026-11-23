@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "@typescript/typescript6";
-import { readSrc } from "./helpers/kit.ts";
+import {
+  ComposerAttachmentPreparationError,
+  observeComposerSend,
+} from "../src/components/assistant-ui/composer-send-lifecycle.ts";
 import {
   composerKeyEventForImeSubmit,
   composerSubmitIntent,
   imeKeydownBlocksComposerSubmit,
   parkedSendSteer,
 } from "../src/features/chat/utils/composer-preferences.ts";
+import { readSrc } from "./helpers/kit.ts";
 
 const text = readSrc("components/assistant-ui/thread.tsx");
 const source = ts.createSourceFile(
@@ -339,7 +343,8 @@ test("main cancels an audio upload only after a normal send reservation succeeds
       notifyPromptQueueRunFailed: () => undefined,
       referenceThreadId: "chat",
       isPreStreamRunReservationActive: () => false,
-    composerSendObserverRef: { current: null },
+      ComposerAttachmentPreparationError,
+      composerSendObserverRef: { current: null },
       observeComposerSend: () => {
         calls.push("observe");
         return {
@@ -402,6 +407,7 @@ test("a reported attachment failure releases the send exactly once", () => {
     notifyPromptQueueRunFailed: () => calls.push("queue-failed"),
     referenceThreadId: "chat",
     isPreStreamRunReservationActive: () => false,
+    ComposerAttachmentPreparationError,
     composerSendObserverRef: { current: null },
     observeComposerSend: (
       _composer: unknown,
@@ -500,6 +506,7 @@ test("a quoted attachment failure releases quote and pre-stream reservations onc
     markQuoteDispatchSendFailed: () => calls.push("send-failed"),
     releaseQuoteDispatch: () => calls.push("release-quote"),
     isPreStreamRunReservationActive: () => false,
+    ComposerAttachmentPreparationError,
     composerSendObserverRef: { current: null },
     observeComposerSend: (
       _composer: unknown,
@@ -584,6 +591,7 @@ test("a busy registration leaves the prior observer and its reservation untouche
     referenceThreadId: "chat",
     isPreStreamRunReservationActive: (token: symbol | null) =>
       token === reservation,
+    ComposerAttachmentPreparationError,
     composerSendObserverRef,
     observeComposerSend: () => {
       observeCalls += 1;
@@ -640,6 +648,7 @@ test("a stale observer is reclaimed without releasing the new reservation", () =
     notifyPromptQueueRunFailed: () => calls.push("queue-failed"),
     referenceThreadId: "chat",
     isPreStreamRunReservationActive: () => false,
+    ComposerAttachmentPreparationError,
     composerSendObserverRef: { current: previous },
     observeComposerSend: (
       _composer: unknown,
@@ -672,7 +681,77 @@ test("a stale observer is reclaimed without releasing the new reservation", () =
     "queue-failed",
     "toast",
   ]);
-  assert.equal(releaseCalls, 1, "only the current attempt's reservation is released");
+  assert.equal(
+    releaseCalls,
+    1,
+    "only the current attempt's reservation is released",
+  );
+});
+
+test("an unavailable observer still sends and uses the generic setup toast", () => {
+  const run = (sendImpl: (calls: unknown[]) => void) => {
+    const calls: unknown[] = [];
+    const deps = {
+      aui: {
+        threads: () => ({ __internal_getAssistantRuntime: () => undefined }),
+        composer: () => ({
+          getState: () => ({
+            text: "Draft",
+            quote: undefined,
+            isEmpty: false,
+          }),
+          __internal_getRuntime: () => undefined,
+          send: () => sendImpl(calls),
+        }),
+      },
+      reservePreStreamRun: () => Symbol("reservation"),
+      preStreamThreadIds: ["chat"],
+      parseExternalModelId: () => null,
+      useChatRuntimeStore: {
+        getState: () => ({
+          params: { checkpoint: "local/model" },
+          incognito: false,
+          activeGgufVariant: null,
+        }),
+      },
+      preStreamRunReservationRef: { current: null },
+      toast: {
+        error: (title: string) => calls.push(["toast", title]),
+      },
+      cancelAudioUpload: () => undefined,
+      claimThreadCreation: () => undefined,
+      projectScope: null,
+      armJustSent: () => calls.push("arm"),
+      releasePreStreamRunReservation: () => {
+        calls.push("release");
+        return true;
+      },
+      notifyPromptQueueRunFailed: () => calls.push("queue-failed"),
+      referenceThreadId: "chat",
+      isPreStreamRunReservationActive: () => false,
+      ComposerAttachmentPreparationError,
+      composerSendObserverRef: { current: null },
+      observeComposerSend,
+    };
+    const send = createCallback(reservedSendCallback, deps);
+    send();
+    return calls;
+  };
+
+  assert.deepEqual(
+    run((calls) => calls.push("send")),
+    ["send", "arm"],
+  );
+  const failed = run((calls) => {
+    calls.push("send");
+    throw new TypeError("send setup failed");
+  });
+  assert.deepEqual(failed, [
+    "send",
+    "release",
+    "queue-failed",
+    ["toast", "Could not send message"],
+  ]);
 });
 
 test("main, edit and comparison composers use the setting and expose settings access", () => {

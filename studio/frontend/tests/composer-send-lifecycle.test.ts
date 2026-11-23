@@ -6,7 +6,7 @@
 // the success signal is the public `send` event.
 
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import type { AttachmentAdapter, PendingAttachment } from "@assistant-ui/core";
 import {
   BaseComposerRuntimeCore,
@@ -18,6 +18,12 @@ import {
   observeComposerSend,
   reportComposerAttachmentFailure,
 } from "../src/components/assistant-ui/composer-send-lifecycle.ts";
+import {
+  closeTapMessageChannels,
+  composerStoreAccessor,
+} from "./helpers/composer-store-accessor.ts";
+
+after(() => closeTapMessageChannels());
 
 class TestComposerCore extends BaseComposerRuntimeCore {
   readonly path = { ref: "thread.composer", threadId: "thread-1" };
@@ -64,12 +70,28 @@ function composerFor(core: TestComposerCore): ThreadComposerRuntimeImpl {
   } as never);
 }
 
+function accessorFor(core: TestComposerCore) {
+  const runtime = composerFor(core);
+  const fixture = composerStoreAccessor(runtime);
+  return { accessor: fixture.accessor, dispose: fixture.dispose, runtime };
+}
+
 function observing(registration: ReturnType<typeof observeComposerSend>) {
   assert.equal(registration.kind, "observing");
   if (registration.kind !== "observing") {
     throw new Error("expected an observing registration");
   }
   return registration.attempt;
+}
+
+async function setComposerText(
+  core: TestComposerCore,
+  text: string,
+): Promise<void> {
+  core.setText(text);
+  // The store client recomputes its memoized state on the tap scheduler's
+  // macrotask.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
 const quote = {
@@ -80,12 +102,18 @@ const quote = {
 test("the installed public send() returns void and reports the send event", async () => {
   const core = new TestComposerCore();
   core.setText("hello");
-  const composer = composerFor(core);
+  const { accessor, dispose, runtime } = accessorFor(core);
+  assert.equal(
+    typeof (accessor as { unstable_on?: unknown }).unstable_on,
+    "undefined",
+  );
+  assert.equal(typeof accessor.__internal_getRuntime, "function");
+  assert.equal(accessor.__internal_getRuntime?.(), runtime);
   let sent = 0;
   let failed = 0;
   const attempt = observing(
     observeComposerSend(
-      composer,
+      accessor,
       ["thread-1"],
       Symbol("reservation"),
       { onSent: () => sent++, onFailed: () => failed++ },
@@ -94,7 +122,7 @@ test("the installed public send() returns void and reports the send event", asyn
   );
   assert.equal(attempt.isActive(), true);
 
-  const result = composer.send();
+  const result = accessor.send();
   assert.equal(result, undefined);
   await Promise.resolve();
   await Promise.resolve();
@@ -104,17 +132,18 @@ test("the installed public send() returns void and reports the send event", asyn
   assert.equal(core.sent.length, 1);
   assert.equal(attempt.isActive(), false);
   attempt.stop();
+  dispose();
 });
 
 test("a quoted send settles only after the exact context reaches history", async () => {
   const core = new TestComposerCore();
   core.setText("quoted");
   core.setQuote(quote);
-  const composer = composerFor(core);
+  const { accessor, dispose } = accessorFor(core);
   let sent = 0;
   const attempt = observing(
     observeComposerSend(
-      composer,
+      accessor,
       ["thread-1"],
       Symbol("reservation"),
       { onSent: () => sent++, onFailed: () => undefined },
@@ -122,7 +151,7 @@ test("a quoted send settles only after the exact context reaches history", async
     ),
   );
 
-  composer.send();
+  accessor.send();
   await Promise.resolve();
   await Promise.resolve();
   assert.equal(
@@ -139,15 +168,22 @@ test("a quoted send settles only after the exact context reaches history", async
   assert.equal(sent, 1, "settlement is idempotent");
   assert.equal(attempt.isActive(), false);
   attempt.stop();
+  dispose();
 });
 
 test("a second registration is rejected without canceling the active attempt", async () => {
   const core = new TestComposerCore();
   core.setText("first");
-  const composer = composerFor(core);
+  const first = accessorFor(core);
+  const secondFixture = composerStoreAccessor(first.runtime);
+  assert.equal(
+    secondFixture.accessor.__internal_getRuntime?.(),
+    first.accessor.__internal_getRuntime?.(),
+    "separate accessors resolve to the same ownership identity",
+  );
   const active = observing(
     observeComposerSend(
-      composer,
+      first.accessor,
       ["thread-1"],
       Symbol("reservation"),
       { onSent: () => undefined, onFailed: () => undefined },
@@ -155,7 +191,7 @@ test("a second registration is rejected without canceling the active attempt", a
     ),
   );
   const second = observeComposerSend(
-    composer,
+    secondFixture.accessor,
     ["thread-1"],
     Symbol("other-reservation"),
     { onSent: () => undefined, onFailed: () => undefined },
@@ -169,17 +205,17 @@ test("a second registration is rejected without canceling the active attempt", a
     "the valid in-flight send is untouched",
   );
 
-  composer.send();
+  first.accessor.send();
   await Promise.resolve();
   await Promise.resolve();
   assert.equal(active.isActive(), false);
 
   // Once the valid attempt has terminated, a legitimate later send can own
   // the composer again.
-  core.setText("later");
+  await setComposerText(core, "later");
   const later = observing(
     observeComposerSend(
-      composer,
+      secondFixture.accessor,
       ["thread-1"],
       Symbol("later-reservation"),
       { onSent: () => undefined, onFailed: () => undefined },
@@ -187,13 +223,15 @@ test("a second registration is rejected without canceling the active attempt", a
     ),
   );
   later.stop();
+  first.dispose();
+  secondFixture.dispose();
 });
 
-test("an empty composer is rejected before it can occupy activeByComposer", () => {
+test("an empty composer is rejected before it can occupy activeByComposer", async () => {
   const core = new TestComposerCore();
-  const composer = composerFor(core);
+  const { accessor, dispose } = accessorFor(core);
   const ignored = observeComposerSend(
-    composer,
+    accessor,
     ["thread-1"],
     Symbol("reservation"),
     { onSent: () => undefined, onFailed: () => undefined },
@@ -206,10 +244,10 @@ test("an empty composer is rejected before it can occupy activeByComposer", () =
 
   // BaseComposerRuntimeCore.send() would return without emitting `send`.
   // The composer must still be available for a real send afterwards.
-  core.setText("later");
+  await setComposerText(core, "later");
   const later = observing(
     observeComposerSend(
-      composer,
+      accessor,
       ["thread-1"],
       Symbol("later-reservation"),
       { onSent: () => undefined, onFailed: () => undefined },
@@ -217,6 +255,189 @@ test("an empty composer is rejected before it can occupy activeByComposer", () =
     ),
   );
   later.stop();
+  dispose();
+});
+
+test("observer teardown unsubscribes once and releases ownership", () => {
+  const core = new TestComposerCore();
+  core.setText("teardown");
+  const { accessor, dispose } = accessorFor(core);
+  const runtime = accessor.__internal_getRuntime?.();
+  assert.ok(runtime);
+  const original = runtime.unstable_on;
+  let unsubscribed = 0;
+  runtime.unstable_on = ((
+    event: "send",
+    callback: (payload: unknown) => void,
+  ) => {
+    const unsubscribe = original.call(runtime, event, callback);
+    return () => {
+      unsubscribed += 1;
+      unsubscribe();
+    };
+  }) as typeof runtime.unstable_on;
+  try {
+    const attempt = observing(
+      observeComposerSend(
+        accessor,
+        ["thread-1"],
+        Symbol("teardown-token"),
+        { onSent: () => undefined, onFailed: () => undefined },
+        { expectedContextId: null },
+      ),
+    );
+    attempt.stop();
+    attempt.stop();
+    assert.equal(unsubscribed, 1);
+    assert.equal(attempt.isActive(), false);
+  } finally {
+    runtime.unstable_on = original;
+  }
+
+  const later = observing(
+    observeComposerSend(
+      accessor,
+      ["thread-1"],
+      Symbol("later-token"),
+      { onSent: () => undefined, onFailed: () => undefined },
+      { expectedContextId: null },
+    ),
+  );
+  later.stop();
+  dispose();
+});
+
+test("an unavailable runtime is non-observing but still permits the send", async () => {
+  const core = new TestComposerCore();
+  core.setText("send without observer");
+  const { accessor, dispose } = accessorFor(core);
+  const runtime = accessor.__internal_getRuntime?.();
+  assert.ok(runtime);
+  const original = runtime.unstable_on;
+  runtime.unstable_on = undefined as never;
+  try {
+    const unavailable = observeComposerSend(
+      accessor,
+      ["thread-1"],
+      Symbol("reservation"),
+      { onSent: () => undefined, onFailed: () => undefined },
+      { expectedContextId: null },
+    );
+    assert.equal(unavailable.kind, "unavailable");
+
+    accessor.send();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(core.sent.length, 1);
+  } finally {
+    runtime.unstable_on = original;
+    dispose();
+  }
+});
+
+test("a throwing subscription rolls back every registration", () => {
+  const core = new TestComposerCore();
+  core.setText("rollback");
+  const { accessor, dispose } = accessorFor(core);
+  const runtime = accessor.__internal_getRuntime?.();
+  assert.ok(runtime);
+  const original = runtime.unstable_on;
+  let failures = 0;
+  const token = Symbol("rollback-token");
+  runtime.unstable_on = (() => {
+    throw new Error("subscribe failed");
+  }) as typeof runtime.unstable_on;
+  try {
+    const unavailable = observeComposerSend(
+      accessor,
+      ["thread-1"],
+      token,
+      {
+        onSent: () => undefined,
+        onFailed: () => {
+          failures += 1;
+        },
+      },
+      { expectedContextId: "ctx-rollback" },
+    );
+    assert.equal(unavailable.kind, "unavailable");
+  } finally {
+    runtime.unstable_on = original;
+  }
+
+  // Token and thread registrations were rolled back, so the failure reporter
+  // cannot find a stale attempt.
+  reportComposerAttachmentFailure(
+    token,
+    ["thread-1"],
+    new Error("stale lookup"),
+  );
+  reportComposerAttachmentFailure(
+    Symbol("unknown-token"),
+    ["thread-1"],
+    new Error("stale thread lookup"),
+  );
+  assert.equal(failures, 0);
+
+  const later = observing(
+    observeComposerSend(
+      accessor,
+      ["thread-1"],
+      Symbol("later-token"),
+      { onSent: () => undefined, onFailed: () => undefined },
+      { expectedContextId: null },
+    ),
+  );
+  later.stop();
+  dispose();
+});
+
+test("a synchronous send event during subscription is not lost or leaked", () => {
+  const core = new TestComposerCore();
+  core.setText("sync event");
+  const { accessor, dispose } = accessorFor(core);
+  const runtime = accessor.__internal_getRuntime?.();
+  assert.ok(runtime);
+  const original = runtime.unstable_on;
+  let unsubscribed = 0;
+  let sent = 0;
+  runtime.unstable_on = ((_event: string, callback: () => void) => {
+    callback();
+    return () => {
+      unsubscribed += 1;
+    };
+  }) as typeof runtime.unstable_on;
+  try {
+    const result = observeComposerSend(
+      accessor,
+      ["thread-1"],
+      Symbol("sync-token"),
+      {
+        onSent: () => {
+          sent += 1;
+        },
+        onFailed: () => undefined,
+      },
+      { expectedContextId: null },
+    );
+    assert.equal(sent, 1, "the synchronous event settled the attempt");
+    assert.equal(unsubscribed, 1, "the late unsubscribe was invoked");
+    assert.equal(result.kind, "unavailable");
+  } finally {
+    runtime.unstable_on = original;
+  }
+
+  const later = observing(
+    observeComposerSend(
+      accessor,
+      ["thread-1"],
+      Symbol("later-token"),
+      { onSent: () => undefined, onFailed: () => undefined },
+      { expectedContextId: null },
+    ),
+  );
+  later.stop();
+  dispose();
 });
 
 test("attachment preparation failure is observed before handleSend and history", async () => {
@@ -238,12 +459,12 @@ test("attachment preparation failure is observed before handleSend and history",
     },
   };
   core.seedPendingAttachment();
-  const composer = composerFor(core);
+  const { accessor, dispose } = accessorFor(core);
   let sent = 0;
   let failure: unknown = null;
   const attempt = observing(
     observeComposerSend(
-      composer,
+      accessor,
       ["thread-1"],
       token,
       {
@@ -265,10 +486,10 @@ test("attachment preparation failure is observed before handleSend and history",
   assert.equal(core.sent.length, 0, "history/send must not run");
   assert.equal(attempt.isActive(), false);
 
-  core.setText("later");
+  await setComposerText(core, "later");
   const later = observing(
     observeComposerSend(
-      composer,
+      accessor,
       ["thread-1"],
       Symbol("later-reservation"),
       { onSent: () => undefined, onFailed: () => undefined },
@@ -276,6 +497,7 @@ test("attachment preparation failure is observed before handleSend and history",
     ),
   );
   later.stop();
+  dispose();
 });
 
 test("only tagged in-flight attachment failures are suppressed", () => {
@@ -294,10 +516,10 @@ test("only tagged in-flight attachment failures are suppressed", () => {
     const token = Symbol("reservation");
     const core = new TestComposerCore();
     core.setText("guarded");
-    const composer = composerFor(core);
+    const { accessor, dispose } = accessorFor(core);
     const attempt = observing(
       observeComposerSend(
-        composer,
+        accessor,
         ["thread-1"],
         token,
         { onSent: () => undefined, onFailed: () => undefined },
@@ -331,6 +553,7 @@ test("only tagged in-flight attachment failures are suppressed", () => {
 
     attempt.stop();
     assert.equal(listeners.size, 0);
+    dispose();
   } finally {
     if (previous === undefined) {
       (globalThis as { window?: unknown }).window = undefined;
