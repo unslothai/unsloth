@@ -126,4 +126,5 @@ def test_real_gloo_two_ranks(tmp_path, picks, verdict):
     ]
     outs = [p.communicate(timeout = 180)[0] for p in procs]
     assert [p.returncode for p in procs] == [0, 0]
-    assert all(o.strip().startswith(verdict) for o in outs), outs
+    # Gloo may print its own connection banner on stdout first; the verdict is the child's last line.
+    assert all(o.strip().splitlines()[-1].startswith(verdict) for o in outs), outs

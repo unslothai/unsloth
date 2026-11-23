@@ -717,6 +717,7 @@ export const es419 = {
       anyApp: "Uso de la computadora",
       anyAppDescription: "Permite que los modelos vean la pantalla y controlen el <b>mouse y el teclado</b>. Los chats piden permiso antes de empezar, antes de usar una app nueva y antes de cualquier acción arriesgada. Las capturas de pantalla se envían al modelo con el que chateas.",
       browser: "Navegador",
+      desktopOnlyDescription: "El uso de la computadora funciona en la app de escritorio de Unsloth. Abre esta configuración allí para activarlo.",
       browserDescription: "Permite que los modelos abran páginas en el panel del navegador de Unsloth, las lean y hagan clic y escriban por ti.",
       screen: "Ver la pantalla",
       screenDescription: "macOS lo pide en «Grabación de pantalla y audio del sistema».",
@@ -5358,6 +5359,14 @@ export const es419 = {
     copied: "Copiado",
     useAsSource: "Traducir este texto",
     downloadSubtitles: "Descargar subtítulos",
+    imageOverlay: {
+      show: "Mostrar en la imagen",
+      title: "Traducción sobre la imagen",
+      description: "El texto traducido se dibuja sobre la imagen donde estaba el texto original.",
+      working: "Traduciendo el texto de la imagen…",
+      download: "Descargar imagen",
+      failed: "No se pudo dibujar la traducción sobre la imagen.",
+    },
     stale:
       "El texto o la configuración cambiaron. Vuelve a traducir para actualizar.",
     stopped: "Se detuvo antes del final. Traduce de nuevo para obtener el resto.",

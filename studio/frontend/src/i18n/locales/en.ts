@@ -648,6 +648,7 @@ export const en = {
       anyApp: "Computer use",
       anyAppDescription: "Let models see the screen and control the <b>mouse and keyboard</b>. Chats ask before starting, before a new app, and before anything risky. Screenshots go to the model you chat with.",
       browser: "Browser",
+      desktopOnlyDescription: "Computer use runs in the Unsloth Desktop app. Open these settings there to turn it on.",
       browserDescription: "Let models open pages in Unsloth's browser panel, read them, and click and type for you.",
       screen: "See the screen",
       screenDescription: "macOS asks for this under Screen & System Audio Recording.",
@@ -4953,6 +4954,14 @@ export const en = {
     // Moves the translation into the text box, to translate it onward into another language.
     useAsSource: "Translate this text",
     downloadSubtitles: "Download subtitles",
+    imageOverlay: {
+      show: "Show on image",
+      title: "Translation on the image",
+      description: "The translated text is drawn over the image where the original text was.",
+      working: "Translating the text on the image…",
+      download: "Download image",
+      failed: "Could not draw the translation on the image.",
+    },
     stale: "The text or settings changed. Translate again to update.",
     stopped: "Stopped before the end. Translate again for the rest.",
     // Opens a new chat with the translation in the message box, to ask about it.
