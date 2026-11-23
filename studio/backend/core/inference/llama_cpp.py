@@ -16790,18 +16790,40 @@ class LlamaCppBackend:
 
     @staticmethod
     def _paged_fit_headroom_mib(
-        detected_gpus: Iterable[tuple], vulkan_igpu_ids: Collection[int]
+        detected_gpus: Iterable[tuple],
+        vulkan_igpu_ids: Collection[int],
+        *,
+        is_vulkan_backend: bool = False,
     ) -> float:
-        """The paging headroom, capped at what a lone Vulkan iGPU reads above its free carve-out.
-        The headroom keeps the fit out of shared memory; a flat 15 GiB also starves a carve-out
-        smaller than that (#18001). Unreadable carve-out or usage keeps the flat headroom."""
+        """Limit paging headroom on a single Windows iGPU with a known memory budget."""
         rows = list(detected_gpus or ())
-        if (
-            not _paged_load_needs_fit_headroom()
-            or len(rows) != 1
-            or rows[0][0] not in set(vulkan_igpu_ids or ())
-        ):
+        if not _paged_load_needs_fit_headroom() or len(rows) != 1:
             return _IGPU_PAGED_FIT_HEADROOM_MIB
+
+        idx, usable_mib = rows[0][:2]
+        if idx not in set(vulkan_igpu_ids or ()):
+            if (
+                not is_vulkan_backend
+                and usable_mib > 0
+                and idx
+                in LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+                    LlamaCppBackend._integrated_cuda_mask_key(), ()
+                )
+                and (
+                    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False
+                    or (
+                        (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper() == "PCI_BUS_ID"
+                        and not LlamaCppBackend._visibility_mask_is_unmappable()
+                    )
+                )
+            ):
+                # The base fit target already reserves memory. Bound the extra room for
+                # page-in by a tenth of the CUDA budget so it cannot consume a small pool.
+                free_mib = usable_mib + _IGPU_HOST_RESERVE_MIB
+                return float(min(_IGPU_PAGED_FIT_HEADROOM_MIB, math.ceil(free_mib / 10)))
+            return _IGPU_PAGED_FIT_HEADROOM_MIB
+
+        # Keep the Vulkan fit inside the free carve-out when both readings are available.
         try:
             carve_out = LlamaCppBackend._igpu_dedicated_memory_bytes(
                 [rows[0][0]], ordinals_are_vulkan = True
@@ -32765,7 +32787,7 @@ class LlamaCppBackend:
                 )
                 _paged_headroom = []
                 _paged_headroom_mib = self._paged_fit_headroom_mib(
-                    _reachable_gpus, _vulkan_igpu_ids
+                    _reachable_gpus, _vulkan_igpu_ids, is_vulkan_backend = is_vulkan_backend
                 )
                 cmd, _pageable_note = self._page_an_oversized_unmapped_load(
                     cmd,
@@ -34458,7 +34480,7 @@ class LlamaCppBackend:
                             _paged_headroom = []
                         _retry_headroom: list = []
                         _retry_headroom_mib = self._paged_fit_headroom_mib(
-                            _retry_rows, _vulkan_igpu_ids
+                            _retry_rows, _vulkan_igpu_ids, is_vulkan_backend = is_vulkan_backend
                         )
                         cmd, _retry_pageable_note = self._page_an_oversized_unmapped_load(
                             cmd,
