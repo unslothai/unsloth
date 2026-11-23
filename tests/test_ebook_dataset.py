@@ -613,3 +613,67 @@ def test_whitespace_windows_do_not_abort_books(
 def test_tiny_budget_still_rejects_an_incomplete_unicode_character(ebooks, byte_tokenizer):
     with pytest.raises(ValueError, match = "complete character"):
         list(ebooks._chunk_text("🦥", byte_tokenizer, 1, 0))
+
+
+@pytest.fixture
+def long_merge_tokenizer():
+    pytest.importorskip("tokenizers")
+    pytest.importorskip("transformers")
+    from tokenizers import Tokenizer, decoders, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast
+
+    # Real BPE vocabularies carry space-led merges that span many characters (indent runs,
+    # rule lines). "Ġ" plus twenty "c" bytes is one source token here.
+    vocab = {char: i for i, char in enumerate(pre_tokenizers.ByteLevel.alphabet())}
+    merges, piece = [], "Ġ"
+    for _ in range(20):
+        piece += "c"
+        vocab[piece] = len(vocab)
+        merges.append((piece[:-1], "c"))
+    backend = Tokenizer(models.BPE(vocab = vocab, merges = merges))
+    backend.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space = False)
+    backend.decoder = decoders.ByteLevel()
+    return PreTrainedTokenizerFast(tokenizer_object = backend)
+
+
+def test_chunk_inside_a_long_token_is_cut_at_characters(ebooks, long_merge_tokenizer, tmp_path):
+    tokenizer = long_merge_tokenizer
+    text = "a " + "c" * 20 + " bcdef"
+    book = make_epub(tmp_path / "book.epub", chapters = {"one.xhtml": "<p>" + text + "</p>"})
+    rows = ebooks.load_ebook_dataset(book, tokenizer = tokenizer, chunk_size = 2, overlap = 1)["text"]
+    assert all(len(tokenizer.encode(row, add_special_tokens = False)) <= 2 for row in rows)
+    assert rows[-1] == "ef"
+
+
+def test_chunk_inside_a_trailing_long_token_reaches_the_end(
+    ebooks, long_merge_tokenizer, tmp_path
+):
+    tokenizer = long_merge_tokenizer
+    text = "abc " + "c" * 20 + " x"
+    book = make_epub(tmp_path / "book.epub", chapters = {"one.xhtml": "<p>" + text + "</p>"})
+    rows = ebooks.load_ebook_dataset(book, tokenizer = tokenizer, chunk_size = 2, overlap = 1)["text"]
+    assert all(len(tokenizer.encode(row, add_special_tokens = False)) <= 2 for row in rows)
+    assert rows[-1] == "x" and "cc" in rows
+
+
+def test_tiny_budget_still_rejects_an_incomplete_long_token(ebooks, tmp_path):
+    pytest.importorskip("tokenizers")
+    pytest.importorskip("transformers")
+    from tokenizers import Tokenizer, decoders, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast
+
+    # One source token whose first character needs more than chunk_size tokens still raises.
+    vocab = {char: i for i, char in enumerate(pre_tokenizers.ByteLevel.alphabet())}
+    merges, piece = [], "Ġ"
+    for char in "ðŁ¦¥" + "c" * 20:  # Ġ + 🦥 + c*20 as one merged token
+        piece += char
+        vocab[piece] = len(vocab)
+        merges.append((piece[:-1], char))
+    backend = Tokenizer(models.BPE(vocab = vocab, merges = merges))
+    backend.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    backend.decoder = decoders.ByteLevel()
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object = backend)
+
+    book = make_epub(tmp_path / "book.epub", chapters = {"one.xhtml": "<p>ab " + "🦥" + "c" * 20 + "</p>"})
+    with pytest.raises(ValueError, match = "complete character"):
+        ebooks.load_ebook_dataset(book, tokenizer = tokenizer, chunk_size = 2, overlap = 0)
