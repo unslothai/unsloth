@@ -170,7 +170,6 @@ def test_the_noop_check_never_skips_a_write_that_changes_the_row(studio, title):
             )
             conn.commit()
             existing, stored = studio_db.get_chat_thread_with_row(tid)
-            # What the importer hands the upsert: the stored row as the base, bumped updatedAt.
             thread = {**existing, "updatedAt": max(4, int(existing.get("updatedAt") or 0))}
             noop = studio_db.chat_thread_upsert_is_noop(thread, stored)
             before = _raw(conn, tid)
