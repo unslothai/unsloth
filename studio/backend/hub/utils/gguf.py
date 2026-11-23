@@ -164,7 +164,12 @@ _H3_DENOISER_PARTITIONS = ("minimax_h3_fl2va", "minimax_h3_ref2va")
 
 
 def _is_selectable_repo_gguf(repo_id: str, filename: str) -> bool:
-    """Hide auxiliary GGUFs from repos that bundle several model roles."""
+    """Hide auxiliary GGUFs from repos that bundle several model roles, and a previous layout
+    kept under Unsloth_Layout/ (alternates of the root quants, used when already cached)."""
+    from utils.gguf_legacy_layout import is_legacy_layout_path
+
+    if is_legacy_layout_path(filename):
+        return False
     if is_h3_bundle_repo(repo_id):
         name = Path(filename).name.lower()
         return name.startswith(_H3_DENOISER_PARTITIONS) and name.endswith(".gguf")

@@ -3710,10 +3710,55 @@ def _cached_variant_sizes(
     return None
 
 
-def _cached_candidate_matches_revision_size(
-    repo_id: str, candidate: tuple[str, str, list[str], Path], hf_token: Optional[str]
+def _cached_candidate_locally_complete(
+    repo_id: str,
+    candidate: tuple[str, str, list[str], Path],
+    hf_variant: Optional[str] = None,
 ) -> bool:
-    """Compares sizes with the Hub revision when reachable, so a manually truncated cache is not reused."""
+    """Completeness from disk alone, for when the Hub cannot size-check the snapshot's revision
+    (unreachable, or the revision is gone after a history squash): every file present and non-empty,
+    no ``.incomplete`` blob beside any of them, the split set whole, and the recorded download
+    manifest (when there is one for this snapshot) satisfied."""
+    main_path, main, shards, snap = candidate
+    root = Path(main_path)
+    for _ in [part for part in main.replace("\\", "/").split("/") if part]:
+        root = root.parent
+    for name in (main, *shards):
+        path = root.joinpath(*[part for part in name.replace("\\", "/").split("/") if part])
+        try:
+            if not path.is_file() or path.stat().st_size <= 0:
+                return False
+            blob = Path(os.path.realpath(path))
+            if blob.with_name(blob.name + ".incomplete").exists():
+                return False
+        except OSError:
+            return False
+    if not _snapshot_has_all_shards(main_path, main, shards, {}):
+        return False
+    if hf_variant:
+        try:
+            from hub.utils.gguf_sources import (
+                cached_gguf_manifest_complete,
+                cached_gguf_source_partial,
+            )
+            if not cached_gguf_manifest_complete(
+                repo_id, hf_variant, snap
+            ) or cached_gguf_source_partial(repo_id, hf_variant, snap):
+                return False
+        except Exception as e:
+            logger.debug("Manifest check failed for cached GGUF %s: %s", main_path, e)
+    return True
+
+
+def _cached_candidate_matches_revision_size(
+    repo_id: str,
+    candidate: tuple[str, str, list[str], Path],
+    hf_token: Optional[str],
+    hf_variant: Optional[str] = None,
+) -> bool:
+    """Compares sizes with the Hub revision when reachable, so a manually truncated cache is not reused.
+    When the revision cannot be read (Hub unreachable, or the revision 404s after a history squash) the
+    copy is judged on disk instead, never thrown away for a re-download."""
     main_path, main, shards, snap = candidate
     paths = [main, *shards]
     try:
@@ -3729,16 +3774,16 @@ def _cached_candidate_matches_revision_size(
         )
     except Exception as e:
         logger.debug(
-            "Could not size-check cached GGUF %s at revision %s: %s",
+            "Could not size-check cached GGUF %s at revision %s, judging it on disk: %s",
             repo_id,
             snap.name,
             e,
         )
-        return True
+        return _cached_candidate_locally_complete(repo_id, candidate, hf_variant)
 
     if not infos:
         # The Hub answers an unknown revision with an empty result, not an error; treat it like unreachable metadata.
-        return True
+        return _cached_candidate_locally_complete(repo_id, candidate, hf_variant)
     expected_sizes = {info.path: info.size for info in infos if info.size is not None}
     if any(path not in expected_sizes for path in paths):
         return False
@@ -3792,7 +3837,7 @@ def cached_gguf_for_load(
         strict = strict,
     ):
         if verify_sizes and not _cached_candidate_matches_revision_size(
-            hf_repo, candidate, hf_token
+            hf_repo, candidate, hf_token, hf_variant
         ):
             continue
         return candidate[0]
@@ -3849,14 +3894,17 @@ def _pick_dspark(candidates: list[str]) -> Optional[str]:
     from hub.utils.gguf import drop_shadowed_appledouble_names
     from utils.models.model_config import dspark_preference_key
 
+    from utils.gguf_legacy_layout import is_legacy_layout_path
+
     # Every GGUF under dspark/ qualifies, so a sidecar ranks equal to its sibling and sorts first.
+    # A previous-layout copy (Unsloth_Layout/) ranks after an equal current one, whatever the listing order.
     files = sorted(
         (
             name
             for name in drop_shadowed_appledouble_names(list(candidates))
             if _is_dspark_drafter_path(name)
         ),
-        key = dspark_preference_key,
+        key = lambda name: (dspark_preference_key(name), is_legacy_layout_path(name)),
     )
     return files[0] if files else None
 
@@ -3936,9 +3984,13 @@ def _pick_mmproj(
     from hub.utils.gguf import drop_shadowed_appledouble_names
 
     # "._mmproj-F16.gguf" satisfies the F16 preference and sorts ahead of the real adapter.
+    from utils.gguf_legacy_layout import is_legacy_layout_path
+
     candidates = drop_shadowed_appledouble_names(list(candidates))
+    # A previous-layout copy (Unsloth_Layout/) sorts last, so the current layout's projector wins.
     mmproj_files = sorted(
-        f for f in candidates if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()
+        (f for f in candidates if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()),
+        key = lambda f: (is_legacy_layout_path(f), f),
     )
     if not mmproj_files:
         return None
@@ -4174,7 +4226,9 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
 
     if _extract_quant_label is not None:
         try:
-            exact = sorted(f for f in main_files if _extract_quant_label(f).lower() == variant_key)
+            exact = _prefer_current_layout(
+                sorted(f for f in main_files if _extract_quant_label(f).lower() == variant_key)
+            )
             if exact:
                 return exact
         except Exception as e:
@@ -4191,7 +4245,16 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
         loose = [
             f for f in loose if (_quant_label_for_endian(f) or variant_key).lower() in accepted
         ]
-    return sorted(loose)
+    return _prefer_current_layout(sorted(loose))
+
+
+def _prefer_current_layout(files: list[str]) -> list[str]:
+    """Drop previous-layout copies (Unsloth_Layout/) when the current layout has the quant too: they
+    are alternates, used only when they are what is on disk."""
+    from utils.gguf_legacy_layout import is_legacy_layout_path
+
+    current = [f for f in files if not is_legacy_layout_path(f)]
+    return current or files
 
 
 def _resolve_variant_gguf_files(
@@ -8477,6 +8540,79 @@ def _companion_repo_files(hf_repo: str, hf_token: Optional[str]) -> list[str]:
     if store is not None:
         store[key] = tuple(files)
     return files
+
+
+_PUBLISHED_HASHES_TTL_S = 120.0
+_published_hashes_cache: dict[tuple, tuple[float, frozenset[str]]] = {}
+_published_hashes_lock = threading.Lock()
+
+
+def _published_lfs_hashes(hf_repo: str, hf_token: Optional[str]) -> Optional[frozenset[str]]:
+    """Every LFS sha256 the repo's current revision publishes (any path), or None if unlisted."""
+    key = (hf_repo.lower(), hashlib.sha256((hf_token or "").encode()).hexdigest())
+    now = time.monotonic()
+    with _published_hashes_lock:
+        hit = _published_hashes_cache.get(key)
+        if hit is not None and now - hit[0] < _PUBLISHED_HASHES_TTL_S:
+            return hit[1]
+    try:
+        from huggingface_hub import HfApi
+        entries = call_hub_with_anonymous_retry(
+            lambda repo, token: list(HfApi(token = token).list_repo_tree(repo, recursive = True)),
+            hf_token,
+            hf_repo,
+        )
+    except Exception as e:
+        logger.debug("Could not list published blobs of %s: %s", hf_repo, e)
+        return None
+    hashes = frozenset(
+        sha
+        for entry in entries
+        if (sha := getattr(getattr(entry, "lfs", None), "sha256", None)) is not None
+    )
+    with _published_hashes_lock:
+        _published_hashes_cache[key] = (now, hashes)
+    return hashes
+
+
+def _cached_published_companion(
+    hf_repo: str,
+    hf_token: Optional[str],
+    pick: Callable[[list[str]], Optional[str]],
+    cache_dir: Optional[str],
+) -> Optional[str]:
+    """A companion cached in another snapshot whose bytes the repo still publishes, at any path.
+
+    The drafter or projector was often fetched at a different revision than the weight (it was
+    added later), and a repo that moves its previous layout into a folder keeps those bytes
+    published: reusing them online is a zero-byte reuse, not a stale copy."""
+    from utils.gguf_legacy_layout import cached_blob_sha256
+    from utils.models.model_config import _drafter_split_is_complete, _iter_hf_cache_snapshots
+
+    candidates: list[Path] = []
+    try:
+        snapshots = (
+            _iter_hf_cache_snapshots(hf_repo, cache_dir)
+            if cache_dir
+            else _iter_hf_cache_snapshots(hf_repo)
+        )
+        for snap in snapshots:
+            chosen = pick(_gguf_snapshot_files(snap))
+            if chosen:
+                candidates.append(snap.joinpath(*chosen.replace("\\", "/").split("/")))
+    except Exception as e:
+        logger.debug("Cached companion scan failed for %s: %s", hf_repo, e)
+        return None
+    if not candidates:
+        return None
+    published = _published_lfs_hashes(hf_repo, hf_token)
+    if not published:
+        return None
+    for candidate in candidates:
+        sha = cached_blob_sha256(str(candidate))
+        if sha in published and candidate.is_file() and _drafter_split_is_complete(candidate):
+            return str(candidate)
+    return None
 
 
 def _forget_companion_listings() -> None:
@@ -21600,6 +21736,13 @@ class LlamaCppBackend:
         companion_cache_dir = _hub_cache_dir_for_snapshot_path(near_path) or str(
             get_hf_cache_paths().hub_cache
         )
+
+        # Fetched at another revision, still published: reuse it rather than fetch the current pick.
+        if near_path and reuse_snapshot_sibling and not _hf_env_offline():
+            cached = _cached_published_companion(hf_repo, hf_token, pick, companion_cache_dir)
+            if cached:
+                logger.info("Reusing cached %s from an earlier revision: %s", label, cached)
+                return cached
 
         if _hub_download_in_flight(hf_repo):
             logger.info("Skipping %s download while a hub download is active", label)

@@ -3188,11 +3188,15 @@ def list_gguf_variants(
     main_files: list[tuple[str, str, int]] = []
 
     from hub.utils.gguf import drop_shadowed_appledouble_siblings
+    from utils.gguf_legacy_layout import is_legacy_layout_path
 
     # Sidecars in the listing would otherwise be advertised as the variant, at their own size.
     for sibling in drop_shadowed_appledouble_siblings(list(info.siblings)):
         fname = sibling.rfilename
         if not fname.lower().endswith(".gguf"):
+            continue
+        # A previous layout kept under Unsloth_Layout/ backs the root quants of the same name.
+        if is_legacy_layout_path(fname):
             continue
         size = sibling.size or 0
 

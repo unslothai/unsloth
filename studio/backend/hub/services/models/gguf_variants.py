@@ -518,6 +518,8 @@ def _local_main_gguf_blobs_by_quant(
     repo_id: str, repo_cache_dir: Optional[Path] = None
 ) -> dict[str, dict[str, set[str]]]:
     """Shared companions are copied into every quant bucket, so update checks need no remote call."""
+    from utils.gguf_legacy_layout import legacy_layout_alias
+
     result: dict[str, dict[str, set[str]]] = {}
     companion_blobs: dict[str, set[str]] = {}
     try:
@@ -557,7 +559,8 @@ def _local_main_gguf_blobs_by_quant(
                         str(blob) for blob in hashes if blob
                     )
                     continue
-                quant = gguf_variant_key(normalized).lower()
+                # A previous-layout copy (Unsloth_Layout/<name>) counts toward the root quant it stands in for.
+                quant = gguf_variant_key(legacy_layout_alias(normalized) or normalized).lower()
                 # The endian predicate reads a quant TOKEN; a qualified key would misread the path.
                 if is_big_endian_gguf_path(normalized, extract_quant_label(normalized)):
                     continue
@@ -585,7 +588,10 @@ def _variant_update_available_from_requirement(
 ) -> bool:
     if requirement is None or not local_blobs:
         return False
+    from utils.gguf_legacy_layout import legacy_layout_alias
+
     local_by_posix = {path.replace("\\", "/"): blobs for path, blobs in local_blobs.items()}
+    published = getattr(requirement, "published_hashes", frozenset())
     for expected in requirement.expected_files:
         path = str(expected.path).replace("\\", "/")
         if not (
@@ -597,10 +603,15 @@ def _variant_update_available_from_requirement(
         remote_blob = expected.sha256
         if not remote_blob:
             continue
-        local_set = local_by_posix.get(path)
+        local_set = local_by_posix.get(path) or set().union(
+            *(blobs for p, blobs in local_by_posix.items() if legacy_layout_alias(p) == path)
+        )
         if not local_set:
             return True
         if remote_blob in local_set:
+            continue
+        # The repo still publishes the cached bytes (moved under a legacy-layout folder): current, not stale.
+        if local_set & published:
             continue
         if _size_identity_matches(local_set, expected.size):
             continue
@@ -2393,6 +2404,30 @@ async def get_gguf_variants_answer(
                     return missing[0]
             return None
 
+        local_blobs_memo: list[dict[str, dict[str, set[str]]]] = []
+
+        def _local_blobs() -> dict[str, dict[str, set[str]]]:
+            if not local_blobs_memo:
+                local_blobs_memo.append(
+                    _local_main_gguf_blobs_by_quant(repo_id, repo_cache_dir)
+                    if cache_reads_authorized
+                    else {}
+                )
+            return local_blobs_memo[0]
+
+        def _alternate_copy_ready(quant: str, requirement, companions: tuple) -> bool:
+            """The quant's previous-layout bytes are on disk (an older snapshot, or Unsloth_Layout/)."""
+            wanted = getattr(requirement, "alternate_main_hashes", frozenset())
+            if not wanted:
+                return False
+            have = set().union(*_local_blobs().get(quant, {}).values())
+            if not wanted <= have:
+                return False
+            return not companions or any(
+                _snapshot_has_companions(by_filename, companions)
+                for by_filename, _by_quant in cached_snapshots
+            )
+
         def _is_fully_downloaded(variant) -> bool:
             quant = variant.quant.lower()
             requirement = requirements_by_quant.get(quant)
@@ -2410,7 +2445,9 @@ async def get_gguf_variants_answer(
             ):
                 return True
             # Byte fallback stops a filename mismatch demoting a present quant; vision still needs an mmproj.
-            if not _quant_and_companions_ready(quant, variant.size_bytes, companions):
+            if not _quant_and_companions_ready(
+                quant, variant.size_bytes, companions
+            ) and not _alternate_copy_ready(quant, requirement, companions):
                 return False
             if (
                 requirement is not None
@@ -2534,11 +2571,7 @@ async def get_gguf_variants_answer(
                 ),
             )
 
-        local_blobs_by_quant = (
-            _local_main_gguf_blobs_by_quant(repo_id, repo_cache_dir)
-            if cache_reads_authorized
-            else {}
-        )
+        local_blobs_by_quant = _local_blobs()
 
         def _engram_ready(
             requirement: Optional[_GgufVariantRequirement], downloaded: bool

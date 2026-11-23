@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Optional, Sequence
 
 from hub.utils.download_manifest import ExpectedFile
@@ -40,6 +40,12 @@ class GgufVariantPlan:
     engram_shard: Optional[ExpectedFile] = None
     # Precision of the table this quant ships in ``engram_shard``.
     engram_precision: Optional[str] = None
+    # Listing facts, not part of what a plan downloads (compare=False: a plan rebuilt from a
+    # recorded manifest equals the listed one). Every LFS sha256 the repo publishes, any path: a
+    # cached blob in this set is current even if the file moved (a previous layout kept under
+    # Unsloth_Layout/). And the sha256s of this quant's own previous-layout copy.
+    published_hashes: frozenset[str] = field(default = frozenset(), compare = False)
+    alternate_main_hashes: frozenset[str] = field(default = frozenset(), compare = False)
 
     def engram_table(self, precision: Optional[str]) -> Optional[ExpectedFile]:
         from core.inference.engram_tables import engram_tables, find_engram_table
@@ -437,8 +443,48 @@ def _with_audio_cpp_extras(plan: GgufVariantPlan, siblings: Sequence) -> GgufVar
 
 
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
+    plans = _build_gguf_variant_plans(siblings)
+    published = frozenset(h for h in (sibling_sha256(s) for s in siblings) if h)
+    alternates = _legacy_layout_main_hashes(siblings)
+    if not published and not alternates:
+        return plans
+    return {
+        quant: replace(
+            plan,
+            published_hashes = published,
+            alternate_main_hashes = alternates.get(quant, frozenset()),
+        )
+        for quant, plan in plans.items()
+    }
+
+
+def _legacy_layout_main_hashes(siblings: Sequence) -> dict[str, frozenset[str]]:
+    """Per root quant key, the sha256s of its previous-layout copy (``Unsloth_Layout/<name>``)."""
+    from utils.gguf_legacy_layout import legacy_layout_alias
+
+    found: dict[str, set[str]] = {}
+    for sibling in siblings:
+        name = _gguf_rfilename(sibling)
+        alias = legacy_layout_alias(name) if name else None
+        sha = sibling_sha256(sibling) if alias else None
+        if alias is None or sha is None:
+            continue
+        if is_mmproj_filename(alias) or is_mtp_drafter_path(alias) or is_imatrix_filename(alias):
+            continue
+        found.setdefault(gguf_variant_key(alias).lower(), set()).add(sha)
+    return {quant: frozenset(hashes) for quant, hashes in found.items()}
+
+
+def _build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     # Family grouping keeps the family holding the lexicographically first name, which is the "._" one, so the plan fetched the sidecar and marked the variant complete, leaving header-based local discovery no main GGUF to load.
-    siblings = drop_shadowed_appledouble_siblings(list(siblings))
+    from utils.gguf_legacy_layout import is_legacy_layout_path
+
+    # A previous layout kept under Unsloth_Layout/ is an alternate of the root quants, not more quants.
+    siblings = [
+        s
+        for s in drop_shadowed_appledouble_siblings(list(siblings))
+        if not is_legacy_layout_path(getattr(s, "rfilename", "") or "")
+    ]
     package_plans = _audio_cpp_package_plans(siblings)
     if package_plans is not None:
         return package_plans
