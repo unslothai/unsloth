@@ -161,3 +161,63 @@ def test_sycl_device_gate_reads_list_devices(monkeypatch, tmp_path, stdout, list
         )
         is listed
     )
+
+
+def _install_sycl_bundle(monkeypatch, tmp_path):
+    import hashlib
+    import io
+    import shutil
+    import tarfile
+
+    bundle = tmp_path / SYCL8
+    with tarfile.open(bundle, "w:gz") as archive:
+        for name in (
+            "llama-server",
+            "llama-quantize",
+            "libllama-common.so",
+            "libllama.so",
+            "libggml.so",
+            "libggml-base.so",
+            "libggml-cpu-x64.so",
+            "libmtmd.so",
+            "libggml-sycl.so",
+        ):
+            payload = f"{name}\n".encode()
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+    monkeypatch.setattr(
+        ILP, "download_file_verified", lambda url, target, **_: shutil.copy2(bundle, target)
+    )
+    choice = ILP.AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "b1",
+        name = SYCL8,
+        url = f"https://example.com/{SYCL8}",
+        source_label = "published",
+        install_kind = "linux-sycl",
+        runtime_line = "sycl8",
+        expected_sha256 = hashlib.sha256(bundle.read_bytes()).hexdigest(),
+    )
+    install = tmp_path / "install"
+    work = tmp_path / "work"
+    install.mkdir()
+    work.mkdir()
+    return ILP.install_from_archives(choice, _host(), install, work), install
+
+
+def test_sycl_install_records_the_venv_oneapi_dirs(monkeypatch, tmp_path):
+    lib = _venv_with_libsycl(monkeypatch, tmp_path, "libsycl.so.8")
+    (_server, quantize), install = _install_sycl_bundle(monkeypatch, tmp_path)
+    bin_dir = install / "build" / "bin"
+    assert (bin_dir / "libggml-sycl.so").is_file()
+    assert oneapi_lib_dirs(bin_dir) == [str(lib)]
+    # llama-quantize is CPU work and ggml skips a backend it cannot dlopen: no wrapper needed.
+    root_quantize = install / "llama-quantize"
+    assert root_quantize.is_symlink() and root_quantize.resolve() == quantize.resolve()
+
+
+def test_sycl_install_without_a_oneapi_runtime_falls_back(monkeypatch, tmp_path):
+    _venv_with_libsycl(monkeypatch, tmp_path)
+    with pytest.raises(ILP.PrebuiltFallback, match = "no oneAPI runtime"):
+        _install_sycl_bundle(monkeypatch, tmp_path)
