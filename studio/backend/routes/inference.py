@@ -17015,7 +17015,14 @@ async def _unload_llama_before_standard_load(llama_backend) -> None:
     the epoch, so a cleanup still pending sees this load replaced the retired server, and one
     already past its check finishes first."""
 
-    def handoff() -> Optional[float]:
+    def this_kill_baseline(kill_started: float):
+        # Read under the lock: only a kill this handoff ran recorded it; an older one is stale.
+        last_kill = getattr(llama_backend, "_last_kill_monotonic", 0.0) or 0.0
+        if last_kill < kill_started:
+            return None
+        return getattr(llama_backend, "_last_kill_vram_baseline", None)
+
+    def handoff():
         # getattr: a stand-in backend has no load to order against.
         lock = getattr(llama_backend, "_serial_load_lock", None)
         if lock is not None:
@@ -17024,23 +17031,28 @@ async def _unload_llama_before_standard_load(llama_backend) -> None:
         with lock or nullcontext():
             if not llama_backend.is_loaded:
                 if lock is None:
-                    return None
+                    return None, None
                 kill_started = time.monotonic()
                 llama_backend.unload_model()
                 # A starting or recovering server was killed: wait for it like a loaded one.
                 last_kill = getattr(llama_backend, "_last_kill_monotonic", 0.0) or 0.0
-                return kill_started if last_kill >= kill_started else None
+                if last_kill < kill_started:
+                    return None, None
+                return kill_started, this_kill_baseline(kill_started)
             logger.info("Unloading GGUF model before loading Unsloth model")
             kill_started = time.monotonic()
             llama_backend.unload_model()
-            return kill_started
+            return kill_started, this_kill_baseline(kill_started)
 
-    kill_started = await asyncio.to_thread(handoff)
+    kill_started, baseline = await asyncio.to_thread(handoff)
     if kill_started is None:
         return
+    # The baseline makes the settle wait for the server's VRAM to show freed (WDDM and some
+    # drivers reclaim late), not just for two equal samples read before the release.
     await asyncio.to_thread(
         llama_backend._wait_for_vram_settle,
         since_kill = kill_started,
+        baseline = baseline,
     )
 
 

@@ -1658,8 +1658,18 @@ class InferenceBackend:
 
             raise Exception(error_msg)
 
+    def unload_model_for_exit(self, model_name: str) -> bool:
+        """unload_model for a worker that exits next: process exit returns the CUDA context and its
+        allocations, so the GPU cache clear and decode-graph release would be thrown away."""
+        return self.unload_model(model_name, process_exiting = True)
+
     @_invalidates_gpu_memory("transformers unload")
-    def unload_model(self, model_name: str) -> bool:
+    def unload_model(
+        self,
+        model_name: str,
+        *,
+        process_exiting: bool = False,
+    ) -> bool:
         """Remove a model from the registry and clear GPU memory."""
         if model_name in self.models:
             try:
@@ -1669,13 +1679,15 @@ class InferenceBackend:
                 logger.info(f"Unloading model '{model_name}' from memory.")
                 model = self.models[model_name].get("model")
                 del self.models[model_name]
-                _release_decode_graphs(model, getattr(self, "_generation_lock", None))
+                if not process_exiting:
+                    _release_decode_graphs(model, getattr(self, "_generation_lock", None))
                 model = None
 
                 if self.active_model_name == model_name:
                     self.active_model_name = None
 
-                clear_gpu_cache()
+                if not process_exiting:
+                    clear_gpu_cache()
 
                 # On spawn platforms keep trainer files so concurrent dataset.map() workers can import them.
                 import sys as _sys
