@@ -13,7 +13,8 @@
       "image": "/whats-new/v0.1.907-beta/video.webp",
       "alt": "LTX-2.5 and Wan2.2 video models",
       "title": "LTX-2.5 and Wan2.2",
-      "summary": "Generate video from text or from an image."
+      "summary": "Generate video from text or from an image.",
+      "link": "https://unsloth.ai/docs/models/ltx-2.5"
     }
   ],
   "changes": [

@@ -13,7 +13,8 @@
       "image": "/whats-new/v0.1.919-beta/engram.webp",
       "alt": "Engram tables",
       "title": "Engram tables",
-      "summary": "Swap the Engram table for Qwen3.8-Flash-Next and DeepSeek-V4.1."
+      "summary": "Swap the Engram table for Qwen3.8-Flash-Next and DeepSeek-V4.1.",
+      "link": "https://unsloth.ai/docs/models/qwen3.8-next"
     }
   ],
   "changes": [

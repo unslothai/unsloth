@@ -13,7 +13,8 @@
       "image": "/whats-new/v0.1.911-beta/minimax.webp",
       "alt": "MiniMax-M3.1-Flash",
       "title": "MiniMax-M3.1-Flash",
-      "summary": "MiniMax's 428B MoE with 23B active."
+      "summary": "MiniMax's 428B MoE with 23B active.",
+      "link": "https://unsloth.ai/docs/models/minimax-m3.1-flash"
     }
   ],
   "changes": [

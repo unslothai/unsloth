@@ -13,7 +13,8 @@
       "image": "/whats-new/v0.1.916-beta/floating-browser.webp",
       "alt": "Floating browser",
       "title": "Floating browser",
-      "summary": "Each chat runs its own browser in a window you can move and resize."
+      "summary": "Each chat runs its own browser in a window you can move and resize.",
+      "link": "https://unsloth.ai/docs/basics/browser-use"
     }
   ],
   "changes": [

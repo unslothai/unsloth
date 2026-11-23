@@ -7,19 +7,22 @@
       "image": "/whats-new/v0.1.908-beta/nemotron.webp",
       "alt": "NVIDIA Nemotron 3.5",
       "title": "NVIDIA Nemotron 3.5",
-      "summary": "Bolt runs in 24 GB of memory, and Super VL brings 120B with 12B active."
+      "summary": "Bolt runs in 24 GB of memory, and Super VL brings 120B with 12B active.",
+      "link": "https://unsloth.ai/docs/models/nemotron-3.5"
     },
     {
       "image": "/whats-new/v0.1.908-beta/muse-spark.webp",
       "alt": "Meta Muse Spark Open",
       "title": "Meta Muse Spark Open",
-      "summary": "An 816B model with 42.7B active that runs on 256 GB."
+      "summary": "An 816B model with 42.7B active that runs on 256 GB.",
+      "link": "https://unsloth.ai/docs/models/muse-spark-open"
     }
   ],
   "changes": [
     [
       "Coding agents",
-      "Claude Code and Codex reprocess far less of each prompt on local GGUFs."
+      "Claude Code and Codex reprocess far less of each prompt on local GGUFs.",
+      "https://unsloth.ai/docs/basics/claude-code"
     ],
     ["Browser use", "Each chat gets its own tab, and Always allow now sticks."],
     [

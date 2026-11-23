@@ -13,17 +13,20 @@
       "image": "/whats-new/v0.1.918-beta/computer-use.webp",
       "alt": "Computer use settings",
       "title": "Computer use (beta)",
-      "summary": "Vision models can see your screen and use apps. Off by default, with approvals."
+      "summary": "Vision models can see your screen and use apps. Off by default, with approvals.",
+      "link": "https://unsloth.ai/docs/basics/computer-use"
     }
   ],
   "changes": [
     [
       "Creative apps",
-      "Connect Unreal Engine, Unity, Godot, and Roblox through MCP."
+      "Connect Unreal Engine, Unity, Godot, and Roblox through MCP.",
+      "https://unsloth.ai/docs/basics/mcp/mcp-engines"
     ],
     [
       "MiniMax-H3-Image",
-      "GGUF for CPU, Mac, and AMD, plus FP8 and INT8 on NVIDIA."
+      "GGUF for CPU, Mac, and AMD, plus FP8 and INT8 on NVIDIA.",
+      "https://unsloth.ai/docs/models/minimax-h3-image"
     ],
     ["Connections", "Live connection status and 9 new providers."],
     [

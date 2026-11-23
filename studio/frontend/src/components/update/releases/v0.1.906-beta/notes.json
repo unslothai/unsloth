@@ -7,22 +7,29 @@
       "image": "/whats-new/v0.1.906-beta/browser-use.webp",
       "alt": "The chat box + menu with Browser use and Computer use",
       "title": "Browser use",
-      "summary": "Let a local model take control of the Unsloth browser from the + menu in the chat box."
+      "summary": "Let a local model take control of the Unsloth browser from the + menu in the chat box.",
+      "link": "https://unsloth.ai/docs/basics/browser-use"
     },
     {
       "image": "/whats-new/v0.1.906-beta/qwen-image.webp",
       "alt": "Qwen-Image-2.1-Turbo",
       "title": "Qwen-Image-2.1-Turbo",
-      "summary": "Images in 8 steps, 2.5x faster."
+      "summary": "Images in 8 steps, 2.5x faster.",
+      "link": "https://unsloth.ai/docs/models/qwen-image-2.1/qwen-image-2.1-turbo"
     }
   ],
   "changes": [
     [
       "Training",
-      "Train text-diffusion LLMs such as DiffusionGemma, LLaDA, and Dream."
+      "Train text-diffusion LLMs such as DiffusionGemma, LLaDA, and Dream.",
+      "https://unsloth.ai/docs/models/diffusiongemma"
     ],
     ["MoE", "Run MoE GGUFs larger than your VRAM up to 3x faster."],
-    ["Mac", "Speculative decoding makes MLX replies up to 2.8x faster."]
+    [
+      "Mac",
+      "Speculative decoding makes MLX replies up to 2.8x faster.",
+      "https://unsloth.ai/docs/basics/inference-and-deployment/saving-to-gguf/speculative-decoding"
+    ]
   ],
   "more": 291
 }

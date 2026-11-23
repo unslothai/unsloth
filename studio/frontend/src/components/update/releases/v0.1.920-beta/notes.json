@@ -7,17 +7,23 @@
       "image": "/whats-new/v0.1.920-beta/amd-npu.webp",
       "alt": "AMD Ryzen AI NPU support",
       "title": "AMD NPU support",
-      "summary": "Run on Ryzen AI NPUs, 2 to 4x more efficient per joule per token than GPUs."
+      "summary": "Run on Ryzen AI NPUs, 2 to 4x more efficient per joule per token than GPUs.",
+      "link": "https://unsloth.ai/docs/get-started/install/amd/amd-npu"
     },
     {
       "image": "/whats-new/v0.1.920-beta/video-lora.webp",
       "alt": "Video LoRA training",
       "title": "Video LoRA",
-      "summary": "Train LoRAs for LTX-2.5 and MOSS-Image."
+      "summary": "Train LoRAs for LTX-2.5 and MOSS-Image.",
+      "link": "https://unsloth.ai/docs/basics/fine-tune-video-models-with-lora"
     }
   ],
   "changes": [
-    ["Diffusion LoRA", "Up to 42% faster per step, and now on T4 GPUs too."],
+    [
+      "Diffusion LoRA",
+      "Up to 42% faster per step, and now on T4 GPUs too.",
+      "https://unsloth.ai/docs/basics/fine-tune-diffusion-models-with-lora"
+    ],
     ["Strix Halo", "FLUX.3 Klein up to 28% faster per step on Windows."],
     [
       "Scheduled tasks",

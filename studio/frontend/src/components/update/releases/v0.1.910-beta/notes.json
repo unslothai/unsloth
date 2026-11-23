@@ -7,13 +7,15 @@
       "image": "/whats-new/v0.1.910-beta/flint.webp",
       "alt": "Flint coding agent model",
       "title": "Flint",
-      "summary": "Recursive's 40B coding-agent MoE runs in 24 GB at 3-bit."
+      "summary": "Recursive's 40B coding-agent MoE runs in 24 GB at 3-bit.",
+      "link": "https://unsloth.ai/docs/models/flint"
     },
     {
       "image": "/whats-new/v0.1.910-beta/moss-image.webp",
       "alt": "MOSS-Image model",
       "title": "MOSS-Image",
-      "summary": "A 5.1B image model for top-tier generation, as GGUF and FP8."
+      "summary": "A 5.1B image model for top-tier generation, as GGUF and FP8.",
+      "link": "https://unsloth.ai/docs/models/moss-image"
     }
   ],
   "changes": [
@@ -31,7 +33,8 @@
     ],
     [
       "Models",
-      "NVIDIA Nemotron 3.5 Bolt E4B scores 63.2 on Tau2-Bench, up from 38.7."
+      "NVIDIA Nemotron 3.5 Bolt E4B scores 63.2 on Tau2-Bench, up from 38.7.",
+      "https://unsloth.ai/docs/models/nemotron-3.5-bolt"
     ]
   ],
   "more": 531

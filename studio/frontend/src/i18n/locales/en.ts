@@ -5815,6 +5815,8 @@ export const en = {
     copyCommand: "Copy command",
     copied: "Copied",
     openRelease: "Open release",
+    readGuide: "Read the guide",
+    guide: "Guide",
     sinceTitle: "What’s new since {version}",
     sinceNav: "Since {version}",
     releaseCount: "{count} releases",

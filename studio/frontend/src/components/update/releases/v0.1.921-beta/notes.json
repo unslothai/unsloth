@@ -7,7 +7,8 @@
       "image": "/whats-new/v0.1.921-beta/inkling.webp",
       "alt": "Inkling 2 Mini",
       "title": "Inkling 2 Mini",
-      "summary": "A 26B model with 5.4B active and a 1M context, the strongest for its size."
+      "summary": "A 26B model with 5.4B active and a 1M context, the strongest for its size.",
+      "link": "https://unsloth.ai/docs/models/inkling-2-mini"
     },
     {
       "image": "/whats-new/v0.1.921-beta/leaner.webp",
@@ -19,7 +20,8 @@
   "changes": [
     [
       "Images",
-      "MiniMax-H3-Image renders a new prompt in 36.7 s on 8 GB GPUs, down from 82.7 s."
+      "MiniMax-H3-Image renders a new prompt in 36.7 s on 8 GB GPUs, down from 82.7 s.",
+      "https://unsloth.ai/docs/models/minimax-h3-image"
     ],
     ["Documents", "Scanned PDFs in chat are read with OCR."]
   ],

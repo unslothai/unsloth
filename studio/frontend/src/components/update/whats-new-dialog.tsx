@@ -310,6 +310,26 @@ function ExternalLink({ href, children }: { href: string; children: string }) {
   );
 }
 
+/** The docs page a card or change row points to, when it has one. */
+function docsLink(item: object): string | undefined {
+  return "link" in item && typeof item.link === "string"
+    ? item.link
+    : undefined;
+}
+
+function GuideLink({ href }: { href: string | undefined }) {
+  const t = useT();
+  if (!href) {
+    return null;
+  }
+  return (
+    <>
+      {" "}
+      <ExternalLink href={href}>{t("updateNotes.guide")}</ExternalLink>
+    </>
+  );
+}
+
 function MoreChanges({ entry }: { entry: Release }) {
   const t = useT();
   if (!entry.more) {
@@ -354,6 +374,13 @@ function ReleaseBody({ entry }: { entry: Release }) {
               <p className="mt-1 text-ui-13 leading-relaxed text-muted-foreground">
                 {feature.summary}
               </p>
+              {docsLink(feature) && (
+                <p className="mt-2 text-ui-13">
+                  <ExternalLink href={docsLink(feature) ?? ""}>
+                    {t("updateNotes.readGuide")}
+                  </ExternalLink>
+                </p>
+              )}
             </figcaption>
           </figure>
         ))}
@@ -361,7 +388,7 @@ function ReleaseBody({ entry }: { entry: Release }) {
       <section className="mt-12">
         <SectionLabel>{t("updateNotes.alsoInRelease")}</SectionLabel>
         <dl className={cn("mt-3 border-t", HAIRLINE)}>
-          {entry.changes.map(([label, description]) => (
+          {entry.changes.map(([label, description, link]) => (
             <div
               key={label}
               className={cn(
@@ -370,7 +397,17 @@ function ReleaseBody({ entry }: { entry: Release }) {
               )}
             >
               <dt className="text-muted-foreground">{label}</dt>
-              <dd>{description}</dd>
+              <dd>
+                {description}
+                {link && (
+                  <>
+                    {" "}
+                    <ExternalLink href={link}>
+                      {t("updateNotes.guide")}
+                    </ExternalLink>
+                  </>
+                )}
+              </dd>
             </div>
           ))}
         </dl>
@@ -427,12 +464,14 @@ function CatchUp({
                     <span className="text-muted-foreground">
                       {feature.summary}
                     </span>
+                    <GuideLink href={docsLink(feature)} />
                   </li>
                 ))}
-                {entry.changes.map(([label, description]) => (
+                {entry.changes.map(([label, description, link]) => (
                   <li key={label}>
                     <span className="font-medium">{label}.</span>{" "}
                     <span className="text-muted-foreground">{description}</span>
+                    <GuideLink href={link} />
                   </li>
                 ))}
               </ul>

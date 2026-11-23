@@ -17,7 +17,11 @@
     }
   ],
   "changes": [
-    ["Models", "New Qwen3.8-27B Dynamic v3.1 GGUFs."],
+    [
+      "Models",
+      "New Qwen3.8-27B Dynamic v3.1 GGUFs.",
+      "https://unsloth.ai/docs/models/qwen3.8"
+    ],
     ["Performance", "Smoother streaming, scrolling, and menus in long chats."],
     ["Images", "Queue the next image while another one renders."],
     ["Mac", "Run Claude Code and Codex on MLX models with unsloth start."]

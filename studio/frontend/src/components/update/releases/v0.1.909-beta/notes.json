@@ -7,17 +7,23 @@
       "image": "/whats-new/v0.1.909-beta/deepseek.webp",
       "alt": "DeepSeek-V4.1-Flash",
       "title": "DeepSeek-V4.1-Flash",
-      "summary": "552B with 16B active, in about 125 GB at 1-bit with its Engram table on SSD."
+      "summary": "552B with 16B active, in about 125 GB at 1-bit with its Engram table on SSD.",
+      "link": "https://unsloth.ai/docs/models/deepseek-v4.1-flash"
     },
     {
       "image": "/whats-new/v0.1.909-beta/flux3.webp",
       "alt": "FLUX.3 Image Klein",
       "title": "FLUX.3 Image Klein",
-      "summary": "Runs on 24 GB and edits with up to 10 reference images."
+      "summary": "Runs on 24 GB and edits with up to 10 reference images.",
+      "link": "https://unsloth.ai/docs/models/flux-3"
     }
   ],
   "changes": [
-    ["MCP", "Run unsloth mcp add to connect Claude Code, Codex, or Cursor."],
+    [
+      "MCP",
+      "Run unsloth mcp add to connect Claude Code, Codex, or Cursor.",
+      "https://unsloth.ai/docs/basics/mcp"
+    ],
     [
       "Chat",
       "Chat models can use the image or video model loaded beside them."

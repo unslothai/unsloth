@@ -22,7 +22,11 @@
       "Render Qwen-Image up to twice as fast under a 16 GB VRAM limit."
     ],
     ["Updates", "App updates finish twice as fast."],
-    ["Models", "DeepSeek-V4.1-Flash gets new Dynamic v3.1 GGUFs."]
+    [
+      "Models",
+      "DeepSeek-V4.1-Flash gets new Dynamic v3.1 GGUFs.",
+      "https://unsloth.ai/docs/basics/dynamic-3.0-ggufs/dynamic-3.1-ggufs"
+    ]
   ],
   "more": 238
 }
