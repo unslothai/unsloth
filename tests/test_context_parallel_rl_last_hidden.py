@@ -392,3 +392,101 @@ def test_passthrough_audit():
 
     for cls in (LlamaForCausalLM, Qwen2ForCausalLM):
         assert cp._decoder_output_passthrough(cls.forward, attrs), cls
+
+
+def test_hidden_states_keyword_into_another_call_is_not_a_passthrough():
+    # hidden_states = outputs.hidden_states counts as handing the tuple on only into the returned ModelOutput.
+    attrs = frozenset({"model"})
+
+    class _KeywordConsumerLM:
+        def forward(
+            self,
+            input_ids = None,
+            **kwargs,
+        ):
+            outputs = self.model(input_ids = input_ids, **kwargs)
+            self.consume(hidden_states = outputs.hidden_states)
+            return CausalLMOutputWithPast(
+                logits = outputs.last_hidden_state, hidden_states = outputs.hidden_states
+            )
+
+    class _ReturnedConsumerLM:
+        def forward(
+            self,
+            input_ids = None,
+            **kwargs,
+        ):
+            outputs = self.model(input_ids = input_ids, **kwargs)
+            return self.consume(hidden_states = outputs.hidden_states)
+
+    class _AssignedOutputLM:
+        def forward(
+            self,
+            input_ids = None,
+            **kwargs,
+        ):
+            outputs = self.model(input_ids = input_ids, **kwargs)
+            result = CausalLMOutputWithPast(
+                logits = outputs.last_hidden_state, hidden_states = outputs.hidden_states
+            )
+            self.probe = result[1]
+            return result
+
+    for cls in (_KeywordConsumerLM, _ReturnedConsumerLM, _AssignedOutputLM):
+        assert not cp._decoder_output_passthrough(cls.forward, attrs), cls
+    assert cp._decoder_output_passthrough(_LM.forward, attrs)
+
+
+class _CPDecoder(torch.nn.Module):
+    def __init__(self, manager):
+        super().__init__()
+        self.embed_tokens = torch.nn.Embedding(4, 4)
+        self.layers = torch.nn.ModuleList()
+        self._unsloth_cp_rl_manager = manager
+
+
+def _find_decoder(monkeypatch, forward):
+    manager = object()
+    monkeypatch.setattr(cp, "get_cp_manager", lambda: manager)
+    model = torch.nn.Module()
+    model.model = _CPDecoder(manager)
+    found = cp.last_hidden_state_decoder(model, forward)
+    assert found is None or found is model.model
+    return found
+
+
+def test_unknown_forward_wrapper_is_not_a_passthrough(monkeypatch):
+    import functools
+
+    def reading(forward):
+        @functools.wraps(forward)
+        def wrapper(self, *args, **kwargs):
+            out = forward(self, *args, **kwargs)
+            self.probe = out.hidden_states[1]
+            return out
+
+        return wrapper
+
+    assert _find_decoder(monkeypatch, _LM.forward) is not None
+    # The innermost forward is a clean passthrough; the wrapper reads an intermediate state.
+    assert _find_decoder(monkeypatch, reading(_LM.forward)) is None
+
+    # A marker copied outward by functools.wraps does not vouch for the wrapper.
+    def marked(self, *args, **kwargs):
+        return _LM.forward(self, *args, **kwargs)
+
+    marked._unsloth_cp_hidden_states_passthrough = True
+    assert _find_decoder(monkeypatch, marked) is not None
+    assert _find_decoder(monkeypatch, reading(marked)) is None
+
+
+def test_transformers_causal_lm_forwards_keep_the_truncation(monkeypatch):
+    # The real decorators (can_return_tuple, deprecate_kwarg) are known wrappers: these CausalLMs still
+    # gather only the last hidden state.
+    from transformers.models.llama.modeling_llama import LlamaForCausalLM
+    from transformers.models.mistral.modeling_mistral import MistralForCausalLM
+    from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
+    from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
+
+    for cls in (LlamaForCausalLM, Qwen2ForCausalLM, Qwen3ForCausalLM, MistralForCausalLM):
+        assert _find_decoder(monkeypatch, cls.forward) is not None, cls

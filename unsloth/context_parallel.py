@@ -2309,8 +2309,8 @@ _OUTPUT_METHODS = frozenset(
 def _decoder_output_passthrough(function, attrs) -> bool:
     """Static check of a CausalLM forward: every ``self.<attr>(...)`` decoder call is assigned to a plain
     name, and that name is read only as a ``.attr`` field (never a method such as ``.to_tuple()``;
-    ``.hidden_states`` only as a ``hidden_states =``
-    keyword), ``[0]`` or ``[1:]``. Nothing reads ``hidden_states`` by string. Anything else: False."""
+    ``.hidden_states`` only as the ``hidden_states =`` keyword of the ModelOutput constructor it returns),
+    ``[0]`` or ``[1:]``. Nothing reads ``hidden_states`` by string. Anything else: False."""
     import ast
     import inspect
     import textwrap
@@ -2361,9 +2361,41 @@ def _decoder_output_passthrough(function, attrs) -> bool:
     if not names:
         return False
 
+    def output_class(func):
+        # The callee resolved in the forward's own module: only a ModelOutput subclass counts.
+        path = []
+        while isinstance(func, ast.Attribute):
+            path.append(func.attr)
+            func = func.value
+        if not isinstance(func, ast.Name):
+            return False
+        try:  # getsource above read the innermost function: resolve in its module
+            scope = inspect.unwrap(function).__globals__
+        except Exception:
+            return False
+        if func.id not in scope:
+            return False
+        value = scope[func.id]
+        try:
+            for attr in reversed(path):
+                value = getattr(value, attr)
+            from transformers.utils import ModelOutput
+        except Exception:
+            return False
+        return isinstance(value, type) and issubclass(value, ModelOutput)
+
     def passthrough_keyword(node):
+        # ``hidden_states = outputs.hidden_states`` only into the ModelOutput the forward returns: any other
+        # callee (self.consume(hidden_states = ...)) may read an intermediate state.
         keyword = parents.get(node)
-        return isinstance(keyword, ast.keyword) and keyword.arg == "hidden_states"
+        if not (isinstance(keyword, ast.keyword) and keyword.arg == "hidden_states"):
+            return False
+        call = parents.get(keyword)
+        return (
+            isinstance(call, ast.Call)
+            and isinstance(parents.get(call), ast.Return)
+            and output_class(call.func)
+        )
 
     for node in ast.walk(tree):
         if (
@@ -2403,6 +2435,35 @@ def _decoder_output_passthrough(function, attrs) -> bool:
     return True
 
 
+_SAFE_WRAPPER_CODES = None
+
+
+def _safe_forward_wrappers() -> frozenset:
+    """Code objects of the transformers forward decorators that return the wrapped forward's output
+    unchanged (can_return_tuple at most calls .to_tuple() on it, deprecate_kwarg renames kwargs). Found by
+    decorating a probe, so a wrapper matches by code identity, not by name."""
+    global _SAFE_WRAPPER_CODES
+    if _SAFE_WRAPPER_CODES is not None:
+        return _SAFE_WRAPPER_CODES
+
+    def probe(self, *args, **kwargs):
+        return None
+
+    codes = set()
+    try:
+        from transformers.utils.generic import can_return_tuple
+        codes.add(can_return_tuple(probe).__code__)
+    except Exception:
+        pass
+    try:
+        from transformers.utils.deprecation import deprecate_kwarg
+        codes.add(deprecate_kwarg("_unsloth_probe", version = "0.0.0")(probe).__code__)
+    except Exception:
+        pass
+    _SAFE_WRAPPER_CODES = frozenset(codes)
+    return _SAFE_WRAPPER_CODES
+
+
 def last_hidden_state_decoder(model, forward) -> Optional[torch.nn.Module]:
     """The decoder a GRPO hidden-state forward of ``model`` may scope with last_hidden_state_only(), or
     None (gather every state). Only the one CP-attached text decoder held directly by ``model``, and only
@@ -2423,6 +2484,13 @@ def last_hidden_state_decoder(model, forward) -> Optional[torch.nn.Module]:
     chain = [function]
     while hasattr(chain[-1], "__wrapped__") and len(chain) < 16:
         chain.append(chain[-1].__wrapped__)
+    # Only the innermost function is audited: every wrapper around it must be a known one that hands the
+    # output back as is. functools.wraps copies the marker outward, so it cannot vouch for a wrapper either.
+    safe = _safe_forward_wrappers()
+    if hasattr(chain[-1], "__wrapped__") or any(
+        getattr(f, "__code__", None) not in safe for f in chain[:-1]
+    ):
+        return None
     if any(getattr(f, _PASSTHROUGH_MARKER, False) for f in chain):
         return decoder
     inner = getattr(chain[-1], "__func__", chain[-1])
