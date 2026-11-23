@@ -130,9 +130,7 @@ def _price(monkeypatch, denoiser, streamed_mib, tokens):
 
 
 def test_int8_denoiser_streaming_on_the_primary_is_priced_at_its_real_forward(monkeypatch):
-    """FLUX.2-klein-base-4B INT8 on 2x T4: the speed layer's preview streams the whole 3876 MiB DiT. Counting only
-    parameters() priced a forward at 0.03 s, so the preview expected a layer split; at its 3.9B logical weights a
-    forward is ~0.68 s and the replica layout wins, as the final placement (nothing streamed) decides."""
+    """klein-base-4B INT8 on 2x T4: parameters() priced a forward at 0.03 s (wrongly favoring a split); ~0.68 s is real."""
     model = _native(nq.NATIVE_INT8, act_int8 = True, rot_group = 256)
     # klein-base-4B's 3.88B weights x 4096 tokens, carried by this small stand-in as more tokens
     tokens = 3_877_455_360 * 4096 // _dense_count(Flux2Transformer2DModel())

@@ -837,19 +837,16 @@ def stream_exposure(
     return transfer, compute, exposed
 
 
-# Integer / fp8 code buffers a fused quantized module multiplies through; float buffers are scales or tables.
+# Code buffers of fused quantized modules; float buffers are scales or tables.
 _QUANT_CODE_DTYPES = frozenset(
     ("int8", "uint8", "float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2", "float8_e5m2fnuz")
 )
 
 
 def logical_weight_elements(module: Any) -> int:
-    """Weights a forward multiplies through, at their logical size: the ``params`` of the ``2 x params x tokens`` price.
+    """Logical weight count for the ``2 x params x tokens`` price; ``parameters()`` misses quantized/packed layouts.
 
-    ``parameters()`` misses quantized layouts: native int8 / fp8 and NVFP4 linears keep their codes in buffers
-    (``weight_q``, ``wq``, ``weight_packed``), GGUF and bnb 4-bit pack several weights per element. A leaf module with
-    ``in_features`` / ``out_features`` counts ``in x out`` plus its bias, so a dense ``nn.Linear`` reads as before; any
-    other module counts its own parameters and integer / fp8 code buffers."""
+    Leaf linears count ``in x out`` + bias; other modules count own params and integer / fp8 code buffers."""
     seen: set[int] = set()
     total = 0
     for sub in module.modules():
