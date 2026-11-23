@@ -331,7 +331,13 @@ def test_exact_count_endpoint_failover_preserves_short_chat_concurrency(monkeypa
                     reservation.cancel()
 
     asyncio.run(scenario())
-    assert calls.count("/v1/chat/completions/input_tokens") == 3
+    native_calls = calls.count("/v1/chat/completions/input_tokens")
+    if failed_path == "legacy":
+        # A native answer is kept per llama-server process, so identical chats racing here may share it.
+        assert 1 <= native_calls <= 3
+    else:
+        # A failed native count is never kept: every reservation asks the endpoint again.
+        assert native_calls == 3
     assert calls.count("/apply-template") == (0 if failed_path == "legacy" else 3)
 
 
