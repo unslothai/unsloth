@@ -9,15 +9,19 @@ __all__ = [
     "UnslothAsyncVLLMServer",
 ]
 
+import copy
 import hmac
 import itertools
 import json
 import logging
 import os
 import secrets
+import shutil
+import tempfile
 import threading
 import time
 import uuid
+import weakref
 from concurrent.futures import Future
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -36,6 +40,59 @@ _BATCH_WAIT_S = 0.0005
 def _inplace_lora():
     # One slot overwritten per sync: with max_loras=1 a new id per sync stalls new requests behind stragglers.
     return os.environ.get("UNSLOTH_ASYNC_GRPO_INPLACE_LORA", "1") != "0"
+
+
+def _tensor_sync():
+    # Kill switch: 0 hands each synced adapter to vLLM through TRL's safetensors files and a load from disk.
+    return os.environ.get("UNSLOTH_ASYNC_GRPO_TENSOR_SYNC", "1") != "0"
+
+
+def _tensor_request_builder():
+    # Zoo's load_lora(load_tensors = True) body without the merged-rollout branch, which folds the adapter into
+    # the shared base around a generate call and cannot serve a continuously stepping engine.
+    try:
+        from unsloth_zoo.vllm_utils import _build_lora_request
+    except Exception:
+        return None
+    return _build_lora_request
+
+
+def _host_snapshot(tensors, dtype = None):
+    """Copies `tensors` to host memory with one device-to-host copy per dtype, so the version keeps its values
+    after the optimizer steps the live weights. Returns name -> view of a fresh flat host buffer. Built outside
+    inference mode: vLLM scales LoRA B in place on the engine thread, which an inference tensor refuses."""
+    import torch
+    with torch.inference_mode(False), torch.no_grad():
+        groups = {}
+        for name, tensor in tensors.items():
+            tensor = tensor.detach()
+            if dtype is not None and tensor.is_floating_point():
+                tensor = tensor.to(dtype)
+            groups.setdefault((tensor.device, tensor.dtype), []).append((name, tensor))
+        out = {}
+        for (device, _), items in groups.items():
+            # torch.cat already allocates a fresh buffer, so a CPU group needs no second copy.
+            flat = torch.cat([tensor.reshape(-1) for _, tensor in items])
+            if device.type != "cpu":
+                flat = flat.to("cpu")
+            offset = 0
+            for name, tensor in items:
+                size = tensor.numel()
+                out[name] = flat[offset : offset + size].view(tensor.shape)
+                offset += size
+        return {name: out[name] for name in tensors}
+
+
+def _upload_copy(lora):
+    """The request handed to `add_lora`. vLLM's tensor load keeps a same-dtype tensor's storage and scales LoRA B
+    in place, so a staged request goes up as a copy and the retained snapshot keeps the values TRL saved: a
+    restore or a rollback then serves them exactly once scaled, as a reload of TRL's files does."""
+    tensors = getattr(lora, "lora_tensors", None)
+    if not tensors:
+        return lora
+    upload = copy.copy(lora)
+    upload.lora_tensors = _host_snapshot(tensors)
+    return upload
 
 
 def _pause_on_sync():
@@ -75,6 +132,34 @@ def _scheduler(llm_engine):
     return getattr(core, "scheduler", None)
 
 
+def _track_preemptions(scheduler):
+    # vllm:num_preemptions_total needs log_stats (off in-process): bank per-request counts on free so the total
+    # stays monotonic. Once per scheduler, since the engine outlives each server.
+    if scheduler is None or hasattr(scheduler, "_unsloth_preemptions_freed"):
+        return
+    free_blocks = getattr(scheduler, "_free_blocks", None)
+    if free_blocks is None or not isinstance(getattr(scheduler, "requests", None), dict):
+        return
+
+    def _free_blocks(request, *args, **kwargs):
+        result = free_blocks(request, *args, **kwargs)
+        scheduler._unsloth_preemptions_freed += getattr(request, "num_preemptions", 0) or 0
+        return result
+
+    scheduler._unsloth_preemptions_freed = 0
+    scheduler._free_blocks = _free_blocks
+
+
+def _preemptions(scheduler):
+    freed = getattr(scheduler, "_unsloth_preemptions_freed", None)
+    if freed is None:
+        return None
+    live = sum(
+        getattr(request, "num_preemptions", 0) or 0 for request in scheduler.requests.values()
+    )
+    return freed + live
+
+
 class _Engine:
     """Owns the vLLM engine on one thread; every engine call happens there."""
 
@@ -103,7 +188,13 @@ class _Engine:
         self.newest = None
         self.lora_holds = {}
         self.inplace = _inplace_lora()
-        self.slot_id = None
+        # Tensor hand-off only through the shared slot: with distinct ids vLLM can evict a version and reload it
+        # lazily from the request a rollout names, and each tensor load scales B in place; files re-read cleanly.
+        self.tensor_sync = _tensor_sync() and self.inplace
+        # (path, LoRARequest) snapshotted by `stage` for the next load of that path; guarded by `cv`.
+        self.staged = None
+        # Allocated once here: the trainer thread stages under this id while the engine thread loads it.
+        self.slot_id = next(_LORA_IDS) if self.inplace else None
         self.slot_version = 0
         self.aborted = None
         self.stats = {
@@ -114,7 +205,12 @@ class _Engine:
             "max_batch": 0,
             "syncs": 0,
             "sync_steps": 0,
+            "tensor_syncs": 0,
         }
+        try:
+            _track_preemptions(_scheduler(self.engine))
+        except Exception as error:
+            logger.info(f"Unsloth: vLLM preemptions will not be reported: {error}")
         self.thread = threading.Thread(
             target = self._run, name = "unsloth-async-grpo-vllm", daemon = True
         )
@@ -142,6 +238,7 @@ class _Engine:
     def stop(self):
         with self.cv:
             self.stopping = True
+            self.staged = None
             self.cv.notify()
         if threading.current_thread() is not self.thread:
             self.thread.join(timeout = 60)
@@ -203,6 +300,7 @@ class _Engine:
         self._fail_active(RuntimeError("Unsloth: the in-process vLLM server stopped."))
         with self.cv:
             pending, self.pending = self.pending, []
+            self.staged = None
         for item in pending:
             item[-1].set_exception(RuntimeError("Unsloth: the in-process vLLM server stopped."))
         for name in list(self.loras):
@@ -274,6 +372,34 @@ class _Engine:
                 self.lora_holds[lora_id][1] -= 1
                 self._maybe_remove(lora_id)
 
+    # Called from the trainer thread while TRL saves the adapter; the engine keeps stepping.
+    def stage(self, path, lora):
+        with self.cv:
+            if self.stopping or not self.tensor_sync:
+                return False
+            self.staged = (path, lora)
+            return True
+
+    def discard_staged(self):
+        # A newer save of the owning model supersedes any pending snapshot, also when it falls back to files.
+        with self.cv:
+            self.staged = None
+
+    def _staged_for(self, path):
+        # One read of path and request together, under the lock the trainer thread publishes with.
+        with self.cv:
+            staged = self.staged
+        if staged is None or staged[0] != path or staged[1].lora_int_id != self.slot_id:
+            return None
+        return staged
+
+    def _consume(self, staged):
+        # Only after vLLM accepted it: an unrelated load or a failed one leaves the version for its own load.
+        with self.cv:
+            if self.staged is staged:
+                self.staged = None
+        self.stats["tensor_syncs"] += 1
+
     # Commands (run on the engine thread through `call`).
     def add_adapter(self, name, path):
         if self.inplace:
@@ -293,19 +419,23 @@ class _Engine:
         if loaded:
             self.engine.remove_lora(self.slot_id)
         try:
-            self.engine.add_lora(lora)
+            self.engine.add_lora(_upload_copy(lora))
         except BaseException:
             if loaded and previous is not None:
                 # Requests in flight still name the slot: put the previous version back.
-                self.engine.add_lora(previous)
+                self.engine.add_lora(_upload_copy(previous))
             raise
         self.slot_version += 1
 
     def _overwrite_slot(self, name, path):
-        if self.slot_id is None:
-            self.slot_id = next(_LORA_IDS)
-        lora = self.load_lora(path, lora_request_id = self.slot_id)
+        staged = self._staged_for(path)
+        if staged is not None:
+            lora = staged[1]
+        else:
+            lora = self.load_lora(path, lora_request_id = self.slot_id)
         self._reload_slot(lora, self.loras.get(self.newest) if self.newest is not None else None)
+        if staged is not None:
+            self._consume(staged)
         self.loras[name] = lora
         self.newest = name
         self.lora_holds.setdefault(self.slot_id, [False, 0])[0] = False
@@ -331,7 +461,7 @@ class _Engine:
     def load(self):
         scheduler = _scheduler(self.engine)
         waiting = len(self.pending)
-        usage = running = None
+        usage = running = preemptions = None
         if scheduler is not None:
             try:
                 usage = float(scheduler.kv_cache_manager.usage)
@@ -339,9 +469,19 @@ class _Engine:
                 waiting += len(scheduler.waiting) + len(getattr(scheduler, "skipped_waiting", ()))
             except Exception:
                 usage = running = None
+            try:
+                preemptions = _preemptions(scheduler)
+            except Exception:
+                preemptions = None
         if running is None:
             running = len(self.active)
-        return {"usage": usage, "running": running, "waiting": waiting}
+        return {
+            "usage": usage,
+            "running": running,
+            "waiting": waiting,
+            "preemptions": preemptions,
+            "stats": dict(self.stats),
+        }
 
     def set_paused(self, paused):
         self.paused = paused
@@ -473,6 +613,14 @@ class UnslothAsyncVLLMServer:
                 "Unsloth: AsyncGRPOTrainer with fast_inference=True needs a LoRA model from get_peft_model."
             )
         _keep_awake(llm)
+        try:
+            self._model = weakref.ref(model)
+        except TypeError:
+            self._model = lambda: None
+        # Private per-server directory (mkdtemp, mode 0700) for the one adapter_config.json the tensor request
+        # needs; never a path derived from TRL's output directory, which other users may be able to write.
+        self._tensor_dir = None
+        self._tensor_lock = threading.Lock()
         self.engine = _Engine(llm, load_lora, sampling_params)
         self.stopped = False
         self._token = secrets.token_urlsafe(32)
@@ -546,6 +694,21 @@ class UnslothAsyncVLLMServer:
             lines.append(f"vllm:kv_cache_usage_perc{{{labels}}} {load['usage']}")
         lines.append(f"vllm:num_requests_running{{{labels}}} {float(load['running'])}")
         lines.append(f"vllm:num_requests_waiting{{{labels}}} {float(load['waiting'])}")
+        if load["preemptions"] is not None:
+            lines.append(f"vllm:num_preemptions_total{{{labels}}} {float(load['preemptions'])}")
+        # Host-side engine counters (no device sync); TRL ignores them.
+        stats = load["stats"]
+        for name, key in (
+            ("requests_finished_total", "requests"),
+            ("generation_tokens_total", "tokens"),
+            ("engine_steps_total", "steps"),
+            ("engine_step_seconds_total", "step_s"),
+            ("engine_max_batch", "max_batch"),
+            ("syncs_total", "syncs"),
+            ("sync_steps_total", "sync_steps"),
+            ("tensor_syncs_total", "tensor_syncs"),
+        ):
+            lines.append(f"unsloth:async_grpo_{name}{{{labels}}} {float(stats[key])}")
         return 200, "\n".join(lines) + "\n"
 
     def post(self, path, body):
@@ -612,6 +775,52 @@ class UnslothAsyncVLLMServer:
         }
         return {"id": output.request_id, "object": "text_completion", "choices": [choice]}
 
+    def discard_staged(self, model):
+        """A save of `model` that writes TRL's files: those files are newer than any pending snapshot."""
+        if model is self._model():
+            self.engine.discard_staged()
+
+    def stage_adapter(self, model, adapter_name, dest_dir):
+        """Snapshot the adapter TRL is about to save to `dest_dir` for its next `/v1/load_lora_adapter`, so the
+        sync skips the safetensors round trip (PEFT's save also probes the Hub for the base config each time).
+        False: nothing staged, TRL saves the files as usual."""
+        engine = self.engine
+        if self.stopped or model is not self._model():
+            return False
+        # This save is the newest version: drop an older pending snapshot first, so a decline below leaves
+        # TRL's fresh files as the only source.
+        engine.discard_staged()
+        if not engine.tensor_sync or not isinstance(dest_dir, str):
+            return False
+        if adapter_name != "default" or set(getattr(model, "peft_config", None) or ()) != {
+            "default"
+        }:
+            return False
+        build = _tensor_request_builder()
+        if build is None:
+            return False
+        import torch
+
+        dtype = getattr(getattr(self.vllm_config, "lora_config", None), "lora_dtype", None)
+        try:
+            with self._tensor_lock:
+                if self.stopped:
+                    return False
+                if self._tensor_dir is None:
+                    self._tensor_dir = tempfile.mkdtemp(prefix = "unsloth-async-grpo-lora-")
+                lora = build(model, self._tensor_dir, True, engine.slot_id)
+            if lora is None or not getattr(lora, "lora_tensors", None):
+                return False
+            # What a load from TRL's files gives vLLM: the values at save time, cast to the LoRA dtype.
+            lora.lora_tensors = _host_snapshot(
+                lora.lora_tensors, dtype if isinstance(dtype, torch.dtype) else None
+            )
+        except Exception as error:
+            logger.info(f"Unsloth: syncing the adapter through files instead of tensors: {error}")
+            engine.tensor_sync = False
+            return False
+        return engine.stage(dest_dir, lora)
+
     def abort_all(self):
         if not self.stopped:
             self.engine.call(self.engine.abort_all)
@@ -620,8 +829,14 @@ class UnslothAsyncVLLMServer:
         if self.stopped:
             return
         self.stopped = True
-        self.engine.stop()
-        self._shutdown()
+        try:
+            self.engine.stop()
+            self._shutdown()
+        finally:
+            with self._tensor_lock:
+                tensor_dir, self._tensor_dir = self._tensor_dir, None
+            if tensor_dir is not None:
+                shutil.rmtree(tensor_dir, ignore_errors = True)
 
 
 def _keep_awake(llm):

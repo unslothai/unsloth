@@ -782,6 +782,38 @@ def test_unsloth_host_metadata_calls_keep_the_stock_forward(monkeypatch, key):
     assert calls  # no host metadata: compiled
 
 
+def test_prefix_grouper_table_keeps_the_stock_forward_on_transformers_layers(monkeypatch):
+    """prefix_grouper_hf passes the table through transformers-native layers too (Qwen3-MoE)."""
+    M = _load()
+    calls = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            calls.append(1)
+            return fn(*args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class Qwen3MoeDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.proj(hidden_states)
+
+    Qwen3MoeDecoderLayer.forward.__module__ = "transformers.models.qwen3_moe.modeling_qwen3_moe"
+    M._wrap(Qwen3MoeDecoderLayer, {})
+    layer = Qwen3MoeDecoderLayer().train()
+    x = torch.randn(1, 4, 8)
+    layer(x, prefix_seg_info = object())
+    assert calls == []
+    layer(x, prefix_seg_info = None)
+    assert calls  # no table: compiled
+
+
 def test_packed_stock_forward_says_blocks_run_uncompiled(monkeypatch, capsys):
     M = _load()
     monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
@@ -1301,6 +1333,118 @@ class _TraceableCollector:
 
     def reset(self, token):
         self.value = token
+
+
+def test_non_reentrant_trial_graph_is_freed(monkeypatch):
+    # Qwen3-30B-A3B shape (router aux loss on, so non-reentrant), 4 layers, 32K tokens: every block's
+    # trial graph stayed alive for the whole run, 14 GiB between steps. An identity pack hook saves an
+    # op's output on its own node, a cycle through the C++ graph that gc.collect() cannot break.
+    import gc
+    import weakref
+
+    from torch.utils.checkpoint import checkpoint
+
+    M = _load()
+    if getattr(torch._C._autograd, "_top_saved_tensors_default_hooks", None) is None:
+        pytest.skip("this torch cannot read the active saved-tensor hooks (no non-reentrant trial)")
+    trial_outputs = []
+    calls = [0]
+
+    def fake_compile(fn, **kwargs):
+        def compiled(self, hidden_states, *args, **kw):
+            calls[0] += 1
+            out = fn(self, hidden_states, *args, **kw)
+            if M._IN_TRIAL[0]:
+                trial_outputs.append(weakref.ref(out))
+            return out
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class SigmoidDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+        ):
+            # sigmoid saves its own output for backward
+            return torch.sigmoid(self.proj(hidden_states) + hidden_states)
+
+    original = SigmoidDecoderLayer.forward
+    M._wrap(SigmoidDecoderLayer, {})
+    with torch.random.fork_rng():
+        torch.manual_seed(0)
+        layer, ref = SigmoidDecoderLayer(), SigmoidDecoderLayer()
+        x = torch.randn(2, 4, 8, requires_grad = True)
+    ref.load_state_dict(layer.state_dict())
+    checkpoint(layer, x, use_reentrant = False).square().sum().backward()
+    gc.collect()
+    assert len(trial_outputs) == 1, "the non-reentrant trial did not run"
+    assert trial_outputs[0]() is None, "the trial forward's graph outlived the trial"
+    assert calls[0] == 3, "expected the trial, the real call and the checkpoint recompute"
+    # The real call and its recompute are unchanged.
+    x_ref = x.detach().requires_grad_()
+    original(ref, x_ref).square().sum().backward()
+    torch.testing.assert_close(x.grad, x_ref.grad)
+    torch.testing.assert_close(layer.proj.weight.grad, ref.proj.weight.grad)
+
+
+def test_no_grad_trial_stays_out_of_an_outer_non_reentrant_checkpoint(monkeypatch):
+    # A reentrant-checkpointed layer inside a non-reentrant parent: the layer's no-grad call trials in
+    # grad mode, and without our own hooks those saves landed in the parent's checkpoint frame, so its
+    # recompute (no trial left to run) saved fewer: CheckpointError "A different number of tensors".
+    from torch.utils.checkpoint import checkpoint
+
+    M = _load()
+    if getattr(torch._C._autograd, "_top_saved_tensors_default_hooks", None) is None:
+        pytest.skip("this torch cannot read the active saved-tensor hooks")
+    seen = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(self, hidden_states, *args, **kw):
+            if M._IN_TRIAL[0]:
+                seen.append(M._in_nonreentrant_checkpoint())
+            return fn(self, hidden_states, *args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class SigmoidDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+        ):
+            return torch.sigmoid(self.proj(hidden_states) + hidden_states)
+
+    original = SigmoidDecoderLayer.forward
+    M._wrap(SigmoidDecoderLayer, {})
+    with torch.random.fork_rng():
+        torch.manual_seed(0)
+        layer, ref = SigmoidDecoderLayer(), SigmoidDecoderLayer()
+        x = torch.randn(2, 4, 8, requires_grad = True)
+    ref.load_state_dict(layer.state_dict())
+
+    def parent(h):
+        return checkpoint(layer, h * 1.5, use_reentrant = True).tanh()
+
+    checkpoint(parent, x, use_reentrant = False).square().sum().backward()
+    # The trial ran, and still saw the outer non-reentrant checkpoint (cudagraph eligibility reads it).
+    assert seen == [True]
+    x_ref = x.detach().requires_grad_()
+    original(ref, x_ref * 1.5).tanh().square().sum().backward()
+    torch.testing.assert_close(x.grad, x_ref.grad)
+    torch.testing.assert_close(layer.proj.weight.grad, ref.proj.weight.grad)
 
 
 def test_trial_forward_graph_is_reused_by_the_real_call(monkeypatch):
@@ -2780,3 +2924,183 @@ def test_opaque_gdn_op_takes_any_fla_return_length(monkeypatch, extra_fwd):
     torch.testing.assert_close(out[0], v.detach() * 0.5)
     out[0].sum().backward()
     assert torch.all(v.grad == 0.5) and torch.all(q.grad == 1) and torch.all(g.grad == 4)
+
+
+def test_block_keeps_checkpointing_under_accelerate_device_map_hooks(monkeypatch):
+    # A model split over GPUs: accelerate's hook calls `_old_forward`, bound at load to transformers' wrapper. After
+    # the block replaced the class forward that wrapper stopped checkpointing (and the block never ran), so every
+    # layer kept its activations: Inkling-2-Mini on 2x T4 grew ~0.45 GB per layer and ran out of memory.
+    hooks = pytest.importorskip("accelerate.hooks")
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    cls = _toy_class()
+    stock = cls.forward
+    cls.forward = _like_transformers_5_23(stock)
+    layer, calls = _checkpointed_layer(cls)
+    hooks.add_hook_to_module(layer, hooks.ModelHook())
+    before = cls.forward
+    M._wrap(cls, {})
+    x = torch.randn(1, 4, 8, requires_grad = True)
+    layer(x)
+    assert calls == []  # the stale bound wrapper: no checkpoint
+    holder = torch.nn.Module()
+    holder.layer = layer
+    assert M._rebind_hooked_instances(holder, cls, before) == 1
+    out = layer(x)
+    torch.testing.assert_close(out, layer.proj(x) + x)
+    assert calls == [1]
+    # Unhooked instances and other classes are left alone.
+    plain, plain_calls = _checkpointed_layer(cls)
+    holder.plain = plain
+    assert M._rebind_hooked_instances(holder, cls, before) == 0
+    plain(x)
+    assert plain_calls == [1]
+
+
+def _like_transformers_5_24(forward):
+    """transformers >= 5.24: checkpoint only under grad, and clear the renamed `cache` keyword first."""
+
+    @functools.wraps(forward)
+    def forward_with_checkpointing(self, *args, **kwargs):
+        if (
+            self.gradient_checkpointing
+            and self.training
+            and torch.is_grad_enabled()
+            and type(self).forward is forward_with_checkpointing
+        ):
+            kwargs["use_cache"] = False
+            kwargs["cache"] = None
+            return self._gradient_checkpointing_func(
+                functools.partial(forward, self, **kwargs), *args
+            )
+        return forward(self, *args, **kwargs)
+
+    return forward_with_checkpointing
+
+
+def _cache_writing_class():
+    class CacheDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            cache = None,
+            use_cache = False,
+        ):
+            if cache is not None:  # stands in for DynamicCache.update
+                cache.append(hidden_states.shape[1])
+            return self.proj(hidden_states) + hidden_states
+
+    return CacheDecoderLayer
+
+
+def test_block_checkpoint_shim_keeps_the_5_24_cache_contract(monkeypatch):
+    # transformers 5.24 renamed `past_key_values` to `cache` and runs a training-mode layer as is without grad.
+    # The shim checkpointed under no_grad and passed `cache` into the block, which wrote it on each run.
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    cls = _cache_writing_class()
+    cls.forward = _like_transformers_5_24(cls.forward)
+    M._wrap(cls, {})
+    layer, calls = _checkpointed_layer(cls)
+    layer.train()
+    x = torch.randn(1, 4, 8, requires_grad = True)
+    cache = []
+    with torch.no_grad():  # generate() from a model left in training mode
+        out = layer(x, cache = cache, use_cache = True)
+    torch.testing.assert_close(out, layer.proj(x) + x)
+    assert calls == [] and cache == [4]
+    cache = []
+    out = layer(x, cache = cache, use_cache = True)  # a training forward handed a cache
+    out.sum().backward()
+    assert calls == [1] and cache == []
+    assert M._has_cache(
+        (), {"cache": []}
+    )  # cache calls keep the stock forward, as `past_key_values` does
+
+
+def _like_transformers_5_23_cache(forward):
+    """transformers 5.23: checkpoint a training-mode layer even without grad, clearing `past_key_values`."""
+
+    @functools.wraps(forward)
+    def forward_with_checkpointing(self, *args, **kwargs):
+        if (
+            self.gradient_checkpointing
+            and self.training
+            and type(self).forward is forward_with_checkpointing
+        ):
+            kwargs["use_cache"] = False
+            if kwargs.get("past_key_values") is not None:
+                kwargs["past_key_values"] = None
+            return self._gradient_checkpointing_func(
+                functools.partial(forward, self, **kwargs), *args
+            )
+        return forward(self, *args, **kwargs)
+
+    return forward_with_checkpointing
+
+
+def test_block_checkpoint_shim_keeps_the_5_23_cache_contract(monkeypatch):
+    # The 5.24 no-grad rule is read off the installed wrapper: on 5.23 a training-mode layer under no_grad is
+    # still checkpointed with its cache cleared, so the shim must not write a cache stock 5.23 drops.
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+
+    class PastDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            past_key_values = None,
+            use_cache = False,
+        ):
+            if past_key_values is not None:
+                past_key_values.append(hidden_states.shape[1])
+            return self.proj(hidden_states) + hidden_states
+
+    stock_cls = type("StockLayer", (PastDecoderLayer,), {})
+    stock_cls.forward = _like_transformers_5_23_cache(PastDecoderLayer.forward)
+    PastDecoderLayer.forward = _like_transformers_5_23_cache(PastDecoderLayer.forward)
+    M._wrap(PastDecoderLayer, {})
+    x = torch.randn(1, 4, 8)
+    for cls in (stock_cls, PastDecoderLayer):
+        layer, calls = _checkpointed_layer(cls)
+        layer.train()
+        cache = []
+        with torch.no_grad():
+            out = layer(x, past_key_values = cache, use_cache = True)
+        torch.testing.assert_close(out, layer.proj(x) + x)
+        assert (calls, cache) == ([1], []), cls.__name__
+
+
+def test_block_rebinds_hooked_layers_of_a_second_model(monkeypatch):
+    # Two models of one layer class, both dispatched (accelerate hooks bound) before either was patched: the
+    # class was wrapped for the first, so the second's rebind was skipped and it ran with no checkpointing.
+    hooks = pytest.importorskip("accelerate.hooks")
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch, "__version__", "2.7.1+cu126")
+    cls = _toy_class()
+    cls.forward = _like_transformers_5_23(cls.forward)
+    models, counts = [], []
+    for _ in range(2):
+        layer, calls = _checkpointed_layer(cls)
+        hooks.add_hook_to_module(layer, hooks.ModelHook())
+        model = torch.nn.Module()
+        model.layers = torch.nn.ModuleList([layer])
+        models.append(model)
+        counts.append(calls)
+    assert M.patch_block_compile(models[0]) == [cls.__name__]
+    assert M.patch_block_compile(models[1]) == []  # already wrapped
+    x = torch.randn(1, 4, 8, requires_grad = True)
+    for model, calls in zip(models, counts):
+        layer = model.layers[0].train()
+        torch.testing.assert_close(layer(x), layer.proj(x) + x)
+        assert calls == [1]

@@ -1512,6 +1512,11 @@ def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
         return False
 
 
+def mlx_serves_chat_only() -> bool:
+    """A Chat only (--no-torch) Mac: MLX serves chat, but unsloth_zoo's MLX trainer and export import torch."""
+    return DEVICE == DeviceType.MLX and bool(CHAT_ONLY) and CHAT_ONLY_REASON == "no_torch"
+
+
 def verdict_blames_the_mlx_stack() -> bool:
     """Unlocked deliberately: _DETECT_LOCK spans a whole detection pass, imports included, so taking it would park the post-warm worker behind an early request's first import. The overturn re-reads under the lock, so a straddling read costs one needless measurement."""
     return bool(CHAT_ONLY) and CHAT_ONLY_REASON == "mlx_unavailable"
@@ -1835,10 +1840,17 @@ def _detect_hardware_locked() -> DeviceType:
     # Require the full mlx/mlx-lm/mlx-vlm stack so the gate matches utils.mlx_repair: a partial stack stays chat-only ("mlx_unavailable") and the background self-heal repairs it.
     if is_apple_silicon() and _has_usable_mlx_stack():
         DEVICE = DeviceType.MLX
-        CHAT_ONLY = False
         # platform.machine() ("arm64"), not platform.processor(), which returns "i386" on universal2 / Rosetta builds even on native arm64.
         chip = platform.machine() or "arm64"
         print(f"Hardware detected: MLX — Apple Silicon ({chip})")
+        if _installed_without_torch():
+            CHAT_ONLY_REASON = "no_torch"
+            logger.info(
+                "Apple Silicon installed --no-torch (Chat only); MLX serves chat, Train/Export "
+                "are off by request. Reinstall without --no-torch to enable them."
+            )
+            return DEVICE
+        CHAT_ONLY = False
         return DEVICE
 
     DEVICE = DeviceType.CPU
@@ -2182,7 +2194,7 @@ def export_capability() -> dict:
         torchao_export_supported = torchao_export_loadable()
     except Exception:
         torchao_export_supported = not _windows_rocm
-    if device in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX):
+    if device in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX) and not mlx_serves_chat_only():
         return {
             "export_supported": True,
             "export_unsupported_reason": None,
@@ -2680,7 +2692,7 @@ def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
 
 
 def _mlx_device_info(mx: Any) -> Dict[str, Any]:
-    """Metal device properties across the MLX rename: mx.device_info() is current, mlx below 0.30 has only mx.metal.device_info(), and the stack gate accepts mlx >= 0.22.0, so reading just the new name leaves the working set cap silently unapplied."""
+    """mlx below 0.30.4 has only mx.metal.device_info(), and the gate accepts mlx >= 0.22.0."""
     for probe in (
         getattr(mx, "device_info", None),
         getattr(getattr(mx, "metal", None), "device_info", None),
@@ -2774,7 +2786,8 @@ def _context_free_cuda_memory_info(
         free_mib, total_mib = _cuda_instance_free_total_mib(idx)
         if free_mib is None or total_mib is None:
             return None
-        if abs(total_mib * 1024**2 - total_bytes) > max(total_bytes // 100, 16 * 1024**2):
+        # 10%: nvidia-smi totals include the driver-reserved framebuffer torch excludes (#18732).
+        if abs(total_mib * 1024**2 - total_bytes) > max(total_bytes // 10, 1024 * 1024**2):
             return None
         return _free_in_torch_scope(total_bytes, (total_mib - free_mib) / 1024)
 
@@ -2800,7 +2813,8 @@ def _context_free_cuda_memory_info(
             if used_gb is None or driver_total_gb is None:
                 break
             driver_total_bytes = round(driver_total_gb * (1024**3))
-            total_tolerance = max(total_bytes // 100, 16 * 1024**2)
+            # 10%: nvidia-smi totals include the driver-reserved framebuffer torch excludes (#18732); partitions differ by GiBs.
+            total_tolerance = max(total_bytes // 10, 1024 * 1024**2)
             if abs(driver_total_bytes - total_bytes) > total_tolerance:
                 logger.debug("Skipping whole-GPU VRAM telemetry for a partitioned GPU device")
                 break
@@ -3089,7 +3103,19 @@ def _torch_get_physical_gpu_count() -> Optional[int]:
 
 def rocm_windows_free_is_untrusted() -> bool:
     """Whether ``mem_get_info``'s FREE half must be treated as an over-report. AMD documents it: on Windows the free memory only accounts for this process's allocations, because WDDM virtualises video memory, so a fresh process sees free at or near total whatever else is resident (ROCm/librocdxg#57 measured 24410 of 24560 MiB free on a filled card; ROCm/TheRock#3724 is the same symptom). Near ``total``, not equal, so callers cap rather than test a sentinel. The TOTAL half is fine, and WSL is deliberately left alone: sys.platform is "linux" there and free tracks physical residency."""
-    return sys.platform == "win32" and IS_ROCM
+    if sys.platform != "win32":
+        return False
+    if IS_ROCM:
+        return True
+    # A spawned child that never ran detect_hardware() (the diffusion trainer) keeps IS_ROCM False: until detection
+    # has answered, the torch build already imported here decides. Never imports torch.
+    if DEVICE is not None:
+        return False
+    mod = sys.modules.get("torch")
+    return mod is not None and bool(
+        getattr(getattr(mod, "version", None), "hip", None)
+        or "rocm" in str(getattr(mod, "__version__", "")).lower()
+    )
 
 
 def trusted_mem_get_info(device: Any = None, *, module: Any = None) -> tuple[int, int]:

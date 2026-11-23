@@ -363,12 +363,22 @@ def has_functional_torchao() -> bool:
         return False
 
 
+def mxfp8_training_offered(capability: tuple) -> bool:
+    """Whether the Train tab offers base_precision='mxfp8': datacenter Blackwell (sm100 / sm103) only. On an sm120
+    card (RTX PRO 6000 / RTX 50) torchao's MXFP8 linear does engage, but it re-casts the frozen weight and the
+    activations to MX blocks on every step and keeps bf16 weight storage, so it trails frozen fp8 (offered there) in
+    speed and memory, and bf16 too at 512 px (FLUX.2 klein 4B LoRA: 0.087 s/step vs fp8 0.064, bf16 0.081).
+    An explicit mxfp8 request still runs on sm100+; this only decides what is advertised."""
+    major = int(capability[0]) if capability else 0
+    return major == 10
+
+
 def train_precision_modes() -> tuple[list[str], str]:
     """(supported base_precision modes, recommended pick) for the current machine: nf4 always works;
     bf16/auto need a bf16-capable CUDA GPU (Ampere+); int8/mxfp8 additionally need a
     FUNCTIONAL torchao (their explicit paths import it with no fallback, and the Windows-ROCm
-    stub only looks installed). fp8 needs sm89+ (torch's own _scaled_mm); mxfp8 needs the Blackwell tensor cores
-    (sm100+) its cuBLAS kernels target. The dense modes all train in bf16 compute, which the DiT
+    stub only looks installed). fp8 needs sm89+ (torch's own _scaled_mm); mxfp8 is offered on datacenter
+    Blackwell only (``mxfp8_training_offered``). The dense modes all train in bf16 compute, which the DiT
     trainer requires, so a non-bf16 CUDA GPU (T4/V100/RTX 20xx) is offered only nf4 -- otherwise
     /info would advertise a start that evicts resident models and then fails the trainer's bf16
     guard. Never raises."""
@@ -386,7 +396,7 @@ def train_precision_modes() -> tuple[list[str], str]:
             major, minor = torch.cuda.get_device_capability()
             if not rocm and (major, minor) >= (8, 9) and hasattr(torch, "float8_e4m3fn"):
                 modes.append("fp8")
-            if torchao_ok and (major, minor) >= (10, 0):
+            if torchao_ok and mxfp8_training_offered((major, minor)):
                 modes.append("mxfp8")
             modes.append("auto")
             recommended = "auto"
@@ -1013,8 +1023,26 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
         return reason
     fam = (resolved_family or "").strip().lower()
     mode = (base_precision or "").strip().lower()
-    if mode in ("bf16", "int8", "fp8", "mxfp8") and dit_fp16_fallback(fam):
+    # The W8A8 int8 prototype (UNSLOTH_DIFFUSION_INT8_TRAIN=w8a8) computes in fp16 too, as the trainer allows.
+    w8a8 = (
+        mode == "int8"
+        and os.environ.get("UNSLOTH_DIFFUSION_INT8_TRAIN", "").strip().lower() == "w8a8"
+    )
+    if mode in ("bf16", "int8", "fp8", "mxfp8") and not w8a8 and dit_fp16_fallback(fam):
         return dit_fp16_dense_reason(mode)
+    if w8a8 and dit_fp16_fallback(fam):
+        # The trainer refuses W8A8 on an fp16 card whose int8 GEMM probe fails (sm70 has no int8 tensor cores);
+        # refuse here so residents are not evicted first.
+        try:
+            import torch
+            cap = torch.cuda.get_device_capability() if torch.cuda.is_available() else None
+        except Exception:  # noqa: BLE001 -- probe failure: leave it to the trainer's own check
+            cap = None
+        if cap is not None and tuple(cap) < (7, 5):
+            return (
+                f"int8 W8A8 needs int8 tensor cores (compute capability 7.5+), this GPU is "
+                f"sm{cap[0]}{cap[1]}; use base_precision='nf4' or 'auto'."
+            )
     if fam in _FLOW_TRAIN_FAMILIES and mode in ("bf16", "int8", "fp8", "mxfp8"):
         # Dense precisions need CUDA; reject here so residents are not evicted first.
         try:
@@ -1033,7 +1061,12 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
                 f"base_precision={mode!r} is a torchao NVIDIA tensor-core path (int8 sm_80+, fp8 "
                 "sm_89+, mxfp8 sm_100+) and this is a ROCm/AMD GPU. Use 'nf4', 'bf16', or 'auto'."
             )
-        if mode == "int8" and not has_functional_torchao():
+        # The fp16 path's W8A8 base runs torch._int_mm and never falls back to torchao (the trainer raises instead).
+        if (
+            mode == "int8"
+            and not (w8a8 and dit_fp16_fallback(fam))
+            and not has_functional_torchao()
+        ):
             return (
                 "base_precision='int8' needs a functional torchao install; this host's torchao is "
                 "missing or the non-functional Windows-ROCm stub. Use 'nf4', 'bf16', or 'auto'."
@@ -1192,6 +1225,12 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,
                 # Compile: SDXL and DiT trainers, except where the GPU lacks bf16 or the trainer cannot compile.
                 "supports_compile": supports_compile or name == "sdxl",
+                # The DiT trainer streams a bf16 base's blocks from host RAM; block_swap is refused elsewhere.
+                "supports_block_swap": bool(
+                    name in _DIT_TRAIN_FAMILIES
+                    and "bf16" in fam_modes
+                    and not dit_fp16_fallback(name)
+                ),
                 # save_steps is refused for checkpointless families, so hide the control.
                 "supports_checkpoints": name not in CHECKPOINTLESS_FAMILIES,
                 # sample_every is refused elsewhere, so the panel offers "Sample every" only where it runs.
@@ -1266,6 +1305,12 @@ class DiffusionLoraConfig:
     enable_tf32: bool = True
     # "nf4" | "bf16" | "int8" | "fp8" | "auto"; non-nf4 needs a dense base.
     base_precision: str = "nf4"
+    # bf16 only: "auto" (as few blocks as fit) or N repeated blocks kept in host RAM and streamed per step; "off" or
+    # 0 none. "" (the default) takes UNSLOTH_DIT_BLOCK_SWAP, so an explicit "off" overrides the server's env.
+    block_swap: str = ""
+    # DiT families on CUDA: data-parallel over this many identical visible GPUs, one process each (diffusion_ddp);
+    # train_batch_size is per GPU. 1 (the default) is the single-device run.
+    num_gpus: int = 1
     # None: model's own schedule ("auto" for AUTO_FLOW_SHIFT_FAMILIES); a number is the effective shift on unshifted u.
     flow_shift: Optional[Any] = None
     # Per-sample chance of using an empty prompt instead of the caption (CFG dropout); 0.0 disables.
@@ -1300,6 +1345,12 @@ class DiffusionLoraConfig:
             raise ValueError("train_batch_size must be >= 1")
         if self.gradient_accumulation_steps < 1:
             raise ValueError("gradient_accumulation_steps must be >= 1")
+        try:
+            num_gpus = int(self.num_gpus if self.num_gpus is not None else 1)
+        except (TypeError, ValueError):
+            raise ValueError("num_gpus must be a whole number >= 1") from None
+        if not 1 <= num_gpus <= 64:
+            raise ValueError("num_gpus must be between 1 and 64")
         if self.lora_rank < 1:
             raise ValueError("lora_rank must be >= 1")
         if self.lora_alpha is not None and self.lora_alpha < 1:
@@ -1505,6 +1556,7 @@ class DiffusionLoraConfig:
             caption_column = caption_column,
             num_epochs = int(self.num_epochs),
             cache_variants = int(self.cache_variants),
+            num_gpus = num_gpus,
             bucketing = bucketing,
             save_steps = save_steps,
             save_total_limit = save_total_limit,
@@ -2082,6 +2134,12 @@ def _apply_perf_flags(
                     cuda_backends.enable_cudnn_sdp(False)
     except Exception:  # noqa: BLE001 -- perf flags are never fatal
         pass
+    try:
+        # gfx1151: diffusers hands SDPA strided q/k/v; contiguous copies train faster.
+        from core.inference.diffusion_attention import install_rocm_contiguous_qkv_training
+        snap["rocm_contiguous_qkv"] = install_rocm_contiguous_qkv_training()
+    except Exception:  # noqa: BLE001 -- perf only
+        pass
     return snap
 
 
@@ -2093,6 +2151,12 @@ def _restore_perf_flags(snap: Optional[dict]) -> None:
     from core.inference.diffusion_speed import restore_backend_flags
 
     restore_backend_flags(snap.get("flags"))
+    if snap.get("rocm_contiguous_qkv"):
+        try:
+            from core.inference.diffusion_attention import uninstall_rocm_contiguous_qkv_training
+            uninstall_rocm_contiguous_qkv_training(snap["rocm_contiguous_qkv"])
+        except Exception:  # noqa: BLE001 -- best-effort restore
+            pass
     try:
         import torch
 

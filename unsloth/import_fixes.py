@@ -1932,6 +1932,89 @@ def fix_transformers_chat_template_path_traversal():
                 logger.info(f"Unsloth: Failed patching {target.__name__}.{name} ({e})")
 
 
+_GEMMA4_TOOL_ARGUMENTS_PATCH_FLAG = "_unsloth_patched_gemma4_tool_arguments"
+_GEMMA4_TOOL_CALL_MARKER = "<|tool_call>call:"
+
+
+def _gemma4_object_arguments(conversations):
+    """JSON-object string arguments -> dicts; returns the input itself when nothing parses."""
+    import json
+
+    changed = False
+    result = []
+    for conversation in conversations:
+        new_conversation = conversation
+        for i, message in enumerate(conversation):
+            calls = message.get("tool_calls") if isinstance(message, dict) else None
+            if not isinstance(calls, list):
+                continue
+            new_calls = None
+            for j, call in enumerate(calls):
+                function = call.get("function") if isinstance(call, dict) else None
+                arguments = function.get("arguments") if isinstance(function, dict) else None
+                if not isinstance(arguments, str):
+                    continue
+                try:
+                    parsed = json.loads(arguments)
+                # RecursionError: deeply nested input; keep the string as before.
+                except (ValueError, RecursionError):
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                if new_calls is None:
+                    new_calls = list(calls)
+                new_calls[j] = {**call, "function": {**function, "arguments": parsed}}
+            if new_calls is not None:
+                if new_conversation is conversation:
+                    new_conversation = list(conversation)
+                new_conversation[i] = {**message, "tool_calls": new_calls}
+                changed = True
+        result.append(new_conversation)
+    return result if changed else conversations
+
+
+def fix_gemma4_string_tool_arguments():
+    """Gemma 4 templates write call:NAME{key:<|"|>value<|"|>} only for mapping arguments and paste an
+    OpenAI-style JSON string verbatim (Google's raises), so training data with string arguments teaches
+    the wrong call syntax. Decode JSON-object strings before rendering any template with that call syntax;
+    anything else renders as before."""
+    try:
+        from transformers.utils import chat_template_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the Gemma 4 tool argument fix ({e})")
+        return
+    original = getattr(chat_template_utils, "render_jinja_template", None)
+    if original is None or getattr(original, _GEMMA4_TOOL_ARGUMENTS_PATCH_FLAG, False):
+        return
+
+    @functools.wraps(original)
+    def render_jinja_template(*args, **kwargs):
+        chat_template = kwargs.get("chat_template", args[3] if len(args) > 3 else None)
+        if isinstance(chat_template, str) and _GEMMA4_TOOL_CALL_MARKER in chat_template:
+            if args:
+                args = (_gemma4_object_arguments(args[0]),) + args[1:]
+            elif "conversations" in kwargs:
+                kwargs["conversations"] = _gemma4_object_arguments(kwargs["conversations"])
+        return original(*args, **kwargs)
+
+    setattr(render_jinja_template, _GEMMA4_TOOL_ARGUMENTS_PATCH_FLAG, True)
+    # Tokenizers and processors call the name they imported, not the module attribute.
+    modules = [chat_template_utils]
+    try:
+        from transformers import tokenization_utils_base
+        modules.append(tokenization_utils_base)
+    except Exception:
+        pass
+    try:
+        from transformers import processing_utils
+        modules.append(processing_utils)
+    except Exception:
+        pass
+    for module in modules:
+        if getattr(module, "render_jinja_template", None) is original:
+            module.render_jinja_template = render_jinja_template
+
+
 _TOKENIZER_VOCAB_PATH_PATCH_FLAG = "_unsloth_patched_tokenizer_config_vocab_paths"
 # Resolved files _from_pretrained reads itself; every other one it hands to the tokenizer class.
 _TOKENIZER_FILES_READ_BY_LOADER = (
@@ -1985,6 +2068,72 @@ def fix_transformers_tokenizer_config_vocab_file_override():
         PreTrainedTokenizerBase._from_pretrained = classmethod(_from_pretrained)
     except Exception as e:
         logger.info(f"Unsloth: Failed patching PreTrainedTokenizerBase._from_pretrained ({e})")
+
+
+_MISTRAL_REGEX_HUB_PATCH_FLAG = "_unsloth_mistral_regex_hub_guard"
+
+
+def _raised_in_frame(exc, name):
+    tb = exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_name == name:
+            return True
+        tb = tb.tb_next
+    return False
+
+
+def fix_transformers_mistral_regex_hub_error():
+    """Back-port of the 5.6.0 guard: below it every tokenizer with a vocab over 100k loaded by repo id
+    asks the Hub for its tags (an anonymous model_info) to spot a Mistral base, and a 429 or outage
+    there fails the load even with the files cached. Treat that failure as not Mistral, as 5.6 does."""
+    try:
+        import transformers  # noqa: F401
+    except Exception:
+        return
+    owners = []
+    for module_name, class_name in (
+        ("transformers.tokenization_utils_base", "PreTrainedTokenizerBase"),
+        ("transformers.tokenization_utils_tokenizers", "TokenizersBackend"),
+    ):
+        try:
+            module = importlib.import_module(module_name)
+            owner = getattr(module, class_name)
+            current = owner.__dict__.get("_patch_mistral_regex")
+            if not isinstance(current, classmethod):
+                continue
+            original = current.__func__
+            if getattr(original, _MISTRAL_REGEX_HUB_PATCH_FLAG, False):
+                continue
+            source = inspect.getsource(original)
+            start = source.find("def is_base_mistral")
+            if start < 0 or "try:" in source[start : start + 120]:
+                continue
+            owners.append((owner, original))
+        except Exception as e:
+            logger.info(f"Unsloth: Skipping the Mistral regex Hub guard for {class_name} ({e})")
+
+    for owner, original in owners:
+
+        def _patch_mistral_regex(
+            cls,
+            tokenizer,
+            *args,
+            _unsloth_original = original,
+            **kwargs,
+        ):
+            try:
+                return _unsloth_original(cls, tokenizer, *args, **kwargs)
+            except Exception as exc:
+                if not _raised_in_frame(exc, "is_base_mistral"):
+                    raise
+                return tokenizer
+
+        functools.update_wrapper(_patch_mistral_regex, original)
+        setattr(_patch_mistral_regex, _MISTRAL_REGEX_HUB_PATCH_FLAG, True)
+        try:
+            owner._patch_mistral_regex = classmethod(_patch_mistral_regex)
+        except Exception as e:
+            logger.info(f"Unsloth: Failed patching {owner.__name__}._patch_mistral_regex ({e})")
 
 
 _SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"
@@ -5549,6 +5698,63 @@ def fix_transformers_voxtral_realtime_inplace_audio_add():
     cls.forward = forward
 
 
+def _torch_pickle_load_unsafe():
+    """torch < 2.6 can run code from a .bin / .pt even with weights_only=True (CVE-2025-32434)."""
+    try:
+        import torch
+        return TrueVersion(torch.__version__.split("+")[0]) < TrueVersion("2.6")
+    except Exception:
+        return False
+
+
+def refuse_pickle_checkpoint_on_old_torch(path = None):
+    """Raise before torch.load reads a pickled checkpoint (adapter_model.bin, pytorch_model.bin)
+    on torch < 2.6, where weights_only=True is bypassable (CVE-2025-32434). No-op on torch >= 2.6."""
+    if not _torch_pickle_load_unsafe():
+        return
+    name = os.path.basename(str(path)) if path is not None else "a pickled checkpoint"
+    raise RuntimeError(
+        f"Unsloth: refusing to load `{name}` with torch {__import__('torch').__version__}: torch < 2.6 "
+        "can execute code hidden in .bin / .pt files even with weights_only=True (CVE-2025-32434). "
+        "Upgrade to torch >= 2.6, or use a checkpoint saved as .safetensors "
+        "(for LoRA adapters: adapter_model.safetensors)."
+    )
+
+
+def patch_peft_bin_load_old_torch():
+    """PEFT's load_peft_weights reads adapter_model.bin via torch_load(weights_only=True) with no
+    torch version check, so on torch < 2.6 a Hub LoRA repo could run code (CVE-2025-32434).
+    Refuse there; safetensors adapters never reach torch_load. No-op on torch >= 2.6. Idempotent."""
+    if not _torch_pickle_load_unsafe() or importlib.util.find_spec("peft") is None:
+        return
+    try:
+        import peft.utils.save_and_load as peft_save_and_load
+    except Exception:
+        return
+    torch_load = getattr(peft_save_and_load, "torch_load", None)
+    if torch_load is None or getattr(torch_load, "_unsloth_old_torch_guard", False):
+        return
+
+    @functools.wraps(torch_load)
+    def _guarded_peft_torch_load(f, *args, **kwargs):
+        refuse_pickle_checkpoint_on_old_torch(f)
+        return torch_load(f, *args, **kwargs)
+
+    _guarded_peft_torch_load._unsloth_old_torch_guard = True
+    peft_save_and_load.torch_load = _guarded_peft_torch_load
+    # Modules that did `from peft.utils.save_and_load import torch_load` hold their own reference.
+    for module in list(sys.modules.values()):
+        try:
+            if (
+                getattr(module, "__name__", "").startswith("peft.")
+                and getattr(module, "torch_load", None) is torch_load
+            ):
+                module.torch_load = _guarded_peft_torch_load
+        except Exception:
+            pass
+    logger.info("Unsloth: refusing PEFT adapter_model.bin loads on torch < 2.6 (CVE-2025-32434).")
+
+
 def patch_unsafe_trainer_rng_load():
     """Harden Trainer._load_rng_state against CVE-2026-1839 (RCE from a malicious
     rng_state.pth on resume). Hardens only the rng torch.load, via a thread-local
@@ -7706,17 +7912,24 @@ def _same_tensor(tensor):
     return tensor
 
 
+def _detached_tensor(tensor):
+    # Nothing backpropagates the example score_mod forward; an identity pack saves an op's output
+    # (tanh soft-capping) on its own node, a cycle gc cannot break, so every call leaked that graph.
+    return tensor.detach()
+
+
 def fix_flex_attention_eager_saved_tensor_hooks():
     """Eager flex_attention traces its score_mod backward in create_fw_bw_graph during forward; inside a
     non-reentrant checkpoint (DDP) that trace unpacks through the checkpoint's hooks and restarts the
-    recompute mid forward. The traced graph owns no activations, so trace it under identity hooks."""
+    recompute mid forward. The traced graph owns no activations, so trace it under our own hooks
+    (detaching pack, identity unpack)."""
     try:
         import torch
         flex_hop = importlib.import_module("torch._higher_order_ops.flex_attention")
     except Exception:
         return
     original = getattr(flex_hop, "create_fw_bw_graph", None)
-    # torch < 2.7 cannot query the active hooks: always trace under identity hooks there.
+    # Without the getter (torch < 2.7, some 2.7 wheels) the active hooks cannot be read: always use ours.
     top_hooks = getattr(torch._C._autograd, "_top_saved_tensors_default_hooks", None)
     if original is None:
         return
@@ -7731,7 +7944,7 @@ def fix_flex_attention_eager_saved_tensor_hooks():
             active = False
         if not active:
             return original(*args, **kwargs)
-        hooks = torch.autograd.graph.saved_tensors_hooks(_same_tensor, _same_tensor)
+        hooks = torch.autograd.graph.saved_tensors_hooks(_detached_tensor, _same_tensor)
         try:
             # Raises while saved-tensor hooks are disabled; those calls keep torch's behaviour.
             hooks.__enter__()

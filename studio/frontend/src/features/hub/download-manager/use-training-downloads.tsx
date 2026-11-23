@@ -16,6 +16,7 @@ import { toast } from "@/lib/toast";
 import { formatBytes } from "../lib/format";
 import { getAllActiveModelDownloads } from "./api";
 import { DOWNLOAD_KIND } from "./constants";
+import { HIDDEN_POLL_INTERVAL_MS } from "./download-manager-config";
 import {
   getState,
   jobKeyOf,
@@ -27,13 +28,14 @@ import {
   isTrainingDownloadVariant,
   TrainingDownloadDiscovery,
 } from "./training-downloads";
+import { startVisibilityPoll } from "./visibility-poll";
+
+const VISIBLE_DISCOVERY_INTERVAL_MS = 1_500;
 
 /** Discover registry jobs globally; the regular manager owns polling and cancellation. */
 export function useTrainingDownloads(enabled: boolean): void {
   useEffect(() => {
     if (!enabled) return;
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     const session = () =>
       `${getAuthSessionEpoch()}:${localStorage.getItem(AUTH_SESSION_MARK_KEY)}`;
     const notices = new Set<string>();
@@ -115,18 +117,18 @@ export function useTrainingDownloads(enabled: boolean): void {
         );
       },
     });
-    const poll = async () => {
-      if ((await discovery.poll()) && !disposed)
-        timer = setTimeout(() => void poll(), 1500);
-    };
+    const poller = startVisibilityPoll(
+      () => discovery.poll(),
+      (hidden) =>
+        hidden ? HIDDEN_POLL_INTERVAL_MS : VISIBLE_DISCOVERY_INTERVAL_MS,
+    );
     const reset = () => {
       discovery.reset();
-      clearTimeout(timer);
       for (const job of Object.values(getState().jobs)) {
         if (isTrainingDownloadVariant(job.variant)) removeJob(job.key);
       }
       clearNotices();
-      void poll();
+      poller.restart();
     };
     const storage = (event: StorageEvent) => {
       if (event.key === AUTH_SESSION_MARK_KEY) reset();
@@ -135,11 +137,10 @@ export function useTrainingDownloads(enabled: boolean): void {
     window.addEventListener(AUTH_SESSION_STORED_EVENT, reset);
     window.addEventListener("storage", storage);
     render();
-    void poll();
+    poller.restart();
     return () => {
-      disposed = true;
       discovery.dispose();
-      clearTimeout(timer);
+      poller.stop();
       unsubscribe();
       clearNotices();
       window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, reset);

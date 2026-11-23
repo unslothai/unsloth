@@ -104,7 +104,8 @@ export const MessageTiming: FC<{
     : formatTimingMs(timing.totalStreamTime);
 
   return (
-    <Tooltip>
+    // Hoverable, so the figures can be selected and copied from the card.
+    <Tooltip disableHoverableContent={false}>
       <TooltipTrigger asChild>
         <button
           type="button"
@@ -121,7 +122,6 @@ export const MessageTiming: FC<{
       <TooltipContent
         side={side}
         sideOffset={8}
-        data-slot="message-timing-popover"
         variant="rich"
         className="[&_span>svg]:hidden!"
       >

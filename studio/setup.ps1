@@ -8613,9 +8613,8 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
     } elseif ($_rocmPair.Stale) {
         substep "pairing Triton for Windows with torch $($_rocmPair.Torch) ($_rocmTritonFrom -> $($_rocmPair.Spec))..." "Cyan"
         $_rocmImportedBefore = $_rocmPair.Healthy
-        # Set the install manifest aside until the pair is verified, so a failed replacement is never certified
-        # complete and the next update re-runs the dependency pass. As in the XPU swap: a manifest that cannot be
-        # moved stays valid through the replacement, so nothing is installed then.
+        # Set the manifest aside so an interrupted replacement is never certified complete. As in the XPU swap, a
+        # manifest that cannot be moved stays valid, so nothing is installed then.
         $_rocmManifest = Join-Path $VenvDir "unsloth_install_manifest.json"
         $_rocmHeld = "$_rocmManifest.triton-pending"
         $_rocmHasHeld = $false
@@ -8655,16 +8654,7 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
             # Exit 0 is not enough: an override-dependencies entry in a uv config keeps the old version, and a
             # probe that could not read the venv verifies nothing.
             $_rocmAfter = Get-RocmTritonPairing
-            if ($_rocmAfter.Known -and $_rocmAfter.Spec -and -not $_rocmAfter.Stale) {
-                if ($_rocmHasHeld) {
-                    try {
-                        Move-Item -LiteralPath $_rocmHeld -Destination $_rocmManifest -Force -ErrorAction Stop
-                    } catch {
-                        # Without the manifest the next update re-runs the dependency pass; nothing is lost.
-                        substep "[WARN] could not restore the install manifest ($($_.Exception.Message)); the next update re-runs the dependency pass." "Yellow"
-                    }
-                }
-            } else {
+            if (-not ($_rocmAfter.Known -and $_rocmAfter.Spec -and -not $_rocmAfter.Stale)) {
                 $_rocmHave = if (-not $_rocmAfter.Known) { "the venv could not be read" } elseif ($_rocmAfter.Triton) { "triton-windows $($_rocmAfter.Triton) installed" } else { "no triton-windows installed" }
                 substep "[WARN] could not pair $($_rocmPair.Spec) (exit $_rocmTritonExit, $_rocmHave); flex attention decode may run unfused. Check uv override-dependencies / constraints if this repeats." "Yellow"
                 Write-StudioLine (Redact-InstallOutput $_rocmTritonOut) -ForegroundColor Yellow
@@ -8674,7 +8664,18 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
                     # Fail, or install.ps1 commits this venv over its rollback copy.
                     $stackExit = if ($_rocmTritonExit -ne 0) { $_rocmTritonExit } else { 1 }
                 }
-                if ($_rocmHasHeld) { Remove-Item -LiteralPath $_rocmHeld -Force -ErrorAction SilentlyContinue }
+            }
+            # A pairing that only warns leaves triton no worse than before, and Test-RocmTritonPairingNeedsPass retries it
+            # next update. Dropping the manifest here left Desktop stuck on studio_install_incomplete after every repair.
+            if ($_rocmHasHeld -and $stackExit -eq 0) {
+                try {
+                    Move-Item -LiteralPath $_rocmHeld -Destination $_rocmManifest -Force -ErrorAction Stop
+                } catch {
+                    Write-StudioLine "[ERROR] could not restore the install manifest: $($_.Exception.Message)" -ForegroundColor Red
+                    $stackExit = 1
+                }
+            } elseif ($_rocmHasHeld) {
+                Remove-Item -LiteralPath $_rocmHeld -Force -ErrorAction SilentlyContinue
             }
         }
     }
@@ -9176,13 +9177,13 @@ if ((Test-Path -LiteralPath $VenvT5Legacy) -and ($script:OfflineFastPath -or (Te
 }
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_530Dir -Version "5.3.0")) { $_NeedT5_530 = $true }
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_550Dir -Version "5.5.4")) { $_NeedT5_550 = $true }
-if (-not (Test-SidecarCurrent -TargetDir $VenvT5_510Dir -Version "5.13.1")) { $_NeedT5_510 = $true }
+if (-not (Test-SidecarCurrent -TargetDir $VenvT5_510Dir -Version "5.15.1")) { $_NeedT5_510 = $true }
 # Offline keep: defer sidecar rebuilds; the runtime self-heal covers a missing tier. Mirrors setup.sh.
 $_DeferT5_530 = $false
 $_DeferT5_550 = $false
 $_DeferT5_510 = $false
 if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {
-    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.4"), @("510", "5.13.1"))) {
+    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.4"), @("510", "5.15.1"))) {
         $flag = "_NeedT5_$($tier[0])"
         if ((Get-Variable -Name $flag -ValueOnly)) {
             substep "transformers $($tier[1]) sidecar is stale or missing but UV_OFFLINE is set -- left for the next online update" "Yellow"
@@ -9192,7 +9193,7 @@ if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {
     }
 }
 if ($script:OfflineFastPath) {
-    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.4"), @("510", "5.13.1"))) {
+    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.4"), @("510", "5.15.1"))) {
         $flag = "_NeedT5_$($tier[0])"
         if ((Get-Variable -Name $flag -ValueOnly)) {
             substep "transformers $($tier[1]) sidecar is stale but UV_OFFLINE is set -- left for the next online update" "Yellow"
@@ -9226,11 +9227,11 @@ if ($_NeedT5_550) {
     Repair-SidecarTiktoken -TargetDir $VenvT5_550Dir -DirName ".venv_t5_550"
 }
 if ($_NeedT5_510) {
-    Install-T5Sidecar -TargetDir $VenvT5_510Dir -Version "5.13.1" -Label "5.13" -DirName ".venv_t5_510" -Reason "for Gemma 4 Unified support"
+    Install-T5Sidecar -TargetDir $VenvT5_510Dir -Version "5.15.1" -Label "5.15" -DirName ".venv_t5_510" -Reason "for Gemma 4 Unified support"
 } elseif ($_DeferT5_510) {
-    step "transformers" "5.13.1 sidecar stale -- left for the next online update"
+    step "transformers" "5.15.1 sidecar stale -- left for the next online update"
 } else {
-    step "transformers" "5.13.1 sidecar current"
+    step "transformers" "5.15.1 sidecar current"
     Repair-SidecarTiktoken -TargetDir $VenvT5_510Dir -DirName ".venv_t5_510"
 }
 $ErrorActionPreference = $script:PrevEAP_T5

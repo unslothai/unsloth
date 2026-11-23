@@ -14,6 +14,7 @@ import shutil
 import sys
 import threading
 import time
+import weakref
 from collections import Counter, OrderedDict
 from contextlib import ExitStack, closing, contextmanager, nullcontext
 from typing import Optional, Generator
@@ -262,6 +263,9 @@ class _ForwardRecord:
         "tail",
         "resume_offset",
         "on_resume",
+        "window",
+        "prompt",
+        "served",
     )
 
     def __init__(self):
@@ -273,6 +277,9 @@ class _ForwardRecord:
         self.tail = None
         self.resume_offset = None
         self.on_resume = None
+        self.window = 0
+        self.prompt = ()
+        self.served = 0
 
 
 _RECORDING_CLASSES = {}
@@ -321,8 +328,9 @@ def _recording_class(base):
             offset = cache_entries_offset(cache) if cache is not None else None
             if record.resume_offset is None:
                 record.resume_offset = offset or 0
-                if record.on_resume is not None:
-                    record.on_resume(record.resume_offset)
+                on_resume = record.on_resume() if record.on_resume is not None else None
+                if on_resume is not None:
+                    on_resume(record.resume_offset)
             # Only after a resume: a Qwen VL model fed no positions reuses the previous request's.
             if record.resume_offset and _prompt_wide_position_ids(args, kwargs):
                 kwargs.pop("position_ids")
@@ -410,6 +418,239 @@ class RecordingForward:
         return self._base.__call__(self._language_model, *args, **kwargs)
 
 
+def vlm_checkpoint_dispatch():
+    """mlx-vlm's dispatch module when its ``generate_step`` takes a checkpoint callback, else None."""
+    try:
+        import mlx_vlm
+        from packaging.version import Version
+
+        # Before 0.7.11 a cold run's processors see only the last chunk: a resumed one must not see more.
+        if Version(mlx_vlm.__version__) < Version("0.7.11"):
+            return None
+        dispatch = importlib.import_module("mlx_vlm.generate.dispatch")
+        ar = importlib.import_module("mlx_vlm.generate.ar")
+        params = set(inspect.signature(ar.generate_step).parameters)
+    except Exception:
+        return None
+    needed = {"prompt_cache_checkpoint", "prompt_cache_checkpoint_lengths", "prefill_step_size"}
+    return (
+        dispatch
+        if needed <= params and callable(getattr(dispatch, "generate_step", None))
+        else None
+    )
+
+
+def _with_reused_prefix(processor, prefix_ids):
+    """*processor* fed the cold run's history: mlx-vlm hands it only the ids past a resumed cache."""
+    import mlx.core as mx
+
+    head = mx.array(list(prefix_ids), dtype = mx.int32)
+
+    def _processor(tokens, logits):
+        return processor(mx.concatenate([head.astype(tokens.dtype), tokens]), logits)
+
+    return _processor
+
+
+def _resumed_processors(kwargs, prefix_ids):
+    """``kwargs`` with every processor ``generate_step`` would run, its own penalties first as it
+    builds them, fed the full history."""
+    ar = importlib.import_module("mlx_vlm.generate.ar")
+    names = (
+        "logit_bias",
+        "repetition_penalty",
+        "repetition_context_size",
+        "presence_penalty",
+        "presence_context_size",
+        "frequency_penalty",
+        "frequency_context_size",
+    )
+    own = {name: kwargs.pop(name) for name in names if name in kwargs}
+    make = ar._generate_module_override("make_logits_processors", ar.make_logits_processors)
+    processors = [*make(**own), *(kwargs.get("logits_processors") or ())]
+    kwargs["logits_processors"] = [_with_reused_prefix(p, prefix_ids) for p in processors]
+    return kwargs
+
+
+class CheckpointForward:
+    """The capture of one request through mlx-vlm's ``generate_step`` checkpoint hook. The language
+    model keeps its class, which unsloth-zoo's drafter discovery checks. Every listed length ends a
+    chunk mlx-vlm cuts anyway, so no forward changes shape. With no ``dispatch`` it captures
+    nothing."""
+
+    def __init__(
+        self,
+        language_model,
+        dispatch = None,
+    ):
+        self._language_model = language_model
+        self._dispatch = dispatch
+        self.record = _ForwardRecord()
+        self._generate_step = None
+        self._capturing = None
+        self._marks = {}
+        self._embed = None
+        self.keeps_rows = None
+
+    def __enter__(self):
+        if self._dispatch is not None:
+            self._generate_step = self._dispatch.generate_step
+            self._dispatch.generate_step = self._seam
+        return self
+
+    def __exit__(self, *_exc):
+        self._disarm()
+        self._restore_embed()
+        if self._dispatch is not None and self._dispatch.generate_step == self._seam:
+            self._dispatch.generate_step = self._generate_step
+        return False
+
+    def unrecorded(self, *args, **kwargs):
+        return self._language_model(*args, **kwargs)
+
+    def _seam(self, input_ids, model, pixel_values, mask, **kwargs):
+        record = self.record
+        if record.resume_offset is not None or kwargs.get("prompt_cache_checkpoint") is not None:
+            # A second generation under one session, or APC's own checkpoints: nothing captured.
+            return self._generate_step(input_ids, model, pixel_values, mask, **kwargs)
+        cache = kwargs.get("prompt_cache")
+        offset = (cache_entries_offset(cache) or 0) if cache is not None else 0
+        record.resume_offset = offset
+        on_resume = record.on_resume() if record.on_resume is not None else None
+        if on_resume is not None:
+            on_resume(offset)
+        primed = None
+        if offset:
+            # GLM4V-style models take an explicit table as is: positions come from the cache offset.
+            primed = (kwargs.pop("position_ids", None), kwargs.get("rope_deltas"))
+            kwargs = _resumed_processors(kwargs, record.prompt[:offset])
+        lengths = []
+        if kwargs.get("prefill_step_size") == record.window and record.window:
+            kwargs["prompt_cache_checkpoint"] = self._checkpoint
+            kwargs["prompt_cache_checkpoint_lengths"] = lengths
+        self._embed_once(model, int(input_ids.shape[-1]), offset, primed, lengths)
+        return self._generate(input_ids, model, pixel_values, mask, kwargs)
+
+    def _generate(self, input_ids, model, pixel_values, mask, kwargs):
+        try:
+            yield from self._generate_step(input_ids, model, pixel_values, mask, **kwargs)
+        finally:
+            # mlx-vlm prefills unchunked when the model refuses chunking: the capture is still taken.
+            snapshot = self._disarm(kwargs.get("prompt_cache"))
+            if self.record.snapshot is None:
+                self.record.snapshot = snapshot
+            self._restore_embed()
+
+    def _embed_once(self, model, ids, offset, primed, lengths):
+        """Fill the checkpoint lengths once the embedding rows are known, as ``generate_step`` reads
+        them only after its one ``get_input_embeddings`` call."""
+        previous = model.__dict__.get("get_input_embeddings")
+        embed = previous or functools.partial(type(model).get_input_embeddings, model)
+        self._embed = (model, previous)
+
+        def get_input_embeddings(*args, **kwargs):
+            self._restore_embed()
+            output = embed(*args, **kwargs)
+            if primed is not None:
+                for name in ("position_ids", "per_layer_inputs"):
+                    if getattr(output, name, None) is not None:
+                        setattr(output, name, None)
+                # generate_step resets the mRoPE state when drafting: back to the prompt's.
+                language_model = getattr(model, "language_model", model)
+                for name, value in zip(("_position_ids", "_rope_deltas"), primed):
+                    if value is not None and hasattr(language_model, name):
+                        setattr(language_model, name, value)
+            rows = getattr(getattr(output, "inputs_embeds", None), "shape", (0, 0))[1]
+            # Visual tokens a processor expands differ from ids: captures would key on the wrong rows.
+            if rows == ids:
+                lengths.extend(self._plan(rows, offset))
+            return output
+
+        model.__dict__["get_input_embeddings"] = get_input_embeddings
+
+    def _restore_embed(self):
+        installed, self._embed = self._embed, None
+        if installed is None:
+            return
+        model, previous = installed
+        if previous is None:
+            model.__dict__.pop("get_input_embeddings", None)
+        else:
+            model.__dict__["get_input_embeddings"] = previous
+
+    def _plan(self, rows, offset):
+        record = self.record
+        window, last = record.window, rows - 1
+        # Marks sit on window multiples or the last row, where mlx-vlm ends a chunk anyway.
+        in_prompt = lambda n: 0 < n <= last
+        self._marks = {}
+        target = record.capture_at * window
+        if record.capture_rows:
+            end = min(target + window, last)
+            if target < last:
+                self._marks.setdefault(end, set()).add("disarm")
+                if target:
+                    self._marks.setdefault(target, set()).add("arm")
+                else:
+                    self._arm()
+        elif in_prompt(target):
+            self._marks.setdefault(target, set()).add("boundary")
+        if record.tail_at and offset == record.served and in_prompt(last):
+            self._marks.setdefault(last, set()).add("tail")
+        return sorted(self._marks)
+
+    def _checkpoint(self, processed, cache):
+        marks = self._marks.get(processed, ())
+        record = self.record
+        if "disarm" in marks:
+            record.snapshot = self._disarm(cache)
+        capture = self._copy if self.keeps_rows is None else self._skeleton
+        if "boundary" in marks:
+            record.snapshot = capture(cache)
+        if "tail" in marks:
+            record.tail = capture(cache)
+        if "arm" in marks:
+            self._arm()
+
+    @staticmethod
+    def _copy(cache):
+        try:
+            return copy_cache_entries(cache)
+        except Exception as exc:
+            logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
+            return None
+
+    def _skeleton(self, cache):
+        try:
+            return kv_skeleton(cache, self.keeps_rows)
+        except Exception as exc:
+            logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
+            return None
+
+    def _arm(self):
+        from unsloth_zoo.mlx.offload import capture_prefill_rows
+
+        def copy(entry):
+            try:
+                return copy_cache_entries([entry])[0]
+            except Exception as exc:
+                logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
+
+        scope = capture_prefill_rows(self.record.capture_rows, copy)
+        self._capturing = (scope, scope.__enter__())
+
+    def _disarm(self, cache = None):
+        capturing, self._capturing = self._capturing, None
+        if capturing is None:
+            return None
+        scope, captured = capturing
+        scope.__exit__(None, None, None)
+        if cache is None:
+            return None
+        snapshot = [captured.get(id(entry)) for entry in cache]
+        return snapshot if all(entry is not None for entry in snapshot) else None
+
+
 def _cache_classes(name):
     modules = (sys.modules.get(m) for m in ("mlx_vlm.models.cache", "mlx_lm.models.cache"))
     return tuple(getattr(m, name) for m in modules if hasattr(m, name))
@@ -463,25 +704,106 @@ def share_kv_rows(entries, base):
     return shared
 
 
-def kv_skeleton(entries):
+def kv_skeleton(entries, keeps_rows = None):
     """``entries`` with in-order KV rows left out (``offset`` kept) and recurrent state copied;
-    None for any other entry (quantized, wrapped)."""
+    None for any other entry. With ``keeps_rows``, only its rows are left out, the rest copied."""
     import mlx.core as mx
 
     classes = (_cache_classes("KVCache"), _cache_classes("RotatingKVCache"))
     recurrent = _cache_classes("ArraysCache")
+    in_order = lambda entry: type(entry) in classes[0] + classes[1] and _rows_in_order(
+        entry, classes
+    )
+    # An unused slot (a cross-attention layer off the stream's offset) keeps its own copy.
+    stream = cache_entries_offset(entries)
+    moves = lambda entry: keeps_rows(entry) and entry.offset == stream
     skeleton = []
     for entry in entries:
-        if type(entry) in classes[0] + classes[1] and _rows_in_order(entry, classes):
+        if (moves if keeps_rows else in_order)(entry):
             entry = copy.copy(entry)
             entry.keys = entry.values = None
-        elif isinstance(entry, recurrent):
+        elif keeps_rows is not None or isinstance(entry, recurrent):
             entry = _copy_value(entry, mx)
         else:
             return None
         skeleton.append(entry)
     mx.async_eval(list(_arrays(skeleton, mx)))
     return skeleton
+
+
+def _owner_type(entry, rows, converts):
+    """Plain KV the turn does not convert, or a ring that cannot wrap within ``rows``."""
+    kv, rings = _cache_classes("KVCache"), _cache_classes("RotatingKVCache")
+    return not converts if type(entry) in kv else type(entry) in rings and entry.max_size >= rows
+
+
+def _owner_eligible(entry, rows, converts):
+    classes = (_cache_classes("KVCache"), _cache_classes("RotatingKVCache"))
+    return _owner_type(entry, rows, converts) and _rows_in_order(entry, classes)
+
+
+def _moved(entry):
+    return getattr(entry, "keys", 0) is None and getattr(entry, "offset", 0) > 0
+
+
+def publish_skeletons(banked, final):
+    """``banked`` filled from one exact copy per ``final`` layer; drops what ``final`` lost."""
+    import mlx.core as mx
+
+    moved = {i for _n, entries, _r in banked for i, e in enumerate(entries) if _moved(e)}
+    sources = [final[i] for i in moved if i < len(final)]
+    ends = {getattr(source, "offset", None) for source in sources}
+    end = ends.pop() if len(sources) == len(moved) and len(ends) == 1 else None
+
+    def fits(entries):
+        return all(
+            end is not None
+            and type(final[i]) is type(entry)
+            and final[i].keys is not None
+            and getattr(final[i], "_idx", end) == end
+            and end >= entry.offset
+            for i, entry in enumerate(entries)
+            if _moved(entry)
+        )
+
+    kept = [b for b in banked if fits(b[1])]
+    need = {}
+    for _n, entries, _r in kept:
+        for i, entry in enumerate(entries):
+            if _moved(entry):
+                need[i] = max(need.get(i, 0), entry.offset)
+    copies = {}
+    for i, n in need.items():
+        layer = final[i]
+        # Always a copy: even an n-row layer may be a view (a turn that never wrote its served rows).
+        pair = (layer.keys[..., :n, :] * 1, layer.values[..., :n, :] * 1)
+        mx.eval(*pair)
+        layer.keys = layer.values = None
+        copies[i] = pair
+    for _n, entries, _r in kept:
+        for i, entry in enumerate(entries):
+            if _moved(entry):
+                entry.keys, entry.values = (a[..., : entry.offset, :] for a in copies[i])
+    return kept
+
+
+def own_kv_rows(layers, wait = True):
+    import mlx.core as mx
+
+    # Not mx.contiguous: it keeps a view whose buffer is at most 16 KiB larger.
+    copies = [(layer.keys * 1, layer.values * 1) for layer in layers]
+    (mx.eval if wait else mx.async_eval)([array for pair in copies for array in pair])
+    for layer, (keys, values) in zip(layers, copies):
+        layer.keys, layer.values = keys, values
+
+
+def own_shared_kv_rows(entries, base):
+    pairs = []
+    classes = (_cache_classes("KVCache"), _cache_classes("RotatingKVCache"))
+    if not _shared_kv_pairs(entries, base, classes, pairs):
+        raise ValueError("entries cannot share every row with base")
+    # Not mx.eval: a store can run between prefill chunks.
+    own_kv_rows([entry for entry, _ in pairs], wait = False)
 
 
 def fill_kv_skeleton(skeleton, final):
@@ -544,6 +866,8 @@ class VLMPromptSnapshotStore:
         self._entries = OrderedDict()
         self._bases = {}
         self._replays = {}
+        # Unlinked entries whose rows a hand-down already copied.
+        self._handed_down = set()
         self.nbytes = 0
         # One request's boundary and replay.
         self._held = VLMPromptSnapshotStore(math.inf, 2, holds = False) if holds else None
@@ -617,7 +941,10 @@ class VLMPromptSnapshotStore:
         entries,
         replay = False,
         hold = True,
+        touch_base = True,
+        lineage = False,
     ):
+        """Only a ``lineage`` its session owns uses the eviction rules; other stores keep LRU."""
         compact_sliding_windows(entries)
         nbytes = cache_entries_nbytes(entries)
         if nbytes > self._max_bytes:
@@ -628,11 +955,7 @@ class VLMPromptSnapshotStore:
                 nbytes / 1e9,
                 self._max_bytes / 1e9,
             )
-            if not held:
-                return False
-            if any(other[0] != key for other in self._held._entries):
-                self._held.clear()
-            return self._held.store(key, prefix_ids, entries, replay)
+            return held and self._hold(key, prefix_ids, entries, replay)
         item = (key, tuple(prefix_ids))
         replay = replay or self._is_replay(item)
         readers = [other for other, base in self._bases.items() if base == item]
@@ -658,12 +981,32 @@ class VLMPromptSnapshotStore:
         if replay and replaced not in (None, item):
             self._hand_down(replaced)
             self.discard(replaced)
-        self._touch(item)
+        self._touch(item, touch_base)
+        diverted = False
         while self._entries and (
             self.nbytes > self._max_bytes or len(self._entries) > self._max_entries
         ):
-            self.discard(next(iter(self._entries)))
-        return item in self._entries
+            victim, pressed = next(iter(self._entries)), lineage and self.nbytes > self._max_bytes
+            # Once per store: diverting again would free nothing, and the loop would not end.
+            divertible = replay and hold and self._held is not None and item in self._entries
+            if pressed and divertible and _extends(item, victim):
+                # Held rather than evict its own conversation's boundaries, which serve next turn.
+                self._hand_down(item)
+                self._pop(item)
+                diverted = self._hold(key, prefix_ids, entries, True)
+                continue
+            base = self._bases.get(victim)
+            if pressed and base not in (None, item) and not self._entries[victim][1]:
+                # A reader charged nothing frees nothing: its base goes, the readers own rows.
+                self._hand_down(base, refresh = False)
+                victim = base
+            self.discard(victim)
+        return diverted or item in self._entries
+
+    def _hold(self, key, prefix_ids, entries, replay):
+        if any(other[0] != key for other in self._held._entries):
+            self._held.clear()
+        return self._held.store(key, prefix_ids, entries, replay)
 
     def _rebase(self, item, base):
         entries, nbytes = self._entries[item]
@@ -673,9 +1016,14 @@ class VLMPromptSnapshotStore:
             self._entries[item] = (entries, owned)
             self.nbytes += owned - nbytes
             self._bases[item] = base
+            self._handed_down.discard(item)
         return bool(shared)
 
-    def _hand_down(self, item):
+    def _hand_down(
+        self,
+        item,
+        refresh = True,
+    ):
         """Re-home ``item``'s readers first, else an edit's new replay drops the old branch."""
         readers = [other for other, base in self._bases.items() if base == item]
         for other in sorted(readers, key = lambda other: len(other[1]), reverse = True):
@@ -687,11 +1035,12 @@ class VLMPromptSnapshotStore:
             ]
             longer.sort(key = lambda longest: len(longest[1]), reverse = True)
             if longer and self._rebase(other, self._bases.get(longer[0], longer[0])):
-                self._touch(other)
+                if refresh:
+                    self._touch(other)
                 continue
             entries, nbytes = self._entries[other]
             try:
-                entries = copy_cache_entries(entries)
+                own_shared_kv_rows(entries, self._entries[item][0])
             except Exception as exc:
                 logger.info("MLX VLM prompt cache: snapshot not handed down (%s)", exc)
                 self.discard(other)
@@ -699,12 +1048,18 @@ class VLMPromptSnapshotStore:
             owned = cache_entries_nbytes(entries)
             self._entries[other] = (entries, owned)
             self.nbytes += owned - nbytes
-            self._entries.move_to_end(other)
+            self._handed_down.add(other)
+            if refresh:
+                self._entries.move_to_end(other)
 
-    def _touch(self, item):
+    def _touch(
+        self,
+        item,
+        touch_base = True,
+    ):
         self._entries.move_to_end(item)
         base = self._bases.get(item)
-        if base is not None:
+        if base is not None and touch_base:
             # Base is evicted last.
             self._entries.move_to_end(base)
 
@@ -714,6 +1069,7 @@ class VLMPromptSnapshotStore:
     def _pop(self, item):
         dropped = self._entries.pop(item, None)
         self._bases.pop(item, None)
+        self._handed_down.discard(item)
         if self._is_replay(item):
             del self._replays[item[0]]
         if dropped is not None:
@@ -725,6 +1081,44 @@ class VLMPromptSnapshotStore:
             self.discard(other)
         if self._held is not None:
             self._held.discard(item)
+
+    def own_rows(self, item, layers):
+        """Copy a stored view's ``layers`` when it reads no base, and point its readers there."""
+        if self._held is not None and item in self._held._entries:
+            return self._held.own_rows(item, layers)
+        if item not in self._entries or item in self._bases:
+            return
+        entries = self._entries[item][0]
+        try:
+            if item not in self._handed_down:
+                own_kv_rows([entries[i] for i in layers])
+        except Exception as exc:
+            logger.info("MLX VLM prompt cache: snapshot and its readers dropped (%s)", exc)
+            self.discard(item)
+            return
+        for other in [other for other, base in self._bases.items() if base == item]:
+            share_kv_rows(self._entries[other][0], entries)
+
+    def take(self, item):
+        """Remove ``item``'s sharing group, so no stored view pins the rows its request writes;
+        (is replay, shorter sharers). Longer entries all stay when any is not a replay."""
+        if self._held is not None and item in self._held._entries:
+            return self._held.take(item)
+        base = self._bases.get(item, item)
+        stored = [base, *(other for other, of in self._bases.items() if of == base)]
+        stored = [other for other in stored if other in self._entries]
+        shorter = [
+            (list(other[1]), self._entries[other][0], self._is_replay(other))
+            for other in stored
+            if _extends(item, other)
+        ]
+        replay, longer = self._is_replay(item), [o for o in stored if _extends(o, item)]
+        # The key's replay alone goes: this turn's replay replaces it, unless the turn banks none.
+        keeps = any(not self._is_replay(other) for other in longer)
+        for other in stored:
+            if not (keeps and other in longer):
+                self.discard(other)
+        return replay, shorter
 
     def retain(self, item):
         keep = (item, self._bases.get(item))
@@ -761,6 +1155,7 @@ class VLMPromptSnapshotStore:
         self._entries.clear()
         self._bases.clear()
         self._replays.clear()
+        self._handed_down.clear()
         self.nbytes = 0
         self.release_held()
 
@@ -794,12 +1189,20 @@ class VLMPromptCacheSession:
         policy_hosts = (),
         step = VLM_PREFILL_STEP,
         window = None,
+        dispatch = None,
+        reuse = True,
+        audio_token_ids = (),
+        max_new_tokens = 0,
+        converts = False,
+        experts_offloaded = False,
     ):
         self.step = step
         self.window = window or step
+        self._reuse = reuse
         self._store = store
         self._key = key
         self._media_token_ids = tuple(media_token_ids)
+        self._audio_token_ids = tuple(audio_token_ids)
         self._releases_unserved = releases_unserved
         self.media_block = media_block
         self._origin = 0
@@ -807,13 +1210,23 @@ class VLMPromptCacheSession:
         self.produced_tokens = 0
         self.produced_seconds = 0.0
         self._policy_hosts = tuple(policy_hosts)
-        self._forward = RecordingForward(language_model)
-        self.cache = make_cache()
+        # The class swap only without the hook, and never under a drafter, whose discovery it defeats.
+        self._forward = (
+            RecordingForward(language_model)
+            if dispatch is None and reuse
+            else CheckpointForward(language_model, dispatch)
+        )
+        self.cache = self._fresh = make_cache()
         self.reused_tokens = 0
         self._token_ids = None
         self._media_end = 0
         self._handed_over = False
         self._rehold = None
+        # Zoo splits the expert-offload route's forwards: it stays on the copy path at any window.
+        self._owns = dispatch is not None and self.window == self.step and not experts_offloaded
+        self._max_new_tokens, self._converts = max_new_tokens, converts
+        self._keeps_rows = None
+        self._pending = []
 
     def __enter__(self):
         self._forward.__enter__()
@@ -831,6 +1244,12 @@ class VLMPromptCacheSession:
                 # so unpatch idempotently rather than del twice.
                 host.__dict__.pop("chunked_prefill_policy", None)
         finally:
+            try:
+                if self._pending:
+                    # finish never ran: the lineage this request took goes back.
+                    self.finish()
+            except Exception as error:
+                logger.info("MLX VLM prompt cache: served snapshot not kept (%s)", error)
             # The class goes back regardless: one left wrapped serves every later request.
             self._forward.__exit__(*exc)
         return False
@@ -838,7 +1257,20 @@ class VLMPromptCacheSession:
     def find_prefix_length(self, token_ids):
         token_ids = list(token_ids)
         self._token_ids = token_ids
+        rows = len(token_ids) + self._max_new_tokens
+        # A layout where no layer can move (nested caches, a converted all-KV cache) keeps the copies.
+        if self._owns and any(_owner_type(entry, rows, self._converts) for entry in self._fresh):
+            self._keeps_rows = self._forward.keeps_rows = functools.partial(
+                _owner_eligible, rows = rows, converts = self._converts
+            )
         origin = self.media_block.rows(token_ids) if self.media_block is not None else 0
+        # mlx-vlm resumes past audio placeholders, which Gemma 4's helper maps to per-layer row 0.
+        audio_end = media_prefix_end(token_ids, self._audio_token_ids)
+        if not self._reuse or 0 < origin < audio_end:
+            # Freed as a miss: no reuse, or an audio placeholder after the media block.
+            self._keep(None)
+            self._store.release_held()
+            return 0
         self._origin = origin
         boundary = shape_stable_prefix(len(token_ids), origin, self.step)
         self._media_end = media_prefix_end(token_ids, self._media_token_ids)
@@ -848,10 +1280,13 @@ class VLMPromptCacheSession:
             self._keep(None)
             return 0
         entries, prefix_len = self._store.lookup(self._key, token_ids, boundary)
+        if prefix_len < audio_end:
+            entries, prefix_len = None, 0
+            self._store.release_held()
         self._handed_over = (
             entries is not None and (self._key, tuple(token_ids[:prefix_len])) not in self._store
         )
-        if self._handed_over and prefix_len == boundary:
+        if self._handed_over and prefix_len == boundary and self._keeps_rows is None:
             # Banking no boundary past it, the request holds again what served it, from its final cache.
             try:
                 self._rehold = kv_skeleton(entries)
@@ -877,7 +1312,8 @@ class VLMPromptCacheSession:
         if entries is not None:
             # The copy is taken at the first forward, once mlx-vlm has resumed.
             self.cache = entries
-            record.on_resume = self._detach_served
+            # Weak: a bound method would hold this session, and its live cache, in a cycle.
+            record.on_resume = weakref.WeakMethod(self._detach_served)
         self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
         rows = boundary - prefix_len
         record.capture_at, record.capture_rows = (
@@ -886,6 +1322,7 @@ class VLMPromptCacheSession:
         if prefix_len <= boundary < len(token_ids) - 1:
             record.tail_at = record.capture_at + 1
         self.reused_tokens = prefix_len
+        record.window, record.prompt, record.served = self.window, token_ids, prefix_len
         return prefix_len
 
     def _keep(self, item):
@@ -903,6 +1340,10 @@ class VLMPromptCacheSession:
                 release_cache_entries(self.cache)
             except Exception as exc:
                 logger.info("MLX VLM prompt cache: declined snapshot not released (%s)", exc)
+            self.cache = self._fresh
+            return
+        if self._keeps_rows is not None:
+            self._hand_over(prefix_ids)
             return
         if self._handed_over:
             return
@@ -918,6 +1359,17 @@ class VLMPromptCacheSession:
         kept = (self._key, tuple(prefix_ids)) in self._store
         self._store.store(self._key, prefix_ids, copy, hold = kept)
 
+    def _hand_over(self, prefix_ids):
+        replay, taken = self._store.take((self._key, tuple(prefix_ids)))
+        taken.append((prefix_ids, self.cache, replay))
+        try:
+            self._pending = [
+                (len(ids), kv_skeleton(entries, self._keeps_rows), is_replay)
+                for ids, entries, is_replay in taken
+            ]
+        except Exception as exc:
+            logger.info("MLX VLM prompt cache: served snapshot not kept (%s)", exc)
+
     def update(self, _token_ids, _cache):
         """mlx-vlm's after-generation hook; ``finish`` stores, as it also runs on a consumer that
         stops reading early."""
@@ -926,18 +1378,47 @@ class VLMPromptCacheSession:
         if self._token_ids is None:
             return False
         record = self._forward.record
-        stored = self._store_boundary(record.snapshot)
-        stored = self._store_rehold() or stored
         replay = len(self._token_ids) - 1
-        if (
+        tail = (
             record.tail is not None
             and record.resume_offset == self.reused_tokens
             and cache_entries_offset(record.tail) == replay
-        ):
+        )
+        banked = [
+            *self._pending,
+            (self._boundary_rows(record.snapshot), record.snapshot, False),
+            (replay if tail else 0, record.tail, True),
+        ]
+        carried, self._pending = {id(b[1]) for b in self._pending}, []
+        banked = [item for item in banked if item[0]]
+        moves = {id(b[1]): [i for i, e in enumerate(b[1]) if _moved(e)] for b in banked}
+        if self._keeps_rows is not None:
+            try:
+                banked = publish_skeletons(banked, self.cache)
+            except Exception as exc:
+                logger.info("MLX VLM prompt cache: snapshots not published (%s)", exc)
+                banked = []
+        stored, lineage = self._store_rehold(), self._keeps_rows is not None
+        for n, entries, is_replay in sorted(banked, key = lambda item: item[0]):
+            ids, taken = self._token_ids[:n], id(entries) in carried
+            # A taken entry may link to another branch's entry: storing it does not refresh that.
             stored = (
-                self._store.store(self._key, self._token_ids[:replay], record.tail, replay = True)
+                self._store.store(
+                    self._key,
+                    ids,
+                    entries,
+                    replay = is_replay,
+                    touch_base = not taken,
+                    lineage = lineage,
+                )
                 or stored
             )
+        owner = max(banked, key = lambda item: item[0], default = (0, None))[1]
+        for n, entries, _replay in banked:
+            item, layers = (self._key, tuple(self._token_ids[:n])), moves[id(entries)]
+            # A shorter view the store did not share would pin the owner, charged as a slice.
+            if layers and entries is not owner:
+                self._store.own_rows(item, layers)
         return stored
 
     def _store_rehold(self):
@@ -952,9 +1433,9 @@ class VLMPromptCacheSession:
             return False
         return self._store.store(self._key, self._token_ids[: self.reused_tokens], skeleton)
 
-    def _store_boundary(self, snapshot):
+    def _boundary_rows(self, snapshot):
         if snapshot is None:
-            return False
+            return 0
         # Read off the snapshot: a declined offer captures an earlier boundary.
         held = cache_entries_offset(snapshot)
         if (
@@ -965,8 +1446,8 @@ class VLMPromptCacheSession:
             or held > shape_stable_prefix(len(self._token_ids), self._origin, self.step)
         ):
             logger.debug("MLX VLM prompt cache: snapshot holds %r rows, not stored", held)
-            return False
-        return self._store.store(self._key, self._token_ids[:held], snapshot)
+            return 0
+        return held
 
 
 class VLMBatchRowCache:
@@ -2147,6 +2628,17 @@ def _zoo_declares_multimodal(model_name, hf_token = None) -> bool:
         return False
 
 
+def _mlx_unsupported_model_type(model_name, hf_token = None):
+    """The ``model_type`` neither mlx-vlm nor mlx-lm builds, or None (also when the config cannot be read)."""
+    try:
+        from utils.models.model_config import _read_raw_config_json
+        from core.inference.mlx_model_support import unsupported_model_type
+        return unsupported_model_type(_read_raw_config_json(model_name, hf_token))
+    except Exception as exc:  # noqa: BLE001 -- detection must never fail a load
+        logger.debug("MLX architecture support check skipped for %s (%s)", model_name, exc)
+        return None
+
+
 def _zoo_builds_text_on_mlx_vlm(model_name, hf_token = None) -> bool:
     """A text family only mlx-vlm ships (Raon-1 Mini): unsloth_zoo builds it there, so it is served there."""
     try:
@@ -2161,9 +2653,8 @@ def _zoo_builds_text_on_mlx_vlm(model_name, hf_token = None) -> bool:
 
 
 def _text_load_drops_the_tower(model_name, hf_token = None) -> bool:
-    """Whether a text-only load builds mlx-lm's text model without the vision weights. unsloth-zoo keeps a
-    family whose mlx-lm build strips the tower only in sanitize on mlx-vlm, tower attached, so that one
-    keeps its vision load and only stops reading images."""
+    """Text-only load drops the tower, except families mlx-lm strips only in sanitize on mlx-vlm:
+    those keep the vision load and just stop reading images."""
     try:
         from utils.models.model_config import _read_raw_config_json
         from unsloth_zoo.mlx.loader import _prefer_vlm_loader_for_text
@@ -2965,9 +3456,7 @@ _GENERATION_STREAM_MODULES = (
 def _drain_generation_streams(mx):
     """Best effort: a stream raises when synchronized off its creating thread, so the drain is skipped."""
 
-    synchronize = getattr(mx, "synchronize", None)
-    if not callable(synchronize):
-        return
+    synchronize = mx.synchronize
     drained = []
     for name in _GENERATION_STREAM_MODULES:
         try:
@@ -3814,6 +4303,67 @@ class _MLXPromptCacheHistory:
         self._lru = lru_cls(max_size = max_entries, max_bytes = max_bytes)
         self._oversized = None
         self._newest = None
+        self._lent = None
+
+    def _lend(self, key, tokens):
+        """The stored prefix ``fetch_nearest_cache`` would deep-copy, handed over instead."""
+        from mlx_lm.models.cache import KVCache
+
+        lru, node = self._lru, self._lru._trie._trie.get(key)
+        walked = served = 0
+        for token in tokens:
+            node = node.get(token) if node is not None else None
+            if node is None:
+                break
+            walked += 1
+            if "__value__" in node:
+                served, entry = walked, node["__value__"]
+        # Upstream's shorter branch alone: no exact match, and no entry shares more of the prompt.
+        if not 1 < served == walked < len(tokens):
+            return None
+        cache = entry.prompt_cache
+        # Only a pure offset rewind can be undone by putting back the lent rows.
+        if any(type(layer) is not KVCache for layer in cache) or (
+            _kv_prefix_coverage(cache) != served
+        ):
+            return None
+        shorter, order = tokens[:served], lru._lru._lrus[entry.cache_type]
+        rows = [layer.keys.shape[2] for layer in cache]
+        slot = (entry.cache_type, order.index((key, shorter)), rows)
+        lru._trie.pop(key, shorter)
+        del order[slot[1]]
+        lru._n_bytes -= entry.nbytes
+        lru._n_bytes_by_type[entry.cache_type] -= entry.nbytes
+        self._lent = (key, shorter, cache, slot)
+        return cache, tokens[served:]
+
+    def _put_back(self, lent, cache):
+        """Lent rows back in their LRU slot, without ``insert()`` moving anything else."""
+        import mlx.core as mx
+
+        key, tokens, lent_cache, (cache_type, position, rows) = lent
+        lru = self._lru
+        # The allocation lent, so the charge and the spare rows are as before the turn. ``* 1``
+        # copies where ``mx.contiguous`` could share a grown buffer the held turn still writes.
+        for layer, source, n in zip(cache, lent_cache, rows):
+            layer.keys = source.keys[..., :n, :] * 1
+            layer.values = source.values[..., :n, :] * 1
+            layer.offset = len(tokens)
+        mx.eval([array for layer in cache for array in (layer.keys, layer.values)])
+        entry = type(lru).CacheEntry(cache, sum(layer.nbytes for layer in cache), cache_type)
+        lru._trie.add(key, tokens, entry)
+        lru._lru._lrus[cache_type].insert(position, (key, tokens))
+        lru._n_bytes += entry.nbytes
+        lru._n_bytes_by_type[cache_type] += entry.nbytes
+
+    def settle_lent(self):
+        """A turn that ended without its insert (Stop, close, exception) returns the lent rows."""
+        lent, self._lent = self._lent, None
+        if lent is not None:
+            try:
+                self._put_back(lent, lent[2])
+            except Exception as exc:
+                logger.debug("MLX prompt cache: lent entry dropped (%s)", exc)
 
     def _take_oversized(self, key, tokens):
         held, self._oversized = self._oversized, None
@@ -3838,10 +4388,24 @@ class _MLXPromptCacheHistory:
     def release_oversized(self):
         self._oversized = None
 
-    def fetch(self, model, key, tokens):
+    def fetch(
+        self,
+        model,
+        key,
+        tokens,
+        lend = False,
+    ):
+        self.settle_lent()
         held = self._take_oversized(key, tokens)
         if held is not None:
             return held
+        try:
+            lent = self._lend(key, list(tokens)) if lend else None
+        except (AttributeError, KeyError, ValueError, ImportError) as exc:
+            logger.debug("MLX prompt cache: entry not handed over (%s)", exc)
+            lent = None
+        if lent is not None:
+            return lent
         cache, rest = self._lru.fetch_nearest_cache(key, list(tokens))
         if cache is not None:
             if rest:
@@ -3881,8 +4445,18 @@ class _MLXPromptCacheHistory:
         tokens = tokens[:covered]
         if not tokens:
             return
+        if self._lent is not None and self._lent[2] is not cache:
+            self.settle_lent()
+        # The turn's own cache replaces the entry it was lent, as on the copy path.
+        lent, self._lent = self._lent, None
         self._newest = (key, tokens)
         if nbytes > self._max_bytes:
+            if lent is not None:
+                # Beside the held turn, the copy path keeps the lent prefix in the LRU.
+                try:
+                    self._put_back(lent, [type(layer)() for layer in cache])
+                except Exception as exc:
+                    logger.debug("MLX prompt cache: lent prefix not kept (%s)", exc)
             # In the LRU it would evict itself and every other conversation.
             logger.debug(
                 "MLX prompt cache: holding %.2f GB entry over the %.2f GB budget for its next turn",
@@ -3894,6 +4468,7 @@ class _MLXPromptCacheHistory:
         self._lru.insert_cache(key, tokens, cache)
 
     def resume_entries(self):
+        self.settle_lent()
         if self._newest is None:
             return []
         key, tokens = self._newest
@@ -5435,6 +6010,7 @@ class MLXInferenceBackend:
         self._prompt_cache_mib = None
         self._prefill_batch = None
         self._prefill_layer_step = None
+        self._experts_offloaded = False
         self._reasoning_budget = -1
         self._reasoning_budget_message = ""
         self._multi_image_marker = None
@@ -5658,11 +6234,25 @@ class MLXInferenceBackend:
     @staticmethod
     def _vlm_media_token_ids(config):
         ids = set()
-        for attr in ("image_token_id", "image_token_index", "video_token_id", "video_token_index"):
+        for attr in (
+            "image_token_id",
+            "image_token_index",
+            "video_token_id",
+            "video_token_index",
+        ):
             value = config.get(attr) if isinstance(config, dict) else getattr(config, attr, None)
             if value is not None:
                 ids.add(int(value))
         return ids
+
+    @staticmethod
+    def _vlm_audio_token_ids(config):
+        value = (
+            config.get("audio_token_id")
+            if isinstance(config, dict)
+            else getattr(config, "audio_token_id", None)
+        )
+        return () if value is None else (int(value),)
 
     @staticmethod
     def _vlm_image_digest(images):
@@ -5685,6 +6275,8 @@ class MLXInferenceBackend:
         images = None,
         prompt = None,
         has_video = False,
+        drafting = False,
+        max_new_tokens = 0,
     ):
         store = self._vlm_prompt_cache_store()
         if store is None or self._vlm_is_diffusion_model(self._model):
@@ -5700,17 +6292,24 @@ class MLXInferenceBackend:
         try:
             language_model, key, make_cache = self._vlm_snapshot_scope(adapter_state, images)
             block = self._vlm_media_block(prompt, images, make_cache)
+            dispatch = vlm_checkpoint_dispatch()
             return VLMPromptCacheSession(
                 store,
                 key,
                 language_model,
                 make_cache,
                 media_token_ids = media_ids,
+                audio_token_ids = self._vlm_audio_token_ids(getattr(self._model, "config", None)),
                 releases_unserved = bool(images),
                 media_block = block,
                 policy_hosts = (self._model, language_model) if block is not None else (),
                 step = self._grid_step(),
                 window = self._session_window(),
+                dispatch = dispatch,
+                reuse = dispatch is not None or not drafting,
+                max_new_tokens = max_new_tokens,
+                converts = bool(self._kv_runtime_quant_kwargs()),
+                experts_offloaded = getattr(self, "_experts_offloaded", False),
             )
         except Exception as exc:
             # A layout that cannot be built once cannot be built later.
@@ -5793,7 +6392,12 @@ class MLXInferenceBackend:
             logger.info("MLX VLM prompt cache: media block not prepared (%s)", exc)
             return None
 
-    def _prepare_prompt_cache(self, prompt, adapter_state):
+    def _prepare_prompt_cache(
+        self,
+        prompt,
+        adapter_state,
+        lend = False,
+    ):
         history = self._prompt_cache()
         if history is None:
             return prompt, None, None, None, 0
@@ -5802,7 +6406,7 @@ class MLXInferenceBackend:
             if not tokens:
                 return prompt, None, None, None, 0
             key = f"{self.active_model_name}|{adapter_state!r}"
-            cache, rest = history.fetch(self._model, key, tokens)
+            cache, rest = history.fetch(self._model, key, tokens, lend = lend)
         except Exception as exc:
             logger.debug("MLX prompt cache lookup failed: %s", exc)
             return prompt, None, None, None, 0
@@ -5960,8 +6564,7 @@ class MLXInferenceBackend:
         markers,
         constraint = None,
     ):
-        """The load's reasoning budget for one templated reply; a raw prompt has no reasoning block,
-        and a document-only grammar allows none."""
+        """Reasoning budget, templated replies only; document-only grammars allow none."""
         if not isinstance(prompt, str) or not self._budgets_reasoning():
             return None
         if constraint is not None and not constraint.allows_reasoning:
@@ -6320,6 +6923,12 @@ class MLXInferenceBackend:
                 f"Hub failure during initial detection. Retry the request."
             )
 
+        # Refused from config.json alone, before the weights download, when neither library has the architecture.
+        unsupported = _mlx_unsupported_model_type(route_config, hf_token)
+        if unsupported is not None:
+            from core.inference.mlx_model_support import unsupported_model_type_message
+            raise ValueError(unsupported_model_type_message(unsupported, model_name))
+
         if hf_token:
             import os
             os.environ["HF_TOKEN"] = hf_token
@@ -6523,7 +7132,8 @@ class MLXInferenceBackend:
         _offload = _mlx_offload_status(offload, self._model)
         _offloaded = (_offload["ple"]["applied"], _offload["experts"]["applied"])
         _offloaded = {"offload": _offloaded} if any(_offloaded) else {}
-        planned = offload["prefill_step"] if _offload["experts"]["applied"] else None
+        self._experts_offloaded = bool(_offload["experts"]["applied"])
+        planned = offload["prefill_step"] if self._experts_offloaded else None
         chosen_step = _positive_int(prefill_step)
         self._prefill_step, self._prefill_grid = _prefill_choice(planned, chosen_step)
         self._prefill_batch = _positive_int(prefill_batch)
@@ -7065,6 +7675,7 @@ class MLXInferenceBackend:
         self._prefill_grid = None
         self._prefill_batch = None
         self._prefill_layer_step = None
+        self._experts_offloaded = False
         self._prompt_cache_mib = None
         self._reasoning_budget = -1
         self._model = None
@@ -7699,7 +8310,7 @@ class MLXInferenceBackend:
                     cache_key,
                     prompt_tokens,
                     cached_n,
-                ) = self._prepare_prompt_cache(prompt, _adapter_state)
+                ) = self._prepare_prompt_cache(prompt, _adapter_state, lend = True)
             max_new_tokens = self._generation_limit(prompt, max_new_tokens, prompt_tokens)
             logger.info(
                 "Generating: prompt_len=%d, cached=%d, max_tokens=%d, model=%s, tokenizer=%s",
@@ -7784,6 +8395,9 @@ class MLXInferenceBackend:
                 logger.error("stream_generate failed:\n%s", traceback.format_exc())
                 raise
             finally:
+                if self._prompt_cache_history is not None:
+                    # Stop closes this stream before its insert: the lent rows go back now.
+                    self._prompt_cache_history.settle_lent()
                 # Latched here so a later cancel cannot rewrite the finish reason
                 if final_response is not None:
                     self.last_generation_stats = _build_generation_stats(
@@ -8584,8 +9198,23 @@ class MLXInferenceBackend:
             # mlx-vlm adds special tokens by family, doubling a BOS the template already emitted.
             import mlx.core as mx
             vlm_kwargs["input_ids"] = mx.array([self._encode_prompt(prompt)])
+        processors = vlm_kwargs.get("logits_processors") or ()
+        if (
+            draft is None
+            or not all(
+                getattr(processor, "history_only", False) or hasattr(processor, "settle")
+                for processor in processors
+            )
+            or _vlm_generation_is_diffusion(self._model)
+        ):
+            draft = None
         session = self._vlm_prompt_cache_session(
-            _adapter_state, images, prompt, has_video = bool(videos)
+            _adapter_state,
+            images,
+            prompt,
+            has_video = bool(videos),
+            drafting = draft is not None,
+            max_new_tokens = max_new_tokens,
         )
         vlm_kwargs.update(self._kv_runtime_quant_kwargs())
         if session is not None:
@@ -8599,17 +9228,7 @@ class MLXInferenceBackend:
             vlm_kwargs.update(self._kv_quant_generate_kwargs())
             vlm_kwargs.update(self._prefill_step_kwargs())
         session_scope = session if session is not None else nullcontext()
-        processors = vlm_kwargs.get("logits_processors") or ()
-        if (
-            draft is None
-            or not all(
-                getattr(processor, "history_only", False) or hasattr(processor, "settle")
-                for processor in processors
-            )
-            or _vlm_generation_is_diffusion(self._model)
-        ):
-            draft = None
-        elif "input_ids" not in vlm_kwargs and not videos:
+        if draft is not None and "input_ids" not in vlm_kwargs and not videos:
             vlm_kwargs.update(
                 _vlm_generate_kwargs(
                     _vlm_prepared_inputs(self._model, self._processor, prompt, images)

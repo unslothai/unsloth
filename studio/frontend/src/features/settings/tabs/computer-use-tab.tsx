@@ -31,6 +31,7 @@ import {
 } from "@/features/computer-use/api";
 import { refreshComputerUseStatus, useComputerUseStore } from "@/features/computer-use/store";
 import { useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { Cursor02Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -145,7 +146,17 @@ export function ComputerUseTab() {
         </p>
       </header>
       <SettingsSection title={t("computerUse.settings.control")}>
-        {status ? (
+        {!isTauri && !status?.available ? (
+          <SettingsRow
+            icon={<HugeiconsIcon icon={Cursor02Icon} strokeWidth={1.75} className={ROW_ICON_CLASS} />}
+            label={t("computerUse.settings.anyApp")}
+            description={t("computerUse.settings.desktopOnlyDescription")}
+          >
+            <span className="shrink-0 text-sm text-muted-foreground">
+              {t("settings.keyboardShortcuts.desktopOnly")}
+            </span>
+          </SettingsRow>
+        ) : status ? (
           <SettingsRow
             icon={<HugeiconsIcon icon={Cursor02Icon} strokeWidth={1.75} className={ROW_ICON_CLASS} />}
             label={t("computerUse.settings.anyApp")}

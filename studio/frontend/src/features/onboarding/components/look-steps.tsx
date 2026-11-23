@@ -7,9 +7,10 @@ import {
   useBackgroundStore,
   useMaterialStore,
 } from "@/features/chat-background";
+import { DEFAULT_ADJUSTMENTS } from "@/features/chat-background/model";
 import {
   setBackgroundCanvas,
-  uploadBackgroundFile,
+  uploadBackgroundImage,
 } from "@/features/chat-background/upload";
 import {
   COLOR_THEMES,
@@ -351,7 +352,7 @@ function Wallpapers() {
           event.target.value = "";
           if (!file) return;
           setPicked("upload");
-          void uploadBackgroundFile(file);
+          void uploadBackgroundImage(file, DEFAULT_ADJUSTMENTS);
         }}
       />
     </div>

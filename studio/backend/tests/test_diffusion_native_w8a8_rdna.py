@@ -179,6 +179,21 @@ def _fresh_state(monkeypatch, on = None):
     )
 
 
+def _fake_linear(in_features, out_features, device):
+    """An nn.Linear whose weights are fake tensors on ``device``, built inside an active FakeTensorMode.
+
+    ``nn.Linear(..., device="cuda:N")`` initialises its weights, and on a CPU-only torch build the fake
+    ``uniform_`` reaches CUDA's generator and raises "PyTorch is not linked with support for cuda devices";
+    moving a fake CUDA tensor that requires grad aborts the process there. Inference weights carry no grad,
+    so these are plain uninitialised fakes and the test runs on any build."""
+    lin = torch.nn.Linear(in_features, out_features, device = "meta")
+    lin.weight = torch.nn.Parameter(
+        torch.empty(out_features, in_features, device = device), requires_grad = False
+    )
+    lin.bias = torch.nn.Parameter(torch.empty(out_features, device = device), requires_grad = False)
+    return lin
+
+
 def test_layer_probes_the_card_its_weight_is_on(monkeypatch):
     # A layer quantised on cuda:1 must probe cuda:1, not whichever card is current.
     from torch._subclasses.fake_tensor import FakeTensorMode
@@ -187,7 +202,7 @@ def test_layer_probes_the_card_its_weight_is_on(monkeypatch):
     seen = []
     monkeypatch.setattr(rdna, "prepare", lambda device = None: seen.append(device) or False)
     with FakeTensorMode(allow_non_fake_inputs = True):
-        lin = torch.nn.Linear(512, 256, device = "cuda:1")
+        lin = _fake_linear(512, 256, "cuda:1")
         nq.native_linear_class()(lin, nq.NATIVE_INT8, act_int8 = True, rot_group = 256)
     assert seen == [torch.device("cuda", 1)]
 

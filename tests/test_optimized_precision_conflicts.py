@@ -308,6 +308,25 @@ def test_modelscope_conflicts_do_not_download_weights(
     assert len(calls) == 1
 
 
+def test_modelscope_adapter_with_network_share_base_is_refused(
+    loader, modelscope_snapshot, monkeypatch
+):
+    env, captured = loader
+    cache, _, _ = modelscope_snapshot
+    env["USE_MODELSCOPE"] = True
+    use_modelscope_adapter(env, cache, r"\\evil.example\share\model")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "unsloth_zoo.vision_utils",
+        SimpleNamespace(_is_network_share = lambda path: path.startswith("\\\\")),
+    )
+
+    with pytest.raises(ValueError, match = "network share"):
+        env["from_pretrained"](model_name = "owner/model", load_in_4bit = False)
+    assert "dispatch" not in captured
+
+
 @pytest.mark.parametrize(
     "kwargs, adapter_base, expected_4bit",
     [

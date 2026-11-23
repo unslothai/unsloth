@@ -185,6 +185,8 @@ def _load_cache_helpers():
         "_LOADED_REVISION_ATTR": "_unsloth_loaded_revision",
         "_get_effective_local_files_only": lambda kwargs: False,
         "_progress_bars_were_disabled": lambda: False,
+        # Outside a load scope the real helper returns the plain revision.
+        "_resolved_revision": lambda name, revision, *args, **kwargs: revision,
     }
     wanted = {
         "models/loader_utils.py": {

@@ -46,7 +46,7 @@ import {
 	resetChatBackground,
 	useChatBackground,
 } from "./storage";
-import { uploadBackgroundFile } from "./upload";
+import { uploadBackgroundImage } from "./upload";
 import {
 	nativeMaterialAvailable,
 	useGlassStrength,
@@ -334,7 +334,8 @@ export function ChatBackgroundControls() {
 				onChange={(event) => {
 					const file = event.target.files?.[0];
 					event.target.value = "";
-					if (file) void uploadBackgroundFile(file);
+					if (!file) return;
+					void uploadBackgroundImage(file, DEFAULT_ADJUSTMENTS);
 				}}
 			/>
 			{error && (
@@ -375,7 +376,7 @@ export function ChatBackgroundControls() {
 									</p>
 								)}
 								<div className="wallpaper-preview-composer rounded-xl p-3">
-									{t("chatBackground.prompt")}
+									<span>{t("chatBackground.prompt")}</span>
 								</div>
 							</div>
 						</div>

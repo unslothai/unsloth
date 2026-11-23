@@ -102,16 +102,56 @@ def installed_files(root: Optional[Path] = None) -> Optional[tuple[str, str]]:
 # ---- hardware -------------------------------------------------------------------------------------------------
 
 
-def hardware_plan(*, platform: Optional[str] = None, devices: Any = "probe") -> dict[str, Any]:
-    """{weights: "bf16" | "q8_0" | None, refusal: str | None, vram_gib}. ``devices`` is
-    utils.hardware.nvidia.get_cuda_device_info()'s answer: [] no CUDA device, None unknown (not refused)."""
+def _metal_working_set() -> Optional[int]:
+    from utils.hardware import is_apple_silicon
+
+    if not is_apple_silicon():
+        return None
+    from core.inference.mlx_diffusion_backend import working_set_bytes
+
+    return working_set_bytes()
+
+
+def _sized_plan(vram: float, short: str) -> dict[str, Any]:
+    """``short``: the refusal's first sentence, with ``need`` and ``have`` (GB)."""
+    if vram >= BF16_MIN_VRAM_GIB:
+        return {"weights": "bf16", "vram_gib": round(vram, 1), "refusal": None}
+    if vram >= Q8_MIN_VRAM_GIB:
+        return {"weights": "q8_0", "vram_gib": round(vram, 1), "refusal": None}
+    return {
+        "weights": None,
+        "vram_gib": round(vram, 1),
+        "refusal": (
+            short.format(need = f"{Q8_MIN_VRAM_GIB:.0f}", have = f"{vram:.1f}")
+            + " The model uses about 29 GB with 8-bit weights and about 40 GB in bf16."
+        ),
+    }
+
+
+def hardware_plan(
+    *,
+    platform: Optional[str] = None,
+    devices: Any = "probe",
+    working_set: Any = "probe",
+) -> dict[str, Any]:
+    """Returns {weights: bf16 | q8_0 | None, refusal, vram_gib}; devices from get_cuda_device_info()
+    ([] no CUDA; None unknown, not refused); working_set is Metal's bytes, else None."""
     platform = sys.platform if platform is None else platform
     if platform == "darwin":
-        return {
-            "weights": None,
-            "vram_gib": None,
-            "refusal": "Restyle needs an NVIDIA GPU with CUDA, so it cannot run on a Mac.",
-        }
+        if working_set == "probe":
+            working_set = _metal_working_set()
+        if not working_set:
+            return {
+                "weights": None,
+                "vram_gib": None,
+                "refusal": "Restyle on a Mac needs Apple Silicon and a native (arm64) Unsloth install.",
+            }
+        # The working set (2/3 to 3/4 of RAM) bounds the whole footprint, measured at 121 frames in bf16 on an M3 Max:
+        # 29.2 GiB on Metal + 11.1 GiB for a CPU-side VAE, or 41.4 GiB all on Metal with an IM2COL_3D build.
+        return _sized_plan(
+            int(working_set) / _GIB,
+            "Restyle needs at least {need} GB of GPU memory; this Mac's GPU can use {have} GB.",
+        )
     if devices == "probe":
         try:
             from utils.hardware.nvidia import get_cuda_device_info
@@ -131,19 +171,10 @@ def hardware_plan(*, platform: Optional[str] = None, devices: Any = "probe") -> 
     if first is None:
         return {"weights": "bf16", "vram_gib": None, "refusal": None}
     # sd-server renders on the first visible CUDA device.
-    vram = int(first[2]) / _GIB
-    if vram >= BF16_MIN_VRAM_GIB:
-        return {"weights": "bf16", "vram_gib": round(vram, 1), "refusal": None}
-    if vram >= Q8_MIN_VRAM_GIB:
-        return {"weights": "q8_0", "vram_gib": round(vram, 1), "refusal": None}
-    return {
-        "weights": None,
-        "vram_gib": round(vram, 1),
-        "refusal": (
-            f"Restyle needs a GPU with at least {Q8_MIN_VRAM_GIB:.0f} GB of memory; this one has "
-            f"{vram:.1f} GB. The model uses about 29 GB with 8-bit weights and about 40 GB in bf16."
-        ),
-    }
+    return _sized_plan(
+        int(first[2]) / _GIB,
+        "Restyle needs a GPU with at least {need} GB of memory; this one has {have} GB.",
+    )
 
 
 # ---- safetensors merge and rename ------------------------------------------------------------------------------

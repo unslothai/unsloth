@@ -2386,9 +2386,10 @@ class LoadProgressResponse(BaseModel):
     phase: Optional[str] = Field(
         None,
         description = (
-            "Load phase: 'mmap' (weights paging into RAM via mmap), "
-            "'ready' (llama-server reported healthy), or null when no "
-            "load is in flight."
+            "Load phase: 'fit' (llama-server's --fit is searching for a layer "
+            "placement and reads no weights yet), 'mmap' (weights paging into "
+            "RAM via mmap), 'ready' (llama-server reported healthy), or null "
+            "when no load is in flight."
         ),
     )
     bytes_loaded: int = Field(
@@ -5074,7 +5075,8 @@ class DiffusionLoadRequest(BaseModel):
         "speed=off). native (alias sdpa) forces default SDPA; cudnn/flash/flash3/flash4 are exact "
         "(kernel/arch-gated); sage is INT8 attention (a small quality cost, consumer "
         "friendly); unsloth_int8 is Studio's own INT8 attention kernel on the families with "
-        "strided attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
+        "strided attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm (aiter needs "
+        "diffusers' local AITER backend, gone in 0.41+; without it ROCm runs the auto pick). An "
         "unavailable kernel falls back to the default.",
     )
     int8_attention: Optional[Literal["auto", "on", "off"]] = Field(
@@ -6509,6 +6511,11 @@ class DiffusionStatusResponse(BaseModel):
         description = "Static step skip only: mode, schedule and the last generation's "
         "calls / computed / skipped transformer calls; null for any other cache",
     )
+    render_engagement: Optional[dict] = Field(
+        None,
+        description = "What the last generation actually ran: fbcache = {computed, skipped} head-block "
+        "decisions of First-Block-Cache (null when it is not installed). null before the first generation.",
+    )
     workflows: list[str] = Field(
         default_factory = list,
         description = "Image workflows the loaded family supports (drives UI tab gating): "
@@ -7687,7 +7694,8 @@ class VideoLoadRequest(BaseModel):
         "is active; native SDPA elsewhere and when speed=off). native (alias sdpa) forces "
         "default SDPA; cudnn/flash/flash3/flash4 are exact (kernel/arch-gated); sage is INT8 "
         "attention; unsloth_int8 is Studio's own INT8 attention kernel on the families with strided "
-        "attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
+        "attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm (aiter needs diffusers' "
+        "local AITER backend, gone in 0.41+; without it ROCm runs the auto pick). An unavailable "
         "kernel falls back to the default.",
     )
     int8_attention: Optional[Literal["auto", "on", "off"]] = Field(
@@ -7845,6 +7853,13 @@ class VideoGenerateRequest(BaseModel):
         None,
         description = "Stream a small live preview of the first frame while the clip denoises "
         "(generate-progress 'preview'). Null = the server default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).",
+    )
+    draft_decode: Optional[bool] = Field(
+        None,
+        description = "Wan families only: decode the finished latent with the tiny Wan VAE instead of the full one "
+        "(much faster and lighter, visibly softer; for drafts on CPU, Apple Silicon or small GPUs). Falls back to the "
+        "full decode when the tiny decoder is unavailable. Null = the server default (off unless "
+        "UNSLOTH_VIDEO_DRAFT_DECODE=1).",
     )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds
     # stay a COARSE family-agnostic outer guard: the enforced rule is the LOADED family's own
@@ -8328,6 +8343,12 @@ class VideoStatusResponse(BaseModel):
         description = "Static step skip only: the schedule (mode, head, tail, every, "
         "planned_skips) and the denoiser call counts (calls, computed, skipped) of the clip in "
         "flight, else of the last one. null for any other step cache.",
+    )
+    render_engagement: Optional[dict] = Field(
+        None,
+        description = "What the last clip actually ran: vae_decode = {untiled, tiled, wide, oom_fallback} "
+        "decodes of the untiled-when-fits VAE wrapper (null when it is not installed), fbcache = "
+        "{computed, skipped} First-Block-Cache decisions (null when it is not installed). null before the first clip.",
     )
     transformer_quant: Optional[str] = Field(
         None,

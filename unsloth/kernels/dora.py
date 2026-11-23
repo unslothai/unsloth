@@ -54,9 +54,21 @@ _MM_OUT_DTYPE = hasattr(torch.ops.aten.mm, "dtype") and getattr(torch.version, "
 _CHUNK_BYTES = 64 * 1024 * 1024
 
 
-def _rank_dtype(device):
-    # Rank-sized terms in float64: a float32 matmul may run as TF32 and round A / B to 10 bits.
-    return torch.float32 if device.type == "mps" else torch.float64
+# Largest rank whose float64 rank terms stay cheap on GPUs with 1/64-rate float64 (T4, L4, RTX): 4 r^2 (d_in + d_out)
+# float64 FLOPs per call, 34 us on an L4 at r = 32 and d = 4096, but 2.2 ms at r = 256 (an RTX 3090 rank-256 DoRA step
+# went from 95 to 261 ms).
+_FP64_MAX_RANK_GPU = 32
+
+
+def _rank_dtype(device, rank = 0):
+    # Rank-sized terms in float64 on CPU, and on CUDA / ROCm up to _FP64_MAX_RANK_GPU: a float32 matmul may run as TF32
+    # (only if the user enabled it) and round A / B to 10 bits. Other devices may have no float64 (MPS; Intel Arc XPUs
+    # raise "Required aspect fp64"): float32. rank is a static weight shape, so the choice adds no runtime guard.
+    if device.type == "cpu":
+        return torch.float64
+    if device.type == "cuda" and rank <= _FP64_MAX_RANK_GPU:
+        return torch.float64
+    return torch.float32
 
 
 def _cross_term_fp32(weight, lora_A_weight):
@@ -74,7 +86,7 @@ def _cross_term_fp32(weight, lora_A_weight):
         A_2 = torch.cat((A_hi, A_lo))
     else:
         A_2 = A_hi
-    if _MM_OUT_DTYPE and weight.is_cuda:
+    if _MM_OUT_DTYPE and weight.is_cuda and not (lowp == torch.float16 and _fp16_accumulation()):
         WA = torch.mm(A_2, weight.t(), out_dtype = torch.float32)
     else:
         # 16-bit values are exact in float32 (and in TF32); upcast W in bounded row chunks.
@@ -87,6 +99,17 @@ def _cross_term_fp32(weight, lora_A_weight):
     return WA[:r] + WA[r:] if split else WA
 
 
+def _fp16_accumulation():
+    # cuBLAS refuses float16 inputs with a float32 output under allow_fp16_accumulation (CUDABlas.cpp,
+    # gemm_internal<at::Half, float>). Reading the flag is a graph break, so a trace takes it as a constant.
+    return bool(getattr(torch.backends.cuda.matmul, "allow_fp16_accumulation", False))
+
+
+_assume_constant = getattr(torch.compiler, "assume_constant_result", None)
+if _assume_constant is not None:
+    _fp16_accumulation = _assume_constant(_fp16_accumulation)
+
+
 @torch.no_grad()
 def factored_dora_weight_norm(weight, lora_A_weight, lora_B_weight, scaling, dtype):
     """Row norm of weight + scaling * lora_B_weight @ lora_A_weight, without forming the product.
@@ -97,7 +120,7 @@ def factored_dora_weight_norm(weight, lora_A_weight, lora_B_weight, scaling, dty
     autocast is off, and the squared norm is floored at the float32 rounding level of its terms instead of 0.
     """
     with torch.autocast(device_type = weight.device.type, enabled = False):
-        acc = _rank_dtype(weight.device)
+        acc = _rank_dtype(weight.device, lora_A_weight.shape[0])
         A = lora_A_weight.to(acc)
         B = lora_B_weight.to(acc)
         WA = _cross_term_fp32(weight, lora_A_weight).to(acc)

@@ -1352,6 +1352,15 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
         )
     if hardware.DEVICE != hardware.DeviceType.MLX:
         return
+    if hardware.mlx_serves_chat_only():
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "This install was set up without the training stack (Chat only), so training is "
+                "disabled. Reinstall Unsloth Studio without --no-torch, or use Upgrade to full "
+                "install in Settings, to enable training."
+            ),
+        )
     if request.is_embedding:
         raise HTTPException(
             status_code = 400,
@@ -3752,6 +3761,11 @@ async def start_diffusion_training(
 
     # Contain dataset and output paths BEFORE spawning; the trainer would resolve them against its cwd.
     config = body.model_dump()
+    # Unset leaves the trainer default (UNSLOTH_DIT_BLOCK_SWAP); a count travels as the trainer's string form.
+    if config.get("block_swap") is None:
+        config.pop("block_swap", None)
+    else:
+        config["block_swap"] = str(config["block_swap"])
     # An API key with no token of its own must not reach the operator's saved HF login.
     config["allow_ambient"] = via_api_key is not True
     try:
@@ -3833,6 +3847,13 @@ async def start_diffusion_training(
     )
     if _precision_reason:
         raise HTTPException(status_code = 400, detail = _precision_reason)
+
+    # The trainer refuses these only after the base loads; refuse a block_swap it cannot honour here.
+    from core.training.diffusion_block_swap import block_swap_start_error
+
+    _swap_reason = block_swap_start_error(normalized_cfg)
+    if _swap_reason:
+        raise HTTPException(status_code = 400, detail = _swap_reason)
 
     # Trainer child imports the pipeline in this interpreter; refuse a broken import before GPU teardown.
     from core.training.diffusion_train_common import training_pipeline_import_error
