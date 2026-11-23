@@ -228,6 +228,18 @@ def test_cross_term_transposed_weight_and_partial_tiles(dora_mod, device):
     torch._dynamo.reset()
 
 
+def _variants(kernel):
+    # Same fallback as tests/test_triton_variant_budget.py: Triton 3.2 exposes `cache`, not `device_caches`.
+    import triton
+
+    while not isinstance(kernel, triton.runtime.jit.JITFunction):
+        kernel = kernel.fn
+    caches = getattr(kernel, "device_caches", None)
+    if caches is not None:
+        return sum(len(v[0]) for v in caches.values())
+    return sum(len(v) for v in kernel.cache.values())
+
+
 def _uses_kernel(mod, device):
     return (
         device == "cuda" and mod.triton is not None and torch.cuda.get_device_capability()[0] >= 8
@@ -245,10 +257,8 @@ def test_one_kernel_variant_across_projection_shapes(dora_mod, device):
         W = torch.randn(d_out, 2048, device = device, dtype = torch.bfloat16)
         # A bfloat16 hi + lo split keeps about 16 bits of the float32 adapter.
         assert _rel(mod._cross_term_fp32(W, A).double(), A.double() @ W.double().t()) < 1e-5
-    caches = mod._dora_cross_kernel.device_caches
-    assert (
-        sum(len(c[0]) for c in caches.values()) <= 2
-    )  # 16-aligned widths share one, the odd width adds one
+    # 16-aligned widths share one, the odd width adds one
+    assert _variants(mod._dora_cross_kernel) <= 2
 
 
 def test_triton_off_switch(monkeypatch):
