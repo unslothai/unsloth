@@ -594,3 +594,48 @@ def test_sft_eval_reaches_the_unsloth_prediction_step(tmp_path):
     trainer = make()
     assert trainer.predict(trainer.eval_dataset).predictions.shape[0] == 4
     assert "eval_loss" in make().evaluate()
+
+
+def test_sft_predict_returns_only_the_logits_of_an_moe_output(tmp_path):
+    """TRL >= 1.15 returned outputs.logits alone; Unsloth's step must not add aux_loss / router_logits."""
+    import trl
+    from datasets import Dataset
+    from packaging.version import Version
+    from transformers.modeling_outputs import MoeCausalLMOutputWithPast
+    from trl import SFTConfig, SFTTrainer
+
+    if Version(trl.__version__).release < (1, 15):
+        pytest.skip(
+            "before TRL 1.15 SFTTrainer used Trainer.prediction_step, which keeps every field"
+        )
+    model, tok = _load_plain()
+
+    # An MoE-shaped output: loss, aux_loss, logits, router_logits, all non-ignored fields.
+    def moe_output(module, args, kwargs, output):
+        logits = output.logits
+        return MoeCausalLMOutputWithPast(
+            loss = output.loss,
+            aux_loss = torch.tensor(0.5),
+            logits = logits,
+            router_logits = (torch.zeros(logits.shape[0] * logits.shape[1], 4),),
+        )
+
+    model.register_forward_hook(moe_output, with_kwargs = True)
+    ds = Dataset.from_list([{"text": "The quick brown fox jumps over the lazy dog."}] * 4)
+    cfg = SFTConfig(
+        output_dir = str(tmp_path / "ci_sft_moe_predict"),
+        per_device_eval_batch_size = 2,
+        report_to = "none",
+        use_cpu = True,
+        max_length = None,
+        padding_free = False,
+        dataset_text_field = "text",
+        fp16 = False,
+        bf16 = False,
+    )
+    trainer = SFTTrainer(
+        model = model, processing_class = tok, args = cfg, train_dataset = ds, eval_dataset = ds
+    )
+    predictions = trainer.predict(trainer.eval_dataset).predictions
+    assert not isinstance(predictions, tuple), [getattr(p, "shape", p) for p in predictions]
+    assert predictions.shape[0] == 4 and predictions.shape[-1] == model.config.vocab_size

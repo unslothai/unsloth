@@ -1614,7 +1614,38 @@ def sft_trainer_prediction_step(function_name, function):
         prediction_loss_only,
         ignore_keys = None,
     ):
-        return super().prediction_step(model, inputs, prediction_loss_only, ignore_keys = ignore_keys)
+        if prediction_loss_only:
+            return super().prediction_step(
+                model, inputs, prediction_loss_only, ignore_keys = ignore_keys
+            )
+        # TRL's step returned outputs.logits only; Unsloth's keeps every non-loss field (aux_loss, router_logits).
+        captured = []
+        had_own = "compute_loss" in self.__dict__
+        compute_loss = self.compute_loss
+
+        def capture_compute_loss(*args, **kwargs):
+            result = compute_loss(*args, **kwargs)
+            if kwargs.get("return_outputs") and isinstance(result, tuple) and len(result) == 2:
+                outputs = result[1]
+                if isinstance(outputs, dict):
+                    captured.append(outputs.get("logits"))
+                else:
+                    captured.append(getattr(outputs, "logits", None))
+            return result
+
+        self.compute_loss = capture_compute_loss
+        try:
+            loss, logits, labels = super().prediction_step(
+                model, inputs, prediction_loss_only, ignore_keys = ignore_keys
+            )
+        finally:
+            if had_own:
+                self.compute_loss = compute_loss
+            else:
+                del self.compute_loss
+        if captured and captured[-1] is not None:
+            logits = captured[-1].detach()
+        return loss, logits, labels
 
     return inspect.getsource(prediction_step)
 

@@ -133,3 +133,44 @@ def test_skip_check_names_a_base_class_that_shadows_the_unsloth_step():
     assert skips(type("Plain", (transformers.Trainer,), {})) is None
     assert skips(Generated).endswith("Shadows")
     assert skips(type("Wrapper", (ReachesTrainer, Shadows), {})).endswith("Shadows")
+
+
+class _CollectingTrainer(_PatchedTrainer):
+    # Like unsloth_prediction_step: every output field except loss becomes the logits payload.
+    def prediction_step(
+        self,
+        model,
+        inputs,
+        prediction_loss_only,
+        ignore_keys = None,
+    ):
+        loss, outputs = self.compute_loss(model, inputs, return_outputs = True)
+        return loss, tuple(v for k, v in outputs.items() if k != "loss"), inputs["labels"]
+
+    def compute_loss(
+        self,
+        model,
+        inputs,
+        return_outputs = False,
+    ):
+        outputs = {
+            "loss": torch.tensor(1.0),
+            "aux_loss": torch.tensor(0.5),
+            "logits": torch.ones(1, 2, 3, requires_grad = True),
+            "router_logits": (torch.zeros(2, 4),),
+        }
+        return (outputs["loss"], outputs) if return_outputs else outputs["loss"]
+
+
+def test_trl_115_prediction_step_keeps_the_logits_only_payload():
+    source = _patched(TRL_115_PREDICTION_STEP)
+    namespace = {"torch": torch, "_CollectingTrainer": _CollectingTrainer}
+    exec(
+        "class Generated(_CollectingTrainer):\n" + textwrap.indent(textwrap.dedent(source), "    "),
+        namespace,
+    )
+    trainer = namespace["Generated"]()
+    loss, logits, labels = trainer.prediction_step(None, {"labels": torch.zeros(1)}, False)
+    assert isinstance(logits, torch.Tensor) and logits.shape == (1, 2, 3)
+    assert not logits.requires_grad
+    assert "compute_loss" not in vars(trainer)
