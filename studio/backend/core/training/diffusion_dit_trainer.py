@@ -4203,7 +4203,9 @@ def _train_dit(
     transformer.add_adapter(_lora_config())
     if fp16_amp:
         # After the adapter, so the island wraps the PEFT layer.
-        fp16_report["fp32_islands"] = len(install_fp32_islands(transformer, spec.family, device))
+        fp16_report["fp32_islands"] = len(
+            install_fp32_islands(transformer, spec.family, device, report = fp16_report)
+        )
     swapping = False
     if swap_request:
         try:
@@ -4430,6 +4432,7 @@ def _train_dit(
                 "mixed_precision": "fp16",
                 "fp16_islands": fp16_report["fp32_islands"],
                 "fp16_linear4bit": fp16_report["linear4bit_fp16"],
+                "fp16_scaled_mm": fp16_report.get("fp16_scaled_mm", 0),
             }
             if fp16_amp
             else {}

@@ -621,3 +621,174 @@ def test_declined_compile_warning_runs_only_on_the_fp16_path():
     assert src.index("_warn_fp16_compile_declined(cfg, on_event)") < src.index(
         "_maybe_compile_transformer("
     )
+
+
+# ---- Z-Image to_out / w2: fp16 operands, fp32 accumulate and output, power-of-two scaled inputs
+
+
+class _LoraW(torch.nn.Module):
+    def __init__(self, k, n):
+        super().__init__()
+        self.base_layer = _Nf4Linear(k, n, bias = False)
+        self.lora_A = torch.nn.Linear(k, 2, bias = False)
+        self.lora_B = torch.nn.Linear(2, n, bias = False)
+
+    def forward(self, x):
+        return self.base_layer(x) + self.lora_B(self.lora_A(x))
+
+
+def _zimage_toy():
+    torch.manual_seed(0)
+    blk = torch.nn.Module()
+    blk.attention = torch.nn.Module()
+    blk.attention.to_out = torch.nn.ModuleList([_LoraW(32, 16)])
+    blk.feed_forward = torch.nn.Module()
+    blk.feed_forward.w2 = _LoraW(64, 16)
+    blk.feed_forward.w1 = _LoraW(16, 64)
+    m = torch.nn.Module()
+    m.layers = torch.nn.ModuleList([blk])
+    for lw in (blk.attention.to_out[0], blk.feed_forward.w2, blk.feed_forward.w1):
+        # nf4 dequant gives bf16 values: keep the fake weight on that grid.
+        lw.base_layer.weight.data = lw.base_layer.weight.data.to(torch.bfloat16).float()
+    return m
+
+
+@pytest.fixture
+def scaled_mm(monkeypatch):
+    """CPU stand-ins: exact fp16-operand / fp32-accumulate GEMM, the fake nf4 weight as its own dequant."""
+    from core.training import diffusion_dit_fp16 as f16
+
+    calls = []
+
+    def mm(a, b):
+        assert a.dtype is torch.float16 and b.dtype is torch.float16
+        calls.append(a.shape)
+        return a.float() @ b.float()
+
+    monkeypatch.setattr(f16, "scaled_mm_supported", lambda device_type: True)
+    monkeypatch.setattr(f16, "_mm_fp32_out", mm)
+    monkeypatch.setattr(
+        f16, "_dequant_4bit", lambda layer: layer.weight.detach().to(torch.bfloat16)
+    )
+    return calls
+
+
+def _ref(lw, x):
+    return torch.nn.functional.linear(x, lw.base_layer.weight.float()) + lw.lora_B(lw.lora_A(x))
+
+
+def test_zimage_scaled_mm_installs_on_to_out_and_w2_only(scaled_mm):
+    from core.training import diffusion_dit_fp16 as f16
+
+    m = _zimage_toy()
+    rep = {}
+    names = f16.install_fp32_islands(m, "z-image", "cpu", report = rep)
+    assert names == ["layers.0.attention.to_out.0", "layers.0.feed_forward.w2"]
+    assert rep["fp16_scaled_mm"] == 2
+    blk = m.layers[0]
+    assert "_unsloth_scaled_mm_orig" in blk.feed_forward.w2.base_layer.__dict__
+    assert "_unsloth_scaled_mm_orig" in blk.attention.to_out[0].base_layer.__dict__
+    assert "_unsloth_scaled_mm_orig" not in blk.feed_forward.w1.base_layer.__dict__
+    # klein / Wan islands keep the fp32 path.
+    rep = {}
+    f16.install_fp32_islands(_zimage_toy(), "flux.2-klein", "cpu", report = rep)
+    assert rep["fp16_scaled_mm"] == 0
+
+
+def test_zimage_scaled_mm_stays_finite_past_fp16_range_and_matches_fp32(scaled_mm):
+    """w2's input reaches 8.7e5 on a T4: a plain fp16 cast is inf, the scaled fp16 GEMM matches the fp32 island."""
+    from core.training import diffusion_dit_fp16 as f16
+
+    m = _zimage_toy()
+    f16.install_fp32_islands(m, "z-image", "cpu")
+    w2 = m.layers[0].feed_forward.w2
+    x = torch.randn(8, 64) * 1.0e4
+    x[3, 5] = 8.7e5
+    x.requires_grad_(True)
+    assert not torch.isfinite(x.half()).all()
+    with torch.autocast("cpu", dtype = torch.float16):
+        y = w2(x)
+    assert y.dtype is torch.float32 and torch.isfinite(y).all()
+    assert w2.base_layer.calls == [], "the fp32 nf4 forward did not run"
+    xr = x.detach().clone().requires_grad_(True)
+    ref = _ref(w2, xr)
+    assert ((y - ref).norm() / ref.norm()) < 2e-3
+    # Grads scaled like GradScaler's 65536 go past fp16 range too.
+    g = torch.randn_like(y) * 65536.0 * 4
+    y.backward(g)
+    ref.backward(g)
+    assert torch.isfinite(x.grad).all()
+    assert ((x.grad - xr.grad).norm() / xr.grad.norm()) < 2e-3
+    assert w2.lora_A.weight.grad is not None and w2.lora_A.weight.grad.dtype is torch.float32
+    assert len(scaled_mm) == 2  # forward + dx
+
+
+def test_pow2_scale_is_exact_and_lands_under_fp16_max():
+    from core.training import diffusion_dit_fp16 as f16
+
+    for amax in (3.0e-6, 0.7, 1.0, 65504.0, 8.7e5, 3.0e9):
+        t = torch.tensor([amax, -amax / 3])
+        s = f16._pow2_scale(t)
+        assert 2.0**14 < float((t * s).abs().max()) <= 2.0**15
+        assert float(torch.log2(s)).is_integer()
+    assert float(f16._pow2_scale(torch.zeros(4))) > 0
+    for bad in (float("inf"), float("nan")):
+        assert not torch.isfinite(
+            torch.tensor([1.0, bad]) * f16._pow2_scale(torch.tensor([1.0, bad]))
+        ).all()
+
+
+def test_scaled_mm_keeps_non_finite_inputs_non_finite(scaled_mm):
+    """GradScaler must still see an overflow upstream: inf in, non-finite out, never silently finite."""
+    from core.training import diffusion_dit_fp16 as f16
+
+    m = _zimage_toy()
+    f16.install_fp32_islands(m, "z-image", "cpu")
+    x = torch.randn(4, 64)
+    x[0, 0] = float("inf")
+    y = m.layers[0].feed_forward.w2(x)
+    assert not torch.isfinite(y).all()
+
+
+def test_scaled_mm_skips_weights_past_fp16_and_honours_the_kill_switch(scaled_mm, monkeypatch):
+    from core.training import diffusion_dit_fp16 as f16
+
+    m = _zimage_toy()
+    m.layers[0].feed_forward.w2.base_layer.weight.data[0, 0] = 1.0e5
+    rep = {}
+    f16.install_fp32_islands(m, "z-image", "cpu", report = rep)
+    assert rep["fp16_scaled_mm"] == 1
+    assert "_unsloth_scaled_mm_orig" not in m.layers[0].feed_forward.w2.base_layer.__dict__
+    y = m.layers[0].feed_forward.w2(torch.randn(2, 64))
+    assert m.layers[0].feed_forward.w2.base_layer.calls == ["orig"] and y.dtype is torch.float32
+    monkeypatch.undo()
+    monkeypatch.setenv(f16.SCALED_MM_ENV, "0")
+    assert f16.scaled_mm_supported("cuda") is False
+    monkeypatch.delenv(f16.SCALED_MM_ENV)
+    assert f16.scaled_mm_supported("cpu") is False
+
+
+def test_scaled_mm_recomputes_identically_under_gradient_checkpointing(scaled_mm):
+    from torch.utils.checkpoint import checkpoint
+
+    from core.training import diffusion_dit_fp16 as f16
+
+    m = _zimage_toy()
+    f16.install_fp32_islands(m, "z-image", "cpu")
+    w2 = m.layers[0].feed_forward.w2
+    x = (torch.randn(6, 64) * 3.0e4).requires_grad_(True)
+    y1 = w2(x)
+    y1.sum().backward()
+    g1 = x.grad.clone()
+    x.grad = None
+    y2 = checkpoint(w2, x, use_reentrant = False)
+    y2.sum().backward()
+    assert torch.equal(y1, y2) and torch.equal(g1, x.grad)
+
+
+def test_trainer_reports_scaled_mm_layers_in_model_load_event():
+    import inspect
+
+    src = inspect.getsource(dit._train_dit)
+    assert "install_fp32_islands(transformer, spec.family, device, report = fp16_report)" in src
+    assert '"fp16_scaled_mm": fp16_report.get("fp16_scaled_mm", 0)' in src

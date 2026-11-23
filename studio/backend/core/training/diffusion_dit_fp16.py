@@ -35,6 +35,18 @@ FP16_FP32_MODULES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Islands whose nf4 matmul runs fp16 in, fp32 accumulate and out, inputs scaled by a power of two (exact),
+# instead of an fp32 sgemm. Only the fp16 cast of the input can overflow, and the scale keeps it in range.
+FP16_SCALED_MM_MODULES: dict[str, tuple[str, ...]] = {
+    "z-image": (
+        r"\.attention\.to_out\.0$",
+        r"\.feed_forward\.w2$",
+    ),
+}
+SCALED_MM_ENV = "UNSLOTH_STUDIO_DIT_FP16_SCALED_MM"
+# Per-tensor amax after the scale lands in (2^14, 2^15]: 2x under fp16 max, subnormals start 2^29 below.
+_SCALE_TARGET = 2.0**15
+
 # This many skips in a row means the forward itself overflows (loss scaling cannot fix it): stop the run.
 MAX_CONSECUTIVE_SKIPS = 30
 
@@ -75,6 +87,116 @@ def make_fp32_island(module, device_type: str = "cuda") -> None:
 
     module.forward = forward
     module._unsloth_fp32_island = True
+
+
+_MM_FP32_OUT_OK: dict[str, bool] = {}
+
+
+def _mm_fp32_out(a, b):
+    import torch
+    return torch.mm(a, b, out_dtype = torch.float32)
+
+
+def scaled_mm_supported(device_type: str) -> bool:
+    """fp16 x fp16 -> fp32 cuBLAS GEMM (``torch.mm(out_dtype=)``) runs on this device and torch."""
+    import os
+
+    import torch
+
+    if os.environ.get(SCALED_MM_ENV, "").strip().lower() in ("0", "false", "off", "no"):
+        return False
+    if device_type != "cuda":
+        return False
+    if device_type not in _MM_FP32_OUT_OK:
+        try:
+            a = torch.ones(16, 16, device = device_type, dtype = torch.float16)
+            y = _mm_fp32_out(a, a)
+            _MM_FP32_OUT_OK[device_type] = bool(y.dtype == torch.float32 and float(y[0, 0]) == 16.0)
+        except Exception:  # noqa: BLE001 -- older torch: no out_dtype
+            _MM_FP32_OUT_OK[device_type] = False
+    return _MM_FP32_OUT_OK[device_type]
+
+
+def _dequant_4bit(layer):
+    import bitsandbytes.functional as bnbf
+    return bnbf.dequantize_4bit(layer.weight.data, layer.weight.quant_state)
+
+
+def _pow2_scale(t):
+    """Power of two taking ``t``'s amax into (2^14, 2^15]; nan / inf stay non-finite, so GradScaler still skips."""
+    import torch
+
+    amax = torch.linalg.vector_norm(t, float("inf")).float()
+    return torch.exp2(torch.floor(torch.log2(_SCALE_TARGET / amax)).clamp(-64, 64))
+
+
+def _scaled_fp32_mm(x2, w16t):
+    import torch
+
+    s = _pow2_scale(x2)
+    x16 = torch.empty(x2.shape, dtype = torch.float16, device = x2.device)
+    torch.mul(x2, s, out = x16)
+    return _mm_fp32_out(x16, w16t).div_(s)
+
+
+def _make_scaled_mm_fn():
+    import torch
+    class ScaledFp16MM(torch.autograd.Function):
+        """y = x @ W^T for a frozen nf4 W: fp16 operands, fp32 accumulate and output; dx the same way."""
+
+        @staticmethod
+        def forward(ctx, x, layer):
+            ctx.layer = layer
+            ctx.x_shape = x.shape
+            w16 = _dequant_4bit(layer).to(torch.float16)
+            y = _scaled_fp32_mm(x.reshape(-1, x.shape[-1]).float(), w16.t())
+            return y.reshape(*x.shape[:-1], w16.shape[0])
+
+        @staticmethod
+        def backward(ctx, g):
+            w16 = _dequant_4bit(ctx.layer).to(torch.float16)
+            dx = _scaled_fp32_mm(g.reshape(-1, g.shape[-1]).float(), w16)
+            return dx.reshape(ctx.x_shape), None
+
+    return ScaledFp16MM
+
+
+_SCALED_MM_FN = None
+
+
+def _scaled_mm_forward(self, x, *args, **kwargs):
+    global _SCALED_MM_FN
+    import torch
+
+    if args or kwargs or not x.is_floating_point() or self.weight.requires_grad:
+        return self.__dict__["_unsloth_scaled_mm_orig"](x, *args, **kwargs)
+    if _SCALED_MM_FN is None:
+        _SCALED_MM_FN = _make_scaled_mm_fn()
+    y = _SCALED_MM_FN.apply(x, self)
+    if self.bias is not None:
+        y = y + self.bias.to(torch.float32)
+    return y.to(x.dtype)
+
+
+def install_scaled_mm(module) -> int:
+    """Route ``module``'s nf4 linears through ``ScaledFp16MM``; a weight past fp16 range keeps the fp32 path."""
+    import types
+
+    import torch
+
+    n = 0
+    for sub in module.modules():
+        if not _is_bnb_4bit(sub) or "_unsloth_scaled_mm_orig" in sub.__dict__:
+            continue
+        try:
+            if not bool(torch.isfinite(_dequant_4bit(sub).to(torch.float16)).all()):
+                continue
+        except Exception:  # noqa: BLE001 -- not a dequantisable 4-bit weight: leave it fp32
+            continue
+        sub.__dict__["_unsloth_scaled_mm_orig"] = sub.forward
+        sub.forward = types.MethodType(_scaled_mm_forward, sub)
+        n += 1
+    return n
 
 
 def island_names(
@@ -118,12 +240,20 @@ def install_fp32_islands(
     family: str,
     device_type: str = "cuda",
     extra: Iterable[str] = (),
+    report: Optional[dict] = None,
 ) -> list[str]:
     """Call AFTER the LoRA attaches, so the island wraps the PEFT wrapper and its adapter branch runs fp32 too."""
     names = island_names(model, family, extra)
     mods = dict(model.named_modules())
+    scaled = [re.compile(p) for p in FP16_SCALED_MM_MODULES.get(family, ())]
+    use_scaled = bool(scaled) and scaled_mm_supported(device_type)
+    n_scaled = 0
     for n in names:
         make_fp32_island(mods[n], device_type)
+        if use_scaled and any(p.search(n) for p in scaled):
+            n_scaled += install_scaled_mm(mods[n])
+    if report is not None:
+        report["fp16_scaled_mm"] = n_scaled
     return names
 
 
