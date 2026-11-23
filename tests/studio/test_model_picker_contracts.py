@@ -3642,12 +3642,22 @@ def test_the_default_is_preflighted_before_the_managed_download():
 
 
 def test_cached_non_gguf_rows_get_the_chat_only_platform_gate():
-    """The picker hides them there (visibleCachedModelRows), except MLX repos on an MLX-serving Mac."""
+    """The picker hides them there (visibleCachedModelRows), unless the Mac serves MLX.
+
+    The served-by-MLX verdict is the shared isServedByMlx rule fed the server's mlx_inference,
+    so auto-load and the pickers cannot disagree; the scenarios in
+    test_chat_autoload_failure_gate.py run that rule as shipped.
+    """
     src = _read("features/chat/api/chat-adapter.ts")
     gate = src.split("function cachedModelRunsOnThisPlatform", 1)[1].split("\n}", 1)[0]
     assert "if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;" in gate
-    assert "platform.mlxInference === true" in gate
-    assert "isChattableCachedRepo(repo) && cachedModelRunsOnThisPlatform(repo)" in src
+    assert "return platformServesMlx(platform);" in gate
+    serves = src.split("function platformServesMlx(", 1)[1].split("\n}", 1)[0]
+    assert "isServedByMlx(" in serves
+    assert "platform.mlxInference" in serves
+    assert re.search(
+        r"isChattableCachedRepo\(repo\) && cachedModelRunsOnThisPlatform\([^)]*\)", src
+    )
     assert "allGgufRepos.filter(isChattableCachedRepo)," in src
 
 
