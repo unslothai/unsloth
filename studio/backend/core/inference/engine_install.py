@@ -350,8 +350,7 @@ def _file_identity(path: Path) -> tuple | None:
     return (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
 
 
-# Status polls price an install of every engine that is not current; the plan only changes with
-# the lock, Studio's own packages or an engine job, so it is reused until one of those moves.
+# Status polls price every engine that is not current; reused until the key or an engine job moves.
 _priced_plans: dict[str, tuple[tuple, dict | None, frozenset[str]]] = {}
 
 
@@ -1169,7 +1168,6 @@ def _safe_download_bytes(engine: str) -> int | None:
 
 def _update(engine: str, **values) -> None:
     if "state" in values:
-        # An install, cancel or failure may have changed what Studio provides.
         _forget_priced_plans()
     with _lock:
         job = _jobs.setdefault(engine, {})

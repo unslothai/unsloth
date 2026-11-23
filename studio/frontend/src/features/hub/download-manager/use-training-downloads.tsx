@@ -30,7 +30,6 @@ import {
 } from "./training-downloads";
 import { startVisibilityPoll } from "./visibility-poll";
 
-// A hidden tab polls at the regular manager's hidden pace and catches up the moment it is shown.
 const VISIBLE_DISCOVERY_INTERVAL_MS = 1_500;
 
 /** Discover registry jobs globally; the regular manager owns polling and cancellation. */
