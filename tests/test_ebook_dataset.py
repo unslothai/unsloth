@@ -168,12 +168,18 @@ def test_ruby_readings_are_not_inlined_into_the_text(ebooks, ruby):
         "<template><p>Card title placeholder</p></template>",
         '<audio src="a.mp3" controls="controls">Your reader does not support audio.</audio>',
         '<video src="a.mp4"><p>Your reader does not support video.</p><track kind="captions"/></video>',
-        '<canvas id="chart">Chart fallback</canvas>',
     ],
 )
 def test_content_a_reader_does_not_display_is_not_training_text(ebooks, markup):
     html = f"<html><body><p>Before.</p>{markup}<p>After.</p></body></html>"
     assert ebooks._html_text(html.encode()) == "Before.\n\nAfter."
+
+
+def test_canvas_fallback_is_kept_for_readers_without_scripting(ebooks):
+    html = (
+        '<html><body><p>Before.</p><canvas id="chart"><p>Sales rose 4%.</p></canvas></body></html>'
+    )
+    assert ebooks._html_text(html.encode()) == "Before.\n\nSales rose 4%."
 
 
 def test_mathml_annotation_is_not_appended_to_the_formula(ebooks):

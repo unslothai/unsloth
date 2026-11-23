@@ -56,9 +56,8 @@ _BLOCKS = {
     "details",
     "summary",
 }
-# Never displayed by a reading system that supports the element: inert templates, the TeX / content copy
-# beside rendered MathML, and "your reader does not support audio" fallbacks.
-_UNRENDERED = {"template", "annotation", "annotation-xml", "audio", "video", "canvas"}
+# Never displayed by a reader supporting the element. Not <canvas>: its fallback shows without scripting.
+_UNRENDERED = {"template", "annotation", "annotation-xml", "audio", "video"}
 _VOID = {
     "area",
     "base",
