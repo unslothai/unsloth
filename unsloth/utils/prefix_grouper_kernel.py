@@ -525,6 +525,9 @@ class PrefixGrouperCompileError(RuntimeError):
 _COMPILE_CHECKED: Dict[Tuple, bool] = {}
 # Setups whose 3-stage tiles overflow shared memory (sm86 / sm89 / sm120 on torch 2.7 / 2.8).
 _ONE_STAGE_KEYS: set = set()
+# Setup (key without the padded length) -> one stage, for setups that passed any check: an enclosing graph
+# reuses that verdict for an unseen ROCm padded length, since the eager check cannot run inside it.
+_CHECKED_SETUPS: Dict[Tuple, bool] = {}
 _COMPILE_FAILURE: Optional[str] = None
 _CHECK_ENV = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_COMPILE_CHECK", "1")
 _COMPILE_CHECK_ON = _CHECK_ENV.lower() not in ("0", "false", "no", "off")
@@ -635,6 +638,7 @@ def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, k
         _record_compile_failure(key, reason)
         raise PrefixGrouperCompileError(reason) from None
     _COMPILE_CHECKED[key] = True
+    _CHECKED_SETUPS[key[:6]] = _CHECKED_SETUPS.get(key[:6], False) or key in _ONE_STAGE_KEYS
     return out
 
 
@@ -668,16 +672,29 @@ def flex_shared_prefix_attention(
         key = (str(device), q.dtype, n_heads, n_kv, q.shape[3], scale)
         # ROCm static flex compiles a new kernel per padded length, each of which can fail and fall back to
         # eager T x T flex: check every length. The dynamic kernel (CUDA, no-grad calls) is checked once.
+        setup = key
         if _uses_static_flex(q, k, v):
             key = key + (T_pad,)
-        if _COMPILE_CHECK_ON and key not in _COMPILE_CHECKED:
+        needs_check = _COMPILE_CHECK_ON and key not in _COMPILE_CHECKED
+        # The check is Dynamo-disabled, so a fullgraph caller would fail on each new padded length.
+        in_graph_reuse = (
+            needs_check
+            and key != setup
+            and torch.compiler.is_compiling()
+            and setup in _CHECKED_SETUPS
+        )
+        if in_graph_reuse:
+            needs_check = False
+        if needs_check:
             out = _checked_first_call(
                 q, k, v, prefix_seg_info, block_mask, enable_gqa, scale, T, T_pad, key
             )
     if out is None:
         if block_mask is None:
             block_mask = get_block_mask(prefix_seg_info, device, compile_mask = compiled)
-        one_stage = compiled and key in _ONE_STAGE_KEYS
+        one_stage = compiled and (
+            key in _ONE_STAGE_KEYS or (in_graph_reuse and _CHECKED_SETUPS[setup])
+        )
         out = _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad, one_stage)
     return out.transpose(1, 2).contiguous()
 

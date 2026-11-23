@@ -201,6 +201,48 @@ def test_rocm_static_kernel_is_checked_per_padded_length(mods, monkeypatch):
     assert sorted(key[-1] for key in kernel._COMPILE_CHECKED) == sorted((short.T_pad, long.T_pad))
 
 
+@pytest.mark.parametrize("warmup", ["grad", "no_grad"])
+def test_rocm_new_padded_length_inside_a_fullgraph_compile(mods, monkeypatch, warmup):
+    """The per-length check is Dynamo-disabled: after a warm-up, a fullgraph caller reaching an unseen padded
+    length (or a grad call after a no-grad warm-up) must reuse the setup's verdict instead of failing."""
+    pg, kernel, calls = mods
+    monkeypatch.setattr(
+        kernel,
+        "_uses_static_flex",
+        lambda q, k, v: torch.is_grad_enabled()
+        and (q.requires_grad or k.requires_grad or v.requires_grad),
+        raising = False,
+    )
+
+    def arithmetic_flex(q, k, v, **kwargs):
+        return q * k + v
+
+    monkeypatch.setattr(kernel, "_flex_attention_compiled", arithmetic_flex)
+    short, long = _seg(kernel), _seg(kernel, _LONG_SPEC)
+    mask = object()
+
+    def attend(q, seg):
+        return kernel.flex_shared_prefix_attention(q, q, q, seg, block_mask = mask)
+
+    q = torch.randn(1, short.T, 2, 16, requires_grad = True)
+    with torch.set_grad_enabled(warmup == "grad"):
+        attend(q, short)
+    checked = dict(kernel._COMPILE_CHECKED)
+    for seg in (short, long):
+        torch._dynamo.reset()
+        q = torch.randn(1, seg.T, 2, 16, requires_grad = True)
+        compiled = torch.compile(attend, backend = "eager", fullgraph = True)
+        out = compiled(q, seg)
+        out.sum().backward()
+        assert torch.allclose(out, q * q + q)
+        assert torch.allclose(q.grad, (2 * q + 1).detach(), atol = 1e-5)
+    # Only the warm-up ran the check; outside a graph a new padded length is still checked.
+    assert kernel._COMPILE_CHECKED == checked and kernel.compile_check_failed() is None
+    eager_q = torch.randn(1, long.T, 2, 16, requires_grad = True)
+    attend(eager_q, long)
+    assert any(key[-1] == long.T_pad for key in kernel._COMPILE_CHECKED)
+
+
 def test_rocm_later_length_compile_failure_is_caught(mods, monkeypatch, capsys):
     pg, kernel, calls = mods
     monkeypatch.setattr(
