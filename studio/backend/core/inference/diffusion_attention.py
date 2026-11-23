@@ -648,6 +648,58 @@ def _heads_major(t: Any) -> Any:
     return t.permute(0, 2, 1, 3).contiguous().permute(0, 2, 1, 3)
 
 
+def _set_arg(args: list, kwargs: dict, index: int, name: str, value: Any) -> None:
+    if len(args) > index:
+        args[index] = value
+    else:
+        kwargs[name] = value
+
+
+def _contiguous_native(native_fn: Any) -> Any:
+    """The native backend with the gfx1151 layout fixes: q/k/v during training (token floor), else k/v over L2."""
+
+    def _contiguous_kv(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("_parallel_config") is None:
+            args = list(args)
+            query = args[0] if args else kwargs.get("query")
+            key = args[1] if len(args) > 1 else kwargs.get("key")
+            value = args[2] if len(args) > 2 else kwargs.get("value")
+            if _rocm_contiguous_qkv_wanted(query, key, value):
+                _set_arg(args, kwargs, 0, "query", _heads_major(query))
+                _set_arg(args, kwargs, 1, "key", _heads_major(key))
+                _set_arg(args, kwargs, 2, "value", _heads_major(value))
+            elif _rocm_contiguous_kv_wanted(key, value):
+                _set_arg(args, kwargs, 1, "key", _heads_major(key))
+                _set_arg(args, kwargs, 2, "value", _heads_major(value))
+        return native_fn(*args, **kwargs)
+
+    setattr(_contiguous_kv, ROCM_CONTIGUOUS_KV_ATTR, True)
+    _contiguous_kv.__wrapped__ = native_fn  # type: ignore[attr-defined]
+    return _contiguous_kv
+
+
+def _install_contiguous_native() -> bool:
+    """Wraps diffusers' native backend once per process; True when the wrapper is (now) in place."""
+    try:
+        from diffusers.models.attention_dispatch import (
+            AttentionBackendName,
+            _AttentionBackendRegistry,
+        )
+        backends = _AttentionBackendRegistry._backends
+        native_fn = backends[AttentionBackendName.NATIVE]
+    except Exception:  # noqa: BLE001
+        return False
+    if not callable(native_fn):
+        return False
+    if getattr(native_fn, ROCM_CONTIGUOUS_KV_ATTR, False):
+        return True
+    try:
+        backends[AttentionBackendName.NATIVE] = _contiguous_native(native_fn)
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 def install_rocm_contiguous_kv(target: Any) -> bool:
     """gfx1151 only: k/v over L2 reach SDPA contiguous (q is not copied). False elsewhere: other GPUs untouched."""
     if os.environ.get(ROCM_CONTIGUOUS_KV_ENV, "").strip().lower() in ("0", "false", "no", "off"):
@@ -656,10 +708,6 @@ def install_rocm_contiguous_kv(target: Any) -> bool:
         return False
     try:
         import torch
-        from diffusers.models.attention_dispatch import (
-            AttentionBackendName,
-            _AttentionBackendRegistry,
-        )
 
         device = torch.device(
             _indexed_cuda_device(
@@ -672,39 +720,82 @@ def install_rocm_contiguous_kv(target: Any) -> bool:
         )
         index = device.index if device.index is not None else torch.cuda.current_device()
         l2 = int(getattr(torch.cuda.get_device_properties(index), "L2_cache_size", 0) or 0)
-        backends = _AttentionBackendRegistry._backends
-        native_fn = backends[AttentionBackendName.NATIVE]
     except Exception:  # noqa: BLE001
         return False
-    if l2 <= 0 or not callable(native_fn):
+    if l2 <= 0:
         return False
     _ROCM_CONTIGUOUS_KV_L2[index] = l2
-    if getattr(native_fn, ROCM_CONTIGUOUS_KV_ATTR, False):
-        return True
+    return _install_contiguous_native()
 
-    def _contiguous_kv(*args: Any, **kwargs: Any) -> Any:
-        args = list(args)
-        key = args[1] if len(args) > 1 else kwargs.get("key")
-        value = args[2] if len(args) > 2 else kwargs.get("value")
-        if kwargs.get("_parallel_config") is None and _rocm_contiguous_kv_wanted(key, value):
-            key, value = _heads_major(key), _heads_major(value)
-            if len(args) > 1:
-                args[1] = key
-            else:
-                kwargs["key"] = key
-            if len(args) > 2:
-                args[2] = value
-            else:
-                kwargs["value"] = value
-        return native_fn(*args, **kwargs)
 
-    setattr(_contiguous_kv, ROCM_CONTIGUOUS_KV_ATTR, True)
-    _contiguous_kv.__wrapped__ = native_fn  # type: ignore[attr-defined]
+# gfx1151 training copies q too: fwd+bwd 1.10x-1.36x at 2,560-8,192 tokens, 7% slower at 1,024, hence the floor.
+# 0 disables; a positive integer moves the floor.
+ROCM_CONTIGUOUS_QKV_TRAIN_ENV = "UNSLOTH_DIFFUSION_ROCM_TRAIN_CONTIGUOUS_QKV"
+ROCM_CONTIGUOUS_QKV_TRAIN_MIN_TOKENS = 2560
+_ROCM_CONTIGUOUS_QKV_TRAIN: dict[
+    int, int
+] = {}  # device index -> token floor, gfx1151 cards of a training run only
+
+
+def _rocm_contiguous_qkv_wanted(query: Any, key: Any, value: Any) -> bool:
+    """Training on gfx1151: grad on (the measured fwd+bwd; sample renders keep their path), q and k both at least the
+    token floor (self / joint attention, not short cross-attention)."""
+    if not _ROCM_CONTIGUOUS_QKV_TRAIN:
+        return False
     try:
-        backends[AttentionBackendName.NATIVE] = _contiguous_kv
+        import torch
+
+        if not torch.is_grad_enabled():
+            return False
+        floor = _ROCM_CONTIGUOUS_QKV_TRAIN.get(query.device.index)
+        if floor is None or query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
+            return False
+        return query.shape[1] >= floor and key.shape[1] >= floor
     except Exception:  # noqa: BLE001
         return False
-    return True
+
+
+def _rocm_contiguous_qkv_floor() -> Optional[int]:
+    raw = os.environ.get(ROCM_CONTIGUOUS_QKV_TRAIN_ENV, "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return None
+    if raw.isdigit():
+        return int(raw)
+    return ROCM_CONTIGUOUS_QKV_TRAIN_MIN_TOKENS
+
+
+def install_rocm_contiguous_qkv_training() -> tuple[int, ...]:
+    """Training: q/k/v at or over the token floor reach SDPA contiguous on gfx1151 cards. Returns the card indices it
+    covers; () elsewhere (other GPUs, CPU, MPS, kill switch), leaving the native backend untouched."""
+    floor = _rocm_contiguous_qkv_floor()
+    if floor is None:
+        return ()
+    try:
+        import torch
+
+        from core.inference.rocm_bf16 import is_rocm_torch
+        from utils.hardware.hardware import _props_gfx_arch
+
+        if not is_rocm_torch(torch) or not torch.cuda.is_available():
+            return ()
+        cards = tuple(
+            i
+            for i in range(torch.cuda.device_count())
+            if _props_gfx_arch(torch.cuda.get_device_properties(i)) in ROCM_CONTIGUOUS_KV_ARCHES
+        )
+    except Exception:  # noqa: BLE001
+        return ()
+    if not cards or not _install_contiguous_native():
+        return ()
+    for i in cards:
+        _ROCM_CONTIGUOUS_QKV_TRAIN[i] = floor
+    return cards
+
+
+def uninstall_rocm_contiguous_qkv_training(cards: Any) -> None:
+    """Undo ``install_rocm_contiguous_qkv_training`` for in-process callers; the k/v inference gate is untouched."""
+    for i in cards or ():
+        _ROCM_CONTIGUOUS_QKV_TRAIN.pop(i, None)
 
 
 def select_attention_backend(
