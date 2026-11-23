@@ -4267,6 +4267,14 @@ def get_base_model_from_lora_identifier(
         except Exception as exc:
             logger.warning("Could not parse adapter_config.json for '%s': %s", identifier, exc)
             return None
+        from utils.datasets.remote_images import is_network_share
+
+        if isinstance(base_model, str) and is_network_share(base_model):
+            # Touching a share path makes Windows sign in to its host (NTLM); the Hub repo picked it.
+            logger.warning(
+                "Ignoring a network share base in adapter_config.json of '%s'", identifier
+            )
+            return None
         if base_model:
             logger.info(
                 "Detected base model from remote adapter_config.json (%s): %s",
