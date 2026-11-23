@@ -11,7 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { usePlatformStore } from "@/config/env";
-import { isServedByMlx } from "@/features/model-picker";
+import { isServedByMlx } from "@/features/model-picker/model-config/per-model-config";
 import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import { useT } from "@/i18n";
 import { type ReactElement, useState } from "react";
