@@ -258,8 +258,9 @@ def validate_model(
             f"{ENGINE_NAMES[engine]} on this GPU cannot load BitsAndBytes checkpoints. Choose an unquantized "
             "or AWQ checkpoint."
         )
-    # vllm-metal 0.33.0 loads only AWQ; GPTQ, FP8, NVFP4 and compressed-tensors fail at engine start.
-    if profile(engine)["platform"] == "metal" and quant.get("quant_method") not in (None, "awq"):
+    # vllm-metal 0.33.0 rejects GPTQ itself and vLLM has no BitNet method; other formats load per model
+    # family through mlx-lm, so they are left to the engine.
+    if profile(engine)["platform"] == "metal" and quant.get("quant_method") in ("gptq", "bitnet"):
         raise ValueError(
             f"{ENGINE_NAMES[engine]} on Apple Silicon cannot load this checkpoint's quantization. Choose an "
             "unquantized, MLX-quantized or AWQ checkpoint."
@@ -358,22 +359,33 @@ def validate_model(
                 "An FP8 KV cache needs an Ampere or newer NVIDIA GPU. "
                 "Choose Model default for KV cache on this GPU."
             )
-    if (
-        kv_cache_dtype == "turboquant"
-        and metadata.get("model_type") == "gemma4"
-        and metadata.get("vision_config")
-        and quant.get("quant_method") != "awq"
-    ):
-        # vllm-metal's Gemma 4 vision sidecar refuses TurboQuant at engine start.
-        raise ValueError(
-            "TurboQuant cannot be used with Gemma 4 vision on Apple Silicon. Choose Model default for KV cache."
-        )
     metadata = metadata.get("text_config") or metadata
     if engine == "sglang" and kv_cache_dtype == "fp8" and metadata.get("kv_lora_rank"):
         # Studio pins SGLang to the Triton attention backend, whose MLA path has no FP8 KV cache.
         raise ValueError(
             "SGLang cannot use an FP8 KV cache with this model's attention. "
             "Choose Model default for KV cache, or use vLLM."
+        )
+    layer_types = metadata.get("layer_types") or []
+    if (
+        kv_cache_dtype == "turboquant"
+        and metadata.get("global_head_dim")
+        and len(layer_types) == metadata.get("num_hidden_layers")
+    ):
+        # vllm-metal 0.33.0 builds per-layer KV shapes for these (Gemma 4) and refuses TurboQuant on them.
+        raise ValueError(
+            "TurboQuant cannot compress this model's attention cache (per-layer KV shapes). "
+            "Choose Model default for KV cache."
+        )
+    heads = metadata.get("num_attention_heads")
+    head_dim = metadata.get("head_dim") or (
+        metadata.get("hidden_size", 0) // heads if isinstance(heads, int) and heads > 0 else None
+    )
+    if kv_cache_dtype == "turboquant" and head_dim and head_dim not in (64, 128, 256, 512):
+        # vllm-metal 0.33.0's TurboQuant transform (FWHT_SUPPORTED_HEAD_DIMS) refuses other head sizes.
+        raise ValueError(
+            f"TurboQuant cannot compress this model's attention cache (head size {head_dim}). "
+            "Choose Model default for KV cache."
         )
     if kv_cache_dtype == "turboquant" and metadata.get("kv_lora_rank"):
         # vllm-metal raises NotImplementedError for TurboQuant on MLA at engine start.

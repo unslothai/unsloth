@@ -140,15 +140,37 @@ def test_kv_cache_options_follow_the_platform(tmp_path, monkeypatch, platform, k
         )
         with pytest.raises(ValueError, match = "MLA"):
             managed_engine.validate_model(config, kv_cache_dtype = "turboquant")
-        gemma4 = {"model_type": "gemma4", "text_config": {"num_attention_heads": 8}}
-        (tmp_path / "config.json").write_text(json.dumps({**gemma4, "vision_config": {}}))
-        assert managed_engine.validate_model(config, kv_cache_dtype = "turboquant")
-        (tmp_path / "config.json").write_text(
-            json.dumps({**gemma4, "vision_config": {"depth": 16}})
-        )
-        with pytest.raises(ValueError, match = "Gemma 4 vision"):
+        gemma4 = {
+            "model_type": "gemma4",
+            "vision_config": {"depth": 16},
+            "text_config": {
+                "num_attention_heads": 8,
+                "num_hidden_layers": 2,
+                "global_head_dim": 512,
+                "layer_types": ["sliding_attention", "full_attention"],
+            },
+        }
+        (tmp_path / "config.json").write_text(json.dumps(gemma4))
+        with pytest.raises(ValueError, match = "per-layer KV shapes"):
             managed_engine.validate_model(config, kv_cache_dtype = "turboquant")
         assert managed_engine.validate_model(config)
+        # GPT-OSS and Qwen3.5 list layer_types without a global_head_dim: uniform KV shapes.
+        del gemma4["text_config"]["global_head_dim"]
+        (tmp_path / "config.json").write_text(json.dumps(gemma4))
+        assert managed_engine.validate_model(config, kv_cache_dtype = "turboquant")
+        for shape, refused in (
+            ({"hidden_size": 2560, "num_attention_heads": 32}, True),
+            ({"hidden_size": 3072, "num_attention_heads": 32}, True),
+            ({"hidden_size": 896, "num_attention_heads": 14}, False),
+            ({"hidden_size": 1024, "num_attention_heads": 16, "head_dim": 128}, False),
+        ):
+            (tmp_path / "config.json").write_text(json.dumps(shape))
+            if refused:
+                with pytest.raises(ValueError, match = "head size"):
+                    managed_engine.validate_model(config, kv_cache_dtype = "turboquant")
+                assert managed_engine.validate_model(config)
+            else:
+                assert managed_engine.validate_model(config, kv_cache_dtype = "turboquant")
 
 
 def test_turboquant_reaches_vllm_metal_as_platform_config():
@@ -180,10 +202,8 @@ def test_metal_loads_on_the_apple_gpu_when_studio_sees_none(mac, monkeypatch):
         managed_engine.validate_load("vllm", request)
 
 
-@pytest.mark.parametrize(
-    "method", ["gptq", "compressed-tensors", "auto-round", "fbgemm_fp8", "fp8", "modelopt"]
-)
-def test_metal_refuses_quantizations_vllm_metal_cannot_load(tmp_path, monkeypatch, method):
+@pytest.mark.parametrize("method", ["gptq", "bitnet"])
+def test_metal_refuses_quantizations_vllm_metal_never_loads(tmp_path, monkeypatch, method):
     monkeypatch.setattr(install, "gpu_platform", lambda: "metal")
     monkeypatch.setattr(managed_engine, "profile", install.profile)
     config = SimpleNamespace(is_local = True, path = str(tmp_path))
@@ -192,11 +212,23 @@ def test_metal_refuses_quantizations_vllm_metal_cannot_load(tmp_path, monkeypatc
     )
     with pytest.raises(ValueError, match = "Apple Silicon cannot load"):
         managed_engine.validate_model(config)
-    (tmp_path / "config.json").write_text(
-        json.dumps({"quantization_config": {"quant_method": "awq"}})
-    )
-    managed_engine.validate_model(config)
-    (tmp_path / "config.json").write_text(
-        json.dumps({"quantization_config": {"group_size": 64, "bits": 4}})
-    )
+
+
+# vllm-metal loads these through mlx-lm for some model families (GPT-OSS MXFP4, Qwen3.5 FP8).
+@pytest.mark.parametrize(
+    "quant",
+    [
+        {"quant_method": "awq"},
+        {"quant_method": "mxfp4"},
+        {"quant_method": "fp8"},
+        {"quant_method": "compressed-tensors"},
+        {"quant_method": "modelopt", "quant_algo": "NVFP4"},
+        {"group_size": 64, "bits": 4},
+    ],
+)
+def test_metal_leaves_family_dependent_quantizations_to_the_engine(tmp_path, monkeypatch, quant):
+    monkeypatch.setattr(install, "gpu_platform", lambda: "metal")
+    monkeypatch.setattr(managed_engine, "profile", install.profile)
+    config = SimpleNamespace(is_local = True, path = str(tmp_path))
+    (tmp_path / "config.json").write_text(json.dumps({"quantization_config": quant}))
     managed_engine.validate_model(config)

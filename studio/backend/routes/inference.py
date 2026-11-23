@@ -18008,7 +18008,7 @@ def _gpu_quant_inference_message(fmt: str) -> str:
     try:
         from core.inference.engine_install import gpu_platform, support_reason
 
-        # vllm-metal 0.33.0 loads neither NVFP4 nor FP8.
+        # Default and vllm-metal load through the same mlx-lm, so vLLM cannot rescue what Default refused.
         if gpu_platform() not in ("rocm", "metal") and support_reason("vllm", wait = False) is None:
             return _GPU_QUANT_ENGINE_MESSAGE.format(fmt = fmt)
     except Exception:
@@ -18036,7 +18036,7 @@ def _vllm_engine_hint(engine: Optional[str]) -> str:
     try:
         from core.inference.engine_install import gpu_platform, support_reason
         if gpu_platform() == "metal":
-            # vllm-metal 0.33.0 has no compressed-tensors loader.
+            # Default and vllm-metal load through the same mlx-lm, so vLLM cannot rescue what Default refused.
             return ""
         return _COMPRESSED_TENSORS_VLLM_HINT if support_reason("vllm", wait = False) is None else ""
     except Exception:
