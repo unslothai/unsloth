@@ -6,7 +6,6 @@ export const DIFFUSION_TRAIN_GUIDE_URLS = {
   video: "https://unsloth.ai/docs/basics/fine-tune-video-models-with-lora",
 } as const;
 
-// Video families get the video guide; image, unknown or not-yet-loaded families get the diffusion guide.
 export function diffusionTrainGuideUrl(
   familyName: string | null | undefined,
   families: ReadonlyArray<{ name: string; is_video?: boolean }> | null | undefined,

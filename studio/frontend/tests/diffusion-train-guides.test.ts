@@ -28,7 +28,6 @@ test("video families link the video LoRA guide", () => {
 test("image families link the diffusion LoRA guide", () => {
   assert.equal(diffusionTrainGuideUrl("sdxl", families), DIFFUSION_TRAIN_GUIDE_URLS.image);
   assert.equal(diffusionTrainGuideUrl("flux", families), DIFFUSION_TRAIN_GUIDE_URLS.image);
-  // A family without is_video is treated as an image family.
   assert.equal(diffusionTrainGuideUrl("minimax-h3", families), DIFFUSION_TRAIN_GUIDE_URLS.image);
   assert.equal(
     DIFFUSION_TRAIN_GUIDE_URLS.image,
