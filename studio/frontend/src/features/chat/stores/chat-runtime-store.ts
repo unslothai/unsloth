@@ -63,6 +63,7 @@ import {
   type RecommendedSamplingKey,
   RECOMMENDED_SAMPLING_KEYS,
   getPresetOwnedParams,
+  isRecommendedSamplingKey,
   getPresetSource,
 } from "../presets/preset-policy";
 import { normalizeModelIdentity } from "../../hub/lib/model-identity";
@@ -1019,13 +1020,29 @@ export function threadScopedOverride<K extends ThreadScopedSettingKey>(
       }
     } else {
       const live = readThreadScopedSettings(useChatRuntimeStore.getState());
-      if (live[key] !== undefined) return live[key];
+      if (live[key] !== undefined && !isUnownedSampling(key)) return live[key];
     }
   }
   return activeThreadScopedSettings?.[key];
 }
 
 const explicitlyEditedThreadFields = new Set<string>();
+
+// A model's recommendation is not an edit: storing it would pin it over the next model's.
+function isUnownedSampling(key: string): boolean {
+  return (
+    isRecommendedSamplingKey(key) &&
+    !explicitlyEditedThreadFields.has(key) &&
+    (activeThreadScopedSettings as Record<string, unknown> | null)?.[key] === undefined
+  );
+}
+
+function withoutUnownedSampling(settings: ThreadScopedSettings): ThreadScopedSettings {
+  for (const key of RECOMMENDED_SAMPLING_KEYS) {
+    if (isUnownedSampling(key)) delete (settings as Record<string, unknown>)[key];
+  }
+  return settings;
+}
 
 /** Fields a provider constraint moved without persisting; no snapshot may save them. */
 const constraintSuppressedThreadFields = new Set<string>();
@@ -1443,6 +1460,7 @@ function buildThreadScopedSnapshot(
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
   restoreChatOwnedValues(threadId, settings);
+  if (threadId === threadScopedSettingsThreadId) withoutUnownedSampling(settings);
   // Not a store field, so a snapshot read from the store lacks it and a replacement would erase it.
   Object.assign(settings, withSavedChatFullAccess(threadId, {}));
   if (threadId === threadScopedSettingsThreadId) {
@@ -5401,6 +5419,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       threadScopedSettingsThreadId = threadId;
       explicitlyEditedThreadFields.clear();
+      for (const field of heldFields) {
+        if (isRecommendedSamplingKey(field)) explicitlyEditedThreadFields.add(field);
+      }
       constraintSuppressedThreadFields.clear();
       const stored = hasThreadScopedSettings(settings)
         ? (settings as ThreadScopedSettings)
@@ -5494,7 +5515,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (threadId !== null && (stored === null || heldFields.size > 0)) {
         scheduleThreadScopedSettingsWrite(
           threadId,
-          stored === null ? sanitizeThreadScopedSettings(applied) : null,
+          stored === null
+            ? withoutUnownedSampling(sanitizeThreadScopedSettings(applied))
+            : null,
         );
       }
       if (!hasKeys(nextState)) {
