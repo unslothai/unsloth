@@ -74,7 +74,6 @@ def test_explicit_opt_in_on_discrete_windows_rocm(host, monkeypatch):
     assert _budget_on()
     monkeypatch.setenv("UNSLOTH_DIFFUSION_DEQUANT_CACHE", "1")
     assert dit._dequant_cache_wanted(True, "cuda", False)
-    # The kill switches still win.
     monkeypatch.setenv(gb.GC_MODE_ENV, "plain")
     monkeypatch.setenv("UNSLOTH_DIFFUSION_DEQUANT_CACHE", "0")
     assert not _budget_on() and not dit._dequant_cache_wanted(True, "cuda", False)

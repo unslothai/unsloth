@@ -368,7 +368,6 @@ def test_auto_plan_resized_when_a_conversion_fails(monkeypatch):
         return m, info
 
     _, ok = plan_for(lambda n: False)
-    # Every linear outside blocks 3, 7 and 11 fails and stays bf16, most of them on the card.
     m, bad = plan_for(lambda n: not n.startswith(("blocks.11.", "blocks.7.", "blocks.3.")))
     assert ok["lowp_failed"] == 0 and bad["lowp_failed"] > 0
     assert bad["swapped_blocks"] > ok["swapped_blocks"]

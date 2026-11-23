@@ -64,8 +64,7 @@ def _vs_fp64(
     return _rel(y.detach(), y64.detach()), _rel(x.grad, x64.grad)
 
 
-# Measured here (K=512, N=256, bf16): int8 rowwise 0.86e-2 forward and 0.81e-2 grad_x (0.45e-2 on the dense
-# path under 17 rows), fp8 e4m3 3.7e-2 both.
+# Measured (K=512, N=256, bf16): int8 ~0.86e-2 fwd / 0.81e-2 grad_x, fp8 e4m3 3.7e-2.
 _INT8_REL_BOUND = 2e-2
 _FP8_REL_BOUND = 6e-2
 

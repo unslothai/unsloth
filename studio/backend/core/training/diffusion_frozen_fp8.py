@@ -275,7 +275,7 @@ class FrozenFp8Linear(nn.Module):
             x = x.to(torch.get_autocast_dtype(x.device.type))
         shape = x.shape
         y = _FrozenFp8MM.apply(
-            # Row-major for _scaled_mm's mat1 (the codes keep the input's layout); a no-op when already contiguous.
+            # Row-major for _scaled_mm's mat1; the codes keep the input's layout.
             x.reshape(-1, shape[-1]).contiguous(),
             self.weight,
             self.weight_scale,

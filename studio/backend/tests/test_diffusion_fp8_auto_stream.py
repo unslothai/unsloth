@@ -108,7 +108,6 @@ def test_fp8_without_a_hosted_file_loads_on_the_host(monkeypatch):
     ],
 )
 def test_pick_auto_precision_fp8_band(monkeypatch, free, cap, expected):
-    # A family measured below 1.5x but not in the fp8-over-bf16 set.
     monkeypatch.setattr(dit, "_AUTO_FP8_MEASURED", dit._AUTO_FP8_MEASURED | {"measured"})
     assert (
         dit._pick_auto_precision(False, "cuda", free, 12.3, cap, True, True, "measured") == expected
@@ -162,7 +161,6 @@ def test_auto_fp8_respects_the_family_train_deny(monkeypatch, family, expected):
         ("flux.2-klein", 1.0, "fp8"),
         ("z-image", 1.3, "fp8"),
         ("z-image", 1.0, "fp8"),
-        # Unmeasured families keep the int8 / nf4 picks below 1.5x.
         ("flux.1", 1.3, "int8"),
         ("flux.1", 1.0, "nf4"),
         ("flux.2-dev", 1.3, "int8"),

@@ -46,8 +46,8 @@ def _run(layer, x, gy):
 def test_column_major_input_and_grad_match_contiguous():
     layer = _layer()
     torch.manual_seed(1)
-    x_cm = torch.randn(64, 48, dtype = torch.bfloat16).t()  # (48, 64), column-major
-    gy_cm = torch.randn(32, 48, dtype = torch.bfloat16).t()  # (48, 32), column-major
+    x_cm = torch.randn(64, 48, dtype = torch.bfloat16).t()
+    gy_cm = torch.randn(32, 48, dtype = torch.bfloat16).t()
     assert not x_cm.is_contiguous() and not gy_cm.is_contiguous()
     y_cm, gx_cm = _run(layer, x_cm, gy_cm)
     y_c, gx_c = _run(layer, x_cm.contiguous(), gy_cm.contiguous())

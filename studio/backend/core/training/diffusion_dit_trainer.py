@@ -888,8 +888,7 @@ AUTO_FP8_MIN_FREE_RATIO = 0.9
 # frame into 256 tokens, where fp8's activation quantisation costs more than it saves (0.78x of bf16), so its
 # 1.15x-1.5x band keeps the bf16 block swap / int8 pick.
 _AUTO_FP8_OVER_BF16 = frozenset({"z-image", "flux.2-klein"})
-# Below 1.5x, the families whose fp8 base was measured (held-out loss inside the bf16 seed spread); every other family
-# keeps the int8 / nf4 pick until it is measured.
+# Families whose fp8 base was measured below 1.5x (held-out loss inside bf16 seed spread); others keep int8 / nf4.
 _AUTO_FP8_MEASURED = frozenset({"z-image", "flux.2-klein", "wan2.2-ti2v-5b"})
 _AUTO_FP8_NOT_OVER_SWAP = frozenset({"wan2.2-ti2v-5b"})
 

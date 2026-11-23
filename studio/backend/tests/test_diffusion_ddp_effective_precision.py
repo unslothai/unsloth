@@ -79,7 +79,6 @@ def test_trainer_checks_after_the_conversions_and_before_the_broadcast():
         assert before, conv
     broadcasts = [n for n in lines.get("broadcast_params", []) if n > min(check)]
     assert broadcasts, "the check must run before the LoRA broadcast"
-    # The W8A8 fallback to torchao weight-only int8 counts as a different base.
     seg = src.splitlines()[min(check) - 1 : min(check) + 3]
     assert any("int8_w8a8" in line and "w8a8_on" in line for line in seg)
 

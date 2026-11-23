@@ -421,8 +421,7 @@ def install_dit_block_swap(
         if not converted:
             raise ValueError(f"block_swap: no eligible linear layer converted to {lowp['mode']}.")
         if failed:
-            # A layer whose conversion failed stays bf16 (2 bytes a weight, not the 1-byte codes it was planned at):
-            # re-size from the tensors as they are now and swap any extra blocks the bigger base needs.
+            # A failed conversion stays bf16 (2 bytes/weight, not 1-byte codes): re-size and swap extra blocks.
             block_bytes = [[_frozen_bytes(b) for b in mod] for _, mod in lists]
             model_bytes = _model_bytes(transformer)
             need = model_bytes + trainable + reserve - free_bytes
