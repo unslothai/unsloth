@@ -311,9 +311,12 @@ jobs:
               _ "$LANES/$name.sh" "$LANES/$name" < /dev/null > /dev/null 2>&1 &
             echo "started $name"
           }
+          # Its own vite cache: the render groups' fixture servers write node_modules/.vite
+          # while this lane may still be running.
           start_lane unit_tests <<'SH'
+          export VITE_TEST_CACHE_DIR="$RUNNER_TEMP/vite-unit-tests"
           cd studio/frontend
-          npm test
+          timeout --kill-after=30s 20m npm test
           SH
           # Pull requests only. Fetch the base commit with an explicit refspec so origin/<base> exists.
           if [ -n "$BASE_REF" ]; then
@@ -488,7 +491,7 @@ jobs:
       # orphaned. The checks that measure frames, stalls or pacing stay serial, after the lanes.
       - name: Browser render and structure checks (two parallel groups)
         working-directory: ${{ github.workspace }}
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: |
           mkdir -p logs
           # For the pinned chat persistence check's in-process API.
@@ -554,7 +557,6 @@ jobs:
             # re-arming, and cleanup.
             run_check progressive_rows 5m python3 tests/studio/playwright_progressive_rows.py
             run_check user_message_time 5m python3 tests/studio/playwright_user_message_time.py
-            run_check message_timing_card 5m python3 tests/studio/playwright_message_timing_card.py
             run_check pinned_chat_persistence 3m python3 tests/studio/playwright_pinned_chat_persistence.py
             exit "$group_failed"
           ) > logs/playwright-render-a.log 2>&1 &
@@ -573,15 +575,12 @@ jobs:
             run_check project_folders 10m python3 tests/studio/playwright_project_folders.py \
               --out "$RUNNER_TEMP/project-folders"
             run_check browser_agent_select 5m python3 tests/studio/playwright_browser_agent_select.py
-            run_check tooltip_switch 3m python3 tests/studio/playwright_tooltip_switch.py chromium
             run_check long_chat_renders 5m python3 tests/studio/playwright_long_chat_renders.py
             # A drag step moves one node; the other nodes of the graph must not re-render.
             run_check recipe_drag_renders 5m python3 tests/studio/playwright_recipe_drag_renders.py
             # Render counts, not timings: a thumbnail arriving or a page appending to the Images or
             # Video strip must not re-render every card's menu, and a card's own menu must delete it.
             run_check gallery_strip_renders 8m python3 tests/studio/playwright_gallery_strip_renders.py
-            # The page mounts one still-modal menu as a control.
-            run_check nonmodal_menus 10m python3 tests/studio/playwright_nonmodal_menus.py
             run_check tool_activity 10m env PW_ENGINE=chromium \
               python3 tests/studio/playwright_tool_activity.py --json
             exit "$group_failed"
@@ -594,6 +593,15 @@ jobs:
           done
           group_pids=()
           exit "$failed"
+
+      - name: Print the background lane logs (cancelled run)
+        if: ${{ cancelled() && steps.lanes.outcome == 'success' }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          for f in "$RUNNER_TEMP"/lanes/*.log; do
+            [ -f "$f" ] || continue
+            echo "::group::$(basename "$f")"; cat "$f"; echo "::endgroup::"
+          done
 
       - name: Collect the background lanes (unit tests, dependency-removal check)
         if: ${{ !cancelled() && steps.lanes.outcome == 'success' }}
@@ -631,6 +639,23 @@ jobs:
       # The step bound is the smaller one, leaving the job 25 minutes for the steps before it: a
       # job timeout is a cancellation, which skips the failure-only artifact upload, so a check
       # hung past it would leave no log anywhere.
+      # Hover and pointer checks that assert UI state after a fixed wait: they run alone, as
+      # they did before the render groups were parallel, so CPU contention cannot flip them.
+      - name: Icon tooltips follow the pointer between neighbours
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 3
+        run: python3 tests/studio/playwright_tooltip_switch.py chromium
+
+      - name: Browser check for the reply stats card
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_message_timing_card.py
+
+      # The page mounts one still-modal menu as a control.
+      - name: Browser checks for the non-modal dropdown wrapper
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_nonmodal_menus.py
+
       - name: Browser smoke groups for data settings and frontend controls
         working-directory: ${{ github.workspace }}
         timeout-minutes: 15
