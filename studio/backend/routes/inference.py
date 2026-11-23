@@ -30001,6 +30001,11 @@ _ANTHROPIC_NATIVE_COMPACT_NOW_TOKENS = 60_000
 _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
+def _compaction_share(payload) -> float:
+    percent = getattr(payload, "compaction_percent", None)
+    return percent / 100 if percent else 1 - _EXTERNAL_COMPACTION_HEADROOM
+
+
 def _extends_turn(old: Any, new: Any) -> bool:
     """``new`` is ``old`` with text or parts appended, as the loop's ``_append_user_turn`` merges."""
     if isinstance(old, str) and isinstance(new, str):
@@ -31323,7 +31328,7 @@ async def _proxy_to_external_provider(
         if _served_window and (_loaded_window or not payload.compaction_threshold):
             _threshold = min(
                 _EXTERNAL_COMPACTION_THRESHOLD_MAX,
-                int(_served_window * (1 - _EXTERNAL_COMPACTION_HEADROOM)),
+                int(_served_window * _compaction_share(payload)),
             )
             payload = payload.model_copy(
                 update = {
@@ -32356,7 +32361,7 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         window = min(filter(None, (payload.context_window, upstream.context_length)))
         threshold = min(
             _EXTERNAL_COMPACTION_THRESHOLD_MAX,
-            int(window * (1 - _EXTERNAL_COMPACTION_HEADROOM)),
+            int(window * _compaction_share(payload)),
         )
         update["context_window"] = window
         update["compaction_threshold"] = min(payload.compaction_threshold or threshold, threshold)

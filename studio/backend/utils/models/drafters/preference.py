@@ -26,9 +26,20 @@ def dspark_precision_rank(name: str) -> int:
     return 3
 
 
-def dspark_preference_key(name: str) -> tuple[int, str]:
+# unsloth/Inkling-2-Mini-GGUF keeps its original (padded-vocab) DSpark drafter under this name so the root name can
+# carry the mainline-layout drafter. The original is faster here (B200: 1.15x vs 1.03x over no drafter at the
+# Inkling 2 sampling defaults) and every Unsloth prebuilt with DSpark loads it, so it is picked first.
+PREFERRED_DSPARK_FILENAMES = frozenset({"dspark-inkling-2-mini-q8_0_old.gguf"})
+
+
+def dspark_preferred_first(name: str) -> int:
+    """0 for a drafter published as the preferred file for its model, else 1."""
+    return 0 if Path(name).name.lower() in PREFERRED_DSPARK_FILENAMES else 1
+
+
+def dspark_preference_key(name: str) -> tuple[int, int, str]:
     """Sort key picking the preferred sidecar by name alone (no filesystem)."""
-    return dspark_precision_rank(name), Path(name).name.lower()
+    return dspark_preferred_first(name), dspark_precision_rank(name), Path(name).name.lower()
 
 
 def mtp_precision_rank(name: str) -> int:

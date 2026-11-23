@@ -65,7 +65,8 @@ def test_partial_is_written_only_inside_the_helper():
     )
 
 
-def test_all_five_model_branches_call_the_helper():
+def test_all_six_model_branches_call_the_helper():
+    """The five original branches plus Inkling 2, which partly disables compile for every new sequence length."""
     calls = [
         node
         for node in ast.walk(_loader_tree())
@@ -73,4 +74,4 @@ def test_all_five_model_branches_call_the_helper():
         and isinstance(node.func, ast.Name)
         and node.func.id == "_set_partial_compile_disable"
     ]
-    assert len(calls) == 5, f"expected the five branches to call the helper, found {len(calls)}"
+    assert len(calls) == 6, f"expected the six branches to call the helper, found {len(calls)}"
