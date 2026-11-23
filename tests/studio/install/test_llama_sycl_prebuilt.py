@@ -221,3 +221,21 @@ def test_sycl_install_without_a_oneapi_runtime_falls_back(monkeypatch, tmp_path)
     _venv_with_libsycl(monkeypatch, tmp_path)
     with pytest.raises(ILP.PrebuiltFallback, match = "no oneAPI runtime"):
         _install_sycl_bundle(monkeypatch, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "libs, recorded, moved",
+    [
+        (["libsycl.so.8"], "sycl8", False),
+        (["libsycl.so.9"], "sycl8", True),
+        ([], "sycl8", True),
+        (["libsycl.so.9"], None, False),
+    ],
+)
+def test_a_kept_sycl_install_is_rejected_once_the_venv_libsycl_moves(
+    monkeypatch, tmp_path, libs, recorded, moved
+):
+    _venv_with_libsycl(monkeypatch, tmp_path, *libs)
+    marker = {"install_kind": "linux-sycl", "runtime_line": recorded}
+    assert ILP._oneapi_runtime_moved(marker) is moved
+    assert ILP._oneapi_runtime_moved({**marker, "install_kind": "linux-vulkan"}) is False

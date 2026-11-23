@@ -8481,6 +8481,22 @@ def _memoized_api_newest_release_tag(repo: str) -> "str | None":
     return _newest_release_tag_from_releases(repo, releases) if releases else None
 
 
+def _oneapi_runtime_moved(marker: "dict[str, Any]") -> bool:
+    """A torch-xpu upgrade can swap the venv's libsycl major under a kept SYCL bundle, whose
+    libggml-sycl then fails to dlopen and llama.cpp silently runs on CPU."""
+    if marker.get("install_kind") != "linux-sycl":
+        return False
+    dirs = oneapi_runtime_lib_dirs()
+    recorded = marker.get("runtime_line")
+    current = oneapi_runtime_line(dirs) if dirs else None
+    if dirs and (not recorded or recorded == current):
+        return False
+    log(
+        f"kept install rejected: the SYCL bundle needs {recorded or 'libsycl'}, the venv has {current or 'none'}"
+    )
+    return True
+
+
 def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:
     """Whether torch now prefers another CUDA runtime line than the one installed.
 
@@ -8831,7 +8847,7 @@ def existing_install_current_without_plan(
     if not _kept_install_covers_host(marker, host):
         log("kept install rejected: the bundle no longer covers this card or driver")
         return False
-    if _runtime_preference_moved(marker, host):
+    if _runtime_preference_moved(marker, host) or _oneapi_runtime_moved(marker):
         return False
     # (3) the release this run would ask for is the release that is installed.
     expected_release = _expected_release_tag_without_plan(
