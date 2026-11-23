@@ -2379,7 +2379,10 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
     FastBaseModel.for_inference(self)
     dtype = _get_dtype(dtype_from_config(self.config))
-    do_bfloat16_mixed_precision = os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1"
+    # Stamped by from_pretrained: the env var stays "1" after one float32 mixed precision load, so it only answers for unstamped models.
+    do_bfloat16_mixed_precision = getattr(self, "_unsloth_bfloat16_mixed_precision", None)
+    if do_bfloat16_mixed_precision is None:
+        do_bfloat16_mixed_precision = os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1"
     if do_bfloat16_mixed_precision:
         dtype = torch.bfloat16
 
@@ -4737,6 +4740,7 @@ class FastBaseModel:
                     "Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA."
                 )
 
+        bfloat16_mixed_precision = False
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
             if do_forced_float32 and not SUPPORTS_BFLOAT16:
@@ -4758,6 +4762,7 @@ class FastBaseModel:
                         "use `float32_mixed_precision = False` during FastLanguageModel.from_pretrained"
                     )
                     os.environ["UNSLOTH_BFLOAT16_MIXED_PRECISION"] = "1"
+                    bfloat16_mixed_precision = True
             elif dtype == torch.float32:
                 print("Unsloth: Using float32 full finetuning.")
             else:
@@ -5623,6 +5628,7 @@ class FastBaseModel:
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        model = _mark_bfloat16_mixed_precision(model, bfloat16_mixed_precision)
         if _explicit_flex:
             setattr(model, _EXPLICIT_FLEX_ATTR, True)
         # Last, so the host copies carry the fp32 recasts the passes above make.

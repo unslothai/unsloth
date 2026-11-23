@@ -18,6 +18,7 @@ __all__ = [
     "_requested_float32",
     "_mark_requested_float32",
     "_mark_forced_float32",
+    "_mark_bfloat16_mixed_precision",
     "_drop_float16_overflowing_attention_dropout",
     "_mark_full_finetuning",
     "is_vLLM_available",
@@ -5831,6 +5832,15 @@ def _mark_requested_float32(model, requested):
             report_memory("load", model)
         except Exception:
             pass
+    return model
+
+
+def _mark_bfloat16_mixed_precision(model, enabled):
+    """Record whether this model generates under bfloat16 autocast (float32 weights, full finetuning with float32_mixed_precision). UNSLOTH_BFLOAT16_MIXED_PRECISION is process wide and nothing resets it, so a later model would generate in bfloat16 too."""
+    try:
+        model._unsloth_bfloat16_mixed_precision = bool(enabled)
+    except Exception:
+        pass
     return model
 
 
