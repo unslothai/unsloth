@@ -5323,6 +5323,7 @@ export const pl = {
     copy: "Kopiuj tłumaczenie",
     copied: "Skopiowano",
     useAsSource: "Przetłumacz ten tekst",
+    downloadSubtitles: "Pobierz napisy",
     stale: "Tekst lub ustawienia uległy zmianie. Przetłumacz ponownie, aby zaktualizować.",
     stopped: "Zatrzymano przed końcem. Przetłumacz ponownie, aby uzyskać resztę.",
     chat: "Czat z przetłumaczonym tekstem",

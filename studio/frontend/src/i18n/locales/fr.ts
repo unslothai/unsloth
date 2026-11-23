@@ -5016,6 +5016,7 @@ export const fr = {
     copy: "Copier la traduction",
     copied: "Copié",
     useAsSource: "Traduire ce texte",
+    downloadSubtitles: "Télécharger les sous-titres",
     stale: "Le texte ou les réglages ont changé. Traduisez à nouveau pour mettre à jour.",
     stopped: "Arrêté avant la fin. Traduisez à nouveau pour obtenir la suite.",
     chat: "Discuter avec le texte traduit",

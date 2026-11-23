@@ -5275,6 +5275,7 @@ export const id = {
     copy: "Salin terjemahan",
     copied: "Disalin",
     useAsSource: "Terjemahkan teks ini",
+    downloadSubtitles: "Unduh subtitle",
     stale: "Teks atau pengaturan berubah. Terjemahkan lagi untuk memperbarui.",
     stopped: "Dihentikan sebelum selesai. Terjemahkan lagi untuk sisanya.",
     chat: "Chat dengan teks terjemahan",

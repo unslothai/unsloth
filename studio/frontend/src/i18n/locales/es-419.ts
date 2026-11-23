@@ -5356,6 +5356,7 @@ export const es419 = {
     copy: "Copiar traducción",
     copied: "Copiado",
     useAsSource: "Traducir este texto",
+    downloadSubtitles: "Descargar subtítulos",
     stale:
       "El texto o la configuración cambiaron. Vuelve a traducir para actualizar.",
     stopped: "Se detuvo antes del final. Traduce de nuevo para obtener el resto.",

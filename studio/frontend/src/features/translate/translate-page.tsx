@@ -103,6 +103,7 @@ import {
   ArrowLeft02Icon,
   ArrowLeftRightIcon,
   Cancel01Icon,
+  Download01Icon,
   Message01Icon,
   RemoveCircleIcon,
   Search01Icon,
@@ -128,6 +129,7 @@ import { useShallow } from "zustand/react/shallow";
 import { chatAboutTranslations } from "./chat-handoff";
 import { TranslateHistoryList } from "./history-list";
 import { transcribeAudioFile } from "./translate-audio";
+import { parseSubtitles, subtitleFileName } from "./translate-subtitles";
 import { detectTranslateLanguage } from "./detect-language";
 import { ICON_ACTION, IconAction } from "./icon-action";
 import {
@@ -249,12 +251,23 @@ function serverUpload(file: File): File {
     : file;
 }
 
+// The STT server decodes the audio track of these containers.
+const VIDEO_FILE_EXTENSIONS = ".mp4,.m4v,.webm,.mkv,.mov";
+
+function isTranscribedFile(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return (
+    isAudioAttachmentFile(file) ||
+    VIDEO_FILE_EXTENSIONS.split(",").some((ext) => name.endsWith(ext))
+  );
+}
+
 const IS_MAC =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad/.test(navigator.platform);
 
-const DROP_ACCEPT = `${OPEN_FILE_EXTENSIONS},${AUDIO_ACCEPT_EXTENSIONS}`;
-const PICKER_ACCEPT = `text/*,${OPEN_FILE_EXTENSIONS},${AUDIO_ATTACHMENT_ACCEPT}`;
+const DROP_ACCEPT = `${OPEN_FILE_EXTENSIONS},${AUDIO_ACCEPT_EXTENSIONS},${VIDEO_FILE_EXTENSIONS}`;
+const PICKER_ACCEPT = `text/*,${OPEN_FILE_EXTENSIONS},${AUDIO_ATTACHMENT_ACCEPT},${VIDEO_FILE_EXTENSIONS}`;
 
 const ACTION_BUTTON = "relative z-10 transition-opacity disabled:opacity-40";
 const GO_BUTTON =
@@ -1276,6 +1289,8 @@ export function TranslatePage() {
   const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState<Downloaded>({});
+  // Names a downloaded subtitle file after the one it came from.
+  const [sourceFile, setSourceFile] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const outputRef = useRef<HTMLDivElement>(null);
   const sourceScrollRef = useRef<HTMLDivElement>(null);
@@ -1297,6 +1312,26 @@ export function TranslatePage() {
     prefs.from !== AUTO_SOURCE ||
     (detected !== null && detected !== prefs.target);
   const stale = translationIsStale({ result, source, prefs });
+  const subtitleFormat = useMemo(
+    () =>
+      result && !stale && !busy
+        ? (parseSubtitles(output)?.format ?? null)
+        : null,
+    [result, stale, busy, output],
+  );
+  const downloadSubtitles = () => {
+    if (!result || !subtitleFormat) return;
+    const url = URL.createObjectURL(
+      new Blob([output], {
+        type: subtitleFormat === "vtt" ? "text/vtt" : "application/x-subrip",
+      }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = subtitleFileName(sourceFile, result.target, subtitleFormat);
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
   const modelKey = translateModelKey(prefs.modelId, prefs.customModel);
   const dedicated = dedicatedTranslateModel(prefs.modelId);
   const modelLabel =
@@ -1377,7 +1412,7 @@ export function TranslatePage() {
     return () => window.clearTimeout(timer);
   }, [copied]);
 
-  const loadText = (text: string) => {
+  const loadText = (text: string, fileName: string | null = null) => {
     if (text.includes("\u0000")) {
       toast.error(t("translate.fileNotText"));
       return;
@@ -1390,6 +1425,7 @@ export function TranslatePage() {
       );
     }
     setSource(text);
+    setSourceFile(fileName);
   };
 
   const [readingFile, setReadingFile] = useState<string | null>(null);
@@ -1412,7 +1448,7 @@ export function TranslatePage() {
   };
   const openFile = async (file: File | undefined) => {
     if (!file) return;
-    if (isAudioAttachmentFile(file)) {
+    if (isTranscribedFile(file)) {
       await openAudio(file);
       return;
     }
@@ -1425,7 +1461,7 @@ export function TranslatePage() {
         return;
       }
       if (text !== null) {
-        loadText(text);
+        loadText(text, file.name);
         return;
       }
     }
@@ -1906,6 +1942,15 @@ export function TranslatePage() {
                       icon={Message01Icon}
                       label={t("translate.chat")}
                       onClick={chatAboutResult}
+                    />
+                  )}
+                  {subtitleFormat && (
+                    <IconAction
+                      className={FOOTER_ICON}
+                      iconClassName="size-5"
+                      icon={Download01Icon}
+                      label={t("translate.downloadSubtitles")}
+                      onClick={downloadSubtitles}
                     />
                   )}
                   {!busy && (

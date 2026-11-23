@@ -5322,6 +5322,7 @@ export const nl = {
     copy: "Vertaling kopiëren",
     copied: "Gekopieerd",
     useAsSource: "Deze tekst vertalen",
+    downloadSubtitles: "Ondertitels downloaden",
     stale: "De tekst of instellingen zijn gewijzigd. Vertaal opnieuw om bij te werken.",
     stopped: "Gestopt voor het einde. Vertaal opnieuw voor de rest.",
     chat: "Chatten met vertaalde tekst",

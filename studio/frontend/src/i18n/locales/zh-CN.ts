@@ -4832,6 +4832,7 @@ export const zhCN = {
     copy: "复制译文",
     copied: "已复制",
     useAsSource: "翻译此文本",
+    downloadSubtitles: "下载字幕",
     stale: "文本或设置已更改。请重新翻译以更新。",
     stopped: "在结束前已停止。再次翻译以获取剩余部分。",
     chat: "用译文开始聊天",

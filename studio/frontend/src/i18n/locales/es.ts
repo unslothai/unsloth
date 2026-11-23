@@ -5005,6 +5005,7 @@ export const es = {
     copy: "Copiar traducción",
     copied: "Copiado",
     useAsSource: "Traducir este texto",
+    downloadSubtitles: "Descargar subtítulos",
     stale: "El texto o los ajustes han cambiado. Vuelve a traducir para actualizar.",
     stopped: "Se detuvo antes del final. Vuelve a traducir para obtener el resto.",
     chat: "Chatear con el texto traducido",

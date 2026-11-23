@@ -4961,6 +4961,7 @@ export const ptBR = {
     copy: "Copiar tradução",
     copied: "Copiado",
     useAsSource: "Traduzir este texto",
+    downloadSubtitles: "Baixar legendas",
     stale: "O texto ou as configurações mudaram. Traduza novamente para atualizar.",
     stopped: "Parou antes do fim. Traduza de novo para obter o restante.",
     chat: "Conversar com o texto traduzido",

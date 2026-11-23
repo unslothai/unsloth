@@ -60,13 +60,13 @@ test("every audio file the drop zone takes is transcribed, not sent to the docum
   );
   assert.match(
     page,
-    /const DROP_ACCEPT = `\$\{OPEN_FILE_EXTENSIONS\},\$\{AUDIO_ACCEPT_EXTENSIONS\}`;/,
+    /const DROP_ACCEPT = `\$\{OPEN_FILE_EXTENSIONS\},\$\{AUDIO_ACCEPT_EXTENSIONS\},\$\{VIDEO_FILE_EXTENSIONS\}`;/,
   );
   assert.match(page, /accept: DROP_ACCEPT,/);
   assert.match(page, /accept=\{PICKER_ACCEPT\}/);
   assert.match(
     page,
-    /if \(!file\) return;\s*if \(isAudioAttachmentFile\(file\)\) \{\s*await openAudio\(file\);\s*return;\s*\}\s*if \(isTextFile\(file\)\)/,
+    /if \(!file\) return;\s*if \(isTranscribedFile\(file\)\) \{\s*await openAudio\(file\);\s*return;\s*\}\s*if \(isTextFile\(file\)\)/,
   );
 });
 
