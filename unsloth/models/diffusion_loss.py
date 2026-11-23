@@ -70,14 +70,16 @@ def _logits(h, weight, bias, softcap):
 
 def _chunk_forward(h, weight, bias, targets, token_weights, softcap):
     z = _logits(h, weight, bias, softcap)
-    lse = torch.logsumexp(z, dim = -1)
     valid = targets != -100
-    picked = z.gather(1, targets.clamp_min(0)[:, None]).squeeze(1)
-    ce = torch.where(valid, lse - picked, 0.0)
-    return (ce * token_weights).sum(), ce.sum(), lse
+    label = targets.clamp_min(0)[:, None]
+    picked = z.gather(1, label).squeeze(1)
+    # Label excluded from the normaliser: logsumexp(z) - x rounds to 0 for confident tokens (softmax collapse).
+    others = torch.logsumexp(z.scatter(1, label, torch.finfo(z.dtype).min), dim = -1)
+    ce = torch.where(valid, F.softplus(others - picked), 0.0)
+    return (ce * token_weights).sum(), ce.sum(), torch.logaddexp(others, picked), ce
 
 
-def _chunk_backward(h, weight, bias, targets, token_weights, lse, grad, softcap):
+def _chunk_backward(h, weight, bias, targets, token_weights, lse, ce, grad, softcap):
     z = h if weight is None else F.linear(h, weight, bias)
     z = z.float()
     if softcap is not None:
@@ -86,7 +88,8 @@ def _chunk_backward(h, weight, bias, targets, token_weights, lse, grad, softcap)
     valid = targets != -100
     scale = torch.where(valid, token_weights * grad, 0.0)
     dz = torch.exp(z - lse[:, None])
-    dz = dz.scatter_add(1, targets.clamp_min(0)[:, None], -valid.to(dz.dtype)[:, None])
+    # p - 1 as expm1(-ce): exp(z - lse) - 1 rounds to 0 for confident tokens.
+    dz = dz.scatter(1, targets.clamp_min(0)[:, None], torch.expm1(-ce)[:, None])
     dz = dz * scale[:, None]
     if softcap is not None:
         dz = dz * (1 - tanh * tanh)
@@ -146,9 +149,9 @@ class _ChunkedCrossEntropy(torch.autograd.Function):
         token_weights = token_weights.float()
         weighted = hidden.new_zeros((), dtype = torch.float32)
         total = hidden.new_zeros((), dtype = torch.float32)
-        lses = []
+        lses, ces = [], []
         for start in range(0, n, rows):
-            w_sum, ce_sum, lse = forward_kernel(
+            w_sum, ce_sum, lse, ce = forward_kernel(
                 _chunk(hidden, start, rows, 0),
                 weight,
                 bias,
@@ -159,8 +162,10 @@ class _ChunkedCrossEntropy(torch.autograd.Function):
             weighted = weighted + w_sum
             total = total + ce_sum
             lses.append(lse)
+            ces.append(ce)
         lse = torch.cat(lses) if lses else hidden.new_zeros((0,), dtype = torch.float32)
-        ctx.save_for_backward(hidden, weight, bias, targets, token_weights, lse)
+        ce = torch.cat(ces) if ces else lse
+        ctx.save_for_backward(hidden, weight, bias, targets, token_weights, lse, ce)
         ctx.rows, ctx.softcap, ctx.compiled = rows, softcap, compiled
         ctx.mark_non_differentiable(total)
         return weighted, total
@@ -176,7 +181,7 @@ class _ChunkedCrossEntropy(torch.autograd.Function):
 
     @staticmethod
     def _backward(ctx, grad_weighted):
-        hidden, weight, bias, targets, token_weights, lse = ctx.saved_tensors
+        hidden, weight, bias, targets, token_weights, lse, ce = ctx.saved_tensors
         _, backward_kernel = _kernels(ctx.compiled)
         rows, n = ctx.rows, hidden.shape[0]
         need_h, need_w, need_b = ctx.needs_input_grad[:3]
@@ -195,6 +200,7 @@ class _ChunkedCrossEntropy(torch.autograd.Function):
                 _chunk(targets, start, rows, -100),
                 _chunk(token_weights, start, rows, 0),
                 lse[start : start + rows],  # one padded entry per row, so every slice is full
+                ce[start : start + rows],
                 grad,
                 ctx.softcap,
             )
