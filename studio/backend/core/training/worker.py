@@ -2813,7 +2813,10 @@ def _mlx_drop_vision_kwargs(use_lora: bool, text_dataset: bool) -> dict:
     """Skip reading a VLM's vision tower for text-only LoRA, on a zoo that trains and saves adapters without it."""
     if not (use_lora and text_dataset):
         return {}
-    from unsloth_zoo.mlx import loader
+    try:
+        from unsloth_zoo.mlx import loader
+    except ImportError:
+        return {}
 
     # Older zoos accept drop_vision_weights but refuse LoRA on the result, so check the marker, not the kwarg.
     if getattr(loader, "DROP_VISION_WEIGHTS_TRAINS_LORA", False) is not True:
