@@ -64,6 +64,8 @@ from .diffusion_attention import (
     _dit_head_dims,
     begin_attention_run,
     report_attention_run,
+    explicit_pick_fallback,
+    normalize_attention_backend,
     select_attention_backend,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift, apply_scheduler_overrides
@@ -6522,6 +6524,9 @@ class VideoBackend:
         # raise OfflineModeIsEnabled, so the load reads the cache only, as a local_files_only one does.
         local_files_only = bool(local_files_only) or hub_reachability.offline_mode()
         int8_policy = resolve_policy(normalize_int8_attention(int8_attention))
+        # Refused here like the image backend, before this load evicts anything: inside the load an unknown name would
+        # only abort the speed layer and run the whole load unoptimised.
+        normalize_attention_backend(attention_backend)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         from .diffusion_nvfp4_route import ROUTE_UNCHANGED, plan_nvfp4_route
 
@@ -12103,6 +12108,9 @@ class VideoBackend:
                 requested = attention_backend,
                 speed_active = effective_speed != SPEED_OFF,
                 int8_policy = int8_policy,
+                fallback = explicit_pick_fallback(
+                    target, attention_backend, speed_active = effective_speed != SPEED_OFF
+                ),
             )
             # The optimizer's speed layer (diffusion_autoopt), shared with the image backend. Its family hooks are
             # what used to be inline here: LTX static compile (token counts depend only on (w, h, frames): one
@@ -13677,13 +13685,26 @@ class VideoBackend:
             )
             h3_torch_device = str(getattr(umem_target, "torch_device", None) or device)
             # Install after the strided processors exist, else the dispatch route takes it and loses fused q/k norm + RoPE
+            h3_probe_target = types.SimpleNamespace(device = device, dtype = dtype)
+            # an explicit kernel that cannot run keeps the automatic pick (and so the strided processors + QK-RoPE)
+            h3_fallback = explicit_pick_fallback(
+                umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
+            )
+            if h3_fallback is not None:
+                try:
+                    h3_fallback = h3_attention_backend(
+                        h3_fallback, requested = None, target = h3_probe_target
+                    )
+                except Exception:  # noqa: BLE001 -- keep the generic pick
+                    pass
             attention_engaged = apply_attention_backend(
                 speed_view,
                 h3_attn_backend,
                 logger = logger,
                 # The probe behind this must see the dtype the pipeline actually RUNS in.
-                target = types.SimpleNamespace(device = device, dtype = dtype),
+                target = h3_probe_target,
                 int8_policy = int8_attention.Int8Policy(request = "off", env = h3_policy.env),
+                fallback = h3_fallback,
             )
             h3_denoiser = getattr(pipe, denoiser_component, None)
             strided_installed = False

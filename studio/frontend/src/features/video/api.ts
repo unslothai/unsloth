@@ -177,7 +177,8 @@ export interface VideoLoadRequest {
     | "flash4"
     | "sage"
     | "xformers"
-    | "aiter";
+    | "aiter"
+    | "flash_sdpa";
   int8_attention?: "auto" | "on" | "off";
   transformer_cache?: "off" | "fbcache" | "static";
   transformer_cache_threshold?: number;

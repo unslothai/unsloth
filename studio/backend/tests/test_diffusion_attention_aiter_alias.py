@@ -113,6 +113,7 @@ _FROZEN = {
         "sdpa": (None, None, None),
         "unsloth_int8": ("_native_cudnn", "_native_cudnn", None),
         "xformers": ("xformers", "xformers", None),
+        "flash_sdpa": ("_native_flash", "_native_flash", None),
     },
     False: {
         "auto": (_C, None, None),
@@ -126,6 +127,7 @@ _FROZEN = {
         "sdpa": (None, None, None),
         "unsloth_int8": (_C, _C, None),
         "xformers": (None, None, _U),
+        "flash_sdpa": (None, None, _U),
     },
 }
 

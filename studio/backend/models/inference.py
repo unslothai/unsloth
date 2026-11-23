@@ -5066,6 +5066,7 @@ class DiffusionLoadRequest(BaseModel):
             "xformers",
             "aiter",
             "unsloth_int8",
+            "flash_sdpa",
         ]
     ] = Field(
         None,
@@ -5076,8 +5077,10 @@ class DiffusionLoadRequest(BaseModel):
         "(kernel/arch-gated); sage is INT8 attention (a small quality cost, consumer "
         "friendly); unsloth_int8 is Studio's own INT8 attention kernel on the families with "
         "strided attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm (aiter needs "
-        "diffusers' local AITER backend, gone in 0.41+; without it ROCm runs the auto pick). An "
-        "unavailable kernel falls back to the default.",
+        "diffusers' local AITER backend, gone in 0.41+; without it ROCm runs the auto pick); flash_sdpa "
+        "pins torch SDPA's flash kernel. diffusers dispatcher names (_native_flash, _native_cudnn, _flash_3_hub, "
+        "flash_4_hub, sage_hub) are accepted as the matching alias. An unavailable kernel falls back to the auto "
+        "pick (native SDPA when speed=off).",
     )
     int8_attention: Optional[Literal["auto", "on", "off"]] = Field(
         None,
@@ -5130,7 +5133,9 @@ class DiffusionLoadRequest(BaseModel):
     @classmethod
     def _normalize_attention_backend(cls, value):
         # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
-        return value.strip().lower() if isinstance(value, str) else value
+        # A diffusers dispatcher name Studio runs ("_native_flash", "_native_cudnn", ...) folds onto Studio's alias.
+        from core.inference.diffusion_attention import canonical_attention_request
+        return canonical_attention_request(value)
 
     @field_validator("text_encoder_file")
     @classmethod
@@ -7686,6 +7691,7 @@ class VideoLoadRequest(BaseModel):
             "xformers",
             "aiter",
             "unsloth_int8",
+            "flash_sdpa",
         ]
     ] = Field(
         None,
@@ -7695,8 +7701,10 @@ class VideoLoadRequest(BaseModel):
         "default SDPA; cudnn/flash/flash3/flash4 are exact (kernel/arch-gated); sage is INT8 "
         "attention; unsloth_int8 is Studio's own INT8 attention kernel on the families with strided "
         "attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm (aiter needs diffusers' "
-        "local AITER backend, gone in 0.41+; without it ROCm runs the auto pick). An unavailable "
-        "kernel falls back to the default.",
+        "local AITER backend, gone in 0.41+; without it ROCm runs the auto pick); flash_sdpa pins torch "
+        "SDPA's flash kernel. diffusers dispatcher names (_native_flash, _native_cudnn, _flash_3_hub, "
+        "flash_4_hub, sage_hub) are accepted as the matching alias. An unavailable kernel falls back to the "
+        "auto pick (native SDPA when speed=off).",
     )
     int8_attention: Optional[Literal["auto", "on", "off"]] = Field(
         None,
@@ -7804,7 +7812,9 @@ class VideoLoadRequest(BaseModel):
     @classmethod
     def _normalize_attention_backend(cls, value):
         # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
-        return value.strip().lower() if isinstance(value, str) else value
+        # A diffusers dispatcher name Studio runs ("_native_flash", "_native_cudnn", ...) folds onto Studio's alias.
+        from core.inference.diffusion_attention import canonical_attention_request
+        return canonical_attention_request(value)
 
 
 class VideoReferenceVideo(BaseModel):

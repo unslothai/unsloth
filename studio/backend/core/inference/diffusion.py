@@ -377,6 +377,7 @@ from .diffusion_attention import (
     attention_may_run_native,
     begin_attention_run,
     report_attention_run,
+    explicit_pick_fallback,
     select_attention_backend,
     _dit_head_dims,
     _ensure_attention_backend_installed,
@@ -11824,6 +11825,13 @@ class DiffusionBackend:
                         # granted by the unset-speed rule alone: only SPEED_UNSET_DITS race
                         speed_unset_only = effective_speed == SPEED_OFF,
                         int8_policy = int8_policy,
+                        # an explicit kernel that cannot run keeps the automatic pick, not bare native SDPA
+                        fallback = explicit_pick_fallback(
+                            target,
+                            attention_backend,
+                            speed_active = effective_speed != SPEED_OFF,
+                            family = fam,
+                        ),
                     )
                     self._raise_if_load_cancelled(_load_token)
                     # Step cache drops compile fullgraph; off/fbcache pin it, auto only on max by FBCACHE_MIN_STEPS.
@@ -15544,6 +15552,9 @@ class DiffusionBackend:
             requested = state.attention_request,
             # the load's own policy: a per-load on / off must not revert to the env switch at the 3rd image
             int8_policy = getattr(state, "int8_policy", None),
+            fallback = explicit_pick_fallback(
+                target, state.attention_request, speed_active = True, family = state.family
+            ),
         )
         object.__setattr__(state, "attention_backend", attention_engaged)
         identity = getattr(state.pipe, "_unsloth_peak_identity", None)

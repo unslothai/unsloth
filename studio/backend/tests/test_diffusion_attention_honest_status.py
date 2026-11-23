@@ -467,3 +467,176 @@ def test_status_reads_add_no_graph_break_recompile_or_tensor_op(monkeypatch):
     compiled(x)
     assert (cnt.frame_count, cnt.op_count) == (frames, ops), "a status read recompiled the DiT"
     assert sum(counters["graph_break"].values()) == 0
+
+
+# ---------------------------------------------------------------- diffusers names, and an explicit pick that cannot run
+
+
+def _auto_cudnn_runs(monkeypatch):
+    """The automatic pick on this (stub) card is the cuDNN pin."""
+    monkeypatch.setattr(A, "_cudnn_serves_pipe", lambda *a, **k: True)
+    monkeypatch.setattr(A, "_native_dispatches_cudnn", lambda *a, **k: False)
+    monkeypatch.setattr(A, "_native_flash_measured_faster", lambda *a, **k: False)
+    monkeypatch.setattr(A, "available_sdpa_kernels", lambda *a, **k: (A.SDPA_FLASH, A.SDPA_CUDNN))
+
+
+def _load_like_studio(
+    pipe,
+    requested,
+    *,
+    speed = True,
+    int8_policy = "off",
+):
+    """``_load`` as the image and video loads call it, with the explicit-pick fallback."""
+    target = _target()
+    backend = A.select_attention_backend(target, requested, speed_active = speed)
+    engaged = A.apply_attention_backend(
+        pipe,
+        backend,
+        target = target,
+        requested = requested,
+        speed_active = speed,
+        int8_policy = int8_policy,
+        fallback = A.explicit_pick_fallback(target, requested, speed_active = speed),
+    )
+    record = build_resolved_record(
+        {"attention_backend": A.attention_resolved_entry(requested, engaged, pipe, target = target)}
+    )
+    return engaged, A.annotate_attention_resolved(record, pipe)["attention_backend"]
+
+
+@pytest.mark.parametrize(
+    "name, alias",
+    [
+        ("_native_flash", "flash_sdpa"),
+        (" _NATIVE_FLASH ", "flash_sdpa"),
+        ("_native_cudnn", "cudnn"),
+        ("_flash_3_hub", "flash3"),
+        ("flash_4_hub", "flash4"),
+        ("sage_hub", "sage"),
+        ("flash", "flash"),
+        ("auto", "auto"),
+    ],
+)
+def test_diffusers_dispatcher_names_fold_onto_studio_aliases(name, alias):
+    assert A.normalize_attention_backend(name) == alias
+
+
+def test_unknown_name_still_refused():
+    with pytest.raises(ValueError, match = "Unsupported attention_backend"):
+        A.normalize_attention_backend("_native_bogus")
+
+
+def test_explicit_native_flash_runs_flash_sdpa(monkeypatch, _isolated):
+    _auto_cudnn_runs(monkeypatch)
+    pipe = _pipe()
+    engaged, entry = _load_like_studio(pipe, "_native_flash")
+    assert engaged == "_native_flash"
+    assert entry["status"] == "applied" and entry["value"] == "_native_flash"
+    assert entry["routed"] == {"_native_flash": N_BLOCKS}
+
+
+def test_flash_without_flash_attn_keeps_the_automatic_pick(monkeypatch, _isolated):
+    _auto_cudnn_runs(monkeypatch)
+    pipe = _pipe()
+    pipe.transformer.fail_on = {"flash"}
+    engaged, entry = _load_like_studio(pipe, "flash")
+    # the cuDNN pin the automatic pick runs, not bare native SDPA
+    assert engaged == "_native_cudnn"
+    assert pipe.transformer.set_calls[-1] == "_native_cudnn"
+    assert entry["value"] == "_native_cudnn" and entry["routed"] == {"_native_cudnn": N_BLOCKS}
+    # the status still says the explicit pick did not run, and why
+    assert entry["status"] == "fell_back"
+    assert "could not set it" in entry["reason"] and "flash is not available" in entry["reason"]
+    decline = A.attention_decline(pipe)
+    assert decline["tried"] == "flash" and decline["engaged"] == "_native_cudnn"
+    assert _isolated == {"auto": 0, "dispatch": 0, "requested": 0}
+
+
+def test_arch_gated_pick_keeps_the_automatic_pick(monkeypatch, _isolated):
+    _auto_cudnn_runs(monkeypatch)
+    engaged, entry = _load_like_studio(_pipe(), "flash4")  # sm89 stub: FA4 needs sm100+
+    assert engaged == "_native_cudnn"
+    assert entry["status"] == "unsupported" and "sm100" in entry["reason"]
+
+
+def test_flash_without_flash_attn_and_speed_off_stays_native(monkeypatch, _isolated):
+    _auto_cudnn_runs(monkeypatch)
+    pipe = _pipe()
+    pipe.transformer.fail_on = {"flash"}
+    engaged, entry = _load_like_studio(pipe, "flash", speed = False)
+    assert engaged is None and entry["value"] == "native" and entry["status"] == "fell_back"
+    assert "_native_cudnn" not in pipe.transformer.set_calls
+
+
+@pytest.mark.parametrize(
+    "requested", [None, "", "auto", "AUTO", "native", "sdpa", "unsloth_int8", "bogus"]
+)
+@pytest.mark.parametrize("speed", [True, False])
+def test_no_fallback_for_studio_or_native_picks(monkeypatch, requested, speed):
+    _auto_cudnn_runs(monkeypatch)
+    assert A.explicit_pick_fallback(_target(), requested, speed_active = speed) is None
+
+
+@pytest.mark.parametrize("device", ["cpu", "mps"])
+def test_no_fallback_off_nvidia(monkeypatch, device):
+    assert A.explicit_pick_fallback(_target(device = device), "flash", speed_active = True) is None
+
+
+@pytest.mark.parametrize(
+    "requested", [None, "auto", "native", "sdpa", "cudnn", "sage", "unsloth_int8"]
+)
+@pytest.mark.parametrize("speed", [True, False])
+def test_default_and_working_picks_unchanged_by_the_fallback(monkeypatch, requested, speed):
+    """Same engaged backend, status entry and setter calls with and without the fallback argument."""
+    _auto_cudnn_runs(monkeypatch)
+    _sage_pip(monkeypatch)
+    results = []
+    for with_fallback in (False, True):
+        pipe = _pipe()
+        target = _target()
+        backend = A.select_attention_backend(target, requested, speed_active = speed)
+        kwargs = dict(target = target, requested = requested, speed_active = speed)
+        if with_fallback:
+            kwargs["fallback"] = A.explicit_pick_fallback(target, requested, speed_active = speed)
+        engaged = A.apply_attention_backend(pipe, backend, **kwargs)
+        entry = A.attention_resolved_entry(requested, engaged, pipe, target = target)
+        procs = [
+            (str(m.processor._attention_backend), getattr(m.processor, "_unsloth_int8", False))
+            for m in pipe.transformer.blocks
+        ]
+        results.append(
+            (engaged, entry, pipe.transformer.set_calls, procs, A.attention_decline(pipe))
+        )
+    assert results[0] == results[1]
+
+
+def test_h3_fallback_keeps_the_strided_processors(monkeypatch):
+    """MiniMax-H3: the fallback goes through the H3 arch pick, and both it and an explicit _native_flash install the
+    strided processors (fused QK-RoPE) that a bare native fallback drops."""
+    import core.inference.video_minimax_h3_attn as H
+
+    _auto_cudnn_runs(monkeypatch)
+    monkeypatch.setattr(H, "_capability", lambda device = None: (8, 9))
+    target = _target()
+    fallback = A.explicit_pick_fallback(target, "flash", speed_active = True)
+    fallback = H.h3_attention_backend(fallback, requested = None, target = target)
+    assert fallback == "_native_flash" and H.strided_install_backend(fallback)
+    explicit = A.select_attention_backend(target, "_native_flash", speed_active = True)
+    explicit = H.h3_attention_backend(explicit, requested = "_native_flash", target = target)
+    assert explicit == "_native_flash" and H.strided_install_backend(explicit)
+    assert not H.strided_install_backend(None)
+
+
+@pytest.mark.parametrize("model", ["DiffusionLoadRequest", "VideoLoadRequest"])
+def test_routes_accept_diffusers_names(model):
+    import models.inference as M
+
+    cls = getattr(M, model)
+    fields = (
+        {"model_path": "org/repo"} if "model_path" in cls.model_fields else {"repo_id": "org/repo"}
+    )
+    assert cls(**fields, attention_backend = "_native_flash").attention_backend == "flash_sdpa"
+    assert cls(**fields, attention_backend = "_Native_Cudnn").attention_backend == "cudnn"
+    with pytest.raises(Exception):
+        cls(**fields, attention_backend = "_native_bogus")
