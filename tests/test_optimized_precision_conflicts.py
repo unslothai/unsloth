@@ -311,7 +311,6 @@ def test_modelscope_conflicts_do_not_download_weights(
 def test_modelscope_adapter_with_network_share_base_is_refused(
     loader, modelscope_snapshot, monkeypatch
 ):
-    # The adapter is a downloaded folder by the time the guard runs; it is still a remote repo.
     env, captured = loader
     cache, _, _ = modelscope_snapshot
     env["USE_MODELSCOPE"] = True
