@@ -126,14 +126,25 @@ def standardize_chat_format(
         content_key = "content"
     elif len(uniques.keys()) == 2:
         keys = list(uniques.keys())
-        length_first = len(set(uniques[keys[0]]))
-        length_second = len(set(uniques[keys[1]]))
-        if length_first < length_second:
-            role_key = keys[0]
-            content_key = keys[1]
+        # A role column's values are drawn from known aliases; a content column's are free text.
+        # Cardinality alone swaps the two on a tie (equal distinct counts), so break ties here.
+        known_roles = {
+            _normalize_role_alias(alias)
+            for aliases in (aliases_for_system, aliases_for_user, aliases_for_assistant)
+            for alias in aliases
+        }
+        role_votes = [
+            sum(_normalize_role_alias(value) in known_roles for value in set(uniques[key]))
+            for key in keys
+        ]
+        if role_votes[0] != role_votes[1]:
+            role_index = role_votes.index(max(role_votes))
         else:
-            role_key = keys[1]
-            content_key = keys[0]
+            length_first = len(set(uniques[keys[0]]))
+            length_second = len(set(uniques[keys[1]]))
+            role_index = 0 if length_first < length_second else 1
+        role_key = keys[role_index]
+        content_key = keys[1 - role_index]
     else:
         raise ValueError(f"Could not infer role/content keys for chat column '{chat_column}'")
 
