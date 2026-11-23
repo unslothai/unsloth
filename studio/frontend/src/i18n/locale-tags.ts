@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// No imports: the build's locale preload (vite-plugin-locale-preload.ts) reads this table and
-// ships matchLocaleTag's source in its boot script, so both pick the same catalog.
+// No imports: vite-plugin-locale-preload.ts ships matchLocaleTag's source in its boot script.
 
 export const LOCALES = {
   en: { label: "English", nativeLabel: "English" },
@@ -38,8 +37,7 @@ export const LOCALES = {
   nl: { label: "Dutch", nativeLabel: "Nederlands" },
 } as const;
 
-/** The supported locale for one browser language tag, or null. Must not reference anything
- * outside its own body: the boot script runs a copy of its source. */
+/** Must not reference anything outside its own body: the boot script runs a copy. */
 export function matchLocaleTag(
   tag: string,
   locales: readonly string[],

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The first render waits for a non-English catalog, whose import() starts only once the whole
-// entry has loaded, so preload it before the entry. A file, not inline: script-src is 'self'.
+// Preload the non-English catalog before the entry (a file, not inline: script-src is 'self').
+// A wrong or failed hint costs one wasted fetch: the app still imports the same URL.
 
 import { createHash } from "node:crypto";
 import type { Plugin } from "vite";
@@ -40,7 +40,8 @@ function staticClosure(
   return order;
 }
 
-/** `files` maps each lazily loaded locale to its catalog chunk first, then that chunk's imports. */
+// Ships matchLocaleTag's own source so the boot script and app cannot drift. crossOrigin ""
+// matches Vite's own modulepreload credentials mode.
 export function localePreloadScript(files: Record<string, string[]>): string {
   return `(function () {
   try {
