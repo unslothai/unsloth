@@ -1095,9 +1095,11 @@ class GgmlSttSidecar:
         language: Optional[str] = None,
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
+        *,
+        timestamps: bool = False,
     ) -> dict:
         """Accepts any container PyAV decodes, under the same validation and caps as the
-        Transformers sidecar."""
+        Transformers sidecar; ``timestamps`` adds whisper.cpp's segments."""
         self._raise_if_update_in_progress()
         ensure_engine_available()
         model_id = resolve_ggml_model_id(model)
@@ -1121,7 +1123,7 @@ class GgmlSttSidecar:
                     self.load(model_id)
                 else:
                     self.load(model_id, request_cancel_event = cancel_event)
-                text = self._post_inference(wav_bytes, lang, fast, cancel_event)
+                payload = self._post_inference(wav_bytes, lang, fast, cancel_event, timestamps)
                 if cancel_event is not None and cancel_event.is_set():
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
             except Exception:
@@ -1131,12 +1133,17 @@ class GgmlSttSidecar:
             finally:
                 self._schedule_idle_unload_locked()
         duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
-        return {
-            "text": text,
+        result = {
+            "text": _one_line(payload["text"]),
             "language": lang,
             "duration": duration,
             "model": model_id,
         }
+        if timestamps:
+            segments = _segments(payload.get("segments"))
+            if segments:
+                result["segments"] = segments
+        return result
 
     def cancel_transcription(self, cancel_event: threading.Event) -> bool:
         already_cancelled = cancel_event.is_set()
@@ -1149,15 +1156,19 @@ class GgmlSttSidecar:
         lang: Optional[str],
         fast: bool,
         cancel_event: Optional[threading.Event] = None,
-    ) -> str:
+        timestamps: bool = False,
+    ) -> dict:
         boundary = uuid.uuid4().hex
         fields = {
             "temperature": "0.0",
-            "response_format": "json",
+            "response_format": "verbose_json" if timestamps else "json",
             # Match the Transformers sidecar: 5-way beam search, greedy for fast.
             "beam_size": "1" if fast else "5",
             "language": lang or "auto",
         }
+        if timestamps:
+            # Spares a second language detection pass over the audio.
+            fields["no_language_probabilities"] = "true"
         parts: list[bytes] = []
         for name, value in fields.items():
             parts.append(
@@ -1219,8 +1230,27 @@ class GgmlSttSidecar:
             raise SttAudioDecodeError("Could not decode the audio.")
         # It served a transcription, so whatever failed earlier was transient.
         clear_runtime_inference_failure()
-        # whisper.cpp joins segments with newlines; dictation wants one line.
-        return " ".join(part.strip() for part in text.splitlines() if part.strip()).strip()
+        return payload
+
+
+def _one_line(text: str) -> str:
+    # whisper.cpp joins segments with newlines; dictation wants one line.
+    return " ".join(part.strip() for part in text.splitlines() if part.strip()).strip()
+
+
+def _segments(raw) -> list[dict]:
+    """whisper.cpp's verbose_json segments as ``{start, end, text}`` in seconds."""
+    segments = []
+    for item in raw if isinstance(raw, list) else ():
+        if not isinstance(item, dict):
+            continue
+        start, end, text = item.get("start"), item.get("end"), item.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (start, end)):
+            continue
+        segments.append({"start": float(start), "end": float(end), "text": text.strip()})
+    return segments
 
 
 _sidecar: Optional[GgmlSttSidecar] = None

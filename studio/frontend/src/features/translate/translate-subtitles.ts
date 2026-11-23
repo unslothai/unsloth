@@ -207,9 +207,9 @@ export async function translateSubtitles(
   return rebuildSubtitles(doc, texts);
 }
 
-const EXTENSION = /\.(srt|vtt)$/i;
+const EXTENSION = /\.(srt|vtt|mp4|m4v|webm|mkv|mov)$/i;
 
-/** `movie.srt` translated into French saves as `movie.fr.srt`. */
+/** `movie.srt` or `movie.mp4` translated into French saves as `movie.fr.srt`. */
 export function subtitleFileName(
   sourceName: string | null,
   target: string,
@@ -217,4 +217,24 @@ export function subtitleFileName(
 ): string {
   const base = sourceName?.replace(EXTENSION, "").trim() || "subtitles";
   return `${base}.${target}.${format}`;
+}
+
+function srtTime(seconds: number): string {
+  const ms = Math.round(Math.max(0, seconds) * 1000);
+  const pad = (value: number, width = 2) => String(value).padStart(width, "0");
+  return `${pad(Math.floor(ms / 3_600_000))}:${pad(Math.floor(ms / 60_000) % 60)}:${pad(Math.floor(ms / 1000) % 60)},${pad(ms % 1000, 3)}`;
+}
+
+/** An SRT file of timed transcript segments, or null when none has text. */
+export function segmentsToSrt(
+  segments: ReadonlyArray<{ start: number; end: number; text: string }>,
+): string | null {
+  const blocks = segments
+    .map((segment) => ({ ...segment, text: cueText(segment.text, "\n") }))
+    .filter((segment) => segment.text)
+    .map(
+      (segment, index) =>
+        `${index + 1}\n${srtTime(segment.start)} --> ${srtTime(Math.max(segment.start, segment.end))}\n${segment.text}`,
+    );
+  return blocks.length > 0 ? `${blocks.join("\n\n")}\n` : null;
 }

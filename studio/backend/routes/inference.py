@@ -27279,6 +27279,8 @@ async def _transcribe_audio_result(
     )
     if serving_engine == "mtmd":
         transcribe = functools.partial(transcribe, context_length = context_length, prompt = prompt)
+    elif serving_engine == "gguf" and timestamps:
+        transcribe = functools.partial(transcribe, timestamps = True)
     cancel_event = threading.Event() if request is not None or on_progress is not None else None
     disconnect_watcher = (
         asyncio.create_task(_await_stt_disconnect_then_cancel(request, sidecar, cancel_event))
@@ -27447,8 +27449,10 @@ async def transcribe_audio_raw(
     stream: bool = False,
     title: str = Query("Recording", max_length = 255),
     context_length: Annotated[int, BeforeValidator(_parse_stt_context_length_query)] = 0,
+    timestamps: bool = False,
 ):
-    """Transcribe a raw audio body without base64 or JSON conversion overhead."""
+    """Transcribe a raw audio body without base64 or JSON conversion overhead; ``timestamps``
+    adds whisper.cpp's segments (audio.cpp models that always time their text return them anyway)."""
     chunks: list[bytes] = []
     size = 0
     async for chunk in request.stream():
@@ -27487,6 +27491,7 @@ async def transcribe_audio_raw(
             request,
             device,
             context_length = context_length,
+            timestamps = timestamps,
         )
     )
 
