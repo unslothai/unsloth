@@ -40116,7 +40116,6 @@ class LlamaCppBackend:
             )
 
         def _prefetch_fit_count(round_conversation, round_limit):
-            """Warm the count memo only; the fit still makes its own call."""
             if (
                 context_overflow != "truncate_oldest"
                 or not self._effective_context_length
@@ -40153,7 +40152,7 @@ class LlamaCppBackend:
                     _fit_count_prefetch = _prefetch_fit_count(
                         conversation, max_tool_iterations + _extra + _continuation_credits
                     )
-                except Exception:  # a warm-up must never break a run in progress
+                except Exception:
                     logger.debug("fit count prefetch failed to start", exc_info = True)
                 try:
                     on_conversation_grew(conversation)
