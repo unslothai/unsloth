@@ -98,6 +98,37 @@ def test_a_cut_thought_is_labelled_with_its_closing_marker(sandbox, monkeypatch)
     assert "Step 12 needs the ledger first\n</think>" in text
 
 
+def test_tool_calls_and_their_results_are_in_the_transcript(sandbox):
+    branch = _branch() + [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {
+                        "name": "python",
+                        "arguments": '{"code": "open(\'report.md\').read()"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": "python",
+            "content": "Revenue grew 12%.",
+        },
+    ]
+
+    compaction_transcript.write(THREAD, branch)
+
+    text = (sandbox / f"transcript-{THREAD}.md").read_text()
+    assert "## assistant called python" in text and "report.md" in text
+    assert "## tool result (python)" in text and "Revenue grew 12%." in text
+
+
 # ── Wired into every compacted request ──
 
 

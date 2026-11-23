@@ -485,3 +485,16 @@ def test_the_route_reparses_and_archives_off_the_event_loop():
         for guard in guards
         for stmt in guard.body
     )
+
+
+def test_expired_cuts_do_not_pile_up(persisted, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(cut_thought.time, "monotonic", lambda: clock[0])
+    cut_thought.mark("thread-a", "a thought")
+    cut_thought.take("thread-a")
+    cut_thought.mark("thread-b", "an abandoned thought")
+
+    clock[0] += cut_thought._TTL_S + 1
+    cut_thought.mark("thread-c", "a new thought")
+
+    assert set(cut_thought._pending) == {"thread-c"} and not cut_thought._taken

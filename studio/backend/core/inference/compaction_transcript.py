@@ -9,6 +9,8 @@ request, so it always holds the whole branch the client sent: the turns the rese
 
 from __future__ import annotations
 
+import json
+
 import os
 import re
 from typing import Optional
@@ -51,8 +53,23 @@ def write(thread_id: Optional[str], messages: list[dict]) -> Optional[str]:
                 lines += _cut_section(role, cut)
             elif reasoning:
                 lines += [f"## {role} (thinking)", "", reasoning, ""]
+            if role == "tool":
+                name = message.get("name") or message.get("tool_call_id") or ""
+                lines += [f"## tool result{f' ({name})' if name else ''}", "", text, ""]
+                continue
             if text:
                 lines += [f"## {role}", "", text, ""]
+            for call in message.get("tool_calls") or ():
+                function = (call or {}).get("function") or {}
+                arguments = function.get("arguments")
+                if not isinstance(arguments, str):
+                    arguments = json.dumps(arguments, ensure_ascii = False)
+                lines += [
+                    f"## {role} called {function.get('name') or 'a tool'}",
+                    "",
+                    arguments or "",
+                    "",
+                ]
         if cut is not None and not shown:
             lines += _cut_section("assistant", cut)
         with open(path, "w", encoding = "utf-8") as handle:

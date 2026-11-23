@@ -56,8 +56,17 @@ def mark(
     if not thread_id or not thought.strip() or not _persisted(thread_id):
         return False
     with _lock:
+        _prune()
         _pending[thread_id] = (time.monotonic(), Cut(thought.strip(), close_marker))
     return True
+
+
+def _prune() -> None:
+    """Drops expired entries; held under _lock. Without it every thread that ever cut keeps its thought."""
+    now = time.monotonic()
+    for cache in (_pending, _taken):
+        for key in [key for key, (at, _) in cache.items() if now - at > _TTL_S]:
+            del cache[key]
 
 
 def take(thread_id: Optional[str]) -> Optional[Cut]:
@@ -68,6 +77,7 @@ def take(thread_id: Optional[str]) -> Optional[Cut]:
         entry = _pending.pop(thread_id, None)
         if entry is None or time.monotonic() - entry[0] > _TTL_S:
             return None
+        _prune()
         _taken[thread_id] = (time.monotonic(), entry[1])
     return entry[1]
 
