@@ -132,3 +132,22 @@ def test_plain_head_and_merged_adapter_stay_fused(monkeypatch, module_name):
     logits = stub.lm_head(hidden.detach())[:, :-1]
     expected = F.cross_entropy(logits.reshape(-1, VOCAB).double(), labels[:, 1:].reshape(-1))
     assert output.loss.item() == pytest.approx(expected.item(), rel = 1e-4)
+
+
+@pytest.mark.parametrize("module_name", ["llama", "mistral"])
+def test_modules_to_save_head_stays_fused_and_trains_its_copy(monkeypatch, module_name):
+    # modules_to_save resolves .weight to the trainable copy, so the fused CE is already exact there.
+    from peft.utils.other import ModulesToSaveWrapper
+
+    stub, hidden = _stub("plain")
+    stub.lm_head.weight.requires_grad_(False)
+    stub.lm_head = ModulesToSaveWrapper(stub.lm_head, "default")
+    stub.lm_head.modules_to_save["default"].weight.requires_grad_(True)
+    output, labels = _loss(monkeypatch, module_name, stub)
+    assert output.logits is EMPTY_LOGITS
+    logits = stub.lm_head(hidden.detach())[:, :-1]
+    expected = F.cross_entropy(logits.reshape(-1, VOCAB).double(), labels[:, 1:].reshape(-1))
+    assert output.loss.item() == pytest.approx(expected.item(), rel = 1e-4)
+    output.loss.backward()
+    grad = stub.lm_head.modules_to_save["default"].weight.grad
+    assert grad is not None and grad.abs().sum() > 0

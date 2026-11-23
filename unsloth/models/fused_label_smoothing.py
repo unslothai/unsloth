@@ -14,6 +14,11 @@ import weakref
 
 import torch
 
+try:
+    from peft.tuners.tuners_utils import BaseTunerLayer as _BaseTunerLayer
+except Exception:
+    _BaseTunerLayer = None
+
 __all__ = ["fused_label_smoothing_compute_loss"]
 
 _OFF = os.environ.get("UNSLOTH_FUSED_LABEL_SMOOTHING", "1") == "0"
@@ -77,15 +82,14 @@ def _output_head(model):
 def output_head_not_fusable(head):
     # The fused CE projects with lm_head.weight (llama.py, the compiled forwards) and llama.py passes no bias, so an
     # active unmerged adapter on the head (PEFT LoRA layer: .weight is the base weight) would get no gradient and a
-    # head bias would leave the loss. Calling lm_head(hidden) keeps both.
+    # head bias would leave the loss. Calling lm_head(hidden) keeps both. Runs every labelled forward: a plain
+    # nn.Linear head (no children, so no tuner layer) returns before the module walk.
     if getattr(head, "bias", None) is not None:
         return True
-    try:
-        from peft.tuners.tuners_utils import BaseTunerLayer
-    except Exception:
+    if not head._modules or _BaseTunerLayer is None:
         return False
     for module in head.modules():
-        if not isinstance(module, BaseTunerLayer) or getattr(module, "disable_adapters", False):
+        if not isinstance(module, _BaseTunerLayer) or getattr(module, "disable_adapters", False):
             continue
         merged = set(getattr(module, "merged_adapters", None) or ())
         held = set()
