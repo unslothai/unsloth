@@ -553,3 +553,84 @@ def test_unsupported_lora_exports_still_refuse(tmp_path):
     model = _export_setup(tmp_path / "b", modules_to_save = ["lm_head"])
     with pytest.raises(NotImplementedError, match = "modules_to_save"):
         _inkling2().save_inkling2_merged_16bit(model, None, str(tmp_path / "merged_b"))
+
+
+def test_trainable_token_rows_are_merged(tmp_path):
+    # LoRA `trainable_token_indices` keeps the trained rows in PEFT's TrainableTokensLayer, not in the embedding the
+    # writer rereads; the export must carry them (merge_and_unload replaces those rows) instead of the originals.
+    import copy
+
+    from transformers import AutoModelForImageTextToText
+
+    rows = [3, 7, 11, 200]
+    model = _export_setup(tmp_path, trainable_token_indices = rows)
+    torch.manual_seed(3)
+    for name, param in model.named_parameters():
+        if "trainable_tokens_delta" in name or "lora_" in name:
+            param.data.normal_(0, 0.1)
+    original = (
+        model.get_base_model()
+        .get_input_embeddings()
+        .token_adapter.base_layer.weight.detach()
+        .clone()
+    )
+    reference = copy.deepcopy(model).merge_and_unload().get_input_embeddings().weight.detach()
+    _inkling2().save_inkling2_merged_16bit(model, None, str(tmp_path / "merged"))
+    got = (
+        AutoModelForImageTextToText.from_pretrained(tmp_path / "merged", dtype = torch.float32)
+        .get_input_embeddings()
+        .weight.detach()
+    )
+    assert (reference[rows] - original[rows]).abs().max() > 0.01
+    assert torch.equal(got, reference.to(torch.bfloat16).float())
+    others = [i for i in range(got.shape[0]) if i not in rows]
+    assert torch.equal(got[others], original[others])
+
+
+def test_float32_export_writes_float32_merge(tmp_path):
+    # save_pretrained_merged(dtype = torch.float32) documents float32 safetensors with the merged delta unrounded;
+    # the Inkling 2 writer must honour it (default stays bf16) and refuse dtypes it does not write.
+    import copy
+
+    from transformers import AutoModelForImageTextToText
+
+    model = _export_setup(
+        tmp_path, target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"]
+    )
+    torch.manual_seed(4)
+    for name, param in model.named_parameters():
+        if "lora_" in name:
+            param.data.normal_(0, 0.1)
+    reference = dict(copy.deepcopy(model).merge_and_unload().named_parameters())
+    ink = _inkling2()
+    ink.save_inkling2_merged_16bit(model, None, str(tmp_path / "fp32"), dtype = torch.float32)
+    ink.save_inkling2_merged_16bit(model, None, str(tmp_path / "default"))
+    fp32, default = _checkpoint(tmp_path / "fp32"), _checkpoint(tmp_path / "default")
+    assert fp32.keys() == default.keys()
+    assert all(v.dtype == torch.float32 for v in fp32.values() if v.is_floating_point())
+    assert all(v.dtype == torch.bfloat16 for v in default.values() if v.is_floating_point())
+    merged = dict(
+        AutoModelForImageTextToText.from_pretrained(
+            tmp_path / "fp32", dtype = torch.float32
+        ).named_parameters()
+    )
+    assert merged.keys() == reference.keys()
+    worst = max((merged[k] - reference[k].detach()).abs().max().item() for k in reference)
+    rounding = max(
+        (reference[k].detach().to(torch.bfloat16).float() - reference[k].detach())
+        .abs()
+        .max()
+        .item()
+        for k in reference
+    )
+    # Rounding the merge to bf16 (the old behaviour) would cost `rounding`; float32 matches the fp32 merge.
+    assert rounding > 1e-4 and worst < 1e-6, (worst, rounding)
+    with pytest.raises(NotImplementedError, match = "dtype"):
+        ink.save_inkling2_merged_16bit(model, None, str(tmp_path / "f16"), dtype = torch.float16)
+
+
+def test_save_pretrained_merged_forwards_dtype_to_inkling2():
+    source = (_ROOT / "unsloth" / "save.py").read_text()
+    call = source[source.index("        save_inkling2_merged_16bit(\n") :]
+    call = call[: call.index(")")]
+    assert "dtype = dtype" in call

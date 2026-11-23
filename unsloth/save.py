@@ -7566,6 +7566,7 @@ def unsloth_generic_save(
             push_to_hub = push_to_hub,
             token = token,
             private = private,
+            dtype = dtype,
         )
     else:
         raise_if_merging_mistral_format_view(model, save_method)

@@ -231,6 +231,36 @@ def _inkling2_trained_biases(model):
     return biases
 
 
+def _inkling2_trainable_tokens(model):
+    """{transformers parameter name: [(row indices, live rows), ...]} for LoRA ``trainable_token_indices``.
+
+    PEFT keeps those rows in a TrainableTokensLayer and merges them like ``get_merged_weights``: each active adapter's
+    ``trainable_tokens_delta`` replaces its rows (``index_copy``), in adapter order. A tied layer shares its partner's
+    rows and tensor, so only the owning layer is written."""
+    try:
+        from peft.tuners.trainable_tokens import TrainableTokensLayer
+    except ImportError:
+        return {}
+    import torch
+
+    tokens = {}
+    for name, module in model.named_modules():
+        if not isinstance(module, TrainableTokensLayer) or module.tied_adapter is not None:
+            continue
+        adapters = [a for a in module.active_adapters if a in module.trainable_tokens_delta]
+        if not adapters:
+            continue
+        key = _peft_name(re.sub(r"\.token_adapter$", "", name)) + ".weight"
+        tokens[key] = [
+            (
+                torch.tensor(module.token_indices[a], dtype = torch.long),
+                module.trainable_tokens_delta[a].detach().float().cpu(),
+            )
+            for a in adapters
+        ]
+    return tokens
+
+
 def save_inkling2_merged_16bit(
     model,
     tokenizer,
@@ -238,10 +268,14 @@ def save_inkling2_merged_16bit(
     push_to_hub = False,
     token = None,
     private = None,
+    dtype = None,
 ):
     """Merge LoRA into Inkling 2 and write the checkpoint in its original layout (``model.llm.*``, ``attn.wq_du``,
     ``controllers.*``) with the MoE experts dequantized to bfloat16, which transformers, vLLM's loader and llama.cpp's
-    converter all read. Every other tensor is copied unchanged; the LoRA deltas are added in float32."""
+    converter all read. Every other tensor is copied unchanged; the LoRA deltas are added in float32.
+
+    ``dtype = torch.float32`` (or ``"float32"``) instead writes every floating tensor, experts included, in float32
+    without rounding the merged deltas; any other non-None ``dtype`` is refused."""
     import gc
     import json
     import os
@@ -258,6 +292,23 @@ def save_inkling2_merged_16bit(
         WeightRenaming,
         rename_source_key,
     )
+
+    if dtype is None:
+        float32 = False
+    elif (
+        isinstance(dtype, str)
+        and dtype.strip().lower().removeprefix("torch.") in ("float32", "fp32", "f32")
+    ) or dtype is torch.float32:
+        float32 = True
+    else:
+        raise NotImplementedError(
+            f"Unsloth: merged Inkling 2 exports support `dtype = None` (checkpoint dtype, experts in bfloat16) "
+            f"or `torch.float32`, not {dtype!r}."
+        )
+    expert_dtype = torch.float32 if float32 else torch.bfloat16
+
+    def out_dtype(W):
+        return torch.float32 if float32 and W.is_floating_point() else W.dtype
 
     base = model.get_base_model() if hasattr(model, "get_base_model") else model
     conversions = getattr(base, "_weight_conversions", None)
@@ -289,6 +340,13 @@ def save_inkling2_merged_16bit(
 
     deltas = _inkling2_lora_deltas(model)
     biases = _inkling2_trained_biases(model)
+    tokens = _inkling2_trainable_tokens(model)
+    both = sorted(set(tokens) & set(deltas))
+    if both:
+        raise NotImplementedError(
+            f"Unsloth: merged Inkling 2 exports do not support LoRA and `trainable_token_indices` on the same "
+            f"weight ({both[0]}); save the LoRA adapter."
+        )
     used = set()
     print(f"Unsloth: Merging {len(deltas)} LoRA weights into Inkling 2 ({source}).")
 
@@ -319,7 +377,7 @@ def save_inkling2_merged_16bit(
             for p in patterns
             if key + p[len("weight") :] in weight_map
         }
-        W = dequant.convert(found, patterns, ["out"], model = None)["out"].to(torch.bfloat16)
+        W = dequant.convert(found, patterns, ["out"], model = None)["out"].to(expert_dtype)
         delta = deltas.get(name)
         if delta is None:
             return W
@@ -340,7 +398,7 @@ def save_inkling2_merged_16bit(
                 raise RuntimeError(
                     f"Unsloth: LoRA delta {tuple(d.shape)} does not fit {name} {tuple(block.shape)}."
                 )
-            block = (block.float() + d).to(torch.bfloat16)
+            block = (block.float() + d).to(expert_dtype)
             if interleaved:
                 block = Interleave(dim = 1, inverse = True).convert({"x": block}, ["x"], ["x"])["x"]
             W[experts] = block
@@ -385,7 +443,7 @@ def save_inkling2_merged_16bit(
                         raise RuntimeError(
                             f"Unsloth: trained bias {tuple(live.shape)} does not fit {name} {tuple(W.shape)}."
                         )
-                    W = live.to(W.dtype)
+                    W = live.to(out_dtype(W))
                     used.add(name)
                 delta = deltas.get(name)
                 if delta is not None:
@@ -394,8 +452,18 @@ def save_inkling2_merged_16bit(
                         raise RuntimeError(
                             f"Unsloth: LoRA delta {tuple(d.shape)} does not fit {name} {tuple(W.shape)}."
                         )
-                    W = (W.float() + d).to(W.dtype)
+                    W = (W.float() + d).to(out_dtype(W))
                     used.add(name)
+                if name in tokens:
+                    W = W.to(out_dtype(W))
+                    for index, rows in tokens[name]:
+                        if rows.shape[1:] != W.shape[1:] or int(index.max()) >= W.shape[0]:
+                            raise RuntimeError(
+                                f"Unsloth: trainable tokens {tuple(rows.shape)} do not fit {name} {tuple(W.shape)}."
+                            )
+                        W = W.index_copy(0, index, rows.to(W.dtype))
+                    used.add(name)
+                W = W.to(out_dtype(W))
             current[key] = W.contiguous()
             current_size += W.numel() * W.element_size()
             if current_size >= shard_limit:
@@ -403,7 +471,7 @@ def save_inkling2_merged_16bit(
     flush()
     handles.clear()
 
-    missing = sorted((set(deltas) | set(biases)) - used)
+    missing = sorted((set(deltas) | set(biases) | set(tokens)) - used)
     if missing:
         raise RuntimeError(
             f"Unsloth: {len(missing)} trained weights have no tensor in the Inkling 2 checkpoint, e.g. {missing[:3]}."
@@ -422,6 +490,10 @@ def save_inkling2_merged_16bit(
         config = json.load(f)
     for cfg in (config, config.get("text_config") or {}):
         cfg.pop("quantization_config", None)
+        if float32:
+            for field in ("dtype", "torch_dtype"):
+                if field in cfg:
+                    cfg[field] = "float32"
     with open(os.path.join(save_directory, "config.json"), "w") as f:
         json.dump(config, f, indent = 2)
     for filename in os.listdir(source):
@@ -432,7 +504,7 @@ def save_inkling2_merged_16bit(
     if tokenizer is not None:
         tokenizer.save_pretrained(save_directory)
     print(
-        f"Unsloth: Merged {len(used)} LoRA weights; saved Inkling 2 in 16-bit to '{save_directory}'."
+        f"Unsloth: Merged {len(used)} LoRA weights; saved Inkling 2 in {'float32' if float32 else '16-bit'} to '{save_directory}'."
     )
 
     if push_to_hub:
