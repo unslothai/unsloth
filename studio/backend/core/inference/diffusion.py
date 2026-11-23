@@ -12229,8 +12229,7 @@ class DiffusionBackend:
                             speed_mode = effective_speed,
                             logger = logger,
                         )
-                    # Placed, so the execution device is final: probe the FLUX.2 GPU reference preprocess now (Triton
-                    # compile + Pillow check), not inside the first edit request.
+                    # Device is final once placed: probe the GPU ref preprocess here, not in the first request.
                     try:
                         from .diffusion_ref_preprocess import warm as warm_ref_preprocess
                         warm_ref_preprocess(pipe, logger = logger)

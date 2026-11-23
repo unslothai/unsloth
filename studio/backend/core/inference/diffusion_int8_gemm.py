@@ -926,9 +926,8 @@ _RACE_SOURCES = {
     # the sm_8x prefetch fix's version: bumped with any change to what it does to the Triton kernel's codegen
     "diffusion_triton_prefetch": ("_TRITON_PREFETCH_SALT",),
 }
-# Functions keyed code calls that are deliberately not in the key (the call-closure test fails on any other):
-# the key builders themselves, the library loader (the loaded file is hashed by its bytes) and the tile probe's own
-# persistence, which is keyed by its whole-file fingerprint (diffusion_probe_cache).
+# Called by keyed code but deliberately unkeyed (call-closure test fails on any other): key builders, the library
+# loader (file hashed by bytes) and tile-probe persistence (keyed by diffusion_probe_cache's file fingerprint).
 _RACE_UNKEYED = {
     "diffusion_int8_gemm": ("_code", "_sources_digest", "_cut_cache_key", "_today_tiles"),
     "diffusion_int8_cutlass": (
