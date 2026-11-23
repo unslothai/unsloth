@@ -1926,21 +1926,38 @@ def _is_hf_checkpoint_wrapper(fn):
 _CHECKPOINT_CACHE_KWARGS = ("past_key_values", "cache", "layer_past")
 
 
-def _checkpointing(forward):
+def _checkpoint_contract(wrapper):
+    """What the installed transformers wrapper does, read off its code: whether it checkpoints only under grad
+    (5.24 added `torch.is_grad_enabled()`; 5.23 checkpoints a training-mode layer under no_grad too, cache
+    cleared) and which cache keywords it clears. Unknown code keeps the 5.24 rule and clears every name."""
+    code = getattr(wrapper, "__code__", None)
+    if code is None:
+        return True, _CHECKPOINT_CACHE_KWARGS
+    names = tuple(n for n in _CHECKPOINT_CACHE_KWARGS if n in code.co_consts)
+    return "is_grad_enabled" in code.co_names, names or _CHECKPOINT_CACHE_KWARGS
+
+
+def _checkpointing(forward, contract = None):
     """The block's forward hides transformers' checkpoint wrapper, so layers ran without checkpointing."""
+    needs_grad, cache_kwargs = contract or (True, _CHECKPOINT_CACHE_KWARGS)
 
     @functools.wraps(forward)
     def forward_with_checkpointing(self, *args, **kwargs):
         outermost = type(self).forward is forward_with_checkpointing or (
             getattr(self.__dict__.get("forward"), "__func__", None) is forward_with_checkpointing
         )
-        # As transformers >= 5.24: without grad there is no backward to replay the layer, so it runs as is,
-        # cache included (generating from a model left in training mode).
-        if self.gradient_checkpointing and self.training and torch.is_grad_enabled() and outermost:
+        # transformers >= 5.24: without grad there is no backward to replay the layer, so it runs as is, cache
+        # included (generating from a model left in training mode). 5.23 checkpoints it with the cache cleared.
+        if (
+            self.gradient_checkpointing
+            and self.training
+            and (not needs_grad or torch.is_grad_enabled())
+            and outermost
+        ):
             if kwargs.get("use_cache"):
                 kwargs["use_cache"] = False
             if not getattr(self, "_can_checkpoint_with_cache", False):
-                for name in _CHECKPOINT_CACHE_KWARGS:
+                for name in cache_kwargs:
                     if kwargs.get(name) is not None:
                         kwargs[name] = None
             return self._gradient_checkpointing_func(
@@ -1979,8 +1996,10 @@ def _wrap(
 ):
     original = getattr(cls.forward, "_unsloth_block_original", cls.forward)
     checkpoint_outside = getattr(cls.forward, "_unsloth_block_checkpoint_outside", False)
+    contract = getattr(cls.forward, "_unsloth_block_checkpoint_contract", None)
     if _is_hf_checkpoint_wrapper(original):
         # Compile the layer's own forward; checkpointing goes back outside the block (below).
+        contract = _checkpoint_contract(original)
         original, checkpoint_outside = original.__wrapped__, True
     # Host-read packed lengths / PrefixGrouper segments stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
@@ -2306,9 +2325,10 @@ def _wrap(
     forward._unsloth_block_original = original
     forward._unsloth_block_state = state
     forward._unsloth_block_checkpoint_outside = checkpoint_outside
+    forward._unsloth_block_checkpoint_contract = contract
     setattr(forward, _MARK, True)
     # A new name: `forward` is also the closure the grad-mode trial above calls (the shim would recurse).
-    installed = _checkpointing(forward) if checkpoint_outside else forward
+    installed = _checkpointing(forward, contract) if checkpoint_outside else forward
     if install:
         cls.forward = installed
     return installed

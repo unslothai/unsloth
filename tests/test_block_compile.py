@@ -2910,6 +2910,63 @@ def test_block_checkpoint_shim_keeps_the_5_24_cache_contract(monkeypatch):
     )  # cache calls keep the stock forward, as `past_key_values` does
 
 
+def _like_transformers_5_23_cache(forward):
+    """transformers 5.23: checkpoint a training-mode layer even without grad, clearing `past_key_values`."""
+
+    @functools.wraps(forward)
+    def forward_with_checkpointing(self, *args, **kwargs):
+        if (
+            self.gradient_checkpointing
+            and self.training
+            and type(self).forward is forward_with_checkpointing
+        ):
+            kwargs["use_cache"] = False
+            if kwargs.get("past_key_values") is not None:
+                kwargs["past_key_values"] = None
+            return self._gradient_checkpointing_func(
+                functools.partial(forward, self, **kwargs), *args
+            )
+        return forward(self, *args, **kwargs)
+
+    return forward_with_checkpointing
+
+
+def test_block_checkpoint_shim_keeps_the_5_23_cache_contract(monkeypatch):
+    # The 5.24 no-grad rule is read off the installed wrapper: on 5.23 a training-mode layer under no_grad is
+    # still checkpointed with its cache cleared, so the shim must not write a cache stock 5.23 drops.
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+
+    class PastDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            past_key_values = None,
+            use_cache = False,
+        ):
+            if past_key_values is not None:
+                past_key_values.append(hidden_states.shape[1])
+            return self.proj(hidden_states) + hidden_states
+
+    stock_cls = type("StockLayer", (PastDecoderLayer,), {})
+    stock_cls.forward = _like_transformers_5_23_cache(PastDecoderLayer.forward)
+    PastDecoderLayer.forward = _like_transformers_5_23_cache(PastDecoderLayer.forward)
+    M._wrap(PastDecoderLayer, {})
+    x = torch.randn(1, 4, 8)
+    for cls in (stock_cls, PastDecoderLayer):
+        layer, calls = _checkpointed_layer(cls)
+        layer.train()
+        cache = []
+        with torch.no_grad():
+            out = layer(x, past_key_values = cache, use_cache = True)
+        torch.testing.assert_close(out, layer.proj(x) + x)
+        assert (calls, cache) == ([1], []), cls.__name__
+
+
 def test_block_rebinds_hooked_layers_of_a_second_model(monkeypatch):
     # Two models of one layer class, both dispatched (accelerate hooks bound) before either was patched: the
     # class was wrapped for the first, so the second's rebind was skipped and it ran with no checkpointing.
