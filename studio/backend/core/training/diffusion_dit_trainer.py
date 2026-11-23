@@ -495,7 +495,7 @@ def _apply_int8_w8a8(
     """Frozen W8A8 int8 base after add_adapter, streamed onto ``device``; False (caller keeps torchao) on failure."""
     import torch
 
-    from core.training.diffusion_frozen_int8 import convert_frozen_int8
+    from core.training.diffusion_frozen_int8 import FrozenInt8Linear, convert_frozen_int8
 
     try:
         dev = torch.device(device) if device is not None else next(transformer.parameters()).device
@@ -518,6 +518,13 @@ def _apply_int8_w8a8(
         )
         return True
     except Exception as exc:  # noqa: BLE001 -- prototype: fall back to the torchao weight-only base
+        if any(isinstance(m, FrozenInt8Linear) for m in transformer.modules()):
+            # Failed partway (a device move OOMs between layers): torchao would quantize only the rest, training a
+            # mixed base that compile, the caches and the checkpoint all treat as weight-only int8.
+            raise ValueError(
+                f"int8 W8A8 failed after converting part of the base ({exc}); "
+                "use base_precision='nf4' or 'auto'."
+            ) from exc
         _emit(on_event, "warning", message = f"int8 W8A8 unavailable, using weight-only int8: {exc}")
         return False
 
