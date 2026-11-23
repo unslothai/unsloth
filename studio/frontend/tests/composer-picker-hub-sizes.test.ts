@@ -139,7 +139,11 @@ test("a Chat only host lists cached checkpoints only where it serves MLX", () =>
   const loop = picker.slice(picker.indexOf("for (const repo of inventory.cachedModels)"));
   assert.match(
     loop.slice(0, loop.indexOf("device.push")),
-    /if \(!audio && chatOnlyKnown && !servesMlx\) \{\s*continue;/,
+    /if \(!audio && hidesCheckpoints\) \{\s*continue;/,
+  );
+  assert.match(
+    picker,
+    /const hidesCheckpoints = usePlatformStore\(\s*\(s\) => chatOnlyKnown && !servesMlx && !s\.isCpuTrainingHost\(\),/,
   );
 });
 
@@ -150,6 +154,6 @@ test("a Chat only host lists local checkpoints beyond GGUF only where it serves 
   const loop = picker.slice(picker.indexOf("for (const lora of loraModels ?? [])"));
   assert.match(
     loop.slice(0, loop.indexOf("device.push")),
-    /lora\.source === "local" &&\s*!lora\.audioType &&\s*chatOnlyKnown &&\s*format !== "gguf" &&\s*!servesMlx\s*\)/,
+    /lora\.source === "local" &&\s*!lora\.audioType &&\s*hidesCheckpoints &&\s*format !== "gguf"\s*\)/,
   );
 });

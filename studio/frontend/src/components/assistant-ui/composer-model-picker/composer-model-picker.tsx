@@ -1944,6 +1944,10 @@ export function ComposerModelPicker({
   const servesMlx = usePlatformStore((s) =>
     isServedByMlx(false, s.deviceType, s.chatOnlyReason, s.mlxInference),
   );
+  // A CPU training host has torch, so it loads checkpoints without MLX.
+  const hidesCheckpoints = usePlatformStore(
+    (s) => chatOnlyKnown && !servesMlx && !s.isCpuTrainingHost(),
+  );
   const recommended = useMemo<ModelOption[]>(() => {
     // The header picker's runtime gate; vLLM loads compressed-tensors checkpoints the gate refuses.
     const supported = (r: (typeof hubResults)[number]) =>
@@ -2101,7 +2105,7 @@ export function ComposerModelPicker({
       ) {
         continue;
       }
-      if (!audio && chatOnlyKnown && !servesMlx) {
+      if (!audio && hidesCheckpoints) {
         continue;
       }
       device.push({
@@ -2141,9 +2145,8 @@ export function ComposerModelPicker({
       if (
         lora.source === "local" &&
         !lora.audioType &&
-        chatOnlyKnown &&
-        format !== "gguf" &&
-        !servesMlx
+        hidesCheckpoints &&
+        format !== "gguf"
       ) {
         continue;
       }
@@ -2274,8 +2277,7 @@ export function ComposerModelPicker({
     externalModels,
     mediaTaskById,
     listsAudio,
-    chatOnlyKnown,
-    servesMlx,
+    hidesCheckpoints,
   ]);
   routeMediaPick.current = (id, meta) => {
     if (!listsAudio) {
