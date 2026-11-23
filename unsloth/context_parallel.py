@@ -2259,10 +2259,17 @@ def _rl_decoder_pre_hook(module, args, kwargs):
 
 
 class _LastHiddenSelection:
-    __slots__ = ("decoder", "truncated")
+    __slots__ = ("decoder", "allowed", "truncated")
 
-    def __init__(self, decoder):
+    def __init__(
+        self,
+        decoder,
+        allowed = True,
+    ):
         self.decoder = decoder
+        # This rank's own verdict. The decoder call still claims the selection when it is False, so every
+        # rank reaches the same vote; the vote then keeps every state on all of them.
+        self.allowed = bool(allowed)
         self.truncated = False
 
 
@@ -2272,12 +2279,13 @@ _LAST_HIDDEN = threading.local()
 
 
 @contextlib.contextmanager
-def last_hidden_state_only(decoder) -> Iterator[_LastHiddenSelection]:
+def last_hidden_state_only(decoder, allowed = True) -> Iterator[_LastHiddenSelection]:
     """For a caller that asks for output_hidden_states only to read the last one (GRPO's hidden-state
     forward): the next call of ``decoder`` on this thread gathers that state alone, not all L + 1 layers
     to full length. ``decoder = None`` selects nothing (and hides an enclosing selection). The yielded
-    selection's ``truncated`` says whether the decoder did return only the last state."""
-    selection = _LastHiddenSelection(decoder)
+    selection's ``truncated`` says whether the decoder did return only the last state. ``allowed = False``
+    claims the decoder call without truncating: it votes against truncation on every rank."""
+    selection = _LastHiddenSelection(decoder, allowed)
     previous = getattr(_LAST_HIDDEN, "selection", None)
     _LAST_HIDDEN.selection = selection
     try:
@@ -2496,22 +2504,52 @@ def _safe_forward_wrappers() -> frozenset:
     return _SAFE_WRAPPER_CODES
 
 
+def _cp_text_decoder(model):
+    # The one CP-attached text decoder held directly by ``model``, and the attribute names holding it. Module
+    # structure only: attach_rl_hooks runs on every rank, so this is the same on all of them.
+    manager = get_cp_manager()
+    if manager is None or model is None:
+        return None, None
+    decoders = _decoders(model)
+    if len(decoders) != 1 or getattr(decoders[0], "_unsloth_cp_rl_manager", None) is not manager:
+        return None, None
+    decoder = decoders[0]
+    attrs = frozenset(name for name, child in model._modules.items() if child is decoder)
+    if not attrs:
+        return None, None
+    return decoder, attrs
+
+
 def last_hidden_state_decoder(model, forward) -> Optional[torch.nn.Module]:
     """The decoder a GRPO hidden-state forward of ``model`` may scope with last_hidden_state_only(), or
     None (gather every state). Only the one CP-attached text decoder held directly by ``model``, and only
     when ``forward`` is marked or audited to pass the hidden states through without reading them: a forward
-    that reads an intermediate state before returning would get the wrong tensor otherwise. The answer
-    depends on code and module structure only, so it is the same on every rank."""
-    manager = get_cp_manager()
-    if manager is None or model is None:
+    that reads an intermediate state before returning would get the wrong tensor otherwise. The verdict on
+    ``forward`` is rank-local (a wrapper installed on one rank changes it): last_hidden_state_scope() votes
+    on it over the CP group."""
+    decoder, attrs = _cp_text_decoder(model)
+    if decoder is None:
         return None
-    decoders = _decoders(model)
-    if len(decoders) != 1 or getattr(decoders[0], "_unsloth_cp_rl_manager", None) is not manager:
-        return None
-    decoder = decoders[0]
-    attrs = frozenset(name for name, child in model._modules.items() if child is decoder)
-    if not attrs:
-        return None
+    return decoder if _forward_passthrough(forward, attrs) else None
+
+
+def last_hidden_state_scope(
+    model,
+    forward,
+    requested = False,
+):
+    """last_hidden_state_only() for GRPO's hidden-state forward of ``model``. The decoder call is claimed
+    from module structure alone, the same on every rank, so all ranks reach one vote; this rank's verdicts
+    (the caller asked for the states itself, ``forward`` fails the passthrough audit) only make that vote
+    keep every state, never skip it on one rank while a peer enters it."""
+    decoder, attrs = _cp_text_decoder(model)
+    if decoder is None:
+        return last_hidden_state_only(None)
+    allowed = not requested and _forward_passthrough(forward, attrs)
+    return last_hidden_state_only(decoder, allowed = allowed)
+
+
+def _forward_passthrough(forward, attrs) -> bool:
     function = getattr(forward, "__func__", forward)
     chain = [function]
     while hasattr(chain[-1], "__wrapped__") and len(chain) < 16:
@@ -2522,28 +2560,28 @@ def last_hidden_state_decoder(model, forward) -> Optional[torch.nn.Module]:
     if hasattr(chain[-1], "__wrapped__") or any(
         getattr(f, "__code__", None) not in safe for f in chain[:-1]
     ):
-        return None
+        return False
     if any(getattr(f, _PASSTHROUGH_MARKER, False) for f in chain):
-        return decoder
+        return True
     inner = getattr(chain[-1], "__func__", chain[-1])
     try:
         key = inner.__code__
     except AttributeError:
-        return None
+        return False
     cached = _PASSTHROUGH_AUDIT.setdefault(key, {})
     if attrs not in cached:
         cached[attrs] = _decoder_output_passthrough(inner, attrs)
-    return decoder if cached[attrs] else None
+    return bool(cached[attrs])
 
 
-def _no_later_forward_hooks(module, hidden, manager) -> bool:
-    """True on every rank when no rank has a forward hook after the CP post hook on ``module``: such a hook
-    reads output["hidden_states"] by index. Agreed over the CP group, so a hook on one rank alone cannot make
-    the peers enter different gathers."""
+def _truncation_agreed(module, hidden, manager, allowed) -> bool:
+    """True on every rank when every rank allows the truncation and no rank has a forward hook after the CP
+    post hook on ``module`` (such a hook reads output["hidden_states"] by index). Agreed over the CP group,
+    so a rank-local hook or forward verdict cannot make the peers enter different gathers."""
     hooks = list(module._forward_hooks)
     mine = getattr(module, "_unsloth_cp_rl_post_hook_id", None)
     later = mine not in hooks or hooks.index(mine) != len(hooks) - 1
-    flag = torch.tensor([int(later)], dtype = torch.int32, device = hidden.device)
+    flag = torch.tensor([int(later or not allowed)], dtype = torch.int32, device = hidden.device)
     dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = manager.group)
     return not bool(flag.item())
 
@@ -2575,7 +2613,7 @@ def _rl_decoder_post_hook(module, args, kwargs, output):
         layers is not None
         and selection is not None
         and len(layers)
-        and _no_later_forward_hooks(module, last, manager)
+        and _truncation_agreed(module, last, manager, selection.allowed)
     ):
         # Only the last state is read: every other layer would be one more all-gather and a full-length copy.
         output["hidden_states"] = (hidden if layers[-1] is last else _full(layers[-1]),)

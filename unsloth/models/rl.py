@@ -2180,15 +2180,16 @@ def _cp_last_hidden_state_only(target_model, original_forward, kwargs):
     from contextlib import nullcontext
 
     module = sys.modules.get("unsloth.context_parallel")
-    scope = getattr(module, "last_hidden_state_only", None)
-    find = getattr(module, "last_hidden_state_decoder", None)
-    if scope is None or find is None:
+    scope = getattr(module, "last_hidden_state_scope", None)
+    if scope is None:
         return nullcontext(None)
     requested = kwargs.get("output_hidden_states")
     if requested is None:
         requested = getattr(getattr(target_model, "config", None), "output_hidden_states", False)
-    # None still enters a scope: it hides a selection made by an enclosing forward on this thread.
-    return scope(None if requested else find(target_model, original_forward))
+    # Always a scope, even one that selects nothing: it hides a selection made by an enclosing forward on
+    # this thread. The requested / audit verdicts are rank-local, so they go into the CP vote rather than
+    # deciding locally whether this rank takes part in it.
+    return scope(target_model, original_forward, requested = bool(requested))
 
 
 def _install_grpo_hidden_states_forward_wrapper(model):

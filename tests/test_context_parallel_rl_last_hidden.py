@@ -315,6 +315,39 @@ def test_later_decoder_hook_on_one_rank_keeps_ranks_in_step():
     _run(lambda env: _later_hook(env, (0,)))
 
 
+def _rank_local_verdict(env, kind):
+    # The forward audit and the caller's own request are rank-local: a transparent wrapper or a config flag
+    # on rank 0 alone must not make rank 0 skip the vote its peer enters (a collective mismatch / hang).
+    cls = _LM
+    if env.rank == 0 and kind == "wrapper":
+        import functools
+
+        original = cls.forward
+
+        @functools.wraps(original)
+        def instrumented(self, *args, **kwargs):
+            return original(self, *args, **kwargs)
+
+        cls = type("InstrumentedLM", (cls,), {"forward": instrumented})
+    lm, _ = env.attach(cls)
+    if env.rank == 0 and kind == "config":
+        lm.config = types.SimpleNamespace(output_hidden_states = True)
+    out = lm(input_ids = env.ids)
+    # Both ranks keep every state: the stand-in attention gather plus all three hidden states.
+    assert len(env.calls) == 4, env.calls
+    torch.testing.assert_close(out.logits, env.full.last_hidden_state, rtol = 1e-5, atol = 1e-6)
+    # The ranks stay in step afterwards.
+    flag = torch.ones(1)
+    dist.all_reduce(flag)
+    assert flag.item() == WORLD
+
+
+@pytest.mark.parametrize("kind", ["wrapper", "config"])
+def test_rank_local_forward_verdict_keeps_ranks_in_step(kind, monkeypatch):
+    monkeypatch.setenv("TORCH_DISTRIBUTED_DEBUG", "DETAIL")
+    _run(lambda env: _rank_local_verdict(env, kind))
+
+
 def _consuming(env, refuse_limiter):
     # Findings 5 and 6: a forward that reads an intermediate state before returning, on the first attempt and
     # on the retry without the limiter.
