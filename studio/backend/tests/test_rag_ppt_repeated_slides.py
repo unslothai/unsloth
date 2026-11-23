@@ -56,7 +56,6 @@ def test_normal_decks_read_unchanged(tmp_path):
     assert office_formats.ppt(str(_deck(tmp_path / "one.ppt", repeats = 1, text = "Hello"))) == [
         ("Hello", 1)
     ]
-    # A few repeats of a small slide stay well inside the budget.
     assert len(office_formats.ppt(str(_deck(tmp_path / "few.ppt", repeats = 5, text = "Hi")))) == 5
     sections = office_formats.ppt(str(build_saved_ppt(tmp_path / "saved.ppt")))
     assert sections == [("Title from list\nText box zebramarker\nNotes:\nSpeaker notes", 1)]

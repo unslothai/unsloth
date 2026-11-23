@@ -1807,7 +1807,6 @@ def ppt(path: str) -> list[Section]:
     for ref in notes_refs:
         offset = persist.get(ref)
         page = _ppt_record_at(data, offset, _PPT_NOTES)
-        # A repeated reference reads the same page into the same entry again.
         if page is None or offset in read_notes:
             continue
         read_notes.add(offset)
