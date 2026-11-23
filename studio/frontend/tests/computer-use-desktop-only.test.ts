@@ -13,7 +13,6 @@ test("browser Studio fills the empty Control section with a Desktop app only row
 	const row = tab.slice(tab.indexOf("{!isTauri && !status?.available"), tab.indexOf(") : status ? ("));
 	assert.match(row, /description=\{t\("computerUse\.settings\.desktopOnlyDescription"\)\}/);
 	assert.match(row, /\{t\("settings\.keyboardShortcuts\.desktopOnly"\)\}/);
-	// The Desktop app keeps its own row, reason and switch.
 	assert.match(tab, /\) : status \? \(\s*<SettingsRow[\s\S]*?description=\{status\.available \? bold/);
 	assert.ok(en.computerUse.settings.desktopOnlyDescription.includes("Unsloth Desktop app"));
 });

@@ -146,7 +146,6 @@ export function ComputerUseTab() {
         </p>
       </header>
       <SettingsSection title={t("computerUse.settings.control")}>
-        {/* The browser has no row of its own here when the server is too old or can't offer it. */}
         {!isTauri && !status?.available ? (
           <SettingsRow
             icon={<HugeiconsIcon icon={Cursor02Icon} strokeWidth={1.75} className={ROW_ICON_CLASS} />}
