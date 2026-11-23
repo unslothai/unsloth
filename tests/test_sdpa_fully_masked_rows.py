@@ -205,6 +205,47 @@ def test_eager_with_attention_sinks_keeps_upstream_rows(unpatched):
     assert bool((after[0, 0, :2] == torch.finfo(after.dtype).min).all())
 
 
+@pytest.mark.parametrize(
+    "model_type, sinks",
+    [
+        ("granite_swa", True),
+        ("granitemoe_swa", True),
+        ("mimo_v2_flash", False),
+        ("mimo_v2_flash", True),
+    ],
+)
+def test_fp16_eager_pad_rows_stay_finite_for_sink_families_without_a_sink_logit(
+    unpatched, model_type, sinks
+):
+    """Granite SWA scales a plain softmax by sigmoid(lse - sink), and MiMo V2 Flash's full layers have no sink:
+    an fp16 all-min row overflows to -inf there and the pad rows, and every gradient, turn NaN. Those families
+    take the own key like sink-free models."""
+    import importlib
+    from types import SimpleNamespace
+
+    try:
+        modeling = importlib.import_module(
+            f"transformers.models.{model_type}.modeling_{model_type}"
+        )
+    except ImportError:
+        pytest.skip(f"transformers has no {model_type}")
+    fix_transformers_fully_masked_rows()
+    attention_mask = torch.tensor([[0, 0, 1, 1]], dtype = torch.bool)
+    mask = _eager_mask(attention_mask, torch.float16, SimpleNamespace(model_type = model_type))
+    q = torch.ones(1, 1, 4, 1, dtype = torch.float16, requires_grad = True)
+    k = torch.full((1, 1, 4, 1), -32.0, dtype = torch.float16, requires_grad = True)
+    v = torch.arange(4, dtype = torch.float16).reshape(1, 1, 4, 1).requires_grad_()
+    layer = torch.nn.Module()
+    layer.num_key_value_groups = 1
+    layer.sinks = torch.zeros(1) if sinks else None
+    layer.eval()
+    out, _ = modeling.eager_attention_forward(layer, q, k, v, mask, 1.0)
+    assert bool(torch.isfinite(out).all()), out.flatten().tolist()
+    out[..., 2:, :].float().sum().backward()  # the real rows alone
+    for t in (q, k, v):
+        assert bool(torch.isfinite(t.grad).all())
+
+
 def _causal_mask(config, inputs_embeds, attention_mask, cache, positions):
     create = masking_utils.create_causal_mask
     params = inspect.signature(create).parameters

@@ -2197,23 +2197,27 @@ def _mask_coordinates(builder):
     return coordinates
 
 
-# Families whose eager attention adds a sink logit to every row. A fully masked
-# row then puts all of its weight on the sink and outputs 0 (as flex attention
-# does), so upstream's all-min row is right for them and opening a key would
-# change the loss. None of them support sdpa, so their sdpa mask is only ever
-# built for eager. A sink family missing here still gets a single own key:
-# causal and finite, only not bitwise upstream on pad rows.
+# Families whose eager attention appends the sink as an extra softmax logit in
+# every layer (a finite column). A fully masked row then puts all of its weight
+# on the sink and outputs 0 (as flex attention does), finite in every dtype, so
+# upstream's all-min row is right for them and opening a key would change the
+# loss. None of them support sdpa, so their sdpa mask is only ever built for
+# eager. Not here, so they get the single own key like sink-free models:
+# - granite_swa / granitemoe_swa scale the output by sigmoid(lse - sink) after a
+#   plain softmax: in fp16 an all-min row overflows to -inf, the softmax is NaN
+#   and the zero scale cannot recover it (NaN pad rows and NaN grads).
+# - mimo_v2_flash has sinks only in its sliding layers; its full layers are
+#   sink-free, where the all-min row is NaN in fp16 the same way.
+# A family missing here still gets a single own key: causal and finite, only
+# not bitwise upstream on pad rows.
 _ATTENTION_SINK_MODEL_TYPES = frozenset(
     {
         "gpt_oss",
         "openai_privacy_filter",
         "flint",
-        "granite_swa",
-        "granitemoe_swa",
         "hy_v4",
         "hy_v4_vl",
         "hy_v4_vl_text",
-        "mimo_v2_flash",
         "deepseek_v4",
         "deepseek_v41",
         "deepseek_v41_text",
