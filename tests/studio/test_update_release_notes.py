@@ -37,6 +37,25 @@ WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
 TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
 
 
+@pytest.mark.parametrize(
+    "notes_path", sorted((FRONTEND / "components/update/releases").glob("v*/notes.json")), ids=lambda p: p.parent.name
+)
+def test_curated_release_sections_and_webp_files(notes_path):
+    notes = json.loads(notes_path.read_text(encoding = "utf-8"))
+    tag = notes_path.parent.name
+    assert tag == f"v{notes['version']}"
+    assert set(notes["changes"]) <= {"new", "improved", "fixed"}
+    for rows in notes["changes"].values():
+        for label, description in rows:
+            assert label and description
+    for feature in notes["features"]:
+        filename = Path(feature["image"])
+        assert filename.name == feature["image"] and filename.suffix == ".webp"
+        with (REPO / "images" / "releases" / tag / filename).open("rb") as image:
+            header = image.read(12)
+        assert header[:4] == b"RIFF" and header[8:] == b"WEBP"
+
+
 CARD_CAP = {
     WEB_BANNER: "max-h-[calc(100dvh_-_2rem)]",
     TAURI_BANNER: "max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))]",
@@ -1008,12 +1027,11 @@ def test_a_label_is_found_literally_or_through_the_catalog():
         _shown_at('{t("desktopUpdate.banner.later")}', "Remind me later")
 
 
-def test_web_banner_toggles_inline_release_notes():
+def test_web_banner_opens_release_dialog_for_the_offered_version():
     src = WEB_BANNER.read_text(encoding = "utf-8")
-    assert "ReleaseNotesPanel" in src
-    _shown_at(src, "Show release notes")
-    _shown_at(src, "Hide release notes")
-    assert "notesVersion" in src
+    assert 'aria-haspopup="dialog"' in src
+    assert "version: status.latestVersion" in src
+    assert 't("updateNotes.whatsNew")' in src
 
 
 def test_desktop_banner_opens_release_dialog_for_the_offered_version():
@@ -1026,7 +1044,7 @@ def test_desktop_banner_opens_release_dialog_for_the_offered_version():
 @pytest.mark.parametrize(
     "banner,toggle,action",
     [
-        (WEB_BANNER, "web-update-release-notes-toggle", "web-update-snooze-button"),
+        (WEB_BANNER, "web-update-whats-new", "web-update-snooze-button"),
         (TAURI_BANNER, "tauri-update-release-notes-toggle", "Remind me later"),
     ],
 )

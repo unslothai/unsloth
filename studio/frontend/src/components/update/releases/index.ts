@@ -17,7 +17,35 @@ import release920 from "./v0.1.920-beta/notes.json";
 import release921 from "./v0.1.921-beta/notes.json";
 import release922 from "./v0.1.922-beta/notes.json";
 
-// Newest first. Artwork lives in public/whats-new/<tag>/ so it also works offline.
+type Row = [string, string];
+
+interface Release {
+  version: string;
+  title: string;
+  date: string;
+  features: {
+    image: string;
+    alt: string;
+    title: string;
+    summary: string;
+    // Docs page, and where the card's button goes (a route, or `settings:<tab>`) with its label.
+    link?: string;
+    open?: string;
+    action?: string;
+  }[];
+  changes: Partial<Record<"new" | "improved" | "fixed", Row[]>>;
+  // Changes the release page lists beyond the ones shown here.
+  more?: number;
+  // Docs pages for change rows, keyed by the row's label.
+  guides?: Record<string, string>;
+}
+
+// Artwork lives outside the frontend bundle and is requested only for the selected release.
+export function releaseImageUrl(version: string, filename: string): string {
+  return `https://raw.githubusercontent.com/unslothai/unsloth/main/images/releases/v${encodeURIComponent(version)}/${encodeURIComponent(filename)}`;
+}
+
+// Newest first.
 export const releases = [
   release922,
   release921,
@@ -37,4 +65,4 @@ export const releases = [
   release907,
   release906,
   release905,
-];
+] as Release[];

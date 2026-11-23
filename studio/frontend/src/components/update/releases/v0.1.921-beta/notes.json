@@ -4,7 +4,7 @@
   "date": "2026-11-20",
   "features": [
     {
-      "image": "/whats-new/v0.1.921-beta/inkling.webp",
+      "image": "inkling.webp",
       "alt": "Inkling 2 Mini",
       "title": "Inkling 2 Mini",
       "summary": "A 26B model with 5.4B active and a 1M context, the strongest for its size.",
@@ -13,19 +13,23 @@
       "action": "Get Inkling 2 Mini"
     },
     {
-      "image": "/whats-new/v0.1.921-beta/leaner.webp",
+      "image": "leaner.webp",
       "alt": "66% less RAM, 87% fewer prompt tokens, 2.2x faster MiniMax-H3-Image",
       "title": "Leaner and faster",
       "summary": "GGUF image models load with up to 66% less RAM, and MCP chats send up to 87% fewer prompt tokens."
     }
   ],
-  "changes": [
-    [
-      "Images",
-      "MiniMax-H3-Image renders a new prompt in 36.7 s on 8 GB GPUs, down from 82.7 s.",
-      "https://unsloth.ai/docs/models/minimax-h3-image"
-    ],
-    ["Documents", "Scanned PDFs in chat are read with OCR."]
-  ],
-  "more": 20
+  "changes": {
+    "new": [["Documents", "Scanned PDFs in chat are read with OCR."]],
+    "improved": [
+      [
+        "Images",
+        "MiniMax-H3-Image renders a new prompt in 36.7 s on 8 GB GPUs, down from 82.7 s."
+      ]
+    ]
+  },
+  "more": 20,
+  "guides": {
+    "Images": "https://unsloth.ai/docs/models/minimax-h3-image"
+  }
 }

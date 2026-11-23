@@ -4,7 +4,7 @@
   "date": "2026-11-03",
   "features": [
     {
-      "image": "https://github.com/user-attachments/assets/bc38677f-9e49-4b46-b0ac-f16522541a57",
+      "image": "glass.webp",
       "alt": "A translucent Studio chat over an illustrated landscape",
       "title": "Glass themes",
       "summary": "Five glass styles with adjustable transparency.",
@@ -12,17 +12,34 @@
       "action": "Try glass themes"
     },
     {
-      "image": "https://github.com/user-attachments/assets/a4c01069-da2f-4cf3-afee-d19499cfefc3",
-      "alt": "Custom artwork behind two Studio chats",
+      "image": "background-controls.webp",
+      "alt": "A custom illustrated background behind a Studio chat",
       "title": "Background controls",
       "summary": "Adjust the size, position, and placement of your chat background.",
       "open": "settings:appearance",
       "action": "Adjust background"
     }
   ],
-  "changes": [
-    ["Chat navigation", "Bookmark a turn and jump back to an earlier message."],
-    ["Training", "Fine-tune text models on CPU from the Train page."]
-  ],
-  "more": 315
+  "changes": {
+    "new": [
+      [
+        "Chat navigation",
+        "Bookmark a turn and jump back to an earlier message."
+      ],
+      ["Training", "Fine-tune text models on CPU from the Train page."]
+    ],
+    "improved": [
+      [
+        "Search",
+        "Search large document collections faster with the new RAG index."
+      ]
+    ],
+    "fixed": [
+      [
+        "MCP connections",
+        "Chat reconnects to its MCP session after the server restarts."
+      ]
+    ]
+  },
+  "more": 313
 }

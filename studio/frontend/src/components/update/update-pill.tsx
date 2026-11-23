@@ -13,7 +13,11 @@ import {
 } from "@/features/training/stores/training-runtime-store";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { Alert02Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import {
+  Alert02Icon,
+  Download01Icon,
+  SparklesIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { sameVersion } from "./release-meta";
@@ -130,8 +134,8 @@ export function UpdatePill({
           </Button>
           <Button
             size="sm"
-            variant="ghost"
-            className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
+            variant="secondary"
+            className="h-auto gap-1.5 rounded-full px-3 py-2 text-ui-13 font-medium"
             aria-haspopup="dialog"
             onClick={() => {
               setOpen(false);
@@ -142,6 +146,12 @@ export function UpdatePill({
             }}
             data-testid="update-popover-whats-new"
           >
+            <HugeiconsIcon
+              icon={SparklesIcon}
+              className="size-3.5 text-primary"
+              strokeWidth={2}
+              aria-hidden="true"
+            />
             {t("updateNotes.whatsNew")}
           </Button>
           <Button
@@ -166,7 +176,9 @@ function Highlights({ release }: { release: (typeof releases)[number] }) {
   const t = useT();
   const items = [
     ...release.features.map((f) => [f.title, f.summary] as const),
-    ...release.changes.map(([label, text]) => [label, text] as const),
+    ...(["new", "improved", "fixed"] as const).flatMap(
+      (key) => release.changes[key] ?? [],
+    ),
   ].slice(0, 3);
   return (
     <div className="mt-4">

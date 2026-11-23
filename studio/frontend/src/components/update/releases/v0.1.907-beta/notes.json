@@ -4,13 +4,13 @@
   "date": "2026-10-13",
   "features": [
     {
-      "image": "/whats-new/v0.1.907-beta/speed.webp",
+      "image": "speed.webp",
       "alt": "Up to 10x faster UI, 5x faster inference, and 3x more file types",
       "title": "Faster everywhere",
       "summary": "The app is up to 10x faster with several chats open, and inference up to 5x faster."
     },
     {
-      "image": "/whats-new/v0.1.907-beta/video.webp",
+      "image": "video.webp",
       "alt": "LTX-2.5 and Wan2.2 video models",
       "title": "LTX-2.5 and Wan2.2",
       "summary": "Generate video from text or from an image.",
@@ -19,17 +19,21 @@
       "action": "Make a video"
     }
   ],
-  "changes": [
-    ["Compaction", "Compaction works with every API connection."],
-    [
-      "Files",
-      "Drag and drop works again on Desktop, with over 3x more file types."
+  "changes": {
+    "new": [
+      ["Compaction", "Compaction works with every API connection."],
+      [
+        "Browser use",
+        "Models can click, drag, and run approved scripts, with per-site rules."
+      ],
+      ["Hardware", "NVIDIA RTX Spark runs with the Windows ARM64 download."]
     ],
-    [
-      "Browser use",
-      "Models can click, drag, and run approved scripts, with per-site rules."
-    ],
-    ["Hardware", "NVIDIA RTX Spark runs with the Windows ARM64 download."]
-  ],
+    "fixed": [
+      [
+        "Files",
+        "Drag and drop works again on Desktop, with over 3x more file types."
+      ]
+    ]
+  },
   "more": 137
 }

@@ -4,7 +4,7 @@
   "date": "2026-10-23",
   "features": [
     {
-      "image": "/whats-new/v0.1.910-beta/flint.webp",
+      "image": "flint.webp",
       "alt": "Flint coding agent model",
       "title": "Flint",
       "summary": "Recursive's 40B coding-agent MoE runs in 24 GB at 3-bit.",
@@ -13,7 +13,7 @@
       "action": "Get Flint"
     },
     {
-      "image": "/whats-new/v0.1.910-beta/moss-image.webp",
+      "image": "moss-image.webp",
       "alt": "MOSS-Image model",
       "title": "MOSS-Image",
       "summary": "A 5.1B image model for top-tier generation, as GGUF and FP8.",
@@ -22,24 +22,28 @@
       "action": "Generate an image"
     }
   ],
-  "changes": [
-    [
-      "Install",
-      "A much smaller chat-only Desktop for GGUF chat. Add training later in Settings."
-    ],
-    [
-      "Mac",
-      "MLX MoE models keep experts on SSD, so Qwen3.8-Flash-Next runs on a 32 GB Mac."
-    ],
-    [
-      "Export",
-      "Prune 25% or 50% of a MoE model's least useful experts with REAP."
-    ],
-    [
-      "Models",
-      "NVIDIA Nemotron 3.5 Bolt E4B scores 63.2 on Tau2-Bench, up from 38.7.",
-      "https://unsloth.ai/docs/models/nemotron-3.5-bolt"
+  "changes": {
+    "new": [
+      [
+        "Install",
+        "A much smaller chat-only Desktop for GGUF chat. Add training later in Settings."
+      ],
+      [
+        "Mac",
+        "MLX MoE models keep experts on SSD, so Qwen3.8-Flash-Next runs on a 32 GB Mac."
+      ],
+      [
+        "Export",
+        "Prune 25% or 50% of a MoE model's least useful experts with REAP."
+      ],
+      [
+        "Models",
+        "NVIDIA Nemotron 3.5 Bolt E4B scores 63.2 on Tau2-Bench, up from 38.7."
+      ]
     ]
-  ],
-  "more": 531
+  },
+  "more": 531,
+  "guides": {
+    "Models": "https://unsloth.ai/docs/models/nemotron-3.5-bolt"
+  }
 }

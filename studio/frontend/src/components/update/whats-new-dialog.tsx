@@ -28,7 +28,7 @@ import {
   sameVersion,
 } from "./release-meta";
 import { ReleaseNotesPanel } from "./release-notes-panel";
-import { releases } from "./releases";
+import { releaseImageUrl, releases } from "./releases";
 import { displayVersion, useUpdateOffer } from "./update-offer-store";
 import { rememberUpdateTarget } from "./updated-notice";
 import { useWhatsNew } from "./whats-new-store";
@@ -315,35 +315,30 @@ function ExternalLink({ href, children }: { href: string; children: string }) {
   );
 }
 
-/** The docs page a card or change row points to, when it has one. */
-function docsLink(item: object): string | undefined {
-  return "link" in item && typeof item.link === "string"
-    ? item.link
-    : undefined;
-}
+type Feature = Release["features"][number];
 
-/** Where "Try it" goes: a route, or a Settings tab as `settings:<tab>`. */
-/** Where the card's button goes: a route, or a Settings tab as `settings:<tab>`. */
-function openTarget(item: object): { to: string; label: string } | undefined {
-  if (
-    "open" in item &&
-    typeof item.open === "string" &&
-    "action" in item &&
-    typeof item.action === "string"
-  ) {
-    return { to: item.open, label: item.action };
-  }
-  return undefined;
+const CHANGE_SECTIONS = [
+  { key: "new", label: "updateNotes.newLabel" },
+  { key: "improved", label: "updateNotes.improved" },
+  { key: "fixed", label: "updateNotes.fixed" },
+] as const;
+
+/** The release's change rows in New, Improved, Fixed order. */
+function changeRows(entry: Release): [string, string][] {
+  return CHANGE_SECTIONS.flatMap(({ key }) => entry.changes[key] ?? []);
 }
 
 const SETTINGS_PREFIX = "settings:";
 
-function CardActions({ feature }: { feature: object }) {
+function CardActions({ feature }: { feature: Feature }) {
   const t = useT();
   const router = useRouter();
   const close = useWhatsNew((state) => state.close);
-  const guide = docsLink(feature);
-  const target = openTarget(feature);
+  const guide = feature.link;
+  const target =
+    feature.open && feature.action
+      ? { to: feature.open, label: feature.action }
+      : undefined;
   if (!(guide || target)) {
     return null;
   }
@@ -432,7 +427,7 @@ function ReleaseBody({ entry }: { entry: Release }) {
         {entry.features.map((feature) => (
           <figure key={feature.title}>
             <img
-              src={feature.image}
+              src={releaseImageUrl(entry.version, feature.image)}
               onError={(event) => {
                 event.currentTarget.style.display = "none";
               }}
@@ -451,32 +446,35 @@ function ReleaseBody({ entry }: { entry: Release }) {
           </figure>
         ))}
       </div>
-      <section className="mt-12">
-        <SectionLabel>{t("updateNotes.alsoInRelease")}</SectionLabel>
-        <dl className={cn("mt-3 border-t", HAIRLINE)}>
-          {entry.changes.map(([label, description, link]) => (
-            <div
-              key={label}
-              className={cn(
-                "grid gap-1 border-b py-3.5 text-ui-13 leading-relaxed sm:grid-cols-[9rem_1fr] sm:gap-6",
-                HAIRLINE,
-              )}
-            >
-              <dt className="text-muted-foreground">{label}</dt>
-              <dd>
-                {description}
-                {link && (
-                  <>
-                    {" "}
-                    <ExternalLink href={link}>
-                      {t("updateNotes.guide")}
-                    </ExternalLink>
-                  </>
-                )}
-              </dd>
-            </div>
-          ))}
-        </dl>
+      {CHANGE_SECTIONS.map(({ key, label }) => {
+        const rows = entry.changes[key];
+        if (!rows || rows.length === 0) {
+          return null;
+        }
+        return (
+          <section key={key} className="mt-10">
+            <SectionLabel>{t(label)}</SectionLabel>
+            <dl className={cn("mt-3 border-t", HAIRLINE)}>
+              {rows.map(([rowLabel, description]) => (
+                <div
+                  key={rowLabel}
+                  className={cn(
+                    "grid gap-1 border-b py-3.5 text-ui-13 leading-relaxed sm:grid-cols-[9rem_1fr] sm:gap-6",
+                    HAIRLINE,
+                  )}
+                >
+                  <dt className="text-muted-foreground">{rowLabel}</dt>
+                  <dd>
+                    {description}
+                    <GuideLink href={entry.guides?.[rowLabel]} />
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        );
+      })}
+      <section>
         {entry.more ? (
           <p className="mt-4 text-ui-13">
             <MoreChanges entry={entry} />
@@ -530,14 +528,14 @@ function CatchUp({
                     <span className="text-muted-foreground">
                       {feature.summary}
                     </span>
-                    <GuideLink href={docsLink(feature)} />
+                    <GuideLink href={feature.link} />
                   </li>
                 ))}
-                {entry.changes.map(([label, description, link]) => (
+                {changeRows(entry).map(([label, description]) => (
                   <li key={label}>
                     <span className="font-medium">{label}.</span>{" "}
                     <span className="text-muted-foreground">{description}</span>
-                    <GuideLink href={link} />
+                    <GuideLink href={entry.guides?.[label]} />
                   </li>
                 ))}
               </ul>
@@ -549,7 +547,7 @@ function CatchUp({
             </div>
             {entry.features[0] && (
               <img
-                src={entry.features[0].image}
+                src={releaseImageUrl(entry.version, entry.features[0].image)}
                 alt=""
                 onError={(event) => {
                   event.currentTarget.style.display = "none";

@@ -4,13 +4,13 @@
   "date": "2026-10-28",
   "features": [
     {
-      "image": "https://github.com/user-attachments/assets/36f5a627-e30c-461a-bf55-508aa3f30fb4",
+      "image": "trick-or-treat.webp",
       "alt": "A tour of Studio’s Halloween themes",
       "title": "Trick or treat",
       "summary": "Eleven seasonal themes brought spooky greetings, bats, and spiders to Studio through October."
     },
     {
-      "image": "/whats-new/v0.1.912-beta/multi-lora.webp",
+      "image": "multi-lora.webp",
       "alt": "Multi-LoRA batching",
       "title": "Multi-LoRA batching",
       "summary": "Train up to four compatible queued jobs together.",
@@ -18,12 +18,16 @@
       "action": "Start training"
     }
   ],
-  "changes": [
-    ["Startup", "Start Studio about twice as fast on first launch."],
-    [
-      "Browser use",
-      "Let models control the built-in browser from its new tab page."
+  "changes": {
+    "improved": [
+      ["Startup", "Start Studio about twice as fast on first launch."]
+    ],
+    "new": [
+      [
+        "Browser use",
+        "Let models control the built-in browser from its new tab page."
+      ]
     ]
-  ],
+  },
   "more": 335
 }

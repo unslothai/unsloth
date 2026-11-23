@@ -4,7 +4,7 @@
   "date": "2026-11-17",
   "features": [
     {
-      "image": "/whats-new/v0.1.919-beta/translate.webp",
+      "image": "translate.webp",
       "alt": "English text translated to Japanese on the Translate page",
       "title": "Translate",
       "summary": "Translate any text into any language, entirely on your device.",
@@ -12,19 +12,21 @@
       "action": "Translate text"
     },
     {
-      "image": "/whats-new/v0.1.919-beta/engram.webp",
+      "image": "engram.webp",
       "alt": "Engram tables",
       "title": "Engram tables",
       "summary": "Swap the Engram table for Qwen3.8-Flash-Next and DeepSeek-V4.1.",
       "link": "https://unsloth.ai/docs/models/qwen3.8-next"
     }
   ],
-  "changes": [
-    [
-      "Compaction",
-      "Long chats on connected providers are summarized automatically, and /compact works with cloud models."
+  "changes": {
+    "new": [
+      [
+        "Compaction",
+        "Long chats on connected providers are summarized automatically, and /compact works with cloud models."
+      ]
     ],
-    ["Training", "Gemma 4 12B trains 1.4 to 2.6x faster."]
-  ],
+    "improved": [["Training", "Gemma 4 12B trains 1.4 to 2.6x faster."]]
+  },
   "more": 17
 }

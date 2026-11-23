@@ -4,7 +4,7 @@
   "date": "2026-10-30",
   "features": [
     {
-      "image": "https://github.com/user-attachments/assets/a4c01069-da2f-4cf3-afee-d19499cfefc3",
+      "image": "backgrounds.webp",
       "alt": "Two Studio chats with custom backgrounds",
       "title": "Your own chat background",
       "summary": "Use your own image and move the composer to the bottom of a new chat.",
@@ -12,7 +12,7 @@
       "action": "Set a background"
     },
     {
-      "image": "/whats-new/v0.1.913-beta/languages.webp",
+      "image": "languages.webp",
       "alt": "14 new languages",
       "title": "14 new languages",
       "summary": "Use Studio in 14 more languages, picked in Settings.",
@@ -20,17 +20,18 @@
       "action": "Change language"
     }
   ],
-  "changes": [
-    [
-      "Generation",
-      "Render Qwen-Image up to twice as fast under a 16 GB VRAM limit."
+  "changes": {
+    "improved": [
+      [
+        "Generation",
+        "Render Qwen-Image up to twice as fast under a 16 GB VRAM limit."
+      ],
+      ["Updates", "App updates finish twice as fast."]
     ],
-    ["Updates", "App updates finish twice as fast."],
-    [
-      "Models",
-      "DeepSeek-V4.1-Flash gets new Dynamic v3.1 GGUFs.",
-      "https://unsloth.ai/docs/basics/dynamic-3.0-ggufs/dynamic-3.1-ggufs"
-    ]
-  ],
-  "more": 238
+    "new": [["Models", "DeepSeek-V4.1-Flash gets new Dynamic v3.1 GGUFs."]]
+  },
+  "more": 238,
+  "guides": {
+    "Models": "https://unsloth.ai/docs/basics/dynamic-3.0-ggufs/dynamic-3.1-ggufs"
+  }
 }

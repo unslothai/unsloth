@@ -4,7 +4,7 @@
   "date": "2026-10-26",
   "features": [
     {
-      "image": "/whats-new/v0.1.911-beta/scheduled.webp",
+      "image": "scheduled.webp",
       "alt": "The Scheduled page with daily, weekly, and hourly tasks",
       "title": "Scheduled tasks",
       "summary": "Run a prompt on a schedule with a local model or an API connection.",
@@ -12,17 +12,21 @@
       "action": "Schedule a task"
     },
     {
-      "image": "/whats-new/v0.1.911-beta/minimax.webp",
+      "image": "minimax.webp",
       "alt": "MiniMax-M3.1-Flash",
       "title": "MiniMax-M3.1-Flash",
       "summary": "MiniMax's 428B MoE with 23B active.",
       "link": "https://unsloth.ai/docs/models/minimax-m3.1-flash"
     }
   ],
-  "changes": [
-    ["Images", "Edit images with prompts in FLUX.3."],
-    ["Presets", "Save Run settings as named presets for each model."],
-    ["Performance", "Large gains on Mac, less lag, and smaller binaries."]
-  ],
+  "changes": {
+    "new": [
+      ["Images", "Edit images with prompts in FLUX.3."],
+      ["Presets", "Save Run settings as named presets for each model."]
+    ],
+    "improved": [
+      ["Performance", "Large gains on Mac, less lag, and smaller binaries."]
+    ]
+  },
   "more": 376
 }

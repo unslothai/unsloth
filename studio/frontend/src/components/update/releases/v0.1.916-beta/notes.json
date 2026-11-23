@@ -4,13 +4,13 @@
   "date": "2026-11-06",
   "features": [
     {
-      "image": "/whats-new/v0.1.916-beta/perf.webp",
+      "image": "perf.webp",
       "alt": "2x two-GPU generation, 40% faster loads, 50% fewer tokens",
       "title": "Faster across the board",
       "summary": "Two-GPU image and video up to 2x faster, and image and video models load up to 40% faster."
     },
     {
-      "image": "/whats-new/v0.1.916-beta/floating-browser.webp",
+      "image": "floating-browser.webp",
       "alt": "Floating browser",
       "title": "Floating browser",
       "summary": "Each chat runs its own browser in a window you can move and resize.",
@@ -19,13 +19,15 @@
       "action": "Browser settings"
     }
   ],
-  "changes": [
-    [
-      "Models",
-      "Qwen3.8-Flash Dynamic v3.1 uses 50% fewer tokens and is 15% more accurate."
+  "changes": {
+    "improved": [
+      [
+        "Models",
+        "Qwen3.8-Flash Dynamic v3.1 uses 50% fewer tokens and is 15% more accurate."
+      ],
+      ["Chats", "Search and delete chats much faster."]
     ],
-    ["Memory", "Unified memory offloading works for big models."],
-    ["Chats", "Search and delete chats much faster."]
-  ],
+    "fixed": [["Memory", "Unified memory offloading now works for big models."]]
+  },
   "more": 177
 }

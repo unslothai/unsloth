@@ -4,7 +4,7 @@
   "date": "2026-11-20",
   "features": [
     {
-      "image": "/whats-new/v0.1.922-beta/theme-files.webp",
+      "image": "theme-files.webp",
       "alt": "Theme files",
       "title": "Theme files",
       "summary": "Export your Appearance settings to a file and import someone else's.",
@@ -12,23 +12,27 @@
       "action": "Export a theme"
     },
     {
-      "image": "/whats-new/v0.1.922-beta/async-grpo.webp",
+      "image": "async-grpo.webp",
       "alt": "AsyncGRPO",
       "title": "AsyncGRPO",
       "summary": "Reinforcement learning steps run 1.46x to 2.47x faster on A100."
     }
   ],
-  "changes": [
-    ["Inkling 2 Mini", "Uses less memory and runs faster."],
-    [
-      "Chat",
-      "A reasoning model that runs out of tokens while thinking now offers Retry."
+  "changes": {
+    "new": [
+      [
+        "Chat",
+        "A reasoning model that runs out of tokens while thinking now offers Retry."
+      ],
+      ["Video", "Video Restyle re-renders a whole clip in a new style on Mac."]
     ],
-    [
-      "Windows",
-      "Desktop no longer gets stuck on an incomplete install on some AMD PCs."
-    ],
-    ["Video", "Video Restyle re-renders a whole clip in a new style on Mac."]
-  ],
+    "improved": [["Inkling 2 Mini", "Uses less memory and runs faster."]],
+    "fixed": [
+      [
+        "Windows",
+        "Desktop no longer gets stuck on an incomplete install on some AMD PCs."
+      ]
+    ]
+  },
   "more": 18
 }

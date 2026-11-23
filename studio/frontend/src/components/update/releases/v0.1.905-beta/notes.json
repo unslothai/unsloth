@@ -4,7 +4,7 @@
   "date": "2026-10-08",
   "features": [
     {
-      "image": "/whats-new/v0.1.905-beta/sandbox.webp",
+      "image": "sandbox.webp",
       "alt": "Sandbox level set to High in Security settings",
       "title": "Sandboxed tools",
       "summary": "Python and terminal tools run in the OS sandbox: Bubblewrap on Linux, Seatbelt on macOS, and MXC on Windows.",
@@ -13,19 +13,23 @@
       "action": "Set sandbox level"
     },
     {
-      "image": "/whats-new/v0.1.905-beta/decision.webp",
+      "image": "decision.webp",
       "alt": "Decision accuracy rising from 30% to 80%",
       "title": "Decision models",
       "summary": "Turn any text or vision model into a decision model, then test, export, and serve it.",
       "link": "https://unsloth.ai/docs/basics/train-your-own-decision-model-with-unsloth"
     }
   ],
-  "changes": [
-    [
-      "ComfyUI",
-      "Load ComfyUI image and video models, text encoders, and VAEs directly."
+  "changes": {
+    "new": [
+      [
+        "ComfyUI",
+        "Load ComfyUI image and video models, text encoders, and VAEs directly."
+      ]
     ],
-    ["Diffusion", "Generate faster and more accurately with INT8 ConvRot."]
-  ],
+    "improved": [
+      ["Diffusion", "Generate faster and more accurately with INT8 ConvRot."]
+    ]
+  },
   "more": 148
 }
