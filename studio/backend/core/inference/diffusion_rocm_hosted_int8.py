@@ -11,8 +11,9 @@ it instead (``diffusion_native_hosted.load_native_from_hosted``, which refuses a
 Only a load whose runtime build would be W8A8 qualifies, since the hosted file is W8A8 only: an explicit int8 request on
 the compiled RDNA tier (``rdna_explicit_int8_reason``) for a family whose explicit or AUTO table measured W8A8
 (``rdna_explicit_w8a8`` / ``rdna_auto_w8a8``), or with ``UNSLOTH_NATIVE_INT8_ACT=1``. AUTO is never changed and
-weight-only families keep the dense shards. Kill switch ``UNSLOTH_ROCM_IMAGE_HOSTED_INT8=0``;
-``UNSLOTH_NATIVE_INT8_ACT=0`` also keeps the old path. Torch-free at import."""
+weight-only families keep the dense shards. Only the target card's measured archs take the route
+(``ROCM_IMAGE_HOSTED_INT8_ARCHS``, gfx1151): other RDNA3 / RDNA4 cards keep the at-load build. Kill switch
+``UNSLOTH_ROCM_IMAGE_HOSTED_INT8=0``; ``UNSLOTH_NATIVE_INT8_ACT=0`` also keeps the old path. Torch-free at import."""
 
 from __future__ import annotations
 
@@ -21,10 +22,28 @@ from typing import Any, Optional
 
 ROCM_IMAGE_HOSTED_INT8_ENV = "UNSLOTH_ROCM_IMAGE_HOSTED_INT8"
 
+# gfx archs where the hosted W8A8 read was measured on hardware (gfx1151, Linux AMD CI). The RDNA W8A8 kernels accept
+# every gfx11xx / gfx12xx card, but no other arch has a speed or quality number, so they keep the at-load build.
+ROCM_IMAGE_HOSTED_INT8_ARCHS = frozenset({"gfx1151"})
+
 
 def rocm_image_hosted_int8_enabled() -> bool:
     raw = (os.environ.get(ROCM_IMAGE_HOSTED_INT8_ENV) or "").strip().lower()
     return raw not in ("0", "off", "false", "no")
+
+
+def _target_arch_measured(target: Any) -> bool:
+    """Whether ``target``'s own card (its ordinal, not the current device) is a measured arch. Never raises."""
+    try:
+        import torch
+
+        from .rocm_bf16 import _device_gfx_arch
+        return (
+            _device_gfx_arch(torch, getattr(target, "ordinal", None))
+            in ROCM_IMAGE_HOSTED_INT8_ARCHS
+        )
+    except Exception:  # noqa: BLE001 - an unreadable arch keeps the dense shards
+        return False
 
 
 def _hosted_convrot_file(fam: Any) -> Optional[str]:
@@ -93,6 +112,8 @@ def rocm_image_hosted_int8_reason(fam: Any, requested: Optional[str], target: An
         # ROCm RDNA explicit int8 on the compiled tier only (checks ROCm, bf16, UNSLOTH_NATIVE_INT8_ACT=0, the fused
         # W8A8 kernel and the compile tier); every other host keeps its existing route.
         if rdna_explicit_int8_reason(target, name) is None:
+            return None
+        if not _target_arch_measured(target):
             return None
         from .diffusion_native_quant import int8_rotation_group
 

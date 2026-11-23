@@ -25,6 +25,7 @@ from core.inference import diffusion_denoiser_prequant as DP  # noqa: E402
 from core.inference import diffusion_native_hosted as NH  # noqa: E402
 from core.inference import diffusion_rocm_hosted_int8 as RH  # noqa: E402
 from core.inference import diffusion_transformer_quant as tq  # noqa: E402
+from core.inference import rocm_bf16  # noqa: E402
 from core.inference.diffusion_families import detect_family  # noqa: E402
 from core.inference.diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE  # noqa: E402
 
@@ -54,13 +55,22 @@ def _host(
     rocm: bool,
     ready: bool = True,
     proven: bool = True,
+    arch: str = "gfx1151",
 ):
+    asked: list = []
+
+    def gfx_arch(_torch, ordinal):
+        asked.append(ordinal)
+        return arch
+
+    monkeypatch.setattr(rocm_bf16, "_device_gfx_arch", gfx_arch)
     monkeypatch.setattr(tq, "torch_is_rocm", lambda: rocm)
     monkeypatch.setattr(tq, "is_stubbed", lambda name: False)
     monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda ordinal = None: ready)
     monkeypatch.setattr(tq, "_rdna_compile_tier_proven", lambda target: proven)
     for env in ENVS:
         monkeypatch.delenv(env, raising = False)
+    return asked
 
 
 @pytest.fixture
@@ -139,6 +149,37 @@ def test_cuda_and_other_hosts_are_untouched(nvidia):
 def test_rocm_without_the_compiled_rdna_tier_is_untouched(monkeypatch, ready, proven):
     _host(monkeypatch, rocm = True, ready = ready, proven = proven)
     assert RH.rocm_image_hosted_int8_reason(_fam(), "int8", GPU_BF16) is None
+
+
+@pytest.mark.parametrize("pair", [FLUX3, QWEN21])
+@pytest.mark.parametrize(
+    "arch, engaged",
+    [("gfx1151", True), ("gfx1100", False), ("gfx1201", False), ("gfx1101", False), ("", False)],
+)
+def test_only_measured_archs_read_the_hosted_file(monkeypatch, pair, arch, engaged):
+    # The RDNA W8A8 kernels accept every gfx11xx / gfx12xx card; only gfx1151 was measured, so the others (and an
+    # unreadable arch) keep quantising the dense shards at load. The arch is the target card's, by its ordinal.
+    asked = _host(monkeypatch, rocm = True, arch = arch)
+    card = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16, ordinal = 1)
+    reason = RH.rocm_image_hosted_int8_reason(_fam(pair), "int8", card)
+    assert (reason is not None) is engaged
+    assert asked and set(asked) == {1}
+
+
+def test_unreadable_arch_keeps_the_dense_shards(monkeypatch):
+    _host(monkeypatch, rocm = True)
+
+    def boom(_torch, _ordinal):
+        raise RuntimeError("no properties")
+
+    monkeypatch.setattr(rocm_bf16, "_device_gfx_arch", boom)
+    assert RH.rocm_image_hosted_int8_reason(_fam(), "int8", GPU_BF16) is None
+
+
+def test_cuda_never_asks_for_a_gfx_arch(monkeypatch):
+    asked = _host(monkeypatch, rocm = False)
+    assert RH.rocm_image_hosted_int8_reason(_fam(), "int8", GPU_BF16) is None
+    assert asked == []
 
 
 def test_fp16_target_is_untouched(rocm):
