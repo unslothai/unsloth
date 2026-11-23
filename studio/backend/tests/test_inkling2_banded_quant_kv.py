@@ -355,9 +355,8 @@ def _llama_cpp_chunk_rows(
 
 
 class TestMultiSlotDenseReserve:
-    """From unslothai/llama.cpp b12649-mix, a ubatch that can hold several sequences reserves the
-    dense relative bias (#386 7adbb5d3f), in query-row chunks of at most 2^29 elements. Measured
-    CUDA0 MiB, Inkling-2-Mini UD-Q4_K_XL, --kv-unified, flash attention, RTX 6000 Ada."""
+    """b12649-mix dense reserve. Measured CUDA0 MiB, Inkling-2-Mini UD-Q4_K_XL, --kv-unified,
+    flash attention, RTX 6000 Ada."""
 
     _MEASURED = [
         # (n_ctx, ub, slots, cache type, --swa-full, MiB)
@@ -386,7 +385,6 @@ class TestMultiSlotDenseReserve:
         (65536, 512, 64, "q8_0", False, 6469.60),
         (98304, 512, 4, "f16", True, 7899.78),
         (196608, 512, 4, "q4_0", True, 12219.03),
-        # Studio's auto context with --swa-full, 4 slots and q4_0: crashed at --fit off before.
         (274688, 512, 4, "q4_0", True, 17022.78),
         # llama.cpp's allocation-free graph sizing on the same build.
         (524288, 512, 4, "q4_0", True, 32379.0),
@@ -441,8 +439,7 @@ class TestMultiSlotDenseReserve:
     def test_reference_chunk_rows(self, ctx, ub, rows):
         assert _llama_cpp_chunk_rows(ctx, ub) == rows
 
-    # One slot on the same build: the reserve also holds the dense bias of a small ubatch
-    # (32 rows over the full cache). 256K at ub=512 adds the +112 MiB measured after a 105K prompt.
+    # One slot: the reserve holds a small ubatch's dense bias; 256K ub=512 adds the prompt's pool.
     _ONE_SLOT = [
         # (n_ctx, ub, cache type, MiB)
         (65536, 256, "f16", 357.02),
@@ -462,8 +459,7 @@ class TestMultiSlotDenseReserve:
         (262144, 2048, "q8_0", 3420.96),
     ]
 
-    # One slot with --swa-full: the sliding layers' per-cell inputs span the full cache. 415,488 at
-    # ub=2048 is Studio's auto context that ran out of memory on the first prompt before.
+    # One slot with --swa-full: the sliding layers' per-cell inputs span the full cache.
     _ONE_SLOT_SWA_FULL = [
         (131072, 512, "q4_0", 1515.58),
         (262144, 512, "q4_0", 3011.58),
@@ -507,13 +503,12 @@ class TestMultiSlotDenseReserve:
 
     @pytest.mark.parametrize("slots", [1, 4])
     def test_fit_margin_is_only_the_pool_once_the_reserve_holds_the_worst_case(self, slots):
-        # 256 KiB per ub token; the B200-era runtime term added ~2.4 GB at 262K q8_0.
+        # 256 KiB per ub token.
         b = _inkling2_mini(MULTI_SEQ_CUDA)
         assert b._inkling2_fit_regrowth_mib(262144, 512, "q8_0", n_parallel = slots) == 128
 
     def test_an_unknown_build_keeps_the_older_fit_margin(self):
-        # b12631-mix has the loader but the banded reserve; without its build number it must
-        # not lose the growth allowance, while the compute estimate still errs high.
+        # b12631-mix has the loader but the banded reserve, so it keeps the growth allowance.
         unknown = _inkling2_mini(MULTI_SEQ_CUDA_UNKNOWN)
         known = _inkling2_mini(MULTI_SEQ_CUDA)
         assert unknown._inkling2_fit_regrowth_mib(32768, 2048, "f16", n_parallel = 4) > 512
@@ -527,7 +522,6 @@ class TestMultiSlotDenseReserve:
         [(262144, 512, "q8_0", 4), (32768, 2048, "f16", 4), (131072, 512, "q4_0", 1)],
     )
     def test_an_unknown_build_prices_the_banded_build_margin(self, ctx, ub, kv, slots):
-        # The margin is the banded build's own, not one derived from the dense reserve.
         unknown = _inkling2_mini(MULTI_SEQ_CUDA_UNKNOWN)
         banded = _inkling2_mini(NEW_CUDA)
         margin = unknown._inkling2_fit_regrowth_mib(ctx, ub, kv, n_parallel = slots)
