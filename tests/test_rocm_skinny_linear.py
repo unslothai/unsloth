@@ -587,3 +587,32 @@ def test_hook_skips_the_cast_and_kernel_for_trainable_adapters_and_other_devices
     with torch.no_grad():
         U.fast_linear_forward(lin, X)
     assert casts == [1] and len(seen) == 1
+
+
+def test_row_count_is_not_specialized():
+    # M (1 to MAX_ROWS rows) varies per decode batch; a specialized M compiles M == 1 and M % 16 == 0 as extra
+    # variants (three per call site). Static check: the kernels only exist on a ROCm build.
+    import ast
+    import pathlib
+
+    path = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "unsloth"
+        / "kernels"
+        / "rocm_skinny_linear.py"
+    )
+    tree = ast.parse(path.read_text())
+    found = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in (
+            "_skinny_linear_kernel",
+            "_splitk_reduce_kernel",
+        ):
+            names = set()
+            for dec in node.decorator_list:
+                if isinstance(dec, ast.Call):
+                    for kw in dec.keywords:
+                        if kw.arg == "do_not_specialize":
+                            names |= {e.value for e in kw.value.elts}
+            found[node.name] = names
+    assert found == {"_skinny_linear_kernel": {"M"}, "_splitk_reduce_kernel": {"M"}}, found

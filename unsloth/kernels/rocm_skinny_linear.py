@@ -37,8 +37,9 @@ if _ENV != "0" and torch.version.hip is not None:
         triton = None
 
 if triton is not None:
-
-    @triton.jit
+    # M (rows, 1 to MAX_ROWS) is not specialized: Triton would otherwise compile M == 1 and M % 16 == 0 as their
+    # own variants, three per call site instead of one.
+    @triton.jit(do_not_specialize = ["M"])
     def _skinny_linear_kernel(
         X,
         W,
@@ -121,7 +122,7 @@ if triton is not None:
                 mask = n_mask[None, :] & (rm[:, None] < BLOCK_M),
             )
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["M"])
     def _splitk_reduce_kernel(
         P,
         Y,
