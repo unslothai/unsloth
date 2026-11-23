@@ -3266,147 +3266,155 @@ def unsloth_fast_generate(self, *args, **kwargs):
         False,
     )
 
-    FastLlamaModel.for_inference(self)
+    graphs = False
 
-    # Unpack a BatchEncoding passed as input_ids: v5 generate() calls .shape on it.
-    _maybe_encoding = kwargs.get("input_ids", None)
-    if (
-        _maybe_encoding is not None
-        and not isinstance(_maybe_encoding, torch.Tensor)
-        and hasattr(_maybe_encoding, "items")
-    ):
-        batch_data = kwargs.pop("input_ids")
-        for key, val in batch_data.items():
-            kwargs.setdefault(key, val)
-
-    dtype = _get_dtype(dtype_from_config(self.config))
-
-    if hasattr(self, "config") and hasattr(self.config, "max_position_embeddings"):
-        if "input_ids" in kwargs and kwargs["input_ids"] is not None and "max_new_tokens" in kwargs:
-            _ids = kwargs["input_ids"]
-            if hasattr(_ids, "shape") and (
-                _ids.shape[-1] + kwargs["max_new_tokens"] > self.config.max_position_embeddings
-            ):
-                raise ValueError(
-                    f"Unsloth: input length {_ids.shape[-1]} + max_new_tokens {kwargs['max_new_tokens']} exceeds the maximum sequence length of {self.config.max_position_embeddings}!\n"
-                    "You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`."
-                )
-
-    # Must patch accelerate for Xformers.
-
-    # transformers raises if cache_implementation is set beside a user-supplied cache.
-    if kwargs.get("past_key_values", None) is not None:
-        # FalconH1 keeps its own input preparation for its hybrid Mamba/attention cache.
-        if getattr(getattr(self, "config", None), "model_type", None) == "falcon_h1":
-            raise NotImplementedError(
-                "Unsloth: passing past_key_values to generate() is not supported for FalconH1 yet."
-            )
-        kwargs["past_key_values"] = _ensure_cache_is_dynamic(kwargs["past_key_values"])
-        # The fast decode path only seeds missing KV buffers; drop the previous generate()'s.
-        for module in self.modules():
-            if hasattr(module, "paged_attention"):
-                del module.paged_attention_K, module.paged_attention_V, module.paged_attention
-        # A user StaticCache triggers CUDA-graph auto-compile, which overwrites the decode buffers.
-        if hasattr(getattr(self, "generation_config", None), "disable_compile"):
-            kwargs.setdefault("disable_compile", True)
-    else:
-        kwargs["cache_implementation"] = "dynamic"
-    # transformers 4.50 renamed num_logits_to_keep to logits_to_keep; re-emit the spelling forward() accepts.
-    _provided_num = kwargs.pop("num_logits_to_keep", None)
-    _provided_logits = kwargs.pop("logits_to_keep", None)
-    _provided = _provided_logits if _provided_logits is not None else _provided_num
     try:
-        _fwd_params = inspect.signature(self.forward).parameters
-        _has_new = "logits_to_keep" in _fwd_params
-        _has_old = "num_logits_to_keep" in _fwd_params
-    except (TypeError, ValueError):
-        # Opaque forward: keep the caller's spelling, defaulting to the new one.
-        _has_old = _provided_num is not None and _provided_logits is None
-        _has_new = not _has_old
-    if _has_new:
-        kwargs["logits_to_keep"] = _provided if _provided is not None else 1
-    elif _has_old:
-        kwargs["num_logits_to_keep"] = _provided if _provided is not None else 1
+        FastLlamaModel.for_inference(self)
 
-    kwargs.pop("token_type_ids", None)
+        # Unpack a BatchEncoding passed as input_ids: v5 generate() calls .shape on it.
+        _maybe_encoding = kwargs.get("input_ids", None)
+        if (
+            _maybe_encoding is not None
+            and not isinstance(_maybe_encoding, torch.Tensor)
+            and hasattr(_maybe_encoding, "items")
+        ):
+            batch_data = kwargs.pop("input_ids")
+            for key, val in batch_data.items():
+                kwargs.setdefault(key, val)
 
-    model_eos_token_id = getattr(self.config, "eos_token_id", None)
-    if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
-        model_eos_token_id = model_eos_token_id[0]
+        dtype = _get_dtype(dtype_from_config(self.config))
 
-    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
-
-    # Decided once per call so the prefill and every decode step agree.
-    with _decode_graphs.generate_scope():
-        graphs = _decode_graphs.enabled()
-        plan, token = "graph", None
-        if graphs:
-            plan_len = _generation_plan_len(self, args, kwargs)
-            try:
-                ids = _generation_input_ids(args, kwargs)
-                bsz = _decode_graphs.decode_batch(
-                    int(ids.shape[0]), kwargs, getattr(self, "generation_config", None)
-                )
-                short = _decode_graphs.short_call(self, plan_len, int(ids.shape[1]), bsz)
-                if short and _decode_graphs.HELD not in self.__dict__:
-                    plan, token = "eager", None
-                else:
-                    plan, token = _decode_graphs.plan_call(
-                        self, ids, dtype, KV_CACHE_INCREMENT, plan_len, bsz = bsz, eager = short,
-                    )  # fmt: skip
-                    if short:
-                        plan, token = "eager", None
-            except Exception:
-                plan, token = "graph", None
-            if plan == "eager":
-                graphs = False
-            else:
-                _decode_graphs.start_generation(plan_len)
-        redos = _decode_graphs.EAGER_REDOS
-        # Mixed precision autocast.
-        try:
-            with (
-                _decode_graphs.eager_scope() if plan == "eager" else contextlib.nullcontext(),
-                _decode_graphs.plan_scope("graph" if graphs else "eager"),
-                _get_inference_mode_context_manager(self),
-                torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
-                # After eager_scope: the fold's graphs-on threshold follows this call's plan.
-                _lora_fold_generate(self, args, kwargs),
+        if hasattr(self, "config") and hasattr(self.config, "max_position_embeddings"):
+            if (
+                "input_ids" in kwargs
+                and kwargs["input_ids"] is not None
+                and "max_new_tokens" in kwargs
             ):
-                output = _decode_graphs.generate_with_fallback(
-                    self, self._old_generate, graphs, args, kwargs
+                _ids = kwargs["input_ids"]
+                if hasattr(_ids, "shape") and (
+                    _ids.shape[-1] + kwargs["max_new_tokens"] > self.config.max_position_embeddings
+                ):
+                    raise ValueError(
+                        f"Unsloth: input length {_ids.shape[-1]} + max_new_tokens {kwargs['max_new_tokens']} exceeds the maximum sequence length of {self.config.max_position_embeddings}!\n"
+                        "You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`."
+                    )
+
+        # Must patch accelerate for Xformers.
+
+        # transformers raises if cache_implementation is set beside a user-supplied cache.
+        if kwargs.get("past_key_values", None) is not None:
+            # FalconH1 keeps its own input preparation for its hybrid Mamba/attention cache.
+            if getattr(getattr(self, "config", None), "model_type", None) == "falcon_h1":
+                raise NotImplementedError(
+                    "Unsloth: passing past_key_values to generate() is not supported for FalconH1 yet."
                 )
-        finally:
+            kwargs["past_key_values"] = _ensure_cache_is_dynamic(kwargs["past_key_values"])
+            # The fast decode path only seeds missing KV buffers; drop the previous generate()'s.
+            for module in self.modules():
+                if hasattr(module, "paged_attention"):
+                    del module.paged_attention_K, module.paged_attention_V, module.paged_attention
+            # A user StaticCache triggers CUDA-graph auto-compile, which overwrites the decode buffers.
+            if hasattr(getattr(self, "generation_config", None), "disable_compile"):
+                kwargs.setdefault("disable_compile", True)
+        else:
+            kwargs["cache_implementation"] = "dynamic"
+        # transformers 4.50 renamed num_logits_to_keep to logits_to_keep; re-emit the spelling forward() accepts.
+        _provided_num = kwargs.pop("num_logits_to_keep", None)
+        _provided_logits = kwargs.pop("logits_to_keep", None)
+        _provided = _provided_logits if _provided_logits is not None else _provided_num
+        try:
+            _fwd_params = inspect.signature(self.forward).parameters
+            _has_new = "logits_to_keep" in _fwd_params
+            _has_old = "num_logits_to_keep" in _fwd_params
+        except (TypeError, ValueError):
+            # Opaque forward: keep the caller's spelling, defaulting to the new one.
+            _has_old = _provided_num is not None and _provided_logits is None
+            _has_new = not _has_old
+        if _has_new:
+            kwargs["logits_to_keep"] = _provided if _provided is not None else 1
+        elif _has_old:
+            kwargs["num_logits_to_keep"] = _provided if _provided is not None else 1
+
+        kwargs.pop("token_type_ids", None)
+
+        model_eos_token_id = getattr(self.config, "eos_token_id", None)
+        if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
+            model_eos_token_id = model_eos_token_id[0]
+
+        kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
+
+        # Decided once per call so the prefill and every decode step agree.
+        with _decode_graphs.generate_scope():
+            graphs = _decode_graphs.enabled()
+            plan, token = "graph", None
             if graphs:
-                _decode_graphs.end_generation()
-        if graphs and _decode_graphs.EAGER_REDOS == redos:
-            _decode_graphs.record_need(self, token)
-    if graphs and restore_training_mode:
-        # Back to training: free the graphs and decode buffers for it, unless they fit beside it
-        # (keep_for_training; they replay the updated adapters after the optimizer step).
-        _decode_graphs.release_for_training(self)
-    elif graphs and getattr(output, "past_key_values", None) is not None:
-        # The returned cache views the persistent decode buffers: hand them over, so a later
-        # generate() allocates its own instead of overwriting a cache the caller kept.
-        _decode_graphs.release(self)
-    elif graphs:
-        # keep_only uses the expanded decode batch.
-        ids = _generation_input_ids(args, kwargs)
-        expected = None
-        if hasattr(ids, "shape") and len(ids.shape) >= 2:
-            expected = _decode_graphs.decode_batch(
-                int(ids.shape[0]), kwargs, getattr(self, "generation_config", None)
+                plan_len = _generation_plan_len(self, args, kwargs)
+                try:
+                    ids = _generation_input_ids(args, kwargs)
+                    bsz = _decode_graphs.decode_batch(
+                        int(ids.shape[0]), kwargs, getattr(self, "generation_config", None)
+                    )
+                    short = _decode_graphs.short_call(self, plan_len, int(ids.shape[1]), bsz)
+                    if short and _decode_graphs.HELD not in self.__dict__:
+                        plan, token = "eager", None
+                    else:
+                        plan, token = _decode_graphs.plan_call(
+                            self, ids, dtype, KV_CACHE_INCREMENT, plan_len, bsz = bsz, eager = short,
+                        )  # fmt: skip
+                        if short:
+                            plan, token = "eager", None
+                except Exception:
+                    plan, token = "graph", None
+                if plan == "eager":
+                    graphs = False
+                else:
+                    _decode_graphs.start_generation(plan_len)
+            redos = _decode_graphs.EAGER_REDOS
+            # Mixed precision autocast.
+            try:
+                with (
+                    _decode_graphs.eager_scope() if plan == "eager" else contextlib.nullcontext(),
+                    _decode_graphs.plan_scope("graph" if graphs else "eager"),
+                    _get_inference_mode_context_manager(self),
+                    torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
+                    # After eager_scope: the fold's graphs-on threshold follows this call's plan.
+                    _lora_fold_generate(self, args, kwargs),
+                ):
+                    output = _decode_graphs.generate_with_fallback(
+                        self, self._old_generate, graphs, args, kwargs
+                    )
+            finally:
+                if graphs:
+                    _decode_graphs.end_generation()
+            if graphs and _decode_graphs.EAGER_REDOS == redos:
+                _decode_graphs.record_need(self, token)
+        if graphs and not restore_training_mode:
+            if getattr(output, "past_key_values", None) is not None:
+                # The returned cache views the persistent decode buffers: hand them over, so a later
+                # generate() allocates its own instead of overwriting a cache the caller kept.
+                _decode_graphs.release(self)
+            else:
+                # keep_only uses the expanded decode batch.
+                ids = _generation_input_ids(args, kwargs)
+                expected = None
+                if hasattr(ids, "shape") and len(ids.shape) >= 2:
+                    expected = _decode_graphs.decode_batch(
+                        int(ids.shape[0]), kwargs, getattr(self, "generation_config", None)
+                    )
+                _decode_graphs.keep_only(self, expected)
+                self.__dict__[_decode_graphs.HELD] = True
+
+        return output
+    finally:
+        if restore_training_mode:
+            if graphs:
+                # Back to training: free the graphs and decode buffers for it, unless they fit beside it
+                # (keep_for_training; they replay the updated adapters after the optimizer step).
+                _decode_graphs.release_for_training(self)
+            FastLlamaModel.for_training(
+                self,
+                use_gradient_checkpointing = use_gradient_checkpointing,
             )
-        _decode_graphs.keep_only(self, expected)
-        self.__dict__[_decode_graphs.HELD] = True
-
-    if restore_training_mode:
-        FastLlamaModel.for_training(
-            self,
-            use_gradient_checkpointing = use_gradient_checkpointing,
-        )
-
-    return output
 
 
 def _vllm_will_load_weights(fast_inference, num_labels = None):
