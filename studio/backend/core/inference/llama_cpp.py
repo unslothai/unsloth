@@ -39458,9 +39458,14 @@ class LlamaCppBackend:
                         and not (cancel_event is not None and cancel_event.is_set())
                         and (max_tokens is None or _spent < max_tokens)
                     ):
+                        # A Max Tokens as large as the window (the chat's default) caps nothing the
+                        # window does not, and what is left of it is only the prompt's size.
+                        _window = self._effective_context_length or 0
                         _length_recovery = (
                             _first_metadata,
-                            None if max_tokens is None else max_tokens - _spent,
+                            None
+                            if max_tokens is None or (_window and max_tokens >= _window)
+                            else max_tokens - _spent,
                         )
                     else:
                         yield _first_metadata

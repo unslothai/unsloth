@@ -344,6 +344,18 @@ def test_the_answer_gets_only_what_is_left_of_max_tokens(monkeypatch):
     assert payloads[1]["n_predict"] == 200
 
 
+def test_a_max_tokens_as_large_as_the_window_does_not_squeeze_the_answer(monkeypatch):
+    payloads: list[dict] = []
+    backend = _closing_backend(
+        monkeypatch, [_thought_cut(completion_tokens = 900), _raw_answer()], payloads, context = 1_000
+    )
+
+    # The chat caps Max Tokens at the loaded window; what is left of it is only the prompt's size.
+    _plain(backend, max_tokens = 1_000)
+
+    assert payloads[1]["n_predict"] > 1_000 - 900
+
+
 def test_a_template_that_opens_the_thought_itself_gets_no_second_opener(monkeypatch):
     payloads: list[dict] = []
     backend = _closing_backend(
