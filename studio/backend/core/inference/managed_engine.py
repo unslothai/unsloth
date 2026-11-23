@@ -262,6 +262,7 @@ def validate_model(
         "gptq",
         "compressed-tensors",
         "auto-round",
+        "fbgemm_fp8",
     ):
         raise ValueError(
             f"{ENGINE_NAMES[engine]} on Apple Silicon cannot load this checkpoint's quantization. Choose an "

@@ -8,12 +8,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.inference import engine_adapters, managed_engine
+from core.inference import engine_adapters, managed_engine, wsl_host
 from core.inference import engine_install as install
 
 
 @pytest.fixture
 def mac(monkeypatch):
+    monkeypatch.setattr(wsl_host, "active", lambda: False)
     monkeypatch.setattr(install.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(install.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(install.platform, "mac_ver", lambda: ("26.5.1", ("", "", ""), "arm64"))
