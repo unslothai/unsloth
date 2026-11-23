@@ -458,3 +458,65 @@ def test_loop_message_input_is_checkpointed_under_gradient_checkpointing(monkeyp
 def test_message_input_checkpoint_skips_inkling2_small():
     m = _inkling2()
     assert m.checkpoint_inkling2_message_inputs(_tiny(loop = False)) == 0
+
+
+def _message_grad(model, ids):
+    # autograd.grad (not .backward) on the hidden states the loop message residual reads.
+    out = model.model.language_model(input_ids = ids, use_cache = False).last_hidden_state
+    params = [p for n, p in model.named_parameters() if "message_input.query" in n]
+    return torch.autograd.grad(out.square().sum(), params)
+
+
+def test_message_checkpoint_follows_the_models_reentrant_setting():
+    # transformers 5.24 checkpoints the layers non-reentrant by default, where autograd.grad works; a reentrant message
+    # checkpoint inside that forward raised "torch.utils.checkpoint is incompatible with .grad()".
+    m = _inkling2()
+    model = _tiny(loop = True)
+    model.train()
+    ids = torch.randint(0, 250, (2, 16), generator = torch.Generator().manual_seed(0))
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
+    want = _message_grad(model, ids)
+    calls = []
+    original = torch.utils.checkpoint.checkpoint
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs.get("use_reentrant"))
+        return original(*args, **kwargs)
+
+    import unittest.mock
+
+    # The wrapper binds checkpoint when it is installed; the layers keep the one transformers bound at enable.
+    with unittest.mock.patch("torch.utils.checkpoint.checkpoint", spy):
+        assert m.checkpoint_inkling2_message_inputs(model) == 1
+    got = _message_grad(model, ids)
+    assert (
+        calls.count(False) >= 6 and True not in calls
+    ), calls  # the 6 message calls took the checkpoint
+    for a, b in zip(got, want):
+        assert torch.equal(a, b)
+    assert m._checkpoint_use_reentrant(model.model.language_model) is False
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
+    assert m._checkpoint_use_reentrant(model.model.language_model) is True
+
+
+def test_message_checkpoint_keeps_accelerate_offload_hook():
+    # accelerate CPU offload keeps the residual's query on meta until the hook's pre_forward loads it: the checkpoint
+    # path computed on meta. An offloaded module keeps its hooked forward.
+    accelerate = pytest.importorskip("accelerate")
+    m = _inkling2()
+    model = _tiny(loop = True)
+    model.train()
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
+    ids = torch.randint(0, 250, (2, 16), generator = torch.Generator().manual_seed(0))
+    out = model(input_ids = ids, labels = ids, use_cache = False)
+    message_input = model.model.language_model.message_input
+    accelerate.cpu_offload(message_input, execution_device = "cpu")
+    assert message_input.query.device.type == "meta"
+    assert m.checkpoint_inkling2_message_inputs(model) == 1
+    got = model(input_ids = ids, labels = ids, use_cache = False)
+    assert got.logits.device.type == "cpu"
+    assert torch.equal(got.logits, out.logits)
+    got.loss.backward()
+    assert m._weights_offloaded(message_input)
+    # Not offloaded: the checkpoint path engages.
+    assert not m._weights_offloaded(_tiny(loop = True).model.language_model.message_input)

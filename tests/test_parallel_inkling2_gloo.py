@@ -51,7 +51,7 @@ def _load(name):
     return module
 
 
-def build(loop):
+def build(loop, reentrant = None):
     from peft import LoraConfig, get_peft_model
     from transformers import AutoModelForImageTextToText
     from transformers.models.inkling2.configuration_inkling2 import Inkling2Config
@@ -118,7 +118,17 @@ def build(loop):
         init_lora_weights = False,
     )
     torch.manual_seed(1)
-    return get_peft_model(model, lora)
+    model = get_peft_model(model, lora)
+    if reentrant is not None:
+        # Gradient checkpointing with Unsloth's checkpointed loop message residual (Mini).
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs = {"use_reentrant": reentrant}
+        )
+        if reentrant:
+            model.enable_input_require_grads()
+        assert _load("inkling2").checkpoint_inkling2_message_inputs(model) == int(loop)
+    model.train()
+    return model
 
 
 def batch(rows = 4, seq = 12):
@@ -164,19 +174,30 @@ def _case(
     mode,
     loop,
     steps = 2,
+    reentrant = None,
 ):
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
 
     ids, labels = batch()
-    ref_model = build(loop)
+    recomputed = [0]
+    if reentrant is not None:
+        ink = _load("inkling2")
+        math = ink._message_input_math
+
+        def counted(*args):
+            recomputed[0] += 1
+            return math(*args)
+
+        ink._message_input_math = counted
+    ref_model = build(loop, reentrant)
     ref = _train(
         ref_model,
         lambda: ref_model(input_ids = ids, labels = labels).loss,
         [p for p in ref_model.parameters() if p.requires_grad],
         steps,
     )
-    model = build(loop)
+    model = build(loop, reentrant)
     per = ids.shape[0] // world
     mine = slice(rank * per, (rank + 1) * per)
 
@@ -196,7 +217,7 @@ def _case(
             steps,
             mean = mean,
         )
-        return {"ref": ref, "got": got}
+        return {"ref": ref, "got": got, "recomputed": recomputed[0]}
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = (mode,))[mode]
     if mode == "fsdp2":
         native = _load("fsdp2_native")
@@ -212,7 +233,7 @@ def _case(
             full = lambda g: g.full_tensor() if hasattr(g, "full_tensor") else g,
             mean = mean,
         )
-        return {"ref": ref, "got": got, "units": units}
+        return {"ref": ref, "got": got, "units": units, "recomputed": recomputed[0]}
     try:
         if mode == "tp":
             _load("tp_native").apply_tensor_parallel(model, mesh)
@@ -288,6 +309,25 @@ def test_data_parallel_matches_one_process(mode, loop):
         assert float((grads[name] - want).abs().max()) <= 1e-7 + 1e-4 * scale, name
     if mode == "fsdp2":
         assert results[0]["units"] > 12  # one unit per decoder layer plus the root
+
+
+# DDP with reentrant checkpointing is left out: the looped layers run each parameter several times per forward, which
+# stock DDP rejects ("mark a variable ready only once") with or without the message checkpoint.
+@pytest.mark.parametrize("mode,reentrant", [("ddp", False), ("fsdp2", False), ("fsdp2", True)])
+def test_data_parallel_message_checkpoint_matches_one_process(mode, reentrant):
+    # Inkling-2-Mini under gradient checkpointing, with the loop message residual checkpointed (recomputed in
+    # backward) on both ranks and in the reference.
+    results = _spawn(mode = mode, loop = True, reentrant = reentrant)
+    assert all(r is not None and "error" not in r for r in results), results
+    (ref_losses, ref_grads), (losses, grads) = results[0]["ref"], results[0]["got"]
+    # 6 loop layers x 2 later passes, forward + backward recompute, 2 steps, reference and parallel model.
+    assert results[0]["recomputed"] >= 2 * 2 * 6 * 2 * 2, results[0]["recomputed"]
+    assert losses == pytest.approx(ref_losses, rel = 1e-5)
+    assert set(grads) == set(ref_grads) and any(".experts." in n for n in grads)
+    for name, want in ref_grads.items():
+        scale = float(want.abs().max())
+        assert scale > 0, name
+        assert float((grads[name] - want).abs().max()) <= 1e-7 + 1e-4 * scale, name
 
 
 @pytest.mark.parametrize("loop", [True, False], ids = ["mini_loop", "small"])

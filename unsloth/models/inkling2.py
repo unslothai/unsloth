@@ -332,6 +332,40 @@ def _message_input_math(query, eps, scaling, block_states, partial_block_states,
     return attn_output.transpose(1, 2)
 
 
+def _checkpoint_use_reentrant(text_model):
+    """The ``use_reentrant`` the text model's layers checkpoint with (transformers keeps it on the partial it installs
+    as ``_gradient_checkpointing_func``; 5.24 defaults to False). Unknown: torch's default, True."""
+    import functools
+
+    function = getattr(text_model, "_gradient_checkpointing_func", None)
+    while isinstance(function, functools.partial):
+        if "use_reentrant" in function.keywords:
+            return bool(function.keywords["use_reentrant"])
+        function = function.func
+    return True
+
+
+def _weights_offloaded(module):
+    """True when accelerate keeps the module's weights elsewhere until its hook runs (CPU / disk offload: the
+    parameter sits on ``meta``) or the hook executes on another device than the parameter's."""
+    query = getattr(module, "query", None)
+    if query is None or query.device.type == "meta":
+        return True
+    hook = getattr(module, "_hf_hook", None)
+    for h in getattr(hook, "hooks", None) or ([hook] if hook is not None else []):
+        if getattr(h, "offload", False):
+            return True
+        execution_device = getattr(h, "execution_device", None)
+        if execution_device is not None:
+            try:
+                import torch
+                if torch.device(execution_device) != query.device:
+                    return True
+            except Exception:
+                return True
+    return False
+
+
 def _checkpointed_message_input(text_model, message_input, forward):
     """Inkling-2-Mini's loop message residual runs in the text model's forward, between the checkpointed decoder
     layers, so everything its fp32 attention saves for backward stays on the GPU for the whole step: about 50 MB per
@@ -342,7 +376,9 @@ def _checkpointed_message_input(text_model, message_input, forward):
     The recompute is the module's math as plain tensor ops (_message_input_math), not a module call: recomputing
     through the module (its accelerate device hook and compiled-module wrapper) from the autograd engine gave
     run-to-run different first-step gradients on a model split over two GPUs, where the engine runs each device's
-    backward on its own thread. UNSLOTH_INKLING2_MESSAGE_CHECKPOINT=0 keeps the stock residual."""
+    backward on its own thread. The checkpoint is reentrant or not as the model's layers are (``autograd.grad`` needs
+    non-reentrant), and a module whose weights accelerate offloads keeps its hooked forward (the hook loads them).
+    UNSLOTH_INKLING2_MESSAGE_CHECKPOINT=0 keeps the stock residual."""
     import os
     import weakref
 
@@ -365,6 +401,7 @@ def _checkpointed_message_input(text_model, message_input, forward):
             or torch.compiler.is_compiling()
             or getattr(getattr(mi, "config", None), "_attn_implementation", "eager") != "eager"
             or os.environ.get("UNSLOTH_INKLING2_MESSAGE_CHECKPOINT", "1") == "0"
+            or _weights_offloaded(mi)
         ):
             return forward(*args, **kwargs)
         block_states, partial_block_states, loop_layer_idx = args
@@ -381,7 +418,7 @@ def _checkpointed_message_input(text_model, message_input, forward):
             block_states,
             partial_block_states,
             int(loop_layer_idx),
-            use_reentrant = True,
+            use_reentrant = _checkpoint_use_reentrant(tm),
             preserve_rng_state = False,
         )
 
