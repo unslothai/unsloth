@@ -4542,8 +4542,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 attention_mask_chunks,
                 vision_chunks,
             )
-            # A "1" left behind by an OOM / interrupt here makes later forwards return hidden
-            # states as .logits, so the env write gets the same prior + finally the other sites use.
+            # A leaked "1" (OOM / interrupt) makes later forwards return hidden states as .logits.
             _unsloth_hs_prior = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
             try:
                 os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0" if _unsloth_head_hooked else "1"
