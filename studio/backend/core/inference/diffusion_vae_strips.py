@@ -917,9 +917,7 @@ def full_map_decode(vae: Any, z: Any) -> Any:
     if getattr(vae, "post_quant_conv", None) is not None:
         z = vae.post_quant_conv(z.to(vae.post_quant_conv.weight.dtype))
     z = z.to(dtype)
-    # A strip decode that already failed on this decoder (same kernels) or fails here: the torch ops, not the tiles,
-    # and without the upsample fold (it may be what failed). ROCm / no-Triton hosts always run the torch ops (portable)
-    # and keep the fold until such a failure.
+    # After a strip-decode failure: torch ops without the fold (it may be what failed). Portable hosts keep the fold.
     failed = decoder.__dict__.get("_unsloth_vae_strips_failed", False)
     kernels = _kernels_ok(decoder, z) and not failed
     try:

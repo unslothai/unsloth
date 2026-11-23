@@ -1443,9 +1443,7 @@ def rdna_auto_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
 
 _FAMILY_RDNA_EXPLICIT_W8A8: dict[str, str] = _profile_table("rdna_explicit_w8a8", quant = True)
 
-# gfx archs where the ``rdna_explicit_w8a8`` rows were measured (gfx1151: FLUX.3 Klein, LTX-2.5). The RDNA W8A8 kernels
-# accept every gfx11xx / gfx12xx card (``diffusion_native_quant._ROCM_FUSED_W8A8_ARCH``), but no other arch has a speed
-# or quality number, so an explicit int8 request stays weight-only there. Widen per arch with a measurement.
+# Only archs with measured W8A8 rows (kernels accept all gfx11/12); others stay weight-only. Widen per measurement.
 RDNA_EXPLICIT_W8A8_ARCHS = frozenset({"gfx1151"})
 
 

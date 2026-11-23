@@ -127,8 +127,7 @@ def test_rocm_without_the_measured_w8a8_tier_keeps_weight_only(monkeypatch, read
     [("gfx1151", True), ("gfx1100", False), ("gfx1101", False), ("gfx1201", False), ("", False)],
 )
 def test_rocm_only_measured_archs_run_explicit_w8a8(monkeypatch, arch, engaged):
-    # The RDNA W8A8 kernels accept every gfx11xx / gfx12xx card; LTX-2.5's W8A8 row was measured on gfx1151 only, so
-    # the others keep the weight-only build quantised from the dense shards, resident and offloaded alike.
+    # W8A8 measured on gfx1151 only: other RDNA archs keep the weight-only build, resident and offloaded.
     asked = _host(monkeypatch, rocm = True, arch = arch)
     card = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16, ordinal = 1)
     assert (tq.rdna_video_explicit_w8a8_reason(card, "ltx-2.5", "int8") is not None) is engaged
