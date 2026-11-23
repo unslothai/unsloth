@@ -468,10 +468,25 @@ def _probe_tile(index: int, fam: int, tile: int, pairs: tuple) -> bool:
                 return False
         torch.cuda.synchronize(dev)
         return True
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if _is_oom(exc):
+            _PROBE_OOMS[0] += 1
         return False
 
 
+def _is_oom(exc: BaseException) -> bool:
+    try:
+        import torch
+        if isinstance(exc, torch.OutOfMemoryError):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return "out of memory" in str(exc).lower()
+
+
+# Out-of-memory failures inside ``_probe_tile``, counted here: the allocator's num_ooms stays 0 under
+# PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync, which never fills the native allocator's stats.
+_PROBE_OOMS: list = [0]
 _PROBED: dict = {}
 # The tile verdicts persist per card (uuid), driver, torch / CUDA / Triton / torchao, these module sources and the
 # loaded library's bytes (``_probe_extra``): any change re-probes. UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
@@ -546,15 +561,18 @@ def probed_tiles(index: int) -> tuple:
             else:
                 pairs = _scale_dtypes(fam)
                 ooms = _alloc_failures(index)
+                probe_ooms = _PROBE_OOMS[0]
                 ok = tuple(t for t in range(len(tiles(fam))) if _probe_tile(index, fam, t, pairs))
                 failed = [t for t in range(len(tiles(fam))) if t not in ok]
                 # a failure persists only when it repeats and nothing around it failed: one transient error, an
                 # out-of-memory on a full card or a broken context must not drop a tile for good
-                if (
-                    not any(_probe_tile(index, fam, t, pairs) for t in failed)
-                    and ooms is not None
-                    and _alloc_failures(index) == ooms
+                repeated = not any(_probe_tile(index, fam, t, pairs) for t in failed)
+                after = _alloc_failures(index)
+                if _PROBE_OOMS[0] != probe_ooms or (
+                    ooms is not None and after is not None and after != ooms
                 ):
+                    return ok  # out of memory: not kept in this process either, the next call probes again
+                if repeated and ooms is not None and after == ooms:
                     _store_tiles(index, fam, ok)
     except Exception:  # noqa: BLE001
         ok = ()
