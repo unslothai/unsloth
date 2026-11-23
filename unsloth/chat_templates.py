@@ -633,18 +633,18 @@ CHAT_TEMPLATES["phi-3.5"] = CHAT_TEMPLATES["phi-3"]
 DEFAULT_SYSTEM_MESSAGE["phi-3.5"] = None
 
 """
-No trimming in Llama 3.1 Instruct!
-Also an extra newline for Cutting Knowledge Date
+Matches the official Llama 3.1 / 3.3 Instruct template: message content is trimmed,
+and there is an extra newline after the Cutting Knowledge Date.
 See https://colab.research.google.com/drive/1Xpqq5xpIgO-B00MQ-UccYMwN2J8QFgBM?usp=sharing
 
-Also should be
+To render today's date instead of the default "26 Jul 2024":
 
 import datetime
 tokenizer.apply_chat_template(
     messages,
     add_generation_prompt = True,
     tokenize = False,
-    date_string = datetime.today().strftime("%d %B %Y")),
+    date_string = datetime.today().strftime("%d %b %Y"),
 )
 """
 
@@ -657,7 +657,7 @@ llama31_template = \
     {%- set tools_in_user_message = true %}
 {%- endif %}
 {%- if not date_string is defined %}
-    {%- set date_string = "26 July 2024" %}
+    {%- set date_string = "26 Jul 2024" %}
 {%- endif %}
 {%- if not tools is defined %}
     {%- set tools = none %}
@@ -665,7 +665,7 @@ llama31_template = \
 
 {#- This block extracts the system message, so we can slot it into the right place. #}
 {%- if messages[0]['role'] == 'system' %}
-    {%- set system_message = messages[0]['content'] %}
+    {%- set system_message = messages[0]['content']|trim %}
     {%- set messages = messages[1:] %}
 {%- else %}
     {%- set system_message = "{system_message}" %}
@@ -697,7 +697,7 @@ llama31_template = \
 {%- if tools_in_user_message and not tools is none %}
     {#- Extract the first user message so we can plug it in here #}
     {%- if messages | length != 0 %}
-        {%- set first_user_message = messages[0]['content'] %}
+        {%- set first_user_message = messages[0]['content']|trim %}
         {%- set messages = messages[1:] %}
     {%- else %}
         {{- raise_exception("Cannot put tools in the first user message when there's no first user message!") }}
@@ -716,7 +716,7 @@ llama31_template = \
 
 {%- for message in messages %}
     {%- if not (message.role == 'ipython' or message.role == 'tool' or message.tool_calls) %}
-        {{- '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] + '<|eot_id|>' }}
+        {{- '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] | trim + '<|eot_id|>' }}
     {%- elif message.tool_calls %}
         {%- if not message.tool_calls|length == 1 %}
             {{- raise_exception("This model only supports single tool-calls at once!") }}
