@@ -97,7 +97,6 @@ def test_buffer_scan_is_not_memoised_while_loading():
     assert backend.reclaimable_gpu_memory_gb() == {0: 2.0}
 
 
-# A two-GPU split with a long context, as llama-server logs it: the weights are the small part.
 _SPLIT_LOAD = [
     "load_tensors:        CUDA0 model buffer size =  3900.00 MiB",
     "load_tensors:        CUDA1 model buffer size =  3790.00 MiB",
@@ -109,7 +108,6 @@ _SPLIT_LOAD = [
     "sched_reserve:      CUDA0 compute buffer size =   900.00 MiB",
     "sched_reserve:      CUDA1 compute buffer size =   850.00 MiB",
     "sched_reserve:  CUDA_Host compute buffer size =    72.00 MiB",
-    # Warmup on and off reserve again and reprint the same buffers.
     "sched_reserve: reserving ...",
     "sched_reserve:      CUDA0 compute buffer size =   900.00 MiB",
     "sched_reserve:      CUDA1 compute buffer size =   850.00 MiB",
@@ -139,7 +137,6 @@ def test_footprint_counts_kv_cache_and_compute_on_every_gpu():
 def test_reclaimable_stays_weights_only():
     backend = _split_backend()
     assert backend.reclaimable_gpu_memory_gb() == {0: 3900 / 1024, 1: 3790 / 1024}
-    # Same answer from the shared cache, in either call order.
     assert backend.gpu_footprint_gb()[0] == (3900 + 6400 + 900) / 1024
     assert backend.reclaimable_gpu_memory_gb() == {0: 3900 / 1024, 1: 3790 / 1024}
 
