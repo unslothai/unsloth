@@ -2205,15 +2205,19 @@ def CausalLM_fast_forward(fast_forward_inference):
         else:
             RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1" or (
                 lm_head_needs_forward(self.lm_head)
-                # Unmerged LoRA on the head or a head bias: the fused CE reads lm_head.weight alone.
-                or output_head_not_fusable(self.lm_head)
             )
             # Below 1024 normal Unsloth uses less VRAM.
             if bsz * q_len <= 1024 and not RETURN_LOGITS:
                 # unsloth_fused_ce_loss calculates the best chunk size to reduce VRAM usage.
                 RETURN_LOGITS = False
 
-            if not RETURN_LOGITS and labels is not None:
+            # Unmerged LoRA on the head or a head bias: the fused CE reads lm_head.weight alone. Checked only
+            # with labels, so inference never pays for it.
+            if (
+                not RETURN_LOGITS
+                and labels is not None
+                and not output_head_not_fusable(self.lm_head)
+            ):
                 n_items = kwargs.get("num_items_in_batch", None)
                 if n_items is None:
                     n_items = kwargs.get("n_items", None)
