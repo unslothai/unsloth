@@ -365,6 +365,7 @@ export function installPageAgent(): PageAgent {
     let cut = false;
     let buffer = "";
     let bufferShown = false;
+    let bufferKeepsLines = false;
     const push = (line: string) => {
       if (cut) return;
       if (used + line.length + 1 > budget) {
@@ -374,12 +375,20 @@ export function installPageAgent(): PageAgent {
       lines.push(line);
       used += line.length + 1;
     };
-    const flush = () => {
-      const text = clean(buffer, 400);
+    const flush = (code = false) => {
+      let text = bufferKeepsLines ? buffer.replace(/[^\S\n]+$/gm, "").replace(/^\n+|\s+$/g, "") : clean(buffer, Infinity);
+      if (code && text) text = `\`\`\`\n${text}\n\`\`\``;
       // A lone symbol is an icon or a bullet; a lone digit or letter is a count or a grade.
-      if (text && bufferShown && (text.length > 1 || /[\p{L}\p{N}]/u.test(text))) push(text);
+      if (text && bufferShown && (text.length > 1 || /[\p{L}\p{N}]/u.test(text))) {
+        const room = budget - used - 1;
+        if (text.length > room && room > 1) {
+          push(`${text.slice(0, room - 1)}…`);
+          cut = true;
+        } else push(text);
+      }
       buffer = "";
       bufferShown = false;
+      bufferKeepsLines = false;
     };
     const walk = (el: Element) => {
       if (cut) return;
@@ -430,6 +439,7 @@ export function installPageAgent(): PageAgent {
       // Text too small to read is there for the model, not the user. Only this element's own text:
       // a font-size:0 parent whose children reset it is a common inline-block layout trick.
       const unreadable = Number.parseFloat(style.fontSize) < 2;
+      const keepsLines = /^(pre|break-spaces)/.test(style.whiteSpace);
       const children = el.shadowRoot ? [...Array.from(el.shadowRoot.childNodes), ...Array.from(el.childNodes)] : Array.from(el.childNodes);
       for (const node of children) {
         if (cut) return;
@@ -437,14 +447,15 @@ export function installPageAgent(): PageAgent {
           const value = node.nodeValue ?? "";
           if (unreadable) buffer += " ";
           else if (!labelled) {
-            buffer += value;
+            buffer += keepsLines ? value : value.replace(/\s+/g, " ");
+            if (keepsLines && value.includes("\n")) bufferKeepsLines = true;
             if (value.trim() && shown && sized(rect)) bufferShown = true;
           }
         } else if (node.nodeType === Node.ELEMENT_NODE) {
           walk(node as Element);
         }
       }
-      if (block) flush();
+      if (block) flush(tag === "pre");
     };
     walk(root);
     flush();
