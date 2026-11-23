@@ -210,9 +210,10 @@ function Lens({
     resize.observe(host);
     resize.observe(wallpaper);
     const motion = new MutationObserver(place);
-    motion.observe(host, { attributes: true, attributeFilter: [GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR] });
     // Dragged panels move by a transform on the host or a wrapper, which no resize or scroll event reports.
-    for (let node: HTMLElement | null = host; node && node !== document.body; node = node.parentElement)
+    // One observe() per target: a second call replaces its options.
+    motion.observe(host, { attributes: true, attributeFilter: [GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR, "style"] });
+    for (let node = host.parentElement; node && node !== document.body; node = node.parentElement)
       motion.observe(node, { attributes: true, attributeFilter: ["style"] });
     const mutations = new MutationObserver(recopy);
     mutations.observe(wallpaper, {
