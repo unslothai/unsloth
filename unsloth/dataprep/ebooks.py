@@ -96,6 +96,8 @@ class _BookTextParser(HTMLParser):
             closes = {"rb", "rp", "rt", "rtc"} if tag in {"rb", "rtc"} else {"rb", "rp", "rt"}
             while self.stack and self.stack[-1][0] in closes:
                 self.stack.pop()
+            while self.page_marks and self.page_marks[-1][0] >= len(self.stack):
+                self.page_marks.pop()
         attrs = dict(attrs)
         if tag == "meta" and self.encoding is None:
             self.encoding = attrs.get("charset")

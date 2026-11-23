@@ -203,6 +203,10 @@ def test_page_break_markers_keep_word_separators(ebooks, html, expected):
         ),
         (b'<table><tr><td epub:type="pagebreak">12<td>Cell</table>', "12 Cell"),
         (b'<p>The <span epub:type="pagebreak">12 quick brown fox</p>', "The 12 quick brown fox"),
+        (
+            "<ruby><rb role='doc-pagebreak'>12<rb>東京</rb></ruby>に行く。".encode(),
+            "12東京に行く。",
+        ),
     ],
 )
 def test_unclosed_page_break_markers_keep_their_text(ebooks, html, expected):
