@@ -136,7 +136,6 @@ const VLLM_QUANT_METHODS: ReadonlySet<string> = new Set([
   "auto-round",
   "fbgemm_fp8",
 ]);
-// Not offered on ROCm vLLM, matching /validate.
 const VLLM_ROCM_REFUSED_QUANT_METHODS: ReadonlySet<string> = new Set([
   "auto-round",
   "fbgemm_fp8",

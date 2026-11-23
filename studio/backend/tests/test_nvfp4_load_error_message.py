@@ -196,7 +196,6 @@ def test_nvfp4_points_at_the_engines_only_where_they_run(platform, reason, engin
 @pytest.mark.parametrize(
     "metadata",
     [
-        # compressed-tensors FP8-Dynamic, transformers block FP8, NVIDIA ModelOpt FP8.
         "{'config_groups': {'group_0': {'format': 'float-quantized'}}}",
         "{'quant_method': 'fp8', 'weight_block_size': [128, 128]}",
         "{'quant_method': 'modelopt', 'quant_algo': 'FP8'}",

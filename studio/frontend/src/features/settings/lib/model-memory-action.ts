@@ -21,7 +21,6 @@ export function modelMemorySettingsAction():
 // The backend's FP8 / NVFP4 refusal on a host that can run vLLM (routes/inference.py _GPU_QUANT_ENGINE_MESSAGE).
 const ENGINE_SETTINGS_MARKER = "Settings > System > More engines";
 
-/** "Open settings" on a load error that names the engines section. Owner only, as above. */
 export function engineSettingsAction(
   message: string,
 ): { label: string; onClick: () => void } | undefined {

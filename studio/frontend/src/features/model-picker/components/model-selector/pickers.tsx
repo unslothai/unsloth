@@ -4509,7 +4509,7 @@ export function HubModelPicker({
   const chatSupportedCheckpointQuant = useCallback(
     (r: HfModelResult) =>
       isChatSupported(r) ||
-      // Formats only vLLM loads (it offers itself on load); plain fp8 already passes on Default.
+      // Only vLLM loads these; plain fp8 passes on Default.
       (runsCheckpointQuant(r) &&
         VLLM_CHECKPOINT_QUANTS.has(r.quantMethod?.toLowerCase() ?? "") &&
         isChatSupported({ ...r, quantMethod: undefined })),

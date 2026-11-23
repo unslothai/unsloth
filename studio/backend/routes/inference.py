@@ -17916,7 +17916,6 @@ _NOT_SUPPORTED_HINTS = (
 )
 
 # The frontend keys its "Open settings" button on this wording (model-memory-action.ts).
-# The first line is the toast's title, the rest its description.
 _GPU_QUANT_ENGINE_MESSAGE = (
     "{fmt} models run on the vLLM or SGLang engine.\nInstall one in Settings > System > "
     "More engines, then choose it as Inference engine in this model's run settings."
