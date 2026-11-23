@@ -167,6 +167,33 @@ def test_a_saved_connection_persists_its_routing_but_never_a_key(thread):
     assert "extra_headers" not in sanitized
 
 
+def test_a_connection_run_keeps_only_the_sampling_the_client_sent(thread):
+    _connection()
+    sanitized = run_routes._sanitize_request(_payload(temperature = 0.3), _ui_request())
+
+    assert sanitized["temperature"] == 0.3
+    # Persisted defaults would be forwarded as if chosen: top_k=20 to a provider that rejects it.
+    for field in ("top_p", "top_k", "min_p", "repetition_penalty"):
+        assert field not in sanitized
+    replayed = run_routes.ChatCompletionRequest.model_validate(sanitized)
+    assert "top_k" not in replayed.model_fields_set
+
+
+def test_a_local_run_keeps_its_stored_defaults(thread):
+    sanitized = run_routes._sanitize_request(
+        run_routes.CreateChatGenerationRun(
+            runId = "run-2",
+            threadId = "thread-1",
+            userMessageId = "user-2",
+            assistantMessageId = "assistant-2",
+            requestPayload = {"model": MODEL, "messages": [{"role": "user", "content": "Hi"}]},
+        ),
+        _ui_request(),
+    )
+
+    assert sanitized["top_k"] == 20
+
+
 @pytest.mark.parametrize(
     "overrides,enabled",
     [
