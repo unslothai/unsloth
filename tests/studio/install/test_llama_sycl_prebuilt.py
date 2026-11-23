@@ -4,6 +4,7 @@
 """Linux Intel SYCL prebuilt: selection, oneAPI runtime discovery, device gate."""
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -134,7 +135,7 @@ def test_recorded_oneapi_dirs_reach_the_binary_env(monkeypatch, tmp_path):
     present = tmp_path / "venv" / "lib"
     present.mkdir(parents = True)
     (bin_dir / ONEAPI_LIB_DIRS_FILENAME).write_text(
-        f"{present}:{tmp_path / 'gone'}\n", encoding = "utf-8"
+        f"{present}{os.pathsep}{tmp_path / 'gone'}\n", encoding = "utf-8"
     )
     assert oneapi_lib_dirs(bin_dir) == [str(present)]
     assert oneapi_lib_dirs(tmp_path) == []
