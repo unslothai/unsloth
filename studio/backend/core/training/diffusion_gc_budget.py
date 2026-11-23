@@ -49,14 +49,6 @@ def _mem_get_info() -> tuple[int, int]:
     return trusted_mem_get_info()
 
 
-def _is_rocm() -> bool:
-    try:
-        import torch
-        return bool(getattr(torch.version, "hip", None))
-    except Exception:  # noqa: BLE001
-        return True
-
-
 def rocm_windows_discrete(device = "cuda") -> bool:
     """A discrete (not APU) Radeon card under Windows ROCm. WDDM shows these budgets the whole card as free (blind to
     other processes) and satisfies an overflow from host RAM instead of raising, so the OOM step-down never fires;
