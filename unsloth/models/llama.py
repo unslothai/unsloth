@@ -1796,8 +1796,9 @@ def LlamaModel_fast_forward(
             kwargs["use_sliding_window"] = use_sliding_window
 
         if gradient_checkpointing and not isinstance(decoder_layer, GradientCheckpointingLayer):
-
-            def create_custom_forward(module):
+            # Bind this layer's values: the reentrant replay runs after the loop, when kwargs
+            # (Gemma2 use_sliding_window) and past_key_value hold the last layer's.
+            def create_custom_forward(module, past_key_value, layer_kwargs):
                 def custom_forward(*inputs):
                     return module(
                         *inputs,
@@ -1805,14 +1806,14 @@ def LlamaModel_fast_forward(
                         output_attentions,
                         padding_mask = padding_mask,
                         position_embeddings = position_embeddings,
-                        **kwargs,
+                        **layer_kwargs,
                     )
 
                 custom_forward._unsloth_checkpoint_module = module
                 return custom_forward
 
             layer_outputs = torch.utils.checkpoint.checkpoint(
-                create_custom_forward(decoder_layer),
+                create_custom_forward(decoder_layer, past_key_value, dict(kwargs)),
                 hidden_states,
                 mask,
                 attention_mask,
@@ -2162,7 +2163,11 @@ def _decode_logits(self, hidden_states):
     """The decode branch of CausalLM_fast_forward's head (q_len == 1, no labels), for captured steps."""
     lm_head = self.lm_head.weight
     dtype = lm_head.dtype
-    if hidden_states.shape[0] == 1 and type(self.lm_head) is torch.nn.Linear:
+    if (
+        hidden_states.shape[0] == 1
+        and type(self.lm_head) is torch.nn.Linear
+        and self.lm_head.bias is None
+    ):
         logits = torch.mv(lm_head, hidden_states.ravel().to(dtype)).unsqueeze(0).unsqueeze(0)
     else:
         logits = self.lm_head(hidden_states.to(dtype))
@@ -2247,7 +2252,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             return_dict = (
                 return_dict if return_dict is not None else config_return_dict(self.config)
             )
-            self.model._has_no_labels = labels is None
+            self.model._has_no_labels = labels is None and shift_labels is None
             outputs = _run_backbone(
                 self,
                 input_ids = input_ids,
@@ -2274,7 +2279,13 @@ def CausalLM_fast_forward(fast_forward_inference):
         keep = logits_to_keep_tensor(num_logits_to_keep, logits_to_keep)
         if keep is not None and (labels is not None or shift_labels is not None):
             keep = None
-        if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
+        if (
+            isinstance(num_logits_to_keep, torch.Tensor)
+            or isinstance(logits_to_keep, torch.Tensor)
+            or labels is not None
+            or shift_labels is not None
+        ):
+            # Labels span the whole sequence, so a suffix slice would misalign the loss.
             num_logits_to_keep = 0
         else:
             num_logits_to_keep = max(num_logits_to_keep or 0, logits_to_keep or 0)
@@ -2306,6 +2317,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             bsz == 1
             and q_len == 1
             and type(self.lm_head) is torch.nn.Linear
+            and self.lm_head.bias is None
             and not getattr(self.lm_head, "_unsloth_vocab_parallel", False)
         ):
             logits = torch.mv(lm_head, hidden_states.ravel().to(dtype))
@@ -2325,7 +2337,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             # logits branch. Checked only with labels, so inference never pays for it.
             if (
                 not RETURN_LOGITS
-                and labels is not None
+                and (labels is not None or shift_labels is not None)
                 and not output_head_not_fusable(self.lm_head)
             ):
                 n_items = kwargs.get("num_items_in_batch", None)
@@ -2348,10 +2360,11 @@ def CausalLM_fast_forward(fast_forward_inference):
                     logit_scale_multiply = 0
 
                 # Raw-label boundary guard; this return leaves mask_packed_sequence_boundaries() dead on packed paths (needs UNSLOTH_RETURN_LOGITS=1)
-                labels = mask_packed_boundary_labels(
-                    labels,
-                    kwargs.get("packed_seq_lengths"),
-                )
+                if shift_labels is None:
+                    labels = mask_packed_boundary_labels(
+                        labels,
+                        kwargs.get("packed_seq_lengths"),
+                    )
 
                 if getattr(
                     self.lm_head, "_unsloth_vocab_parallel", False
