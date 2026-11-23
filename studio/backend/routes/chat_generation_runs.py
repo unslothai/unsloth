@@ -179,7 +179,11 @@ def _admit_saved_connection(raw: dict[str, Any], request: Request | None) -> Non
     ):
         raise HTTPException(status_code = 400, detail = EXTERNAL_LEGACY_DETAIL)
     from auth.authentication import request_admitted_without_credential
-    from routes.inference import _request_may_use_saved_provider_key
+    from routes.inference import (
+        _request_has_api_key,
+        _request_is_saved_credential_workflow,
+        _request_may_use_saved_provider_key,
+    )
 
     # The producer runs without the caller's credential, so the proxy's caller gates apply here.
     if request_admitted_without_credential(request):
@@ -197,6 +201,16 @@ def _admit_saved_connection(raw: dict[str, Any], request: Request | None) -> Non
     ):
         # The live stream reports a missing or disabled connection in the chat.
         raise HTTPException(status_code = 400, detail = EXTERNAL_LEGACY_DETAIL)
+    # The proxy's subscription gate is narrower than the saved-key one: an `unsloth start` key passes the latter.
+    if (
+        provider["provider_type"] == "openai_codex"
+        and _request_has_api_key(request)
+        and not _request_is_saved_credential_workflow(request)
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "ChatGPT subscriptions are available only to Unsloth UI and internal workflows.",
+        )
     account_access.require_connection_model_allowed(provider, external_model)
 
 

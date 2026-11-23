@@ -296,3 +296,29 @@ async def test_stop_reaches_a_connection_run_and_closes_the_upstream(thread):
         await asyncio.sleep(0.3)
         assert not upstream.finished
         assert upstream.sent < 400
+
+
+@pytest.mark.parametrize("provider_type,admitted", [("openai_codex", False), ("custom", True)])
+def test_an_agent_key_cannot_spend_a_chatgpt_subscription(
+    thread, monkeypatch, provider_type, admitted
+):
+    from routes import inference
+
+    # An `unsloth start` key: it may spend a saved key, but the live proxy refuses it a subscription.
+    monkeypatch.setattr(inference, "_request_may_use_saved_provider_key", lambda _request: True)
+    monkeypatch.setattr(inference, "_request_has_api_key", lambda _request: True)
+    monkeypatch.setattr(inference, "_request_is_saved_credential_workflow", lambda _request: False)
+    providers_db.create_provider(
+        id = "conn-1",
+        provider_type = provider_type,
+        display_name = "Connection",
+        base_url = "http://127.0.0.1:9/v1",
+        models = [MODEL],
+    )
+    request = _ui_request(authorization = "Bearer sk-unsloth-agent")
+    if admitted:
+        assert run_routes._sanitize_request(_payload(), request)["provider_id"] == "conn-1"
+        return
+    with pytest.raises(HTTPException) as exc_info:
+        run_routes._sanitize_request(_payload(), request)
+    assert exc_info.value.status_code == 403
