@@ -594,6 +594,7 @@ class Inkling2PipelineAdapter:
 
     def install(self, decoder, ctx, stage_output):
         install_inkling2_stage_forward(decoder, ctx, stage_output)
+        pin_inkling2_dequant_plan(decoder.layers[ctx.start : ctx.end])
 
 
 def inkling2_pipeline_adapter(decoder):
@@ -825,3 +826,78 @@ def install_inkling2_stage_forward(decoder, ctx, stage_output):
     forward._unsloth_inkling2_pipeline_stage = True
     decoder.forward = forward
     return forward
+
+
+_DEQUANT_CHUNK_ENV = "UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS"
+
+
+def _expert_stack_shape(param):
+    while hasattr(param, "base_layer"):
+        param = param.base_layer
+    shape = getattr(param, "_original_shape", None) or getattr(
+        getattr(param, "quant_state", None), "shape", None
+    )
+    if shape is None and getattr(param, "dim", lambda: 0)() == 3:
+        shape = param.shape
+    return tuple(int(x) for x in shape) if shape is not None and len(shape) == 3 else None
+
+
+def pin_inkling2_dequant_plan(layers):
+    """Under pipeline parallel, fix unsloth_zoo's expert dequant chunking for this stage's run.
+
+    zoo reads an Inkling 2 expert stack in chunks when the stack exceeds twice ``_unsloth_dequant_scratch_fraction``
+    of the card and does not fit the free memory at that moment. Its checkpoint replay reuses the first pass's
+    decision only inside zoo's own checkpoint; under torch's non-reentrant checkpoint the recompute decides again,
+    and a pipeline stage holding several micro-batches sees other free memory then (real Inkling-2-Mini on a T4,
+    stage 0 = layers 0..17: ``CheckpointError: ... saved during forward: 202, during recomputation: 200``). On a card
+    where the decision depends on free memory, always chunk with zoo's own chunk size (the chunks give the whole
+    stack's values bit for bit); elsewhere zoo never chunks and nothing is set. An explicit
+    UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS or UNSLOTH_MOE_DEQUANT_MAX_MB wins. Returns the chunk set, else None."""
+    import os
+
+    import torch
+
+    if _DEQUANT_CHUNK_ENV in os.environ or os.environ.get(
+        "UNSLOTH_MOE_DEQUANT_MAX_MB", "auto"
+    ).strip().lower() not in (
+        "",
+        "auto",
+    ):
+        return None
+    for layer in layers:
+        for module in layer.modules():
+            fraction = getattr(type(module), "_unsloth_dequant_scratch_fraction", None)
+            if not fraction:
+                continue
+            shapes, device = [], None
+            for name in ("gate_up_proj", "down_proj"):
+                param = getattr(module, name, None)
+                shape = _expert_stack_shape(param) if param is not None else None
+                if shape is None:
+                    continue
+                shapes.append(shape)
+                base = param
+                while hasattr(base, "base_layer"):
+                    base = base.base_layer
+                device = getattr(base, "device", device)
+            if (
+                not shapes
+                or device is None
+                or device.type != "cuda"
+                or not torch.cuda.is_available()
+            ):
+                return None
+            element = 2  # zoo dequantizes to the 16-bit compute dtype
+            per_expert = max(a * b for _, a, b in shapes) * element
+            scratch = shapes[0][0] * per_expert
+            cap = float(fraction) * torch.cuda.get_device_properties(device).total_memory
+            if cap <= 0 or scratch <= 2 * cap:
+                return None  # zoo keeps the whole stack whatever the free memory: already one plan
+            chunk = max(1, int(cap // per_expert))
+            os.environ[_DEQUANT_CHUNK_ENV] = str(chunk)
+            print(
+                f"Unsloth: Inkling 2 pipeline stage: expert stacks dequantized {chunk} experts at a time "
+                f"({_DEQUANT_CHUNK_ENV}={chunk}), so checkpoint recomputes repeat the forward's plan."
+            )
+            return chunk
+    return None

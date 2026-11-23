@@ -422,3 +422,40 @@ def test_adapter_cut_points_and_carry():
     assert [adapter.blocks_before(c) for c in (1, 6, 7, 18, 19, 23)] == [1, 1, 2, 3, 4, 4]
     assert adapter.carry(18) == [((2304,), None), ((3, 2304), None)]
     assert adapter.owner_layer("message_input") == 6 and adapter.owner_layer("final_input") is None
+
+
+def test_dequant_plan_pinned_where_zoo_decides_by_free_memory(monkeypatch):
+    """Real Inkling-2-Mini expert stacks (128 x 2304 x 2304 gate_up, 16-bit scratch 1.27 GiB): on a T4 zoo's chunking
+    depends on free memory, so the stage pins zoo's own chunk; on a 40 GB card zoo never chunks and nothing is set."""
+    import types as _types
+
+    ink = _load("inkling2")
+
+    class Experts(torch.nn.Module):
+        _unsloth_dequant_scratch_fraction = 0.025
+
+        def __init__(self):
+            super().__init__()
+            self.gate_up_proj = _types.SimpleNamespace(
+                _original_shape = (128, 2304, 2304), device = torch.device("cuda", 0)
+            )
+            self.down_proj = _types.SimpleNamespace(
+                _original_shape = (128, 2304, 1152), device = torch.device("cuda", 0)
+            )
+
+    layer = torch.nn.Module()
+    layer.experts = Experts()
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    for total, want in ((int(14.56 * 2**30), "36"), (int(39.5 * 2**30), None)):
+        monkeypatch.delenv(ink._DEQUANT_CHUNK_ENV, raising = False)
+        monkeypatch.setattr(
+            torch.cuda,
+            "get_device_properties",
+            lambda device, t = total: _types.SimpleNamespace(total_memory = t),
+        )
+        got = ink.pin_inkling2_dequant_plan([layer])
+        assert os.environ.get(ink._DEQUANT_CHUNK_ENV) == want and (got is None) == (want is None)
+    monkeypatch.setenv(ink._DEQUANT_CHUNK_ENV, "0")  # an explicit setting wins
+    assert (
+        ink.pin_inkling2_dequant_plan([layer]) is None and os.environ[ink._DEQUANT_CHUNK_ENV] == "0"
+    )
