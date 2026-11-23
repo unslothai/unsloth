@@ -556,7 +556,18 @@ def save_inkling2_merged_16bit(
     )
 
     if push_to_hub:
-        api.upload_folder(folder_path = save_directory, repo_id = final_directory)
+        # The upload only adds files, so an existing repo keeps an older model.safetensors or LoRA adapter that would
+        # shadow the merged shards on reload: delete them in the same commit, as the local save does.
+        stale = sorted(
+            name
+            for name in api.list_repo_files(final_directory)
+            if name not in new_map.values() and _STALE_WEIGHT_FILE.fullmatch(name)
+        )
+        api.upload_folder(
+            folder_path = save_directory,
+            repo_id = final_directory,
+            delete_patterns = stale or None,
+        )
         shutil.rmtree(save_directory, ignore_errors = True)
         print(f"Unsloth: Uploaded the merged model to https://huggingface.co/{final_directory}")
 

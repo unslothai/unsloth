@@ -948,3 +948,41 @@ def test_private_push_refuses_an_existing_public_repo(tmp_path, monkeypatch, pub
         save()
         api.upload_folder.assert_called_once()
         assert api.upload_folder.call_args.kwargs["repo_id"] == "someone/inkling-merged"
+
+
+def test_push_deletes_stale_remote_weights(tmp_path, monkeypatch):
+    # upload_folder only adds files: an older model.safetensors or LoRA adapter already on the Hub would shadow the
+    # merged shards on reload, so the push must delete them in the same commit and keep everything else.
+    import types
+    import unittest.mock
+
+    import huggingface_hub
+
+    model = _export_setup(tmp_path, target_parameters = ["mlp.experts.gate_up_proj"])
+    api = unittest.mock.MagicMock()
+    api.create_repo.return_value = types.SimpleNamespace(repo_id = "someone/inkling-merged")
+    api.list_repo_files.return_value = [
+        ".gitattributes",
+        "README.md",
+        "model.safetensors",
+        "model-00001-of-00001.safetensors",
+        "model-00002-of-00003.safetensors",
+        "pytorch_model.bin",
+        "adapter_config.json",
+        "adapter_model.safetensors",
+        "sub/model.safetensors",
+    ]
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda *a, **k: api)
+    _inkling2().save_inkling2_merged_16bit(
+        model, None, "inkling-merged", push_to_hub = True, token = "hf_x"
+    )
+    api.upload_folder.assert_called_once()
+    kwargs = api.upload_folder.call_args.kwargs
+    assert kwargs["repo_id"] == "someone/inkling-merged"
+    assert sorted(kwargs.get("delete_patterns") or []) == [
+        "adapter_config.json",
+        "adapter_model.safetensors",
+        "model-00002-of-00003.safetensors",
+        "model.safetensors",
+        "pytorch_model.bin",
+    ]
