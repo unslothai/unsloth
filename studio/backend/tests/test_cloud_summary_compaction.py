@@ -772,6 +772,7 @@ def test_a_percent_applies_to_the_window_a_self_hosted_server_reports(monkeypatc
     _proxy("vllm", chat, context_overflow = "truncate_oldest", compaction_percent = 50)
     assert seen["threshold"] == 20_000
 
+
 def test_a_prompt_squeezed_by_fixed_overhead_summarises_up_to_the_newest_turn():
     from models.inference import ChatCompletionRequest
 

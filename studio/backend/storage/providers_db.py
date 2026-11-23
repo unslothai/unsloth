@@ -179,9 +179,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     if "auto_compact_percent" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN auto_compact_percent INTEGER")
     if "auto_compact_percent_by_model_json" not in existing_cols:
-        conn.execute(
-            "ALTER TABLE llm_providers ADD COLUMN auto_compact_percent_by_model_json TEXT"
-        )
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN auto_compact_percent_by_model_json TEXT")
     if "compaction_mode" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN compaction_mode TEXT")
     if "reasoning_config_json" not in existing_cols:
