@@ -3467,7 +3467,6 @@ def _lora_variant_note(model, adapter) -> str:
 def _fused_lora_skip_reason(
     lora_dropout,
     bias,
-    float32_base = False,
     fsdp = False,
 ) -> str:
     """Why patch_peft_model skipped the fused LoRA kernels, for the patched layers summary.
@@ -3480,8 +3479,6 @@ def _fused_lora_skip_reason(
         reasons.append(f"lora_dropout = {lora_dropout} with UNSLOTH_FUSED_LORA_DROPOUT=0")
     if bias != "none":
         reasons.append(f"bias = '{bias}'")
-    if float32_base:
-        reasons.append("the base weights are float32")
     if fsdp:
         reasons.append(
             "FSDP1 hands them shard views of the weights they read (UNSLOTH_FORCE_FUSED_LORA=1 "
@@ -5862,7 +5859,9 @@ class FastLlamaModel:
             else apply_lora_mlp
         )
 
-        # The fused kernels assume 16-bit base weights; float32 falls back to PEFT's own forward.
+        # float32 bases fuse only under bfloat16 autocast, with X and the bases cast as autocast would; float32
+        # training keeps PEFT's own forward (fast_lora._autocast_master_dtype). PEFT under autocast adds the
+        # LoRA term to an already rounded bfloat16 base output and loses small LoRA updates.
         float32_base = (
             _base_weight_dtype(model.model.model.layers[0].self_attn.q_proj) == torch.float32
         )
@@ -5873,7 +5872,6 @@ class FastLlamaModel:
         if (
             (lora_dropout == 0 or _fast_lora.FUSED_LORA_DROPOUT)
             and bias == "none"
-            and not float32_base
             and not fused_lora_declined_for_fsdp
         ):
             for idx, layer in enumerate(model.model.model.layers):
@@ -5902,6 +5900,8 @@ class FastLlamaModel:
                         and not _fast_lora.lora_bias_blocks_fused(down_proj)
                     ):
                         _install_fused_lora_mlp(mlp_module, _apply_lora_mlp)
+                        if float32_base:
+                            mlp_module.__dict__[_fast_lora._BF16_AUTOCAST_ONLY] = True
                         n_mlp += 1
                     else:
                         logger.warning_once(
@@ -5929,6 +5929,8 @@ class FastLlamaModel:
                     and not _fast_lora.lora_bias_blocks_fused(v_proj)
                 ):
                     layer.self_attn.apply_qkv = apply_lora_qkv
+                    if float32_base:
+                        layer.self_attn.__dict__[_fast_lora._BF16_AUTOCAST_ONLY] = True
                     n_qkv += 1
                 else:
                     if model_type == "qwen2":
@@ -5949,6 +5951,8 @@ class FastLlamaModel:
                     and not _fast_lora.lora_bias_blocks_fused(o_proj)
                 ):
                     layer.self_attn.apply_o = apply_lora_o
+                    if float32_base:
+                        layer.self_attn.__dict__[_fast_lora._BF16_AUTOCAST_ONLY] = True
                     n_o += 1
                 else:
                     logger.warning_once(
@@ -5957,8 +5961,13 @@ class FastLlamaModel:
                     )
 
         unfused_reason = _fused_lora_skip_reason(
-            lora_dropout, bias, float32_base, fsdp = fused_lora_declined_for_fsdp
+            lora_dropout, bias, fsdp = fused_lora_declined_for_fsdp
         ) + _lora_variant_note(model, active_adapter)
+        if float32_base and n_qkv + n_o + n_mlp > 0:
+            unfused_reason += (
+                " The base weights are float32, so the fused LoRA kernels run under bfloat16 autocast"
+                " (bf16 = True) and float32 training uses PEFT's forward."
+            )
         logger.warning_once(
             f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.{unfused_reason}",

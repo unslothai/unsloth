@@ -184,6 +184,58 @@ def _autocast_dtype_mismatch(X):
     )
 
 
+# Set by patch_peft_model on attention / MLP modules whose LoRA bases are float32: their fused kernels run
+# only under bfloat16 autocast (cast as below), and float32 training keeps PEFT's own forward.
+_BF16_AUTOCAST_ONLY = "_unsloth_fused_lora_bf16_autocast_only"
+
+
+def _autocast_master_dtype(module, projs, X):
+    # float32 master weights under bfloat16 autocast: a float32 model trained with bf16 = True, or with
+    # neither flag on a bf16 GPU (rl.py picks bf16 autocast). PEFT's forward adds the LoRA term to a base
+    # output autocast already rounded to bfloat16, so a LoRA update under half a bfloat16 ulp of it is lost
+    # (about 95% of it at |lora_B| ~ 2e-5, the first Adam steps at lr 2e-5). Returns bfloat16 when every base
+    # is a frozen, plain float32 weight: the caller then casts X and the bases as autocast would and runs
+    # the fused kernels, which round base + LoRA once, exactly like a bfloat16 model. Else None.
+    if X.dtype is not torch.float32 and not (
+        X.dtype is torch.bfloat16 and module.__dict__.get(_BF16_AUTOCAST_ONLY, False)
+    ):
+        return None
+    if (
+        _is_any_autocast_enabled is not None
+        and not _is_compiling()
+        and not _is_any_autocast_enabled()
+    ):
+        return None
+    device_type = "cuda" if X.is_cuda else X.device.type
+    if (
+        not torch.is_autocast_enabled(device_type)
+        or torch.get_autocast_dtype(device_type) is not torch.bfloat16
+    ):
+        return None
+    for proj in projs:
+        if proj.__dict__.get("_unsloth_tp_local") is not None:
+            return None
+        base = proj._modules.get("base_layer")
+        if base is None or getattr(base, "weight_fake_quantizer", None) is not None:
+            return None
+        if getattr(type(base), "_unsloth_mxfp4_packed_linear", False):
+            return None
+        if getattr(base, "quant_method", None) is not None:
+            return None
+        W = base._parameters.get("weight")
+        if (
+            type(W) is not torch.nn.Parameter
+            or type(W.data) is not torch.Tensor
+            or W.dtype is not torch.float32
+            or W.requires_grad
+            or W.ndim != 2
+            or W.shape[1] == 1
+            or getattr(W, "quant_state", None) is not None
+        ):
+            return None
+    return torch.bfloat16
+
+
 def _is_plain_lora(proj):
     # One enabled, unmerged adapter with no dropout module and no lora_B bias (the default LoRA config).
     # Reads PEFT's instance state directly: getattr through nn.Module / properties costs more than the
@@ -990,19 +1042,26 @@ def apply_lora_mlp_swiglu(
 ):
     projs = (self.gate_proj, self.up_proj, self.down_proj)
     extras = None
+    cast = None
     if not any(
         _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
         or _has_activation_fake_quantizer(proj)
         for proj in projs
     ):
-        extras = _lora_dropout_and_bias(projs, X)
+        cast = _autocast_master_dtype(self, projs, X)
+        X_cast = X if cast is None else X.to(cast)
+        if cast is not None or not self.__dict__.get(_BF16_AUTOCAST_ONLY, False):
+            extras = _lora_dropout_and_bias(projs, X_cast)
     if extras is None:
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
     dropout_p, biases = extras
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
+    if cast is not None:
+        X = X_cast
+        gateW, upW, downW = gateW.to(cast), upW.to(cast), downW.to(cast)
     skip = _take_skip_down(self) and dropout_p is None and all(b is None for b in biases)
     if skip:
         _SKIP_DOWN_TLS.active = True
@@ -1050,19 +1109,26 @@ def apply_lora_mlp_geglu_exact(
 ):
     projs = (self.gate_proj, self.up_proj, self.down_proj)
     extras = None
+    cast = None
     if not any(
         _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
         or _has_activation_fake_quantizer(proj)
         for proj in projs
     ):
-        extras = _lora_dropout_and_bias(projs, X)
+        cast = _autocast_master_dtype(self, projs, X)
+        X_cast = X if cast is None else X.to(cast)
+        if cast is not None or not self.__dict__.get(_BF16_AUTOCAST_ONLY, False):
+            extras = _lora_dropout_and_bias(projs, X_cast)
     if extras is None:
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
     dropout_p, biases = extras
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
+    if cast is not None:
+        X = X_cast
+        gateW, upW, downW = gateW.to(cast), upW.to(cast), downW.to(cast)
     skip = _take_skip_down(self) and dropout_p is None and all(b is None for b in biases)
     if skip:
         _SKIP_DOWN_TLS.active = True
@@ -1109,19 +1175,26 @@ def apply_lora_mlp_geglu_approx(
 ):
     projs = (self.gate_proj, self.up_proj, self.down_proj)
     extras = None
+    cast = None
     if not any(
         _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
         or _has_activation_fake_quantizer(proj)
         for proj in projs
     ):
-        extras = _lora_dropout_and_bias(projs, X)
+        cast = _autocast_master_dtype(self, projs, X)
+        X_cast = X if cast is None else X.to(cast)
+        if cast is not None or not self.__dict__.get(_BF16_AUTOCAST_ONLY, False):
+            extras = _lora_dropout_and_bias(projs, X_cast)
     if extras is None:
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
     dropout_p, biases = extras
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
+    if cast is not None:
+        X = X_cast
+        gateW, upW, downW = gateW.to(cast), upW.to(cast), downW.to(cast)
     skip = _take_skip_down(self) and dropout_p is None and all(b is None for b in biases)
     if skip:
         _SKIP_DOWN_TLS.active = True
@@ -1471,19 +1544,26 @@ def apply_lora_qkv(
 ):
     projs = (self.q_proj, self.k_proj, self.v_proj)
     extras = None
+    cast = None
     if not any(
         _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
         or _has_activation_fake_quantizer(proj)
         for proj in projs
     ):
-        extras = _lora_dropout_and_bias(projs, X)
+        cast = _autocast_master_dtype(self, projs, X)
+        X_cast = X if cast is None else X.to(cast)
+        if cast is not None or not self.__dict__.get(_BF16_AUTOCAST_ONLY, False):
+            extras = _lora_dropout_and_bias(projs, X_cast)
     if extras is None:
         return self.q_proj(X), self.k_proj(X), self.v_proj(X)
     dropout_p, biases = extras
     QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
     KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
     VW, VW_quant, VA, VB, VS = get_lora_parameters(self.v_proj)
+    if cast is not None:
+        X = X_cast
+        QW, KW, VW = QW.to(cast), KW.to(cast), VW.to(cast)
     Q, K, V = _apply(
         LoRA_QKV,
         X,
@@ -1627,16 +1707,23 @@ class LoRA_W(torch.autograd.Function):
 
 def apply_lora_o(self, X):
     extras = None
+    cast = None
     if not (
         _has_multiple_active_adapters(self.o_proj)
         or _has_active_dora_adapter(self.o_proj)
         or _has_activation_fake_quantizer(self.o_proj)
     ):
-        extras = _lora_dropout_and_bias((self.o_proj,), X)
+        cast = _autocast_master_dtype(self, (self.o_proj,), X)
+        X_cast = X if cast is None else X.to(cast)
+        if cast is not None or not self.__dict__.get(_BF16_AUTOCAST_ONLY, False):
+            extras = _lora_dropout_and_bias((self.o_proj,), X_cast)
     if extras is None:
         return self.o_proj(X)
     dropout_p, (bias,) = extras
     OW, OW_quant, OA, OB, OS = get_lora_parameters(self.o_proj)
+    if cast is not None:
+        X = X_cast
+        OW = OW.to(cast)
     if dropout_p is None and bias is None:
         return _apply(LoRA_W, X, OW, OW_quant, OA, OB, OS)
     return _apply(LoRA_W, X, OW, OW_quant, OA, OB, OS, dropout_p and dropout_p[0], bias)

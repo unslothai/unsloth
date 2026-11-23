@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""float32 base weights skip the fused LoRA kernels, and fp32 NF4 dequantizes with the fp32 kernel."""
+"""float32 base weights are no fused-kernel skip reason, and fp32 NF4 dequantizes with the fp32 kernel."""
 
 from __future__ import annotations
 
@@ -30,9 +30,12 @@ def test_base_weight_dtype_reads_quant_state():
     assert _base_weight_dtype(_proj(weight)) == torch.float32
 
 
-def test_float32_skip_reason():
+def test_float32_base_is_not_a_skip_reason():
+    # float32 bases get the fused kernels, which run them only under bfloat16 autocast
+    # (test_fused_lora_fp32_master_autocast.py); the gate no longer reads the base dtype.
     assert _fused_lora_skip_reason(0, "none") == ""
-    assert "float32" in _fused_lora_skip_reason(0, "none", float32_base = True)
+    with pytest.raises(TypeError):
+        _fused_lora_skip_reason(0, "none", float32_base = True)
 
 
 @pytest.mark.gpu
