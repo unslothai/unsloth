@@ -1888,7 +1888,7 @@ def _copy_error(error):
 
 
 try:
-    # transformers >= 5.18: every public from_pretrained resolves its revision with one repo_info call.
+    # transformers >= 5.18: each from_pretrained sends a repo_info request to resolve its revision.
     from transformers.utils.hub import resolve_revision as _hub_resolve_revision
     from huggingface_hub import ResolvedRevision as _ResolvedRevision
 except ImportError:
@@ -1903,11 +1903,7 @@ def _resolved_revision(
     local_files_only = False,
     cache_dir = None,
 ):
-    """`revision` resolved once per load, for the `revision =` argument of transformers loads only.
-
-    Each transformers from_pretrained would otherwise send its own repo_info request for the same
-    commit. Unsloth's own checks keep the plain `revision`: a ResolvedRevision compares equal to "main",
-    not None. A failed resolve returns `revision` unchanged, so transformers keeps its own fallbacks."""
+    """Resolve once per load, only for transformers `revision =` args: a ResolvedRevision equals "main", not None."""
     memo = _LOAD_PROBE_MEMO.get()
     if (
         memo is None
@@ -1942,7 +1938,6 @@ def _resolved_revision(
             )
         except Exception:
             resolved = revision
-        # A failure is remembered too: transformers retries it inside each call as before.
         memo[key] = resolved if isinstance(resolved, _ResolvedRevision) else revision
     return memo[key]
 
@@ -1955,7 +1950,6 @@ def _kwargs_with_resolved_revision(
     kwargs,
     token = _TOKEN_FROM_KWARGS,
 ):
-    """`kwargs` with `revision` swapped for this load's resolved one, for a transformers call."""
     revision = kwargs.get("revision")
     resolved = _resolved_revision(
         model_name,
@@ -1971,8 +1965,7 @@ def _kwargs_with_resolved_revision(
 
 def _memo_config_probe(loader, model_name, **kwargs):
     memo = _LOAD_PROBE_MEMO.get()
-    # Only transformers loaders take the resolved revision; PeftConfig keeps the plain one. The owning
-    # class decides: import_fixes wraps AutoConfig.from_pretrained in functions of its own module.
+    # Keyed on the owning class: import_fixes wraps AutoConfig.from_pretrained; PeftConfig keeps the plain ref.
     owner = getattr(loader, "__self__", loader)
     pin = (getattr(owner, "__module__", None) or "").startswith("transformers.")
     if memo is None or kwargs.get("trust_remote_code") or not isinstance(model_name, str):

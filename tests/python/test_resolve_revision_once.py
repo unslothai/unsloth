@@ -53,7 +53,6 @@ def test_one_resolve_per_repo_and_ref(resolver):
         again = [loader_utils._resolved_revision("org/model", None, None) for _ in range(4)]
         assert all(r is first for r in again)
         assert isinstance(first, ResolvedRevision) and first.resolved == SHA
-        # Each distinct input of the transformers call resolves on its own.
         loader_utils._resolved_revision("org/model", "dev", None)
         loader_utils._resolved_revision("org/model", None, "hf_x")
         loader_utils._resolved_revision("org/model", None, None, True)
@@ -154,7 +153,7 @@ def test_config_probe_pins_transformers_loaders_only(resolver):
     peft_loader.__module__ = "peft.config"
 
     def load():
-        for _ in range(2):  # the second probe is a memo hit
+        for _ in range(2):
             loader_utils._memo_config_probe(config_loader, "org/model", token = None, revision = None)
         loader_utils._memo_config_probe(peft_loader, "org/model", token = None, revision = None)
         loader_utils._memo_config_probe(
@@ -230,8 +229,7 @@ def _parents(tree):
     ["unsloth/models/llama.py", "unsloth/models/vision.py", "unsloth/tokenizer_utils.py"],
 )
 def test_resolved_revision_only_reaches_transformers_loads(relpath):
-    """A ResolvedRevision equals "main", not None: it must not reach Unsloth's own revision checks,
-    warnings or _mark_loaded_revision. Its only uses are `revision =` of a from_pretrained call."""
+    """A ResolvedRevision (equal to "main", not None) is only ever `revision =` of a from_pretrained call."""
     tree = ast.parse((REPO / relpath).read_text(encoding = "utf-8"))
     parent = _parents(tree)
     holders = set()
