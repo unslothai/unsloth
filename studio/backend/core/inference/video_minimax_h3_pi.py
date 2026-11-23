@@ -55,15 +55,19 @@ def h3_pi_static_refusal(
             "The 4-step fast mode merges the pi-H3 adapter into the Diffusers denoiser; a GGUF H3 runs on "
             "stable-diffusion.cpp, which cannot take it. Load the MiniMax-H3 pipeline instead."
         )
+    if gguf_filename:
+        from .video_minimax_h3_pdd import h3_pdd_name
+        if h3_pdd_name(gguf_filename):
+            return "A PDD checkpoint is already step-distilled; the 4-step fast mode does not stack on it."
+    if kind == "single_file" and not h3_task and getattr(fam, "modular_workflow", None):
+        # The load infers the partition from the file name later; refuse here, before the worker stages weights.
+        from .video_minimax_h3_comfy import h3_comfy_task
+        h3_task = h3_comfy_task(gguf_filename)
     if h3_task == "ref2va":
         return (
             "pi-H3 has no reference-to-video adapter: the 4-step fast mode covers text-to-video, image-to-video "
             "and first/last-frame video (the fl2va partition). Reference-to-video keeps its own sampler."
         )
-    if gguf_filename:
-        from .video_minimax_h3_pdd import h3_pdd_name
-        if h3_pdd_name(gguf_filename):
-            return "A PDD checkpoint is already step-distilled; the 4-step fast mode does not stack on it."
     if has_loras:
         return (
             "User LoRAs merge into the released dense denoiser, and the pi-H3 adapter targets the pruned one; "

@@ -107,6 +107,27 @@ def _h3():
     return detect_video_family("MiniMaxAI/MiniMax-H3")
 
 
+def test_single_file_ref2va_refused_before_staging():
+    fam = _h3()
+    # No explicit h3_task: the partition comes from the file name, as the load later infers it.
+    assert "reference-to-video" in PI.h3_pi_static_refusal(
+        fam, "single_file", gguf_filename = "minimax_h3_ref2va_bf16.safetensors"
+    )
+    assert (
+        PI.h3_pi_static_refusal(
+            fam, "single_file", gguf_filename = "minimax_h3_fl2va_bf16.safetensors"
+        )
+        is None
+    )
+    # An explicit task still wins over the file name.
+    assert (
+        PI.h3_pi_static_refusal(
+            fam, "single_file", h3_task = "fl2va", gguf_filename = "minimax_h3_ref2va_bf16.safetensors"
+        )
+        is None
+    )
+
+
 def test_static_refusals():
     fam = _h3()
     assert PI.h3_pi_static_refusal(fam, "pipeline") is None
