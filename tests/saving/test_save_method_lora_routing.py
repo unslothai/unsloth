@@ -40,6 +40,7 @@ def _load(*names, **env):
         "raise_if_merging_mistral_format_view": lambda model, save_method: None,
         # Same for the Inkling 2 merge refusal: no fixture is an Inkling 2 model.
         "raise_if_merging_inkling2": lambda model, save_method: None,
+        "is_inkling2_config": lambda config: False,
         "lora_relative_to_original_base": lambda model: contextlib.nullcontext(),
         # Unmerges FSDP2 streamed layers when a save raises; these fixtures never stream.
         "_unmerge_flags_on_error": lambda streamed: contextlib.nullcontext(),
