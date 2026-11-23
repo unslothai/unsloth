@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { triggerShortcut } from "@/features/settings/hooks/use-shortcut";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { TOUR_OPEN_EVENT, isTourListening } from "@/features/tour";
 import { useT } from "@/i18n";
 import {
@@ -44,25 +45,42 @@ function whenReady(attempt: () => boolean, timeoutMs = 3000): void {
   window.setTimeout(tick, 120);
 }
 
-function ProgressBar({
+function ProgressDots({
   pages,
   page,
-}: { pages: OnboardingPageId[]; page: OnboardingPageId }) {
+  onPick,
+}: {
+  pages: OnboardingPageId[];
+  page: OnboardingPageId;
+  onPick: (index: number) => void;
+}) {
+  const t = useT();
   const current = pages.indexOf(page);
   return (
-    <div aria-hidden="true" className="flex flex-1 items-center gap-1.5">
+    <div className="pointer-events-none absolute inset-x-0 flex justify-center">
       {pages.map((p, i) => (
-        <span
+        <button
           key={p}
-          className="bg-muted-foreground/20 h-1 flex-1 overflow-hidden rounded-full"
+          type="button"
+          aria-label={t("onboarding.progress", {
+            current: i + 1,
+            total: pages.length,
+          })}
+          aria-current={i === current ? "step" : undefined}
+          onClick={() => onPick(i)}
+          className="group pointer-events-auto flex h-6 items-center rounded-full px-[3px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <motion.span
-            className="bg-control-accent block h-full rounded-full"
-            initial={false}
-            animate={{ width: i <= current ? "100%" : "0%" }}
-            transition={{ duration: 0.45, ease: EASE_OUT_EXPO }}
+          <span
+            className={cn(
+              "block h-1.5 rounded-full transition-all duration-300",
+              i === current
+                ? "bg-control-accent w-5"
+                : i < current
+                  ? "bg-muted-foreground group-hover:bg-foreground w-1.5"
+                  : "bg-muted-foreground/30 group-hover:bg-muted-foreground w-1.5",
+            )}
           />
-        </span>
+        </button>
       ))}
     </div>
   );
@@ -123,6 +141,16 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
     setIndex((i) => i + 1);
   }, [finish, last, page, record]);
 
+  const goTo = useCallback(
+    (target: number) => {
+      if (target === index) return;
+      if (target > index) record(page);
+      setDirection(target > index ? 1 : -1);
+      setIndex(target);
+    },
+    [index, page, record],
+  );
+
   const back = useCallback(() => {
     setDirection(-1);
     setIndex((i) => Math.max(0, i - 1));
@@ -159,11 +187,18 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
         ref={cardRef}
         data-onboarding=""
         showCloseButton={false}
+        // Connect opens Settings over the guide; clicks and Esc there must not dismiss it.
+        onInteractOutside={(e) => {
+          if (useSettingsDialogStore.getState().open) e.preventDefault();
+        }}
+        onEscapeKeyDown={(e) => {
+          if (useSettingsDialogStore.getState().open) e.preventDefault();
+        }}
         onOpenAutoFocus={(e) => {
           e.preventDefault();
           primaryRef.current?.focus();
         }}
-        className="flex max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(40rem*var(--ui-space-scale,1))] sm:rounded-[2rem]"
+        className="flex max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] min-h-[min(calc(41.5rem*var(--ui-space-scale,1)),calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(40rem*var(--ui-space-scale,1))] sm:rounded-[2rem]"
       >
         <DialogTitle className="sr-only">
           {t("onboarding.dialogTitle")}
@@ -174,8 +209,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
             total: pages.length,
           })}
         </DialogDescription>
-        <div className="relative flex shrink-0 items-center gap-4 pt-6 pr-5 pl-8 sm:pl-10">
-          <ProgressBar pages={pages} page={page} />
+        <div className="absolute top-4 right-4 z-10">
           <DialogClose asChild={true}>
             <Button
               variant="ghost"
@@ -191,7 +225,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
             </Button>
           </DialogClose>
         </div>
-        <div className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 pt-10 pb-10 sm:px-14">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto px-6 py-12 [mask-image:linear-gradient(to_bottom,transparent,black_calc(2.5rem*var(--ui-space-scale,1)),black_calc(100%-2.5rem*var(--ui-space-scale,1)),transparent)] sm:px-14">
           <AnimatePresence
             mode="wait"
             initial={false}
@@ -200,7 +234,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
           >
             <motion.div
               key={page}
-              className="mx-auto flex min-h-full w-full max-w-[calc(30rem*var(--ui-space-scale,1))] flex-col"
+              className="mx-auto my-auto flex w-full max-w-[calc(30rem*var(--ui-space-scale,1))] flex-col"
               custom={direction}
               variants={{
                 enter: (d: number) => ({
@@ -229,7 +263,8 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
             </motion.div>
           </AnimatePresence>
         </div>
-        <div className="relative flex shrink-0 items-center justify-between gap-3 px-6 pb-6 sm:px-10 sm:pb-8">
+        <div className="relative flex shrink-0 items-center justify-between gap-3 px-6 pt-1 pb-6 sm:px-8 sm:pb-6">
+          <ProgressDots pages={pages} page={page} onPick={goTo} />
           {page === "welcome" ? (
             <button
               type="button"

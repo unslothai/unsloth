@@ -9,7 +9,7 @@ import {
   ONBOARDING_PAGES,
   decideOnboarding,
   greetingName,
-  mediaAvailable,
+  videoAvailable,
 } from "../src/features/onboarding/lib/pages.ts";
 
 const record = (
@@ -87,9 +87,10 @@ test("page ids fit the backend's pattern", () => {
   for (const id of ONBOARDING_PAGES) assert.match(id, /^[a-z0-9-]{1,40}$/);
 });
 
-test("media follows the video verdict on a chat-only host", () => {
-  assert.equal(mediaAvailable(true, true), true);
-  assert.equal(mediaAvailable(true, false), false);
-  assert.equal(mediaAvailable(true, null), false);
-  assert.equal(mediaAvailable(false, null), true);
+test("video follows its own verdict, on a chat-only host too", () => {
+  assert.equal(videoAvailable(true, true), true);
+  assert.equal(videoAvailable(true, false), false);
+  assert.equal(videoAvailable(true, null), false);
+  assert.equal(videoAvailable(false, null), true);
+  assert.equal(videoAvailable(false, false), false);
 });

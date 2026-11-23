@@ -8,7 +8,7 @@ import {
   refreshHardwareInfo,
 } from "@/hooks/use-hardware-info";
 import { useEffect, useState } from "react";
-import { mediaAvailable } from "./lib/pages";
+import { videoAvailable } from "./lib/pages";
 
 export type DeviceSummary =
   | { status: "checking" }
@@ -22,7 +22,8 @@ export type DeviceSummary =
       appleSilicon: boolean;
       ramGb: number | null;
       train: boolean;
-      media: boolean;
+      image: boolean;
+      video: boolean;
     };
 
 async function readRamGb(): Promise<number | null> {
@@ -52,7 +53,8 @@ function toSummary(
     appleSilicon: platform.appleSilicon,
     ramGb,
     train: !platform.isTrainUnavailable(),
-    media: mediaAvailable(platform.isChatOnly(), hardware.videoSupported),
+    image: !platform.isChatOnly(),
+    video: videoAvailable(platform.isChatOnly(), hardware.videoSupported),
   };
 }
 

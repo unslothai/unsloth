@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { publicAssetUrl } from "@/components/mascot-img";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { UserAvatar } from "@/features/profile/components/user-avatar";
@@ -26,13 +25,22 @@ import { motion } from "motion/react";
 import { type ReactNode, useRef, useState } from "react";
 import { greetingName } from "../lib/pages";
 import type { DeviceSummary } from "../use-device-summary";
-import { ChosenRing, Group, Mascot, Row, Tile } from "./onboarding-ui";
+import { ConnectAccounts } from "./connect-accounts";
+import { Group, Mascot, Row, Tile } from "./onboarding-ui";
 
 const AVATARS = [
   "Sloth emojis/large sloth wave.png",
   "Sloth emojis/large sloth yay.png",
   "Sloth emojis/large sloth glasses.png",
-  "Sloth emojis/sloth headphones.png",
+  "Sloth emojis/sloth magnify final.png",
+  "Sloth emojis/Large sloth Question mark.png",
+  "Sloth emojis/large sloth thumbs.png",
+  "Sloth emojis/large sloth sad.png",
+  "Sloth emojis/UnSloth Sparkling large.png",
+  "Sloth emojis/sloth shy large.png",
+  "Sloth emojis/sloth sir large.png",
+  "Sloth emojis/large sloth drink.png",
+  "Sloth emojis/sloth huglove large.png",
 ];
 
 function AvatarChoice({
@@ -53,10 +61,13 @@ function AvatarChoice({
       aria-label={label}
       title={label}
       onClick={onPick}
-      className="bg-muted relative flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className={cn(
+        // No transition, as in the Profile picker: an animated ring makes the old selection linger.
+        "bg-muted ring-border hover:ring-ring focus-visible:ring-ring relative flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-full ring-1 focus-visible:outline-none",
+        active && "ring-ring-strong hover:ring-ring-strong ring-2",
+      )}
     >
       {children}
-      <ChosenRing on={active} className="ring-foreground ring-inset" />
     </button>
   );
 }
@@ -89,6 +100,7 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
     <div>
       <div className="flex flex-col items-center text-center">
         <motion.div
+          className="flex size-24 items-center justify-center"
           key={avatar ?? (displayName.trim() ? "initials" : "mascot")}
           initial={{ opacity: 0.4 }}
           animate={{ opacity: 1 }}
@@ -104,7 +116,7 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
               name={displayName.trim() || "?"}
               imageUrl={avatar}
               size="lg"
-              className="size-20 text-2xl ring-4 ring-background"
+              className="size-24 text-3xl"
             />
           )}
         </motion.div>
@@ -118,7 +130,7 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
         </p>
       </div>
       <form
-        className="mt-10"
+        className="mx-auto mt-10 max-w-[calc(25rem*var(--ui-space-scale,1))]"
         onSubmit={(e) => {
           e.preventDefault();
           onSubmit();
@@ -133,21 +145,29 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
           placeholder={t("onboarding.profile.placeholder")}
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
-          className="h-12 px-5 text-center text-base"
+          className="h-12 border-[color-mix(in_srgb,var(--border)_70%,var(--foreground))] px-5 text-center text-base"
         />
       </form>
       <div className="mt-6">
-        <div className="flex items-center justify-center gap-3">
+        <div className="mx-auto flex w-[calc(23.75rem*var(--ui-space-scale,1))] flex-wrap justify-center gap-x-3 gap-y-2.5">
           <AvatarChoice
-            active={avatar === null}
-            label={t("onboarding.profile.initials")}
-            onPick={() => setAvatar(null)}
+            active={false}
+            label={
+              uploading
+                ? t("onboarding.profile.uploading")
+                : t("onboarding.profile.upload")
+            }
+            onPick={() => {
+              if (!uploading) fileInput.current?.click();
+            }}
           >
-            <span className="text-muted-foreground text-xs font-semibold">
-              {initialsFromName(displayName.trim() || "?")}
-            </span>
+            <HugeiconsIcon
+              icon={Upload01Icon}
+              className={cn("size-4.5", uploading && "animate-pulse")}
+              strokeWidth={1.75}
+            />
           </AvatarChoice>
-          {AVATARS.map((path) => {
+          {(custom && avatar ? AVATARS.slice(0, -1) : AVATARS).map((path) => {
             const url = publicAssetUrl(path);
             return (
               <AvatarChoice
@@ -179,6 +199,15 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
               />
             </AvatarChoice>
           ) : null}
+          <AvatarChoice
+            active={avatar === null}
+            label={t("onboarding.profile.initials")}
+            onPick={() => setAvatar(null)}
+          >
+            <span className="text-muted-foreground text-xs font-semibold">
+              {initialsFromName(displayName.trim() || "?")}
+            </span>
+          </AvatarChoice>
           <input
             ref={fileInput}
             type="file"
@@ -191,24 +220,6 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
               e.target.value = "";
             }}
           />
-        </div>
-        <div className="mt-5 flex justify-center">
-          <Button
-            type="button"
-            variant="muted"
-            className="h-10 gap-2 rounded-full px-5"
-            disabled={uploading}
-            onClick={() => fileInput.current?.click()}
-          >
-            <HugeiconsIcon
-              icon={Upload01Icon}
-              className="size-4"
-              strokeWidth={1.75}
-            />
-            {uploading
-              ? t("onboarding.profile.uploading")
-              : t("onboarding.profile.upload")}
-          </Button>
         </div>
         {uploadError ? (
           <p className="text-destructive mt-3 text-center text-xs">
@@ -251,24 +262,28 @@ function AcceleratorRow({ summary }: { summary: DeviceSummary }) {
   const t = useT();
   if (summary.status === "checking") {
     return (
-      <Row
-        lead={
-          <span className="flex size-9 shrink-0 items-center justify-center">
-            <span className="border-muted-foreground/30 border-t-foreground size-4.5 animate-spin rounded-full border-2" />
-          </span>
-        }
-        label={t("onboarding.device.checking")}
-        muted={true}
-      />
+      <div className="mx-auto w-fit">
+        <Row
+          lead={
+            <span className="flex size-8 shrink-0 items-center justify-center">
+              <span className="border-muted-foreground/30 border-t-foreground size-4.5 animate-spin rounded-full border-2" />
+            </span>
+          }
+          label={t("onboarding.device.checking")}
+          muted={true}
+        />
+      </div>
     );
   }
   if (summary.status === "error") {
     return (
-      <Row
-        lead={<Tile icon={CpuIcon} />}
-        label={t("onboarding.device.error")}
-        muted={true}
-      />
+      <div className="mx-auto w-fit">
+        <Row
+          lead={<Tile icon={CpuIcon} />}
+          label={t("onboarding.device.error")}
+          muted={true}
+        />
+      </div>
     );
   }
   const name =
@@ -276,50 +291,63 @@ function AcceleratorRow({ summary }: { summary: DeviceSummary }) {
     (summary.appleSilicon
       ? t("onboarding.device.appleSilicon")
       : t("onboarding.device.cpuOnly"));
+  const memory = memoryLine(summary, t);
   return (
-    <Row
-      lead={
+    <div className="flex flex-col items-center gap-5">
+      <div className="flex items-center gap-4">
         <Tile
           icon={summary.gpuName || summary.appleSilicon ? ChipIcon : CpuIcon}
-          tone="accent"
+          tone="plain"
         />
-      }
-      label={
-        <>
-          {name}
-          {summary.gpuCount > 1 ? (
-            <span className="text-muted-foreground font-normal">
-              {" "}
-              {t("onboarding.device.moreGpus", { count: summary.gpuCount - 1 })}
-            </span>
+        <div className="min-w-0">
+          <div className="text-sm font-medium">
+            {name}
+            {summary.gpuCount > 1 ? (
+              <span className="text-muted-foreground font-normal">
+                {" "}
+                {t("onboarding.device.moreGpus", {
+                  count: summary.gpuCount - 1,
+                })}
+              </span>
+            ) : null}
+          </div>
+          {memory ? (
+            <div className="text-muted-foreground mt-0.5 text-xs leading-relaxed">
+              {memory}
+            </div>
           ) : null}
-        </>
-      }
-      description={memoryLine(summary, t) || undefined}
-      below={<Capabilities summary={summary} />}
-    />
+        </div>
+      </div>
+      <Capabilities summary={summary} />
+    </div>
   );
 }
 
 const CAPABILITIES: {
-  key: "chat" | "train" | "media";
+  key: "chat" | "train" | "image" | "video";
   label: TranslationKey;
 }[] = [
   { key: "chat", label: "onboarding.device.chat" },
   { key: "train", label: "onboarding.device.train" },
-  { key: "media", label: "onboarding.device.media" },
+  { key: "image", label: "onboarding.device.image" },
+  { key: "video", label: "onboarding.device.video" },
 ];
 
 function Capabilities({ summary }: { summary: ReadySummary }) {
   const t = useT();
-  const ready = { chat: true, train: summary.train, media: summary.media };
+  const ready = {
+    chat: true,
+    train: summary.train,
+    image: summary.image,
+    video: summary.video,
+  };
   return (
-    <div className="flex flex-wrap gap-1.5">
+    <div className="flex flex-wrap justify-center gap-1.5">
       {CAPABILITIES.map((c) => (
         <span
           key={c.key}
           className={cn(
-            "bg-muted flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs",
+            "bg-muted flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs",
             ready[c.key]
               ? "text-foreground"
               : "text-muted-foreground opacity-70",
@@ -353,23 +381,30 @@ export function DoneStep({
   const name = greetingName(displayName);
   return (
     <div className="my-auto">
-      <div className="mx-auto flex size-14 items-center justify-center rounded-full bg-control-accent text-control-accent-foreground">
-        <HugeiconsIcon icon={Tick02Icon} className="size-6" strokeWidth={2.5} />
-      </div>
-      <div className="mt-6 mb-10 space-y-2.5 text-center">
-        <h2 className="font-heading text-[1.75rem] leading-[1.15] font-semibold tracking-[-0.02em]">
-          {name
-            ? t("onboarding.done.titleName", { name })
-            : t("onboarding.done.title")}
-        </h2>
+      <div className="mt-2 mb-10 space-y-2.5 text-center">
+        <div className="flex items-center justify-center gap-3">
+          <span className="bg-control-accent text-control-accent-foreground flex size-8 shrink-0 items-center justify-center rounded-full">
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              className="size-4.5"
+              strokeWidth={2.5}
+            />
+          </span>
+          <h2 className="font-heading text-[1.75rem] leading-[1.15] font-semibold tracking-[-0.02em]">
+            {name
+              ? t("onboarding.done.titleName", { name })
+              : t("onboarding.done.title")}
+          </h2>
+        </div>
         <p className="text-muted-foreground text-[0.9375rem]">
           {t("onboarding.done.startChat")}
         </p>
       </div>
-      <Group>
-        <div aria-live="polite">
-          <AcceleratorRow summary={device} />
-        </div>
+      <div aria-live="polite">
+        <AcceleratorRow summary={device} />
+      </div>
+      <ConnectAccounts />
+      <Group className="mt-10">
         <Row
           lead={<Tile icon={CursorInfo02Icon} />}
           label={

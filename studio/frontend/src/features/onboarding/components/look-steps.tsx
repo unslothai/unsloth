@@ -139,9 +139,9 @@ function ModeCard({
       type="button"
       aria-pressed={active}
       onClick={onPick}
-      className="bg-muted/50 hover:bg-muted relative flex flex-col rounded-2xl p-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="bg-muted/50 hover:bg-muted relative flex flex-col rounded-xl p-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <span className="block aspect-[16/9] overflow-hidden rounded-[0.625rem]">
+      <span className="block aspect-[16/9] overflow-hidden rounded-md">
         {mode.value === "system" ? (
           <span className="flex h-full">
             <span className="h-full w-1/2 overflow-hidden">

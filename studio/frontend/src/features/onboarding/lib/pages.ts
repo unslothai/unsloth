@@ -46,9 +46,9 @@ export function greetingName(displayName: string): string {
 }
 
 /** Video is gated on its own verdict, which a CPU host can pass (experimental CPU video) while chat-only. */
-export function mediaAvailable(
+export function videoAvailable(
   chatOnly: boolean,
   videoSupported: boolean | null,
 ): boolean {
-  return !chatOnly || videoSupported === true;
+  return chatOnly ? videoSupported === true : videoSupported !== false;
 }

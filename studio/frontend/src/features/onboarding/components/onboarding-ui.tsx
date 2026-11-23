@@ -51,14 +51,14 @@ export function Tile({
   return (
     <span
       className={cn(
-        "flex size-9 shrink-0 items-center justify-center rounded-xl",
+        "flex size-8 shrink-0 items-center justify-center rounded-full",
         tone === "accent" && "bg-control-accent text-control-accent-foreground",
         tone === "done" &&
           "bg-emerald-500/15 text-emerald-600 dark:text-emerald-500",
         tone === "plain" && "bg-muted text-foreground",
       )}
     >
-      <HugeiconsIcon icon={icon} className="size-4.5" strokeWidth={1.75} />
+      <HugeiconsIcon icon={icon} className="size-4" strokeWidth={1.75} />
     </span>
   );
 }
