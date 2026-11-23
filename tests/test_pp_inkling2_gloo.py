@@ -200,13 +200,16 @@ def _case(
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))["pp"]
     out = {"ref": ref, "full": full, "cells": {}}
     stage_calls = [0]
-    layers_fn = ink.inkling2_stage_layers
+    layers_fn = getattr(
+        ink, "inkling2_stage_layers", None
+    )  # None before the adapter: every cell is refused
 
     def counted(*args, **kwargs):
         stage_calls[0] += 1
         return layers_fn(*args, **kwargs)
 
-    ink.inkling2_stage_layers = counted
+    if layers_fn is not None:
+        ink.inkling2_stage_layers = counted
     for sizes, schedule in layouts:
         model = build(loop, layers, loop_range, reentrant)
         key = f"{'-'.join(map(str, sizes)) if sizes else 'auto'}_{schedule}"

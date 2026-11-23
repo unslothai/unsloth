@@ -1854,7 +1854,9 @@ class _PPStageModule(nn.Module):
         ctx = self._pp_ctx
         self._publish(tensors)
         out = []
-        for t, (shape, dtype) in zip(tensors, ctx.layout(ctx.end)):
+        carry_at = getattr(ctx, "carry_at", None)
+        layout = ctx.carry if carry_at is None else carry_at(ctx.end)
+        for t, (shape, dtype) in zip(tensors, layout):
             if tuple(t.shape[2:]) != tuple(shape):
                 raise RuntimeError(
                     f"Unsloth: pipeline stage carried a tensor of shape {tuple(t.shape)}, expected "
