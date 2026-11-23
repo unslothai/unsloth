@@ -66,11 +66,12 @@ _VALIDATED_MARKER = "npu_validated.json"
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn", "decision"})
 # FastFlowLM 1.0.13 *-oga-hipep models run on the GPU through a separate HIP runtime, not the NPU.
 _GPU_FAMILY_SUFFIX = "-oga-hipep"
-# Engine limits below checkpoint metadata, from the FastFlowLM v1.0.12 model cards (docs/docs/models)
-# and qwen3_core_backend.hpp; the 27B pair fails above 8192 (ROCm/FastFlowLM#1001). Recheck on pin bumps.
+# Engine limits below checkpoint metadata. Qwen3.8-27B advertised 262k from config.json but
+# FastFlowLM's engine tops out lower: 8k through v1.0.12 (#13525 / FastFlowLM#1001), 16_377
+# from v1.0.13 (Studio pin). Recheck on pin bumps.
 _FLM_CONTEXT_LIMITS = {
-    "qwen3.8-mtp:27b": 8192,
-    "qwen3.8-dflash2:27b": 8192,
+    "qwen3.8-mtp:27b": 16377,
+    "qwen3.8-dflash2:27b": 16377,
     **dict.fromkeys(
         (
             "qwen3:0.6b",
