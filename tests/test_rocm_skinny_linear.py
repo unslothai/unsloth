@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""gfx11 ROCm decode linear (unsloth/kernels/rocm_skinny_linear.py): out = X @ W.T + s * (X @ A.T) @ B.T for
-<= 16 decode rows in one Triton launch.
+"""gfx11 ROCm / NVIDIA L4 decode linear (unsloth/kernels/rocm_skinny_linear.py): out = X @ W.T + s * (X @ A.T) @ B.T
+for <= 16 decode rows in one Triton launch.
 
 CPU: config heuristic, gating, the fast_linear_forward hook, and the kernel itself under TRITON_INTERPRET=1
 (fp16; the interpreter has no bf16 dot). GPU (gfx1151 ROCm only): bf16 / fp16 accuracy against fp64, at least
@@ -24,24 +24,26 @@ UTILS = ROOT / "unsloth" / "kernels" / "utils.py"
 
 
 def _load(hip = "7.0", env = None):
-    """The kernel module on its own (no unsloth import), as if on a ROCm build."""
+    """The kernel module on its own (no unsloth import), as if on a ROCm build (hip = None: a CUDA build)."""
     # The feature flags are set explicitly: an ambient UNSLOTH_ROCM_SKINNY_LINEAR=0 must not change the tests.
     env = {
         "UNSLOTH_ROCM_SKINNY_LINEAR": "1",
         "UNSLOTH_ROCM_SKINNY_LINEAR_CONFIG": "",
+        "UNSLOTH_CUDA_SKINNY_LINEAR": "1",
         **(env or {}),
     }
-    old_hip = torch.version.hip
+    old_hip, old_cuda = torch.version.hip, torch.version.cuda
     old_env = {k: os.environ.get(k) for k in env}
     os.environ.update(env)
     torch.version.hip = hip
+    torch.version.cuda = (old_cuda or "12.8") if hip is None else None
     try:
         spec = importlib.util.spec_from_file_location("_rsl_under_test", KERNEL)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod
     finally:
-        torch.version.hip = old_hip
+        torch.version.hip, torch.version.cuda = old_hip, old_cuda
         for k, v in old_env.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -53,11 +55,72 @@ def _have_triton():
     return importlib.util.find_spec("triton") is not None
 
 
-def test_cuda_build_never_loads_triton_kernel():
+def test_cuda_build_loads_triton_kernel_unless_disabled():
+    assert _load(hip = None, env = {"UNSLOTH_CUDA_SKINNY_LINEAR": "0"}).triton is None
     mod = _load(hip = None)
-    assert mod.triton is None
+    assert (mod.triton is not None) is _have_triton()
     X = torch.randn(4, 1, 8)
     assert mod.skinny_decode_linear(X, torch.randn(6, 8), None, None, None, None) is None
+
+
+@pytest.mark.skipif(not _have_triton(), reason = "triton not installed")
+@pytest.mark.parametrize(
+    "env,cc,want",
+    [
+        ("1", (8, 9), True),
+        ("1", (7, 5), False),
+        ("1", (8, 0), False),
+        ("1", (9, 0), False),
+        ("1", (10, 0), False),
+        ("all", (8, 0), True),
+        ("all", (12, 0), True),
+        ("all", (7, 5), False),
+    ],
+)
+def test_cuda_arch_gate(monkeypatch, env, cc, want):
+    mod = _load(hip = None, env = {"UNSLOTH_CUDA_SKINNY_LINEAR": env})
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: cc)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    assert mod.skinny_linear_supported(torch.device("cuda", 0)) is want
+    assert mod.skinny_linear_supported(torch.device("cpu")) is False
+
+
+def test_cuda_routing_and_config_match_l4_measurements():
+    mod = _load(hip = None)
+    # (N, K) -> routed, from the L4 sweep (weights streamed from DRAM, LoRA r32, M = 8 / 16)
+    measured = {
+        (1024, 1024): True,
+        (2048, 1024): True,
+        (3072, 1024): True,
+        (1024, 3072): True,
+        (512, 2048): True,
+        (9728, 2560): True,
+        (4096, 4096): True,
+        (4096, 12288): False,
+        (12288, 4096): False,
+        (14336, 4096): False,
+    }
+    for (N, K), want in measured.items():
+        assert mod.routed(N, K) is want, (N, K)
+    assert mod.CUDA_MIN_ROWS == 2
+    if _have_triton():
+        assert mod.pick_config(1024, 1024) == (64, 128, 4, 2, 2)
+        assert mod.pick_config(151936, 4096) == (64, 128, 4, 2, 2)
+        forced = _load(hip = None, env = {"UNSLOTH_ROCM_SKINNY_LINEAR_CONFIG": "32,128,4,2"})
+        assert forced.pick_config(1024, 1024) == (32, 128, 4, 2)
+
+
+def test_cuda_takes_lora_calls_of_two_or_more_rows_only(monkeypatch):
+    mod, ran = _gated(monkeypatch, hip = None)
+    with torch.no_grad():
+        X, W, A, B = _operands(M = 2)
+        assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is not None
+        assert len(ran) == 1
+        # no active LoRA (a base layer, or a folded adapter): cuBLAS
+        assert mod.skinny_decode_linear(X, W, None, None, None, None) is None
+        X1, W1, A1, B1 = _operands(M = 1)
+        assert mod.skinny_decode_linear(X1, W1, A1, B1, 2.0, None) is None
+    assert len(ran) == 1
 
 
 def test_kill_switch():
@@ -172,7 +235,7 @@ def test_decode_gate_refuses_non_decode_shapes_on_cpu():
 
 def test_fast_linear_forward_hook_is_rocm_gated():
     """The hook sits before the 16-bit decode GEMM, only behind _ROCM_SKINNY_LINEAR, which needs torch.version.hip
-    and the kill switch unset, and returns early only when the kernel took the call."""
+    (or a CUDA build) and the kill switch unset, and returns early only when the kernel took the call."""
     src = UTILS.read_text(encoding = "utf-8")
     tree = ast.parse(src)
     flag = [
@@ -297,7 +360,17 @@ def test_kernel_under_triton_interpreter(tmp_path):
 gpu = pytest.mark.skipif(not _gfx1151(), reason = "needs a gfx1151 ROCm GPU")
 
 
-@gpu
+def _cuda_skinny_gpu():
+    # An NVIDIA card the kernel takes by default (L4), or any sm80+ one with UNSLOTH_CUDA_SKINNY_LINEAR=all.
+    if torch.version.hip is not None or not torch.cuda.is_available() or not _have_triton():
+        return False
+    cc = torch.cuda.get_device_capability(0)
+    return cc == (8, 9) or (os.environ.get("UNSLOTH_CUDA_SKINNY_LINEAR") == "all" and cc[0] >= 8)
+
+
+@pytest.mark.skipif(
+    not (_gfx1151() or _cuda_skinny_gpu()), reason = "needs a gfx1151 ROCm GPU or an NVIDIA L4"
+)
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("M", [1, 2, 4, 8, 16])
 @pytest.mark.parametrize(
@@ -400,9 +473,9 @@ def test_wrapper_subclass_weights_keep_their_own_matmul(monkeypatch):
     assert ran == [1]
 
 
-def _gated(monkeypatch):
+def _gated(monkeypatch, hip = "7.0"):
     """The kernel module past every device / shape gate on CPU, skinny_linear replaced by a recorder."""
-    mod = _load()
+    mod = _load(hip = hip)
     ran = []
     monkeypatch.setattr(mod, "skinny_linear_supported", lambda device: True)
     for name in ("skinny_linear", "_launch"):

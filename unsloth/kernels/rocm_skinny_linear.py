@@ -9,6 +9,9 @@
 # fp32 partials go to a [SPLIT_K, 16, N] scratch buffer and a second small launch sums them in a fixed
 # order, so the result is deterministic. On by default only where measured (gfx1151, Radeon 8060S / Strix Halo); UNSLOTH_ROCM_SKINNY_LINEAR=all
 # enables it on every gfx11 part, =0 disables it.
+# NVIDIA: on by default on L4 (sm89) for 2 to 16 rows, where cuBLAS runs the two rank-r GEMMs as extra
+# tile passes; UNSLOTH_CUDA_SKINNY_LINEAR=all enables it on every sm80+ card, =0 disables it. Turing (T4)
+# never takes it: Triton ran these shapes 3-10x slower than cuBLAS there.
 
 import os
 
@@ -28,8 +31,10 @@ STATS = {"calls": 0}
 _SUPPORTED = {}
 _ENV = os.environ.get("UNSLOTH_ROCM_SKINNY_LINEAR", "1")
 _CONFIG_ENV = os.environ.get("UNSLOTH_ROCM_SKINNY_LINEAR_CONFIG", "")
+_CUDA_ENV = os.environ.get("UNSLOTH_CUDA_SKINNY_LINEAR", "1")
+_HIP = torch.version.hip is not None
 triton = None
-if _ENV != "0" and torch.version.hip is not None:
+if (_ENV != "0") if _HIP else (_CUDA_ENV != "0" and torch.version.cuda is not None):
     try:
         import triton
         import triton.language as tl
@@ -179,6 +184,10 @@ def pick_config(N, K):
     within 5% of it for every Qwen3-0.6B projection; the split is capped so wide outputs keep one pass."""
     if _FORCED is not None:
         return _FORCED
+    if not _HIP:
+        # L4 sweep (weights streamed from DRAM, M = 8 / 16, Qwen3 0.6B-8B and Llama 3.x 1B-8B shapes): within
+        # 1% of the best of 19 configs on average, at most 5.4% off.
+        return 64, 128, 4, 2, 2
     split = max(1, min(8, round(K / 256)))
     tiles = -(-N // 64)
     while split > 1 and tiles * split > 512:
@@ -189,20 +198,37 @@ def pick_config(N, K):
 def routed(N, K):
     """Shapes the kernel takes. Measured on gfx1151 (Linux and Windows, M = 1 to 16, LoRA r32): faster than
     rocBLAS for every Qwen3-0.6B / Qwen3-4B projection with K <= 3072 and for Llama-3-8B k / v (N = 1024);
-    slower for K = 4096 with N >= 2560 (Qwen3-4B o_proj, Llama-3-8B q / gate_up), which keep rocBLAS."""
+    slower for K = 4096 with N >= 2560 (Qwen3-4B o_proj, Llama-3-8B q / gate_up), which keep rocBLAS.
+    L4 (LoRA r32, M = 8 / 16): 0.50-0.99x the cuBLAS base + LoRA time below 48M weight elements (median 0.84x),
+    even from there (8B gate / up / down), which keep cuBLAS; one row is CUDA_MIN_ROWS."""
+    if not _HIP:
+        return N * K < 48 * 2**20
     return K <= 3072 or N <= 1024
+
+
+# L4, one row: at most 17% faster for small weights and up to 12% slower for 8B ones, so cuBLAS keeps it.
+CUDA_MIN_ROWS = 2
 
 
 # Archs with a measured decode win; others keep rocBLAS / hipBLASLt unless UNSLOTH_ROCM_SKINNY_LINEAR=all.
 _ARCHS = ("gfx1151",)
+# NVIDIA compute capabilities with a measured decode win (L4); others keep cuBLAS unless =all (sm80+).
+_CUDA_ARCHS = ((8, 9),)
 
 
 def skinny_linear_supported(device):
-    """Triton on a measured gfx11 ROCm device (any gfx11 with UNSLOTH_ROCM_SKINNY_LINEAR=all)."""
+    """Triton on a measured gfx11 ROCm device (any gfx11 with UNSLOTH_ROCM_SKINNY_LINEAR=all), or a measured
+    NVIDIA one (any sm80+ with UNSLOTH_CUDA_SKINNY_LINEAR=all)."""
     if triton is None or device.type != "cuda":
         return False
     index = device.index if device.index is not None else torch.cuda.current_device()
     ok = _SUPPORTED.get(index)
+    if ok is None and not _HIP:
+        try:
+            cc = tuple(torch.cuda.get_device_capability(index))
+        except Exception:
+            cc = (0, 0)
+        ok = _SUPPORTED[index] = cc in _CUDA_ARCHS or (_CUDA_ENV == "all" and cc[0] >= 8)
     if ok is None:
         try:
             arch = torch.cuda.get_device_properties(index).gcnArchName.split(":")[0]
@@ -393,7 +419,7 @@ def skinny_decode_linear(X, W, A, B, scale, out):
         return None
     if X.layout != _STRIDED or W.layout != _STRIDED or X.is_neg() or W.is_neg():
         return None
-    if not routed(N, K):
+    if not routed(N, K) or (not _HIP and bsz < CUDA_MIN_ROWS):
         return None
     device = X.device
     if W.device != device or not skinny_linear_supported(device):
@@ -416,6 +442,9 @@ def skinny_decode_linear(X, W, A, B, scale, out):
     # [first, last + 1) element spans; strides are never negative.
     spans = [(X, (bsz - 1) * xs0 + (K - 1) * xs1 + 1), (W, (N - 1) * ws0 + (K - 1) * ws1 + 1)]
     if A is None:
+        if not _HIP:
+            # NVIDIA was measured against cuBLAS base + LoRA only: a plain 16-bit GEMM keeps cuBLAS.
+            return None
         # No active LoRA (a base layer, or an adapter folded for this generate()): lora_S is None.
         B, scale = None, 1.0
     else:
