@@ -2452,6 +2452,25 @@ export function ChatProvidersSettings({
                     : ""}
                   .
                 </p>
+                <p
+                  id="provider-auto-compact-tokens-note"
+                  className="mt-1 text-xs leading-snug text-muted-foreground"
+                >
+                  {providerType === "anthropic" ? "At least 50,000 for Claude. " : ""}
+                  {autoCompactModel
+                    ? `Blank uses the setting for all models.${
+                        autoCompactModelWindow
+                          ? ` This model's context window is ${autoCompactModelWindow.toLocaleString()} tokens.`
+                          : " Capped at the model's context window."
+                      }`
+                    : `Capped at each model's context window.${
+                        autoCompactOverrideCount > 0
+                          ? ` ${autoCompactOverrideCount === 1 ? "1 model has its own limit" : `${autoCompactOverrideCount} models have their own limits`}.`
+                          : autoCompactModels.length > 0
+                            ? " Pick a model in the menu to give it its own limit."
+                            : ""
+                      }`}
+                </p>
               </div>
               <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
                 {autoCompactModels.length > 0 ? (
@@ -2537,25 +2556,6 @@ export function ChatProvidersSettings({
                     className="h-9 w-28 shrink-0 text-sm tabular-nums"
                   />
                 </div>
-                <p
-                  id="provider-auto-compact-tokens-note"
-                  className="text-xs leading-snug text-muted-foreground"
-                >
-                  {providerType === "anthropic" ? "At least 50,000 for Claude. " : ""}
-                  {autoCompactModel
-                    ? `Blank uses the setting for all models.${
-                        autoCompactModelWindow
-                          ? ` This model's context window is ${autoCompactModelWindow.toLocaleString()} tokens.`
-                          : " Capped at the model's context window."
-                      }`
-                    : `Capped at each model's context window.${
-                        autoCompactOverrideCount > 0
-                          ? ` ${autoCompactOverrideCount === 1 ? "1 model has its own limit" : `${autoCompactOverrideCount} models have their own limits`}.`
-                          : autoCompactModels.length > 0
-                            ? " Pick a model above to give it its own limit."
-                            : ""
-                      }`}
-                </p>
               </div>
             </div>
           ) : null}
