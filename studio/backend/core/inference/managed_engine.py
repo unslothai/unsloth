@@ -747,6 +747,14 @@ class ManagedEngine:
                     raise RuntimeError("The selected engine is no longer installed.")
                 port = _free_port(_PORT_LIMIT if self.engine == "sglang" else None)
                 self.base_url = f"http://127.0.0.1:{port}"
+                if (
+                    self.engine == "sglang"
+                    and info.get("host") == "wsl"
+                    and model_path
+                    and ":" in model
+                ):
+                    # SGLang reserves colons for LoRA aliases. Keep the real path separate.
+                    model = "unsloth-local-" + hashlib.sha256(model.encode()).hexdigest()[:16]
                 self.model, self.context = model, context or 4096
                 self.reasoning_parser = (options or {}).get("reasoning_parser")
                 self.opens_thought = bool((options or {}).get("opens_thought"))
