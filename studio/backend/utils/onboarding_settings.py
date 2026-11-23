@@ -17,11 +17,16 @@ def get_onboarding() -> dict:
     return stored if isinstance(stored, dict) else {}
 
 
-def account_has_chat_history() -> bool:
+# Training-only or recipe-only accounts are existing users too, not just those with chats.
+_HISTORY_TABLES = ("chat_threads", "training_runs", "data_recipes", "chat_projects")
+
+
+def account_has_history() -> bool:
     from storage.studio_db import get_connection
     conn = get_connection()
     try:
-        return conn.execute("SELECT EXISTS(SELECT 1 FROM chat_threads)").fetchone()[0] == 1
+        query = " OR ".join(f"EXISTS(SELECT 1 FROM {table})" for table in _HISTORY_TABLES)
+        return conn.execute(f"SELECT {query}").fetchone()[0] == 1
     finally:
         conn.close()
 

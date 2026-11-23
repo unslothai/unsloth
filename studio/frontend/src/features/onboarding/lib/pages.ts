@@ -13,7 +13,7 @@ export type OnboardingRecord = {
   saved: boolean;
   pages: string[];
   completedAt: number | null;
-  hasChatHistory: boolean;
+  hasHistory: boolean;
 };
 
 export type OnboardingDecision =
@@ -23,7 +23,7 @@ export type OnboardingDecision =
 
 export function decideOnboarding(record: OnboardingRecord): OnboardingDecision {
   if (!record.saved) {
-    return record.hasChatHistory
+    return record.hasHistory
       ? { kind: "adopt" }
       : { kind: "show", pages: [...ONBOARDING_PAGES] };
   }

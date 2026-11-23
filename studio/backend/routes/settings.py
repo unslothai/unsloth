@@ -74,7 +74,7 @@ from utils.device_sync_settings import (
     update_client_preferences,
 )
 from utils.onboarding_settings import (
-    account_has_chat_history,
+    account_has_history,
     get_onboarding,
     update_onboarding,
 )
@@ -5553,7 +5553,7 @@ class OnboardingResponse(BaseModel):
     saved: bool = False
     pages: list[str] = Field(default_factory = list)
     completedAt: Optional[int] = None
-    hasChatHistory: bool = False
+    hasHistory: bool = False
 
 
 def _onboarding_response(stored: dict, *, history: bool = False) -> OnboardingResponse:
@@ -5563,7 +5563,7 @@ def _onboarding_response(stored: dict, *, history: bool = False) -> OnboardingRe
         saved = bool(stored),
         pages = [p for p in pages if isinstance(p, str)] if isinstance(pages, list) else [],
         completedAt = completed_at if isinstance(completed_at, int) else None,
-        hasChatHistory = history,
+        hasHistory = history,
     )
 
 
@@ -5572,7 +5572,7 @@ def get_onboarding_settings(
     current_subject: str = Depends(get_current_subject),
 ) -> OnboardingResponse:
     stored = get_onboarding()
-    return _onboarding_response(stored, history = not stored and account_has_chat_history())
+    return _onboarding_response(stored, history = not stored and account_has_history())
 
 
 @_account_settings_router.put("/onboarding", response_model = OnboardingResponse)

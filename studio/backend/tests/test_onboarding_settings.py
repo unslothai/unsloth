@@ -15,6 +15,8 @@ if str(_BACKEND) not in sys.path:
 
 from auth.authentication import get_current_subject  # noqa: E402
 from routes import settings as settings_routes  # noqa: E402
+from storage import studio_db  # noqa: E402
+from utils.onboarding_settings import _HISTORY_TABLES  # noqa: E402
 
 
 @pytest.fixture
@@ -26,11 +28,9 @@ def settings_db(monkeypatch, tmp_path):
         connection.row_factory = sqlite3.Row
         return connection
 
+    # The real schema, so a renamed history table fails here rather than 500 in production.
     with connect() as connection:
-        connection.execute(
-            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value_json TEXT, updated_at TEXT)"
-        )
-        connection.execute("CREATE TABLE chat_threads (id TEXT PRIMARY KEY)")
+        studio_db._ensure_schema(connection)
     monkeypatch.setattr("storage.studio_db.get_connection", connect)
     return connect
 
@@ -45,17 +45,24 @@ def client(settings_db):
 
 def test_fresh_account_is_unsaved_without_history(client):
     body = client.get("/api/settings/onboarding").json()
-    assert body == {"saved": False, "pages": [], "completedAt": None, "hasChatHistory": False}
+    assert body == {"saved": False, "pages": [], "completedAt": None, "hasHistory": False}
 
 
-def test_account_with_chats_reports_history_until_saved(client, settings_db):
+@pytest.mark.parametrize("table", _HISTORY_TABLES)
+def test_existing_account_reports_history_until_saved(client, settings_db, table):
     with settings_db() as connection:
-        connection.execute("INSERT INTO chat_threads (id) VALUES ('t1')")
-    assert client.get("/api/settings/onboarding").json()["hasChatHistory"] is True
+        connection.execute("PRAGMA foreign_keys=OFF")
+        columns = connection.execute(f"PRAGMA table_info({table})").fetchall()
+        required = [c["name"] for c in columns if c["notnull"] and c["dflt_value"] is None]
+        connection.execute(
+            f"INSERT INTO {table} ({', '.join(required)}) VALUES ({', '.join('?' * len(required))})",
+            ["x"] * len(required),
+        )
+    assert client.get("/api/settings/onboarding").json()["hasHistory"] is True
     client.put("/api/settings/onboarding", json = {"pages": ["welcome"], "completed": True})
     body = client.get("/api/settings/onboarding").json()
     assert body["saved"] is True
-    assert body["hasChatHistory"] is False
+    assert body["hasHistory"] is False
 
 
 def test_pages_merge_in_order_and_completion_sticks(client):

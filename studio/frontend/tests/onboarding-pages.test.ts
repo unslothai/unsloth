@@ -19,7 +19,7 @@ const record = (
   saved: false,
   pages: [] as string[],
   completedAt: null,
-  hasChatHistory: false,
+  hasHistory: false,
   ...over,
 });
 
@@ -31,7 +31,7 @@ test("a fresh account sees every page", () => {
 });
 
 test("an account that already chatted is adopted, not shown", () => {
-  assert.deepEqual(decideOnboarding(record({ hasChatHistory: true })), {
+  assert.deepEqual(decideOnboarding(record({ hasHistory: true })), {
     kind: "adopt",
   });
 });
