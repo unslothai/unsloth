@@ -3744,7 +3744,7 @@ def _check_ollama_server():
             timeout = 3,
         )
     except FileNotFoundError:
-        # curl is absent on Windows and in minimal containers; `ollama` may still work.
+        # No curl (minimal containers): skip the advisory check, `ollama` may still work.
         return
     except subprocess.TimeoutExpired:
         raise RuntimeError(

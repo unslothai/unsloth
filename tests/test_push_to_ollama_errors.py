@@ -34,8 +34,6 @@ def _extract(name):
 
 
 class _FakePopen:
-    """The readline-to-EOF / wait / context-manager surface save.py drives."""
-
     def __init__(
         self,
         args,
@@ -58,8 +56,7 @@ class _FakePopen:
 
 
 def _load(run = None, popen = None):
-    """Exec the real ollama functions beside a fake `subprocess`, so the test pins the
-    subprocess.run / subprocess.Popen boundary rather than the functions' callers."""
+    """Exec the real ollama functions beside a fake `subprocess` module."""
     calls = {"run": [], "popen": []}
 
     def _run(args, **_kwargs):
