@@ -6979,8 +6979,15 @@ def _push_merged_to_hub_revision(save_kwargs):
             if not save_kwargs["create_pr"] or error.response.status_code != 403:
                 raise
     with tempfile.TemporaryDirectory(prefix = "unsloth-merged-") as directory:
+        # Past the gate this rank is the writer: the staged save must not skip itself.
         unsloth_generic_save(
-            **{**save_kwargs, "save_directory": directory, "push_to_hub": False, "token": token}
+            **{
+                **save_kwargs,
+                "save_directory": directory,
+                "push_to_hub": False,
+                "token": token,
+                "is_main_process": True,
+            }
         )
         card_path = Path(directory) / "README.md"
         try:

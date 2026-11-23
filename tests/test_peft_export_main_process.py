@@ -252,3 +252,41 @@ def test_full_model_inside_fsdp2_gather_ignores_the_flag(monkeypatch, tmp_path):
     )
     _generic_save(model, str(tmp_path / "full"), is_main_process = False)
     assert (tmp_path / "full" / "config.json").exists()
+
+
+class _Staged(Exception):
+    pass
+
+
+def test_staged_hub_save_runs_as_the_writer(monkeypatch):
+    """The FSDP2 writer's staged save (full model, merge or adapter) must not see the false flag."""
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: True)
+    monkeypatch.setattr(unsloth_save, "_determine_username", lambda *a: ("user/repo", "user"))
+    monkeypatch.setattr(unsloth_save, "_refuse_private_push_to_public_repo", lambda *a, **k: None)
+    monkeypatch.setattr(
+        unsloth_save,
+        "HfApi",
+        type(
+            "Api", (), {"__init__": lambda self, **k: None, "create_repo": lambda self, **k: None}
+        ),
+    )
+    seen = []
+
+    def staged(**kwargs):
+        seen.append(kwargs["is_main_process"])
+        raise _Staged
+
+    monkeypatch.setattr(unsloth_save, "unsloth_generic_save", staged)
+    with pytest.raises(_Staged):
+        unsloth_save._push_merged_to_hub_revision(
+            dict(
+                is_main_process = False,
+                token = "hf_x",
+                save_directory = "user/repo",
+                private = False,
+                revision = None,
+                create_pr = True,
+                save_method = "lora",
+            )
+        )
+    assert seen == [True]
