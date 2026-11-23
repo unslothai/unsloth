@@ -176,7 +176,6 @@ def test_health_check_timeout_stops_before_create(tmp_path, monkeypatch, capsys)
 
 
 def test_missing_curl_still_runs_ollama(tmp_path, monkeypatch, capsys):
-    """Windows and minimal containers ship no curl; the check is skipped, not fatal."""
     monkeypatch.chdir(tmp_path)
 
     def _run(args):
