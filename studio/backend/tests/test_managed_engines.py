@@ -3165,3 +3165,30 @@ def test_windows_local_checkpoint_served_names(monkeypatch):
     assert launch("sglang", "org/model", None) == "org/model"
     assert launch("sglang", "custom", first) == "custom"
     assert launch("vllm", first, first) == first
+
+
+@_LOCAL_ENGINE_HOST
+def test_local_sglang_checkpoint_served_name(isolated, monkeypatch):
+    from types import SimpleNamespace
+    from core.inference import managed_engine
+
+    class CommandCaptured(Exception):
+        pass
+
+    def command(python, model_path, *args, **kwargs):
+        assert model_path == "/mnt/c/checkpoints/model"
+        assert kwargs["served_model_name"] == managed.model
+        raise CommandCaptured
+
+    active(isolated, "sglang")
+    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.8)
+    managed = ManagedEngine("sglang")
+    managed.adapter = SimpleNamespace(
+        command = command, environment = lambda _: {}, key_environment = lambda _: {}
+    )
+    # Studio inside WSL maps a typed drive path for the engine but keeps it as the identifier.
+    with pytest.raises(CommandCaptured):
+        managed._start_once(
+            r"C:\checkpoints\model", 1024, [0], {}, None, {}, False, "/mnt/c/checkpoints/model"
+        )
+    assert ":" not in managed.model
