@@ -77,7 +77,7 @@ export const it = {
     materialMenusDescription: "Anche menu a discesa, menu e selettori usano il vetro.",
     materialStrength: "Intensità del vetro",
     lens: "Lente di vetro",
-    lensDescription: "Curva l'immagine sotto il compositore come un vero vetro.",
+    lensDescription: "Curva l'immagine sotto ogni superficie di vetro come un vero vetro.",
     lensOff: "Disattivato",
     lensMagnify: "Ingrandisci",
     lensShrink: "Riduci",

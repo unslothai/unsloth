@@ -80,7 +80,7 @@ export const id = {
     materialMenusDescription: "Dropdown, menu, dan pemilih juga menggunakan kaca.",
     materialStrength: "Kekuatan kaca",
     lens: "Lensa kaca",
-    lensDescription: "Membengkokkan gambar di bawah kotak tulis seperti kaca sungguhan.",
+    lensDescription: "Membengkokkan gambar di bawah setiap permukaan kaca seperti kaca sungguhan.",
     lensOff: "Mati",
     lensMagnify: "Perbesar",
     lensShrink: "Perkecil",

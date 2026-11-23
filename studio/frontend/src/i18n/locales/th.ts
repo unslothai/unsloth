@@ -80,7 +80,7 @@ export const th = {
     materialMenusDescription: "ดรอปดาวน์ เมนู และตัวเลือกก็ใช้กระจกด้วย",
     materialStrength: "ความเข้มของกระจก",
     lens: "เลนส์กระจก",
-    lensDescription: "หักเหภาพใต้ช่องพิมพ์ข้อความเหมือนกระจกจริง",
+    lensDescription: "หักเหภาพใต้พื้นผิวกระจกทุกส่วนเหมือนกระจกจริง",
     lensOff: "ปิด",
     lensMagnify: "ขยาย",
     lensShrink: "ย่อ",

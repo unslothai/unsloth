@@ -80,7 +80,7 @@ export const uk = {
     materialMenusDescription: "Розкривні списки, меню та засоби вибору також використовують скло.",
     materialStrength: "Сила скла",
     lens: "Скляна лінза",
-    lensDescription: "Викривлює зображення під полем введення, як справжнє скло.",
+    lensDescription: "Викривлює зображення під кожною скляною поверхнею, як справжнє скло.",
     lensOff: "Вимк.",
     lensMagnify: "Збільшити",
     lensShrink: "Зменшити",

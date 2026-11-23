@@ -80,7 +80,7 @@ export const ptBR = {
     materialMenusDescription: "Listas suspensas, menus e seletores também usam vidro.",
     materialStrength: "Intensidade do vidro",
     lens: "Lente de vidro",
-    lensDescription: "Curva a imagem sob a caixa de mensagem como vidro de verdade.",
+    lensDescription: "Curva a imagem sob cada superfície de vidro como vidro de verdade.",
     lensOff: "Desativado",
     lensMagnify: "Ampliar",
     lensShrink: "Reduzir",
