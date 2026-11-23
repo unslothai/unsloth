@@ -444,11 +444,16 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
         return preview_slice, total_rows
 
     if suffix in (".json", ".jsonl", ".csv"):
+        load_kwargs = csv_as_text_kwargs([dataset_path])
+        if "features" in load_kwargs:
+            # Every column is typed by the explicit string features, so parse only the preview rows
+            # instead of the builder's default 10k-row chunk (csv_as_text_kwargs already read those).
+            load_kwargs["chunksize"] = max(1, preview_size)
         preview = _stream_file_preview_slice(
             dataset_path,
             preview_size,
             dates_as_written = True,
-            **csv_as_text_kwargs([dataset_path]),
+            **load_kwargs,
         )
         if preview is None:
             raise HTTPException(
