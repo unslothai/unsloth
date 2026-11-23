@@ -288,8 +288,13 @@ def test_repo_is_prequantized_alias_is_same_object():
     assert dit._repo_is_prequantized is repo_is_prequantized
 
 
-def test_pick_auto_precision_policy_table():
-    p = dit._pick_auto_precision
+def test_pick_auto_precision_policy_table(monkeypatch):
+    # A family measured below 1.5x but not in the fp8-over-bf16 set, so every band shows its plain pick.
+    monkeypatch.setattr(dit, "_AUTO_FP8_MEASURED", dit._AUTO_FP8_MEASURED | {"measured"})
+
+    def p(*args):
+        args = args + (True,) * (7 - len(args))
+        return dit._pick_auto_precision(*args, "measured")
 
     assert p(True, "cuda", 140, 23.8, (10, 0), True) == "nf4"
     assert p(False, "cpu", 140, 23.8, (10, 0), True) == "nf4"
@@ -356,7 +361,14 @@ def test_resolve_auto_int8_band_gates_on_torchao(monkeypatch):
     monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
     monkeypatch.setattr(dit, "_auto_fp8_probe_ok", lambda device: True)
 
-    # The frozen fp8 base (sm100 here) needs no torchao; the kill switch restores the torchao int8 gate.
+    # flux.1's fp8 base is unmeasured, so Auto keeps the torchao int8 gate for it.
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "int8"
+    # The frozen fp8 base of a measured family (sm100 here) needs no torchao; the kill switch restores the int8 gate.
+    spec = dit._SPECS["flux.2-klein"]
+    monkeypatch.setattr(dit, "_dense_bf16_gb", lambda spec, base_model: 23.8)
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "fp8"
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)

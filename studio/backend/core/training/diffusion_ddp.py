@@ -194,6 +194,32 @@ class DistContext:
             return picks[0]
         return min(known, key = order.index)
 
+    # The base every rank actually trains once its conversions ran (their fallbacks are rank-local).
+    _EFFECTIVE_PRECISIONS = ("nf4", "int8", "int8_w8a8", "fp8", "mxfp8", "bf16")
+
+    def check_effective_precision(self, effective: str) -> None:
+        """Refuse on every rank when the ranks ended on different bases. agree_precision fixes the pick, but the fp8 /
+        W8A8 conversions fall back per rank (bf16, an nf4 reload, torchao weight-only int8); a mixed run would
+        all-reduce LoRA grads taken through different base numerics without any error. One int64 per rank."""
+        import torch
+        import torch.distributed as dist
+
+        names = self._EFFECTIVE_PRECISIONS
+        code = names.index(effective) if effective in names else len(names)
+        mine = torch.tensor([code], dtype = torch.int64, device = self._device())
+        out = [torch.empty_like(mine) for _ in range(self.world)]
+        dist.all_gather(out, mine)
+        codes = [int(t.item()) for t in out]
+        if len(set(codes)) > 1:
+            picks = ", ".join(
+                f"rank {r}: {names[c] if c < len(names) else 'unknown'}"
+                for r, c in enumerate(codes)
+            )
+            raise RuntimeError(
+                "Multi-GPU training stopped: the GPUs ended up training different base precisions after "
+                f"conversion ({picks}). Set base_precision to one of them explicitly, or train on one GPU."
+            )
+
     def params_checksum(self, params) -> float:
         import torch
         with torch.no_grad():

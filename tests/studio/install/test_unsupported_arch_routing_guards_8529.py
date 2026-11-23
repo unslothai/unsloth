@@ -596,6 +596,11 @@ def _run_summary_guard(tmp_path, lspci_lines: "list[str]") -> str:
             "_amd_gpu_present_via_pci",
         )
     )
+    # Only lspci describes this host: the APU / WSL / PCI probes read the runner's own files, and a
+    # Strix Halo runner's /proc/cpuinfo would add a covered gfx1151 beside the uncovered card.
+    missing = (tmp_path / "missing").as_posix()
+    for host_path in ("/proc/cpuinfo", "/proc/version", "/dev/dxg", "/sys/bus/pci/devices"):
+        funcs = funcs.replace(host_path, missing + host_path)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok = True)
     fixture = tmp_path / "lspci.txt"

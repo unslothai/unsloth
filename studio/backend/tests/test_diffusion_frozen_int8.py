@@ -36,6 +36,71 @@ def test_forward_and_input_grad_track_the_dense_layer(rows):
     assert all(not p.requires_grad for p in m.parameters())
 
 
+def _rel(a, ref):
+    return ((a.double() - ref).norm() / ref.norm()).item()
+
+
+def _vs_fp64(
+    layer_cls,
+    rows,
+    k = 512,
+    n = 256,
+    scale_mutation = None,
+):
+    """Relative L2 error of forward and grad_x against a float64 dense oracle (cosine alone cannot see a scale error)."""
+    torch.manual_seed(0)
+    lin = nn.Linear(k, n, bias = False).to(torch.bfloat16).requires_grad_(False)
+    lin.weight.data.mul_(0.02 / lin.weight.float().std())
+    m = layer_cls(lin)
+    if scale_mutation is not None:
+        m.weight_scale.mul_(scale_mutation)
+    x = torch.randn(rows, k, dtype = torch.bfloat16, requires_grad = True)
+    g = torch.randn(rows, n, dtype = torch.bfloat16)
+    y = m(x)
+    y.backward(g)
+    x64 = x.detach().double().requires_grad_(True)
+    y64 = x64 @ lin.weight.double().t()
+    y64.backward(g.double())
+    return _rel(y.detach(), y64.detach()), _rel(x.grad, x64.grad)
+
+
+# Measured (K=512, N=256, bf16): int8 ~0.86e-2 fwd / 0.81e-2 grad_x, fp8 e4m3 3.7e-2.
+_INT8_REL_BOUND = 2e-2
+_FP8_REL_BOUND = 6e-2
+
+
+@pytest.mark.parametrize("rows", [64, 512, 8])
+def test_int8_relative_error_against_fp64(rows):
+    fwd, gx = _vs_fp64(fi8.FrozenInt8Linear, rows)
+    assert fwd < _INT8_REL_BOUND and gx < _INT8_REL_BOUND, (fwd, gx)
+
+
+def test_relative_bound_sees_a_scale_error_cosine_misses():
+    # A 5% weight-scale error leaves cosine at ~1 but moves the relative error past the bound.
+    fwd, gx = _vs_fp64(fi8.FrozenInt8Linear, 64, scale_mutation = 1.05)
+    assert fwd > _INT8_REL_BOUND and gx > _INT8_REL_BOUND
+
+
+def _cpu_fp8_mm_ok() -> bool:
+    try:
+        a = torch.zeros(16, 16).to(torch.float8_e4m3fn)
+        one = torch.ones((), dtype = torch.float32)
+        torch._scaled_mm(a, a.t(), scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@pytest.mark.skipif(not _cpu_fp8_mm_ok(), reason = "no CPU fp8 GEMM here")
+@pytest.mark.parametrize("rows", [64, 512])
+def test_fp8_relative_error_against_fp64(rows):
+    from core.training import diffusion_frozen_fp8 as ff8
+
+    ff8.BACKWARD_WEIGHTS.active = False
+    fwd, gx = _vs_fp64(ff8.FrozenFp8Linear, rows)
+    assert fwd < _FP8_REL_BOUND and gx < _FP8_REL_BOUND, (fwd, gx)
+
+
 def test_weight_is_quantized_once_not_per_call(monkeypatch):
     lin = nn.Linear(32, 32, bias = False).to(torch.bfloat16)
     m = fi8.FrozenInt8Linear(lin)

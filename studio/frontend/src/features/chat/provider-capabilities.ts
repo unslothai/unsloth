@@ -201,7 +201,7 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   },
   {
     providerType: "gemini",
-    prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
+    prefixes: ["gemini-3", "gemini-4", "gemini-pro", "gemini-flash"],
     cap: 65536,
   },
   { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
@@ -740,6 +740,10 @@ const ANTHROPIC_SAMPLING_REMOVED_MODEL =
 const OPENAI_RESPONSES_FIXED_SAMPLING_MODEL =
   /^(?:gpt-5(?:[.-]|$)|gpt-4\.5(?:[.-]|$)|o\d+(?:[.-]|$)|codex-mini(?:[.-]|$)|gpt-6-astra(?:[.-]|$))/;
 
+// Mirrors _GEMINI_RESTRICTED_GENERATION in external_provider.py (#18726).
+const GEMINI_RESTRICTED_GENERATION_MODEL =
+  /^gemini-(?:3\.[78]-flash|(?:[4-9]|\d{2,})(?:\.\d+)?)(?:-|$)/;
+
 export function getProviderCapabilities(
   providerType: string | null | undefined,
   apiType?: "chat_completions" | "responses",
@@ -769,6 +773,12 @@ export function getProviderCapabilities(
       temperature: false,
       topK: false,
     };
+  }
+  if (
+    providerType === "gemini" &&
+    GEMINI_RESTRICTED_GENERATION_MODEL.test(modelId?.trim().toLowerCase() ?? "")
+  ) {
+    return { ...PROVIDER_CAPABILITIES.gemini, presencePenalty: false };
   }
   // kimi-k3 fixes presence_penalty too and the docs ask for it to be omitted.
   if (providerType === "kimi" && isKimiK3(modelId)) {
@@ -1067,8 +1077,12 @@ function resolveGeminiReasoningCapabilities(
       ] as const,
     });
   }
-  if (GEMINI3_PRO_PATTERN.test(m) || GEMINI3_PRO_PREFIXES.some((p) => m.startsWith(p))) {
-    // Gemini 3.x Pro cannot fully disable thinking and rejects "minimal".
+  if (
+    GEMINI_RESTRICTED_GENERATION_MODEL.test(m) ||
+    GEMINI3_PRO_PATTERN.test(m) ||
+    GEMINI3_PRO_PREFIXES.some((p) => m.startsWith(p))
+  ) {
+    // Gemini 3.x Pro, 3.7/3.8 Flash, and Gemini 4+ cannot fully disable thinking and reject "minimal".
     return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: false,

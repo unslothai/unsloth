@@ -138,7 +138,9 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
     except Exception:  # noqa: BLE001 - torchao absent / stubbed / moved
         return False
     orig = getattr(_f8t, "addmm_float8_unwrapped_inference", None)
-    if orig is None or not callable(orig):
+    if (
+        orig is None or not callable(orig) or isinstance(orig, type)
+    ):  # a torchao stub's sentinel class
         return False
     if getattr(orig, "_unsloth_unit_scale", False):
         _STATE.update(installed = True)

@@ -41,6 +41,7 @@ from core.training.diffusion_block_swap import (
     block_swap_error,
     block_swap_explicit_off,
     block_swap_request,
+    swap_lowp_mode,
     compile_swapped_blocks,
     install_dit_block_swap,
     reset_block_swaps,
@@ -646,6 +647,44 @@ def _probe_lowp(
         raise RuntimeError("probe GEMM returned non-finite values")
 
 
+def _lowp_swap_spec(
+    transformer, mode: Optional[str], family: Optional[str], device
+) -> Optional[dict]:
+    """install_dit_block_swap's ``lowp`` for a frozen fp8 / W8A8 base, after the GEMM probe the resident path runs.
+    No fallback: the run asked for this base and block swap together, so a probe failure refuses the run."""
+    if mode is None:
+        return None
+    import torch
+
+    if mode == "fp8":
+        from core.training.diffusion_fp8_prequant import dequantize_placeholders
+        from core.training.diffusion_frozen_fp8 import convert_frozen_fp8 as convert
+
+        probe = lambda: _probe_lowp(_convert_fp8, None, device)  # noqa: E731
+        finish = dequantize_placeholders
+    else:
+        from core.training.diffusion_frozen_int8 import convert_frozen_int8 as convert
+        def probe():
+            a = torch.ones((32, 32), dtype = torch.int8, device = device)
+            torch._int_mm(a, a.t())
+
+        finish = None
+    try:
+        probe()
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(
+            f"block_swap with base_precision={'fp8' if mode == 'fp8' else 'int8'}: this GPU's {mode} GEMM probe "
+            f"failed ({exc}). Use base_precision='bf16' with block_swap."
+        ) from exc
+    targets = {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)}
+
+    def _convert(model, names, dev):
+        done, failed = convert(model, names, device = dev)
+        return done, failed
+
+    return {"mode": mode, "targets": targets, "convert": _convert, "finish": finish}
+
+
 class Fp8FallbackDoesNotFit(RuntimeError):
     """The fp8 conversion failed and the rest of the base, still on the host in bf16, does not fit the card."""
 
@@ -849,6 +888,8 @@ AUTO_FP8_MIN_FREE_RATIO = 0.9
 # frame into 256 tokens, where fp8's activation quantisation costs more than it saves (0.78x of bf16), so its
 # 1.15x-1.5x band keeps the bf16 block swap / int8 pick.
 _AUTO_FP8_OVER_BF16 = frozenset({"z-image", "flux.2-klein"})
+# Families whose fp8 base was measured below 1.5x (held-out loss inside bf16 seed spread); others keep int8 / nf4.
+_AUTO_FP8_MEASURED = frozenset({"z-image", "flux.2-klein", "wan2.2-ti2v-5b"})
 _AUTO_FP8_NOT_OVER_SWAP = frozenset({"wan2.2-ti2v-5b"})
 
 
@@ -923,16 +964,19 @@ def _pick_auto_precision(
     has_torchao = True,
     family: Optional[str] = None,
     compiled: bool = True,
+    fp8_host_ok: bool = True,
 ) -> str:
     """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the fastest
     dense mode whose weights + headroom (activations, optimizer, cache) fit the free VRAM at
     decision time. ``has_fp8`` is the caller's NVIDIA frozen-fp8 check; fp8 is only picked on sm89+.
     - free > 1.5x dense: compiled bf16, or the frozen fp8 base for the families in _AUTO_FP8_OVER_BF16 when the run
       compiles (``compiled``: the gain was measured compiled against compiled).
-    - 1.15x-1.5x: the frozen fp8 base (about 2x eager int8 and 1.8x the bf16 block swap Auto picked here before, at
+    - 1.15x-1.5x: the frozen fp8 base for the families in _AUTO_FP8_MEASURED (about 2x eager int8 and 1.8x the bf16 block swap Auto picked here before, at
       the same held-out loss), else int8, else nf4 without torchao (``_int8_quantize_base`` has no fallback).
-    - AUTO_FP8_MIN_FREE_RATIO-1.15x: the fp8 base streams onto the card Linear by Linear (never whole in bf16), so it
+    - AUTO_FP8_MIN_FREE_RATIO-1.15x (_AUTO_FP8_MEASURED families): the fp8 base streams onto the card Linear by Linear (never whole in bf16), so it
       fits where only nf4 did; nf4 trained a worse adapter (held-out MSE above the bare base on Z-Image) 1.75x slower.
+      That fp8 load holds the dense bf16 base in host RAM first, where the nf4 load it replaces streams to the card,
+      so it also needs ``fp8_host_ok`` (the caller's _auto_swap_host_ram_ok check); without it the band keeps nf4.
     Every fp8 pick needs ``compiled``: eager fp8 lost to the eager picks it would replace (L4, Z-Image 512 px: 1.41
     s/step vs bf16 + block swap 1.25-1.36 at 1.33x, 1.69-1.70 vs nf4 1.30-1.34 at 0.93x), so an eager run keeps them.
     UNSLOTH_DIT_AUTO_FP8=0 restores the int8 / nf4 picks."""
@@ -943,10 +987,16 @@ def _pick_auto_precision(
     if free_gb > dense_gb * 1.5:
         return "fp8" if fp8 and compiled and fam in _AUTO_FP8_OVER_BF16 else "bf16"
     if free_gb > dense_gb * 1.15:
-        if fp8 and compiled and fam not in _AUTO_FP8_NOT_OVER_SWAP:
+        if fp8 and compiled and fam in _AUTO_FP8_MEASURED and fam not in _AUTO_FP8_NOT_OVER_SWAP:
             return "fp8"
         return "int8" if has_torchao else "nf4"
-    if fp8 and compiled and free_gb > dense_gb * AUTO_FP8_MIN_FREE_RATIO:
+    if (
+        fp8
+        and compiled
+        and fp8_host_ok
+        and fam in _AUTO_FP8_MEASURED
+        and free_gb > dense_gb * AUTO_FP8_MIN_FREE_RATIO
+    ):
         return "fp8"
     return "nf4"
 
@@ -1122,16 +1172,22 @@ def _resolve_base_precision(cfg, spec, device) -> str:
             )
         except Exception:  # noqa: BLE001 -- probe failure -> the safe mode
             pass
+    dense_gb = _dense_bf16_gb(spec, cfg.base_model)
+    # Below 1.15x the fp8 base replaces nf4, whose load streams to the card; fp8 loads the bf16 base on the host.
+    fp8_host_ok = True
+    if has_fp8 and free_gb and dense_gb and free_gb <= dense_gb * 1.15:
+        fp8_host_ok = _auto_swap_host_ram_ok(spec, cfg)
     return _pick_auto_precision(
         prequant,
         device,
         free_gb,
-        _dense_bf16_gb(spec, cfg.base_model),
+        dense_gb,
         capability,
         has_fp8,
         has_torchao,
         getattr(spec, "family", None),
         _auto_run_compiles(cfg),
+        fp8_host_ok,
     )
 
 
@@ -4088,10 +4144,13 @@ def _train_dit(
         cfg.gradient_checkpointing,
         integrated = bool(swap_request) and _device_is_integrated(device),
     )
+    if swap_request and fp16_amp:
+        swap_error = "block_swap needs a GPU with bf16: this one trains the fp16 fallback. Turn block_swap off."
     if swap_error:
         raise ValueError(swap_error)
+    # A swapped fp8 / W8A8 base converts inside install_dit_block_swap; the conversions below are skipped.
+    lowp_swap = swap_lowp_mode(base_precision) if swap_request else None
     with report_model_load_progress(on_event):
-        # A swapped bf16 base loads on the host: install_dit_block_swap places everything but the swapped blocks.
         transformer = spec.load_transformer(
             fetch_cfg, "cpu" if swap_request else device, weight_dtype, base_precision
         )
@@ -4130,6 +4189,7 @@ def _train_dit(
                 swap_request,
                 tokens = _block_swap_tokens(spec, cfg),
                 batch = cfg.train_batch_size,
+                lowp = _lowp_swap_spec(transformer, lowp_swap, cfg.resolved_family, device),
             )
         except ValueError as exc:
             if not auto_swap:
@@ -4168,7 +4228,7 @@ def _train_dit(
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
     # Convert AFTER the LoRA attaches so the adapter modules stay high precision.
-    w8a8_on = (
+    w8a8_on = lowp_swap == "int8_w8a8" or (
         base_precision == "int8"
         and _int8_w8a8()
         and _apply_int8_w8a8(transformer, on_event, cfg.resolved_family, device = device)
@@ -4184,7 +4244,7 @@ def _train_dit(
     if base_precision == "int8":
         # Re-collect: the move to device must not leave the optimizer holding host tensors.
         lora_params = [p for p in transformer.parameters() if p.requires_grad]
-    if base_precision == "fp8":
+    if base_precision == "fp8" and lowp_swap != "fp8":
         reload_nf4 = None
         try:
             if not _apply_fp8_training(transformer, on_event, cfg.resolved_family, device = device):
@@ -4224,6 +4284,10 @@ def _train_dit(
     ):
         base_precision = "bf16"
     if ddp is not None:
+        # The conversion fallbacks above ran per rank: refuse on every rank if they left different bases.
+        ddp.check_effective_precision(
+            "int8_w8a8" if base_precision == "int8" and w8a8_on else base_precision
+        )
         # Same seed, so already equal; the broadcast makes the replicas identical whatever the load consumed.
         ddp.broadcast_params(lora_params)
 
@@ -4976,12 +5040,22 @@ def _dequant_cache_wanted(
     """nf4 / int8 dequant cache on CUDA and ROCm; off on the fp16 path, whose 16 GB cards it shares with the checkpointing budget
     (on a T4 both planned from step 1's free memory and step 2 OOMed). int8 runs eager, so the cache is its only
     relief from torchao's per-call weight cast."""
+    from core.training.diffusion_gc_budget import rocm_windows_discrete
     from core.training.diffusion_lora_fast import dequant_cache_enabled, int8_dequant_cache_enabled
+
+    # Off on a discrete Windows ROCm card until measured (rocm_windows_discrete); UNSLOTH_DIFFUSION_DEQUANT_CACHE=1 opts in.
+    opted_in = os.environ.get("UNSLOTH_DIFFUSION_DEQUANT_CACHE", "").strip().lower() in (
+        "1",
+        "true",
+        "on",
+        "yes",
+    )
     return (
         (base_is_bnb or (int8_base and int8_dequant_cache_enabled()))
         and device == "cuda"
         and not fp16_amp
         and dequant_cache_enabled()
+        and (opted_in or not rocm_windows_discrete(device))
     )
 
 

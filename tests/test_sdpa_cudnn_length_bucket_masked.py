@@ -263,8 +263,15 @@ def test_inference_prefill_bucketed_decode_untouched(monkeypatch, masked):
     assert _rel(got.float(), orc) <= 1.25 * _rel(want.float(), orc) + 2e-3
 
 
+@pytest.fixture
+def nvidia_decode(monkeypatch):
+    """The decode pin tests flag a device in _NO_CUDNN_DECODE, which only NVIDIA hosts populate; a
+    real ROCm host would otherwise return early through its own SDPA guard before the pin."""
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", False)
+
+
 @pytest.mark.parametrize("masked", [True, False])
-def test_decode_sdpa_avoids_cudnn_where_flagged(monkeypatch, masked):
+def test_decode_sdpa_avoids_cudnn_where_flagged(monkeypatch, nvidia_decode, masked):
     """Decode (one query against a growing cache) runs off cuDNN on flagged devices: cuDNN would
     build a plan for every new cache length, i.e. every generated token."""
     if not torch.cuda.is_available() or ad._CUDNN_CHOICE is None:
@@ -294,7 +301,7 @@ def test_decode_sdpa_avoids_cudnn_where_flagged(monkeypatch, masked):
 
 
 @pytest.mark.parametrize("masked", [True, False])
-def test_decode_sdpa_pins_only_where_torch_picks_cudnn(monkeypatch, masked):
+def test_decode_sdpa_pins_only_where_torch_picks_cudnn(monkeypatch, nvidia_decode, masked):
     """The pin is entered only when torch's own pick for the call is cuDNN: elsewhere (torch 2.10 on
     H100) sdpa_kernel is pure overhead per decode call."""
     if not torch.cuda.is_available() or ad._CUDNN_CHOICE is None:
@@ -344,7 +351,7 @@ def _policy(names):
         ("CUDNN_ATTENTION",),
     ],
 )
-def test_decode_pin_keeps_caller_backend_policy(monkeypatch, policy):
+def test_decode_pin_keeps_caller_backend_policy(monkeypatch, nvidia_decode, policy):
     """The decode pin only removes cuDNN from the caller's backends: it never enables a backend the
     caller's sdpa_kernel disabled, and a cuDNN-only policy is left as is."""
     if not torch.cuda.is_available() or ad._CUDNN_CHOICE is None:

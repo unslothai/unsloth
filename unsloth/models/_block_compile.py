@@ -323,6 +323,15 @@ def _same(tensor):
     return tensor
 
 
+def _detached(tensor):
+    # Pack hook of the non-reentrant trial. Nothing backpropagates the trial graph, so it is only freed
+    # when its output dies; a pack hook returning its input saves an op's output on that op's own node,
+    # a cycle through the C++ graph that gc cannot see (torch's saved_tensors_hooks warning). Each
+    # block's first non-reentrant call then kept its whole trial forward until exit (Qwen3-30B-A3B
+    # shape, 4 layers, 32K tokens, aux loss on: 14 GiB between steps).
+    return tensor.detach()
+
+
 @contextlib.contextmanager
 def _no_output_capture(layer):
     """Hide the trial forward from transformers output recording (an extra router_logits entry skews the aux loss)."""
@@ -512,7 +521,11 @@ def _in_nonreentrant_checkpoint():
         hooks = torch._C._autograd._top_saved_tensors_default_hooks(False)
     except Exception:
         return False
-    return bool(hooks) and getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
+    # The trial's own pair is only pushed inside a non-reentrant checkpoint (see _wrap).
+    return bool(hooks) and (
+        getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
+        or (hooks[0] is _detached and hooks[1] is _same)
+    )
 
 
 def _graphs_unsafe_moe(layer, note = True):
@@ -2052,19 +2065,15 @@ def _wrap(
         kwargs,
         mode,
         skip_down = False,
+        trial = False,
     ):
         kwargs, shared = _shared_kv_scratch(self, kwargs)
         if skip_down:
-            # A guarded global the traced LoRA_MLP reads: the replay graph drops the down projection.
-            previous = _fast_lora().set_block_skip_down(True)
-            try:
-                out = _run(self, hidden_states, args, kwargs, mode)
-            finally:
-                _fast_lora().set_block_skip_down(previous)
-            if _IN_TRIAL[0] is not True:
-                _fast_lora().MLP_DOWN_SKIP_STATS["skipped"] += 1
-        else:
-            out = _run(self, hidden_states, args, kwargs, mode)
+            # Call scoped: only this call's tagged layer forward and fused MLP see it (no global, no thread).
+            kwargs = {**kwargs, "_unsloth_skip_down": True}
+        out = _run(self, hidden_states, args, kwargs, mode)
+        if skip_down and not trial:
+            _fast_lora().MLP_DOWN_SKIP_STATS["skipped"] += 1
         if shared is not None:
             shared[0].update(shared[1])
         return out
@@ -2155,6 +2164,8 @@ def _wrap(
 
     @functools.wraps(original)
     def forward(self, hidden_states, *args, **kwargs):
+        # Set only on the grad-mode trial call below: it compiles the skip graph the replay will use.
+        trial = kwargs.pop("_unsloth_skip_trial", False)
         tracing = torch.compiler.is_compiling()
         mode = self.__dict__.get("_unsloth_block_mode")
         if mode is None:
@@ -2223,7 +2234,7 @@ def _wrap(
         # checkpointed forward) of an eligible layer trials the graph its replay will use.
         skip_down = _skip_down_eligible(self, original)
         if torch.is_grad_enabled():
-            skip_down = skip_down and (_IN_TRIAL[0] is True or _replays(self))
+            skip_down = skip_down and (trial or _replays(self))
             bit = 4 if skip_down else 2
         else:
             bit = 1
@@ -2234,11 +2245,14 @@ def _wrap(
         )
         if (bit == 1 or nonreentrant) and not checked & trial_bit:
             # Grad-mode trial runs first (RNG forked); a checkpoint recompute must not demote below
-            # this call. Non-reentrant: identity saved-tensor hooks keep a failed trial graph out
+            # this call. Inside a non-reentrant checkpoint (also a no-grad call: a reentrant layer in a
+            # non-reentrant parent) our own saved-tensor hooks keep the trial graph out of the
+            # checkpoint frame, whose recompute would otherwise save fewer tensors (detaching pack,
+            # see _detached)
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
             hooks = (
-                torch.autograd.graph.saved_tensors_hooks(_same, _same)
-                if nonreentrant
+                torch.autograd.graph.saved_tensors_hooks(_detached, _same)
+                if nonreentrant or (bit == 1 and _in_nonreentrant_checkpoint())
                 else contextlib.nullcontext()
             )
             with (
@@ -2249,7 +2263,13 @@ def _wrap(
             ):
                 _IN_TRIAL[0] = "nonreentrant" if nonreentrant else True
                 try:
-                    forward(self, hidden_states.detach().requires_grad_(), *args, **kwargs)
+                    forward(
+                        self,
+                        hidden_states.detach().requires_grad_(),
+                        *args,
+                        _unsloth_skip_trial = not nonreentrant,
+                        **kwargs,
+                    )
                 finally:
                     _IN_TRIAL[0] = False
             mode = self.__dict__["_unsloth_block_mode"]
@@ -2258,11 +2278,11 @@ def _wrap(
             checked = self.__dict__.get("_unsloth_block_checked", 0)
         skip_down = bit == 4
         if checked & bit:
-            return run(self, hidden_states, args, kwargs, mode, skip_down)
+            return run(self, hidden_states, args, kwargs, mode, skip_down, trial)
         while True:
             try:
                 with _strict_dynamo():
-                    out = run(self, hidden_states, args, kwargs, mode, skip_down)
+                    out = run(self, hidden_states, args, kwargs, mode, skip_down, trial)
                 self.__dict__["_unsloth_block_checked"] = checked | bit
                 return out
             except torch.OutOfMemoryError:
