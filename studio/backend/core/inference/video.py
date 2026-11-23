@@ -13920,7 +13920,11 @@ class VideoBackend:
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
         try:
+            from .video_minimax_h3_ref_cache import clear as clear_h3_ref_latents
             from .video_minimax_h3_ref_encode import install_h3_chunked_reference_encode
+
+            # a new VAE load: no condition latent of an earlier one survives it
+            clear_h3_ref_latents("load", logger)
             install_h3_chunked_reference_encode(logger)
         except Exception as exc:  # noqa: BLE001 -- the render's recipe install retries it
             logger.warning("video.h3_ref_encode: keeping the stock reference encode: %s", exc)
@@ -16669,6 +16673,10 @@ class VideoBackend:
         release_load_budget_fraction("video")
         state, self._state = self._state, None
         self._float_seeds = None
+        # No MiniMax-H3 condition latent outlives the VAE that encoded it.
+        from .video_minimax_h3_ref_cache import clear as clear_h3_ref_latents
+
+        clear_h3_ref_latents("unload", logger)
         if state is not None:
             server_slot = getattr(getattr(state, "pipe", None), "server_slot", None)
             if server_slot is not None:

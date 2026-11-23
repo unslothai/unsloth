@@ -174,6 +174,10 @@ def test_the_mean_installs_even_with_chunking_off(monkeypatch):
     assert ref_encode.install_h3_chunked_reference_encode()
     monkeypatch.setattr(encoders, "encode_vae_condition", original)
     monkeypatch.setenv(ref_encode.H3_REFERENCE_LATENT_ENV, "sample")
+    # the condition latent cache alone still needs the shim
+    assert ref_encode.install_h3_chunked_reference_encode()
+    monkeypatch.setattr(encoders, "encode_vae_condition", original)
+    monkeypatch.setenv(ref_encode.ref_cache.H3_REF_LATENT_CACHE_ENV, "0")
     assert not ref_encode.install_h3_chunked_reference_encode()
     assert encoders.encode_vae_condition is original
 
