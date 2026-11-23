@@ -189,6 +189,11 @@ def test_valueless_attributes_do_not_abort_the_book(ebooks, markup):
     assert ebooks._html_text(b"<html><p hidden>Gone.</p><p>Shown.</p></html>") == "Shown."
 
 
+def test_valueless_meta_charset_defers_to_a_later_declaration(ebooks):
+    data = '<html><head><meta charset><meta charset="windows-1252"></head><p>café</p></html>'
+    assert ebooks._html_text(data.encode("cp1252")) == "café"
+
+
 def test_html_body_closes_implicit_head(ebooks):
     assert ebooks._html_text(b"<head><title>Book</title><body><p>hello</p>") == "hello"
 
