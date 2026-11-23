@@ -320,7 +320,6 @@ pub(super) async fn probe_backend_ports(ignored_ports: &[u16]) -> Vec<BackendPro
     };
 
     // The desktop-auth probe stays sequential per candidate because it has auth-log side effects.
-    // A port with no listener can only refuse, which takes 1-2 s per connect on Windows.
     let candidates: Vec<u16> = crate::desktop_backend_owner::desktop_candidate_ports().collect();
     let candidate_count = candidates.len();
     let ports = crate::tcp_listeners::retain_listening(

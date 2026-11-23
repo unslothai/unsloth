@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-//! Windows retransmits a SYN that loopback answers with a reset, so a connect to a closed
-//! 127.0.0.1 port takes one to two seconds there instead of well under a millisecond. Reading the
-//! listener tables once lets a port scan skip ports nothing listens on, which a connect would
-//! only have seen refused.
+//! A connect to a closed 127.0.0.1 port takes 1-2 s on Windows; skip ports with no listener.
 
 use std::collections::HashSet;
 
-/// Ports with a TCP listener on any local address, IPv4 or IPv6. `None` means unknown (not
-/// Windows, or the table read failed): callers probe every port as before.
+/// `None` (not Windows, or any table read failed) means probe every port (fail open).
 pub(crate) fn listening_ports() -> Option<HashSet<u16>> {
     #[cfg(windows)]
     {
@@ -21,8 +17,6 @@ pub(crate) fn listening_ports() -> Option<HashSet<u16>> {
     }
 }
 
-/// Keeps order. A port with a listener on any address is kept, so the result is a superset of
-/// the ports a 127.0.0.1 connect could reach.
 pub(crate) fn retain_listening(ports: Vec<u16>, listening: Option<&HashSet<u16>>) -> Vec<u16> {
     match listening {
         Some(listening) => ports
@@ -33,7 +27,7 @@ pub(crate) fn retain_listening(ports: Vec<u16>, listening: Option<&HashSet<u16>>
     }
 }
 
-/// The tables store the port in network byte order in the low 16 bits of a DWORD.
+/// dwLocalPort is in network byte order in the low 16 bits.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn port_from_table_dword(value: u32) -> u16 {
     u16::from_be(value as u16)
@@ -64,7 +58,7 @@ mod windows_tables {
             |row| row.dwLocalPort,
             &mut ports,
         )?;
-        // No IPv6 stack means no dual-stack socket that could take a 127.0.0.1 connect.
+        // Unsupported IPv6 family counts as no IPv6 listeners.
         if let Some(v6) = read_table(AF_INET6)? {
             collect::<MIB_TCP6ROW_OWNER_PID>(
                 &v6,
@@ -79,7 +73,6 @@ mod windows_tables {
     /// `None` on failure, `Some(None)` when the address family is not supported.
     fn read_table(family: u32) -> Option<Option<Vec<u32>>> {
         let mut size = 0u32;
-        // u32 storage keeps the rows (all DWORD-aligned) aligned.
         let mut buffer: Vec<u32> = Vec::new();
         for _ in 0..MAX_ATTEMPTS {
             let rc = unsafe {
@@ -102,7 +95,6 @@ mod windows_tables {
                     return Some(Some(buffer));
                 }
                 NO_ERROR | ERROR_INSUFFICIENT_BUFFER => {
-                    // Listeners can appear between calls: leave room for a few more rows.
                     let bytes = (size as usize).max(4) + 1024;
                     buffer = vec![0u32; bytes.div_ceil(4)];
                     size = (buffer.len() * 4) as u32;
@@ -114,7 +106,6 @@ mod windows_tables {
         None
     }
 
-    /// Both table layouts are a DWORD count followed by the rows.
     fn collect<Row>(
         buffer: &[u32],
         rows_offset: usize,
@@ -170,7 +161,6 @@ mod tests {
 
     #[test]
     fn table_ports_are_network_byte_order() {
-        // 8888 = 0x22B8, stored as bytes 22 B8, which a little-endian DWORD reads as 0xB822.
         assert_eq!(
             port_from_table_dword(u32::from_le_bytes([0x22, 0xB8, 0, 0])),
             8888
