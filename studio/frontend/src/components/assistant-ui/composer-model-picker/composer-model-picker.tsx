@@ -5336,7 +5336,9 @@ export function ComposerModelPicker({
                       )}
                     >
                       <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
-                        <RowMark row={chosenMark} />
+                        <span className="composer-chip-mark flex shrink-0">
+                          <RowMark row={chosenMark} />
+                        </span>
                       </span>
                       <HugeiconsIcon
                         icon={RemoveCircleIcon}
@@ -5346,7 +5348,9 @@ export function ComposerModelPicker({
                     </span>
                   </Hint>
                 ) : chosenName ? (
-                  <RowMark row={chosenMark} />
+                  <span className="composer-chip-mark flex shrink-0">
+                    <RowMark row={chosenMark} />
+                  </span>
                 ) : null}
                 <span className="unsloth-thinking-label composer-model-chip-name truncate">
                   {chipLabel}
@@ -5413,7 +5417,9 @@ export function ComposerModelPicker({
                   )}
                 >
                   <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
-                    <RowMark row={chosenMark} />
+                    <span className="composer-chip-mark flex shrink-0">
+                      <RowMark row={chosenMark} />
+                    </span>
                   </span>
                   <HugeiconsIcon
                     icon={RemoveCircleIcon}
@@ -5423,7 +5429,9 @@ export function ComposerModelPicker({
                 </span>
               </Hint>
             ) : chosenName ? (
-              <RowMark row={chosenMark} />
+              <span className="composer-chip-mark flex shrink-0">
+                <RowMark row={chosenMark} />
+              </span>
             ) : null}
             <span className="unsloth-thinking-label composer-model-chip-name truncate">
               {chipLabel}

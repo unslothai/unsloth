@@ -717,6 +717,7 @@ export const es419 = {
       anyApp: "Uso de la computadora",
       anyAppDescription: "Permite que los modelos vean la pantalla y controlen el <b>mouse y el teclado</b>. Los chats piden permiso antes de empezar, antes de usar una app nueva y antes de cualquier acción arriesgada. Las capturas de pantalla se envían al modelo con el que chateas.",
       browser: "Navegador",
+      desktopOnlyDescription: "El uso de la computadora funciona en la app de escritorio de Unsloth. Abre esta configuración allí para activarlo.",
       browserDescription: "Permite que los modelos abran páginas en el panel del navegador de Unsloth, las lean y hagan clic y escriban por ti.",
       screen: "Ver la pantalla",
       screenDescription: "macOS lo pide en «Grabación de pantalla y audio del sistema».",
@@ -3481,7 +3482,7 @@ export const es419 = {
       rememberParamsPerModelHint:
         "Si está desactivado, todos los modelos usan la misma configuración.",
       autoCompactHint:
-        "Chats GGUF y MLX locales: los turnos expulsados se indexan para que el modelo pueda recuperarlos con una búsqueda, y un reinicio cita palabra por palabra las instrucciones permanentes que quepan, dando prioridad a las más antiguas y a las más recientes sobre las intermedias. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto que configuraste, no la VRAM disponible. Modelos de API: el proveedor resume los turnos antiguos cuando puede; si no, se descartan los más antiguos cuando el chat se acerca a la ventana de contexto publicada del modelo.",
+        "Chats GGUF y MLX locales: los turnos expulsados se indexan para que el modelo pueda recuperarlos con una búsqueda, y un reinicio cita palabra por palabra las instrucciones permanentes que quepan, dando prioridad a las más antiguas y a las más recientes sobre las intermedias. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto que configuraste, no la VRAM disponible. Modelos de API: el proveedor resume los turnos antiguos cuando puede; si no, los más antiguos salen del contexto cuando el chat se acerca a la ventana de contexto publicada del modelo y se indexan de la misma forma.",
       pastedTextShortDescription:
         "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt.",
       pastedTextOffDescription:
@@ -5358,6 +5359,14 @@ export const es419 = {
     copied: "Copiado",
     useAsSource: "Traducir este texto",
     downloadSubtitles: "Descargar subtítulos",
+    imageOverlay: {
+      show: "Mostrar en la imagen",
+      title: "Traducción sobre la imagen",
+      description: "El texto traducido se dibuja sobre la imagen donde estaba el texto original.",
+      working: "Traduciendo el texto de la imagen…",
+      download: "Descargar imagen",
+      failed: "No se pudo dibujar la traducción sobre la imagen.",
+    },
     stale:
       "El texto o la configuración cambiaron. Vuelve a traducir para actualizar.",
     stopped: "Se detuvo antes del final. Traduce de nuevo para obtener el resto.",

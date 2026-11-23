@@ -648,6 +648,7 @@ export const it = {
       anyApp: "Uso del computer",
       anyAppDescription: "Consenti ai modelli di vedere lo schermo e controllare <b>mouse e tastiera</b>. Le chat chiedono conferma prima di iniziare, prima di usare una nuova app e prima di qualsiasi azione rischiosa. Gli screenshot vengono inviati al modello con cui chatti.",
       browser: "Browser",
+      desktopOnlyDescription: "L'uso del computer funziona nell'app desktop di Unsloth. Apri queste impostazioni lì per attivarlo.",
       browserDescription: "Consenti ai modelli di aprire le pagine nel pannello browser di Unsloth, leggerle e fare clic e scrivere per te.",
       screen: "Vedere lo schermo",
       screenDescription: "macOS lo chiede in \"Registrazione schermo e audio di sistema\".",
@@ -3108,7 +3109,7 @@ export const it = {
       rememberParamsPerModelHint:
         "Quando è disattivata, tutti i modelli usano le stesse impostazioni.",
       autoCompactHint:
-        "Chat GGUF e MLX locali: I turni rimossi vengono indicizzati perché il modello possa recuperarli, e un ripristino cita parola per parola le istruzioni permanenti che rientrano, privilegiando le più vecchie e le più recenti rispetto a quelle intermedie. L’archiviazione richiede una chat salvata e l’indice vettoriale; senza di essi i turni più vecchi vengono eliminati. Usa la lunghezza del contesto impostata, non la VRAM disponibile. Modelli API: il provider riassume i turni più vecchi quando lo supporta, altrimenti i più vecchi vengono eliminati quando la chat si avvicina alla finestra di contesto pubblicata del modello.",
+        "Chat GGUF e MLX locali: I turni rimossi vengono indicizzati perché il modello possa recuperarli, e un ripristino cita parola per parola le istruzioni permanenti che rientrano, privilegiando le più vecchie e le più recenti rispetto a quelle intermedie. L’archiviazione richiede una chat salvata e l’indice vettoriale; senza di essi i turni più vecchi vengono eliminati. Usa la lunghezza del contesto impostata, non la VRAM disponibile. Modelli API: il provider riassume i turni più vecchi quando lo supporta, altrimenti i più vecchi escono dal contesto quando la chat si avvicina alla finestra di contesto pubblicata del modello e vengono indicizzati allo stesso modo.",
       pastedTextShortDescription: "Il testo incollato di almeno {count} caratteri diventa un allegato .txt.",
       pastedTextOffDescription:
         "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
@@ -5003,6 +5004,14 @@ export const it = {
     copied: "Copiato",
     useAsSource: "Traduci questo testo",
     downloadSubtitles: "Scarica i sottotitoli",
+    imageOverlay: {
+      show: "Mostra sull'immagine",
+      title: "Traduzione sull'immagine",
+      description: "Il testo tradotto viene disegnato sull'immagine al posto del testo originale.",
+      working: "Traduzione del testo dell'immagine…",
+      download: "Scarica l'immagine",
+      failed: "Impossibile disegnare la traduzione sull'immagine.",
+    },
     stale: "Il testo o le impostazioni sono cambiati. Traduci di nuovo per aggiornare.",
     stopped: "Interrotto prima della fine. Traduci di nuovo per il resto.",
     chat: "Chatta con il testo tradotto",

@@ -716,6 +716,7 @@ export const pl = {
       anyApp: "Korzystanie z komputera",
       anyAppDescription: "Pozwól modelom widzieć ekran oraz sterować <b>myszą i klawiaturą</b>. Czaty pytają o zgodę przed rozpoczęciem, przed użyciem nowej aplikacji i przed każdą ryzykowną czynnością. Zrzuty ekranu trafiają do modelu, z którym rozmawiasz.",
       browser: "Przeglądarka",
+      desktopOnlyDescription: "Korzystanie z komputera działa w aplikacji Unsloth na komputer. Otwórz tam te ustawienia, aby je włączyć.",
       browserDescription: "Pozwól modelom otwierać strony w panelu przeglądarki Unsloth, czytać je oraz klikać i pisać za Ciebie.",
       screen: "Widzenie ekranu",
       screenDescription: "macOS prosi o to w sekcji \"Screen & System Audio Recording\".",
@@ -3472,7 +3473,7 @@ export const pl = {
       rememberParamsPerModelHint:
         "Po wyłączeniu wszystkie modele używają tych samych ustawień.",
       autoCompactHint:
-        "Lokalne czaty GGUF i MLX: usunięte tury są indeksowane, aby model mógł je wyszukać i przywrócić, a reset cytuje dosłownie mieszczące się stałe instrukcje, zachowując najstarsze i najnowsze kosztem środkowych. Archiwizacja wymaga zapisanego czatu i indeksu wektorowego; bez nich starsze tury są odrzucane. Używa ustawionej długości kontekstu, a nie dostępnej VRAM. Modele API: dostawca streszcza starsze tury, gdy to możliwe, w przeciwnym razie najstarsze tury są odrzucane, gdy czat zbliża się do opublikowanego okna kontekstu modelu.",
+        "Lokalne czaty GGUF i MLX: usunięte tury są indeksowane, aby model mógł je wyszukać i przywrócić, a reset cytuje dosłownie mieszczące się stałe instrukcje, zachowując najstarsze i najnowsze kosztem środkowych. Archiwizacja wymaga zapisanego czatu i indeksu wektorowego; bez nich starsze tury są odrzucane. Używa ustawionej długości kontekstu, a nie dostępnej VRAM. Modele API: dostawca streszcza starsze tury, gdy to możliwe, w przeciwnym razie najstarsze tury wypadają z kontekstu, gdy czat zbliża się do opublikowanego okna kontekstu modelu, i są indeksowane w ten sam sposób.",
       pastedTextShortDescription:
         "Wklejony tekst o długości co najmniej {count} znaków staje się załącznikiem .txt.",
       pastedTextOffDescription:
@@ -5325,6 +5326,14 @@ export const pl = {
     copied: "Skopiowano",
     useAsSource: "Przetłumacz ten tekst",
     downloadSubtitles: "Pobierz napisy",
+    imageOverlay: {
+      show: "Pokaż na obrazie",
+      title: "Tłumaczenie na obrazie",
+      description: "Przetłumaczony tekst jest rysowany na obrazie w miejscu oryginalnego tekstu.",
+      working: "Tłumaczenie tekstu z obrazu…",
+      download: "Pobierz obraz",
+      failed: "Nie udało się narysować tłumaczenia na obrazie.",
+    },
     stale: "Tekst lub ustawienia uległy zmianie. Przetłumacz ponownie, aby zaktualizować.",
     stopped: "Zatrzymano przed końcem. Przetłumacz ponownie, aby uzyskać resztę.",
     chat: "Czat z przetłumaczonym tekstem",

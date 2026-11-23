@@ -215,3 +215,16 @@ def python_runtime_dirs() -> list[str]:
         candidates.extend(root.glob("nvidia/*/Library/bin/x64"))
         candidates.extend(root.glob("torch/lib"))
     return dedupe_existing_dirs(candidates)
+
+
+def venv_oneapi_lib_dirs() -> list[str]:
+    """The active venv's oneAPI runtime (libsycl, MKL, compiler runtime), shipped by the torch-xpu wheels."""
+    venv_lib = Path(sys.prefix) / "lib"
+    return [str(venv_lib)] if any(venv_lib.glob("libsycl.so.*")) else []
+
+
+def oneapi_lib_dirs(binary_dir: str | Path) -> list[str]:
+    """oneAPI dirs a SYCL build in ``binary_dir`` needs; resolved per launch, since the venv can move."""
+    if not any(Path(binary_dir).glob("libggml-sycl.so*")):
+        return []
+    return venv_oneapi_lib_dirs()

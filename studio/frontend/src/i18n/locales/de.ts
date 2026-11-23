@@ -651,6 +651,7 @@ export const de = {
       anyApp: "Computernutzung",
       anyAppDescription: "Modelle sehen den Bildschirm und steuern <b>Maus und Tastatur</b>. Chats fragen, bevor sie beginnen, vor dem Verwenden einer neuen App und vor einer riskanten Aktion. Screenshots gehen an das Modell, mit dem du chattest.",
       browser: "Browser",
+      desktopOnlyDescription: "Computernutzung läuft in der Unsloth-Desktop-App. Öffne diese Einstellungen dort, um sie einzuschalten.",
       browserDescription: "Modelle öffnen Seiten im Browser-Panel von Unsloth, lesen sie und klicken und tippen für dich.",
       screen: "Bildschirm sehen",
       screenDescription: "macOS fragt danach unter „Bildschirm- & Systemaudioaufnahme“.",
@@ -3231,7 +3232,7 @@ export const de = {
       rememberParamsPerModelHint:
         "Wenn deaktiviert, verwenden alle Modelle dieselben Einstellungen.",
       autoCompactHint:
-        "Lokale GGUF- und MLX-Chats: Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset zitiert die dauerhaft geltenden Anweisungen, die hineinpassen, wortgetreu und mit Vorrang für die ältesten und neuesten vor allem dazwischen. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM. API-Modelle: Der Anbieter fasst ältere Runden zusammen, wo er das unterstützt, sonst werden die ältesten Runden verworfen, sobald der Chat das veröffentlichte Kontextfenster des Modells erreicht.",
+        "Lokale GGUF- und MLX-Chats: Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset zitiert die dauerhaft geltenden Anweisungen, die hineinpassen, wortgetreu und mit Vorrang für die ältesten und neuesten vor allem dazwischen. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM. API-Modelle: Der Anbieter fasst ältere Runden zusammen, wo er das unterstützt, sonst werden die ältesten Runden aus dem Kontext entfernt, sobald der Chat das veröffentlichte Kontextfenster des Modells erreicht, und genauso indexiert.",
       pastedTextShortDescription:
         "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt.",
       pastedTextOffDescription:
@@ -5008,6 +5009,14 @@ export const de = {
     copied: "Kopiert",
     useAsSource: "Diesen Text übersetzen",
     downloadSubtitles: "Untertitel herunterladen",
+    imageOverlay: {
+      show: "Auf dem Bild anzeigen",
+      title: "Übersetzung auf dem Bild",
+      description: "Der übersetzte Text wird dort über das Bild gelegt, wo der Originaltext stand.",
+      working: "Text auf dem Bild wird übersetzt…",
+      download: "Bild herunterladen",
+      failed: "Die Übersetzung konnte nicht auf das Bild gezeichnet werden.",
+    },
     stale: "Text oder Einstellungen wurden geändert. Übersetze erneut, um zu aktualisieren.",
     stopped: "Vor dem Ende angehalten. Übersetze erneut für den Rest.",
     chat: "Mit übersetztem Text chatten",

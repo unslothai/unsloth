@@ -651,6 +651,7 @@ export const ptBR = {
       anyApp: "Uso do computador",
       anyAppDescription: "Permite que os modelos vejam a tela e controlem o <b>mouse e o teclado</b>. Os chats pedem permissão antes de começar, antes de usar um novo app e antes de qualquer ação arriscada. As capturas de tela vão para o modelo com que você conversa.",
       browser: "Navegador",
+      desktopOnlyDescription: "O uso do computador funciona no app para desktop do Unsloth. Abra estas configurações lá para ativá-lo.",
       browserDescription: "Permite que os modelos abram páginas no painel do navegador do Unsloth, leiam e cliquem e digitem por você.",
       screen: "Ver a tela",
       screenDescription: "O macOS pede isso em \"Gravação de Tela e Áudio do Sistema\".",
@@ -3206,7 +3207,7 @@ export const ptBR = {
         "Altere esta configuração para cada chat pelo menu de anexos.",
       rememberParamsPerModelHint:
         "Quando desativado, todos os modelos usam as mesmas configurações.",
-      autoCompactHint: "Chats GGUF e MLX locais: Os turnos removidos são indexados para que o modelo possa buscá-los de volta, e uma reinicialização cita palavra por palavra as instruções permanentes que couberem, priorizando as mais antigas e as mais recentes em vez das intermediárias. Arquivar exige um chat salvo e o índice vetorial; sem eles, os turnos antigos são descartados. Usa o tamanho de contexto definido, não a VRAM disponível. Modelos de API: o provedor resume os turnos antigos quando oferece suporte; caso contrário, os mais antigos são descartados quando o chat se aproxima da janela de contexto publicada do modelo.",
+      autoCompactHint: "Chats GGUF e MLX locais: Os turnos removidos são indexados para que o modelo possa buscá-los de volta, e uma reinicialização cita palavra por palavra as instruções permanentes que couberem, priorizando as mais antigas e as mais recentes em vez das intermediárias. Arquivar exige um chat salvo e o índice vetorial; sem eles, os turnos antigos são descartados. Usa o tamanho de contexto definido, não a VRAM disponível. Modelos de API: o provedor resume os turnos antigos quando oferece suporte; caso contrário, os mais antigos saem do contexto quando o chat se aproxima da janela de contexto publicada do modelo e são indexados da mesma forma.",
       pastedTextShortDescription: "Textos colados com {count} caracteres ou mais viram anexos .txt.",
       pastedTextOffDescription:
         "Todo o texto colado fica na caixa de mensagem, independentemente do tamanho.",
@@ -4963,6 +4964,14 @@ export const ptBR = {
     copied: "Copiado",
     useAsSource: "Traduzir este texto",
     downloadSubtitles: "Baixar legendas",
+    imageOverlay: {
+      show: "Mostrar na imagem",
+      title: "Tradução na imagem",
+      description: "O texto traduzido é desenhado sobre a imagem, no lugar do texto original.",
+      working: "Traduzindo o texto da imagem…",
+      download: "Baixar imagem",
+      failed: "Não foi possível desenhar a tradução na imagem.",
+    },
     stale: "O texto ou as configurações mudaram. Traduza novamente para atualizar.",
     stopped: "Parou antes do fim. Traduza de novo para obter o restante.",
     chat: "Conversar com o texto traduzido",

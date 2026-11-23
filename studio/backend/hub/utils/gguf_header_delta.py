@@ -521,7 +521,7 @@ def prepare_media_gguf(
         else:
             try:
                 local_commit = (repo_dir / "refs" / ref).read_text(encoding = "utf-8").strip()
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 local_commit = ""
         if local_commit and os.path.lexists(repo_dir / "snapshots" / local_commit / filename):
             return DeltaResult(reason = "already cached", decide_s = time.perf_counter() - t0)

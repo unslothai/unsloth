@@ -713,6 +713,7 @@ export const tr = {
       anyApp: "Bilgisayar kullanımı",
       anyAppDescription: "Modellerin ekranı görmesine ve <b>fareyi ve klavyeyi</b> kontrol etmesine izin verin. Sohbetler başlamadan, yeni bir uygulama kullanmadan ve riskli bir işlemden önce izin ister. Ekran görüntüleri sohbet ettiğiniz modele gönderilir.",
       browser: "Tarayıcı",
+      desktopOnlyDescription: "Bilgisayar kullanımı Unsloth masaüstü uygulamasında çalışır. Açmak için bu ayarları orada açın.",
       browserDescription: "Modellerin Unsloth'un tarayıcı panelinde sayfaları açmasına, okumasına ve sizin yerinize tıklayıp yazmasına izin verin.",
       screen: "Ekranı görme",
       screenDescription: "macOS bunu \"Screen & System Audio Recording\" altında ister.",
@@ -3434,7 +3435,7 @@ export const tr = {
       rememberParamsPerModelHint:
         "Kapalıyken her model için aynı ayarlar kullanılır.",
       autoCompactHint:
-        "Yerel GGUF ve MLX sohbetleri: çıkarılan turlar dizine eklenir, böylece model bunları arayıp geri getirebilir; sıfırlamada ise sığan kalıcı talimatlar, ortadakiler yerine en eski ve en yeniler korunarak kelimesi kelimesine yeniden alıntılanır. Arşivleme için kaydedilmiş bir sohbet ve vektör dizini gerekir; bunlar yoksa eski turlar atılır. Kullanılabilir VRAM'i değil, ayarladığınız bağlam uzunluğunu kullanır. API modelleri: sağlayıcı mümkün olduğunda eski turları özetler; aksi halde sohbet modelin yayımlanan bağlam penceresine yaklaştıkça en eski turlar atılır.",
+        "Yerel GGUF ve MLX sohbetleri: çıkarılan turlar dizine eklenir, böylece model bunları arayıp geri getirebilir; sıfırlamada ise sığan kalıcı talimatlar, ortadakiler yerine en eski ve en yeniler korunarak kelimesi kelimesine yeniden alıntılanır. Arşivleme için kaydedilmiş bir sohbet ve vektör dizini gerekir; bunlar yoksa eski turlar atılır. Kullanılabilir VRAM'i değil, ayarladığınız bağlam uzunluğunu kullanır. API modelleri: sağlayıcı mümkün olduğunda eski turları özetler; aksi halde sohbet modelin yayımlanan bağlam penceresine yaklaştıkça en eski turlar bağlamdan çıkarılır ve aynı şekilde dizinlenir.",
       pastedTextShortDescription:
         "{count} veya daha fazla karakter içeren yapıştırmalar .txt eki olur.",
       pastedTextOffDescription:
@@ -5274,6 +5275,14 @@ export const tr = {
     copied: "Kopyalandı",
     useAsSource: "Bu metni çevir",
     downloadSubtitles: "Altyazıları indir",
+    imageOverlay: {
+      show: "Görselde göster",
+      title: "Görsel üzerinde çeviri",
+      description: "Çevrilen metin, görselin üzerine özgün metnin bulunduğu yere çizilir.",
+      working: "Görseldeki metin çevriliyor…",
+      download: "Görseli indir",
+      failed: "Çeviri görselin üzerine çizilemedi.",
+    },
     stale: "Metin veya ayarlar değişti. Güncellemek için yeniden çevirin.",
     stopped: "Bitmeden durduruldu. Geri kalanı için yeniden çevirin.",
     chat: "Çevrilen metinle sohbet et",

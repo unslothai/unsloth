@@ -75,6 +75,38 @@ _VOID = {
     "wbr",
 }
 # Ruby annotations (<rt>, <rtc>) and their fallback parentheses (<rp>) are not prose.
+_MAX_PAGE_LABEL = 32
+_PAGE_LABEL_TAGS = {
+    "a",
+    "abbr",
+    "b",
+    "bdi",
+    "bdo",
+    "br",
+    "cite",
+    "code",
+    "del",
+    "dfn",
+    "em",
+    "font",
+    "i",
+    "img",
+    "ins",
+    "kbd",
+    "mark",
+    "q",
+    "s",
+    "samp",
+    "small",
+    "span",
+    "strong",
+    "sub",
+    "sup",
+    "time",
+    "u",
+    "var",
+    "wbr",
+}
 _IGNORE = {"head", "script", "style", "nav", "svg", "rt", "rp", "rtc"}
 # Layout hints inside words (soft hyphen, ZWSP, word joiner, BOM), as in TextPreprocessor.clean_text.
 _INVISIBLE = "\u00ad\u200b\u2060\ufeff"
@@ -96,8 +128,12 @@ class _BookTextParser(HTMLParser):
         self.encoding = None
         # <pre> text is kept verbatim and spliced back after whitespace cleanup.
         self.preformatted = []
+        self.page_marks = []
 
     def handle_starttag(self, tag, attrs):
+        if tag not in _PAGE_LABEL_TAGS:
+            # Any other tag may imply the marker's end tag; its extent is then unknown, so keep its text.
+            self.page_marks.clear()
         if tag == "body":
             self.handle_endtag("head")
         elif tag in {"rb", "rp", "rt", "rtc"} and any(t == "ruby" for t, _ in self.stack):
@@ -105,9 +141,10 @@ class _BookTextParser(HTMLParser):
             closes = {"rb", "rp", "rt", "rtc"} if tag in {"rb", "rtc"} else {"rb", "rp", "rt"}
             while self.stack and self.stack[-1][0] in closes:
                 self.stack.pop()
-        attrs = dict(attrs)
+        attrs = {name: value or "" for name, value in attrs}
         if tag == "meta" and self.encoding is None:
-            self.encoding = attrs.get("charset")
+            # An empty <meta charset> must not stop a later meta from declaring it.
+            self.encoding = attrs.get("charset") or None
             if not self.encoding and attrs.get("http-equiv", "").lower() == "content-type":
                 charset = re.search(r"charset\s*=\s*[\"']?([\w-]+)", attrs.get("content", ""), re.I)
                 if charset:
@@ -127,6 +164,11 @@ class _BookTextParser(HTMLParser):
             elif tag in {"td", "th"}:
                 self.parts.append(" ")
         if tag not in _VOID:
+            if not hidden and (
+                "pagebreak" in (attrs.get("epub:type") or "").split()
+                or "doc-pagebreak" in (attrs.get("role") or "").split()
+            ):
+                self.page_marks.append((len(self.stack), len(self.parts)))
             self.stack.append((tag, hidden))
 
     def handle_startendtag(self, tag, attrs):
@@ -136,12 +178,37 @@ class _BookTextParser(HTMLParser):
 
     def handle_endtag(self, tag):
         hidden = bool(self.stack and self.stack[-1][1])
+        closed = None
         for i in range(len(self.stack) - 1, -1, -1):
             if self.stack[i][0] == tag:
                 del self.stack[i:]
+                closed = i
                 break
+        # Drop only the outermost marker, and only when closed by its own end tag.
+        while self.page_marks and self.page_marks[-1][0] >= len(self.stack):
+            depth, start = self.page_marks.pop()
+            if not self.page_marks and depth == closed:
+                self._drop_page_number(start)
         if not hidden and tag in _BLOCKS:
             self.parts.append("\n\n")
+
+    def _drop_page_number(self, start):
+        # Keep only the marker's outer whitespace (spaces, <br>), which may be the only word separator.
+        text = re.sub(
+            "\ue000(\\d+)\ue001",
+            lambda m: self.preformatted[int(m[1])],
+            "".join(self.parts[start:]),
+        )
+        if len("".join(text.split())) > _MAX_PAGE_LABEL:
+            return  # Not a page label.
+        del self.parts[start:]
+        if text.strip():
+            text = text[: len(text) - len(text.lstrip())] + text[len(text.rstrip()) :]
+        if text and any(tag == "pre" for tag, _ in self.stack):
+            self.parts.append(f"\ue000{len(self.preformatted)}\ue001")
+            self.preformatted.append(text)
+        elif text:
+            self.parts.append(text)
 
     def handle_data(self, data):
         if not self.stack or not self.stack[-1][1]:

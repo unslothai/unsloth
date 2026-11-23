@@ -1263,3 +1263,25 @@ def test_a_deliberate_switch_still_takes_the_repair_branch(monkeypatch):
     monkeypatch.setattr(whisper_upd, "repair_pairing_plan", lambda: marker)
     monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: True)
     assert _whisper_phase_plan("vulkan", llama_will_run = True) is marker
+
+
+def test_a_sycl_llama_runtime_pairs_with_the_cpu_slim_whisper(monkeypatch, tmp_path):
+    import utils.llama_cpp_freshness as llama_freshness
+
+    whisper_binary = _slim_whisper(monkeypatch, tmp_path)
+    marker_path = Path(whisper_binary).parents[2] / whisper_upd._INSTALL_MARKER_NAME
+    marker_path.write_text(
+        json.dumps({**json.loads(marker_path.read_text()), "backend": "cpu"}), encoding = "utf-8"
+    )
+    monkeypatch.setattr(upd, "_find_binary", lambda: "llama-server")
+    monkeypatch.setattr(
+        llama_freshness,
+        "read_install_marker",
+        lambda _binary: {"backend": "sycl", "asset": "app-b1-linux-x64-sycl.tar.gz"},
+    )
+    monkeypatch.setattr(
+        whisper_upd, "_install_latest", lambda *a, **k: pytest.fail("whisper has no sycl build")
+    )
+
+    assert whisper_upd.slim_pairing_is_stale() is False
+    assert whisper_upd.run_repair_phase({}, lambda progress: None) == {}

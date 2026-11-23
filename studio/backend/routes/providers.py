@@ -219,6 +219,8 @@ def _provider_response(row: dict, *, hide_headers: bool = False) -> ProviderResp
         available_models = row.get("available_models") or [],
         max_output_tokens = row.get("max_output_tokens"),
         auto_compact_tokens = row.get("auto_compact_tokens"),
+        auto_compact_percent = row.get("auto_compact_percent"),
+        auto_compact_percent_by_model = row.get("auto_compact_percent_by_model") or {},
         compaction_mode = (
             row.get("compaction_mode")
             if row.get("compaction_mode") in ("summary", "rolling", "checkpoint")
@@ -440,6 +442,8 @@ async def create_provider_config(
             shared = payload.shared,
             auto_compact_tokens = payload.auto_compact_tokens,
             compaction_mode = payload.compaction_mode,
+            auto_compact_percent = payload.auto_compact_percent,
+            auto_compact_percent_by_model = payload.auto_compact_percent_by_model,
         )
         try:
             if api_key:
@@ -541,6 +545,8 @@ async def update_provider_config(
         "available_models",
         "max_output_tokens",
         "auto_compact_tokens",
+        "auto_compact_percent",
+        "auto_compact_percent_by_model",
         "compaction_mode",
         "api_type",
         "reasoning_config",
@@ -584,6 +590,12 @@ async def update_provider_config(
             metadata_updates["auto_compact_tokens"] = payload.auto_compact_tokens
         if "compaction_mode" in payload.model_fields_set:
             metadata_updates["compaction_mode"] = payload.compaction_mode
+        if "auto_compact_percent" in payload.model_fields_set:
+            metadata_updates["auto_compact_percent"] = payload.auto_compact_percent
+        if "auto_compact_percent_by_model" in payload.model_fields_set:
+            metadata_updates["auto_compact_percent_by_model"] = (
+                payload.auto_compact_percent_by_model or {}
+            )
         if reasoning_config_requested:
             metadata_updates["reasoning_config"] = (
                 payload.reasoning_config.model_dump()
@@ -602,6 +614,8 @@ async def update_provider_config(
         available_models = existing.get("available_models") or [],
         max_output_tokens = existing.get("max_output_tokens"),
         auto_compact_tokens = existing.get("auto_compact_tokens"),
+        auto_compact_percent = existing.get("auto_compact_percent"),
+        auto_compact_percent_by_model = existing.get("auto_compact_percent_by_model") or {},
         compaction_mode = existing.get("compaction_mode"),
         api_type = existing.get("api_type", "chat_completions"),
         reasoning_config = existing.get("reasoning_config"),
@@ -630,6 +644,8 @@ async def update_provider_config(
             if written is None and field not in {
                 "max_output_tokens",
                 "auto_compact_tokens",
+                "auto_compact_percent",
+                "auto_compact_percent_by_model",
                 "compaction_mode",
                 "reasoning_config",
                 "extra_headers",

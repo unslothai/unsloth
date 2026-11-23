@@ -651,6 +651,7 @@ export const es = {
       anyApp: "Uso del ordenador",
       anyAppDescription: "Permite que los modelos vean la pantalla y controlen el <b>ratón y el teclado</b>. Los chats piden permiso antes de empezar, antes de usar una app nueva y antes de cualquier acción arriesgada. Las capturas de pantalla se envían al modelo con el que chateas.",
       browser: "Navegador",
+      desktopOnlyDescription: "El uso del ordenador funciona en la aplicación de escritorio de Unsloth. Abre estos ajustes allí para activarlo.",
       browserDescription: "Permite que los modelos abran páginas en el panel del navegador de Unsloth, las lean y hagan clic y escriban por ti.",
       screen: "Ver la pantalla",
       screenDescription: "macOS lo pide en «Grabación de pantalla y audio del sistema».",
@@ -3222,7 +3223,7 @@ export const es = {
       rememberParamsPerModelHint:
         "Al desactivarlo, todos los modelos usan los mismos ajustes.",
       autoCompactHint:
-        "Chats GGUF y MLX locales: Los turnos expulsados se indexan para que el modelo pueda recuperarlos, y un reinicio cita palabra por palabra las instrucciones permanentes que quepan, dando prioridad a las más antiguas y a las más recientes frente a las intermedias. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto configurada, no la VRAM disponible. Modelos de API: el proveedor resume los turnos antiguos cuando lo admite; si no, se descartan los más antiguos cuando el chat se acerca a la ventana de contexto publicada del modelo.",
+        "Chats GGUF y MLX locales: Los turnos expulsados se indexan para que el modelo pueda recuperarlos, y un reinicio cita palabra por palabra las instrucciones permanentes que quepan, dando prioridad a las más antiguas y a las más recientes frente a las intermedias. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto configurada, no la VRAM disponible. Modelos de API: el proveedor resume los turnos antiguos cuando lo admite; si no, los más antiguos salen del contexto cuando el chat se acerca a la ventana de contexto publicada del modelo y se indexan de la misma forma.",
       pastedTextShortDescription:
         "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt.",
       pastedTextOffDescription:
@@ -5007,6 +5008,14 @@ export const es = {
     copied: "Copiado",
     useAsSource: "Traducir este texto",
     downloadSubtitles: "Descargar subtítulos",
+    imageOverlay: {
+      show: "Mostrar en la imagen",
+      title: "Traducción sobre la imagen",
+      description: "El texto traducido se dibuja sobre la imagen donde estaba el texto original.",
+      working: "Traduciendo el texto de la imagen…",
+      download: "Descargar imagen",
+      failed: "No se ha podido dibujar la traducción sobre la imagen.",
+    },
     stale: "El texto o los ajustes han cambiado. Vuelve a traducir para actualizar.",
     stopped: "Se detuvo antes del final. Vuelve a traducir para obtener el resto.",
     chat: "Chatear con el texto traducido",

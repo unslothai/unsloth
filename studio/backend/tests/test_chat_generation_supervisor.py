@@ -233,7 +233,9 @@ async def test_create_route_schedules_producer_on_request_loop(monkeypatch):
     monkeypatch.setattr(run_routes.db, "create_run", create_run)
     response = await run_routes.create_chat_generation_run(_create_payload(), request, "alice")
     assert response["created"] is True
-    assert started == [("run-1", {"thread_id": "thread-1", "model": "local", "images": {}})]
+    assert started == [
+        ("run-1", {"thread_id": "thread-1", "model": "local", "images": {}, "external": False})
+    ]
 
 
 @pytest.mark.asyncio

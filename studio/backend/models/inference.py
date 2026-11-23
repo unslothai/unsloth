@@ -3486,7 +3486,7 @@ class ChatCompletionRequest(BaseModel):
             "summarise the oldest turns, keeps the recent ones verbatim and "
             "reuses the summary on later turns of a saved thread, so the prompt "
             "and the reply fit within it before forwarding. If the summary call "
-            "fails the oldest turns are dropped instead. "
+            "fails the oldest turns are evicted instead, archived for recall on a saved thread. "
             "Per-provider floors are enforced in the corresponding stream helpers."
         ),
     )
@@ -3497,6 +3497,16 @@ class ChatCompletionRequest(BaseModel):
             'after" setting rather than the default. Anthropic and OpenAI server-side '
             "compaction then use it as given instead of capping it at 200k: it is still "
             "raised to the provider's floor and never exceeds context_window."
+        ),
+    )
+    compaction_percent: Optional[int] = Field(
+        None,
+        ge = 10,
+        le = 100,
+        description = (
+            "[x-unsloth] The connection's \"Auto-compact at\" share of the model's window, in "
+            "percent. Where Unsloth reads the window from a self-hosted server (no "
+            "compaction_threshold, or Ollama's loaded num_ctx), it replaces the 75% default."
         ),
     )
     compaction_mode: Optional[Literal["summary", "rolling", "checkpoint"]] = Field(

@@ -1016,8 +1016,13 @@ def _image_png(opened) -> bytes:
     return out.getvalue()
 
 
-def _image_text(path: str, filename: str) -> tuple[str, str | None]:
-    """The loaded vision model reads each page, else local Tesseract; returns the text and any warning."""
+def _image_text(
+    path: str,
+    filename: str,
+    blocks: list | None = None,
+) -> tuple[str, str | None]:
+    """The loaded vision model reads each page, else local Tesseract; returns the text and any warning.
+    ``blocks`` collects Tesseract's text blocks of a one-page image."""
     import tempfile
 
     from PIL import Image
@@ -1062,7 +1067,11 @@ def _image_text(path: str, filename: str) -> tuple[str, str | None]:
                 for number in rest:
                     with open(normalized, "wb") as handle:
                         handle.write(pngs[number])
-                    text = pdf_ocr.ocr_pages(normalized, [1]).get(1, "")
+                    if blocks is not None and not multipage:
+                        text, found = pdf_ocr.ocr_image_blocks(normalized)
+                        blocks.extend(found)
+                    else:
+                        text = pdf_ocr.ocr_pages(normalized, [1]).get(1, "")
                     if text:
                         texts[number] = text
         except OSError:
@@ -1177,14 +1186,17 @@ def extract_text(
     file: UploadFile = File(...),
     # Translate keeps only its first max_chars characters; scanned pages past them are not OCR'd.
     max_chars: Annotated[int | None, Form(ge = 1)] = None,
+    # Translate draws the translation over an image Tesseract read; a vision model gives no boxes.
+    boxes: Annotated[bool, Form()] = False,
     subject: str = Depends(get_current_subject),
 ) -> dict:
     from core.rag import parsers
 
     stored_path, filename, _digest = _save_upload(file, _IMAGE_TEXT_EXTS)
     if os.path.splitext(filename)[1].lower() in _IMAGE_TEXT_EXTS:
+        blocks: list | None = [] if boxes else None
         try:
-            text, warning = _image_text(stored_path, filename)
+            text, warning = _image_text(stored_path, filename, blocks)
         except Exception as exc:
             raise HTTPException(
                 status_code = 422, detail = f"{filename} could not be read: {exc}"
@@ -1201,6 +1213,8 @@ def extract_text(
         result = {"filename": filename, "text": text, "truncated": False}
         if warning:
             result["warning"] = warning
+        if blocks:
+            result["blocks"] = blocks
         return result
     try:
         pages = parsers.parse(stored_path)

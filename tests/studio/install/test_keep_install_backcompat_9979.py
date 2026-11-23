@@ -432,7 +432,7 @@ def test_a_backend_this_unsloth_does_not_know_falls_back_to_the_asset_name(tmp_p
     """An unrecognised ``backend`` is not the end of the derivation: ``marker_backend`` tries
     the recorded backend, then the install kind, then the asset name. Asserted both ways so the
     fallback order is pinned."""
-    named = {**S12, "backend": "sycl"}  # asset is ...linux-x64-cuda12.tar.gz
+    named = {**S12, "backend": "musa"}  # asset is ...linux-x64-cuda12.tar.gz
     assert ILP.marker_backend(named) == "cuda"
 
     without_cuda_lib = build_install(tmp_path / "a", marker = named, payload_backend = None)
@@ -444,7 +444,7 @@ def test_a_backend_this_unsloth_does_not_know_falls_back_to_the_asset_name(tmp_p
 
 def test_a_backend_no_source_can_name_falls_open_to_the_shared_payload(tmp_path):
     """When neither the backend nor the asset name resolves, do not reject a good tree."""
-    opaque = {**S12, "backend": "sycl", "asset": "bundle.tar.gz"}
+    opaque = {**S12, "backend": "musa", "asset": "bundle.tar.gz"}
     assert ILP.marker_backend(opaque) is None
 
     install_dir = build_install(tmp_path, marker = opaque, payload_backend = None)
@@ -750,7 +750,7 @@ def test_a_marker_from_a_newer_unsloth_refuses_rather_than_keeping(tmp_path, mon
     _transient_listing_failure(monkeypatch)
     install_dir = build_install(
         tmp_path,
-        marker = {**S12, "backend": "cuda", "backend_request": "sycl"},
+        marker = {**S12, "backend": "cuda", "backend_request": "musa"},
         payload_backend = "cuda",
     )
     with pytest.raises(SystemExit) as caught:
