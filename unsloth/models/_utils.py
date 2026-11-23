@@ -6934,6 +6934,11 @@ def patch_gradient_accumulation_fix(Trainer):
             from ._ddp_defaults import install_unsloth_ddp_comm_defaults
 
             install_unsloth_ddp_comm_defaults(self)
+            try:
+                from ._jit_checkpoint import install_jit_checkpoint_agreement
+                install_jit_checkpoint_agreement(self)
+            except Exception as e:
+                logger.warning_once(f"Unsloth: rank-agreed JIT checkpoint skipped ({e})")
             if os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0") != "0":
                 from ..optimizers.state_offload import install_optimizer_state_offload
                 install_optimizer_state_offload(self)
