@@ -295,20 +295,24 @@ def _worker(
     import torch.distributed as dist
 
     torch.set_num_threads(2)
-    dist.init_process_group(  # a file rendezvous: no port to lose to another process
-        "gloo",
-        store = dist.FileStore(os.path.join(tmp, "rendezvous"), world),
-        rank = rank,
-        world_size = world,
-        timeout = datetime.timedelta(seconds = 300),
-    )
+    if "MASTER_PORT" not in (
+        env or {}
+    ):  # else torchrun's environment: Unsloth creates the group itself
+        dist.init_process_group(  # a file rendezvous: no port to lose to another process
+            "gloo",
+            store = dist.FileStore(os.path.join(tmp, "rendezvous"), world),
+            rank = rank,
+            world_size = world,
+            timeout = datetime.timedelta(seconds = 300),
+        )
     try:
         res = globals()[case](rank, world, tmp, **kwargs)
     except Exception as exc:
         import traceback
         res = {"error": f"{type(exc).__name__}: {exc}"[:600] + traceback.format_exc()[-6000:]}
     torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
-    dist.destroy_process_group()
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 def _spawn(
@@ -381,7 +385,11 @@ def test_ep_env_trainer_matches_one_process():
     if "skip" in ref:
         pytest.skip(f"import unsloth failed on this host: {ref['skip']}")
     assert "error" not in ref, ref
-    results = _spawn("_case_env_trainer", env = {"UNSLOTH_PARALLEL": "ep=2"})
+    from tests._rendezvous_port import free_port
+
+    # As under torchrun: no process group yet at get_peft_model (Unsloth creates it from the environment).
+    env = {"UNSLOTH_PARALLEL": "ep=2", "MASTER_ADDR": "127.0.0.1", "MASTER_PORT": str(free_port())}
+    results = _spawn("_case_env_trainer", env = env)
     assert all(r is not None and "error" not in r for r in results), results
     assert not ref["is_ep"]
     for r in results:

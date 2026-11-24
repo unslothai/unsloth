@@ -66,16 +66,20 @@ def ep_env_mesh():
         import torch.distributed as dist
         from torch.distributed.device_mesh import init_device_mesh
 
+        cuda = torch.cuda.is_available()
+        if cuda:
+            torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
         if not dist.is_initialized():
-            from .tp_native import _world_mesh
-            _world_mesh()  # raises: no process group
+            # As parallel_env.ParallelLayout.mesh (torchrun's environment); the Trainer's accelerate reuses it.
+            dist.init_process_group("nccl" if cuda else "gloo")
         ep = ep_env_size()
         if dist.get_world_size() != ep:
             raise ValueError(
                 f"Unsloth: {_EP_ENV}={ep} needs WORLD_SIZE = {ep}, got {dist.get_world_size()}."
             )
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        _ENV_MESH.append(init_device_mesh(device, (ep,), mesh_dim_names = ("ep",))["ep"])
+        _ENV_MESH.append(
+            init_device_mesh("cuda" if cuda else "cpu", (ep,), mesh_dim_names = ("ep",))["ep"]
+        )
     return _ENV_MESH[0]
 
 
