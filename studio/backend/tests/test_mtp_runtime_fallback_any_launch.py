@@ -30,9 +30,7 @@ from utils import process_lifetime  # noqa: E402
 
 def test_runtime_fallback_armed_without_tensor_parallel():
     src = inspect.getsource(LlamaCppBackend.load_model)
-    m = re.search(
-        r"_mtp_active_for_launched_server = bool\(\s*([^)]*?)\s*\)", src, re.DOTALL
-    )
+    m = re.search(r"_mtp_active_for_launched_server = bool\(\s*([^)]*?)\s*\)", src, re.DOTALL)
     assert m, "load_model must record whether the launched server runs a draft speculative mode"
     armed = re.sub(r"\s+", " ", m.group(1)).strip()
     assert "_spec_requested_mtp" in armed
