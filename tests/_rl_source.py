@@ -30,6 +30,7 @@ WRAPPER_NAMES = (
     "_install_grpo_hidden_states_forward_wrapper",
     "_grpo_pre_head_hidden_divisor",
     "_grpo_hidden_states_reproduce_logits",
+    "_grpo_head_input_match_is_decisive",
 )
 
 OPTIONAL_NAMES = ("_note_grpo_hidden_states_success",)
@@ -41,6 +42,7 @@ CONSTANT_NAMES = (
     "_UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR",
     "_UNSLOTH_GRPO_HIDDEN_STATES_UNSAFE_ATTR",
     "_UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR",
+    "_UNSLOTH_GRPO_HIDDEN_STATES_RETURNS_HEAD_INPUT_ATTR",
 )
 
 
