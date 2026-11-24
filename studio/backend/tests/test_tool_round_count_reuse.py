@@ -183,21 +183,28 @@ def test_a_render_count_reuses_the_native_count_of_the_same_prompt(monkeypatch):
     assert [r[0] for r in server.requests] == [_NATIVE]
 
 
-@pytest.mark.parametrize("change", ["messages", "tools", "continue_final", "template_kwargs"])
+@pytest.mark.parametrize(
+    "change",
+    ["messages", "system", "tools", "continue_final", "template_kwargs", "template_options"],
+)
 def test_a_render_count_of_a_different_prompt_still_renders(monkeypatch, change):
     server = _Server(monkeypatch)
     backend = _count_backend()
     backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, prefer_native = True)
-    messages, tools, kw = _MESSAGES, _TOOLS, {}
+    messages, system, tools, kw = _MESSAGES, None, _TOOLS, {}
     if change == "messages":
         messages = _MESSAGES + [{"role": "assistant", "content": "x"}]
+    elif change == "system":
+        system = "Be terse."
     elif change == "tools":
         tools = None
     elif change == "continue_final":
         kw = {"continue_final_message": True}
-    else:
+    elif change == "template_kwargs":
         kw = {"chat_template_kwargs": {"enable_thinking": False}}
-    backend.count_chat_tokens(messages, None, tools, strict = True, **kw)
+    else:
+        kw = {"template_options": {"tool_choice": "required"}}
+    backend.count_chat_tokens(messages, system, tools, strict = True, **kw)
     assert len(server.paths("/apply-template")) == 1
 
 
