@@ -428,9 +428,9 @@ def test_an_older_database_gains_tool_columns_once(tmp_path):
     )
     studio_db._ensure_schema(conn)
     studio_db._ensure_schema(conn)
-    assert conn.execute("SELECT web_search, mcp_server_ids_json FROM scheduled_tasks").fetchall() == [
-        (0, "[]")
-    ]
+    assert conn.execute(
+        "SELECT web_search, mcp_server_ids_json FROM scheduled_tasks"
+    ).fetchall() == [(0, "[]")]
 
 
 def test_create_list_and_read(client, monkeypatch):
