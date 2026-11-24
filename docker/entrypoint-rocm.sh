@@ -22,11 +22,45 @@ if [[ -x /usr/local/bin/unsloth-studio-home ]]; then
 fi
 
 # Studio and JupyterLab run as root, so hand what they download into a host-owned HF cache mount back to its owner.
-# Group root + g+w keeps them writable for Studio's tool sandbox, which stays uid 0 but drops every capability.
+# Group root + g+rwX keeps them usable by Studio's tool sandbox (uid 0, no capabilities, umask 077), which shares
+# this cache writable: hence descriptor-relative no-follow updates and no multi-link files, so it cannot redirect them.
 hf_cache_uid="$(stat -c '%u' "${HF_HOME:-}" 2>/dev/null || true)"
-if [[ "$(id -u)" == 0 && -n "${hf_cache_uid}" && "${hf_cache_uid}" != 0 ]]; then
+if [[ "$(id -u)" == 0 && -n "${hf_cache_uid}" && "${hf_cache_uid}" != 0 ]] && command -v python3 >/dev/null 2>&1; then
     while :; do
-        find "${HF_HOME}" -uid 0 \( -type l -o -exec chmod g+w {} + \) -exec chown -h "${hf_cache_uid}:0" {} + 2>/dev/null || true
+        python3 -I -S - "${HF_HOME}" "${hf_cache_uid}" <<'PY' || true
+import os, stat, sys
+
+top, uid = sys.argv[1], int(sys.argv[2])
+src = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+
+
+def hand_over(name, dfd):
+    st = os.stat(name, dir_fd = dfd, follow_symlinks = False)
+    if st.st_uid != src:
+        return
+    if stat.S_ISLNK(st.st_mode):
+        os.chown(name, uid, 0, dir_fd = dfd, follow_symlinks = False)
+        return
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd = dfd)
+    try:
+        st = os.fstat(fd)
+        is_dir = stat.S_ISDIR(st.st_mode)
+        if st.st_uid != src or not (is_dir or (stat.S_ISREG(st.st_mode) and st.st_nlink == 1)):
+            return
+        mode = stat.S_IMODE(st.st_mode) | (0o070 if is_dir or st.st_mode & 0o111 else 0o060)
+        os.fchown(fd, uid, 0)
+        os.fchmod(fd, mode if is_dir else mode & ~0o6000)
+    finally:
+        os.close(fd)
+
+
+for _, dirs, files, dfd in os.fwalk(top, follow_symlinks = False):
+    for name in dirs + files:
+        try:
+            hand_over(name, dfd)
+        except OSError:
+            pass
+PY
         sleep 30
     done </dev/null >/dev/null 2>&1 &
 fi
