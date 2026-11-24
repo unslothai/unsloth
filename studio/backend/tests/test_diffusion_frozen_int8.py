@@ -192,38 +192,61 @@ def test_int8_kernel_env(monkeypatch, raw, want):
 
 
 @pytest.mark.parametrize(
-    "recorded, kernel, env, want",
+    "kernel, env, want",
     [
-        ("int8", "w8a8", None, True),
-        ("int8", "weight-only", None, False),
-        ("int8", None, None, False),  # an int8 bundle from before the record trained weight-only
-        ("bf16", None, None, True),  # a non-int8 bundle says nothing about the int8 kernel
+        ("w8a8", None, True),
+        ("weight-only", None, False),
+        (None, None, True),  # not an int8 bundle (or unreadable): the default
         (
-            "int8",
             "weight-only",
             "w8a8",
             True,
         ),  # explicit env wins (the identity check then refuses the switch)
-        ("int8", "w8a8", "weight-only", False),
+        ("w8a8", "weight-only", False),
     ],
 )
-def test_resume_continues_the_recorded_int8_kernel(monkeypatch, recorded, kernel, env, want):
+def test_resume_continues_the_recorded_int8_kernel(monkeypatch, kernel, env, want):
+    """Real bundles go through test_diffusion_int8_resume.py; this pins the precedence."""
+    from core.training import diffusion_checkpoint as ck
+
     if env is None:
         monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
     else:
         monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", env)
-    monkeypatch.setattr(dit, "recorded_base_precision", lambda p: (True, recorded))
-    monkeypatch.setattr(dit, "recorded_int8_kernel", lambda p: kernel)
+    monkeypatch.setattr(ck, "recorded_int8_resume_kernel", lambda p: kernel)
     cfg = type("C", (), {"resume_from_checkpoint": "/some/run"})()
     assert dit._int8_w8a8(cfg) is want
     fresh = type("C", (), {"resume_from_checkpoint": None})()
     assert dit._int8_w8a8(fresh) is (env != "weight-only")
 
 
-def test_recorded_int8_kernel_never_raises(tmp_path):
+def test_recorded_int8_resume_kernel_never_raises(tmp_path):
     from core.training import diffusion_checkpoint as ck
-    assert ck.recorded_int8_kernel(tmp_path / "missing") is None
-    assert ck.recorded_int8_kernel(None) is None
+    assert ck.recorded_int8_resume_kernel(tmp_path / "missing") is None
+    assert ck.recorded_int8_resume_kernel(None) is None
+
+
+def test_the_int8_probe_does_not_cache_an_out_of_memory(monkeypatch):
+    """A full card says nothing about the int8 GEMM: the next probe runs again instead of reading a cached no."""
+    calls = []
+
+    def flaky(a, b):
+        calls.append(1)
+        if len(calls) == 1:
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+        return torch.full((32, 32), 32, dtype = torch.int32)
+
+    real_ones = torch.ones
+    monkeypatch.setattr(dit, "_INT8_MM_PROBE_OK", {})
+    monkeypatch.setattr(torch, "_int_mm", flaky)
+    monkeypatch.setattr(torch, "ones", lambda *a, **k: real_ones(*a, **{**k, "device": "cpu"}))
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (8, 9))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "NVIDIA L4")
+    dev = torch.device("cuda", 0)
+    assert dit._int8_mm_probe_ok(dev) is False
+    assert dit._INT8_MM_PROBE_OK == {}
+    assert dit._int8_mm_probe_ok(dev) is True and len(calls) == 2
+    assert dit._INT8_MM_PROBE_OK == {"cuda:0": True}
 
 
 def test_apply_lands_the_base_and_reports(monkeypatch):

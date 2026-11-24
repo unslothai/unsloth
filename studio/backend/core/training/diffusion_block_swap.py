@@ -95,13 +95,28 @@ def int8_w8a8_requested() -> bool:
     return True if explicit is None else explicit
 
 
-def swap_lowp_mode(base_precision: str) -> Optional[str]:
+def int8_w8a8_for_run(cfg: Any = None) -> bool:
+    """Whether this run's int8 base is W8A8: the explicit UNSLOTH_DIFFUSION_INT8_TRAIN choice, else the kernel a
+    resumed int8 bundle trained on (weight-only for one without the record), else W8A8."""
+    explicit = int8_w8a8_env()
+    if explicit is not None:
+        return explicit
+    resume = getattr(cfg, "resume_from_checkpoint", None) if cfg is not None else None
+    if resume:
+        from core.training.diffusion_checkpoint import recorded_int8_resume_kernel
+        kernel = recorded_int8_resume_kernel(resume)
+        if kernel is not None:
+            return kernel == "w8a8"
+    return True
+
+
+def swap_lowp_mode(base_precision: str, cfg: Any = None) -> Optional[str]:
     """The frozen low-precision base block swap streams for this precision ("fp8" / "int8_w8a8"), or None."""
     if not lowp_swap_enabled():
         return None
     if base_precision == "fp8":
         return "fp8"
-    if base_precision == "int8" and int8_w8a8_requested():
+    if base_precision == "int8" and int8_w8a8_for_run(cfg):
         return "int8_w8a8"
     return None
 
@@ -118,13 +133,14 @@ def block_swap_error(
     device: str,
     gradient_checkpointing: bool,
     integrated: bool = False,
+    cfg: Any = None,
 ) -> Optional[str]:
-    """Why this run cannot swap blocks, or None."""
+    """Why this run cannot swap blocks, or None. ``cfg`` lets a resume keep the int8 kernel its bundle recorded."""
     if request is None:
         return None
     if device != "cuda":
         return "block_swap needs a CUDA GPU."
-    if base_precision != "bf16" and swap_lowp_mode(base_precision) is None:
+    if base_precision != "bf16" and swap_lowp_mode(base_precision, cfg) is None:
         if base_precision == "int8" and lowp_swap_enabled():
             return (
                 "block_swap streams int8 only as the frozen W8A8 base; the torchao weight-only int8 base "
@@ -188,6 +204,7 @@ def block_swap_start_error(cfg: Any, device_facts = None) -> Optional[str]:
         device,
         bool(getattr(cfg, "gradient_checkpointing", True)),
         integrated = integrated,
+        cfg = cfg,
     )
 
 

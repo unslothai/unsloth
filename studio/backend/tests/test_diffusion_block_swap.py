@@ -258,13 +258,35 @@ def test_auto_keeps_compiled_w8a8_int8_over_the_bf16_swap(monkeypatch):
         lambda n, *a: object() if n in ("unsloth_zoo.block_swap", "triton") else real(n, *a),
     )
     monkeypatch.setattr(dit, "_int8_mm_probe_ok", lambda d: True)
-    assert not dit._auto_block_swap_wanted(_auto_cfg(), "int8", "cuda")
-    assert dit._auto_block_swap_wanted(_auto_cfg(compile_transformer = "off"), "int8", "cuda")
+    monkeypatch.setattr(dit, "_compile_toolchain_missing", lambda: None)
+
+    def q21(**kw):
+        return _auto_cfg(
+            **{
+                "resolved_family": "qwen-image-2.1",
+                "compile_transformer": "auto",
+                "train_steps": 10,
+                **kw,
+            }
+        )
+
+    assert not dit._auto_block_swap_wanted(q21(), "int8", "cuda")
+    # A family whose compiled W8A8 base was not measured keeps main's swap.
+    assert dit._auto_block_swap_wanted(
+        _auto_cfg(resolved_family = "flux.1", compile_transformer = "auto", train_steps = 10),
+        "int8",
+        "cuda",
+    )
+    # The compile helper's own gates decide: compile off, or no toolchain, keeps the swap.
+    assert dit._auto_block_swap_wanted(q21(compile_transformer = "off"), "int8", "cuda")
+    monkeypatch.setattr(dit, "_compile_toolchain_missing", lambda: "no C++ compiler")
+    assert dit._auto_block_swap_wanted(q21(), "int8", "cuda")
+    monkeypatch.setattr(dit, "_compile_toolchain_missing", lambda: None)
     monkeypatch.setattr(dit, "_int8_mm_probe_ok", lambda d: False)
-    assert dit._auto_block_swap_wanted(_auto_cfg(), "int8", "cuda")
+    assert dit._auto_block_swap_wanted(q21(), "int8", "cuda")
     monkeypatch.setattr(dit, "_int8_mm_probe_ok", lambda d: True)
     monkeypatch.setenv(dit.INT8_TRAIN_ENV, "weight-only")
-    assert dit._auto_block_swap_wanted(_auto_cfg(), "int8", "cuda")
+    assert dit._auto_block_swap_wanted(q21(), "int8", "cuda")
 
 
 def test_swapping_checkpoints_every_block_even_with_partial_mode(monkeypatch):

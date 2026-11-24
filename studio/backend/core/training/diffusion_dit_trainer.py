@@ -44,7 +44,7 @@ from core.training.diffusion_block_swap import (
     swap_lowp_mode,
     compile_swapped_blocks,
     install_dit_block_swap,
-    int8_w8a8_env,
+    int8_w8a8_for_run,
     reset_block_swaps,
 )
 from core.training.diffusion_gc_budget import (
@@ -110,7 +110,6 @@ from core.training.diffusion_checkpoint import (
     with_resolved_revision,
     preflight_resume,
     recorded_base_precision,
-    recorded_int8_kernel,
 )
 from core.training.diffusion_samples import (
     discard_samples,
@@ -488,16 +487,8 @@ def _int8_w8a8(cfg = None) -> bool:
     """int8 trains on the frozen W8A8 base (``diffusion_frozen_int8``): it traces, so the run compiles, where torchao
     weight-only int8 runs eager (L4, Qwen-Image-2.1 512 px: 0.57 vs 1.25 s/step, bf16 0.87).
     UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only keeps the torchao base. Unset, a resume continues the int8 kernel its
-    bundle trained on; an int8 bundle that predates the record trained weight-only."""
-    explicit = int8_w8a8_env()
-    if explicit is not None:
-        return explicit
-    resume = getattr(cfg, "resume_from_checkpoint", None) if cfg is not None else None
-    if resume:
-        found, recorded = recorded_base_precision(resume)
-        if found and recorded == "int8":
-            return recorded_int8_kernel(resume) == "w8a8"
-    return True
+    bundle trained on; an int8 bundle without the record trained weight-only (block swap shares this decision)."""
+    return int8_w8a8_for_run(cfg)
 
 
 def _apply_int8_w8a8(
@@ -1071,7 +1062,7 @@ def _auto_block_swap_wanted(
         getattr(cfg, "base_precision", "") or ""
     ).strip().lower() != "auto" or base_precision != "int8":
         return False
-    if _auto_int8_w8a8_compiled(cfg, device):
+    if _auto_int8_w8a8_compiled(cfg, device, spec):
         return False
     if os.environ.get(AUTO_BLOCK_SWAP_ENV, "1").strip().lower() in ("0", "off", "false", "no"):
         return False
@@ -1136,23 +1127,44 @@ def _int8_mm_probe_ok(device) -> bool:
     if key not in _INT8_MM_PROBE_OK:
         ok = False
         if _int8_gemm_decline(dev) is None:
+            import torch
             try:
-                import torch
                 a = torch.ones((32, 32), dtype = torch.int8, device = dev)
                 ok = bool(torch._int_mm(a, a.t())[0, 0].item() == 32)
+            except torch.cuda.OutOfMemoryError:
+                # A full card says nothing about the GEMM: answer no for now, never cache it.
+                return False
             except Exception:  # noqa: BLE001 -- no int8 GEMM: the run would fall back to weight-only
                 ok = False
         _INT8_MM_PROBE_OK[key] = ok
     return _INT8_MM_PROBE_OK[key]
 
 
-def _auto_int8_w8a8_compiled(cfg, device) -> bool:
-    """Auto's int8 pick will train the compiled W8A8 base (not the eager weight-only one the block swap replaced)."""
+# Families whose W8A8 base was measured compiled (regional compile engaged, graphs > 0) and faster than the bf16
+# block swap Auto picks otherwise, at a held-out loss inside the bf16 seed spread (Colab L4 / A100 / G4, 512 px).
+_AUTO_W8A8_MEASURED = frozenset({"qwen-image-2.1", "flux.2-klein", "z-image"})
+
+
+def _auto_int8_w8a8_compiled(
+    cfg,
+    device,
+    spec = None,
+) -> bool:
+    """Auto's int8 pick will train the compiled W8A8 base (not the eager weight-only one the block swap replaced):
+    a measured family, the compile helper's own gates (_should_compile for int8, a compile toolchain) say it
+    compiles, and the int8 GEMM runs on the card. Anything else keeps main's choice."""
+    family = (
+        str(getattr(spec, "family", None) or getattr(cfg, "resolved_family", "") or "")
+        .strip()
+        .lower()
+    )
     return (
         device == "cuda"
+        and family in _AUTO_W8A8_MEASURED
         and not torch_is_rocm()
-        and _int8_w8a8(cfg)
+        and _should_compile(cfg, False, device, "int8")
         and _auto_run_compiles(cfg)
+        and _compile_toolchain_missing() is None
         and _int8_mm_probe_ok(device)
     )
 
@@ -4315,13 +4327,14 @@ def _train_dit(
         device,
         cfg.gradient_checkpointing,
         integrated = bool(swap_request) and _device_is_integrated(device),
+        cfg = cfg,
     )
     if swap_request and fp16_amp:
         swap_error = "block_swap needs a GPU with bf16: this one trains the fp16 fallback. Turn block_swap off."
     if swap_error:
         raise ValueError(swap_error)
     # A swapped fp8 / W8A8 base converts inside install_dit_block_swap; the conversions below are skipped.
-    lowp_swap = swap_lowp_mode(base_precision) if swap_request else None
+    lowp_swap = swap_lowp_mode(base_precision, cfg) if swap_request else None
     with report_model_load_progress(on_event):
         transformer = spec.load_transformer(
             fetch_cfg, "cpu" if swap_request else device, weight_dtype, base_precision

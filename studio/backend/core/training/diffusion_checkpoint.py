@@ -1679,17 +1679,23 @@ def recorded_base_precision(path_value: Any) -> tuple[bool, Optional[str]]:
     return False, None
 
 
-def recorded_int8_kernel(path_value: Any) -> Optional[str]:
-    """The int8 base kernel ("w8a8" / "weight-only") the resumed bundle trained on, or None (unreadable, not int8,
-    or a bundle that predates the record). Never raises."""
+def recorded_int8_resume_kernel(path_value: Any) -> Optional[str]:
+    """The int8 base kernel ("w8a8" / "weight-only") a resumed bundle trained on, or None when it is unreadable or
+    did not train int8. A bundle without ``base_precision_effective`` counts as int8 when it requested int8, and one
+    without ``base_int8_kernel`` trained weight-only (both records postdate weight-only int8). Never raises."""
     try:
         root = resolve_resume_dir(str(path_value))
         explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
         candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
         for _candidate, manifest in candidates:
             saved = CheckpointIdentity.from_dict((manifest or {}).get("identity"))
-            if saved is not None:
-                return saved.base_int8_kernel
+            if saved is None:
+                continue
+            effective = (saved.base_precision_effective or "").strip().lower()
+            requested = (saved.base_precision or "").strip().lower()
+            if effective == "int8" or (not effective and requested == "int8"):
+                return saved.base_int8_kernel or "weight-only"
+            return None
     except Exception:  # noqa: BLE001 -- best effort; the identity check reports a real mismatch
         pass
     return None
