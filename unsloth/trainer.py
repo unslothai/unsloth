@@ -11,6 +11,7 @@
 
 import copy
 import logging
+import math
 import os
 import psutil
 import warnings
@@ -248,6 +249,127 @@ def _default_packing_dataset(dataset, config, formatting_func) -> bool:
         return True
     field = getattr(config, "dataset_text_field", None) or "text"
     return bool(columns & {"input_ids", field, "messages"}) or {"prompt", "completion"} <= columns
+
+
+# Default packing may cut optimizer steps per epoch by at most this factor. Packing k documents per row at an
+# unchanged batch size and gradient accumulation cuts them by k: an epoch run then makes k times fewer updates at
+# a learning rate tuned for the unpacked count and ends undertrained (6.7 documents per row: 75 -> 12 steps, eval
+# loss 1.49 -> 1.67 on Qwen3-0.6B). Packing at matched documents per step reached the unpacked eval loss.
+_DEFAULT_PACKING_MAX_FEWER_STEPS = 1.25
+
+
+def _default_packing_batch(documents, rows, batch_size, grad_accum):
+    """(batch size, gradient accumulation) for `rows` packed rows holding `documents` documents that keeps the
+    documents per optimizer step near batch_size x grad_accum, or None when even 1 x 1 packs too many."""
+    if documents <= 0 or rows <= 0 or batch_size < 1 or grad_accum < 1:
+        return None
+    wanted = (
+        batch_size * grad_accum * rows / documents
+    )  # packed rows per step at the unpacked docs per step
+    options = [
+        r
+        for r in {max(1, math.floor(wanted)), max(1, math.ceil(wanted))}
+        if r / wanted <= _DEFAULT_PACKING_MAX_FEWER_STEPS
+    ]
+    if not options:
+        return None
+    per_step = min(options, key = lambda r: abs(math.log(r / wanted)))
+    if per_step >= batch_size * grad_accum:
+        return batch_size, grad_accum
+    new_batch = max(d for d in range(1, min(batch_size, per_step) + 1) if per_step % d == 0)
+    return new_batch, per_step // new_batch
+
+
+def _restore_default_packing_batch(config):
+    """Undo the batch shape default packing chose, while the config still holds it."""
+    saved = getattr(config, "_unsloth_default_packing_batch", None)
+    if not saved:
+        return
+    setattr(config, "_unsloth_default_packing_batch", None)
+    (batch_size, grad_accum), chosen = saved
+    if (
+        getattr(config, "per_device_train_batch_size", None),
+        getattr(config, "gradient_accumulation_steps", None),
+    ) == chosen:
+        setattr(config, "per_device_train_batch_size", batch_size)
+        setattr(config, "gradient_accumulation_steps", grad_accum)
+
+
+def _steps_per_epoch(items, per_step, world_size):
+    return max(1, math.ceil(items / max(1, per_step * world_size)))
+
+
+def _guard_default_packing_steps(trainer):
+    """Wrap this trainer's `_prepare_dataset` so default packing keeps optimizer steps per epoch.
+
+    TRL packs the train split inside `__init__`, before `Trainer.__init__` reads the batch size and gradient
+    accumulation, so the packed row count is known in time to shrink them by the documents per row. When even
+    1 x 1 would cut steps per epoch by more than `_DEFAULT_PACKING_MAX_FEWER_STEPS`, the split is prepared
+    unpacked instead (padding-free, the behaviour before default packing)."""
+    prepare = getattr(trainer, "_prepare_dataset", None)
+    if prepare is None:
+        return
+    params = ("dataset", "processing_class", "args", "packing", "formatting_func", "dataset_name")
+    done = []
+
+    def guarded(*pargs, **pkwargs):
+        bound = dict(zip(params, pargs))
+        bound.update(pkwargs)
+        config = bound.get("args")
+        dataset = bound.get("dataset")
+        if (
+            done
+            or not bound.get("packing")
+            or bound.get("dataset_name") != "train"
+            or config is None
+        ):
+            return prepare(*pargs, **pkwargs)
+        done.append(True)
+        packed = prepare(*pargs, **pkwargs)
+        try:
+            documents, rows = len(dataset), len(packed)
+            batch_size = int(config.per_device_train_batch_size)
+            grad_accum = int(config.gradient_accumulation_steps)
+            world_size = int(getattr(config, "world_size", 1) or 1)
+        except Exception:
+            return packed
+        chosen = _default_packing_batch(documents, rows, batch_size, grad_accum)
+        unpacked_steps = _steps_per_epoch(documents, batch_size * grad_accum, world_size)
+        if chosen is None:
+            packed_steps = _steps_per_epoch(rows, batch_size * grad_accum, world_size)
+            setattr(config, "packing", False)
+            # Still Unsloth's choice: a config reused for another trainer decides again.
+            if getattr(config, "_unsloth_packing_unset", False):
+                setattr(config, "_unsloth_packing_auto", False)
+            if getattr(config, "eval_packing", None) is False:
+                setattr(config, "eval_packing", None)
+            if "packing" in pkwargs:
+                pkwargs["packing"] = False
+            else:
+                pargs = pargs[:3] + (False,) + pargs[4:]
+            trainer._unsloth_default_packing_note = (
+                f"Unsloth: Default packing skipped: {documents} documents fit {rows} packed rows, so batch size "
+                f"{batch_size} x gradient accumulation {grad_accum} would train {packed_steps} optimizer steps "
+                f"per epoch instead of {unpacked_steps}. Using padding-free batches; set packing = True in "
+                f"SFTConfig to pack anyway."
+            )
+            return prepare(*pargs, **pkwargs)
+        new_batch, new_accum = chosen
+        if (new_batch, new_accum) != (batch_size, grad_accum):
+            setattr(config, "per_device_train_batch_size", new_batch)
+            setattr(config, "gradient_accumulation_steps", new_accum)
+            setattr(config, "_unsloth_default_packing_batch", ((batch_size, grad_accum), chosen))
+        packed_steps = _steps_per_epoch(rows, new_batch * new_accum, world_size)
+        trainer._unsloth_default_packing_note = (
+            f"Unsloth: Packing is on by default: {documents} documents -> {rows} packed rows. Batch size x "
+            f"gradient accumulation {batch_size} x {grad_accum} -> {new_batch} x {new_accum} keeps about "
+            f"{documents * new_batch * new_accum / rows:.1f} documents per optimizer step ({packed_steps} steps "
+            f"per epoch, {unpacked_steps} unpacked). Set packing = False in SFTConfig (or "
+            f"UNSLOTH_DEFAULT_PACKING=0) to turn it off."
+        )
+        return packed
+
+    trainer._prepare_dataset = guarded
 
 
 _RESPONSES_ONLY_PACKED_ROWS = []
@@ -2068,6 +2190,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             config_arg = args[1]
         else:
             config_arg = kwargs.get("args")
+        if config_arg is not None:
+            _restore_default_packing_batch(config_arg)
         # The mark lets a config reused for another trainer decide again, unless the user changed packing since.
         packing_unset = config_arg is not None and (
             getattr(config_arg, "packing", False) is None
@@ -2367,6 +2491,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             setattr(config_arg, "_unsloth_packing_auto", getattr(config_arg, "packing", None))
             if default_packing or auto_padding_free_active:
                 setattr(config_arg, "_unsloth_padding_free_auto", True)
+        if default_packing:
+            _guard_default_packing_steps(self)
         try:
             original_init(self, *args, **kwargs)
         except ValueError as exc:
@@ -2389,6 +2515,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             elif default_packing:
                 # Default packing must never break a run that trained before.
                 logger.info("Unsloth: default packing turned off (%s).", exc)
+                _restore_default_packing_batch(config_arg)
+                self.__dict__.pop("_unsloth_default_packing_note", None)
                 setattr(config_arg, "packing", False)
                 if getattr(config_arg, "eval_packing", None) is False:
                     setattr(config_arg, "eval_packing", None)
@@ -2471,7 +2599,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                     "against packing = False."
                 )
             elif default_packing:
-                print(_DEFAULT_PACKING_NOTE)
+                print(getattr(self, "_unsloth_default_packing_note", _DEFAULT_PACKING_NOTE))
             else:
                 print("🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!")
         elif not blocked and trainer_padding_free:
@@ -2481,6 +2609,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 if auto_padding_free_active
                 else "🦥 Unsloth: Padding-free enabled, enabling faster training."
             )
+            if default_packing:  # default packing skipped to keep optimizer steps: say why
+                message = getattr(self, "_unsloth_default_packing_note", None) or message
             print(message)
 
         install_token_budget(self)
