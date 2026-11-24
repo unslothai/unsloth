@@ -801,3 +801,42 @@ def test_a_forced_mixed_host_falls_back_to_a_mapped_peer_when_adapter_0_is_unkno
         )
     )
     assert kv["ROUTE"] == "rocm" and kv["ARCH"] == "gfx1201"
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "env, route, arch",
+    [
+        ({"UNSLOTH_FORCE_ROCM_TORCH": "1", "HIP_VISIBLE_DEVICES": "1"}, "rocm", "gfx1201"),
+        ({"UNSLOTH_FORCE_ROCM_TORCH": "1", "HIP_VISIBLE_DEVICES": "0"}, "cuda-forced", ""),
+        ({"UNSLOTH_FORCE_ROCM_TORCH": "1", "CUDA_VISIBLE_DEVICES": "1"}, "rocm", "gfx1201"),
+        ({"CUDA_VISIBLE_DEVICES": "1"}, "cuda-notice", ""),
+    ],
+    ids = [
+        "hip-mask-selects-discrete",
+        "hip-mask-selects-unmapped",
+        "forced-cuda-mask",
+        "notice-ignores-cuda-mask",
+    ],
+)
+def test_a_wmi_only_mixed_host_applies_the_mask_to_every_adapter(env, route, arch):
+    kv = _ps_kv(
+        _script(
+            COLLECT,
+            INSTALL_HELPERS,
+            INSTALL_WHEEL_MAPS,
+            NAME_ARCH_TABLE,
+            "$_hipAllArches = @(); $_smiGfxTokens = @(); $_asicGfxTokens = @()",
+            "$wmiAmdNames = @('AMD Radeon(TM) Graphics', 'AMD Radeon RX 9070 XT')",
+            _env(**env),
+            "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
+            "$HasNvidiaSmi = $true; $ProbeAmdBesideNvidia = $true",
+            "$ROCmGfxArch = $null; $AmdHasGpuWheels = $false",
+            "$HasROCm = $false; $HipSdkInstalled = $false; $ROCmGpuLabel = 'AMD Radeon(TM) Graphics'; $ROCmGpuName = 'x'",
+            "$ROCmUnsupportedGfxArch = $null",
+            INSTALL_DECISION,
+            'Write-Output "ROUTE=$MixedHostRoute"',
+            'Write-Output "ARCH=$ROCmGfxArch"',
+        )
+    )
+    assert kv["ROUTE"] == route and kv["ARCH"] == arch

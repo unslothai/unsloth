@@ -9416,8 +9416,23 @@ main()
     if ($ProbeAmdBesideNvidia) {
         $_mixedArches = @(@($_hipAllArches) + @($_smiGfxTokens) + @($_asicGfxTokens) | Where-Object { $_ })
         if ($_mixedArches.Count -eq 0 -and $wmiAmdNames -and $nameArchTable -and -not $env:UNSLOTH_ROCM_GFX_ARCH) {
-            # WMI-only: every adapter's inferred arch, as setup.ps1 scores them, not adapter 0 alone.
-            $_mixedArches = @(foreach ($n in $wmiAmdNames) { foreach ($row in $nameArchTable) { if ($n -match $row.P) { $row.A; break } } })
+            # WMI-only: every adapter's inferred arch ("" when unmapped, so indexes line up), as setup.ps1 scores them.
+            $_wmiArchAt = @(foreach ($n in $wmiAmdNames) { $a = ""; foreach ($row in $nameArchTable) { if ($n -match $row.P) { $a = $row.A; break } }; $a })
+            $_mixedArches = @($_wmiArchAt | Where-Object { $_ })
+            # A mask picks its adapter, as setup.ps1's Resolve-VisibleGpuIndex; the CUDA one only on a ROCm request.
+            $_masks = @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES)
+            if ((Test-RocmTorchExplicitlyRequested) -or $nvMaskHidesAll) { $_masks += $env:CUDA_VISIBLE_DEVICES }
+            foreach ($m in $_masks) {
+                if ($null -eq $m) { continue }
+                [int]$_idx = -1
+                if ([int]::TryParse(($m.Trim() -split ',')[0].Trim(), [ref]$_idx) -and $_idx -ge 0 -and $_idx -lt $_wmiArchAt.Count) {
+                    $ROCmGfxArch = if ($_wmiArchAt[$_idx]) { $_wmiArchAt[$_idx] } else { $null }
+                    $AmdHasGpuWheels = [bool]($ROCmGfxArch -and ($archFamilyMap.ContainsKey($ROCmGfxArch) -or $multiArchGfx -contains $ROCmGfxArch))
+                    $ROCmGpuName = $wmiAmdNames[$_idx]
+                    if ($ROCmGfxArch) { $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)" }
+                }
+                break
+            }
         }
         $_mixedPicked = Resolve-MixedHostShadowingArch -Picked $ROCmGfxArch -Arches $_mixedArches
         if ($_mixedPicked -and $_mixedPicked -ne $ROCmGfxArch) {
