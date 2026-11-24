@@ -13,13 +13,16 @@ from routes import inference
 
 
 @pytest.mark.parametrize("gguf", [False, True], ids = ["transformers", "gguf"])
-@pytest.mark.parametrize("failure", [None, "load", "render", "restore"])
+@pytest.mark.parametrize("failure", [None, "load", "render", "restore", "native lease"])
 def test_swap_lifecycle(monkeypatch, gguf, failure):
     resident = "text"
     token = None
     events = []
     recipe = LoadRequest(
-        model_path = "text", max_seq_length = 4096, gguf_variant = "Q4_K_M" if gguf else None
+        model_path = "text",
+        max_seq_length = 4096,
+        gguf_variant = "Q4_K_M" if gguf else None,
+        native_path_lease = "one-time-lease" if failure == "native lease" else None,
     )
     monkeypatch.setattr(chat_image_swap, "text_load_to_restore", lambda: (recipe, True))
     payload = ChatImageSwapRequest(
@@ -120,6 +123,13 @@ def test_swap_lifecycle(monkeypatch, gguf, failure):
         return {"type": "http.request", "body": b"", "more_body": False}
 
     request = Request({"type": "http", "headers": []}, receive)
+    if failure == "native lease":
+        with pytest.raises(HTTPException, match = "file picker") as error:
+            asyncio.run(generate_and_restore(payload, request, "owner"))
+        assert error.value.status_code == 409
+        assert events == []
+        assert resident == "text"
+        return
     if failure:
         with pytest.raises((RuntimeError, HTTPException), match = failure):
             asyncio.run(generate_and_restore(payload, request, "owner"))

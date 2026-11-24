@@ -108,6 +108,10 @@ async def _run(request, http_request, subject, ticket):
     async with gpu_switch_lock():
         chat = await inference.get_status(subject)
         recipe, user_initiated = text_load_to_restore()
+        if recipe.native_path_lease:
+            # The desktop file picker grants a single load. The already-used lease
+            # cannot restore the chat model once it has been unloaded.
+            raise busy("Models opened through the desktop file picker cannot use image swapping.")
         text_load = recipe.model_copy(
             update = {
                 "force_cancel_active": False,

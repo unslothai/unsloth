@@ -685,6 +685,7 @@ export interface OpenAIChatCompletionsRequest {
   enable_tools?: boolean | null;
   enabled_tools?: string[];
   mcp_enabled?: boolean;
+  deep_research_armed?: boolean;
   mcp_image?: string;
   studio_tool_history?: boolean;
   confirm_tool_calls?: boolean;

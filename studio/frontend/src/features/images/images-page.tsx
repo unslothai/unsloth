@@ -6492,7 +6492,7 @@ export function ImagesPage({
         <div className="flex items-center justify-between">
           <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
             Swap models for chat images
-            <InfoHint>Chat uses the last text-to-image model loaded here. When only the text model is loaded, an image tool call unloads it, renders the image, then restores the text model.</InfoHint>
+            <InfoHint>Chat uses the last text-to-image model loaded here. When only the text model is loaded, an image tool call unloads it, renders the image, then restores the text model. Turn off other chat tools to use swapping.</InfoHint>
           </span>
           <Switch checked={chatImageSwap} aria-label="Swap models for chat images" onCheckedChange={(on) => {
             setChatImageSwap(on);

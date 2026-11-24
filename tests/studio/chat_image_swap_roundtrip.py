@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """Exercise one automatic image tool call against a dedicated local Unsloth instance.
 
 Supply the same JSON load requests used by the text and image model pickers.

@@ -30,7 +30,10 @@ export async function imageSwapForRequest(
   signal: AbortSignal,
 ) {
   if (
-    !body.enabled_tools?.includes("generate_image") ||
+    body.enabled_tools?.length !== 1 ||
+    body.enabled_tools[0] !== "generate_image" ||
+    body.mcp_enabled ||
+    body.deep_research_armed ||
     body.provider_id ||
     body.external_model
   )
@@ -117,8 +120,6 @@ export async function* streamImageSwap(
   signal: AbortSignal,
   contextLength: number | null,
 ) {
-  const otherTools =
-    body.enabled_tools?.filter((name) => name !== "generate_image") ?? [];
   const tool = {
     type: "function",
     function: {
@@ -167,21 +168,13 @@ export async function* streamImageSwap(
   }>(response);
   const choice = first.choices[0];
   const calls = choice.message.tool_calls;
-  const followup = {
-    ...body,
-    enabled_tools: otherTools,
-    enable_tools: !!otherTools.length || !!body.mcp_enabled,
-  };
   if (!calls?.length) {
-    if (otherTools.length || body.mcp_enabled)
-      yield* streamChatCompletions(followup, signal, contextLength);
-    else
-      yield {
-        choices: [
-          { delta: choice.message, finish_reason: choice.finish_reason },
-        ],
-        usage: first.usage,
-      } as OpenAIChatChunk;
+    yield {
+      choices: [
+        { delta: choice.message, finish_reason: choice.finish_reason },
+      ],
+      usage: first.usage,
+    } as OpenAIChatChunk;
     return;
   }
   const delta = {
@@ -250,7 +243,9 @@ export async function* streamImageSwap(
   signal.throwIfAborted();
   yield* streamChatCompletions(
     {
-      ...followup,
+      ...body,
+      enabled_tools: [],
+      enable_tools: false,
       messages: [
         ...body.messages,
         choice.message,
