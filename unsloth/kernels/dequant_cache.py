@@ -738,7 +738,7 @@ def _addmm_impl(
         W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype, X.shape[0]
     )
     if Wd.dtype != out.dtype:
-        # The quant state's dtype can differ from the gradient's; the eager path dequantizes to dY.dtype.
+        # NF4 decodes to the quant state's dtype, and in-place addmm_ needs matching dtypes (autocast skips it).
         Wd = Wd.to(out.dtype)
     out.addmm_(X, Wd.t())
 
