@@ -76,7 +76,8 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
     # The store keeps a checkpoint across idle unloads and deletions, so it must be in the catalog.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
-    assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
+    assert 'catalog?.filter((m) => sameBaseModelId(m.id, checkpoint ?? "")) ?? [];' in hook
+    assert ") ?? sameBase[0];" in hook
     assert "entry.loaded || (!keylessOnly && autoSwitch)" in hook
     assert "autoSwitch ||\n" not in hook
 

@@ -65,3 +65,11 @@ test("the Hub's resident status read names the selected quant", () => {
   const hub = readSrc("features/hub/hub-page.tsx");
   assert.match(hub, /servedCheckpoint\(loadedModels, selected, activeGgufVariant\)/);
 });
+
+test("API examples name the selected quant when two of its repo are loaded", () => {
+  const examples = readSrc("features/settings/components/usage-examples.tsx");
+  assert.match(
+    examples,
+    /sameBase\.find\(\s*\(m\) =>\s*ggufVariant && m\.quant\?\.toLowerCase\(\) === ggufVariant\.toLowerCase\(\),?\s*\) \?\? sameBase\[0\]/,
+  );
+});
