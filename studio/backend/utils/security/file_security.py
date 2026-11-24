@@ -213,6 +213,19 @@ def escaping_weight_references(folder) -> list:
     the text, so Hub cache snapshots whose files link into the blob store still pass, except that
     a ``..`` is judged where the kernel sends it. A Sentence Transformers folder's modules.json
     module folders are read too, judged against the model folder."""
+    names = _escaping_weight_references(folder)
+    # Loaders open the forward-slash spelling (normalize_path), which can be another folder.
+    try:
+        from utils.paths.path_utils import normalize_path
+        spelled = normalize_path(str(folder))
+    except Exception:
+        spelled = str(folder)
+    if spelled != str(folder):
+        names = list(dict.fromkeys(names + _escaping_weight_references(spelled)))
+    return names
+
+
+def _escaping_weight_references(folder) -> list:
     try:
         folder = Path(str(folder)).expanduser()
         if not folder.is_dir():

@@ -71,3 +71,14 @@ def test_access_check_treats_a_relative_model_path_like_the_loader(tmp_path, mon
         vae_file = None,
     )
     assert account_access.media_component_file_references(request) == [None]
+
+
+def test_the_forward_slash_spelling_of_a_folder_is_checked_too(tmp_path, monkeypatch):
+    real = tmp_path / "a" / "b"
+    real.mkdir(parents = True)
+    (real / "config.json").write_text(
+        json.dumps({"transformers_weights": "/srv/owner/x.safetensors"})
+    )
+    monkeypatch.chdir(tmp_path)
+    # On POSIX "a\\b" is one folder name the check reads; loaders open "a/b".
+    assert escaping_weight_references("a\\b")
