@@ -34,7 +34,7 @@ REFUSED = {
     "llama": "hf-internal-testing/tiny-random-LlamaForCausalLM",
 }
 EXPERT_LORA = dict(target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"])
-_SEQ = (7, 5)
+_SEQ = (7, 5, 6)
 
 
 def _modules():
@@ -197,10 +197,19 @@ def _spawn(
 
 @pytest.mark.parametrize("family", sorted(FAMILIES))
 def test_ep_family_matches_one_process(family):
-    results = _spawn("_case_family", repo = FAMILIES[family])
+    _check_family(_spawn("_case_family", repo = FAMILIES[family]), 2)
+
+
+def test_ep_three_ranks_pad_experts_and_leave_one_rank_only_padding():
+    # 4 experts over 3 ranks: 2 per rank, padded to 6, so rank 2 owns only zero experts the router never picks
+    # (every call it receives no token: the empty-receiver path) and the splits are uneven three ways.
+    _check_family(_spawn("_case_family", world = 3, repo = FAMILIES["olmoe"]), 3)
+
+
+def _check_family(results, world):
     assert all(r is not None and "error" not in r for r in results), results
     for r in results:
-        assert r["blocks"] >= 1 and r["per_rank"] * 2 == r["experts"], r
+        assert r["blocks"] >= 1 and r["per_rank"] == max(2, -(-r["experts"] // world)), r
         got, want = r["loss"]
         assert got == pytest.approx(want, rel = 1e-6), r["loss"]
         got, want = r["norm"]

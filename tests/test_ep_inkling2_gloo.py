@@ -377,7 +377,9 @@ def test_ep_four_bit_experts_quantized_on_load(loop):
         full_bytes, held = r["bytes"]
         assert held < full_bytes, r["bytes"]
         assert r["per_rank"] == 2 and r["sliced"] and r["compared"] == 24, r
-        _check(r["ref"], r["ep"], 1e-4)
+        # 4-bit Mini: the looped backward amplifies fp32 GEMM-shape rounding (the experts see both ranks' pairs at
+        # once) up to ~2e-4 on some runs; a broken exchange or DDP ignore list moves the step-1 loss by >= 1e-3.
+        _check(r["ref"], r["ep"], 5e-4)
 
 
 def test_ep_env_trainer_matches_one_process():
