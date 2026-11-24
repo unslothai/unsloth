@@ -3098,6 +3098,15 @@ export const uk = {
         runningOn: "Зараз llama.cpp працює на бекенді {backend}.",
         hint: "Інсталює збірку llama.cpp для цього бекенда й зберігає її під час оновлень. Корисно, коли автоматичний вибір спричиняє збої або ваш драйвер GPU його не підтримує. Показано лише бекенди, для яких є збірка для цього комп’ютера; навчання це не зачіпає.",
         autoWith: "Автоматично ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm не встановлено",
+          rocmNoAccess: "немає доступу до GPU",
+          otherRelease: "потрібне оновлення llama.cpp",
+          checkFailed: "не вдалося перевірити",
+          noBuild: "немає збірки для цього комп'ютера",
+        },
         apply: "Застосувати",
         applying: "Інсталяція...",
         applyHint:

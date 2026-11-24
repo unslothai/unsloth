@@ -3069,6 +3069,15 @@ export const tr = {
         runningOn: "llama.cpp şu anda şu arka uçta çalışıyor: {backend}.",
         hint: "Bu arka uç için llama.cpp derlemesini kurar ve güncellemeler boyunca korur. Otomatik seçim çöktüğünde veya GPU sürücünüz onu desteklemediğinde kullanışlıdır. Yalnızca bu makine için derlemesi olan arka uçlar listelenir; eğitim etkilenmez.",
         autoWith: "Otomatik ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm yüklü değil",
+          rocmNoAccess: "GPU'ya erişim yok",
+          otherRelease: "llama.cpp güncellemesi gerekiyor",
+          checkFailed: "kontrol edilemedi",
+          noBuild: "bu makine için derleme yok",
+        },
         apply: "Uygula",
         applying: "Kuruluyor...",
         applyHint:
