@@ -425,15 +425,17 @@ def make_dataset_task(
 ) -> None:
     """Write an exact-match generate_until task over a .jsonl/.json/.csv file."""
     builder = "json" if data_file.suffix.lower() in {".json", ".jsonl"} else "csv"
+    stop = _stop_sequence(data_file, target_key)
     spec = {
         "task": name,
         "dataset_path": builder,
         "dataset_kwargs": {"data_files": str(data_file.resolve())},
         "test_split": "train",
         "fewshot_split": "train",
+        "fewshot_delimiter": max(stop, "\n\n", key = len),
         "output_type": "generate_until",
         "doc_to_text": _doc_column(input_key),
-        "generation_kwargs": {"until": [_stop_sequence(data_file, target_key)]},
+        "generation_kwargs": {"until": [stop]},
         # strip so " 2" matches gold "2"; with one capture group re.findall yields the group text
         "filter_list": [
             {

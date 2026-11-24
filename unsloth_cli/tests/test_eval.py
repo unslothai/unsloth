@@ -184,6 +184,23 @@ def test_single_line_dataset_still_stops_at_the_first_newline(tmp_path):
     assert _score_generation(tmp_path, rows, "2\nBecause 1+1 is 2.") == 1.0
 
 
+def test_fewshot_examples_end_on_the_stop_sequence(tmp_path):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "qa.jsonl"
+    rows = [
+        {"question": "First?", "answer": "def f():\n\n    return 1"},
+        {"question": "Second?", "answer": "x"},
+    ]
+    data.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tasks")
+    manager = tasks.TaskManager(include_defaults = False, include_path = includes)
+    task = manager.load_task_or_group(names)["qa"]
+    task.set_fewshot_seed(0)
+    context = task.fewshot_context(task.test_docs()[1], num_fewshot = 1)
+    (stop,) = task.config.generation_kwargs["until"]
+    assert context == f"First? def f():\n\n    return 1{stop}Second?"
+
+
 def test_stop_sequence_reads_long_csv_fields_and_unicode_separators(tmp_path):
     csv_file = tmp_path / "qa.csv"
     csv_file.write_text(f'question,answer\n"{"x" * 200_000}","red\nblue"\n', encoding = "utf-8")
