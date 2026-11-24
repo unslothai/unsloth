@@ -405,6 +405,44 @@ def _stray_tensors(module: Any, device: Any) -> list:
     return out
 
 
+def _partner_reserve_mib(torch: Any, partner: int, free_mib: int) -> int:
+    """What the partner card keeps free beside the copy: the reserve Automatic placement subtracts when it picks a
+    replica card (1 GiB, or what the user's VRAM Budget keeps free when larger), re-read at decode time because an
+    explicit selection never went through that check and headroom can shrink between the load and the decode."""
+    from .diffusion_multigpu import _replica_reserve_mib
+
+    try:
+        total = int(torch.cuda.mem_get_info(partner)[1]) >> 20
+    except Exception:  # noqa: BLE001 - the budget share is then taken of the free memory
+        total = None
+    return int(_replica_reserve_mib(free_mib, total))
+
+
+_STICKY_CUDA_ERRORS = (
+    "illegal memory access",
+    "illegal address",
+    "unspecified launch failure",
+    "device-side assert",
+    "misaligned address",
+    "illegal instruction",
+    "hardware stack error",
+    "launch timed out",
+)
+
+
+def sticky_cuda_error(exc: Optional[BaseException]) -> bool:
+    """True for a CUDA error that poisons the context (an illegal address, a device-side assert): every later call on
+    it fails too, so a one-card retry cannot succeed. Out-of-memory and ordinary failures are not sticky."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        text = str(exc).lower()
+        if any(m in text for m in _STICKY_CUDA_ERRORS):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 def _try_split(vae: Any, z: Any, state: dict, logger: Any) -> tuple[Optional[Any], str]:
     import torch
 
@@ -423,14 +461,61 @@ def _try_split(vae: Any, z: Any, state: dict, logger: Any) -> tuple[Optional[Any
     except Exception as exc:  # noqa: BLE001
         return None, f"cuda:{partner} unreadable ({exc})"
     need = need_mib(vae)
-    if free < need:
-        return None, f"cuda:{partner} has {free} MiB free, the copy needs ~{need}"
+    reserve = _partner_reserve_mib(torch, partner, free)
+    if free - reserve < need:
+        return None, (
+            f"cuda:{partner} has {free} MiB free ({reserve} MiB kept free), the copy needs ~{need}"
+        )
     try:
         return split_tiled_decode(vae, z, partner), "split"
     except Exception as exc:  # noqa: BLE001 - the stock decode reruns every tile on the load card
+        if sticky_cuda_error(exc):
+            raise  # the context is lost: a one-card retry would fail on its first kernel
         if logger is not None:
             logger.warning("video.vae_multigpu: split decode failed, one card: %s", exc)
         return None, f"split failed ({type(exc).__name__}: {exc})"
+
+
+def _cleanup(
+    torch: Any, on_cuda: bool, caller: Any, side: Any, partner: Any, decoded: dict, box: dict
+) -> Optional[BaseException]:
+    """Every step of the split's cleanup, each run even when an earlier one raised; returns the first error.
+
+    The load card's tiles (all of them when the partner failed mid-way) may still be running on the caller's stream:
+    the collect and empty_cache free and release blocks on every card, so both cards' work is waited for first
+    (Kaggle 2x T4: without the caller wait an aborted split's next decode hit an illegal memory access). After a
+    failed wait the collect still runs (the copy and its tiles are dropped) but nothing is released to the driver:
+    blocks of work that may still be running stay with the allocator."""
+    failures: list = []
+
+    def step(fn: Any) -> bool:
+        try:
+            fn()
+            return True
+        except BaseException as exc:  # noqa: BLE001 - recorded, the remaining steps still run
+            failures.append(exc)
+            return False
+
+    waited = True
+    if on_cuda:
+        waited = step(side.synchronize)
+        waited = step(caller.synchronize) and waited
+    step(decoded.clear)
+    step(box.clear)
+    if on_cuda:
+        import gc
+
+        # the copy sits in reference cycles (bound hooks / patch closures): collect it now, or the next decode
+        # finds its ~2.7 GiB still held on the partner card (Kaggle 2x T4: 2478 MiB free on the second render)
+        step(gc.collect)
+        if waited:
+
+            def release() -> None:
+                with contextlib.suppress(Exception), torch.cuda.device(partner):
+                    torch.cuda.empty_cache()
+
+            step(release)
+    return failures[0] if failures else None
 
 
 def split_tiled_decode(
@@ -573,6 +658,7 @@ def split_tiled_decode(
     # (_feat_map) would clone them on the load card, and the copy briefly lifts the source's hooks.
     copied = threading.Event()
     worker.start()
+    raised: Optional[BaseException] = None
     try:
         try:
             copied.wait()
@@ -596,24 +682,15 @@ def split_tiled_decode(
                 rows = [[decoded[(i, j)].to(home) for j in col_starts] for i in row_starts]
         else:
             rows = [[decoded[(i, j)].to(home) for j in col_starts] for i in row_starts]
+    except BaseException as exc:
+        raised = exc
+        raise
     finally:
-        if on_cuda:
-            # the load card's tiles (all of them when the partner failed mid-way) may still be running on the
-            # caller's stream: the collect and empty_cache below free and release blocks on every card, so both
-            # cards' work has to be finished first (Kaggle 2x T4: without this an aborted split's next decode
-            # hit an illegal memory access)
-            caller.synchronize()
-            side.synchronize()
-        decoded.clear()
-        box.clear()
-        if on_cuda:
-            import gc
-
-            # the copy sits in reference cycles (bound hooks / patch closures): collect it now, or the next decode
-            # finds its ~2.7 GiB still held on the partner card (Kaggle 2x T4: 2478 MiB free on the second render)
-            gc.collect()
-            with contextlib.suppress(Exception), torch.cuda.device(partner):
-                torch.cuda.empty_cache()
+        failure = _cleanup(torch, on_cuda, caller, side, partner, decoded, box)
+        if failure is not None and (raised is None or sticky_cuda_error(failure)):
+            # a cleanup error surfaces when the decode itself succeeded, or replaces an ordinary failure when it
+            # lost the context (the caller must not retry on one card)
+            raise failure
     result_rows = []
     for i, row in enumerate(rows):
         result_row = []

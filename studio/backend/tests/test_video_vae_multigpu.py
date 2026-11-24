@@ -483,3 +483,118 @@ def test_an_unusable_copy_never_starts_the_source_tiles(monkeypatch):
     with torch.no_grad(), pytest.raises(RuntimeError, match = "holds tensors on another card"):
         vm.split_tiled_decode(vae, z, torch.device("cpu"))
     assert calls == []
+
+
+def _fake_cuda_split(monkeypatch, free_mib, total_mib, need):
+    # _try_split up to its admission gate without a GPU: latents and weights "on" cuda:0, the partner cuda:1.
+    vae = types.SimpleNamespace(
+        post_quant_conv = types.SimpleNamespace(parameters = lambda: []), named_modules = lambda: []
+    )
+    z = types.SimpleNamespace(device = torch.device("cuda", 0))
+    monkeypatch.setattr(vm, "_partner_free_mib", lambda torch_, partner: free_mib)
+    monkeypatch.setattr(vm, "need_mib", lambda v: need)
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda d = None: (free_mib << 20, total_mib << 20)
+    )
+    return vae, z, {"partner": 1}
+
+
+def test_the_decode_time_gate_keeps_the_partner_cards_reserve(monkeypatch):
+    # The reserve Automatic placement subtracts (an 80% VRAM Budget keeps 4915 MiB of a 24 GiB card free) applies at
+    # decode time too: 6144 MiB free leaves 1229 MiB usable, short of a 4600 MiB copy.
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(dm, "_user_budget_reserve_mib", lambda base: int(base * 0.2))
+    vae, z, state = _fake_cuda_split(monkeypatch, 6144, 24576, 4600)
+    monkeypatch.setattr(vm, "split_tiled_decode", lambda *a, **k: pytest.fail("split admitted"))
+    dec, why = vm._try_split(vae, z, state, None)
+    assert dec is None and "4915 MiB kept free" in why
+    # without a budget the 1 GiB floor still applies
+    monkeypatch.setattr(dm, "_user_budget_reserve_mib", lambda base: 0)
+    vae, z, state = _fake_cuda_split(monkeypatch, 5000, 24576, 4600)
+    dec, why = vm._try_split(vae, z, state, None)
+    assert dec is None and "1024 MiB kept free" in why
+    monkeypatch.setattr(vm, "split_tiled_decode", lambda *a, **k: "decoded")
+    vae, z, state = _fake_cuda_split(monkeypatch, 5700, 24576, 4600)
+    assert vm._try_split(vae, z, state, None) == ("decoded", "split")
+
+
+def test_a_sticky_cuda_error_is_not_retried_on_one_card(monkeypatch):
+    vae, z, state = _fake_cuda_split(monkeypatch, 20000, 24576, 4600)
+
+    def sticky(*a, **k):
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    monkeypatch.setattr(vm, "split_tiled_decode", sticky)
+    with pytest.raises(RuntimeError, match = "illegal memory access"):
+        vm._try_split(vae, z, state, None)
+
+    def oom(*a, **k):
+        raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 806.00 MiB")
+
+    monkeypatch.setattr(vm, "split_tiled_decode", oom)
+    dec, why = vm._try_split(
+        vae, z, state, None
+    )  # an ordinary failure still falls back to the stock decode
+    assert dec is None and "OutOfMemoryError" in why
+
+
+def test_cleanup_runs_every_step_when_the_load_stream_wait_raises(monkeypatch):
+    import gc
+
+    calls = []
+    lost = RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    class Stream:
+        def __init__(
+            self,
+            name,
+            error = None,
+        ):
+            self.name, self.error = name, error
+
+        def synchronize(self):
+            calls.append(self.name)
+            if self.error is not None:
+                raise self.error
+
+    monkeypatch.setattr(gc, "collect", lambda *a: calls.append("collect"))
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append("empty_cache"))
+    import contextlib
+
+    monkeypatch.setattr(torch.cuda, "device", lambda d: contextlib.nullcontext())
+    decoded, box = {(0, 0): object()}, {"copy": object()}
+    out = vm._cleanup(torch, True, Stream("caller", lost), Stream("side"), None, decoded, box)
+    assert out is lost and vm.sticky_cuda_error(out)
+    assert decoded == {} and box == {}
+    # the partner wait and the collect still ran; nothing still possibly running is released to the driver
+    assert calls == ["side", "caller", "collect"]
+    calls.clear()
+    assert vm._cleanup(torch, True, Stream("caller"), Stream("side"), None, {}, {}) is None
+    assert calls == ["side", "caller", "collect", "empty_cache"]
+
+
+def test_a_lost_context_in_the_cleanup_replaces_an_ordinary_split_failure(monkeypatch):
+    # The partner ran out of memory (ordinary: a one-card retry is fine) but the load stream's wait then reports an
+    # illegal address: the split raises the sticky error, so _try_split re-raises instead of retrying on one card.
+    lost = RuntimeError("CUDA error: an illegal memory access was encountered")
+    monkeypatch.setattr(vm, "_cleanup", lambda *a, **k: lost)
+    vae = _vae()
+    z = _latents(vae)
+
+    def build(src, device):
+        raise torch.OutOfMemoryError("CUDA out of memory on the partner")
+
+    from core.inference import diffusion_multigpu as dm
+
+    monkeypatch.setattr(dm, "build_replica", build)
+    with torch.no_grad(), pytest.raises(RuntimeError, match = "illegal memory access") as info:
+        vm.split_tiled_decode(vae, z, torch.device("cpu"))
+    assert isinstance(info.value.__context__, torch.OutOfMemoryError)
+    # an ordinary cleanup error after a successful decode surfaces as well
+    monkeypatch.setattr(
+        dm, "build_replica", lambda src, device: dm.__dict__["_copy_module"](src, device)
+    )
+    monkeypatch.setattr(vm, "_cleanup", lambda *a, **k: ValueError("cleanup"))
+    with torch.no_grad(), pytest.raises(ValueError, match = "cleanup"):
+        vm.split_tiled_decode(vae, z, torch.device("cpu"))
