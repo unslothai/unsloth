@@ -26,11 +26,10 @@ _TIMEOUT = httpx.Timeout(120.0, connect = 10.0)
 
 
 class ConnectionEmbedderError(RuntimeError):
-    """The connection named by the embedding model is missing, disabled or answered badly."""
+    """A missing or disabled connection, or a bad answer from it."""
 
 
 def resolve_connection_model(name: str) -> tuple[dict, str]:
-    """The saved connection and remote model id ``name`` refers to, or ConnectionEmbedderError."""
     from storage import providers_db
 
     ref = name.strip()[len(config.CONNECTION_MODEL_PREFIX) :].strip()
@@ -70,8 +69,7 @@ def _client_for(provider: dict):
 
 
 def _estimate_tokens(text: str) -> int:
-    # No tokenizer is reachable over the OpenAI API; ~3 UTF-8 bytes per token overestimates for
-    # English and code, which keeps chunks under small (512-token) embedders.
+    # The OpenAI API has no tokenizer; 3 bytes/token overestimates, keeping chunks under 512-token embedders.
     return max(1, math.ceil(len(text.encode("utf-8", "ignore")) / 3))
 
 
@@ -86,8 +84,6 @@ def _remote_http_client() -> httpx.Client:
 
 
 class ConnectionEmbeddingBackend:
-    """Stateless apart from the HTTP pool and per-model widths, so one instance serves every reference."""
-
     def __init__(self, *, attempts: int = _ATTEMPTS) -> None:
         self._attempts = max(1, attempts)
         self._http = _remote_http_client()
