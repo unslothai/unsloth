@@ -176,7 +176,7 @@ jobs:
 
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
-        # See studio-windows-update-smoke.yml: npm >= 11 and Defender exclusions.
+        # npm >= 11 and Defender exclusions, which the install needs on the Windows image.
         run: |
           $ProgressPreference = 'SilentlyContinue'
           Write-Host "npm version before upgrade: $(npm -v)"
@@ -275,23 +275,33 @@ jobs:
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
 
       # `wait:` takes no `if:` (the workflow is rejected), so the units are collected here, after the
-      # shared setup and before either phase, as the update smoke did on its own.
+      # shared setup and before either phase, as the update smoke did on its own. A failed unit
+      # test fails this step; the API steps below chain on the shim and on each other with
+      # !cancelled(), so it does not skip them, as when the API smoke was its own workflow.
       - name: Collect the PowerShell unit tests
         wait: [ps-uninstall-units, ps-modulepath-units, ps51-uninstall-guard]
 
       - name: Install pyjwt for the JWT-expiry forge test
+        id: api_pyjwt
+        if: ${{ !cancelled() && steps.shim.outcome == 'success' }}
         run: python -m pip install 'pyjwt>=2.6'
 
       - name: Reset auth + boot Unsloth (API-only)
+        id: api_boot
+        if: ${{ !cancelled() && steps.api_pyjwt.outcome == 'success' }}
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
           bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
+        id: api_health
+        if: ${{ !cancelled() && steps.api_boot.outcome == 'success' }}
         run: |
           bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Pass bootstrap password + rotated targets to the test
+        id: api_pw
+        if: ${{ !cancelled() && steps.api_health.outcome == 'success' }}
         run: |
           OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
           NEW="ApiSmoke-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
@@ -304,6 +314,8 @@ jobs:
           echo "STUDIO_NEW2_PW=$NEW2" >> "$GITHUB_ENV"
 
       - name: Run Unsloth API & Auth tests
+        id: api_test
+        if: ${{ !cancelled() && steps.api_pw.outcome == 'success' }}
         # Do NOT pin STUDIO_AUTH_DIR: the Windows path varies by image; the default is right.
         env:
           BASE_URL: http://127.0.0.1:18895
