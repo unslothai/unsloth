@@ -21943,12 +21943,22 @@ async def validate_model(
         # Mirror /load's latest-sidecar 16-bit flip: an active sidecar forces 16-bit; an offered upgrade
         # only without a custom-code (auto_map) fallback, which still loads 4-bit.
         if effective_load_in_4bit and not is_gguf:
-            from utils.transformers_version import latest_tier_forces_16bit, latest_tier_keeps_4bit
+            from utils.transformers_version import (
+                latest_tier_forces_16bit,
+                latest_tier_upgrade_keeps_4bit,
+            )
             _install_only_upgrade = (
                 transformers_upgrade is not None
                 and transformers_upgrade.installable
                 and not requires_trust_remote_code
-                and not latest_tier_keeps_4bit(transformers_upgrade.model_type)
+                and not await asyncio.to_thread(
+                    _offline_guarded,
+                    (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                    latest_tier_upgrade_keeps_4bit,
+                    transformers_upgrade.model_type,
+                    config.identifier,
+                    request.hf_token,
+                )
             )
             if _install_only_upgrade or await asyncio.to_thread(
                 _offline_guarded,
@@ -22236,7 +22246,7 @@ async def check_transformers_upgrade_route(
     for training. Never raises: an unreadable model reports "no upgrade needed" and the
     caller proceeds exactly as it did before.
     """
-    from utils.transformers_version import latest_tier_keeps_4bit, latest_tier_load_policy
+    from utils.transformers_version import latest_tier_load_policy, latest_tier_upgrade_keeps_4bit
 
     if account_access.managed_account():
         for ref in (
@@ -22315,9 +22325,19 @@ async def check_transformers_upgrade_route(
         )
     except Exception as exc:
         logger.debug("Latest-tier check failed for '%s': %s", model_name, exc)
-    upgrade_keeps_4bit = transformers_upgrade is not None and latest_tier_keeps_4bit(
-        transformers_upgrade.model_type
-    )
+    upgrade_keeps_4bit = False
+    if transformers_upgrade is not None:
+        try:
+            upgrade_keeps_4bit = await asyncio.to_thread(
+                _offline_guarded,
+                tuple(targets),
+                latest_tier_upgrade_keeps_4bit,
+                transformers_upgrade.model_type,
+                load_target,
+                request.hf_token,
+            )
+        except Exception as exc:
+            logger.debug("4-bit check failed for '%s': %s", model_name, exc)
 
     # Only install-only upgrades or active sidecars force 16-bit; offered ones do not (bnb 4-bit feeds unvalidated paths for new architectures).
     install_only_upgrade = bool(

@@ -3119,6 +3119,7 @@ class TestValidateGuardCoversMetadataPreflights:
             "latest_tier_active_for",
             "latest_tier_forces_16bit",
             "latest_tier_load_policy",
+            "latest_tier_upgrade_keeps_4bit",
             "get_base_model_from_lora_identifier",
             "_guard_chat_load_against_training",
         }
@@ -3205,6 +3206,7 @@ class TestGuardIsKeyedOnWhatIsRead:
                 "latest_tier_active_for",
                 "latest_tier_forces_16bit",
                 "latest_tier_load_policy",
+                "latest_tier_upgrade_keeps_4bit",
                 "_guard_chat_load_against_training",
             ):
                 if isinstance(targets, ast.Name):

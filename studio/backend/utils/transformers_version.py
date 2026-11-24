@@ -583,6 +583,15 @@ def latest_tier_keeps_4bit(model_type) -> bool:
     return isinstance(model_type, str) and model_type in LATEST_TIER_4BIT_MODEL_TYPES
 
 
+def latest_tier_upgrade_keeps_4bit(
+    model_type,
+    model_name: str,
+    hf_token: str | None = None,
+) -> bool:
+    """Whether the load after installing the offered release stays 4-bit: a validated type or a bnb checkpoint. Never raises."""
+    return latest_tier_keeps_4bit(model_type) or not _sidecar_forces_16bit(model_name, hf_token)
+
+
 def latest_tier_load_policy(model_name: str, hf_token: str | None = None) -> tuple[bool, bool]:
     """(latest sidecar active, it forces 16-bit), resolving a remote adapter once; never raises."""
     with remote_lora_base_scope():

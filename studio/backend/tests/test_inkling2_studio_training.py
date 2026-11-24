@@ -141,6 +141,24 @@ def test_bnb_checkpoint_is_not_called_16bit(monkeypatch):
     assert tv.latest_tier_forces_16bit("someone/Muse-Glimmer-30B-bnb-4bit") is False
 
 
+def test_offered_install_keeps_4bit_for_a_bnb_checkpoint(monkeypatch):
+    """The install the Train tab offers leads to the 4-bit load above, so it must not announce 16-bit."""
+    cfg = {
+        **NEW_ARCH_CFG,
+        "quantization_config": {"quant_method": "bitsandbytes", "load_in_4bit": True},
+    }
+    offer = {
+        "model_type": "muse_glimmer",
+        "pypi_version": "5.24.0",
+        "supported_in_pypi": True,
+        "supported_in_main": True,
+    }
+    before = _upgrade_route(monkeypatch, offer, False, cfg)
+    assert before.requires_transformers_upgrade is True
+    assert before.forces_16bit is False
+    assert before.sidecar_keeps_4bit is True
+
+
 class _InklingTokenizer:
     def get_added_vocab(self):
         return {
