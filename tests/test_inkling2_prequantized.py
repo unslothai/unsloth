@@ -5,6 +5,7 @@
 unsloth/Inkling-2-Mini-unsloth-bnb-4bit, 16-bit loads and full finetuning to the unsloth/Inkling-2-Mini mirror of
 the original checkpoint, and a merged export of a model loaded from the pre-quantized repo reads the original."""
 
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -21,6 +22,19 @@ def _no_remote_mapper():
     return {}, {}, {}, {}, {}
 
 
+def _fake_zoo(monkeypatch, has_fix):
+    import types
+
+    import unsloth_zoo
+
+    # A zoo with the fix has patching_utils.BARE_PARAMS4BIT_COMPUTE_DTYPE; an older one lacks the attribute.
+    fake = types.ModuleType("unsloth_zoo.patching_utils")
+    if has_fix:
+        fake.BARE_PARAMS4BIT_COMPUTE_DTYPE = True
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.patching_utils", fake)
+    monkeypatch.setattr(unsloth_zoo, "patching_utils", fake, raising = False)
+
+
 @pytest.mark.parametrize(
     "name, load_in_4bit, expected",
     [
@@ -32,11 +46,41 @@ def _no_remote_mapper():
         ("thinkingmachines/Inkling-2-Mini", False, MIRROR),
     ],
 )
-def test_inkling2_mini_resolution(name, load_in_4bit, expected):
+def test_inkling2_mini_resolution(name, load_in_4bit, expected, monkeypatch):
+    _fake_zoo(monkeypatch, True)
     with patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper):
         mapped = get_model_name(name, load_in_4bit = load_in_4bit)
     # Exact case: case-sensitive mirrors and caches reject a lowercased repo id.
     assert mapped == expected
+
+
+@pytest.mark.parametrize("zoo_has_fix", [True, False])
+@pytest.mark.parametrize(
+    "name",
+    ["unsloth/Inkling-2-Mini", "thinkingmachines/Inkling-2-Mini", PREQUANTIZED],
+)
+def test_inkling2_mini_4bit_gated_on_zoo_compute_dtype_fix(name, zoo_has_fix, monkeypatch):
+    _fake_zoo(monkeypatch, zoo_has_fix)
+    fetched = []
+
+    def remote_mapper():
+        fetched.append(True)
+        return _no_remote_mapper()
+
+    with patch.object(loader_utils, "_get_new_mapper", remote_mapper):
+        mapped = get_model_name(name, load_in_4bit = True)
+        if name != PREQUANTIZED:
+            # The gate never falls through to the "update Unsloth" probe of the fetched mapper.
+            assert fetched == []
+        mapped_16bit = get_model_name(name, load_in_4bit = False)
+    if zoo_has_fix or name == PREQUANTIZED:
+        # An explicit pre-quantized name is the user's choice either way.
+        assert mapped == PREQUANTIZED
+    else:
+        # Older zoo: keep quantize-on-load from the requested checkpoint, exactly as named.
+        assert mapped == name
+    # 16-bit loads do not depend on the fix.
+    assert mapped_16bit == MIRROR
 
 
 def test_inkling2_small_is_not_mapped_to_mini():
