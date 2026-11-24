@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.5 (video) on a GPU without native bf16 (T4): the load promotes float16 to float32 and no low-RAM route
-serves it, so the 42 GB DiT and 9.2 GB of VAEs / connectors widen to float32 in host RAM (~95 GiB). A Kaggle T4x2
-host (31 GB) was OOM-killed mid-load, right after the Gemma 4 worker started. The precision gate refuses such a host
-before the eviction, the pull and the worker, with the normal memory-refusal message."""
+"""LTX-2.5 on an fp16-only GPU widens to float32 in host RAM; small hosts are refused before the load."""
 
 import pytest
 import torch
@@ -17,7 +14,7 @@ from core.inference.video_families import _FAMILIES as VIDEO_FAMILIES
 LTX25 = next(f for f in VIDEO_FAMILIES if f.name == "ltx-2.5")
 LTX2 = next(f for f in VIDEO_FAMILIES if f.name == "ltx-2")
 WAN = next(f for f in VIDEO_FAMILIES if f.name == "wan2.2-ti2v-5b")
-GIB = 1024  # MiB per GiB
+GIB = 1024
 
 
 def _target(dtype):
@@ -46,9 +43,7 @@ def host(monkeypatch):
     return _set
 
 
-@pytest.mark.parametrize(
-    "host_gib, shown", [(31.4, "31.4"), (12.7, "12.7")]
-)  # Kaggle T4x2, Colab T4
+@pytest.mark.parametrize("host_gib, shown", [(31.4, "31.4"), (12.7, "12.7")])
 @pytest.mark.parametrize("quant", [None, "auto", "none", "int8", "fp8"])
 def test_t4_class_host_is_refused_before_the_load(host, host_gib, shown, quant):
     host(torch.float16, host_gib)
@@ -57,23 +52,23 @@ def test_t4_class_host_is_refused_before_the_load(host, host_gib, shown, quant):
     msg = str(err.value)
     assert msg.startswith("Not enough system RAM to load this model: LTX-2.5")
     assert "float32" in msg and "GGUF" in msg and "UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0" in msg
-    # (42.0 + 9.2) decimal GB x 2 bytes, one decimal like the other host-RAM refusals
+    # (42.0 + 9.2) GB x 2 bytes
     assert "about 95.4 GB of host memory" in msg and f"{shown} GB is available" in msg
 
 
 @pytest.mark.parametrize(
     "dtype, host_gib, fam, kind",
     [
-        (torch.bfloat16, 31, LTX25, "pipeline"),  # bf16 cards keep their routes: unchanged
+        (torch.bfloat16, 31, LTX25, "pipeline"),
         (torch.bfloat16, 12, LTX25, "pipeline"),
         (
             torch.float16,
             128,
             LTX25,
             "pipeline",
-        ),  # a host that holds the float32 weights is not refused
-        (torch.float16, 31, LTX25, "gguf"),  # the GGUF DiT stays quantized
-        (torch.float16, 31, LTX2, "pipeline"),  # other video families are untouched
+        ),
+        (torch.float16, 31, LTX25, "gguf"),
+        (torch.float16, 31, LTX2, "pipeline"),
         (torch.float16, 31, WAN, "pipeline"),
     ],
 )
@@ -81,7 +76,7 @@ def test_other_hosts_and_builds_are_not_refused(host, dtype, host_gib, fam, kind
     host(dtype, host_gib)
     assert v.ltx25_fp16_host_shortfall(fam, _target(dtype), model_kind = kind) is None
     if fam is LTX25 and kind == "pipeline":
-        v.assert_video_precision_available(fam, model_kind = kind)  # unset precision: no refusal
+        v.assert_video_precision_available(fam, model_kind = kind)
 
 
 @pytest.mark.parametrize(
@@ -101,7 +96,6 @@ def test_unreadable_host_ram_refuses_nothing(host, monkeypatch):
 
 
 def test_test_cap_caps_a_large_host(host, monkeypatch):
-    # the small-host test hook caps the reading, so a big host can rehearse the refusal
     host(torch.float16, 512)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_HOST_RAM_LIMIT_MIB", str(30 * GIB))
     msg = v.ltx25_fp16_host_shortfall(LTX25, _target(torch.float16), model_kind = "pipeline")
