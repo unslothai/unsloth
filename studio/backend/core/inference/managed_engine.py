@@ -657,8 +657,7 @@ class ManagedEngine:
 
         env = self.adapter.environment(gpu_count)
         if self.engine == "vllm":
-            # The 0.26 CUDA worker allocates a UVA buffer during startup. Its
-            # WSL2 default disables the pinned host memory that buffer needs.
+            # 0.26 has no non-UVA buffer fallback, and vLLM disables pinned memory on WSL2.
             if info.get("platform") == "cuda" and info.get("version") == "0.26.0" and _is_wsl():
                 env["VLLM_WSL2_ENABLE_PIN_MEMORY"] = "1"
             if _deep_gemm_unloadable(info["path"]):
