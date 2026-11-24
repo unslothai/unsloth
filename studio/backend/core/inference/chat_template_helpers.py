@@ -29,6 +29,15 @@ _GEMMA_TEMPLATE_OPENERS = (
     _GEMMA_THOUGHT_OPEN + "\\n",
     _GEMMA_THOUGHT_OPEN + _GEMMA_THOUGHT_CLOSE,
 )
+# Inkling 2: every block is a message closed by <|end_message|>; the thought is the <|content_thinking|> one.
+_INKLING_THOUGHT_OPEN = "<|content_thinking|>"
+_INKLING_MESSAGE_END = "<|end_message|>"
+_INKLING_TOOL_CALL_OPEN = "<|content_invoke_tool_json|>"
+_INKLING_ROLE_OPEN = "<|message_model|>"
+_INKLING_TEXT_OPEN = "<|content_text|>"
+_INKLING_CONTENT_OPENS = (_INKLING_TEXT_OPEN, _INKLING_THOUGHT_OPEN, _INKLING_TOOL_CALL_OPEN)
+# A message header names at most a tool; past this the held text is content after all.
+_INKLING_HEADER_MAX_LEN = 128
 
 # Both header prefixes occur: the first header arrives without the prompt's "<|start|>assistant".
 _ATEM_REASONING_RECIPIENT = "self"
@@ -1647,6 +1656,8 @@ def _detect_reasoning_channel_markers_from_templates(
         return _GEMMA_THOUGHT_OPEN, _GEMMA_THOUGHT_CLOSE
     if any(_ATEM_TEMPLATE_OPENER in template for template in templates):
         return _ATEM_REASONING_RECIPIENT, _ATEM_REPLY_RECIPIENT
+    if any(_INKLING_THOUGHT_OPEN in template for template in templates):
+        return _INKLING_THOUGHT_OPEN, _INKLING_MESSAGE_END
     return None
 
 
@@ -1932,6 +1943,105 @@ class ReasoningChannelNormalizer:
         return output
 
 
+class InklingMessageNormalizer(ReasoningChannelNormalizer):
+    """Inkling 2 writes every block as ``<|message_model|>[name]<|content_KIND|>...<|end_message|>``, and the
+    generation prompt already holds the first ``<|message_model|>``. Headers are read first: the role opener and
+    ``<|content_text|>`` are dropped, and so is a tool call's name prefix (its JSON repeats the name), which
+    otherwise showed as "python" before the reply. The thinking message then becomes ``<think>`` (the base class),
+    a tool call keeps its ``<|end_message|>`` for the tool-call parser, and a text message's closer is dropped:
+    shown, it printed ``<|end_message|>`` after every answer. A later thinking opener is dropped too."""
+
+    _CONTROLS = (_INKLING_MESSAGE_END, _INKLING_TOOL_CALL_OPEN, _INKLING_THOUGHT_OPEN)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._header = ""
+        self._role_partial = ""
+        # The generation prompt ends with <|message_model|>, so the stream starts inside a header.
+        self._in_header = True
+        self._held = ""
+        self._in_tool_call = False
+
+    def feed(self, text: str) -> str:
+        return self._filter(super().feed(self._headers(text)))
+
+    def finish(self) -> str:
+        return self._filter(super().feed(self._flush_header()) + super().finish(), final = True)
+
+    def drain(self) -> str:
+        return self._filter(super().feed(self._flush_header()) + super().drain(), final = True)
+
+    def _flush_header(self) -> str:
+        held = self._role_partial + self._header
+        self._role_partial, self._header, self._in_header = "", "", False
+        return held
+
+    def _headers(self, text: str) -> str:
+        output: list[str] = []
+        text = text or ""
+        while text:
+            if self._in_header:
+                self._header += text
+                text = ""
+                found = [
+                    (self._header.find(opener), opener)
+                    for opener in _INKLING_CONTENT_OPENS
+                    if opener in self._header
+                ]
+                if not found:
+                    if len(self._header) > _INKLING_HEADER_MAX_LEN:
+                        output.append(self._flush_header())
+                    break
+                index, opener = min(found)
+                # The role opener's leftovers and a tool name go; the content opener decides what follows.
+                text = self._header[index + len(opener) :]
+                self._header, self._in_header = "", False
+                if opener != _INKLING_TEXT_OPEN:
+                    output.append(opener)
+                continue
+            text = self._role_partial + text
+            self._role_partial = ""
+            index = text.find(_INKLING_ROLE_OPEN)
+            if index < 0:
+                stable, self._role_partial = _split_partial_marker(text, _INKLING_ROLE_OPEN)
+                output.append(stable)
+                break
+            output.append(text[:index])
+            text = text[index + len(_INKLING_ROLE_OPEN) :]
+            self._in_header = True
+        return "".join(output)
+
+    def _filter(
+        self,
+        text: str,
+        final: bool = False,
+    ) -> str:
+        text = self._held + (text or "")
+        self._held = ""
+        output: list[str] = []
+        while text:
+            found = [(text.find(marker), marker) for marker in self._CONTROLS if marker in text]
+            if not found:
+                if not final:
+                    for marker in self._CONTROLS:
+                        _, held = _split_partial_marker(text, marker)
+                        if held and len(held) > len(self._held):
+                            self._held = held
+                    text = text[: len(text) - len(self._held)]
+                output.append(text)
+                break
+            index, marker = min(found)
+            output.append(text[:index])
+            text = text[index + len(marker) :]
+            if marker == _INKLING_TOOL_CALL_OPEN:
+                self._in_tool_call = True
+                output.append(marker)
+            elif marker == _INKLING_MESSAGE_END and self._in_tool_call:
+                self._in_tool_call = False
+                output.append(marker)
+        return "".join(output)
+
+
 class RecipientChannelNormalizer:
     """Convert a recipient-addressed reasoning protocol to ``<think>``.
 
@@ -2106,6 +2216,8 @@ def make_reasoning_normalizer(markers: tuple[str, ...], *, in_reasoning: bool = 
     if markers and markers[0] == _ATEM_REASONING_RECIPIENT:
         # The generation prompt ends at "<|start|>assistant", so the model always writes its own header.
         return RecipientChannelNormalizer(*markers)
+    if tuple(markers) == (_INKLING_THOUGHT_OPEN, _INKLING_MESSAGE_END):
+        return InklingMessageNormalizer(*markers, in_reasoning = in_reasoning)
     return ReasoningChannelNormalizer(*markers, in_reasoning = in_reasoning)
 
 
