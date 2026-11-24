@@ -19684,11 +19684,29 @@ def _discoverable_drafters(model_path: str) -> Optional[list]:
 
 def _require_resolved_base_access(config) -> None:
     """Grants apply to the base in an adapter's config, so it cannot pull a foreign cached base."""
+    if not account_access.managed_account():
+        return
     base = getattr(config, "base_model", None)
-    if account_access.managed_account() and isinstance(base, str) and base.strip():
+    if isinstance(base, str) and base.strip():
         account_access.require_model_access(base.strip())
         account_access.require_adapter_chain_access(base.strip())
     account_access.require_listed_adapters_access(getattr(config, "identifier", None))
+    # A local merged vision export's processor comes from the base_model its export_metadata.json names.
+    if getattr(config, "is_local", False) and not getattr(config, "is_lora", False):
+        meta_base = _export_metadata_base(getattr(config, "path", None))
+        if meta_base:
+            account_access.require_model_access(meta_base)
+
+
+def _export_metadata_base(folder) -> Optional[str]:
+    if not folder:
+        return None
+    try:
+        meta = json.loads((Path(folder) / "export_metadata.json").read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError, TypeError):
+        return None
+    base = meta.get("base_model") if isinstance(meta, dict) else None
+    return base.strip() if isinstance(base, str) and base.strip() else None
 
 
 async def _managed_engine_request(request):
