@@ -15,7 +15,10 @@ REPO = Path(__file__).resolve().parents[3]
 STUDIO = REPO / "studio"
 SETUP_SH = STUDIO / "setup.sh"
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason = "bash not available")
+# setup.sh never runs on native Windows, where bare "bash" can resolve to System32's WSL stub.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None, reason = "setup.sh needs a POSIX bash"
+)
 
 
 def _between(src, start, end):
