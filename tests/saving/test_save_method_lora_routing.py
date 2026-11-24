@@ -40,6 +40,7 @@ def _load(*names, **env):
         "raise_if_merging_mistral_format_view": lambda model, save_method: None,
         # Same for the Inkling 2 merge refusal: no fixture is an Inkling 2 model.
         "raise_if_merging_inkling2": lambda model, save_method: None,
+        "is_inkling2_config": lambda config: False,
         "lora_relative_to_original_base": lambda model: contextlib.nullcontext(),
         # Unmerges FSDP2 streamed layers when a save raises; these fixtures never stream.
         "_unmerge_flags_on_error": lambda streamed: contextlib.nullcontext(),
@@ -214,6 +215,7 @@ _GENERIC_SAVE_REAL_HELPERS = (
 _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
     {
         "patch_saving_functions",
+        "_defer_to_main_process",
         "_push_merged_to_hub_revision",
         "_prewarm_base_model_hub_cache",
         "_is_qwen3_5_vlm",
@@ -235,6 +237,9 @@ _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
         "_restamp_index_total_size",
         # Decorator factory; _load strips decorators.
         "_model_parallel_refuses_save",
+        # Separately trained lm_head: these fixtures train no vocab layers.
+        "_untied_trained_vocab",
+        "_untie_merged_checkpoint",
     }
 )
 
@@ -243,7 +248,7 @@ def _not_reached(*args, **kwargs):
     raise AssertionError("the routing harness does not reach this helper")
 
 
-def _routing_environment(monkeypatch, model):
+def _routing_environment(monkeypatch, model, **overrides):
     calls = {"merge": [], "adapter": [], "prewarm": [], "convert": []}
 
     zoo = types.ModuleType("unsloth_zoo.saving_utils")
@@ -262,6 +267,7 @@ def _routing_environment(monkeypatch, model):
         PreTrainedTokenizerBase = type("Tokenizer", (), {}),
         ProcessorMixin = type("Processor", (), {}),
         patch_saving_functions = lambda tokenizer: tokenizer,
+        _defer_to_main_process = lambda is_main_process, model = None: not is_main_process,
         get_token = lambda: "fixture-token",
         get_model_name = lambda name: name,
         _push_merged_to_hub_revision = lambda kwargs: calls.setdefault("revision", []).append(kwargs),
@@ -275,6 +281,8 @@ def _routing_environment(monkeypatch, model):
         _internal_mtp_save = contextlib.nullcontext,
         _stitch_mtp_head = lambda model, directory: None,
         _mtp_head_tensor_names = lambda model: [],
+        _untied_trained_vocab = lambda model: None,
+        _untie_merged_checkpoint = _not_reached,
         _release_layout_for_merged_save = lambda model, directory, method: False,
         _push_lfm3_audio_release_config = lambda model, save_directory, token = None: False,
         _left_padding_side = lambda tokenizer: contextlib.nullcontext(),
@@ -292,6 +300,7 @@ def _routing_environment(monkeypatch, model):
             save = lambda *args, **kwargs: None,
             cuda = types.SimpleNamespace(is_bf16_supported = lambda: False),
         ),
+        **overrides,
     )
     return namespace["unsloth_generic_save"], calls
 
@@ -365,6 +374,49 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
     )
 
 
+@pytest.mark.parametrize("is_main_process", [True, False])
+def test_only_the_writing_rank_runs_the_inkling2_writer(monkeypatch, tmp_path, is_main_process):
+    """The Inkling 2 writer has no rank guard: a DDP rank with is_main_process=False must not run it."""
+    written = []
+    writer = lambda *args, **kwargs: written.append(args)
+    model = _PeftModel()
+    generic_save, calls = _routing_environment(
+        monkeypatch,
+        model,
+        is_inkling2_config = lambda config: True,
+        save_inkling2_merged_16bit = writer,
+    )
+    generic_save(
+        model,
+        None,
+        save_directory = str(tmp_path),
+        save_method = "merged_16bit",
+        is_main_process = is_main_process,
+    )
+    assert len(written) == is_main_process
+    assert calls["merge"] == []
+
+    save_model = _load(
+        "unsloth_save_model",
+        torch = types.SimpleNamespace(save = None),
+        _refuse_mtp_variant = lambda model, variant: None,
+        _attached_mtp_head = lambda model: None,
+        PreTrainedTokenizerBase = type("T", (), {}),
+        ProcessorMixin = type("P", (), {}),
+        _normalize_safe_serialization = lambda value: True,
+        get_token = lambda: None,
+        _collect_garbage = lambda before = None: None,
+        clean_gpu_cache = None,
+        is_inkling2_config = lambda config: True,
+        save_inkling2_merged_16bit = writer,
+    )["unsloth_save_model"]
+    written.clear()
+    save_model(
+        model, None, str(tmp_path), save_method = "merged_16bit", is_main_process = is_main_process
+    )
+    assert len(written) == is_main_process
+
+
 @pytest.mark.parametrize(
     "spelling, canonical",
     [
@@ -419,6 +471,7 @@ def test_the_fsdp2_gather_placement_reads_the_canonical_method(spelling, canonic
 def test_a_respelled_in_place_merge_is_refused_under_tensor_parallel(spelling):
     refuse = _load(
         "_refuse_tp_in_place_merge",
+        "_is_in_place_merge",
         _TP_IN_PLACE_MERGES = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit"),
     )["_refuse_tp_in_place_merge"]
 
@@ -611,6 +664,7 @@ def _adapter_save_environment(monkeypatch):
         PreTrainedTokenizerBase = type("Tokenizer", (), {}),
         ProcessorMixin = type("Processor", (), {}),
         patch_saving_functions = lambda tokenizer: tokenizer,
+        _defer_to_main_process = lambda is_main_process, model = None: not is_main_process,
         get_token = lambda: "fixture-token",
         upload_to_huggingface = upload_to_huggingface,
         logger = types.SimpleNamespace(warning_once = lambda *a, **k: None),

@@ -4,6 +4,7 @@
 projections, PEFT accepts them, and the released checkpoints' "modelopt" marker skips the generic ModelOpt rewrite."""
 
 import importlib.util
+import os
 import pathlib
 import re
 from types import SimpleNamespace
@@ -289,20 +290,29 @@ def test_4bit_keeps_mini_message_gates_out_of_bitsandbytes():
     assert not (kept - gates)
 
 
-def test_fastmodel_keeps_inkling2_eager_unless_told_otherwise():
+def test_fastmodel_keeps_inkling2_eager_unless_told_otherwise(monkeypatch):
     # Compiled, Inkling 2 recompiled per sequence length (A100 Mini QLoRA: 85-840 s per step vs 4.4 s eager). The
     # branch must cover both model types, sit in the model-type chain, and leave an explicit user choice alone.
     import unsloth.models.loader as loader_module
 
-    source = pathlib.Path(loader_module.__file__).read_text()
+    source = pathlib.Path(loader_module.__file__).read_text(encoding = "utf-8")
     branch = re.search(r'elif "inkling2" in model_types_all:(.*?)\n        else:\n', source, re.S)
     assert branch
-    body = branch.group(1)
-    assert re.search(
-        r'if os\.environ\.get\("UNSLOTH_COMPILE_DISABLE", "0"\) == "0":\s*\n\s*'
-        r'os\.environ\["UNSLOTH_COMPILE_DISABLE"\] = "partial"',
-        body,
-    )
+    # The shared helper (#19073) sets "partial" and keeps a full disable full.
+    assert re.search(r"^\s*_set_partial_compile_disable\(\)\s*$", branch.group(1), re.M)
+    for before, after in (
+        (None, "partial"),
+        ("0", "partial"),
+        ("partial", "partial"),
+        ("1", "1"),
+        ("true", "1"),
+    ):
+        if before is None:
+            monkeypatch.delenv("UNSLOTH_COMPILE_DISABLE", raising = False)
+        else:
+            monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", before)
+        loader_module._set_partial_compile_disable()
+        assert os.environ["UNSLOTH_COMPILE_DISABLE"] == after, before
 
 
 @pytest.mark.parametrize(
@@ -350,18 +360,18 @@ def test_fast_inference_switches_inkling2_to_unsloth_inference(loop):
 
 
 @pytest.mark.parametrize("loop", [True, False])
-def test_merged_exports_refuse_inkling2(loop):
-    # Colab A100, real Mini 4-bit + LoRA r 8: merged_16bit wrote the released checkpoint back bit for bit (0 of 1244
-    # tensors changed, reload KL to the base 0.0): its names (attn.wq_du, controllers.*) and NVFP4 experts never match
-    # the LoRA targets. Every merged / GGUF export must refuse; the adapter save must not.
+def test_inkling2_export_methods(loop):
+    # merged_16bit and GGUF go through save_inkling2_merged_16bit; the generic merges (merged_4bit) re-read the
+    # checkpoint under the wrong names and must still refuse. The adapter save is untouched.
     inkling2 = _inkling2()
     model = _tiny(loop)
-    for method in ("merged_16bit", "merged_4bit", "forced_merged_4bit", "gguf"):
+    for method in ("merged_4bit", "forced_merged_4bit", "mxfp4"):
         with pytest.raises(NotImplementedError, match = "Inkling 2"):
             inkling2.raise_if_merging_inkling2(model, method)
-    inkling2.raise_if_merging_inkling2(model, "lora")
+    for method in ("lora", "merged_16bit", "gguf"):
+        inkling2.raise_if_merging_inkling2(model, method)
     inkling2.raise_if_merging_inkling2(
-        SimpleNamespace(config = SimpleNamespace(model_type = "llama")), "merged_16bit"
+        SimpleNamespace(config = SimpleNamespace(model_type = "llama")), "merged_4bit"
     )
     # Each export entry point runs it right after the Mistral-format guard.
     source = (_ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
@@ -370,6 +380,52 @@ def test_merged_exports_refuse_inkling2(loop):
         source,
     )
     assert len(sites) == 4, sites
+    # Both merged_16bit entry points route Inkling 2 to its own writer before the generic merge.
+    assert source.count("save_inkling2_merged_16bit(") == 2
+
+
+@pytest.mark.parametrize("loop", [True, False])
+def test_merged_16bit_matches_the_adapter(loop, tmp_path):
+    # Colab A100, real Mini 4-bit + LoRA r 8: the generic merge wrote the released checkpoint back bit for bit
+    # (0 of 1244 tensors changed). The Inkling 2 writer must place every LoRA weight, attention and experts, keep the
+    # checkpoint's own names, and reload in transformers to the same logits as base + adapter.
+    peft = pytest.importorskip("peft")
+    from transformers import AutoModelForImageTextToText
+
+    inkling2 = _inkling2()
+    _tiny(loop).to(torch.bfloat16).save_pretrained(tmp_path / "base")
+    base = AutoModelForImageTextToText.from_pretrained(tmp_path / "base", dtype = torch.float32)
+    targets = inkling2.inkling2_lora_target_modules(base, None)
+    config = peft.LoraConfig(
+        r = 4,
+        lora_alpha = 8,
+        target_modules = targets,
+        target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"],
+    )
+    model = peft.get_peft_model(base, config)
+    torch.manual_seed(1)
+    for name, param in model.named_parameters():
+        if "lora_" in name:
+            param.data.normal_(0, 0.1)
+    ids = torch.randint(0, 250, (1, 12))
+    with torch.no_grad():
+        reference = model(input_ids = ids).logits
+        with model.disable_adapter():
+            original = model(input_ids = ids).logits
+    inkling2.save_inkling2_merged_16bit(model, None, str(tmp_path / "merged"))
+    merged = AutoModelForImageTextToText.from_pretrained(tmp_path / "merged", dtype = torch.float32)
+    with torch.no_grad():
+        logits = merged(input_ids = ids).logits
+    effect = (reference - original).abs().max()
+    assert effect > 0.1
+    assert (logits - reference).abs().max() < 0.05 * effect
+    import json
+
+    names = json.loads((tmp_path / "merged" / "model.safetensors.index.json").read_text())[
+        "weight_map"
+    ]
+    assert any(".attn.wq_du." in k for k in names) and not any("language_model" in k for k in names)
+    assert "quantization_config" not in (tmp_path / "merged" / "config.json").read_text()
 
 
 @pytest.mark.parametrize(
@@ -405,6 +461,262 @@ def test_vision_only_training_maps_the_vision_tower(monkeypatch, targets):
     if len(targets) > 1:
         assert {"fc1", "fc2"} <= leaves
     assert not list(out.peft_config["default"].target_parameters or [])
+
+
+def _export_setup(
+    tmp_path,
+    loop = True,
+    **lora,
+):
+    peft = pytest.importorskip("peft")
+    from transformers import AutoModelForImageTextToText
+
+    _tiny(loop).to(torch.bfloat16).save_pretrained(tmp_path / "base")
+    base = AutoModelForImageTextToText.from_pretrained(tmp_path / "base", dtype = torch.float32)
+    lora.setdefault("target_modules", _inkling2().inkling2_lora_target_modules(base, None))
+    model = peft.get_peft_model(base, peft.LoraConfig(r = 4, lora_alpha = 8, **lora))
+    return model
+
+
+def _checkpoint(path):
+    from safetensors.torch import load_file
+
+    out = {}
+    for f in sorted(path.glob("*.safetensors")):
+        out.update(load_file(f))
+    return out
+
+
+@pytest.mark.parametrize("init", ["pissa", "olora"])
+def test_residual_init_export_before_training_is_the_checkpoint(tmp_path, init):
+    # PiSSA / OLoRA subtract the initial adapter from the live base. The writer rereads the original checkpoint, so
+    # it must add the delta relative to it (zero before training), not the adapter's full contribution.
+    import unsloth  # noqa: F401
+    from unsloth.models._utils import snapshot_residual_lora_init
+
+    model = _export_setup(tmp_path, init_lora_weights = init)
+    snapshot_residual_lora_init(model, init)
+    _inkling2().save_inkling2_merged_16bit(model, None, str(tmp_path / "merged"))
+    original, merged = _checkpoint(tmp_path / "base"), _checkpoint(tmp_path / "merged")
+    assert original.keys() == merged.keys()
+    worst = max((merged[k].float() - original[k].float()).abs().max().item() for k in original)
+    assert worst == 0.0, worst
+    # The live factors are restored after the export.
+    assert all(
+        m.lora_A["default"].weight.shape[0] == 4
+        for m in model.modules()
+        if getattr(m, "_unsloth_initial_lora", None) and "default" in getattr(m, "lora_A", {})
+    )
+
+
+def test_embedding_lora_is_merged(tmp_path):
+    import copy
+
+    from transformers import AutoModelForImageTextToText
+
+    model = _export_setup(tmp_path, target_modules = ["embed_tokens"])
+    torch.manual_seed(1)
+    for name, param in model.named_parameters():
+        if "lora_embedding" in name:
+            param.data.normal_(0, 0.1)
+    _inkling2().save_inkling2_merged_16bit(model, None, str(tmp_path / "merged"))
+    reference = copy.deepcopy(model).merge_and_unload().get_input_embeddings().weight.detach()
+    merged = AutoModelForImageTextToText.from_pretrained(tmp_path / "merged", dtype = torch.float32)
+    original = model.get_base_model().get_input_embeddings().base_layer.weight.detach()
+    got = merged.get_input_embeddings().weight.detach()
+    assert (reference - original).abs().max() > 0.01
+    assert torch.allclose(got, reference.to(torch.bfloat16).float(), atol = 1e-2, rtol = 0)
+    assert (got - reference).abs().max() < 0.05 * (reference - original).abs().max()
+
+
+@pytest.mark.parametrize("bias", ["all", "lora_only"])
+def test_trained_biases_are_written(tmp_path, bias):
+    from transformers import AutoModelForImageTextToText
+
+    model = _export_setup(
+        tmp_path,
+        target_modules = r".*vision_tower\.layers\.\d+\.self_attn\.q_proj",
+        bias = bias,
+    )
+    torch.manual_seed(2)
+    trained = {}
+    for name, param in model.named_parameters():
+        if name.endswith(".bias") and param.requires_grad:
+            param.data.normal_(0, 1.0)
+            trained[name] = param.detach().clone()
+    assert trained and (bias == "all") == (len(trained) > 1)
+    _inkling2().save_inkling2_merged_16bit(model, None, str(tmp_path / "merged"))
+    merged = dict(
+        AutoModelForImageTextToText.from_pretrained(
+            tmp_path / "merged", dtype = torch.float32
+        ).named_parameters()
+    )
+    for name, value in trained.items():
+        key = re.sub(r"^base_model\.model\.", "", name).replace(".base_layer", "")
+        assert torch.equal(merged[key], value.to(torch.bfloat16).float()), key
+
+
+def test_unsupported_lora_exports_still_refuse(tmp_path):
+    model = _export_setup(tmp_path, use_dora = True)
+    with pytest.raises(NotImplementedError, match = "DoRA"):
+        _inkling2().save_inkling2_merged_16bit(model, None, str(tmp_path / "merged"))
+    model = _export_setup(tmp_path / "b", modules_to_save = ["lm_head"])
+    with pytest.raises(NotImplementedError, match = "modules_to_save"):
+        _inkling2().save_inkling2_merged_16bit(model, None, str(tmp_path / "merged_b"))
+
+
+def test_trainable_token_rows_are_merged(tmp_path):
+    # LoRA `trainable_token_indices` keeps the trained rows in PEFT's TrainableTokensLayer, not in the embedding the
+    # writer rereads; the export must carry them (merge_and_unload replaces those rows) instead of the originals.
+    import copy
+
+    from transformers import AutoModelForImageTextToText
+
+    rows = [3, 7, 11, 200]
+    model = _export_setup(tmp_path, trainable_token_indices = rows)
+    torch.manual_seed(3)
+    for name, param in model.named_parameters():
+        if "trainable_tokens_delta" in name or "lora_" in name:
+            param.data.normal_(0, 0.1)
+    original = (
+        model.get_base_model()
+        .get_input_embeddings()
+        .token_adapter.base_layer.weight.detach()
+        .clone()
+    )
+    reference = copy.deepcopy(model).merge_and_unload().get_input_embeddings().weight.detach()
+    _inkling2().save_inkling2_merged_16bit(model, None, str(tmp_path / "merged"))
+    got = (
+        AutoModelForImageTextToText.from_pretrained(tmp_path / "merged", dtype = torch.float32)
+        .get_input_embeddings()
+        .weight.detach()
+    )
+    assert (reference[rows] - original[rows]).abs().max() > 0.01
+    assert torch.equal(got, reference.to(torch.bfloat16).float())
+    others = [i for i in range(got.shape[0]) if i not in rows]
+    assert torch.equal(got[others], original[others])
+
+
+def test_float32_export_writes_float32_merge(tmp_path):
+    # save_pretrained_merged(dtype = torch.float32) documents float32 safetensors with the merged delta unrounded;
+    # the Inkling 2 writer must honour it (default stays bf16) and refuse dtypes it does not write.
+    import copy
+
+    from transformers import AutoModelForImageTextToText
+
+    model = _export_setup(
+        tmp_path, target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"]
+    )
+    torch.manual_seed(4)
+    for name, param in model.named_parameters():
+        if "lora_" in name:
+            param.data.normal_(0, 0.1)
+    reference = dict(copy.deepcopy(model).merge_and_unload().named_parameters())
+    ink = _inkling2()
+    ink.save_inkling2_merged_16bit(model, None, str(tmp_path / "fp32"), dtype = torch.float32)
+    ink.save_inkling2_merged_16bit(model, None, str(tmp_path / "default"))
+    fp32, default = _checkpoint(tmp_path / "fp32"), _checkpoint(tmp_path / "default")
+    assert fp32.keys() == default.keys()
+    assert all(v.dtype == torch.float32 for v in fp32.values() if v.is_floating_point())
+    assert all(v.dtype == torch.bfloat16 for v in default.values() if v.is_floating_point())
+    merged = dict(
+        AutoModelForImageTextToText.from_pretrained(
+            tmp_path / "fp32", dtype = torch.float32
+        ).named_parameters()
+    )
+    assert merged.keys() == reference.keys()
+    worst = max((merged[k] - reference[k].detach()).abs().max().item() for k in reference)
+    rounding = max(
+        (reference[k].detach().to(torch.bfloat16).float() - reference[k].detach())
+        .abs()
+        .max()
+        .item()
+        for k in reference
+    )
+    # Rounding the merge to bf16 (the old behaviour) would cost `rounding`; float32 matches the fp32 merge.
+    assert rounding > 1e-4 and worst < 1e-6, (worst, rounding)
+    with pytest.raises(NotImplementedError, match = "dtype"):
+        ink.save_inkling2_merged_16bit(model, None, str(tmp_path / "f16"), dtype = torch.float16)
+
+
+def test_save_pretrained_merged_forwards_dtype_to_inkling2():
+    source = (_ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
+    call = source[source.index("        save_inkling2_merged_16bit(\n") :]
+    call = call[: call.index(")")]
+    assert "dtype = dtype" in call
+
+
+def test_merged_export_replaces_an_earlier_save(tmp_path):
+    # transformers loads model.safetensors ahead of an index, so weights from an earlier unsharded save
+    # left in the directory would silently shadow the new merged shards on reload.
+    from safetensors.torch import save_file
+    from transformers import AutoModelForImageTextToText
+
+    model = _export_setup(tmp_path, target_parameters = ["mlp.experts.gate_up_proj"])
+    torch.manual_seed(5)
+    for name, param in model.named_parameters():
+        if "lora_" in name:
+            param.data.normal_(0, 0.1)
+    ink = _inkling2()
+    ink.save_inkling2_merged_16bit(model, None, str(tmp_path / "clean"))
+    fresh = _checkpoint(tmp_path / "clean")
+
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    old = {k: torch.zeros_like(v) for k, v in fresh.items()}
+    save_file(old, str(stale / "model.safetensors"), metadata = {"format": "pt"})
+    save_file(old, str(stale / "model-00007-of-00009.safetensors"), metadata = {"format": "pt"})
+    torch.save(old, stale / "pytorch_model.bin")
+    (stale / "pytorch_model.bin.index.json").write_text('{"metadata": {}, "weight_map": {}}')
+    (stale / "notes.txt").write_text("keep")
+    ink.save_inkling2_merged_16bit(model, None, str(stale))
+
+    assert not (stale / "model.safetensors").exists()
+    assert not (stale / "model-00007-of-00009.safetensors").exists()
+    assert not (stale / "pytorch_model.bin").exists()
+    assert not (stale / "pytorch_model.bin.index.json").exists()
+    assert (stale / "notes.txt").read_text() == "keep"
+    reloaded = dict(AutoModelForImageTextToText.from_pretrained(stale).named_parameters())
+    expected = dict(
+        AutoModelForImageTextToText.from_pretrained(tmp_path / "clean").named_parameters()
+    )
+    assert reloaded.keys() == expected.keys()
+    assert any(v.abs().max() > 0 for v in expected.values())
+    assert all(torch.equal(reloaded[k], expected[k]) for k in expected)
+
+
+def test_merged_export_removes_an_earlier_lora_save(tmp_path):
+    # transformers auto-loads adapter_config.json found next to the weights, so a LoRA save left in
+    # the directory would be applied a second time on top of the merged export.
+    from transformers import AutoModelForImageTextToText
+
+    model = _export_setup(tmp_path, target_parameters = ["mlp.experts.gate_up_proj"])
+    torch.manual_seed(6)
+    for name, param in model.named_parameters():
+        if "lora_" in name:
+            param.data.normal_(0, 0.1)
+    ink = _inkling2()
+    ink.save_inkling2_merged_16bit(model, None, str(tmp_path / "clean"))
+
+    stale = tmp_path / "stale"
+    model.save_pretrained(str(stale))
+    assert (stale / "adapter_config.json").exists()
+    assert (stale / "adapter_model.safetensors").exists()
+    torch.save({}, stale / "adapter_model.bin")
+    ink.save_inkling2_merged_16bit(model, None, str(stale))
+
+    assert not (stale / "adapter_config.json").exists()
+    assert not (stale / "adapter_model.safetensors").exists()
+    assert not (stale / "adapter_model.bin").exists()
+    loaded = AutoModelForImageTextToText.from_pretrained(stale)
+    assert not getattr(loaded, "_hf_peft_config_loaded", False)
+    assert not any("lora_" in n for n, _ in loaded.named_parameters())
+    reloaded = dict(loaded.named_parameters())
+    expected = dict(
+        AutoModelForImageTextToText.from_pretrained(tmp_path / "clean").named_parameters()
+    )
+    assert reloaded.keys() == expected.keys()
+    assert all(torch.equal(reloaded[k], expected[k]) for k in expected)
 
 
 def _saved_bytes_and_grads(model, ids):
@@ -619,3 +931,68 @@ def test_message_checkpoint_follows_a_deepcopy_and_pickles(monkeypatch):
             assert torch.equal(a, b)
         original, _ = _residual_grads(model, monkeypatch, enabled = True)
         assert not torch.equal(got, original)
+
+
+@pytest.mark.parametrize("public", [True, False])
+def test_private_push_refuses_an_existing_public_repo(tmp_path, monkeypatch, public):
+    # create_repo(private = True) leaves an existing public repo public, so the merged Inkling 2 upload must refuse
+    # before merging or uploading anything, as the staged Hub export does.
+    import types
+    import unittest.mock
+
+    import huggingface_hub
+
+    model = _export_setup(tmp_path, target_parameters = ["mlp.experts.gate_up_proj"])
+    api = unittest.mock.MagicMock()
+    api.create_repo.return_value = types.SimpleNamespace(repo_id = "someone/inkling-merged")
+    api.repo_info.return_value = types.SimpleNamespace(private = not public)
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda *a, **k: api)
+    save = lambda: _inkling2().save_inkling2_merged_16bit(
+        model, None, "inkling-merged", push_to_hub = True, token = "hf_x", private = True
+    )
+    if public:
+        with pytest.raises(RuntimeError, match = "already exists and is public"):
+            save()
+        api.upload_folder.assert_not_called()
+    else:
+        save()
+        api.upload_folder.assert_called_once()
+        assert api.upload_folder.call_args.kwargs["repo_id"] == "someone/inkling-merged"
+
+
+def test_push_deletes_stale_remote_weights(tmp_path, monkeypatch):
+    # upload_folder only adds files: an older model.safetensors or LoRA adapter already on the Hub would shadow the
+    # merged shards on reload, so the push must delete them in the same commit and keep everything else.
+    import types
+    import unittest.mock
+
+    import huggingface_hub
+
+    model = _export_setup(tmp_path, target_parameters = ["mlp.experts.gate_up_proj"])
+    api = unittest.mock.MagicMock()
+    api.create_repo.return_value = types.SimpleNamespace(repo_id = "someone/inkling-merged")
+    api.list_repo_files.return_value = [
+        ".gitattributes",
+        "README.md",
+        "model.safetensors",
+        "model-00001-of-00001.safetensors",
+        "model-00002-of-00003.safetensors",
+        "pytorch_model.bin",
+        "adapter_config.json",
+        "adapter_model.safetensors",
+        "sub/model.safetensors",
+    ]
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda *a, **k: api)
+    _inkling2().save_inkling2_merged_16bit(
+        model, None, "inkling-merged", push_to_hub = True, token = "hf_x"
+    )
+    api.upload_folder.assert_called_once()
+    kwargs = api.upload_folder.call_args.kwargs
+    assert kwargs["repo_id"] == "someone/inkling-merged"
+    assert sorted(kwargs.get("delete_patterns") or []) == [
+        "adapter_config.json",
+        "adapter_model.safetensors",
+        "model-00002-of-00003.safetensors",
+        "model.safetensors",
+        "pytorch_model.bin",
+    ]

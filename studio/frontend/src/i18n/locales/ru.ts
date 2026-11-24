@@ -937,6 +937,9 @@ export const ru = {
     useModelScopeHint: "Искать и скачивать через ModelScope. Вернуть можно в настройках.",
     useModelScopeFailed: "Не удалось переключиться на ModelScope.",
     updateToken: "Обновить токен",
+    linkedModelTitle: "Загрузить {model}?",
+    linkedModelBody: "Ссылка открыла эту страницу и просит скачать и загрузить эту модель.",
+    linkedModelLoad: "Загрузить",
     hfToken: {
       label: "Токен HF",
       saved: "Сохранён",

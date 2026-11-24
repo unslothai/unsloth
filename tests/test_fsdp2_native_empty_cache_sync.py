@@ -75,6 +75,9 @@ def test_generate_gather_probe_synchronizes_before_empty_cache(cuda_log, monkeyp
     monkeypatch.setattr(F, "_unit_param_groups", lambda unit: [group])
     monkeypatch.setattr(F, "_unit_gathered_bytes", lambda unit: 1 << 20)
     monkeypatch.setattr(F, "_agree_over_ranks", lambda dist_, device, values, mesh: values)
+    monkeypatch.setattr(
+        F, "_agree_min_over_ranks", lambda dist_, device, values, mesh: list(values), raising = False
+    )
     monkeypatch.setattr(dist, "is_available", lambda: True)
     monkeypatch.setattr(dist, "is_initialized", lambda: True)
     assert F._generate_streams_blocks(net) is False  # everything fits: whole gather

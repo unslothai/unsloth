@@ -15,7 +15,7 @@ import threading
 import traceback
 import weakref
 import types
-from functools import update_wrapper
+from functools import WRAPPER_ASSIGNMENTS, update_wrapper
 from typing import Any, Optional
 
 from .diffusion_bg_compile import capture_suppressed as _bg_capture_suppressed
@@ -1332,11 +1332,45 @@ class GraphedForward:
             self.module.__dict__.pop("forward", None)
             return self
         # Offload hooks installed after this wrapper wrap it: unwrap it inside their chain, keeping the hooks.
+        stock = type(self.module).forward.__get__(self.module)
         registry = getattr(self.module, "_diffusers_hook", None)
         for ref in list(getattr(registry, "_fn_refs", None) or ()):
-            if getattr(ref, "forward", None) is self:
-                ref.forward = type(self.module).forward.__get__(self.module)
+            for attr in ("forward", "original_forward"):
+                if getattr(ref, attr, None) is self:
+                    setattr(ref, attr, stock)
+        self._unlink_wrapper_metadata(stock)
         return self
+
+    # What ``update_wrapper`` copies from the class forward through this wrapper: kept on a hook wrapper.
+    _WRAPPER_METADATA = frozenset(
+        {*WRAPPER_ASSIGNMENTS, "__wrapped__", "__signature__", "__dict__"}
+    )
+
+    def _unlink_wrapper_metadata(self, stock: Any) -> None:
+        """diffusers wraps a hooked forward FROM the one it replaced (``update_wrapper``): the slot's ``__wrapped__``
+        chain still names this retired wrapper, and each link carries a copy of its ``__dict__`` (cache, stats, the
+        module). The CFG replica builder peels the root forward by ``__wrapped__`` and refuses an unknown override, so
+        point the chain at the class forward and drop the copied state."""
+        chain: list = []
+        link = self.module.__dict__.get("forward")
+        while link is not None and link is not self and len(chain) < 16:
+            chain.append(link)
+            link = getattr(link, "__wrapped__", None)
+        if link is not self:
+            return
+        mine = self.__dict__
+        for link in chain:
+            state = getattr(link, "__dict__", None)
+            if not isinstance(state, dict):
+                continue
+            for key in [
+                k
+                for k, v in state.items()
+                if k in mine and k not in self._WRAPPER_METADATA and v is mine[k]
+            ]:
+                del state[key]
+            if state.get("__wrapped__") is self:
+                state["__wrapped__"] = stock
 
     def enable(self) -> "GraphedForward":
         self.install()
@@ -3073,6 +3107,15 @@ def set_bypass(handles: Any, on: bool) -> None:
             handle.set_bypass(on)
         except Exception:  # noqa: BLE001 - optimisation only
             pass
+
+
+def wrappers_over(model: Any) -> tuple:
+    """Live graph wrappers over ``model`` or its submodules, wherever their handle is stashed."""
+    try:
+        ids = {id(m) for m in model.modules()} if hasattr(model, "modules") else {id(model)}
+    except Exception:  # noqa: BLE001
+        ids = {id(model)}
+    return tuple(w for w in tuple(_LIVE_WRAPPERS) if id(getattr(w, "module", None)) in ids)
 
 
 def _holds_graphs(handle: Any) -> bool:

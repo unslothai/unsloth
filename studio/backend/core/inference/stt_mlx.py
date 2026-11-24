@@ -51,6 +51,7 @@ def ships_custom_code(snapshot: Path) -> bool:
             data = json.loads((snapshot / name).read_text(encoding = "utf-8"))
         except (OSError, ValueError):
             continue
-        if isinstance(data, dict) and "auto_map" in data:
+        # A configuration_files list makes transformers read a config.<version>.json instead, auto_map included.
+        if isinstance(data, dict) and ("auto_map" in data or data.get("configuration_files")):
             return True
     return False

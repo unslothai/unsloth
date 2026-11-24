@@ -989,6 +989,9 @@ export const sv = {
       "Sök och hämta från ModelScope i stället. Du kan byta tillbaka i Inställningar.",
     useModelScopeFailed: "Det gick inte att byta till ModelScope.",
     updateToken: "Uppdatera token",
+    linkedModelTitle: "Läsa in {model}?",
+    linkedModelBody: "En länk öppnade den här sidan och vill ladda ned och läsa in den här modellen.",
+    linkedModelLoad: "Läs in",
     hfToken: {
       label: "HF-token",
       saved: "Sparad",

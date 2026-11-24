@@ -3732,14 +3732,33 @@ def _maybe_compile_transformer(
             _install_backports()
         except Exception:  # noqa: BLE001 -- the backport is best-effort
             pass
+        compile_kwargs = {"fullgraph": not base_is_bnb, "dynamic": True}
+        _pin_reduction_choices(compile_kwargs)
         if block_swap:
             # The swap hooks sit in each block's _call_impl: compile forward so they stay outside the graph.
-            return compile_swapped_blocks(transformer, fullgraph = not base_is_bnb, dynamic = True) > 0
-        fn(fullgraph = not base_is_bnb, dynamic = True)
+            return compile_swapped_blocks(transformer, **compile_kwargs) > 0
+        fn(**compile_kwargs)
         return True
     except Exception as exc:  # noqa: BLE001 -- optimisation only, never fatal
         _emit(on_event, "warning", message = f"torch.compile disabled (eager fallback): {exc}")
         return False
+
+
+def _pin_reduction_choices(compile_kwargs: dict) -> None:
+    """Same-seed runs in fresh processes otherwise train different bits: inductor times near-tied reduction configs
+    and R0_BLOCK sizes per process (warm cache included), so the compiled forward differs. Pins one of each, as the
+    inference compile does; UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK=1 keeps inductor's per-process pick. The rblock
+    knob is process-global and restored with the other perf flags on exit."""
+    try:
+        from core.inference import diffusion_compile_config as compile_config
+        from core.inference.diffusion_speed import pin_reduction_configs
+
+        if not compile_config.reduction_blocks_pinned():
+            return
+        compile_config.set_knob("torch._inductor.config", "dynamic_scale_rblock", False)
+        pin_reduction_configs(compile_kwargs)
+    except Exception:  # noqa: BLE001 -- reproducibility pin only, never fatal
+        pass
 
 
 def _dynamo_compile_counters() -> Optional[tuple[int, int, int]]:
@@ -4205,9 +4224,15 @@ def _train_dit(
         )
 
     transformer.add_adapter(_lora_config())
+    scaled_mm_calls0 = 0
     if fp16_amp:
+        from core.training.diffusion_dit_fp16 import scaled_mm_stats
+
         # After the adapter, so the island wraps the PEFT layer.
-        fp16_report["fp32_islands"] = len(install_fp32_islands(transformer, spec.family, device))
+        fp16_report["fp32_islands"] = len(
+            install_fp32_islands(transformer, spec.family, device, report = fp16_report)
+        )
+        scaled_mm_calls0 = scaled_mm_stats()["calls"]
     swapping = False
     if swap_request:
         try:
@@ -4432,15 +4457,7 @@ def _train_dit(
         compiled = compiled,
         base_precision = base_precision,
         fast_lora_layers = fast_lora_layers,
-        **(
-            {
-                "mixed_precision": "fp16",
-                "fp16_islands": fp16_report["fp32_islands"],
-                "fp16_linear4bit": fp16_report["linear4bit_fp16"],
-            }
-            if fp16_amp
-            else {}
-        ),
+        **(_fp16_load_fields(fp16_report) if fp16_amp else {}),
     )
     # Read the commit after the base is on disk: an earlier identity says unresolved, so resume cannot detect a moved repo. Record the repo actually fetched.
     identity = with_resolved_revision(identity, fetch_cfg.base_model)
@@ -4929,8 +4946,15 @@ def _train_dit(
             set_vram_request_handler(None)
         fp8_backward.clear()
         fp8_backward.active = False
+    # Layers installed next to the scaled-GEMM forwards actually taken: an install the forward never reaches shows 0.
+    fp16_stats = _fp16_run_stats(fp16_report, scaled_mm_calls0) if fp16_amp else {}
+    if fp16_stats:
+        import logging
+        logging.getLogger(__name__).info("fp16 scaled GEMM: %s", fp16_stats)
+        if not fast_lora_layers:
+            _emit(on_event, "fp16_stats", **fp16_stats)
     if fast_lora_layers:
-        stats = fast_lora_stats()
+        stats = {**fast_lora_stats(), **fp16_stats}
         if dequant_cache is not None:
             stats["dequant"] = dequant_cache.stats()
             set_vram_request_handler(None)
@@ -5050,6 +5074,30 @@ FP16_COMPILE_DECLINED = (
     "torch.compile is not used on the fp16 path (GPUs without bf16); compile_transformer='on' is "
     "ignored and this run trains eager."
 )
+
+
+def _fp16_load_fields(fp16_report) -> dict:
+    """``model_load_completed`` fields of the fp16 path: islands, nf4 linears, scaled-GEMM layers installed."""
+    if fp16_report is None:
+        return {}
+    return {
+        "mixed_precision": "fp16",
+        "fp16_islands": fp16_report["fp32_islands"],
+        "fp16_linear4bit": fp16_report["linear4bit_fp16"],
+        "fp16_scaled_mm": fp16_report.get("fp16_scaled_mm", 0),
+    }
+
+
+def _fp16_run_stats(fp16_report, calls_at_start: int) -> dict:
+    """End-of-run fp16 stats: scaled-GEMM layers installed and the scaled-GEMM forwards this run actually took."""
+    if fp16_report is None:
+        return {}
+    from core.training.diffusion_dit_fp16 import scaled_mm_stats
+
+    return {
+        "fp16_scaled_mm": fp16_report.get("fp16_scaled_mm", 0),
+        "fp16_scaled_mm_calls": scaled_mm_stats()["calls"] - calls_at_start,
+    }
 
 
 def _warn_fp16_compile_declined(cfg, on_event) -> bool:

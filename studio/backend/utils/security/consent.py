@@ -24,6 +24,7 @@ from utils.security.remote_code_scan import (
     config_declares_auto_map,
     hub_config_path,
     remote_code_config_paths,
+    versioned_config_paths,
     remote_code_fingerprint,
     repo_remote_code_files,
     scan_remote_code_files,
@@ -118,9 +119,10 @@ def _is_direct_gguf_file_ref(model_name: str) -> bool:
     if not name.lower().endswith(".gguf"):
         return False
     try:
-        from utils.paths import is_local_path
+        from utils.paths import is_local_path, normalize_path
         if is_local_path(name):
-            return True
+            # A folder named *.gguf is a model folder, auto_map and all.
+            return not os.path.isdir(os.path.expanduser(normalize_path(name)))
     except Exception:
         pass
     # Remote: a file reference is repo_id ("org/name") + filename => >= 2 slashes.
@@ -140,17 +142,28 @@ def _load_remote_code_configs(
     try:
         from utils.paths import is_local_path, normalize_path
 
+        names = list(remote_code_config_paths(load_subdirs))
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
             configs = []
-            for name in remote_code_config_paths(load_subdirs):
+            if root.is_file():
+                # A JSON file path loads as the config itself: AutoConfig reads it and imports its auto_map.
+                try:
+                    configs.append(json.loads(root.read_text(encoding = "utf-8-sig")))
+                except ValueError:
+                    pass
+                root = root.parent
+            for name in names:
                 p = root.joinpath(*Path(name).parts)
                 if p.is_file():
                     configs.append(json.loads(p.read_text(encoding = "utf-8-sig")))
+                    names.extend(
+                        [n for n in versioned_config_paths(name, configs[-1]) if n not in names]
+                    )
             return configs
 
         configs = []
-        for name in remote_code_config_paths(load_subdirs):
+        for name in names:
             try:
                 p = hub_config_path(model_name, name, hf_token)
             except Exception:
@@ -158,6 +171,9 @@ def _load_remote_code_configs(
                 return None
             if p is not None:
                 configs.append(json.loads(Path(p).read_text(encoding = "utf-8-sig")))
+                names.extend(
+                    [n for n in versioned_config_paths(name, configs[-1]) if n not in names]
+                )
         # Every config was read or a genuine 404 -> an empty list is a definitive "no auto_map".
         return configs
     except Exception as exc:
@@ -246,6 +262,20 @@ def _fingerprint_target_key(target: str) -> str:
     return target.lower()
 
 
+def _managed_refusal(primary: str) -> RemoteCodeDecision:
+    return RemoteCodeDecision(
+        primary,
+        True,
+        True,
+        None,
+        None,
+        "",
+        MANAGED_REMOTE_CODE_REFUSAL,
+        approvable = False,
+        block_cause = MANAGED_REFUSED,
+    )
+
+
 def evaluate_remote_code_consent_for_targets(
     targets,
     hf_token: Optional[str] = None,
@@ -286,6 +316,9 @@ def evaluate_remote_code_consent_for_targets(
         declares_code = _config_has_auto_map(target, hf_token, **scan_kwargs)
         if declares_code is False:
             continue
+        if declares_code is True and managed_remote_code_refused():
+            # Refused whatever the code says, so do not download and scan every .py first.
+            return _managed_refusal(primary)
         try:
             files = repo_remote_code_files(target, hf_token = hf_token, **scan_kwargs)
         except RemoteCodeUnscannable:
@@ -336,17 +369,7 @@ def evaluate_remote_code_consent_for_targets(
         )
 
     if managed_remote_code_refused():
-        return RemoteCodeDecision(
-            primary,
-            True,
-            True,
-            None,
-            None,
-            "",
-            MANAGED_REMOTE_CODE_REFUSAL,
-            approvable = False,
-            block_cause = MANAGED_REFUSED,
-        )
+        return _managed_refusal(primary)
 
     result = scan_remote_code_files(combined)
     fingerprint = remote_code_fingerprint(combined)

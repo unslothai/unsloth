@@ -1233,7 +1233,7 @@ AUTO_CUDNN = _AutoCudnn("_native_cudnn")
 BLACKWELL_NATIVE_ATTN_ENV = (
     "UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN"  # auto (default) | 0 keeps the cuDNN pin
 )
-_NATIVE_DISPATCH_CACHE: dict[tuple[str, str, int], bool] = {}
+_NATIVE_DISPATCH_CACHE: dict[tuple[str, str, int, bool], bool] = {}
 # Native flash measured faster than the cuDNN pin at every DiT/U-Net shape, bf16+fp16 (torch 2.14.1+cu130); others keep the pin.
 FLASH_FASTER_CAPABILITIES: dict[tuple[int, int], str] = {
     (
@@ -1246,7 +1246,17 @@ FLASH_FASTER_CAPABILITIES: dict[tuple[int, int], str] = {
     ): "L4: cuDNN never faster than native flash (Lumina-2 0.70x per call, the rest 0.93-1.00x)",
 }
 NATIVE_FLASH_ATTN_ENV = "UNSLOTH_DIFFUSION_NATIVE_FLASH_ATTN"  # auto (default) | 0 keeps the cuDNN pin on FLASH_FASTER_CAPABILITIES cards
-_NATIVE_FLASH_CACHE: dict[tuple[str, str, int], bool] = {}
+_NATIVE_FLASH_CACHE: dict[tuple[str, str, int, bool], bool] = {}
+# DiTs whose block attention carries a key-padding mask on every call. Torch's FLASH kernel takes no mask, so native
+# SDPA runs those calls on mem-efficient attention, not flash: the native-dispatch probes ask with a mask for them.
+# Krea 2 pads its text rows (diffusers: "Krea 2 always attends with a text padding mask"; Studio trims them to a
+# 128-row bucket and keeps the mask): native ran fmha_cutlassF for 34% of an L4 Turbo render. The cuDNN pin is 0.54-0.57x
+# per masked call on A100 / L4 and cut the A100 render 3.45 -> 2.89 s, no further from an fp32 attention reference.
+# Chroma, HunyuanImage-2.1 and Ideogram 4 mask every call too and are left out: Chroma's pinned render was not
+# repeatable across processes on an A100 (base was), and the other two are unmeasured end to end.
+MASKED_ATTENTION_DITS: dict[str, str] = {
+    "Krea2Transformer2DModel": "text rows padded to a 128-row bucket, masked as keys in every block",
+}
 ROCM_FLASH_ENV = "UNSLOTH_DIFFUSION_ROCM_FLASH"  # auto (timed) | 0 (auto never picks flash) | 1 (verified is enough)
 ROCM_FLASH_MIN_GAIN = 0.03
 # Accuracy is judged on the raw attention output (flash vs native SDPA, same inputs), not the block: the residual and
@@ -1903,6 +1913,13 @@ def _native_sdpa_fused_serves(
         return False
 
 
+def block_activation_bytes(hidden: int, inner: int, width: int, elem: int) -> tuple[int, int]:
+    """(per-query, per-key) token bytes of a DiT block's widest activations, fused SDPA; ``width`` = key hidden size."""
+    per_query = (11 * int(hidden) + 3 * int(inner)) * int(elem) + 2 * int(inner) * 4
+    per_key = (int(width) + 2 * int(inner)) * int(elem)
+    return per_query, per_key
+
+
 def _rocm_flash_probe_bytes(
     geometry: tuple,
     tokens: int,
@@ -1921,8 +1938,7 @@ def _rocm_flash_probe_bytes(
     inner = heads * head_dim
     elem = getattr(dtype, "itemsize", 2) or 2
     weights = (4 * inner * hidden + 8 * hidden * hidden + 2 * inner * width) * elem
-    per_query = (11 * hidden + 3 * inner) * elem + 2 * inner * 4
-    per_key = (width + 2 * inner) * elem
+    per_query, per_key = block_activation_bytes(hidden, inner, width, elem)
     fused = _native_sdpa_fused_serves(device, dtype, heads, head_dim, tokens, kv_tokens, batch)
     scores = 0 if fused else 2 * batch * heads * tokens * kv_tokens * 4
     return weights + batch * (tokens * per_query + kv_tokens * per_key) + scores
@@ -3983,12 +3999,34 @@ def _cudnn_runs_head_dim(target: Any, head_dim: int) -> Optional[bool]:
     return _CUDNN_HEAD_DIM_CACHE.setdefault(key, bool(ran))
 
 
-def _native_sdp_choice(device: str, dtype: Any, head_dim: int) -> int:
-    """torch's own SDPA dispatch choice (an ``SDPBackend`` value) at ``head_dim`` / ``dtype`` on ``device``."""
+def _native_sdp_choice(
+    device: str,
+    dtype: Any,
+    head_dim: int,
+    masked: bool = False,
+) -> int:
+    """torch's own SDPA dispatch choice (an ``SDPBackend`` value) at ``head_dim`` / ``dtype`` on ``device``; ``masked``
+    asks with a boolean key-padding mask, as a ``MASKED_ATTENTION_DITS`` block call carries."""
     import torch
 
     q = torch.zeros(1, 2, 256, int(head_dim), device = device, dtype = dtype)
-    return int(torch._fused_sdp_choice(q, q, q))
+    if not masked:
+        return int(torch._fused_sdp_choice(q, q, q))
+    mask = torch.ones(1, 1, 1, 256, device = device, dtype = torch.bool)
+    mask[..., -1] = False
+    return int(torch._fused_sdp_choice(q, q, q, attn_mask = mask))
+
+
+def _dits_mask_attention(pipe: Any) -> bool:
+    """True when any denoiser DiT is a ``MASKED_ATTENTION_DITS`` class (its block attention is masked every call)."""
+    return any(type(dit).__name__ in MASKED_ATTENTION_DITS for dit in _attention_dits(pipe))
+
+
+def _probe_choice(device: str, dtype: Any, head_dim: int, masked: bool) -> int:
+    # the unmasked call keeps the 3-argument form
+    if masked:
+        return _native_sdp_choice(device, dtype, head_dim, masked = True)
+    return _native_sdp_choice(device, dtype, head_dim)
 
 
 def _device_capability(device: str) -> tuple[int, int]:
@@ -3998,7 +4036,8 @@ def _device_capability(device: str) -> tuple[int, int]:
 
 def _native_dispatches_cudnn(pipe: Any, target: Any) -> bool:
     """True on a Blackwell (SM100+) NVIDIA card when torch's own SDPA dispatch picks cuDNN for every DiT head dim at the
-    run dtype, so the ``auto`` pin would change no kernel. Unknown head dims, dtype or capability keep the pin."""
+    run dtype (with a key-padding mask for ``MASKED_ATTENTION_DITS``), so the ``auto`` pin would change no kernel.
+    Unknown head dims, dtype or capability keep the pin."""
     if (os.environ.get(BLACKWELL_NATIVE_ATTN_ENV) or "").strip().lower() in (
         "0",
         "off",
@@ -4024,11 +4063,12 @@ def _native_dispatches_cudnn(pipe: Any, target: Any) -> bool:
         dtype = getattr(target, "dtype", None)
         if dtype not in (torch.bfloat16, torch.float16):
             return False
+        masked = _dits_mask_attention(pipe)
         for dim in sorted(dims):
-            key = (device, str(dtype), int(dim))
+            key = (device, str(dtype), int(dim), masked)
             hit = _NATIVE_DISPATCH_CACHE.get(key)
             if hit is None:
-                hit = _native_sdp_choice(device, dtype, dim) == int(SDPBackend.CUDNN_ATTENTION)
+                hit = _probe_choice(device, dtype, dim, masked) == int(SDPBackend.CUDNN_ATTENTION)
                 _NATIVE_DISPATCH_CACHE[key] = hit
             if not hit:
                 return False
@@ -4038,7 +4078,8 @@ def _native_dispatches_cudnn(pipe: Any, target: Any) -> bool:
 
 
 def _native_flash_measured_faster(pipe: Any, target: Any) -> bool:
-    """True on a ``FLASH_FASTER_CAPABILITIES`` card whose native SDPA picks FLASH for every DiT head dim; else keep the pin."""
+    """True on a ``FLASH_FASTER_CAPABILITIES`` card whose native SDPA picks FLASH for every DiT head dim (asked with a
+    key-padding mask for ``MASKED_ATTENTION_DITS``, which then never get FLASH); else keep the pin."""
     if (os.environ.get(NATIVE_FLASH_ATTN_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return False
     if not _is_cuda_nvidia(target):
@@ -4059,11 +4100,13 @@ def _native_flash_measured_faster(pipe: Any, target: Any) -> bool:
         dtype = getattr(target, "dtype", None)
         if dtype not in (torch.bfloat16, torch.float16):
             return False
+        # a masked block call never runs flash (no kernel takes the mask): ask the way the real call does
+        masked = _dits_mask_attention(pipe)
         for dim in sorted(dims):
-            key = (device, str(dtype), int(dim))
+            key = (device, str(dtype), int(dim), masked)
             hit = _NATIVE_FLASH_CACHE.get(key)
             if hit is None:
-                hit = _native_sdp_choice(device, dtype, dim) == int(SDPBackend.FLASH_ATTENTION)
+                hit = _probe_choice(device, dtype, dim, masked) == int(SDPBackend.FLASH_ATTENTION)
                 _NATIVE_FLASH_CACHE[key] = hit
             if not hit:
                 return False
@@ -4316,6 +4359,7 @@ def _apply_attention_backend_impl(
             setattr(dit, ROCM_FLASH_GATE_ATTR, None)
         except Exception:  # noqa: BLE001
             pass
+    auto_pick = False
     if backend == ROCM_FLASH_CANDIDATE:
         backend = "flash" if _rocm_flash_block_admitted(pipe, target, logger) else None
     if backend is not None:
@@ -4405,6 +4449,7 @@ def _apply_attention_backend_impl(
                     NATIVE_FLASH_ATTN_ENV,
                 )
             backend = None
+        auto_pick = isinstance(backend, _AutoCudnn)
         if backend is not None:
             backend = str(backend)
         if backend == "flash_4_hub" and not _install_fa4_dispatch_guard():
@@ -4442,7 +4487,7 @@ def _apply_attention_backend_impl(
                     _warn(logger, ATTN_NATIVE, exc)
             engaged = False
         if engaged:
-            _tag_dits(pipe, backend)
+            _tag_dits(pipe, backend, auto_pick = auto_pick)
             if backend == "_native_cudnn" and target is not None and _is_cuda_nvidia(target):
                 from .diffusion_flux3_attn import install as install_flux3_strided
                 from .diffusion_qwenimage21_attn import install as install_q21_strided
@@ -4472,12 +4517,19 @@ def _apply_attention_backend_impl(
 
 # Read by graph_eligible: Sage under a replayed graph renders noise.
 ATTENTION_BACKEND_ATTR = "_unsloth_attention_backend"
+# auto's cuDNN pick, not explicit: diffusion_krea2_prefix_kv may swap it for flash on mask-free calls
+ATTENTION_AUTO_PICK_ATTR = "_unsloth_attention_auto_pick"
 
 
-def _tag_dits(pipe: Any, backend: Optional[str]) -> None:
+def _tag_dits(
+    pipe: Any,
+    backend: Optional[str],
+    auto_pick: bool = False,
+) -> None:
     for dit in _attention_dits(pipe):
         try:
             setattr(dit, ATTENTION_BACKEND_ATTR, backend)
+            setattr(dit, ATTENTION_AUTO_PICK_ATTR, bool(auto_pick and backend is not None))
         except Exception:  # noqa: BLE001
             pass
 

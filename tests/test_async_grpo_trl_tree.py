@@ -67,6 +67,8 @@ NAMES = (
     "_tree_gdn_callers",
     "_patch_tree_gdn_namespace",
     "_unsloth_patch_tree_gdn",
+    "_patch_tree_recurrent_namespace",
+    "_unsloth_patch_tree_recurrent",
     "_async_grpo_masked_compute_loss",
     "_import_trl_async_grpo_module",
     "patch_trl_async_grpo",
@@ -164,8 +166,7 @@ def _load():
     }
     for node in ast.parse(src).body:
         is_constant = isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name)
-            and (t.id.startswith("_ASYNC_GRPO_") or t.id == "_TREE_GDN_NAMES")
+            isinstance(t, ast.Name) and t.id.startswith(("_ASYNC_GRPO_", "_TREE_"))
             for t in node.targets
         )
         if is_constant or (isinstance(node, ast.FunctionDef) and node.name in NAMES):
@@ -214,6 +215,7 @@ def patched(monkeypatch):
         "validate_lora_for_vllm_sync",
         "save_lora_adapter",
         "patch_tree_gdn",
+        "patch_tree_recurrent",
     ):
         if hasattr(module, name):
             monkeypatch.setattr(module, name, getattr(module, name))

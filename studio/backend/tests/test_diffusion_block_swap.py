@@ -138,7 +138,9 @@ def test_maybe_compile_routes_swap_to_forward_compile(monkeypatch):
     monkeypatch.setattr(dit, "_compile_toolchain_missing", lambda: None)
     used = []
     monkeypatch.setattr(
-        dit, "compile_swapped_blocks", lambda t, fullgraph, dynamic: used.append(fullgraph) or 3
+        dit,
+        "compile_swapped_blocks",
+        lambda t, fullgraph, dynamic, **kw: used.append(fullgraph) or 3,
     )
     m = _Model()
     m.compile_repeated_blocks = lambda **kw: used.append("regional")
