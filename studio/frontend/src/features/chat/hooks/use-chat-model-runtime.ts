@@ -695,7 +695,7 @@ export async function syncInferenceStatusToStore(options?: {
     const selectedAtStart = useChatRuntimeStore.getState().params.checkpoint;
     const [listRes, statusRes, , idleUnloadArmed] = await Promise.all([
       listModels(),
-      getInferenceStatus(signal, selectedAtStart),
+      getInferenceStatus(signal, servedSelection()),
       // Settled from this request alone: a sibling rejection must not mark the inventory settled.
       includeLoras
         ? listLoras().then(

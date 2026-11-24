@@ -127,3 +127,8 @@ test("normal startup status adoption owns the resident model's globals", () => {
     /adoptingExistingServerModel: selectedCheckpoint === ""/,
   );
 });
+
+test("a refresh reads the selected quant, not whichever copy of its repo was used last", () => {
+  assert.match(SYNC, /getInferenceStatus\(signal, servedSelection\(\)\)/);
+  assert.doesNotMatch(SYNC, /getInferenceStatus\(signal, selectedAtStart\)/);
+});
