@@ -225,6 +225,8 @@ def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, t
         {"inputs": {"reference": {"input_id": "../../etc/passwd"}}},
         {"inputs": {"reference": {"input_id": "a" * 32}, "emotion": {"url": "http://x"}}},
         {"options": {"voice_ref": "/etc/passwd"}},
+        {"options": {"voice_samples": "/etc/passwd,/x.wav"}},
+        {"options": {"multi_reference_cond": '[{"audio": "/x.wav", "text": "hi"}]'}},
         {"options": {"source_audio": "/etc/passwd"}},
         {"options": {"codec_model_path": "/etc/passwd"}},
         {"options": {"video": "/etc/passwd"}},

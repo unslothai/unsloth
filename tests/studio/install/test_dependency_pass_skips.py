@@ -907,7 +907,7 @@ def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
         ("mlx-lm", "0.32.3"),
         ("mlx-lm", None),
         ("mlx-vlm", "0.6.3"),
-        ("mlx-vlm", "0.8.1"),
+        ("mlx-vlm", "0.8.2"),
         ("mlx-vlm", None),
     ):
         broken = dict(versions)
@@ -1019,12 +1019,12 @@ def test_the_pip_fallback_never_names_one_project_twice() -> None:
             "--upgrade-package",
             "mlx-vlm",
             "mlx==0.32.3",
-            "mlx-vlm>=0.6.4,<=0.8.0",
+            "mlx-vlm>=0.6.4,<=0.8.1",
         )
     )
     assert "--upgrade" in cmd and "--upgrade-package" not in cmd
     assert cmd.count("mlx") == 0 and cmd.count("mlx-vlm") == 0
-    assert "mlx==0.32.3" in cmd and "mlx-vlm>=0.6.4,<=0.8.0" in cmd
+    assert "mlx==0.32.3" in cmd and "mlx-vlm>=0.6.4,<=0.8.1" in cmd
 
 
 def test_a_package_named_only_by_the_flag_is_still_passed() -> None:

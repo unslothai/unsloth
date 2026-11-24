@@ -320,6 +320,17 @@ def flux3_pipeline_class() -> type:
     return _PIPELINE_CLASS
 
 
+def _reset_guider_step(mp: Any) -> None:
+    """Rewind the guider's step state. diffusers keeps the last call's step: after a call whose last steps ran past a
+    Fast CFG stop, the next text step would read one condition and skip the negative embeddings its CFG steps need."""
+    guider = getattr(mp, "guider", None)
+    if guider is None:
+        return
+    guider._step = 0
+    guider._num_inference_steps = None
+    guider._timestep = None
+
+
 class _Flux3KleinPipelineMixin:
     """FLUX.3 Klein (distilled or base) as a ``DiffusionPipeline``; the denoise runs in the modular blocks."""
 
@@ -416,15 +427,38 @@ class _Flux3KleinPipelineMixin:
         with torch.no_grad():
             return run_selected(self.text_encoder, layers, call)
 
-    def _set_guidance(self, mp, guidance_scale: Optional[float]) -> None:
-        guider = getattr(mp, "guider", None)
-        if guider is None or guidance_scale is None:
-            return
-        if float(getattr(guider.config, "guidance_scale", -1.0)) == float(guidance_scale):
-            return
-        from diffusers import ClassifierFreeGuidance
+    def _set_guidance(
+        self,
+        mp,
+        guidance_scale: Optional[float],
+        guidance_stop: Optional[float] = None,
+    ) -> None:
+        """Install a guider for this call's scale and interval. ``guidance_stop`` < 1 drops the unconditional
+        branch for the steps from that fraction on (diffusers ``ClassifierFreeGuidance(stop = ...)``)."""
+        from .diffusion_cfg_batch import set_guided_step_probe
 
-        mp.update_components(guider = ClassifierFreeGuidance(guidance_scale = float(guidance_scale)))
+        guider = getattr(mp, "guider", None)
+        stop = 1.0 if guidance_stop is None else float(guidance_stop)
+        # CFG batching: the steps past the stop run one branch by design, not a missed second branch
+        set_guided_step_probe(
+            self,
+            None if guider is None or stop >= 1.0 else (lambda: mp.guider.num_conditions > 1),
+        )
+        if guider is None:
+            return
+        current = getattr(guider.config, "guidance_scale", None)
+        # No scale keeps the guider's own, but never an interval a previous Fast CFG render left on it.
+        scale = guidance_scale if guidance_scale is not None else current
+        if scale is not None and (
+            current is None
+            or float(current) != float(scale)
+            or float(getattr(guider.config, "stop", 1.0)) != stop
+        ):
+            from diffusers import ClassifierFreeGuidance
+            mp.update_components(
+                guider = ClassifierFreeGuidance(guidance_scale = float(scale), stop = stop)
+            )
+        _reset_guider_step(mp)
 
     def __call__(
         self,
@@ -443,10 +477,13 @@ class _Flux3KleinPipelineMixin:
         return_dict: bool = True,
         callback_on_step_end: Optional[Callable] = None,
         callback_on_step_end_tensor_inputs = ("latents",),
+        guidance_stop: Optional[float] = None,
     ):
         self._interrupt = False
         mp = self.modular_pipeline()
-        self._set_guidance(mp, guidance_scale)
+        if guidance_stop is not None and not 0.0 < float(guidance_stop) <= 1.0:
+            raise ValueError("guidance_stop must be in (0, 1].")
+        self._set_guidance(mp, guidance_scale, None if self.is_distilled else guidance_stop)
 
         prompts = prompt if isinstance(prompt, (list, tuple)) else [prompt]
         if any(not isinstance(p, str) for p in prompts):
@@ -512,6 +549,7 @@ class _Flux3KleinPipelineMixin:
                 if not self.is_distilled:
                     cond_blocks.begin_render(transformer)
                 try:
+                    _reset_guider_step(mp)
                     with self._step_hooks(
                         mp,
                         callback_on_step_end,

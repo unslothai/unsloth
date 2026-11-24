@@ -67,6 +67,7 @@ from utils.native_path_leases import child_env_without_native_path_secret
 from utils.prebuilt.update_flow import resolves_into_studio_app_tree
 from utils.native_tls import inline_gate_source, vendor_dir
 from utils.happy_eyeballs import inline_activation_source
+from utils.transformers_backports import inline_install_source
 from utils.child_stdio import utf8_child_env
 from utils.hf_cache_settings import get_hf_cache_paths
 from utils.subprocess_compat import (
@@ -1534,11 +1535,15 @@ _TRUSTSTORE_VENDOR = """
     + "\n"
     + inline_gate_source()
     + inline_activation_source()
+    + inline_install_source()
     + r"""
 target_dir, model_name = sys.argv[1], sys.argv[2]
 if target_dir:  # empty = probe the ambient (default-tier) transformers, no sidecar prepend
     sys.path.insert(0, target_dir)
 try:
+    # Unsloth is never imported here, and the sidecars below 5.5.0 need its LightGlue back-port
+    # for trust_remote_code=False to hold; failing to install it fails the parse.
+    _install_transformers_backports()
     from transformers import AutoConfig
     AutoConfig.from_pretrained(model_name, trust_remote_code=False)
     sys.exit(0)

@@ -7,6 +7,7 @@ import {
   isOllamaModelId,
   modelIdsMatch,
   publicModelId,
+  withoutNamedQuant,
 } from "@/features/hub/lib/model-identity";
 import type {
   LoraModelOption,
@@ -80,7 +81,7 @@ export function chatModelLoadedTarget(
   loadedModels: readonly LoadedChatModelSlot[],
 ): ChatModelSwitchTarget | null {
   for (const slot of loadedModels) {
-    const checkpoint = slot.checkpoint ?? slot.id;
+    const checkpoint = withoutNamedQuant(slot.checkpoint ?? slot.id, slot.quant);
     // undefined = the slot's quant is still being looked up: wait for it rather than guess.
     if (
       slot.quant === undefined ||

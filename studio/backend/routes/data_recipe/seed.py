@@ -254,29 +254,78 @@ def _pick_config(configs: list[dict[str, Any]], subset: str | None) -> dict[str,
     )
 
 
-def _glob_to_regex(pattern: str) -> re.Pattern[str]:
+class _GlobMatcher:
+    """A compiled glob, matched by a position-set walk: linear per token, where the
+    equivalent backtracking regex goes exponential on a card glob like `**a**a**a...`."""
+
+    __slots__ = ("pattern", "_tokens")
+
+    def __init__(self, pattern: str, tokens: list[tuple[str, Any]]):
+        self.pattern = pattern
+        self._tokens = tokens
+
+    def match(self, text: str) -> bool:
+        n = len(text)
+        reach = {0}
+        for kind, arg in self._tokens:
+            nxt: set[int] = set()
+            if kind == "one":
+                nxt = {p + 1 for p in reach if p < n and arg.match(text, p)}
+            elif kind == "star":
+                # [^/]*: every position up to the next folder boundary.
+                for p in sorted(reach):
+                    if p in nxt:
+                        continue
+                    stop = text.find("/", p)
+                    nxt.update(range(p, (n if stop < 0 else stop) + 1))
+            elif kind == "any":
+                # .* stops at a newline, as the regex did.
+                for p in sorted(reach):
+                    if p in nxt:
+                        continue
+                    stop = text.find("\n", p)
+                    nxt.update(range(p, (n if stop < 0 else stop) + 1))
+            else:  # "dirs": (?:[^/]+/)*, whole non-empty folders or none
+                for p in sorted(reach):
+                    if p in nxt:
+                        continue
+                    nxt.add(p)
+                    q = p
+                    while True:
+                        slash = text.find("/", q)
+                        if slash <= q:
+                            break
+                        q = slash + 1
+                        nxt.add(q)
+            if not nxt:
+                return False
+            reach = nxt
+        return n in reach
+
+
+def _glob_to_regex(pattern: str) -> _GlobMatcher:
     """* stops at a folder boundary, ** crosses it; prefix matching would claim train-notes.json."""
-    parts: list[str] = []
+    tokens: list[tuple[str, Any]] = []
     i = 0
     while i < len(pattern):
         char = pattern[i]
         if char == "*" and pattern[i + 1 : i + 2] == "*":
             if pattern[i + 2 : i + 3] == "/":
                 # Whole folders, or none: `data/**/train.*` is not `data/nottrain.x`.
-                parts.append("(?:[^/]+/)*")
+                tokens.append(("dirs", None))
                 i += 3
             else:
-                parts.append(".*")
+                tokens.append(("any", None))
                 i += 2
             continue
         if char == "*":
-            parts.append("[^/]*")
+            tokens.append(("star", None))
         elif char == "?":
-            parts.append("[^/]")
+            tokens.append(("one", re.compile("[^/]")))
         elif char == "[":
             end = _class_end(pattern, i)
             if end < 0:
-                parts.append(r"\[")
+                tokens.append(("one", re.compile(r"\[")))
             else:
                 body = pattern[i + 1 : end].replace("\\", "\\\\")
                 # Only `!` negates a glob class; a leading `^` is a character.
@@ -284,12 +333,12 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
                     body = f"^{body[1:]}"
                 elif body[:1] == "^":
                     body = f"\\^{body[1:]}"
-                parts.append(f"[{body}]")
+                tokens.append(("one", re.compile(f"[{body}]")))
                 i = end
         else:
-            parts.append(re.escape(char))
+            tokens.append(("one", re.compile(re.escape(char))))
         i += 1
-    return re.compile("".join(parts) + r"\Z")
+    return _GlobMatcher(pattern, tokens)
 
 
 def _class_end(pattern: str, start: int) -> int:
@@ -1368,6 +1417,9 @@ async def upload_unstructured_file(
             _BLOCK_UPLOAD_LOCKS.pop(block_id, None)
     ext = Path(original_filename).suffix.lower()
     size_bytes = len(content)
+    # On disk already: extraction reads raw_path, and an upload waiting for an extraction slot
+    # must not keep the whole document in memory meanwhile.
+    del content
 
     extracted_path = block_dir / f"{file_id}.extracted.txt"
     try:

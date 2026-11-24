@@ -4983,6 +4983,13 @@ _amd_sole_index_arch() {
     printf '%s\n' "$_sia"
 }
 
+# KFD's sole wheel-backed arch, only when this process can reach the GPU (lspci too old to name it).
+_amd_kfd_sole_index_arch() {
+    [ -e /dev/kfd ] || return 1
+    _amd_visible_masks_select_no_gpu && return 1
+    _amd_sole_index_arch "$(_kfd_gfx_targets 2>/dev/null || true)"
+}
+
 # Mirrors install.ps1 $archFamilyMap.
 _amd_arch_index_family_for_gfx() {
     case "$1" in
@@ -5602,6 +5609,12 @@ get_torch_index_url() {
                [ -n "$_amd_inferred_gfx" ] && \
                _amd_arch_index_family_for_gfx "$_amd_inferred_gfx" >/dev/null 2>&1; then
                 echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- inferring $_amd_inferred_gfx from hardware IDs." >&2
+                echo "$_base/cpu"; return
+            fi
+            # Same deferral when only KFD names the arch; the reroute reads it too.
+            _amd_kfd_gfx=$(_amd_kfd_sole_index_arch 2>/dev/null) || _amd_kfd_gfx=""
+            if [ -n "$_amd_kfd_gfx" ]; then
+                echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- the kernel driver (KFD) reports $_amd_kfd_gfx." >&2
                 echo "$_base/cpu"; return
             fi
             # Repairing rocminfo cannot help here: the arch would read fine and still have no wheels (#8529). Advice only, same CPU index either way.
@@ -6563,6 +6576,18 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
             _linux_inferred_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
             _linux_inferred_gfx=$(_amd_sole_index_arch "$_linux_inferred_gfx") \
                 || _linux_inferred_gfx=""
+            # pci.ids too old to name the card ("Device [1002:7590]"): take KFD's arch, never over a declared one.
+            _amd_kfd_spoof=""
+            if [ -z "$_linux_inferred_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && \
+               [ "${_amd_no_rocm_version_reroute:-false}" != true ]; then
+                _linux_inferred_gfx=$(_amd_kfd_sole_index_arch 2>/dev/null) || _linux_inferred_gfx=""
+                # KFD is immune to the override, so one naming another arch is a spoof the wheels cannot serve.
+                _amd_kfd_hsa=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}")
+                if [ -n "$_linux_inferred_gfx" ] && [ -n "$_amd_kfd_hsa" ] && \
+                   [ "$_amd_kfd_hsa" != "$_linux_inferred_gfx" ]; then
+                    _amd_kfd_spoof=1
+                fi
+            fi
             if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
                 _linux_inferred_gfx="${_amd_probed_gfx_first:-}"
             fi
@@ -6599,8 +6624,8 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     if [ -n "$_linux_inferred_gfx" ]; then
                         export UNSLOTH_ROCM_GFX_ARCH="$_linux_inferred_gfx"
                     fi
-                    if [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
-                       [ -n "${_amd_spoof_physical:-}" ]; then
+                    if { [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
+                         [ -n "${_amd_spoof_physical:-}" ]; } || [ -n "$_amd_kfd_spoof" ]; then
                         unset HSA_OVERRIDE_GFX_VERSION
                         echo "  [WARN] Clearing HSA_OVERRIDE_GFX_VERSION for the rest of this install:" >&2
                         echo "  [WARN] these wheels carry $_linux_inferred_gfx kernels, so the runtime has" >&2
@@ -7714,8 +7739,8 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.11.10}"
-_unsloth_zoo_install_spec="unsloth-zoo>=2026.11.10"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.11.11}"
+_unsloth_zoo_install_spec="unsloth-zoo>=2026.11.11"
 
 # An index lagging PyPI (mirror, delayed feed, cutoff) may lack these floors (#14031): lower them to its newest release.
 # The marker tells Desktop preflight this older backend is the newest available, so it is not repaired forever.

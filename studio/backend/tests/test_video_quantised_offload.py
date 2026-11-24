@@ -37,10 +37,10 @@ EXPECTED = {
         12: ("model", _W8),
         16: ("model", _W8),
         24: ("dit", _AO),
-        # Hosted INT8 even where bf16 stays resident (auto_prequant_when_resident: 1.18x faster, see video_families).
-        32: ("dit", _AO),
-        48: ("none", _AO),
-        80: ("none", _AO),
+        # bf16 where it stays resident: INT8 failed the 0.05 video bar (0.213 LPIPS vs bf16, see video_families).
+        32: ("dit", _BF),
+        48: ("none", _BF),
+        80: ("none", _BF),
     },
     "wan2.2-t2v-a14b": {
         8: ("model", _W8),

@@ -1406,6 +1406,13 @@ test("Eject on the chosen model takes the host's guarded unload; other rows name
     "/cache/b.gguf",
   );
   assert.equal(ejectTargetId({ id: "unsloth/b" }, undefined), "unsloth/b");
+  const q4 = { quant: "Q4_K_M", id: "unsloth/a-GGUF:Q4_K_M" };
+  const q8 = { quant: "Q8_0", id: "unsloth/a-GGUF:Q8_0" };
+  const both = { id: "unsloth/a-GGUF", loadedId: q8.id, loadedCopies: [q4, q8] };
+  assert.equal(ejectTargetId(both, "unsloth/a-GGUF", q8.id), undefined);
+  const other = { id: "unsloth/a-GGUF", loadedId: q4.id, loadedCopies: [q4] };
+  assert.equal(ejectTargetId(other, "unsloth/a-GGUF", q8.id), q4.id);
+  assert.equal(ejectTargetId(other, "unsloth/a-GGUF", q4.id), undefined);
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
@@ -1950,5 +1957,36 @@ test("Run settings for an MLX repo open as one checkpoint, never the Hub, and sk
   assert.match(
     settings,
     /if \(row\.kind === "cached"\) \{\s*return cachedMeta\(row\);/,
+  );
+});
+
+test("each pinned quant of a repo with two loaded quants is its own loaded copy", async () => {
+  const { expandQuantFavorites } = await import(
+    "../src/components/assistant-ui/composer-model-picker/picker-model.ts"
+  );
+  const id = "unsloth/a-GGUF";
+  const q4 = { quant: "Q4_K_M", id: `${id}:Q4_K_M` };
+  const q8 = { quant: "Q8_0", id: `${id}:Q8_0` };
+  const repo = {
+    key: `gguf:${id}`,
+    id,
+    label: "a",
+    tab: "device",
+    kind: "gguf" as const,
+    loaded: true,
+    loadedQuant: "Q8_0",
+    loadedId: q8.id,
+    loadedCopies: [q4, q8],
+    favoriteQuant: undefined as string | undefined,
+  };
+  const pinned = ["Q4_K_M", "Q8_0", "Q2_K"].map((quant) => `${id}::${quant}`);
+  const rows = expandQuantFavorites([repo], pinned);
+  assert.deepEqual(
+    rows.map((row) => [row.favoriteQuant, row.loaded, row.loadedId]),
+    [
+      ["Q4_K_M", true, q4.id],
+      ["Q8_0", true, q8.id],
+      ["Q2_K", false, undefined],
+    ],
   );
 });
