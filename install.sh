@@ -6552,8 +6552,16 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
             _linux_inferred_gfx=$(_amd_sole_index_arch "$_linux_inferred_gfx") \
                 || _linux_inferred_gfx=""
             # pci.ids too old to name the card ("Device [1002:7590]"): take KFD's arch, never over a declared one.
-            if [ -z "$_linux_inferred_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+            _amd_kfd_spoof=""
+            if [ -z "$_linux_inferred_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && \
+               [ "${_amd_no_rocm_version_reroute:-false}" != true ]; then
                 _linux_inferred_gfx=$(_amd_kfd_sole_index_arch 2>/dev/null) || _linux_inferred_gfx=""
+                # KFD is immune to the override, so one naming another arch is a spoof the wheels cannot serve.
+                _amd_kfd_hsa=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}")
+                if [ -n "$_linux_inferred_gfx" ] && [ -n "$_amd_kfd_hsa" ] && \
+                   [ "$_amd_kfd_hsa" != "$_linux_inferred_gfx" ]; then
+                    _amd_kfd_spoof=1
+                fi
             fi
             if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
                 _linux_inferred_gfx="${_amd_probed_gfx_first:-}"
@@ -6591,8 +6599,8 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     if [ -n "$_linux_inferred_gfx" ]; then
                         export UNSLOTH_ROCM_GFX_ARCH="$_linux_inferred_gfx"
                     fi
-                    if [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
-                       [ -n "${_amd_spoof_physical:-}" ]; then
+                    if { [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
+                         [ -n "${_amd_spoof_physical:-}" ]; } || [ -n "$_amd_kfd_spoof" ]; then
                         unset HSA_OVERRIDE_GFX_VERSION
                         echo "  [WARN] Clearing HSA_OVERRIDE_GFX_VERSION for the rest of this install:" >&2
                         echo "  [WARN] these wheels carry $_linux_inferred_gfx kernels, so the runtime has" >&2

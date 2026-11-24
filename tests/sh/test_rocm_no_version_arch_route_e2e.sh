@@ -597,6 +597,12 @@ reset_host
 mock_kfd; mock_pci_amd_display; mock_lspci "Device"
 assert_eq "a KFD node with no gfx_target_version stays on cpu" "$_BASE/cpu" "$(run_index)"
 runtime_less_kfd_host 120000
+assert_eq "a KFD-only gfx1200 clears an override naming another arch" "" \
+    "$(run_installer_env HSA_OVERRIDE_GFX_VERSION=11.0.0 | sed -n 's/^HSA=//p')"
+runtime_less_kfd_host 120000
+assert_eq "and keeps one naming the KFD arch" "12.0.0" \
+    "$(run_installer_env HSA_OVERRIDE_GFX_VERSION=12.0.0 | sed -n 's/^HSA=//p')"
+runtime_less_kfd_host 120000
 assert_eq "a KFD-only host under a mask hiding every GPU stays on cpu" \
     "$_BASE/cpu" "$(run_index_env HIP_VISIBLE_DEVICES=-1)"
 runtime_less_kfd_host 120000
