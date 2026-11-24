@@ -359,8 +359,14 @@ def MistralForCausalLM_fast_forward(
     keep = logits_to_keep_tensor(num_logits_to_keep, logits_to_keep)
     if keep is not None and (labels is not None or shift_labels is not None):
         keep = None
-    # Merge spellings first so the decode last-token slice hits the normal path; no int max() on tensors
-    if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
+    # Merge spellings first so the decode last-token slice hits the normal path; no int max() on tensors.
+    # Labels span the whole sequence, so a suffix slice would misalign the loss.
+    if (
+        isinstance(num_logits_to_keep, torch.Tensor)
+        or isinstance(logits_to_keep, torch.Tensor)
+        or labels is not None
+        or shift_labels is not None
+    ):
         num_logits_to_keep = 0
     else:
         num_logits_to_keep = max(num_logits_to_keep or 0, logits_to_keep or 0)
@@ -382,7 +388,12 @@ def MistralForCausalLM_fast_forward(
 
     if keep is not None:
         logits = self.lm_head(slice_hidden_to_keep(hidden_states, keep).to(lm_head.dtype))
-    elif bsz == 1 and q_len == 1 and type(self.lm_head) is torch.nn.Linear:
+    elif (
+        bsz == 1
+        and q_len == 1
+        and type(self.lm_head) is torch.nn.Linear
+        and self.lm_head.bias is None
+    ):
         logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
         logits = logits.unsqueeze(0).unsqueeze(0)
     elif num_logits_to_keep != 0:

@@ -66,6 +66,14 @@ def _compiling() -> bool:
     return bool(is_compiling is not None and is_compiling())
 
 
+def _capturing() -> bool:
+    import torch
+    try:
+        return bool(torch.cuda.is_available() and torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _stats(module: Any) -> dict:
     stats = module.__dict__.get(STATS_ATTR)
     if stats is None:
@@ -100,7 +108,8 @@ def _text_rows(
 
     dtype = get_parameter_dtype(self.context_embedder)
     cache = self.__dict__.get(_SCOPE_ATTR)
-    if cache is None or not refiner_cache_enabled():
+    # A recording graph would bake the cached rows' storage (dropped with the render) or keep its own pool's rows.
+    if cache is None or not refiner_cache_enabled() or _capturing():
         text_embeds = self.context_embedder(encoder_hidden_states.to(dtype))
         return self.token_refiner(text_embeds)
     # the LoRA scale apply_lora_scale applied to this call scales the refiner's adapters too

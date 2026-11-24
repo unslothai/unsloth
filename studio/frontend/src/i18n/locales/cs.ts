@@ -1037,6 +1037,9 @@ export const cs = {
       "Hledat a stahovat raději z ModelScope. Zpět můžete přepnout v Nastavení.",
     useModelScopeFailed: "Na ModelScope se nepodařilo přepnout.",
     updateToken: "Aktualizovat token",
+    linkedModelTitle: "Načíst {model}?",
+    linkedModelBody: "Odkaz otevřel tuto stránku a požádal o stažení a načtení tohoto modelu.",
+    linkedModelLoad: "Načíst",
     hfToken: {
       label: "Token HF",
       saved: "Uloženo",
@@ -2604,12 +2607,16 @@ export const cs = {
         label: "Typ instalace",
         description:
           "Pouze chat (GGUF). Úplná instalace přidává trénování, export, video, modely safetensors a další funkce generování obrázků.",
+        descriptionMlx:
+          "Pouze chat (GGUF/MLX). Úplná instalace přidává trénování, export, video, modely safetensors a další funkce generování obrázků.",
         descriptionCpu:
           "Pouze chat (GGUF). Nebyla nalezena podporovaná GPU, takže úplná instalace přidává trénování na CPU.",
         action: "Upgradovat na úplnou instalaci",
         confirmTitle: "Upgradovat na úplnou instalaci?",
         confirmDescription:
           "Tato instalace Pouze chat spouští modely GGUF. Úplná instalace přidává PyTorch pro GPU tohoto počítače, což umožňuje trénování, export, video, modely safetensors a další funkce generování obrázků. Stáhne několik gigabajtů (potřeba je alespoň 5 GB místa na disku) a restartuje server. Chaty, modely a nastavení zůstanou zachovány. Může to trvat několik minut.",
+        confirmDescriptionMlx:
+          "Tato instalace Pouze chat spouští modely GGUF/MLX. Úplná instalace přidává PyTorch pro GPU tohoto počítače, což umožňuje trénování, export, video, modely safetensors a další funkce generování obrázků. Stáhne několik gigabajtů (potřeba je alespoň 5 GB místa na disku) a restartuje server. Chaty, modely a nastavení zůstanou zachovány. Může to trvat několik minut.",
         confirmDescriptionCpu:
           "Tato instalace Pouze chat spouští modely GGUF. V tomto počítači nebyla nalezena podporovaná GPU, takže úplná instalace přidává PyTorch pro CPU, což umožňuje trénování na CPU. Trénování na CPU je mnohem pomalejší než na GPU. Je potřeba alespoň 5 GB místa na disku a server se restartuje. Chaty, modely a nastavení zůstanou zachovány. Může to trvat několik minut.",
         confirmAction: "Upgradovat",
@@ -2807,7 +2814,7 @@ export const cs = {
         oldWebkitWarning:
           "WebKitGTK {version} na Waylandu: vykreslování pomocí GPU může při spuštění na NVIDIA se zlomkovým škálováním spadnout (chyba WebKitu 280210). Pokud k tomu dojde, Unsloth se sám vrátí k vykreslování pomocí CPU. Na WebKitGTK 2.50.4 nepřineslo žádné měřitelné zrychlení (v obou případech 8 fps), proto se zde možnost Zapnuto nedoporučuje.",
         oldDriverWarning:
-          "Ovladač NVIDIA {version} na X11: Unsloth ponechá vykreslování pomocí GPU vypnuté, dokud nebude ovladač ve verzi 610 nebo novější. Starší ovladače při každém snímku ztrácejí jeden popisovač souboru a okno se během několika minut přestane vykreslovat.",
+          "Ovladač NVIDIA {version} na X11: Unsloth ponechá vykreslování pomocí GPU vypnuté, dokud nebude ovladač ve verzi 590 nebo novější. Starší ovladače při každém snímku ztrácejí jeden popisovač souboru a okno se během několika minut přestane vykreslovat.",
         fallbackNote:
           "Vykreslování pomocí GPU v tomto systému při spuštění spadlo, proto Unsloth používá vykreslování pomocí CPU.",
         tryAgain: "Zkusit GPU znovu",

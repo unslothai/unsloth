@@ -26,6 +26,7 @@ def _isolated(monkeypatch):
     """Attempt latch is process-global; a worker outliving its test would run the real repair next."""
     monkeypatch.setattr(mr, "_attempted", False)
     monkeypatch.setattr(mr, "_environment_mutated", False)
+    monkeypatch.setattr(mr, "_chat_only_repair_failed", False)
     monkeypatch.delenv(mr.DISABLE_ENV_VAR, raising = False)
     yield
     for thread in threading.enumerate():
@@ -155,7 +156,8 @@ def _apple_silicon_without_mlx(monkeypatch):
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
 
 
-def test_no_torch_install_starts_no_repair(monkeypatch):
+def test_no_torch_install_starts_no_repair_unless_the_verdict_blames_mlx(monkeypatch):
+    """A verdict that does not blame MLX (the wheels skip this Mac) settled as no_torch: nothing to repair."""
     _apple_silicon_without_mlx(monkeypatch)
     _hardware(monkeypatch, blames_mlx = False)
     monkeypatch.setattr(mr, "_installed_without_torch", lambda: True)
@@ -163,22 +165,22 @@ def test_no_torch_install_starts_no_repair(monkeypatch):
     monkeypatch.setattr(mr, "attempt_mlx_repair", lambda **_kw: attempts.append(1) or True)
 
     assert mr.start_mlx_autorepair_if_needed() is False
-    assert attempts == [], "a --no-torch install must not be given the training stack back"
+    assert attempts == []
+    assert mr._attempted is False, "the one-shot latch must not be spent by a declined repair"
 
 
-def test_no_torch_install_starts_no_repair_even_when_the_verdict_blames_mlx(monkeypatch):
-    """The verdict blaming MLX is what carries the opt-out past the first gate, so the
-    second one has to hold. Without it, a --no-torch venv whose health check says
-    'mlx_unavailable' would still be handed a reinstall, which is the reported bug."""
+def test_no_torch_install_repairs_a_stack_the_verdict_blames(monkeypatch):
     _apple_silicon_without_mlx(monkeypatch)
     _hardware(monkeypatch, blames_mlx = True)
     monkeypatch.setattr(mr, "_installed_without_torch", lambda: True)
     attempts = []
     monkeypatch.setattr(mr, "attempt_mlx_repair", lambda **_kw: attempts.append(1) or True)
 
-    assert mr.start_mlx_autorepair_if_needed() is False
-    assert attempts == []
-    assert mr._attempted is False, "the one-shot latch must not be spent by a declined repair"
+    assert mr.start_mlx_autorepair_if_needed() is True
+    for thread in threading.enumerate():
+        if thread.name == "mlx-autorepair":
+            join_when_started(thread, timeout = 5)
+    assert attempts == [1]
 
 
 def test_a_normal_install_still_repairs(monkeypatch):
@@ -226,22 +228,64 @@ def test_a_no_torch_install_still_overturns_a_verdict_that_blames_mlx(monkeypatc
     assert attempts == [], "an adequate stack needs no reinstall"
 
 
-def test_a_no_torch_install_settles_its_verdict_once_the_probe_measures_unusable(monkeypatch):
-    """With mlx on disk the verdict boots as mlx_unavailable so the sidebar keeps polling for
-    the overturn; once the probe measures the stack unusable, nothing is coming, so it settles
-    as the opt-out it is and the poll stops on the next read."""
+@pytest.mark.parametrize("installed", [False, True], ids = ["nothing-installed", "install-ran"])
+def test_a_no_torch_install_settles_its_verdict_once_the_repair_fails(monkeypatch, installed):
+    """Nothing else is coming, so the verdict settles as no_torch and the sidebar stops polling."""
     import utils.hardware.hardware as hw
 
     _apple_silicon_without_mlx(monkeypatch)
     _hardware(monkeypatch, blames_mlx = True)
     monkeypatch.setattr(mr, "_installed_without_torch", lambda: True)
+    monkeypatch.setattr(
+        mr, "attempt_mlx_repair", lambda **_kw: setattr(mr, "_environment_mutated", installed)
+    )
     settled = []
     monkeypatch.setattr(
         hw, "settle_the_no_torch_verdict", lambda epoch: settled.append(epoch) or True
     )
 
+    assert mr.start_mlx_autorepair_if_needed() is True
+    for thread in threading.enumerate():
+        if thread.name == "mlx-autorepair":
+            join_when_started(thread, timeout = 5)
+    assert settled == [1], "settled with the epoch read before the repair"
+
+
+def test_a_normal_install_whose_repair_fails_is_not_settled_as_no_torch(monkeypatch):
+    import utils.hardware.hardware as hw
+
+    _apple_silicon_without_mlx(monkeypatch)
+    _hardware(monkeypatch, blames_mlx = True)
+    monkeypatch.setattr(mr, "_installed_without_torch", lambda: False)
+    monkeypatch.setattr(mr, "attempt_mlx_repair", lambda **_kw: False)
+    settled = []
+    monkeypatch.setattr(
+        hw, "settle_the_no_torch_verdict", lambda epoch: settled.append(epoch) or True
+    )
+
+    assert mr.start_mlx_autorepair_if_needed() is True
+    for thread in threading.enumerate():
+        if thread.name == "mlx-autorepair":
+            join_when_started(thread, timeout = 5)
+    assert settled == []
+
+
+def test_the_kill_switch_settles_a_no_torch_verdict_without_a_repair(monkeypatch):
+    import utils.hardware.hardware as hw
+
+    _apple_silicon_without_mlx(monkeypatch)
+    _hardware(monkeypatch, blames_mlx = True)
+    monkeypatch.setattr(mr, "_installed_without_torch", lambda: True)
+    monkeypatch.setenv(mr.DISABLE_ENV_VAR, "1")
+    attempts, settled = [], []
+    monkeypatch.setattr(mr, "attempt_mlx_repair", lambda **_kw: attempts.append(1) or True)
+    monkeypatch.setattr(
+        hw, "settle_the_no_torch_verdict", lambda epoch: settled.append(epoch) or True
+    )
+
     assert mr.start_mlx_autorepair_if_needed() is False
-    assert settled == [1], "settled with the epoch read before the measurement"
+    assert attempts == []
+    assert settled == [1]
 
 
 def test_the_kill_switch_does_not_settle_the_verdict_as_no_torch(monkeypatch):
@@ -258,3 +302,84 @@ def test_the_kill_switch_does_not_settle_the_verdict_as_no_torch(monkeypatch):
 
     assert mr.start_mlx_autorepair_if_needed() is False
     assert settled == [], "the kill switch is a normal install; its verdict is not an opt-out"
+
+
+def test_a_failed_repair_settles_the_lifespan_that_outlived_it(monkeypatch):
+    """The repair is once per process, so a lifespan started during it never repairs: settle that one."""
+    import utils.hardware.hardware as hw
+
+    _apple_silicon_without_mlx(monkeypatch)
+    _hardware(monkeypatch, blames_mlx = True)
+    monkeypatch.setattr(mr, "_installed_without_torch", lambda: True)
+    epochs = iter([1, 2, 2, 2, 2])
+    monkeypatch.setattr(hw, "current_detection_epoch", lambda: next(epochs))
+    monkeypatch.setattr(mr, "attempt_mlx_repair", lambda **_kw: False)
+    settled = []
+    monkeypatch.setattr(
+        hw, "settle_the_no_torch_verdict", lambda epoch: settled.append(epoch) or True
+    )
+
+    assert mr.start_mlx_autorepair_if_needed() is True
+    for thread in threading.enumerate():
+        if thread.name == "mlx-autorepair":
+            join_when_started(thread, timeout = 5)
+    assert settled == [2]
+
+
+@pytest.mark.parametrize(("failed", "expected"), [(True, [1]), (False, [])])
+def test_a_later_lifespan_settles_after_the_chat_only_repair_failed(monkeypatch, failed, expected):
+    """The latch is spent, so nothing else would settle a verdict detected after the worker's own settle."""
+    import utils.hardware.hardware as hw
+
+    _apple_silicon_without_mlx(monkeypatch)
+    _hardware(monkeypatch, blames_mlx = True)
+    monkeypatch.setattr(mr, "_installed_without_torch", lambda: True)
+    monkeypatch.setattr(mr, "_attempted", True)
+    monkeypatch.setattr(mr, "_chat_only_repair_failed", failed)
+    settled = []
+    monkeypatch.setattr(
+        hw, "settle_the_no_torch_verdict", lambda epoch: settled.append(epoch) or True
+    )
+
+    assert mr.start_mlx_autorepair_if_needed() is False
+    assert settled == expected
+
+
+def test_the_failure_is_recorded_before_the_worker_settles(monkeypatch):
+    """Otherwise a lifespan whose check runs between the two is settled by neither."""
+    import utils.hardware.hardware as hw
+
+    monkeypatch.setattr(mr, "_installed_without_torch", lambda: True)
+    monkeypatch.setattr(hw, "current_detection_epoch", lambda: 1)
+    seen = []
+    monkeypatch.setattr(
+        hw, "settle_the_no_torch_verdict", lambda epoch: seen.append(mr._chat_only_repair_failed)
+    )
+    mr._settle_a_chat_only_install(hw)
+    assert seen == [True]
+
+
+def test_a_failed_repair_whose_redetection_raises_is_still_recorded(monkeypatch):
+    import utils.hardware.hardware as hw
+
+    _apple_silicon_without_mlx(monkeypatch)
+    _hardware(monkeypatch, blames_mlx = True)
+    monkeypatch.setattr(mr, "_installed_without_torch", lambda: True)
+    monkeypatch.setattr(
+        mr, "attempt_mlx_repair", lambda **_kw: setattr(mr, "_environment_mutated", True)
+    )
+
+    def broken_pipe():
+        raise BrokenPipeError
+
+    monkeypatch.setattr(hw, "detect_hardware", broken_pipe)
+    settled = []
+    monkeypatch.setattr(
+        hw, "settle_the_no_torch_verdict", lambda epoch: settled.append(epoch) or True
+    )
+    assert mr.start_mlx_autorepair_if_needed() is True
+    for thread in threading.enumerate():
+        if thread.name == "mlx-autorepair":
+            join_when_started(thread, timeout = 5)
+    assert mr._chat_only_repair_failed is True
+    assert settled == [1]

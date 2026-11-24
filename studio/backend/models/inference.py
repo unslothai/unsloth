@@ -26,6 +26,7 @@ from pydantic import (
     model_validator,
 )
 
+from core.inference.audio_cpp_models import FILE_OPTIONS
 from core.inference.audio_workflows import status_audio_workflows
 from core.inference.diffusion_conditioning import MAX_REQUEST_SIDE
 from core.inference.llama_server_args import (
@@ -5696,6 +5697,15 @@ class DiffusionGenerateRequest(BaseModel):
         description = "How far toward the variation seed's noise: 0 = off, 1 = the variation seed alone. "
         "With a batch, every image keeps the seed and image i uses variation_seed + i.",
     )
+    cfg_interval_end: Optional[float] = Field(
+        None,
+        gt = 0.0,
+        le = 1.0,
+        description = "Fast CFG (lossy, off by default): fraction of the denoising steps after which "
+        "the unconditional branch is skipped, e.g. 0.8 runs CFG for the first 80% of the steps and the "
+        "conditional branch alone for the rest (about 10% faster at 50 steps on FLUX.3 Klein base). Only "
+        "on models whose status has supports_cfg_interval; omitted or 1 keeps full CFG.",
+    )
     shift: Optional[float] = Field(
         None,
         gt = 0.0,
@@ -6016,6 +6026,9 @@ class GalleryImage(BaseModel):
     )
     variation_strength: Optional[float] = Field(
         None, description = "Variation strength; null = no variation"
+    )
+    cfg_interval_end: Optional[float] = Field(
+        None, description = "Fast CFG step fraction the image used; null = full CFG"
     )
     shift: Optional[float] = Field(
         None, description = "Requested static flow shift; null = the model's"
@@ -6652,6 +6665,10 @@ class DiffusionStatusResponse(BaseModel):
         "{min, max, default, recommended}, variation_seed, vary_strength, prediction_type}. Null when "
         "the loaded model has none of them (every non-SDXL family, the native and MLX engines).",
     )
+    supports_cfg_interval: bool = Field(
+        False,
+        description = "Whether generate accepts cfg_interval_end (Fast CFG) for the loaded model.",
+    )
     shift_control: Optional[Dict[str, Any]] = Field(
         None,
         description = "The Shift control the loaded flow-matching model takes, or null to hide it: "
@@ -6991,8 +7008,8 @@ _AUDIO_CLIP_OPTION_ENDINGS = frozenset({"audio", "wav", "ref", "video", "image",
 
 def _names_a_file(name: str, value: Any) -> bool:
     words = re.split(r"[^a-z0-9]+", name.lower())
-    # Vevo2's target_voice is a file, but neither of its words gives that away.
-    if name.lower() == "target_voice" or any(word in _AUDIO_FILE_OPTION_WORDS for word in words):
+    # Vevo2's target_voice, VibeVoice's voice_samples: files, but no word of theirs gives that away.
+    if name.lower() in FILE_OPTIONS or any(word in _AUDIO_FILE_OPTION_WORDS for word in words):
         return True
     return isinstance(value, str) and words[-1] in _AUDIO_CLIP_OPTION_ENDINGS
 

@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""gfx11 ROCm decode linear (unsloth/kernels/rocm_skinny_linear.py): out = X @ W.T + s * (X @ A.T) @ B.T for
-<= 16 decode rows in one Triton launch.
+"""gfx11 ROCm / NVIDIA L4 decode linear (unsloth/kernels/rocm_skinny_linear.py): out = X @ W.T + s * (X @ A.T) @ B.T
+for <= 16 decode rows in one Triton launch.
 
 CPU: config heuristic, gating, the fast_linear_forward hook, and the kernel itself under TRITON_INTERPRET=1
-(fp16; the interpreter has no bf16 dot). GPU (gfx1151 ROCm only): bf16 / fp16 accuracy against fp64, at least
-as close as the rocBLAS three-GEMM sequence it replaces, determinism, row independence, strided outputs."""
+(fp16; the interpreter has no bf16 dot). GPU (gfx1151 ROCm, or an NVIDIA card the CUDA gate takes): bf16 / fp16
+accuracy against fp64, at least as close as the BLAS three-GEMM sequence it replaces, determinism, row
+independence, strided outputs."""
 
 import ast
 import importlib.util
@@ -24,24 +25,26 @@ UTILS = ROOT / "unsloth" / "kernels" / "utils.py"
 
 
 def _load(hip = "7.0", env = None):
-    """The kernel module on its own (no unsloth import), as if on a ROCm build."""
+    """The kernel module on its own (no unsloth import), as if on a ROCm build (hip = None: a CUDA build)."""
     # The feature flags are set explicitly: an ambient UNSLOTH_ROCM_SKINNY_LINEAR=0 must not change the tests.
     env = {
         "UNSLOTH_ROCM_SKINNY_LINEAR": "1",
         "UNSLOTH_ROCM_SKINNY_LINEAR_CONFIG": "",
+        "UNSLOTH_CUDA_SKINNY_LINEAR": "1",
         **(env or {}),
     }
-    old_hip = torch.version.hip
+    old_hip, old_cuda = torch.version.hip, torch.version.cuda
     old_env = {k: os.environ.get(k) for k in env}
     os.environ.update(env)
     torch.version.hip = hip
+    torch.version.cuda = (old_cuda or "12.8") if hip is None else None
     try:
         spec = importlib.util.spec_from_file_location("_rsl_under_test", KERNEL)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod
     finally:
-        torch.version.hip = old_hip
+        torch.version.hip, torch.version.cuda = old_hip, old_cuda
         for k, v in old_env.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -53,11 +56,73 @@ def _have_triton():
     return importlib.util.find_spec("triton") is not None
 
 
-def test_cuda_build_never_loads_triton_kernel():
+def test_cuda_build_loads_triton_kernel_unless_disabled():
+    assert _load(hip = None, env = {"UNSLOTH_CUDA_SKINNY_LINEAR": "0"}).triton is None
     mod = _load(hip = None)
-    assert mod.triton is None
+    assert (mod.triton is not None) is _have_triton()
     X = torch.randn(4, 1, 8)
     assert mod.skinny_decode_linear(X, torch.randn(6, 8), None, None, None, None) is None
+
+
+@pytest.mark.skipif(not _have_triton(), reason = "triton not installed")
+@pytest.mark.parametrize(
+    "env,cc,want",
+    [
+        ("1", (8, 9), True),
+        ("1", (7, 5), False),
+        ("1", (8, 0), False),
+        ("1", (9, 0), False),
+        ("1", (10, 0), False),
+        ("all", (8, 0), True),
+        ("all", (12, 0), True),
+        ("all", (7, 5), False),
+    ],
+)
+def test_cuda_arch_gate(monkeypatch, env, cc, want):
+    mod = _load(hip = None, env = {"UNSLOTH_CUDA_SKINNY_LINEAR": env})
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: cc)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    assert mod.skinny_linear_supported(torch.device("cuda", 0)) is want
+    assert mod.skinny_linear_supported(torch.device("cpu")) is False
+
+
+def test_cuda_routing_and_config_match_l4_measurements():
+    mod = _load(hip = None)
+    # (N, K) -> routed, from the L4 sweep (weights streamed from DRAM, LoRA r32, M = 8 / 16)
+    measured = {
+        (1024, 1024): True,
+        (2048, 1024): True,
+        (3072, 1024): True,
+        (1024, 3072): True,
+        (512, 2048): True,
+        (9728, 2560): True,
+        (4096, 4096): True,
+        (4096, 12288): False,
+        (12288, 4096): False,
+        (14336, 4096): False,
+    }
+    for (N, K), want in measured.items():
+        assert mod.routed(N, K) is want, (N, K)
+    assert mod.CUDA_MIN_ROWS == 2
+    if _have_triton():
+        assert mod.pick_config(1024, 1024) == (64, 128, 4, 2, 2)
+        assert mod.pick_config(151936, 4096) == (64, 128, 4, 2, 2)
+        # The ROCm tuning override is not a CUDA one.
+        forced = _load(hip = None, env = {"UNSLOTH_ROCM_SKINNY_LINEAR_CONFIG": "32,128,4,2"})
+        assert forced.pick_config(1024, 1024) == (64, 128, 4, 2, 2)
+
+
+def test_cuda_takes_lora_calls_of_two_or_more_rows_only(monkeypatch):
+    mod, ran = _gated(monkeypatch, hip = None)
+    with torch.no_grad():
+        X, W, A, B = _operands(M = 2)
+        assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is not None
+        assert len(ran) == 1
+        # no active LoRA (a base layer, or a folded adapter): cuBLAS
+        assert mod.skinny_decode_linear(X, W, None, None, None, None) is None
+        X1, W1, A1, B1 = _operands(M = 1)
+        assert mod.skinny_decode_linear(X1, W1, A1, B1, 2.0, None) is None
+    assert len(ran) == 1
 
 
 def test_kill_switch():
@@ -172,7 +237,7 @@ def test_decode_gate_refuses_non_decode_shapes_on_cpu():
 
 def test_fast_linear_forward_hook_is_rocm_gated():
     """The hook sits before the 16-bit decode GEMM, only behind _ROCM_SKINNY_LINEAR, which needs torch.version.hip
-    and the kill switch unset, and returns early only when the kernel took the call."""
+    (or a CUDA build) and the kill switch unset, and returns early only when the kernel took the call."""
     src = UTILS.read_text(encoding = "utf-8")
     tree = ast.parse(src)
     flag = [
@@ -180,14 +245,25 @@ def test_fast_linear_forward_hook_is_rocm_gated():
         for n in ast.walk(tree)
         if isinstance(n, ast.If) and "UNSLOTH_ROCM_SKINNY_LINEAR" in ast.unparse(n.test)
     ]
-    assert flag and "torch.version.hip is not None" in ast.unparse(flag[0].test)
+    assert flag
+    guard = ast.unparse(flag[0].test)
+    for term in (
+        "torch.version.hip is not None",
+        "UNSLOTH_ROCM_SKINNY_LINEAR",
+        "torch.version.cuda is not None",
+        "UNSLOTH_CUDA_SKINNY_LINEAR",
+    ):
+        assert term in guard, term
     fn = next(
         n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "fast_linear_forward"
     )
     body = ast.unparse(fn)
     hook = body.index("_rocm_skinny_decode_linear(X, W, A, B, lora_S, out)")
     assert body.index("if q_len != 1:") < hook < body.index("out = torch_matmul(X, W.t(), out=out)")
-    assert "if W_quant is None and _ROCM_SKINNY_LINEAR and (not _is_compiling()):" in body
+    assert (
+        "if W_quant is None and temp_lora is None and _ROCM_SKINNY_LINEAR and (not _is_compiling()):"
+        in body
+    )
     assert "if fused is not None:" in body
 
 
@@ -294,10 +370,105 @@ def test_kernel_under_triton_interpreter(tmp_path):
     assert p.returncode == 0 and "INTERP_OK" in p.stdout, (p.stdout[-2000:], p.stderr[-3000:])
 
 
-gpu = pytest.mark.skipif(not _gfx1151(), reason = "needs a gfx1151 ROCm GPU")
+_INTERP_SPLIT_K = textwrap.dedent(
+    """
+    import importlib.util, os, sys
+    os.environ["TRITON_INTERPRET"] = "1"
+    import torch
+    torch.version.hip, torch.version.cuda = None, torch.version.cuda or "12.8"
+    spec = importlib.util.spec_from_file_location("rsl", sys.argv[1])
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    # N = 100: two projection column tiles (the second does not store X @ A^T) and a partial last reduce tile.
+    N = 100
+    assert m.pick_config(N, 256)[3] == 2  # the NVIDIA schedule splits K = 256 in two
+    X = torch.ones(4, 256, dtype = torch.float16)
+    A = torch.zeros(16, 256, dtype = torch.float16)
+    B = torch.zeros(N, 16, dtype = torch.float16); B[:, 0] = 1
+    # Base partials +2^22 and -2^22 cancel; the 2^-8 LoRA term must not be rounded into one of them first.
+    W = torch.zeros(N, 256, dtype = torch.float16); W[:, :128], W[:, 128:] = 2**15, -2**15
+    A[0, 0] = 2**-8
+    y = m.skinny_linear(X, W, A, B, 1.0)
+    assert (y == 2**-8).all(), y[0, :4]
+    # X @ A^T split partials +256 and -256 at scale 2^120 overflow to +Inf and -Inf if scaled per split.
+    W = torch.zeros(N, 256, dtype = torch.float16); W[:, 0] = 1
+    A[0, :128], A[0, 128:] = 2, -2
+    y = m.skinny_linear(X, W, A, B, 2.0**120)
+    assert (y == 1).all(), y[0, :4]
+    # The reduce launch reads B while it writes out: an out over B's own bytes must give the same result.
+    g = torch.Generator().manual_seed(0)
+    X = torch.randint(-2, 3, (4, 256), generator = g).half()
+    W = torch.randint(-2, 3, (65, 256), generator = g).half()
+    A = torch.randint(-2, 3, (4, 256), generator = g).half()
+    B = torch.randint(-2, 3, (65, 4), generator = g).half()
+    ref = m.skinny_linear(X, W, A, B, 2.0**-6)
+    y = m.skinny_linear(X, W, A, B, 2.0**-6, out = B.view(4, 65))
+    assert torch.equal(y, ref), (y != ref).sum()
+    print("SPLIT_K_OK")
+    """
+)
 
 
-@gpu
+@pytest.mark.skipif(
+    not _interpreter_ok(), reason = "needs the Triton >= 3.8 interpreter on a host without gfx1151"
+)
+def test_split_k_adds_the_scaled_lora_term_after_the_reduction(tmp_path):
+    script = tmp_path / "interp_split_k.py"
+    script.write_text(_INTERP_SPLIT_K, encoding = "utf-8")
+    p = subprocess.run(
+        [sys.executable, "-I", str(script), str(KERNEL)],
+        capture_output = True,
+        text = True,
+        timeout = 900,
+        # The child loads the module as a CUDA build: an ambient UNSLOTH_CUDA_SKINNY_LINEAR=0 would drop Triton.
+        env = dict(os.environ, TRITON_INTERPRET = "1", UNSLOTH_CUDA_SKINNY_LINEAR = "1"),
+        cwd = str(tmp_path),
+    )
+    assert p.returncode == 0 and "SPLIT_K_OK" in p.stdout, (p.stdout[-2000:], p.stderr[-3000:])
+
+
+def _rocm_skinny_gpu():
+    # The GPU tests import the real module: UNSLOTH_ROCM_SKINNY_LINEAR=0 leaves it without Triton.
+    return (
+        os.environ.get("UNSLOTH_ROCM_SKINNY_LINEAR", "1") != "0" and _gfx1151() and _have_triton()
+    )
+
+
+def _cuda_skinny_gpu():
+    # The production gate on the current device, under the ambient UNSLOTH_CUDA_SKINNY_LINEAR (=0: none).
+    if torch.version.hip is not None or torch.version.cuda is None or not torch.cuda.is_available():
+        return False
+    if not _have_triton():
+        return False
+    mode = os.environ.get("UNSLOTH_CUDA_SKINNY_LINEAR", "1")
+    mod = _load(hip = None, env = {"UNSLOTH_CUDA_SKINNY_LINEAR": mode})
+    return mod.skinny_linear_supported(torch.device("cuda"))
+
+
+gpu = pytest.mark.skipif(not _rocm_skinny_gpu(), reason = "needs an enabled gfx1151 ROCm GPU")
+
+
+@pytest.mark.skipif(not _have_triton(), reason = "triton not installed")
+@pytest.mark.parametrize(
+    "hip,mode,want", [(None, "0", False), (None, "1", True), ("7.0", "0", False)]
+)
+def test_gpu_selectors_honour_the_kill_switches(monkeypatch, hip, mode, want):
+    # An L4 (or gfx1151) host with the backend's kill switch set must not select the raw-kernel GPU tests.
+    monkeypatch.setattr(torch.version, "hip", hip)
+    monkeypatch.setattr(torch.version, "cuda", None if hip else (torch.version.cuda or "12.8"))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: (8, 9))
+    props = type("P", (), {"gcnArchName": "gfx1151:sramecc-:xnack-"})()
+    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda index = None: props)
+    monkeypatch.setenv("UNSLOTH_CUDA_SKINNY_LINEAR", mode)
+    monkeypatch.setenv("UNSLOTH_ROCM_SKINNY_LINEAR", mode)
+    assert (_rocm_skinny_gpu() if hip else _cuda_skinny_gpu()) is want
+
+
+@pytest.mark.skipif(
+    not (_rocm_skinny_gpu() or _cuda_skinny_gpu()),
+    reason = "needs an enabled gfx1151 ROCm GPU or an NVIDIA card the CUDA gate takes",
+)
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("M", [1, 2, 4, 8, 16])
 @pytest.mark.parametrize(
@@ -327,6 +498,29 @@ def test_gpu_accuracy_vs_rocblas_sequence(dtype, M, shape):
     assert torch.equal(
         S.skinny_linear(X[:1], W, A, B, 2.0)[0], y[0]
     ), "row 0 depends on the other rows"
+
+
+@pytest.mark.skipif(not _cuda_skinny_gpu(), reason = "needs an NVIDIA card the CUDA gate takes")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_gpu_split_k_cancellation_matches_cublas(dtype):
+    # The compiled split-K schedule on the two cases of the interpreter test above.
+    from unsloth.kernels import rocm_skinny_linear as S
+
+    X = torch.ones(4, 256, dtype = dtype, device = "cuda")
+    A = torch.zeros(16, 256, dtype = dtype, device = "cuda")
+    # N = 100: a second projection column tile and a partial last reduce tile, as in the interpreter test.
+    N = 100
+    assert S.pick_config(N, 256)[3] == 2
+    B = torch.zeros(N, 16, dtype = dtype, device = "cuda")
+    B[:, 0] = 1
+    W = torch.zeros(N, 256, dtype = dtype, device = "cuda")
+    W[:, :128], W[:, 128:] = 2**15, -(2**15)
+    A[0, 0] = 2**-8
+    assert (S.skinny_linear(X, W, A, B, 1.0) == 2**-8).all()
+    W.zero_()
+    W[:, 0] = 1
+    A[0, :128], A[0, 128:] = 2, -2
+    assert (S.skinny_linear(X, W, A, B, 2.0**120) == 1).all()
 
 
 @gpu
@@ -400,9 +594,9 @@ def test_wrapper_subclass_weights_keep_their_own_matmul(monkeypatch):
     assert ran == [1]
 
 
-def _gated(monkeypatch):
+def _gated(monkeypatch, hip = "7.0"):
     """The kernel module past every device / shape gate on CPU, skinny_linear replaced by a recorder."""
-    mod = _load()
+    mod = _load(hip = hip)
     ran = []
     monkeypatch.setattr(mod, "skinny_linear_supported", lambda device: True)
     for name in ("skinny_linear", "_launch"):
@@ -682,6 +876,48 @@ def test_row_count_is_not_specialized():
     assert found == {"_skinny_linear_kernel": {"M"}, "_splitk_reduce_kernel": {"M"}}, found
 
 
+def test_scratch_offset_guard_counts_the_rank_partials(monkeypatch):
+    # The scratch holds up to 64 splits of [16, N] base partials and [16, 128] rank partials, all int32 offsets.
+    mod, ran = _gated(monkeypatch)
+    X = torch.randn(2, 1, 1, dtype = torch.bfloat16)
+    for N, want in ((2**21 - 64, False), (2**21 - 128 - 1, True)):
+        ran.clear()
+        mod.skinny_decode_linear(X, torch.randn(N, 1, dtype = torch.bfloat16), None, None, None, None)
+        assert bool(ran) is want, N
+
+
+@pytest.mark.skipif(not _have_triton(), reason = "triton not installed")
+@pytest.mark.parametrize("hip", ["7.0", None])
+def test_sum_only_reduce_gets_fixed_lora_arguments(hip):
+    # Triton keys a compiled variant on every argument, used or not: the sum-only reduce (ROCm, or a base-only
+    # split K call) must not get a new variant per adapter rank or B layout.
+    mod = _load(hip = hip)
+    calls = []
+
+    class Rec:
+        def __init__(self, name):
+            self.name = name
+
+        def __getitem__(self, grid):
+            return lambda *a, **k: calls.append((self.name, a, k))
+
+    mod._skinny_linear_kernel = Rec("main")
+    mod._splitk_reduce_kernel = Rec("reduce")
+    X, W = torch.randn(4, 512).half(), torch.randn(64, 512).half()
+    keys = set()
+    for R, t in ((8, False), (16, False), (32, True), (None, False)):
+        A = torch.randn(R, 512).half() if R else None
+        B = (torch.randn(R, 64).half().t() if t else torch.randn(64, R).half()) if R else None
+        calls.clear()
+        mod._launch(X, W, A, B, 2.0, None, (64, 64, 2, 2, 2))
+        ((_, a, k),) = [c for c in calls if c[0] == "reduce"]
+        if k["LORA_IN_REDUCE"]:
+            continue
+        assert a[1] is a[0], "B is not the partials buffer"
+        keys.add((a[5], a[6], a[7], a[10], k["BLOCK_R"]))
+    assert keys == {(0, 0, 0, 0.0, 16)}, keys
+
+
 def test_launch_oom_and_device_errors_raise_and_do_not_latch(monkeypatch):
     """OOM goes to the caller's recovery (generate()'s graph-OOM eager redo), and a HIP launch error is not
     hidden: neither returns None nor turns the kernel off. Only a compile failure falls back and latches."""
@@ -752,3 +988,129 @@ def test_rejected_decode_casts_the_adapters_once(monkeypatch):
         got = U.fast_linear_forward(lin, X)
     assert casts == [1], "the rejected call looked the LoRA cast up twice"
     torch.testing.assert_close(got, want, rtol = 0, atol = 0)
+
+
+def test_cuda_compile_failure_names_the_cuda_switch(monkeypatch):
+    # The warning names the backend's own kill switch: the CUDA import gate never reads the ROCm one.
+    for hip, flag, other in (
+        (None, "UNSLOTH_CUDA_SKINNY_LINEAR=0", "ROCM"),
+        ("7.0", "UNSLOTH_ROCM_SKINNY_LINEAR=0", "CUDA"),
+    ):
+        mod, _ = _gated(monkeypatch, hip = hip)
+
+        def boom(*a, **k):
+            raise RuntimeError("PassManager::run failed")
+
+        monkeypatch.setattr(mod, "_launch", boom)
+        X, W, A, B = _operands()
+        with torch.no_grad(), pytest.warns(UserWarning, match = flag) as record:
+            assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is None
+        assert all(other not in str(w.message) for w in record)
+
+
+def test_zero_scale_adapter_keeps_the_blas_path(monkeypatch):
+    # BLAS skips the adapters at alpha = 0; the kernel would compute 0 * (NaN or an fp16 overflow) = NaN.
+    for hip in (None, "7.0"):
+        mod, ran = _gated(monkeypatch, hip = hip)
+        X, W, A, B = _operands()
+        with torch.no_grad():
+            for s in (0, 0.0, -0.0):
+                assert mod.skinny_decode_linear(X, W, A, B, s, None) is None
+            assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is not None
+        assert len(ran) == 1
+
+
+def test_function_dispatch_modes_and_tracing_keep_the_dispatched_ops(monkeypatch):
+    # A mode overriding matmul, make_fx's proxy mode or a JIT trace never sees the kernel's raw-pointer write.
+    from torch.overrides import TorchFunctionMode
+    from torch.utils._python_dispatch import TorchDispatchMode
+    from torch.fx.experimental.proxy_tensor import make_fx
+
+    class FnMode(TorchFunctionMode):
+        def __torch_function__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            return func(*args, **(kwargs or {}))
+
+    class DispMode(TorchDispatchMode):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            return func(*args, **(kwargs or {}))
+
+    mod, ran = _gated(monkeypatch, hip = None)
+    X, W, A, B = _operands()
+    with torch.no_grad():
+        with FnMode():
+            assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is None
+        with DispMode():
+            assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is None
+        got = []
+        make_fx(lambda x: got.append(mod.skinny_decode_linear(x, W, A, B, 2.0, None)) or x + 1)(X)
+        assert got == [None]
+        torch.jit.trace(
+            lambda x: got.append(mod.skinny_decode_linear(x, W, A, B, 2.0, None)) or x + 1,
+            (X,),
+            check_trace = False,
+        )
+        assert got == [None, None]
+        assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is not None
+    assert len(ran) == 1
+
+
+def test_triton_stub_is_not_a_runtime(monkeypatch):
+    # With no Triton package, `import unsloth` resolves unsloth's `import triton` to unsloth_zoo's stub.
+    import types
+
+    stub = types.ModuleType("unsloth_zoo.stubs.triton_stub")
+    stub.jit = lambda *a, **k: (lambda fn: fn)
+    stub.language = types.ModuleType("triton.language")
+    stub.language.constexpr = int
+    stub.cdiv = lambda a, b: -(-a // b)
+    stub.next_power_of_2 = lambda n: 1 << (n - 1).bit_length()
+    monkeypatch.setitem(sys.modules, "triton", stub)
+    monkeypatch.setitem(sys.modules, "triton.language", stub.language)
+    monkeypatch.setitem(sys.modules, "triton.errors", types.ModuleType("triton.errors"))
+    for hip in (None, "7.0"):
+        mod = _load(hip = hip)
+        assert mod.triton is None
+        with pytest.raises(RuntimeError, match = "needs Triton"):
+            mod.skinny_linear(torch.randn(2, 8), torch.randn(6, 8))
+
+
+def test_hook_writes_a_callers_temp_lora(monkeypatch):
+    """fast_linear_forward(temp_lora = buf) fills buf with X @ A.T; the fused kernel never materializes it, so
+    such calls keep the PyTorch path."""
+    U = pytest.importorskip("unsloth.kernels.utils")
+    lin = torch.nn.Linear(8, 6, bias = False).to(torch.bfloat16)
+    lin.weight.requires_grad_(False)
+    lora_A = torch.randn(4, 8, dtype = torch.bfloat16)
+    lora_B = torch.randn(6, 4, dtype = torch.bfloat16)
+    monkeypatch.setattr(
+        U, "get_lora_parameters_bias", lambda p: (lin.weight, None, lora_A, lora_B, 2.0, None)
+    )
+    seen = []
+
+    def fake(X, W, A, B, s, out):
+        seen.append(1)
+        return torch.zeros(X.shape[0], 1, W.shape[0], dtype = X.dtype)
+
+    monkeypatch.setattr(U, "_ROCM_SKINNY_LINEAR", True)
+    monkeypatch.setattr(U, "_rocm_skinny_supported", lambda device: True, raising = False)
+    monkeypatch.setattr(U, "_rocm_skinny_decode_linear", fake, raising = False)
+    X = torch.randn(3, 1, 8, dtype = torch.bfloat16)
+    buf = torch.full((3, 4), 7.0, dtype = torch.bfloat16)
+    with torch.no_grad():
+        U.fast_linear_forward(lin, X, temp_lora = buf)
+        assert seen == []
+        torch.testing.assert_close(buf, X[:, 0] @ lora_A.t())
+        U.fast_linear_forward(lin, X)
+    assert seen == [1]

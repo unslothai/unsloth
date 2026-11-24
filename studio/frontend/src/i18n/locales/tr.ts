@@ -1032,6 +1032,9 @@ export const tr = {
       "Bunun yerine ModelScope'ta arayın ve oradan indirin. Ayarlar'dan geri dönebilirsiniz.",
     useModelScopeFailed: "ModelScope'a geçilemedi.",
     updateToken: "Token'ı güncelle",
+    linkedModelTitle: "{model} yüklensin mi?",
+    linkedModelBody: "Bir bağlantı bu sayfayı açtı ve bu modelin indirilip yüklenmesini istedi.",
+    linkedModelLoad: "Yükle",
     hfToken: {
       label: "HF token",
       saved: "Kaydedildi",
@@ -2581,12 +2584,16 @@ export const tr = {
         label: "Kurulum türü",
         description:
           "Yalnızca sohbet (GGUF). Tam kurulum; eğitim, dışa aktarma, video, safetensors modelleri ve ek görüntü üretme özellikleri ekler.",
+        descriptionMlx:
+          "Yalnızca sohbet (GGUF/MLX). Tam kurulum; eğitim, dışa aktarma, video, safetensors modelleri ve ek görüntü üretme özellikleri ekler.",
         descriptionCpu:
           "Yalnızca sohbet (GGUF). Desteklenen bir GPU bulunamadı, bu nedenle tam kurulum CPU üzerinde eğitim ekler.",
         action: "Tam kuruluma yükselt",
         confirmTitle: "Tam kuruluma yükseltilsin mi?",
         confirmDescription:
           "Bu Yalnızca sohbet kurulumu GGUF modellerini çalıştırır. Tam kurulum, bu makinenin GPU'su için PyTorch ekler; bu da eğitimi, dışa aktarmayı, videoyu, safetensors modellerini ve ek görüntü üretme özelliklerini etkinleştirir. Birkaç gigabayt indirir (en az 5 GB disk alanı) ve sunucuyu yeniden başlatır. Sohbetler, modeller ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
+        confirmDescriptionMlx:
+          "Bu Yalnızca sohbet kurulumu GGUF/MLX modellerini çalıştırır. Tam kurulum, bu makinenin GPU'su için PyTorch ekler; bu da eğitimi, dışa aktarmayı, videoyu, safetensors modellerini ve ek görüntü üretme özelliklerini etkinleştirir. Birkaç gigabayt indirir (en az 5 GB disk alanı) ve sunucuyu yeniden başlatır. Sohbetler, modeller ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
         confirmDescriptionCpu:
           "Bu Yalnızca sohbet kurulumu GGUF modellerini çalıştırır. Bu makinede desteklenen bir GPU bulunamadı, bu nedenle tam kurulum CPU için PyTorch ekler; bu da CPU üzerinde eğitimi etkinleştirir. CPU üzerinde eğitim, GPU'ya göre çok daha yavaştır. En az 5 GB disk alanı gerektirir ve sunucuyu yeniden başlatır. Sohbetler, modeller ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
         confirmAction: "Yükselt",
@@ -2784,7 +2791,7 @@ export const tr = {
         oldWebkitWarning:
           "Wayland üzerinde WebKitGTK {version}: Kesirli ölçekleme kullanılan NVIDIA sistemlerinde GPU ile işleme başlatma sırasında çökebilir (WebKit hatası 280210). Böyle olursa Unsloth kendiliğinden CPU ile işlemeye geri döner. WebKitGTK 2.50.4 üzerinde ölçülebilir bir hızlanma sağlamadı (her iki durumda da 8 fps), bu nedenle burada Açık önerilmez.",
         oldDriverWarning:
-          "X11 üzerinde NVIDIA sürücüsü {version}: Sürücü 610 veya daha yeni olana kadar Unsloth GPU ile işlemeyi kapalı tutar. Eski sürücüler her karede bir dosya tanımlayıcısı sızdırır ve pencere birkaç dakika içinde çizim yapmayı durdurur.",
+          "X11 üzerinde NVIDIA sürücüsü {version}: Sürücü 590 veya daha yeni olana kadar Unsloth GPU ile işlemeyi kapalı tutar. Eski sürücüler her karede bir dosya tanımlayıcısı sızdırır ve pencere birkaç dakika içinde çizim yapmayı durdurur.",
         fallbackNote:
           "GPU ile işleme bu sistemde başlatma sırasında çöktüğü için Unsloth CPU ile işleme kullanıyor.",
         tryAgain: "GPU'yu yeniden dene",

@@ -61,6 +61,7 @@ import { isSettingsRouteAbsent } from "@/features/settings/api/settings-route-ab
 import {
   failureLogPath,
   loadFailureLogFamily,
+  managedEngineFailureLogsAction,
   viewLogsAction,
 } from "@/features/settings/lib/view-logs-action";
 import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
@@ -105,6 +106,7 @@ import {
   listLoras,
   listModels,
   loadModel,
+  LoadModelError,
   unloadModel,
   validateModel,
 } from "../api/chat-api";
@@ -2935,9 +2937,15 @@ export function useChatModelRuntime() {
                     await consumeNativePathToken(previousActiveNativePathToken, "load-model")
                   ).nativePathLease;
                 } catch {
-                  throw new Error(
-                    "Could not reload the previous local model: please re-select the file.",
-                  );
+                  const guidance = "Could not reload the previous local model: please re-select the file.";
+                  if (error instanceof LoadModelError) {
+                    throw new LoadModelError(
+                      [error.message, guidance].join("\n\n"),
+                      error.status,
+                      error.detail,
+                    );
+                  }
+                  throw new Error(guidance);
                 }
               }
               try {
@@ -3486,6 +3494,10 @@ export function useChatModelRuntime() {
             const message =
               err instanceof Error ? err.message : "Failed to load model";
             const { summary, detail } = loadFailureToastParts(message);
+            const managedLogsAction =
+              err instanceof LoadModelError
+                ? managedEngineFailureLogsAction(err.detail)
+                : undefined;
             const runnerLogPath = failureLogPath(message);
             const logsAction = runnerLogPath
               ? viewLogsAction(
@@ -3499,7 +3511,7 @@ export function useChatModelRuntime() {
             const description = refusal ? message : detail || undefined;
             const action = refusal
               ? modelMemorySettingsAction()
-              : (engineSettingsAction(message) ?? logsAction);
+              : (managedLogsAction ?? engineSettingsAction(message) ?? logsAction);
             if (loadToastDismissedRef.current) {
               toast.error(title, { description, action });
             } else {

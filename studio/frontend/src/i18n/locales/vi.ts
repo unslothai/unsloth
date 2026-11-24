@@ -1037,6 +1037,9 @@ export const vi = {
       "Tìm kiếm và tải xuống từ ModelScope thay thế. Bạn có thể chuyển lại trong Cài đặt.",
     useModelScopeFailed: "Không thể chuyển sang ModelScope.",
     updateToken: "Cập nhật token",
+    linkedModelTitle: "Tải {model}?",
+    linkedModelBody: "Một liên kết đã mở trang này và yêu cầu tải xuống và tải mô hình này.",
+    linkedModelLoad: "Tải",
     hfToken: {
       label: "Token HF",
       saved: "Đã lưu",
@@ -2591,12 +2594,16 @@ export const vi = {
         label: "Loại cài đặt",
         description:
           "Chỉ trò chuyện (GGUF). Bản cài đặt đầy đủ bổ sung huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung.",
+        descriptionMlx:
+          "Chỉ trò chuyện (GGUF/MLX). Bản cài đặt đầy đủ bổ sung huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung.",
         descriptionCpu:
           "Chỉ trò chuyện (GGUF). Không tìm thấy GPU được hỗ trợ, nên bản cài đặt đầy đủ bổ sung huấn luyện trên CPU.",
         action: "Nâng cấp lên bản cài đặt đầy đủ",
         confirmTitle: "Nâng cấp lên bản cài đặt đầy đủ?",
         confirmDescription:
           "Bản cài đặt Chỉ trò chuyện này chạy các mô hình GGUF. Bản cài đặt đầy đủ bổ sung PyTorch cho GPU của máy này, cho phép huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung. Quá trình này tải xuống vài gigabyte (cần ít nhất 5 GB dung lượng ổ đĩa) và khởi động lại máy chủ. Cuộc trò chuyện, mô hình và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
+        confirmDescriptionMlx:
+          "Bản cài đặt Chỉ trò chuyện này chạy các mô hình GGUF/MLX. Bản cài đặt đầy đủ bổ sung PyTorch cho GPU của máy này, cho phép huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung. Quá trình này tải xuống vài gigabyte (cần ít nhất 5 GB dung lượng ổ đĩa) và khởi động lại máy chủ. Cuộc trò chuyện, mô hình và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
         confirmDescriptionCpu:
           "Bản cài đặt Chỉ trò chuyện này chạy các mô hình GGUF. Không tìm thấy GPU được hỗ trợ trên máy này, nên bản cài đặt đầy đủ bổ sung PyTorch cho CPU, cho phép huấn luyện trên CPU. Huấn luyện trên CPU chậm hơn nhiều so với trên GPU. Quá trình này cần ít nhất 5 GB dung lượng ổ đĩa và khởi động lại máy chủ. Cuộc trò chuyện, mô hình và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
         confirmAction: "Nâng cấp",
@@ -2794,7 +2801,7 @@ export const vi = {
         oldWebkitWarning:
           "WebKitGTK {version} trên Wayland: kết xuất bằng GPU có thể gây sập khi khởi chạy trên NVIDIA với tỷ lệ phóng to lẻ (lỗi WebKit 280210). Nếu xảy ra, Unsloth sẽ tự chuyển về kết xuất bằng CPU. Trên WebKitGTK 2.50.4, tùy chọn này không cho thấy tốc độ cải thiện đo được (8 fps ở cả hai chế độ), nên không khuyến nghị chọn Bật ở đây.",
         oldDriverWarning:
-          "Trình điều khiển NVIDIA {version} trên X11: Unsloth giữ tắt kết xuất bằng GPU cho đến khi trình điều khiển là bản 610 trở lên. Các trình điều khiển cũ hơn rò rỉ một bộ mô tả tệp mỗi khung hình và cửa sổ sẽ ngừng vẽ trong vài phút.",
+          "Trình điều khiển NVIDIA {version} trên X11: Unsloth giữ tắt kết xuất bằng GPU cho đến khi trình điều khiển là bản 590 trở lên. Các trình điều khiển cũ hơn rò rỉ một bộ mô tả tệp mỗi khung hình và cửa sổ sẽ ngừng vẽ trong vài phút.",
         fallbackNote:
           "Kết xuất bằng GPU đã gây sập khi khởi chạy trên hệ thống này, nên Unsloth đang dùng kết xuất bằng CPU.",
         tryAgain: "Thử lại GPU",

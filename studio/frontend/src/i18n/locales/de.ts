@@ -937,6 +937,9 @@ export const de = {
     useModelScopeHint: "Stattdessen über ModelScope suchen und herunterladen. Sie können in den Einstellungen zurückwechseln.",
     useModelScopeFailed: "Wechsel zu ModelScope fehlgeschlagen.",
     updateToken: "Token aktualisieren",
+    linkedModelTitle: "{model} laden?",
+    linkedModelBody: "Ein Link hat diese Seite geöffnet und möchte dieses Modell herunterladen und laden.",
+    linkedModelLoad: "Laden",
     hfToken: {
       label: "HF-Token",
       saved: "Gespeichert",
@@ -2405,12 +2408,16 @@ export const de = {
         label: "Installationstyp",
         description:
           "Nur Chat (GGUF). Die vollständige Installation ergänzt Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung.",
+        descriptionMlx:
+          "Nur Chat (GGUF/MLX). Die vollständige Installation ergänzt Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung.",
         descriptionCpu:
           "Nur Chat (GGUF). Es wurde keine unterstützte GPU gefunden, daher ergänzt die vollständige Installation Training auf der CPU.",
         action: "Auf vollständige Installation upgraden",
         confirmTitle: "Auf die vollständige Installation upgraden?",
         confirmDescription:
           "Diese Nur-Chat-Installation führt GGUF-Modelle aus. Die vollständige Installation ergänzt PyTorch für die GPU dieses Rechners und ermöglicht damit Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung. Sie lädt mehrere Gigabyte herunter (mindestens 5 GB Speicherplatz) und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
+        confirmDescriptionMlx:
+          "Diese Nur-Chat-Installation führt GGUF/MLX-Modelle aus. Die vollständige Installation ergänzt PyTorch für die GPU dieses Rechners und ermöglicht damit Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung. Sie lädt mehrere Gigabyte herunter (mindestens 5 GB Speicherplatz) und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
         confirmDescriptionCpu:
           "Diese Nur-Chat-Installation führt GGUF-Modelle aus. Auf diesem Rechner wurde keine unterstützte GPU gefunden, daher ergänzt die vollständige Installation PyTorch für die CPU und ermöglicht damit Training auf der CPU. CPU-Training ist deutlich langsamer als GPU-Training. Sie benötigt mindestens 5 GB Speicherplatz und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
         confirmAction: "Upgraden",
@@ -2625,7 +2632,7 @@ export const de = {
         off: "Aus",
         oldWebkitWarning: "WebKitGTK {version} unter Wayland: GPU-Rendering kann auf NVIDIA mit gebrochener Skalierung beim Start abstürzen (WebKit bug 280210). In diesem Fall wechselt Unsloth von selbst zurück zum CPU-Rendering. Unter WebKitGTK 2.50.4 brachte es keinen messbaren Geschwindigkeitsgewinn (in beiden Fällen 8 fps), daher wird An hier nicht empfohlen.",
         oldDriverWarning:
-          "NVIDIA-Treiber {version} unter X11: Unsloth lässt das GPU-Rendering aus, bis der Treiber 610 oder neuer ist. Ältere Treiber verlieren pro Frame einen Dateideskriptor, und das Fenster zeichnet nach wenigen Minuten nicht mehr.",
+          "NVIDIA-Treiber {version} unter X11: Unsloth lässt das GPU-Rendering aus, bis der Treiber 590 oder neuer ist. Ältere Treiber verlieren pro Frame einen Dateideskriptor, und das Fenster zeichnet nach wenigen Minuten nicht mehr.",
         fallbackNote: "GPU-Rendering ist auf diesem System beim Start abgestürzt, daher verwendet Unsloth CPU-Rendering.",
         tryAgain: "GPU erneut versuchen",
         envOverride: "Durch die Umgebungsvariable {name} festgelegt. Diese Einstellung hat keine Wirkung, solange sie gesetzt ist.",

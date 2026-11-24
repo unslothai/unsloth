@@ -1036,6 +1036,9 @@ export const id = {
       "Cari dan unduh dari ModelScope sebagai gantinya. Anda dapat beralih kembali di Pengaturan.",
     useModelScopeFailed: "Tidak dapat beralih ke ModelScope.",
     updateToken: "Perbarui token",
+    linkedModelTitle: "Muat {model}?",
+    linkedModelBody: "Sebuah tautan membuka halaman ini dan meminta untuk mengunduh dan memuat model ini.",
+    linkedModelLoad: "Muat",
     hfToken: {
       label: "Token HF",
       saved: "Tersimpan",
@@ -2586,12 +2589,16 @@ export const id = {
         label: "Jenis instalasi",
         description:
           "Hanya chat (GGUF). Instalasi lengkap menambahkan pelatihan, ekspor, video, model safetensors, dan fitur pembuatan gambar tambahan.",
+        descriptionMlx:
+          "Hanya chat (GGUF/MLX). Instalasi lengkap menambahkan pelatihan, ekspor, video, model safetensors, dan fitur pembuatan gambar tambahan.",
         descriptionCpu:
           "Hanya chat (GGUF). Tidak ditemukan GPU yang didukung, jadi instalasi lengkap menambahkan pelatihan di CPU.",
         action: "Tingkatkan ke instalasi lengkap",
         confirmTitle: "Tingkatkan ke instalasi lengkap?",
         confirmDescription:
           "Instalasi Hanya chat ini menjalankan model GGUF. Instalasi lengkap menambahkan PyTorch untuk GPU mesin ini, yang mengaktifkan pelatihan, ekspor, video, model safetensors, dan fitur pembuatan gambar tambahan. Proses ini mengunduh beberapa gigabyte (minimal 5 GB ruang disk) dan memulai ulang server. Chat, model, dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
+        confirmDescriptionMlx:
+          "Instalasi Hanya chat ini menjalankan model GGUF/MLX. Instalasi lengkap menambahkan PyTorch untuk GPU mesin ini, yang mengaktifkan pelatihan, ekspor, video, model safetensors, dan fitur pembuatan gambar tambahan. Proses ini mengunduh beberapa gigabyte (minimal 5 GB ruang disk) dan memulai ulang server. Chat, model, dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
         confirmDescriptionCpu:
           "Instalasi Hanya chat ini menjalankan model GGUF. Tidak ditemukan GPU yang didukung di mesin ini, jadi instalasi lengkap menambahkan PyTorch untuk CPU, yang mengaktifkan pelatihan di CPU. Pelatihan di CPU jauh lebih lambat daripada di GPU. Proses ini memerlukan ruang disk minimal 5 GB dan memulai ulang server. Chat, model, dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
         confirmAction: "Tingkatkan",
@@ -2791,7 +2798,7 @@ export const id = {
         oldWebkitWarning:
           "WebKitGTK {version} di Wayland: rendering GPU dapat mogok saat diluncurkan di NVIDIA dengan penskalaan pecahan (bug WebKit 280210). Jika terjadi, Unsloth akan kembali ke rendering CPU dengan sendirinya. Di WebKitGTK 2.50.4, tidak ada peningkatan kecepatan yang terukur (8 fps dalam kedua kasus), jadi Aktif tidak disarankan di sini.",
         oldDriverWarning:
-          "Driver NVIDIA {version} di X11: Unsloth menonaktifkan rendering GPU hingga driver versi 610 atau yang lebih baru. Driver lama membocorkan satu file descriptor per frame, dan jendela berhenti menggambar dalam hitungan menit.",
+          "Driver NVIDIA {version} di X11: Unsloth menonaktifkan rendering GPU hingga driver versi 590 atau yang lebih baru. Driver lama membocorkan satu file descriptor per frame, dan jendela berhenti menggambar dalam hitungan menit.",
         fallbackNote:
           "Rendering GPU mogok saat diluncurkan di sistem ini, jadi Unsloth menggunakan rendering CPU.",
         tryAgain: "Coba GPU lagi",

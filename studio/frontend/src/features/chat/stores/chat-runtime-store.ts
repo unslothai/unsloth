@@ -2669,6 +2669,8 @@ type ChatRuntimeStore = {
       runId?: string;
       /** A computer call's reasons for asking; absent on a card restored after a reload. */
       computerUse?: ComputerUseAsk;
+      /** The tool the approval is for: only a card naming that tool may ask or answer. */
+      toolName?: string;
     }
   >;
   webFetchToolsEnabled: boolean;
@@ -2920,6 +2922,7 @@ type ChatRuntimeStore = {
     imageDisclosure?: ImageDisclosure,
     runId?: string,
     computerUse?: ComputerUseAsk,
+    toolName?: string,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
@@ -6089,6 +6092,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     imageDisclosure,
     runId,
     computerUse,
+    toolName,
   ) =>
     set((state) => ({
       toolConfirmations: {
@@ -6101,6 +6105,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           imageDisclosure,
           runId,
           computerUse,
+          toolName,
         },
       },
     })),
