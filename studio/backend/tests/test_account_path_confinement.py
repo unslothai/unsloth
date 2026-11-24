@@ -610,3 +610,59 @@ def test_a_normal_module_folder_keeps_its_verdict(tmp_path, path):
         {"model.safetensors.index.json": {"weight_map": {"w": "../../victim/model.safetensors"}}},
     )
     assert escaping_weight_references(folder)
+
+
+def test_a_resume_checkpoint_whose_index_escapes_is_refused(tmp_path):
+    # A one-byte adapter file made the checkpoint look valid while its index named another account's model.
+    from core.training import worker
+
+    checkpoint = _write(
+        tmp_path / "checkpoint-1",
+        {
+            "model.safetensors.index.json": {
+                "weight_map": {"w": "/home/owner/outputs/run/model.safetensors"}
+            }
+        },
+    )
+    (checkpoint / "adapter_model.safetensors").write_bytes(b"x")
+    assert worker._escaping_weights_error({"resume_from_checkpoint": str(checkpoint)})
+    assert (
+        worker._escaping_weights_error({"resume_from_checkpoint": str(_write(tmp_path / "ok", {}))})
+        is None
+    )
+
+
+def test_gguf_export_rechecks_an_index_written_after_the_load(tmp_path):
+    # A full model's GGUF export re-stages its folder from disk, so the check runs again right before.
+    import ast
+    import inspect
+
+    from core.export import export as export_mod
+
+    folder = _write(tmp_path / "m", {"config.json": {"model_type": "llama"}})
+    assert export_mod._restaged_checkpoint_refusal(str(folder)) is None
+    (folder / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "/home/owner/outputs/run/model.safetensors"}})
+    )
+    assert export_mod._restaged_checkpoint_refusal(str(folder))
+    assert export_mod._restaged_checkpoint_refusal("org/repo") is None
+
+    source = inspect.getsource(export_mod.ExportBackend.export_gguf)
+    tree = ast.parse(source.lstrip())
+    order = [
+        n.func.attr if isinstance(n.func, ast.Attribute) else n.func.id
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, (ast.Attribute, ast.Name))
+    ]
+    lines = {
+        name: [
+            n.lineno
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and getattr(n.func, "attr", getattr(n.func, "id", None)) == name
+        ]
+        for name in ("_restaged_checkpoint_refusal", "save_pretrained_gguf", "push_to_hub_gguf")
+    }
+    assert "_restaged_checkpoint_refusal" in order
+    assert min(lines["_restaged_checkpoint_refusal"]) < min(lines["save_pretrained_gguf"])
+    assert max(lines["_restaged_checkpoint_refusal"]) < min(lines["push_to_hub_gguf"])

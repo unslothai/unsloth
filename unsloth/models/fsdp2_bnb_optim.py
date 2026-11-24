@@ -528,6 +528,7 @@ def localize_bnb_optimizer(optimizer):
     in place). Returns True when converted (or already converted)."""
     if is_local_shard_bnb_optimizer(optimizer):
         return True
+    _restore_stock_bnb_class(optimizer)
     if not supports_local_shards(optimizer):
         return False
     if any(len(s) for s in optimizer.state.values()):
@@ -536,6 +537,18 @@ def localize_bnb_optimizer(optimizer):
             "parameters; build it after `shard_model(model)` and before training."
         )
     optimizer.__class__ = _local_shard_class(type(optimizer))
+    _rebind_scheduler_step(optimizer)
+    return True
+
+
+def _restore_stock_bnb_class(optimizer):
+    """Undo unsloth's fused 8-bit AdamW class swap (optimizers/flat_adamw8bit.py): it overrides step,
+    so the plain-class check would refuse it, and its fused update takes plain tensors only."""
+    base = getattr(type(optimizer), "_unsloth_flat_base", None)
+    if base is None or not getattr(type(optimizer), "_unsloth_flat_adamw8bit", False):
+        return False
+    optimizer.__class__ = base
+    vars(optimizer).pop("_unsloth_flat_plans", None)
     _rebind_scheduler_step(optimizer)
     return True
 

@@ -458,7 +458,7 @@ test("a stopped download and the chat model's own slot are honoured", () => {
     /\(outcome\) => \{[\s\S]*?if \(outcome === "started" && signal\.aborted\) cancelJob\(\);/,
   );
   const chat = runner.slice(runner.indexOf("async function chatModel"));
-  assert.match(chat, /getInferenceStatus\(signal, picked \|\| undefined\)/);
+  assert.match(chat, /getInferenceStatus\(signal, served \|\| undefined\)/);
   assert.match(chat, /isTranslationHeldSlot\(status\.active_model, picked\)/);
 });
 

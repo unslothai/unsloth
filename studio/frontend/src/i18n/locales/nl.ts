@@ -995,6 +995,13 @@ export const nl = {
     compactUnsupported:
       "Comprimeren vereist een GGUF- of MLX-model met toolondersteuning",
   },
+  chatFiles: {
+    title: "Bestanden in deze chat",
+    code: "Codefragmenten",
+    showInChat: "Tonen in chat",
+    download: "{name} downloaden",
+    saveFailed: "Kan {name} niet opslaan.",
+  },
   welcome: {
     goodToSeeYou: "Fijn je te zien",
     goodToSeeYouName: "Fijn je te zien, {name}",
@@ -1047,6 +1054,9 @@ export const nl = {
       "Zoek en download in plaats daarvan via ModelScope. Je kunt terugschakelen in Instellingen.",
     useModelScopeFailed: "Kan niet overschakelen naar ModelScope.",
     updateToken: "Token bijwerken",
+    linkedModelTitle: "{model} laden?",
+    linkedModelBody: "Een link heeft deze pagina geopend en vraagt dit model te downloaden en te laden.",
+    linkedModelLoad: "Laden",
     hfToken: {
       label: "HF-token",
       saved: "Opgeslagen",
@@ -2832,7 +2842,7 @@ export const nl = {
         oldWebkitWarning:
           "WebKitGTK {version} op Wayland: GPU-rendering kan bij het starten crashen op NVIDIA met fractionele schaling (WebKit-bug 280210). Als dat gebeurt, schakelt Unsloth vanzelf terug naar CPU-rendering. Op WebKitGTK 2.50.4 leverde het geen meetbare versnelling op (in beide gevallen 8 fps), dus Aan wordt hier niet aanbevolen.",
         oldDriverWarning:
-          "NVIDIA-stuurprogramma {version} op X11: Unsloth houdt GPU-rendering uit tot het stuurprogramma versie 610 of nieuwer is. Oudere stuurprogramma's lekken per frame een bestandsdescriptor, en het venster stopt binnen enkele minuten met tekenen.",
+          "NVIDIA-stuurprogramma {version} op X11: Unsloth houdt GPU-rendering uit tot het stuurprogramma versie 590 of nieuwer is. Oudere stuurprogramma's lekken per frame een bestandsdescriptor, en het venster stopt binnen enkele minuten met tekenen.",
         fallbackNote:
           "GPU-rendering is bij het starten gecrasht op dit systeem, dus Unsloth gebruikt CPU-rendering.",
         tryAgain: "GPU opnieuw proberen",
@@ -3110,6 +3120,15 @@ export const nl = {
         runningOn: "llama.cpp draait momenteel op {backend}.",
         hint: "Installeert de llama.cpp-build voor deze backend en behoudt die bij updates. Handig als de automatische keuze crasht of je GPU-stuurprogramma die niet ondersteunt. Alleen backends met een build voor deze machine worden getoond; training wordt niet beïnvloed.",
         autoWith: "Automatisch ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm niet geïnstalleerd",
+          rocmNoAccess: "geen toegang tot de GPU",
+          otherRelease: "vereist een llama.cpp-update",
+          checkFailed: "kon niet worden gecontroleerd",
+          noBuild: "geen build voor deze computer",
+        },
         apply: "Toepassen",
         applying: "Installeren...",
         applyHint:
