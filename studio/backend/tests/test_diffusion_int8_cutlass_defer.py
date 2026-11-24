@@ -312,3 +312,311 @@ def test_image_backend_render_hook(monkeypatch):
     monkeypatch.setenv(defer.DEFER_ENV, "0")
     with backend._int8_defer_render():
         assert not defer.allowed()
+
+
+def test_a_waiting_render_re_records_on_the_shape_that_just_won(monkeypatch):
+    """Each shape's winner is published with the refresh before a render waiting on it is let in, not only once the
+    whole card's job ends: else a graph recorded on that shape keeps replaying the Triton launches."""
+    release = threading.Event()
+    racing = threading.Event()
+
+    def gate(n, m):
+        if n == 64 and m == 512:
+            racing.set()
+            assert release.wait(10)
+
+    _env(monkeypatch, {}, gate = gate)
+    _image_load(0, [_rec(), _rec(96, 32)])
+    defer.render_begin()
+    defer.render_end()
+    assert racing.wait(10)
+    got = []
+    t = threading.Thread(target = lambda: got.append(defer.render_begin()))
+    t.start()
+    time.sleep(0.2)
+    release.set()
+    t.join(10)
+    assert _key() in g8._CUT_PLAN[0]
+    assert got == [True]
+    assert (
+        defer.status()["pending_units"] == 1
+    )  # the 96-row shape still waits for the next idle spell
+    defer.render_end()
+    _wait_state("done")
+    assert defer.render_begin() is True  # the 96-row shape won too
+    defer.render_end()
+
+
+def test_a_shape_that_lost_asks_no_re_record(monkeypatch):
+    monkeypatch.setitem(_WINNERS, 4096, None)
+    monkeypatch.setitem(_WINNERS, 16384, None)
+    _env(monkeypatch, {})
+    _image_load(0, [_rec()])
+    defer.render_begin()
+    defer.render_end()
+    st = _wait_state("done")
+    assert st["raced"] == 1 and st["won"] == 0
+    assert defer.render_begin() is False
+    defer.render_end()
+
+
+def test_a_capture_on_another_card_never_waits_on_the_race(monkeypatch):
+    """The deferred unit holds only its own card off captures across its sustained timings: a video capture on another
+    card records meanwhile, one on the race's card waits (then runs eager), and a recording on the race's card makes
+    the unit retry later."""
+    from core.inference import diffusion_cuda_graph as cg
+
+    racing = threading.Event()
+    release = threading.Event()
+
+    def plan(
+        index,
+        recs,
+        triton_on,
+        logger = None,
+    ):
+        racing.set()
+        assert release.wait(10)
+        return {}
+
+    monkeypatch.setattr(g8, "_cutlass_plan", plan)
+    monkeypatch.setattr(torch.cuda, "device", lambda *a_: contextlib.nullcontext())
+    monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 0.3)
+    out = []
+    race = threading.Thread(target = lambda: out.append(g8._defer_unit(0, None, (), _key(), None)))
+    race.start()
+    try:
+        assert racing.wait(10)
+        entered = threading.Event()
+
+        def capture_other_card():
+            with cg._capturing(1):
+                entered.set()
+
+        t = threading.Thread(target = capture_other_card)
+        t.start()
+        assert entered.wait(2)  # no wait on the race of card 0
+        t.join(5)
+        with pytest.raises(cg.CaptureRefused):
+            with cg._capturing(0):
+                pass
+        # a capture whose card is unknown waits too (it may be the race's card)
+        monkeypatch.setattr(
+            torch.cuda, "current_device", lambda: (_ for _ in ()).throw(RuntimeError("no card"))
+        )
+        with pytest.raises(cg.CaptureRefused):
+            with cg._capturing():
+                pass
+    finally:
+        release.set()
+        race.join(10)
+    assert out == [0]
+    assert not cg._DEVICE_HOLDS and not cg._DEVICE_DEPTH
+    with cg._capturing(0):
+        pass  # the hold is gone
+    with cg._capturing(1):
+        assert g8._defer_unit(0, None, (), _key(), None) == 0  # another card records: the race runs
+    with cg._capturing(0):
+        assert g8._defer_unit(0, None, (), _key(), None) is False  # its own card records: retried
+    assert not cg._DEVICE_HOLDS and not cg._DEVICE_DEPTH
+
+
+def test_the_race_frees_memory_only_while_no_card_records(monkeypatch):
+    """``torch.cuda.empty_cache`` frees cached blocks on every card: inside the deferred unit it never runs beside
+    another card's recording, and other threads keep the real one."""
+    from core.inference import diffusion_cuda_graph as cg
+
+    freed = []
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: freed.append(threading.get_ident()))
+    real = torch.cuda.empty_cache
+    seen = {}
+
+    def plan(
+        index,
+        recs,
+        triton_on,
+        logger = None,
+    ):
+        torch.cuda.empty_cache()
+        seen["inside"] = torch.cuda.empty_cache
+        return {}
+
+    monkeypatch.setattr(g8, "_cutlass_plan", plan)
+    monkeypatch.setattr(torch.cuda, "device", lambda *a_: contextlib.nullcontext())
+    recording, done = threading.Event(), threading.Event()
+
+    def record_on_card_1():
+        with cg._capturing(1):
+            recording.set()
+            assert done.wait(10)
+
+    t = threading.Thread(target = record_on_card_1)
+    t.start()
+    try:
+        assert recording.wait(5)
+        assert g8._defer_unit(0, None, (), _key(), None) == 0
+    finally:
+        done.set()
+        t.join(5)
+    assert freed == []  # skipped beside card 1's recording
+    assert g8._defer_unit(0, None, (), _key(), None) == 0
+    assert freed == [threading.get_ident()]
+    assert torch.cuda.empty_cache is real and seen["inside"] is not real
+
+
+def test_a_failed_load_drops_only_its_own_shapes(monkeypatch):
+    """The pre-publication rollback cancels the shapes its own arm deferred (they hold its modules), not another's."""
+    from core.inference import diffusion as diff
+
+    raced = _env(monkeypatch, {})
+    with defer.allow():  # an earlier owner (a render) with a shape still queued
+        g8._plan_or_defer(0, [_rec(96, 32)], True, False)
+    token = defer.arm()  # the failing load
+    try:
+        g8._CUT_TRITON_ON[0] = True
+        g8._plan_or_defer(0, [_rec()], True, False)
+        assert defer.status()["pending_units"] == 4  # (before + one shape) per owner
+        diff._cancel_int8_defer_of_this_load()
+    finally:
+        defer.disarm(token)
+    assert defer.status()["pending_units"] == 2
+    assert list(g8._CUT_DEFER_KEYS[0]) == [
+        g8._cut_key(96, 32, torch.float32, torch.bfloat16, False)
+    ]
+    diff._cancel_int8_defer_of_this_load()  # not armed here: cancels nothing
+    assert defer.status()["pending_units"] == 2
+    defer.render_begin()
+    defer.render_end()
+    _wait_state("done")
+    assert [r[0] for r in raced] == [96, 96, 96]
+
+
+def test_cancel_waits_for_a_finalizer_already_past_job_removal(monkeypatch):
+    """A finalizer runs after the worker removed its job: cancel() must wait for it, and it must neither remove a
+    replacement load's shape keys nor publish for it."""
+    table: dict = {}
+    _env(monkeypatch, table)
+    finishing = threading.Event()
+    release = threading.Event()
+    after = g8._defer_after
+
+    def slow_after(index, owner = None):
+        finishing.set()
+        assert release.wait(10)
+        return after(index, owner)
+
+    monkeypatch.setattr(g8, "_defer_after", slow_after)
+    _image_load(0, [_rec()])
+    defer.render_begin()
+    defer.render_end()
+    assert finishing.wait(10)
+    assert defer._STATE["refresh"] is True  # the shape's win was published with its unit
+    cancelled = threading.Event()
+    t = threading.Thread(target = lambda: (g8.cancel_deferred_race(), cancelled.set()))
+    t.start()
+    assert not cancelled.wait(0.3)  # the finalizer in flight belongs to the load being dropped
+    release.set()
+    assert cancelled.wait(10)
+    t.join(5)
+    # the replacement load on the same card (a fresh one: nothing stored): nothing of the old one touches it
+    monkeypatch.setattr(g8, "_defer_after", after)
+    g8._CUT_PLAN.clear()
+    g8._CUT_DONE.clear()
+    table.clear()
+    _image_load(0, [_rec()])
+    assert _key() in g8._CUT_DEFER_KEYS[0]
+    assert defer.status()["state"] == "pending" and defer.status()["pending_units"] == 2
+    assert defer.render_begin() is False
+    defer.render_end()
+    _wait_state("done")
+
+
+def test_a_finalizer_outliving_the_cancel_wait_touches_only_its_own_load(monkeypatch):
+    table: dict = {}
+    _env(monkeypatch, table)
+    finishing = threading.Event()
+    release = threading.Event()
+    after = g8._defer_after
+
+    def slow_after(index, owner = None):
+        finishing.set()
+        assert release.wait(10)
+        return after(index, owner)
+
+    monkeypatch.setattr(g8, "_defer_after", slow_after)
+    _image_load(0, [_rec()])
+    defer.render_begin()
+    defer.render_end()
+    assert finishing.wait(10)
+    monkeypatch.setattr(defer.cancel, "__defaults__", (0.2, None))
+    g8.cancel_deferred_race()  # gives up waiting
+    monkeypatch.setattr(g8, "_defer_after", after)
+    g8._CUT_PLAN.clear()
+    g8._CUT_DONE.clear()
+    table.clear()
+    blocked = threading.Event()
+
+    def gate(n, m):
+        blocked.wait(10)
+
+    monkeypatch.setattr(
+        cut, "race", lambda *a_, **k_: (gate(0, 0), {"tile": 1, "us": {}, "m": 0})[1]
+    )
+    _image_load(0, [_rec()])
+    release.set()
+    deadline = time.perf_counter() + 5
+    while defer.status()["running"] and time.perf_counter() < deadline:
+        time.sleep(0.01)
+    assert _key() in g8._CUT_DEFER_KEYS[0]  # the replacement's key survives the old finalizer
+    assert defer.status()["state"] == "pending"
+    assert defer.render_begin() is False
+    blocked.set()
+    defer.render_end()
+    _wait_state("done")
+
+
+def test_a_complete_stored_race_is_served_without_a_stored_tile_verdict(monkeypatch):
+    """An upgrade that moves the tile-probe key (no stored tile verdict) keeps a card's complete stored races: the
+    load probes the tiles, as before the deferral, and the first image already runs the stored winner."""
+    skey = repr(_key())
+    table = {"ck": {skey: {"512": None, "4224": 8, "16384": 2}}, "ck|rows": {skey: [4224]}}
+    raced = _env(monkeypatch, table, stored = None)
+    plan = _image_load(0, [_rec()])
+    assert raced == [] and plan[_key()] == {512: None, 4224: 8, 16384: 2}
+    assert defer.status()["state"] == "none" and not g8._CUT_DEFER_KEYS
+    assert g8._cutlass_tile(0, *_call(4176)) == 8
+
+
+def test_an_incomplete_race_without_a_tile_verdict_still_waits(monkeypatch):
+    skey = repr(_key())
+    table = {"ck": {skey: {"512": None, "4224": 8}}, "ck|rows": {skey: [4224]}}
+    raced = _env(monkeypatch, table, stored = None)
+    plan = _image_load(0, [_rec()])
+    assert raced == [] and plan == {} and defer.status()["state"] == "pending"
+
+
+def test_an_unrelated_gemm_edit_keeps_the_stored_tile_verdicts(monkeypatch):
+    """The tile-probe key covers the probe's own code, not every byte of diffusion_int8_gemm.py: an edit elsewhere
+    there (this deferral itself) must not drop every card's tile verdict on upgrade."""
+    import pathlib
+
+    from core.inference import diffusion_probe_cache as pc
+
+    def digest():
+        return pc.Namespace("int8_cutlass_tiles", cut.PROBE_PERSIST_SOURCES)._source_digest()
+
+    before = digest()
+    read = pathlib.Path.read_bytes
+
+    def edited(self):
+        data = read(self)
+        return (
+            data + b"\n\ndef _unrelated_new_helper():\n    return 1\n"
+            if self.name == "diffusion_int8_gemm.py"
+            else data
+        )
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", edited)
+    assert digest() == before
+    # the probe's diffusion_int8_gemm input still keys it, through the race code digest in _probe_extra
+    assert "tie_operands" in g8._RACE_SOURCES["diffusion_int8_gemm"]

@@ -8,15 +8,19 @@ L4, plus 7-8 s of row-bucket races inside the first render). Those shapes now ru
 passes the same bit-exact probe against the same eager epilogue, and the race runs on a background thread once a
 render has ended and Studio has been idle for ``UNSLOTH_DIFFUSION_INT8_CUTLASS_DEFER_IDLE_S`` seconds. It races one
 weight shape at a time; a render arriving meanwhile waits only for the shape in flight, and the rest wait for the
-next idle spell. Verdicts persist exactly as a load-time race's, so later processes race nothing. Once winners
-land, the next render drops its CUDA graphs so it re-records them on the winning kernels.
+next idle spell. Verdicts persist exactly as a load-time race's, so later processes race nothing. Each shape that
+wins is published before a waiting render is let in, and that render drops its CUDA graphs so it re-records them on
+the winning kernels.
 
-Only image loads arm it (``allow``); ``UNSLOTH_DIFFUSION_INT8_CUTLASS_DEFER=0`` races at load, as before."""
+Only image loads arm it (``allow``); each arm is an owner, and its queued shapes and finalizer belong to it
+(``cancel(owner = ...)`` on a failed load, ``cancel()`` on unload). ``UNSLOTH_DIFFUSION_INT8_CUTLASS_DEFER=0`` races at
+load, as before."""
 
 from __future__ import annotations
 
 import contextlib
 import contextvars
+import itertools
 import os
 import threading
 import time
@@ -31,10 +35,12 @@ _IDLE_MAX_S = 600.0
 _RETRY_S = 0.5
 _CANCEL_WAIT_S = 60.0
 
-# Set by the image backend's load and render: a video load (no render hooks here) keeps racing at load.
-_ALLOWED: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "unsloth_int8_cutlass_defer_allowed", default = False
+# Set by the image backend's load and render to the arming owner: a video load (no render hooks here) keeps racing at
+# load. None = not armed.
+_ALLOWED: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+    "unsloth_int8_cutlass_defer_allowed", default = None
 )
+_OWNERS = itertools.count(1)
 
 
 def enabled() -> bool:
@@ -43,11 +49,16 @@ def enabled() -> bool:
 
 
 def allowed() -> bool:
-    return enabled() and _ALLOWED.get()
+    return enabled() and _ALLOWED.get() is not None
+
+
+def current_owner() -> Optional[int]:
+    """The owner (one per ``arm``) the shapes deferred in this context are queued under; None = not armed."""
+    return _ALLOWED.get()
 
 
 def arm() -> Any:
-    return _ALLOWED.set(True)
+    return _ALLOWED.set(next(_OWNERS))
 
 
 def disarm(token: Any) -> None:
@@ -75,29 +86,45 @@ def idle_seconds() -> float:
 
 
 class _Job:
-    __slots__ = ("index", "units", "logger", "before", "after", "n_shapes")
+    __slots__ = (
+        "index",
+        "owner",
+        "units",
+        "logger",
+        "before",
+        "after",
+        "n_shapes",
+        "won",
+        "cancelled",
+    )
 
-    def __init__(self, index: Any, logger: Any, before: Callable, after: Callable) -> None:
+    def __init__(
+        self, index: Any, owner: Any, logger: Any, before: Callable, after: Callable
+    ) -> None:
         self.index = index
-        # callables, one weight shape each; a unit returning False is retried after _RETRY_S
+        self.owner = owner
+        # callables, one weight shape each: False = retried after _RETRY_S, an int = shapes whose winner it published
         self.units: list = []
         self.logger = logger
         self.before = before
         self.after = after
         self.n_shapes = 0
+        self.won = 0
+        # set under _COND by cancel: nothing of this job publishes or runs after that
+        self.cancelled = False
 
 
 _COND = threading.Condition(threading.Lock())
-_JOBS: dict = {}  # card index -> _Job
+_JOBS: dict = {}  # (card index, owner) -> _Job
 _STATE: dict = {
     "active": 0,  # renders under way
     "last_end": None,  # perf_counter of the last render's end
     "rendered": False,  # a render ended since the jobs were scheduled
-    "running": False,  # a unit is racing now
+    "running": False,  # a unit or a finalizer is running now
+    "job": None,  # the job that unit / finalizer belongs to
     "refresh": False,  # winners landed since the last render began: it re-records its graphs
     "thread": None,
     "busy": None,  # extra idle check (a background compile running)
-    "generation": 0,  # bumped by cancel: a unit of an older generation publishes nothing new
 }
 _STATUS: dict = {
     "state": "none",
@@ -124,16 +151,26 @@ def pending(index: Any = None) -> bool:
     with _COND:
         if index is None:
             return bool(_JOBS)
-        return index in _JOBS
+        return any(key[0] == index for key in _JOBS)
 
 
-def schedule(index: Any, units: list, logger: Any, before: Callable, after: Callable) -> None:
-    """Queue ``units`` (one weight shape each) for card ``index``; ``before()`` runs once ahead of them, ``after()``
-    once they are done and returns the number of shapes that won. Nothing runs until a render has ended."""
+def schedule(
+    index: Any,
+    units: list,
+    logger: Any,
+    before: Callable,
+    after: Callable,
+    owner: Any = None,
+) -> None:
+    """Queue ``units`` (one weight shape each) for card ``index`` under ``owner`` (default: this context's
+    ``current_owner``); ``before()`` runs once ahead of them, ``after()`` once they are done (not after a cancel).
+    A unit returns False (retry), or how many shapes it published a winner for. Nothing runs until a render ends."""
+    if owner is None:
+        owner = current_owner() or 0
     with _COND:
-        job = _JOBS.get(index)
+        job = _JOBS.get((index, owner))
         if job is None:
-            job = _JOBS[index] = _Job(index, logger, before, after)
+            job = _JOBS[(index, owner)] = _Job(index, owner, logger, before, after)
             job.units.append(before)
         job.units.extend(units)
         job.n_shapes += len(units)
@@ -146,7 +183,8 @@ def schedule(index: Any, units: list, logger: Any, before: Callable, after: Call
 
 def render_begin() -> bool:
     """A render starts: waits for a race unit in flight (one weight shape), then returns True once if winners
-    landed since the last render began (drop the CUDA graphs so they re-record on the winning kernels)."""
+    landed since the last render began (drop the CUDA graphs so they re-record on the winning kernels). A unit
+    publishes its winner and this flag together, before it lets a waiting render in."""
     with _COND:
         _STATE["active"] += 1
         waited = False
@@ -209,40 +247,49 @@ def _worker() -> None:
                     if left == 0.0:
                         break
                     _COND.wait(left)
-                index = next(iter(_JOBS))
-                job = _JOBS[index]
+                key = next(iter(_JOBS))
+                job = _JOBS[key]
                 if not job.units:
-                    _JOBS.pop(index)
+                    _JOBS.pop(key)
                     unit = None
                 else:
                     unit = job.units.pop(0)
-                    _STATE["running"] = True
-                    generation = _STATE["generation"]
                     if _STATUS["started_at"] is None:
                         _STATUS["started_at"] = time.time()
                     _STATUS["state"] = "running"
+                # The finalizer counts as running too: cancel() waits for it, so it never runs past its load.
+                _STATE["running"] = True
+                _STATE["job"] = job
             if unit is None:
                 _finish(job)
                 continue
-            ok = True
+            result: Any = True
             try:
-                ok = unit() is not False
+                result = unit()
             except Exception as exc:  # noqa: BLE001 - a failed shape keeps the Triton path
                 _STATUS["error"] = f"{type(exc).__name__}: {exc}"
             with _COND:
                 _STATE["running"] = False
-                if generation == _STATE["generation"]:
-                    if ok:
-                        if unit is not job.before:
-                            _STATUS["raced"] += 1
-                    else:
+                _STATE["job"] = None
+                if not job.cancelled:
+                    if result is False:
                         job.units.insert(0, unit)
                         _STATE["last_end"] = time.perf_counter() - idle_seconds() + _RETRY_S
+                    else:
+                        if unit is not job.before:
+                            _STATUS["raced"] += 1
+                        won = result if type(result) is int and result > 0 else 0
+                        if won:
+                            # Published with the winner, before a render waiting on this unit is let in.
+                            job.won += won
+                            _STATUS["won"] += won
+                            _STATE["refresh"] = True
                 _COND.notify_all()
     finally:
         with _COND:
             _STATE["thread"] = None
             _STATE["running"] = False
+            _STATE["job"] = None
             if _JOBS and _STATE["rendered"]:
                 # a job queued while this thread was leaving
                 thread = threading.Thread(
@@ -254,19 +301,21 @@ def _worker() -> None:
 
 
 def _finish(job: _Job) -> None:
-    won = 0
     try:
-        won = int(job.after() or 0)
+        if not job.cancelled:
+            job.after()
     except Exception as exc:  # noqa: BLE001
         _STATUS["error"] = f"{type(exc).__name__}: {exc}"
-    with _COND:
-        _STATUS["won"] += won
-        if won:
-            _STATE["refresh"] = True
-        if not _JOBS:
-            _STATUS["state"] = "done"
-            _STATUS["done_at"] = time.time()
-    if job.logger is not None:
+    finally:
+        with _COND:
+            _STATE["running"] = False
+            _STATE["job"] = None
+            cancelled = job.cancelled
+            if not cancelled and not _JOBS:
+                _STATUS["state"] = "done"
+                _STATUS["done_at"] = time.time()
+            _COND.notify_all()
+    if job.logger is not None and not cancelled:
         took = (
             (_STATUS["done_at"] or time.time()) - _STATUS["started_at"]
             if _STATUS["started_at"]
@@ -276,25 +325,33 @@ def _finish(job: _Job) -> None:
             "diffusion.int8_gemm: deferred CUTLASS race done on cuda:%s in %.1f s: %d of %d weight shape(s) won%s",
             job.index,
             took,
-            won,
+            job.won,
             job.n_shapes,
-            "; the next render re-records its CUDA graphs on them" if won else "",
+            "; renders after each win re-record their CUDA graphs on it" if job.won else "",
         )
 
 
-def cancel(timeout: float = _CANCEL_WAIT_S) -> None:
-    """Drop every queued unit (unload / a new load); waits for a unit in flight so no race outlives the weights."""
+def cancel(timeout: float = _CANCEL_WAIT_S, owner: Any = None) -> None:
+    """Drop the queued units of ``owner`` (a failed load), or every one (None: unload / a new load); waits for a unit
+    or finalizer of theirs in flight so no race outlives the weights, and none of theirs publishes afterwards."""
     with _COND:
-        _STATE["generation"] += 1
-        had = bool(_JOBS)
-        _JOBS.clear()
-        deadline = time.perf_counter() + timeout
-        while _STATE["running"] and time.perf_counter() < deadline:
-            _COND.wait(0.5)
-        _STATE["refresh"] = False
-        _STATE["rendered"] = False
-        _STATE["busy"] = None
-        if had and _STATUS["state"] in ("pending", "running"):
+        mine = lambda job: owner is None or job.owner == owner  # noqa: E731
+        had = False
+        for key in [key for key, job in _JOBS.items() if mine(job)]:
+            _JOBS.pop(key).cancelled = True
+            had = True
+        flying = _STATE["job"]
+        if flying is not None and mine(flying):
+            flying.cancelled = True
+            had = True
+            deadline = time.perf_counter() + timeout
+            while _STATE["job"] is flying and time.perf_counter() < deadline:
+                _COND.wait(0.5)
+        if owner is None:
+            _STATE["refresh"] = False
+            _STATE["rendered"] = False
+            _STATE["busy"] = None
+        if had and not _JOBS and _STATUS["state"] in ("pending", "running"):
             _STATUS["state"] = "cancelled"
         _COND.notify_all()
 
@@ -302,7 +359,9 @@ def cancel(timeout: float = _CANCEL_WAIT_S) -> None:
 def _reset_for_tests() -> None:
     cancel(timeout = 5.0)
     with _COND:
-        _STATE.update(active = 0, last_end = None, rendered = False, running = False, refresh = False)
+        _STATE.update(
+            active = 0, last_end = None, rendered = False, running = False, job = None, refresh = False
+        )
         _STATUS.update(
             state = "none",
             scheduled_at = None,

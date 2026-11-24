@@ -12,6 +12,7 @@ path there); UNSLOTH_DIFFUSION_INT8_GEMM=0 disables."""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import types
@@ -1273,9 +1274,11 @@ _CUT_DEFER_KEYS: dict = {}
 
 def _cut_misses(index: int, recs: list) -> tuple:
     """(recs whose every race point ``_cutlass_plan`` would read back from the race cache, [(module, rec, shape key)]
-    of the ones it would race). Reads the cache as ``_cutlass_plan`` does, without probing a tile or racing; a stored
-    tile verdict missing counts every shape as a miss. Advisory only: a shape called ready that the plan still races
-    is raced at load, as before."""
+    of the ones it would race). Reads the cache as ``_cutlass_plan`` does, without probing a tile or racing. With no
+    stored tile verdict (a fresh card, or one whose tile key moved with an upgrade) a complete race entry still counts
+    as ready: the load probes the tiles, as before this deferral, and serves the stored winners from the first image.
+    Advisory only: a shape called ready that the plan still races (a stored winner failed the probe) is raced at
+    load, as before."""
     import torch
 
     from . import diffusion_int8_cutlass as cut
@@ -1295,6 +1298,13 @@ def _cut_misses(index: int, recs: list) -> tuple:
     recorded = table.get(_rows_cache_key(ckey)) if ckey else None
     recorded = recorded if isinstance(recorded, dict) else {}
     stored = cut._PROBED[index] if index in cut._PROBED else cut._stored_tiles(index, fam)
+
+    def known(tile: Any) -> bool:
+        if stored is not None:
+            return tile in stored
+        # no tile verdict to check against: the load's probe decides (a stored winner it rejects is raced at load)
+        return type(tile) is int and tile >= 0
+
     planned = _CUT_PLAN.get(index) or {}
     done = _CUT_DONE.get(index) or set()
     dev = torch.device("cuda", index)
@@ -1319,8 +1329,7 @@ def _cut_misses(index: int, recs: list) -> tuple:
             hit = (
                 {int(m): v for m, v in hit.items()}
                 if isinstance(hit, dict)
-                and stored is not None
-                and all(v is None or v == _CUT_SKIPPED or v in stored for v in hit.values())
+                and all(v is None or v == _CUT_SKIPPED or known(v) for v in hit.values())
                 else {}
             )
         except (TypeError, ValueError):
@@ -1376,19 +1385,22 @@ def _plan_or_defer(
         _CUT_FAMILY[index] = cut.family(torch.cuda.get_device_capability(index))
     from functools import partial
 
-    keys = _CUT_DEFER_KEYS.setdefault(index, set())
+    # the arming load / render owns these shapes: its failed-load rollback drops them, and only them
+    owner = defer.current_owner() or 0
+    keys = _CUT_DEFER_KEYS.setdefault(index, {})
     units = []
     for module, rec, key in missed:
         if key not in keys:
-            keys.add(key)
-            units.append(partial(_defer_unit, index, module, rec, logger))
+            keys[key] = owner
+            units.append(partial(_defer_unit, index, module, rec, key, logger))
     if units:
         defer.schedule(
             index,
             units,
             logger,
             before = partial(_defer_before, index),
-            after = partial(_defer_after, index),
+            after = partial(_defer_after, index, owner),
+            owner = owner,
         )
         if logger is not None:
             logger.info(
@@ -1422,26 +1434,61 @@ def _defer_before(index: int) -> bool:
     return True
 
 
-def _defer_unit(index: int, module: Any, rec: tuple, logger: Any) -> bool:
-    """One deferred weight shape: the load-time race and verdict (``_cutlass_plan``), outside every capture.
-    False = a graph was recording elsewhere: retried."""
+def _defer_unit(index: int, module: Any, rec: tuple, key: Any, logger: Any) -> Any:
+    """One deferred weight shape: the load-time race and verdict (``_cutlass_plan``), outside every capture on card
+    ``index``. A capture on another card goes on meanwhile (the process-wide capture lock is never held across the
+    sustained timings). False = a graph was recording or entering on this card: retried; else 1 when the shape won
+    (its tile serves from now on: the scheduler tells the next render to re-record its graphs), 0 when it lost."""
     import torch
 
-    from .diffusion_cuda_graph import hold_off_capture
+    from .diffusion_cuda_graph import hold_device_off_capture
 
-    with hold_off_capture() as safe:
+    with hold_device_off_capture(index) as safe:
         if not safe:
             return False
-        with torch.cuda.device(index):
-            _cutlass_plan(index, [(module, rec)], bool(_CUT_TRITON_ON.get(index)), logger)
-    return True
+        with torch.cuda.device(index), _empty_cache_outside_capture():
+            plan = _cutlass_plan(index, [(module, rec)], bool(_CUT_TRITON_ON.get(index)), logger)
+    return 1 if key in plan else 0
 
 
-def _defer_after(index: int) -> int:
-    """The deferred shapes that won (their tile now serves the next render's calls)."""
-    keys = _CUT_DEFER_KEYS.pop(index, None) or set()
+@contextlib.contextmanager
+def _empty_cache_outside_capture():
+    """While a deferred unit runs: ``torch.cuda.empty_cache`` frees cached blocks on EVERY card, which a capture
+    recording on another card does not survive, so on the unit's thread it runs only when no graph records anywhere
+    (else the blocks stay cached for reuse). Other threads call the real one. ``_cutlass_plan`` itself is left as is:
+    its source keys the stored race verdicts (``_RACE_SOURCES``)."""
+    import torch
+
+    from .diffusion_cuda_graph import device_held_here, run_if_capture_idle
+
+    real = torch.cuda.empty_cache
+
+    def empty_cache() -> None:
+        if not device_held_here():
+            return real()
+        try:
+            run_if_capture_idle(real)
+        except Exception:  # noqa: BLE001 - memory hand-back is best effort
+            pass
+
+    torch.cuda.empty_cache = empty_cache
+    try:
+        yield
+    finally:
+        if torch.cuda.empty_cache is empty_cache:
+            torch.cuda.empty_cache = real
+
+
+def _defer_after(index: int, owner: Any = None) -> int:
+    """Once the owner's deferred shapes are done: drop their keys (not another load's), return how many won."""
+    keys = _CUT_DEFER_KEYS.get(index) or {}
+    mine = [k_ for k_, o in list(keys.items()) if owner is None or o == owner]
+    for k_ in mine:
+        keys.pop(k_, None)
+    if not keys:
+        _CUT_DEFER_KEYS.pop(index, None)
     plan = _CUT_PLAN.get(index) or {}
-    return sum(1 for k_ in keys if k_ in plan)
+    return sum(1 for k_ in mine if k_ in plan)
 
 
 def deferred_race_status() -> dict:
@@ -1450,12 +1497,17 @@ def deferred_race_status() -> dict:
     return defer.status()
 
 
-def cancel_deferred_race() -> None:
-    """Unload / a new load: drop the queued shapes (they race again on the next load that needs them)."""
+def cancel_deferred_race(owner: Any = None) -> None:
+    """Unload / a new load (``owner`` None): drop every queued shape; a failed load: only the shapes its own arm queued.
+    They race again on the next load that needs them. Returns once a unit or finalizer of theirs in flight ended."""
     from . import diffusion_int8_cutlass_defer as defer
 
-    defer.cancel()
-    _CUT_DEFER_KEYS.clear()
+    defer.cancel(owner = owner)
+    if owner is None:
+        _CUT_DEFER_KEYS.clear()
+        return
+    for index in list(_CUT_DEFER_KEYS):
+        _defer_after(index, owner)
 
 
 def cutlass_call_count() -> int:
@@ -1617,7 +1669,7 @@ def device_config(index: int) -> Optional[tuple]:
             else:
                 ooms = _PROBE_OOMS[0]
                 for cand in (want, _FALLBACK_CONFIG) if want is not None else ():
-                    if cand is not None and _probe(index, cand):
+                    if cand is not None and _settled_probe(index, cand):
                         cfg = cand
                         break
                 ok = {}
@@ -1625,7 +1677,7 @@ def device_config(index: int) -> Optional[tuple]:
                     for rule in shape_tiles(cap):
                         tile = rule[4]
                         if tile not in ok:
-                            ok[tile] = tile == cfg or _probe(index, tile)
+                            ok[tile] = tile == cfg or _settled_probe(index, tile)
                     _store_cfg(index, cap, want, cfg, ok, ooms)
             if cfg is not None:
                 rules = tuple(rule for rule in shape_tiles(cap) if ok[rule[4]])
@@ -1710,7 +1762,7 @@ def _graph_latency(
         for name, fn in fns.items():
             graph = torch.cuda.CUDAGraph()
             # This card's own capture stream: a bare torch.cuda.graph on a second card records an empty graph.
-            with _capturing(), card_graph(graph, index):
+            with _capturing(index), card_graph(graph, index):
                 for _ in range(reps):
                     for op in ops:
                         fn(*op)
@@ -1948,7 +2000,20 @@ def _probe(
     except Exception as exc:  # noqa: BLE001 - out of shared memory, compile failure, ...
         if _is_oom(exc):
             _PROBE_OOMS[0] += 1
+        else:
+            _PROBE_ERRORS[0] += 1
         return False
+
+
+def _settled_probe(index: int, cfg: tuple) -> bool:
+    """``_probe``, retried once when it raised (a compile or launch error) rather than ran and mismatched: device_config
+    persists its verdicts, so a one-off error must not pin the fallback tile (or drop a shape tile) across restarts.
+    A rejection is then stable: a bit-exact mismatch, or the same error twice (a tile past the card's shared memory)."""
+    errors = _PROBE_ERRORS[0]
+    passed = _probe(index, cfg)
+    if passed or _PROBE_ERRORS[0] == errors:
+        return passed
+    return _probe(index, cfg)
 
 
 def _is_oom(exc: BaseException) -> bool:
@@ -1964,6 +2029,8 @@ def _is_oom(exc: BaseException) -> bool:
 # ``_probe``'s own out-of-memory failures (torch's num_ooms stays 0 under cudaMallocAsync): a verdict decided beside one
 # is never persisted.
 _PROBE_OOMS: list = [0]
+# ``_probe``'s other exceptions (compile / launch errors), told apart from a bit-exact mismatch by ``_settled_probe``.
+_PROBE_ERRORS: list = [0]
 # device_config's bit-exact verdict (tile, per-shape tiles) persists per card like the CUTLASS tile probe: card uuid,
 # driver, torch / CUDA / Triton / torchao and the env switches (diffusion_probe_cache.fingerprint), these sources (the
 # kernel, its probe, the arch tables, the sm_8x prefetch fix) and the toolchain the kernel compiles with (_cfg_extra).
@@ -1975,13 +2042,28 @@ CFG_PERSIST_SOURCES = (
 )
 
 
-def _cfg_extra() -> dict:
+def _ptxas_version(arch: int) -> str:
+    """The ptxas Triton assembles for ``arch`` with (3.3+ picks one per arch, Blackwell has its own; 3.2 takes no arch)."""
+    import inspect
+
+    from triton.backends.nvidia.compiler import get_ptxas_version
+
+    try:
+        takes_arch = bool(inspect.signature(get_ptxas_version).parameters)
+    except (TypeError, ValueError):
+        takes_arch = True
+    got = get_ptxas_version(arch) if takes_arch else get_ptxas_version()
+    return " ".join(str(got).split())[-40:]
+
+
+def _cfg_extra(index: int) -> dict:
     """What the probed cubin depends on beyond the fingerprint: libdevice (torch / Studio repoint it at the CUDA
-    toolkit's under emulate_precision_casts), ptxas and the prefetch fix's state."""
+    toolkit's under emulate_precision_casts), ptxas for card ``index`` (not the thread's current card), Triton's own
+    version (the triton-windows distribution has no ``triton`` metadata) and the prefetch fix's state."""
     import hashlib
 
+    import triton
     from triton import knobs
-    from triton.backends.nvidia.compiler import get_ptxas_version
 
     import torch
 
@@ -1993,20 +2075,21 @@ def _cfg_extra() -> dict:
         lib = str(Path(nvc.__file__).parent / "lib" / "libdevice.10.bc")
     with open(lib, "rb") as f:
         lib_sha = hashlib.sha256(f.read()).hexdigest()[:16]
-    # the current card's ptxas (Blackwell has its own); the fingerprint already keys the card itself
-    major, minor = torch.cuda.get_device_capability(torch.cuda.current_device())
+    # the probed card's ptxas (Blackwell has its own); the fingerprint already keys the card itself
+    major, minor = torch.cuda.get_device_capability(int(index))
     return {
         "libdevice": lib_sha,
-        "ptxas": " ".join(str(get_ptxas_version(major * 10 + minor)).split())[-40:],
+        "ptxas": _ptxas_version(major * 10 + minor),
+        "triton": str(getattr(triton, "__version__", "")),
         "prefetch_fix": _prefetch_fix_key(),
     }
 
 
-def _cfg_store() -> Any:
+def _cfg_store(index: int) -> Any:
     """A fresh view per call: Namespace caches a card's slot with the extra key it saw first, and the early prewarm
     thread asks before the libdevice pin while device_config asks after it."""
     from .diffusion_probe_cache import Namespace
-    return Namespace("int8_gemm_cfg", CFG_PERSIST_SOURCES, extra = _cfg_extra)
+    return Namespace("int8_gemm_cfg", CFG_PERSIST_SOURCES, extra = lambda: _cfg_extra(index))
 
 
 def _cfg_slot(cap: tuple, want: tuple) -> str:
@@ -2016,7 +2099,7 @@ def _cfg_slot(cap: tuple, want: tuple) -> str:
 def _stored_cfg(index: int, cap: tuple, want: tuple) -> Optional[tuple]:
     """(tile, {shape tile: passed}) persisted for this card, or None (missing, stale, malformed). Never raises."""
     try:
-        got = _cfg_store().get(f"cuda:{int(index)}", _cfg_slot(cap, want))
+        got = _cfg_store(index).get(f"cuda:{int(index)}", _cfg_slot(cap, want))
         if not isinstance(got, dict) or not isinstance(got.get("cfg"), list):
             return None
         cfg = tuple(int(v) for v in got["cfg"])
@@ -2040,7 +2123,7 @@ def _store_cfg(index: int, cap: tuple, want: tuple, cfg: tuple, ok: dict, ooms: 
         import torch
 
         torch.cuda.synchronize(index)
-        _cfg_store().put(
+        _cfg_store(index).put(
             f"cuda:{int(index)}",
             _cfg_slot(cap, want),
             {"cfg": list(cfg), "tiles": [[list(t), bool(p)] for t, p in ok.items()]},

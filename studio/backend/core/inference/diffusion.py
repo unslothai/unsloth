@@ -2948,6 +2948,19 @@ def _release_streamed_expandable() -> None:
         pass
 
 
+def _cancel_int8_defer_of_this_load() -> None:
+    """A load failed before it was published: drop the CUTLASS race shapes its own arm deferred (only those), so the
+    queued modules and weights die with it rather than at the next load or unload."""
+    owner = int8_defer.current_owner()
+    gemm = sys.modules.get(f"{__package__}.diffusion_int8_gemm")
+    if owner is None or gemm is None:
+        return
+    try:
+        gemm.cancel_deferred_race(owner = owner)
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
+
+
 def _drop_measured_reserve_for_layer_split(pipe: Any, plan: Any) -> bool:
     """A layer split replaced the one-card plan whose partial residency the measured reserve priced. Left in place, a
     conditioned request past it would give the split denoiser on-demand offload hooks onto the primary
@@ -12897,6 +12910,8 @@ class DiffusionBackend:
                     if not state_committed:
                         # Never published, so _unload_locked cannot reach them: the pinners would keep the encoders.
                         stop_background_pins(pipe)
+                        # The CUTLASS race this load deferred holds a module of it per weight shape.
+                        _cancel_int8_defer_of_this_load()
                         # First: its gate sits in front of the CUDA-graph layer uninstalled by identity below.
                         if load_bg_compile is not None:
                             load_bg_compile.close()

@@ -190,7 +190,8 @@ def fingerprint(card: str) -> Optional[dict[str, Any]]:
             "torch_cuda": str(torch.version.cuda),
             "hip": str(hip),
             "torchao": _version("torchao"),
-            "triton": _version("triton"),
+            # triton-windows ships the same module under another distribution name
+            "triton": _version("triton") or _version("triton-windows"),
             "driver": driver,
             "gpu_name": str(props.name),
             "gpu_uuid": uuid,
