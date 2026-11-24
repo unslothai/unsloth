@@ -5799,7 +5799,7 @@ class FastLlamaModel:
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _is_text_seq2seq_config(
             getattr(model, "config", None)
         ):
-            return FastBaseModel.patch_peft_model(
+            return FastBaseModel.post_patch_model(
                 model = model,
                 use_gradient_checkpointing = use_gradient_checkpointing,
             )
