@@ -937,6 +937,9 @@ export const ptBR = {
     useModelScopeHint: "Pesquise e baixe pelo ModelScope. Você pode voltar nas Configurações.",
     useModelScopeFailed: "Não foi possível mudar para o ModelScope.",
     updateToken: "Atualizar token",
+    linkedModelTitle: "Carregar {model}?",
+    linkedModelBody: "Um link abriu esta página e pediu para baixar e carregar este modelo.",
+    linkedModelLoad: "Carregar",
     hfToken: {
       label: "Token do HF",
       saved: "Salvo",
@@ -2615,7 +2618,7 @@ export const ptBR = {
         on: "Ativado",
         off: "Desativado",
         oldWebkitWarning: "WebKitGTK {version} no Wayland: a renderização por GPU pode travar ao iniciar em NVIDIA com escala fracionária (WebKit bug 280210). Se isso acontecer, o Unsloth volta sozinho para a renderização por CPU. No WebKitGTK 2.50.4 não houve ganho de velocidade mensurável (8 fps nos dois casos), então Ativado não é recomendado aqui.",
-        oldDriverWarning: "Driver NVIDIA {version} no X11: o Unsloth mantém a renderização por GPU desativada até o driver ser 610 ou mais recente. Drivers mais antigos vazam um descritor de arquivo por quadro, e a janela para de ser desenhada em poucos minutos.",
+        oldDriverWarning: "Driver NVIDIA {version} no X11: o Unsloth mantém a renderização por GPU desativada até o driver ser 590 ou mais recente. Drivers mais antigos vazam um descritor de arquivo por quadro, e a janela para de ser desenhada em poucos minutos.",
         fallbackNote: "A renderização por GPU travou ao iniciar neste sistema, então o Unsloth está usando renderização por CPU.",
         tryAgain: "Tentar a GPU de novo",
         envOverride: "Definido pela variável de ambiente {name}. Esta configuração não tem efeito até que ela seja removida.",

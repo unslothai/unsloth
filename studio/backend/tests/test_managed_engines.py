@@ -3130,3 +3130,65 @@ def test_download_size_counts_the_flashinfer_kernel_wheel(isolated, kernel_host,
     assert (
         with_kernels - install.download_bytes("vllm") == table[f"{version}+cu130"]["x86_64"]["size"]
     )
+
+
+def test_windows_local_checkpoint_served_names(monkeypatch):
+    from contextlib import nullcontext
+    from core.inference import managed_engine
+
+    class CommandCaptured(Exception):
+        pass
+
+    monkeypatch.setattr(managed_engine, "installed", lambda _: {"host": "wsl"})
+    monkeypatch.setattr(managed_engine, "engine_lease", lambda _: nullcontext())
+    monkeypatch.setattr(managed_engine, "_free_port", lambda _: 12345)
+
+    def launch(engine, model, path):
+        managed = ManagedEngine(engine)
+
+        def capture(info, env, gpu_ids, options, trust, served_name, model_path, port):
+            assert model_path == path
+            assert served_name == managed.model
+            raise CommandCaptured
+
+        monkeypatch.setattr(managed, "_wsl_command", capture)
+        with pytest.raises(CommandCaptured):
+            managed._start_once(model, 1024, [0], {}, None, {}, False, path)
+        return managed.model
+
+    first = r"C:\checkpoints\model"
+    second = r"D:\checkpoints\model"
+    alias = launch("sglang", first, first)
+    assert alias and ":" not in alias
+    assert launch("sglang", first, first) == alias
+    assert launch("sglang", second, second) != alias
+    assert launch("sglang", "org/model", None) == "org/model"
+    assert launch("sglang", "custom", first) == "custom"
+    assert launch("vllm", first, first) == first
+
+
+@_LOCAL_ENGINE_HOST
+def test_local_sglang_checkpoint_served_name(isolated, monkeypatch):
+    from types import SimpleNamespace
+    from core.inference import managed_engine
+
+    class CommandCaptured(Exception):
+        pass
+
+    def command(python, model_path, *args, **kwargs):
+        assert model_path == "/mnt/c/checkpoints/model"
+        assert kwargs["served_model_name"] == managed.model
+        raise CommandCaptured
+
+    active(isolated, "sglang")
+    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.8)
+    managed = ManagedEngine("sglang")
+    managed.adapter = SimpleNamespace(
+        command = command, environment = lambda _: {}, key_environment = lambda _: {}
+    )
+    # Studio inside WSL maps a typed drive path for the engine but keeps it as the identifier.
+    with pytest.raises(CommandCaptured):
+        managed._start_once(
+            r"C:\checkpoints\model", 1024, [0], {}, None, {}, False, "/mnt/c/checkpoints/model"
+        )
+    assert ":" not in managed.model

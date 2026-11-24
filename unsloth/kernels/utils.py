@@ -722,8 +722,13 @@ _USE_NF4_KERNELS = False
 _TRITON_GEMV_EAGER = False
 _GEMV_MAX_ROWS = 1
 _is_compiling = torch.compiler.is_compiling
+# gfx1151 ROCm and NVIDIA L4: the Triton skinny decode linear (rocm_skinny_linear.py) where measured.
 _ROCM_SKINNY_LINEAR = False
-if torch.version.hip is not None and os.environ.get("UNSLOTH_ROCM_SKINNY_LINEAR", "1") != "0":
+if (
+    os.environ.get("UNSLOTH_ROCM_SKINNY_LINEAR", "1") != "0"
+    if torch.version.hip is not None
+    else os.environ.get("UNSLOTH_CUDA_SKINNY_LINEAR", "1") != "0" and torch.version.cuda is not None
+):
     try:
         from . import rocm_skinny_linear as _rocm_skinny
         if _rocm_skinny.triton is not None:
@@ -1867,10 +1872,10 @@ def fast_linear_forward(
         )
 
     lora_cast = None
-    if W_quant is None and _ROCM_SKINNY_LINEAR and not _is_compiling():
-        # gfx11 ROCm: base GEMM + LoRA in one launch (rocBLAS skinny GEMMs are slow there). Decided before the
-        # LoRA cast: other devices cast once below, and trainable adapters under grad keep the path below
-        # (the cached cast is detached).
+    if W_quant is None and temp_lora is None and _ROCM_SKINNY_LINEAR and not _is_compiling():
+        # gfx11 ROCm / L4: base GEMM + LoRA in one launch (rocBLAS skinny GEMMs, cuBLAS rank-r GEMMs are slow
+        # there). Decided before the LoRA cast: other devices cast once below, and trainable adapters under grad
+        # keep the path below (the cached cast is detached). A caller's temp_lora must get X @ A.T: path below.
         A = B = None
         take = _rocm_skinny_supported(X.device)
         if take and lora_A is not None:

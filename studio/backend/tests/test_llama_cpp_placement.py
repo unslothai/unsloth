@@ -5953,7 +5953,11 @@ def test_the_launch_discounts_the_lazy_table(tmp_path, _moe_cache_host):
     _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, caps = no_auto, **card)
     assert _load_mode(cmd) is None, "qwen3moe does not mark the table lazy"
 
-    _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, **card)
+    # The prompt cache is off so only the table decides: a pinned load has to leave room for the
+    # cache it would grow into, and 12 GiB cannot hold the 8 GiB default beside the weights.
+    _b, cmd = _cache_launch(
+        tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, cache_ram = 0, **card
+    )
     assert _load_mode(cmd) == "none", cmd
     # And "-lzm off" makes it an ordinary tensor again.
     _b, cmd = _cache_launch(
@@ -6042,7 +6046,7 @@ def test_an_igpu_only_child_gets_no_auto_lazy_discount(tmp_path, _moe_cache_host
     card = dict(memory = _EIGHT_GIB_CARD)
     _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, **card)
     assert _load_mode(cmd) is None, cmd
-    # An explicit "on" is read lazily on any device.
+    # An explicit "on" is read lazily on any device (prompt cache off, as above).
     _b, cmd = _cache_launch(
         tmp_path,
         ram_gib = 12,
@@ -6050,6 +6054,7 @@ def test_an_igpu_only_child_gets_no_auto_lazy_discount(tmp_path, _moe_cache_host
         arch = "qwen4exp",
         caps = no_auto,
         extra_args = ["-lzm", "on"],
+        cache_ram = 0,
         **card,
     )
     assert _load_mode(cmd) == "none", cmd
@@ -6193,9 +6198,9 @@ def _apu_qwen38(
 def test_a_mixed_cuda_host_keeps_the_lazy_discount_through_the_preflight(
     tmp_path, _moe_cache_host, monkeypatch, load_kwargs
 ):
-    """No --device list."""
+    """No --device list. The prompt cache is off so only the lazy discount decides the pin."""
     _mixed_cuda_soc_host(monkeypatch)
-    backend, cmd = _mixed_cuda_launch(tmp_path, host_guard = True, **load_kwargs)
+    backend, cmd = _mixed_cuda_launch(tmp_path, host_guard = True, cache_ram = 0, **load_kwargs)
     assert _load_mode(cmd) == "none", cmd
     assert backend.last_load_warning is None, backend.last_load_warning
 

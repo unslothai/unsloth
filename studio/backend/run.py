@@ -1983,6 +1983,24 @@ def _cloudflare_tunnel_should_start(
     return is_wildcard_host(host) and not api_only
 
 
+async def _hold_ipv6_loopback(protocol_factory, server, host: str, backlog: int):
+    """Also listen on [::1] when serving plain HTTP on 127.0.0.1. Browsers may send http://localhost to ::1
+    first, so whoever else listens there (another OS user, a sandboxed tool sharing the host network) would
+    get the page's requests and session token. Best effort: no IPv6 or a taken ::1 leaves 127.0.0.1 alone."""
+    import asyncio
+
+    if host != "127.0.0.1":
+        return None
+    try:
+        port = _final_bound_port(server, 0)
+        return await asyncio.get_running_loop().create_server(
+            protocol_factory, host = "::1", port = port, backlog = backlog
+        )
+    except (OSError, RuntimeError) as exc:
+        logger.debug("Not listening on [::1]: %s", exc)
+        return None
+
+
 def _final_bound_port(server, requested_port: int) -> int:
     """Resolve Uvicorn's OS-assigned port after readiness for ``port=0``."""
     if requested_port > 0:
@@ -2627,11 +2645,16 @@ def run_server(
 
     class _ReadyServer(uvicorn.Server):
         loopback_http = None
+        loopback_v6 = None
 
         async def startup(self, *args, **kwargs):
             await super().startup(*args, **kwargs)
             if tls is not None and getattr(self, "started", False) and not self.should_exit:
                 await self._start_loopback_http()
+            if tls is None and getattr(self, "started", False) and not self.should_exit:
+                self.loopback_v6 = await _hold_ipv6_loopback(
+                    self._protocol_factory(), self, self.config.host, self.config.backlog
+                )
             if getattr(self, "started", False) and not self.should_exit:
                 logger.info(
                     "Uvicorn startup hook completed in %.1fms",
@@ -2639,9 +2662,7 @@ def run_server(
                 )
                 ready_event.set()
 
-        async def _start_loopback_http(self):
-            # Plain HTTP on an ephemeral loopback port for Studio's own /v1 self-calls (utils/studio_tls.py). Kept out
-            # of self.servers: _final_bound_port and _bound_request_host read the user's listener from there.
+        def _protocol_factory(self):
             config = self.config
 
             def _protocol(_loop = None):
@@ -2652,14 +2673,21 @@ def run_server(
                     _loop = _loop,
                 )
 
+            return _protocol
+
+        async def _start_loopback_http(self):
+            # Plain HTTP on an ephemeral loopback port for Studio's own /v1 self-calls (utils/studio_tls.py). Kept out
+            # of self.servers: _final_bound_port and _bound_request_host read the user's listener from there.
             self.loopback_http = await asyncio.get_running_loop().create_server(
-                _protocol, host = "127.0.0.1", port = 0, backlog = config.backlog
+                self._protocol_factory(), host = "127.0.0.1", port = 0, backlog = self.config.backlog
             )
             app.state.loopback_http_port = self.loopback_http.sockets[0].getsockname()[1]
 
         async def shutdown(self, *args, **kwargs):
             if self.loopback_http is not None:
                 self.loopback_http.close()
+            if self.loopback_v6 is not None:
+                self.loopback_v6.close()
             await super().shutdown(*args, **kwargs)
 
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.

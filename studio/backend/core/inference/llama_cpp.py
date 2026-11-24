@@ -2823,6 +2823,10 @@ _MISS = object()
 
 # GGUF unsigned value-type id -> byte width (uint8, uint16, uint32, uint64).
 _GGUF_UINT_WIDTHS = {0: 1, 2: 2, 4: 4, 10: 8}
+# The GGUF is the publisher's: counts it declares size lists built here, so past these a value is
+# treated as absent. Real files stay far below (a few hundred layers, chat templates of kilobytes).
+_GGUF_MAX_LAYERS = 1 << 16
+_GGUF_MAX_TEXT_BYTES = 16 * 1024 * 1024
 _GGUF_MARKUP_FIRST_BYTES = frozenset(b"<[")
 
 
@@ -7885,6 +7889,23 @@ _LAZY_MODE_SPELLINGS: dict[str, tuple[frozenset[str], str]] = {
 _LLAMA_CACHE_RAM_DEFAULT_MIB = 8192
 # llama-server's own host RAM with every layer on a GPU (0.9 GiB on a T4); the fit charges VRAM only.
 _LLAMA_SERVER_HOST_MIB = 1024
+# Share of total host RAM a --load-mode none launch may hold: the host-side weights it pins
+# (cudaMallocHost, never paged out) plus what llama-server grows into after load. Measured with
+# Inkling-2-Mini UD-IQ3_XXS on an 8 GB card and a 16 GB host: a 7.7 GB peak (49%) ran, 10-11 GB
+# (63-70%) hung the machine. Above it the load keeps mmap, whose weight pages the OS can evict.
+_PINNED_HOST_SAFE_FRAC = 0.5
+# Windows CUDA keeps less: the desktop compositor and the WDDM sysmem fallback share the same RAM.
+_PINNED_HOST_SAFE_FRAC_WINDOWS = 0.4
+# Cards at or below this total VRAM serve one slot by default once the weights overflow to host
+# RAM: every extra slot adds checkpoints and a saved prompt state in host RAM, not VRAM.
+_SMALL_CARD_SINGLE_SLOT_MIB = 12 * 1024
+# Below this a prompt cache cannot hold a useful saved state; 0 turns it off instead.
+_CACHE_RAM_MIN_USEFUL_MIB = 256
+# Share of the room beside the load a lowered --cache-ram may take. The cache fills to its cap
+# (it keeps earlier prompts), and the other half absorbs what the fit does not price: the desktop,
+# the browser, and on Windows CUDA the WDDM sysmem fallback spilling VRAM into the same RAM. Keeps
+# the 8 GB + 16 GB Inkling-2-Mini plan's projected peak under 9 GiB on Linux and Windows.
+_CACHE_RAM_LOWERED_SHARE = 0.5
 
 
 def _prompt_cache_host_bytes(
@@ -7909,7 +7930,9 @@ def _prompt_cache_host_bytes(
         override = _last_flag_value(extra_args, _CACHE_RAM_FLAGS)
         if override is not None:
             value = override
-        mib = int(str(value).strip())
+        text = str(value).strip().lower()
+        # The fork's "auto" never sizes above the default.
+        mib = _LLAMA_CACHE_RAM_DEFAULT_MIB if text == "auto" else int(text)
     except (TypeError, ValueError):
         return None
     return None if mib < 0 else mib * 1024 * 1024
@@ -8760,7 +8783,7 @@ def _count_memo_key(backend, *parts) -> Optional[bytes]:
                 time.strftime("%Y-%m-%d"),
                 *parts,
             ],
-            sort_keys = True,
+            # Unsorted: llama-server renders tool schema keys in the order sent, which moves the count.
             ensure_ascii = False,
         )
     except Exception:  # unserialisable content: count it, never guess a key
@@ -9034,6 +9057,8 @@ class LlamaCppBackend:
         # --parallel the last load asked for, before any fit-time reduction.
         self._requested_n_parallel: int = 1
         self._slots_cut_for_drafter: bool = False
+        # Auto served one slot because the weights overflow a small card into host RAM.
+        self._slots_cut_for_host_ram: bool = False
         # Budget the running child was sized against; None before any load, so the
         # settings route reports a stale budget instead of nagging on every save.
         self._vram_fraction_launched: Optional[float] = None
@@ -9760,6 +9785,7 @@ class LlamaCppBackend:
         # Cleared with the effective count so a stale value can't skew the dedupe.
         self._requested_n_parallel = 1
         self._slots_cut_for_drafter = False
+        self._slots_cut_for_host_ram = False
         self._requested_n_batch = None
         self._requested_n_ubatch = None
         self._requested_load_mode = None
@@ -10316,7 +10342,7 @@ class LlamaCppBackend:
         # The same count chosen rather than defaulted is one Auto may not cut.
         if (
             not self._is_diffusion
-            and self._slots_cut_for_drafter
+            and (self._slots_cut_for_drafter or self._slots_cut_for_host_ram)
             and not intent.n_parallel_from_default
         ):
             return False
@@ -11279,6 +11305,7 @@ class LlamaCppBackend:
                 "supports_fit_target": False,
                 "fit_measures_borrowed_drafts": False,
                 "supports_cache_ram": False,
+                "supports_cache_ram_auto": False,
                 "supports_ctx_checkpoints": False,
                 "ctx_checkpoints_flag": None,
                 "ctx_checkpoints_default": None,
@@ -11372,6 +11399,7 @@ class LlamaCppBackend:
         supports_load_mode_auto = False
         supports_moe_cache = False
         supports_moe_cache_auto = False
+        supports_cache_ram_auto = False
         supports_lazy_mode = False
         supports_ple = False
         lazy_mode_flag = None
@@ -11558,6 +11586,12 @@ class LlamaCppBackend:
             supports_fit_ctx = _is_real("--fit-ctx")
             supports_fit_target = _is_real("--fit-target")
             supports_cache_ram = _is_real("--cache-ram")
+            # "auto" is a fork addition (size from host RAM after load); upstream exits on it.
+            supports_cache_ram_auto = bool(
+                probe_ok
+                and supports_cache_ram
+                and re.search(r"--cache-ram\s+N\|auto", blocks.get("--cache-ram") or "")
+            )
             # --swa-checkpoints is the older alias; probing only the modern name drops the Checkpoints control on old builds, so record which name this build has.
             for _alias in ("--ctx-checkpoints", "--swa-checkpoints"):
                 if _is_real(_alias):
@@ -11692,6 +11726,7 @@ class LlamaCppBackend:
             "fit_measures_borrowed_drafts": supports_fit_target
             and _fit_measures_borrowed_drafts(bin_path),
             "supports_cache_ram": supports_cache_ram,
+            "supports_cache_ram_auto": supports_cache_ram_auto,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
             "ctx_checkpoints_flag": ctx_checkpoints_flag,
             "ctx_checkpoints_default": ctx_checkpoints_default,
@@ -17272,6 +17307,8 @@ class LlamaCppBackend:
         free_vram_bytes = int(free_vram_mib * 1024 * 1024)
         # VRAM covers the GPU-eligible part; its spill plus the host-only bytes hit RAM.
         spill = max(0, max(0, footprint_bytes - host_only) - free_vram_bytes) + host_only
+        # Read back by the host-peak estimate; a what-if call overwrites it.
+        self._last_fit_spill_bytes = spill
         if spill <= 0:
             return True
         avail = self._available_system_memory_mib() if avail_mib is None else avail_mib
@@ -17469,7 +17506,9 @@ class LlamaCppBackend:
         self, fit_kwargs: Mapping[str, Any], state_bytes: int
     ) -> Optional[int]:
         """Largest --cache-ram up to one saved full-context state (target + draft + checkpoints,
-        server-task.cpp skips a bigger one) the fit still holds; None keeps the default."""
+        server-task.cpp skips a bigger one) the fit still holds; None keeps the default. When
+        the default itself does not fit beside the load, the largest size below it that does
+        (half of it, 0 turns the cache off)."""
         mib = 1024 * 1024
         avail = self._available_system_memory_mib()
         if avail is not None:
@@ -17491,6 +17530,20 @@ class LlamaCppBackend:
             )
 
         low = _LLAMA_CACHE_RAM_DEFAULT_MIB
+        if not fits(low):
+            # The default no longer fits beside the load: lower it to what does, down to 0. A load
+            # that does not fit even without a cache pages its weights anyway; keep the default.
+            if not fits(0):
+                return None
+            low, high = 0, _LLAMA_CACHE_RAM_DEFAULT_MIB - 1
+            while low < high:
+                mid = (low + high + 1) // 2
+                if fits(mid):
+                    low = mid
+                else:
+                    high = mid - 1
+            low = int(low * _CACHE_RAM_LOWERED_SHARE)
+            return low if low >= _CACHE_RAM_MIN_USEFUL_MIB else 0
         high = -(-state_bytes // mib)
         while low < high:
             mid = (low + high + 1) // 2
@@ -17500,8 +17553,134 @@ class LlamaCppBackend:
                 high = mid - 1
         return low if low > _LLAMA_CACHE_RAM_DEFAULT_MIB else None
 
+    @staticmethod
+    def _small_card_overflow_total_mib(
+        gpus: Iterable[tuple],
+        total_by_idx: Mapping[int, int],
+        model_size: Optional[int],
+        *,
+        n_parallel: int,
+        slots_from_default: bool,
+    ) -> Optional[int]:
+        """The largest card's total VRAM (MiB) when a default slot count should drop to one: the
+        weights alone exceed the free VRAM of every discrete card, so --fit overflows them to host
+        RAM, and no card is above ``_SMALL_CARD_SINGLE_SLOT_MIB``. None keeps the slots."""
+        from utils.hardware import is_apple_silicon
+
+        if n_parallel <= 1 or not slots_from_default or not model_size or is_apple_silicon():
+            return None
+        rows = [(idx, free) for idx, free in (gpus or ()) if (total_by_idx.get(idx) or 0) > 0]
+        if not rows:
+            return None
+        largest = max(int(total_by_idx[idx]) for idx, _free in rows)
+        if largest > _SMALL_CARD_SINGLE_SLOT_MIB:
+            return None
+        free_bytes = sum(max(0, int(free)) for _idx, free in rows) * 1024 * 1024
+        return largest if model_size > free_bytes else None
+
+    # The last launch's projected llama-server host RSS at peak; None when unpriced.
+    _host_peak_estimate_bytes: Optional[int] = None
+    _last_fit_spill_bytes: Optional[int] = None
+
+    def _host_peak_bytes(self, fit_kwargs: Mapping[str, Any], growth_bytes: int) -> Optional[int]:
+        """Host bytes the fit spills (host-side weights, host KV, checkpoints) plus the growth."""
+        self._last_fit_spill_bytes = None
+        self._fit_derived_load_mode(
+            **{
+                **fit_kwargs,
+                "host_only_bytes": fit_kwargs.get("host_only_bytes", 0) + growth_bytes,
+                "announce": False,
+            }
+        )
+        return self._last_fit_spill_bytes
+
+    @staticmethod
+    def _llama_server_growth_bytes(prompt_cache_bytes: Optional[int], state_bytes: int) -> int:
+        """Host RAM llama-server grows into after load: the prompt cache at its configured --cache-ram
+        capacity plus the server's own baseline. The cache keeps earlier prompts and raises its
+        token limit until the size cap is full (server_prompt_cache::update), so the cap is the
+        price, not one state per slot. An unbounded cache (-1) keeps at most n_ctx tokens in all,
+        priced at one full-context state. Checkpoints are already in the fit's host-only term."""
+        cache = max(0, int(state_bytes)) if prompt_cache_bytes is None else prompt_cache_bytes
+        return max(0, cache) + _LLAMA_SERVER_HOST_MIB * 1024 * 1024
+
+    def _pinned_load_mode_keeps(
+        self,
+        fit_kwargs: Mapping[str, Any],
+        growth_bytes: int,
+        *,
+        announce: bool = True,
+    ) -> bool:
+        """Whether a ``--load-mode none`` verdict survives llama-server's post-load growth.
+
+        The fit prices the load; a pinned load also has to hold the prompt cache, checkpoints
+        and server baseline it grows into (``growth_bytes``), and on a GPU build its host-side
+        weights are pinned with cudaMallocHost, so they cannot be paged out when that growth
+        arrives. Two checks: the growth still fits the available RAM, and the pinned weights
+        plus growth stay under a safe share of total RAM. Either failing keeps mmap."""
+        if (
+            self._fit_derived_load_mode(
+                **{
+                    **fit_kwargs,
+                    "host_only_bytes": fit_kwargs.get("host_only_bytes", 0) + growth_bytes,
+                    "announce": False,
+                }
+            )
+            != self._FIT_LOAD_MODE
+        ):
+            if announce:
+                logger.info(
+                    "Load mode: keeping mmap; the load fits, but not with the %.1f GB "
+                    "llama-server grows into after it (prompt cache, server).",
+                    growth_bytes / (1024**3),
+                )
+            return False
+        # Only a GPU build pins its host copy; a CPU-only load is ordinary, pageable memory.
+        if not list(fit_kwargs.get("gpus") or ()):
+            return True
+        total = self._host_memory_capacity_mib()
+        if not total:
+            return True
+        frac = _PINNED_HOST_SAFE_FRAC_WINDOWS if sys.platform == "win32" else _PINNED_HOST_SAFE_FRAC
+        if (
+            self._fit_derived_load_mode(
+                **{
+                    **fit_kwargs,
+                    "host_only_bytes": fit_kwargs.get("host_only_bytes", 0) + growth_bytes,
+                    # The fit grants avail minus the headroom; grant exactly the safe share.
+                    "avail_mib": int(total * frac) + _HOST_RAM_HEADROOM_MIB,
+                    "announce": False,
+                }
+            )
+            != self._FIT_LOAD_MODE
+        ):
+            if announce:
+                logger.info(
+                    "Load mode: keeping mmap; pinning the host-side weights plus the %.1f GB "
+                    "llama-server grows into would hold more than %d%% of the %.1f GB of RAM, "
+                    "which the OS cannot page out.",
+                    growth_bytes / (1024**3),
+                    int(frac * 100),
+                    total / 1024,
+                )
+            return False
+        return True
+
     # Only ever reassigned, so the shared default is safe; the --cache-ram pair this launch sized.
     _sized_cache_ram_flags: list[str] = []
+
+    def _retry_dropped_cache_ram_flags(self) -> list[str]:
+        """The sized --cache-ram pair a retry that gives up the fit's proof drops: only a raise
+        above the default rested on that proof. A lowered cache (or "auto", which never raises)
+        is the safe side of host RAM, so a retry keeps it instead of going back to the default."""
+        flags = list(self._sized_cache_ram_flags or ())
+        if not flags:
+            return []
+        try:
+            raised = int(str(flags[-1]).strip()) > _LLAMA_CACHE_RAM_DEFAULT_MIB
+        except (TypeError, ValueError):
+            raised = False
+        return flags if raised else []
 
     # Chosen by measurement: dio was fastest cold on large models; kept at none because that was
     # requested. dio has no pre-enum spelling, so old builds would emit nothing.
@@ -19440,6 +19619,8 @@ class LlamaCppBackend:
         ):
             return
         span = end - start
+        if n_phys + (count - 1) * span > _GGUF_MAX_LAYERS:
+            return
         phys = list(range(n_phys)) + [start + k % span for k in range((count - 1) * span)]
         for attr in (
             "_n_kv_heads_by_layer",
@@ -20440,6 +20621,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _gguf_read_array_value(f, atype: int, alen: int) -> Optional[list]:
+        if atype in (4, 5, 7) and alen > _GGUF_MAX_LAYERS:
+            f.seek(LlamaCppBackend._GGUF_TYPE_SIZE[atype] * alen, 1)
+            return None
         if atype == 4:  # UINT32
             return [struct.unpack("<I", f.read(4))[0] for _ in range(alen)]
         if atype == 5:  # INT32
@@ -20871,6 +21055,9 @@ class LlamaCppBackend:
                         ):
                             if vtype == 8:  # STRING
                                 slen = struct.unpack("<Q", f.read(8))[0]
+                                if slen > _GGUF_MAX_TEXT_BYTES:
+                                    f.seek(slen, 1)
+                                    continue
                                 val_s = f.read(slen).decode("utf-8")
                                 if key.endswith(".decision.type"):
                                     decision_by_arch[key] = val_s
@@ -20987,6 +21174,14 @@ class LlamaCppBackend:
                         break
                 else:
                     kv_complete = True
+
+            if self._n_layers is not None and self._n_layers > _GGUF_MAX_LAYERS:
+                logger.warning(
+                    "GGUF declares %d layers; treating the layer count as unknown", self._n_layers
+                )
+                self._n_layers = None
+            if self._loop_count is not None and self._loop_count > _GGUF_MAX_LAYERS:
+                self._loop_count = None
 
             # Bind buffered metadata after discovering the architecture namespace.
             if arch is not None:
@@ -25158,7 +25353,7 @@ class LlamaCppBackend:
         if replay is None:
             return None
         # Replay runs on no GPU, so give the CPU attempt llama.cpp's auto mmap back.
-        replay = _without_subsequence(replay, self._sized_cache_ram_flags)
+        replay = _without_subsequence(replay, self._retry_dropped_cache_ram_flags())
         if self._fit_load_mode_flags:
             replay = _without_subsequence(replay, self._fit_load_mode_flags)
             logger.info(
@@ -26612,6 +26807,7 @@ class LlamaCppBackend:
                 _metal_alongside_shortfall: Optional[tuple[int, int]] = None
                 # A path that never prices the launch must not commit the previous one's plan.
                 self._pending_plan_mib = {}
+                self._host_peak_estimate_bytes = None
                 # Set by the expert-spill raise after the fit.
                 self._moe_spill_batch_restore: Optional[tuple[Optional[int], Optional[int]]] = None
                 _moe_cache_candidate = False
@@ -26648,6 +26844,8 @@ class LlamaCppBackend:
                 # flags above: the except path falls through to the launch, which reads it.
                 _fit_load_mode: Optional[str] = None
                 _planned_cache_ram = cache_ram
+                # Set by the except arm below: the placement threw, so nothing was priced.
+                _placement_unpriced = False
                 _managed_lazy_flags: Optional[list[str]] = None
                 _host_input_embd = 0
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
@@ -26662,6 +26860,8 @@ class LlamaCppBackend:
                 _spec_dropped_no_vram = False
                 _mtp_slots_asked: Optional[int] = None
                 _mtp_slots_target_ctx: Optional[int] = None
+                # The default slot count before the small-card host-RAM cut, None if not cut.
+                _host_ram_slots_asked: Optional[int] = None
                 # The projector runs on the CPU and so allocates no VRAM:
                 # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates its whole
                 # GPU backend on that, leaving no partial offload. Only the paravirtual
@@ -26805,6 +27005,27 @@ class LlamaCppBackend:
                     # GPU-aware speculative defaults; the list feeds the
                     # CPU-fallback check.
                     _detected_gpus = list(gpus)
+                    _single_slot_card_mib = self._small_card_overflow_total_mib(
+                        gpus,
+                        total_by_idx,
+                        model_size,
+                        n_parallel = n_parallel,
+                        slots_from_default = bool(intent.n_parallel_from_default)
+                        and _extra_args_n_parallel(extra_args, env = {}) is None,
+                    )
+                    if _single_slot_card_mib is not None:
+                        logger.info(
+                            "Auto: serving slots reduced %d -> 1; the weights overflow the "
+                            "%.1f GB card into host RAM, where every extra slot adds "
+                            "checkpoints and a saved prompt. Set Parallel Slots to keep %d.",
+                            n_parallel,
+                            _single_slot_card_mib / 1024,
+                            n_parallel,
+                        )
+                        _host_ram_slots_asked = n_parallel
+                        n_parallel = 1  # allow-slot-clamp: weights spill to host RAM
+                        _effective_ubatch = _ubatch_for_slots(n_parallel)
+                        planned_kv_unified = _kv_unified_from_args(extra_args, default = False)
                     # Auto placement only; Vulkan auto already dropped its iGPUs above.
                     if not gpu_ids and not is_vulkan_backend and len(gpus) > 1:
                         _unified = self._rocm_unified_memory_gpu_ids()
@@ -29356,9 +29577,10 @@ class LlamaCppBackend:
                         )
                         _host_avail_mib = self._available_system_memory_mib()
                         if _host_avail_mib is not None:
+                            _host_budget_mib = _host_avail_mib - _HOST_RAM_HEADROOM_MIB
                             effective_ctx = self._fit_context_to_vram(
                                 effective_ctx,
-                                _host_avail_mib - _HOST_RAM_HEADROOM_MIB,
+                                _host_budget_mib,
                                 model_size_fit,
                                 cache_type_kv,
                                 min_ctx = _FIT_MIN_CTX,
@@ -29375,6 +29597,9 @@ class LlamaCppBackend:
                                 total_mib = None,
                                 ctx_checkpoints = _fit_ctx_checkpoints,
                             )
+                            # Weights over budget come back unfitted at the requested size.
+                            if model_size_fit >= _host_budget_mib * 1024 * 1024:
+                                effective_ctx = min(effective_ctx, _FIT_MIN_CTX)
 
                     # Prefer fewer serving slots on GPU over --fit on offload: when the extra
                     # --parallel slots push the footprint past the pin budget, llama-server
@@ -30712,6 +30937,23 @@ class LlamaCppBackend:
                         _fit_lazy_bytes = 0
                     _spill_inputs["lazy_read_bytes"] = _fit_lazy_bytes
                     _fit_load_mode = self._fit_derived_load_mode(**_fit_load_mode_kwargs)
+                    if _fit_load_mode == self._FIT_LOAD_MODE:
+                        _growth_cache = _prompt_cache_host_bytes(
+                            cache_ram,
+                            _fit_extras,
+                            _fit_env,
+                            supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
+                        )
+                        if not self._pinned_load_mode_keeps(
+                            _fit_load_mode_kwargs,
+                            self._llama_server_growth_bytes(
+                                _growth_cache,
+                                _fit_load_mode_kwargs["kv_cache_bytes"]
+                                + _fit_load_mode_kwargs["mtp_bytes"]
+                                + _ckpt_host_bytes,
+                            ),
+                        ):
+                            _fit_load_mode = None
                     if _moe_cache_candidate:
                         _moe_cache_switch = _moe_switch(_MOE_CACHE_ENV)
                         _moe_share = (
@@ -30829,12 +31071,44 @@ class LlamaCppBackend:
                             + _cache_fit["mtp_bytes"]
                             + _ckpt_host_bytes,
                         )
-                        if _planned_cache_ram is not None:
+                        if (
+                            _planned_cache_ram is not None
+                            and _planned_cache_ram < _LLAMA_CACHE_RAM_DEFAULT_MIB
+                        ):
+                            logger.info(
+                                "Prompt cache: --cache-ram %d MiB; host RAM cannot hold the "
+                                "%d MiB default beside this load.",
+                                _planned_cache_ram,
+                                _LLAMA_CACHE_RAM_DEFAULT_MIB,
+                            )
+                        elif _planned_cache_ram is not None:
                             logger.info(
                                 "Prompt cache: --cache-ram %d MiB so a saved conversation "
                                 "of up to %d tokens is kept.",
                                 _planned_cache_ram,
                                 effective_ctx,
+                            )
+                        self._host_peak_estimate_bytes = self._host_peak_bytes(
+                            _cache_fit,
+                            self._llama_server_growth_bytes(
+                                # The capacity this launch configures: Studio's sized value,
+                                # else the user's or llama.cpp's default.
+                                _prompt_cache_host_bytes(
+                                    _planned_cache_ram,
+                                    _fit_extras,
+                                    _fit_env,
+                                    supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
+                                ),
+                                _cache_fit["kv_cache_bytes"]
+                                + _cache_fit["mtp_bytes"]
+                                + _ckpt_host_bytes,
+                            ),
+                        )
+                        if self._host_peak_estimate_bytes is not None:
+                            logger.info(
+                                "Host RAM: llama-server peaks at about %.1f GB resident "
+                                "(host-side weights, checkpoints, prompt cache, server).",
+                                self._host_peak_estimate_bytes / (1024**3),
                             )
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
@@ -30845,6 +31119,7 @@ class LlamaCppBackend:
                     # Same reasoning: an unpriced load keeps llama.cpp's default.
                     _fit_load_mode = None
                     _planned_cache_ram = cache_ram
+                    _placement_unpriced = True
                     _managed_lazy_flags = None
                     _moe_cache_candidate = _moe_cache_ram_ok = _moe_cache_lazy_table = False
                     # And a half-built snapshot is not a price either: the throw can
@@ -31246,6 +31521,17 @@ class LlamaCppBackend:
                             "llama-server has no --cache-ram; skipping the requested %s MiB.",
                             cache_ram,
                         )
+                elif (
+                    # Unpriced launch (the placement threw): a fork build sizes the cache from
+                    # the host RAM left after load; upstream builds keep their default.
+                    cache_ram is None
+                    and _placement_unpriced
+                    and server_caps.get("supports_cache_ram_auto")
+                    and not _extra_args_set_any_flag(extra_args, _CACHE_RAM_FLAGS)
+                    and not str(os.environ.get("LLAMA_ARG_CACHE_RAM") or "").strip()
+                ):
+                    cmd.extend(["--cache-ram", "auto"])
+                    self._sized_cache_ram_flags = cmd[-2:]
                 # Read early so the effective budget can fold in an inherited
                 # LLAMA_ARG_THINK_BUDGET*; the launch env is rebuilt below before spawn.
                 env = self._llama_server_env_for_binary(binary)
@@ -33249,7 +33535,7 @@ class LlamaCppBackend:
 
                 def _drop_fit_load_mode_for_no_flash(fa_cmd: list) -> list:
                     """Drops Unsloth's --load-mode on a --flash-attn off respawn (OOM instead of paging); do NOT clear the record, since the CPU fallback replays these tokens."""
-                    fa_cmd = _without_subsequence(fa_cmd, self._sized_cache_ram_flags)
+                    fa_cmd = _without_subsequence(fa_cmd, self._retry_dropped_cache_ram_flags())
                     if not self._fit_load_mode_flags:
                         return fa_cmd
                     stripped = _without_subsequence(fa_cmd, self._fit_load_mode_flags)
@@ -33849,7 +34135,7 @@ class LlamaCppBackend:
                             # the load fits, and that proof is what just failed, so
                             # give the retry llama.cpp's auto back. Only Unsloth's
                             # own tokens; a user's --load-mode is untouched.
-                            _run = _without_subsequence(_run, self._sized_cache_ram_flags)
+                            _run = _without_subsequence(_run, self._retry_dropped_cache_ram_flags())
                             if self._fit_load_mode_flags:
                                 _run = _without_subsequence(_run, self._fit_load_mode_flags)
                                 # The record is NOT cleared: it describes `cmd`, which
@@ -34707,8 +34993,10 @@ class LlamaCppBackend:
                         self._record_load_warning(_retry_host_msg)
                         # Restore what cmd means: a --fit retry may have recorded a page-lock that cmd never carried.
                         _fit_mode_left_cmd = bool(self._fit_load_mode_flags)
-                        cmd = _without_subsequence(cmd, self._sized_cache_ram_flags)
-                        self._sized_cache_ram_flags = []
+                        _dropped_cache_ram = self._retry_dropped_cache_ram_flags()
+                        cmd = _without_subsequence(cmd, _dropped_cache_ram)
+                        if _dropped_cache_ram:
+                            self._sized_cache_ram_flags = []
                         if self._fit_load_mode_flags:
                             cmd = _without_subsequence(cmd, self._fit_load_mode_flags)
                             self._fit_load_mode_flags = []
@@ -35345,7 +35633,7 @@ class LlamaCppBackend:
                             # the fallbacks below respawn from an argv that carries these
                             # tokens and has to be able to name them.
                             _cpu_projector_cmd = _without_subsequence(
-                                _cpu_projector_cmd, self._sized_cache_ram_flags
+                                _cpu_projector_cmd, self._retry_dropped_cache_ram_flags()
                             )
                             if self._fit_load_mode_flags:
                                 _stripped_cpu_projector_cmd = _without_subsequence(
@@ -35714,6 +36002,9 @@ class LlamaCppBackend:
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
                 self._slots_cut_for_drafter = (
                     _mtp_slots_asked is not None and n_parallel < _mtp_slots_asked
+                )
+                self._slots_cut_for_host_ram = (
+                    _host_ram_slots_asked is not None and n_parallel < _host_ram_slots_asked
                 )
                 # Commit with the rest of the known-good state: only a launch that got
                 # this far replaced the runtime, so a rejected preflight leaves the old
@@ -37161,7 +37452,7 @@ class LlamaCppBackend:
             poll = getattr(getattr(backend, "_process", None), "poll", None)
             if callable(poll) and poll() is not None:
                 continue
-            total += int(flags[-1])
+            total += _LLAMA_CACHE_RAM_DEFAULT_MIB if flags[-1] == "auto" else int(flags[-1])
         return total
 
     def _other_servers_running(self) -> bool:
@@ -40180,7 +40471,14 @@ class LlamaCppBackend:
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
         _budget = self._window_thinking_budget(
-            openai_messages, None, max_tokens, thinking_budget_tokens, enable_thinking
+            openai_messages,
+            None,
+            max_tokens,
+            thinking_budget_tokens,
+            enable_thinking,
+            _reasoning_kw,
+            bool(payload.get("continue_final_message")),
+            cancel_event,
         )
         if _budget is not None:
             payload["thinking_budget_tokens"] = _budget
@@ -40458,8 +40756,15 @@ class LlamaCppBackend:
         max_tokens: Optional[int],
         requested: Optional[int],
         enable_thinking: Optional[bool],
+        chat_template_kwargs: Optional[dict],
+        continue_final_message: bool = False,
+        cancel_event = None,
     ) -> Optional[int]:
-        if enable_thinking is False or not self._supports_reasoning:
+        if (
+            enable_thinking is False
+            or not self._supports_reasoning
+            or (cancel_event is not None and cancel_event.is_set())
+        ):
             return requested
         from core.inference import cut_thought
 
@@ -40467,10 +40772,21 @@ class LlamaCppBackend:
         if requested is None and server_budget >= 0:
             requested = server_budget
         try:
-            prompt = estimate_messages_tokens_dense(self._countable_messages(messages))
-            prompt += estimate_messages_tokens_dense(tools or [])
+            prompt = self.count_chat_tokens(
+                self._countable_messages(messages),
+                None,
+                tools,
+                strict = True,
+                chat_template_kwargs = chat_template_kwargs,
+                continue_final_message = continue_final_message,
+                should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
+            )
         except Exception:
-            return requested
+            try:
+                prompt = estimate_messages_tokens_dense(self._countable_messages(messages))
+                prompt += estimate_messages_tokens_dense(tools or [])
+            except Exception:
+                return requested
         return cut_thought.window_budget(
             self._effective_context_length, prompt, max_tokens, requested
         )
@@ -41630,6 +41946,9 @@ class LlamaCppBackend:
                     _iteration_max_tokens,
                     thinking_budget_tokens,
                     enable_thinking,
+                    payload.get("chat_template_kwargs"),
+                    bool(payload.get("continue_final_message")),
+                    cancel_event,
                 )
                 if _budget is not None:
                     payload["thinking_budget_tokens"] = _budget
@@ -44067,7 +44386,13 @@ class LlamaCppBackend:
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
         _budget = self._window_thinking_budget(
-            conversation, _final_tools, _final_max_tokens, thinking_budget_tokens, enable_thinking
+            conversation,
+            _final_tools,
+            _final_max_tokens,
+            thinking_budget_tokens,
+            enable_thinking,
+            _reasoning_kw,
+            cancel_event = cancel_event,
         )
         if _budget is not None:
             stream_payload["thinking_budget_tokens"] = _budget
@@ -44919,14 +45244,16 @@ class LlamaCppBackend:
                         if continue_final_message:
                             template_body["continue_final_message"] = True
                             template_body["add_generation_prompt"] = False
-                        if prefer_native and on_prompt is None:
+                        if on_prompt is None:
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
-                            # Only native answers are kept; a failed endpoint is retried next time.
+                            # The native endpoint renders and tokenizes this same body, so a render count reuses it.
                             native_key = _count_memo_key(self, "native-input-tokens", template_body)
                             cached = _count_memo_get(self, native_key, _NATIVE_COUNT_MEMO)
                             if cached is not None:
                                 return cached, False
+                        if prefer_native and on_prompt is None:
+                            # Only native answers are kept; a failed endpoint is retried next time.
                             try:
                                 native = client.post(
                                     f"{self.base_url}/v1/chat/completions/input_tokens",

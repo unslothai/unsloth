@@ -2509,7 +2509,7 @@ export const it = {
         off: "Disattivo",
         oldWebkitWarning: "WebKitGTK {version} su Wayland: il rendering GPU può bloccarsi all’avvio su NVIDIA con il ridimensionamento frazionario (WebKit bug 280210). In tal caso Unsloth torna da solo al rendering CPU. Su WebKitGTK 2.50.4 non ha dato alcun miglioramento misurabile (8 fps in entrambi i casi), quindi Attivo qui non è consigliato.",
         oldDriverWarning:
-          "Driver NVIDIA {version} su X11: Unsloth mantiene disattivato il rendering GPU finché il driver non è 610 o successivo. I driver precedenti perdono un descrittore di file per fotogramma e la finestra smette di disegnare entro pochi minuti.",
+          "Driver NVIDIA {version} su X11: Unsloth mantiene disattivato il rendering GPU finché il driver non è 590 o successivo. I driver precedenti perdono un descrittore di file per fotogramma e la finestra smette di disegnare entro pochi minuti.",
         fallbackNote: "Il rendering GPU si è bloccato all’avvio su questo sistema, quindi Unsloth usa il rendering CPU.",
         tryAgain: "Riprova con la GPU",
         envOverride: "Impostato dalla variabile d’ambiente {name}. Questa impostazione non ha effetto finché non viene rimossa.",
@@ -4062,6 +4062,9 @@ export const it = {
     useModelScopeHint: "Cerca e scarica da ModelScope. Puoi tornare indietro nelle Impostazioni.",
     useModelScopeFailed: "Impossibile passare a ModelScope.",
     updateToken: "Aggiorna token",
+    linkedModelTitle: "Caricare {model}?",
+    linkedModelBody: "Un link ha aperto questa pagina e chiede di scaricare e caricare questo modello.",
+    linkedModelLoad: "Carica",
     hfToken: {
       label: "Token HF",
       saved: "Salvato",

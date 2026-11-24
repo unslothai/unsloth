@@ -863,19 +863,33 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
         logger.warning(f"Could not publish the model card: {exception}")
 
 
-def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
-    """Why a local checkpoint must not load now: a pinned adapter base it no longer names, or
-    weight entries that point outside the folder."""
-    from core.export.decision import adapter_base_changed
+def _checkpoint_load_refusal(
+    checkpoint_path,
+    pinned_base,
+    adapter_free = False,
+) -> Optional[str]:
+    """Why a local checkpoint must not load now: a pinned adapter base it no longer names (or any,
+    when it was checked with no adapter config), or weight entries that point outside the folder."""
+    from core.export.decision import adapter_base_changed, adapter_load_bases
     from utils.security.file_security import escaping_weight_references
 
-    if pinned_base and adapter_base_changed(checkpoint_path, pinned_base):
+    if (pinned_base and adapter_base_changed(checkpoint_path, pinned_base)) or (
+        adapter_free and adapter_load_bases(checkpoint_path)
+    ):
         return "The adapter's base model changed after it was checked. Load it again."
     if escaping_weight_references(checkpoint_path):
         return "This checkpoint's weight index names files outside its folder."
     # A local base loads too: its own index must stay inside its folder as well.
     if pinned_base and os.path.isdir(pinned_base) and escaping_weight_references(pinned_base):
         return "The base model's weight index names files outside its folder."
+    return None
+
+
+def _restaged_checkpoint_refusal(checkpoint_path) -> Optional[str]:
+    """GGUF export of a full model re-stages its folder from disk, so an index written after the load
+    is followed: re-check it right before the conversion."""
+    if checkpoint_path and os.path.isdir(str(checkpoint_path)):
+        return _checkpoint_load_refusal(checkpoint_path, None)
     return None
 
 
@@ -1014,6 +1028,7 @@ class ExportBackend:
         base_model: Optional[str] = None,
         offload_layers = "auto",
         _offload_retry: bool = False,
+        adapter_free: bool = False,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -1044,6 +1059,12 @@ class ExportBackend:
             from core.export.decision import decision_kind
 
             decision = decision_kind(checkpoint_path)
+            if decision is not None and decision[1] and adapter_free:
+                # An adapter-only decision run loads a base: its adapter config was written after the check.
+                return (
+                    False,
+                    "The adapter's base model changed after it was checked. Load it again.",
+                )
             if decision is not None:
                 return self._load_decision_checkpoint(
                     str(Path(checkpoint_path).expanduser()),
@@ -1053,7 +1074,7 @@ class ExportBackend:
                 )
 
             # The decision loader above checks its own base against the pin.
-            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base, adapter_free)
             if refusal:
                 return False, refusal
 
@@ -1114,7 +1135,7 @@ class ExportBackend:
                     self.is_vision = False
 
             # Again right before the load: the folder may have been edited during the probes.
-            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base, adapter_free)
             if refusal:
                 return False, refusal
 
@@ -1395,6 +1416,7 @@ class ExportBackend:
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
             base_model = base_model,
+            adapter_free = adapter_free,
             **retry_kw,
         )
 
@@ -1728,6 +1750,13 @@ class ExportBackend:
                     and not self._export_dir_overlaps_checkpoint(save_directory)
                 ):
                     reused_writes = _ReusedFolderWrites(save_directory)
+                if (
+                    push_to_hub
+                    and (is_compressed or is_torchao)
+                    and not _dir_is_fresh(f"{save_directory}-{compressed_suffix}")
+                ):
+                    # The quantized "<dir>-<suffix>" sibling is pushed whole; an earlier export's files there must not go up.
+                    reused_writes = _ReusedFolderWrites(f"{save_directory}-{compressed_suffix}")
 
                 # save.py turns None into get_token(), so the merge needs the token spelled out.
                 merged_token_kw = (
@@ -1825,6 +1854,24 @@ class ExportBackend:
                                     **merged_token_kw,
                                 )
                                 self._package_drafter_merged(upload_dir, repo_id)
+                                self._sync_reap_report(upload_dir)
+                            if (
+                                (is_compressed or is_torchao)
+                                and reused_writes is not None
+                                and written is None
+                            ):
+                                # An untracked reused quantized sibling is rebuilt in a fresh folder, sidecars too.
+                                staged = stack.enter_context(_staging_dir(Path(output_path).parent))
+                                rebuilt = os.path.join(staged, "model")
+                                self.current_model.save_pretrained_merged(
+                                    rebuilt,
+                                    self.current_tokenizer,
+                                    save_method = save_method,
+                                    **consent_kw,
+                                    **merged_token_kw,
+                                )
+                                upload_dir = f"{rebuilt}-{compressed_suffix}"
+                                self._package_drafter_merged(upload_dir, repo_id, allow_mtp = False)
                                 self._sync_reap_report(upload_dir)
                             # Whatever was built, only weights are worth a repo; without them the
                             # merging push below runs instead, as it did before this was uploaded.
@@ -2125,6 +2172,9 @@ class ExportBackend:
                 try:
                     # Pinned to setup.sh's llama.cpp ref so the converter cannot drift past the pinned
                     # llama-quantize gguf API; scoped to the conversion.
+                    refusal = _restaged_checkpoint_refusal(self.current_checkpoint)
+                    if refusal:
+                        return False, refusal, None
                     with _llama_cpp_scripts_pin(), _converter_remote_code(remote_code_approved):
                         result = self.current_model.save_pretrained_gguf(
                             _model_tmp,
@@ -2172,9 +2222,13 @@ class ExportBackend:
                             "GGUF conversion produced only AppleDouble metadata companions "
                             f"and no usable .gguf file for {abs_save_dir}"
                         )
-                    drafter_gguf_files = self._package_drafter_gguf(
-                        reported.get("save_directory") or _model_tmp, abs_save_dir, exported_ggufs
-                    )
+                    # Runs the converter again (on an EAGLE-3 drafter folder): same trust decision.
+                    with _converter_remote_code(remote_code_approved):
+                        drafter_gguf_files = self._package_drafter_gguf(
+                            reported.get("save_directory") or _model_tmp,
+                            abs_save_dir,
+                            exported_ggufs,
+                        )
                     exported_ggufs.extend(f for f in drafter_gguf_files if f.endswith(".gguf"))
                     exported_is_vlm = bool(
                         reported.get("is_vlm", getattr(self, "is_vision", False))
@@ -2358,6 +2412,9 @@ class ExportBackend:
                     except Exception as exception:
                         logger.warning(f"Could not publish the model card: {exception}")
                 else:
+                    refusal = _restaged_checkpoint_refusal(self.current_checkpoint)
+                    if refusal:
+                        return False, refusal, None
                     # Converts as well as pushes, so it needs the same scoped pin.
                     with _llama_cpp_scripts_pin(), _converter_remote_code(remote_code_approved):
                         self.current_model.push_to_hub_gguf(

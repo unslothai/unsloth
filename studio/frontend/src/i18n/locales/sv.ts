@@ -989,6 +989,9 @@ export const sv = {
       "Sök och hämta från ModelScope i stället. Du kan byta tillbaka i Inställningar.",
     useModelScopeFailed: "Det gick inte att byta till ModelScope.",
     updateToken: "Uppdatera token",
+    linkedModelTitle: "Läsa in {model}?",
+    linkedModelBody: "En länk öppnade den här sidan och vill ladda ned och läsa in den här modellen.",
+    linkedModelLoad: "Läs in",
     hfToken: {
       label: "HF-token",
       saved: "Sparad",
@@ -2726,7 +2729,7 @@ export const sv = {
         off: "Av",
         oldWebkitWarning: "WebKitGTK {version} på Wayland: GPU-rendering kan krascha vid start på NVIDIA med skalning i bråkdelar (WebKit bug 280210). Om det händer byter Unsloth själv tillbaka till CPU-rendering. På WebKitGTK 2.50.4 gav det ingen mätbar förbättring (8 fps i båda fallen), så På rekommenderas inte här.",
         oldDriverWarning:
-          "NVIDIA-drivrutin {version} på X11: Unsloth håller GPU-rendering avstängd tills drivrutinen är 610 eller nyare. Äldre drivrutiner läcker en filbeskrivare per bildruta, och fönstret slutar ritas inom några minuter.",
+          "NVIDIA-drivrutin {version} på X11: Unsloth håller GPU-rendering avstängd tills drivrutinen är 590 eller nyare. Äldre drivrutiner läcker en filbeskrivare per bildruta, och fönstret slutar ritas inom några minuter.",
         fallbackNote: "GPU-rendering kraschade vid start på det här systemet, så Unsloth använder CPU-rendering.",
         tryAgain: "Försök med GPU igen",
         envOverride: "Anges av miljövariabeln {name}. Den här inställningen har ingen effekt förrän den tas bort.",

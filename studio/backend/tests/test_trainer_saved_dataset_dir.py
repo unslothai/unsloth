@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -150,22 +151,53 @@ def test_a_saved_to_disk_eval_folder_loads_as_saved(trainer, tmp_path):
     assert len(result[1]) == 2
 
 
-@pytest.mark.parametrize("escape", ["state_file", "dict_split"])
+@pytest.mark.parametrize("escape", ["state_file", "state_file_beside_dict", "dict_split"])
 def test_a_saved_manifest_pointing_outside_its_folder_is_refused(tmp_path, escape):
     from datasets import Dataset, DatasetDict
     from utils.datasets.saved import load_saved_dataset
 
     Dataset.from_list(_ROWS).save_to_disk(str(tmp_path / "outside"))
     folder = tmp_path / "saved"
-    if escape == "state_file":
+    if escape in ("state_file", "state_file_beside_dict"):
         Dataset.from_list(_ROWS).save_to_disk(str(folder))
         state = json.loads((folder / "state.json").read_text())
         arrow = next((tmp_path / "outside").glob("*.arrow")).name
         state["_data_files"] = [{"filename": f"../outside/{arrow}"}]
         (folder / "state.json").write_text(json.dumps(state))
+        if escape == "state_file_beside_dict":
+            # load_from_disk reads the folder's own state.json even when it also lists splits.
+            Dataset.from_list(_ROWS).save_to_disk(str(folder / "part"))
+            (folder / "dataset_dict.json").write_text(json.dumps({"splits": ["part"]}))
     else:
         DatasetDict(train = Dataset.from_list(_ROWS)).save_to_disk(str(folder))
         (folder / "dataset_dict.json").write_text(json.dumps({"splits": ["../outside"]}))
 
     with pytest.raises(ValueError, match = "outside its folder"):
+        load_saved_dataset(folder)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Windows cannot name a folder with '::'")
+@pytest.mark.parametrize("where", ["folder", "split"])
+def test_a_url_chain_in_a_saved_dataset_path_is_refused(tmp_path, where):
+    # datasets reads "notes::1" as the URL chain "notes" :: "1" and loads "notes", not the folder that was checked.
+    from datasets import Dataset, DatasetDict
+    from utils.datasets.saved import load_saved_dataset
+
+    Dataset.from_list(_ROWS).save_to_disk(str(tmp_path / "outside"))
+    arrow = next((tmp_path / "outside").glob("*.arrow"))
+    decoy = tmp_path / "notes"
+    Dataset.from_list(_ROWS).save_to_disk(str(decoy))
+    state = json.loads((decoy / "state.json").read_text())
+    state["_data_files"] = [{"filename": str(arrow)}]
+    (decoy / "state.json").write_text(json.dumps(state))
+    chained = tmp_path / "notes::1"
+    chained.mkdir()
+    (chained / "dataset_info.json").write_text((decoy / "dataset_info.json").read_text())
+    (chained / "state.json").write_text(json.dumps({**state, "_data_files": []}))
+    folder = chained
+    if where == "split":
+        folder = tmp_path
+        (tmp_path / "dataset_dict.json").write_text(json.dumps({"splits": ["notes::1"]}))
+
+    with pytest.raises(ValueError, match = "::"):
         load_saved_dataset(folder)
