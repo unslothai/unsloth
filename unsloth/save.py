@@ -5405,19 +5405,7 @@ def unsloth_save_pretrained_gguf(
                 "Unsloth: Please use .push_to_hub_gguf(save_method='lora') instead of "
                 ".save_pretrained_gguf(save_method='lora', push_to_hub=True)."
             )
-        _qm = quantization_method
-        if isinstance(_qm, (list, tuple)) and len(_qm) == 1:
-            _qm = _qm[0]  # the gguf API allows a list; unwrap a single outtype
-        if _qm in _LORA_GGUF_OUTTYPES:
-            _outtype = _qm
-        else:
-            if _qm not in (None, "fast_quantized"):
-                logger.warning_once(
-                    f"Unsloth: LoRA GGUF export does not support "
-                    f"quantization_method={quantization_method!r}; using outtype 'f16'. "
-                    f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
-                )
-            _outtype = "f16"
+        _outtype = _lora_gguf_outtype(quantization_method)
         return _unsloth_save_lora_gguf(
             self, tokenizer, save_directory, outtype = _outtype, token = token
         )
@@ -6097,19 +6085,7 @@ def unsloth_push_to_hub_gguf(
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA, not a merged model.
     if save_method is not None and str(save_method).lower() == "lora":
-        _qm = quantization_method
-        if isinstance(_qm, (list, tuple)) and len(_qm) == 1:
-            _qm = _qm[0]  # the gguf API allows a list; unwrap a single outtype
-        if _qm in _LORA_GGUF_OUTTYPES:
-            _outtype = _qm
-        else:
-            if _qm not in (None, "fast_quantized"):
-                logger.warning_once(
-                    f"Unsloth: LoRA GGUF export does not support "
-                    f"quantization_method={quantization_method!r}; using outtype 'f16'. "
-                    f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
-                )
-            _outtype = "f16"
+        _outtype = _lora_gguf_outtype(quantization_method)
         return _unsloth_save_lora_gguf(
             self,
             tokenizer,
@@ -6346,6 +6322,25 @@ def save_lora_to_custom_dir(model, tokenizer, save_directory):
 # Valid output float types for llama.cpp's convert_lora_to_gguf.py.
 _LORA_GGUF_OUTTYPES = ("f32", "f16", "bf16", "q8_0", "auto")
 
+
+def _lora_gguf_outtype(quantization_method):
+    """--outtype for a save_method="lora" GGUF export; case-insensitive like the merged GGUF path."""
+    outtype = quantization_method
+    if isinstance(outtype, (list, tuple)) and len(outtype) == 1:
+        outtype = outtype[0]
+    if isinstance(outtype, str):
+        outtype = outtype.lower()
+    if outtype in _LORA_GGUF_OUTTYPES:
+        return outtype
+    if outtype not in (None, "fast_quantized"):
+        logger.warning_once(
+            f"Unsloth: LoRA GGUF export does not support "
+            f"quantization_method={quantization_method!r}; using outtype 'f16'. "
+            f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
+        )
+    return "f16"
+
+
 # get_token() reads only the first two; the rest are third-party. HF_OIDC_* mint one, ahead of HF_TOKEN, on hub >= 1.19.
 _HF_TOKEN_ENV_KEYS = (
     "HF_TOKEN",
@@ -6545,6 +6540,8 @@ def _unsloth_save_lora_gguf(
             "Unsloth: LoRA GGUF export needs a PEFT/LoRA model. "
             "For a full or merged model use save_pretrained_gguf(...) instead."
         )
+    if isinstance(outtype, str):
+        outtype = outtype.lower()
     if outtype not in _LORA_GGUF_OUTTYPES:
         raise ValueError(
             f"Unsloth: LoRA GGUF outtype must be one of {_LORA_GGUF_OUTTYPES} (got '{outtype}')."

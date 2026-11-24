@@ -155,7 +155,6 @@ test("Images, Video and chat raise the refusal under its title, with the owner's
       [
         "isMultiModelRefusal(null, refusalHeadersOf(err), message);",
         "const title = refusal ? MULTI_MODEL_REFUSAL_TITLE : summary;",
-        "? modelMemorySettingsAction()\n              : (engineSettingsAction(message) ?? logsAction);",
       ],
     ],
   ];
@@ -164,6 +163,12 @@ test("Images, Video and chat raise the refusal under its title, with the owner's
     for (const pin of required)
       assert.ok(source.includes(pin), `${path} missing: ${pin}`);
   }
+  // A refusal gets the owner's settings link; any other failure still ends in the engine settings, then the logs.
+  // Actions ahead of those (a managed engine's own log, #19166) do not change what a refusal shows.
+  assert.match(
+    readSrc("features/chat/hooks/use-chat-model-runtime.ts"),
+    /const action = refusal\s*\?\s*modelMemorySettingsAction\(\)\s*:\s*\((?:[\w.]+ \?\? )*engineSettingsAction\(message\) \?\? logsAction\);/,
+  );
 });
 
 test("the wording matched here is the backend's", (t) => {

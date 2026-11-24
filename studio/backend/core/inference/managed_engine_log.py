@@ -56,7 +56,7 @@ class ManagedEngineLog:
             except OSError:
                 pass
             return None
-        prune_log_dir(directory, f"{engine}-*.log", protect = path)
+        prune_log_dir(directory, pattern, protect = path)
         return log
 
     def write_redacted(self, line: str) -> bool:

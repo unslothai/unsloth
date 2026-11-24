@@ -16,6 +16,7 @@ if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
 import test_llama_cpp_placement as placement  # noqa: E402
+from test_llama_cpp_placement import _pinned_host_ram  # noqa: E402, F401  (autouse: same host here)
 import utils.hardware as hardware  # noqa: E402
 from _sidecar_fit_helpers import last  # noqa: E402
 from core.inference import llama_cpp as lc  # noqa: E402

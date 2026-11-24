@@ -92,10 +92,14 @@ jobs:
             tests/studio/test_chat_ui_shards_cover_everything.py \
             tests/studio/test_ui_shard_engines.py \
             tests/studio/test_zoo_suite_parallel_isolation.py \
+            tests/studio/test_zoo_inductor_cache_is_cpu_keyed.py \
+            tests/studio/test_long_chat_ab_measures_against_the_merge_base_tip.py \
+            tests/studio/test_core_floor_gate_runs_once.py \
             tests/studio/test_core_setup_zoo_revision_notice.py \
             tests/studio/test_ci_parallel_browser_results.py \
             tests/studio/test_ci_shell_suite_coverage.py \
             tests/studio/test_pip_cache_naming.py \
+            tests/studio/test_backend_uv_install_parity.py \
             tests/studio/test_compile_caches_are_per_worker.py \
             tests/studio/test_browser_simulations_retry_once.py \
             tests/studio/test_step_scripts_get_the_secrets_they_read.py \
@@ -117,6 +121,7 @@ jobs:
             tests/studio/test_settings_smoke_covers_every_tab.py \
             tests/studio/test_playwright_install_avoids_with_deps.py \
             tests/studio/test_macos_slots_per_commit.py \
+            tests/studio/test_tauri_native_paths_cover_inputs.py \
             tests/studio/test_main_runs_survive_merge_bursts.py \
             tests/studio/test_pull_requests_cancel_superseded_runs.py \
             tests/studio/test_push_filters_match_pull_request_filters.py \
@@ -129,10 +134,12 @@ jobs:
             tests/studio/test_smoke_workflows_share_one_script.py \
             tests/studio/test_stt_model_search_locator_contract.py \
             tests/studio/test_studio_smokes_do_not_trigger_on_the_training_library.py \
+            tests/studio/test_smokes_skip_backend_unit_tests.py \
             tests/studio/test_studiobench_ci_update_checks_off.py \
             tests/studio/test_uv_cache_discipline.py \
             tests/studio/test_version_compat_bundle.py \
             tests/studio/test_windows_small_checks_stay_on_their_image.py \
+            tests/studio/test_windows_installer_paths_cover_inputs.py \
             tests/studio/test_windows_sac_probe.py \
             tests/studio/test_windows_ui_lanes_are_isolated.py \
             tests/studio/test_workflow_guards_run_unfiltered.py \

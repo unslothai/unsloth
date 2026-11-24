@@ -15,13 +15,17 @@ from core.inference import engine_install, managed_engine, managed_engine_log, w
 from utils import debug_log_sources
 
 
-ENGINE = "sglang"
 _TOKEN = "fixture-opaque-hf-credential"
 _FILE_TOKEN = "fixture-opaque-hf-file-credential"
 
 
+@pytest.fixture(params = ["sglang", "vllm"])
+def engine_name(request):
+    return request.param
+
+
 @pytest.fixture
-def engine(tmp_path, monkeypatch):
+def engine(tmp_path, monkeypatch, engine_name):
     info = {
         "path": str(tmp_path / "env"),
         "host": "native",
@@ -32,7 +36,7 @@ def engine(tmp_path, monkeypatch):
     monkeypatch.setattr(managed_engine, "_child_cuda_mask", lambda _: "0")
     monkeypatch.setattr(engine_install, "cuda_environment", lambda _: {})
     monkeypatch.setattr(engine_install, "engine_root", lambda: tmp_path)
-    runner = managed_engine.ManagedEngine(ENGINE)
+    runner = managed_engine.ManagedEngine(engine_name)
     runner.adapter = SimpleNamespace(
         command = lambda *args, **kwargs: pytest.fail("No command was arranged for this test"),
         progress = lambda _: None,
@@ -93,7 +97,7 @@ def _arrange_process(engine, monkeypatch, host, *, attempt, fail):
 
 @pytest.mark.parametrize("host", ["native", "wsl"])
 def test_failed_launch_stays_selectable_after_retry(tmp_path, monkeypatch, engine, host):
-    info = managed_engine.installed(ENGINE)
+    info = managed_engine.installed(engine.engine)
     info["host"] = host
     token_path = tmp_path / "token"
     token_path.write_text(_FILE_TOKEN, encoding = "utf-8")
@@ -105,7 +109,7 @@ def test_failed_launch_stays_selectable_after_retry(tmp_path, monkeypatch, engin
     failed_path = Path(failure.value.managed_engine_log_path)
     assert engine.process is None and engine._attempt_log is None
 
-    retry = managed_engine.ManagedEngine(ENGINE)
+    retry = managed_engine.ManagedEngine(engine.engine)
     retry.adapter = engine.adapter
     _arrange_process(retry, monkeypatch, host, attempt = "second", fail = False)
     try:
@@ -131,7 +135,9 @@ def test_failed_launch_stays_selectable_after_retry(tmp_path, monkeypatch, engin
         assert "guest received EOF" in ready_path.read_text(encoding = "utf-8")
 
     sources = debug_log_sources.list_sources()
-    assert next(source for source in sources if source.family == ENGINE).realpath == str(ready_path)
+    assert next(source for source in sources if source.family == engine.engine).realpath == str(
+        ready_path
+    )
     old_id = debug_log_sources.source_id_for_path(str(failed_path), sources)
     assert debug_log_sources.resolve_source_id(old_id) == failed_path
 
@@ -220,7 +226,9 @@ def test_logging_failure_does_not_prevent_load_or_unload(engine, monkeypatch, fa
     assert engine.stop()
     if fail_at == "open":
         assert log is None
-        assert not any(source.family == ENGINE for source in debug_log_sources.list_sources())
+        assert not any(
+            source.family == engine.engine for source in debug_log_sources.list_sources()
+        )
     else:
         assert log._stream.closed
         assert engine.key not in Path(log.path).read_text(encoding = "utf-8")
@@ -235,17 +243,17 @@ def test_cancelled_before_spawn_opens_no_file(engine):
     assert not hasattr(failure.value, "managed_engine_log_path")
 
 
-def test_darwin_has_no_managed_engine_logs(monkeypatch):
+def test_darwin_has_no_managed_engine_logs(monkeypatch, engine_name):
     monkeypatch.setattr(wsl_host, "active", lambda: False)
     monkeypatch.setattr(managed_engine, "resolve_requested_gpu_ids", lambda _: [0])
     monkeypatch.setattr(managed_engine, "_mig_rows", lambda _: [])
     monkeypatch.setattr(engine_install.platform, "system", lambda: "Darwin")
     with pytest.raises(ValueError, match = "require Linux"):
-        managed_engine.validate_load(ENGINE, SimpleNamespace(gpu_ids = None))
-    assert not any(source.family == ENGINE for source in debug_log_sources.list_sources())
+        managed_engine.validate_load(engine_name, SimpleNamespace(gpu_ids = None))
+    assert not any(source.family == engine_name for source in debug_log_sources.list_sources())
 
 
-def test_all_retained_attempts_are_resolvable_alongside_existing_sources():
+def test_all_retained_attempts_are_resolvable_alongside_existing_sources(engine_name):
     from utils.log_retention import DEFAULT_KEEP
     from utils.paths import studio_root
 
@@ -254,7 +262,7 @@ def test_all_retained_attempts_are_resolvable_alongside_existing_sources():
     (server / "server-fixture.log").touch()
     first = None
     for index in range(DEFAULT_KEEP + 1):
-        log = managed_engine_log.ManagedEngineLog.open(ENGINE)
+        log = managed_engine_log.ManagedEngineLog.open(engine_name)
         assert log is not None
         log.close()
         if index == 0:
@@ -262,7 +270,7 @@ def test_all_retained_attempts_are_resolvable_alongside_existing_sources():
             os.utime(first, (1, 1))
 
     sources = debug_log_sources.list_sources()
-    assert len([source for source in sources if source.family == ENGINE]) == DEFAULT_KEEP
+    assert len([source for source in sources if source.family == engine_name]) == DEFAULT_KEEP
     assert any(source.family == "server" for source in sources)
     assert not Path(first).exists()
     for source in sources:

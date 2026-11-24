@@ -1,0 +1,240 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Windows and macOS Rust unit tests for the Tauri shell, plus a Windows debug build and a WebView2
+# GPU-flag probe. `cfg(windows)` / `cfg(target_os = "macos")` code is stripped on Linux and cannot be
+# cross-compiled there (`ring` needs MSVC). Split from studio-tauri-smoke.yml so a frontend-only
+# change, most frontend commits, does not take Windows and the account-wide five macOS slots.
+# tests/studio/test_tauri_native_paths_cover_inputs.py keeps the paths in step with what the Rust
+# code reads outside studio/src-tauri.
+
+name: Unsloth Tauri native CI
+
+on:
+  pull_request:
+    # ready_for_review: every job below skips draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'studio/src-tauri/**'
+      # Tauri spawns `unsloth studio`; the Rust tests read unsloth_cli/_system_dir_guard.py.
+      - 'unsloth_cli/**'
+      - '.github/workflows/studio-tauri-native-ci.yml'
+      # The Tauri CLI is installed from the studio/ package root.
+      - 'studio/package.json'
+      - 'studio/package-lock.json'
+      - 'studio/.npmrc'
+      - 'scripts/lockfile_supply_chain_audit.py'
+      # The audit's default npm lockfiles not already listed here.
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      # Read by the Rust test every_shared_case_agrees_with_the_desktop_filter.
+      - 'studio/backend/tests/fixtures/access_log_records.json'
+      # The frontend is built here only so tauri-build finds frontendDist; its content is not under
+      # test (Frontend CI, the Linux Tauri job and the Windows/macOS smoke installs build it). What
+      # can break this build on Windows or macOS alone: dependencies and the build config.
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'studio/frontend/.npmrc'
+      - 'studio/frontend/vite*.ts'
+      - 'studio/frontend/tsconfig*.json'
+      # Imported by vite-plugin-locale-preload.ts, so it runs in `vite build`.
+      - 'studio/frontend/src/i18n/locale-tags.ts'
+      # Frontend files the Rust tests embed with include_str!.
+      - 'studio/frontend/src/features/auth/api.ts'
+      - 'studio/frontend/src/features/settings/api/debug-logs.ts'
+      - 'studio/frontend/src/index.css'
+      - 'studio/frontend/src/lib/mac-stray-key-text.ts'
+      - 'studio/frontend/src/features/browser/dangerous-file-types.json'
+      # Bundled by tauri.windows.conf.json / tauri.macos.conf.json; `tauri build` copies them.
+      - 'install.ps1'
+      - 'install.sh'
+      # `npm run build` runs it before vite build, with OS-specific spawnSync handling.
+      - 'studio/frontend/scripts/typecheck.mjs'
+  push:
+    branches: [main]
+    # Same list as the PR filter, to spare the account-wide macOS slots.
+    paths:
+      - 'studio/src-tauri/**'
+      # Tauri spawns `unsloth studio`; the Rust tests read unsloth_cli/_system_dir_guard.py.
+      - 'unsloth_cli/**'
+      - '.github/workflows/studio-tauri-native-ci.yml'
+      # The Tauri CLI is installed from the studio/ package root.
+      - 'studio/package.json'
+      - 'studio/package-lock.json'
+      - 'studio/.npmrc'
+      - 'scripts/lockfile_supply_chain_audit.py'
+      # The audit's default npm lockfiles not already listed here.
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      # Read by the Rust test every_shared_case_agrees_with_the_desktop_filter.
+      - 'studio/backend/tests/fixtures/access_log_records.json'
+      # The frontend is built here only so tauri-build finds frontendDist; its content is not under
+      # test (Frontend CI, the Linux Tauri job and the Windows/macOS smoke installs build it). What
+      # can break this build on Windows or macOS alone: dependencies and the build config.
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'studio/frontend/.npmrc'
+      - 'studio/frontend/vite*.ts'
+      - 'studio/frontend/tsconfig*.json'
+      # Imported by vite-plugin-locale-preload.ts, so it runs in `vite build`.
+      - 'studio/frontend/src/i18n/locale-tags.ts'
+      # Frontend files the Rust tests embed with include_str!.
+      - 'studio/frontend/src/features/auth/api.ts'
+      - 'studio/frontend/src/features/settings/api/debug-logs.ts'
+      - 'studio/frontend/src/index.css'
+      - 'studio/frontend/src/lib/mac-stray-key-text.ts'
+      - 'studio/frontend/src/features/browser/dangerous-file-types.json'
+      # Bundled by tauri.windows.conf.json / tauri.macos.conf.json; `tauri build` copies them.
+      - 'install.ps1'
+      - 'install.sh'
+      # `npm run build` runs it before vite build, with OS-specific spawnSync handling.
+      - 'studio/frontend/scripts/typecheck.mjs'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
+  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
+  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # `cfg(windows)` code (e.g. install.rs path normalizer) is stripped on Linux.
+  windows-unit-tests:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    name: Rust unit tests (windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: '24'
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
+
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          # Save only on main: PR-scoped caches only serve that PR and evict main's shared copy.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: studio/src-tauri -> target
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Lockfile supply-chain audit (pre-install scan)
+        run: python scripts/lockfile_supply_chain_audit.py
+
+      # tauri-build resolves frontendDist at compile time, so dist/ must exist first.
+      - name: Frontend build (npm ci, vite)
+        working-directory: studio/frontend
+        run: |
+          npm ci --no-fund --no-audit
+          npm run build
+
+      - name: Rust unit tests (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo test --no-fail-fast
+
+      # The browser guard is under `not(debug_assertions)`, so check the release profile.
+      - name: Rust release type check (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo check --all-targets --release
+
+      - name: Install pinned Tauri CLI (matches release-desktop.yml)
+        run: npm ci --prefix studio --no-fund --no-audit
+
+      - name: Tauri debug build (Windows, no bundle)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ''
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: npx --prefix studio tauri build --debug --no-bundle
+
+      # GPU rendering Off must reach WebView2 as --disable-gpu without dropping wry's default
+      # flags; Auto must leave the arguments alone. The second launch follows the first at once,
+      # so a WebView2 that cannot switch arguments on a fast relaunch fails here.
+      - name: GPU rendering Off reaches WebView2
+        shell: pwsh
+        run: |
+          $bin = Resolve-Path "studio/src-tauri/target/debug/unsloth-studio.exe"
+          $cfg = Join-Path $env:APPDATA "ai.unsloth.studio"
+          New-Item -ItemType Directory -Force $cfg | Out-Null
+          function Get-Browser {
+            Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" |
+              Where-Object { $_.CommandLine -notmatch '--type=' -and $_.CommandLine -match 'ai\.unsloth\.studio\\EBWebView' }
+          }
+          function Stop-App($app) {
+            Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+            Get-Browser | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          }
+          function Probe($setting) {
+            Set-Content -Path (Join-Path $cfg "gpu-rendering-v1") -Value $setting
+            $app = Start-Process -FilePath $bin -PassThru
+            $browser = $null
+            for ($i = 0; $i -lt 90 -and -not $browser; $i++) { Start-Sleep 1; $browser = Get-Browser }
+            if (-not $browser) { Stop-App $app; throw "no WebView2 browser process for setting=$setting" }
+            $line = ($browser | Select-Object -First 1).CommandLine
+            Write-Host "setting=$setting -> $line"
+            Start-Sleep 20
+            if ($app.HasExited) { throw "app exited (code $($app.ExitCode)) with setting=$setting" }
+            Stop-App $app
+            return $line
+          }
+          $off = Probe "off"
+          if ($off -notmatch '--disable-gpu') { throw "Off: --disable-gpu missing" }
+          if ($off -notmatch 'msSmartScreenProtection') { throw "Off: wry's default --disable-features was dropped" }
+          $auto = Probe "auto"
+          if ($auto -match '--disable-gpu') { throw "Auto: --disable-gpu present" }
+          Write-Host "Off passes --disable-gpu with wry's defaults; Auto leaves the arguments alone"
+
+  macos-unit-tests:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    name: Rust unit tests (macos)
+    # macos-26, not macos-15: same hardware class but a much shorter queue tail (measured on
+    # studio-mac-install-matrix). Re-measure if queues change.
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: '24'
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
+
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          # Save only on main: PR-scoped caches only serve that PR and evict main's shared copy.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: studio/src-tauri -> target
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Lockfile supply-chain audit (pre-install scan)
+        run: python scripts/lockfile_supply_chain_audit.py
+
+      # tauri-build resolves frontendDist at compile time, so dist/ must exist first.
+      - name: Frontend build (npm ci, vite)
+        working-directory: studio/frontend
+        run: |
+          npm ci --no-fund --no-audit
+          npm run build
+
+      - name: Rust unit tests (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo test --no-fail-fast
+
+      # The browser guard is under `not(debug_assertions)`, so check the release profile.
+      - name: Rust release type check (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo check --all-targets --release

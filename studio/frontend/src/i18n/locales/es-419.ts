@@ -991,6 +991,13 @@ export const es419 = {
     compactUnsupported:
       "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
   },
+  chatFiles: {
+    title: "Archivos en este chat",
+    code: "Fragmentos de código",
+    showInChat: "Mostrar en el chat",
+    download: "Descargar {name}",
+    saveFailed: "No se pudo guardar {name}.",
+  },
   welcome: {
     goodToSeeYou: "Me alegra verte",
     goodToSeeYouName: "Me alegra verte, {name}",
@@ -3115,6 +3122,15 @@ export const es419 = {
         runningOn: "llama.cpp se ejecuta actualmente en {backend}.",
         hint: "Instala la compilación de llama.cpp para este backend y la mantiene entre actualizaciones. Útil cuando la elección automática falla o el controlador de tu GPU no la admite. Solo se muestran los backends con una compilación para esta computadora; el entrenamiento no se ve afectado.",
         autoWith: "Automático ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm no está instalado",
+          rocmNoAccess: "sin acceso a la GPU",
+          otherRelease: "necesita una actualización de llama.cpp",
+          checkFailed: "no se pudo verificar",
+          noBuild: "no hay build para esta computadora",
+        },
         apply: "Aplicar",
         applying: "Instalando...",
         applyHint:

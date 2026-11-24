@@ -982,6 +982,13 @@ export const fa = {
     compactUnsupported:
       "فشرده‌سازی به یک مدل GGUF یا MLX با پشتیبانی از ابزار نیاز دارد",
   },
+  chatFiles: {
+    title: "فایل‌های این گفتگو",
+    code: "قطعه‌کدها",
+    showInChat: "نمایش در گفتگو",
+    download: "دانلود {name}",
+    saveFailed: "ذخیرهٔ {name} ممکن نشد.",
+  },
   welcome: {
     goodToSeeYou: "از دیدنتان خوشحالیم",
     goodToSeeYouName: "از دیدنتان خوشحالیم، {name}",
@@ -3062,6 +3069,15 @@ export const fa = {
         runningOn: "llama.cpp در حال حاضر روی {backend} اجرا می‌شود.",
         hint: "بیلد llama.cpp مربوط به این بک‌اند را نصب می‌کند و در به‌روزرسانی‌ها حفظ می‌کند. وقتی انتخاب خودکار از کار می‌افتد یا درایور GPU شما از آن پشتیبانی نمی‌کند مفید است. فقط بک‌اندهایی فهرست شده‌اند که برای این دستگاه بیلد دارند؛ آموزش تحت تأثیر قرار نمی‌گیرد.",
         autoWith: "خودکار ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm نصب نشده است",
+          rocmNoAccess: "دسترسی به GPU وجود ندارد",
+          otherRelease: "به به‌روزرسانی llama.cpp نیاز دارد",
+          checkFailed: "بررسی ممکن نشد",
+          noBuild: "بیلدی برای این دستگاه وجود ندارد",
+        },
         apply: "اعمال",
         applying: "در حال نصب...",
         applyHint:

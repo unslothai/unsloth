@@ -1211,6 +1211,9 @@ class HttpChatBackend:
         if not loaded:
             return False
         loaded = str(loaded)
+        quant = status.get("gguf_variant")
+        if quant and "/" in loaded and loaded.casefold().endswith(f":{quant}".casefold()):
+            loaded = loaded[: -len(quant) - 1]
         if model == status.get("model_identifier"):
             same = True
         elif os.path.exists(model):

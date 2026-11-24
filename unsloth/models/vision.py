@@ -32,6 +32,7 @@ _ROPE_LAYOUT_KEYS = ("rope_theta", "partial_rotary_factor", "mrope_section", "mr
 def _apply_user_rope_scaling(config, rope_scaling):
     """Put the caller's rope_scaling (e.g. YaRN) on the text config before the model is built.
     Returns the dict applied (flat), or None for a per-layer-type layout."""
+    from ..import_fixes import assign_rope_scaling
     from .llama import _rope_scaling_as_dict, _user_rope_scaling
 
     target = config.get_text_config() if hasattr(config, "get_text_config") else config
@@ -83,7 +84,7 @@ def _apply_user_rope_scaling(config, rope_scaling):
     )
     layout = {key: existing[key] for key in _ROPE_LAYOUT_KEYS if key in existing}
     applied = {**layout, **_user_rope_scaling(target, scaling)}
-    target.rope_scaling = applied
+    assign_rope_scaling(target, applied)
     return dict(applied)
 
 

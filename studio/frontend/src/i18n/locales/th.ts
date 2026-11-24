@@ -938,6 +938,13 @@ export const th = {
     compactEmpty: "ยังไม่มีอะไรให้ย่อ",
     compactUnsupported: "การย่อการสนทนาต้องใช้โมเดล GGUF หรือ MLX ที่รองรับเครื่องมือ",
   },
+  chatFiles: {
+    title: "ไฟล์ในแชทนี้",
+    code: "ส่วนย่อยของโค้ด",
+    showInChat: "แสดงในแชท",
+    download: "ดาวน์โหลด {name}",
+    saveFailed: "ไม่สามารถบันทึก {name} ได้",
+  },
   welcome: {
     goodToSeeYou: "ยินดีที่ได้พบคุณ",
     goodToSeeYouName: "ยินดีที่ได้พบคุณ {name}",
@@ -2959,6 +2966,15 @@ export const th = {
         runningOn: "ขณะนี้ llama.cpp ทำงานบน {backend}",
         hint: "ติดตั้งบิลด์ llama.cpp สำหรับแบ็กเอนด์นี้และคงไว้เมื่ออัปเดต มีประโยชน์เมื่อตัวเลือกอัตโนมัติแครชหรือไดรเวอร์ GPU ของคุณไม่รองรับ แสดงเฉพาะแบ็กเอนด์ที่มีบิลด์สำหรับเครื่องนี้ การเทรนไม่ได้รับผลกระทบ",
         autoWith: "อัตโนมัติ ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ไม่ได้ติดตั้ง ROCm",
+          rocmNoAccess: "ไม่มีสิทธิ์เข้าถึง GPU",
+          otherRelease: "ต้องอัปเดต llama.cpp",
+          checkFailed: "ตรวจสอบไม่ได้",
+          noBuild: "ไม่มีบิลด์สำหรับเครื่องนี้",
+        },
         apply: "ใช้",
         applying: "กำลังติดตั้ง...",
         applyHint:

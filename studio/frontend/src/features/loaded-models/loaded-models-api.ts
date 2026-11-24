@@ -9,7 +9,7 @@ import { confirmStopRunningChatsIfNeeded } from "@/features/chat/utils/confirm-s
 import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { requestScopedLocalPromptQueueStop } from "@/features/chat/utils/prompt-queue-boundary";
-import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
+import { servedInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
@@ -174,7 +174,7 @@ async function ejectChatRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
   const decision = await confirmStopRunningChatsIfNeeded(
     "Unloading this model",
     "unloadOne",
-    entry.name,
+    entry.label ?? entry.name,
   );
   if (!decision.proceed) return { status: "declined" };
   const { unloadedAliases, stillResident, replacedBy } = await ejectChatModel(
@@ -182,7 +182,7 @@ async function ejectChatRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
     {
       readResident: async () => {
         const status = await bounded(getInferenceStatus);
-        const checkpoint = resolveInferenceCheckpointId(status);
+        const checkpoint = servedInferenceCheckpointId(status);
         if (!checkpoint) return null;
         return {
           checkpoint,

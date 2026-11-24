@@ -145,6 +145,8 @@ export {
   normalizeModelIdentity,
   publicModelId,
   residentModelIdMatches,
+  servedCheckpoint,
+  withoutNamedQuant,
 } from "./lib/model-identity";
 export {
   formatBytes,

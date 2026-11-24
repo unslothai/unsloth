@@ -984,6 +984,13 @@ export const id = {
     compactUnsupported:
       "Pemadatan memerlukan model GGUF atau MLX yang mendukung alat",
   },
+  chatFiles: {
+    title: "File di obrolan ini",
+    code: "Cuplikan kode",
+    showInChat: "Tampilkan di obrolan",
+    download: "Unduh {name}",
+    saveFailed: "Tidak dapat menyimpan {name}.",
+  },
   welcome: {
     goodToSeeYou: "Senang bertemu Anda",
     goodToSeeYouName: "Senang bertemu Anda, {name}",
@@ -3077,6 +3084,15 @@ export const id = {
         runningOn: "llama.cpp saat ini berjalan di {backend}.",
         hint: "Menginstal build llama.cpp untuk backend ini dan mempertahankannya saat pembaruan. Berguna saat pilihan otomatis mogok atau driver GPU Anda tidak mendukungnya. Hanya backend yang memiliki build untuk mesin ini yang dicantumkan; pelatihan tidak terpengaruh.",
         autoWith: "Otomatis ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm belum terpasang",
+          rocmNoAccess: "tidak ada akses ke GPU",
+          otherRelease: "memerlukan pembaruan llama.cpp",
+          checkFailed: "tidak dapat memeriksa",
+          noBuild: "tidak ada build untuk mesin ini",
+        },
         apply: "Terapkan",
         applying: "Menginstal...",
         applyHint:

@@ -992,6 +992,13 @@ export const pl = {
     compactUnsupported:
       "Kompaktowanie wymaga modelu GGUF lub MLX z obsługą narzędzi",
   },
+  chatFiles: {
+    title: "Pliki w tym czacie",
+    code: "Fragmenty kodu",
+    showInChat: "Pokaż w czacie",
+    download: "Pobierz {name}",
+    saveFailed: "Nie udało się zapisać {name}.",
+  },
   welcome: {
     goodToSeeYou: "Miło Cię widzieć",
     goodToSeeYouName: "Miło Cię widzieć, {name}",
@@ -3108,6 +3115,15 @@ export const pl = {
         runningOn: "llama.cpp działa obecnie na: {backend}.",
         hint: "Instaluje kompilację llama.cpp dla tego backendu i zachowuje ją przy aktualizacjach. Przydatne, gdy automatyczny wybór powoduje awarie lub sterownik GPU go nie obsługuje. Wyświetlane są tylko backendy z kompilacją dla tego komputera; nie wpływa to na trenowanie.",
         autoWith: "Automatycznie ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm nie jest zainstalowany",
+          rocmNoAccess: "brak dostępu do GPU",
+          otherRelease: "wymaga aktualizacji llama.cpp",
+          checkFailed: "nie udało się sprawdzić",
+          noBuild: "brak kompilacji dla tego komputera",
+        },
         apply: "Zastosuj",
         applying: "Instalowanie...",
         applyHint:

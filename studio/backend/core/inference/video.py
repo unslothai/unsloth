@@ -246,6 +246,7 @@ from .diffusion_transformer_quant import (
 from .diffusion import (
     _comfy_keep_fp32_pricing,
     _family_override_resolved,
+    _SplitPreviewRefine,
     _companion_split_expected,
     _layer_split_expected,
     _memory_request_forces_offload,
@@ -542,6 +543,8 @@ def assert_video_precision_available(
     gpu_ordinal: Optional[int] = None,
     checkpoint_filename: Optional[str] = None,
     checkpoint_repo: Optional[str] = None,
+    speed_mode: Optional[str] = None,
+    loras_active: bool = False,
 ) -> None:
     """Must run in the route before the GPU is taken, because begin_load evicts chat first."""
     from .diffusion_nvfp4_flag import refuse_disabled_nvfp4
@@ -576,6 +579,9 @@ def assert_video_precision_available(
                 model_kind = model_kind,
                 text_encoder_quant = text_encoder_quant,
                 base = checkpoint_repo,
+                transformer_quant = transformer_quant,
+                speed_mode = speed_mode,
+                loras_active = loras_active,
             )
         if shortfall is not None:
             logger.error("video.ltx25_host_ram: refusing load: %s", shortfall)
@@ -592,6 +598,17 @@ def assert_video_precision_available(
             resolve_diffusion_device_target()
             if gpu_ordinal is None
             else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+        )
+        # The LTX-2.5 low-RAM route loads as a bf16 card (an int8 DiT is native there): judge that target.
+        target = _ltx25_lowram_target(
+            fam,
+            target,
+            kind = model_kind,
+            text_encoder_quant = text_encoder_quant,
+            base = checkpoint_repo,
+            transformer_quant = transformer_quant,
+            speed_mode = speed_mode,
+            loras_active = loras_active,
         )
         _assert_video_precision_for_target(
             fam,
@@ -1097,6 +1114,84 @@ def h3_fp16_host_shortfall(
     )
 
 
+def video_transformer_quant_request(
+    transformer_quant: Optional[str], speed_mode: Optional[str]
+) -> Optional[str]:
+    """The transformer precision a pipeline load runs: unset / auto is the hardware ladder (``auto``), except under an
+    explicit Speed "off", which stays dense bf16 (``off``, bit-exact: auto-quant would engage int8/fp8 and compile);
+    none / off / a scheme is kept as asked."""
+    if transformer_quant is None or str(transformer_quant).strip().lower() in ("", TQ_AUTO):
+        speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
+        return "off" if speed_off else TQ_AUTO
+    return transformer_quant
+
+
+def _ltx25_lowram_hosted_dit(
+    fam: Any,
+    storage: Any,
+    *,
+    transformer_quant: Optional[str],
+    loras_active: bool = False,
+    base: Optional[str] = None,
+    speed_mode: Optional[str] = None,
+) -> bool:
+    """Whether the low-RAM route reads the hosted int8 DiT (25.1 GB) rather than the dense bf16 shards (42 GB): an
+    unset / auto / int8 request, no LoRA to merge, the hosted and offload reads on, the official base, and a native
+    build the ``storage`` (bf16) target can read. The planner and the RAM price both ask this."""
+    try:
+        from .diffusion_families import canonical_base
+        from .diffusion_native_hosted import native_hosted_enabled
+        from .model_ids import hf_cache_repo_id
+
+        # What the load resolves the request to (the same call): Speed "off" keeps unset / auto dense.
+        transformer_quant = video_transformer_quant_request(transformer_quant, speed_mode)
+        if str(transformer_quant).strip().lower() not in (TQ_AUTO, TQ_INT8) or loras_active:
+            return False
+        if not native_hosted_enabled() or not _offload_hosted_read_enabled():
+            return False
+        if base and not _te_base_is_official(fam, str(base)):
+            loading = canonical_base(hf_cache_repo_id(str(base)) or str(base)).lower()
+            rows = {
+                str(r[0]).lower()
+                for r in getattr(fam, "prequant_variant_repos", None) or ()
+                if r[1] == TQ_INT8
+            }
+            if loading not in rows:
+                return False
+        return _video_native_hosted_scheme(fam, TQ_INT8, storage) == TQ_INT8
+    except Exception:  # noqa: BLE001 -- unanswerable: price the dense shards
+        return False
+
+
+def _ltx25_lowram_target(
+    fam: Any,
+    target: Any,
+    *,
+    kind: str,
+    text_encoder_quant: Optional[str] = None,
+    base: Optional[str] = None,
+    transformer_quant: Optional[str] = None,
+    speed_mode: Optional[str] = None,
+    loras_active: bool = False,
+) -> Any:
+    """``target`` as the low-RAM route plans and loads it (a bfloat16 card) when the route engages, else ``target``."""
+    if getattr(fam, "name", None) != "ltx-2.5":
+        return target
+    from .video_ltx25_lowram import decide_lowram, storage_target
+
+    route = decide_lowram(
+        fam,
+        target,
+        model_kind = kind,
+        text_encoder_quant = text_encoder_quant,
+        base = base or getattr(fam, "base_repo", None),
+        transformer_quant = transformer_quant,
+        speed_mode = speed_mode,
+        loras_active = loras_active,
+    )
+    return storage_target(target) if route.engaged else target
+
+
 def ltx25_fp16_host_shortfall(
     fam: Any,
     target: Any,
@@ -1104,6 +1199,9 @@ def ltx25_fp16_host_shortfall(
     model_kind: str,
     text_encoder_quant: Optional[str] = None,
     base: Optional[str] = None,
+    transformer_quant: Optional[str] = None,
+    speed_mode: Optional[str] = None,
+    loras_active: bool = False,
 ) -> Optional[str]:
     """Why an LTX-2.5 Diffusers load cannot fit host RAM on a non-bf16 GPU, else None.
 
@@ -1127,7 +1225,24 @@ def ltx25_fp16_host_shortfall(
             small_host_disabled,
         )
 
-        if small_host_disabled() or host_ram_check_disabled():
+        if host_ram_check_disabled():
+            return None
+        from .video_ltx25_lowram import decide_lowram
+
+        # The low-RAM route (bf16 storage, float32 compute) serves a host short of the float32 load.
+        route = decide_lowram(
+            fam,
+            target,
+            model_kind = model_kind,
+            text_encoder_quant = text_encoder_quant,
+            base = base or getattr(fam, "base_repo", None),
+            transformer_quant = transformer_quant,
+            speed_mode = speed_mode,
+            loras_active = loras_active,
+        )
+        if route.refusal is not None:
+            return route.refusal
+        if route.engaged or small_host_disabled():
             return None
         sizes = tuple(float(x) for x in (getattr(fam, "bf16_components_gb", None) or ()))
         if len(sizes) != 3:
@@ -2672,6 +2787,11 @@ def _h3_te_canonical(repo_id: Optional[str]) -> str:
     return canonical_base(repo_id).strip().lower()
 
 
+def _video_no_mirror() -> bool:
+    """``UNSLOTH_DIFFUSION_NO_MIRROR``: base components are fetched from the upstream id, never its unsloth mirror."""
+    return bool(os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip())
+
+
 def _video_fetch_repo(
     repo_id: Optional[str],
     hf_token: Optional[str] = None,
@@ -2692,7 +2812,7 @@ def _video_fetch_repo(
     # ``checkpoint``: the user-selected file itself. The opt-out folds a mirror back onto its upstream only for BASE
     # components; an unsloth carrier repo's own root FP8 / GGUF checkpoints do not exist upstream, so a pick stays in
     # the repo it was selected from.
-    no_mirror = bool(os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip())
+    no_mirror = _video_no_mirror()
     if checkpoint and no_mirror:
         return repo_id
     from .diffusion_families import (
@@ -4473,6 +4593,13 @@ def _native_cache_background() -> bool:
         return False
 
 
+def _native_cache_write_deferred(*, lowram_engaged: bool = False) -> bool:
+    """Whether the native build's cache write runs after the load is published. Never on the LTX-2.5 low-RAM route:
+    it upcasts the build to float32 compute before publishing, and the cache must hold the storage-dtype build a
+    later bf16 load reads back, so the route writes inside the load, before the upcast."""
+    return not lowram_engaged and _native_cache_background()
+
+
 class _NativeCacheWrites:
     """Offloaded native build's cache writes, run after the load is published.
 
@@ -4824,6 +4951,51 @@ def _auto_seed_yields_to_resident_bf16(
     if scheme in (getattr(profile, "auto_prequant_when_resident", None) or ()):
         return False
     return requested is None or normalize_transformer_quant(requested) == TQ_AUTO
+
+
+def _auto_offline_keeps_cached_seed(
+    fam: Any,
+    scheme: Optional[str],
+    base: Optional[str],
+    *,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    fetch_repos: Sequence[Optional[str]] = (),
+) -> bool:
+    """An offline AUTO load whose dense DiT shards are not cached keeps the cached hosted ``scheme`` checkpoint.
+
+    The dense shards count only in the repo assembly reads: the selection ``_video_fetch_repo`` makes for ``base``
+    (upstream or its unsloth mirror, by cached completeness) and ``fetch_repos`` (the load's own ``fetch_base``).
+
+    Installs where an older auto staged only the hosted int8 DiT still load offline. Cache reads only, never raises."""
+    try:
+        if scheme is None or scheme == DENOISER_SEED_DECLINED:
+            return False
+        if not local_files_only and _can_download():
+            return False
+        from core.inference.diffusion import DiffusionBackend
+
+        dense_repos = []
+        for candidate in (*fetch_repos, _video_fetch_repo(base, hf_token) or base):
+            if candidate and candidate not in dense_repos:
+                dense_repos.append(candidate)
+        if any(DiffusionBackend._released_transformer_cached(r) for r in dense_repos):
+            return False
+        repo = VideoBackend._denoiser_prequant_cached_repo(
+            fam, scheme, base, online = False, hf_token = hf_token
+        )
+        if repo is None:
+            return False
+        logger.info(
+            "video.denoiser_prequant: offline auto load and the dense %s DiT shards are not cached, so the "
+            "cached hosted %s checkpoint (%s) is loaded instead of a resident bf16 DiT",
+            getattr(fam, "name", None),
+            scheme,
+            repo,
+        )
+        return True
+    except Exception:  # noqa: BLE001 -- unanswerable keeps the bf16 rule
+        return False
 
 
 def _auto_keeps_resident_bf16(plan: Any, target: Any) -> bool:
@@ -5792,6 +5964,59 @@ def video_split_shortfall_message(
     return None
 
 
+# "0" prices every video decode with the flat clip estimate (``estimate_video_runtime_mib``) again.
+VIDEO_TILED_DECODE_PRICE_ENV = "UNSLOTH_VIDEO_TILED_DECODE_PRICE"
+
+
+def _video_tiled_decode_mib(
+    state: Any,
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    frames: Optional[int],
+    available_mib: int,
+    device: Any = None,
+) -> Optional[int]:
+    """The request guard's decode-phase price above the decode-phase weights (LTX-2 wide tiles), or None (flat estimate).
+    Priced at the tile the decode takes with the room the live tiler reads (driver free + reusable cache, CUDA graph
+    pools excluded, less the VRAM Budget reserve); whatever ``available_mib`` credits beyond that room (graph pools,
+    groups still resident) is charged to the decode too, so the guard admits it only when the tile fits that room."""
+    if (os.environ.get(VIDEO_TILED_DECODE_PRICE_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return None
+    if not (width and height and frames):
+        return None
+    decode_floor = getattr(state, "vram_decode_floor_mib", None)
+    if decode_floor is None:
+        decode_floor = getattr(state, "vram_floor_mib", None)
+    if decode_floor is None:
+        return None
+    try:
+        from .video_ltx2_vae_tiles import admission_decode_mib
+        from .video_vae_untiled import _free_bytes
+
+        free = _free_bytes(device)
+        if free is None:
+            return None
+        room = int(free) >> 20
+        price = admission_decode_mib(
+            getattr(getattr(state, "pipe", None), "vae", None),
+            width = int(width),
+            height = int(height),
+            frames = int(frames),
+            free_mib = room,
+        )
+        if price is None:
+            return None
+        return int(price) + max(0, int(available_mib) - int(decode_floor) - room)
+    except Exception:  # noqa: BLE001 -- unpriced: the flat estimate stands
+        return None
+
+
 def video_offload_shortfall_message(
     *,
     family: str,
@@ -5803,28 +6028,35 @@ def video_offload_shortfall_message(
     frames: Optional[int] = None,
     decode_floor_mib: Optional[int] = None,
     measured_extra_mib: Optional[int] = None,
+    decode_mib: Optional[int] = None,
 ) -> Optional[str]:
     """Refusal when co-resident weights plus the activation headroom exceed the device, else None.
     ``measured_extra_mib``: a recorded peak (above the request's start) of a completed request at least this large
     under the same load; it replaces the estimated headroom when it asks for less (margin and slack as the Wan
     residency fit uses).
     Denoise and VAE decode are separate phases: the decoded-clip share is held only beside the weights still on the
-    device during the decode (``decode_floor_mib``, the full floor when unknown), never beside the streamed DiT."""
+    device during the decode (``decode_floor_mib``, the full floor when unknown), never beside the streamed DiT.
+    ``decode_mib``: the decode phase priced from this request's tile (``admission_decode_mib``, headroom included);
+    it replaces the base overhead and the decoded-clip share for that phase."""
     headroom = DEFAULT_BASE_OVERHEAD_MIB
     full_floor_mib = int(floor_mib)
     required = int(floor_mib) + headroom
     if width and height and frames:
+        decode_floor = int(
+            floor_mib if decode_floor_mib is None else min(decode_floor_mib, floor_mib)
+        )
         # decoded-clip share of the runtime estimate; its fixed 4 GiB denoise base over-refuses measured cells
         clip_mib = max(
             0,
             estimate_video_runtime_mib(width = width, height = height, num_frames = frames)
             - _VIDEO_DENOISE_ACTIVATION_MIB,
         )
-        decode_floor = int(
-            floor_mib if decode_floor_mib is None else min(decode_floor_mib, floor_mib)
-        )
-        if decode_floor + headroom + clip_mib > required:
-            floor_mib, headroom = decode_floor, headroom + clip_mib
+        decode_headroom = headroom + clip_mib
+        if decode_mib is not None:
+            # never above the flat estimate: what it admitted stays admitted
+            decode_headroom = min(decode_headroom, max(0, int(decode_mib)))
+        if decode_floor + decode_headroom > required:
+            floor_mib, headroom = decode_floor, decode_headroom
             required = decode_floor + headroom
     if measured_extra_mib is not None and measured_extra_mib > 0:
         from .video_stream_residency import MEASURED_PEAK_MARGIN, MEASURED_SLACK_MIB
@@ -6691,6 +6923,8 @@ class VideoBackend:
             gpu_ordinal = gpu_ordinal,
             checkpoint_filename = gguf_filename,
             checkpoint_repo = repo_id,
+            speed_mode = speed_mode,
+            loras_active = video_lora.has_active(loras),
         )
         # Publish the companion claim with _loading, or a delete in the gap removes a needed repo.
         from .video_minimax_h3 import (
@@ -6891,6 +7125,7 @@ class VideoBackend:
                 hf_token = kwargs.get("hf_token"),
                 ltx25_dev = ltx25_dev,
                 native_hosted = native_hosted_out,
+                local_files_only = local_files_only,
             )
             if baking_loras:
                 # LoRAs merge into dense weights: no hosted pre-quantized denoiser replaces the dense shards.
@@ -8390,6 +8625,7 @@ class VideoBackend:
         hf_token: Optional[str] = None,
         ltx25_dev: bool = False,
         native_hosted: Optional[list] = None,
+        local_files_only: bool = False,
     ) -> Optional[str]:
         """The pre-download auto denoiser scheme, None, or ``DENOISER_SEED_DECLINED`` if the plan would offload.
 
@@ -8407,6 +8643,33 @@ class VideoBackend:
                     if gpu_ordinal is None
                     else resolve_diffusion_device_target(ordinal = gpu_ordinal)
                 )
+                card = target
+                target = _ltx25_lowram_target(
+                    fam,
+                    target,
+                    kind = kind,
+                    text_encoder_quant = text_encoder_quant,
+                    base = base,
+                    transformer_quant = transformer_quant,
+                    speed_mode = speed_mode,
+                )
+                if target is not card and _ltx25_lowram_hosted_dit(
+                    fam,
+                    target,
+                    transformer_quant = transformer_quant,
+                    base = base,
+                    speed_mode = speed_mode,
+                ):
+                    # The low-RAM route offloads the DiT on an fp16-only card: read the hosted int8 file (25 GB) as
+                    # native Linears instead of pulling the 42 GB dense shards and quantising them at load.
+                    hosted = _video_native_hosted_scheme(fam, TQ_INT8, target)
+                    if native_hosted is not None and hosted is not None:
+                        native_hosted.append(hosted)
+                        logger.info(
+                            "video.ltx25_lowram: the hosted %s DiT is read as offload-safe native Linears",
+                            hosted,
+                        )
+                        return DENOISER_SEED_DECLINED
                 if target.dtype is torch.float16 and fp16_promotes_to_fp32(fam):
                     # The loader promotes fp16 to float32 here, so read the dtype the load will.
                     return None
@@ -8444,8 +8707,11 @@ class VideoBackend:
                         settled.append(settled_snapshot_device_memory(target))
                     return settled[0]
 
-                if _auto_seed_yields_to_resident_bf16(
-                    scheme, transformer_quant, fam
+                if (
+                    _auto_seed_yields_to_resident_bf16(scheme, transformer_quant, fam)
+                    and not _auto_offline_keeps_cached_seed(
+                        fam, scheme, base, hf_token = hf_token, local_files_only = local_files_only
+                    )
                 ) and _video_seed_stays_resident(
                     fam,
                     target = target,
@@ -10253,6 +10519,35 @@ class VideoBackend:
         te_auto_retry = (
             text_encoder_quant if text_encoder_quant_auto and te_auto_unavailable else None
         )
+        # LTX-2.5 on an fp16-only card whose host cannot hold the float32 load: plan and load as a bf16 card (hosted int8
+        # DiT, bf16 companions), then compute in float32 below. ``lowram_target`` is the real card, restored then.
+        lowram_target = None
+        if fam.name == "ltx-2.5":
+            from .video_ltx25_lowram import decide_lowram, storage_target
+
+            # The encoder request is settled above; the DiT price follows the request, LoRAs and the hosted read.
+            lowram = decide_lowram(
+                fam,
+                target,
+                model_kind = kind,
+                text_encoder_quant = text_encoder_quant,
+                base = repo_id if kind == "pipeline" else base,
+                transformer_quant = transformer_quant,
+                speed_mode = speed_mode,
+                loras_active = bool(lora_specs),
+                resolve_te = False,
+            )
+            if lowram.engaged:
+                logger.warning(
+                    "video.ltx25_lowram: engaged (%s): bf16 storage, float32 compute; route needs ~%d MiB of "
+                    "%s MiB host RAM",
+                    lowram.reason,
+                    lowram.need_mib,
+                    lowram.total_mib,
+                )
+                lowram_target, target = target, storage_target(target)
+            elif lowram.total_mib is not None:
+                logger.info("video.ltx25_lowram: not engaged (%s)", lowram.reason)
         # FlashInfer only serves hosted pre-quantised denoisers. Modular H3 installs below; a conventional load installs
         # after its live-memory plan keeps the seed (a capacity-settled seed can still be dropped).
         _nvfp4_install_wanted = (
@@ -10348,14 +10643,8 @@ class VideoBackend:
             )
 
         transformer_quant_requested = transformer_quant
-        # Unset/auto: hardware ladder; none/off: dense bf16; a scheme pins it. Pipeline kind only.
-        if transformer_quant is None or str(transformer_quant).strip().lower() in (
-            "",
-            "auto",
-        ):
-            # Explicit Speed=off must stay dense bf16 (bit-exact); auto-quant would engage int8/fp8 and compile.
-            speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
-            transformer_quant = "off" if speed_off else TQ_AUTO
+        # Unset/auto: hardware ladder (dense bf16 under Speed "off"); none/off: dense bf16; a scheme pins it.
+        transformer_quant = video_transformer_quant_request(transformer_quant, speed_mode)
 
         # Settled memory, so the previous pipeline's cached-but-free buffers do not read as used.
         device_memory = settled_snapshot_device_memory(target)
@@ -10805,9 +11094,18 @@ class VideoBackend:
             denoiser_seed_scheme = None
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
-        if _auto_seed_yields_to_resident_bf16(
-            denoiser_seed_scheme, transformer_quant, fam
-        ) and _auto_keeps_resident_bf16(_plan_for_te_scale(te_scale, log = False)[1], target):
+        if (
+            _auto_seed_yields_to_resident_bf16(denoiser_seed_scheme, transformer_quant, fam)
+            and _auto_keeps_resident_bf16(_plan_for_te_scale(te_scale, log = False)[1], target)
+            and not _auto_offline_keeps_cached_seed(
+                fam,
+                denoiser_seed_scheme,
+                base,
+                hf_token = hf_token,
+                local_files_only = local_files_only,
+                fetch_repos = (fetch_base,),
+            )
+        ):
             # Auto keeps a resident bf16 DiT; seeding would change auto's precision wherever bf16 fits.
             logger.info(
                 "video.denoiser_prequant: auto keeps the bf16 DiT (it fits resident), so the hosted "
@@ -10909,7 +11207,8 @@ class VideoBackend:
                 cache_dir = hub_cache_dir(),
                 local_files_only = local_files_only,
                 device = worker_device,
-                dtype = str(dtype).replace("torch.", ""),
+                # The low-RAM route computes in float32; so does its encoder worker.
+                dtype = "float32" if lowram_target is not None else str(dtype).replace("torch.", ""),
                 resident = encoder_resident_for_plan(plan),
                 budget_mib = worker_budget,
                 te_quant = ltx25_te_quant_scheme(text_encoder_quant),
@@ -11883,7 +12182,9 @@ class VideoBackend:
                     == _native_spec_for(native_scheme, fam, native_kwargs.get("act_int8"))
                 ):
                     # The native build is read back under auto too: the cache replays the pick, never makes it.
-                    if _native_cache_background():
+                    # The low-RAM route upcasts the build to float32 compute below: write it now, at storage dtype,
+                    # never from the background after that, or a later bf16 load reads float32 companions.
+                    if _native_cache_write_deferred(lowram_engaged = lowram_target is not None):
                         native_writes = _NativeCacheWrites(
                             pipe,
                             fam,
@@ -11997,13 +12298,26 @@ class VideoBackend:
                 )
             )
 
+        if lowram_target is not None:
+            from .video_ltx25_lowram import eager_target, upcast_compute_
+
+            # Before placement, patches and compile: they read the compute dtype off the modules.
+            kept = upcast_compute_(pipe, torch.float32)
+            dtype = torch.float32
+            target = eager_target(lowram_target)
+            logger.info(
+                "video.ltx25_lowram: float32 compute, bf16 weights cast per layer (MiB kept at bf16: %s)",
+                ", ".join(f"{name} {mib}" for name, mib in kept.items()),
+            )
+
         # Order: step cache first (compile keys fullgraph off it), then attention, speed, placement.
         effective_speed = resolve_speed_mode(
             speed_mode, is_gguf = kind == "gguf", dense_default = SPEED_DEFAULT
         )
         video_refine = lambda p, pl, lg: _video_refine_for_multigpu(fam, p, pl, lg)  # noqa: E731
         _note_video_default_request(fam, pipe)
-        split_expected = _layer_split_expected(pipe, plan, video_refine)
+        split_refine = _SplitPreviewRefine(video_refine)
+        split_expected = _layer_split_expected(pipe, plan, split_refine)
         # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower.
         quant_forces_compile = transformer_quant_engaged is not None and (
             native_scheme is None
@@ -12012,7 +12326,7 @@ class VideoBackend:
                 native_scheme,
                 split_expected
                 or plan.offload_policy == "none"
-                or _companion_split_expected(pipe, plan, video_refine),
+                or _companion_split_expected(pipe, plan, split_refine),
             )
         )
         if quant_forces_compile and effective_speed == SPEED_OFF:
@@ -12223,6 +12537,9 @@ class VideoBackend:
                     speed_optims += ("ltx2_full_mask_drop",)
                 if wan_fused_engaged:
                     speed_optims += ("wan_fused_adaln",)
+                if lowram_target is not None:
+                    # Status shows the route runs eager (no compile on the per-layer cast hooks).
+                    speed_optims += ("ltx25_lowram_eager",)
         if "compiled" in speed_optims and getattr(target, "device", None) == "cuda":
             # The first clip compiles inline: start the workers and hash the keys while the load finishes.
             _start_compile_prewarm(logger)
@@ -13843,6 +14160,18 @@ class VideoBackend:
                     logger.warning("video.h3_attn: INT8 attention dispatch skipped: %s", exc)
             if not h3_int8_modules:
                 h3_int8_reason = h3_int8_gate.reason
+            elif int8_auto and h3_int8_gate.exact_steps > 0:
+                # Auto engaged INT8 (any device): the first denoise steps of each render stay on the 16-bit kernel
+                from .video_minimax_h3_attn import finish_h3_int8_auto
+                h3_int8_modules, h3_int8_reason = finish_h3_int8_auto(
+                    h3_denoiser,
+                    pipe,
+                    h3_int8_gate.exact_steps,
+                    modules = h3_int8_modules,
+                    policy = h3_policy,
+                    status_pipe = speed_view,
+                    logger = logger,
+                )
             if h3_int8_modules:
                 h3_attn_levers += ("h3_int8_attention",)
                 attention_engaged = int8_attention.BACKEND
@@ -15204,6 +15533,14 @@ class VideoBackend:
                         decode_floor_mib = getattr(state, "vram_decode_floor_mib", None),
                         measured_extra_mib = video_stream_residency.measured_extra_mib(
                             calibration, int(width) * int(height) * int(frames)
+                        ),
+                        decode_mib = _video_tiled_decode_mib(
+                            state,
+                            width = width,
+                            height = height,
+                            frames = frames,
+                            available_mib = int(available_bytes // (1024 * 1024)),
+                            device = device_obj,
                         ),
                     )
                     if shortfall is not None:
