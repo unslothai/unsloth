@@ -547,6 +547,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
             message_id TEXT NOT NULL,
             parent_id TEXT,
+            role TEXT,
             PRIMARY KEY(thread_id, message_id)
         ) WITHOUT ROWID
         """
@@ -4607,7 +4608,7 @@ def upsert_chat_message(
             raise ChatMessageProtectedError(
                 "deleted server-managed generation messages cannot be restored"
             )
-        deleted_parents = _deleted_chat_message_parents(conn, message["threadId"])
+        deleted_parents = _deleted_chat_message_parents(conn, message["threadId"], [message])
         if message["id"] in deleted_parents:
             raise ChatMessageProtectedError("deleted chat messages cannot be restored")
         message = _with_surviving_parent(message, deleted_parents)
@@ -4691,13 +4692,31 @@ def upsert_chat_message(
 
 
 def _deleted_chat_message_parents(
-    conn: sqlite3.Connection, thread_id: str
+    conn: sqlite3.Connection, thread_id: str, incoming: list[dict]
 ) -> dict[str, str | None]:
     rows = conn.execute(
-        "SELECT message_id, parent_id FROM chat_message_tombstones WHERE thread_id = ?",
+        "SELECT message_id, parent_id, role FROM chat_message_tombstones WHERE thread_id = ?",
         (thread_id,),
     ).fetchall()
-    return {str(row["message_id"]): row["parent_id"] for row in rows}
+    deleted = {str(row["message_id"]): row["parent_id"] for row in rows}
+    deleted_user_ids = {str(row["message_id"]) for row in rows if row["role"] == "user"}
+    # A reply to a deleted user turn goes with it, as on delete; stored rows are server-managed survivors.
+    late_replies = [
+        m
+        for m in incoming
+        if m.get("role") == "assistant" and m.get("parentId") in deleted_user_ids
+    ]
+    if late_replies:
+        stored = {
+            str(row["id"])
+            for row in conn.execute(
+                "SELECT id FROM chat_messages WHERE thread_id = ?", (thread_id,)
+            )
+        }
+        deleted.update(
+            {str(m["id"]): m["parentId"] for m in late_replies if str(m["id"]) not in stored}
+        )
+    return deleted
 
 
 def _with_surviving_parent(message: dict, deleted_parents: dict[str, str | None]) -> dict:
@@ -4740,7 +4759,7 @@ def sync_chat_messages(
             for message in messages
             if _references_tombstoned_generation(conn, message)
         }
-        deleted_parents = _deleted_chat_message_parents(conn, thread_id)
+        deleted_parents = _deleted_chat_message_parents(conn, thread_id, messages)
         messages = [
             _with_surviving_parent(message, deleted_parents)
             for message in messages
@@ -4873,8 +4892,8 @@ def sync_chat_messages(
             missing_ids = sorted(pruned)
             if explicitly_deleted_ids:
                 conn.executemany(
-                    "INSERT OR IGNORE INTO chat_message_tombstones (thread_id, message_id, parent_id) "
-                    "SELECT thread_id, id, parent_id FROM chat_messages WHERE thread_id = ? AND id = ?",
+                    "INSERT OR IGNORE INTO chat_message_tombstones (thread_id, message_id, parent_id, role) "
+                    "SELECT thread_id, id, parent_id, role FROM chat_messages WHERE thread_id = ? AND id = ?",
                     [(thread_id, message_id) for message_id in missing_ids],
                 )
             for start in range(0, len(missing_ids), _SQLITE_IN_CHUNK_SIZE):
