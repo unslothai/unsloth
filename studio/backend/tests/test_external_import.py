@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import base64
 import dataclasses
 import gc
 import json
@@ -713,6 +714,52 @@ def test_cursor_reads_the_query_and_strips_injected_context(cursor_home):
     assert t.messages[1]["parentId"] == t.messages[0]["id"]
 
 
+def test_cursor_keeps_pasted_images(cursor_home):
+    project = cursor_home / "projects" / "p"
+    image = project / "assets" / "image-1.png"
+    image.parent.mkdir(parents = True)
+    image.write_bytes(base64.b64decode(PNG))
+    path = _write(
+        project / "agent-transcripts" / "s1" / "s1.jsonl",
+        [
+            k_turn(
+                "user",
+                "[Image]\n<image_files>\nThe following images were provided by the user and saved"
+                f" to the workspace for future use:\n1. {image}\n2. {project}/assets/gone.png\n"
+                "</image_files>\n<user_query>\nWhy does this button look broken?\n</user_query>",
+            ),
+            k_turn("assistant", "The padding is off."),
+        ],
+    )
+    t = cursor.read_transcript(path, "t", "s1")
+
+    assert t.messages[0]["content"] == [
+        {"type": "image", "image": f"data:image/png;base64,{PNG}"},
+        {"type": "text", "text": "Why does this button look broken?"},
+    ]
+    assert t.title == "Why does this button look broken?"
+
+
+def test_cursor_drops_the_placeholder_beside_an_image_only_paste(cursor_home):
+    project = cursor_home / "projects" / "p"
+    image = project / "assets" / "image-1.png"
+    image.parent.mkdir(parents = True)
+    image.write_bytes(base64.b64decode(PNG))
+    pasted = f"[Image]\n<image_files>\n1. {image}\n</image_files>\n<user_query>\n</user_query>"
+    path = _write(
+        project / "agent-transcripts" / "s1" / "s1.jsonl",
+        [
+            k_turn("user", pasted),
+            k_turn("assistant", "A button."),
+            k_turn("user", pasted.replace(str(image), str(project / "assets" / "gone.png"))),
+        ],
+    )
+    t = cursor.read_transcript(path, "t", "s1")
+
+    assert t.messages[0]["content"] == [{"type": "image", "image": f"data:image/png;base64,{PNG}"}]
+    assert len(t.messages) == 3 and t.messages[2]["content"][0]["type"] == "text"
+
+
 def test_codex_replays_events_not_the_injected_context(codex_home):
     t = codex.read_transcript(_rollout(codex_home), "t", "s1")
 
@@ -767,7 +814,7 @@ def test_codex_without_a_zstd_decoder_warns_instead_of_failing(codex_home, monke
     real_import = builtins.__import__
 
     def no_zstd(name, *args, **kwargs):
-        if name in ("zstandard", "compression"):
+        if name in ("zstandard", "compression", "backports"):
             raise ImportError(name)
         return real_import(name, *args, **kwargs)
 
@@ -775,6 +822,102 @@ def test_codex_without_a_zstd_decoder_warns_instead_of_failing(codex_home, monke
     summary = run_import(codex.SOURCE)
     assert summary.new_chats == 0
     assert summary.warnings and "zstandard" in summary.warnings[0]
+
+
+def _fake_zstandard(monkeypatch, stream_reader):
+    import sys
+    import types
+
+    fake = types.ModuleType("zstandard")
+    fake.ZstdError = type("ZstdError", (Exception,), {})
+    fake.ZstdDecompressor = lambda: types.SimpleNamespace(stream_reader = stream_reader)
+    monkeypatch.setitem(sys.modules, "compression", None)
+    monkeypatch.setitem(sys.modules, "backports", None)
+    monkeypatch.setitem(sys.modules, "zstandard", fake)
+    return fake
+
+
+def _ends_badly(head: bytes, error: Exception):
+    import io
+    class EndsBadly(io.BytesIO):
+        def read(self, size = -1):
+            return super().read(size) or self._fail()
+
+        def read1(self, size = -1):
+            return super().read1(size) or self._fail()
+
+        def readinto(self, buf):
+            return super().readinto(buf) or self._fail()
+
+        def _fail(self):
+            raise error
+
+    return EndsBadly(head)
+
+
+def test_codex_a_corrupt_zst_rollout_is_skipped_without_crashing(client, codex_home, monkeypatch):
+    fake = _fake_zstandard(
+        monkeypatch, lambda _raw: _ends_badly(b"", fake.ZstdError("corrupt archive"))
+    )
+    _rollout(codex_home, sid = "ok")
+    bad = _rollout(codex_home, cwd = "/srv/api", sid = "bad")
+    bad.rename(bad.with_name(bad.name + ".zst"))
+
+    assert len(codex.list_projects(codex_home)) == 2
+    response = client.post("/api/import/codex")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["new_chats"], body["skipped"], body["warnings"]) == (1, 1, [])
+
+
+def test_codex_a_truncated_zst_rollout_keeps_its_decoded_prefix(codex_home, monkeypatch):
+    path = _rollout(codex_home)
+    head = b"".join(path.read_bytes().splitlines(keepends = True)[:4])
+    path.rename(path.with_name(path.name + ".zst"))
+    fake = _fake_zstandard(
+        monkeypatch, lambda _raw: _ends_badly(head, fake.ZstdError("truncated frame"))
+    )
+
+    summary = run_import(codex.SOURCE)
+
+    assert (summary.new_chats, summary.messages, summary.warnings) == (1, 1, [])
+    assert _messages(codex.SOURCE, "019a")[0]["content"] == [
+        {"type": "text", "text": "List the files"}
+    ]
+
+
+def _real_zstd():
+    for name in ("compression.zstd", "backports.zstd"):
+        try:
+            return __import__(name, fromlist = ["zstd"])
+        except ImportError:
+            pass
+    pytest.skip("no stdlib-style zstd module")
+
+
+@pytest.mark.parametrize("cut", [None, 0.5])
+def test_codex_a_real_zst_rollout_imports_with_the_installed_decoder(codex_home, cut):
+    zstd = _real_zstd()
+    path = _rollout(codex_home)
+    blob = zstd.compress(path.read_bytes())
+    path.with_name(path.name + ".zst").write_bytes(blob[: int(len(blob) * cut)] if cut else blob)
+    path.unlink()
+
+    summary = run_import(codex.SOURCE)
+
+    assert summary.warnings == []
+    assert summary.new_chats == (0 if cut else 1)
+
+
+def test_codex_a_valid_zst_rollout_still_imports(codex_home, monkeypatch):
+    _fake_zstandard(monkeypatch, lambda raw: raw)
+    path = _rollout(codex_home)
+    path.rename(path.with_name(path.name + ".zst"))
+
+    summary = run_import(codex.SOURCE)
+
+    assert (summary.new_chats, summary.messages, summary.warnings) == (1, 4, [])
 
 
 # Discovery

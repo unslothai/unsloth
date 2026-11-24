@@ -824,3 +824,287 @@ def test_cross_device_rows_do_not_recompile_a_fullgraph_block():
     for _ in range(12):
         out = compiled(x)
     assert out.device.type == "meta" and tuple(out.shape) == (1, 6)
+
+
+def _gguf_q8(model, match):
+    """Swaps matching Linears for the GGUFLinear diffusers' GGUF loader builds from a Q8_0 tensor."""
+    gguf = pytest.importorskip("gguf")
+    utils = pytest.importorskip("diffusers.quantizers.gguf.utils")
+    dtype = next(model.parameters()).dtype
+    for name, mod in list(model.named_modules()):
+        for cname, child in list(mod.named_children()):
+            full = f"{name}.{cname}" if name else cname
+            if not (isinstance(child, torch.nn.Linear) and match(full)):
+                continue
+            q = gguf.quantize(child.weight.detach().float().numpy(), gguf.GGMLQuantizationType.Q8_0)
+            lin = utils.GGUFLinear(
+                child.in_features,
+                child.out_features,
+                bias = child.bias is not None,
+                compute_dtype = dtype,
+            )
+            lin.weight = utils.GGUFParameter(
+                torch.from_numpy(q), quant_type = gguf.GGMLQuantizationType.Q8_0
+            )
+            if child.bias is not None:
+                lin.bias = torch.nn.Parameter(child.bias.detach(), requires_grad = False)
+            setattr(mod, cname, lin)
+    return model
+
+
+def _gguf_qwen_edit(dtype = torch.float32):
+    """Qwen-Image-Edit-2511's layout: zero_cond_t, GGUF time embedder and per-block modulation."""
+    model = _qwen(zero_cond_t = True).to(dtype)
+    return _gguf_q8(model, lambda n: "time_text_embed" in n or "_mod." in n).requires_grad_(False)
+
+
+def test_gguf_time_embedder_gets_a_host_copy():
+    """A deep-copied GGUFParameter loses its quant_type, so the copy is built tensor by tensor."""
+    model = _gguf_qwen_edit()
+    calls = _qwen_calls(torch.float32, zero_cond_t = True)
+    ref = _run(model, calls)
+    assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
+    host = model.__dict__[ap.STATE_ATTR].tte_host
+    assert host is not None
+    live = model.time_text_embed.timestep_embedder.linear_1.weight
+    copied = host.timestep_embedder.linear_1.weight
+    assert copied.quant_type == live.quant_type and copied.data_ptr() != live.data_ptr()
+    t = torch.rand(2) / 2
+    hs = torch.empty(1)
+    with torch.no_grad():
+        assert torch.equal(host(t, hs, None), model.time_text_embed(t, hs, None))
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
+    assert ap.installed(model)
+
+
+def test_fallback_restore_joins_the_top_level_host_map():
+    """Studio's pinned / no-copy-back top-level group onloads only its host map: a restored norm_out must join it."""
+    from diffusers.hooks import group_offloading as go
+
+    from core.inference.diffusion_memory import TOP_GROUP_HOST_ATTR
+
+    model = _qwen(zero_cond_t = True)
+    calls = _qwen_calls(torch.float32, zero_cond_t = True)
+    ref = _run(model, calls)
+    assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
+    _group_offloaded(model, fake_stream = False)
+    top = model._diffusers_hook.get_hook(go._GROUP_OFFLOADING).group
+    host = {t: t.data for m in top.modules for t in list(m.parameters()) + list(m.buffers())}
+    setattr(top, TOP_GROUP_HOST_ATTR, host)
+    assert not any(t is model.norm_out.linear._unsloth_orig.weight for t in host)
+    assert ap.uninstall(model, reason = "unsupported call: test")
+    lin = model.norm_out.linear
+    assert lin.weight in host and lin.bias in host
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
+
+
+def test_host_copy_runs_on_its_own_weights():
+    """A deep copy: an instance-bound forward (MethodType patch) is rebound to the copy, never the live module."""
+    model = _gguf_qwen_edit()
+    lin = model.time_text_embed.timestep_embedder.linear_2
+    lin.forward = types.MethodType(type(lin).forward, lin)
+    host = ap._host_copy(model.time_text_embed)
+    copied = host.timestep_embedder.linear_2
+    assert copied.forward.__self__ is copied
+    assert copied.weight.quant_type == lin.weight.quant_type
+
+
+@pytest.mark.parametrize("guidance", [True, False])
+def test_gguf_flux_time_embedder_gets_a_host_copy(guidance):
+    """FLUX.1 GGUF (dev and schnell embedders): same deepcopy failure, same host copy."""
+    model = _gguf_q8(
+        _flux(guidance = guidance), lambda n: "timestep_embedder" in n or "guidance_embedder" in n
+    )
+    calls = _flux_calls(torch.float32, guidance = 3.5 if guidance else None)
+    ref = _run(model, calls)
+    assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
+    assert model.__dict__[ap.STATE_ATTR].tte_host is not None
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
+
+
+# CUDA only: the failure is a CPU weight meeting a CUDA activation after an offload onload
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.parametrize("policy", ["streaming", "group"])
+@pytest.mark.parametrize("top", ["pinned", "pageable"])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_gguf_qwen_edit_streamed_render_matches_stock(monkeypatch, policy, top, fallback):
+    """Issue 18759: GGUF Qwen-Image-Edit placed by Studio's streaming / group offload, top-level group pinned or
+    pageable with the copy-back skipped, rendered every step (precompute on, and after a fallback) bit-identical
+    to the stock model."""
+    from diffusers.hooks import group_offloading as go
+
+    from core.inference import diffusion_memory as dm
+
+    if top == "pageable":
+        monkeypatch.setattr(dm, "_pin_top_level_group", lambda *_a, **_k: False)
+
+    def build(precompute):
+        model = _gguf_qwen_edit(torch.bfloat16)
+        calls = _qwen_calls(torch.bfloat16, zero_cond_t = True)
+        pipe = _keep(_Pipe(torch.linspace(1000.0, 30.0, len(calls))))
+        pipe.transformer = model
+        pipe.components = {"transformer": model}
+        if precompute:
+            assert ap.install(model, pipe, offloaded = True)
+            if fallback:
+                model.__dict__[ap.STATE_ATTR].tte_host = None
+        if policy == "streaming":
+            dm._apply_streaming_offload(pipe, "cuda", None)
+        else:
+            assert dm._apply_group_offload(pipe, "cuda", None)
+        group = model._diffusers_hook.get_hook(go._GROUP_OFFLOADING).group
+        flag = "_unsloth_pinned_top" if top == "pinned" else "_unsloth_top_no_copy_back"
+        if not getattr(group, flag, False):
+            pytest.skip(f"{top} top-level group not built here")
+        cuda = []
+        for kw in calls:
+            kw = dict(kw)
+            for k in (
+                "hidden_states",
+                "encoder_hidden_states",
+                "encoder_hidden_states_mask",
+                "timestep",
+            ):
+                kw[k] = kw[k].to("cuda")
+            cuda.append(kw)
+        return model, cuda
+
+    stock, calls = build(False)
+    ref = [o.cpu() for o in _run(stock, calls)]
+    model, calls = build(True)
+    out = [o.cpu() for o in _run(model, calls)]
+    assert all(torch.equal(a, b) for a, b in zip(ref, out))
+    assert all(torch.equal(a, b) for a, b in zip(ref, [o.cpu() for o in _run(model, calls)]))
+    assert ap.installed(model) is not fallback
+
+
+@pytest.mark.parametrize("mid_capture", [False, True])
+def test_uninstall_drops_recorded_graphs_before_their_buffers(mid_capture):
+    """Uninstall resets the pipe's graphs before freeing the buffers they read, deferred past an active capture."""
+    import gc
+    import weakref
+
+    from core.inference import diffusion_cuda_graph as cg
+
+    model = _flux()
+    calls = _flux_calls(torch.float32)
+    pipe = _pipe(len(calls))
+    assert ap.install(model, pipe, requested = ap.MODE_ON)
+    _run(model, calls)
+    st = model.__dict__[ap.STATE_ATTR]
+    bufs = [weakref.ref(buf) for buf, _views in st.layouts.values()]
+    del st
+    assert bufs
+    seen = []
+
+    class _Handle:
+        cache = {}
+
+        def reset(self):
+            gc.collect()
+            seen.append(all(r() is not None for r in bufs))
+
+    pipe._unsloth_cuda_graphs = (_Handle(),)
+    recording = getattr(cg._OUTSIDE_LOCAL, "recording", 0)
+    if mid_capture:
+        cg._OUTSIDE_LOCAL.recording = recording + 1
+    try:
+        assert ap.uninstall(model, reason = "unsupported call: test")
+        if mid_capture:
+            assert seen == []  # nothing dropped while the recording runs
+            gc.collect()
+            assert all(r() is not None for r in bufs)
+    finally:
+        cg._OUTSIDE_LOCAL.recording = recording
+    if mid_capture:
+        cg.drain_deferred_releases()
+    assert seen == [True]
+    gc.collect()
+    assert all(r() is None for r in bufs)
+
+
+def _layout_refs(model):
+    import weakref
+
+    refs = [weakref.ref(buf) for buf, _views in model.__dict__[ap.STATE_ATTR].layouts.values()]
+    assert refs and all(r() is not None for r in refs)
+    return refs
+
+
+@pytest.mark.parametrize("via_hook", [False, True])
+def test_uninstall_from_a_workflow_pipe_resets_the_owner_graphs(via_hook):
+    """A workflow pipe sharing the denoiser lacks the handles; uninstall must still reset the model's graph."""
+    import gc
+    import types
+    from unittest.mock import patch
+
+    from core.inference import diffusion_cuda_graph as cg
+
+    model = _flux()
+    calls = _flux_calls(torch.float32)
+    owner = _pipe(len(calls))
+    owner.transformer = model
+    assert ap.install(model, owner, requested = ap.MODE_ON)
+    _run(model, calls)
+    refs = _layout_refs(model)
+    graph = cg.GraphedForward(model).enable()
+    try:
+        graph.cache["recorded"] = types.SimpleNamespace(pool_token = None, graph = None)
+        owner._unsloth_cuda_graphs = (graph,)
+        workflow = _pipe(len(calls))
+        workflow.transformer = model
+        ap.bind_pipe(workflow)
+        if via_hook:
+            with patch.object(
+                ap, "_serve", side_effect = ap._Unsupported("synthetic unsupported call")
+            ):
+                ap._pre_hook(model, (), {})
+        else:
+            assert ap.uninstall(model, reason = "test")
+        assert not ap.installed(model)
+        assert workflow.transformer.forward is graph
+        assert not graph.cache
+        gc.collect()
+        assert all(r() is None for r in refs)
+    finally:
+        graph.free()
+
+
+def test_standalone_install_keeps_no_buffers_after_uninstall():
+    """``install(model)`` without a pipe: nothing graphs the model, so uninstall frees the layouts at once."""
+    import gc
+
+    model = _flux()
+    calls = _flux_calls(torch.float32)
+    for _cycle in range(2):
+        assert ap.install(model, requested = ap.MODE_ON)
+        _run(model, calls)
+        refs = _layout_refs(model)
+        assert ap.uninstall(model)
+        gc.collect()
+        assert all(r() is None for r in refs)
+
+
+def test_a_graph_that_failed_to_reset_keeps_the_buffers_it_reads():
+    import gc
+
+    model = _flux()
+    calls = _flux_calls(torch.float32)
+    pipe = _pipe(len(calls))
+    assert ap.install(model, pipe, requested = ap.MODE_ON)
+    _run(model, calls)
+    refs = _layout_refs(model)
+
+    class _Stuck:
+        cache = {"recorded": object()}
+
+        def reset(self):
+            raise RuntimeError("reset failed")
+
+    pipe._unsloth_cuda_graphs = (_Stuck(),)
+    assert ap.uninstall(model)
+    gc.collect()
+    assert all(r() is not None for r in refs)
+    pipe._unsloth_cuda_graphs = ()
+    gc.collect()
+    assert all(r() is None for r in refs)

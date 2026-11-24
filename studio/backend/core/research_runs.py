@@ -36,6 +36,7 @@ from core.inference.tools import (
     EMPTY_SEARCH_RESULTS,
     RAG_SOURCES_SENTINEL,
     execute_mcp_tool,
+    is_unreadable_page,
     execute_tool,
     is_high_risk_tool_call,
     mcp_search_tools,
@@ -58,6 +59,7 @@ from core.research.citations import (
     _citation_title,
     _document_source_citation,
     _mcp_source_label,
+    _trim_url_tail,
     _validate_report,
 )
 from core.research.redaction import _sanitize_public_query, _shield_untrusted
@@ -97,6 +99,12 @@ _OPENAI_RESPONSES_FIXED_SAMPLING_MODEL = re.compile(
     r"o\d+(?:[-.]|$)|codex-mini(?:[-.]|$))"
 )
 _OPENAI_NON_REASONING_CHAT_ALIAS = re.compile(r"-chat(?:-latest)?$")
+# RFC 3986 bars unencoded []{}|\^; typographic quotes and CJK punctuation end a URL in prose.
+_QUESTION_URL = re.compile(
+    r"https?://[^\s<>\"`\x00\[\]{}|\\^\u00ab\u00bb\u2018-\u201f\u3000-\u303f\uff00-\uffef]+",
+    re.IGNORECASE,
+)
+_QUESTION_URL_PAIRS = {('"', '"'), ("`", "`"), ("<", ">")}
 _WALL_CLOCK_TIMEOUT_CANCEL_MESSAGE = "research-wall-clock-timeout"
 _MAX_ERROR_CHARS = 500
 _MAX_CONTEXT_CHARS = 12_000
@@ -1037,11 +1045,39 @@ def _mcp_evidence(sources: list[dict]) -> str:
     return f"\n\nMCP tools:\n{text}"
 
 
+def _question_url(question: str, match: re.Match) -> str:
+    """GFM tail trim, plus the closing half of a *_~' run that opens the URL ('url', **url**)."""
+    opener = question[: match.start()]
+    scheme, rest = match.group(0).split(":", 1)
+    url = f"{scheme.lower()}:{rest}"
+    if opener.endswith("]("):
+        depth = 0
+        for index, char in enumerate(url):
+            depth += (char == "(") - (char == ")")
+            if depth < 0:
+                return url[:index]
+        return url
+    if (opener[-1:], question[match.end() : match.end() + 1]) in _QUESTION_URL_PAIRS:
+        return url
+    closer = opener[len(opener.rstrip("*_~'")) :][::-1]
+    while True:
+        trimmed = _trim_url_tail(url)
+        if closer and trimmed.endswith(closer):
+            trimmed, closer = trimmed[: -len(closer)], ""
+        if trimmed == url:
+            return url
+        url = trimmed
+
+
 def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
     """empty searches must report missing evidence even when the tool succeeds."""
     if rag_sources:
         return False
-    return is_tool_error(web_result) or web_result.strip() in EMPTY_SEARCH_RESULTS
+    return (
+        is_tool_error(web_result)
+        or web_result.strip() in EMPTY_SEARCH_RESULTS
+        or is_unreadable_page(web_result)
+    )
 
 
 def _preferred_step_error(current: str, candidate: str) -> str:
@@ -2435,6 +2471,13 @@ class ResearchSupervisor:
             run["userMessageId"],
             str(run["config"].get("question") or ""),
         )
+        question_urls = [
+            url
+            for url in dict.fromkeys(
+                _question_url(question, match) for match in _QUESTION_URL.finditer(question)
+            )
+            if check_url_access(url, website_policy)[0]
+        ]
         reset = db.prepare_execution_resume if resuming else db.reset_execution_steps
         written = await asyncio.to_thread(reset, run["id"], self.worker_id)
         await self._check_worker_write(run["id"], written)
@@ -2535,106 +2578,122 @@ class ResearchSupervisor:
         )
         for position in range(start_position, max_steps):
             await self._check_active(run["id"])
-            source_catalog = "\n".join(
-                f"- {_citation_title(source, source['url'])} | {source['url']} | "
-                f"{source.get('snippet') or ''}"
-                for source in sources
+            linked_url = (
+                next(
+                    (url for url in question_urls if url not in fetched_urls),
+                    None,
+                )
+                if len(sources) < max_sources
+                else None
             )
-            evidence = "\n\n".join(decision_notes)
-            decision_system = _system_prompt_with_instructions(
-                _AGENT_SYSTEM_PROMPT + (f"\n\n{policy_prompt}" if policy_prompt else ""),
-                run["config"],
-            )
-            await _refresh_served_context_length(run)
-            # A fixed 60k tail dwarfs small contexts and runs every step; overflow kills the run pre-synthesis.
-            decision_total = _prompt_char_budget(
-                _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
-            )
-            decision_question, decision_plan_json = _fit_decision_inputs(
-                question,
-                run["plan"],
-                len(decision_system),
-                decision_total,
-            )
-            # Catalog is unbounded too (maxSources, 4000-char snippets); fit it before dependent sections.
-            decision_catalog = _fit_source_catalog(
-                source_catalog,
-                _trimmable_budget(
+            if linked_url is not None:
+                action = {"action": "fetch", "title": "Reading the linked page", "url": linked_url}
+            else:
+                source_catalog = "\n".join(
+                    f"- {_citation_title(source, source['url'])} | {source['url']} | "
+                    f"{source.get('snippet') or ''}"
+                    for source in sources
+                )
+                evidence = "\n\n".join(decision_notes)
+                decision_system = _system_prompt_with_instructions(
+                    _AGENT_SYSTEM_PROMPT + (f"\n\n{policy_prompt}" if policy_prompt else ""),
+                    run["config"],
+                )
+                await _refresh_served_context_length(run)
+                # A fixed 60k tail dwarfs small contexts and runs every step; overflow kills the run pre-synthesis.
+                decision_total = _prompt_char_budget(
+                    _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
+                )
+                decision_question, decision_plan_json = _fit_decision_inputs(
+                    question,
+                    run["plan"],
+                    len(decision_system),
                     decision_total,
+                )
+                # Catalog is unbounded too (maxSources, 4000-char snippets); fit it before dependent sections.
+                decision_catalog = _fit_source_catalog(
+                    source_catalog,
+                    _trimmable_budget(
+                        decision_total,
+                        len(decision_system)
+                        + len(decision_question)
+                        + len(decision_plan_json)
+                        + _MIN_SYNTHESIS_EVIDENCE_CHARS,
+                        len(source_catalog),
+                    ),
+                )
+                decision_query_history_json = json.dumps(
+                    sorted(used_queries),
+                    ensure_ascii = False,
+                )
+                decision_state_json = json.dumps(research_state, ensure_ascii = False)
+                decision_scaffold = (
                     len(decision_system)
                     + len(decision_question)
                     + len(decision_plan_json)
-                    + _MIN_SYNTHESIS_EVIDENCE_CHARS,
-                    len(source_catalog),
-                ),
-            )
-            decision_query_history_json = json.dumps(
-                sorted(used_queries),
-                ensure_ascii = False,
-            )
-            decision_state_json = json.dumps(research_state, ensure_ascii = False)
-            decision_scaffold = (
-                len(decision_system)
-                + len(decision_question)
-                + len(decision_plan_json)
-                + len(decision_catalog)
-                + len(decision_query_history_json)
-                + len(decision_state_json)
-            )
-            evidence_chars = _trimmable_budget(
-                decision_total, decision_scaffold, _MAX_SYNTHESIS_EVIDENCE_CHARS
-            )
-            decision_context = conversation_context[
-                : _trimmable_budget(
-                    decision_total, decision_scaffold + evidence_chars, _MAX_CONTEXT_CHARS
+                    + len(decision_catalog)
+                    + len(decision_query_history_json)
+                    + len(decision_state_json)
                 )
-            ]
-            decision, decision_reasoning, _finish_reason, _usage = await self._stream_completion(
-                run,
-                [
-                    {
-                        "role": "system",
-                        "content": decision_system,
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Conversation context JSON:\n{_shield_untrusted(decision_context)}\n\n"
-                            f"Question:\n{_shield_untrusted(decision_question)}\n\n"
-                            f"Approved plan (guidance only):\n"
-                            f"{_shield_untrusted(decision_plan_json)}\n\n"
-                            f"Actions remaining after this one: {max_steps - position - 1}\n"
-                            f"<untrusted_query_history_json>\n"
-                            f"{_shield_untrusted(decision_query_history_json)}\n"
-                            f"</untrusted_query_history_json>\n\n"
-                            f"<untrusted_research_state_json>\n"
-                            f"{_shield_untrusted(decision_state_json) or '{}'}\n"
-                            f"</untrusted_research_state_json>\n\n"
-                            f"<untrusted_web_evidence>\n"
-                            f"Gathered sources:\n{_shield_untrusted(decision_catalog) or '(none)'}\n\n"
-                            f"{_shield_untrusted(evidence[-evidence_chars:] if evidence_chars else '') or '(none)'}\n"
-                            f"</untrusted_web_evidence>"
-                        ),
-                    },
-                ],
-                json_mode = True,
-                report_progress = False,
-                phase = "decision",
-                step_position = position,
-                max_tokens = 2048,
-                enable_thinking = False,
-            )
-            try:
-                action = _parse_and_validate_action(
+                evidence_chars = _trimmable_budget(
+                    decision_total, decision_scaffold, _MAX_SYNTHESIS_EVIDENCE_CHARS
+                )
+                decision_context = conversation_context[
+                    : _trimmable_budget(
+                        decision_total, decision_scaffold + evidence_chars, _MAX_CONTEXT_CHARS
+                    )
+                ]
+                (
                     decision,
                     decision_reasoning,
-                    {source["url"] for source in sources},
-                    website_policy,
+                    _finish_reason,
+                    _usage,
+                ) = await self._stream_completion(
+                    run,
+                    [
+                        {
+                            "role": "system",
+                            "content": decision_system,
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Conversation context JSON:\n{_shield_untrusted(decision_context)}\n\n"
+                                f"Question:\n{_shield_untrusted(decision_question)}\n\n"
+                                f"Approved plan (guidance only):\n"
+                                f"{_shield_untrusted(decision_plan_json)}\n\n"
+                                f"Actions remaining after this one: {max_steps - position - 1}\n"
+                                f"<untrusted_query_history_json>\n"
+                                f"{_shield_untrusted(decision_query_history_json)}\n"
+                                f"</untrusted_query_history_json>\n\n"
+                                f"<untrusted_research_state_json>\n"
+                                f"{_shield_untrusted(decision_state_json) or '{}'}\n"
+                                f"</untrusted_research_state_json>\n\n"
+                                f"<untrusted_web_evidence>\n"
+                                f"Gathered sources:\n{_shield_untrusted(decision_catalog) or '(none)'}\n\n"
+                                f"{_shield_untrusted(evidence[-evidence_chars:] if evidence_chars else '') or '(none)'}\n"
+                                f"</untrusted_web_evidence>"
+                            ),
+                        },
+                    ],
+                    json_mode = True,
+                    report_progress = False,
+                    phase = "decision",
+                    step_position = position,
+                    max_tokens = 2048,
+                    enable_thinking = False,
                 )
-            except (ValueError, json.JSONDecodeError):
-                action = _next_unused_seed_action(run["plan"], used_queries)
-                if action is None:
-                    break
+                try:
+                    action = _parse_and_validate_action(
+                        decision,
+                        decision_reasoning,
+                        {source["url"] for source in sources},
+                        website_policy,
+                    )
+                except (ValueError, json.JSONDecodeError):
+                    action = _next_unused_seed_action(run["plan"], used_queries)
+                    if action is None:
+                        break
             if action["action"] == "finish":
                 if notes:
                     next_state = _normalize_research_state(action.get("researchState"))
@@ -2800,10 +2859,19 @@ class ResearchSupervisor:
                 document_sources.append({**source, "stepPosition": position})
                 rag_sources.append(source)
             step_sources = []
-            for match in _URL_BLOCK.finditer(result if action["action"] == "search" else ""):
+            found_sources = (
+                [
+                    {k: match.group(k).strip() for k in ("title", "url", "snippet")}
+                    for match in _URL_BLOCK.finditer(result)
+                ]
+                if action["action"] == "search"
+                else [{"title": argument, "url": argument, "snippet": ""}]
+                if not _research_step_failed(result, [])
+                else []
+            )
+            for source in found_sources:
                 if len(sources) >= max_sources:
                     break
-                source = {k: match.group(k).strip() for k in ("title", "url", "snippet")}
                 allowed, _reason, _hostname = check_url_access(
                     source["url"],
                     website_policy,

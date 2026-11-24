@@ -13,7 +13,7 @@ Unsloth (TRANSFORMERS_DEFAULT_VERSION).
 Two separate target directories are maintained:
   - .venv_t5_530/  — transformers 5.3.0 (Ministral-3, GLM, Qwen3 MoE, etc.)
   - .venv_t5_550/  — transformers 5.5.4 (Gemma 4)
-  - .venv_t5_510/  — transformers 5.13.1 (Gemma 4 Unified / 12B); the highest
+  - .venv_t5_510/  — transformers 5.15.1 (Gemma 4 Unified / 12B); the highest
     pre-installed tier. The directory and tier keep their 5.10 names so existing
     installs and saved routing stay valid.
 
@@ -67,6 +67,7 @@ from utils.native_path_leases import child_env_without_native_path_secret
 from utils.prebuilt.update_flow import resolves_into_studio_app_tree
 from utils.native_tls import inline_gate_source, vendor_dir
 from utils.happy_eyeballs import inline_activation_source
+from utils.transformers_backports import inline_install_source
 from utils.child_stdio import utf8_child_env
 from utils.hf_cache_settings import get_hf_cache_paths
 from utils.subprocess_compat import (
@@ -421,8 +422,8 @@ _config_needs_457_cache: dict[tuple[str, str | None], bool] = {}
 # Keyed by local config.json signature so overwritten checkpoints re-probe, not Hub sha; no huggingface_hub import before sidecar venv activates.
 _probe_tier_cache: dict[str, str] = {}
 
-# Tier keys and directory names are historical: "510" is the highest pre-installed tier, now 5.13.1.
-TRANSFORMERS_510_VERSION = "5.13.1"
+# Tier keys and directory names are historical: "510" is the highest pre-installed tier, now 5.15.1.
+TRANSFORMERS_510_VERSION = "5.15.1"
 TRANSFORMERS_550_VERSION = "5.5.4"
 TRANSFORMERS_530_VERSION = "5.3.0"
 TRANSFORMERS_457_VERSION = "4.57.6"
@@ -720,6 +721,16 @@ def _is_canonical_repo_id(model_name: str) -> bool:
     )
 
 
+def _hub_adapter_base(base, model_name: str) -> str | None:
+    """A Hub adapter's base, without a Windows network share: touching one signs in to its host (NTLM)."""
+    from utils.datasets.remote_images import is_network_share
+
+    if isinstance(base, str) and is_network_share(base):
+        logger.warning("Ignoring a network share base in adapter_config.json of '%s'", model_name)
+        return None
+    return base or None
+
+
 def _adapter_base_from_hf_cache(model_name: str) -> str | None:
     """Stdlib-only hub cache read (no huggingface_hub import), so a cached LoRA resolves offline."""
     if not _is_canonical_repo_id(model_name):
@@ -752,7 +763,7 @@ def _adapter_base_from_hf_cache(model_name: str) -> str | None:
                 base = json.loads(cfg_path.read_text(encoding = "utf-8-sig")).get(
                     "base_model_name_or_path"
                 )
-                return base or None
+                return _hub_adapter_base(base, model_name)
     except Exception as exc:
         logger.debug("HF cache adapter_config.json lookup failed for '%s': %s", model_name, exc)
     return None
@@ -804,7 +815,7 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
         return base
     try:
         cfg = _hf_json(url, hf_token)
-        base = cfg.get("base_model_name_or_path")
+        base = _hub_adapter_base(cfg.get("base_model_name_or_path"), model_name)
         if base:
             logger.info("Resolved remote LoRA adapter '%s' → base model '%s'", model_name, base)
         if answers is not None:
@@ -1524,11 +1535,15 @@ _TRUSTSTORE_VENDOR = """
     + "\n"
     + inline_gate_source()
     + inline_activation_source()
+    + inline_install_source()
     + r"""
 target_dir, model_name = sys.argv[1], sys.argv[2]
 if target_dir:  # empty = probe the ambient (default-tier) transformers, no sidecar prepend
     sys.path.insert(0, target_dir)
 try:
+    # Unsloth is never imported here, and the sidecars below 5.5.0 need its LightGlue back-port
+    # for trust_remote_code=False to hold; failing to install it fails the parse.
+    _install_transformers_backports()
     from transformers import AutoConfig
     AutoConfig.from_pretrained(model_name, trust_remote_code=False)
     sys.exit(0)

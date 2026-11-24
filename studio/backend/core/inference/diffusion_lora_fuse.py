@@ -9,7 +9,8 @@ weight dtype) and marks each layer merged, so PEFT's forward runs the base layer
 on the card when it has ample room (a restore is then a device copy), else in host chunks (pinned on a discrete card,
 only while the host keeps its RAM reserve), and copied back
 before any change, so the weights-only fast path (``set_adapters``) runs on exactly the weights it would have seen
-unfused. Opt out with UNSLOTH_DIFFUSION_LORA_FUSE=0."""
+unfused. Opt in with UNSLOTH_DIFFUSION_LORA_FUSE=1: rounding the merged weight to bf16 lands further from an fp32
+reference than PEFT's unfolded branch, and the restore copy costs a full set of adapted weights."""
 
 from __future__ import annotations
 
@@ -30,11 +31,45 @@ _PINNED_CHUNK = 512 << 20
 
 
 def enabled() -> bool:
-    return (os.environ.get(LORA_FUSE_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+    """Off by default: measured on L4 and A100-40, PEFT's unfolded path is closer to an fp32 reference."""
+    return (os.environ.get(LORA_FUSE_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
 
 
 def fused(pipe: Any) -> bool:
     return bool(getattr(pipe, _FUSED_ATTR, None))
+
+
+def _moves_with_hooks(module: Any) -> bool:
+    for sub in module.modules():
+        if getattr(sub, "_hf_hook", None) is not None:
+            return True
+        hooks = getattr(getattr(sub, "_diffusers_hook", None), "hooks", None) or {}
+        if any("offload" in str(key) for key in hooks):
+            return True
+    return False
+
+
+def _on_card(module: Any) -> bool:
+    devices = {t.device for t in (*module.parameters(), *module.buffers())}
+    return len(devices) == 1 and next(iter(devices)).type not in ("cpu", "meta")
+
+
+def group_fold_opted_in() -> bool:
+    return enabled()
+
+
+def denoisers_resident(offload_policy: Any, memory_mode: Any, denoisers: list) -> bool:
+    """Folded weights must not move: group offload qualifies only if opted in and every denoiser is whole on the
+    card, unhooked."""
+    from .diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE, keeps_denoiser_streamed
+
+    if offload_policy == OFFLOAD_NONE:
+        return True
+    if offload_policy != OFFLOAD_GROUP or not denoisers or not group_fold_opted_in():
+        return False
+    if keeps_denoiser_streamed(memory_mode):
+        return False
+    return all(not _moves_with_hooks(m) and _on_card(m) for m in denoisers)
 
 
 def _lora_layers(module: Any) -> list:

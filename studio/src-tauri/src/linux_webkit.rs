@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::{CString, OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 
 use crate::gpu_rendering::GpuRendering;
 
@@ -25,6 +27,28 @@ const FORCE_DMABUF: &str = "WEBKIT_FORCE_DMABUF_RENDERER";
 const DISABLE_COMPOSITING: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
 // Skia rasterizes on the CPU even with GPU compositing on.
 const SKIA_CPU_RENDERING: &str = "WEBKIT_SKIA_ENABLE_CPU_RENDERING";
+// 2.46 replaced cairo, which rasterized on the CPU, with Skia on the GPU whenever compositing is on.
+const SKIA_MIN_VERSION: (u32, u32) = (2, 46);
+// Below this the GPU look also needs hardware_gl_available.
+const GPU_PAINTING_ASSUMED_FROM: (u32, u32) = (2, 54);
+const DEV_DIR: &str = "/dev";
+const DRM_CLASS_DIR: &str = "/sys/class/drm";
+// glvnd's default vendor search path; the variables that replace it are in GL_SELECTION_OVERRIDES.
+const EGL_VENDOR_DIRS: [&str; 2] = ["/etc/glvnd/egl_vendor.d", "/usr/share/glvnd/egl_vendor.d"];
+// Kernel drivers of GPUs Mesa renders on. Virtual ones (virtio_gpu, vmwgfx, vboxvideo) are left
+// out: without host 3D their Mesa driver falls back to llvmpipe behind the same render node.
+const MESA_GPU_DRIVERS: &[&str] = &[
+    "amdgpu", "asahi", "etnaviv", "i915", "lima", "msm", "nouveau", "panfrost", "panthor",
+    "radeon", "v3d", "xe",
+];
+// Each can put WebKit on llvmpipe on a host with a GPU, so they void the evidence.
+const GL_SELECTION_OVERRIDES: &[&str] = &[
+    "LIBGL_ALWAYS_SOFTWARE",
+    "GALLIUM_DRIVER",
+    "MESA_LOADER_DRIVER_OVERRIDE",
+    "__EGL_VENDOR_LIBRARY_FILENAMES",
+    "__EGL_VENDOR_LIBRARY_DIRS",
+];
 // Composited video goes through GStreamer GL, which cannot create a context on NVIDIA with the
 // AppImage's bundled GStreamer: frames stay black. Without it WebKit uses the sink main already uses.
 const GST_DISABLE_GL_SINK: &str = "WEBKIT_GST_DISABLE_GL_SINK";
@@ -204,14 +228,16 @@ fn compositing_disabled_by(value: &OsStr) -> bool {
 /// Whether this launch's web process paints on the CPU, read from the environment it inherits.
 /// Skia's CPU path re-blurs every CSS shadow on each repaint, so the frontend flattens large
 /// blurred shadows to a 1px edge. True when unsure: a flat edge costs a GPU path only its softness.
+/// Compositing that WebKit turns off itself is read at setup (`note_cpu_painting`).
+/// `hardware_gl` runs only when its answer decides, so most launches never look at the devices.
 fn paints_on_cpu(
     env: impl Fn(&str) -> Option<OsString>,
     webkit_version: (u32, u32, u32),
     gpu: GpuInputs,
+    hardware_gl: impl FnOnce() -> bool,
 ) -> bool {
-    let (major, minor, _) = webkit_version;
-    // Before 2.54 WebKitGTK paints on the CPU on every path we pick, GPU rendering On included.
-    if gpu.unsafe_flag || gpu.setting == GpuRendering::Off || (major, minor) < (2, 54) {
+    let version = (webkit_version.0, webkit_version.1);
+    if gpu.unsafe_flag || gpu.setting == GpuRendering::Off || version < SKIA_MIN_VERSION {
         return true;
     }
     // No NVIDIA case: a distribution's disable-nvidia-dmabuf.patch only narrows the transport to
@@ -224,6 +250,83 @@ fn paints_on_cpu(
         || env(DISABLE_COMPOSITING)
             .as_deref()
             .is_some_and(compositing_disabled_by)
+        || (version < GPU_PAINTING_ASSUMED_FROM && !hardware_gl())
+}
+
+/// An EGL vendor glvnd loads plus the devices it renders on; without one WebKit runs on llvmpipe,
+/// slower than Skia's CPU path. Reads only files and permissions: opening a device, or NVIDIA's
+/// per-GPU procfs, can wake a suspended GPU.
+fn hardware_gl_available(
+    env: impl Fn(&str) -> Option<OsString>,
+    dev_dir: &Path,
+    drm_class_dir: &Path,
+    egl_vendor_dirs: &[&Path],
+) -> bool {
+    if GL_SELECTION_OVERRIDES
+        .iter()
+        .any(|name| env(name).is_some())
+    {
+        return false;
+    }
+    let vendors = egl_vendor_libraries(egl_vendor_dirs);
+    let installed = |prefix: &str| vendors.iter().any(|library| library.starts_with(prefix));
+    (installed("libEGL_nvidia") && nvidia_devices_accessible(dev_dir))
+        || (installed("libEGL_mesa") && mesa_render_node_accessible(dev_dir, drm_class_dir))
+}
+
+fn nvidia_devices_accessible(dev_dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dev_dir) else {
+        return false;
+    };
+    node_accessible(&dev_dir.join("nvidiactl"))
+        && entries.flatten().any(|entry| {
+            let name = entry.file_name();
+            let gpu = name
+                .as_bytes()
+                .strip_prefix(b"nvidia")
+                .is_some_and(|minor| !minor.is_empty() && minor.iter().all(u8::is_ascii_digit));
+            gpu && node_accessible(&entry.path())
+        })
+}
+
+fn mesa_render_node_accessible(dev_dir: &Path, drm_class_dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(drm_class_dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let driver = std::fs::read_link(entry.path().join("device/driver")).ok();
+        name.as_bytes().starts_with(b"renderD")
+            && driver
+                .as_deref()
+                .and_then(Path::file_name)
+                .and_then(OsStr::to_str)
+                .is_some_and(|driver| MESA_GPU_DRIVERS.contains(&driver))
+            && node_accessible(&dev_dir.join("dri").join(&name))
+    })
+}
+
+fn egl_vendor_libraries(dirs: &[&Path]) -> Vec<String> {
+    dirs.iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().extension() == Some(OsStr::new("json")))
+        .filter_map(|entry| std::fs::read(entry.path()).ok())
+        .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .filter_map(|vendor| {
+            let path = Path::new(vendor["ICD"]["library_path"].as_str()?);
+            Some(path.file_name()?.to_str()?.to_owned())
+        })
+        .collect()
+}
+
+/// access(2), not open(2): opening a GPU device can wake it.
+fn node_accessible(path: &Path) -> bool {
+    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    unsafe { libc::access(path.as_ptr(), libc::R_OK | libc::W_OK) == 0 }
 }
 
 /// TextureMapper (before Skia in 2.54) blurs later layers into a backdrop-filter: index.css `webkit-legacy-compositor`.
@@ -598,6 +701,8 @@ pub struct RendererDecision {
     pub webkit_version: (u32, u32, u32),
     pub wayland_session: bool,
     pub nvidia_driver_branch: Option<u32>,
+    /// Evidence of a hardware GL renderer, when it was needed (see `hardware_gl_available`).
+    pub hardware_gl: Option<bool>,
     /// Whether the web process paints on the CPU, from the environment this launch hands it.
     pub cpu_painting: bool,
 }
@@ -638,6 +743,7 @@ pub fn configure_renderer(
         webkit_version,
         wayland_session: session_is_wayland(&env, wayland_socket, x11_open),
         nvidia_driver_branch: nvidia,
+        hardware_gl: None,
         cpu_painting: true,
     };
     let gpu = GpuInputs {
@@ -675,7 +781,23 @@ pub fn configure_renderer(
         }
     }
     // After claim/release_claimed: the web process inherits exactly this environment.
-    decision.cpu_painting = paints_on_cpu(|name| std::env::var_os(name), webkit_version, gpu);
+    let mut hardware_gl = None;
+    decision.cpu_painting = paints_on_cpu(
+        |name| std::env::var_os(name),
+        webkit_version,
+        gpu,
+        || {
+            let vendor_dirs = EGL_VENDOR_DIRS.map(Path::new);
+            let evidence = hardware_gl_available(
+                |name| std::env::var_os(name),
+                Path::new(DEV_DIR),
+                Path::new(DRM_CLASS_DIR),
+                &vendor_dirs,
+            );
+            *hardware_gl.insert(evidence)
+        },
+    );
+    decision.hardware_gl = hardware_gl;
     decision
 }
 
@@ -2419,6 +2541,7 @@ mod tests {
             },
             webkit_version,
             inputs,
+            || true,
         )
     }
 
@@ -2433,32 +2556,47 @@ mod tests {
     }
 
     #[test]
-    fn cpu_painting_is_false_only_on_webkit_2_54_with_the_gpu_path_kept() {
+    fn cpu_painting_is_false_only_with_skia_on_the_gpu_path_kept() {
         let hosts = [
             ("wayland", WAYLAND_HOST),
             ("x11", X11_HOST),
             ("appimage-wayland", APPIMAGE_WAYLAND_HOST),
         ];
-        for version in [WEBKIT_BUNDLED, (2, 52, 3), WEBKIT_2_53, WEBKIT_2_54] {
+        let versions = [
+            MODERN_WEBKIT,
+            (2, 45, 90),
+            (2, 46, 0),
+            WEBKIT_BUNDLED,
+            (2, 52, 3),
+            WEBKIT_2_53,
+            WEBKIT_2_54,
+        ];
+        for version in versions {
             for (name, vars) in hosts {
                 for nvidia in [false, true] {
                     for setting in [GpuRendering::Auto, GpuRendering::On, GpuRendering::Off] {
                         for flag in [false, true] {
-                            let expected =
-                                if version < WEBKIT_2_54 || flag || setting == GpuRendering::Off {
-                                    true
-                                } else {
-                                    match (setting, nvidia, name) {
-                                        // These helpers model driver 580: On must retain the
-                                        // X11 compositing fallback, including its image shadows.
-                                        (GpuRendering::On, true, "x11") => true,
-                                        // Auto takes the driver-580 X11 fallback, DISABLE_DMABUF.
-                                        (GpuRendering::Auto, true, "x11") => true,
-                                        // An AppImage on Wayland gets DISABLE_DMABUF under Auto.
-                                        (GpuRendering::Auto, false, "appimage-wayland") => true,
-                                        _ => false,
+                            // Cairo, before 2.46, rasterizes on the CPU whatever composites.
+                            let cairo = version < (2, 46, 0);
+                            let expected = if cairo || flag || setting == GpuRendering::Off {
+                                true
+                            } else {
+                                match (setting, nvidia, name) {
+                                    // These helpers model driver 580: On must retain the
+                                    // X11 compositing fallback, including its image shadows.
+                                    (GpuRendering::On, true, "x11") => true,
+                                    // Auto takes the driver-580 X11 fallback: compositing off
+                                    // before 2.54, DISABLE_DMABUF from 2.54.
+                                    (GpuRendering::Auto, true, "x11") => true,
+                                    // An AppImage on Wayland gets DISABLE_DMABUF under Auto.
+                                    (GpuRendering::Auto, false, "appimage-wayland") => true,
+                                    // NVIDIA Wayland keeps DISABLE_DMABUF under Auto until 2.54.2.
+                                    (GpuRendering::Auto, true, _) => {
+                                        version < NVIDIA_WAYLAND_GPU_MIN_VERSION
                                     }
-                                };
+                                    _ => false,
+                                }
+                            };
                             assert_eq!(
                                 cpu_painting_on(vars, version, nvidia, gpu(setting, flag)),
                                 expected,
@@ -2473,7 +2611,14 @@ mod tests {
 
     #[test]
     fn cpu_shadows_follow_the_nvidia_x11_driver_gate() {
-        for version in [(2, 54, 0), (2, 54, 1), WEBKIT_2_54] {
+        // The bundled 2.50.4 and Ubuntu 24.04's 2.52.6 paint on the GPU with composited SHM too.
+        for version in [
+            WEBKIT_BUNDLED,
+            (2, 52, 6),
+            (2, 54, 0),
+            (2, 54, 1),
+            WEBKIT_2_54,
+        ] {
             for branch in [0, 580, 609, 610, 615] {
                 for setting in [GpuRendering::Auto, GpuRendering::On, GpuRendering::Off] {
                     let inputs = gpu(setting, false);
@@ -2488,6 +2633,7 @@ mod tests {
                         },
                         version,
                         inputs,
+                        || true,
                     );
                     assert_eq!(
                         cpu_painting,
@@ -2541,6 +2687,131 @@ mod tests {
     }
 
     #[test]
+    fn below_2_54_the_gpu_look_needs_hardware_gl_evidence() {
+        let env = |_: &str| None;
+        for (version, without_evidence) in [
+            (WEBKIT_BUNDLED, true),
+            ((2, 52, 6), true),
+            (WEBKIT_2_53, true),
+            ((2, 54, 0), false),
+            (WEBKIT_2_54, false),
+        ] {
+            assert!(!paints_on_cpu(env, version, GpuInputs::default(), || true));
+            assert_eq!(
+                paints_on_cpu(env, version, GpuInputs::default(), || false),
+                without_evidence,
+                "{version:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_hardware_check_runs_only_when_it_decides() {
+        let unused = || -> bool { panic!("hardware_gl ran without deciding anything") };
+        let none = |_: &str| None;
+        let skia_cpu = |name: &str| (name == SKIA_CPU_RENDERING).then(|| OsString::from("1"));
+        let off = gpu(GpuRendering::Off, false);
+        assert!(paints_on_cpu(none, WEBKIT_BUNDLED, off, unused));
+        assert!(paints_on_cpu(
+            none,
+            WEBKIT_BUNDLED,
+            gpu(GpuRendering::Auto, true),
+            unused
+        ));
+        assert!(paints_on_cpu(
+            none,
+            MODERN_WEBKIT,
+            GpuInputs::default(),
+            unused
+        ));
+        assert!(paints_on_cpu(
+            skia_cpu,
+            WEBKIT_BUNDLED,
+            GpuInputs::default(),
+            unused
+        ));
+        assert!(!paints_on_cpu(
+            none,
+            WEBKIT_2_54,
+            GpuInputs::default(),
+            unused
+        ));
+    }
+
+    #[test]
+    fn hardware_gl_needs_a_loadable_vendor_with_its_devices() {
+        let root = tempfile::tempdir().unwrap();
+        let path = |rel: &str| root.path().join(rel);
+        let (dev, class, vendors) = (path("dev"), path("class"), path("vendors"));
+        for dir in [&dev.join("dri"), &class, &vendors] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let touch = |rel: &str| std::fs::write(dev.join(rel), "").unwrap();
+        let remove = |rel: &str| std::fs::remove_file(dev.join(rel)).unwrap();
+        let node = |name: &str, driver: &str| {
+            let device = class.join(name).join("device");
+            std::fs::create_dir_all(&device).unwrap();
+            let target = format!("../../../bus/pci/drivers/{driver}");
+            std::os::unix::fs::symlink(target, device.join("driver")).unwrap();
+        };
+        let vendor = |file: &str, library: &str| {
+            let json = format!(
+                r#"{{"file_format_version": "1.0.0", "ICD": {{"library_path": "{library}"}}}}"#
+            );
+            std::fs::write(vendors.join(file), json).unwrap();
+        };
+        let available = || hardware_gl_available(|_| None, &dev, &class, &[&vendors]);
+
+        // NVIDIA: nvidiactl and any nvidiaN, with its vendor installed; no render node needed.
+        vendor("10_nvidia.json", "libEGL_nvidia.so.0");
+        node("renderD128", "nvidia");
+        touch("dri/renderD128");
+        assert!(!available(), "a render node alone: llvmpipe");
+        touch("nvidia1");
+        assert!(!available(), "nvidiaN without nvidiactl: llvmpipe");
+        touch("nvidiactl");
+        assert!(available());
+        remove("dri/renderD128");
+        assert!(available(), "NVIDIA's EGL renders with /dev/dri hidden");
+        remove("nvidia1");
+        touch("nvidia-modeset");
+        assert!(!available(), "nvidia-modeset is not a GPU");
+        touch("nvidia0");
+        assert!(available());
+        for name in GL_SELECTION_OVERRIDES {
+            let env = |key: &str| (key == *name).then(|| OsString::from("1"));
+            assert!(
+                !hardware_gl_available(env, &dev, &class, &[&vendors]),
+                "{name}"
+            );
+        }
+        // The devices without NVIDIA's vendor: glvnd falls back to Mesa's llvmpipe.
+        std::fs::remove_file(vendors.join("10_nvidia.json")).unwrap();
+        vendor("50_mesa.json", "libEGL_mesa.so.0");
+        assert!(!available());
+
+        // Mesa: a render node of a GPU it drives, with its vendor installed.
+        node("card0", "i915");
+        touch("dri/card0");
+        assert!(!available(), "a primary node is not a render node");
+        node("renderD129", "virtio_gpu");
+        touch("dri/renderD129");
+        assert!(
+            !available(),
+            "a virtual GPU may be llvmpipe behind its render node"
+        );
+        node("renderD130", "amdgpu");
+        assert!(!available(), "/dev/dri lacks the node");
+        touch("dri/renderD130");
+        assert!(available());
+        std::fs::remove_file(vendors.join("50_mesa.json")).unwrap();
+        std::fs::write(vendors.join("broken.json"), "{").unwrap();
+        assert!(!available(), "Mesa's GPU without Mesa's vendor");
+        vendor("50_mesa.json", "/usr/lib/x86_64-linux-gnu/libEGL_mesa.so.0");
+        assert!(available());
+    }
+
+    #[test]
     fn only_a_gpu_path_on_wayland_asks_for_supervision() {
         let decision = |gpu_path: Option<&'static str>, wayland_session: bool| RendererDecision {
             applied: None,
@@ -2549,6 +2820,7 @@ mod tests {
             webkit_version: WEBKIT_2_54,
             wayland_session,
             nvidia_driver_branch: None,
+            hardware_gl: None,
             cpu_painting: false,
         };
         assert!(decision(Some(GPU_ON_REASON), true).wants_supervision());

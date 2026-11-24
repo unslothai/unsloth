@@ -435,6 +435,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             id TEXT NOT NULL PRIMARY KEY,
             name TEXT NOT NULL,
             instructions TEXT,
+            mcp_server_ids TEXT,
             root_path TEXT,
             archived INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
@@ -447,6 +448,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "root_path" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN root_path TEXT")
+    if "mcp_server_ids" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN mcp_server_ids TEXT")
     # The user's folder, never deleted; only root_path (Studio's own) is removed on project delete.
     if "working_folder" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder TEXT")
@@ -535,6 +538,17 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS chat_thread_tombstones (
             id TEXT NOT NULL PRIMARY KEY,
             deleted_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_message_tombstones (
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            message_id TEXT NOT NULL,
+            parent_id TEXT,
+            role TEXT,
+            PRIMARY KEY(thread_id, message_id)
         ) WITHOUT ROWID
         """
     )
@@ -2243,6 +2257,7 @@ def _chat_project_from_row(row: sqlite3.Row) -> dict:
         "id": data["id"],
         "name": data["name"],
         "instructions": data.get("instructions") or "",
+        "mcpServerIds": _json_loads(data.get("mcp_server_ids"), None),
         "rootPath": root_path or None,
         "sandboxPath": os.path.join(root_path, "sandbox") if root_path else None,
         "workingFolder": data.get("working_folder") or None,
@@ -2283,6 +2298,71 @@ def _raise_if_chat_thread_deleted(conn: sqlite3.Connection, thread_id: str) -> N
     ).fetchone()
     if row is not None:
         raise ChatThreadDeletedError(thread_id)
+
+
+def _chat_thread_upsert_values(thread: dict) -> dict:
+    """The INSERT values of upsert_chat_thread, keyed by column, in its column order."""
+    return {
+        "id": thread["id"],
+        "title": thread.get("title") or "New Chat",
+        "model_type": thread["modelType"],
+        "model_id": thread.get("modelId") or "",
+        "model_gguf_variant": thread.get("modelGgufVariant"),
+        "pair_id": thread.get("pairId"),
+        "project_id": thread.get("projectId"),
+        "archived": 1 if thread.get("archived") else 0,
+        "created_at": int(thread["createdAt"]),
+        "updated_at": int(thread["updatedAt"]) if thread.get("updatedAt") is not None else None,
+        "openai_code_exec_container_id": thread.get("openaiCodeExecContainerId"),
+        "anthropic_code_exec_container_id": thread.get("anthropicCodeExecContainerId"),
+        "forked_from_thread_id": thread.get("forkedFromThreadId"),
+        "forked_from_message_id": thread.get("forkedFromMessageId"),
+        "fork_boundary_message_id": thread.get("forkBoundaryMessageId"),
+        "fork_title_base": thread.get("forkTitleBase"),
+        "settings_json": json.dumps(thread["settings"])
+        if thread.get("settings") is not None
+        else None,
+        "scheduled_task_id": thread.get("scheduledTaskId"),
+    }
+
+
+def _same_value(a, b) -> bool:
+    # Type-strict: 1 == 1.0 == True in Python, but SQLite stores and compares them apart.
+    return type(a) is type(b) and a == b
+
+
+def _coalesce(*values):
+    return next((value for value in values if value is not None), None)
+
+
+def chat_thread_upsert_is_noop(thread: dict, stored: dict) -> bool:
+    """True if upsert_chat_thread(thread) would leave ``stored`` (the raw row) exactly as it is.
+
+    Mirrors the ON CONFLICT clause; any doubt answers False, so the caller just writes.
+    """
+    new = _chat_thread_upsert_values(thread)
+    if not _same_value(new["id"], stored.get("id")):
+        return False
+    for column in ("title", "model_id"):
+        # The CASE branches below compare these with SQL '='; only plain text matches Python's.
+        if not isinstance(new[column], str) or not isinstance(stored.get(column), str):
+            return False
+    same_model = new["model_id"] == stored["model_id"]
+    after = {
+        **{column: new[column] for column in new if column != "fork_boundary_message_id"},
+        "model_gguf_variant": _coalesce(new["model_gguf_variant"], stored.get("model_gguf_variant"))
+        if same_model
+        else new["model_gguf_variant"],
+        "updated_at": _coalesce(new["updated_at"], stored.get("updated_at")),
+        "fork_title_base": stored.get("fork_title_base")
+        if new["title"] == stored["title"]
+        else None,
+        "settings_json": _coalesce(new["settings_json"], stored.get("settings_json")),
+        "scheduled_task_id": _coalesce(stored.get("scheduled_task_id"), new["scheduled_task_id"]),
+    }
+    return all(
+        column in stored and _same_value(value, stored[column]) for column, value in after.items()
+    )
 
 
 def upsert_chat_thread(
@@ -2340,26 +2420,7 @@ def upsert_chat_thread(
                 -- Set by the scheduler when it makes the chat; no later writer changes it.
                 scheduled_task_id = COALESCE(chat_threads.scheduled_task_id, excluded.scheduled_task_id)
             """,
-            (
-                thread["id"],
-                thread.get("title") or "New Chat",
-                thread["modelType"],
-                thread.get("modelId") or "",
-                thread.get("modelGgufVariant"),
-                thread.get("pairId"),
-                thread.get("projectId"),
-                1 if thread.get("archived") else 0,
-                int(thread["createdAt"]),
-                int(thread["updatedAt"]) if thread.get("updatedAt") is not None else None,
-                thread.get("openaiCodeExecContainerId"),
-                thread.get("anthropicCodeExecContainerId"),
-                thread.get("forkedFromThreadId"),
-                thread.get("forkedFromMessageId"),
-                thread.get("forkBoundaryMessageId"),
-                thread.get("forkTitleBase"),
-                json.dumps(thread["settings"]) if thread.get("settings") is not None else None,
-                thread.get("scheduledTaskId"),
-            ),
+            tuple(_chat_thread_upsert_values(thread).values()),
         )
         _probe_chat_revisions(conn, thread["id"], end = True)
         conn.commit()
@@ -2584,6 +2645,16 @@ def get_chat_thread(id: str) -> Optional[dict]:
     try:
         row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
         return _chat_thread_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_chat_thread_with_row(id: str) -> tuple[Optional[dict], Optional[dict]]:
+    """get_chat_thread plus the raw stored columns, from one read; (None, None) if absent."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
+        return (_chat_thread_from_row(row), dict(row)) if row is not None else (None, None)
     finally:
         conn.close()
 
@@ -3397,8 +3468,8 @@ def upsert_chat_project(
         conn.execute(
             """
             INSERT INTO chat_projects
-                (id, name, instructions, root_path, archived, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (id, name, instructions, mcp_server_ids, root_path, archived, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 instructions = excluded.instructions,
@@ -3411,6 +3482,7 @@ def upsert_chat_project(
                 project["id"],
                 project["name"],
                 project.get("instructions") or "",
+                json.dumps(project.get("mcpServerIds")),
                 root_path,
                 1 if project.get("archived") else 0,
                 int(project["createdAt"]),
@@ -3435,6 +3507,7 @@ def update_chat_project(id: str, patch: dict) -> Optional[dict]:
     allowed = {
         "name": ("name", patch.get("name")),
         "instructions": ("instructions", patch.get("instructions")),
+        "mcpServerIds": ("mcp_server_ids", json.dumps(patch.get("mcpServerIds"))),
         "archived": ("archived", 1 if patch.get("archived") else 0),
         "createdAt": ("created_at", patch.get("createdAt")),
         "updatedAt": ("updated_at", patch.get("updatedAt")),
@@ -4424,6 +4497,11 @@ def insert_server_chat_message(
            VALUES (?, ?, ?, 'assistant', ?, ?, ?)""",
         (message_id, thread_id, parent_id, content_json, metadata_json, created_at),
     )
+    # The server re-creating a deleted id (a run admitted after another tab deleted its placeholder) owns it again.
+    conn.execute(
+        "DELETE FROM chat_message_tombstones WHERE thread_id = ? AND message_id = ?",
+        (thread_id, message_id),
+    )
     if not was_clean:
         return
     tombstones = {
@@ -4535,6 +4613,11 @@ def upsert_chat_message(
             raise ChatMessageProtectedError(
                 "deleted server-managed generation messages cannot be restored"
             )
+        deleted_parents = _deleted_chat_message_parents(conn, message["threadId"], [message])
+        if message["id"] in deleted_parents:
+            conn.commit()
+            raise ChatMessageProtectedError("deleted chat messages cannot be restored")
+        message = _with_surviving_parent(message, deleted_parents)
         if allow_generation_edit:
             _detach_terminal_generation_for_edit(conn, message["threadId"], message)
         _guard_server_managed_messages(
@@ -4614,6 +4697,85 @@ def upsert_chat_message(
         conn.close()
 
 
+def _deleted_chat_message_parents(
+    conn: sqlite3.Connection, thread_id: str, incoming: list[dict]
+) -> dict[str, str | None]:
+    rows = conn.execute(
+        "SELECT message_id, parent_id, role FROM chat_message_tombstones WHERE thread_id = ?",
+        (thread_id,),
+    ).fetchall()
+    deleted = {str(row["message_id"]): row["parent_id"] for row in rows}
+    deleted_user_ids = {str(row["message_id"]) for row in rows if row["role"] == "user"}
+    # Replies to a deleted user turn go with it, as on delete; a stored one is one the delete kept.
+    late_replies = [
+        m
+        for m in incoming
+        if m.get("role") == "assistant" and m.get("parentId") in deleted_user_ids
+    ]
+    if late_replies:
+        stored = {
+            str(row["id"])
+            for row in conn.execute(
+                "SELECT id FROM chat_messages WHERE thread_id = ?", (thread_id,)
+            )
+        }
+        late = {
+            str(m["id"]): m["parentId"]
+            for m in late_replies
+            if str(m["id"]) not in stored and str(m["id"]) not in deleted
+        }
+        conn.executemany(
+            "INSERT OR IGNORE INTO chat_message_tombstones (thread_id, message_id, parent_id, role) "
+            "VALUES (?, ?, ?, 'assistant')",
+            [(thread_id, message_id, parent_id) for message_id, parent_id in late.items()],
+        )
+        deleted.update(late)
+        # A row saved under a reply before that reply turned out late would be left dangling.
+        orphans = conn.execute(
+            f"SELECT id, parent_id FROM chat_messages WHERE thread_id = ? "
+            f"AND parent_id IN ({','.join('?' for _ in late)})",
+            (thread_id, *late),
+        ).fetchall()
+        _reseat_protected_messages(
+            conn,
+            thread_id,
+            {
+                str(row["id"]): _with_surviving_parent({"parentId": row["parent_id"]}, deleted)[
+                    "parentId"
+                ]
+                for row in orphans
+            },
+        )
+    return deleted
+
+
+_RUNTIME_MESSAGE_ORDER = "created_at, CASE role WHEN 'system' THEN 0 WHEN 'user' THEN 1 WHEN 'assistant' THEN 2 ELSE 99 END, id"
+
+
+def _displayed_parent_ids(rows: list) -> dict[str, str | None]:
+    # As the chat runtime orders and reads them: pre-branching rows store NULL and hang off the row before.
+    parents: dict[str, str | None] = {}
+    previous = None
+    recorded = False
+    for row in rows:
+        parent = row["parent_id"]
+        parents[str(row["id"])] = previous if parent is None and not recorded else parent
+        recorded = recorded or parent is not None
+        previous = str(row["id"])
+    return parents
+
+
+def _with_surviving_parent(message: dict, deleted_parents: dict[str, str | None]) -> dict:
+    parent = message.get("parentId")
+    if parent not in deleted_parents:
+        return message
+    seen = set()
+    while parent in deleted_parents and parent not in seen:
+        seen.add(parent)
+        parent = deleted_parents[parent]
+    return {**message, "parentId": parent}
+
+
 class ExternalImportMark(NamedTuple):
     source: str
     session_id: str
@@ -4629,7 +4791,9 @@ def sync_chat_messages(
     allow_research_update: bool = False,
     deleted_message_ids: Iterable[str] = (),
     external_import_mark: Optional[ExternalImportMark] = None,
-) -> list[dict]:
+    return_rows: bool = True,
+) -> Optional[list[dict]]:
+    """The thread's rows after the write, or None with return_rows=False (skips re-reading them)."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -4641,7 +4805,13 @@ def sync_chat_messages(
             for message in messages
             if _references_tombstoned_generation(conn, message)
         }
-        messages = [message for message in messages if str(message["id"]) not in tombstoned_ids]
+        deleted_parents = _deleted_chat_message_parents(conn, thread_id, messages)
+        dropped_ids = tombstoned_ids | deleted_parents.keys()
+        messages = [
+            _with_surviving_parent(message, deleted_parents)
+            for message in messages
+            if str(message["id"]) not in dropped_ids
+        ]
         # Generation-linked messages are server-managed: keep them rather than reject on client drift; the single-message upsert still guards edits.
         research_ids = _research_message_ids(conn, thread_id)
         generation_ids = _generation_message_ids(conn, thread_id)
@@ -4662,7 +4832,8 @@ def sync_chat_messages(
         unseen_ids: set = set()
         if prune_missing:
             stored_rows = conn.execute(
-                "SELECT id, parent_id, role FROM chat_messages WHERE thread_id = ?",
+                "SELECT id, parent_id, role FROM chat_messages WHERE thread_id = ? "
+                f"ORDER BY {_RUNTIME_MESSAGE_ORDER}",
                 (thread_id,),
             ).fetchall()
             unseen_ids = {str(row["id"]) for row in stored_rows} - requested_ids
@@ -4680,6 +4851,12 @@ def sync_chat_messages(
                     }
                     - managed_ids
                 )
+        messages = [
+            {**m, "parentId": _surviving_parent_id(conn, thread_id, str(m["parentId"]), pruned)}
+            if m.get("parentId") in pruned
+            else m
+            for m in messages
+        ]
         protected = generation_ids if allow_research_update else managed_ids
         messages = [
             m
@@ -4767,6 +4944,17 @@ def sync_chat_messages(
             )
         if prune_missing:
             missing_ids = sorted(pruned)
+            if explicitly_deleted_ids:
+                shown_parents = _displayed_parent_ids(stored_rows)
+                conn.executemany(
+                    "INSERT OR IGNORE INTO chat_message_tombstones (thread_id, message_id, parent_id, role) "
+                    "VALUES (?, ?, ?, ?)",
+                    [
+                        (thread_id, str(row["id"]), shown_parents[str(row["id"])], row["role"])
+                        for row in stored_rows
+                        if str(row["id"]) in pruned
+                    ],
+                )
             for start in range(0, len(missing_ids), _SQLITE_IN_CHUNK_SIZE):
                 chunk = missing_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
                 placeholders = ",".join("?" for _ in chunk)
@@ -4792,7 +4980,7 @@ def sync_chat_messages(
             _record_external_import_mark(conn, external_import_mark)
         _probe_chat_revisions(conn, thread_id, end = True)
         conn.commit()
-        return list_chat_messages(thread_id)
+        return list_chat_messages(thread_id) if return_rows else None
     except (ChatMessageConflictError, ChatMessageProtectedError):
         conn.rollback()
         raise
@@ -5020,11 +5208,7 @@ def fork_chat_thread(
                 "This chat is still generating. Fork it once it finishes."
             )
         rows = conn.execute(
-            """SELECT * FROM chat_messages WHERE thread_id = ?
-               ORDER BY created_at,
-                 CASE role WHEN 'system' THEN 0 WHEN 'user' THEN 1
-                           WHEN 'assistant' THEN 2 ELSE 99 END,
-                 id""",
+            f"SELECT * FROM chat_messages WHERE thread_id = ? ORDER BY {_RUNTIME_MESSAGE_ORDER}",
             (source_thread_id,),
         ).fetchall()
         by_id = {row["id"]: row for row in rows}
@@ -5037,18 +5221,7 @@ def fork_chat_thread(
             conn.rollback()
             return None
         branch_message_id = branch_row["id"]
-        # match the runtime's sequential legacy prefix while preserving recorded branches and later roots.
-        parents: dict[str, Optional[str]] = {}
-        previous_id = None
-        saw_recorded_parent = False
-        for row in rows:
-            parent = row["parent_id"]
-            parents[row["id"]] = (
-                previous_id if parent is None and not saw_recorded_parent else parent
-            )
-            if parent is not None:
-                saw_recorded_parent = True
-            previous_id = row["id"]
+        parents = _displayed_parent_ids(rows)
         ancestry: list[sqlite3.Row] = []
         cursor_row = branch_row
         seen: set[str] = set()

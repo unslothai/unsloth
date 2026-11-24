@@ -19,6 +19,30 @@ from typing import Callable, Optional, Union
 import torch
 import torch.nn as nn
 
+
+def _resume_torch_load(path, **kwargs):
+    """Refused on torch < 2.6 like Trainer's check_torch_load_is_safe (CVE-2025-32434)."""
+    from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    refuse_pickle_checkpoint_on_old_torch(path)
+    return torch.load(path, weights_only = True, **kwargs)
+
+
+def _load_full_optimizer_state(path):
+    """The full optimizer.pt on the CPU, memory-mapped: every rank reads the whole file and keeps only its
+    shards, so an eager load costs each rank an anonymous copy of the full state (ranks x file size of host
+    RAM). Mapped pages are file-backed and shared by the ranks through the page cache. A file object, or a
+    file torch cannot map (legacy non-zip serialization), loads eagerly as before."""
+    if not isinstance(path, (str, os.PathLike)):
+        return _resume_torch_load(path, map_location = "cpu")
+    try:
+        return _resume_torch_load(path, map_location = "cpu", mmap = True)
+    except RuntimeError as e:
+        if "mmap can only be used" not in str(e):
+            raise
+    return _resume_torch_load(path, map_location = "cpu")
+
+
 __all__ = [
     "FSDP2Config",
     "STORAGE_DTYPE",
@@ -1572,6 +1596,14 @@ def _eager_decode_scope(stream):
     return eager_scope()
 
 
+def _generate_stream_installed(model):
+    """A per-block generate stream is active on the model's decoder blocks."""
+    layers = _language_decoder_layers(model)
+    if layers is None:
+        return False
+    return isinstance(layers.__dict__.get("_unsloth_block_swap", None), _GenerateBlockStream)
+
+
 def _wrap_generate(model):
     """Run `generate` (the root's and every inner module's that has one) inside native_fsdp2_unsharded."""
     import weakref
@@ -1594,13 +1626,14 @@ def _wrap_generate(model):
                 return _generate(*args, **kwargs)
             _GENERATE_DEPTH[0] += 1
             try:
-                stream = _generate_streams_blocks(target)
-                with (
-                    native_fsdp2_unsharded(target, stream_blocks = stream),
-                    torch.no_grad(),
-                    _eager_decode_scope(stream),
-                ):
-                    return _generate(*args, **kwargs)
+                stream, resident = _generate_gather_plan(
+                    target, request_bytes = _generate_request_bytes(target, args, kwargs)
+                )
+                with native_fsdp2_unsharded(target, stream_blocks = stream, resident_blocks = resident):
+                    # Eager only when a block really streams: with every block resident (or no
+                    # decoder block list) nothing all-gathers per step and CUDA graphs stay on.
+                    with torch.no_grad(), _eager_decode_scope(_generate_stream_installed(target)):
+                        return _generate(*args, **kwargs)
             finally:
                 _GENERATE_DEPTH[0] -= 1
 
@@ -1910,11 +1943,22 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         layout.replicate_frozen = False
         layout.root_only = False
         layout.reasons.append("replicate_frozen=False (fully_shard has no ignored_params)")
-    layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch = _agree_over_ranks(
-        dist,
-        device,
-        [layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch],
-        config.mesh,
+    from .fsdp2_reduce import half_transport_enabled
+
+    # The opt-in 16-bit reduce transport changes which collective runs, so its switch rides this agreement.
+    layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch, half_transport = (
+        _agree_over_ranks(
+            dist,
+            device,
+            [
+                layout.fits,
+                layout.replicate_frozen,
+                layout.root_only,
+                layout.prefetch,
+                half_transport_enabled(),
+            ],
+            config.mesh,
+        )
     )
     # reshard_after_forward is derived from `fits` (when not set by config / env): derive it again from
     # the agreed value, or a rank that fit alone keeps its blocks gathered while the others reshard, and
@@ -2130,6 +2174,13 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     # The replicated-gradient average and the media agreement run over this mesh's ranks only.
     model.__dict__["_unsloth_fsdp2_mesh"] = mesh
     _post_shard(model, units, device, root_only = layout.root_only)
+    from .fsdp2_reduce import install_half_transport_reduce
+
+    # Opt-in: 16-bit gradients cross the wire as 16-bit and add in float32 (the float32 reduce's sum, half
+    # the bytes). Off (the default) installs nothing.
+    model._unsloth_fsdp2_half_transport = install_half_transport_reduce(
+        [*wrapped, *model._unsloth_fsdp2_extra_units, model], enabled = half_transport
+    )
     from .fsdp2_vision import install_vision_dummy
 
     install_vision_dummy(model)  # mixed image / text ranks
@@ -2464,8 +2515,9 @@ _GENERATE_GATHER_MODES = ("auto", "all", "block")
 
 def _generate_gather_mode():
     """UNSLOTH_FSDP2_GENERATE_GATHER: "all" gathers every unit for the whole generate (no collective
-    per decode step), "block" gathers one decoder block at a time, "auto" (default) gathers all only
-    when every rank has the free device memory for it."""
+    per decode step), "block" gathers one decoder block at a time, "auto" (default) gathers all
+    when every rank has the free device memory for it, else keeps as many decoder blocks gathered
+    as fit (the same blocks on every rank) and streams only the rest."""
     value = os.environ.get("UNSLOTH_FSDP2_GENERATE_GATHER", "auto").strip().lower() or "auto"
     if value in ("layer", "blocks", "stream"):
         value = "block"
@@ -2495,37 +2547,372 @@ def _unit_gathered_bytes(unit):
     return total
 
 
+def _synchronized_empty_cache():
+    """`torch.cuda.empty_cache()` after a device synchronize. Under expandable segments every stream owns its own
+    segment and releasing a page waits only on THAT stream, while FSDP2 allocates gathered weights and reduced
+    gradients on its side streams and the default stream reads them. A grad freed by `zero_grad()` (or a weight
+    freed by `reshard()`) while an optimizer / decode kernel reading it is still queued on the default stream
+    (no host sync since the step, e.g. `logging_steps > 1`) could be unmapped under that kernel. Only called
+    where an empty_cache runs anyway, so it adds no per-step sync."""
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+
+
+def _generate_resident_override():
+    """UNSLOTH_FSDP2_GENERATE_RESIDENT=N: decoder blocks kept gathered for a streamed generate. Under
+    "block" exactly N (default 0: every block streams); under "auto" at most N (0 = stream every block
+    whenever the whole gather does not fit, the behaviour before partial residency). Unset = None.
+    Never raises: a value that is not a non-negative integer warns and counts as 0, so one rank's typo
+    cannot leave its peers waiting in the plan's agreement or in a weight all-gather."""
+    value = os.environ.get("UNSLOTH_FSDP2_GENERATE_RESIDENT", "").strip()
+    if not value:
+        return None
+    try:
+        n = int(value)
+    except ValueError:
+        n = -1
+    if n < 0:
+        import warnings
+        warnings.warn(
+            "Unsloth: UNSLOTH_FSDP2_GENERATE_RESIDENT must be a non-negative integer; keeping no decoder "
+            "block resident (every block streams).",
+            stacklevel = 2,
+        )
+        return 0
+    return n
+
+
+_GENERATE_PLAN_STATS = {"generates": 0, "resident_blocks": 0, "streamed_blocks": 0}
+
+
 def _generate_streams_blocks(model):
-    """Collective on CUDA in "auto" mode: True when generate should gather decoder blocks one at a
-    time. Gathering every unit at once needs the whole model's weights on each rank next to its
-    shards (a 12B 4-bit model after training on 2x 16 GB ran out of memory there), so "auto" streams
-    unless every rank has the free memory for the whole gather."""
+    """True when generate should gather decoder blocks one at a time (see _generate_gather_plan)."""
+    return _generate_gather_plan(model)[0]
+
+
+def _agree_min_over_ranks(
+    dist,
+    device,
+    values,
+    mesh = None,
+):
+    """Elementwise MIN of a list of ints over the ranks of `mesh` (the world when None). The callers
+    always pass the same fixed number of values, whatever the rank's own settings, so the reduction
+    lines up on every rank. gloo groups reduce on the host."""
+    group = mesh.get_group(0) if mesh is not None else None
+    try:
+        backend = str(dist.get_backend(group))
+    except Exception:
+        backend = ""
+    if backend == "gloo":
+        device = torch.device("cpu")
+    t = torch.tensor([int(v) for v in values], dtype = torch.int64, device = device)
+    if mesh is None:
+        dist.all_reduce(t, op = dist.ReduceOp.MIN)
+    else:
+        for dim in range(mesh.ndim):
+            dist.all_reduce(t, op = dist.ReduceOp.MIN, group = mesh.get_group(dim))
+    return [int(v) for v in t.tolist()]
+
+
+def _param_groups_or_empty(unit):
+    try:
+        return _unit_param_groups(unit)
+    except Exception:
+        return []
+
+
+def _units_offload_to_cpu(units):
+    """Any unit keeps its shards on the host (CPUOffloadPolicy)."""
+    return any(
+        getattr(fsdp_param, "offload_to_cpu", False)
+        for unit in units
+        for group in _param_groups_or_empty(unit)
+        for fsdp_param in getattr(group, "fsdp_params", ())
+    )
+
+
+def _forward_prefetch_depth(units):
+    """Most units any unit all-gathers ahead in its pre-forward (explicit forward prefetch, including
+    the lookahead the recompute hook restores)."""
+    depth = 0
+    for unit in units:
+        n = len(getattr(unit, "_unsloth_forward_prefetch", None) or ())
+        try:
+            state = unit._get_fsdp_state()
+            n = max(n, len(getattr(state, "_states_to_forward_prefetch", None) or ()))
+        except Exception:
+            pass
+        depth = max(depth, n)
+    return depth
+
+
+def _unsloth_fast_decode(model):
+    """The model decodes through Unsloth's paged fast path (pre_patch runs it only on marked modules)."""
+    if getattr(model, "_unsloth_fast_path", False):
+        return True
+    modules = getattr(model, "modules", None)
+    if not callable(modules):
+        return False
+    try:
+        return any(getattr(m, "_unsloth_fast_path", False) for m in modules())
+    except Exception:
+        return True  # cannot tell: count the larger, two-cache peak
+
+
+def _generate_request_bytes(model, args, kwargs):
+    """Upper estimate of the device memory one generate call allocates besides the weights: the KV cache
+    as Unsloth's decode allocator sizes it (KV_CACHE_INCREMENT rows past the prompt even for a short
+    generation, its growth steps and graph BUCKET rounding, plus one growth increment of headroom; this
+    also covers HF generate's prompt + max_new_tokens cache) and the per-layer attention score buffer
+    for batch x beams x return sequences, one decoder layer's prefill activations and the last-token
+    logits (plus any scores / logits generate returns per token), times 1.25. A supplied past_key_values
+    counts toward the cache length. On Unsloth's fast decode path the prefill cache, still held while the
+    first decode step fills the paged one, is counted next to it. Prefill extras the call can trigger are counted too: full prompt logits
+    for an explicit logits_to_keep=0 (or a model that cannot slice them), the [batch, heads, prompt, keys]
+    score matrices of eager attention (also requested by output_attentions), and the routed token copies of
+    a mixture-of-experts layer. None when the request's shape, the cache length, the retained outputs or
+    the model's dimensions are unknown, and for vision / audio inputs, whose tower activations are not
+    sized here."""
+    try:
+        ids = kwargs.get("input_ids")
+        if ids is None:
+            ids = kwargs.get("inputs")
+        if ids is None and args and isinstance(args[0], torch.Tensor):
+            ids = args[0]
+        if ids is None:
+            ids = kwargs.get("inputs_embeds")
+        if not isinstance(ids, torch.Tensor) or ids.dim() < 2:
+            return None
+        batch, prompt = int(ids.shape[0]), int(ids.shape[1])
+        # An uncached first step prefills from inputs_embeds even when shorter ids ride along.
+        embeds = kwargs.get("inputs_embeds")
+        if (
+            isinstance(embeds, torch.Tensor)
+            and embeds.dim() >= 2
+            and kwargs.get("past_key_values") is None
+        ):
+            prompt = max(prompt, int(embeds.shape[1]))
+        # Media prompts run a vision / audio tower in prefill whose activations depend on the media
+        # shape and the tower config: decline (no block stays resident) instead of under-counting.
+        for name, value in kwargs.items():
+            if value is not None and (
+                name.startswith(("pixel_values", "image_", "video_", "audio_"))
+                or name in ("input_features", "input_values", "images", "videos")
+            ):
+                return None
+        gen = kwargs.get("generation_config")
+        if gen is None and len(args) > 1:  # generate(inputs, generation_config, ...)
+            gen = args[1]
+        if gen is None:
+            gen = getattr(model, "generation_config", None)
+
+        def pick(name):
+            value = kwargs.get(name)
+            return value if value is not None else getattr(gen, name, None)
+
+        # Without a cache every step forwards the whole growing sequence: decline instead of under-counting.
+        if pick("use_cache") is False:
+            return None
+        # A supplied cache holds history the suffix-only ids do not show; the decode allocator sizes its
+        # new paged cache from the whole length, so count it (or decline when it cannot be read).
+        cached = 0
+        past = kwargs.get("past_key_values")
+        if past is not None:
+            if hasattr(past, "get_seq_length"):
+                cached = int(past.get_seq_length())
+            elif isinstance(past, (tuple, list)) and past and isinstance(past[0][0], torch.Tensor):
+                cached = int(past[0][0].shape[-2])
+            else:
+                return None
+        new = pick("max_new_tokens")
+        if new is None:
+            max_length = pick("max_length")
+            if max_length is None:
+                return None
+            # generate bounds the output by max_length minus the ids it was given; cached history
+            # counts toward the cache rows below, not toward this subtraction (requested_new_tokens).
+            new = max(0, int(max_length) - prompt)
+        # Outputs generate keeps for the whole call: scores / logits are one fp32 batch x vocab tensor per
+        # generated token; attentions and hidden states per step cannot be sized here, so decline.
+        retained_per_token = 0
+        if pick("return_dict_in_generate"):
+            if pick("output_attentions") or pick("output_hidden_states"):
+                return None
+            retained_per_token = int(bool(pick("output_scores"))) + int(bool(pick("output_logits")))
+        batch *= max(1, int(pick("num_beams") or 1)) * max(
+            1, int(pick("num_return_sequences") or 1)
+        )
+        config = getattr(model, "config", None)
+        if config is not None and hasattr(config, "get_text_config"):
+            config = config.get_text_config()
+        layers = getattr(config, "num_hidden_layers", None)
+        hidden = getattr(config, "hidden_size", None)
+        heads = getattr(config, "num_attention_heads", None)
+        vocab = getattr(config, "vocab_size", None)
+        if not all(isinstance(v, int) and v > 0 for v in (layers, hidden, heads, vocab)):
+            return None
+        kv_heads = getattr(config, "num_key_value_heads", None) or heads
+        head_dim = getattr(config, "head_dim", None) or hidden // heads
+        inter = getattr(config, "intermediate_size", None) or 4 * hidden
+        dtype = getattr(config, "torch_dtype", None) or getattr(config, "dtype", None)
+        width = dtype.itemsize if isinstance(dtype, torch.dtype) else 4
+        from ._decode_graphs import decode_cache_rows
+
+        rows = decode_cache_rows(cached + prompt, int(new))
+        # Per layer: the paged K / V cache [rows, 2, batch, kv_heads, head_dim] and the scores
+        # [batch, heads, 1, rows] alloc_decode_buffers allocates next to it.
+        kv = layers * batch * rows * (2 * kv_heads * head_dim + heads) * width
+        # Unsloth's fast decode path (modules marked _unsloth_fast_path) copies the prefill cache into the
+        # paged one layer by layer on the first decode step while generate still holds the prefill
+        # cache [batch, kv_heads, history + prompt, head_dim] per layer, so both are live at once there.
+        # HF's own decode path keeps a single cache, already covered by the paged size.
+        if _unsloth_fast_decode(model):
+            kv += layers * batch * (cached + prompt) * 2 * kv_heads * head_dim * width
+        act = batch * prompt * (4 * hidden + 3 * inter) * width
+        # Prefill logits rows: generate passes logits_to_keep = 1 unless the caller set it (0 = every
+        # prompt position) or the model cannot slice them. One row is inside the 2 below.
+        keep = kwargs.get("logits_to_keep", kwargs.get("num_logits_to_keep"))
+        supports = getattr(model, "_supports_logits_to_keep", None)
+        if keep is None and callable(supports):
+            try:
+                keep = None if supports() else 0
+            except Exception:
+                keep = None
+        if isinstance(keep, torch.Tensor):
+            keep_rows = prompt  # positions or a mask: at most every prompt position
+        elif keep is None:
+            keep_rows = 1
+        else:
+            keep_rows = prompt if int(keep) <= 0 else int(keep)
+        keep_rows = max(1, min(prompt, keep_rows))
+        # Eager attention materialises one layer's prefill scores in the model dtype, their float32
+        # softmax and the cast back.
+        attn = getattr(config, "_attn_implementation", None)
+        if attn == "eager" or pick("output_attentions"):
+            act += batch * heads * prompt * (cached + prompt) * (2 * width + 4)
+        # Prefill builds a dense [batch, 1, prompt, keys] mask (_prepare_4d_causal_attention_mask_for_sdpa)
+        # unless it can be elided: an all-ones 2D mask, no cached history and keys inside the window.
+        # Count the mask and its construction copies (expanded, inverted, filled) plus bool temporaries.
+        mask = kwargs.get("attention_mask")
+        keys = cached + prompt
+        window = getattr(config, "sliding_window", None)
+        dense = isinstance(mask, torch.Tensor) and (mask.dim() != 2 or not bool(mask.all()))
+        dense = dense or (cached > 0 and prompt > 1)
+        dense = dense or (isinstance(window, int) and window > 0 and keys >= window - 1)
+        if dense:
+            act += batch * prompt * keys * (3 * width + 2)
+        # Mixture of experts: each token is copied to its top-k experts (input, gate / up / activation and
+        # output per copy) next to the float32 router logits.
+        experts = 0
+        for name in ("num_experts", "num_local_experts", "n_routed_experts"):
+            value = getattr(config, name, None)
+            if isinstance(value, int) and value > 1:
+                experts = value
+                break
+        if experts:
+            top_k = experts
+            for name in ("num_experts_per_tok", "num_experts_per_token", "moe_topk"):
+                value = getattr(config, name, None)
+                if isinstance(value, int) and value > 0:
+                    top_k = value
+                    break
+            moe_inter = getattr(config, "moe_intermediate_size", None) or inter
+            act += batch * prompt * (top_k * (2 * hidden + 3 * moe_inter) * width + experts * 4)
+        logits = (2 + keep_rows - 1 + retained_per_token * int(new)) * batch * vocab * 4
+        return int(1.25 * (kv + act + logits))
+    except Exception:
+        return None
+
+
+def _generate_gather_plan(model, request_bytes = None):
+    """(stream, resident): stream = generate gathers decoder blocks one at a time; resident = how many of
+    them (the first, in decode order) stay gathered for the whole call anyway. Collective on CUDA in
+    "auto" mode and whenever "block" runs distributed. Gathering every unit at once needs the whole
+    model's weights on each rank next to its shards (a 12B 4-bit model after training on 2x 16 GB ran
+    out of memory there), so "auto" streams unless every rank has the free memory for the whole gather;
+    when streaming it keeps the longest prefix of blocks gathered that fits on every rank.
+
+    Every rank computes its own cap and its own fits locally (nothing here raises on a bad setting),
+    then one all_reduce MIN of two ints ([whole gather fits, resident blocks]) picks the plan, so ranks
+    with different free memory, caps or request sizes still pick the same blocks. A prefix is counted
+    as fitting only when every shorter one does, so the minimum fits on every rank. Budget for keeping
+    k blocks: the larger of the up-front gather's peak (each unit's all-gather output next to its copied
+    weights while the earlier ones stay held) and decode's (the k blocks plus the streamed block, its
+    all-gather output and the forward-prefetch lookahead), plus a workspace of the request estimate
+    (`request_bytes`, KV cache etc.; at least 1 GiB). With no estimate, "auto" keeps no block resident
+    unless UNSLOTH_FSDP2_GENERATE_RESIDENT caps it explicitly. CPU-offloaded models always stream every
+    block."""
     FSDPModule = _fsdp_module_class()
     if FSDPModule is None or not is_native_fsdp2(model):
-        return False
+        return False, 0
     mode = _generate_gather_mode()
-    if mode != "auto":
-        return mode == "block"
+    if mode == "all":
+        return False, 0
+    override = _generate_resident_override()
     units = [m for m in model.modules() if isinstance(m, FSDPModule)]
-    if not units or not _stream_block_lists(model, units):
-        return False
-    groups = _unit_param_groups(units[0])
+    block_lists = _stream_block_lists(model, units) if units else []
+    # Decode order: the executor walks the lists in order and keeps each list's lowest indices.
+    ordered = [found[i] for _, found in block_lists for i in sorted(found)]
+    groups = _param_groups_or_empty(units[0]) if units else []
     mesh_info = getattr(groups[0], "mesh_info", None) if groups else None
+    mesh = getattr(mesh_info, "mesh", None)
     device = getattr(groups[0], "device", None) if groups else None
-    if device is None or torch.device(device).type != "cuda":
-        return False  # host memory: keep the single gather
     import torch.distributed as dist
 
-    if not dist.is_available() or not dist.is_initialized():
-        return False
+    distributed = device is not None and dist.is_available() and dist.is_initialized()
+    offloaded = bool(units) and _units_offload_to_cpu(units)
+    if mode == "block":
+        cap = 0 if offloaded else min(override or 0, len(ordered))
+        if distributed:
+            cap = _agree_min_over_ranks(dist, device, [0, cap], mesh)[1]
+        return True, cap
+    if not ordered:
+        return False, 0
+    if device is None or torch.device(device).type != "cuda":
+        return False, 0  # host memory: keep the single gather
+    if not distributed:
+        return False, 0
     sizes = [_unit_gathered_bytes(unit) for unit in units]
-    need = (
-        sum(sizes) + max(sizes) + (1 << 30)
-    )  # gathered weights + one all-gather buffer + decode scratch
-    torch.cuda.empty_cache()
+    scratch = 1 << 30  # decode scratch
+    need = sum(sizes) + max(sizes) + scratch  # gathered weights + one all-gather buffer + scratch
+    limit = len(ordered) - 1  # all of them is the whole gather above
+    if offloaded:
+        cap = 0
+    elif override is not None:
+        cap = min(override, limit)
+    else:
+        cap = 0 if request_bytes is None else limit
+    workspace = max(scratch, int(request_bytes or 0))
+    size_of = {id(unit): size for unit, size in zip(units, sizes)}
+    block_sizes = [size_of.get(id(unit), 0) for unit in ordered]
+    fixed = sum(
+        size for unit, size in zip(units, sizes) if id(unit) not in {id(b) for b in ordered}
+    )
+    depth = _forward_prefetch_depth(units)
+    needs = []
+    for k in range(cap + 1):
+        streamed = {id(unit) for unit in ordered[k:]}
+        held = setup = 0
+        for unit, size in zip(units, sizes):
+            if id(unit) in streamed:
+                continue
+            setup = max(setup, held + 2 * size)  # all-gather output + copied-out weights
+            held += size
+        ahead = min(depth, len(ordered) - k - 1)
+        decode = fixed + sum(block_sizes[:k]) + (2 + ahead) * max(block_sizes[k:])
+        needs.append(max(setup, decode) + workspace)
+    _synchronized_empty_cache()  # follows the last step's zero_grad() with no host sync in between
     free = torch.cuda.mem_get_info(device)[0]
-    fits = _agree_over_ranks(dist, device, [free >= need], getattr(mesh_info, "mesh", None))[0]
-    return not fits
+    resident = -1
+    for k, n in enumerate(needs):
+        if free < n:
+            break
+        resident = k
+    whole, resident = _agree_min_over_ranks(dist, device, [free >= need, max(0, resident)], mesh)
+    if whole:
+        return False, 0
+    return True, resident
 
 
 def _publish_gathered_device(layer):
@@ -2551,6 +2938,9 @@ class _GenerateBlockStream:
 
     def __init__(self, units):
         self.units = units  # {block index: FSDP unit}
+        # CPU-offloaded shards live on the host between gathers: the decode loops must not repair
+        # per-layer devices from them (the gathered blocks publish their own device on enter).
+        self.keeps_weights_on_device = not _units_offload_to_cpu(units.values())
 
     def enter(self, index):
         unit = self.units.get(index)
@@ -2626,11 +3016,16 @@ def _reshard_after_forward_on(unit):
 
 
 @contextlib.contextmanager
-def native_fsdp2_unsharded(model, stream_blocks = False):
+def native_fsdp2_unsharded(
+    model,
+    stream_blocks = False,
+    resident_blocks = 0,
+):
     """Collective (every rank must enter): gather every unit's whole weights and keep them gathered,
     for code that reads weights without calling the blocks (Unsloth's decode loop, `PeftModel.generate`,
     which skips the root's hooks, merges). Resharded on exit. A no-op for a model not sharded natively.
-    stream_blocks (generate): decoder-block units stay sharded and are gathered one at a time."""
+    stream_blocks (generate): decoder-block units stay sharded and are gathered one at a time, except
+    the first `resident_blocks` of them, which are gathered up front like every other unit."""
     FSDPModule = _fsdp_module_class()
     if FSDPModule is None or not is_native_fsdp2(model):
         yield model
@@ -2650,16 +3045,27 @@ def native_fsdp2_unsharded(model, stream_blocks = False):
     saved = {}
     streams = []
     streamed = set()
+    resident_ids = set()
     try:
         _rebind_swapped_modules(root, units)
         _lazy_init_root(root, units)
         if stream_blocks:
+            keep = max(0, int(resident_blocks or 0))
             for layers, blocks in _stream_block_lists(model, units):
                 if layers.__dict__.get("_unsloth_block_swap", None) is not None:
+                    continue
+                order = sorted(blocks)
+                kept, keep = order[:keep], keep - min(keep, len(order))
+                resident_ids.update(id(blocks[i]) for i in kept)
+                blocks = {i: blocks[i] for i in order[len(kept) :]}
+                _GENERATE_PLAN_STATS["resident_blocks"] += len(kept)
+                _GENERATE_PLAN_STATS["streamed_blocks"] += len(blocks)
+                if not blocks:
                     continue
                 streams.append(layers)
                 layers.__dict__["_unsloth_block_swap"] = _GenerateBlockStream(blocks)
                 streamed.update(id(unit) for unit in blocks.values())
+            _GENERATE_PLAN_STATS["generates"] += 1
         # Streamed blocks may still be gathered (a forward that kept them); reshard them first.
         for unit in units:
             if id(unit) in streamed:
@@ -2668,6 +3074,8 @@ def native_fsdp2_unsharded(model, stream_blocks = False):
         for unit in units:
             if id(unit) not in streamed:
                 unit.unshard()
+                if id(unit) in resident_ids:
+                    _publish_gathered_device(unit)  # as a streamed block does on enter
         for unit in units:
             if id(unit) in streamed:
                 saved[id(unit)] = _reshard_after_forward_on(unit)
@@ -2688,7 +3096,7 @@ def native_fsdp2_unsharded(model, stream_blocks = False):
             if id(unit) in saved:
                 _reshard_after_forward_restore(unit, saved[id(unit)])
         if streams and torch.cuda.is_available():
-            torch.cuda.empty_cache()  # the next whole-root gather needs its buffer in one piece
+            _synchronized_empty_cache()  # the next whole-root gather needs its buffer in one piece
         if errors:
             raise errors[0]
 
@@ -3087,7 +3495,7 @@ def native_load_optimizer(model, optimizer, path_or_state):
     if isinstance(state, (str, os.PathLike)) and _is_dcp_dir(state):
         return native_load_optimizer_sharded(model, optimizer, state)
     if not isinstance(state, dict):
-        state = torch.load(state, map_location = "cpu", weights_only = True)
+        state = _load_full_optimizer_state(state)
     from .fsdp2_bnb_optim import rename_optimizer_state_for
 
     # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.
@@ -3539,7 +3947,7 @@ def _read_checkpoint_weights(checkpoint):
         if path.endswith(".safetensors"):
             from safetensors.torch import load_file
             return load_file(path, device = "cpu")
-        return torch.load(path, map_location = "cpu", weights_only = True)
+        return _resume_torch_load(path, map_location = "cpu")
 
     for name in _WEIGHT_FILES:
         path = os.path.join(checkpoint, name)
@@ -4094,7 +4502,7 @@ def _install_trainer_hooks():
             os.path.join(checkpoint, _OPTIMIZER_DCP_DIR if sharded else _OPTIMIZER_NAME),
         )
         self.lr_scheduler.load_state_dict(
-            torch.load(os.path.join(checkpoint, _SCHEDULER_NAME), weights_only = True)
+            _resume_torch_load(os.path.join(checkpoint, _SCHEDULER_NAME))
         )
 
     original_load_from_checkpoint = Trainer._load_from_checkpoint
@@ -4281,9 +4689,8 @@ def _scaler_for_native(trainer):
             # Same race for a fused optimizer's grad_scale / found_inf on CPU parameters: use host copies.
             if not (
                 self.is_enabled()
-                and self._device != "cpu"
                 and getattr(optimizer, "_step_supports_amp_scaling", False)
-                and _has_cpu_tensors(optimizer)
+                and (self._device == "cpu" or _has_cpu_tensors(optimizer))
             ):
                 return super().step(optimizer, *args, **kwargs)
             had = "step" in optimizer.__dict__
@@ -4295,6 +4702,13 @@ def _scaler_for_native(trainer):
                     t = getattr(optimizer, name, None)
                     if isinstance(t, torch.Tensor) and t.device.type != "cpu":
                         setattr(optimizer, name, t.cpu())
+                # GradScaler calls a fused optimizer's step on inf grads too (the kernel skips), so
+                # accelerate counts a step and the Trainer advances the lr schedule; a foreach
+                # optimizer is not called. Skip here as well (found_inf is a host tensor, no sync):
+                # CPU offload switches adamw_torch to fused and would run one lr step ahead.
+                found_inf = getattr(optimizer, "found_inf", None)
+                if isinstance(found_inf, torch.Tensor) and bool(found_inf.sum() > 0):
+                    return None
                 return real(*a, **k)
 
             optimizer.step = step_with_host_flags
@@ -4433,6 +4847,8 @@ def _swap_bnb_optimizer(training_args, cpu_shards = False):
             f"'adamw_torch' (or 'adamw_torch_fused'), or build a DTensor-compatible optimizer after "
             f"`unsloth.models.fsdp2_native.shard_model(model)` and pass it to the Trainer."
         )
+    if cpu_shards and _fused_cpu_adamw(training_args, name):
+        return True
     target = _BNB_OPTIMS.get(name)
     if target is None:
         return False
@@ -4443,7 +4859,8 @@ def _swap_bnb_optimizer(training_args, cpu_shards = False):
             "torch's AdamW)."
         )
         return False
-    if target == "adamw_torch_fused" and not torch.cuda.is_available():
+    # Fused AdamW steps CPU shards fine; a non-CUDA accelerator mesh keeps adamw_torch.
+    if target == "adamw_torch_fused" and not torch.cuda.is_available() and not cpu_shards:
         target = "adamw_torch"
     _print_rank0(
         f"Unsloth: native FSDP2 shards parameters as DTensors, which bitsandbytes' optimizers cannot "
@@ -4454,6 +4871,38 @@ def _swap_bnb_optimizer(training_args, cpu_shards = False):
         training_args.optim = OptimizerNames(target)
     except Exception:
         training_args.optim = target
+    return True
+
+
+def _fused_cpu_adamw(
+    training_args,
+    name,
+    label = "native FSDP2",
+):
+    """optim = 'adamw_torch' leaves torch's AdamW to pick foreach / fused itself, and foreach only covers
+    accelerator tensors: CPU shards (UNSLOTH_FSDP2_CPU_OFFLOAD, a CPU mesh) step one tensor at a time,
+    2.6-4.9x slower than the fused CPU kernel (torch >= 2.4) for the same update (fp32, within 1 ulp).
+    Switch to adamw_torch_fused, unless optim_args is set (FlashAdamW keys off it) or
+    UNSLOTH_CPU_FUSED_ADAMW=0. True when switched."""
+    if name != "adamw_torch" or getattr(training_args, "optim_args", None):
+        return False
+    if os.environ.get("UNSLOTH_CPU_FUSED_ADAMW", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    _print_rank0(
+        f"Unsloth: {label} keeps the trainable shards on the CPU, where torch's AdamW would step one "
+        "tensor at a time. Switching optim = 'adamw_torch' to 'adamw_torch_fused' (fused CPU kernel, same "
+        "update; UNSLOTH_CPU_FUSED_ADAMW=0 keeps adamw_torch)."
+    )
+    try:
+        from transformers.training_args import OptimizerNames
+        training_args.optim = OptimizerNames("adamw_torch_fused")
+    except Exception:
+        training_args.optim = "adamw_torch_fused"
     return True
 
 
@@ -4838,7 +5287,8 @@ def _refuse_q_galore(training_args):
 def _refuse_projection_optim(training_args):
     """GaLore and APOLLO (optim = 'galore_*' / 'apollo_*', layerwise or not) project whole 2-D weights,
     like Q-GaLore, and the layerwise variants register per-parameter post-gradient hooks that
-    transformers documents as single-GPU only. Native FSDP2 hands them DTensor shards."""
+    transformers documents as single-GPU only. Adafactor (optim = 'adafactor') factors over whole rows
+    and columns. Native FSDP2 hands them DTensor shards."""
     optim = getattr(training_args, "optim", None) if training_args is not None else None
     if optim is None:
         return
@@ -4849,6 +5299,14 @@ def _refuse_projection_optim(training_args):
             "APOLLO project whole 2-D weights (the layerwise variants are single-GPU only), and native "
             "FSDP2 hands the optimizer DTensor shards. Use optim = 'adamw_torch', or launch without "
             "UNSLOTH_FSDP2."
+        )
+    if "adafactor" in name:
+        # Factored second moments need whole rows / columns; step one fails on DTensor shards.
+        raise ValueError(
+            f"Unsloth: native FSDP2 (UNSLOTH_FSDP2=1) cannot train with optim = '{name}': Adafactor "
+            "factors each weight's second moment over whole rows and columns, and native FSDP2 hands "
+            "the optimizer DTensor shards (its first step would fail). Use optim = 'adamw_torch' / "
+            "'adamw_torch_fused' / 'adamw_8bit' / 'paged_adamw_8bit', or launch without UNSLOTH_FSDP2."
         )
 
 

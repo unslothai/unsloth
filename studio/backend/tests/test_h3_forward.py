@@ -163,6 +163,33 @@ def test_cache_only_inside_a_render_and_keyed_on_the_conditioning(monkeypatch):
 
 
 @needs_mirror
+def test_text_rows_recorded_by_a_cuda_graph_never_come_from_the_cache(monkeypatch):
+    # capture computes rows itself and leaves the cache untouched
+    monkeypatch.delenv(h3f.REFINER_CACHE_ENV, raising = False)
+    m = _model()
+    h3f.install_h3_forward(m)
+    stats = m.__dict__[h3f.STATS_ATTR]
+    calls = {"refiner": 0}
+    m.token_refiner.register_forward_hook(
+        lambda *a: calls.__setitem__("refiner", calls["refiner"] + 1)
+    )
+    layout, enc = _layout(), _enc()
+    stock = _run(_model(), enc, steps = 1, layout = layout)
+    with h3f.h3_render_scope(_Pipe(m)):
+        _run(m, enc, steps = 1, layout = layout)  # warm-up: fills the cache
+        cached = m.__dict__[h3f._SCOPE_ATTR].value
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
+        got = _run(m, enc, steps = 1, layout = layout)  # the recording
+        assert calls["refiner"] == 2 and stats["text_hits"] == 0
+        assert m.__dict__[h3f._SCOPE_ATTR].value is cached
+        monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+        _run(m, enc, steps = 1, layout = layout)  # eager again: the cache serves
+        assert calls["refiner"] == 2 and stats["text_hits"] == 1
+    _assert_same(stock, got)
+
+
+@needs_mirror
 def test_inference_mode_render(monkeypatch):
     monkeypatch.delenv(h3f.REFINER_CACHE_ENV, raising = False)
     m, stock = _model(), _model()

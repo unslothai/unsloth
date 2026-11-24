@@ -13,6 +13,10 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _BACKEND_CI = REPO_ROOT / ".github" / "workflows" / "studio-backend-ci.yml"
+# The multi-rank shards live in their own path-filtered workflow; both matrices together are
+# Repo tests (CPU), so every check below reads both.
+_DISTRIBUTED_CI = REPO_ROOT / ".github" / "workflows" / "distributed-cpu-ci.yml"
+_SHARD_JOBS = ((_BACKEND_CI, "repo-cpu-tests"), (_DISTRIBUTED_CI, "distributed-cpu-tests"))
 _TESTS_DIR = REPO_ROOT / "tests"
 
 # Directories under tests/ that no shard runs, and what runs them instead.
@@ -30,11 +34,23 @@ def _backend_ci() -> dict:
     return yaml.safe_load(_BACKEND_CI.read_text(encoding = "utf-8"))
 
 
+def _workflow(path: Path) -> dict:
+    return yaml.safe_load(path.read_text(encoding = "utf-8"))
+
+
+def _shard_entries() -> list:
+    return [
+        entry
+        for path, job in _SHARD_JOBS
+        for entry in _workflow(path)["jobs"][job]["strategy"]["matrix"]["include"]
+    ]
+
+
 def _shards() -> dict:
-    """{shard name: (roots, ignores)} parsed out of the job's matrix."""
-    job = _backend_ci()["jobs"]["repo-cpu-tests"]
+    """{shard name: (roots, ignores)} parsed out of both jobs' matrices."""
     shards = {}
-    for entry in job["strategy"]["matrix"]["include"]:
+    for entry in _shard_entries():
+        assert entry["shard"] not in shards, f"shard {entry['shard']} is defined twice"
         roots, ignores = [], []
         tokens = entry["selection"].split()
         index = 0
@@ -79,7 +95,8 @@ def _claiming_shards(path: str, shards: dict) -> list:
 def _isolated_paths() -> list:
     """Spoof files and load_freeze run in a separate step: they mutate module globals or assert timing."""
     paths = []
-    for step in _backend_ci()["jobs"]["repo-cpu-tests"]["steps"]:
+    steps = [step for path, job in _SHARD_JOBS for step in _workflow(path)["jobs"][job]["steps"]]
+    for step in steps:
         run = str(step.get("run", ""))
         if "${{ matrix.selection }}" in run or "pytest" not in run:
             continue
@@ -179,6 +196,118 @@ class TestTheSplitKeepsTheSelectionItInherited:
         assert "--timeout=330" in run
         assert "timeout --signal=INT --kill-after=60" in run
 
+    def test_the_split_out_shards_run_the_same_step_and_install(self):
+        """The multi-rank shards moved workflows, not behaviour: same pytest step, same
+        install, same environment, so a shard means the same thing in either file."""
+
+        def named(path, job):
+            return {
+                step.get("name"): step
+                for step in _workflow(path)["jobs"][job]["steps"]
+                if step.get("name")
+            }
+
+        backend, distributed = named(*_SHARD_JOBS[0]), named(*_SHARD_JOBS[1])
+        for name in (
+            "Repo tests (CPU, auto-discovered)",
+            "Install deps (shared shape with backend pytest job)",
+            "Install the pinned ruff-unsloth (formatter fixed-point guard)",
+        ):
+            assert name in distributed, f"distributed-cpu-ci.yml lost the {name!r} step"
+            for field in ("run", "env"):
+                assert backend[name].get(field) == distributed[name].get(
+                    field
+                ), f"{name!r} differs between the two workflows in {field!r}"
+        jobs = [_workflow(path)["jobs"][job] for path, job in _SHARD_JOBS]
+        for field in ("runs-on", "timeout-minutes", "name"):
+            assert jobs[0][field] == jobs[1][field], f"the two jobs differ in {field!r}"
+
+
+class TestTheDistributedWorkflowSeesWhatItsTestsRead:
+    """distributed-cpu-ci.yml runs only when its paths change, so its paths must cover every
+    tests/ file its shards import, directly or through a sibling test module or helper."""
+
+    def _paths(self, event: str) -> list:
+        on = _workflow(_DISTRIBUTED_CI).get(True) or _workflow(_DISTRIBUTED_CI).get("on")
+        return on[event]["paths"]
+
+    def _shard_files(self) -> list:
+        files = _test_files()
+        roots = [
+            root
+            for entry in _workflow(_DISTRIBUTED_CI)["jobs"]["distributed-cpu-tests"]["strategy"][
+                "matrix"
+            ]["include"]
+            for root in entry["selection"].split()
+            if not root.startswith("-")
+        ]
+        return sorted({path for path in files for root in roots if fnmatch.fnmatch(path, root)})
+
+    def _local_imports(self, start: list) -> set:
+        import ast
+
+        def resolve(module: str):
+            parts = module.split(".")
+            if parts[0] == "tests":
+                parts = parts[1:]
+            for base in (_TESTS_DIR, _TESTS_DIR / "_shared"):
+                candidate = base.joinpath(*parts)
+                for found in (candidate.with_suffix(".py"), candidate / "__init__.py"):
+                    if parts and found.is_file():
+                        return str(found.relative_to(REPO_ROOT))
+            return None
+
+        seen, queue = set(), list(start)
+        while queue:
+            path = queue.pop()
+            if path in seen:
+                continue
+            seen.add(path)
+            try:
+                tree = ast.parse((REPO_ROOT / path).read_text(encoding = "utf-8"))
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                names = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                    names = [node.module] + [f"{node.module}.{alias.name}" for alias in node.names]
+                for name in names:
+                    found = resolve(name)
+                    if found and found not in seen:
+                        queue.append(found)
+        return seen
+
+    def test_the_shards_select_files(self):
+        assert len(self._shard_files()) > 100, "the distributed shards select almost nothing"
+
+    def test_every_imported_test_file_triggers_the_workflow(self):
+        start = self._shard_files() + ["tests/conftest.py"]
+        paths = self._paths("pull_request")
+        missed = sorted(
+            path
+            for path in self._local_imports(start)
+            if not any(fnmatch.fnmatch(path, pattern.replace("**", "*")) for pattern in paths)
+        )
+        assert not missed, (
+            "distributed-cpu-ci.yml runs these files (or imports them from its tests) but no "
+            f"path in its pull_request filter matches them, so editing them skips it: {missed}"
+        )
+
+    def test_push_and_pull_request_paths_match(self):
+        assert self._paths("push") == self._paths("pull_request")
+
+    def test_unsloth_and_the_conftest_trigger_it(self):
+        paths = self._paths("pull_request")
+        for needed in ("unsloth/**", "tests/conftest.py", "tests/_shared/**", "pyproject.toml"):
+            assert needed in paths, f"{needed} must trigger distributed-cpu-ci.yml"
+
+    def test_a_nightly_run_catches_unsloth_zoo_drift(self):
+        """The shards install unsloth_zoo from git main, which no path here can see."""
+        on = _workflow(_DISTRIBUTED_CI).get(True) or _workflow(_DISTRIBUTED_CI).get("on")
+        assert on.get("schedule"), "distributed-cpu-ci.yml needs its nightly schedule"
+
 
 class TestTheGuardIsNotVacuous:
     def test_a_gap_is_reported(self):
@@ -193,7 +322,7 @@ class TestTheGuardIsNotVacuous:
 def _selection_text(shard: str | None = None) -> str:
     return " ".join(
         " ".join(entry["selection"].split())
-        for entry in _backend_ci()["jobs"]["repo-cpu-tests"]["strategy"]["matrix"]["include"]
+        for entry in _shard_entries()
         if shard is None or entry["shard"] == shard
     )
 

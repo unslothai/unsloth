@@ -1336,7 +1336,8 @@ def test_the_h3_conditioner_load_carries_the_hub_token(monkeypatch):
 
     assert seen[0] == {"index_token": "hf_secret", "cache_dir": "/live/hub"}
     component_loads = seen[1:]
-    assert len(component_loads) == 2
+    # Tokenizer + processor, then the conditioner alone, then the VAEs.
+    assert len(component_loads) == 3
     assert all(call.get("token") == "hf_secret" for call in component_loads), component_loads
     # Pin cache_dir to the LIVE root: the import-time constant ignores a mid-session folder change.
     assert all(call.get("cache_dir") == "/live/hub" for call in component_loads), component_loads
@@ -1468,7 +1469,7 @@ def _h3_cache_run(
     pipe = types.SimpleNamespace(
         text_encoder = _Placed(), processor = None, vae = _Placed(), audio_vae = _Placed()
     )
-    monkeypatch.setattr(h3, "_load_conditioners", lambda cfg, device: pipe)
+    monkeypatch.setattr(h3, "_load_conditioners", lambda cfg, device, **_k: pipe)
     monkeypatch.setattr(h3, "_encode_prompt", lambda *_a, **_k: torch.zeros(1, 8, 16))
     monkeypatch.setattr(h3, "_dataset_canvas", lambda _path, _short_edge: (64, 64))
     monkeypatch.setattr(h3, "decode_clip", lambda *_a, **_k: (None, None))
@@ -1728,7 +1729,9 @@ def test_h3_routes_its_transformer_through_the_shared_regional_compile(
         order.append("optimizer")
         raise _Stop
 
-    monkeypatch.setattr(diffusion_h3_trainer, "_load_conditioners", lambda cfg, device: _Pipe())
+    monkeypatch.setattr(
+        diffusion_h3_trainer, "_load_conditioners", lambda cfg, device, **_k: _Pipe()
+    )
     monkeypatch.setattr(
         diffusion_h3_trainer, "_encode_prompt", lambda pipe, cap, device: torch.zeros(1, 3, 8)
     )

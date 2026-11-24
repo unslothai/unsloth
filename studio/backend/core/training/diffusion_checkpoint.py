@@ -78,6 +78,8 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("enable_tf32", "TF32 matmuls"),
     # Batch, accumulation and clip norm all change the trajectory the restored moments were produced on.
     ("train_batch_size", "batch size"),
+    # Every rank draws train_batch_size images: the GPU count scales the global batch and the sampler's stream.
+    ("world_size", "GPU count"),
     ("gradient_accumulation_steps", "gradient accumulation"),
     ("max_grad_norm", "gradient clipping"),
     # Trainers crop to this before the restored sampler sees anything; a 1024 bundle could finish at 768.
@@ -86,6 +88,8 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("base_precision", "base precision"),
     # Record actual base precision: fp8/mxfp8 can fall back to bf16, so the request would look clean.
     ("base_precision_effective", "resolved base precision"),
+    # int8 is torchao weight-only or the W8A8 base (UNSLOTH_DIFFUSION_INT8_TRAIN): different base math, one name.
+    ("base_int8_kernel", "int8 base kernel"),
     # LoRAEMA uses the INCOMING decay with restored shadows, so a change makes a hybrid EMA.
     ("ema_decay", "EMA decay"),
 )
@@ -112,16 +116,19 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "bucketing",
         "enable_tf32",
         "train_batch_size",
+        "world_size",
         "gradient_accumulation_steps",
         "max_grad_norm",
         # Known only to the DiT trainer; unknown means cannot-tell, leaving route preflight and SDXL alone.
         "base_precision_effective",
+        "base_int8_kernel",
         "base_dit",
         "base_dit_revision",
     }
 )
 # Bundle side only: an incoming None is the route's unresolved pre-trainer identity ("cannot tell").
-_LEGACY_IDENTITY_DEFAULTS: dict[str, str] = {"bucketing": "off"}
+# A bundle from before world_size was recorded trained on one GPU.
+_LEGACY_IDENTITY_DEFAULTS: dict[str, Any] = {"bucketing": "off", "world_size": 1}
 
 
 def _revision_is_comparable(value: Any) -> bool:
@@ -175,6 +182,8 @@ class CheckpointIdentity:
     bucketing: Optional[str] = None
     enable_tf32: Optional[str] = None
     train_batch_size: Optional[int] = None
+    # Data-parallel GPU count; set by the DiT trainer once the world is planned, None elsewhere (cannot tell).
+    world_size: Optional[int] = None
     gradient_accumulation_steps: Optional[int] = None
     # Text, so 0.0 (clipping disabled) is a value and None stays "not recorded".
     max_grad_norm: Optional[str] = None
@@ -182,6 +191,8 @@ class CheckpointIdentity:
     ema_decay: Optional[str] = None
     # Set by the DiT trainer once it knows whether fp8/mxfp8 took; None elsewhere reads as cannot-tell.
     base_precision_effective: Optional[str] = None
+    # "w8a8" or "weight-only" for an int8 base, set by the DiT trainer; None elsewhere and in older bundles.
+    base_int8_kernel: Optional[str] = None
     # Gated bases fetch from an ungated mirror with different SHAs, so record which repo.
     base_revision_repo: Optional[str] = None
     base_dit: Optional[str] = None
@@ -217,10 +228,12 @@ class CheckpointIdentity:
             "bucketing": self.bucketing,
             "enable_tf32": self.enable_tf32,
             "train_batch_size": self.train_batch_size,
+            "world_size": self.world_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "max_grad_norm": self.max_grad_norm,
             "ema_decay": self.ema_decay,
             "base_precision_effective": self.base_precision_effective,
+            "base_int8_kernel": self.base_int8_kernel,
             "precision": self.precision,
             "base_precision": self.base_precision,
             # Resolution is a hard identity: trainers crop to it, so loadable tensors alone are not a resume.
@@ -259,10 +272,12 @@ class CheckpointIdentity:
                 bucketing = _optional_str(data.get("bucketing")),
                 enable_tf32 = _optional_str(data.get("enable_tf32")),
                 train_batch_size = _optional_int(data.get("train_batch_size")),
+                world_size = _optional_int(data.get("world_size")),
                 gradient_accumulation_steps = _optional_int(data.get("gradient_accumulation_steps")),
                 max_grad_norm = _optional_str(data.get("max_grad_norm")),
                 ema_decay = _optional_str(data.get("ema_decay")),
                 base_precision_effective = _optional_str(data.get("base_precision_effective")),
+                base_int8_kernel = _optional_str(data.get("base_int8_kernel")),
                 precision = str(data.get("precision") or ""),
                 base_precision = str(data.get("base_precision") or ""),
                 resolution = int(data.get("resolution") or 0),
@@ -439,6 +454,11 @@ def with_cache_mode(identity: "CheckpointIdentity", used_cache: bool) -> "Checkp
     return replace(identity, cache_mode = "cached" if used_cache else "in-loop")
 
 
+def with_world_size(identity: "CheckpointIdentity", world: Any) -> "CheckpointIdentity":
+    """Records the data-parallel GPU count after its fallbacks; a resume at another count changes the global batch."""
+    return replace(identity, world_size = max(1, int(world or 1)))
+
+
 def with_resolved_base_precision(
     identity: "CheckpointIdentity", resolved: Any
 ) -> "CheckpointIdentity":
@@ -447,6 +467,11 @@ def with_resolved_base_precision(
     if not value:
         return identity  # nothing resolved; leave it unknown rather than asserting a value
     return replace(identity, base_precision_effective = value)
+
+
+def with_int8_kernel(identity: "CheckpointIdentity", w8a8: bool) -> "CheckpointIdentity":
+    """Records which int8 base trained: a resume must not switch W8A8 and torchao weight-only under one name."""
+    return replace(identity, base_int8_kernel = "w8a8" if w8a8 else "weight-only")
 
 
 _DEFAULT_DIT_SUBFOLDER = {"ltx-2.5": "transformer_full"}
@@ -1637,6 +1662,22 @@ def recorded_resume_targets(path_value: Any) -> Optional[tuple[str, ...]]:
     return None
 
 
+def recorded_base_precision(path_value: Any) -> tuple[bool, Optional[str]]:
+    """(found, precision): whether a resume would continue a readable bundle, and the base precision that bundle
+    actually trained on (None when it predates the field). Never raises."""
+    try:
+        root = resolve_resume_dir(str(path_value))
+        explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+        candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
+        for _candidate, manifest in candidates:
+            saved = CheckpointIdentity.from_dict((manifest or {}).get("identity"))
+            if saved is not None:
+                return True, saved.base_precision_effective
+    except Exception:  # noqa: BLE001 -- best effort; the preflight reports the real problem
+        pass
+    return False, None
+
+
 def recorded_bucketing(path_value: str) -> bool:
     """Whether the resumed bundle trained bucketed (pre-field or unreadable: False; preflight_resume refuses)."""
     try:
@@ -1808,7 +1849,25 @@ class LoadedCheckpoint:
         path = self._file(role)
         if path is None:
             return None
+        _refuse_pickle_on_old_torch(torch, path)
         return torch.load(str(path), map_location = "cpu", weights_only = True)
+
+
+def _refuse_pickle_on_old_torch(torch: Any, path: Path) -> None:
+    """Same rule as unsloth/import_fixes.py::refuse_pickle_checkpoint_on_old_torch (diffusion never
+    imports unsloth): torch < 2.6 runs code hidden in a .pt even with weights_only = True
+    (CVE-2025-32434), so a resume bundle is refused there instead of loaded."""
+    try:
+        from packaging.version import Version
+        old = Version(str(torch.__version__).split("+")[0]).release[:2] < (2, 6)
+    except Exception:  # noqa: BLE001 -- an unparsable version is a newer build, not an old one
+        return
+    if old:
+        raise ResumeError(
+            f"'{path.name}' is a pickled state file and torch {torch.__version__} can execute code "
+            "hidden in it even with weights_only = True (CVE-2025-32434). Upgrade to torch >= 2.6 "
+            "to resume this run."
+        )
 
 
 def load_checkpoint(path: str | os.PathLike[str]) -> LoadedCheckpoint:

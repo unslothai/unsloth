@@ -18,15 +18,18 @@ import contextlib
 import functools
 import operator
 import os
+import sys
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
 import torch
+import torch.utils.checkpoint
 from torch import Tensor
 import torch.nn.functional as F
 from packaging.version import Version
 
 from ..device_type import DEVICE_TYPE
+from ..import_fixes import _unmask_rows_attending_to_nothing
 from ..models._utils import *
 from ..context_parallel import get_cp_manager
 from .ulysses import ulysses_attention
@@ -1734,7 +1737,11 @@ def run_attention(
         _SAVE_ATTENTION
         and context.training
         and manager is None
-        and (_SAVE_ATTENTION_MIN_SEQ is None or _auto_saves_attention(config, context))
+        and (
+            _explicit_saves_attention()
+            if _SAVE_ATTENTION_MIN_SEQ is None
+            else _auto_saves_attention(config, context)
+        )
     ):
         # GC replay reuses the first pass's attention output + logsumexp; graph breaks under compile.
         traced = torch.compiler.is_compiling()
@@ -1764,17 +1771,120 @@ def _auto_saves_attention(config, context) -> bool:
         and config.backend == SDPA
         and context.seq_info is None
         and context.prefix_seg_info is None
+        and _saved_attention_frames_possible()
     )
+
+
+def _unsloth_checkpoint_installed_now() -> bool:
+    # zoo makes frames only under its smart checkpoint, and in automatic mode only while the setting is
+    # still "auto": UNSLOTH_GC_SAVE_ATTENTION=0 set after import turns frames off but not this routing.
+    if (
+        getattr(torch.utils.checkpoint.CheckpointFunction, "__name__", "")
+        != "UnslothCheckpointFunction"
+    ):
+        return False
+    setting = os.environ.get("UNSLOTH_GC_SAVE_ATTENTION", "auto").strip().lower() or "auto"
+    return setting == "auto"
+
+
+# Dynamo cannot read a Function class's name; patched once at get_peft_model, before any trace.
+_unsloth_checkpoint_installed = _constant_probe(_unsloth_checkpoint_installed_now)
+
+
+def _saved_attention_frames_possible() -> bool:
+    # Frames exist only inside Unsloth's smart checkpoint (use_gradient_checkpointing = "unsloth"); any
+    # other call reaches saved_attention_call with no frame and runs plain behind torch.compiler.disable:
+    # a graph break per layer for nothing, Unsupported under a user's fullgraph=True.
+    if not _unsloth_checkpoint_installed():
+        return False
+    return not torch.compiler.is_compiling() or _in_unsloth_compiled_region()
+
+
+def _may_cross_into_saved_attention() -> bool:
+    # Eager code, Unsloth's own blocks and a compile that may graph break all cross compiler.disable,
+    # so both checkpoint passes route alike even when only one is traced (zoo matches replay calls by
+    # position). Only a compile where a graph break is fatal stays in the graph.
+    if not torch.compiler.is_compiling() or _in_unsloth_compiled_region():
+        return True
+    return not _graph_break_is_fatal()
+
+
+def _in_unsloth_compiled_region() -> bool:
+    # Unsloth's own per-layer compile (fullgraph=False, a graph break is legal); not set when the block
+    # is inlined into a user's torch.compile, which may be fullgraph=True.
+    flag = getattr(sys.modules.get("unsloth.models._block_compile"), "_IN_COMPILED_REGION", None)
+    return bool(flag) and bool(flag[0])
+
+
+def _graph_break_is_fatal_now() -> bool:
+    # The tracing root's fullgraph=True / error_on_graph_break. Unknown (no tracer API): assume fatal.
+    try:
+        from torch._dynamo.symbolic_convert import InstructionTranslator
+        tx = InstructionTranslator.current_tx()
+    except Exception:
+        return True
+    if tx is None:
+        return True
+    return bool(getattr(tx, "one_graph", True)) or bool(getattr(tx, "error_on_graph_break", False))
+
+
+# Read once per traced graph: fullgraph is fixed per torch.compile call.
+_graph_break_is_fatal = _constant_probe(_graph_break_is_fatal_now)
+
+
+def _explicit_saves_attention() -> bool:
+    # UNSLOTH_GC_SAVE_ATTENTION=1 / offload. zoo makes a frame only for a checkpoint on a device whose
+    # SDPA keeps an attention kernel, so a call outside a frame stays in the caller's graph instead of
+    # crossing compiler.disable (Unsupported under fullgraph=True). Dynamo guards on the frame read.
+    # Inside a frame, a fullgraph=True compile stays in the graph (nothing kept for that call).
+    # The in-graph route must fill / take its call's entry so both passes line up whichever route each takes.
+    skip_slot = getattr(
+        sys.modules.get("unsloth_zoo.saved_attention"), "saved_attention_skip_slot", None
+    )
+    if skip_slot is None:
+        # An older zoo: ROCm keeps nothing, so no pass can consume another call's entry; other builds
+        # route every call as before.
+        return not _ROCM_SDPA_GUARD
+    if not _saved_attention_active():
+        return False
+    if _may_cross_into_saved_attention():
+        return True
+    skip_slot()
+    return False
+
+
+def _select_rocm_saved_sdpa(q):
+    """zoo's ROCm saved-attention selector: the SDPA backend a training call on q's device runs here,
+    under the same rocm_sdpa_check filter as scaled_dot_product_attention; a refused kernel is ERROR."""
+    from torch.nn.attention import SDPBackend
+    from .rocm_sdpa_check import rocm_sdpa_verdict
+
+    index = q.device.index
+    verdict = rocm_sdpa_verdict(index)
+    backends = _CUDNN_FREE_BACKENDS[_rocm_sdpa_index_now(index)]
+    with _sdpa_kernel(backends) if backends is not None else contextlib.nullcontext():
+        choice = int(torch._fused_sdp_choice(q, q, q, is_causal = True))
+    if (choice == int(SDPBackend.FLASH_ATTENTION) and not verdict["flash"]) or (
+        choice == int(SDPBackend.EFFICIENT_ATTENTION) and not verdict["efficient"]
+    ):
+        return int(SDPBackend.ERROR)
+    return choice
 
 
 def _load_saved_attention():
     """(call, min_seq): min_seq None = every training call (UNSLOTH_GC_SAVE_ATTENTION=1 / offload);
-    an int = automatic mode from that query length. An unsloth_zoo without automatic mode stays off."""
+    an int = automatic mode from that query length. An unsloth_zoo without automatic mode stays off.
+    Configuration only: no device is touched here (ranks are placed later; zoo decides per checkpoint)."""
     try:
-        from unsloth_zoo.saved_attention import save_attention_enabled, saved_attention_call
+        from unsloth_zoo import saved_attention as sa
+        saved_attention_call = sa.saved_attention_call
     except Exception:
         return None, None
-    if save_attention_enabled():
+    # Older zoo: save_attention_enabled() is the configuration (and keeps ROCm off).
+    if getattr(sa, "save_attention_requested", sa.save_attention_enabled)():
+        register = getattr(sa, "register_rocm_saved_attention_selector", None)
+        if _ROCM_SDPA_GUARD and register is not None:
+            register(_select_rocm_saved_sdpa)
         return saved_attention_call, None
     try:
         from unsloth_zoo.saved_attention import save_attention_auto_min_seq
@@ -1788,6 +1898,9 @@ def _load_saved_attention():
 
 _saved_attention_call, _SAVE_ATTENTION_MIN_SEQ = _load_saved_attention()
 _SAVE_ATTENTION = _saved_attention_call is not None
+_saved_attention_active = getattr(
+    sys.modules.get("unsloth_zoo.saved_attention"), "saved_attention_active", lambda: False
+)
 
 
 def _run_attention(
@@ -2120,6 +2233,14 @@ def _run_attention(
         else:
             q_len_local = Q.shape[-2]
             k_len_local = K.shape[-2]
+            # The queries are the last q_len of the context's kv_seq_len filled keys. K can have more
+            # columns than that (a preallocated cache), so K's last q_len columns are not their positions.
+            filled = context.kv_seq_len
+            q_offset_local = (
+                filled - q_len_local
+                if isinstance(filled, (int, torch.SymInt)) and q_len_local <= filled <= k_len_local
+                else k_len_local - q_len_local
+            )
             if local_mask is not None and isinstance(local_mask, torch.Tensor):
                 local_mask = local_mask.to(device = Q.device)
 
@@ -2131,7 +2252,7 @@ def _run_attention(
                         # tokenizer attention_mask is typically int 0/1
                         key_keep = local_mask != 0
 
-                    past_len = k_len_local - q_len_local  # works for prefill (0) and decode
+                    past_len = q_offset_local  # works for prefill (0) and decode
                     q_pos = torch.arange(past_len, past_len + q_len_local, device = Q.device)
                     k_pos = torch.arange(k_len_local, device = Q.device)
 
@@ -2161,8 +2282,22 @@ def _run_attention(
 
                 # Avoid NaNs from fully-masked rows, common with left padding.
                 if local_mask.dtype == torch.bool:
-                    no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
-                    local_mask = local_mask | no_allowed
+                    if context.is_causal:
+                        # Causal: the row attends to its own key only. Every key would let a left pad
+                        # query, whose logits predict the first real token, read that token and later ones.
+                        if local_mask.shape[-2] != q_len_local:
+                            local_mask = local_mask.expand(
+                                *local_mask.shape[:-2], q_len_local, local_mask.shape[-1]
+                            )
+                        local_mask = _unmask_rows_attending_to_nothing(
+                            local_mask,
+                            q_offset = q_offset_local
+                            if local_mask.shape[-1] == k_len_local
+                            else local_mask.shape[-1] - q_len_local,
+                        )
+                    else:
+                        no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
+                        local_mask = local_mask | no_allowed
 
             if local_mask is None and sliding_window is not None and k_len_local > sliding_window:
                 # SDPA's is_causal has no window, so build the windowed mask explicitly.

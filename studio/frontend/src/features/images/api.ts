@@ -223,7 +223,8 @@ export interface DiffusionLoadRequest {
     | "flash4"
     | "sage"
     | "xformers"
-    | "aiter";
+    | "aiter"
+    | "flash_sdpa";
   int8_attention?: "auto" | "on" | "off";
   memory_mode?: "auto" | "fast" | "balanced" | "low_vram";
   // Neither engine shards, so several cards resolve to the one with the most free VRAM.
@@ -326,6 +327,11 @@ export interface DiffusionLoraInfo {
   size_bytes: number;
   weight_default: number;
   fine_tuned?: boolean;
+  /** Step-distilled adapters: the publisher's steps / guidance, applied when the adapter is picked. */
+  recommended_steps?: number | null;
+  recommended_guidance?: number | null;
+  /** A two-expert pair (high- and low-noise files) for a two-expert video model. */
+  expert_pair?: boolean;
 }
 
 export interface GalleryImage {
@@ -782,6 +788,8 @@ export interface DiffusionTrainingStartRequest {
   lr_warmup_steps?: number;
   base_precision?: "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto";
   compile_transformer?: "off" | "on" | "auto";
+  // bf16 DiT bases only: blocks streamed from host RAM. Omitted = the server default (off).
+  block_swap?: "off" | "auto" | number;
   cache_latents?: boolean;
   cache_variants?: number;
   enable_tf32?: boolean;
@@ -855,6 +863,13 @@ export interface DiffusionTrainingStatus {
   base_model?: string | null;
   samples_per_second?: number | null;
   peak_memory_gb?: number | null;
+  // What block_swap resolved to once the base loaded; absent when it did not run.
+  block_swap?: {
+    swapped_blocks?: number;
+    total_blocks?: number;
+    host_gib?: number;
+    pinned_gib?: number;
+  } | null;
   checkpoint_path?: string | null;
   checkpoint_step?: number | null;
   resume_blocked_reason?: string | null;
@@ -977,6 +992,8 @@ export interface DiffusionTrainableFamily {
   precision_modes?: string[];
   recommended_precision?: string;
   supports_compile?: boolean;
+  // DiT trainer with bf16 on this host; absent on an older backend, which has no block_swap field.
+  supports_block_swap?: boolean;
   // Whether the family loop writes checkpoint bundles; undefined on an older backend reads as true.
   supports_checkpoints?: boolean;
   // Absent on an older backend: "Sample every" hidden.

@@ -61,6 +61,8 @@ export function chatLocalModelOptions(
       // A GGUF directory needs no `gguf` in its name: the scan's format says so.
       isGguf: isDirectGguf || model.model_format === "gguf" ? true : undefined,
       isDirectGguf: isDirectGguf ? true : undefined,
+      // An oMLX folder can have a plain name; its source is what marks it MLX.
+      localSource: model.source,
       audioType: model.audio_type ?? undefined,
     });
   }

@@ -1379,10 +1379,17 @@ def _compile_repeated_blocks(
             return _compile_unet_blocks(unet, unet_kwargs, logger)
         try:
             unet.compile(**unet_kwargs)
-            return True
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "unet whole-module compile", exc)
             return False
+        try:
+            # A static step skip in the forward slot decides in front of the compiled call: inside a fullgraph trace
+            # its dynamo-disabled frames leave no compiled frame (torch 2.13+ raises on the first render).
+            from .diffusion_step_skip import front_compiled_call
+            front_compiled_call(unet)
+        except Exception as exc:  # noqa: BLE001 - the compile stands; only the skip placement failed
+            _warn(logger, "static skip in front of the compiled unet", exc)
+        return True
     # Compile every denoiser DiT (dual-DiT families run both); a per-DiT failure degrades only that one to eager.
     engaged = False
     for transformer in dits:

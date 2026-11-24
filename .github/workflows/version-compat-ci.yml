@@ -87,6 +87,7 @@ jobs:
             tests/version_compat/test_transformers_pinned_symbols.py \
             tests/version_compat/test_no_dtype_kwarg_at_load.py \
             tests/version_compat/test_trl_vllm_colocate_weight_sync.py \
+            tests/version_compat/test_router_aux_loss_non_reentrant_gc.py \
             -n 4 --dist loadfile -v --tb=short
 
   cap-site-consistency:
@@ -144,7 +145,7 @@ jobs:
             torch_pins: >-
               'torch<2.15' torchvision 'torchcodec>=0.12'
             pkg_pins: >-
-              'transformers==5.18.0' 'trl==1.15.0'
+              'transformers==5.18.0' 'trl==1.18.2'
               peft sentence-transformers accelerate 'datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0'
               bitsandbytes triton hf_transfer
           - slug: latest

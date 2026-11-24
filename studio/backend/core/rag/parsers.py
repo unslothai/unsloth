@@ -1611,11 +1611,45 @@ def _docx_number_lists(document) -> None:
             p_pr.addnext(run)
 
 
+# Word allows 63 columns; a declared span past this is never real layout, only a memory bomb.
+_DOCX_GRID_MAX = 1000
+_DOCX_GRID_TAGS = (_W + "gridSpan", _W + "gridBefore", _W + "gridAfter")
+
+
+def _docx_row_grid_elements(tr):
+    """This row's own gridBefore / gridAfter / gridSpan, not those of rows in nested tables."""
+    for child in tr:
+        if child.tag == _W + "trPr":
+            yield from (el for el in child if el.tag in _DOCX_GRID_TAGS)
+        elif child.tag == _W + "tc":
+            for tc_pr in child:
+                if tc_pr.tag == _W + "tcPr":
+                    yield from (el for el in tc_pr if el.tag in _DOCX_GRID_TAGS)
+
+
+def _docx_clamp_grid(tbl) -> None:
+    """Clamp declared grid widths in place, so a few bytes of XML cannot expand into a giant row."""
+    # iter() still reaches nested tables' rows, but each row only spends its own declarations.
+    for tr in tbl.iter(_W + "tr"):
+        budget = _DOCX_GRID_MAX
+        for el in _docx_row_grid_elements(tr):
+            try:
+                value = int(el.get(_W + "val"))
+            except (TypeError, ValueError):
+                continue
+            floor = 1 if el.tag == _W + "gridSpan" else 0
+            clamped = min(value, max(budget, floor))
+            if clamped != value:
+                el.set(_W + "val", str(clamped))
+            budget = max(0, budget - max(clamped, 0))
+
+
 def _docx_table_rows(table) -> list[str]:
     """Cells joined by pipes, aligned to the layout grid; the locator splits anchors on pipes."""
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
+    _docx_clamp_grid(table._tbl)
     rows: list[str] = []
     seen: set = set()
     for row in table.rows:

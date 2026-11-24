@@ -40,11 +40,12 @@ DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned for reproducibility; UNSLOTH_SD_CPP_TAG overrides (empty tracks latest) and a missing tag falls back to latest. The -u<id> suffix is the mirror's patch set: an unpatched build aborts on the default --cfg-scale and on --vae-on-cpu, and quantizes MiniMax-H3's 1-D norms into an output uncorrelated with its own bf16 reference (leejet/stable-diffusion.cpp#1861, #1862, #1863).
 # The base must carry every family's sd_cpp_arch_marker / sd_cpp_edit_marker: hosts the mirror does
-# not build (ROCm) install it from upstream. -ud331c66, the previous pin on this base, ignores the MOSS-Image
+# not build (ROCm) install it from upstream. -u9455ee1 is -u27b9ddc plus the implicit GEMM Metal CONV_2D
+# (unslothai/stable-diffusion.cpp#103). -ud331c66, an earlier pin on this base, ignores the MOSS-Image
 # moss_uncond_skip* sample args; master-968 predates MOSS-Image (master-975, split-QKV GGUF loading in the same
 # release); master-951 before it predated FLUX.3 Image Klein (master-968), and master-813 Qwen-Image-2.1 (master-883)
 # and its reference-alpha fix (master-896). CUDA bundles carry no CUDA runtime.
-DEFAULT_TAG = "master-982-0518b34-u27b9ddc"
+DEFAULT_TAG = "master-982-0518b34-u9455ee1"
 
 REPO = DEFAULT_REPO
 
@@ -165,9 +166,7 @@ def _pinned_tag() -> Optional[str]:
 
 
 def install_is_stale(root: Path) -> bool:
-    """True when ``root`` was installed for another pin, or is a per-GPU-family CUDA bundle that does
-    not serve a GPU this process can use (a card swapped since the install). Unknown (no record / tag,
-    tracking latest, undetectable GPUs) is not stale."""
+    """True for another pin, or a per-GPU CUDA bundle that no usable GPU matches; unknown is not stale."""
     return _pin_is_stale(root) or _cuda_coverage_is_stale(root)
 
 
@@ -183,9 +182,8 @@ def _cuda_coverage_is_stale(root: Path) -> bool:
             _INSTALLED_CUDA_SMS_MEMO.pop(str(root), None)
     if rec.get("accelerator") != "cuda" or not isinstance(sms, list) or not sms:
         return False
-    # The visible GPUs only: when no bundle covers a masked card the selection falls back to a
-    # visible-only bundle, and checking the hidden card would reinstall it forever. None visible
-    # (an empty or unmatched mask) is unknown, not stale.
+    # Visible GPUs only: a masked card would reinstall forever; no visible GPU is unknown, not
+    # stale.
     _physical, visible = host_cuda_sms()
     missing = [sm for sm in visible if sm not in {str(v) for v in sms}]
     if missing:
@@ -404,11 +402,9 @@ def select_cuda_bundles(
     cuda_major: Optional[str],
     host_sms: Sequence[str],
 ) -> tuple[list[CudaBundle], list[str]]:
-    """Ordered CUDA bundle attempts for this host plus a selection log; pure. llama.cpp's order: the
-    tightest covering family bundle ((max_sm - min_sm), rank, max_sm), then the portable one; with
-    unknown compute capability only the portable one. A host no bundle lists (a card newer than the
-    build) takes the bundles whose PTX it can JIT, family before portable, where llama.cpp would build
-    from source. Empty when nothing applies, so the caller keeps the name-based pick."""
+    """Ordered CUDA bundles: tightest covering family ((max_sm - min_sm), rank, max_sm), then
+    portable; unknown compute capability gets portable only; newer uncovered cards take PTX-JIT
+    bundles, family first; empty keeps the name pick."""
     line = f"cuda{cuda_major or '12'}"
     present = set(asset_names)
     host_sms = _core.normalize_compute_caps(host_sms)
@@ -534,8 +530,7 @@ _SELECTED_CUDA_SMS: dict[str, list[str]] = {}
 def _resolve_cuda_bundle(
     release: dict, names: Sequence[str], *, system: str, machine: str, cuda_major: Optional[str]
 ) -> Optional[str]:
-    """The per-GPU-family bundle for this host, or None to keep the name-based pick (a release
-    without the split, no covering bundle, or no manifest)."""
+    """Per-GPU-family bundle, or None (keep the name pick) if no split, covering bundle or manifest."""
     if SD_MANIFEST_ASSET not in names:
         return None
     if not any(n.endswith(".tar.gz") or "-x64-cuda" in n for n in names):
@@ -566,9 +561,8 @@ def _resolve_cuda_bundle(
 
 
 def _tar_gz_to_zip(archive: Path, dest: Path) -> None:
-    """Repack a .tar.gz bundle (Linux per-family CUDA) as a stored zip, so it goes through exactly
-    the extraction, sweep and replacement path a .zip does. Regular files and directories only:
-    the bundles hold no links, so any link, device or path escaping the archive is refused."""
+    """Repack tar.gz as stored zip to share the .zip extract, sweep and replace path; only regular
+    files and dirs (bundles hold no links), so links, devices, escaping paths are refused."""
     with tarfile.open(archive, "r:gz") as tf, zipfile.ZipFile(dest, "w", zipfile.ZIP_STORED) as zf:
         for m in tf:
             name = m.name

@@ -10,6 +10,7 @@ PrefixGrouper off for the process.
 """
 
 import importlib.util
+import itertools
 import pathlib
 import sys
 import types
@@ -21,24 +22,31 @@ flex = pytest.importorskip("torch.nn.attention.flex_attention")
 
 UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "utils"
 PKG = "_pg_check_pkg_under_test"
+_LOADS = itertools.count()
 
 
-def _load():
-    """prefix_grouper.py + its kernel under a throwaway package (no full unsloth import)."""
-    pkg = types.ModuleType(PKG)
+def _load(monkeypatch):
+    """prefix_grouper.py + its kernel under a throwaway package (no full unsloth import).
+
+    Dynamo resolves a traced function's globals by importing its module by name, and caches that import for
+    the process. So the package stays in sys.modules until the test's teardown (dropping it right after loading
+    makes every torch.compile of the kernel fail with ModuleNotFoundError), and each load gets its own package
+    name (reusing one would let a later test's compile read an earlier test's kernel state)."""
+    pkg_name = f"{PKG}_{next(_LOADS)}"
+    names = (pkg_name, f"{pkg_name}.prefix_grouper_kernel", f"{pkg_name}.prefix_grouper")
+    for n in names:
+        # Record each name as unset so teardown removes it, including the kernel the loader imports on its own.
+        monkeypatch.setitem(sys.modules, n, None)
+        del sys.modules[n]
+    pkg = types.ModuleType(pkg_name)
     pkg.__path__ = [str(UTILS)]
-    names = (PKG, f"{PKG}.prefix_grouper_kernel", f"{PKG}.prefix_grouper")
-    sys.modules[PKG] = pkg
-    try:
-        name = f"{PKG}.prefix_grouper"
-        spec = importlib.util.spec_from_file_location(name, UTILS / "prefix_grouper.py")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module
-        spec.loader.exec_module(module)
-        kernel = sys.modules[f"{PKG}.prefix_grouper_kernel"]
-    finally:
-        for n in names:
-            sys.modules.pop(n, None)
+    monkeypatch.setitem(sys.modules, pkg_name, pkg)
+    name = f"{pkg_name}.prefix_grouper"
+    spec = importlib.util.spec_from_file_location(name, UTILS / "prefix_grouper.py")
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+    spec.loader.exec_module(module)
+    kernel = sys.modules[f"{pkg_name}.prefix_grouper_kernel"]
     return module, kernel
 
 
@@ -67,7 +75,7 @@ def mods(monkeypatch):
         if hasattr(config, name):
             monkeypatch.setattr(config, name, getattr(config, name))
     config.suppress_errors = True  # what unsloth_zoo sets
-    pg, kernel = _load()
+    pg, kernel = _load(monkeypatch)
     calls = {"flex": 0, "strict": [], "mask": 0, "shapes": [], "grad": []}
 
     def eager_flex(
@@ -161,6 +169,113 @@ def test_new_head_layout_is_checked_once(mods):
     assert all(kernel._COMPILE_CHECKED.values()) and len(kernel._COMPILE_CHECKED) == 2
 
 
+_LONG_SPEC = ((100, [60, 50]), (40, [30]))  # T = 280, T_pad 384 against 128 for the default spec
+
+
+def _grad_call(kernel, seg):
+    q, k, v = (x.clone().requires_grad_(True) for x in _qkv(seg.T))
+    kernel.flex_shared_prefix_attention(q, k, v, seg).sum().backward()
+
+
+def test_dynamic_kernel_is_checked_once_across_padded_lengths(mods):
+    """CUDA (and ROCm no-grad calls): one dynamic=True kernel serves every length, so one check."""
+    pg, kernel, calls = mods
+    short, long = _seg(kernel), _seg(kernel, _LONG_SPEC)
+    assert short.T_pad != long.T_pad
+    _grad_call(kernel, short)
+    _grad_call(kernel, long)
+    assert calls["flex"] == 2 + 1
+    assert len(kernel._COMPILE_CHECKED) == 1
+
+
+def test_rocm_static_kernel_is_checked_per_padded_length(mods, monkeypatch):
+    """ROCm compiles a static kernel per padded length; a later length's compile failure would otherwise run
+    eager T x T flex silently under unsloth_zoo's suppress_errors."""
+    pg, kernel, calls = mods
+    monkeypatch.setattr(
+        kernel,
+        "_uses_static_flex",
+        lambda q, k, v: torch.is_grad_enabled()
+        and (q.requires_grad or k.requires_grad or v.requires_grad),
+        raising = False,
+    )
+    short, long = _seg(kernel), _seg(kernel, _LONG_SPEC)
+    _grad_call(kernel, short)
+    _grad_call(kernel, long)
+    _grad_call(kernel, long)
+    # real call + checked copy per new length, then one plain call
+    assert calls["flex"] == 2 + 2 + 1
+    assert calls["strict"] == [False, False, False, False, True]
+    assert sorted(key[-1] for key in kernel._COMPILE_CHECKED) == sorted((short.T_pad, long.T_pad))
+
+
+@pytest.mark.parametrize("warmup", ["grad", "no_grad"])
+def test_rocm_new_padded_length_inside_a_fullgraph_compile(mods, monkeypatch, warmup):
+    """The per-length check is Dynamo-disabled: after a warm-up, a fullgraph caller reaching an unseen padded
+    length (or a grad call after a no-grad warm-up) must reuse the setup's verdict instead of failing."""
+    pg, kernel, calls = mods
+    monkeypatch.setattr(
+        kernel,
+        "_uses_static_flex",
+        lambda q, k, v: torch.is_grad_enabled()
+        and (q.requires_grad or k.requires_grad or v.requires_grad),
+        raising = False,
+    )
+
+    def arithmetic_flex(q, k, v, **kwargs):
+        return q * k + v
+
+    monkeypatch.setattr(kernel, "_flex_attention_compiled", arithmetic_flex)
+    short, long = _seg(kernel), _seg(kernel, _LONG_SPEC)
+    mask = object()
+
+    def attend(q, seg):
+        return kernel.flex_shared_prefix_attention(q, q, q, seg, block_mask = mask)
+
+    q = torch.randn(1, short.T, 2, 16, requires_grad = True)
+    with torch.set_grad_enabled(warmup == "grad"):
+        attend(q, short)
+    checked = dict(kernel._COMPILE_CHECKED)
+    for seg in (short, long):
+        torch._dynamo.reset()
+        q = torch.randn(1, seg.T, 2, 16, requires_grad = True)
+        compiled = torch.compile(attend, backend = "eager", fullgraph = True)
+        out = compiled(q, seg)
+        out.sum().backward()
+        assert torch.allclose(out, q * q + q)
+        assert torch.allclose(q.grad, (2 * q + 1).detach(), atol = 1e-5)
+    # Only the warm-up ran the check; outside a graph a new padded length is still checked.
+    assert kernel._COMPILE_CHECKED == checked and kernel.compile_check_failed() is None
+    eager_q = torch.randn(1, long.T, 2, 16, requires_grad = True)
+    attend(eager_q, long)
+    assert any(key[-1] == long.T_pad for key in kernel._COMPILE_CHECKED)
+
+
+def test_rocm_later_length_compile_failure_is_caught(mods, monkeypatch, capsys):
+    pg, kernel, calls = mods
+    monkeypatch.setattr(
+        kernel,
+        "_uses_static_flex",
+        lambda q, k, v: torch.is_grad_enabled()
+        and (q.requires_grad or k.requires_grad or v.requires_grad),
+        raising = False,
+    )
+    short, long = _seg(kernel), _seg(kernel, _LONG_SPEC)
+    _grad_call(kernel, short)
+    working = kernel._flex_attention_compiled
+
+    def fails_at_long_length(*args, **kwargs):
+        if args[0].shape[2] == long.T_pad and not torch._dynamo.config.suppress_errors:
+            raise RuntimeError("static flex kernel failed to compile at this length")
+        return working(*args, **kwargs)
+
+    monkeypatch.setattr(kernel, "_flex_attention_compiled", fails_at_long_length)
+    with pytest.raises(kernel.PrefixGrouperCompileError):
+        _grad_call(kernel, long)
+    assert "PrefixGrouper is off" in capsys.readouterr().out
+    assert pg.prefix_grouper_enabled() is False
+
+
 def test_compile_failure_turns_prefix_grouper_off_once(mods, monkeypatch, capsys):
     pg, kernel, calls = mods
 
@@ -250,6 +365,48 @@ def test_backward_compile_failure_is_caught(mods, monkeypatch):
     assert pg.prefix_grouper_enabled() is False
 
 
+def test_failed_check_backward_frees_its_input_copies(mods, monkeypatch):
+    """The check's pack hook returned its input, so an op that saves its own output formed a cycle gc
+    cannot break: a backward that failed (out of resource retry, compile failure) kept the Q / K / V
+    copies and the check's graph alive."""
+    import gc
+    import weakref
+
+    pg, kernel, calls = mods
+    refs = []
+
+    def fwd_ok_bwd_broken(
+        *args,
+        kernel_options = None,
+        **kwargs,
+    ):
+        out = _cpu_flex(*args, **kwargs)
+        if not args[0].requires_grad:
+            return out
+        # sigmoid saves its own output for backward, as the flex kernel saves out / logsumexp.
+        saved = torch.sigmoid(out + 0 * args[0].sum())
+        refs.extend(weakref.ref(x) for x in (*args[:3], saved))
+        return _BackwardFails.apply(saved)
+
+    monkeypatch.setattr(kernel, "_flex_attention_compiled", fwd_ok_bwd_broken)
+    seg = _seg(kernel)
+    with pytest.raises(kernel.PrefixGrouperCompileError):
+        kernel.flex_shared_prefix_attention(*_qkv(seg.T), seg)
+    gc.collect()
+    assert refs, "the check's forward did not run"
+    assert all(ref() is None for ref in refs), "the failed check's graph outlived it"
+
+
+class _BackwardFails(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grad):
+        raise RuntimeError("backward kernel failed to compile")
+
+
 def test_real_dynamo_failure_is_silent_without_the_check(mods, monkeypatch):
     """A backend failure is swallowed by suppress_errors on a plain call but caught by the check."""
     pg, kernel, calls = mods
@@ -316,7 +473,7 @@ def test_eager_path_skips_the_check(mods):
 
 def test_kill_switch(monkeypatch):
     monkeypatch.setenv("UNSLOTH_GRPO_PREFIX_GROUPER_COMPILE_CHECK", "0")
-    pg, kernel = _load()
+    pg, kernel = _load(monkeypatch)
     assert kernel._COMPILE_CHECK_ON is False
 
 

@@ -259,6 +259,37 @@ def test_a_wedged_backend_times_out_instead_of_hanging(monkeypatch):
     assert "timed out" in reason
 
 
+def test_a_timed_out_probe_is_undecided_and_not_cached(monkeypatch):
+    """Tool code can load the host past the deadline: a timeout must not become a cached "no sandbox"
+    verdict, or auto mode would run every later call on the host."""
+    monkeypatch.setattr(sandbox_probe, "PROBE_TIMEOUT_SECONDS", 1.0)
+    runs = []
+
+    def sleeper(plan):
+        runs.append(1)
+        return PreparedSandboxLaunch(
+            argv = (sys.executable, "-I", "-S", "-c", "import time; time.sleep(120)"),
+            workdir = plan.workdir,
+            env = plan.env,
+            preexec_fn = None,
+            backend = "loaded",
+        )
+
+    backend = _Backend("loaded", sleeper)
+    for _ in range(2):
+        available, reason = sandbox_probe.probe(backend)
+        assert available is False
+        assert isinstance(reason, sandbox_probe.UndecidedReason), reason
+    assert len(runs) == 2
+
+
+def test_a_host_control_timeout_is_undecided():
+    exc = subprocess.TimeoutExpired(cmd = "python", timeout = 30)
+    assert isinstance(
+        sandbox_probe._classified("host control timed out", exc), sandbox_probe.UndecidedReason
+    )
+
+
 def _zombie(pid: int) -> bool:
     """Killed but unreaped: a container whose PID 1 never reaps orphans keeps it in the table."""
     try:

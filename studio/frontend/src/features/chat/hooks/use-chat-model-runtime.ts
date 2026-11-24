@@ -24,7 +24,10 @@ import {
   MULTI_MODEL_REFUSAL_TITLE,
   refusalHeadersOf,
 } from "@/lib/multi-model-refusal";
-import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
+import {
+  engineSettingsAction,
+  modelMemorySettingsAction,
+} from "@/features/settings/lib/model-memory-action";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
   isBackendDownForDesktopUpdate,
@@ -1590,6 +1593,7 @@ export function useChatModelRuntime() {
                   residentIsGguf,
                   platform.deviceType,
                   platform.chatOnlyReason,
+                  platform.mlxInference,
                 ),
                 pinnedMaxSeqLength: normalizeMaxSeqLength(
                   pendingConfig
@@ -2059,6 +2063,7 @@ export function useChatModelRuntime() {
             platform.deviceType,
             platform.chatOnlyReason,
             rollbackState.loadedIsMlx,
+            platform.mlxInference,
           );
           // What the outgoing model loaded with, not an unapplied control value.
           const previousPin = rollbackState.loadedCustomContextLength;
@@ -2298,6 +2303,7 @@ export function useChatModelRuntime() {
               isGguf,
               platform.deviceType,
               platform.chatOnlyReason,
+              platform.mlxInference,
             );
             // Only a same-model reload without a staged config reuses the resident's settings; otherwise the
             // drafter is this model's own and a standing mode goes through the resolver.
@@ -3359,6 +3365,16 @@ export function useChatModelRuntime() {
               }
               return;
             }
+            if (prog.phase === "fit") {
+              mmapSamples.length = 0;
+              const label = "Finding a GPU layer split that fits in memory.";
+              if (loadToastDismissedRef.current) {
+                setLoadProgress({ percent: null, label, phase: "starting" });
+              } else {
+                toast(null, { id: toastId, ...modelLoadToastOptions(renderLoadDescription("Starting model…", label)) });
+              }
+              return;
+            }
             if (prog.bytes_total <= 0) return;
             // Decimal GB to match the file size Hugging Face reports.
             const loadedGb = prog.bytes_loaded / 1e9;
@@ -3481,7 +3497,9 @@ export function useChatModelRuntime() {
             const refusal = isMultiModelRefusal(null, refusalHeadersOf(err), message);
             const title = refusal ? MULTI_MODEL_REFUSAL_TITLE : summary;
             const description = refusal ? message : detail || undefined;
-            const action = refusal ? modelMemorySettingsAction() : logsAction;
+            const action = refusal
+              ? modelMemorySettingsAction()
+              : (engineSettingsAction(message) ?? logsAction);
             if (loadToastDismissedRef.current) {
               toast.error(title, { description, action });
             } else {

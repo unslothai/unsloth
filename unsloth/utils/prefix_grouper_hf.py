@@ -200,6 +200,37 @@ def _text_config_of(config):
     return None
 
 
+_ATTENTION_CONFIG_FIELDS = (
+    "model_type",
+    "sliding_window",
+    "use_sliding_window",
+    "max_window_layers",
+    "layer_types",
+    "attention_dropout",
+    "output_router_logits",
+    "num_attention_heads",
+    "num_key_value_heads",
+    "head_dim",
+    "num_hidden_layers",
+)
+_MISSING = object()
+
+
+def _same_attention_config(config, text_config) -> bool:
+    # Not identity: the vLLM rebuild (copy_attributes) deepcopies config per module.
+    if config is text_config:
+        return True
+    if config is None or type(config) is not type(text_config):
+        return False
+    try:
+        return all(
+            getattr(config, name, _MISSING) == getattr(text_config, name, _MISSING)
+            for name in _ATTENTION_CONFIG_FIELDS
+        )
+    except Exception:
+        return False
+
+
 def enable_hf_prefix_seg_info(model, num_layers) -> bool:
     """Route prefix_seg_info through the flex kernel on every eligible HF attention module of model.
 
@@ -219,7 +250,7 @@ def enable_hf_prefix_seg_info(model, num_layers) -> bool:
             continue
         if not all(hasattr(module, a) for a in _REQUIRED_ATTRS) or not check(module):
             return False
-        if module.config is not text_config:
+        if not _same_attention_config(module.config, text_config):
             return False
         forward = getattr(type(module), "forward", None)
         if not callable(forward) or getattr(forward, "_unsloth_gated", False):

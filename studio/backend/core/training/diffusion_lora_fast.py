@@ -18,6 +18,16 @@ from typing import Optional
 
 import torch
 
+
+def _mem_get_info() -> tuple[int, int]:
+    """(free, total) for the cache budget: Studio's trusted reading (Windows ROCm's WDDM free capped), else torch."""
+    try:
+        from utils.hardware import trusted_mem_get_info
+    except ImportError:  # the trainer outside Studio's backend
+        return torch.cuda.mem_get_info()
+    return trusted_mem_get_info()
+
+
 GIB = 1 << 30
 _MARGIN_MIN_BYTES = 2 * GIB
 _MARGIN_FRAC = 0.10
@@ -375,7 +385,7 @@ def plan_dequant_cache(
         except ValueError:
             pass
     try:
-        free, total = torch.cuda.mem_get_info()
+        free, total = _mem_get_info()
         allocated = torch.cuda.memory_allocated()
         reserved = torch.cuda.memory_reserved()
     except Exception:  # noqa: BLE001 -- no probe: only a pinned budget caches
@@ -395,7 +405,7 @@ def plan_dequant_cache(
 def rebalance_dequant_cache(cache) -> int:
     """Evict if another process took memory since the plan, regrow when it returns. Returns bytes evicted."""
     try:
-        free, _total = torch.cuda.mem_get_info()
+        free, _total = _mem_get_info()
         allocated = torch.cuda.memory_allocated()
         reserved = torch.cuda.memory_reserved()
     except Exception:  # noqa: BLE001 -- no probe: leave the cache as it is

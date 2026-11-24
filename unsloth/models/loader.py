@@ -124,7 +124,9 @@ SUPPORTS_GEMMA3N = transformers_version >= Version("4.53.0")
 SUPPORTS_GPTOSS = transformers_version >= Version("4.55.0")
 SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
 # unsloth_zoo cannot share these models' vLLM weights with the training model.
-VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss",)
+# Inkling 2 (Mini = inkling2_loop, Small = inkling2): no vLLM release registers it (0.34.0 has only Inkling v1
+# and needs transformers < 5.23, Inkling 2 needs 5.24), and the zoo has no weight layout for its looped layers.
+VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss", "inkling2", "inkling2_loop")
 # model_type -> unsloth_zoo.empty_model symbol that rebuilds it from vLLM; an older zoo falls back.
 _VLLM_NEEDS_ZOO_SYMBOL = {"nemotron_h": "extract_nemotron_h_mixer"}
 # vLLM 0.31 has no attention backend for these below sm80: TRITON_ATTN needs 96 KB shared memory
@@ -509,11 +511,40 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
+def _refuse_network_share_adapter_base(model_name, peft_config):
+    """On Windows a Hub adapter's UNC base would probe a host the repo chose (SMB, NTLM leak).
+    Local adapter folders are the user's own and are left alone."""
+    base = getattr(peft_config, "base_model_name_or_path", None)
+    if not isinstance(base, str) or not base or os.path.isdir(model_name):
+        return
+    try:
+        from unsloth_zoo.vision_utils import _is_network_share
+    except ImportError:  # an older unsloth_zoo: plain UNC paths only
+
+        def _is_network_share(path):
+            p = path.replace("\\", "/")
+            host = p[2:].split("/", 1)[0].lower()
+            return (
+                os.name == "nt"
+                and p.startswith("//")
+                and host not in ("", ".", "?", "localhost", "127.0.0.1", "wsl$", "wsl.localhost")
+            )
+
+    if _is_network_share(base):
+        raise ValueError(
+            f"Unsloth: The adapter {model_name} names a base model on a network share ({base!r}). "
+            "Refusing to load it: download the base model and load the adapter from a local folder instead."
+        )
+
+
 def _adapter_file_shapes(path):
     if path.endswith(".safetensors"):
         from safetensors import safe_open
         with safe_open(path, framework = "pt") as handle:
             return {key: tuple(handle.get_slice(key).get_shape()) for key in handle.keys()}
+    from unsloth.import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    refuse_pickle_checkpoint_on_old_torch(path)
     state_dict = torch.load(path, map_location = "meta", weights_only = True)
     return {key: tuple(value.shape) for key, value in state_dict.items()}
 
@@ -922,6 +953,13 @@ DISABLE_COMPILE_MODEL_NAMES = [
     "granite,llava_next",  # Granite-vision 3
 ]
 
+
+def _set_partial_compile_disable():
+    # Keep a full disable full; true/yes become "1" since zoo only reads "1" / "partial" as off.
+    value = os.environ.get("UNSLOTH_COMPILE_DISABLE", "0").lower()
+    os.environ["UNSLOTH_COMPILE_DISABLE"] = "1" if value in ("1", "true", "yes") else "partial"
+
+
 # Architectures with gated-deltanet (linear attention) layers. Unsloth bundles the flash-linear-attention Triton kernels, so no install is needed; transformers falls back to the much slower pure PyTorch path only when they cannot be enabled.
 FLA_MODEL_TYPE_PREFIXES = ("qwen3_next", "qwen3_5", "kimi_linear", "olmo_hybrid")
 _fla_advised = False
@@ -1240,6 +1278,7 @@ _VLLM_ENGINE_KWARGS = (
     "max_num_batched_tokens",
     "return_args",
     "training",
+    "speculative_config",
 )
 
 
@@ -1748,6 +1787,9 @@ class FastLanguageModel(FastLlamaModel):
             )
             raise RuntimeError(combined_error) from _cause
 
+        if peft_config is not None:
+            # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
+            _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
         _model_type_config = peft_config if peft_config is not None else model_config
         if peft_config is not None and isinstance(token, str) and token:
             _model_type_config = _memo_config_probe(
@@ -2751,6 +2793,9 @@ class FastModel(FastBaseModel):
             )
             raise RuntimeError(combined_error) from _cause
 
+        if peft_config is not None:
+            # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
+            _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
         _model_type_config = peft_config if peft_config is not None else model_config
         if peft_config is not None and isinstance(token, str) and token:
             _model_type_config = _memo_config_probe(
@@ -2905,7 +2950,7 @@ class FastModel(FastBaseModel):
             from unsloth.kernels.utils import is_rdna
 
             if is_rdna():
-                os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+                _set_partial_compile_disable()
         elif "cohere2" in model_types_all and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError(
                 "Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY
@@ -2917,9 +2962,9 @@ class FastModel(FastBaseModel):
             except ImportError:
                 prepare_compiled_checkpoint = None
             if prepare_compiled_checkpoint is None or not prepare_compiled_checkpoint():
-                os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+                _set_partial_compile_disable()
         elif "csm" in model_types_all:
-            os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"  # Inference is too slow
+            _set_partial_compile_disable()  # Inference is too slow
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"  # Sesame fails
             # Set the down projection compute dtype to float32 for float16 machines, and norms to float32 since they get upcasted anyway.
             register_custom_dtype(
@@ -2997,10 +3042,16 @@ class FastModel(FastBaseModel):
                     ";"
                 )
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+        elif "inkling2" in model_types_all:
+            from .inkling2 import raise_if_inkling2_parallel_unsupported
+            raise_if_inkling2_parallel_unsupported(model_config, model_types)
+            # Inkling 2 (Mini and Small): compiled, every new sequence length recompiles the layers (A100, Mini QLoRA at
+            # 1024 tokens: 85-840 s per step, eager 4.4 s), and the compiled block attention residual has wrong grads.
+            _set_partial_compile_disable()
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
-                    os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+                    _set_partial_compile_disable()
                     os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
                     if transformers_version < Version("4.50.0.dev0"):
                         raise RuntimeError(
@@ -3014,7 +3065,7 @@ class FastModel(FastBaseModel):
             and getattr(model_config, "model_type", None) in ("t5", "mt5", "umt5")
             and _is_text_seq2seq_config(model_config)
         ):
-            os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+            _set_partial_compile_disable()
 
         if auto_model is not None:
             # All other models need to disable static cache.

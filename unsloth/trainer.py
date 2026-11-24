@@ -2042,6 +2042,12 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 install_memory_report(self)
             except Exception as exc:
                 logger.warning(f"Unsloth: could not enable the memory report ({exc}).")
+        if os.environ.get("UNSLOTH_SYNC_REPORT", "0") != "0":
+            try:
+                from .utils.run_report import install_sync_report
+                install_sync_report(self)
+            except Exception as exc:
+                logger.warning(f"Unsloth: could not enable the sync report ({exc}).")
 
     return new_init
 

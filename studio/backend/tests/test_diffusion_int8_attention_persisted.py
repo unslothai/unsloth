@@ -225,6 +225,51 @@ def test_a_sink_decision_is_raced_again_for_every_load(machine, monkeypatch):
     I.forget_plans()
 
 
+def test_a_load_that_kept_the_sink_path_for_its_first_render_persists_nothing(machine, monkeypatch):
+    """The first-render rule keeps the sink path where a used call clipped, yet the verdict stays per load: nothing
+    reaches the probe cache, and the next load (and the next process) races again."""
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(I, "_GRAPHED", [False])
+    monkeypatch.setattr(
+        I, "_drop_routes", lambda plan: pytest.fail("the kept sink path moves no route")
+    )
+    writes = []
+    store = I.persisted()
+    real_put = store.put
+    monkeypatch.setattr(store, "put", lambda *a: writes.append(a) or real_put(*a))
+    decision = (0, (("bn", 128),), 1, 24, 128, torch.bfloat16, None, 16, 16, I.MODE_RACE)
+    races = []
+
+    def used_plan():
+        plan = _plan(decision)
+        plan["checks"] = [
+            (_Event(), torch.tensor([1]), True)
+        ]  # a used call clipped on the sink path
+        return plan
+
+    def race(plan, answer):
+        def run():
+            races.append(answer)
+            plan["sink_race"] = {"incumbent": 1.0, "sinks": 1.2, "plain": 1.1}
+            return answer
+
+        return run
+
+    I._decisions().clear()
+    plan = used_plan()
+    assert I._choose_path(plan, race(plan, False))[0] is True and races == [False]
+    I.forget_plans()
+    plan = used_plan()
+    assert I._choose_path(plan, race(plan, False))[0] is True and races == [False, False]
+    I.forget_plans()
+    machine["new_process"]()
+    plan = _plan(decision)
+    assert I._choose_path(plan, race(plan, False))[0] is False and races == [False, False, False]
+    assert writes == []
+    I.forget_plans()
+
+
 def test_an_out_of_memory_sink_race_is_not_persisted(machine, monkeypatch):
     monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
     monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)

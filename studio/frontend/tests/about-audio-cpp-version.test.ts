@@ -56,7 +56,7 @@ test("the Engines section shows MLX only where it is installed", () => {
   assert.match(section, /row\.key !== "mlx" \|\| row\.installed != null/);
 });
 
-test("FastFlowLM and Lemonade show only on a detected AMD NPU with both installed", () => {
+test("FastFlowLM shows on a detected AMD NPU once installed, Lemonade only when Studio runs it", () => {
   const values = [undefined, null, "", "1.0.12", "v1.0.12"];
   let shown = 0;
   for (const present of [undefined, false, true]) {
@@ -69,9 +69,12 @@ test("FastFlowLM and Lemonade show only on a detected AMD NPU with both installe
           versions: { fastflowlm, lemonade },
         } as never;
         const got = npuEngineVersions(status);
-        if (present && fastflowlm && lemonade) {
+        if (present && fastflowlm) {
           shown++;
-          assert.deepEqual(got, { fastflowlm: "v1.0.12", lemonade: "v1.0.12" });
+          assert.deepEqual(got, {
+            fastflowlm: "v1.0.12",
+            lemonade: lemonade ? "v1.0.12" : null,
+          });
         } else {
           assert.equal(
             got,
@@ -82,7 +85,7 @@ test("FastFlowLM and Lemonade show only on a detected AMD NPU with both installe
       }
     }
   }
-  assert.equal(shown, 4);
+  assert.equal(shown, 10);
   assert.equal(npuEngineVersions(null), null);
   assert.equal(
     npuEngineVersions({

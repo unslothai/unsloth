@@ -7,6 +7,8 @@
   posterior under seed 42 and rounds to float16; ``UNSLOTH_H3_REFERENCE_LATENT=sample`` restores that.
 - Memory: a reference video is normalised per 17-frame chunk, not as one float32 clip; bit-identical (elementwise).
   ``UNSLOTH_H3_CHUNKED_REF_ENCODE=0`` disables the chunking.
+- Cache: the encoded condition is kept across prompt / seed edits (video_minimax_h3_ref_cache);
+  ``UNSLOTH_H3_REF_LATENT_CACHE=0`` disables it.
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ import inspect
 import os
 import threading
 from typing import Any, Optional
+
+from . import video_minimax_h3_ref_cache as ref_cache
 
 H3_CHUNKED_REF_ENCODE_ENV = "UNSLOTH_H3_CHUNKED_REF_ENCODE"
 H3_REFERENCE_LATENT_ENV = "UNSLOTH_H3_REFERENCE_LATENT"
@@ -47,6 +51,15 @@ def reference_latent_mode() -> str:
         if raw == H3_REFERENCE_LATENT_SAMPLE
         else H3_REFERENCE_LATENT_MEAN
     )
+
+
+def _log() -> Any:
+    try:
+        from loggers import get_logger
+        return get_logger(__name__)
+    except Exception:  # noqa: BLE001 - logging only
+        import logging
+        return logging.getLogger(__name__)
 
 
 def _sha(fn: Any) -> Optional[str]:
@@ -125,6 +138,29 @@ def _make_shim(original: Any) -> Any:
     ) -> Any:
         sample = reference_latent_mode() == H3_REFERENCE_LATENT_SAMPLE
         chunked = _eligible(vae, pixels)
+        if not ref_cache.enabled():
+            return _encode(sample, chunked, vae, pixels, pixel_mean, pixel_std, encode_seed)
+        return ref_cache.cached_encode(
+            lambda: _encode(sample, chunked, vae, pixels, pixel_mean, pixel_std, encode_seed),
+            vae,
+            pixels,
+            pixel_mean,
+            pixel_std,
+            encode_seed,
+            # the recipe: posterior mode, chunked normalisation, and which stock function it falls back to
+            ("sample" if sample else "mean", chunked, id(original)),
+            logger = _log(),
+        )
+
+    def _encode(
+        sample: bool,
+        chunked: bool,
+        vae: Any,
+        pixels: Any,
+        pixel_mean: tuple,
+        pixel_std: tuple,
+        encode_seed: int,
+    ) -> Any:
         if sample and not chunked:
             return original(vae, pixels, pixel_mean, pixel_std, encode_seed)
         import torch
@@ -163,7 +199,11 @@ def _make_shim(original: Any) -> Any:
 
 def install_h3_chunked_reference_encode(logger: Any = None) -> bool:
     """Shims the module global the modular step calls; idempotent, never raises."""
-    if not enabled() and reference_latent_mode() == H3_REFERENCE_LATENT_SAMPLE:
+    if (
+        not enabled()
+        and reference_latent_mode() == H3_REFERENCE_LATENT_SAMPLE
+        and not ref_cache.enabled()
+    ):
         return False
     try:
         from diffusers.modular_pipelines.minimax_h3 import encoders as module
@@ -184,7 +224,9 @@ def install_h3_chunked_reference_encode(logger: Any = None) -> bool:
         setattr(module, _FUNC, _make_shim(current))
     if logger is not None:
         logger.info(
-            "video.h3_ref_encode: conditions take the posterior %s; reference videos normalise one VAE chunk at a time",
+            "video.h3_ref_encode: conditions take the posterior %s; reference videos normalise one VAE chunk at a "
+            "time; condition latent cache %s",
             reference_latent_mode(),
+            "on" if ref_cache.enabled() else "off",
         )
     return True

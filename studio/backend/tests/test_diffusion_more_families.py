@@ -131,15 +131,15 @@ def test_zimage_base_has_no_hosted_prequant_to_inherit():
 
 
 def test_prequant_exclusion_does_not_break_a_family_type_that_lacks_the_field():
-    # Shared with the video loader, whose VideoFamily lacks prequant_excluded_bases; a bare except
-    # upstream would turn an AttributeError into a silent dense fallback.
+    # Shared with the video loader, whose VideoFamily carries prequant_excluded_bases empty by default (only a
+    # distilled student is excluded); a bare except upstream would turn a bad read into a silent dense fallback.
     from core.inference.diffusion_families import family_prequant_repo
     from core.inference.diffusion_prequant import resolve_prequant_source
     from core.inference.video_families import detect_video_family
 
     h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
     assert h3 is not None
-    assert not hasattr(h3, "prequant_excluded_bases")
+    assert getattr(h3, "prequant_excluded_bases", ()) == ()
     for scheme in ("int8", "fp8"):
         assert (
             family_prequant_repo(h3, scheme, base_repo = "MiniMaxAI/MiniMax-H3")
@@ -761,7 +761,7 @@ def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert module.DEFAULT_TAG == "master-982-0518b34-u27b9ddc", (
+    assert module.DEFAULT_TAG == "master-982-0518b34-u9455ee1", (
         "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1, FLUX.3 and MOSS-Image; "
         f"{module.DEFAULT_TAG} is not"
     )
