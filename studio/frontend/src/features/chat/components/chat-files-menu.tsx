@@ -38,7 +38,7 @@ import { useChatProjectScope } from "../chat-project-scope";
 import {
   type ChatFile,
   type ChatFolder,
-  collectChatFiles,
+  createChatFilesCollector,
 } from "../lib/chat-files";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { CHAT_MENU_TRIGGER } from "./chat-header-menu";
@@ -111,11 +111,10 @@ export function ChatFilesBridge() {
   }, [sessionKey, running, uploads]);
 
   const folders = listed?.key === sessionKey ? listed.folders : NO_FOLDERS;
-  // The streaming reply changes every token: leave it out until it settles. Earlier messages are cached.
-  const files = useMemo(
-    () => collectChatFiles(running ? messages.slice(0, -1) : messages, folders),
-    [messages, running, folders],
-  );
+  // The streaming reply changes every token: leave it out until it settles, and reuse the
+  // result while the settled messages are the same objects.
+  const [collect] = useState(createChatFilesCollector);
+  const files = collect(running ? messages.slice(0, -1) : messages, folders);
 
   useEffect(() => {
     useChatFiles.setState({ files });

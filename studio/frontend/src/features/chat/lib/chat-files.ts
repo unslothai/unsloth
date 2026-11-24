@@ -258,3 +258,23 @@ export function collectChatFiles(
   const used = new Set<string>();
   return found.map((file) => ({ ...file, name: uniqueName(file.name, used) }));
 }
+
+/** collectChatFiles that hands back its last result while the messages and folders are the same objects. */
+export function createChatFilesCollector(): typeof collectChatFiles {
+  let last: {
+    messages: readonly MessageLike[];
+    folders: readonly ChatFolder[];
+    files: ChatFile[];
+  } | null = null;
+  return (messages, folders = []) => {
+    const same =
+      last !== null &&
+      last.folders === folders &&
+      last.messages.length === messages.length &&
+      messages.every((message, index) => message === last?.messages[index]);
+    if (!(same && last)) {
+      last = { messages, folders, files: collectChatFiles(messages, folders) };
+    }
+    return last.files;
+  };
+}

@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { collectChatFiles } from "../src/features/chat/lib/chat-files.ts";
+import {
+  collectChatFiles,
+  createChatFilesCollector,
+} from "../src/features/chat/lib/chat-files.ts";
 
 const sandboxResult = (
   sessionId: string,
@@ -226,4 +229,21 @@ test("remote assistant image URLs are left out", () => {
     },
   ]);
   assert.equal(files.length, 0);
+});
+
+test("the collector reuses its result while the settled messages are unchanged", () => {
+  const collect = createChatFilesCollector();
+  const first = python("a1", sandboxResult("t1", ["a.txt"]));
+  const folders = [{ sessionId: "t1", names: ["a.txt"] }];
+  const before = collect([first], folders);
+  assert.equal(collect([first], folders), before);
+  const after = collect(
+    [first, python("a2", sandboxResult("t1", ["b.txt"]))],
+    folders,
+  );
+  assert.notEqual(after, before);
+  assert.deepEqual(
+    after.map((f) => f.name),
+    ["a.txt", "b.txt"],
+  );
 });
