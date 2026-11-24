@@ -110,25 +110,27 @@ env:
 
 jobs:
   # ═════════════════════════════════════════════════════════════════════
-  # Job 1: connection. Per agent: serve, preflight the dialect, install, run the start.py recipe,
-  # assert a non-empty reply. One runner per cell, one model per port.
+  # Job 1: connection. One runner per shard: install Unsloth and serve the model once, then per
+  # agent, in turn: preflight the dialect, install, run the start.py recipe, assert a non-empty
+  # reply. Every agent runs even when an earlier one fails; the job fails if any did.
+  # Per agent: its own npm prefix (on PATH only for that agent), GITHUB_PATH file, work dir and
+  # Node (22, or 24 for openclaw). OpenCode stable and V2 sit in different shards: `unsloth start
+  # opencode` prefers an opencode2 binary whenever it can find one.
   # ═════════════════════════════════════════════════════════════════════
   connection:
-    name: connection (${{ matrix.agent }}, ${{ matrix.opencode_channel }})
+    name: connection (${{ matrix.agents }})
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Each agent keeps the old per-leg 40 minute bound; the job bound covers a shard of them.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        agent: [claude, codex, hermes, openclaw, opencode, pi, dsh, vibe]
-        opencode_channel: [stable]
         include:
-          # OpenClaw needs Node 24; everything else is happy on 22.
-          - agent: openclaw
-            node: '24'
-          # V2 uses beta until @opencode-ai/cli@latest publishes opencode2.
-          - agent: opencode
-            opencode_channel: v2
+          # agent[:opencode channel], balanced on the per-leg minutes of the last usage export.
+          - shard: a
+            agents: claude pi hermes opencode:v2 codex
+          - shard: b
+            agents: openclaw dsh vibe opencode:stable
     env:
       # gemma-4-E4B: the 270m model gave empty replies for codex/openclaw. Flat GGUF; the -MTP- repo
       # ships no separate draft.
@@ -153,10 +155,22 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: ${{ matrix.node || '22' }}
+          node-version: '22'
+
+      - name: Remember Node 22 (every agent but openclaw runs on it)
+        run: echo "NODE22_BIN=$(dirname "$(command -v node)")" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        if: contains(matrix.agents, 'openclaw')
+        with:
+          node-version: '24'
           # openclaw@latest tracks the newest Node 24 in its engines floor (2026.10.6 wants
           # >=24.22.1), and '24' alone resolves to the runner's cached 24.x, which lags.
-          check-latest: ${{ matrix.agent == 'openclaw' }}
+          check-latest: ${{ contains(matrix.agents, 'openclaw') }}
+
+      - name: Remember Node 24 (openclaw)
+        if: contains(matrix.agents, 'openclaw')
+        run: echo "NODE24_BIN=$(dirname "$(command -v node)")" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
@@ -208,60 +222,91 @@ jobs:
             --extra "--seed $UNSLOTH_SEED --temp 0" \
             --health-timeout 900
 
-      # A failure here is a server regression (class a); the agent steps never run.
-      - name: Preflight the agent's API dialect (class-a isolation)
+      - name: Connect each agent (${{ matrix.agents }})
         env:
-          AGENT: ${{ matrix.agent }}
+          AGENTS: ${{ matrix.agents }}
         run: |
           set -uo pipefail
-          B="$UNSLOTH_BASE_URL"; K="$UNSLOTH_API_KEY"
-          preflight_fail() {
-            echo "::error::[server/API regression] agent=$AGENT: $* (preflight failed BEFORE install/connect; this is class (a), not guide drift). Endpoint contract lives in studio/backend/routes/**.";
-            exit 1
+          ONE="$RUNNER_TEMP/connect-one.sh"
+          cat > "$ONE" <<'SH'
+          set -uo pipefail
+          # (a) A failure here is a server regression: the agent's install and drive never run.
+          preflight() {
+            set -uo pipefail
+            B="$UNSLOTH_BASE_URL"; K="$UNSLOTH_API_KEY"
+            preflight_fail() {
+              echo "::error::[server/API regression] agent=$AGENT: $* (preflight failed BEFORE install/connect; this is class (a), not guide drift). Endpoint contract lives in studio/backend/routes/**.";
+              exit 1
+            }
+            code=$(curl -s -o "$AGENT_DIR/pf.json" -w '%{http_code}' "$B/v1/models" \
+              -H "Authorization: Bearer $K") || true
+            [ "$code" = "200" ] || preflight_fail "/v1/models returned HTTP $code"
+            case "$AGENT" in
+              claude)
+                code=$(curl -s -o "$AGENT_DIR/pf.json" -w '%{http_code}' "$B/v1/messages" \
+                  -H "Authorization: Bearer $K" -H 'content-type: application/json' \
+                  --max-time 120 \
+                  -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}") || true
+                [ "$code" = "200" ] || preflight_fail "/v1/messages returned HTTP $code"
+                ;;
+              codex)
+                # Codex always streams /v1/responses.
+                code=$(curl -s -o "$AGENT_DIR/pf.json" -w '%{http_code}' "$B/v1/responses" \
+                  -H "Authorization: Bearer $K" -H 'content-type: application/json' \
+                  --max-time 120 \
+                  -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"input\":\"Hi\",\"max_output_tokens\":16,\"stream\":true}") || true
+                [ "$code" = "200" ] || preflight_fail "/v1/responses returned HTTP $code"
+                ;;
+              *)
+                # OpenAI Chat Completions (hermes/opencode/pi/openclaw; openclaw's recipe writes an openai-completions provider).
+                code=$(curl -s -o "$AGENT_DIR/pf.json" -w '%{http_code}' "$B/v1/chat/completions" \
+                  -H "Authorization: Bearer $K" -H 'content-type: application/json' \
+                  --max-time 120 \
+                  -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}") || true
+                [ "$code" = "200" ] || preflight_fail "/v1/chat/completions returned HTTP $code"
+                ;;
+            esac
+            echo "preflight OK for $AGENT"
           }
-          code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/models" \
-            -H "Authorization: Bearer $K") || true
-          [ "$code" = "200" ] || preflight_fail "/v1/models returned HTTP $code"
-          case "$AGENT" in
-            claude)
-              code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/messages" \
-                -H "Authorization: Bearer $K" -H 'content-type: application/json' \
-                --max-time 120 \
-                -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}") || true
-              [ "$code" = "200" ] || preflight_fail "/v1/messages returned HTTP $code"
-              ;;
-            codex)
-              # Codex always streams /v1/responses.
-              code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/responses" \
-                -H "Authorization: Bearer $K" -H 'content-type: application/json' \
-                --max-time 120 \
-                -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"input\":\"Hi\",\"max_output_tokens\":16,\"stream\":true}") || true
-              [ "$code" = "200" ] || preflight_fail "/v1/responses returned HTTP $code"
-              ;;
-            *)
-              # OpenAI Chat Completions (hermes/opencode/pi/openclaw; openclaw's recipe writes an openai-completions provider).
-              code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/chat/completions" \
-                -H "Authorization: Bearer $K" -H 'content-type: application/json' \
-                --max-time 120 \
-                -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}") || true
-              [ "$code" = "200" ] || preflight_fail "/v1/chat/completions returned HTTP $code"
-              ;;
-          esac
-          echo "preflight OK for $AGENT"
-
-      # ── (b) install the agent CLI (hardened npm/curl, retried) ─────────
-      - name: Install agent CLI (class-b isolation)
-        env:
-          AGENT: ${{ matrix.agent }}
-          OPENCODE_CHANNEL: ${{ matrix.opencode_channel }}
-        run: bash .github/scripts/agent-guides-install.sh "$AGENT"
-
-      # ── (c) drive the agent via start.py and assert a reply ──────────
-      # Apply the env from `unsloth start <agent> --no-launch`, then run the printed command with a hard timeout.
-      - name: Drive ${{ matrix.agent }} via unsloth start (class-c isolation)
-        env:
-          AGENT: ${{ matrix.agent }}
-        run: bash .github/scripts/agent-guides-drive.sh connection "$AGENT"
+          preflight || exit 1
+          # (b) install the agent CLI (hardened npm/curl, retried).
+          bash .github/scripts/agent-guides-install.sh "$AGENT" || exit 1
+          # What the installer adds to GITHUB_PATH applies to this agent only.
+          while IFS= read -r dir; do
+            [ -n "$dir" ] && PATH="$dir:$PATH"
+          done < "$GITHUB_PATH"
+          export PATH
+          # (c) drive the agent via start.py and assert a reply.
+          bash .github/scripts/agent-guides-drive.sh connection "$AGENT"
+          SH
+          failed=()
+          for spec in $AGENTS; do
+            agent="${spec%%:*}"
+            channel=stable
+            [ "$spec" != "$agent" ] && channel="${spec#*:}"
+            AGENT_DIR="$RUNNER_TEMP/agents/$agent-$channel"
+            mkdir -p "$AGENT_DIR/npm/bin"
+            : > "$AGENT_DIR/github_path"
+            node_bin="$NODE22_BIN"
+            [ "$agent" = openclaw ] && node_bin="$NODE24_BIN"
+            echo "::group::connection ($agent, $channel)"
+            rc=0
+            env AGENT="$agent" OPENCODE_CHANNEL="$channel" AGENT_DIR="$AGENT_DIR" \
+              NPM_CONFIG_PREFIX="$AGENT_DIR/npm" GITHUB_PATH="$AGENT_DIR/github_path" \
+              PATH="$AGENT_DIR/npm/bin:$node_bin:$PATH" \
+              timeout --kill-after=60s 40m bash "$ONE" || rc=$?
+            echo "::endgroup::"
+            if [ "$rc" = 0 ]; then
+              echo "connection ($agent, $channel): OK"
+            else
+              echo "::error title=connection ($agent, $channel)::exited $rc; its log is in the group above"
+              failed+=("$agent-$channel")
+            fi
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "failed: ${failed[*]}"
+            exit 1
+          fi
 
       - name: Collect server logs (debug)
         if: always()
@@ -290,7 +335,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: connection-${{ matrix.agent }}-${{ matrix.opencode_channel }}-log
+          name: connection-${{ matrix.shard }}-log
           path: |
             logs/
             redacted-configs/
