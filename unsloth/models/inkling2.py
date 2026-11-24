@@ -301,9 +301,15 @@ def _checkpoint_quant_method(
 
     if os.path.isdir(source):
         path = os.path.join(source, "config.json")
+        if not os.path.isfile(path):
+            return ""
     else:
         from huggingface_hub import hf_hub_download
-        path = hf_hub_download(source, "config.json", revision = revision, token = token)
+        from huggingface_hub.errors import EntryNotFoundError
+        try:
+            path = hf_hub_download(source, "config.json", revision = revision, token = token)
+        except EntryNotFoundError:
+            return ""
     with open(path, encoding = "utf-8") as f:
         config = json.load(f)
     for cfg in (config, config.get("text_config") or {}):
