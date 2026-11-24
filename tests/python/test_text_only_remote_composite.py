@@ -79,16 +79,34 @@ def _config_commit_hash_fix():
         del base._unsloth_commit_hash_patched
 
 
-def _ns():
-    from packaging.version import Version
-
-    source = UTILS_PATH.read_text(encoding = "utf-8")
+@functools.lru_cache(maxsize = 4)
+def _utils_segments(
+    source: str, constant_names: frozenset
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Top-level function sources and the _CONSTANTS assignments of _utils.py, extracted once per file
+    content and _CONSTANTS selection (both are the cache key): ast.get_source_segment re-splits the
+    14k-line file on every call. Each test still execs them into a fresh namespace."""
     tree = ast.parse(source)
     funcs = {
         n.name: ast.get_source_segment(source, n)
         for n in tree.body
         if isinstance(n, ast.FunctionDef)
     }
+    constants = tuple(
+        ast.get_source_segment(source, n)
+        for n in tree.body
+        if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id in constant_names for t in n.targets)
+    )
+    return funcs, constants
+
+
+def _ns():
+    from packaging.version import Version
+
+    funcs, constants = _utils_segments(
+        UTILS_PATH.read_text(encoding = "utf-8"), frozenset(_CONSTANTS)
+    )
     ns = {
         "copy": copy,
         "re": re,
@@ -115,15 +133,24 @@ def _ns():
         return builtins.__import__(name, globals, locals, fromlist, level)
 
     ns["__builtins__"] = {**vars(builtins), "__import__": _import}
-    for n in tree.body:
-        if isinstance(n, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id in _CONSTANTS for t in n.targets
-        ):
-            exec(ast.get_source_segment(source, n), ns)
+    for segment in constants:
+        exec(segment, ns)
     for name in _HELPERS:
         if name in funcs:
             exec(funcs[name], ns)
     return ns
+
+
+@functools.lru_cache(maxsize = 4)
+def _pickle_guard_segments(source: str) -> tuple[str, ...]:
+    """The two pickle-guard function sources of import_fixes.py, extracted once per file content."""
+    tree = ast.parse(source)
+    return tuple(
+        ast.get_source_segment(source, n)
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef)
+        and n.name in ("_torch_pickle_load_unsafe", "refuse_pickle_checkpoint_on_old_torch")
+    )
 
 
 def _import_fixes_namespace():
@@ -133,15 +160,10 @@ def _import_fixes_namespace():
     from packaging.version import Version
 
     source = (UTILS_PATH.parents[1] / "import_fixes.py").read_text(encoding = "utf-8")
-    tree = ast.parse(source)
     module = types.ModuleType("unsloth.import_fixes")
     module.__dict__.update(os = os, TrueVersion = Version)
-    for n in tree.body:
-        if isinstance(n, ast.FunctionDef) and n.name in (
-            "_torch_pickle_load_unsafe",
-            "refuse_pickle_checkpoint_on_old_torch",
-        ):
-            exec(ast.get_source_segment(source, n), module.__dict__)
+    for segment in _pickle_guard_segments(source):
+        exec(segment, module.__dict__)
     return module
 
 
