@@ -111,17 +111,14 @@ export function ChatFilesBridge() {
   }, [sessionKey, running, uploads]);
 
   const folders = listed?.key === sessionKey ? listed.folders : NO_FOLDERS;
-  // A streaming reply changes every token; collect once it settles.
-  const settled = running ? null : messages;
+  // The streaming reply changes every token: leave it out until it settles. Earlier messages are cached.
   const files = useMemo(
-    () => (settled ? collectChatFiles(settled, folders) : null),
-    [settled, folders],
+    () => collectChatFiles(running ? messages.slice(0, -1) : messages, folders),
+    [messages, running, folders],
   );
 
   useEffect(() => {
-    if (files) {
-      useChatFiles.setState({ files });
-    }
+    useChatFiles.setState({ files });
   }, [files]);
   useEffect(() => () => useChatFiles.setState({ files: [] }), []);
 
