@@ -188,7 +188,7 @@ def test_latent_tokens_read_the_actual_request(frames, tokens):
 
 @pytest.mark.parametrize("force", [False, True])
 def test_an_explicit_selection_is_not_declined_on_the_default_request(monkeypatch, force):
-    # the 121-frame Wan default prices 12915 + 1024 MiB; a 49-frame render needs 10966 + 1024 of the 13000 free
+    # default (121 frames) needs 12915+1024 MiB; 49 frames needs 10966+1024 of 13000 free
     pipe, model = _family(_WAN_T4, monkeypatch)
     if force:
         monkeypatch.setenv(mg.CFG_PARALLEL_ENV, "force")

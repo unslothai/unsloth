@@ -1189,8 +1189,7 @@ def replica_activation_mib(module: Any, tokens: Optional[int] = None) -> int:
 
 
 def latent_tokens(module: Any, latent: Any) -> Optional[int]:
-    """Tokens per sample of a denoiser call on ``latent``: (B, C, F, H, W) and (B, C, H, W) after patching, the
-    sequence of a packed (B, N, C) latent; None when unreadable."""
+    """Tokens per sample for a (B, C, [F,] H, W) latent after patching, or a packed (B, N, C) one; None if unreadable."""
     try:
         shape = tuple(int(s) for s in latent.shape)
         if len(shape) == 3:
@@ -1221,9 +1220,7 @@ def replica_need_mib(
     *,
     activations: bool = True,
 ) -> int:
-    """MiB beyond :func:`_replica_reserve_mib`: weights, one branch's activations, working set over the reserve.
-    ``tokens``: the actual request's tokens per branch (else the default request's); ``activations=False``: weights
-    and working set only, for a selection the user made, which the first guided branch prices on its real shape."""
+    """MiB beyond :func:`_replica_reserve_mib`. ``activations=False`` for user selections, priced later on the real shape."""
     weights = sum(
         t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
     ) // (1 << 20)
@@ -1235,8 +1232,7 @@ def replica_need_mib(
 
 
 def _prices_default_request(selection: Any) -> bool:
-    """Only Automatic placement declines a replica on the load-time default request's activations: an explicit or
-    forced selection is priced on each render's actual shape when the replica is built."""
+    """Only Automatic declines on the default request; explicit/forced selections are priced at replica build."""
     return bool(getattr(selection, "automatic", False)) and cfg_parallel_mode() != "force"
 
 
@@ -4080,7 +4076,6 @@ class CfgParallelRouter:
             hooked = _hooks_present(module)
             if hooked is not None:
                 raise RuntimeError(f"denoiser carries hooks ({hooked})")
-            # the first guided branch's own shape, not the load-time default request
             need_mib = replica_need_mib(module, latent_tokens(module, latent))
             automatic = getattr(self, "automatic_idle_only", False)
             # Outside the load scope: read the card directly, before the memory read opens our context (3-7% busy).
