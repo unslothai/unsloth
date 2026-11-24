@@ -1065,6 +1065,13 @@ class GgmlSttSidecar:
             if GgmlSttSidecar._probe_is_whisper_server(process, port, route) and (
                 GgmlSttSidecar._probe_is_whisper_server(process, port, route)
             ):
+                from core.inference.llama_cpp import LlamaCppBackend
+
+                # whisper-server binds only after loading its model, so another local user can answer first.
+                if not LlamaCppBackend._health_listener_is_ours(process, port):
+                    raise SttEngineUnavailableError(
+                        "Another program took the local transcription port; try again."
+                    )
                 return
             time.sleep(0.2)
         raise SttEngineUnavailableError("The local transcription runtime did not start in time.")

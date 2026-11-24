@@ -408,6 +408,7 @@ export interface InferenceStatusResponse {
   loaded: string[];
   serving?: string[];
   serving_checkpoints?: string[];
+  serving_quants?: (string | null)[];
   resident_mib?: number | null;
   resident_on_gpu?: boolean | null;
   /** Keep multiple models loaded, as saved on the server. Absent from older servers. */

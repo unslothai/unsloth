@@ -13,7 +13,7 @@ from utils import hf_cache_settings
 
 
 @pytest.fixture(params = [False, True])
-def cache_locations(monkeypatch, tmp_path, request):
+def cache_locations(monkeypatch, tmp_path, request, tmp_cache_home_allowed):
     active_custom = request.param
     store = {}
     monkeypatch.setattr(hf_cache_settings, "_EXPLICIT_CACHE_ENV", {})

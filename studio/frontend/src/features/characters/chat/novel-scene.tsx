@@ -6,9 +6,8 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useAuiState } from "@assistant-ui/react";
 import { useObjectUrl } from "@/hooks/use-object-url";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Portrait } from "../components/portrait";
-import { nameHue } from "../components/portrait-monogram";
 import { viewAvatar } from "../images";
 import { shortName } from "../prompt/speakers";
 import { useStageFocus } from "../stage-focus";
@@ -53,9 +52,15 @@ export function NovelScene({ threadId, cast }: { threadId: string | null; cast: 
             active={character.id === focus.id}
             speaking={speaking && character.id === focus.id}
             solo={cast.length === 1}
+            named={cast.length > 1}
             onAsk={running ? undefined : () => ask(character.id, character.name)}
           />
         ))}
+        {cast.length > 1 ? (
+          <span role="status" className="sr-only">
+            {speaking ? t("characters.chat.speaking", { name: focus.name }) : ""}
+          </span>
+        ) : null}
       </section>
     </>
   );
@@ -87,12 +92,14 @@ function NovelFigure({
   active,
   speaking,
   solo,
+  named,
   onAsk,
 }: {
   character: Character;
   active: boolean;
   speaking: boolean;
   solo: boolean;
+  named: boolean;
   onAsk?: () => void;
 }) {
   const t = useT();
@@ -129,6 +136,16 @@ function NovelFigure({
           className="character-novel-figure-picture size-full rounded-t-[40px]"
         />
       </span>
+      {named && active ? (
+        <span
+          aria-hidden={true}
+          className="character-novel-figure-name pointer-events-none absolute left-1/2 z-[3] flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full bg-background/85 px-3.5 py-1 text-foreground shadow-[0_8px_20px_-10px_rgb(0_0_0/0.5)] ring-1 ring-border/60 backdrop-blur-md animate-in fade-in-0 duration-300"
+          data-testid="character-novel-figure-name"
+        >
+          <span className="font-heading text-ui-14 font-semibold">{character.name}</span>
+          {speaking ? <Dots className="bg-muted-foreground" /> : null}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -140,28 +157,6 @@ function Dots({ className = "bg-white/90" }: { className?: string }) {
       <span className={cn("size-1 animate-bounce rounded-full [animation-delay:-0.15s]", className)} />
       <span className={cn("size-1 animate-bounce rounded-full", className)} />
     </span>
-  );
-}
-
-export function NovelNameplate({ threadId, cast }: { threadId: string | null; cast: Character[] }) {
-  const { focus, speaking } = useStageFocus(threadId, cast);
-  if (!focus) return null;
-  const hue = nameHue(focus.name);
-  const style: CSSProperties = {
-    background: `linear-gradient(135deg, hsl(${hue} 52% 46%), hsl(${(hue + 28) % 360} 56% 36%))`,
-  };
-  return (
-    <div
-      key={focus.id}
-      className="pointer-events-none absolute -top-4 left-[clamp(1rem,6%,3.5rem)] z-20 flex items-center gap-2.5 rounded-full py-1.5 pl-4 pr-4 text-white shadow-[0_10px_24px_-10px_rgb(0_0_0/0.6)] ring-1 ring-white/20 animate-in fade-in-0 slide-in-from-bottom-1 duration-300"
-      style={style}
-      data-testid="character-novel-nameplate"
-    >
-      <span className="font-heading text-ui-15 font-semibold tracking-[-0.01em]">{shortName(focus.name)}</span>
-      {speaking ? (
-        <Dots />
-      ) : null}
-    </div>
   );
 }
 

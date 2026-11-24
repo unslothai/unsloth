@@ -60,6 +60,8 @@ import {
 } from "@/components/assistant-ui/thread-message-slot";
 import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+// eslint-disable-next-line no-restricted-imports -- pure helpers; the barrel would pull character components into the thread.
+import { isHiddenRoleplayTurn } from "@/features/characters/meta";
 import { inputPointerHeld } from "@/lib/input-pointer-state";
 import { isWebKitGTK } from "@/components/ui/theme-view-transition";
 
@@ -252,6 +254,7 @@ type ThreadMessage = {
   role?: ThreadMessageRole;
   content?: readonly { type?: string; text?: string }[];
   composer?: { isEditing?: boolean };
+  metadata?: unknown;
 };
 
 type Metas = {
@@ -267,8 +270,11 @@ function metaOf(message: ThreadMessage, index: number, expanded: Expanded): RowM
   if (cached?.expanded === expanded) return cached.meta;
   const role = message.role ?? "assistant";
   // Unknown shapes count as rendering: room for a row that turns out empty costs nothing.
+  // A character chat's hidden turns mount no row to measure: estimated as prompts, a long group chat's
+  // spacers would grow and shrink by them as the reader scrolls. The opening's 28px gap is left out.
   const renders =
-    message.role == null || rendersAsRow(message.role, message.composer?.isEditing === true);
+    (message.role == null || rendersAsRow(message.role, message.composer?.isEditing === true)) &&
+    !isHiddenRoleplayTurn(message);
   const meta: RowMeta = {
     id: message.id ?? `#${index}`,
     role,

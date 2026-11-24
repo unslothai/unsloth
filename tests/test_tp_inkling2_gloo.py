@@ -107,6 +107,7 @@ def build(
     lora = True,
     four_bit = False,
     dtype = torch.float32,
+    text_overrides = None,
 ):
     from transformers import AutoModelForImageTextToText
     from transformers.models.inkling2.configuration_inkling2 import Inkling2Config
@@ -133,6 +134,7 @@ def build(
         num_experts_per_tok = 2,
         moe_intermediate_size = 32,
     )
+    text.update(text_overrides or {})
     vision = dict(
         model_type = "inkling2_vision",
         hidden_size = 16,

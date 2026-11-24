@@ -1529,7 +1529,7 @@ function scheduleGenerationRecovery(
     const carried = stored.carried;
     // Keyed exactly as the live stream (toolConfirmationScopeId) so cards are the same.
     const toolRecovery = createGenerationToolRecovery(carried, runId, cursor, {
-      register: (partId, approvalId, sessionId) =>
+      register: (partId, approvalId, sessionId, toolName) =>
         useChatRuntimeStore
           .getState()
           .setToolConfirmation(
@@ -1540,6 +1540,8 @@ function scheduleGenerationRecovery(
             threadId,
             undefined,
             runId,
+            undefined,
+            toolName,
           ),
       resolve: (partId) =>
         useChatRuntimeStore.getState().clearToolConfirmation(partId),

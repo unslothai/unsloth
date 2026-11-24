@@ -5059,6 +5059,9 @@ def _expected_torch_flavor_tag() -> str:
     unknown_pin = _explicit_unknown_family_torch_index_url()
     if unknown_pin is not None:
         return "" if unknown_pin else (_RECORDED_TORCH_TAG or "")
+    # The swap _ensure_rocm_torch makes, or a manifest / NVIDIA probe would put CUDA back.
+    if IS_WINDOWS and _windows_forced_rocm_is_viable():
+        return "rocm"
     if _RECORDED_TORCH_TAG:
         return _RECORDED_TORCH_TAG
     if _explicit_torch_index_family() is None and not _has_usable_nvidia_gpu():
@@ -5845,6 +5848,55 @@ def _rocm_torch_family_needs_repair(
     ) or _generic_only_target_below_floor(runtime_gfx, _installed_tag)
 
 
+def _windows_forced_rocm_is_viable() -> bool:
+    """UNSLOTH_FORCE_ROCM_TORCH beside a usable NVIDIA GPU, with an AMD card _ensure_rocm_torch can serve.
+
+    A non-ROCm handover means setup.ps1 found no AMD route; its answer wins over this probe."""
+    if not (_rocm_torch_explicitly_requested() and _has_usable_nvidia_gpu()):
+        return False
+    if _handover_torch_flavor_tag() not in ("", "rocm"):
+        return False
+    gfx_arch = _detect_windows_gfx_arch()
+    if not gfx_arch or _windows_rocm_index_url(gfx_arch) is None:
+        return False
+    return _windows_amd_hardware_is_corroborated()
+
+
+def _windows_amd_hardware_is_corroborated() -> bool:
+    """UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo, amd-smi or WMI must see one.
+
+    Presence, not a second arch inference: the override exists for cards WMI names generically."""
+    _override = os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
+    if not (_override or "").strip():
+        return True
+    os.environ.pop("UNSLOTH_ROCM_GFX_ARCH")
+    try:
+        if _detect_windows_gfx_arch():
+            return True
+    finally:
+        os.environ["UNSLOTH_ROCM_GFX_ARCH"] = _override
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "@(Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'AMD|Radeon' }).Count",
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 30,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:  # noqa: BLE001 - no answer is no evidence
+        return False
+    return result.returncode == 0 and result.stdout.decode(errors = "replace").strip() not in (
+        "",
+        "0",
+    )
+
+
 def _windows_rocm_device_packs_need_dependency_pass() -> bool:
     """For setup.ps1's fast path: would _ensure_rocm_torch repair this multi-arch ROCm torch?
 
@@ -5857,7 +5909,7 @@ def _windows_rocm_device_packs_need_dependency_pass() -> bool:
             _explicit_unknown_family_torch_index_url() is not None
             or _explicit_torch_index_is_unusable()
             or _explicit_rocm_torch_index_url() is not None
-            or _has_usable_nvidia_gpu()
+            or (_has_usable_nvidia_gpu() and not _rocm_torch_explicitly_requested())
         ):
             return False
         gfx_arch = _detect_windows_gfx_arch()
@@ -5912,9 +5964,11 @@ def _ensure_rocm_torch() -> "bool | None":
     if IS_WINDOWS:
         # An explicit ROCm pin overrides the per-arch index: retry the PINNED one, not repo.amd.com.
         _win_rocm_pin = _explicit_rocm_torch_index_url()
-        # UNSLOTH_FORCE_ROCM_TORCH is deliberately not read: install.ps1 / setup.ps1 would restore CUDA,
-        # making this a multi-GB round trip.
-        if _win_rocm_pin is None and _has_usable_nvidia_gpu():
+        if (
+            _win_rocm_pin is None
+            and _has_usable_nvidia_gpu()
+            and not _windows_forced_rocm_is_viable()
+        ):
             return
         gfx_arch = _detect_windows_gfx_arch()
         if not gfx_arch and _win_rocm_pin is None:
@@ -10217,7 +10271,7 @@ def _has_working_git() -> bool:
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.4", "mlx-metal==0.32.4")
 # A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
 _MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
-_MLX_VLM_SPEC = "mlx-vlm>=0.6.4,<=0.8.0"
+_MLX_VLM_SPEC = "mlx-vlm>=0.6.4,<=0.8.1"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + (

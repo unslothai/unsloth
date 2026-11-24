@@ -236,7 +236,12 @@ class TestRemoteUrlNeverReachesLlamaServer:
         r = _client(monkeypatch, backend).post("/v1/chat/completions", json = _chat_body(_webp_b64()))
 
         assert r.status_code == 200, r.text
-        assert _image_urls(backend.dispatched[-1]["messages"]) == [_webp_b64()]
+        # The payload is decoded and checked like any image (#19193), so llama-server gets a data URL of the
+        # checked bytes, not the caller's string: compare the picture, not the encoding.
+        [sent] = _image_urls(backend.dispatched[-1]["messages"])
+        assert sent.startswith("data:image/"), sent[:40]
+        with Image.open(BytesIO(base64.b64decode(sent.split(",", 1)[1]))) as img:
+            assert img.size == (2, 2)
 
     def test_a_data_url_still_goes_through_untouched_by_the_fetch(self, monkeypatch):
         def _never(*_a, **_k):

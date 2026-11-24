@@ -188,6 +188,7 @@ import {
   type PerModelConfig,
   loadedContextFields,
 } from "@/features/model-picker";
+import { managedEngineFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
@@ -200,6 +201,7 @@ import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   fetchGgufStagedMetadata,
   getInferenceStatus,
+  LoadModelError,
   loadModel,
   unloadModel,
   validateModel,
@@ -2354,6 +2356,9 @@ export function SharedComposer({
             id: toastId,
             description:
               failure instanceof Error ? failure.message : "Unknown error",
+            action: failure instanceof LoadModelError
+              ? managedEngineFailureLogsAction(failure.detail)
+              : undefined,
             duration: cancelled ? 5000 : 4000,
           },
         );
