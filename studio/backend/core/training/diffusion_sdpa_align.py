@@ -7,10 +7,12 @@ mask's sizes / strides are multiples of 8 (``is_aligned_realized_tensor`` and th
 ``[L, L]`` causal mask over its text tokens, so the first caption whose token count is a multiple of 8 recompiled
 every block mid-run (L4, 512 px: a 27 to 29 s stall at step 16 in every compiled arm, bf16 / fp8 / int8 alike).
 
-The wrapper answers those alignment questions only when they are statically known and never adds a guard; an
-undecided one takes the path inductor already takes for a misaligned mask (a copy into an aligned layout), which is
-correct for any length. It only applies inside the SDPA constraint, so no other guard changes.
-``UNSLOTH_DIFFUSION_SDPA_ALIGN_GUARD=1`` keeps torch's guard."""
+Inside the SDPA constraint only, an alignment question (every relation in it is ``Mod(x, n) == 0`` or already
+statically decided) is answered when it is statically known and never guarded; an undecided one takes the path
+inductor already takes for a misaligned mask (a copy into an aligned layout), which is correct for any length.
+Every other question there keeps torch's own ``guard_or_false``. While installed, a ``cache_key_tag`` keeps warm
+FX / AOT caches of the two lowerings apart. ``uninstall_sdpa_align_without_guard`` restores torch's constraint and
+tag; ``UNSLOTH_DIFFUSION_SDPA_ALIGN_GUARD=1`` never installs it."""
 
 from __future__ import annotations
 
@@ -19,8 +21,10 @@ import threading
 from typing import Any
 
 SDPA_ALIGN_GUARD_ENV = "UNSLOTH_DIFFUSION_SDPA_ALIGN_GUARD"
+CACHE_TAG = "|unsloth_sdpa_align=unguarded"
 
 _LOCK = threading.Lock()
+# "ops": {op: original constraint} wrapped by this module; "tag": the cache_key_tag before install.
 _STATE: dict[str, Any] = {}
 
 
@@ -33,22 +37,73 @@ def _kept() -> bool:
     )
 
 
+def _is_mod_zero(rel: Any) -> bool:
+    import sympy
+
+    if not isinstance(rel, sympy.Eq):
+        return False
+    for side, other in ((rel.lhs, rel.rhs), (rel.rhs, rel.lhs)):
+        if other == 0 and (
+            isinstance(side, sympy.Mod) or type(side).__name__ in ("Mod", "PythonMod")
+        ):
+            return True
+    return False
+
+
+def is_alignment_question(expr: Any, sizevars: Any) -> bool:
+    """True when ``expr`` asks only whether sizes / strides are multiples of something: at least one
+    ``Mod(x, n) == 0`` relation, and every other relation in it already statically decided."""
+    import sympy
+
+    try:
+        rels = [expr] if isinstance(expr, sympy.core.relational.Relational) else []
+        rels += [r for r in expr.atoms(sympy.core.relational.Relational) if r is not expr]
+    except Exception:  # noqa: BLE001 -- not a sympy expression: not ours to answer
+        return False
+    has_mod = False
+    for rel in rels:
+        if _is_mod_zero(rel):
+            has_mod = True
+            continue
+        try:
+            decided = sizevars.statically_known_true(rel) or sizevars.statically_known_true(
+                sympy.Not(rel)
+            )
+        except Exception:  # noqa: BLE001
+            decided = False
+        if not decided:
+            return False
+    return has_mod
+
+
 def _wrap(original: Any) -> Any:
     from torch._inductor.virtualized import V
 
-    def sdpa_constraint_unguarded(fx_node, *args, **kwargs):
+    def sdpa_constraint_unguarded_alignment(fx_node, *args, **kwargs):
         sizevars = V.graph.sizevars
-        shadowed = "guard_or_false" in vars(sizevars)
-        if shadowed:  # nested or already unguarded: nothing to do
+        if "guard_or_false" in vars(sizevars):  # nested call: the outer one already answers
             return original(fx_node, *args, **kwargs)
-        sizevars.guard_or_false = sizevars.statically_known_true
+        guarded = sizevars.guard_or_false
+
+        def guard_or_false(expr):
+            if is_alignment_question(expr, sizevars):
+                return bool(sizevars.statically_known_true(expr))
+            return guarded(expr)
+
+        sizevars.guard_or_false = guard_or_false
         try:
             return original(fx_node, *args, **kwargs)
         finally:
             del sizevars.guard_or_false
 
-    sdpa_constraint_unguarded._unsloth_original = original
-    return sdpa_constraint_unguarded
+    sdpa_constraint_unguarded_alignment._unsloth_original = original
+    return sdpa_constraint_unguarded_alignment
+
+
+def _cache_config():
+    import torch
+    cconfig = getattr(getattr(torch, "compiler", None), "config", None)
+    return cconfig if cconfig is not None and hasattr(cconfig, "cache_key_tag") else None
 
 
 def install_sdpa_align_without_guard() -> int:
@@ -57,21 +112,57 @@ def install_sdpa_align_without_guard() -> int:
     if _kept():
         return 0
     with _LOCK:
-        if "wrapped" in _STATE:
-            return _STATE["wrapped"]
-        count = 0
+        if _STATE.get("ops"):
+            return len(_STATE["ops"])
         try:
             import torch._inductor.lowering as lowering
 
             original = getattr(lowering, "sdpa_constraint", None)
             table = getattr(lowering, "_maybe_layout_constraints", None)
-            if callable(original) and isinstance(table, dict):
-                wrapped = _wrap(original)
-                for op, constraint in list(table.items()):
-                    if constraint is original:
-                        table[op] = wrapped
-                        count += 1
+            if not callable(original) or not isinstance(table, dict):
+                return 0
+            wrapped = _wrap(original)
+            ops = {}
+            for op, constraint in list(table.items()):
+                if constraint is original:
+                    table[op] = wrapped
+                    ops[op] = original
+            if not ops:
+                return 0
+            _STATE["ops"] = ops
+            cconfig = _cache_config()
+            if cconfig is not None:
+                prev = cconfig.cache_key_tag or ""
+                _STATE["tag"] = prev
+                if CACHE_TAG not in prev:
+                    cconfig.cache_key_tag = prev + CACHE_TAG
+            return len(ops)
         except Exception:  # noqa: BLE001 -- an inductor without these internals keeps its own behaviour
-            count = 0
-        _STATE["wrapped"] = count
-        return count
+            return 0
+
+
+def uninstall_sdpa_align_without_guard() -> int:
+    """Put torch's SDPA constraint and the previous ``cache_key_tag`` back; returns how many ops it restored."""
+    with _LOCK:
+        ops = _STATE.pop("ops", None) or {}
+        tag = _STATE.pop("tag", None)
+        restored = 0
+        try:
+            import torch._inductor.lowering as lowering
+            table = getattr(lowering, "_maybe_layout_constraints", None)
+            if isinstance(table, dict):
+                for op, original in ops.items():
+                    if getattr(table.get(op), "_unsloth_original", None) is original:
+                        table[op] = original
+                        restored += 1
+        except Exception:  # noqa: BLE001
+            pass
+        if tag is not None:
+            cconfig = _cache_config()
+            if cconfig is not None and CACHE_TAG in (cconfig.cache_key_tag or ""):
+                cconfig.cache_key_tag = tag
+        return restored
+
+
+def installed() -> bool:
+    return bool(_STATE.get("ops"))

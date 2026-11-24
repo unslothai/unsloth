@@ -4016,6 +4016,10 @@ def run_dit_lora_training(
         return out
     finally:
         _restore_perf_flags(perf_snap)
+        # The SDPA alignment wrapper (installed by the compile) lives only as long as this run.
+        from core.training.diffusion_sdpa_align import uninstall_sdpa_align_without_guard
+
+        uninstall_sdpa_align_without_guard()
         if tunableop:
             _release_rocm_tunableop()
         if launched is not None:

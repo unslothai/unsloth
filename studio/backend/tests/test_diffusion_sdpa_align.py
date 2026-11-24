@@ -2,34 +2,21 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """The SDPA layout constraint answers mask alignment without a shape guard, so a caption length that is a multiple
-of 8 does not recompile the compiled DiT blocks (Qwen-Image-2.1: a 27 s stall at step 16 on L4)."""
+of 8 does not recompile the compiled DiT blocks (Qwen-Image-2.1: a 27 s stall at step 16 on L4). Only alignment
+questions change, the cache key is tagged while installed, and uninstall restores torch."""
 
 import types
 
 import pytest
+import sympy
 import torch
 
 import core.training.diffusion_sdpa_align as sa
 
 
-@pytest.fixture
-def fresh(monkeypatch):
-    import torch._inductor.lowering as lowering
-
-    def original(fx_node, *args, **kwargs):
-        from torch._inductor.virtualized import V
-        return V.graph.sizevars.guard_or_false("aligned?"), args
-
-    other = lambda *a, **k: None  # noqa: E731
-    table = {"sdpa_fwd": original, "sdpa_bwd": original, "mm": other}
-    monkeypatch.setattr(lowering, "sdpa_constraint", original)
-    monkeypatch.setattr(lowering, "_maybe_layout_constraints", table)
-    monkeypatch.setattr(sa, "_STATE", {})
-    monkeypatch.delenv(sa.SDPA_ALIGN_GUARD_ENV, raising = False)
-    return original, other, table
-
-
 class _SizeVars:
+    """Records what reaches torch's guarding method; statically knows only literal True / False."""
+
     def __init__(self):
         self.guards = []
 
@@ -38,7 +25,32 @@ class _SizeVars:
         return True
 
     def statically_known_true(self, expr):
-        return False
+        return expr == sympy.true
+
+
+L = sympy.Symbol("s0", integer = True, positive = True)
+ALIGN = sympy.And(sympy.Eq(sympy.Mod(L, 8), 0), sympy.Eq(sympy.Mod(L * L, 8), 0))
+OTHER = sympy.Le(L, 64)
+
+
+@pytest.fixture
+def fresh(monkeypatch):
+    import torch._inductor.lowering as lowering
+
+    def original(fx_node, *exprs):
+        from torch._inductor.virtualized import V
+        return [V.graph.sizevars.guard_or_false(e) for e in exprs]
+
+    other = lambda *a, **k: None  # noqa: E731
+    table = {"sdpa_fwd": original, "sdpa_bwd": original, "mm": other}
+    monkeypatch.setattr(lowering, "sdpa_constraint", original)
+    monkeypatch.setattr(lowering, "_maybe_layout_constraints", table)
+    monkeypatch.setattr(sa, "_STATE", {})
+    monkeypatch.delenv(sa.SDPA_ALIGN_GUARD_ENV, raising = False)
+    cconfig = torch.compiler.config
+    monkeypatch.setattr(cconfig, "cache_key_tag", "|other_tag")
+    yield original, other, table
+    sa.uninstall_sdpa_align_without_guard()
 
 
 def test_wraps_only_the_sdpa_constraint_once(fresh):
@@ -51,20 +63,42 @@ def test_wraps_only_the_sdpa_constraint_once(fresh):
     assert table["sdpa_fwd"]._unsloth_original is original
 
 
-def test_the_wrapper_never_guards_and_restores_the_sizevars(fresh):
+def test_only_alignment_questions_skip_the_guard(fresh):
     from torch._inductor.virtualized import V
 
     _original, _other, table = fresh
     sa.install_sdpa_align_without_guard()
     sizevars = _SizeVars()
     with V.set_graph_handler(types.SimpleNamespace(sizevars = sizevars)):
-        aligned, args = table["sdpa_fwd"](None, 1, 2)
-        assert args == (1, 2)
-        # Undecided without a guard: the misaligned path, and no guard recorded.
-        assert aligned is False and sizevars.guards == []
-        # Outside the constraint the real guarding method is back.
+        aligned, other = table["sdpa_fwd"](None, ALIGN, OTHER)
+        # The alignment question is undecided without a guard: the misaligned path, nothing recorded for it.
+        assert aligned is False
+        # Any other question still goes to torch's guarding method.
+        assert other is True and sizevars.guards == [OTHER]
         assert "guard_or_false" not in vars(sizevars)
-        assert sizevars.guard_or_false("x") is True and sizevars.guards == ["x"]
+
+
+def test_alignment_question_detection():
+    sv = _SizeVars()
+    assert sa.is_alignment_question(ALIGN, sv)
+    assert sa.is_alignment_question(sympy.Eq(sympy.Mod(L, 8), 0), sv)
+    assert not sa.is_alignment_question(OTHER, sv)
+    # An undecided non-alignment relation next to the alignment one keeps the guard.
+    assert not sa.is_alignment_question(sympy.And(sympy.Eq(sympy.Mod(L, 8), 0), OTHER), sv)
+    assert not sa.is_alignment_question("not sympy", sv)
+
+
+def test_cache_tag_while_installed_and_uninstall_restores(fresh):
+    original, other, table = fresh
+    cconfig = torch.compiler.config
+    sa.install_sdpa_align_without_guard()
+    assert cconfig.cache_key_tag == "|other_tag" + sa.CACHE_TAG
+    assert sa.installed()
+    assert sa.uninstall_sdpa_align_without_guard() == 2
+    assert table["sdpa_fwd"] is table["sdpa_bwd"] is original and table["mm"] is other
+    assert cconfig.cache_key_tag == "|other_tag"
+    assert not sa.installed()
+    assert sa.uninstall_sdpa_align_without_guard() == 0  # restoring twice is a no-op
 
 
 def test_env_keeps_torchs_guard(fresh, monkeypatch):
@@ -72,6 +106,7 @@ def test_env_keeps_torchs_guard(fresh, monkeypatch):
     monkeypatch.setenv(sa.SDPA_ALIGN_GUARD_ENV, "1")
     assert sa.install_sdpa_align_without_guard() == 0
     assert table["sdpa_fwd"] is original
+    assert sa.CACHE_TAG not in (torch.compiler.config.cache_key_tag or "")
 
 
 def test_missing_inductor_internals_install_nothing(monkeypatch):
@@ -88,12 +123,7 @@ def test_the_real_torch_registers_sdpa_under_the_wrapped_name():
 
     table = lowering._maybe_layout_constraints
     assert callable(lowering.sdpa_constraint)
-    ops = [
-        op
-        for op, c in table.items()
-        if c is lowering.sdpa_constraint
-        or getattr(c, "_unsloth_original", None) is lowering.sdpa_constraint
-    ]
+    ops = [op for op, c in table.items() if c is lowering.sdpa_constraint]
     assert any("efficient_attention" in str(op) for op in ops)
 
 
@@ -125,20 +155,18 @@ def _graphs_over_text_lengths(lengths):
 def test_a_multiple_of_8_text_length_does_not_recompile(monkeypatch):
     import torch._functorch.config as functorch_config
     import torch._inductor.config as inductor_config
-    import torch._inductor.lowering as lowering
 
     # Fresh compiles: a cached artifact carries the guards of the process that wrote it.
     monkeypatch.setattr(inductor_config, "fx_graph_cache", False)
     monkeypatch.setattr(functorch_config, "enable_autograd_cache", False)
-    unwrapped = {
-        op: getattr(c, "_unsloth_original", c)
-        for op, c in lowering._maybe_layout_constraints.items()
-    }
-    monkeypatch.setattr(lowering, "_maybe_layout_constraints", unwrapped)
     monkeypatch.setattr(sa, "_STATE", {})
     monkeypatch.delenv(sa.SDPA_ALIGN_GUARD_ENV, raising = False)
     lengths = (27, 29, 24, 32, 35)
     # torch's own guard: the first multiple of 8 compiles a second graph (the test can fail).
     assert _graphs_over_text_lengths(lengths) == 2
-    assert sa.install_sdpa_align_without_guard() > 0
-    assert _graphs_over_text_lengths(lengths) == 1
+    try:
+        assert sa.install_sdpa_align_without_guard() > 0
+        assert _graphs_over_text_lengths(lengths) == 1
+    finally:
+        sa.uninstall_sdpa_align_without_guard()
+    assert _graphs_over_text_lengths(lengths) == 2  # restored: torch's guard is back
