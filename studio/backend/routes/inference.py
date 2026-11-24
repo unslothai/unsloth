@@ -12184,6 +12184,7 @@ async def _maybe_auto_switch_model(
             resident = _loaded_slot_ident()
             try:
                 await asyncio.to_thread(account_access.require_model_access, resident)
+                await asyncio.to_thread(_require_loaded_base_access)
             except HTTPException as refusal:
                 # A Hub resident the caller's own token can fetch is theirs to use as well.
                 if refusal.status_code != 404:
@@ -19682,11 +19683,48 @@ def _discoverable_drafters(model_path: str) -> Optional[list]:
     return [row["repo_id"] for row in _mlx_cached_drafters(model_path)]
 
 
+def _require_loaded_base_access() -> None:
+    """A resident adapter answers with its base model, so sharing it needs the base grant too."""
+    if not account_access.managed_account():
+        return
+    backend = _peek_inference_backend()
+    active = getattr(backend, "active_model_name", None) if backend is not None else None
+    info = (getattr(backend, "models", None) or {}).get(active) or {}
+    base = info.get("base_model") if isinstance(info, dict) else None
+    if isinstance(base, str) and base.strip():
+        account_access.require_model_access(base.strip())
+
+
 def _require_resolved_base_access(config) -> None:
     """Grants apply to the base in an adapter's config, so it cannot pull a foreign cached base."""
+    if not account_access.managed_account():
+        return
     base = getattr(config, "base_model", None)
-    if account_access.managed_account() and isinstance(base, str) and base.strip():
+    if isinstance(base, str) and base.strip():
         account_access.require_model_access(base.strip())
+        account_access.require_adapter_chain_access(base.strip())
+    account_access.require_listed_adapters_access(getattr(config, "identifier", None))
+    # A local merged vision export's processor comes from the base_model its export_metadata.json names;
+    # text exports are self-contained and never open it.
+    if (
+        getattr(config, "is_vision", False)
+        and getattr(config, "is_local", False)
+        and not getattr(config, "is_lora", False)
+    ):
+        meta_base = _export_metadata_base(getattr(config, "path", None))
+        if meta_base:
+            account_access.require_model_access(meta_base)
+
+
+def _export_metadata_base(folder) -> Optional[str]:
+    if not folder:
+        return None
+    try:
+        meta = json.loads((Path(folder) / "export_metadata.json").read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError, TypeError):
+        return None
+    base = meta.get("base_model") if isinstance(meta, dict) else None
+    return base.strip() if isinstance(base, str) and base.strip() else None
 
 
 async def _managed_engine_request(request):
@@ -20315,6 +20353,7 @@ async def _load_model_impl(
                 if not _resident_audio_holds_no_gpu(backend):
                     await asyncio.to_thread(_reassert_chat_claim, multi_model_mode)
                 if replacing:
+                    await asyncio.to_thread(_require_loaded_base_access)
                     account_access.join_resident("chat")
                 if request._advertised_id:
                     backend._openai_advertised_id = request._advertised_id

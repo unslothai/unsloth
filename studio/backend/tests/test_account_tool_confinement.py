@@ -894,6 +894,49 @@ def test_privileged_etc_secrets_are_excluded_from_the_system_grant(tmp_path, mon
         ), private
 
 
+def test_root_only_studio_and_cloud_init_secrets_are_excluded(tmp_path, monkeypatch):
+    """A root-run Studio keeps the Docker initial password under /run/unsloth and cloud-init user-data
+    (often holding UNSLOTH_STUDIO_PASSWORD) under /var/lib/cloud and /run/cloud-init: no managed tool reads them."""
+    if sys.platform != "linux":
+        pytest.skip("Linux rule builder")
+    root = tmp_path / "host"
+    for name in (
+        "run/unsloth",
+        "run/cloud-init",
+        "run/lock",
+        "var/lib/cloud/instance",
+        "var/lib/dpkg",
+        "etc/wireguard",
+    ):
+        (root / name).mkdir(parents = True)
+    (root / "run/unsloth/studio-initial-password").write_text("pw")
+    (root / "var/lib/cloud/instance/user-data.txt").write_text("UNSLOTH_STUDIO_PASSWORD=pw")
+    (root / "etc/wireguard/wg0.conf").write_text("PrivateKey = x")
+    (root / "etc/hosts").write_text("127.0.0.1 localhost")
+    _keep_the_interpreter_walk_out_of_the_fixtures(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        tool_confinement,
+        "_SYSTEM_READ_ROOTS",
+        tuple(str(root / sub) for sub in ("run", "var/lib", "etc")),
+    )
+    for name in ("_PRIVATE_RUNTIME_ROOTS", "_PRIVATE_SYSTEM_PATHS"):
+        monkeypatch.setattr(
+            tool_confinement,
+            name,
+            tuple(str(root / p.lstrip("/")) for p in getattr(tool_confinement, name)),
+        )
+    run_as(ALICE, tools._get_workdir, "chat")
+    rules = run_as(ALICE, tool_confinement._landlock_rules, 6, tools._SANDBOX_SITE_DIR)
+    granted = [p for p, _ in rules]
+    resolved = str(root.resolve())
+    for public in ("run/lock", "var/lib/dpkg", "etc/hosts"):
+        assert f"{resolved}/{public}" in granted, public
+    for private in ("run/unsloth", "run/cloud-init", "var/lib/cloud", "etc/wireguard"):
+        assert not any(
+            p == f"{resolved}/{private}" or p.startswith(f"{resolved}/{private}/") for p in granted
+        ), private
+
+
 def test_landlock_grants_device_nodes_not_the_device_tree(tmp_path):
     """Same-UID ptys, shm objects and a root deployment's disks live under /dev; tools get the pseudo-devices."""
     if sys.platform != "linux":

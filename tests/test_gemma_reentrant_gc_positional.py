@@ -17,7 +17,7 @@ _VISION = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "
 
 
 def _load_wrapper(original):
-    tree = ast.parse(_VISION.read_text())
+    tree = ast.parse(_VISION.read_text(encoding = "utf-8"))
     fn = next(
         n
         for n in ast.walk(tree)

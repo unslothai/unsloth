@@ -3441,7 +3441,7 @@ function VideoGenerator({
     if (modelLinkedFromOutside(wanted)) {
       const linked = { model: wanted, quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
       void navigateSelf({ to: "/video", search: {}, replace: true });
-      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/video", search: linked }));
+      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/video", search: linked, replace: true }));
       return;
     }
     setFamilyOverride("auto");
