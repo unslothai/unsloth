@@ -29428,43 +29428,49 @@ class LlamaCppBackend:
                             if len(devices) < 2:
                                 return True
                             _ub = _ubatch_for_slots(slots)
-                            _kv_kw = {
-                                "swa_full": swa_full,
-                                "n_parallel": slots,
-                                "kv_unified": planned_kv_unified,
-                                "n_ubatch": _ub,
-                                "flash_attn": planned_flash_attn,
-                            }
+                            _cut_inputs = dict(
+                                separate_draft_on_gpu = bool(
+                                    _mtp_will_engage and _mtp_draft_for_budget
+                                ),
+                                model_path = model_path,
+                                kv_cache_bytes = self._estimate_kv_cache_bytes(
+                                    _reduce_ctx,
+                                    cache_type_kv,
+                                    swa_full = swa_full,
+                                    n_parallel = slots,
+                                    kv_unified = planned_kv_unified,
+                                    n_ubatch = _ub,
+                                    flash_attn = planned_flash_attn,
+                                ),
+                                kv_layer_weights = self._kv_layer_weights(
+                                    _reduce_ctx,
+                                    swa_full = swa_full,
+                                    n_parallel = slots,
+                                    kv_unified = planned_kv_unified,
+                                    n_ubatch = _ub,
+                                    flash_attn = planned_flash_attn,
+                                    cache_type_kv = cache_type_kv,
+                                ),
+                                mtp_will_engage = bool(_mtp_will_engage),
+                                compute_buffer_flat = int(_layer_compute_buffer(slots)),
+                                extra_gpu_bytes = (
+                                    mmproj_size
+                                    + _shared_pool_mmproj
+                                    + _mtp_bytes(_reduce_ctx, slots, _ub)
+                                ),
+                                ctx_compute_per_device = (
+                                    _cc_bytes(_reduce_ctx, len(devices), slots) // len(devices)
+                                ),
+                                soft_overhead = _soft_overhead,
+                                gpus = list(gpus),
+                                gpu_usable_mib = {
+                                    _idx: max(0.0, _gpu_usable((_idx, _free), _pin_fraction))
+                                    for _idx, _free in gpus
+                                },
+                            )
                             _cut_split = self._mixed_pin_split(
                                 list(devices),
-                                {
-                                    "separate_draft_on_gpu": bool(
-                                        _mtp_will_engage and _mtp_draft_for_budget
-                                    ),
-                                    "model_path": model_path,
-                                    "kv_cache_bytes": self._estimate_kv_cache_bytes(
-                                        _reduce_ctx, cache_type_kv, **_kv_kw
-                                    ),
-                                    "kv_layer_weights": self._kv_layer_weights(
-                                        _reduce_ctx, cache_type_kv = cache_type_kv, **_kv_kw
-                                    ),
-                                    "mtp_will_engage": bool(_mtp_will_engage),
-                                    "compute_buffer_flat": int(_layer_compute_buffer(slots)),
-                                    "extra_gpu_bytes": (
-                                        mmproj_size
-                                        + _shared_pool_mmproj
-                                        + _mtp_bytes(_reduce_ctx, slots, _ub)
-                                    ),
-                                    "ctx_compute_per_device": (
-                                        _cc_bytes(_reduce_ctx, len(devices), slots) // len(devices)
-                                    ),
-                                    "soft_overhead": _soft_overhead,
-                                    "gpus": list(gpus),
-                                    "gpu_usable_mib": {
-                                        _idx: max(0.0, _gpu_usable((_idx, _free), _pin_fraction))
-                                        for _idx, _free in gpus
-                                    },
-                                },
+                                _cut_inputs,
                                 _shared_gpu_ids,
                                 extra_args,
                                 os.environ,
