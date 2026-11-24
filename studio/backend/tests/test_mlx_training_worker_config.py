@@ -827,7 +827,12 @@ class _UnsizedStream:
         raise TypeError("a stream has no length")
 
 
-def _exec_trainer_config(dataset_streaming, embedding_lr_value, config = None, fields = None):
+def _exec_trainer_config(
+    dataset_streaming,
+    embedding_lr_value,
+    config = None,
+    fields = None,
+):
     block = compile(ast.Module(body = _trainer_config_block(), type_ignores = []), "<cfg>", "exec")
     configs, schedules = [], []
     namespace = dict(vars(_worker))
