@@ -8606,6 +8606,21 @@ _LISTED_DEVICE_RE = re.compile(r"^\s+(\S+):\s")
 _LIST_DEVICES_HEADER = "Available devices:"
 
 
+class _ExitedProcess:
+    """A reaped child's exit status: no pid or terminate(), so a kill never signals a reused pid."""
+
+    pid = None
+
+    def __init__(self, returncode: Optional[int]):
+        self.returncode = returncode
+
+    def poll(self) -> Optional[int]:
+        return self.returncode
+
+    def wait(self, timeout: Optional[float] = None) -> Optional[int]:
+        return self.returncode
+
+
 def _parse_listed_devices(text: Optional[str]) -> Optional[list[str]]:
     """Only lines below the header count: backend init logging above it also has colons."""
     if not text:
@@ -34011,6 +34026,8 @@ class LlamaCppBackend:
                                 self._stdout_thread.join(timeout = 2)
                             _undo_ld, _undo_proc, _undo_lines, _undo_log = _rocm_signal_undo
                             env["LD_LIBRARY_PATH"] = _undo_ld
+                            # Reaped before the bundle launch, so only its exit status comes back.
+                            _undo_proc = _ExitedProcess(_undo_proc.poll())
                             with self._spawn_lock:
                                 self._process = _undo_proc
                                 self._process_env = (_undo_proc, env)

@@ -1557,6 +1557,7 @@ def _run_full_offload_spawns(
     outputs,
     returncodes,
     bundle_devices = ("ROCm0",),
+    sink = None,
 ):
     """Runs load_model with --fit off; use_system_rocm=False skips /opt/rocm/lib, as the retry does."""
 
@@ -1611,6 +1612,9 @@ def _run_full_offload_spawns(
     monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", {})
 
     launches = []
+    terminated = []
+    if sink is not None:
+        sink["terminated"] = terminated
 
     class _Process:
         pid = 123
@@ -1623,7 +1627,7 @@ def _run_full_offload_spawns(
             return self.returncode
 
         def terminate(self):
-            return None
+            terminated.append(self)
 
         def wait(self, timeout = None):
             return self.returncode
@@ -1769,15 +1773,19 @@ class TestHipRocrSegfaultRetriesBundleOnly:
         self, monkeypatch, tmp_path
     ):
         """If the bundled runtime crashes too, later recoveries go back to system ROCm."""
+        sink = {}
         launches, loaded, error = _run_full_offload_spawns(
             monkeypatch,
             tmp_path,
             outputs = ["", "", ""],
             returncodes = [-11, -11, None],
+            sink = sink,
         )
         assert error is None
         assert loaded
         assert len(launches) == 3
+        # The restored crash is reaped once: a second kill would signal its possibly reused pid.
+        assert len(sink["terminated"]) == len(set(map(id, sink["terminated"])))
         assert "/opt/rocm/lib" not in launches[1][1]["LD_LIBRARY_PATH"].split(":")
         assert launches[2][1]["LD_LIBRARY_PATH"].startswith("/opt/rocm/lib")
         assert _fit_mode(launches[2][0]) == "on"
