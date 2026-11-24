@@ -44226,6 +44226,17 @@ class LlamaCppBackend:
                 _refit_tail = _new
                 _refit_tail_merged = True
 
+        def _final_refit_messages(messages):
+            rebuilt = list(
+                neutralize_control_markup_in_messages(messages, None, self.markup_profile)
+            )
+            if _refit_tail:
+                if _refit_tail_merged and trailing_assistant_text(rebuilt) is not None:
+                    rebuilt[-1:] = _refit_tail
+                else:
+                    rebuilt.extend(_refit_tail)
+            return rebuilt
+
         def _refit_final_after_respawn() -> None:
             nonlocal conversation
             _before_respawn_fit = conversation
@@ -44273,6 +44284,25 @@ class LlamaCppBackend:
                         _archive_current_context(
                             conversation,
                             _before_respawn_fit,
+                            # Match continuation admission, including the restored partial answer.
+                            handover_budget = (
+                                self._effective_context_length
+                                - _reply_floor(self._effective_context_length)
+                                if _refit_tail
+                                else prompt_budget(
+                                    self._effective_context_length, stream_payload["max_tokens"]
+                                )
+                            ),
+                            count_tokens = lambda fitted: self.count_chat_tokens(
+                                self._countable_messages(_final_refit_messages(fitted)),
+                                None,
+                                _final_tools,
+                                strict = True,
+                                chat_template_kwargs = stream_payload.get("chat_template_kwargs"),
+                                continue_final_message = bool(
+                                    stream_payload.get("continue_final_message")
+                                ),
+                            ),
                             thread_id = thread_id,
                             style = "inline",
                             recall_done = True,
@@ -44291,16 +44321,7 @@ class LlamaCppBackend:
                 from core.inference import context_refusal  # noqa: PLC0415
 
                 context_refusal.record_fit(truncation)
-                # Copy because neutralization may return `conversation` itself.
-                _refit_messages = list(
-                    neutralize_control_markup_in_messages(conversation, None, self.markup_profile)
-                )
-                if _refit_tail:
-                    # A merged tail replaces the trailing assistant prefill.
-                    if _refit_tail_merged and trailing_assistant_text(_refit_messages) is not None:
-                        _refit_messages[-1:] = _refit_tail
-                    else:
-                        _refit_messages.extend(_refit_tail)
+                _refit_messages = _final_refit_messages(conversation)
                 stream_payload["messages"] = _refit_messages
                 if _refit_tail:
                     # Recheck the restored tail against the replacement window.

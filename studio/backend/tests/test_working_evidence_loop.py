@@ -514,3 +514,87 @@ def test_evidence_reserves_only_unreported_usage(monkeypatch, outcome):
     retained = any(RECORD_HEADER in m.get("content", "") for m in payloads[-1]["messages"])
     assert retained is (outcome in ("zero", "timings"))
     assert events[-1]["usage"]["completion_tokens"] == 5000 - reserved
+
+
+@pytest.mark.parametrize("record_rows", [1, 180])
+def test_final_respawn_prices_evidence_with_the_continuation_tail(monkeypatch, record_rows):
+    import httpx
+    from .test_document_context_recovery import _usage
+
+    partial = "\n".join(
+        f"Finding {i}: source {i * 73} establishes exemption {i * 29}." for i in range(250)
+    )
+    record = "\n".join(
+        f"Saved finding {i}: condition {i * 29} applies." for i in range(record_rows)
+    )
+    payloads = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [
+                _tool_call_sse("python", {"code": "print('early')"}, "early"),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            [
+                _tool_call_sse("python", {"code": "print('late')"}, "late"),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            [_sse({"content": partial}), _usage(6500, 3500), _finish("length"), _done()],
+            httpx.ConnectError("server restarted"),
+            [
+                _sse({"content": "\nAll findings reported."}),
+                _usage(7000, 10),
+                _finish("stop"),
+                _done(),
+            ],
+        ],
+        payloads,
+    )
+    backend._effective_context_length = 10000
+    backend._supports_tools = True
+
+    def count(messages, *args, **kwargs):
+        return 500 + sum(len(json.dumps(m)) // 4 for m in messages)
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count)
+
+    def restart():
+        backend._effective_context_length = 8192
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", restart)
+    outputs = iter(["EARLY FINDING.\n" * 800, "LATER FINDING.\n" * 730])
+    monkeypatch.setattr(tools, "execute_tool", lambda *a, **kw: next(outputs))
+    summaries = []
+
+    def summary(messages, **kwargs):
+        summaries.append(kwargs)
+        yield record
+        yield {
+            "type": "metadata",
+            "finish_reason": "stop",
+            "usage": {"completion_tokens": len(record) // 4},
+        }
+
+    monkeypatch.setattr(backend, "generate_chat_completion", summary)
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Compare every finding."}],
+            tools = [tools.PYTHON_TOOL],
+            max_tokens = None,
+            max_tool_iterations = 2,
+            context_overflow = "truncate_oldest",
+        )
+    )
+    assert len(payloads) == 5
+    assert len(summaries) == 1
+    final = payloads[-1]["messages"]
+    assert final[-1]["content"] == partial
+    assert payloads[-1]["continue_final_message"] is True
+    assert count(final) + 512 <= 8192, count(final)
+    assert any(RECORD_HEADER in m.get("content", "") for m in final) is (record_rows == 1)
+    assert "All findings reported." in "".join(
+        e.get("text", "") for e in events if e["type"] == "content"
+    )
