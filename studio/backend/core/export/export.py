@@ -1742,6 +1742,13 @@ class ExportBackend:
                     and not self._export_dir_overlaps_checkpoint(save_directory)
                 ):
                     reused_writes = _ReusedFolderWrites(save_directory)
+                if (
+                    push_to_hub
+                    and (is_compressed or is_torchao)
+                    and not _dir_is_fresh(f"{save_directory}-{compressed_suffix}")
+                ):
+                    # The quantized "<dir>-<suffix>" sibling is pushed whole; an earlier export's files there must not go up.
+                    reused_writes = _ReusedFolderWrites(f"{save_directory}-{compressed_suffix}")
 
                 # save.py turns None into get_token(), so the merge needs the token spelled out.
                 merged_token_kw = (
@@ -1840,9 +1847,18 @@ class ExportBackend:
                                 )
                                 self._package_drafter_merged(upload_dir, repo_id)
                                 self._sync_reap_report(upload_dir)
+                            # An untracked reused quantized sibling is not uploaded: the merging push below
+                            # rebuilds it in a fresh folder.
+                            quantized_untracked = (
+                                (is_compressed or is_torchao)
+                                and reused_writes is not None
+                                and written is None
+                            )
                             # Whatever was built, only weights are worth a repo; without them the
                             # merging push below runs instead, as it did before this was uploaded.
-                            if _holds_checkpoint_weights(upload_dir, written):
+                            if not quantized_untracked and _holds_checkpoint_weights(
+                                upload_dir, written
+                            ):
                                 hf_api = HfApi(token = hf_token)
                                 repo_url = hf_api.create_repo(
                                     repo_id, private = private, exist_ok = True
