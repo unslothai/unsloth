@@ -680,8 +680,9 @@ def _whole_sequence_mask(total, device, dtype, window, cu_seqlens):
     [T, T] int64 difference or extra bool copy is ever allocated."""
     idx = torch.arange(total, device = device)
     allowed = idx[None, :] <= idx[:, None]
-    if window is not None:
-        # key > query - window is query - key < window, with the subtraction on [T] only.
+    if window is not None and window < total:
+        # key > query - window is query - key < window, with the subtraction on [T] only. A window of T or
+        # more keeps every causal key (and could not be subtracted in int64 past 2**63), so it is skipped.
         allowed &= idx[None, :] > (idx - window)[:, None]
     if cu_seqlens is not None:
         doc = torch.bucketize(idx, cu_seqlens[1:].to(device = device, dtype = idx.dtype), right = True)

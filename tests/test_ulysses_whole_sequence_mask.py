@@ -112,3 +112,11 @@ def test_mask_peak_memory_has_no_int64_square(window, packed):
     assert _peak_per_element(uh._whole_sequence_mask, total, window, cu_seqlens) < bound
     reference = _peak_per_element(_reference_mask, total, window, cu_seqlens)
     assert reference > bound  # the tracker sees what it is meant to bound
+
+
+@pytest.mark.parametrize("window", [5, 6, 2**31, 2**63 + 1])
+def test_window_at_or_past_the_length_is_plain_causal(window):
+    """A window of T or more removes nothing: the mask equals the causal one, including windows past int64."""
+    total = 5
+    causal = uh._whole_sequence_mask(total, "cpu", torch.float32, None, None)
+    assert torch.equal(uh._whole_sequence_mask(total, "cpu", torch.float32, window, None), causal)
