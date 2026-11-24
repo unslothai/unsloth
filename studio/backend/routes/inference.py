@@ -6424,6 +6424,7 @@ async def _select_request_tools(
         apply_full_access_tool_descriptions,
         get_enabled_mcp_tools,
         set_mcp_project_scope,
+        set_mcp_server_scope,
     )
 
     if not tools_on:
@@ -6519,8 +6520,13 @@ async def _select_request_tools(
         from core.inference.media_chat_tools import remember_server_loop
 
         remember_server_loop(asyncio.get_running_loop())
-        await set_mcp_project_scope(getattr(payload, "session_id", None))
-        tools = tools + await get_enabled_mcp_tools()
+        scheduled_mcp_tools = getattr(payload, "_scheduled_mcp_tools", None)
+        if scheduled_mcp_tools is None:
+            await set_mcp_project_scope(getattr(payload, "session_id", None))
+            tools += await get_enabled_mcp_tools()
+        else:
+            set_mcp_server_scope(payload._scheduled_mcp_server_ids)
+            tools += scheduled_mcp_tools
     # Some callers pass lighter payloads that may lack deep_research_armed, so read it with getattr.
     if getattr(payload, "deep_research_armed", None):
         # Past every filter incl. tools_on: arming research is what offers this tool.

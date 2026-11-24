@@ -13998,8 +13998,8 @@ _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
 _MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
-_MCP_PROJECT_SERVER_IDS: ContextVar[frozenset[str] | None] = ContextVar(
-    "mcp_project_server_ids", default = None
+_MCP_SERVER_IDS: ContextVar[frozenset[str] | None] = ContextVar(
+    "mcp_server_ids", default = None
 )
 # A dict set per request, so the listing can fill it from a thread running in a copy of the request's context.
 _MCP_LISTING_MATCHES: ContextVar = ContextVar("mcp_listing_matches", default = None)
@@ -14896,20 +14896,24 @@ def mcp_project_excludes(server_id: str, session_id: str | None) -> bool:
     return selected is not None and server_id not in selected
 
 
+def set_mcp_server_scope(server_ids: frozenset[str] | None) -> None:
+    _MCP_SERVER_IDS.set(server_ids)
+
+
 async def set_mcp_project_scope(session_id: str | None) -> None:
     selected = (
         await asyncio.to_thread(_mcp_project_server_ids, session_id)
         if session_id and session_id.startswith(_PROJECT_SESSION_PREFIX)
         else None
     )
-    _MCP_PROJECT_SERVER_IDS.set(selected)
+    set_mcp_server_scope(selected)
 
 
 def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
     from core.inference.studio_tools_mcp import keyless_caller
 
     keyless = keyless_caller(current_account())
-    selected = _MCP_PROJECT_SERVER_IDS.get()
+    selected = _MCP_SERVER_IDS.get()
     enabled = [
         server
         for server in servers
@@ -14963,7 +14967,10 @@ async def _discover_mcp_tools(server: dict) -> list[dict]:
 
 
 async def get_enabled_mcp_tools(
-    include_stdio: bool = True, server_ids: set[str] | None = None
+    include_stdio: bool = True,
+    server_ids: set[str] | None = None,
+    *,
+    defer_tools: bool = True,
 ) -> list[dict]:
     # keep the SQLite-backed server list off the event loop.
     servers = await asyncio.to_thread(lambda: _enabled_mcp_servers(mcp_servers_db.list_servers()))
@@ -15017,6 +15024,8 @@ async def get_enabled_mcp_tools(
                 continue
             payload = [public_tool(server, tool) for tool in payload]
             listed.append((server, payload, _mcp_specs_for_server(server, payload)))
+        if not defer_tools:
+            return [spec for _, _, specs in listed for spec in specs]
         return _mcp_listing(listed)
 
     # Off the loop: pricing the listing can make several synchronous token-count calls to llama-server.
@@ -15306,6 +15315,9 @@ def execute_tool(
             return f"Error: MCP server '{display}' is disabled"
         if mcp_project_excludes(server_id, session_id):
             return f"Error: MCP server '{display}' is not enabled for this project"
+        selected = _MCP_SERVER_IDS.get()
+        if selected is not None and server_id not in selected:
+            return f"Error: MCP server '{display}' is outside this run's selection"
         if _runs_local_mcp(server) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"
         mcp_scope = mcp_session_scope(session_id, thread_id)

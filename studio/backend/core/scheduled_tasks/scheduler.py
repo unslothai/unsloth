@@ -133,7 +133,7 @@ def system_prompt(task: dict, now_ms: int) -> str:
     local = _local_time(task, now_ms)
     when = f"{local:%A}, {local:%B} {local.day}, {local.year} at {local:%H:%M}"
     return (
-        f"This is a scheduled task the user set up in Unsloth Studio, running on {when} "
+        f"This is a scheduled task the user set up in Unsloth, running on {when} "
         f"({task['timezone']}). The user is not watching this chat and will read your reply "
         "later, so complete the task directly and do not ask follow-up questions."
     )
@@ -672,18 +672,23 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
         )
 
 
-def _tool_fields(web_search: bool) -> dict:
-    """Web search only, never python or terminal: nobody is there to approve a call, so "off" never prompts."""
+def _tool_fields(web_search: bool, mcp_enabled: bool) -> dict:
+    """Use only tools explicitly enabled on the task, with no interactive approval."""
     from state.tool_policy import get_tool_policy
 
     # --disable-tools also covers a connection's hosted search, which the local loop's veto would not reach.
-    if not web_search or get_tool_policy() is False:
+    if get_tool_policy() is False:
+        if mcp_enabled:
+            raise RunFailed(message = "MCP tools are disabled in Unsloth.")
+        web_search = False
+    if not web_search and not mcp_enabled:
         # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
         # means every built-in, python and terminal included.
         return {"tool_choice": "none", "enabled_tools": []}
     return {
         "enable_tools": True,
-        "enabled_tools": ["web_search"],
+        "enabled_tools": ["web_search"] if web_search else [],
+        "mcp_enabled": mcp_enabled,
         "permission_mode": "off",
         # Studio's search, not a provider's hosted one, as Chat sends it.
         "run_tools_locally": True,
@@ -703,7 +708,7 @@ async def generate_answer(
     cancel_event: threading.Event,
     holder: Optional[SwapHolder] = None,
 ) -> Answer:
-    """Ask the chat model to do the task; web search is the only tool a run may use."""
+    """Ask the chat model to do the task with its explicitly selected tools."""
     from fastapi import HTTPException
 
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
@@ -789,6 +794,25 @@ async def generate_answer(
                 )
             except TimeoutError:
                 raise RunFailed("timeout") from None
+            mcp_server_ids = set(task.get("mcpServerIds", ()))
+            tool_fields = _tool_fields(bool(task.get("webSearch")), bool(mcp_server_ids))
+            scheduled_mcp_tools = None
+            if mcp_server_ids:
+                from core.inference.tools import get_enabled_mcp_tools
+
+                # Deferred tool search can expand to the account-wide catalog.
+                try:
+                    scheduled_mcp_tools = await asyncio.wait_for(
+                        get_enabled_mcp_tools(server_ids = mcp_server_ids, defer_tools = False),
+                        timeout = max(0.0, deadline - loop.time()),
+                    )
+                except TimeoutError:
+                    raise RunFailed("timeout") from None
+                if not scheduled_mcp_tools:
+                    raise RunFailed(
+                        message = "No tools are available from the selected MCP servers. "
+                        "Check that they are enabled and reachable."
+                    )
             payload = ChatCompletionRequest.model_validate(
                 {
                     "messages": [
@@ -804,7 +828,7 @@ async def generate_answer(
                         if history
                         else {}
                     ),
-                    **_tool_fields(bool(task.get("webSearch"))),
+                    **tool_fields,
                     **model_fields,
                     **_reasoning_fields(
                         task.get("reasoningEffort"),
@@ -817,6 +841,12 @@ async def generate_answer(
                     ),
                 }
             )
+
+            if scheduled_mcp_tools is not None:
+                payload._scheduled_mcp_tools = scheduled_mcp_tools
+                payload._scheduled_mcp_server_ids = frozenset(mcp_server_ids)
+                # Each run starts independent stateful MCP sessions.
+                payload.thread_id = run["id"]
 
             serving: dict = {}
 

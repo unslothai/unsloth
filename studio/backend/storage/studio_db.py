@@ -908,6 +908,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             archive_successful INTEGER NOT NULL DEFAULT 0,
             project_id TEXT,
             web_search INTEGER NOT NULL DEFAULT 0,
+            mcp_server_ids_json TEXT NOT NULL DEFAULT '[]',
             thread_id TEXT
         )
         """
@@ -935,6 +936,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN project_id TEXT")
     if "web_search" not in scheduled_task_cols:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN web_search INTEGER NOT NULL DEFAULT 0")
+    if "mcp_server_ids_json" not in scheduled_task_cols:
+        conn.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN mcp_server_ids_json TEXT NOT NULL DEFAULT '[]'"
+        )
     if "thread_id" not in scheduled_task_cols:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN thread_id TEXT")
     conn.execute(
