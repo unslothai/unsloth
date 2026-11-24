@@ -556,8 +556,7 @@ _fail_calls=$(lspci_calls)
 assert_eq "a failing lspci is asked again (index $_fail_index)" \
     "yes" "$([ "$_fail_calls" -ge 2 ] && echo yes || echo "no ($_fail_calls)")"
 
-# No rocminfo or amd-smi, and a pci.ids too old to name the card ("Device [1002:7590]"):
-# the KFD topology is the only source of the arch (RX 9060 XT on Linux Mint 22.1).
+# No rocminfo/amd-smi and lspci prints "Device": only KFD names the arch (RX 9060 XT, Linux Mint 22.1).
 runtime_less_kfd_host() {   # $1 = gfx_target_version
     reset_host
     mock_kfd_gfx "$1"

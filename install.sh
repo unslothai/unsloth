@@ -5601,7 +5601,7 @@ get_torch_index_url() {
                 echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- inferring $_amd_inferred_gfx from hardware IDs." >&2
                 echo "$_base/cpu"; return
             fi
-            # Same deferral when only KFD names the arch (lspci's pci.ids predates the card); the reroute reads it too.
+            # Same deferral when only KFD names the arch; the reroute reads it too.
             _amd_kfd_gfx=$(_amd_sole_index_arch "$(_kfd_gfx_targets 2>/dev/null || true)" 2>/dev/null) || _amd_kfd_gfx=""
             if [ -n "$_amd_kfd_gfx" ]; then
                 echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- the kernel driver (KFD) reports $_amd_kfd_gfx." >&2
@@ -6544,8 +6544,7 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
             _linux_inferred_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
             _linux_inferred_gfx=$(_amd_sole_index_arch "$_linux_inferred_gfx") \
                 || _linux_inferred_gfx=""
-            # An older pci.ids names a new card "Device [1002:7590]", so no name maps; the kernel's own arch does.
-            # Never over a declared arch: that one is the user's call, mapped or not.
+            # pci.ids too old to name the card ("Device [1002:7590]"): take KFD's arch, never over a declared one.
             if [ -z "$_linux_inferred_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
                 _linux_inferred_gfx=$(_amd_sole_index_arch "$(_kfd_gfx_targets 2>/dev/null || true)") \
                     || _linux_inferred_gfx=""
