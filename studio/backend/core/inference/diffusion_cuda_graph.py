@@ -3109,6 +3109,16 @@ def set_bypass(handles: Any, on: bool) -> None:
             pass
 
 
+def wrappers_over(model: Any) -> tuple:
+    """Every live graph wrapper over ``model`` or one of its submodules, wherever its handle is stashed (a workflow
+    pipeline built from the loaded components shares the denoiser but not the owner's ``_unsloth_cuda_graphs``)."""
+    try:
+        ids = {id(m) for m in model.modules()} if hasattr(model, "modules") else {id(model)}
+    except Exception:  # noqa: BLE001
+        ids = {id(model)}
+    return tuple(w for w in tuple(_LIVE_WRAPPERS) if id(getattr(w, "module", None)) in ids)
+
+
 def _holds_graphs(handle: Any) -> bool:
     """True while ``handle`` (or its fallback handle) still holds a captured graph."""
     if getattr(handle, "cache", None):

@@ -8,6 +8,7 @@ UNSLOTH_DIFFUSION_ADALN_VERIFY=1 checks rows against the real module (eager only
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import inspect
 import os
@@ -979,21 +980,38 @@ def uninstall(
     del model.__dict__[STATE_ATTR]
     if logger is not None:
         logger.info("diffusion.adaln_precompute: removed (%s)", reason or "requested")
-    _drop_graphs_then_free(pipe, held, torch)
+    _drop_graphs_then_free(model, pipe, held, torch)
     return True
 
 
-def _drop_graphs_then_free(pipe: Any, held: tuple, torch: Any) -> None:
-    """Reset graphs reading ``held`` before freeing it (deferred past an active capture); no pipe = keep held."""
-    if pipe is None:
-        _ORPHANED.append(held)
-        return
-    handles = tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
-    from .diffusion_cuda_graph import recording_here, release_when_capture_idle, reset_all
+def _keep(_held: Any) -> None:
+    pass
+
+
+def _drop_graphs_then_free(model: Any, pipe: Any, held: tuple, torch: Any) -> None:
+    """Reset the graphs over ``model`` before freeing ``held`` (deferred past an active capture). Found through the
+    model, not ``pipe`` alone: ``bind_pipe`` points the state at a workflow pipeline that never stashed the handles."""
+    from .diffusion_cuda_graph import (
+        _holds_graphs,
+        recording_here,
+        release_when_capture_idle,
+        reset_all,
+        wrappers_over,
+    )
+
+    handles = list(getattr(pipe, "_unsloth_cuda_graphs", ()) or ()) if pipe is not None else []
+    for wrapper in wrappers_over(model):
+        if not any(wrapper is h for h in handles):
+            handles.append(wrapper)
 
     def drop(held = held) -> None:  # the default holds the buffers until this ran
         if handles:
             reset_all(handles)
+            for handle in handles:
+                if _holds_graphs(handle):
+                    # a reset that failed: the buffers live as long as the graph that may still replay them
+                    with contextlib.suppress(TypeError):
+                        weakref.finalize(handle, _keep, held)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -1006,9 +1024,6 @@ def _drop_graphs_then_free(pipe: Any, held: tuple, torch: Any) -> None:
         release_when_capture_idle(drop)
     else:
         drop()
-
-
-_ORPHANED: list = []
 
 
 def bind_pipe(pipe: Any) -> None:
