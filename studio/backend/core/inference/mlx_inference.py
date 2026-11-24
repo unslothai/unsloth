@@ -1254,7 +1254,13 @@ class VLMPromptCacheSession:
             self._forward.__exit__(*exc)
         return False
 
-    def find_prefix_length(self, token_ids):
+    def find_prefix_length(
+        self,
+        token_ids,
+        *,
+        video_timing = (),
+    ):
+        # mlx-vlm 0.8.1 passes video_timing; always empty here, as video requests get no session.
         token_ids = list(token_ids)
         self._token_ids = token_ids
         rows = len(token_ids) + self._max_new_tokens
@@ -1370,7 +1376,13 @@ class VLMPromptCacheSession:
         except Exception as exc:
             logger.info("MLX VLM prompt cache: served snapshot not kept (%s)", exc)
 
-    def update(self, _token_ids, _cache):
+    def update(
+        self,
+        _token_ids,
+        _cache,
+        *,
+        video_timing = (),
+    ):
         """mlx-vlm's after-generation hook; ``finish`` stores, as it also runs on a consumer that
         stops reading early."""
 
