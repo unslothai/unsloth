@@ -4,6 +4,8 @@
 """CPU-only torch: a video load whose float32 host floor cannot fit available RAM is refused before any download;
 GPU / MPS targets never reach the sizing."""
 
+import os
+
 import pytest
 import torch
 
@@ -27,6 +29,27 @@ except (
 _REAL_CAPACITY = dm._host_ram_capacity_mib
 _REAL_AVAILABLE = dm._available_system_memory_mib
 _REAL_MMAP = gguf_mmap.gguf_mmap_enabled
+
+# Declared on-disk sizes of the tiny test checkpoints: NTFS allocates sparse files in full, so the files hold only
+# their headers and the size the guard reads comes from here.
+_DECLARED_SIZES = {}
+
+
+@pytest.fixture(autouse = True)
+def _declared_checkpoint_sizes(monkeypatch):
+    _DECLARED_SIZES.clear()
+    if vch is None:
+        return
+    real = vch._checkpoint_size
+
+    def sized(repo, filename):
+        size, path = real(repo, filename)
+        if path is not None and os.path.basename(path) in _DECLARED_SIZES:
+            return _DECLARED_SIZES[os.path.basename(path)], path
+        return size, path
+
+    monkeypatch.setattr(vch, "_checkpoint_size", sized)
+
 
 FAM = {f.name: f for f in VIDEO_FAMILIES}
 LTX25, LTX2, H3 = FAM["ltx-2.5"], FAM["ltx-2"], FAM["minimax-h3"]
@@ -199,8 +222,8 @@ def test_gguf_copy_is_priced_when_the_mmap_hook_is_off(host, monkeypatch, tmp_pa
     host("cpu", 50 * GB_PER_GIB, LTX25_RENDERED_AVAILABLE_GB)
     monkeypatch.setattr(gguf_mmap, "gguf_mmap_enabled", lambda: False)
     name = "ltx-2.5-22b-distilled-UD-Q4_K_XL.gguf"
-    with open(tmp_path / name, "wb") as f:
-        f.truncate(14_000_234_880)  # sparse: only the size matters
+    (tmp_path / name).write_bytes(b"GGUF")
+    _DECLARED_SIZES[name] = 14_000_234_880
     msg = _refusal(LTX25, "gguf", checkpoint_repo = str(tmp_path), checkpoint_filename = name)
     assert "needs about 42.4 GB" in msg and "GGUF denoiser copied into memory 14.0" in msg
     # The copy is what a lower quant shrinks, so the advice names the size that fits.
@@ -373,7 +396,7 @@ def test_cpu_check_follows_the_callers_target(host, sizing_must_not_run, monkeyp
 
 
 def _sparse_safetensors(path, dtype, nbytes):
-    """A safetensors file whose header declares one ``dtype`` tensor of ``nbytes``; sparse, so only its size is real."""
+    """A header-only safetensors file declaring one ``dtype`` tensor of ``nbytes``; its size is declared, not written."""
     import json
     import struct
 
@@ -388,7 +411,7 @@ def _sparse_safetensors(path, dtype, nbytes):
     ).encode()
     with open(path, "wb") as f:
         f.write(struct.pack("<Q", len(header)) + header)
-        f.truncate(8 + len(header) + nbytes)
+    _DECLARED_SIZES[path.name] = 8 + len(header) + nbytes
     return path.name
 
 
