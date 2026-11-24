@@ -580,8 +580,7 @@ _LATEST_TIER_4BIT_MODEL_TYPES = frozenset(
 
 
 def latest_tier_keeps_4bit(model_name: str, hf_token: str | None = None) -> bool:
-    """Whether a latest-sidecar load stays bnb 4-bit: a validated architecture, or a checkpoint already
-    quantized with bitsandbytes (it loads 4-bit whatever the flag says). Never raises; unknown is False."""
+    """Validated architecture or an already-bnb checkpoint (loads 4-bit regardless). Never raises."""
     try:
         if _is_lora_adapter_dir(Path(model_name)):
             resolved = _resolve_base_model(model_name)

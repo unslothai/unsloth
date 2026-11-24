@@ -426,13 +426,11 @@ def _keeps_4bit(monkeypatch, value = True):
 
 
 def test_install_for_a_model_the_sidecar_keeps_in_4bit_reports_4bit(monkeypatch):
-    # Inkling 2: the install is offered, and the sidecar trains it in bnb 4-bit.
     inf_mod = _stub(monkeypatch, upgrade = {**UPGRADE, "model_type": "inkling2_loop"})
     _keeps_4bit(monkeypatch)
     response = _call(inf_mod, model = "unsloth/Inkling-2-Mini")
     assert response.requires_transformers_upgrade is True
     assert response.forces_16bit is False
-    # The frontend reads this to skip its "Install switches to 16-bit" disclosure.
     assert response.sidecar_keeps_4bit is True
 
 

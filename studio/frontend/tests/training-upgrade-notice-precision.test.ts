@@ -96,7 +96,6 @@ test("the sidecar already routing this model needs no action-dependent wording",
 });
 
 test("an install the sidecar keeps in 4-bit is announced with no precision change", () => {
-  // Inkling 2: the release is installable and the sidecar trains it in bnb 4-bit.
   const notice = trainingTransformersUpgradeNotice(
     {
       ...BOTH_ACTIONS,

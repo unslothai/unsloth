@@ -20613,7 +20613,7 @@ async def _load_model_impl(
                 f"Resolved load_in_4bit={effective_load_in_4bit} for '{model_log_label}' "
                 f"from adapter_config.json / base model (requested {request.load_in_4bit})"
             )
-        # Latest-sidecar models load 16-bit unless validated in 4-bit (the worker's rule); size the guard to match.
+        # Latest-sidecar models load 16-bit unless kept in 4-bit (the worker's rule); size the guard to match.
         if effective_load_in_4bit and not config.is_gguf:
             from utils.transformers_version import latest_tier_forces_16bit
             if await asyncio.to_thread(
@@ -21838,8 +21838,7 @@ async def validate_model(
             )
 
         # Mirror /load's latest-sidecar 16-bit flip: an active sidecar forces 16-bit; an offered upgrade
-        # only without a custom-code (auto_map) fallback, which still loads 4-bit. Neither applies to
-        # a model the sidecar keeps in 4-bit.
+        # only without a custom-code (auto_map) fallback, which still loads 4-bit.
         if effective_load_in_4bit and not is_gguf:
             from utils.transformers_version import (
                 latest_tier_forces_16bit,
@@ -22242,7 +22241,6 @@ async def check_transformers_upgrade_route(
         except Exception as exc:
             logger.debug("4-bit check failed for '%s': %s", model_name, exc)
     # Already on the sidecar: the install does not strand the checkpoint; resume is refused regardless.
-    # A model the sidecar keeps in 4-bit is not stranded by the install either.
     install_breaks_exact_resume = False
     if request.resume_run_id and not latest_tier_active and not keeps_4bit:
         install_breaks_exact_resume = await asyncio.to_thread(

@@ -2939,9 +2939,6 @@ class TestHfEndpointUnreachable:
 
 
 class TestLatestTierKeeps4Bit:
-    """latest_tier_keeps_4bit / latest_tier_forces_16bit: the sidecar's 16-bit rule spares
-    architectures validated in 4-bit (Inkling 2) and checkpoints already quantized with bitsandbytes."""
-
     @staticmethod
     def _config(monkeypatch, tv, cfg):
         monkeypatch.setattr(tv, "_remote_lora_base", lambda name, hf_token = None: None)
@@ -2964,7 +2961,6 @@ class TestLatestTierKeeps4Bit:
         assert tv.latest_tier_keeps_4bit("thinkingmachines/Inkling-2-Small") is True
 
     def test_bnb_checkpoint_keeps_4bit(self, monkeypatch):
-        """A bnb checkpoint loads 4-bit from its own quantization_config, so 16-bit would be a false claim."""
         import utils.transformers_version as tv
 
         cfg = {"model_type": "zaya", "quantization_config": {"quant_method": "bitsandbytes"}}
