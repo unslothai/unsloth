@@ -59,6 +59,12 @@ def _logging_helper():
 # ---------------------------------------------------------------- rope_scaling
 
 
+_ROPE_DEPRECATION = (
+    "`rope_scaling` is deprecated and will be removed in a future version. Set `rope_parameters` "
+    "instead, with `rope_type` and `rope_theta` included."
+)
+
+
 def _rope_warnings(record):
     return [
         w
@@ -67,36 +73,133 @@ def _rope_warnings(record):
     ]
 
 
-def test_rope_scaling_probe_does_not_warn():
+def _raw_setter_warns():
+    """Does this transformers' own `rope_scaling` setter warn? (5.3 .. 5.20 have a silent one.)"""
+    from transformers import LlamaConfig
+
+    prop = inspect.getattr_static(LlamaConfig, "rope_scaling", None)
+    if not isinstance(prop, property) or prop.fset is None:
+        return False
+    config = LlamaConfig(hidden_size = 64, num_attention_heads = 2, num_key_value_heads = 2)
+    with warnings.catch_warnings(record = True) as record:
+        warnings.simplefilter("always")
+        prop.fset(config, {"rope_type": "linear", "factor": 2.0})
+    return bool(_rope_warnings(record))
+
+
+def test_rope_scaling_probe_wrapper_filters_only_its_own_warning(monkeypatch):
+    from unsloth import import_fixes
+
+    def probe():
+        warnings.warn(_ROPE_DEPRECATION, FutureWarning)
+        warnings.warn("an unrelated FutureWarning", FutureWarning)
+        return True
+
+    monkeypatch.setattr(import_fixes, "_probe_rope_scaling_assignment_drops_theta", probe)
+    before = list(warnings.filters)
+    with warnings.catch_warnings(record = True) as record:
+        warnings.simplefilter("always")
+        assert import_fixes._transformers_rope_scaling_assignment_drops_theta() is True
+    assert _rope_warnings(record) == [], [str(w.message) for w in record]
+    assert [str(w.message) for w in record] == ["an unrelated FutureWarning"]
+    assert list(warnings.filters) == before  # nothing leaks past the probe
+
+
+def test_rope_scaling_probe_gives_the_raw_answer():
     from unsloth import import_fixes
 
     with warnings.catch_warnings(record = True) as record:
         warnings.simplefilter("always")
         quiet = import_fixes._transformers_rope_scaling_assignment_drops_theta()
     assert _rope_warnings(record) == [], [str(w.message) for w in record]
-    # Same answer as the raw probe: only the message changed.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         assert quiet == import_fixes._probe_rope_scaling_assignment_drops_theta()
 
 
-def test_user_rope_scaling_write_still_warns_after_probe():
+def test_user_rope_scaling_write_still_warns_after_unsloth_writes():
     import transformers
     from transformers import LlamaConfig
     from unsloth import import_fixes
+    from unsloth.models.vision import _apply_user_rope_scaling
 
+    before = list(warnings.filters)
     import_fixes._transformers_rope_scaling_assignment_drops_theta()
+    import_fixes.assign_rope_scaling(
+        LlamaConfig(hidden_size = 64, num_attention_heads = 2, num_key_value_heads = 2),
+        {"rope_type": "linear", "factor": 2.0},
+    )
+    _apply_user_rope_scaling(
+        LlamaConfig(hidden_size = 64, num_attention_heads = 2, num_key_value_heads = 2),
+        {"rope_type": "linear", "factor": 2.0},
+    )
+    assert list(warnings.filters) == before
     config = LlamaConfig(hidden_size = 64, num_attention_heads = 2, num_key_value_heads = 2)
+    # No simplefilter("always"): a leaked "ignore" filter must be able to fail this.
+    with warnings.catch_warnings(record = True) as record:
+        config.rope_scaling = {"rope_type": "linear", "factor": 2.0}
+    expected = _raw_setter_warns()
+    assert bool(_rope_warnings(record)) is expected, (
+        f"transformers {transformers.__version__}: user write warned {bool(record)}, "
+        f"its own setter warns {expected}"
+    )
+
+
+def _rope_factor(config):
+    scaling = getattr(config, "rope_parameters", None) or getattr(config, "rope_scaling", None)
+    return dict(scaling or {}).get("factor")
+
+
+def test_unsloth_rope_writes_are_quiet_and_applied():
+    from transformers import LlamaConfig
+    from unsloth import import_fixes
+    from unsloth.models.vision import _apply_user_rope_scaling
+
+    def config():
+        return LlamaConfig(hidden_size = 64, num_attention_heads = 2, num_key_value_heads = 2)
+
+    direct, vision = config(), config()
     with warnings.catch_warnings(record = True) as record:
         warnings.simplefilter("always")
-        config.rope_scaling = {"rope_type": "linear", "factor": 2.0}
-    # transformers 5 deprecates the alias (a property); 4.x stores a plain attribute and never warned.
-    if isinstance(inspect.getattr_static(LlamaConfig, "rope_scaling", None), property):
-        assert _rope_warnings(
-            record
-        ), f"transformers {transformers.__version__}: user write lost its warning"
-    else:
-        assert _rope_warnings(record) == []
+        import_fixes.assign_rope_scaling(direct, {"rope_type": "linear", "factor": 2.0})
+        _apply_user_rope_scaling(vision, {"rope_type": "linear", "factor": 4.0})
+    assert _rope_warnings(record) == [], [str(w.message) for w in record]
+    assert _rope_factor(direct) == 2.0 and _rope_factor(vision) == 4.0
+
+
+def test_rope_inv_freq_config_copy_retry_is_quiet(monkeypatch):
+    # Object-style rope_scaling: the first rope init raises, the retry writes the plain dict
+    # on a config copy. That write is Unsloth's, so it must not print the deprecation.
+    import transformers.modeling_rope_utils as rope_utils
+    from transformers import LlamaConfig
+    from unsloth.models import llama
+
+    class _ObjectScaling:
+        rope_type = "linear"
+        factor = 2.0
+
+        def to_dict(self):
+            return {"rope_type": "linear", "factor": 2.0}
+
+    seen = []
+
+    def rope_init(config, device):
+        scaling = config.rope_scaling  # transformers 5: an alias of rope_parameters
+        if not isinstance(scaling, dict):
+            raise TypeError("object-style rope_scaling")
+        seen.append(dict(scaling))
+        return torch.ones(4), 1.0
+
+    monkeypatch.setitem(rope_utils.ROPE_INIT_FUNCTIONS, "linear", rope_init)
+    config = LlamaConfig(hidden_size = 64, num_attention_heads = 2, num_key_value_heads = 2)
+    alias = isinstance(inspect.getattr_static(LlamaConfig, "rope_scaling", None), property)
+    object.__setattr__(config, "rope_parameters" if alias else "rope_scaling", _ObjectScaling())
+    with warnings.catch_warnings(record = True) as record:
+        warnings.simplefilter("always")
+        inv_freq, scale = llama._compute_config_rope_inv_freq(config, _ObjectScaling())
+    assert seen and seen[-1].get("factor") == 2.0, "the retry did not run"
+    assert _rope_warnings(record) == [], [str(w.message) for w in record]
+    assert scale == 1.0 and inv_freq.shape == (4,)
 
 
 # ---------------------------------------------------------------- xformers

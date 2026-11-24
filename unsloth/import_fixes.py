@@ -3589,6 +3589,23 @@ def _carry_rope_theta_across_assignment(
 _ROPE_SCALING_DEPRECATION_MESSAGE = r"`?rope_scaling`? is deprecated"
 
 
+def assign_rope_scaling(config, value):
+    """``config.rope_scaling = value`` for Unsloth's own writes, without transformers 5's FutureWarning.
+
+    The caller handed Unsloth a ``rope_scaling`` (or Unsloth extended the context itself), so
+    a warning about the config attribute's name is not something the user can act on. The
+    setter still runs (it standardises ``rope_parameters``); only that one message is
+    filtered, only for this assignment. A user's own ``config.rope_scaling = ...`` still warns.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message = _ROPE_SCALING_DEPRECATION_MESSAGE,
+            category = FutureWarning,
+        )
+        config.rope_scaling = value
+
+
 def _transformers_rope_scaling_assignment_drops_theta():
     """Run the probe below without printing transformers' ``rope_scaling`` FutureWarning.
 
