@@ -2347,6 +2347,20 @@ def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset)
     return False
 
 
+def _pin_loaded_quant(entry: dict, models: list, variant: str) -> dict:
+    """Two loaded quants of a repo both answer to its bare id, routed to whichever was used last."""
+    model_id = str(entry.get("id") or "")
+    if not model_id or model_id.casefold().endswith(f":{variant}".casefold()):
+        return entry
+    prefix = f"{model_id}:".casefold()
+    sibling = any(
+        str(m.get("id") or "").casefold().startswith(prefix)
+        for m in models
+        if m.get("loaded") is not False
+    )
+    return {**entry, "id": f"{model_id}:{variant}"} if sibling else entry
+
+
 def _resolve_model(
     base: str,
     key: str,
@@ -5400,6 +5414,8 @@ def _connect(
             # That server was started FROM these knobs, so inferring a target here would reload what was just loaded.
             infer_resident = server is None,
         )
+        if load.gguf_variant:
+            entry = _pin_loaded_quant(entry, _loaded_models(base, key), load.gguf_variant)
         status = _inference_status(base, key, entry["id"]) if model else {}
         # A GGUF can be active while the resolved entry is another resident model.
         if status.get("memory_warning") and any(

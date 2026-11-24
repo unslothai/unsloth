@@ -1242,3 +1242,13 @@ def test_no_pending_retry_is_still_a_no_op(monkeypatch):
     start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 8192))
 
     assert "force_reload" not in server.loads[0]
+
+
+def test_a_named_quant_beside_its_twin_is_pinned_by_its_own_id():
+    repo = RESIDENT["id"]
+    twins = [{"id": repo, "loaded": True}, {"id": f"{repo}:Q8_0", "loaded": True}]
+    pin = start_cli._pin_loaded_quant
+    assert pin({"id": repo}, twins, "Q4_K_M")["id"] == f"{repo}:Q4_K_M"
+    assert pin({"id": repo}, twins, "Q8_0")["id"] == f"{repo}:Q8_0"
+    assert pin({"id": f"{repo}:Q8_0"}, twins, "q8_0")["id"] == f"{repo}:Q8_0"
+    assert pin({"id": repo}, twins[:1], "Q4_K_M")["id"] == repo
