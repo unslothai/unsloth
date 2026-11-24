@@ -4833,8 +4833,12 @@ def _auto_offline_keeps_cached_seed(
     *,
     hf_token: Optional[str] = None,
     local_files_only: bool = False,
+    fetch_repos: Sequence[Optional[str]] = (),
 ) -> bool:
     """An offline AUTO load whose dense DiT shards are not cached keeps the cached hosted ``scheme`` checkpoint.
+
+    The dense shards count as cached in any repo the load reads them from: ``base``, its resolved fetch repo (an
+    unsloth mirror, ``_video_fetch_repo``) and ``fetch_repos`` (the load's own ``fetch_base``).
 
     Installs where an older auto staged only the hosted int8 DiT still load offline. Cache reads only, never raises."""
     try:
@@ -4844,7 +4848,13 @@ def _auto_offline_keeps_cached_seed(
             return False
         from core.inference.diffusion import DiffusionBackend
 
-        if DiffusionBackend._released_transformer_cached(base):
+        from .diffusion_families import mirror_repo
+
+        dense_repos = []
+        for candidate in (base, *fetch_repos, _video_fetch_repo(base, hf_token), mirror_repo(base)):
+            if candidate and candidate not in dense_repos:
+                dense_repos.append(candidate)
+        if any(DiffusionBackend._released_transformer_cached(r) for r in dense_repos):
             return False
         repo = VideoBackend._denoiser_prequant_cached_repo(
             fam, scheme, base, online = False, hf_token = hf_token
@@ -10856,6 +10866,7 @@ class VideoBackend:
                 base,
                 hf_token = hf_token,
                 local_files_only = local_files_only,
+                fetch_repos = (fetch_base,),
             )
         ):
             # Auto keeps a resident bf16 DiT; seeding would change auto's precision wherever bf16 fits.

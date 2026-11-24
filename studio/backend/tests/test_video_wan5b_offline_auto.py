@@ -32,7 +32,7 @@ from .test_video_quantised_offload import _spoof
 REPO = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
 
 
-def _cache(monkeypatch, *, int8: bool, dense: bool) -> None:
+def _cache(monkeypatch, *, int8: bool, dense) -> None:
     """The hub cache as the loader sees it: the hosted INT8 DiT repo and/or the dense transformer shards."""
     monkeypatch.setattr(
         DiffusionBackend,
@@ -40,7 +40,9 @@ def _cache(monkeypatch, *, int8: bool, dense: bool) -> None:
         staticmethod(lambda repo, name, *a, **k: int8 and repo != REPO),
     )
     monkeypatch.setattr(
-        DiffusionBackend, "_released_transformer_cached", staticmethod(lambda base: dense)
+        DiffusionBackend,
+        "_released_transformer_cached",
+        staticmethod(lambda base: base in dense if isinstance(dense, (set, tuple)) else dense),
     )
 
 
@@ -78,6 +80,23 @@ def test_offline_dense_cached_auto_keeps_bf16(monkeypatch):
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     spy = _spoof(monkeypatch, tier_gib = 48)
     _cache(monkeypatch, int8 = True, dense = True)
+    _assemble(monkeypatch, dense = True, offline = True)
+    result = VideoBackend().load_pipeline(REPO, local_files_only = True, transformer_quant = "auto")
+    assert result["loaded"]
+    assert spy.seeded == []
+    assert result["transformer_quant"] != "int8"
+
+
+@pytest.mark.usefixtures("fake_runtime")
+def test_offline_dense_cached_under_resolved_repo_auto_keeps_bf16(monkeypatch):
+    # The dense shards sit only in the unsloth mirror the load resolves the base to, not under the upstream id.
+    from core.inference.diffusion_families import mirror_repo
+
+    resolved = mirror_repo(REPO)
+    assert resolved and resolved != REPO
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    spy = _spoof(monkeypatch, tier_gib = 48)
+    _cache(monkeypatch, int8 = True, dense = {resolved})
     _assemble(monkeypatch, dense = True, offline = True)
     result = VideoBackend().load_pipeline(REPO, local_files_only = True, transformer_quant = "auto")
     assert result["loaded"]
