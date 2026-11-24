@@ -3003,28 +3003,18 @@ def plan_diffusion_memory(
     requested_mode: Optional[str] = None,
     explicit_offload: bool = False,
     calibrated_activation: Optional[CalibratedImageActivation] = None,
-    streamed_companion_mib: int = 0,
 ) -> MemoryPlan:
-    """Encoders run once before step 0, so streaming them adds one transfer pass per call, not per step.
-    ``streamed_companion_mib``: the part of ``companion_dense_mib`` a streamed-DiT group plan streams too (run-once
-    companions, ``group_run_once_companions``); it leaves only the two streamed-DiT group floors."""
+    """Encoders run once before step 0, so streaming them adds one transfer pass per call, not per step."""
     mode = normalize_memory_mode(requested_mode) or MEMORY_MODE_AUTO
     can_offload = bool(getattr(target, "supports_model_cpu_offload", False))
     budget = _safe_device_budget_mib(device_memory)
     required = _sum_required(model_dense_mib, runtime_headroom_mib, base_overhead_mib)
-    streamed_companion_mib = max(0, int(streamed_companion_mib or 0))
     # The resident floor under group offload: companions stay, the transformer streams.
-    group_floor = _sum_required(
-        None
-        if companion_dense_mib is None
-        else max(0, int(companion_dense_mib) - streamed_companion_mib),
-        runtime_headroom_mib,
-        base_overhead_mib,
-    )
+    group_floor = _sum_required(companion_dense_mib, runtime_headroom_mib, base_overhead_mib)
     # Second floor with text encoders streamed too; computed only when both terms are known, and clamped at 0 since they can differ in source.
     group_floor_streamed_te = (
         _sum_required(
-            max(0, int(companion_dense_mib) - int(text_encoder_dense_mib) - streamed_companion_mib),
+            max(0, int(companion_dense_mib) - int(text_encoder_dense_mib)),
             runtime_headroom_mib,
             base_overhead_mib,
         )
@@ -3058,8 +3048,6 @@ def plan_diffusion_memory(
         "group_floor_streamed_te_mib": group_floor_streamed_te,
         "resident_transformer_floor_mib": resident_transformer_floor,
     }
-    if streamed_companion_mib:
-        estimates["streamed_companion_mib"] = streamed_companion_mib
 
     def _group_fits() -> bool:
         # Group offload only helps if the resident companions fit; a too-big text encoder needs whole-module offload.
@@ -3546,52 +3534,6 @@ def _run_once_companions_pin(dit_mib: int, leaf_mib: int, companion_mib: int, de
         return True
     budget = None if _pinned_memory_capped() else _pin_budget_mib()
     return budget is not None and budget > 0 and dit_mib + leaf_mib + companion_mib <= budget
-
-
-def _stream_companion_unpinned(
-    module: Any,
-    onload: Any,
-    logger: Any = None,
-) -> bool:
-    """Leaf-level offload of a run-once companion with no copy stream: plain copies on the compute stream, nothing
-    pinned, so a refused host pin cannot surface at an onload. On failure its hooks are removed and False returned."""
-    try:
-        import inspect
-
-        import torch
-        from diffusers.hooks import apply_group_offloading
-
-        params = inspect.signature(apply_group_offloading).parameters
-        kwargs: dict[str, Any] = {
-            "onload_device": torch.device(onload),
-            "offload_device": torch.device("cpu"),
-            "offload_type": "leaf_level",
-        }
-        for key, value in (
-            ("use_stream", False),
-            ("non_blocking", False),
-            ("record_stream", False),
-            ("low_cpu_mem_usage", True),
-        ):
-            if key in params:
-                kwargs[key] = value
-        apply_group_offloading(module, **kwargs)
-    except Exception as exc:  # noqa: BLE001 -- the caller keeps it resident
-        _remove_group_offload_hooks(module)
-        if logger is not None:
-            logger.warning(
-                "diffusion.memory: unpinned leaf offload unavailable for %s (%s); keeping it resident",
-                type(module).__name__,
-                exc,
-            )
-        return False
-    if logger is not None:
-        logger.info(
-            "diffusion.memory: streaming %s leaf by leaf unpinned (host pin budget short): plain copies once per "
-            "request, off the card for the denoise and the decode",
-            type(module).__name__,
-        )
-    return True
 
 
 def _module_storage_bytes(module: Any, seen: set[int]) -> int:
@@ -9645,11 +9587,8 @@ def _apply_group_offload(
                 module.to(onload)
         for name, module in companions.items():
             if not companions_pinned:
-                # host RAM short: no copy stream, nothing pinned (a refused pin at an onload would fail the encode)
-                if _stream_companion_unpinned(module, onload, logger):
-                    installed += 1
-                else:
-                    module.to(onload)
+                # host RAM short: resident, as before (streaming them unpinned costs more than it frees here)
+                module.to(onload)
                 continue
             ckwargs = {k: v for k, v in gkwargs.items() if k != "num_blocks_per_group"}
             ckwargs["offload_type"] = "leaf_level"

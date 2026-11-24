@@ -87,23 +87,24 @@ def _plan(
 
 
 @pytest.mark.parametrize("te", [False, True])
-def test_group_floor_leaves_the_connectors_off_the_card(te):
-    from core.inference.video import _video_offload_vram_floor_mib
+def test_group_floor_counts_the_connectors_resident_until_their_hooks_say_otherwise(
+    monkeypatch, te
+):
+    import core.inference.video as video
 
     pipe = _pipe()
-    # vae 3 + DiT window (2x2 MiB); the 6 MiB connectors stream and are smaller than the window
-    assert _video_offload_vram_floor_mib(pipe, _plan("group", te = te)) == 3 + 4
-    assert _video_offload_vram_floor_mib(pipe, _plan("group", te = te), phase = "decode") == 3
-
-
-@pytest.mark.parametrize("env", [_GROUP_ENV, _STREAM_ENV])
-def test_group_floor_kill_switches_keep_the_connectors_resident(monkeypatch, env):
-    from core.inference.video import _video_offload_vram_floor_mib
-
-    monkeypatch.setenv(env, "0")
-    pipe = _pipe()
-    assert _video_offload_vram_floor_mib(pipe, _plan("group")) == 3 + 6 + 4
-    assert _video_offload_vram_floor_mib(pipe, _plan("group"), phase = "decode") == 3 + 6
+    # before placement: resident, as main (the installer streams them only if the host can pin them)
+    assert video._video_offload_vram_floor_mib(pipe, _plan("group", te = te)) == 3 + 6 + 4
+    assert video._video_offload_vram_floor_mib(pipe, _plan("group", te = te), phase = "decode") == 3 + 6
+    # after placement with the connectors hooked: vae 3 + DiT window (2x2 MiB), the connectors streamed
+    monkeypatch.setattr(video, "_video_group_hooked", lambda module: module is not pipe.vae)
+    assert video._video_offload_vram_floor_mib(pipe, _plan("group", te = te), applied = True) == 3 + 4
+    assert (
+        video._video_offload_vram_floor_mib(
+            pipe, _plan("group", te = te), applied = True, phase = "decode"
+        )
+        == 3
+    )
 
 
 def test_resident_dit_group_plan_keeps_the_connectors_resident():
@@ -205,52 +206,18 @@ def test_group_offload_streams_the_connectors_pinned_when_they_fit(monkeypatch):
     assert pipe.vae.moved_to
 
 
-def test_group_offload_streams_the_connectors_unpinned_when_host_ram_is_short(monkeypatch):
-    # the 8 MiB DiT pins, the 6 MiB connectors would not: they still leave the card, with no copy stream and no pin
-    # at any onload (a refused pin there would fail the first prompt encode)
-    calls, deferred = _stub_group(monkeypatch, 9)
+@pytest.mark.parametrize("defer", [False, True])
+def test_group_offload_keeps_the_connectors_resident_when_host_ram_is_short(monkeypatch, defer):
+    # the 8 MiB DiT pins, the 6 MiB connectors would not: main's resident placement, no hooks and no pins
+    calls, deferred = _stub_group(monkeypatch, 9, defer = defer)
     pipe = _pipe()
+    if defer:
+        pipe._unsloth_background_pin_request = True
+        monkeypatch.setattr(dm, "_BACKGROUND_PIN_REQUEST_ATTR", "_unsloth_background_pin_request")
     assert dm._apply_group_offload(pipe, "cuda", None)
-    assert _hooks(calls)[id(pipe.connectors)] == ("leaf_level", True, False)
-    assert pipe.connectors.moved_to == []
+    assert id(pipe.connectors) not in _hooks(calls)
     assert all(m is not pipe.connectors for m in deferred)
-
-
-def test_unpinned_connectors_never_pin_even_with_background_pins(monkeypatch):
-    calls, deferred = _stub_group(monkeypatch, 9, defer = True)
-    pipe = _pipe()
-    pipe._unsloth_background_pin_request = True
-    monkeypatch.setattr(dm, "_BACKGROUND_PIN_REQUEST_ATTR", "_unsloth_background_pin_request")
-    assert dm._apply_group_offload(pipe, "cuda", None)
-    assert _hooks(calls)[id(pipe.connectors)] == ("leaf_level", True, False)
-    assert all(m is not pipe.connectors for m in deferred)
-
-
-def test_unpinned_connector_hook_failure_keeps_them_resident(monkeypatch):
-    import sys
-
-    calls, _ = _stub_group(monkeypatch, 9)
-    pipe = _pipe()
-    real = sys.modules["diffusers.hooks"].apply_group_offloading
-
-    def apply(module, **kwargs):
-        if module is pipe.connectors:
-            raise RuntimeError("refused")
-        return real(module, **kwargs)
-
-    monkeypatch.setattr(sys.modules["diffusers.hooks"], "apply_group_offloading", apply)
-    monkeypatch.setattr(dm, "_remove_group_offload_hooks", lambda module: None)
-    assert dm._apply_group_offload(pipe, "cuda", None)
     assert pipe.connectors.moved_to
-
-
-@pytest.mark.parametrize("backend, kind", [("xpu", "discrete_vram"), ("cuda", "unified_memory")])
-def test_group_floor_keeps_the_connectors_where_no_copy_stream_streams_them(backend, kind):
-    from core.inference.video import _video_offload_vram_floor_mib
-
-    plan = _plan("group")
-    plan.device_memory = types.SimpleNamespace(backend = backend, is_unified = kind == "unified_memory")
-    assert _video_offload_vram_floor_mib(_pipe(), plan) == 3 + 6 + 4
 
 
 def test_group_offload_defers_the_connector_pin_with_the_background_pins(monkeypatch):
@@ -296,73 +263,6 @@ def test_a_connector_hook_failure_keeps_them_resident(monkeypatch):
     monkeypatch.setattr(dm, "_remove_group_offload_hooks", lambda module: None)
     assert dm._apply_group_offload(pipe, "cuda", None)
     assert pipe.connectors.moved_to
-
-
-# ── planner ────────────────────────────────────────────────────────────────────
-
-
-def _device(free_mib):
-    return dm.DeviceMemory("cuda", "cuda", "discrete_vram", free_mib, free_mib)
-
-
-def _target():
-    return types.SimpleNamespace(supports_model_cpu_offload = True, device = "cuda")
-
-
-def _video_plan(free_mib, streamed = 0):
-    # LTX-2.5 shaped: 25.1 GB int8 DiT; companions 10.2 GB (connectors 6.0 of it), worker-held encoder priced 0
-    return dm.plan_diffusion_memory(
-        target = _target(),
-        device_memory = _device(free_mib),
-        model_dense_mib = 33_660,
-        runtime_headroom_mib = 7_840,
-        companion_dense_mib = 9_727,
-        text_encoder_dense_mib = 0,
-        streamed_companion_mib = streamed,
-    )
-
-
-def test_streamed_companions_leave_only_the_group_floors():
-    base = _video_plan(20_000)
-    head = _video_plan(20_000, streamed = 6_046)
-    assert head.estimates["group_floor_mib"] == base.estimates["group_floor_mib"] - 6_046
-    assert (
-        head.estimates["group_floor_streamed_te_mib"]
-        == base.estimates["group_floor_streamed_te_mib"] - 6_046
-    )
-    for key in ("model_dense_mib", "companion_dense_mib", "resident_required_mib"):
-        assert head.estimates[key] == base.estimates[key]
-    assert head.estimates["streamed_companion_mib"] == 6_046
-    assert "streamed_companion_mib" not in base.estimates
-
-
-def test_streamed_companions_admit_the_group_tier_on_a_smaller_card():
-    # 16 GiB: the 19.6 GiB group floor with the connectors resident fails; 13.6 GiB without them fits
-    assert _video_plan(16_384).offload_policy == dm.OFFLOAD_MODEL
-    head = _video_plan(16_384, streamed = 6_046)
-    assert head.offload_policy == dm.OFFLOAD_GROUP
-    assert head.stream_transformer
-    # a card that already took the group tier keeps it
-    for streamed in (0, 6_046):
-        plan = _video_plan(23_000, streamed = streamed)
-        assert plan.offload_policy == dm.OFFLOAD_GROUP and plan.stream_transformer
-
-
-def test_video_streamed_companion_mib_is_ltx25_on_a_discrete_cuda_card(monkeypatch):
-    import core.inference.host_pinning as hp
-    from core.inference.video import _video_streamed_companion_mib
-
-    monkeypatch.setattr(hp, "host_pinning_allowed", lambda *a, **k: True)
-    cuda = types.SimpleNamespace(device = "cuda", torch_device = "cuda:0")
-    ltx25 = types.SimpleNamespace(name = "ltx-2.5")
-    assert _video_streamed_companion_mib(ltx25, cuda) == int(6.34e9 / 2**20)
-    assert _video_streamed_companion_mib(types.SimpleNamespace(name = "wan2.2-ti2v-5b"), cuda) == 0
-    assert _video_streamed_companion_mib(ltx25, types.SimpleNamespace(device = "mps")) == 0
-    monkeypatch.setenv(_GROUP_ENV, "0")
-    assert _video_streamed_companion_mib(ltx25, cuda) == 0
-    monkeypatch.delenv(_GROUP_ENV)
-    monkeypatch.setattr(hp, "host_pinning_allowed", lambda *a, **k: False)
-    assert _video_streamed_companion_mib(ltx25, cuda) == 0
 
 
 # ── peak calibration key ───────────────────────────────────────────────────────
