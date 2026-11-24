@@ -9438,7 +9438,7 @@ main()
         $_amdSeen = $HasROCm -or @($amdAdapters).Count -gt 0 -or @($_hipAllArches + $_smiGfxTokens + $_asicGfxTokens).Count -gt 0
         $MixedHostRoute = Get-MixedHostTorchRoute -AmdHasGpuWheels ($AmdHasGpuWheels -and $_amdSeen) `
             -ForceRocm (Test-RocmTorchExplicitlyRequested) -CudaMaskHidesNvidia $nvMaskHidesAll `
-            -NoticeArch (Get-MixedHostNoticeArch -Arches (@($ROCmGfxArch) + @($_mixedArches)))
+            -NoticeArch $(if ($_amdSeen) { Get-MixedHostNoticeArch -Arches (@($ROCmGfxArch) + @($_mixedArches)) })
         if ($MixedHostRoute -eq "rocm") {
             $RocmTorchOverNvidia = $true
             $HasNvidiaSmi = $false

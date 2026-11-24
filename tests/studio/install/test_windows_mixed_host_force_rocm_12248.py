@@ -911,3 +911,35 @@ def test_a_declared_arch_is_corroborated_by_any_amd_adapter(wmi_count, expected)
         assert stack_mod._windows_amd_hardware_is_corroborated() is expected
         assert os.environ["UNSLOTH_ROCM_GFX_ARCH"] == "gfx1201"
     assert seen and "Win32_VideoController" in seen[0][-1]
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "evidence, route",
+    [
+        ("", "cuda"),
+        ("$amdAdapters = @([pscustomobject]@{ Name = 'AMD Radeon RX 9070 XT' })", "cuda-notice"),
+    ],
+    ids = ["declared-arch-no-card", "declared-arch-with-card"],
+)
+def test_the_notice_needs_a_card_behind_a_declared_arch(evidence, route):
+    kv = _ps_kv(
+        _script(
+            COLLECT,
+            INSTALL_HELPERS,
+            INSTALL_WHEEL_MAPS,
+            "$_hipAllArches = @(); $_smiGfxTokens = @(); $_asicGfxTokens = @(); $amdAdapters = @()",
+            evidence,
+            _env(UNSLOTH_ROCM_GFX_ARCH = "gfx1201"),
+            "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
+            "$HasNvidiaSmi = $true; $ProbeAmdBesideNvidia = $true",
+            "$ROCmGfxArch = 'gfx1201'; $AmdHasGpuWheels = $true",
+            "$HasROCm = $false; $HipSdkInstalled = $false; $ROCmGpuLabel = 'x'; $ROCmGpuName = 'x'",
+            "$ROCmUnsupportedGfxArch = $null",
+            INSTALL_DECISION,
+            'Write-Output "ROUTE=$MixedHostRoute"',
+            'Write-Output "NOTICE=$MixedHostAmdArch"',
+        )
+    )
+    assert kv["ROUTE"] == route
+    assert bool(kv["NOTICE"]) == (route == "cuda-notice")
