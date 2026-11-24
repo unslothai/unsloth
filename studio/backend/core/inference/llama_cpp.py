@@ -8226,6 +8226,10 @@ def _canonicalize_spec_mode(value):
     return "auto"
 
 
+def _join_thoughts(before: str, thought: str) -> str:
+    return f"{before.rstrip()}\n\n{thought.lstrip()}" if before.strip() else thought
+
+
 def _backfill_usage_from_timings(usage, timings):
     """Fills usage from timings when absent or zero, so the UI's t/s is not diluted by wall-clock time."""
     if not timings:
@@ -41327,6 +41331,7 @@ class LlamaCppBackend:
         _forced_tool_call_pending = False
         # Turns cut off mid-thought: continue in a fresh turn with thinking off, the one setting that guarantees visible output; compaction cannot help.
         _length_continuations = 0
+        _thought_before_retries = ""
         _effective_enable_thinking = enable_thinking
         # An explicit effort wins over enable_thinking, so clear it too.
         _effective_reasoning_effort = reasoning_effort
@@ -42793,6 +42798,9 @@ class LlamaCppBackend:
                                 _effective_reasoning_effort = reasoning_effort
                             else:
                                 conversation[:] = _cand_l
+                                _thought_before_retries = _join_thoughts(
+                                    _thought_before_retries, _resumed_reasoning + reasoning_accum
+                                )
                                 if _cap_left_l is not None:
                                     _continuation_max_tokens = _cap_left_l
                                 _accumulated_completion_tokens += _fu_l.get("completion_tokens", 0)
@@ -42828,7 +42836,11 @@ class LlamaCppBackend:
                                 record_cut_thought
                                 and not _cap_spent_g
                                 and self._mark_cut_thought(
-                                    thread_id, _resumed_reasoning + reasoning_accum
+                                    thread_id,
+                                    _join_thoughts(
+                                        _thought_before_retries,
+                                        _resumed_reasoning + reasoning_accum,
+                                    ),
                                 )
                             ):
                                 yield {
@@ -43074,6 +43086,7 @@ class LlamaCppBackend:
                 # ── Execute tool calls ──
                 # Progress made: reset stall counters and restore thinking.
                 _length_continuations = 0
+                _thought_before_retries = ""
                 _effective_enable_thinking = enable_thinking
                 _effective_reasoning_effort = reasoning_effort
                 # Captured before the reset: later records must merge into a resumed partial.

@@ -166,6 +166,22 @@ def test_a_tool_turn_the_window_cut_is_held_for_the_threads_next_request(monkeyp
     assert [e["finish_reason"] for e in events if e.get("type") == "metadata"] == ["length"]
 
 
+def test_a_tool_turn_cut_across_retries_keeps_every_attempts_thought(monkeypatch, persisted):
+    attempts = [f"attempt{i} " * 200 for i in range(_MAX_LENGTH_CONTINUATIONS + 1)]
+    streams = [
+        [_sse({"reasoning_content": thought}), _finish("length"), _usage(3_000), _done()]
+        for thought in attempts
+    ]
+    backend = _with_server_helpers(_make_backend(monkeypatch, streams, []), monkeypatch)
+
+    _with_tools(backend)
+
+    cut = cut_thought.take(THREAD)
+    assert cut is not None
+    for i in range(len(attempts)):
+        assert f"attempt{i}" in cut.thought
+
+
 def test_a_tool_recovery_whose_own_thought_is_cut_ends_as_before(monkeypatch, persisted):
     streams = [_thought_cut() for _ in range(_MAX_LENGTH_CONTINUATIONS + 1)]
     backend = _make_backend(monkeypatch, streams, [])
@@ -174,6 +190,28 @@ def test_a_tool_recovery_whose_own_thought_is_cut_ends_as_before(monkeypatch, pe
 
     assert cut_thought.take(THREAD) is None
     assert "Lower the reasoning effort" in _content(events)
+
+
+def test_a_tool_chat_that_cannot_recover_keeps_the_exhaustion_message():
+    import ast
+    import inspect
+
+    from routes import inference as inference_route
+
+    tree = ast.parse(inspect.getsource(inference_route.produce_openai_chat_completions))
+    records = [
+        ast.unparse(kw.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func).endswith("generate_chat_completion_with_tools")
+        for kw in node.keywords
+        if kw.arg == "record_cut_thought"
+    ]
+    assert records == ["_cut_recovery is None and _cut_thought_recoverable(payload)"]
+    for policy, recoverable in (("error", False), ("truncate_middle", False), (None, True)):
+        payload = _continuation()
+        payload.context_overflow = policy
+        assert inference_route._cut_thought_recoverable(payload) is recoverable
 
 
 def test_a_thread_studio_does_not_keep_is_left_alone(monkeypatch):
