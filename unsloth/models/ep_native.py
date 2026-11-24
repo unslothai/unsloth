@@ -349,6 +349,7 @@ def apply_expert_parallel(model, mesh = None):
         if callable(level.__dict__.get("generate")) or hasattr(type(level), "generate"):
             _sync_generate(level)
         _ep_save_entrypoints(level)
+        _ep_refuse_exports(level)  # a custom training loop never reaches ep_trainer_setup
         names = [n for n, _ in _ep_params(level)]
         ignored = list(getattr(level, "_ddp_params_and_buffers_to_ignore", None) or [])
         level._ddp_params_and_buffers_to_ignore = ignored + [
@@ -478,7 +479,9 @@ def _ep_save_entrypoints(level):
                     "rank's 4-bit expert stacks. Save the adapter (the PEFT model's save_pretrained or "
                     "trainer.save_model), or save from one process."
                 )
-            state = ep_full_adapter_state_dict(level)
+            # Only global rank 0 writes: only it receives the gathered tensors (the adapter's alone for a PEFT
+            # model), so no rank holds the whole expert set.
+            state = ep_full_adapter_state_dict(level, dst = 0)
             _SAVING.append(True)
             try:
                 out = (
@@ -568,30 +571,65 @@ def _gather_expert(
     p,
     group,
     value = None,
+    dst = None,
 ):
-    """The 1-GPU tensor of expert parameter `p` (or of `value`, its gradient) gathered over the ep ranks."""
+    """The 1-GPU tensor of expert parameter `p` (or of `value`, its gradient) gathered over the ep ranks. `dst` (a
+    global rank): only that rank receives the parts (the others send theirs and get None)."""
     import torch.distributed as dist
 
     dim, groups, per, E, E_pad, ep = getattr(p, _EP)
     local = (p if value is None else value).detach().contiguous()
-    parts = [torch.empty_like(local) for _ in range(ep)]
-    dist.all_gather(parts, local, group = group)
+    if dst is None:
+        parts = [torch.empty_like(local) for _ in range(ep)]
+        dist.all_gather(parts, local, group = group)
+    else:
+        parts = [torch.empty_like(local) for _ in range(ep)] if dist.get_rank() == dst else None
+        dist.gather(local, parts, dst = dst, group = group)
+        if parts is None:
+            return None
     per_rank = E_pad // ep
     pieces = [t.unflatten(dim, (groups, per_rank, per)) for t in parts]
     full = torch.cat(pieces, dim = dim + 1).flatten(dim, dim + 2)
     return _tpn()._trim_expert_pad(full, dim, groups, E, E_pad, per)
 
 
-def ep_full_adapter_state_dict(model):
-    """Collective: the model's state dict with every expert LoRA factor gathered to its 1-GPU shape."""
+def _is_peft(model):
+    try:
+        from peft import PeftModel
+    except ImportError:
+        return False
+    return isinstance(model, PeftModel)
+
+
+def ep_full_adapter_state_dict(
+    model,
+    adapter = None,
+    dst = None,
+):
+    """Collective over the ep ranks: the model's state dict with its expert tensors gathered to the 1-GPU shape.
+    `adapter` (default: `model` is a PEFT model): only the expert tensors an adapter keeps (the LoRA factors and
+    any trainable stack) are gathered; the frozen base stacks PEFT drops stay this rank's (gathering them would
+    put every expert on every rank). `dst` (a global rank, the one that writes): only it receives the gathered
+    tensors, each moved to the CPU as it arrives (one stack on the GPU at a time); every other rank gets None,
+    and the ranks of other replica groups (they hold the same experts) take no part."""
+    import torch.distributed as dist
+
+    if adapter is None:
+        adapter = _is_peft(model)
     group = _mesh(model).get_group()
-    state = dict(model.state_dict())
+    if dst is not None and dst not in dist.get_process_group_ranks(group):
+        return None
+    receives = dst is None or dist.get_rank() == dst
+    state = dict(model.state_dict()) if receives else None
     for n, p in model.named_parameters():
         layout = getattr(p, _EP, None)
-        if (
-            layout is not None and layout[0] != "4bit"
-        ):  # the frozen 4-bit stacks are not in an adapter
-            state[n] = _gather_expert(p, group)
+        if layout is None or layout[0] == "4bit":  # the frozen 4-bit stacks are not in an adapter
+            continue
+        if adapter and not (p.requires_grad or "lora_" in n):
+            continue  # a frozen base stack: not in the adapter
+        full = _gather_expert(p, group, dst = dst)
+        if receives:
+            state[n] = full if dst is None else full.cpu()
     return state
 
 
@@ -719,6 +757,26 @@ def _refuse(what):
     return refused
 
 
+_EP_EXPORTS = (
+    "save_pretrained_merged",
+    "save_pretrained_gguf",
+    "push_to_hub_merged",
+    "push_to_hub_gguf",
+    "save_pretrained_torchao",
+)
+
+
+def _ep_refuse_exports(level):
+    """Merged / GGUF / torchao exports read every weight in this process, and each rank holds only its experts:
+    refused (also by unsloth/save.py's model parallel export guard)."""
+    for attr in _EP_EXPORTS:
+        prior = getattr(level, attr, None)
+        if callable(prior) and not getattr(prior, "_unsloth_ep_refused", False):
+            refused = _refuse(attr)
+            refused._unsloth_ep_refused = True
+            setattr(level, attr, refused)
+
+
 def ep_trainer_setup(trainer):
     """Trainer.__init__ (after accelerate exists): EP-aware clipping, non-finite sync, 1-GPU adapter saves."""
     model = getattr(trainer, "model", None)
@@ -750,8 +808,9 @@ def ep_trainer_setup(trainer):
     save_model = trainer.save_model
 
     def ep_save_model(output_dir = None, _internal_call = False):
-        # Every rank gathers the expert LoRA (collective), then the Trainer's own save on the main process.
-        state = ep_full_adapter_state_dict(model)
+        # Every rank takes part in gathering the expert LoRA (collective) onto global rank 0, the main process
+        # that writes (onto every rank when each node saves), then the Trainer's own save there.
+        state = ep_full_adapter_state_dict(model, dst = None if trainer.args.save_on_each_node else 0)
         directory = output_dir or trainer.args.output_dir
         if trainer.args.should_save:
             model.save_pretrained(directory, state_dict = state)
@@ -803,12 +862,5 @@ def ep_trainer_setup(trainer):
     trainer._load_best_model = ep_load_best_model
     trainer._load_optimizer_and_scheduler = ep_load_optimizer_and_scheduler
     for level in _levels(model):
-        for attr in (
-            "save_pretrained_merged",
-            "save_pretrained_gguf",
-            "push_to_hub_merged",
-            "push_to_hub_gguf",
-        ):
-            if callable(getattr(level, attr, None)):
-                setattr(level, attr, _refuse(attr))
+        _ep_refuse_exports(level)
     return True

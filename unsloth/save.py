@@ -1579,8 +1579,8 @@ def _refuse_tp_in_place_merge(fn, method, args, kwargs):
 
 
 def _model_parallel_refuses_save(method):
-    """Every whole-model export refuses an apply_pipeline_parallel model before it writes anything (see
-    _refuse_model_parallel_export). A tensor parallel model (tp, or tp x DDP-style dp) is gathered to rank 0,
+    """Every whole-model export refuses an apply_pipeline_parallel or apply_expert_parallel model (each rank holds
+    only its experts) before it writes anything (see _refuse_model_parallel_export). A tensor parallel model (tp, or tp x DDP-style dp) is gathered to rank 0,
     which runs the export; the other ranks wait for it (models/tp_replica.py)."""
 
     def decorate(fn):

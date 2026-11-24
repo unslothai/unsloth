@@ -245,6 +245,82 @@ def _case_refused(rank, world, tmp, repo):
     }
 
 
+_EXPORTS = (
+    "save_pretrained_merged",
+    "save_pretrained_gguf",
+    "push_to_hub_merged",
+    "push_to_hub_gguf",
+)
+
+
+def _case_save(rank, world, tmp, repo):
+    """A direct save_pretrained of a LoRA model with unquantized experts: the adapter equals one process', and
+    the gather receives only the expert LoRA factors, on rank 0 alone (never a frozen base stack). Then the merged
+    / GGUF exports Unsloth binds on the model are refused without any Trainer (a custom training loop)."""
+    import torch.distributed as dist
+    from safetensors.torch import load_file
+    from torch.distributed.device_mesh import init_device_mesh
+
+    build, tpn, epn = _modules()
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    ref = _build(build, repo)
+    ref_dir = os.path.join(tmp, f"ref_{rank}")
+    ref.save_pretrained(ref_dir)
+    want = load_file(os.path.join(ref_dir, "adapter_model.safetensors"))
+    experts = {k: p.numel() for k, p in ref.named_parameters() if ".experts." in k}
+    base = {k: n for k, n in experts.items() if "lora_" not in k}
+    lora = sum(n for k, n in experts.items() if "lora_" in k)
+
+    model = _build(build, repo)
+    calls = []
+    for level in tpn._tp_chain(model):  # what patch_saving_functions binds on an Unsloth model
+        for attr in _EXPORTS:
+            setattr(level, attr, lambda *a, attr = attr, **k: calls.append(attr))
+    epn.apply_expert_parallel(model, mesh)
+    received = []
+    all_gather, gather = dist.all_gather, dist.gather
+
+    def counting_all_gather(tensor_list, tensor, *args, **kwargs):
+        received.append(sum(t.numel() for t in tensor_list))
+        return all_gather(tensor_list, tensor, *args, **kwargs)
+
+    def counting_gather(
+        tensor,
+        gather_list = None,
+        *args,
+        **kwargs,
+    ):
+        received.append(sum(t.numel() for t in gather_list or []))
+        return gather(tensor, gather_list, *args, **kwargs)
+
+    dist.all_gather, dist.gather = counting_all_gather, counting_gather
+    try:
+        out = os.path.join(tmp, "ep")
+        model.save_pretrained(out)
+    finally:
+        dist.all_gather, dist.gather = all_gather, gather
+    got = load_file(os.path.join(out, "adapter_model.safetensors"))
+    refused = {}
+    for level in tpn._tp_chain(model):
+        for attr in _EXPORTS:
+            try:
+                getattr(level, attr)("unused")
+                refused[f"{type(level).__name__}.{attr}"] = None
+            except NotImplementedError as exc:
+                refused[f"{type(level).__name__}.{attr}"] = str(exc)
+    return {
+        "received": sum(received),
+        "lora": lora,
+        "smallest_base": min(base.values()),
+        "worst": max(float((got[k] - want[k]).abs().max()) for k in want)
+        if sorted(got) == sorted(want)
+        else None,
+        "expert_keys": sum(1 for k in got if ".experts." in k),
+        "refused": refused,
+        "calls": calls,
+    }
+
+
 def _worker(rank, world, tmp, case, kwargs):
     os.environ.update(
         RANK = str(rank), WORLD_SIZE = str(world), LOCAL_RANK = str(rank), LOCAL_WORLD_SIZE = str(world)
@@ -389,3 +465,32 @@ def test_ep_refuses_models_it_cannot_shard(family):
     for r in results:
         assert r["message"] is not None and "no shardable MoE block" in r["message"], r["message"]
         assert r["unchanged"] and not r["is_ep"], r
+
+
+_SAVED = {}
+
+
+def _saved():
+    if "olmoe" not in _SAVED:
+        _SAVED["olmoe"] = _spawn("_case_save", repo = FAMILIES["olmoe"])
+    results = _SAVED["olmoe"]
+    assert all(r is not None and "error" not in r for r in results), results
+    return results
+
+
+def test_ep_adapter_save_gathers_only_lora_factors_onto_rank0():
+    rank0, rank1 = _saved()
+    for r in (rank0, rank1):  # every rank reads the one file rank 0 wrote: the 1-GPU adapter
+        assert r["worst"] == 0 and r["expert_keys"] > 0, r
+    # No base expert stack is gathered anywhere, and only the writing rank receives anything.
+    assert rank1["received"] == 0, rank1
+    assert rank0["received"] == rank0["lora"] < rank0["smallest_base"], rank0
+
+
+def test_ep_exports_refused_without_a_trainer():
+    for r in _saved():
+        assert not r["calls"], r["calls"]
+        assert r["refused"] and all(
+            m is not None and "not supported under expert parallel" in m
+            for m in r["refused"].values()
+        ), r["refused"]
