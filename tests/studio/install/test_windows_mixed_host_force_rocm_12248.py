@@ -476,7 +476,7 @@ def test_hipinfo_beside_nvidia_ignores_a_cuda_mask_naming_nvidia_cards(beside, e
             _env(**env),
             "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
             f"$ProbeAmdBesideNvidia = ${str(beside).lower()}",
-            slice_between(INSTALL_SRC, "    $script:StudioMuteLines = ", "\n"),
+            slice_between(INSTALL_SRC, "    $script:StudioMuteLines = $ProbeAmdBesideNvidia", "\n"),
             "function Invoke-FakeHipinfo { if ($null -eq $env:CUDA_VISIBLE_DEVICES) { '<unset>' } else { $env:CUDA_VISIBLE_DEVICES } }",
             "$hipinfoExe = [pscustomobject]@{ Source = 'Invoke-FakeHipinfo' }",
             HIPINFO_CALL,
@@ -498,7 +498,7 @@ def test_install_ps1_shadowing_list_matches_setup_ps1():
     assert re.findall(r"gfx\w+", install) == re.findall(r"gfx\w+", setup)
 
 
-PROBE_MUTE = slice_between(INSTALL_SRC, "    $script:StudioMuteLines = ", "\n")
+PROBE_MUTE = slice_between(INSTALL_SRC, "    $script:StudioMuteLines = $ProbeAmdBesideNvidia", "\n")
 
 
 @requires_pwsh
@@ -712,3 +712,45 @@ def test_a_forced_mixed_host_weighs_the_amd_smi_arches():
         )
     )
     assert kv["ROUTE"] == "rocm" and kv["ARCH"] == "gfx1100"
+
+
+SMI_VIS_IDX = slice_between(INSTALL_SRC, "                        $_smiVisIdx = ", "\n")
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "beside, env, idx",
+    [
+        (True, {"CUDA_VISIBLE_DEVICES": "1"}, "1"),
+        (False, {"CUDA_VISIBLE_DEVICES": "1"}, "0"),
+        (True, {"CUDA_VISIBLE_DEVICES": "1", "HIP_VISIBLE_DEVICES": "0"}, "0"),
+    ],
+    ids = ["forced-route-reads-cuda-mask", "amd-only-host-unchanged", "hip-mask-wins"],
+)
+def test_the_amd_smi_pick_applies_a_cuda_mask_beside_nvidia(beside, env, idx):
+    kv = _ps_kv(
+        _script(
+            _env(**env),
+            f"$ProbeAmdBesideNvidia = ${str(beside).lower()}",
+            SMI_VIS_IDX,
+            'Write-Output "IDX=$_smiVisIdx"',
+        )
+    )
+    assert kv["IDX"] == idx
+
+
+@requires_pwsh
+@pytest.mark.parametrize("src", [INSTALL_SRC, SETUP_SRC], ids = ["install.ps1", "setup.ps1"])
+def test_the_logger_runs_under_strict_mode(src):
+    init = "$script:StudioMuteLines = $false"
+    assert init in src.split("function Write-StudioLine")[0]
+    kv = _ps_kv(
+        _script(
+            "Set-StrictMode -Version Latest",
+            "$script:StudioStdoutRedirected = $true",
+            init,
+            _function_source(src, "Write-StudioLine"),
+            "Write-StudioLine 'OK=yes'",
+        )
+    )
+    assert kv["OK"] == "yes"

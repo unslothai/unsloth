@@ -152,6 +152,7 @@ function Install-UnslothStudio {
 
     # Resolved once: it picks the sink in Write-StudioLine. Same probe as studio/setup.ps1.
     $script:StudioStdoutRedirected = $false
+    $script:StudioMuteLines = $false
     try { $script:StudioStdoutRedirected = [Console]::IsOutputRedirected } catch { }
 
     # 5.1's Write-Host uses the OEM code page, and the desktop app decodes the pipe as UTF-8,
@@ -9144,7 +9145,8 @@ main()
                     if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
                         $HasROCm = $true
                         # gfx tokens in enumeration order, picked via HIP_VISIBLE_DEVICES.
-                        $_smiVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
+                        # Beside NVIDIA (a ROCm route) HIP applies a CUDA mask too, as setup.ps1's Resolve-VisibleGpuIndex reads it.
+                        $_smiVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } elseif ($ProbeAmdBesideNvidia -and $env:CUDA_VISIBLE_DEVICES -match '^\d') { [int]($env:CUDA_VISIBLE_DEVICES -split ',')[0] } else { 0 }
                         # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
                         $_smiGfxTokens = @([regex]::Matches($smiOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
                         # Market names, when this amd-smi prints them, indexed like the gfx

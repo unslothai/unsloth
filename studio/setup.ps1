@@ -104,6 +104,8 @@ try { $script:StudioStdoutRedirected = [Console]::IsOutputRedirected } catch { }
 
 # 5.1's Write-Host uses the OEM code page even when redirected, so use one sink:
 # the console handle when redirected, Write-Host (colorized) when interactive.
+# Only install.ps1 mutes; set here for Set-StrictMode callers.
+$script:StudioMuteLines = $false
 function Write-StudioLine {
     param([string]$Message = "", [string]$ForegroundColor)
     if ($script:StudioMuteLines) { return }
