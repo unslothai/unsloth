@@ -3847,6 +3847,9 @@ def setup_frontend(
             raise HTTPException(status_code = 404, detail = "Not Found")
         if not _frontend_request_allowed(request):
             return Response(status_code = 404)
+        # No asset is this long, and resolving a deep path costs the square of its parts on the event loop.
+        if len(full_path) > 1024:
+            return Response(status_code = 404)
 
         from utils.datasets.remote_images import is_network_share
 
