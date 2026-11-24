@@ -211,6 +211,26 @@ def test_another_quant_without_model_loads_with_its_saved_settings(monkeypatch):
     }
 
 
+def test_another_quant_beside_a_kept_twin_posts_the_bare_repo(monkeypatch):
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": True,
+            "active_model": RESIDENT["id"],
+            "model_identifier": f"{RESIDENT['id']}:Q4_K_M",
+            "gguf_variant": "Q4_K_M",
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(gguf_variant = "Q8_0"))
+
+    assert sent(server) == {
+        "model_path": RESIDENT["id"],
+        "gguf_variant": "Q8_0",
+        "use_saved_settings": True,
+    }
+
+
 def test_active_model_decides_the_resident_not_list_order(monkeypatch):
     """active_model, not catalog order, names the resident."""
     server = FakeServer(

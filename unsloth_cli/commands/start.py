@@ -2119,6 +2119,10 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
             )
         return None, None
     identifier = status.get("model_identifier")
+    quant = status.get("gguf_variant")
+    if identifier and quant and identifier.casefold().endswith(f":{quant}".casefold()):
+        if _is_hub_model_id(identifier[: -len(quant) - 1]):
+            identifier = identifier[: -len(quant) - 1]
     if identifier:
         return identifier, public_id
     # A native path lease redacts the internal path; inventing one from the basename would address the wrong file, so only a hub id can be posted back.
