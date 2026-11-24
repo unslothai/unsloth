@@ -5359,6 +5359,13 @@ _INKLING2_BANDED_QUANT_KV_RE = re.compile(rb"flash_attn_ext_banded\w*ggml_type8E
 # loader string with the banded reserve, so the build number gates it too.
 _INKLING2_MULTI_SEQ_DENSE_RE = re.compile(rb"inkling2_loop: %zu cache slots exceed")
 _INKLING2_MULTI_SEQ_DENSE_BUILD = 12649
+# The banded-position fix to #386 drops that dense reserve: several slots run banded over cell
+# positions (attn_inp_k_pos*), and short ubatches over the padded cache (attn_inp_rel_shift*).
+# Both graph input names are in libllama only from that fix on, and survive strip.
+_INKLING2_BANDED_POS_RES = (
+    re.compile(rb"attn_inp_k_pos_swa\x00"),
+    re.compile(rb"attn_inp_rel_shift_swa\x00"),
+)
 _LLAMA_LIB_GLOBS = ("libllama.so*", "libllama*.dylib", "llama.dll")
 _GGML_GPU_LIB_GLOBS = {
     "cuda": ("libggml-cuda.so*", "ggml-cuda.dll"),
@@ -5407,17 +5414,27 @@ def _llama_lib_has_multi_seq_dense(lib_dir: Path) -> bool:
     return _lib_dir_matches(lib_dir, _LLAMA_LIB_GLOBS, _INKLING2_MULTI_SEQ_DENSE_RE)
 
 
+def _llama_lib_has_banded_pos(lib_dir: Path) -> bool:
+    """Whether libllama beside llama-server has the banded-position fix to the #386 reserve; fails
+    closed, so a build without it keeps the dense pricing."""
+    return all(
+        _lib_dir_matches(lib_dir, _LLAMA_LIB_GLOBS, marker) for marker in _INKLING2_BANDED_POS_RES
+    )
+
+
 class _Inkling2BandedSupport(NamedTuple):
     """backend: ggml GPU backend, None if unknown; quant_kv: quantized banded K/V + shared mask;
     tile_kv: every visible CUDA card dequantizes q8_0 / q4_0 in the tile (Turing MMA);
     multi_seq_dense: the reserve holds the worst case (_inkling2_reserve_bytes); build_known: the
-    build number was read, so that reserve is identified, not assumed."""
+    build number was read, so that reserve is identified, not assumed; banded_pos: the fix to that
+    reserve, which holds only the KQ masks (_inkling2_banded_pos_reserve_bytes)."""
 
     backend: Optional[str] = None
     quant_kv: bool = False
     tile_kv: bool = False
     multi_seq_dense: bool = False
     build_known: bool = False
+    banded_pos: bool = False
 
 
 # Unknown build prices as pre-#399.
@@ -11078,8 +11095,9 @@ class LlamaCppBackend:
             multi_seq_dense = (
                 build_number is None or build_number >= _INKLING2_MULTI_SEQ_DENSE_BUILD
             ) and _llama_lib_has_multi_seq_dense(_llama_lib_dir(binary))
+            banded_pos = multi_seq_dense and _llama_lib_has_banded_pos(_llama_lib_dir(binary))
             return _Inkling2BandedSupport(
-                backend, quant_kv, tile_kv, multi_seq_dense, build_number is not None
+                backend, quant_kv, tile_kv, multi_seq_dense, build_number is not None, banded_pos
             )
         except Exception as exc:  # noqa: BLE001 -- an unreadable build prices as legacy
             logger.debug("Inkling 2 banded probe failed: %s", exc)
@@ -19208,6 +19226,11 @@ class LlamaCppBackend:
     _INKLING2_DENSE_CHUNK_MAX = 64
     _INKLING2_DENSE_TILE_ROWS = 64
     _INKLING2_SHARED_RUNTIME_BYTES_PER_UB = 1200 * 1024
+    # banded_pos reserve (_inkling2_banded_pos_reserve_bytes), fitted to the fix on B200: one f16
+    # KQ mask per cell and ub token, plus up to 94 KiB per ub token past the flat estimate (and
+    # 48 KiB for mixed K/V types), whatever the slots, K/V type or context.
+    _INKLING2_BANDED_POS_MASK_BYTES = 2
+    _INKLING2_BANDED_POS_BYTES_PER_UB = 160 * 1024
 
     def _compute_activation_width(self) -> int:
         """Widest dense, expert or recurrent block plus per-layer embeddings, floored at 12 * n_embd."""
@@ -19511,6 +19534,24 @@ class LlamaCppBackend:
             + fixed
         )
 
+    def _inkling2_banded_pos_reserve_bytes(
+        self,
+        n_ctx: int,
+        ub: int,
+        *,
+        split_extra: int = 0,
+        swa_full: bool = False,
+    ) -> int:
+        """Context scratch of a banded_pos build on the banded path, any slot count and K/V type:
+        the f16 KQ mask over the padded cache (the sliding layers' too with --swa-full) and a
+        per-ubatch remainder the flat estimate leaves out."""
+        masks = 2 if swa_full and self._effective_sliding_window() > 0 else 1
+        n_kv = _pad_kv_cells(n_ctx)
+        return int(
+            (self._INKLING2_BANDED_POS_MASK_BYTES * ub + split_extra) * n_kv * masks
+            + self._INKLING2_BANDED_POS_BYTES_PER_UB * ub
+        )
+
     def _inkling2_fit_regrowth_mib(
         self,
         n_ctx: int,
@@ -19533,8 +19574,10 @@ class LlamaCppBackend:
         if self._inkling2_banded_terms(n_ctx, ub, cache_type_kv, flash_attn = flash_attn) is None:
             return 0
         build = self._inkling2_banded()
-        if build.multi_seq_dense and build.build_known:
-            # The reserve already holds the worst case: only the CUDA pool grows past it.
+        if build.banded_pos or (build.multi_seq_dense and build.build_known):
+            # The reserve already holds the worst case (the fix's masks: at most 18 MiB more after
+            # DSpark drafts at 128K): only the CUDA pool grows past it. Its markers identify the
+            # fix without a build number.
             return math.ceil(self._INKLING2_RESERVED_RUNTIME_BYTES_PER_UB * ub / (1024 * 1024))
         # Mini's activation estimate as a fixed scale, so the growth tracks ub and context
         # like #18919's runtime term instead of a larger model's own activations.
@@ -19652,6 +19695,10 @@ class LlamaCppBackend:
                 n_ctx, ub, cache_type_kv, flash_attn = flash_attn, split_extra = split_extra
             )
             if banded is not None:
+                if self._inkling2_banded().banded_pos:
+                    return self._inkling2_banded_pos_reserve_bytes(
+                        n_ctx, ub, split_extra = split_extra, swa_full = swa_full
+                    )
                 if self._inkling2_banded().multi_seq_dense:
                     return self._inkling2_reserve_bytes(
                         n_ctx,

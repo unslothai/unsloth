@@ -40,6 +40,10 @@ MULTI_SEQ_CUDA = _Inkling2BandedSupport("cuda", True, True, True, True)
 # The same reserve assumed from an unreadable build number: priced, not identified.
 MULTI_SEQ_CUDA_UNKNOWN = _Inkling2BandedSupport("cuda", True, True, True, False)
 LOOP_MARKER = b"inkling2_loop: %zu cache slots exceed the maximum of %d"
+# The banded-position fix to that reserve: several slots and short ubatches run banded.
+BANDED_POS_CUDA = _Inkling2BandedSupport("cuda", True, True, True, True, True)
+BANDED_POS_CUDA_UNKNOWN = _Inkling2BandedSupport("cuda", True, True, True, False, True)
+BANDED_POS_MARKERS = b"\x00attn_inp_k_pos_swa\x00attn_inp_rel_shift_swa\x00"
 
 # Registration strings of the banded MMA kernel: #399 instantiates it per K/V tile type.
 NEW_KERNEL = b"_Z25flash_attn_ext_banded_mmaILi128ELi1EL9ggml_type8EEvPKcS2_S2_S2_PKhS2_PKfPfS7_fil"
@@ -247,7 +251,14 @@ class TestProbe:
     ):
         self._caps(monkeypatch, caps, sms)
         binary = self._install(tmp_path, {"libggml-cuda.so": NEW_KERNEL})
-        assert LlamaCppBackend.inkling2_banded_support(binary) == ("cuda", True, tile, False, False)
+        assert LlamaCppBackend.inkling2_banded_support(binary) == (
+            "cuda",
+            True,
+            tile,
+            False,
+            False,
+            False,
+        )
 
     def test_new_cuda_library(self, tmp_path):
         binary = self._install(
@@ -271,6 +282,7 @@ class TestProbe:
             False,
             False,
             False,
+            False,
         )
 
     def test_metal_build(self, tmp_path, monkeypatch):
@@ -280,6 +292,7 @@ class TestProbe:
         binary = self._install(tmp_path, {"libggml-metal.dylib": b""})
         assert LlamaCppBackend.inkling2_banded_support(binary) == (
             "metal",
+            False,
             False,
             False,
             False,
@@ -306,7 +319,43 @@ class TestProbe:
             True,
             dense,
             build is not None,
+            False,
         )
+
+    @pytest.mark.parametrize(
+        "build,lib,expected",
+        [
+            # The fix as built from ink-AB-combined: build 13010 (4f96ac056).
+            (13010, LOOP_MARKER + BANDED_POS_MARKERS, BANDED_POS_CUDA),
+            # Its markers identify it without a build number.
+            (None, LOOP_MARKER + BANDED_POS_MARKERS, BANDED_POS_CUDA_UNKNOWN),
+            # b12649-mix and ded02bdeb: the loader string alone.
+            (12649, LOOP_MARKER, MULTI_SEQ_CUDA),
+            # Both inputs are needed: one alone is not the fix this prices.
+            (13010, LOOP_MARKER + b"\x00attn_inp_k_pos_swa\x00", MULTI_SEQ_CUDA),
+            (13010, LOOP_MARKER + b"\x00attn_inp_rel_shift_swa\x00", MULTI_SEQ_CUDA),
+            # A longer name is another input, not the marker.
+            (
+                13010,
+                LOOP_MARKER + b"\x00attn_inp_k_pos_swa_x\x00attn_inp_rel_shift_swa\x00",
+                MULTI_SEQ_CUDA,
+            ),
+            # b12631-mix's build gates the dense reserve, and the fix with it.
+            (12631, LOOP_MARKER + BANDED_POS_MARKERS, NEW_CUDA._replace(build_known = True)),
+        ],
+    )
+    def test_banded_position_inputs_mark_the_fixed_reserve(
+        self, tmp_path, monkeypatch, build, lib, expected
+    ):
+        monkeypatch.setattr(
+            LlamaCppBackend, "probe_build_number", classmethod(lambda cls, binary = None: build)
+        )
+        binary = self._install(
+            tmp_path, {"libggml-cuda.so": NEW_KERNEL, "libllama.so.1.0.0": b"x" + lib + b"y"}
+        )
+        if build is None:
+            expected = expected._replace(build_known = False)
+        assert LlamaCppBackend.inkling2_banded_support(binary) == expected
 
     def test_libllama_without_the_loader_keeps_the_banded_reserve(self, tmp_path):
         binary = self._install(tmp_path, {"libggml-cuda.so": NEW_KERNEL, "libllama.so": b"llama"})
@@ -568,3 +617,147 @@ class TestMultiSlotDenseReserve:
         )
         assert seen == [cc(3), cc(2), cc(1)]
         assert cc(1) * 3 < cc(2)
+
+
+class TestBandedPositionReserve:
+    """The banded-position fix to #386 (ink-AB-combined, build 13010): the reserve holds the f16
+    KQ masks and a per-ubatch remainder, whatever the slots or K/V type. Measured CUDA0 MiB at load,
+    llama-server, Inkling-2-Mini UD-IQ1_S, flash attention, -b 2048, --kv-unified, B200."""
+
+    _MEASURED = [
+        # (n_ctx, ub, slots, cache type, --swa-full, MiB)
+        (4096, 512, 1, "f16", False, 224.23),
+        (8192, 512, 1, "f16", False, 228.24),
+        (16384, 512, 1, "f16", False, 236.28),
+        (65536, 512, 1, "f16", False, 284.46),
+        (524288, 512, 1, "f16", False, 734.21),
+        (4096, 2048, 1, "f16", False, 902.63),
+        (16384, 2048, 1, "f16", False, 950.67),
+        (65536, 2048, 1, "f16", False, 1142.86),
+        (524288, 2048, 1, "f16", False, 2936.61),
+        (32768, 256, 1, "f16", False, 126.15),
+        (262144, 256, 1, "f16", False, 239.02),
+        (32768, 1024, 1, "f16", False, 505.47),
+        (262144, 1024, 1, "f16", False, 954.35),
+        (262144, 512, 1, "bf16", False, 477.21),
+        (1048576, 512, 1, "q4_0", False, 1248.21),
+        (32768, 512, 1, "f16", True, 282.96),
+        (131072, 512, 1, "f16", True, 475.71),
+        (131072, 2048, 1, "f16", True, 1899.60),
+        (262144, 512, 1, "q4_0", True, 732.71),
+        (415488, 512, 1, "q4_0", True, 1033.38),
+        (415488, 2048, 1, "q4_0", True, 4123.77),
+        (65536, 512, 2, "f16", False, 285.54),
+        (262144, 2048, 2, "f16", False, 1915.68),
+        (4096, 512, 4, "f16", False, 226.97),
+        (8192, 512, 4, "f16", False, 231.48),
+        (32768, 512, 4, "f16", False, 255.58),
+        (65536, 512, 4, "f16", False, 287.70),
+        (131072, 512, 4, "q8_0", False, 351.95),
+        (262144, 512, 4, "q5_1", False, 480.45),
+        (524288, 512, 4, "f16", False, 737.45),
+        (1048576, 512, 4, "q4_1", False, 1251.45),
+        (32768, 2048, 4, "q5_0", False, 1026.98),
+        (131072, 2048, 4, "f16", False, 1411.35),
+        (262144, 2048, 4, "q4_0", False, 1923.85),
+        (1048576, 2048, 4, "q8_0", False, 4998.85),
+        (131072, 1024, 4, "f16", False, 704.09),
+        (32768, 256, 4, "f16", False, 127.89),
+        (65536, 512, 4, "f16", True, 347.44),
+        (131072, 512, 4, "q8_0", True, 475.95),
+        (131072, 2048, 4, "f16", True, 1899.82),
+        (274688, 512, 4, "q4_0", True, 757.53),
+        (274688, 512, 4, "q4_0", False, 492.78),
+        (65536, 512, 8, "f16", False, 292.02),
+        (65536, 512, 16, "f16", False, 300.66),
+        (262144, 512, 16, "f16", False, 493.36),
+        (65536, 512, 64, "f16", False, 352.02),
+        (131072, 512, 64, "f16", False, 416.80),
+        (196608, 512, 64, "q4_0", False, 480.98),
+    ]
+
+    @pytest.mark.parametrize("ctx,ub,slots,kv,swa_full,measured", _MEASURED)
+    def test_estimate_covers_the_reserve(self, ctx, ub, slots, kv, swa_full, measured):
+        b = _inkling2_mini(BANDED_POS_CUDA)
+        est = (
+            b._estimate_compute_buffer_bytes(n_ubatch = ub, n_parallel = slots)
+            + b._compute_buffer_ctx_bytes(ctx, ub, kv, n_parallel = slots, swa_full = swa_full)
+        ) / MIB
+        # Highest with 64 slots at 64K, where the flat estimate's output rows lead: 1.25x.
+        assert measured <= est <= measured * 1.26
+
+    @pytest.mark.parametrize(
+        "ctx,ub,measured",
+        [
+            # q8_0 K with f16 V dequantizes one more copy: 48 KiB per ub token.
+            (524288, 512, 758.21),
+            (1048576, 512, 1275.45),
+            (1048576, 2048, 5094.85),
+            (32768, 2048, 1122.98),
+        ],
+    )
+    def test_mixed_kv_types_stay_covered(self, ctx, ub, measured):
+        b = _inkling2_mini(BANDED_POS_CUDA)
+        for slots in (1, 4):
+            est = (
+                b._estimate_compute_buffer_bytes(n_ubatch = ub, n_parallel = slots)
+                + b._compute_buffer_ctx_bytes(ctx, ub, "q8_0", n_parallel = slots)
+            ) / MIB
+            assert measured <= est
+
+    @pytest.mark.parametrize("ub", [256, 512, 2048])
+    def test_slots_and_kv_types_cost_nothing_and_context_never_lowers_it(self, ub):
+        b = _inkling2_mini(BANDED_POS_CUDA)
+        prev = 0
+        for ctx in range(4096, 1048577, 4096):
+            costs = {
+                b._compute_buffer_ctx_bytes(ctx, ub, kv, n_parallel = s)
+                for kv in ("f16", "q8_0", "q4_0")
+                for s in (1, 4, 64)
+            }
+            assert len(costs) == 1
+            cost = costs.pop()
+            assert cost >= prev
+            prev = cost
+
+    @pytest.mark.parametrize(
+        "ctx,ub,slots,kv,swa_full",
+        [
+            (32768, 512, 4, "f16", False),
+            (262144, 512, 4, "q8_0", False),
+            (1048576, 512, 1, "q4_0", False),
+            (274688, 512, 4, "q4_0", True),
+            (65536, 512, 64, "f16", False),
+        ],
+    )
+    def test_far_below_the_dense_reserve(self, ctx, ub, slots, kv, swa_full):
+        fixed = _inkling2_mini(BANDED_POS_CUDA)._compute_buffer_ctx_bytes(
+            ctx, ub, kv, n_parallel = slots, swa_full = swa_full
+        )
+        dense = _inkling2_mini(MULTI_SEQ_CUDA)._compute_buffer_ctx_bytes(
+            ctx, ub, kv, n_parallel = slots, swa_full = swa_full
+        )
+        assert fixed * 3 < dense
+
+    def test_a_layer_split_adds_the_mask_copies(self):
+        b = _inkling2_mini(BANDED_POS_CUDA)
+        one = b._compute_buffer_ctx_bytes(32768, 512, "f16", n_parallel = 4)
+        split = b._compute_buffer_ctx_bytes(32768, 512, "f16", n_parallel = 4, layer_split = True)
+        assert split - one == 3 * 2 * 512 * 32768
+
+    @pytest.mark.parametrize("support", [BANDED_POS_CUDA, BANDED_POS_CUDA_UNKNOWN])
+    @pytest.mark.parametrize("ub", [512, 2048])
+    def test_fit_margin_is_only_the_pool(self, support, ub):
+        # 256 KiB per ub token; the markers identify the fix without a build number.
+        b = _inkling2_mini(support)
+        for ctx, slots in ((32768, 4), (262144, 1), (1048576, 4)):
+            assert b._inkling2_fit_regrowth_mib(ctx, ub, "q8_0", n_parallel = slots) == ub // 4
+
+    def test_flash_attention_off_and_small_ubatches_keep_the_dense_upper_bound(self):
+        fixed = _inkling2_mini(BANDED_POS_CUDA)
+        dense = _inkling2_mini(MULTI_SEQ_CUDA)
+        for kw in ({"flash_attn": False}, {}):
+            ub = 512 if kw else 32
+            assert fixed._compute_buffer_ctx_bytes(65536, ub, "f16", n_parallel = 4, **kw) == (
+                dense._compute_buffer_ctx_bytes(65536, ub, "f16", n_parallel = 4, **kw)
+            )
