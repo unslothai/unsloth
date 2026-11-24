@@ -53,10 +53,11 @@ select_cuda_jit_tools() {
 select_cuda_jit_tools || true
 
 # Studio and JupyterLab run as root, so hand what they download into a host-owned HF cache mount back to its owner.
-hf_cache_owner="$(stat -c '%u:%g' "${HF_HOME:-}" 2>/dev/null || true)"
-if [[ "$(id -u)" == 0 && -n "${hf_cache_owner}" && "${hf_cache_owner}" != 0:* ]]; then
+# Group root + g+w keeps them writable for Studio's tool sandbox, which stays uid 0 but drops every capability.
+hf_cache_uid="$(stat -c '%u' "${HF_HOME:-}" 2>/dev/null || true)"
+if [[ "$(id -u)" == 0 && -n "${hf_cache_uid}" && "${hf_cache_uid}" != 0 ]]; then
     while :; do
-        chown -R -h --from=0 "${hf_cache_owner}" "${HF_HOME}" 2>/dev/null || true
+        find "${HF_HOME}" -uid 0 \( -type l -o -exec chmod g+w {} + \) -exec chown -h "${hf_cache_uid}:0" {} + 2>/dev/null || true
         sleep 30
     done </dev/null >/dev/null 2>&1 &
 fi
