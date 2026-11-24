@@ -38,3 +38,30 @@ def test_the_check_time_state_reaches_the_worker_load():
         if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "load_checkpoint"
     ]
     assert any(k.arg == "adapter_free" for c in calls for k in c.keywords)
+
+
+def test_a_merged_decision_checkpoint_still_loads_when_no_adapter_was_seen(tmp_path, monkeypatch):
+    # Merged Clef / Laya runs carry their own weights and load no adapter base, so "no adapter at
+    # check time" is true for them and must not refuse them; an adapter-only Clef run still is.
+    merged = tmp_path / "clef-merged"
+    merged.mkdir()
+    for name in ("joint_head.safetensors", "joint_head_config.json", "config.json"):
+        (merged / name).write_text("{}")
+    backend = export_mod.ExportBackend.__new__(export_mod.ExportBackend)
+    monkeypatch.setattr(backend, "cleanup_memory", lambda: None, raising = False)
+    loaded = []
+    monkeypatch.setattr(
+        backend,
+        "_load_decision_checkpoint",
+        lambda path, *a, **k: loaded.append(a) or (True, "ok"),
+        raising = False,
+    )
+    assert backend.load_checkpoint(str(merged), adapter_free = True) == (True, "ok")
+    assert loaded == [("clef", False)]
+
+    adapter_only = tmp_path / "clef-adapter"
+    adapter_only.mkdir()
+    for name in ("joint_head.safetensors", "joint_head_config.json", "adapter_config.json"):
+        (adapter_only / name).write_text("{}")
+    ok, message = backend.load_checkpoint(str(adapter_only), adapter_free = True)
+    assert not ok and "changed after it was checked" in message

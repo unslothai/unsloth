@@ -1051,8 +1051,8 @@ class ExportBackend:
             from core.export.decision import decision_kind
 
             decision = decision_kind(checkpoint_path)
-            if decision is not None and adapter_free:
-                # A decision run is an adapter: its config was written after the check.
+            if decision is not None and decision[1] and adapter_free:
+                # An adapter-only decision run loads a base: its adapter config was written after the check.
                 return (
                     False,
                     "The adapter's base model changed after it was checked. Load it again.",
