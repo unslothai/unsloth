@@ -25,6 +25,8 @@ on:
       - 'studio/package-lock.json'
       - 'studio/.npmrc'
       - 'scripts/lockfile_supply_chain_audit.py'
+      # The audit's default npm lockfiles not already listed here.
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
       # Read by the Rust test every_shared_case_agrees_with_the_desktop_filter.
       - 'studio/backend/tests/fixtures/access_log_records.json'
       # The frontend is built here only so tauri-build finds frontendDist; its content is not under
@@ -35,6 +37,8 @@ on:
       - 'studio/frontend/.npmrc'
       - 'studio/frontend/vite*.ts'
       - 'studio/frontend/tsconfig*.json'
+      # Imported by vite-plugin-locale-preload.ts, so it runs in `vite build`.
+      - 'studio/frontend/src/i18n/locale-tags.ts'
       # Frontend files the Rust tests embed with include_str!.
       - 'studio/frontend/src/features/auth/api.ts'
       - 'studio/frontend/src/features/settings/api/debug-logs.ts'
@@ -59,6 +63,8 @@ on:
       - 'studio/package-lock.json'
       - 'studio/.npmrc'
       - 'scripts/lockfile_supply_chain_audit.py'
+      # The audit's default npm lockfiles not already listed here.
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
       # Read by the Rust test every_shared_case_agrees_with_the_desktop_filter.
       - 'studio/backend/tests/fixtures/access_log_records.json'
       # The frontend is built here only so tauri-build finds frontendDist; its content is not under
@@ -69,6 +75,8 @@ on:
       - 'studio/frontend/.npmrc'
       - 'studio/frontend/vite*.ts'
       - 'studio/frontend/tsconfig*.json'
+      # Imported by vite-plugin-locale-preload.ts, so it runs in `vite build`.
+      - 'studio/frontend/src/i18n/locale-tags.ts'
       # Frontend files the Rust tests embed with include_str!.
       - 'studio/frontend/src/features/auth/api.ts'
       - 'studio/frontend/src/features/settings/api/debug-logs.ts'
