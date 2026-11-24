@@ -37,6 +37,33 @@ def _kept() -> bool:
     )
 
 
+def internals_supported() -> bool:
+    """The exact torch internals the wrapper relies on: ``SizeVarAllocator.guard_or_false`` and
+    ``statically_known_true``, an ``is_aligned_realized_tensor`` that asks ``guard_or_false``, and the SDPA
+    constraint in ``_maybe_layout_constraints``. torch 2.4 to 2.7 lack them (their SDPA constraint never guards
+    through ``guard_or_false``), so there the wrapper stays out. Never raises."""
+    try:
+        import inspect
+
+        import torch._inductor.ir as ir
+        import torch._inductor.lowering as lowering
+        from torch._inductor.sizevars import SizeVarAllocator
+
+        if not (
+            callable(getattr(SizeVarAllocator, "guard_or_false", None))
+            and callable(getattr(SizeVarAllocator, "statically_known_true", None))
+        ):
+            return False
+        aligned = getattr(ir, "is_aligned_realized_tensor", None)
+        if not callable(aligned) or "guard_or_false" not in inspect.getsource(aligned):
+            return False
+        return callable(getattr(lowering, "sdpa_constraint", None)) and isinstance(
+            getattr(lowering, "_maybe_layout_constraints", None), dict
+        )
+    except Exception:  # noqa: BLE001 -- unknown internals: stay out
+        return False
+
+
 def _is_mod_zero(rel: Any) -> bool:
     import sympy
 
@@ -108,8 +135,11 @@ def _cache_config():
 
 def install_sdpa_align_without_guard() -> int:
     """Wrap every registered SDPA layout constraint; returns how many ops it covers (0: not installed). Idempotent,
-    never raises."""
+    never raises. With the opt-out set, a wrapper an earlier run in this process installed is taken out."""
     if _kept():
+        uninstall_sdpa_align_without_guard()
+        return 0
+    if not internals_supported():
         return 0
     with _LOCK:
         if _STATE.get("ops"):
