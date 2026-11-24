@@ -59,10 +59,8 @@ const APPLIED_WORKAROUND: &str = "UNSLOTH_WEBKIT_RENDERER_WORKAROUND";
 const FORCE_SHARED_MEMORY_MIN_VERSION: (u32, u32) = (2, 44);
 // Proprietary and open nvidia modules publish this; nouveau does not and is unaffected.
 const NVIDIA_DRIVER_VERSION_PATH: &str = "/proc/driver/nvidia/version";
-// Composited WebKit leaked a sync_file per frame on 580.173.02, 580.178.04 and 580.196.07
-// (#10214, #10795), open and proprietary modules alike: the 580 branch never got the fix.
-// 590.48.01, 595.58.03, 595.91.07, 610.43.02 and 615.71.09 do not leak. Older or unreadable
-// branches keep compositing off.
+// Composited WebKit leaks a sync_file per frame on every tested 580 driver, open or proprietary
+// (#10214, #10795); 590, 595, 610 and 615 do not. Older or unreadable branches stay off.
 const NVIDIA_COMPOSITING_MIN_BRANCH: u32 = 590;
 
 const NVIDIA_REASON: &str = "NVIDIA driver loaded (no Wayland session)";
