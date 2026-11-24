@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Wan VAE tiled decode with its spatial tiles shared by two CUDA cards of a multi-GPU selection.
+"""Wan VAE tiled decode with its spatial tiles split across two CUDA cards; bitwise the stock tiled decode.
 
-Each spatial tile is an independent causal decode over every frame (its own feature cache), so the tiles run on the
-load card and a per-decode copy of the VAE on the partner card at the same time, then blend on the load card exactly
-as diffusers does: bitwise the stock tiled decode (Kaggle 2x T4, Wan 2.2 TI2V 5B fp32: 832x480x33 129 s -> 65 s).
-Only the stock ``AutoencoderKLWan.tiled_decode`` body is mirrored (checked by AST fingerprint); untiled decodes are
-untouched. Automatic placement (no gpu_ids) lends only an idle card of the same model, like the CFG copy.
-``UNSLOTH_VIDEO_VAE_MULTIGPU=0`` keeps the decode on one card (``force``: any selected card under Automatic too)."""
+Only the stock ``AutoencoderKLWan.tiled_decode`` body is mirrored (AST fingerprint). Automatic placement lends only an
+idle same-model card. ``UNSLOTH_VIDEO_VAE_MULTIGPU=0`` disables (``force``: any selected card under Automatic)."""
 
 from __future__ import annotations
 
@@ -93,9 +89,7 @@ def _hooked(vae: Any) -> Optional[str]:
 
 
 def _automatic_partner(vae: Any, partner: int) -> tuple[Optional[int], str]:
-    """Automatic placement (no gpu_ids) lends only an idle card of the primary's model, sized from nvidia-smi so no
-    CUDA context is opened on a card it may never use (the CFG copy's rule, ``automatic_partner``); an explicit pick of
-    several cards keeps ``partner``. ``UNSLOTH_VIDEO_VAE_MULTIGPU=force`` keeps it under Automatic too."""
+    """Automatic (no gpu_ids) lends only an idle same-model card, sized via nvidia-smi so no CUDA context opens on it."""
     from .diffusion_multigpu import DeviceProbe, automatic_partner, current_selection, probe_devices
 
     selection = current_selection()
@@ -123,7 +117,6 @@ def install(
     partner: Optional[int],
     logger: Any = None,
 ) -> bool:
-    """Route ``pipe.vae.tiled_decode`` through the two-card split; partner = the selection's secondary ordinal."""
     vae = getattr(pipe, "vae", None)
     if vae is None or partner is None or not enabled():
         return False
@@ -193,8 +186,7 @@ def _module_mib(module: Any) -> int:
 
 @contextlib.contextmanager
 def _without_hooks(vae: Any):
-    """Forward hooks (e.g. the MP4 stream encoder's decoder hook) stay with the source: the copy is built without
-    them, and they are restored at once."""
+    """Forward hooks stay with the source: the copy is built without them."""
     saved = []
     for sub in vae.modules():
         for attr in (
@@ -258,12 +250,11 @@ def _cuda_autocast_state() -> tuple:
     import torch
     try:
         return torch.is_autocast_enabled("cuda"), torch.get_autocast_dtype("cuda")
-    except (AttributeError, TypeError):  # torch < 2.4
+    except (AttributeError, TypeError):
         return torch.is_autocast_enabled(), torch.get_autocast_gpu_dtype()
 
 
 def _source_map(src: Any, copy: Any) -> dict:
-    """id(source module / parameter / buffer) -> the copy's counterpart, matched by name."""
     out = {}
     copies = dict(copy.named_modules())
     for name, module in src.named_modules():
@@ -278,8 +269,7 @@ def _source_map(src: Any, copy: Any) -> dict:
 
 
 def _rebound(value: Any, mapping: dict, seen: dict) -> Any:
-    """``value`` with every source module / tensor it captures (closure cells, defaults, partial arguments, a bound
-    method's self) swapped for the copy's, recursing into captured functions. ``value`` itself when nothing moves."""
+    """``value`` with captured source modules / tensors swapped for the copy's, recursively."""
     import functools as _ft
 
     key = id(value)
@@ -311,9 +301,7 @@ def _rebound(value: Any, mapping: dict, seen: dict) -> Any:
     elif isinstance(value, types.FunctionType):
         if not any(id(item) in mapping for item in _captured(value, set())):
             return value
-        # Built before its captures are rebound, so a closure that reaches itself (a wrapper that checks
-        # ``vae.decode is <itself>``, mutually recursive helpers) gets the new function, not the source's. Cells
-        # shared by sibling closures stay shared between their rebuilt copies.
+        # Built before rebinding captures, so self-referencing closures get the new function; shared cells stay shared.
         cells = value.__closure__ or ()
         closure = []
         filled = []
@@ -324,7 +312,7 @@ def _rebound(value: Any, mapping: dict, seen: dict) -> Any:
                 seen[("cell", id(cell))] = new_cell
                 try:
                     filled.append((new_cell, cell.cell_contents))
-                except ValueError:  # an empty cell stays empty
+                except ValueError:
                     pass
             closure.append(new_cell)
         out = types.FunctionType(
@@ -348,9 +336,7 @@ def _rebound(value: Any, mapping: dict, seen: dict) -> Any:
 
 
 def _rebind_forwards(src: Any, copy: Any) -> int:
-    """Speed paths install instance-level forwards that close over the source's modules (the fused Wan residual
-    blocks, the RMS norm + activation); a deepcopy keeps those function objects, so the copy's forwards would
-    still read the load card's weights. Rebuild them against the copy's own modules. Returns how many moved."""
+    """Rebuild speed-path instance forwards (closures over source modules) against the copy's modules."""
     mapping = _source_map(src, copy)
     seen: dict = {}
     moved = 0
@@ -370,7 +356,6 @@ def torch_module_type() -> Any:
 
 
 def _captured(value: Any, seen: set) -> list:
-    """Modules and tensors a callable reaches through closure cells, defaults, partial arguments and bound self."""
     import functools as _ft
 
     if id(value) in seen:
@@ -397,7 +382,6 @@ def _captured(value: Any, seen: set) -> list:
 
 
 def _stray_tensors(module: Any, device: Any) -> list:
-    """Tensors the copy holds on another CUDA card (parameters, buffers and plain tensor attributes)."""
     import torch
 
     out = []
@@ -414,7 +398,6 @@ def _stray_tensors(module: Any, device: Any) -> list:
         for n, t in (*module.named_parameters(), *module.named_buffers())
         if t.device.type == "cuda" and t.device != device
     ]
-    # Instance-level forwards (speed paths) that still reach another module tree or another card's tensors.
     own = {id(m) for m in module.modules()}
     for name, sub in module.named_modules():
         for key, value in list(sub.__dict__.items()):
@@ -432,9 +415,7 @@ def _stray_tensors(module: Any, device: Any) -> list:
 
 
 def _partner_reserve_mib(torch: Any, partner: int, free_mib: int) -> int:
-    """What the partner card keeps free beside the copy: the reserve Automatic placement subtracts when it picks a
-    replica card (1 GiB, or what the user's VRAM Budget keeps free when larger), re-read at decode time because an
-    explicit selection never went through that check and headroom can shrink between the load and the decode."""
+    """Reserve kept free on the partner, re-read at decode time: headroom can shrink after the load."""
     from .diffusion_multigpu import _replica_reserve_mib
 
     try:
@@ -505,13 +486,10 @@ def _try_split(vae: Any, z: Any, state: dict, logger: Any) -> tuple[Optional[Any
 def _cleanup(
     torch: Any, on_cuda: bool, caller: Any, side: Any, partner: Any, decoded: dict, box: dict
 ) -> Optional[BaseException]:
-    """Every step of the split's cleanup, each run even when an earlier one raised; returns the first error.
+    """Every cleanup step runs even if an earlier one raised; returns the first error.
 
-    The load card's tiles (all of them when the partner failed mid-way) may still be running on the caller's stream:
-    the collect and empty_cache free and release blocks on every card, so both cards' work is waited for first
-    (Kaggle 2x T4: without the caller wait an aborted split's next decode hit an illegal memory access). After a
-    failed wait the collect still runs (the copy and its tiles are dropped) but nothing is released to the driver:
-    blocks of work that may still be running stay with the allocator."""
+    Both streams are waited for before freeing (Kaggle 2x T4: without it the next decode hit an illegal memory
+    access); after a failed wait nothing is released to the driver."""
     failures: list = []
 
     def step(fn: Any) -> bool:
@@ -531,8 +509,7 @@ def _cleanup(
     if on_cuda:
         import gc
 
-        # the copy sits in reference cycles (bound hooks / patch closures): collect it now, or the next decode
-        # finds its ~2.7 GiB still held on the partner card (Kaggle 2x T4: 2478 MiB free on the second render)
+        # the copy sits in reference cycles; without collect ~2.7 GiB stays on the partner (Kaggle 2x T4)
         step(gc.collect)
         if waited:
 
@@ -550,15 +527,8 @@ def split_tiled_decode(
     partner: Any,
     replica: Any = None,
 ) -> Any:
-    """``AutoencoderKLWan.tiled_decode`` (diffusers 0.42 / 0.43 body) with tiles alternating between ``vae`` (the
-    latents' card, on the caller's current stream) and a copy on ``partner`` (its own stream); returns the clamped
-    sample. Tile math, order and blend are the stock ones.
-
-    Stream discipline (every cross-card copy is explicit): the copy is built and its tiles decoded on a dedicated
-    partner stream that first waits for the caller's stream (the latents and weights are ready); copies from the load
-    card run with that caller stream current for the load card, so PyTorch orders them against it; the decoded tiles
-    come back on the caller's stream after it waits for the partner stream, with the partner stream current for the
-    source side; nothing on the partner card is freed before that stream has finished."""
+    """Stock ``AutoencoderKLWan.tiled_decode`` (diffusers 0.42 / 0.43) with tiles alternating between ``vae`` and a copy
+    on ``partner`` (own stream); every cross-card copy is ordered by explicit stream waits."""
     import torch
 
     from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
@@ -631,10 +601,8 @@ def split_tiled_decode(
         if not on_cuda:
             return contextlib.nullcontext()
         stack = contextlib.ExitStack()
-        stack.enter_context(
-            torch.cuda.stream(caller)
-        )  # current for the load card in this thread too
-        stack.enter_context(torch.cuda.stream(side))  # last: the partner card is the current device
+        stack.enter_context(torch.cuda.stream(caller))
+        stack.enter_context(torch.cuda.stream(side))
         return stack
 
     def partner_run(todo: list) -> None:
@@ -658,8 +626,7 @@ def split_tiled_decode(
                         with _without_hooks(vae):
                             copy = build_replica(vae, partner)
                     _rebind_forwards(vae, copy)
-                    # checked before the caller is released: a copy it cannot use must not start the source's
-                    # half of the tiles (the fallback decodes every tile again on the load card)
+                    # checked before releasing the caller, so no source tiles are wasted
                     stray = _stray_tensors(copy, partner)
                     if stray:
                         raise RuntimeError(
@@ -675,13 +642,12 @@ def split_tiled_decode(
         except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
             errors.append(exc)
         finally:
-            copied.set()  # any exit, setup failures included, must release the caller
+            copied.set()
 
     worker = threading.Thread(
         target = partner_run, args = (coords[1::2],), name = "unsloth-vae-split", daemon = True
     )
-    # The source decode starts once the copy exists: copying while the load card fills the causal caches
-    # (_feat_map) would clone them on the load card, and the copy briefly lifts the source's hooks.
+    # Source decode starts after the copy exists: otherwise the copy clones live causal caches (_feat_map).
     copied = threading.Event()
     worker.start()
     raised: Optional[BaseException] = None
@@ -689,22 +655,18 @@ def split_tiled_decode(
         try:
             copied.wait()
             if errors:
-                raise errors[
-                    0
-                ]  # the partner failed before its copy existed: fall back without decoding here
+                raise errors[0]
             run(vae, z, coords[0::2])
         finally:
             worker.join()
             for exc in errors:
-                # the worker's finished frames (the copy, its tiles) would stay reachable from the re-raised traceback
                 traceback.clear_frames(exc.__traceback__)
         if errors:
             raise errors[0]
         if on_cuda:
             caller.wait_stream(side)
             with torch.cuda.device(partner), torch.cuda.stream(side):
-                # source side current = the partner stream: PyTorch makes the copy wait for it, and makes it wait
-                # for the copy before any partner block is reused
+                # partner stream current for the source side orders frees against the copy
                 rows = [[decoded[(i, j)].to(home) for j in col_starts] for i in row_starts]
         else:
             rows = [[decoded[(i, j)].to(home) for j in col_starts] for i in row_starts]
@@ -714,8 +676,7 @@ def split_tiled_decode(
     finally:
         failure = _cleanup(torch, on_cuda, caller, side, partner, decoded, box)
         if failure is not None and (raised is None or sticky_cuda_error(failure)):
-            # a cleanup error surfaces when the decode itself succeeded, or replaces an ordinary failure when it
-            # lost the context (the caller must not retry on one card)
+            # a sticky (context-lost) cleanup error must not be retried on one card
             raise failure
     result_rows = []
     for i, row in enumerate(rows):
