@@ -11,6 +11,7 @@ import { sandboxFilePath, sandboxRoutePrefix } from "./sandbox-files";
 export async function saveSandboxFile(
   sessionId: string,
   name: string,
+  saveAs = name,
 ): Promise<void> {
   const path = sandboxFilePath(sessionId, name);
   // The URL bearer is never refreshed, so authFetch refreshes first; the HEAD confirms the file.
@@ -22,7 +23,7 @@ export async function saveSandboxFile(
   const url = apiUrl(
     token ? `${path}${separator}token=${encodeURIComponent(token)}` : path,
   );
-  await downloadUrlStreaming(url, name);
+  await downloadUrlStreaming(url, saveAs);
 }
 
 /** Relative names in this chat's folder; [] when nothing has been written yet. */

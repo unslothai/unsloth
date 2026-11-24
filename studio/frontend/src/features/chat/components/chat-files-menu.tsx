@@ -127,7 +127,7 @@ export function ChatFilesBridge() {
 
 async function saveChatFile(file: ChatFile): Promise<void> {
   if (file.sandbox) {
-    await saveSandboxFile(file.sandbox.sessionId, file.sandbox.name);
+    await saveSandboxFile(file.sandbox.sessionId, file.sandbox.name, file.name);
   } else if (file.dataUrl) {
     await downloadUrl(file.dataUrl, file.name);
   } else if (file.text != null) {
