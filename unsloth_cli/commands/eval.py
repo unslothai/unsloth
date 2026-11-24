@@ -336,10 +336,18 @@ def _pattern_value(patterns: dict, module: str, default):
     return default
 
 
+def _vllm_scales_lora_per_module() -> bool:
+    try:
+        installed = tuple(int(n) for n in re.findall(r"\d+", version("vllm"))[:2])
+    except PackageNotFoundError:
+        return False
+    return installed >= (0, 32)
+
+
 def _mixed_lora_scale(adapter_dir: str) -> bool:
     """True when rank_pattern / alpha_pattern give a module a scale other than lora_alpha / r.
 
-    vLLM (PEFTHelper) applies that one scale to every module, so such an adapter scores wrong.
+    vLLM before 0.32 applies that one scale to every module, so such an adapter scores wrong.
     Patterns are resolved per module like PEFT does, against the module names stored in the
     adapter weights; without readable weights the pattern keys stand in for module names.
     """
@@ -875,11 +883,13 @@ def evaluate(
                         f"--backend vllm supports LoRA ranks up to {_VLLM_LORA_RANKS[-1]}, "
                         f"but this adapter was trained with rank {rank}. {merge_hint}"
                     )
-                if _mixed_lora_scale(model_args["lora_local_path"]):
+                if not _vllm_scales_lora_per_module() and _mixed_lora_scale(
+                    model_args["lora_local_path"]
+                ):
                     _fail(
-                        "--backend vllm scales every LoRA module by lora_alpha / r and ignores "
-                        "rank_pattern / alpha_pattern, so this adapter would be scored with the "
-                        f"wrong weights. {merge_hint}"
+                        "--backend vllm before 0.32 scales every LoRA module by lora_alpha / r and "
+                        "ignores rank_pattern / alpha_pattern, so this adapter would be scored with "
+                        f"the wrong weights. Upgrade vLLM to 0.32 or newer. {merge_hint}"
                     )
                 if rank > 16:
                     model_args["max_lora_rank"] = next(r for r in _VLLM_LORA_RANKS if r >= rank)
