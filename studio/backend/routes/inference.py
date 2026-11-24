@@ -52383,6 +52383,21 @@ def _shift_kwargs(generate: Any, request: Any) -> dict:
     raise ValueError("Shift is supported on the diffusers engine only.")
 
 
+def _cfg_interval_kwargs(generate: Any, request: Any) -> dict:
+    """``cfg_interval_end`` (Fast CFG) for an engine whose generate() takes it; omitted when unset, refused
+    (ValueError -> 400) on an engine without it."""
+    value = getattr(request, "cfg_interval_end", None)
+    if value is None:
+        return {}
+    try:
+        import inspect
+        if "cfg_interval_end" in inspect.signature(generate).parameters:
+            return {"cfg_interval_end": value}
+    except (TypeError, ValueError):
+        pass
+    raise ValueError("Fast CFG is supported on the diffusers engine only.")
+
+
 def _inpaint_mask_kwargs(generate: Any, request: Any) -> dict:
     """Inpaint mask kwargs generate() accepts; only the set ones, so an untouched request is unchanged."""
     try:
@@ -52584,6 +52599,7 @@ async def _external_image_generation(
         or body.hires is not None
         or body.upscale_model
         or body.detailer is not None
+        or body.cfg_interval_end is not None
     ):
         raise HTTPException(
             status_code = 400,
@@ -53184,6 +53200,7 @@ async def _generate_diffusion_image_run(
                     **_sampler_kwargs(backend.generate, request.sampler, request.schedule_type),
                     **_sd_controls_kwargs(backend.generate, request),
                     **_shift_kwargs(backend.generate, request),
+                    **_cfg_interval_kwargs(backend.generate, request),
                     **_inpaint_mask_kwargs(backend.generate, request),
                     **_hires_kwargs(backend.generate, request),
                 )
@@ -53358,6 +53375,7 @@ async def _generate_diffusion_image_run(
                         **{
                             key: result[key]
                             for key in (
+                                "cfg_interval_end",
                                 "shift",
                                 "base_shift",
                                 "max_shift",
