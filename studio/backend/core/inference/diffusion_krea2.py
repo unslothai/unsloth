@@ -25,8 +25,7 @@ def _live_cache_dir() -> str:
 
 
 def krea2_hub_patterns() -> list[str]:
-    """The Hub files ``load_krea2_pipeline`` reads: model_index, scheduler, tokenizer and the non-variant weights
-    of each component (transformers ``model*``, diffusers ``diffusion_pytorch_model*``), nothing at the repo root."""
+    """The Hub files ``load_krea2_pipeline`` reads (non-variant component weights, nothing at the repo root)."""
     patterns = ["model_index.json", "scheduler/*", "tokenizer/*"]
     for sub, stem in (
         ("text_encoder", "model"),

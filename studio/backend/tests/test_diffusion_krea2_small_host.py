@@ -31,7 +31,6 @@ KREA2_TURBO = {
     "transformer": sh.StoredComponent("transformer", 25065, "bfloat16", 0, "diffusers"),
     "vae": sh.StoredComponent("vae", 484, "float32", 0, "diffusers"),
 }
-# Kaggle T4 x2: the float32 load was SIGKILLed with no further log line.
 KAGGLE_T4 = (32098, 29000)
 BIG_HOST = (512 * 1024, 480 * 1024)
 ROOMY_DISK = 200 * 1024
@@ -197,8 +196,7 @@ def test_loader_reads_routed_components_at_their_stored_dtype(monkeypatch):
     }
 
 
-# unsloth/Krea-2-Turbo file list (Hub tree, 2026-11): the loader reads only the pipeline folders, never the root
-# single-file checkpoint or the README images.
+# unsloth/Krea-2-Turbo Hub tree (2026-11); the loader never reads the root checkpoint or README images.
 KREA2_TURBO_FILES = [
     ".gitattributes",
     "README.md",
@@ -218,7 +216,6 @@ KREA2_TURBO_FILES = [
     "turbo.safetensors",
     "vae/config.json",
     "vae/diffusion_pytorch_model.safetensors",
-    # a variant / stray layout the loaders never select
     "transformer/diffusion_pytorch_model.fp16-00001-of-00002.safetensors",
     "text_encoder/model.fp16.safetensors",
     "extra/weights.safetensors",
@@ -298,7 +295,6 @@ def test_cold_fp16_only_load_fetches_exactly_what_the_loader_reads(monkeypatch):
             ignore_patterns = kw["ignore_patterns"],
         )
     )
-    # the supplied text encoder is skipped; its config still resolves the pipeline's sizing
     assert picked == {
         "model_index.json",
         "scheduler/scheduler_config.json",

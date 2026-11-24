@@ -14337,8 +14337,7 @@ class DiffusionBackend:
         snapshot = resolve_snapshot_dir(source, hub_cache_dir())
         device = str(getattr(target, "backend", None) or getattr(target, "device", ""))
         total, available = host_ram_mib()
-        # the route never engages here (bf16 card, kill switch, unreadable RAM, LoRA): the loader downloads
-        # what it reads, so a prefetch would only add a blocking Hub call
+        # route cannot engage: skip the prefetch, the loader downloads what it reads
         can_engage = small_host_ineligible(dtype, device = device) is None and (
             small_host_forced() or (available is not None and not lora_active)
         )
