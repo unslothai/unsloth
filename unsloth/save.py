@@ -6695,6 +6695,7 @@ def _unsloth_save_lora_gguf(
 
 
 @_model_parallel_refuses_save("push_to_hub_ggml")
+@_ddp_push_on_rank0("push_to_hub")
 @_fsdp2_export_on_rank0("push_to_hub_ggml", adapter_only = lambda model, arguments: True)
 def unsloth_convert_lora_to_ggml_and_push_to_hub(
     self,
@@ -6710,7 +6711,10 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
     outtype: str = "f16",
+    is_main_process: bool = True,
 ):
+    if _defer_to_main_process(is_main_process, self):
+        return None
     return _unsloth_save_lora_gguf(
         self,
         tokenizer,
@@ -6735,7 +6739,10 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
     outtype: str = "f16",
+    is_main_process: bool = True,
 ):
+    if _defer_to_main_process(is_main_process, self):
+        return None
     return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = outtype)
 
 

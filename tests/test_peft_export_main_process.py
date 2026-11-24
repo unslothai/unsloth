@@ -368,3 +368,53 @@ def test_peft_merge_on_fsdp1_keeps_every_rank(monkeypatch, tmp_path):
     model = _as_fsdp1(monkeypatch, _tiny_peft_model())
     _generic_save(model, str(tmp_path / "fsdp1"), is_main_process = False)
     assert len(calls) == 1
+
+
+def _counted_lora_gguf(monkeypatch):
+    """_unsloth_save_lora_gguf -> call recorder: no adapter staging or llama.cpp subprocess."""
+    calls = []
+    monkeypatch.setattr(
+        unsloth_save, "_unsloth_save_lora_gguf", lambda *a, **k: calls.append(k) or "gguf"
+    )
+    return calls
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+def test_push_to_hub_ggml_uploads_from_rank0_only(monkeypatch, rank):
+    """The GGML LoRA push gates like push_to_hub_gguf: rank 0 alone converts and uploads."""
+    calls = _counted_lora_gguf(monkeypatch)
+    _fake_ddp(monkeypatch, rank)
+    out = unsloth_save.unsloth_convert_lora_to_ggml_and_push_to_hub(
+        _tiny_peft_model(), object(), "user/repo", token = "hf_x"
+    )
+    if rank == 0:
+        assert calls and out == "gguf"
+    else:
+        assert out is None and calls == []
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+def test_save_pretrained_ggml_skips_everything_off_main(monkeypatch, tmp_path, rank):
+    """Same gate as save_pretrained_gguf: a non-main rank never converts into the shared dir."""
+    calls = _counted_lora_gguf(monkeypatch)
+    _fake_ddp(monkeypatch, rank)
+    out = unsloth_save.unsloth_convert_lora_to_ggml_and_save_locally(
+        _tiny_peft_model(),
+        str(tmp_path / "ggml"),
+        object(),
+        is_main_process = (rank == 0),
+    )
+    if rank == 0:
+        assert calls and out == "gguf"
+    else:
+        assert out is None and calls == []
+
+
+def test_save_pretrained_ggml_inside_fsdp2_gather_ignores_the_flag(monkeypatch, tmp_path):
+    """An FSDP2 writer with is_main_process=False must still run the GGML export."""
+    calls = _counted_lora_gguf(monkeypatch)
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: True)
+    out = unsloth_save.unsloth_convert_lora_to_ggml_and_save_locally(
+        _tiny_peft_model(), str(tmp_path / "ggml"), object(), is_main_process = False
+    )
+    assert calls and out == "gguf"
