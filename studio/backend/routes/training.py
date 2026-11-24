@@ -751,10 +751,15 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
     if not dataset_id:
         return
 
+    from core.training.account_jobs import _dataset_builder_name
     from huggingface_hub.utils import HFValidationError, validate_repo_id
 
     try:
         validate_repo_id(dataset_id)
+        # Well formed, but load_dataset takes its own builder names ahead of the Hub and reads the
+        # worker's cwd with them.
+        if _dataset_builder_name(dataset_id):
+            raise HFValidationError(f"'{dataset_id}' is a datasets builder, not a repository")
     except HFValidationError as error:
         raise _hf_preflight_error(
             400,
