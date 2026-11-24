@@ -158,7 +158,7 @@ jobs:
 
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
-        # See studio-windows-update-smoke.yml: npm >= 11 and Defender exclusions.
+        # See studio-windows-api-smoke.yml: npm >= 11 and Defender exclusions.
         run: |
           $ProgressPreference = 'SilentlyContinue'
           Write-Host "npm version before upgrade: $(npm -v)"
