@@ -1420,7 +1420,7 @@ def _mark_capped(dataset, cap, drop_unsupervised):
     return dataset
 
 
-# Marks a stream view _cap built: its rows always pass its own slice + filter, so the mark cannot go stale. Streams lack _fingerprint; without this get_eval_dataloader re-probed and stacked a second cap.
+# A stream view _cap built itself (streams have no _fingerprint): every row passes its own slice + filter, so its mark cannot go stale.
 _CAP_OWN_STREAM_ATTR = "_unsloth_cap_own_stream"
 
 
