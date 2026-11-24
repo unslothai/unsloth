@@ -1942,6 +1942,44 @@ class ReasoningChannelNormalizer:
         return output
 
 
+class _InklingToolBody:
+    """A tool call's JSON body: only an ``<|end_message|>`` outside its strings closes it."""
+
+    def __init__(self):
+        self.open = False
+        self._in_string = False
+        self._escape = False
+
+    def start(self):
+        self.open, self._in_string, self._escape = True, False, False
+
+    def take(
+        self,
+        text: str,
+        final: bool = False,
+    ) -> tuple[str, str, str]:
+        """``(body, held, rest)``: the body up to and including its closer, a partial closer to hold,
+        and the text after the closer."""
+        for i, char in enumerate(text):
+            if self._escape:
+                self._escape = False
+            elif self._in_string:
+                if char == "\\":
+                    self._escape = True
+                elif char == '"':
+                    self._in_string = False
+            elif char == '"':
+                self._in_string = True
+            elif text.startswith(_INKLING_MESSAGE_END, i):
+                end = i + len(_INKLING_MESSAGE_END)
+                self.open = False
+                return text[:end], "", text[end:]
+        if final or self._in_string:
+            return text, "", ""
+        body, held = _split_partial_marker(text, _INKLING_MESSAGE_END)
+        return body, held, ""
+
+
 class InklingMessageNormalizer(ReasoningChannelNormalizer):
     """Inkling 2 writes every block as ``<|message_model|>[name]<|content_KIND|>...<|end_message|>``. Headers
     and text closers are dropped (a tool name prefix is repeated in its JSON); the first thought becomes
@@ -1962,26 +2000,33 @@ class InklingMessageNormalizer(ReasoningChannelNormalizer):
         # unless the prompt already opened the thought or a continued message's content.
         self._in_header = not (self._in_reasoning or continued)
         self._held = ""
-        self._in_tool_call = False
+        # Each stage tracks the tool call's JSON strings, so quoted control text stays argument text.
+        self._header_tool_body = _InklingToolBody()
+        self._filter_tool_body = _InklingToolBody()
+        self._body_partial = ""
 
     def feed(self, text: str) -> str:
         return self._filter(super().feed(self._headers(text)))
 
-    def finish(self) -> str:
-        return self._filter(super().feed(self._flush_header()) + super().finish(), final = True)
-
     def drain(self) -> str:
+        # Also the flush inside finish(), which only adds the think closer: filtering twice would drop a tool closer.
         return self._filter(super().feed(self._flush_header()) + super().drain(), final = True)
 
     def _flush_header(self) -> str:
-        held = self._role_partial + self._header
-        self._role_partial, self._header, self._in_header = "", "", False
+        held = self._role_partial + self._body_partial + self._header
+        self._role_partial, self._body_partial, self._header, self._in_header = "", "", "", False
         return held
 
     def _headers(self, text: str) -> str:
         output: list[str] = []
         text = text or ""
         while text:
+            if self._header_tool_body.open:
+                body, self._body_partial, text = self._header_tool_body.take(
+                    self._body_partial + text
+                )
+                output.append(body)
+                continue
             if self._in_header:
                 self._header += text
                 text = ""
@@ -1997,6 +2042,8 @@ class InklingMessageNormalizer(ReasoningChannelNormalizer):
                 index, opener = min(found)
                 text = self._header[index + len(opener) :]
                 self._header, self._in_header = "", False
+                if opener == _INKLING_TOOL_CALL_OPEN:
+                    self._header_tool_body.start()
                 if opener != _INKLING_TEXT_OPEN:
                     output.append(opener)
                 continue
@@ -2021,6 +2068,10 @@ class InklingMessageNormalizer(ReasoningChannelNormalizer):
         self._held = ""
         output: list[str] = []
         while text:
+            if self._filter_tool_body.open:
+                body, self._held, text = self._filter_tool_body.take(text, final)
+                output.append(body)
+                continue
             found = [(text.find(marker), marker) for marker in self._CONTROLS if marker in text]
             if not found:
                 if not final:
@@ -2035,10 +2086,7 @@ class InklingMessageNormalizer(ReasoningChannelNormalizer):
             output.append(text[:index])
             text = text[index + len(marker) :]
             if marker == _INKLING_TOOL_CALL_OPEN:
-                self._in_tool_call = True
-                output.append(marker)
-            elif marker == _INKLING_MESSAGE_END and self._in_tool_call:
-                self._in_tool_call = False
+                self._filter_tool_body.start()
                 output.append(marker)
         return "".join(output)
 

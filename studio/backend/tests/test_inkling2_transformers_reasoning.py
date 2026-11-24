@@ -3,6 +3,7 @@
 
 """Inkling 2 message protocol on the transformers path; pure string tests, no model."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -166,3 +167,14 @@ def test_a_continued_answer_keeps_its_text():
     rest = "<|end_message|><|message_model|>python<|content_invoke_tool_json|>{}<|end_message|>"
     out = _stream(normalizer, _token_chunks(rest))
     assert out == "<|content_invoke_tool_json|>{}<|end_message|>"
+
+
+def test_quoted_control_text_in_tool_arguments_is_kept():
+    code = "print('<|end_message|>', \"<|message_model|>\", '<|end_message|>')"
+    call = json.dumps({"name": "python", "args": {"code": code}}, separators = (",", ":"))
+    raw = "<|content_thinking|>t<|end_message|><|message_model|>python<|content_invoke_tool_json|>"
+    raw += call + "<|end_message|>"
+    expected = "<think>t</think><|content_invoke_tool_json|>" + call + "<|end_message|>"
+    for size in range(1, 12):
+        chunks = [raw[i : i + size] for i in range(0, len(raw), size)]
+        assert _stream(make_reasoning_normalizer(MARKERS), chunks) == expected, size
