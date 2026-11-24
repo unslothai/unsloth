@@ -2172,9 +2172,13 @@ class ExportBackend:
                             "GGUF conversion produced only AppleDouble metadata companions "
                             f"and no usable .gguf file for {abs_save_dir}"
                         )
-                    drafter_gguf_files = self._package_drafter_gguf(
-                        reported.get("save_directory") or _model_tmp, abs_save_dir, exported_ggufs
-                    )
+                    # Runs the converter again (on an EAGLE-3 drafter folder): same trust decision.
+                    with _converter_remote_code(remote_code_approved):
+                        drafter_gguf_files = self._package_drafter_gguf(
+                            reported.get("save_directory") or _model_tmp,
+                            abs_save_dir,
+                            exported_ggufs,
+                        )
                     exported_ggufs.extend(f for f in drafter_gguf_files if f.endswith(".gguf"))
                     exported_is_vlm = bool(
                         reported.get("is_vlm", getattr(self, "is_vision", False))
