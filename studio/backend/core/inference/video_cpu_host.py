@@ -206,8 +206,8 @@ def single_file_packed_gb(
 ) -> Optional[float]:
     """GB an fp8 single-file denoiser holds when the loader keeps it packed (one byte per fp8 weight), else None (a
     dense checkpoint, or fp8 storage unavailable / disabled, which widens it). fp8 is read from the safetensors header
-    when the file is local, else from its name. The stored size is the file's; unread, half the bf16 table. Never
-    raises."""
+    when the file is local, else from its name. The stored size is the file's (both experts' for a dual-expert family);
+    unread, half the bf16 table. Never raises."""
     try:
         from .diffusion_comfy_quant import _read_header, comfy_fp8_storage
 
@@ -229,9 +229,17 @@ def single_file_packed_gb(
             fp8 = bool(_FP8_NAME.search(Path(str(filename or "")).name))
         if not fp8:
             return None
+        if size and getattr(fam, "is_moe", False):
+            # A dual-expert pick loads its partner expert too (``_resolve_moe_partner_path``): add its stored size,
+            # or this file's again when the partner cannot be read.
+            from .video_moe_pair import moe_partner_filename
+
+            partner = moe_partner_filename(filename)
+            partner_size = _checkpoint_size(repo, partner)[0] if partner else 0
+            size += partner_size or size
         if size:
             return size / 1e9
-        sizes = _sizes(fam)
+        sizes = _sizes(fam)  # the table's denoiser term already covers both experts
         return sizes[0] / 2.0 if sizes else None
     except Exception:  # noqa: BLE001 -- unsized: price it dense, as before
         return None

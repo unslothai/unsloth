@@ -457,3 +457,26 @@ def test_dense_single_file_and_disabled_fp8_storage_stay_float32(host, monkeypat
     assert "denoiser 20.0" in _refusal(
         WAN5B, "single_file", checkpoint_repo = str(tmp_path), checkpoint_filename = fp8
     )
+
+
+def test_fp8_dual_expert_single_file_prices_both_experts(host, tmp_path):
+    """A Wan2.2-A14B fp8 pick loads its partner expert too: both ~14.3 GB files count (53.4 GB, not 39.1)."""
+    host("cpu", 64 * GB_PER_GIB, 45.0)
+    high = _sparse_safetensors(
+        tmp_path / "wan2.2_t2v_high_noise_14B_scaled.safetensors", "F8_E4M3", 14_300_000_000
+    )
+    _sparse_safetensors(
+        tmp_path / "wan2.2_t2v_low_noise_14B_scaled.safetensors", "F8_E4M3", 14_300_000_000
+    )
+    msg = _refusal(A14B, "single_file", checkpoint_repo = str(tmp_path), checkpoint_filename = high)
+    assert "needs about 53.4 GB" in msg and "denoiser 28.6" in msg
+
+
+def test_fp8_dual_expert_partner_unread_counts_the_pick_twice(host, tmp_path):
+    host("cpu", 64 * GB_PER_GIB, 45.0)
+    low = _sparse_safetensors(
+        tmp_path / "wan2.2_t2v_low_noise_14B_scaled.safetensors", "F8_E4M3", 14_300_000_000
+    )
+    assert "denoiser 28.6" in _refusal(
+        A14B, "single_file", checkpoint_repo = str(tmp_path), checkpoint_filename = low
+    )
