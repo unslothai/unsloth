@@ -63,3 +63,18 @@ test("Audio, Images and Video ask before a linked model downloads or loads", () 
     }
   }
 });
+
+test("a confirmed linked model replaces the stripped entry instead of stacking one", () => {
+  // The page first replaces the linked URL with one that loads nothing; the confirmed pick puts the link
+  // back in that same entry, so Back does not land on the stripped copy of the page.
+  for (const file of [
+    "features/audio/hooks/use-audio-handoff.ts",
+    "features/images/images-page.tsx",
+    "features/video/video-page.tsx",
+  ]) {
+    const source = readSrc(file);
+    const confirm = source.match(/confirmLinkedModel\(wanted, \(\) => void navigateSelf\(\{[^}]*\}\)\)/);
+    assert.ok(confirm, file);
+    assert.match(confirm[0], /replace: true/, file);
+  }
+});

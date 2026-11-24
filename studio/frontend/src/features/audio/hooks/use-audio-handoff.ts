@@ -118,7 +118,7 @@ export function useAudioHandoff({
       };
       // The page stays; the pick waits for the toast's action.
       void navigateSelf({ to: "/audio", search: { workflow: committedWorkflow }, replace: true });
-      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/audio", search: linked }));
+      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/audio", search: linked, replace: true }));
       return;
     }
     // Open the named page first, or a staged or failed load leaves the user on another page.

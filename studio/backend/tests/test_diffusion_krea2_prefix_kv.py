@@ -444,6 +444,18 @@ def test_the_mask_free_call_takes_flash_only_in_place_of_auto_s_masked_pin(monke
     assert pkv._prefix_backend(N._NATIVE_CUDNN, cuda, bf16, auto_pick = True) == N._NATIVE_CUDNN
 
 
+@pytest.mark.parametrize("hip, version", [("6.4", "2.9.0"), (None, "2.9.0+rocm7.1")])
+def test_a_rocm_build_keeps_the_pin(monkeypatch, hip, version):
+    """ROCm never takes the CUDA flash pick, including AMD SDK / Radeon wheels that leave version.hip unset."""
+    from diffusers.models.attention_dispatch import AttentionBackendName as N
+
+    cuda, bf16 = torch.device("cuda", 0), torch.bfloat16
+    _cuda_card(monkeypatch, (8, 9), ("flash", "mem_efficient", "cudnn", "math"))
+    monkeypatch.setattr(torch.version, "hip", hip)
+    monkeypatch.setattr(torch, "__version__", version)
+    assert pkv._prefix_backend(N._NATIVE_CUDNN, cuda, bf16, auto_pick = True) == N._NATIVE_CUDNN
+
+
 def test_a_build_without_flash_sdpa_keeps_the_pin(monkeypatch):
     """PyTorch Windows (MSVC) builds 2.10-2.14 ship no CUDA flash SDPA: exclusive flash would have no kernel."""
     from diffusers.models.attention_dispatch import AttentionBackendName as N

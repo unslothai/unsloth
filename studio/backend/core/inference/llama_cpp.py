@@ -8726,7 +8726,7 @@ def _count_memo_key(backend, *parts) -> Optional[bytes]:
                 time.strftime("%Y-%m-%d"),
                 *parts,
             ],
-            sort_keys = True,
+            # Unsorted: llama-server renders tool schema keys in the order sent, which moves the count.
             ensure_ascii = False,
         )
     except Exception:  # unserialisable content: count it, never guess a key
@@ -39821,7 +39821,14 @@ class LlamaCppBackend:
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
         _budget = self._window_thinking_budget(
-            openai_messages, None, max_tokens, thinking_budget_tokens, enable_thinking
+            openai_messages,
+            None,
+            max_tokens,
+            thinking_budget_tokens,
+            enable_thinking,
+            _reasoning_kw,
+            bool(payload.get("continue_final_message")),
+            cancel_event,
         )
         if _budget is not None:
             payload["thinking_budget_tokens"] = _budget
@@ -40099,8 +40106,15 @@ class LlamaCppBackend:
         max_tokens: Optional[int],
         requested: Optional[int],
         enable_thinking: Optional[bool],
+        chat_template_kwargs: Optional[dict],
+        continue_final_message: bool = False,
+        cancel_event = None,
     ) -> Optional[int]:
-        if enable_thinking is False or not self._supports_reasoning:
+        if (
+            enable_thinking is False
+            or not self._supports_reasoning
+            or (cancel_event is not None and cancel_event.is_set())
+        ):
             return requested
         from core.inference import cut_thought
 
@@ -40108,10 +40122,21 @@ class LlamaCppBackend:
         if requested is None and server_budget >= 0:
             requested = server_budget
         try:
-            prompt = estimate_messages_tokens_dense(self._countable_messages(messages))
-            prompt += estimate_messages_tokens_dense(tools or [])
+            prompt = self.count_chat_tokens(
+                self._countable_messages(messages),
+                None,
+                tools,
+                strict = True,
+                chat_template_kwargs = chat_template_kwargs,
+                continue_final_message = continue_final_message,
+                should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
+            )
         except Exception:
-            return requested
+            try:
+                prompt = estimate_messages_tokens_dense(self._countable_messages(messages))
+                prompt += estimate_messages_tokens_dense(tools or [])
+            except Exception:
+                return requested
         return cut_thought.window_budget(
             self._effective_context_length, prompt, max_tokens, requested
         )
@@ -41271,6 +41296,9 @@ class LlamaCppBackend:
                     _iteration_max_tokens,
                     thinking_budget_tokens,
                     enable_thinking,
+                    payload.get("chat_template_kwargs"),
+                    bool(payload.get("continue_final_message")),
+                    cancel_event,
                 )
                 if _budget is not None:
                     payload["thinking_budget_tokens"] = _budget
@@ -43708,7 +43736,13 @@ class LlamaCppBackend:
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
         _budget = self._window_thinking_budget(
-            conversation, _final_tools, _final_max_tokens, thinking_budget_tokens, enable_thinking
+            conversation,
+            _final_tools,
+            _final_max_tokens,
+            thinking_budget_tokens,
+            enable_thinking,
+            _reasoning_kw,
+            cancel_event = cancel_event,
         )
         if _budget is not None:
             stream_payload["thinking_budget_tokens"] = _budget
@@ -44560,14 +44594,16 @@ class LlamaCppBackend:
                         if continue_final_message:
                             template_body["continue_final_message"] = True
                             template_body["add_generation_prompt"] = False
-                        if prefer_native and on_prompt is None:
+                        if on_prompt is None:
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
-                            # Only native answers are kept; a failed endpoint is retried next time.
+                            # The native endpoint renders and tokenizes this same body, so a render count reuses it.
                             native_key = _count_memo_key(self, "native-input-tokens", template_body)
                             cached = _count_memo_get(self, native_key, _NATIVE_COUNT_MEMO)
                             if cached is not None:
                                 return cached, False
+                        if prefer_native and on_prompt is None:
+                            # Only native answers are kept; a failed endpoint is retried next time.
                             try:
                                 native = client.post(
                                     f"{self.base_url}/v1/chat/completions/input_tokens",

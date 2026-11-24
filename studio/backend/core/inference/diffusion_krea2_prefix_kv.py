@@ -162,12 +162,13 @@ def _prefix_backend(
         import torch
 
         from .diffusion_attention import FLASH_FASTER_CAPABILITIES, NATIVE_FLASH_ATTN_ENV
+        from .rocm_bf16 import is_rocm_torch
 
         if (os.environ.get(NATIVE_FLASH_ATTN_ENV) or "").strip().lower() in _OFF:
             return backend
         if (
             getattr(device, "type", None) == "cuda"
-            and getattr(torch.version, "hip", None) is None
+            and not is_rocm_torch(torch)
             and dtype in (torch.bfloat16, torch.float16)
             and tuple(torch.cuda.get_device_capability(device)) in FLASH_FASTER_CAPABILITIES
             and _flash_runs(device, dtype)
