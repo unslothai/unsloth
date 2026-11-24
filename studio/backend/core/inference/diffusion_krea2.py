@@ -151,9 +151,7 @@ def load_krea2_pipeline(
     storage_dtypes: Optional[dict] = None,
 ):
     """local_files_only raises rather than fetching a component after the resident pipeline was evicted.
-    ``storage_dtypes`` (component -> dtype name, the small-host route's ``SmallHostDecision.storage_dtypes``) loads
-    those components at their stored dtype instead of ``dtype``, so they stay memory-mapped until the route converts
-    them; a float32 load on an fp16-only card otherwise widens the 12.8B DiT to 51 GB in host RAM first."""
+    ``storage_dtypes`` loads those components at their stored dtype so they stay memory-mapped."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     import diffusers

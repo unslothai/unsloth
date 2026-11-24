@@ -155,7 +155,6 @@ def test_the_load_passes_an_explicit_none_to_the_small_host_decision():
 
     src = Path(d.__file__).read_text(encoding = "utf-8")
     flag = src.index("small_host_dense = (")
-    # diffusers pipelines (two sites) and the per-component MOSS-Image and Krea 2 assemblies
     assert src.count("dense_denoiser = small_host_dense,") == 4
     assert all(i > flag for i in [src.index("dense_denoiser = small_host_dense,")])
     body = src[flag : flag + 400]

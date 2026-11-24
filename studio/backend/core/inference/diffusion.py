@@ -4130,9 +4130,8 @@ def _per_component_small_host_fetch(
     token: Any,
     skip: Any = (),
 ) -> Optional[Callable[[], Any]]:
-    """A per-component assembly's (MOSS-Image, Krea 2) components, fetched before the small-host decision as
-    ``_small_host_fetch`` does for diffusers pipelines (those loaders have no Hub ``download``); ``skip`` names
-    supplied components whose weights are not fetched. None offline or with a staged snapshot."""
+    """Prefetch for per-component loaders (MOSS-Image, Krea 2), which lack a Hub ``download``; ``skip`` components
+    are not fetched. None offline or with a staged snapshot."""
     if local_files_only or local_dir or not isinstance(repo, str) or _is_local_path(repo):
         return None
     ignore = [f"{name}/*.safetensors" for name in skip] or None
@@ -10854,9 +10853,7 @@ class DiffusionBackend:
                                     # krea's transformers-5.x configs break the 4.x line: assemble per component from
                                     # pipe_kwargs (pre-cast TE, seeded denoiser or None = dense shards).
                                     try:
-                                        # A float32 load (fp16-only card) widens the 12.8B DiT (51 GB) and the
-                                        # encoder in host RAM: the small-host route keeps them at their stored bf16,
-                                        # memory-mapped. Decided on fetch_base, the source the assembly reads.
+                                        # fp32 on an fp16-only card would widen the DiT to 51 GB in host RAM.
                                         small_host = self._small_host_decision(
                                             fetch_base,
                                             pipe_kwargs,

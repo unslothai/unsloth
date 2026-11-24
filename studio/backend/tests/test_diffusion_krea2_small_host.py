@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Krea 2 on an fp16-only card (T4): the float32 promotion must not widen the 12.8B DiT (51 GB) in host RAM before
-anything quantises it. The per-component loader takes the small-host route like a diffusers pipeline: routed
-components load at their stored bf16 and the DiT runs on the route's int8 weights. CPU only."""
+"""Krea 2 on an fp16-only card: components load at stored bf16 via the small-host route, not fp32. CPU only."""
 
 from __future__ import annotations
 
@@ -71,8 +69,7 @@ def test_kaggle_t4_takes_the_route_instead_of_widening(disk):
 
 
 def test_kaggle_t4_with_the_int8_encoder_routes_the_dit():
-    """Studio's default auto-selects the int8 text encoder: it arrives pre-built in pipe_kwargs, so only the DiT and
-    VAE are sized, and the DiT still takes the route."""
+    """A pre-built int8 text encoder in pipe_kwargs is not sized; the DiT still takes the route."""
     comps = {k: v for k, v in KREA2_TURBO.items() if k != "text_encoder"}
     d = _decide(comps, *KAGGLE_T4)
     assert d.engaged and d.refuse is None
@@ -86,7 +83,6 @@ def test_big_host_keeps_the_dense_load():
 
 
 def _krea_branch() -> ast.If:
-    """The ``elif fam.name == KREA2_FAMILY_NAME`` branch of the pipeline load that assembles the pipeline."""
     tree = ast.parse((_BACKEND / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
         if (
@@ -112,7 +108,6 @@ def test_pipeline_branch_decides_the_route_and_loads_stored_dtypes():
     assert "self._small_host_decision" in calls, "Krea 2 skips the small-host decision"
     decide = calls["self._small_host_decision"]
     assert {k.arg for k in decide.keywords} >= {"lora_active", "dense_denoiser", "fetch"}
-    # Sized on the source the assembly reads, not the staged dir.
     assert ast.unparse(decide.args[0]) == ast.unparse(calls["load_krea2_pipeline"].args[0])
     fetch = next(k.value for k in decide.keywords if k.arg == "fetch")
     assert ast.unparse(fetch.func) == "_per_component_small_host_fetch"
@@ -170,7 +165,6 @@ def test_loader_reads_routed_components_at_their_stored_dtype(monkeypatch):
 
         return types.SimpleNamespace(from_pretrained = _load)
 
-    # A stand-in diffusers: the loader's surface only, independent of the installed version.
     fake = types.SimpleNamespace(
         Krea2Pipeline = lambda **kw: types.SimpleNamespace(**kw),
         FlowMatchEulerDiscreteScheduler = types.SimpleNamespace(
