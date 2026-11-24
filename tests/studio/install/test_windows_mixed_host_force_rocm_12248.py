@@ -531,8 +531,9 @@ class TestStackWindowsForcedFlavor:
         self,
         gfx = "gfx1201",
         nvidia = True,
+        **over,
     ):
-        return (
+        return tuple(patch.object(stack_mod, k, return_value = v) for k, v in over.items()) + (
             patch.object(stack_mod, "IS_WINDOWS", True),
             patch.object(stack_mod, "IS_MACOS", False),
             patch.object(stack_mod, "NO_TORCH", False),
@@ -553,8 +554,11 @@ class TestStackWindowsForcedFlavor:
         with patch.dict(os.environ, env, clear = False), ExitStack() as stack:
             if not force:
                 os.environ.pop("UNSLOTH_FORCE_ROCM_TORCH", None)
+            seen = set()
             for p in self._patches(**kw):
-                stack.enter_context(p)
+                if p.attribute not in seen:
+                    seen.add(p.attribute)
+                    stack.enter_context(p)
             return fn()
 
     @pytest.mark.parametrize(
@@ -595,3 +599,33 @@ class TestStackWindowsForcedFlavor:
                 self._run(stack_mod._windows_rocm_device_packs_need_dependency_pass, force)
                 is expected
             )
+
+    def test_an_opaque_pin_keeps_its_own_expectation(self):
+        pin = {"_explicit_unknown_family_torch_index_url": "https://m/simple"}
+        assert self._run(stack_mod._expected_torch_flavor_tag, True, **pin) == ""
+
+    def test_a_cuda_handover_from_setup_ps1_wins_over_the_python_probe(self):
+        cuda = {"_handover_torch_flavor_tag": "cu128"}
+        assert not self._run(stack_mod._windows_forced_rocm_is_viable, True, **cuda)
+        install = MagicMock()
+        with patch.object(stack_mod, "pip_install", install):
+            self._run(stack_mod._ensure_rocm_torch, True, **cuda)
+        assert not install.called
+
+
+AMD_SMI_GATE = slice_between(INSTALL_SRC, "        $amdSmiAllowed = ", "\n")
+
+
+@requires_pwsh
+@pytest.mark.parametrize("muted, expected", [(True, "False"), (False, "True")])
+def test_the_notice_only_probe_never_runs_amd_smi(muted, expected):
+    kv = _ps_kv(
+        _script(
+            "Remove-Item Env:UNSLOTH_ENABLE_AMD_SMI -ErrorAction SilentlyContinue",
+            "$amdSmiOptOut = $false; $HipSdkInstalled = $true",
+            f"$script:StudioMuteLines = ${str(muted).lower()}",
+            AMD_SMI_GATE,
+            'Write-Output "ALLOWED=$amdSmiAllowed"',
+        )
+    )
+    assert kv["ALLOWED"] == expected

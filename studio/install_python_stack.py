@@ -5037,9 +5037,6 @@ def _expected_torch_flavor_tag() -> str:
             return "rocm"
         if _is_cuda_family_leaf(leaf) or leaf in ("xpu", "cpu"):
             return leaf
-    # The swap _ensure_rocm_torch makes, or a manifest / NVIDIA probe would put CUDA back.
-    if IS_WINDOWS and _windows_forced_rocm_is_viable():
-        return "rocm"
     # A resolved backend is a stated choice; honoured when it agrees with the installed wheel, and ahead of
     # the manifest, which describes the previous install.
     if _TORCH_BACKEND in ("cpu", "cuda", "rocm", "xpu"):
@@ -5054,6 +5051,9 @@ def _expected_torch_flavor_tag() -> str:
     unknown_pin = _explicit_unknown_family_torch_index_url()
     if unknown_pin is not None:
         return "" if unknown_pin else (_RECORDED_TORCH_TAG or "")
+    # The swap _ensure_rocm_torch makes, or a manifest / NVIDIA probe would put CUDA back.
+    if IS_WINDOWS and _windows_forced_rocm_is_viable():
+        return "rocm"
     if _RECORDED_TORCH_TAG:
         return _RECORDED_TORCH_TAG
     if _explicit_torch_index_family() is None and not _has_usable_nvidia_gpu():
@@ -5841,8 +5841,12 @@ def _rocm_torch_family_needs_repair(
 
 
 def _windows_forced_rocm_is_viable() -> bool:
-    """UNSLOTH_FORCE_ROCM_TORCH beside a usable NVIDIA GPU, with an AMD card _ensure_rocm_torch can serve."""
+    """UNSLOTH_FORCE_ROCM_TORCH beside a usable NVIDIA GPU, with an AMD card _ensure_rocm_torch can serve.
+
+    A non-ROCm handover means setup.ps1 found no AMD route; its answer wins over this probe."""
     if not (_rocm_torch_explicitly_requested() and _has_usable_nvidia_gpu()):
+        return False
+    if _handover_torch_flavor_tag() not in ("", "rocm"):
         return False
     gfx_arch = _detect_windows_gfx_arch()
     return bool(gfx_arch) and _windows_rocm_index_url(gfx_arch) is not None
@@ -5918,7 +5922,7 @@ def _ensure_rocm_torch() -> "bool | None":
         if (
             _win_rocm_pin is None
             and _has_usable_nvidia_gpu()
-            and not _rocm_torch_explicitly_requested()
+            and not _windows_forced_rocm_is_viable()
         ):
             return
         gfx_arch = _detect_windows_gfx_arch()

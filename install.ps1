@@ -9133,7 +9133,8 @@ main()
         }
         # amd-smi pops an unsuppressable UAC prompt without HIP, so probe only with a SDK or opt-in.
         $amdSmiOptOut = $env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(0|false|no|off)$'
-        $amdSmiAllowed = (-not $amdSmiOptOut) -and ($HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$'))
+        # Not for the notice-only probe: amd-smi can raise UAC, and hipinfo / WMI name the card.
+        $amdSmiAllowed = (-not $amdSmiOptOut) -and -not $script:StudioMuteLines -and ($HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$'))
         if (-not $HasROCm -and $amdSmiAllowed) {
             $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
             if ($amdSmiExe) {
