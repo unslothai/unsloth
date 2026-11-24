@@ -1359,16 +1359,24 @@ def _think_spans_outside_tool_markup(text: str) -> list[tuple[int, int]]:
     call_spans = _tool_call_markup_spans(text)
     # Prefilled reasoning: the template opens <think> in the prompt, so a leading span skips calls rehearsed there.
     close = _THINK_CLOSE_RE.search(text) if "</think>" in text or "[/THINK]" in text else None
+    if not think_spans and close is None:
+        return think_spans
+    # The lazy closed-pair spans end at a quoted </tool_call>; brace-matched coverage, DeepSeek envelopes
+    # and python_tag objects bound the real call, so a think tag later in its arguments stays data.
+    from core.inference.tool_call_parser import _call_body_spans
+
+    data_spans = call_spans + marker_coverage(text) + _call_body_spans(text)
     if close is not None:
         opener = _THINK_OPEN_RE.search(text)
         if (
             (opener is None or close.start() < opener.start())
-            and not any(cs <= close.start() < ce for cs, ce in call_spans)
+            and not any(cs <= close.start() < ce for cs, ce in data_spans)
             and any(cs >= close.end() for cs, ce in call_spans)
         ):
             think_spans = [(0, close.end())] + think_spans
     if not think_spans:
         return think_spans
+    call_spans = data_spans
     if not call_spans:
         return think_spans
     # Merged and bisected: a pairwise scan is quadratic on long output.

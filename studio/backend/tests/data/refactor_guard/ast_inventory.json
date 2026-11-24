@@ -1766,6 +1766,11 @@
         "kind": "def",
         "signature": "text: str, enabled_tool_names"
       },
+      "_call_body_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
       "_call_object_end": {
         "decorators": [],
         "kind": "def",
@@ -1780,6 +1785,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "literal: str"
+      },
+      "_deepseek_envelope_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
       },
       "_disabled_gemma_call_end_containing_signal": {
         "decorators": [],
