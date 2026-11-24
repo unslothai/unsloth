@@ -1656,7 +1656,10 @@ def _memory(model, args):
     except Exception:
         fn = None
     name = getattr(fn, "__name__", "")
-    from unsloth.models._gc_config_default import is_activation_checkpointing as _is_activation_checkpointing
+    from unsloth.models._gc_config_default import (
+        is_activation_checkpointing as _is_activation_checkpointing,
+    )
+
     gc = bool(getattr(args, "gradient_checkpointing", False)) or bool(
         _is_activation_checkpointing(model)
     )

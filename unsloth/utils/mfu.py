@@ -307,7 +307,10 @@ def _runs_unsloth_head_window(model):
 def _gradient_checkpointing_on(model, args):
     if getattr(args, "gradient_checkpointing", False):
         return True
-    from unsloth.models._gc_config_default import is_activation_checkpointing as _is_activation_checkpointing
+    from unsloth.models._gc_config_default import (
+        is_activation_checkpointing as _is_activation_checkpointing,
+    )
+
     if _is_activation_checkpointing(model) is True:
         return True
     return any(getattr(m, "gradient_checkpointing", False) is True for m in model.modules())

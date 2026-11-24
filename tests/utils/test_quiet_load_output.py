@@ -254,7 +254,12 @@ class _Messages(__import__("logging").Handler):
         self.messages.append(record.getMessage())
 
 
-def _template_messages(template, name, monkeypatch, strict = False):
+def _template_messages(
+    template,
+    name,
+    monkeypatch,
+    strict = False,
+):
     import logging
 
     from tokenizers import Tokenizer, models
@@ -281,11 +286,15 @@ def _template_messages(template, name, monkeypatch, strict = False):
     finally:
         for one in loggers:
             one.removeHandler(capture)
-    return result, [m for m in capture.messages if "add_generation_prompt" in m and "by design" not in m]
+    return result, [
+        m for m in capture.messages if "add_generation_prompt" in m and "by design" not in m
+    ]
 
 
 def test_inkling2_template_is_not_repaired_or_warned(monkeypatch):
-    result, messages = _template_messages(_INKLING2_LIKE_TEMPLATE, "org/inkling2-case-a", monkeypatch)
+    result, messages = _template_messages(
+        _INKLING2_LIKE_TEMPLATE, "org/inkling2-case-a", monkeypatch
+    )
     assert result == _INKLING2_LIKE_TEMPLATE  # no marker appended
     assert messages == []
 
@@ -326,8 +335,12 @@ def test_checkpointing_flag_read_without_deprecated_alias():
 
     model = LlamaForCausalLM(
         LlamaConfig(
-            hidden_size = 16, intermediate_size = 32, num_hidden_layers = 1,
-            num_attention_heads = 2, num_key_value_heads = 2, vocab_size = 32,
+            hidden_size = 16,
+            intermediate_size = 32,
+            num_hidden_layers = 1,
+            num_attention_heads = 2,
+            num_key_value_heads = 2,
+            vocab_size = 32,
         )
     )
     model.gradient_checkpointing_enable()
@@ -415,8 +428,13 @@ def test_gradient_checkpointing_default_does_not_warn_and_is_unchanged():
         pytest.skip("transformers < 5.23 has no activation_checkpointing")
     before, after = _generated_config(route = False), _generated_config(route = True)
     # Checkpointing is on exactly when it was before, for every way of asking.
-    for kwargs in ({}, {"gradient_checkpointing": False}, {"gradient_checkpointing": True},
-                   {"activation_checkpointing": False}, {"activation_checkpointing": True}):
+    for kwargs in (
+        {},
+        {"gradient_checkpointing": False},
+        {"gradient_checkpointing": True},
+        {"activation_checkpointing": False},
+        {"activation_checkpointing": True},
+    ):
         assert _resolved(after, **kwargs)[0] == _resolved(before, **kwargs)[0], kwargs
     assert _resolved(before)[1] is True  # main warned with nothing passed
     assert _resolved(after)[1] is False
@@ -430,5 +448,7 @@ def test_gradient_checkpointing_route_is_a_no_op_without_the_new_field():
     arguments = "self,\n        gradient_checkpointing = True,\n"
     assert route(arguments, "gradient_checkpointing = gradient_checkpointing") == (arguments, "")
     # An already-None default (TRL >= 1.18.2) needs nothing either.
-    arguments = "self,\n        activation_checkpointing = None,\n        gradient_checkpointing = None,\n"
+    arguments = (
+        "self,\n        activation_checkpointing = None,\n        gradient_checkpointing = None,\n"
+    )
     assert route(arguments, "activation_checkpointing, gradient_checkpointing") == (arguments, "")
