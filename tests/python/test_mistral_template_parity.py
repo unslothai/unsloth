@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Expected strings rendered by the official mistralai/Mistral-7B-Instruct-v0.2
-chat template (tokenizer_config.json), hard coded for offline runs."""
+"""Expected strings = the official Mistral-7B-Instruct-v0.2 chat_template output, inlined for offline runs."""
 
 import pytest
 from tokenizers import Tokenizer, models
@@ -12,7 +11,7 @@ from unsloth.chat_templates import get_chat_template
 
 @pytest.fixture(autouse = True)
 def _scratch_cwd(tmp_path, monkeypatch):
-    # get_chat_template writes a scratch dir under CWD; isolate it per test and xdist worker.
+    # get_chat_template writes a scratch dir under CWD.
     monkeypatch.chdir(tmp_path)
 
 
@@ -28,8 +27,6 @@ def _tokenizer():
     return get_chat_template(tokenizer, "mistral")
 
 
-# mistralai/Mistral-7B-Instruct-v0.2 renders ' [INST] ' with a leading space, folds
-# a leading system prompt in with '\n\n', and emits ' {assistant}{eos}'.
 EXPECTED = {
     (
         ("system", "Be brief."),
