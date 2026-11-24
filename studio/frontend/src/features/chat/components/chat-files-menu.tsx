@@ -6,6 +6,7 @@ import {
   saveSandboxFile,
 } from "@/components/assistant-ui/sandbox-download";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
+import { sandboxUploadListeners } from "@/components/assistant-ui/sandbox-upload";
 import { requestJumpToMessage } from "@/components/assistant-ui/message-jump";
 import {
   Popover,
@@ -62,8 +63,22 @@ export function ChatFilesBridge() {
     projectId,
   );
   const [folder, setFolder] = useState<ChatFolder | null>(null);
+  const [uploads, setUploads] = useState(0);
 
-  // Re-read after each run: tools write to the folder without always naming the file.
+  useEffect(() => {
+    const listener = (uploaded: string) => {
+      if (uploaded === sessionId) {
+        setUploads((count) => count + 1);
+      }
+    };
+    sandboxUploadListeners.add(listener);
+    return () => {
+      sandboxUploadListeners.delete(listener);
+    };
+  }, [sessionId]);
+
+  // Re-read after each run and upload: tools write to the folder without always naming the file.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: uploads only triggers a re-list.
   useEffect(() => {
     if (!sessionId || running) return;
     let live = true;
@@ -73,7 +88,7 @@ export function ChatFilesBridge() {
     return () => {
       live = false;
     };
-  }, [sessionId, running]);
+  }, [sessionId, running, uploads]);
 
   const current = folder?.sessionId === sessionId ? folder : null;
   const files = useMemo(

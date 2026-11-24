@@ -144,3 +144,17 @@ test("an indented fence downloads without the opener's indentation", () => {
   ]);
   assert.equal(files[0].text, "def answer():\n    return 42");
 });
+
+test("a fence opened right after a list marker closes on its own fence", () => {
+  const text = "- ```python\n  print(1)\n  ```\n\n```js\nconsole.log(2)\n```\n";
+  const files = collectChatFiles([
+    { id: "a1", role: "assistant", content: [{ type: "text", text }] },
+  ]);
+  assert.deepEqual(
+    files.map((f) => [f.name, f.text]),
+    [
+      ["snippet.py", "print(1)"],
+      ["snippet.js", "console.log(2)"],
+    ],
+  );
+});

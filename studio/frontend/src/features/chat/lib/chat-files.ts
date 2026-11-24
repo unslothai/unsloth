@@ -41,7 +41,9 @@ type MessageLike = {
 };
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
-const FENCE_OPEN_RE = /^( {0,3})(`{3,}|~{3,})\s*([^\s`]*)/;
+// Leading spaces and list markers are the fence's container (`- ```py`, `1. ```js`), not code.
+const FENCE_OPEN_RE =
+  /^((?:[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+)*[ \t]*)(`{3,}|~{3,})[ \t]*([^\s`]*)/;
 
 export function extractCodeFences(
   markdown: string,
@@ -56,9 +58,9 @@ export function extractCodeFences(
       continue;
     }
     const fence = open[2];
-    // CommonMark strips the opener's indentation from body lines.
+    // CommonMark strips the container's width from body lines.
     const indentRe = open[1] ? new RegExp(`^ {0,${open[1].length}}`) : null;
-    const closeRe = new RegExp(`^ {0,3}${fence[0]}{${fence.length},}\\s*$`);
+    const closeRe = new RegExp(`^[ \\t]*${fence[0]}{${fence.length},}[ \\t]*$`);
     const body: string[] = [];
     i += 1;
     while (i < lines.length && !closeRe.test(lines[i])) {
