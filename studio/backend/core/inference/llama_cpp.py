@@ -8726,7 +8726,7 @@ def _count_memo_key(backend, *parts) -> Optional[bytes]:
                 time.strftime("%Y-%m-%d"),
                 *parts,
             ],
-            sort_keys = True,
+            # Unsorted: llama-server renders tool schema keys in the order sent, which moves the count.
             ensure_ascii = False,
         )
     except Exception:  # unserialisable content: count it, never guess a key
@@ -44594,14 +44594,16 @@ class LlamaCppBackend:
                         if continue_final_message:
                             template_body["continue_final_message"] = True
                             template_body["add_generation_prompt"] = False
-                        if prefer_native and on_prompt is None:
+                        if on_prompt is None:
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
-                            # Only native answers are kept; a failed endpoint is retried next time.
+                            # The native endpoint renders and tokenizes this same body, so a render count reuses it.
                             native_key = _count_memo_key(self, "native-input-tokens", template_body)
                             cached = _count_memo_get(self, native_key, _NATIVE_COUNT_MEMO)
                             if cached is not None:
                                 return cached, False
+                        if prefer_native and on_prompt is None:
+                            # Only native answers are kept; a failed endpoint is retried next time.
                             try:
                                 native = client.post(
                                     f"{self.base_url}/v1/chat/completions/input_tokens",
