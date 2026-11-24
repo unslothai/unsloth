@@ -34047,7 +34047,7 @@ class LlamaCppBackend:
                             not _did_rocm_retry
                             and not _hip_rocr_mismatch
                             and self._is_signal_crash(
-                                _crashed_proc.returncode if _crashed_proc is not None else None
+                                _crashed_proc.poll() if _crashed_proc is not None else None
                             )
                         ):
                             _clean_env = self._llama_server_env_for_binary(
