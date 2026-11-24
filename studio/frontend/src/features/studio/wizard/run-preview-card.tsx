@@ -15,6 +15,12 @@ import {
   useTrainingResourceNotices,
   useTrainingTransformersUpgradeNotice,
 } from "@/features/training";
+import {
+  PARALLEL_MODE_LABEL_KEYS,
+  runGpuCount,
+  showsGpuSection,
+} from "@/features/training/lib/parallel-plan";
+import { useTrainingParallelStore } from "@/features/training/stores/training-parallel-store";
 import { useGpuInfo } from "@/hooks";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -375,6 +381,12 @@ export function RunPreviewCard({
   );
 
   const gpu = useGpuInfo();
+  // Only where the GPUs section shows, so a single-GPU preview is unchanged.
+  const parallelPlan = useTrainingParallelStore((s) =>
+    s.capabilities && showsGpuSection(s.capabilities.gpus.length) && !s.plan?.error
+      ? s.plan
+      : null,
+  );
   const hfToken = useHfTokenStore((s) => s.token);
   const hasToken = hfApiToken(hfToken) !== undefined;
   const { isReady, hasModel, hasDataset } = useTrainingReadiness();
@@ -532,6 +544,15 @@ export function RunPreviewCard({
             hasToken ? t("studio.preview.saved") : t("studio.preview.notSet")
           }
         />
+        {parallelPlan && (
+          <MetaRow
+            label={t("studio.preview.gpus")}
+            value={t("studio.gpus.runChip", {
+              mode: t(PARALLEL_MODE_LABEL_KEYS[parallelPlan.mode]),
+              count: numberFormatter.format(runGpuCount(parallelPlan)),
+            })}
+          />
+        )}
       </section>
 
       <ResourceNoticeList notices={resourceNotices} />

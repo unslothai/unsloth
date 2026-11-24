@@ -12,6 +12,7 @@ import { toast } from "@/lib/toast";
 import { DatasetFormatError, checkDatasetFormat } from "../api/datasets-api";
 import { getCachedSystemInfo } from "@/hooks/use-system";
 import { buildTrainingStartPayload } from "../api/mappers";
+import { currentParallelRequestFields } from "../stores/training-parallel-store";
 import {
   TrainingStartError,
   isTrainingStartOutcomeUnknownError,
@@ -543,12 +544,15 @@ async function submitFreshTrainingRun(
     return attempt.cancel(translate(validation.errorKey));
   }
 
-  const payload = buildTrainingStartPayload(
-    attempt.config,
-    hfToken,
-    getCachedSystemInfo(),
-    usePlatformStore.getState().isCpuTrainingHost(),
-  );
+  const payload = {
+    ...buildTrainingStartPayload(
+      attempt.config,
+      hfToken,
+      getCachedSystemInfo(),
+      usePlatformStore.getState().isCpuTrainingHost(),
+    ),
+    ...currentParallelRequestFields(),
+  };
   if (!attempt.enterTransport()) {
     return false;
   }
