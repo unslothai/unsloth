@@ -130,7 +130,6 @@ class LoadRequest(BaseModel):
     _override_alias_id: Optional[str] = PrivateAttr(default = None)
     # The catalog id a load by path should keep advertising (Open WebUI /models/load).
     _advertised_id: Optional[str] = PrivateAttr(default = None)
-    # The model_path as sent, before its own ":QUANT" is stripped: a scoped cancel names this one.
     _submitted_model_path: Optional[str] = PrivateAttr(default = None)
     load_request_id: Optional[str] = Field(
         None,

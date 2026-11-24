@@ -19411,8 +19411,7 @@ def _served_twice(slot) -> tuple[bool, Optional[_ExtraSlot]]:
     def identity(llama):
         if not getattr(llama, "is_loaded", False) or not getattr(llama, "hf_variant", None):
             return None
-        # What a request sees, not placement or admission: a twin with another context or
-        # template is not this load.
+        # Request-visible settings only, not placement or admission flags.
         intent = getattr(llama, "last_load_intent", None)
         served = tuple(getattr(intent, name, None) for name in _TWIN_SETTINGS)
         # The resolved files too: an updated cache entry is other weights under the same quant.
