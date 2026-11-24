@@ -55,6 +55,10 @@ def _build_backend(
         '\nif [ "$_setup_nvidia_usable" = true ]; then\n    _setup_nv_banner_fields',
     )
     build = _between(src, "_select_nvcc() {", '_BUILD_DESC="building"')
+    # Point the hard-coded host paths at nothing, so a real ROCm / CUDA host cannot answer.
+    for real in ("/opt/rocm", "/dev/kfd", "/sys/class/kfd", "/usr/local/cuda"):
+        fake = str(tmp_path / "absent") + real
+        probe, build = probe.replace(real, fake), build.replace(real, fake)
     torch_root = tmp_path / "torch_root"
     _fake_torch(torch_root, torch == "rocm")
     script = tmp_path / "run.sh"
