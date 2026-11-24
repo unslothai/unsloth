@@ -264,9 +264,10 @@ def test_small_card_load_streams_instead_of_counting_the_connectors_resident(mon
 
     monkeypatch.delenv(dm.STREAM_RUN_ONCE_COMPANIONS_ENV, raising = False)
     out = dm.refine_memory_plan_for_components(_ltx_pipe(), _model_plan(7))
-    # streamed: only the 2 MiB VAE stays; the 6 MiB connectors no longer count as resident
+    # streamed: only the 2 MiB VAE stays; the 6 MiB connectors fit only off the card, pinned or not
     assert out.offload_policy == dm.OFFLOAD_STREAMING
     assert out.estimates["streaming_resident_mib"] == 2
+    assert dm.streams_companions_unpinned(out)
     # the streaming switch keeps them resident, and then streaming cannot fit either: the plan stands
     monkeypatch.setenv(dm.STREAM_RUN_ONCE_COMPANIONS_ENV, "0")
     assert dm.refine_memory_plan_for_components(_ltx_pipe(), _model_plan(7)).offload_policy == (
@@ -387,7 +388,9 @@ def test_refined_streaming_load_never_places_the_connectors_on_the_card(monkeypa
     pipe.connectors.to = lambda *a, **k: moved.append(a) or pipe.connectors
     out = dm.refine_memory_plan_for_components(pipe, _model_plan(7))
     assert out.offload_policy == dm.OFFLOAD_STREAMING
-    dm._apply_streaming_offload(pipe, "cuda", None)
+    dm._apply_streaming_offload(
+        pipe, "cuda", None, stream_companions_unpinned = dm.streams_companions_unpinned(out)
+    )
     hooked = {id(m): (t, stream, low) for m, t, stream, low in calls}
     assert hooked[id(pipe.connectors)] == ("leaf_level", False, True)
     assert moved == []
@@ -405,3 +408,56 @@ def test_streaming_connectors_stay_resident_only_when_switched_off(monkeypatch):
     dm._apply_streaming_offload(pipe, "cuda", None)
     assert all(m is not pipe.connectors for m, *_ in calls)
     assert moved
+
+
+def test_a_card_the_connectors_fit_keeps_them_resident_when_it_cannot_pin_them(monkeypatch):
+    """Main's placement wherever main's plan works: the connectors fit beside the rest (9 MiB budget, 8 MiB resident),
+    so the plan carries no unpinned request and a short pin budget keeps them on the card."""
+    import core.inference.diffusion_memory as dm
+
+    calls = _stub_streaming(monkeypatch, 1)
+    pipe = _ltx_pipe()
+    moved = []
+    pipe.vae.to = lambda *a, **k: pipe.vae
+    pipe.connectors.to = lambda *a, **k: moved.append(a) or pipe.connectors
+    out = dm.refine_memory_plan_for_components(pipe, _model_plan(9))
+    assert out.offload_policy == dm.OFFLOAD_STREAMING
+    assert out.estimates["streaming_resident_mib"] == 8
+    assert not dm.streams_companions_unpinned(out)
+    dm._apply_streaming_offload(
+        pipe, "cuda", None, stream_companions_unpinned = dm.streams_companions_unpinned(out)
+    )
+    assert all(m is not pipe.connectors for m, *_ in calls)
+    assert moved
+
+
+def test_apply_memory_plan_hands_the_unpinned_request_to_the_streaming_installer(monkeypatch):
+    import core.inference.diffusion_memory as dm
+
+    seen = []
+    monkeypatch.setattr(
+        dm,
+        "_apply_streaming_offload",
+        lambda *a, **k: seen.append(k.get("stream_companions_unpinned")),
+    )
+    monkeypatch.setattr(dm, "_enable_vae_saver", lambda *a, **k: False)
+    pipe = _ltx_pipe()
+    for flagged in (True, False):
+        plan = _model_plan(7)
+        estimates = dict(plan.estimates)
+        if flagged:
+            estimates[dm.STREAM_COMPANIONS_UNPINNED_KEY] = 1
+        import dataclasses
+
+        plan = dataclasses.replace(
+            plan,
+            offload_policy = dm.OFFLOAD_STREAMING,
+            estimates = estimates,
+            vae_tiling = False,
+            vae_slicing = False,
+        )
+        try:
+            dm.apply_memory_plan(pipe, plan, device = "cuda")
+        except Exception:  # noqa: BLE001 -- only the installer call is under test
+            pass
+    assert seen == [True, False]

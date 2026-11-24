@@ -149,14 +149,23 @@ def test_streaming_offload_streams_the_connectors_when_they_pin(monkeypatch):
     assert pipe.vae.moved_to
 
 
-def test_connectors_stream_unpinned_when_the_pin_budget_is_short(monkeypatch):
+@pytest.mark.parametrize("must_stream", [False, True])
+def test_short_pin_budget_keeps_connectors_resident_unless_the_plan_needs_them_off(
+    monkeypatch, must_stream
+):
     monkeypatch.delenv(_ENV, raising = False)
     calls = _stub_streaming(monkeypatch, 9)  # the 8 MiB DiT pins, the 6 MiB connectors would not
     pipe = _pipe()
-    dm._apply_streaming_offload(pipe, "cuda", None)
-    # off the card all the same, without the copy stream or any pin
-    assert {id(m): (t, low) for m, t, low in calls}[id(pipe.connectors)] == ("leaf_level", True)
-    assert pipe.connectors.moved_to == []
+    dm._apply_streaming_offload(pipe, "cuda", None, stream_companions_unpinned = must_stream)
+    hooked = {id(m): (t, low) for m, t, low in calls}
+    if must_stream:
+        # off the card all the same, without the copy stream or any pin
+        assert hooked[id(pipe.connectors)] == ("leaf_level", True)
+        assert pipe.connectors.moved_to == []
+    else:
+        # main's placement
+        assert id(pipe.connectors) not in hooked
+        assert pipe.connectors.moved_to
 
 
 def test_connectors_stay_resident_when_switched_off(monkeypatch):
