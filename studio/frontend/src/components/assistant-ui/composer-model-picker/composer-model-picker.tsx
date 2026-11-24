@@ -730,12 +730,14 @@ function OwnerImageMark({
   owner,
   repoName,
   name,
+  remote = true,
 }: {
   owner: string;
   repoName?: string;
   name?: string;
+  remote?: boolean;
 }) {
-  const src = useAvatarImageUrl(owner, repoName);
+  const src = useAvatarImageUrl(owner, repoName, remote);
   const image = useAvatarImageRetry(src);
   if (!src || !image.show) {
     return (
@@ -800,6 +802,8 @@ function RowMark({ row }: { row?: RowMarkRow }) {
         owner={parts.owner}
         repoName={parts.name}
         name={name ?? parts.name}
+        // Discover search rows list any owner on HF: cached logos only, like the Hub.
+        remote={row?.kind !== "hub"}
       />
     );
   }
