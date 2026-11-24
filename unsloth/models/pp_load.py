@@ -618,10 +618,19 @@ def _load_quantizing(real, cls, name, args, kwargs, state):
         counts["placeholder_tensors"] += 1
         counts["placeholder_numel"] += p.numel()
 
+    def keep(model, target_name):
+        # The allocator warmup sees the meta model before any tensor is set: plan this rank's stages from it.
+        if plan.get("model") is not model:
+            plan_for(model)
+        return not target_name.startswith(plan["prefixes"])
+
+    from .fsdp2_load import sharded_load_memory
+
     loading.set_param_for_module = set_and_drop
     state["active"] = True
     try:
-        loaded = real(cls, name, *args, **kwargs)
+        with sharded_load_memory(mesh.size(), keep):
+            loaded = real(cls, name, *args, **kwargs)
     finally:
         loading.set_param_for_module = set_param
         state["active"] = False
