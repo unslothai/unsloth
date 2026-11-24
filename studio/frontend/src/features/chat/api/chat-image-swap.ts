@@ -4,15 +4,17 @@ import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import {
   chatImageSwapSelection,
   getDiffusionStatus,
-  parseJson,
   type DiffusionGenerateResponse,
 } from "@/features/images/api";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { fileToBase64 } from "@/lib/audio-utils";
+import { streamedToolCallArguments } from "../tool-call-arguments";
+import { extractDeltaText } from "../utils/parse-assistant-content";
 import type {
   OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
+  OpenAIToolCallPart,
 } from "../types/api";
 import {
   getInferenceStatus,
@@ -140,59 +142,89 @@ export async function* streamImageSwap(
       },
     },
   };
-  const response = await authFetch(
-    "/v1/chat/completions",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal,
-      body: JSON.stringify({
-        ...body,
-        stream: false,
-        stream_options: undefined,
-        enable_tools: false,
-        enabled_tools: undefined,
-        // This request only proposes a call. The client confirms before rendering.
-        confirm_tool_calls: false,
-        mcp_enabled: false,
-        tools: [tool],
-        tool_choice: "auto",
-        parallel_tool_calls: false,
-      }),
-    },
-    { retryNetworkErrors: false },
-  );
-  const first = await parseJson<{
-    choices: {
-      message: OpenAIChatMessage & { reasoning_content?: string };
-      finish_reason: string;
-    }[];
-    usage?: OpenAIChatChunk["usage"];
-  }>(response);
-  const choice = first.choices[0];
-  const calls = choice.message.tool_calls;
-  if (!calls?.length) {
-    yield {
-      choices: [
-        { delta: choice.message, finish_reason: choice.finish_reason },
-      ],
-      usage: first.usage,
-    } as OpenAIChatChunk;
-    return;
-  }
-  const delta = {
-    content: choice.message.content,
-    reasoning_content: choice.message.reasoning_content,
+  const proposal = {
+    ...body,
+    stream: true,
+    enable_tools: false,
+    enabled_tools: undefined,
+    // The stream only proposes a call. The client confirms before rendering.
+    confirm_tool_calls: false,
+    mcp_enabled: false,
+    tools: [tool],
+    tool_choice: "auto",
+    parallel_tool_calls: false,
   };
-  if (delta.content || delta.reasoning_content)
-    yield { choices: [{ delta, finish_reason: null }] } as OpenAIChatChunk;
-  const [call] = calls;
+  let call: OpenAIToolCallPart | undefined;
+  let content = "";
+  let reasoning = "";
+  let finishReason: string | null | undefined;
+  for await (const chunk of streamChatCompletions(
+    proposal,
+    signal,
+    contextLength,
+    false,
+    { waitForClose: true },
+  )) {
+    const choice = chunk.choices?.[0];
+    const delta = choice?.delta;
+    content += extractDeltaText(delta?.content).text;
+    const thought = (delta as { reasoning_content?: unknown } | undefined)
+      ?.reasoning_content;
+    if (typeof thought === "string") reasoning += thought;
+    finishReason = choice?.finish_reason ?? finishReason;
+    for (const fragment of delta?.tool_calls ?? []) {
+      if (
+        ("index" in fragment &&
+          typeof fragment.index === "number" &&
+          fragment.index !== 0) ||
+        (call?.id && fragment.id && call.id !== fragment.id)
+      ) {
+        throw new Error("Expected a single image tool call.");
+      }
+      call = {
+        id: fragment.id ?? call?.id,
+        type: "function",
+        function: {
+          name: fragment.function?.name ?? call?.function?.name,
+          arguments:
+            (call?.function?.arguments ?? "") +
+            streamedToolCallArguments(fragment.function?.arguments),
+        },
+      };
+    }
+    if (
+      choice &&
+      (delta?.tool_calls?.length || choice.finish_reason === "tool_calls")
+    ) {
+      // The image card is emitted after the complete call, as one start/end pair.
+      yield {
+        ...chunk,
+        choices: [
+          {
+            ...choice,
+            delta: { ...delta, tool_calls: undefined },
+            finish_reason: null,
+          },
+        ],
+      };
+    } else {
+      yield chunk;
+    }
+  }
+  if (!call) return;
   if (
-    calls.length !== 1 ||
+    finishReason === "length" ||
     !call.id ||
     call.function?.name !== "generate_image"
-  )
-    throw new Error("Expected a single image tool call.");
+  ) {
+    throw new Error("Expected a complete image tool call.");
+  }
+  const assistant: OpenAIChatMessage & { reasoning_content?: string } = {
+    role: "assistant",
+    content: content || null,
+    ...(reasoning ? { reasoning_content: reasoning } : {}),
+    tool_calls: [call],
+  };
   const args = JSON.parse(call.function.arguments ?? "{}");
   const prompt: unknown = args?.prompt;
   if (typeof prompt !== "string" || !prompt.trim())
@@ -251,7 +283,7 @@ export async function* streamImageSwap(
       enable_tools: false,
       messages: [
         ...body.messages,
-        choice.message,
+        assistant,
         {
           role: "tool",
           tool_call_id: call.id,

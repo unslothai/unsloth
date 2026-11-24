@@ -257,3 +257,83 @@ test("image swap replay sends the gallery reference and keeps the PNG out of mod
     /PNG_BYTES/,
   );
 });
+
+test("image swap streams its proposal and waits for complete tool arguments", async () => {
+  const source = readSrc("features/chat/api/chat-image-swap.ts");
+  const start = source.indexOf("export async function* streamImageSwap(");
+  let requests = 0;
+  let proposalEnded = false;
+  const streamImageSwap = new Function(
+    "streamChatCompletions",
+    "extractDeltaText",
+    "streamedToolCallArguments",
+    "render",
+    "authFetch",
+    "sameSession",
+    stripTypeScriptTypes(source.slice(start).replace("export ", "")) +
+      "\nreturn streamImageSwap;",
+  )(
+    async function* (
+      request: { stream: boolean; messages: unknown[] },
+      _signal: AbortSignal,
+      _contextLength: number | null,
+      _kvCacheHint: boolean,
+      options?: { waitForClose: boolean },
+    ) {
+      assert.equal(request.stream, true);
+      if (++requests === 1) {
+        assert.equal(options?.waitForClose, true);
+        yield { choices: [{ delta: { content: "I can help." } }] };
+        yield {
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "image-1",
+                function: { name: "generate_image", arguments: '{"pro' },
+              }],
+            },
+          }],
+        };
+        yield {
+          choices: [{
+            delta: {
+              tool_calls: [{ index: 0, function: { arguments: 'mpt":"a tree"}' } }],
+            },
+            finish_reason: "tool_calls",
+          }],
+        };
+        proposalEnded = true;
+      } else {
+        assert.equal(request.messages.length, 2);
+        assert.match(JSON.stringify(request.messages[0]), /I can help/);
+        assert.match(JSON.stringify(request.messages[0]), /a tree/);
+      }
+    },
+    (content: unknown) => ({ text: typeof content === "string" ? content : "" }),
+    (value: unknown) => value ?? "",
+    async (_selection: unknown, args: { prompt: string }) => {
+      assert.equal(proposalEnded, true);
+      assert.equal(args.prompt, "a tree");
+      return { id: "saved", url: "/gallery/saved" };
+    },
+    async (path: string) => {
+      assert.match(path, /\/images\/gallery\//);
+      return { ok: false };
+    },
+    () => {},
+  );
+  const generator = streamImageSwap(
+    { stream: true, messages: [] },
+    { textId: "text", image: { model_path: "image" } },
+    new AbortController().signal,
+    null,
+  );
+  const first = await generator.next();
+  assert.equal(first.value.choices[0].delta.content, "I can help.");
+  assert.equal(proposalEnded, false);
+  for await (const _ of generator) {
+    // Collect the remainder through the restore continuation.
+  }
+  assert.equal(requests, 2);
+});
