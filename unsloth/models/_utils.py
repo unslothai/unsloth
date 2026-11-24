@@ -5851,6 +5851,9 @@ def is_bfloat16_supported():
     # unsloth_zoo probe sees it. Cheap (device properties only).
     if DEVICE_TYPE == "xpu" and zoo_shares_xpu_bf16():
         return xpu_supports_native_bf16()
+    # HIP: _gpu_init's patched probe judges the current card.
+    if DEVICE_TYPE == "hip":
+        return torch.cuda.is_bf16_supported()
     if _BF16_BY_DEVICE is None:
         return SUPPORTS_BFLOAT16
     try:
