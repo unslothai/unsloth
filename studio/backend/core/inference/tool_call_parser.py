@@ -4002,6 +4002,43 @@ def _find_outside_json_strings(text: str, needle: str, start: int) -> int:
     return -1
 
 
+def _call_body_spans(text: str) -> list[tuple[int, int]]:
+    """DeepSeek envelopes and ``<|python_tag|>{json}`` calls, bounded outside JSON strings, so a think
+    tag quoted in their arguments is not read as reasoning; an unclosed one runs to the end."""
+    spans = _deepseek_envelope_spans(text) if _DEEPSEEK_BEGIN_RE.search(text) else []
+    pos = text.find(_LLAMA3_PYTHON_TAG)
+    while pos >= 0:
+        i = pos + len(_LLAMA3_PYTHON_TAG)
+        while i < len(text) and text[i] in " \t\r\n":
+            i += 1
+        end = len(text)
+        if i < len(text) and text[i] == "{":
+            brace_end = _balanced_brace_end(text, i)
+            end = len(text) if brace_end is None else brace_end + 1
+            spans.append((pos, end))
+        else:
+            end = i
+        pos = text.find(_LLAMA3_PYTHON_TAG, end)
+    return spans
+
+
+def _deepseek_envelope_spans(text: str) -> list[tuple[int, int]]:
+    """``(start, end)`` per DeepSeek envelope; the close is found outside JSON strings, and an unclosed
+    envelope runs to the end of the text."""
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    while True:
+        begin = _DEEPSEEK_BEGIN_RE.search(text, pos)
+        if begin is None:
+            return spans
+        end = _find_outside_json_strings(text, _DEEPSEEK_END, begin.end())
+        if end < 0:
+            spans.append((begin.start(), len(text)))
+            return spans
+        pos = end + len(_DEEPSEEK_END)
+        spans.append((begin.start(), pos))
+
+
 def _parse_deepseek_tool_calls(
     content: str,
     *,
