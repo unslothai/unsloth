@@ -10391,6 +10391,18 @@ def test_continue_allows_pi_subagent_without_persist(fake_studio, tmp_path, monk
     assert "UNSLOTH_PI_SUBAGENT_CONFIG" in resumed["env"]
 
 
+def test_continue_does_not_pin_a_path_loaded_residents_bare_name(
+    fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    fake_studio.state["models"] = [{**MODEL, "id": "foo"}]
+    _capture_launch(monkeypatch, ["claude"])
+    assert json.loads((tmp_path / "last_start.json").read_text())["model"] is None
+    resumed = _capture_launch(monkeypatch, ["--continue"])
+    assert resumed["command"][1:] == ["--model", "foo", "--continue"]
+
+
 def test_continue_refuses_a_session_that_was_not_kept(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/hermes")
     _capture_launch(monkeypatch, ["hermes"])

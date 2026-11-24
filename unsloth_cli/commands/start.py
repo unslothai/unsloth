@@ -5535,7 +5535,8 @@ def _remember_start(base: str, entry: dict) -> None:
     subagent = ctx.params.get("as_subagent") or ctx.params.get("auto_route")
     last = {
         "agent": agent,
-        "model": positional or entry["id"],
+        # A path-loaded resident's public id is a bare name that would resolve to unsloth/<name>.
+        "model": positional or (entry["id"] if _looks_like_model(entry["id"]) else None),
         "args": _typed_options(ctx),
         # Pi's subagent mode keeps the user's own Pi dir; only the bridge config is temporary.
         "kept": bool(
@@ -5568,7 +5569,7 @@ def _start_group(
     args = last.get("args")
     if (
         agent not in _CONTINUE_ARGS
-        or not isinstance(last.get("model"), str)
+        or not isinstance(last.get("model"), (str, type(None)))
         or not isinstance(args, list)
         or not all(isinstance(arg, str) for arg in args)
     ):
@@ -5581,7 +5582,8 @@ def _start_group(
     if isinstance(last.get("server"), str):
         os.environ.setdefault("UNSLOTH_STUDIO_URL", last["server"])
     command = ctx.command.get_command(ctx, agent)
-    argv = ["--model", last["model"], *args, *_CONTINUE_ARGS[agent]]
+    model = ["--model", last["model"]] if last.get("model") else []
+    argv = [*model, *args, *_CONTINUE_ARGS[agent]]
     with command.make_context(agent, argv, parent = ctx) as sub:
         command.invoke(sub)
 
