@@ -263,6 +263,7 @@ class _PassthroughCommand(TyperCommand):
     def invoke(self, ctx: click.Context):
         global _agent_ctx
         _agent_ctx = ctx
+        ctx.meta["unsloth_raw_args"] = list(ctx.args)
         return super().invoke(ctx)
 
 
@@ -5449,7 +5450,7 @@ def _run(
             typer.echo(f"Unsloth Studio is still running at {base}.")
             typer.echo("Stop it with: unsloth studio stop")
         return
-    _remember_start(entry)
+    _remember_start(base, entry)
     try:
         code = _launch(
             command,
@@ -5523,16 +5524,24 @@ def _typed_options(ctx) -> list:
     return args
 
 
-def _remember_start(entry: dict) -> None:
+def _remember_start(base: str, entry: dict) -> None:
     ctx = _agent_ctx
     if ctx is None or ctx.info_name not in _CONTINUE_ARGS:
         return
+    agent = ctx.info_name
+    positional, _ = _consume_positional_model(
+        ctx.params.get("model"), ctx.meta.get("unsloth_raw_args") or []
+    )
+    subagent = ctx.params.get("as_subagent") or ctx.params.get("auto_route")
     last = {
-        "agent": ctx.info_name,
-        "model": ctx.params.get("model") or entry["id"],
+        "agent": agent,
+        "model": positional or entry["id"],
         "args": _typed_options(ctx),
-        "persist": bool(ctx.params.get("persist")),
-        "server": os.environ.get("UNSLOTH_STUDIO_URL"),
+        # Pi's subagent mode keeps the user's own Pi dir; only the bridge config is temporary.
+        "kept": bool(
+            ctx.params.get("persist") or agent in _OWN_HOME_AGENTS or (agent == "pi" and subagent)
+        ),
+        "server": base,
     }
     try:
         _write_private_json(_last_start_path(), last)
@@ -5564,7 +5573,7 @@ def _start_group(
         or not all(isinstance(arg, str) for arg in args)
     ):
         _fail("Nothing to continue yet. Start an agent first, e.g. `unsloth start claude`.")
-    if agent not in _OWN_HOME_AGENTS and not last.get("persist"):
+    if not last.get("kept"):
         _fail(
             f"The last {agent} session was not kept, so there is nothing to resume. "
             f"Start it with `unsloth start {agent} --persist` to keep sessions you can continue."

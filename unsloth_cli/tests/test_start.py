@@ -10375,6 +10375,22 @@ def test_continue_replays_typed_options_but_not_yolo(fake_studio, tmp_path, monk
     assert replayed[0]["yolo"] is False
 
 
+def test_continue_keeps_positional_variant_and_server(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    _capture_launch(monkeypatch, ["claude", f"{MODEL['id']}:Q8_0", "--print", "hi"])
+    last = json.loads((tmp_path / "last_start.json").read_text())
+    assert last["model"] == f"{MODEL['id']}:Q8_0"
+    assert last["server"] == BASE
+
+
+def test_continue_allows_pi_subagent_without_persist(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/pi")
+    _capture_launch(monkeypatch, ["pi", "--as-subagent"])
+    resumed = _capture_launch(monkeypatch, ["--continue"])
+    assert resumed["command"][-1] == "--continue"
+    assert "UNSLOTH_PI_SUBAGENT_CONFIG" in resumed["env"]
+
+
 def test_continue_refuses_a_session_that_was_not_kept(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/hermes")
     _capture_launch(monkeypatch, ["hermes"])
