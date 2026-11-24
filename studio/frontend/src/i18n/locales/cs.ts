@@ -986,6 +986,13 @@ export const cs = {
     compactUnsupported:
       "Komprimace vyžaduje model GGUF nebo MLX s podporou nástrojů",
   },
+  chatFiles: {
+    title: "Soubory v tomto chatu",
+    code: "Úryvky kódu",
+    showInChat: "Zobrazit v chatu",
+    download: "Stáhnout {name}",
+    saveFailed: "{name} se nepodařilo uložit.",
+  },
   welcome: {
     goodToSeeYou: "Je fajn vás vidět",
     goodToSeeYouName: "Je fajn vás vidět, {name}",
@@ -2814,7 +2821,7 @@ export const cs = {
         oldWebkitWarning:
           "WebKitGTK {version} na Waylandu: vykreslování pomocí GPU může při spuštění na NVIDIA se zlomkovým škálováním spadnout (chyba WebKitu 280210). Pokud k tomu dojde, Unsloth se sám vrátí k vykreslování pomocí CPU. Na WebKitGTK 2.50.4 nepřineslo žádné měřitelné zrychlení (v obou případech 8 fps), proto se zde možnost Zapnuto nedoporučuje.",
         oldDriverWarning:
-          "Ovladač NVIDIA {version} na X11: Unsloth ponechá vykreslování pomocí GPU vypnuté, dokud nebude ovladač ve verzi 610 nebo novější. Starší ovladače při každém snímku ztrácejí jeden popisovač souboru a okno se během několika minut přestane vykreslovat.",
+          "Ovladač NVIDIA {version} na X11: Unsloth ponechá vykreslování pomocí GPU vypnuté, dokud nebude ovladač ve verzi 590 nebo novější. Starší ovladače při každém snímku ztrácejí jeden popisovač souboru a okno se během několika minut přestane vykreslovat.",
         fallbackNote:
           "Vykreslování pomocí GPU v tomto systému při spuštění spadlo, proto Unsloth používá vykreslování pomocí CPU.",
         tryAgain: "Zkusit GPU znovu",
@@ -3091,6 +3098,15 @@ export const cs = {
         runningOn: "llama.cpp aktuálně běží na: {backend}.",
         hint: "Nainstaluje sestavení llama.cpp pro tento backend a zachová ho i při aktualizacích. Hodí se, když automatická volba padá nebo ji ovladač vašeho GPU nepodporuje. Zobrazují se jen backendy, pro které existuje sestavení pro tento počítač; trénování to neovlivní.",
         autoWith: "Automaticky ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm není nainstalován",
+          rocmNoAccess: "bez přístupu ke GPU",
+          otherRelease: "vyžaduje aktualizaci llama.cpp",
+          checkFailed: "nelze ověřit",
+          noBuild: "pro tento počítač není k dispozici build",
+        },
         apply: "Použít",
         applying: "Instalace...",
         applyHint:

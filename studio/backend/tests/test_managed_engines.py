@@ -2888,6 +2888,42 @@ def test_vllm_retries_once_without_a_drafter_that_breaks_startup(isolated, monke
 
 
 @_LOCAL_ENGINE_HOST
+@pytest.mark.parametrize(
+    ("initial_outcome", "use_drafter"),
+    [("mamba", False), ("crash", True)],
+)
+def test_vllm_automatic_retry_preserves_both_logs(
+    isolated, monkeypatch, initial_outcome, use_drafter
+):
+    from core.inference import engine_adapters
+    from utils import debug_log_sources
+
+    if use_drafter:
+        monkeypatch.setattr(
+            engine_adapters, "vllm_speculative_args", lambda _: ["--speculative-config", "{}"]
+        )
+    engine, launches = _scripted_engine(isolated, monkeypatch, [initial_outcome, "crash"])
+    with pytest.raises(RuntimeError, match = "Engine failed to start") as failure:
+        engine.start("model", 4096, [0], dict(os.environ))
+
+    assert len(launches) == 2
+    paths = sorted(
+        Path(source.realpath)
+        for source in debug_log_sources.list_sources()
+        if source.family == "vllm"
+    )
+    assert len(paths) == 2
+    first, final = paths
+    assert str(final) == failure.value.managed_engine_log_path
+    initial_output = _MAMBA_LIMIT_LINE if initial_outcome == "mamba" else "CUDA out of memory"
+    assert initial_output in first.read_text(encoding = "utf-8")
+    assert "CUDA out of memory" in final.read_text(encoding = "utf-8")
+    for path in paths:
+        assert "Managed engine stopped." in path.read_text(encoding = "utf-8")
+    assert engine.process is None and engine._attempt_log is None
+
+
+@_LOCAL_ENGINE_HOST
 def test_vllm_drafter_retry_respects_an_external_stop(isolated, monkeypatch):
     import os
     from core.inference import engine_adapters, managed_engine

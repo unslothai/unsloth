@@ -747,6 +747,21 @@ def _flux2_klein_distilled(pipe: Any) -> bool:
     return bool(getattr(getattr(pipe, "config", None), "is_distilled", False))
 
 
+_CFG_INTERVAL_KWARG = "guidance_stop"
+
+
+def _cfg_interval_supported(state: Any) -> bool:
+    """Fast CFG needs real CFG and a pipeline taking ``guidance_stop`` (measured on FLUX.3 Klein base only)."""
+    pipe = getattr(state, "pipe", None)
+    call = getattr(pipe, "__call__", None)
+    if call is None or not _guidance_supported(state):
+        return False
+    try:
+        return _CFG_INTERVAL_KWARG in inspect.signature(call).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _guidance_supported(state: Any) -> bool:
     """FLUX.2 klein base and distilled share a family; Flux2KleinPipeline turns guidance off on ``is_distilled``."""
     if not state.family.uses_guidance:
@@ -2833,6 +2848,28 @@ def _guard_layer_cards(
                 "under Advanced on the Images page."
             )
     return checked
+
+
+class _SplitPreviewRefine:
+    """Memoised refine shared by both split previews of one load; clear() after a LoRA bake changes the pipe."""
+
+    def __init__(self, refine: Optional[Callable[..., Any]] = None):
+        self._refine = refine
+        self._answers: dict = {}
+
+    def __call__(
+        self,
+        pipe: Any,
+        plan: Any,
+        logger: Any = None,
+    ) -> Any:
+        key = (id(pipe), id(plan), logger)
+        if key not in self._answers:
+            self._answers[key] = (self._refine or refine_plan_for_multigpu)(pipe, plan, logger)
+        return self._answers[key]
+
+    def clear(self) -> None:
+        self._answers.clear()
 
 
 def _layer_split_expected(
@@ -11773,9 +11810,11 @@ class DiffusionBackend:
                         base,
                         fam.name,
                     )
-                    split_expected = _layer_split_expected(pipe, plan)
+                    split_refine = _SplitPreviewRefine()
+                    split_expected = _layer_split_expected(pipe, plan, split_refine)
                     # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower, losing to GGUF.
                     if comfy_compile and _has_active_lora(loras):
+                        split_refine.clear()
                         # A quantized single file bakes its adapters before the compile; a new adapter set reloads.
                         baked = self._resolve_lora_set(
                             [(i, w) for (i, w) in loras if w != 0],
@@ -11819,7 +11858,7 @@ class DiffusionBackend:
                             native_scheme,
                             split_expected
                             or plan_keeps_transformer_resident(plan)
-                            or _companion_split_expected(pipe, plan),
+                            or _companion_split_expected(pipe, plan, split_refine),
                         )
                     )
                     if quant_forces_compile and effective_speed == SPEED_OFF:
@@ -15912,6 +15951,7 @@ class DiffusionBackend:
         inpaint_padding: Optional[int] = None,
         # Upscale workflow: a model upscaler id (diffusion_upscalers) in place of the Lanczos resize. None = Lanczos.
         upscale_model: Optional[str] = None,
+        cfg_interval_end: Optional[float] = None,
         _hires_pass: Optional[HiresPass] = None,
     ) -> dict[str, Any]:
         import torch
@@ -16352,6 +16392,17 @@ class DiffusionBackend:
                         kwargs["layers"] = layer_count
                     if "resolution" in call_params:
                         kwargs["resolution"] = int(getattr(fam, "layer_resolution", 640))
+                cfg_interval_applied = None
+                if cfg_interval_end is not None and float(cfg_interval_end) < 1.0:
+                    if not (_guidance_supported(state) and _CFG_INTERVAL_KWARG in call_params):
+                        raise ValueError(
+                            "Fast CFG (cfg_interval_end) is not available for this model."
+                        )
+                    if not 0.0 < float(cfg_interval_end) <= 1.0:
+                        raise ValueError("cfg_interval_end must be in (0, 1].")
+                    if float(guidance) > 1.0:
+                        kwargs[_CFG_INTERVAL_KWARG] = float(cfg_interval_end)
+                        cfg_interval_applied = float(cfg_interval_end)
                 if state.family.name == LUMINA2_FAMILY_NAME and "cfg_trunc_ratio" in call_params:
                     # Lumina 2 card recipe truncates CFG to the first quarter (cfg_trunc_ratio=0.25); the 1.0 default oversaturates.
                     kwargs["cfg_trunc_ratio"] = 0.25
@@ -17314,10 +17365,10 @@ class DiffusionBackend:
                         weighting_used = weighting_used[0],
                         variation_seed_list = variation_seed_list,
                     ),
-                    # Recorded only when applied, so a plain inpaint recipe stays unchanged.
                     "mask_blur": mask_blur_applied,
                     "inpaint_only_masked": True if inpaint_padding_applied is not None else None,
                     "inpaint_padding": inpaint_padding_applied,
+                    "cfg_interval_end": cfg_interval_applied,
                 }
                 if upscale_model and workflow == "upscale":
                     result["upscale_model"] = upscale_model
@@ -17766,6 +17817,7 @@ class DiffusionBackend:
             ),
             "negative_prompt_min_guidance": _negative_prompt_guidance_threshold(state.family),
             "supports_guidance": _guidance_supported(state),
+            "supports_cfg_interval": _cfg_interval_supported(state),
             "supports_live_preview": _live_preview_available(state),
             "prompt_hint": state.family.prompt_hint,
             "samplers": sampler_options(getattr(state.pipe, "scheduler", None)),

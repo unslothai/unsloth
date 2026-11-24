@@ -14317,7 +14317,13 @@ def _gguf_runtime_bytes(
             # mirrors _plan_tensor_parallel: per-device buffer and ctx growth on every device
             compute = devices * (
                 _flat_buffer(True)
-                + probe._compute_buffer_ctx_bytes(ctx, effective_ubatch, cache_type_for_scratch)
+                + probe._compute_buffer_ctx_bytes(
+                    ctx,
+                    effective_ubatch,
+                    cache_type_for_scratch,
+                    n_parallel = slots,
+                    swa_full = swa_full,
+                )
             )
         else:
             # layer_split follows the loader: -ot, -ncmoe, --no-kv-offload disable pipeline parallelism.
@@ -14336,6 +14342,7 @@ def _gguf_runtime_bytes(
                     layer_split = devices > 1 and not pipeline_parallel_off,
                     flash_attn = flash_attn,
                     n_parallel = slots,
+                    swa_full = swa_full,
                 )
             )
         if compute <= 0:
@@ -19355,11 +19362,17 @@ def _refuse_oom_beside_media_under_always() -> None:
         raise gpu_arbiter.refusal_for(slots)
 
 
+_MANAGED_ENGINE_LOAD_FAILURE = "managed_engine_load_failed"
+
+
 def _ran_out_of_memory(exc: HTTPException) -> bool:
-    if isinstance(exc.detail, dict):  # a classified audio.cpp failure
-        # Out of CPU RAM: evicting GPU models frees none of it.
-        return exc.detail.get("code") == "out_of_memory" and exc.detail.get("device") != "cpu"
-    return exc.status_code == 500 and "out of memory" in str(exc.detail).lower()
+    detail = exc.detail
+    if isinstance(detail, dict):
+        if detail.get("code") != _MANAGED_ENGINE_LOAD_FAILURE:
+            # Classified audio.cpp failure. Evicting GPU models frees no CPU RAM.
+            return detail.get("code") == "out_of_memory" and detail.get("device") != "cpu"
+        detail = detail.get("message", "")
+    return exc.status_code == 500 and "out of memory" in str(detail).lower()
 
 
 def _gate_kept_models(request: LoadRequest, cancel: bool = True) -> None:
@@ -20046,6 +20059,17 @@ async def _load_model_impl(
             _shutting_down_now = _loads_shutting_down
         if _shutting_down_now:
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
+
+    def _load_error_detail(exc: Exception, message: str):
+        path = getattr(exc, "managed_engine_log_path", None)
+        if path and _owner_session(fastapi_request) and _load_warnings_reach_user.get():
+            return {
+                "code": _MANAGED_ENGINE_LOAD_FAILURE,
+                "message": message,
+                "log_family": request.engine,
+                "log_path": path,
+            }
+        return message
 
     # Arm the throttle so even an instant 100% load logs its first step.
     _reset_load_progress_step()
@@ -21339,7 +21363,7 @@ async def _load_model_impl(
             )
             raise HTTPException(
                 status_code = 500,
-                detail = _unsupported_quantization,
+                detail = _load_error_detail(e, _unsupported_quantization),
             )
         if native_grant_backed:
             logger.warning(
@@ -21347,10 +21371,10 @@ async def _load_model_impl(
                 model_log_label,
                 redacted_msg,
             )
-            raise HTTPException(status_code = 400, detail = redacted_msg)
+            raise HTTPException(status_code = 400, detail = _load_error_detail(e, redacted_msg))
         logger.warning("Rejected inference GPU selection: %s", e)
         # User-facing validation (e.g. "Invalid gpu_ids [99]"): redact paths, keep detail.
-        raise HTTPException(status_code = 400, detail = redacted_msg)
+        raise HTTPException(status_code = 400, detail = _load_error_detail(e, redacted_msg))
     except GpuMemoryShortError:
         raise  # load_model_gated makes room and retries
     except MultiModelAlwaysRefusal:
@@ -21402,7 +21426,7 @@ async def _load_model_impl(
             )
             raise HTTPException(
                 status_code = 500,
-                detail = _unsupported_quantization,
+                detail = _load_error_detail(e, _unsupported_quantization),
             )
         if native_grant_backed:
             logger.error(
@@ -21413,11 +21437,16 @@ async def _load_model_impl(
             msg = _maybe_unsupported_message(redacted_msg)
             raise HTTPException(
                 status_code = 500,
-                detail = f"Failed to load native model {model_log_label}: {msg}",
+                detail = _load_error_detail(
+                    e, f"Failed to load native model {model_log_label}: {msg}"
+                ),
             )
         logger.error(f"Error loading model: {e}", exc_info = True)
         msg = _maybe_unsupported_message(redacted_msg)
-        raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
+        raise HTTPException(
+            status_code = 500,
+            detail = _load_error_detail(e, f"Failed to load model: {msg}"),
+        )
     finally:
         gguf_load_stack.close()
         # Runs for a load that failed part way too: the bytes it pulled are cached anyway.
@@ -52383,6 +52412,21 @@ def _shift_kwargs(generate: Any, request: Any) -> dict:
     raise ValueError("Shift is supported on the diffusers engine only.")
 
 
+def _cfg_interval_kwargs(generate: Any, request: Any) -> dict:
+    """``cfg_interval_end`` (Fast CFG) for an engine whose generate() takes it; omitted when unset, refused
+    (ValueError -> 400) on an engine without it."""
+    value = getattr(request, "cfg_interval_end", None)
+    if value is None:
+        return {}
+    try:
+        import inspect
+        if "cfg_interval_end" in inspect.signature(generate).parameters:
+            return {"cfg_interval_end": value}
+    except (TypeError, ValueError):
+        pass
+    raise ValueError("Fast CFG is supported on the diffusers engine only.")
+
+
 def _inpaint_mask_kwargs(generate: Any, request: Any) -> dict:
     """Inpaint mask kwargs generate() accepts; only the set ones, so an untouched request is unchanged."""
     try:
@@ -52584,6 +52628,7 @@ async def _external_image_generation(
         or body.hires is not None
         or body.upscale_model
         or body.detailer is not None
+        or body.cfg_interval_end is not None
     ):
         raise HTTPException(
             status_code = 400,
@@ -53184,6 +53229,7 @@ async def _generate_diffusion_image_run(
                     **_sampler_kwargs(backend.generate, request.sampler, request.schedule_type),
                     **_sd_controls_kwargs(backend.generate, request),
                     **_shift_kwargs(backend.generate, request),
+                    **_cfg_interval_kwargs(backend.generate, request),
                     **_inpaint_mask_kwargs(backend.generate, request),
                     **_hires_kwargs(backend.generate, request),
                 )
@@ -53358,6 +53404,7 @@ async def _generate_diffusion_image_run(
                         **{
                             key: result[key]
                             for key in (
+                                "cfg_interval_end",
                                 "shift",
                                 "base_shift",
                                 "max_shift",

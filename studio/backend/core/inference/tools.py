@@ -105,6 +105,7 @@ from core.inference.mcp_client import (
     is_studio_tools,
     is_stdio,
     list_tools_async,
+    needs_discovery,
     oauth_client_kwargs,
     parse_server_headers,
     parse_stdio_command,
@@ -14976,12 +14977,7 @@ async def get_enabled_mcp_tools(
 
     # cool-off avoids blocking every send for the full probe timeout when a server is down. The in-process
     # Unsloth Studio row is re-listed every send, so tool toggles apply at once.
-    uncached = [
-        s
-        for s in servers
-        if is_studio_tools(s["url"])
-        or (get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"]))
-    ]
+    uncached = [s for s in servers if is_studio_tools(s["url"]) or needs_discovery(s["id"])]
     if uncached:
         results = await asyncio.gather(
             *(_discover_mcp_tools(s) for s in uncached), return_exceptions = True

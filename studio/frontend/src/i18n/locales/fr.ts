@@ -887,6 +887,13 @@ export const fr = {
     compactEmpty: "Rien à compacter pour le moment",
     compactUnsupported: "Le compactage nécessite un modèle GGUF ou MLX prenant en charge les outils",
   },
+  chatFiles: {
+    title: "Fichiers de cette discussion",
+    code: "Extraits de code",
+    showInChat: "Afficher dans la discussion",
+    download: "Télécharger {name}",
+    saveFailed: "Impossible d’enregistrer {name}.",
+  },
   welcome: {
     goodToSeeYou: "Ravi de vous voir",
     goodToSeeYouName: "Ravi de vous voir, {name}",
@@ -2630,7 +2637,7 @@ export const fr = {
         off: "Désactivé",
         oldWebkitWarning: "WebKitGTK {version} sous Wayland : le rendu GPU peut planter au lancement sur NVIDIA avec une mise à l’échelle fractionnaire (WebKit bug 280210). Dans ce cas, Unsloth repasse de lui-même au rendu CPU. Sous WebKitGTK 2.50.4, il n’a apporté aucun gain mesurable (8 fps dans les deux cas), donc Activé n’est pas recommandé ici.",
         oldDriverWarning:
-          "Pilote NVIDIA {version} sous X11 : Unsloth laisse le rendu GPU désactivé tant que le pilote n'est pas en version 610 ou plus récente. Les pilotes plus anciens perdent un descripteur de fichier par image et la fenêtre cesse de s'afficher en quelques minutes.",
+          "Pilote NVIDIA {version} sous X11 : Unsloth laisse le rendu GPU désactivé tant que le pilote n'est pas en version 590 ou plus récente. Les pilotes plus anciens perdent un descripteur de fichier par image et la fenêtre cesse de s'afficher en quelques minutes.",
         fallbackNote: "Le rendu GPU a planté au lancement sur ce système, donc Unsloth utilise le rendu CPU.",
         tryAgain: "Réessayer le GPU",
         envOverride: "Défini par la variable d’environnement {name}. Ce réglage n’a aucun effet tant qu’elle n’est pas supprimée.",
@@ -2901,6 +2908,15 @@ export const fr = {
         runningOn: "llama.cpp fonctionne actuellement sur {backend}.",
         hint: "Installe la version de llama.cpp pour ce backend et la conserve lors des mises à jour. Utile si le choix automatique plante ou si votre pilote GPU ne le prend pas en charge. Seuls les backends disposant d'une version pour cette machine sont proposés ; l'entraînement n'est pas affecté.",
         autoWith: "Automatique ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm n'est pas installé",
+          rocmNoAccess: "pas d'accès au GPU",
+          otherRelease: "nécessite une mise à jour de llama.cpp",
+          checkFailed: "vérification impossible",
+          noBuild: "aucun build pour cette machine",
+        },
         apply: "Appliquer",
         applying: "Installation...",
         applyHint: "Télécharge la nouvelle version et redémarre llama.cpp. Un modèle chargé sera déchargé.",

@@ -1424,12 +1424,29 @@ def _mark_capped(dataset, cap, drop_unsupervised):
     return dataset
 
 
+# A stream view _cap built itself (streams have no _fingerprint): every row passes its own slice + filter, so its mark cannot go stale.
+_CAP_OWN_STREAM_ATTR = "_unsloth_cap_own_stream"
+
+
+def _mark_own_stream(dataset):
+    try:
+        setattr(dataset, _CAP_OWN_STREAM_ATTR, True)
+    except Exception:
+        pass
+    return dataset
+
+
+def _is_own_stream(dataset):
+    own = getattr(dataset, "__dict__", None)
+    return isinstance(own, dict) and own.get(_CAP_OWN_STREAM_ATTR) is True
+
+
 def _cap_still_holds(dataset, cap, drop_unsupervised):
     """Whether an earlier mark of ours still describes this split. Three of the four ``_cap`` outcomes mark the CALLER'S OWN object and hand it back, and that object can be mutated between two ``evaluate()`` calls (a ``set_transform`` yielding longer ``input_ids`` is enough), which let the mark skip the rescan. Our own wrappers hold a fixed slice and are trusted outright; anything else has to still fingerprint the way it did when marked. An unfingerprintable split is simply rescanned, which is safe because ``_column_names`` chains its probed row back on."""
     signature = _cap_signature(dataset)
     if signature is None:
         return False
-    if isinstance(dataset, _CappedBase):
+    if isinstance(dataset, _CappedBase) or _is_own_stream(dataset):
         return tuple(signature[:2]) == (cap, drop_unsupervised)
     token = _mutation_token(dataset)
     return token is not None and tuple(signature) == (cap, drop_unsupervised, token)
@@ -1874,6 +1891,9 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                     new = new if len(kept) == len(new) else kept
                 except Exception:
                     new = kept
+            # Never the caller's split; map-style copies use their fingerprint.
+            if new is not dataset and _is_stream(new):
+                _mark_own_stream(new)
             return _mark_capped(new, cap, drop_unsupervised)
         except Exception:
             return dataset  # never turn an eval call into a hard error
@@ -5048,6 +5068,48 @@ class _ApplyOnInputDevice:
             return self.function.apply(hidden, *args)
 
 
+def _bf16_autocast_fused_forward(model, fused_forward, *args, **kwargs):
+    # Checked per call: re-preparing the model in float32 removes the autocast subclass but keeps this instance forward.
+    compute_dtype = getattr(type(model), "_unsloth_autocast_dtype", None)
+    if compute_dtype is None or not getattr(model, "_unsloth_bf16_autocast_wrapped", False):
+        return fused_forward(*args, **kwargs)
+    from unsloth_zoo.training_utils import _call_forward_with_bf16_autocast
+
+    return _call_forward_with_bf16_autocast(fused_forward, model, args, kwargs, compute_dtype)
+
+
+def _keep_bf16_autocast_on_fused_forward(model):
+    # bfloat16 full finetuning keeps norms in float32 and runs the model's forward under bfloat16 autocast
+    # (unsloth_zoo.training_utils._wrap_forward_in_bf16_autocast, a class-level forward). TRL's fused head is an
+    # instance forward whose fused_lm_head = True branch calls the backbone directly, skipping that autocast, so the
+    # first float32 norm output reaches a bfloat16 projection: "expected mat1 and mat2 to have the same dtype".
+    # A partial holding (model, fused_forward): each installation keeps its own delegate (a second add_fused_lm_head
+    # wraps the first, it does not loop back into itself), a deepcopy rebinds both to the copy, and __wrapped__
+    # keeps TRL's signature, which generate() validates model kwargs against.
+    if getattr(type(model), "_unsloth_autocast_dtype", None) is None:
+        return
+    if not getattr(model, "_unsloth_bf16_autocast_wrapped", False):
+        return
+    fused_forward = model.__dict__.get("forward")
+    if fused_forward is None or (
+        isinstance(fused_forward, functools.partial)
+        and fused_forward.func is _bf16_autocast_fused_forward
+    ):
+        return
+    try:
+        from unsloth_zoo.training_utils import _call_forward_with_bf16_autocast  # noqa: F401
+    except ImportError:
+        return
+    forward = functools.update_wrapper(
+        functools.partial(_bf16_autocast_fused_forward, model, fused_forward),
+        fused_forward,
+        updated = (),
+    )
+    # It calls fused_forward unchanged (_unsloth_forward_returns_hidden_states).
+    forward._unsloth_forward_delegate = (forward, fused_forward)
+    model.forward = forward
+
+
 def patch_trl_fused_lm_head_devices():
     # TRL >= 1.15's fused head drops accelerate's io_same_device hook: on a split model log_probs stay on lm_head's card (#4030).
     try:
@@ -5061,6 +5123,7 @@ def patch_trl_fused_lm_head_devices():
     @functools.wraps(original)
     def add_fused_lm_head(model, *args, **kwargs):
         result = original(model, *args, **kwargs)
+        _keep_bf16_autocast_on_fused_forward(model)
         if not _spans_several_devices(model):
             return result
         kernel = getattr(_tu, "_ChunkedLogProbFunction", None)
