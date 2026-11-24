@@ -76,10 +76,8 @@ def _columns(
     floor: int = 0,
     prefix: bool = False,
 ) -> Optional[tuple]:
-    """(column index, every kept column valid for every row, key starts) or None when nothing would be dropped. One
-    host read. ``floor``: keep at least this many rows (the longer branch of a CFG pair, so both stack).
-    ``prefix``: a [B, rows] index putting each row's pads first (``diffusion_krea2_prefix_kv``), and the number of
-    pads of each row; else one sorted column index for every row and starts None."""
+    """(column index, all kept columns valid, key starts) or None when nothing would be dropped. ``floor``: min rows
+    (the longer CFG branch, so both stack). ``prefix``: [B, rows] index with each row's pads first, plus pad counts."""
     import torch
 
     mb = mask.bool()
@@ -171,7 +169,6 @@ def _trim(
 
 
 def _prefix_on(module: Any) -> bool:
-    """Whether this transformer's block attention reads the valid key prefix (``diffusion_krea2_prefix_kv``)."""
     from . import diffusion_krea2_prefix_kv as prefix_kv
     return prefix_kv.installed(module)
 
@@ -180,7 +177,7 @@ def _plan_prefix(module: Any, starts: Optional[list]) -> None:
     try:
         from . import diffusion_krea2_prefix_kv as prefix_kv
         prefix_kv.set_plan(module, starts if _prefix_on(module) else None)
-    except Exception:  # noqa: BLE001 - the masked call runs
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -229,8 +226,7 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> tuple:
 
 
 def _post_hook(module: Any, args: tuple, kwargs: dict, output: Any) -> None:
-    """The prefix plan belongs to the call that wrote it: cleared after it, so a later call that skips the hooks (a
-    direct ``forward``) runs the masked attention."""
+    """Clear the plan so a later hook-less call (direct ``forward``) runs masked."""
     _plan_prefix(module, None)
 
 
@@ -276,7 +272,7 @@ def install_for_pipe(
     try:
         post = transformer.register_forward_hook(_post_hook, with_kwargs = True, always_call = True)
         object.__setattr__(transformer, _POST_HOOK_ATTR, post)
-    except Exception:  # noqa: BLE001 - the next call's pre-hook resets the plan
+    except Exception:  # noqa: BLE001
         pass
     if logger is not None:
         logger.info(

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Krea 2 block attention reads the valid key prefix with no mask: the trim puts each row's pads first and the
-blocks attend over keys from the first valid row on. Same output as the padded masked call (fp32), no masked block
-call, one compiled graph across prompts."""
+"""Krea 2 block attention over the valid key prefix with no mask matches the padded masked call."""
 
 from __future__ import annotations
 
@@ -170,9 +168,7 @@ def test_a_cfg_pair_of_unequal_lengths_shares_the_rows_and_each_branch_matches(d
 
 
 def test_a_batch_the_hook_did_not_plan_reads_its_plan_off_the_mask():
-    """A CFG router stacking two planned B=1 calls into one B=2 forward: the plan names one row, so the op reads each
-    row's key start off the pads-first mask (once per mask) and still runs mask-free; a mask whose masked keys are
-    not a leading run keeps the masked call. Every path matches the masked reference."""
+    """A CFG-stacked B=2 call reads starts off the pads-first mask; a non-leading mask stays masked."""
     torch.manual_seed(0)
     q, k, v = (torch.randn(2, 12, 2, 8) for _ in range(3))
 
@@ -217,8 +213,7 @@ def test_a_batch_the_hook_did_not_plan_reads_its_plan_off_the_mask():
 
 
 def test_a_planned_call_is_never_recorded_by_a_cuda_graph(dit):
-    """The key start is fixed at capture time and follows the prompt: the graph-key hook raises for a non-zero start
-    (the graph layers then run the call eager) and keys a zero start or no plan as before."""
+    """The graph-key hook raises for a non-zero start and keys a zero start or no plan as before."""
     _install(dit)
     keys = []
 
@@ -279,8 +274,7 @@ def test_a_padded_call_after_a_planned_one_clears_the_plan(dit, monkeypatch):
 
 
 def test_a_call_that_skips_the_hooks_never_reads_the_last_plan(dit):
-    """The plan is cleared after the call that wrote it: a direct ``forward`` with the same batch size (no pre-hook)
-    runs the masked call on its own mask, never the previous call's key start."""
+    """A direct ``forward`` after a planned call runs masked, never the stale key start."""
     _install(dit)
     planned, other = _inputs((6,)), _inputs((2,))
     with torch.no_grad():
@@ -294,10 +288,7 @@ def test_a_call_that_skips_the_hooks_never_reads_the_last_plan(dit):
 
 
 def test_a_cfg_replica_reads_its_own_mask_never_the_copied_plan(dit):
-    """Studio's CFG replica: ``_copy_module`` deep-copies the transformer (root hooks stripped, so the trim never runs
-    on it) and ``_mirror_hook_state`` mirrors only scalar state. The source's plan moves on after the copy; the replica
-    must not keep the key start it was copied with. It reads each plan off its own mask (mask-free, its own backend)
-    and matches the masked call; main's tree masked every call."""
+    """A deepcopy CFG replica must not keep the copied key start: it plans off its own mask."""
     from core.inference import diffusion_multigpu as mg
 
     stock = _model()
@@ -328,8 +319,7 @@ def test_a_cfg_replica_reads_its_own_mask_never_the_copied_plan(dit):
 
 
 def test_a_call_that_needs_gradients_runs_the_stock_masked_attention(dit):
-    """The op has no autograd formula: with grad enabled and a trainable input or weight the processor runs the stock
-    masked attention, and every gradient matches the stock model's."""
+    """Grad calls run the stock masked attention (no autograd formula); gradients match."""
     stock = _model()
     _install(dit)
     kw = _inputs((6,))
@@ -349,8 +339,7 @@ def test_a_call_that_needs_gradients_runs_the_stock_masked_attention(dit):
 
 
 def test_the_int8_route_takes_the_block_attention_and_its_unmasked_calls(dit):
-    """The prefix processors are routable by the INT8 dispatch (main: Krea 2's attention names no ``heads`` and every
-    block call carries a mask, so nothing routes), and a planned block call reaches the route without a mask."""
+    """Prefix processors are INT8-routable and a planned block call reaches the route without a mask."""
     from core.inference import diffusion_int8_attention_dispatch as D
 
     _install(dit)

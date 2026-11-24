@@ -224,7 +224,7 @@ def load_krea2_pipeline(
         patch_size = int(model_index.get("patch_size", 2)),
     )
     if transformer is not None:
-        # before the attention backend and the INT8 route are applied, which read the block processors
+        # before the attention backend / INT8 route, which read the block processors
         from .diffusion_krea2_prefix_kv import install as install_prefix_kv
         install_prefix_kv(transformer, logger)
     return pipe

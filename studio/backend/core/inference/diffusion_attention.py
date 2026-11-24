@@ -4511,8 +4511,7 @@ def _apply_attention_backend_impl(
 
 # Read by graph_eligible: Sage under a replayed graph renders noise.
 ATTENTION_BACKEND_ATTR = "_unsloth_attention_backend"
-# True when the engaged backend is auto's cuDNN pick, not an explicit request (diffusion_krea2_prefix_kv may then
-# swap it for native flash on a mask-free call; an explicit ``cudnn`` stays cuDNN).
+# auto's cuDNN pick, not explicit: diffusion_krea2_prefix_kv may swap it for flash on mask-free calls
 ATTENTION_AUTO_PICK_ATTR = "_unsloth_attention_auto_pick"
 
 
