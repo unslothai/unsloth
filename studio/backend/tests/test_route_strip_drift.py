@@ -101,6 +101,10 @@ def test_route_strip_is_disabled_when_healing_is_off(route_strip):
             "</tool_call>Here is the reference.",
             "Here is the reference.",
         ),
+        (
+            '<tool_call>{"name":"web_search","arguments":{"q":"foo[ARGS]{"}}</tool_call>Use "}" here.',
+            'Use "}" here.',
+        ),
     ],
 )
 def test_route_strip_keeps_rehearsal_and_marker_rules_apart(route_strip, text, expected):

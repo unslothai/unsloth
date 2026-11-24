@@ -7011,22 +7011,39 @@ def _strip_tool_xml_for_display(
         seg = _strip_glm_calls(seg, final = is_last)
         seg = _strip_function_xml_calls(seg, final = is_last)
         if is_last:
-            # A rehearsal the bracket scan kept is an example: hide it whole, never past the code span it sits in.
-            kept, parts, pos, spans = [], [], 0, _code_spans(seg)
-            # The placeholder char must not occur in seg, or restoring would rewrite the model's own text.
-            mark = next(chr(c) for c in range(0xE001, 0xF900) if chr(c) not in seg)
-            for m in _re.finditer(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*\{", seg):
-                end = _balanced_json_span(seg, m.end() - 1)
-                code_end = next((e - 1 for b, e in spans if b <= m.start() < e), None)
-                if code_end is not None:
-                    end = code_end if end is None else min(end, code_end)
-                if m.start() >= pos and end is not None:
-                    parts += [seg[pos : m.start()], f"{mark}{len(kept)}{mark}"]
-                    kept.append(seg[m.start() : end + 1])
-                    pos = end + 1
-            seg = _TOOL_XML_RE.sub("", "".join(parts) + seg[pos:])
-            if kept:
-                seg = _re.sub(f"{mark}(\\d+){mark}", lambda m: kept[int(m[1])], seg)
+            # Leftmost wins: a rehearsal the bracket scan kept is an example and shields markup quoted in it (never past
+            # its code span), while a real call starting first takes a rehearsal quoted in its arguments with it.
+            spans = _code_spans(seg)
+
+            def _examples():
+                si = 0
+                for m in _re.finditer(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*\{", seg):
+                    end = _balanced_json_span(seg, m.end() - 1)
+                    while si < len(spans) and spans[si][1] <= m.start():
+                        si += 1
+                    if si < len(spans) and spans[si][0] <= m.start():
+                        code_end = spans[si][1] - 1
+                        end = code_end if end is None else min(end, code_end)
+                    if end is not None:
+                        yield m.start(), end + 1
+
+            examples, out, pos = _examples(), [], 0
+            example, call = next(examples, None), _TOOL_XML_RE.search(seg)
+            while True:
+                while example is not None and example[0] < pos:
+                    example = next(examples, None)
+                if call is not None and call.start() < pos:
+                    call = _TOOL_XML_RE.search(seg, pos)
+                if call is not None and (example is None or call.start() < example[0]):
+                    out.append(seg[pos : call.start()])
+                    pos = call.end()
+                elif example is not None:
+                    out.append(seg[pos : example[1]])
+                    pos = example[1]
+                else:
+                    break
+            out.append(seg[pos:])
+            seg = "".join(out)
             # Then the truncated rehearsal tail, gated and code-aware as in strip_segment, once outer calls are gone.
             return apply_tool_strip_patterns(seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
