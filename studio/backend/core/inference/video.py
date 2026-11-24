@@ -5501,7 +5501,12 @@ def _video_offload_vram_floor_mib(
                 streamed |= encoders
             from .diffusion_memory import group_streams_run_once_companions, run_once_companions
 
-            if group_streams_run_once_companions(
+            memory = getattr(plan, "device_memory", None)
+            # the installer streams them on a copy-stream card only (discrete CUDA): not XPU, not unified memory
+            copy_stream = getattr(memory, "backend", None) == "cuda" and not getattr(
+                memory, "is_unified", False
+            )
+            if copy_stream and group_streams_run_once_companions(
                 stream_transformer = bool(getattr(plan, "stream_transformer", True))
             ):
                 # streamed leaf by leaf beside the DiT (``_apply_group_offload``); ``applied`` reads their hooks

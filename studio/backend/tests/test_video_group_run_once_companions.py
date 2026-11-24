@@ -206,12 +206,51 @@ def test_group_offload_streams_the_connectors_pinned_when_they_fit(monkeypatch):
 
 
 def test_group_offload_streams_the_connectors_unpinned_when_host_ram_is_short(monkeypatch):
-    # the 8 MiB DiT pins, the 6 MiB connectors would not: they still leave the card, pinned per run
-    calls, _ = _stub_group(monkeypatch, 9)
+    # the 8 MiB DiT pins, the 6 MiB connectors would not: they still leave the card, with no copy stream and no pin
+    # at any onload (a refused pin there would fail the first prompt encode)
+    calls, deferred = _stub_group(monkeypatch, 9)
     pipe = _pipe()
     assert dm._apply_group_offload(pipe, "cuda", None)
-    assert _hooks(calls)[id(pipe.connectors)] == ("leaf_level", True, True)
+    assert _hooks(calls)[id(pipe.connectors)] == ("leaf_level", True, False)
     assert pipe.connectors.moved_to == []
+    assert all(m is not pipe.connectors for m in deferred)
+
+
+def test_unpinned_connectors_never_pin_even_with_background_pins(monkeypatch):
+    calls, deferred = _stub_group(monkeypatch, 9, defer = True)
+    pipe = _pipe()
+    pipe._unsloth_background_pin_request = True
+    monkeypatch.setattr(dm, "_BACKGROUND_PIN_REQUEST_ATTR", "_unsloth_background_pin_request")
+    assert dm._apply_group_offload(pipe, "cuda", None)
+    assert _hooks(calls)[id(pipe.connectors)] == ("leaf_level", True, False)
+    assert all(m is not pipe.connectors for m in deferred)
+
+
+def test_unpinned_connector_hook_failure_keeps_them_resident(monkeypatch):
+    import sys
+
+    calls, _ = _stub_group(monkeypatch, 9)
+    pipe = _pipe()
+    real = sys.modules["diffusers.hooks"].apply_group_offloading
+
+    def apply(module, **kwargs):
+        if module is pipe.connectors:
+            raise RuntimeError("refused")
+        return real(module, **kwargs)
+
+    monkeypatch.setattr(sys.modules["diffusers.hooks"], "apply_group_offloading", apply)
+    monkeypatch.setattr(dm, "_remove_group_offload_hooks", lambda module: None)
+    assert dm._apply_group_offload(pipe, "cuda", None)
+    assert pipe.connectors.moved_to
+
+
+@pytest.mark.parametrize("backend, kind", [("xpu", "discrete_vram"), ("cuda", "unified_memory")])
+def test_group_floor_keeps_the_connectors_where_no_copy_stream_streams_them(backend, kind):
+    from core.inference.video import _video_offload_vram_floor_mib
+
+    plan = _plan("group")
+    plan.device_memory = types.SimpleNamespace(backend = backend, is_unified = kind == "unified_memory")
+    assert _video_offload_vram_floor_mib(_pipe(), plan) == 3 + 6 + 4
 
 
 def test_group_offload_defers_the_connector_pin_with_the_background_pins(monkeypatch):

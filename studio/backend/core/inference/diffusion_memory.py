@@ -3548,6 +3548,52 @@ def _run_once_companions_pin(dit_mib: int, leaf_mib: int, companion_mib: int, de
     return budget is not None and budget > 0 and dit_mib + leaf_mib + companion_mib <= budget
 
 
+def _stream_companion_unpinned(
+    module: Any,
+    onload: Any,
+    logger: Any = None,
+) -> bool:
+    """Leaf-level offload of a run-once companion with no copy stream: plain copies on the compute stream, nothing
+    pinned, so a refused host pin cannot surface at an onload. On failure its hooks are removed and False returned."""
+    try:
+        import inspect
+
+        import torch
+        from diffusers.hooks import apply_group_offloading
+
+        params = inspect.signature(apply_group_offloading).parameters
+        kwargs: dict[str, Any] = {
+            "onload_device": torch.device(onload),
+            "offload_device": torch.device("cpu"),
+            "offload_type": "leaf_level",
+        }
+        for key, value in (
+            ("use_stream", False),
+            ("non_blocking", False),
+            ("record_stream", False),
+            ("low_cpu_mem_usage", True),
+        ):
+            if key in params:
+                kwargs[key] = value
+        apply_group_offloading(module, **kwargs)
+    except Exception as exc:  # noqa: BLE001 -- the caller keeps it resident
+        _remove_group_offload_hooks(module)
+        if logger is not None:
+            logger.warning(
+                "diffusion.memory: unpinned leaf offload unavailable for %s (%s); keeping it resident",
+                type(module).__name__,
+                exc,
+            )
+        return False
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: streaming %s leaf by leaf unpinned (host pin budget short): plain copies once per "
+            "request, off the card for the denoise and the decode",
+            type(module).__name__,
+        )
+    return True
+
+
 def _module_storage_bytes(module: Any, seen: set[int]) -> int:
     storage_bytes = 0
     for tensor in list(module.parameters(recurse = True)) + list(module.buffers(recurse = True)):
@@ -9598,13 +9644,20 @@ def _apply_group_offload(
                 _drop_deferred_pinning(pipe, module)
                 module.to(onload)
         for name, module in companions.items():
+            if not companions_pinned:
+                # host RAM short: no copy stream, nothing pinned (a refused pin at an onload would fail the encode)
+                if _stream_companion_unpinned(module, onload, logger):
+                    installed += 1
+                else:
+                    module.to(onload)
+                continue
             ckwargs = {k: v for k, v in gkwargs.items() if k != "num_blocks_per_group"}
             ckwargs["offload_type"] = "leaf_level"
             try:
                 if "low_cpu_mem_usage" in _params:
-                    # Unpinned (host RAM short): each run pins its leaves on the fly, still off the card after.
-                    ckwargs["low_cpu_mem_usage"] = not companions_pinned or defer
-                if companions_pinned and defer:
+                    # a deferred pin applies unpinned, the background pinner pins it once the load commits
+                    ckwargs["low_cpu_mem_usage"] = defer
+                if defer:
                     apply_group_offloading(module, **ckwargs)
                     _defer_pinning(pipe, module, onload, logger)
                 else:
@@ -9612,11 +9665,10 @@ def _apply_group_offload(
                 installed += 1
                 if logger is not None:
                     logger.info(
-                        "diffusion.memory: streaming %s (%d MiB, %s) leaf by leaf under group offload: run once "
+                        "diffusion.memory: streaming %s (%d MiB, pinned) leaf by leaf under group offload: run once "
                         "before step 0, off the card for the denoise and the decode",
                         type(module).__name__,
                         _module_host_mib_on_cpu(module),
-                        "pinned" if companions_pinned else "unpinned",
                     )
             except Exception as exc:  # noqa: BLE001 -- resident as before, never fail the load
                 if logger is not None:
