@@ -6535,9 +6535,6 @@ def _converter_error_line(lines) -> str:
 
 
 def _lora_gguf_conversion_error(returncode, cause, expert_targets) -> Exception:
-    """The converter's failure as one message. LoRA on MoE expert weights (PEFT target_parameters) that the
-    converter cannot map yet gets its own wording; nothing refuses it up front, so a converter that learns it just works.
-    """
     if expert_targets and "Can not map tensor" in cause and ".experts" in cause:
         return NotImplementedError(
             "Unsloth: llama.cpp's LoRA GGUF converter cannot map this adapter's MoE expert weights "

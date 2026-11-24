@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// llama.cpp's LoRA converter cannot map LoRA on MoE expert weights yet. The page hints at that and leaves both
-// GGUF adapter choices usable, so they work as soon as the converter does; the backend reports a real failure.
+// Expert adapters get a hint, not disabled GGUF adapter choices: llama.cpp's converter decides.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

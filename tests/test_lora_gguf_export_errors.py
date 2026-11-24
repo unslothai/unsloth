@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""LoRA GGUF export of an MoE expert (PEFT target_parameters) adapter: llama.cpp's converter decides, and its failure
-is named. Runs the real _unsloth_save_lora_gguf on a stand-in converter, without `import unsloth` (which wants a GPU)."""
+"""LoRA GGUF export errors, run on stand-in converters without `import unsloth` (which wants a GPU)."""
 
 import ast
 import collections
@@ -126,7 +125,6 @@ def test_other_failures_name_the_converters_error():
     error = namespace["_lora_gguf_conversion_error"]
     plain = error(1, "KeyError: 'lm_head'", [])
     assert type(plain) is RuntimeError and "KeyError: 'lm_head'" in str(plain)
-    # An expert adapter that fails for another reason gets the plain message, not the expert one.
     other = error(1, "KeyError: 'lm_head'", _EXPERTS)
     assert type(other) is RuntimeError
     silent = error(2, "", [])

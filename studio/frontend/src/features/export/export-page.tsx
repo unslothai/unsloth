@@ -767,7 +767,7 @@ export function ExportPage() {
     exportMethod === "gguf" && ggufTarget === "lora" && effectiveIsAdapter
       ? "lora"
       : exportMethod;
-  // Expert LoRA scales with the expert count (1.6 GB for Inkling 2 Mini at rank 16), so "~100 MB" would mislead.
+  // Expert LoRA scales with the expert count, so "~100 MB" would mislead.
   const estimatedSize =
     estimateMethod === "lora" && moeExpertAdapter
       ? ""

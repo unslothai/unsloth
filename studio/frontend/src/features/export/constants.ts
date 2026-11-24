@@ -282,7 +282,6 @@ export function buildQuantSizeLabels(
   return out;
 }
 
-// A hint, not a block: llama.cpp's converter decides, so the choice works once it can convert expert LoRA.
 export const MOE_GGUF_ADAPTER_HINT =
   "This adapter trains MoE expert weights. If your llama.cpp cannot convert those yet, the export stops and says so; the full-model GGUF export works either way.";
 
