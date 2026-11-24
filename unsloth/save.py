@@ -61,6 +61,7 @@ from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 import subprocess
 import traceback
 import psutil
+import collections
 import re
 from .models.loader_utils import (
     get_model_name,
@@ -6518,6 +6519,23 @@ def _resolve_imatrix_file(model, imatrix_file, token, dest_dir):
     )
 
 
+def _lora_target_parameters(model) -> list:
+    """Parameter names a PEFT model trains through ``target_parameters`` (LoRA on 3D MoE expert weights)."""
+    names = set()
+    for config in (getattr(model, "peft_config", None) or {}).values():
+        names.update(getattr(config, "target_parameters", None) or ())
+    return sorted(str(name) for name in names)
+
+
+def _converter_error_line(lines) -> str:
+    """The last ``SomethingError: ...`` line a llama.cpp converter printed, or ""."""
+    for line in reversed(list(lines)):
+        stripped = line.strip()
+        if re.match(r"^[A-Za-z_][\w.]*(Error|Exception): ", stripped):
+            return stripped
+    return ""
+
+
 @_model_parallel_refuses_save("save_pretrained_gguf")
 def _unsloth_save_lora_gguf(
     model,
@@ -6551,6 +6569,16 @@ def _unsloth_save_lora_gguf(
     token_is_explicit = token is not None
     if token is None or token is True:
         token = get_token()
+
+    # llama.cpp's converter maps Linear LoRA only: PEFT target_parameters LoRA on 3D MoE experts stops it with
+    # "Can not map tensor '...experts.base_layer.weight'", after the adapter is already written. Refuse first.
+    expert_targets = _lora_target_parameters(model)
+    if expert_targets:
+        raise NotImplementedError(
+            "Unsloth: this adapter trains MoE expert weights (target_parameters: "
+            f"{', '.join(expert_targets)}), which llama.cpp's LoRA GGUF converter cannot map yet. Export the "
+            "merged model as GGUF instead, or save the adapter as safetensors."
+        )
 
     # Resolve the dequantized base id, since the adapter usually references a 4bit repo.
     base_model_id = _lora_base_model_id(model)
@@ -6616,6 +6644,8 @@ def _unsloth_save_lora_gguf(
         _apply_token_to_child_env(env, token, explicit = token_is_explicit)
 
         print(f"Unsloth: Converting LoRA adapter at '{lora_dir}' to GGUF -> '{out_gguf}'")
+        # The converter's own error is the useful part of a failure; a UI shows the raised message, not the stream.
+        output_tail = collections.deque(maxlen = 40)
         # Resolve the cache from the live env like the merge, not huggingface_hub's frozen constants: a runtime cache redirect (read-only default, Unsloth) would else miss (#6890).
         try:
             with subprocess.Popen(
@@ -6630,13 +6660,15 @@ def _unsloth_save_lora_gguf(
             ) as sp:
                 for line in sp.stdout:
                     print(line, end = "", flush = True)
+                    output_tail.append(line.rstrip())
                 sp.wait()
                 if sp.returncode != 0:
                     raise subprocess.CalledProcessError(sp.returncode, sp.args)
         except subprocess.CalledProcessError as e:
+            cause = _converter_error_line(output_tail)
             raise RuntimeError(
-                f"Unsloth: LoRA -> GGUF conversion failed (exit {e.returncode}). "
-                "See the output above for details."
+                f"Unsloth: LoRA -> GGUF conversion failed (exit {e.returncode})"
+                + (f": {cause}" if cause else ". See the output above for details.")
             )
 
         if not os.path.isfile(out_gguf):

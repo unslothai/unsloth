@@ -282,10 +282,16 @@ export function buildQuantSizeLabels(
   return out;
 }
 
+/** Shown on the adapter-GGUF choices for an adapter that trains MoE expert weights. */
+export const MOE_GGUF_ADAPTER_REASON =
+  "This adapter trains MoE expert weights, which llama.cpp's GGUF LoRA format cannot hold yet. Export the full model as GGUF instead.";
+
 export function getEstimatedSize(
   method: ExportMethod | null,
   quantLevels: string[],
   fp16Bytes: number | null | undefined,
+  /** Expert LoRA scales with the expert count, so the usual adapter estimate is far too low. */
+  moeExpertAdapter = false,
 ): string {
   if (method === "gguf" && quantLevels.length > 0) {
     const perQuant = quantLevels.map((q) => estimateQuantBytes(fp16Bytes, q));
@@ -305,8 +311,8 @@ export function getEstimatedSize(
     return fp16Bytes && fp16Bytes > 0 ? `~${formatModelSize(fp16Bytes)}` : "";
   }
   if (method === "lora") {
-    // Adapter size is bounded by LoRA rank, not the base model size.
-    return "~100 MB";
+    // Adapter size is bounded by LoRA rank, not the base model size; expert LoRA is not.
+    return moeExpertAdapter ? "" : "~100 MB";
   }
   return "";
 }

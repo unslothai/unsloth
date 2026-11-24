@@ -111,6 +111,7 @@ import {
   QUANT_OPTIONS,
   buildQuantSizeLabels,
   getEstimatedSize,
+  MOE_GGUF_ADAPTER_REASON,
   mergedFormatPayload,
 } from "./constants";
 import {
@@ -448,6 +449,10 @@ export function ExportPage() {
     () => selectedModelData?.checkpoints ?? [],
     [selectedModelData],
   );
+  // llama.cpp's GGUF LoRA converter cannot map LoRA on MoE expert weights (PEFT target_parameters).
+  const moeAdapterBlocksGguf =
+    sourceMode === "checkpoint" &&
+    selectedModelData?.adapter_features?.moe_target_parameters === true;
 
   const baseModelName = selectedModelData?.base_model ?? "—";
   const isAdapter = !!selectedModelData?.peft_type;
@@ -705,11 +710,17 @@ export function ExportPage() {
     ) {
       setExportMethod(null);
     }
-    if (diffusionDisabledMethods.includes("gguf") && loraAsGguf) {
+    if (
+      (diffusionDisabledMethods.includes("gguf") || moeAdapterBlocksGguf) &&
+      loraAsGguf
+    ) {
       setLoraAsGguf(false);
     }
     // The GGUF LoRA target only applies to an adapter checkpoint on a non-Mac host.
-    if ((!effectiveIsAdapter || isMacHost) && ggufTarget !== "model") {
+    if (
+      (!effectiveIsAdapter || isMacHost || moeAdapterBlocksGguf) &&
+      ggufTarget !== "model"
+    ) {
       setGgufTarget("model");
     }
   }, [
@@ -720,6 +731,7 @@ export function ExportPage() {
     ggufTarget,
     diffusionDisabledMethods,
     loraAsGguf,
+    moeAdapterBlocksGguf,
   ]);
 
   const handleSourceTabChange = useCallback((next: string) => {
@@ -759,7 +771,14 @@ export function ExportPage() {
     }
   };
 
-  const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
+  const estimatedSize = getEstimatedSize(
+    exportMethod === "gguf" && ggufTarget === "lora" && effectiveIsAdapter
+      ? "lora"
+      : exportMethod,
+    quantLevels,
+    fp16Bytes,
+    moeAdapterBlocksGguf,
+  );
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
   // Derived, not reset in an effect: an imatrix is calibrated for one model only.
@@ -1092,7 +1111,7 @@ export function ExportPage() {
         checkpointLabel: selectedExportSource,
         methodLabel,
         method: effectiveMethod,
-        quantLevels,
+        quantLevels: ggufAsLora ? [] : quantLevels,
         mergedFormats: exportMethod === "merged" ? selectedFormats : [],
         destination,
         reapLabel,
@@ -1850,13 +1869,16 @@ export function ExportPage() {
                                     variant={loraAsGguf ? "dark" : "outline"}
                                     size="sm"
                                     onClick={() => setLoraAsGguf(true)}
-                                    disabled={diffusionDisabledMethods.includes(
-                                      "gguf",
-                                    )}
+                                    disabled={
+                                      diffusionDisabledMethods.includes("gguf") ||
+                                      moeAdapterBlocksGguf
+                                    }
                                     title={
                                       diffusionDisabledMethods.includes("gguf")
                                         ? (diffusionLmInfo?.reason ?? undefined)
-                                        : "llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
+                                        : moeAdapterBlocksGguf
+                                          ? MOE_GGUF_ADAPTER_REASON
+                                          : "llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
                                     }
                                   >
                                     GGUF adapter
@@ -2026,7 +2048,12 @@ export function ExportPage() {
                                       }
                                       size="sm"
                                       onClick={() => setGgufTarget("lora")}
-                                      title="Export just the adapter as a GGUF LoRA (llama.cpp `--lora`); the base model stays separate."
+                                      disabled={moeAdapterBlocksGguf}
+                                      title={
+                                        moeAdapterBlocksGguf
+                                          ? MOE_GGUF_ADAPTER_REASON
+                                          : "Export just the adapter as a GGUF LoRA (llama.cpp `--lora`); the base model stays separate."
+                                      }
                                     >
                                       LoRA adapter
                                     </Button>
@@ -2220,7 +2247,7 @@ export function ExportPage() {
                     {showPanel && (
                       <ExportRunPanel
                         exportMethod={exportMethod}
-                        quantLevels={quantLevels}
+                        quantLevels={ggufAsLora ? [] : quantLevels}
                         checkpoint={selectedExportSource}
                         baseModelName={sourceBaseModelName}
                         isAdapter={sourceMode === "checkpoint" && isAdapter}
