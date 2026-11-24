@@ -904,3 +904,27 @@ def test_the_python_forced_route_needs_a_card_behind_a_declared_arch():
         probe["arch"] = "gfx1201"
         assert t._run(viable, True) is True
         assert os.environ["UNSLOTH_ROCM_GFX_ARCH"] == "gfx1201"
+
+
+@pytest.mark.parametrize(
+    "wmi_count, expected",
+    [(b"1\r\n", True), (b"0\r\n", False)],
+    ids = ["generic-name-adapter", "no-adapter"],
+)
+def test_a_declared_arch_is_corroborated_by_any_amd_adapter(wmi_count, expected):
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(argv)
+        return MagicMock(returncode = 0, stdout = wmi_count)
+
+    with (
+        patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": "gfx1201"}),
+        patch.object(
+            stack_mod, "_detect_windows_gfx_arch", lambda: os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
+        ),
+        patch.object(stack_mod.subprocess, "run", run),
+    ):
+        assert stack_mod._windows_amd_hardware_is_corroborated() is expected
+        assert os.environ["UNSLOTH_ROCM_GFX_ARCH"] == "gfx1201"
+    assert seen and "Win32_VideoController" in seen[0][-1]

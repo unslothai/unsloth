@@ -5855,13 +5855,38 @@ def _windows_forced_rocm_is_viable() -> bool:
 
 
 def _windows_amd_hardware_is_corroborated() -> bool:
-    """UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo, amd-smi or WMI must see one."""
-    _override = os.environ.pop("UNSLOTH_ROCM_GFX_ARCH", None)
+    """UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo, amd-smi or WMI must see one.
+
+    Presence, not a second arch inference: the override exists for cards WMI names generically."""
+    _override = os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
+    if not (_override or "").strip():
+        return True
+    os.environ.pop("UNSLOTH_ROCM_GFX_ARCH")
     try:
-        return _override is None or bool(_detect_windows_gfx_arch())
+        if _detect_windows_gfx_arch():
+            return True
     finally:
-        if _override is not None:
-            os.environ["UNSLOTH_ROCM_GFX_ARCH"] = _override
+        os.environ["UNSLOTH_ROCM_GFX_ARCH"] = _override
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "@(Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'AMD|Radeon' }).Count",
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 30,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:  # noqa: BLE001 - no answer is no evidence
+        return False
+    return result.returncode == 0 and result.stdout.decode(errors = "replace").strip() not in (
+        "",
+        "0",
+    )
 
 
 def _windows_rocm_device_packs_need_dependency_pass() -> bool:
