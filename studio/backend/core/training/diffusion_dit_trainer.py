@@ -3776,6 +3776,10 @@ def _maybe_compile_transformer(
             _install_backports()
         except Exception:  # noqa: BLE001 -- the backport is best-effort
             pass
+        # A caption whose token count is a multiple of 8 recompiled every block mid-run (Qwen-Image-2.1's text mask).
+        from core.training.diffusion_sdpa_align import install_sdpa_align_without_guard
+
+        install_sdpa_align_without_guard()
         compile_kwargs = {"fullgraph": not base_is_bnb, "dynamic": True}
         _pin_reduction_choices(compile_kwargs)
         if block_swap:
