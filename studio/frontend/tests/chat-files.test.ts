@@ -203,3 +203,27 @@ test("standard assistant image parts (imported chats) are listed", () => {
     [["generated-image.jpg", "image", "data:image/jpeg;base64,AA"]],
   );
 });
+
+test("a suffixed name never repeats a name already listed", () => {
+  const files = collectChatFiles([
+    python(
+      "a1",
+      sandboxResult("t1", ["data.csv", "sub/data.csv", "data-2.csv"]),
+    ),
+  ]);
+  assert.deepEqual(
+    files.map((f) => f.name),
+    ["data.csv", "data-2.csv", "data-2-2.csv"],
+  );
+});
+
+test("remote assistant image URLs are left out", () => {
+  const files = collectChatFiles([
+    {
+      id: "a1",
+      role: "assistant",
+      content: [{ type: "image", image: "https://example.com/cat.png" }],
+    },
+  ]);
+  assert.equal(files.length, 0);
+});

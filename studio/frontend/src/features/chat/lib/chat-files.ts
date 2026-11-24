@@ -83,14 +83,15 @@ function extFromMime(mime: string): string {
   return sub === "jpeg" ? "jpg" : sub || "png";
 }
 
-function uniqueName(name: string, used: Map<string, number>): string {
-  const count = (used.get(name) ?? 0) + 1;
-  used.set(name, count);
-  if (count === 1) return name;
+function uniqueName(name: string, used: Set<string>): string {
   const dot = name.lastIndexOf(".");
-  return dot > 0
-    ? `${name.slice(0, dot)}-${count}${name.slice(dot)}`
-    : `${name}-${count}`;
+  let candidate = name;
+  for (let n = 2; used.has(candidate); n += 1) {
+    candidate =
+      dot > 0 ? `${name.slice(0, dot)}-${n}${name.slice(dot)}` : `${name}-${n}`;
+  }
+  used.add(candidate);
+  return candidate;
 }
 
 type Found = Omit<ChatFile, "name"> & { name: string };
@@ -132,8 +133,13 @@ function collectMessageFiles(message: MessageLike): Found[] {
       });
       return;
     }
-    if (part.type === "image" && typeof part.image === "string" && part.image) {
-      const mime = /^data:([^;,]+)/.exec(part.image)?.[1] ?? "image/png";
+    // Data URLs only: a remote URL's download link can navigate Studio away instead of saving.
+    const dataImage =
+      part.type === "image" && typeof part.image === "string"
+        ? /^data:(image\/[^;,]+)[;,]/.exec(part.image)
+        : null;
+    if (dataImage && typeof part.image === "string") {
+      const mime = dataImage[1];
       found.push({
         id: base,
         name: `generated-image.${extFromMime(mime)}`,
@@ -249,6 +255,6 @@ export function collectChatFiles(
       );
     }
   }
-  const used = new Map<string, number>();
+  const used = new Set<string>();
   return found.map((file) => ({ ...file, name: uniqueName(file.name, used) }));
 }
