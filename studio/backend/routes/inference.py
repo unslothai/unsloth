@@ -19315,6 +19315,7 @@ async def load_model_gated(
                 await asyncio.to_thread(model_slots.drop, extra)
                 await asyncio.to_thread(release_chat_gpu_claim)
                 routed_slot.set(survivor)
+                model_slots.mark_used(survivor)
                 extra = None
             if extra is not None:
                 from core.inference.llama_keepwarm import _note_activity
