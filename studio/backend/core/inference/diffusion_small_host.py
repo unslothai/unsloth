@@ -363,6 +363,17 @@ def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
     return out
 
 
+def small_host_components(
+    stored: dict[str, StoredComponent], supplied: Any = ()
+) -> dict[str, StoredComponent]:
+    """The components a pipeline load prices for host RAM: the snapshot's stored components (``stored_components``)
+    minus the ones the load supplies from elsewhere (pre-built pipe kwargs: a GGUF / pre-quantized denoiser, a hosted
+    encoder or VAE). The loader's small-host decision and the float16 encoder pick both call this, so they price the
+    same set."""
+    skip = set(supplied or ())
+    return {name: comp for name, comp in stored.items() if name not in skip}
+
+
 def resolve_snapshot_dir(repo_or_dir: Any, cache_dir: Any = None) -> Optional[Path]:
     """Local diffusers dir for a repo id (cache only) or path."""
     try:
@@ -447,6 +458,90 @@ class SmallHostDecision:
     dense_denoiser: bool = False
 
 
+def small_host_ineligible(compute_dtype: Any, *, device: str) -> Optional[str]:
+    """Why the route cannot engage whatever the weights hold, else None; known before any download."""
+    if small_host_disabled():
+        return f"{SMALL_HOST_ENV}=0"
+    if str(device) != "cuda":
+        return "not a CUDA load"
+    compute = _dtype_name(compute_dtype)
+    if compute not in ("float16", "float32"):
+        return f"compute dtype {compute} needs no conversion"
+    return None
+
+
+def _converted_components(components: dict[str, StoredComponent]) -> dict[str, StoredComponent]:
+    """The components a dense load converts on the host: large bf16 ones."""
+    return {
+        name: comp
+        for name, comp in components.items()
+        if comp.dtype == "bfloat16" and comp.mib >= _STREAM_MIN_MIB
+    }
+
+
+def _dense_mib(converted: dict[str, StoredComponent], compute: str) -> int:
+    return int(
+        sum(c.mib * _itemsize(compute) / _itemsize(c.dtype) for c in converted.values())
+        * _CONVERT_MARGIN
+    )
+
+
+def _dense_commit_mib(
+    converted: dict[str, StoredComponent], dense: int, pread_libraries: tuple[str, ...]
+) -> int:
+    # Windows charges each copy-on-write safetensors view to commit until the load ends: stored bytes plus the
+    # converted copy; a component read through ``pread`` (``pread_libraries``) holds no view. Linux / macOS do not
+    # enforce commit.
+    return dense + int(
+        sum(c.mib for c in converted.values() if c.library not in pread_libraries) * _CONVERT_MARGIN
+    )
+
+
+def _dense_fits(
+    dense: int,
+    dense_commit: int,
+    reserve: int,
+    host_available_mib: Optional[int],
+    commit: Optional[int],
+) -> bool:
+    commit_fits = commit is None or dense_commit + reserve <= commit
+    return (
+        host_available_mib is not None
+        and dense + reserve <= int(host_available_mib)
+        and commit_fits
+    )
+
+
+def dense_load_fits(
+    components: dict[str, StoredComponent],
+    compute_dtype: Any,
+    *,
+    host_total_mib: Optional[int],
+    host_available_mib: Optional[int],
+    host_commit_mib: Optional[int] = None,
+    pread_libraries: tuple[str, ...] = (),
+) -> tuple[Optional[bool], int]:
+    """(fits, dense MiB): whether a dense load of ``components`` at ``compute_dtype`` fits host RAM, priced exactly as
+    ``decide_small_host`` prices it (same conversion margin, reserve and commit rule). fits is None when host RAM is
+    unreadable; True when nothing converts."""
+    compute = _dtype_name(compute_dtype)
+    converted = _converted_components(components)
+    if not converted:
+        return True, 0
+    dense = _dense_mib(converted, compute)
+    if host_available_mib is None:
+        return None, dense
+    commit = None if host_commit_mib is None else int(host_commit_mib)
+    reserve = host_reserve_mib(host_total_mib)
+    return _dense_fits(
+        dense,
+        _dense_commit_mib(converted, dense, pread_libraries),
+        reserve,
+        host_available_mib,
+        commit,
+    ), dense
+
+
 def decide_small_host(
     components: dict[str, StoredComponent],
     compute_dtype: Any,
@@ -466,24 +561,14 @@ def decide_small_host(
     violation in native code, not a Python error (#13432, #14513). ``spill_free_mib``: ``spill_capacity_mib``, None = no spill.
     ``dense_denoiser``: the caller asked for the unquantised denoiser, so the route keeps it memory-mapped at its
     stored dtype (cast per call) instead of storing it as int8."""
-    if small_host_disabled():
-        return SmallHostDecision(False, f"{SMALL_HOST_ENV}=0")
-    if str(device) != "cuda":
-        return SmallHostDecision(False, "not a CUDA load")
+    skip = small_host_ineligible(compute_dtype, device = device)
+    if skip:
+        return SmallHostDecision(False, skip)
     compute = _dtype_name(compute_dtype)
-    if compute not in ("float16", "float32"):
-        return SmallHostDecision(False, f"compute dtype {compute} needs no conversion")
-    converted = {
-        name: comp
-        for name, comp in components.items()
-        if comp.dtype == "bfloat16" and comp.mib >= _STREAM_MIN_MIB
-    }
+    converted = _converted_components(components)
     if not converted:
         return SmallHostDecision(False, "no large bf16 component to convert")
-    dense = int(
-        sum(c.mib * _itemsize(compute) / _itemsize(c.dtype) for c in converted.values())
-        * _CONVERT_MARGIN
-    )
+    dense = _dense_mib(converted, compute)
     # encoders stay memory-mapped except fp32-kept layers and a token embedding widened to float32
     # (``prepare_streamed_encoder_`` converts the first parameter's owner on the host: 3.8 GB for Qwen3.5-9B); a DiT
     # lands as int8, or memory-mapped like an encoder
@@ -498,23 +583,13 @@ def decide_small_host(
         for n, c in converted.items()
     )
     reserve = host_reserve_mib(host_total_mib)
-    # Windows charges each copy-on-write safetensors view to commit until the load ends: stored bytes plus the
-    # converted copy; a component read through ``pread`` (``pread_libraries``) holds no view. Linux / macOS do not
-    # enforce commit.
-    dense_commit = dense + int(
-        sum(c.mib for c in converted.values() if c.library not in pread_libraries) * _CONVERT_MARGIN
-    )
+    dense_commit = _dense_commit_mib(converted, dense, pread_libraries)
     storage = {name: comp.dtype for name, comp in converted.items()}
     forced = small_host_forced()
     if host_available_mib is None and not forced:
         return SmallHostDecision(False, "host RAM unreadable", dense_host_mib = dense)
     commit = None if host_commit_mib is None else int(host_commit_mib)
-    commit_fits = commit is None or dense_commit + reserve <= commit
-    fits = (
-        host_available_mib is not None
-        and dense + reserve <= int(host_available_mib)
-        and commit_fits
-    )
+    fits = _dense_fits(dense, dense_commit, reserve, host_available_mib, commit)
     commit_note = (
         ""
         if commit is None

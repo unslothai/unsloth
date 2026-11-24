@@ -84,12 +84,10 @@ def _fake_cuda(
 _TARGET = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
 _BF = torch.bfloat16
 # measured: kernel per-step error within the family's INT8 weights' and faster on the card (the race decides per card)
-RACED = (
-    "FluxTransformer2DModel",
-    "Flux2Transformer2DModel",
-    "HunyuanVideo15Transformer3DModel",
-)
-SPEED_UNSET = ("FluxTransformer2DModel", "Flux2Transformer2DModel")
+RACED = ("HunyuanVideo15Transformer3DModel",)
+SPEED_UNSET = ()
+# routed on request only: INT8 LPIPS above the kernel-swap floor (see AUTO_DITS)
+REQUEST_ONLY = ("FluxTransformer2DModel", "Flux2Transformer2DModel")
 
 
 class _Pipe:
@@ -294,15 +292,26 @@ def test_the_measured_families_are_listed():
     assert set(RACED) <= D.AUTO_DITS
     assert set(SPEED_UNSET) <= D.SPEED_UNSET_DITS
     assert set(RACED) <= D.AUTO_CUDA_ONLY and set(RACED) <= I.SINK_DITS
+    for name in REQUEST_ONLY:
+        assert (
+            name not in D.AUTO_DITS
+            and name not in D.SPEED_UNSET_DITS
+            and name not in D.AUTO_CUDA_ONLY
+        )
+        assert name in I.SINK_DITS
     assert (
         "HunyuanVideo15Transformer3DModel" not in D.SPEED_UNSET_DITS
     )  # video: speed profile only, as Wan
     for name in (
         "QwenImageTransformer2DModel",
         "HunyuanImageTransformer2DModel",
-        "Krea2Transformer2DModel",
     ):
         assert name not in D.AUTO_DITS and name not in I.SINK_DITS
+    # Krea 2 races on the plain path (its block calls are mask-free over the valid key prefix), no sink path
+    assert (
+        "Krea2Transformer2DModel" in D.AUTO_DITS and "Krea2Transformer2DModel" in D.AUTO_CUDA_ONLY
+    )
+    assert "Krea2Transformer2DModel" not in I.SINK_DITS
 
 
 @pytest.mark.parametrize("name", RACED)
@@ -361,6 +370,21 @@ def test_a_triton_stand_in_keeps_the_incumbent_unless_requested(card, monkeypatc
     dit, _ = _build(name)
     assert D.install(_Pipe(dit), _TARGET) == 0
     assert D.install(_Pipe(dit), _TARGET, requested = I.BACKEND) > 0
+
+
+@pytest.mark.parametrize("name", REQUEST_ONLY)
+def test_flux1_flux2_route_on_request_only(card, monkeypatch, name):
+    """FLUX.1 / FLUX.2: unset races nothing; a request routes every module on the sink path."""
+    seen = _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": 0})
+    dit, kw = _build(name)
+    assert D.install(_Pipe(dit), _TARGET) == 0
+    assert D.install(_Pipe(dit), _TARGET, speed_unset_only = True) == 0
+    assert not seen and _forward(dit, kw) == {} and not card
+    routed = D.install(_Pipe(dit), _TARGET, requested = I.BACKEND)
+    assert routed == len(D.routable_modules(dit)) > 0
+    routes = [m.processor._attention_backend for m in D.routable_modules(dit)]
+    assert all(isinstance(r, D.Int8Route) and r.sinks == I.MODE_KERNELS for r in routes)
+    assert _forward(dit, kw) == {"int8": routed}
 
 
 def test_qwen_image_routes_on_request_only(card, monkeypatch):
@@ -530,7 +554,7 @@ def _cuda_case(name, dtype):
 
 @pytest.mark.gpu
 @needs_kernel
-@pytest.mark.parametrize("name", RACED + ("QwenImageTransformer2DModel",))
+@pytest.mark.parametrize("name", RACED + REQUEST_ONLY + ("QwenImageTransformer2DModel",))
 def test_cuda_family_routes_and_matches(monkeypatch, name):
     """Named requests run each family's real kernel and stay close to native attention."""
     import torch.nn.functional as F

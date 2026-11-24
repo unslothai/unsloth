@@ -71,6 +71,14 @@ def _fake_cpu_gpu(mp):
         mp.setattr(torch.accelerator, "is_available", lambda *a, **k: False)
 
     # Redirect cuda allocations to CPU: the spoof keeps real allocators, but inductor allocates on cuda.
+    # torch.device("meta") recognises factories through a set cached on first use. Built after the wrappers
+    # below, it holds them instead of the real factories, so transformers 5's `torch.tensor([]).device` meta
+    # probe reads cpu, runs _init_weights on the meta model, and leaves RoPE inv_freq uninitialised.
+    try:
+        from torch.utils._device import _device_constructors
+        _device_constructors()
+    except Exception:
+        pass
     for _name in (
         "empty",
         "zeros",
@@ -674,3 +682,121 @@ def test_sft_eval_with_empty_label_names(tmp_path):
     out = trainer.predict(trainer.eval_dataset)
     assert out.predictions.shape[-1] == model.config.vocab_size
     assert out.label_ids is not None and out.label_ids.shape[0] == 4
+
+
+def _clear_moe_backend_caches():
+    # zoo caches its MoE backend per module, the unsloth_compiled_cache copy of moe_utils included.
+    for module in list(sys.modules.values()):
+        try:
+            clear = getattr(module, "_clear_selected_moe_backend", None)
+        except Exception:
+            continue
+        if callable(clear):
+            clear()
+
+
+def test_sft_router_aux_loss_keeps_its_gradient_under_gradient_checkpointing(tmp_path, monkeypatch):
+    """Reentrant checkpointing records the router logits under no_grad, so the aux loss is logged but adds no
+    gradient. Unsloth's config pins use_reentrant = True; with the aux loss on, a plain from_pretrained model
+    must still get TRL's gradient. Oracle: the same step in float64 without checkpointing."""
+    import copy
+    import inspect
+    from datasets import Dataset
+    from trl import SFTConfig, SFTTrainer
+    from transformers import AutoTokenizer, MixtralConfig, MixtralForCausalLM
+
+    if "router_aux_loss_coef" not in inspect.signature(SFTConfig).parameters:
+        pytest.skip("SFTConfig has no router_aux_loss_coef before TRL 1.7")
+    try:
+        tok = AutoTokenizer.from_pretrained(_MODEL)
+    except OSError as e:
+        pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
+    tok.pad_token = tok.pad_token or tok.eos_token
+    config = MixtralConfig(
+        vocab_size = len(tok),
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
+        output_router_logits = True,
+    )
+    torch.manual_seed(0)
+    model = MixtralForCausalLM(config)
+    # Train in float32: the oracle is float64, and bf16 autocast would hide the aux gradient in its noise.
+    model._unsloth_forced_float32 = True
+    oracle = copy.deepcopy(model).to(torch.float64)
+    ds = Dataset.from_list([{"text": "The quick brown fox jumps over the lazy dog."}] * 8)
+    coef = 0.5
+    cfg = SFTConfig(
+        output_dir = str(tmp_path / "ci_sft_moe_gc"),
+        per_device_train_batch_size = 2,
+        gradient_accumulation_steps = 1,
+        max_steps = 1,
+        learning_rate = 0.0,
+        report_to = "none",
+        save_strategy = "no",
+        use_cpu = True,
+        max_length = None,
+        padding_free = False,
+        dataset_text_field = "text",
+        fp16 = False,
+        bf16 = False,
+        gradient_checkpointing = True,
+        router_aux_loss_coef = coef,
+    )
+    trainer = SFTTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds)
+    # transformers 4: block_sparse_moe.gate; 5: mlp.gate.
+    gates = {
+        n: p
+        for n, p in model.named_parameters()
+        if n.endswith((".block_sparse_moe.gate.weight", ".mlp.gate.weight"))
+    }
+    assert gates, "no router weights found"
+    grads, batch = {}, {}
+
+    def _keep_grad(name):
+        def hook(g):
+            grads.setdefault(name, g.detach().double().clone())
+
+        return hook
+
+    for n, p in gates.items():
+        p.register_hook(_keep_grad(n))
+
+    def _keep_batch(_module, _args, kwargs):
+        batch.setdefault("kwargs", {k: v for k, v in kwargs.items() if torch.is_tensor(v)})
+
+    model.register_forward_pre_hook(_keep_batch, with_kwargs = True)
+    trainer.train()
+    assert set(grads) == set(gates), "the train step left a router weight without a gradient"
+
+    kwargs = batch["kwargs"]
+    oracle.train()
+    oracle.router_aux_loss_coef = coef
+    # torch._grouped_mm has no float64 kernel: where it exists (a GPU host, recent CPU torch) the float64
+    # oracle runs the per-expert loop instead.
+    with monkeypatch.context() as mp:
+        mp.setenv("UNSLOTH_MOE_BACKEND", "native_torch")
+        _clear_moe_backend_caches()
+        out = oracle(
+            input_ids = kwargs["input_ids"],
+            attention_mask = kwargs.get("attention_mask"),
+            labels = kwargs["labels"],
+            num_items_in_batch = kwargs.get("num_items_in_batch"),
+            output_router_logits = True,
+            use_cache = False,
+        )
+        out.loss.backward()
+    _clear_moe_backend_caches()
+    oracle_gates = dict(oracle.named_parameters())
+    for n in gates:
+        want = oracle_gates[n].grad
+        rel = float((grads[n] - want).norm() / want.norm())
+        assert rel < 1e-4, (
+            f"{n}: router gradient off by {rel:.2e} relative to the float64 oracle "
+            f"(train {float(grads[n].norm()):.6e}, oracle {float(want.norm()):.6e}); "
+            f"use_reentrant = {trainer.args.gradient_checkpointing_kwargs.get('use_reentrant')}"
+        )

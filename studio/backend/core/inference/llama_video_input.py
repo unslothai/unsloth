@@ -9,6 +9,7 @@ import base64
 import binascii
 import json
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -216,9 +217,15 @@ def shrink_video_for_llama(
     from utils.media_playlist import refuse_playlist
 
     try:
-        raw = base64.b64decode(video_b64)
+        raw = base64.b64decode(video_b64, validate = True)
     except (binascii.Error, ValueError):
-        return video_b64
+        # llama-server decodes unpadded or prefixed base64 its own way, so forward exactly the bytes checked here.
+        cleaned = re.sub(r"[^A-Za-z0-9+/]", "", video_b64)
+        try:
+            raw = base64.b64decode(cleaned + "=" * (-len(cleaned) % 4))
+        except (binascii.Error, ValueError):
+            raise ValueError("The video is not valid base64.") from None
+        video_b64 = base64.b64encode(raw).decode("ascii")
     # Before the tool check: without ffmpeg the clip still reaches llama-server's own FFmpeg.
     refuse_playlist(raw)
     tools = video_tools(ffmpeg_dir)

@@ -16,6 +16,7 @@ if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
 import test_llama_cpp_placement as placement  # noqa: E402
+from test_llama_cpp_placement import _pinned_host_ram  # noqa: E402, F401  (autouse: same host here)
 import utils.hardware as hardware  # noqa: E402
 from _sidecar_fit_helpers import last  # noqa: E402
 from core.inference import llama_cpp as lc  # noqa: E402
@@ -120,8 +121,50 @@ def test_another_servers_cache_cap_is_held_back(launch, monkeypatch):
     assert sized == avail_mib - 16384 - 2048 - 1024
 
 
-def test_a_host_without_room_keeps_the_default(launch):
-    assert "--cache-ram" not in launch(avail_mib = 9 * 1024)
+def test_a_host_without_room_for_the_default_lowers_the_cache(launch):
+    # The default 8192 MiB no longer fits beside the load: half of what does fit, after the server.
+    assert last(launch(avail_mib = 9 * 1024), "--cache-ram") == str((9 * 1024 - 2048 - 1024) // 2)
+
+
+@pytest.mark.parametrize("sysmem", [False, True])
+def test_a_lowered_cache_takes_half_the_room_on_every_platform(launch, monkeypatch, sysmem):
+    # The cache fills to its cap; the other half is for what the fit does not price (desktop,
+    # browser, the WDDM sysmem fallback on Windows CUDA).
+    monkeypatch.setattr(
+        LlamaCppBackend, "_sysmem_fallback_risk", staticmethod(lambda binary = None: sysmem)
+    )
+    assert last(launch(avail_mib = 9 * 1024), "--cache-ram") == str((9 * 1024 - 2048 - 1024) // 2)
+
+
+def test_windows_cuda_with_room_for_the_default_is_sized_as_before(launch, monkeypatch):
+    monkeypatch.setattr(
+        LlamaCppBackend, "_sysmem_fallback_risk", staticmethod(lambda binary = None: True)
+    )
+    assert last(launch(), "--cache-ram") == str(FULL_CONTEXT_MIB)
+    assert "--cache-ram" not in launch(n_ctx = 16384)
+
+
+def test_a_cache_too_small_to_hold_a_state_is_turned_off(launch):
+    assert last(launch(avail_mib = 2048 + 1024 + 100), "--cache-ram") == "0"
+
+
+def test_a_load_that_pages_anyway_keeps_the_default(launch):
+    # Not even the server fits: the weights page whatever the cache is, so nothing is lowered.
+    assert "--cache-ram" not in launch(avail_mib = 2048)
+
+
+def test_a_lowered_cache_is_recorded_for_the_retry_rungs_and_other_servers(launch):
+    backends = []
+    real_backend = placement._backend
+
+    def tracked(*args, **kwargs):
+        backend, gguf = real_backend(*args, **kwargs)
+        backends.append(backend)
+        return backend, gguf
+
+    with mock.patch.object(placement, "_backend", tracked):
+        cmd = launch(avail_mib = 9 * 1024)
+    assert backends[-1]._sized_cache_ram_flags == ["--cache-ram", last(cmd, "--cache-ram")]
 
 
 def test_a_full_cache_leaves_the_server_its_own_memory(launch):
@@ -212,7 +255,54 @@ def test_the_cpu_fallback_drops_the_sized_prompt_cache():
 
 def test_every_retry_that_drops_the_fits_load_mode_drops_the_sized_cache():
     src = inspect.getsource(LlamaCppBackend.load_model)
-    assert src.count("_without_subsequence(fa_cmd, self._sized_cache_ram_flags)") == 1
-    assert src.count("_without_subsequence(_run, self._sized_cache_ram_flags)") == 1
-    assert src.count("_without_subsequence(cmd, self._sized_cache_ram_flags)") == 1
-    assert src.count("_cpu_projector_cmd, self._sized_cache_ram_flags") == 1
+    assert src.count("_without_subsequence(fa_cmd, self._retry_dropped_cache_ram_flags())") == 1
+    assert src.count("_without_subsequence(_run, self._retry_dropped_cache_ram_flags())") == 1
+    assert src.count("_without_subsequence(cmd, _dropped_cache_ram)") == 1
+    assert src.count("_cpu_projector_cmd, self._retry_dropped_cache_ram_flags()") == 1
+    # No retry strips the raw record: a lowered cache has to survive it.
+    assert "_without_subsequence(fa_cmd, self._sized_cache_ram_flags)" not in src
+    assert "_without_subsequence(_run, self._sized_cache_ram_flags)" not in src
+    assert "_without_subsequence(cmd, self._sized_cache_ram_flags)" not in src
+
+
+@pytest.mark.parametrize(
+    "flags, dropped",
+    [
+        (["--cache-ram", "16384"], ["--cache-ram", "16384"]),
+        (["--cache-ram", "8193"], ["--cache-ram", "8193"]),
+        (["--cache-ram", "8192"], []),
+        (["--cache-ram", "1804"], []),
+        (["--cache-ram", "0"], []),
+        (["--cache-ram", "auto"], []),
+        ([], []),
+    ],
+)
+def test_a_retry_drops_only_a_raised_prompt_cache(flags, dropped):
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._sized_cache_ram_flags = flags
+    assert backend._retry_dropped_cache_ram_flags() == dropped
+
+
+def test_the_cpu_fallback_keeps_a_lowered_prompt_cache():
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._memory_dio_flags = []
+    backend._fit_load_mode_flags = ["--load-mode", "none"]
+    backend._sized_cache_ram_flags = ["--cache-ram", "1804"]
+    replay = [
+        "llama-server", "-m", "model.gguf", "--cache-ram", "1804",
+        "--load-mode", "none", "--device", "none",
+    ]  # fmt: skip
+    with (
+        mock.patch.object(lc.LlamaCppBackend, "_is_vulkan_backend", return_value = True),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_replay", return_value = list(replay)),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_binary", return_value = "cpu-server"),
+        mock.patch.object(
+            lc.LlamaCppBackend,
+            "_llama_server_env_for_binary",
+            return_value = {lc._loader_path_var(): "/staged"},
+        ),
+    ):
+        out, _reason, _note = backend._prepare_cpu_fallback_launch("llama-server", replay, {}, {})
+    # The load mode goes back to llama.cpp's auto; the lowered cache stays.
+    assert "--load-mode" not in out
+    assert out[out.index("--cache-ram") + 1] == "1804"

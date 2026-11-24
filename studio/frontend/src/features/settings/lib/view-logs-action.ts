@@ -5,7 +5,21 @@ import { isAccountOwner } from "@/features/auth/account-session";
 import { translate } from "@/i18n";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-export type FailureLogFamily = "llama-server" | "diffusion-server" | "server";
+import {
+  type ManagedEngineLogFamily,
+  managedEngineFailureLogTarget,
+} from "./managed-engine-log-target";
+
+export type FailureLogFamily =
+  | "llama-server"
+  | "diffusion-server"
+  | "server"
+  | ManagedEngineLogFamily;
+
+export function managedEngineFailureLogsAction(detail: unknown) {
+  const target = managedEngineFailureLogTarget(detail);
+  return target ? viewLogsAction(target.family, target.path) : undefined;
+}
 
 export function loadFailureLogFamily(
   isGguf: boolean | undefined,

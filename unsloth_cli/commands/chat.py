@@ -428,8 +428,8 @@ def chat(
     compare_mode = compare
     messages = []
 
-    # Compare's base column: server mode and local MLX load the base separately; local CUDA just toggles the adapter.
-    dual_compare = compare_blocked is None and (server_mode or _compare_needs_second_model())
+    # Compare's base column: local MLX loads the base separately; Unsloth and local CUDA just toggle the adapter.
+    dual_compare = compare_blocked is None and not server_mode and _compare_needs_second_model()
     base_backend = None
 
     def load_base_for_compare():

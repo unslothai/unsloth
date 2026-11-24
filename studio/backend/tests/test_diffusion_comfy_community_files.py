@@ -297,7 +297,12 @@ def test_every_anima_render_frees_the_offload_hooks():
         def modular_pipeline(self):
             return self.mp
 
-        def _set_guidance(self, mp, guidance_scale):
+        def _set_guidance(
+            self,
+            mp,
+            guidance_scale,
+            guidance_stop = None,
+        ):
             pass
 
         def maybe_free_model_hooks(self):

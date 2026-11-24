@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,6 +27,18 @@ from hub.utils import (
     hf_cache_state,
     state_dir,
 )
+
+
+# A delete narrows its scan to the one repo, as it does an HFCacheInfo: a dataclass holding hashable repos.
+class _CachedRepo(SimpleNamespace):
+    __hash__ = object.__hash__
+
+
+@dataclass
+class _CacheScan:
+    repos: list
+    delete_revisions: object
+    cache_dir: object = None
 
 
 def _shared_setup_1(monkeypatch, tmp_path):
@@ -599,10 +612,10 @@ def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_p
             calls.append(self.label)
 
     def _cache(label: str, hub):
-        return SimpleNamespace(
+        return _CacheScan(
             cache_dir = label,
             repos = [
-                SimpleNamespace(
+                _CachedRepo(
                     repo_type = "dataset",
                     repo_id = "Org/Data",
                     repo_path = str(hub / "datasets--Org--Data"),
@@ -773,9 +786,9 @@ def test_delete_raw_path_removes_only_same_scope_app_cache(monkeypatch, tmp_path
     for entry in (first, second):
         repo_path = entry.hub_cache / "datasets--Org--Data"
         scans.append(
-            SimpleNamespace(
+            _CacheScan(
                 repos = [
-                    SimpleNamespace(
+                    _CachedRepo(
                         repo_type = "dataset",
                         repo_id = repo_id,
                         repo_path = str(repo_path),

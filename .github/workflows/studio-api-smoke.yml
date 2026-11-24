@@ -11,6 +11,8 @@ on:
       # Only what the test boots: backend, installer and CLI. The install is --no-torch and the
       # frontend is never served.
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this workflow drives.
+      - '!studio/backend/tests/**'
       - 'studio/setup.sh'
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
@@ -38,6 +40,8 @@ on:
     branches: [main]
     paths:
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this workflow drives.
+      - '!studio/backend/tests/**'
       - 'studio/setup.sh'
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'

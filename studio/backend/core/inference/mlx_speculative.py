@@ -266,6 +266,18 @@ def has_builtin_head(model_dir: Optional[str]) -> bool:
         return False
 
 
+def _builtin_head_kind(model_dir: str) -> str:
+    """``dspark`` for a bundled head mlx-vlm builds as a DSpark drafter (Inkling 2's ``mtp.safetensors``), else ``mtp``."""
+    try:
+        from mlx_vlm.speculative.drafters.mtp_split import get_mtp_splitter
+        splitter = get_mtp_splitter(source_config = _read_config(model_dir))
+    except Exception as exc:
+        logger.debug("MLX speculative: no MTP splitter for %s: %s", model_dir, exc)
+        return "mtp"
+    output = str(getattr(splitter, "output_model_type", ""))
+    return "dspark" if output.endswith("_dspark") else "mtp"
+
+
 def resolve_speculation(
     speculative_type,
     spec_draft_model: Optional[str],
@@ -301,8 +313,11 @@ def resolve_speculation(
         for source in ([bundled] if bundled else []) + companions
         if (auto or source.kind == kind) and source not in sources
     ]
-    if kind == "mtp" and has_builtin_head(model_dir):
-        companions.insert(0, DrafterSource("mtp", str(model_dir), True))
+    # Under ``mtp`` (and so auto) the checkpoint's own head of either kind; under ``dspark`` only a DSpark head.
+    if kind in ("mtp", "dspark") and has_builtin_head(model_dir):
+        head = _builtin_head_kind(model_dir)
+        if kind in ("mtp", head):
+            companions.insert(0, DrafterSource(head, str(model_dir), True))
     sources += companions
     if not sources and auto:
         return SpecResolution(mode, reason = reason)
