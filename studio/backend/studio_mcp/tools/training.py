@@ -136,6 +136,11 @@ async def _checked_trainable(
     from utils.audio_tokens import NATIVE_OUTPUT_AUDIO_TYPES, TTS_AUDIO_TYPES
 
     name = str(validated.model_name or "").strip()
+    from utils.datasets.remote_images import is_network_share
+
+    # Probing a share signs Windows in to its host (NTLM); the start route judges the path itself.
+    if is_network_share(name):
+        return validated, None
     shown = _asked_name(asked, name)
     leaf = re.split(r"[\\/]", name.rstrip("/\\"))[-1].lower()
     # audio.cpp rows are GGUF folders too; their refusal says more.
