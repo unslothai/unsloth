@@ -1253,6 +1253,14 @@ def test_local_path_aliases_match_case_exactly(studio_embedder, tmp_path):
     assert inference_route._names_studio_embedder(f"sentence-transformers:{segment}")
 
 
+def test_a_connection_embedder_answers_to_its_configured_name(studio_embedder):
+    ref = "connection:Scheduler/bge-m3"
+    studio_embedder.setattr(rag_config, "effective_embedding_model", lambda: ref)
+    assert inference_route._names_studio_embedder(ref) == ref
+    assert inference_route._names_studio_embedder(rag_config.embedding_identity("connection", ref))
+    assert inference_route._names_studio_embedder("connection:Other/bge-m3") is None
+
+
 def test_untagged_aliases_never_probe_the_backend(studio_embedder):
     def boom(*_args, **_kwargs):
         raise AssertionError("embedding_identity must not run for untagged names")

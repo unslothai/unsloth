@@ -40932,6 +40932,9 @@ def _names_studio_embedder(requested: str) -> Optional[str]:
     repo = rag_config.effective_gguf_repo_for_embedding_model(model)
     label = _public_embedding_name(model)
     wanted = requested.strip()
+    # A connection reference reads as a tagged identity, so the configured name is matched first.
+    if wanted == model:
+        return model
     if rag_config.embedding_identity_model(wanted) is not None:
         current = rag_embeddings.embedding_identity(model)
         if wanted in (current, _public_embedding_identity(current, model, label)):
