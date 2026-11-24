@@ -242,9 +242,7 @@ def test_a_decision_checkpoint_naming_its_own_model_file_is_refused(
         decision_mlx.FastDecisionModel.from_pretrained(str(tmp_path))
 
 
-def test_a_push_refuses_a_bad_save_method_before_creating_the_repo(
-    decision_mlx, monkeypatch
-):
+def test_a_push_refuses_a_bad_save_method_before_creating_the_repo(decision_mlx, monkeypatch):
     # create_repo is a remote side effect: a save_method the merge then rejects must not
     # leave an empty repo behind.
     calls = []
@@ -269,7 +267,5 @@ def test_a_push_refuses_a_bad_save_method_before_creating_the_repo(
         )
     )
     with pytest.raises(NotImplementedError, match = "16-bit"):
-        decision_mlx._decision_push_merged(
-            model, "user/repo", save_method = "merged_4bit"
-        )
+        decision_mlx._decision_push_merged(model, "user/repo", save_method = "merged_4bit")
     assert calls == []
