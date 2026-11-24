@@ -1254,6 +1254,131 @@ def install_ltx2_full_mask_drop(pipe: Any, logger: Any = None) -> int:
     return count
 
 
+# LTX-2.3 / 2.5 connectors (per-modality projections): diffusers builds the masked norm, then the video- and the
+# audio-scaled copies of it, all [batch, 1024, 49 * 3840] (368 MiB each in bf16) and all alive when the 1.44 GiB
+# video projection onloads. The lean forward builds each scaled input from the hidden states when its projection
+# runs (norm, mask in place, scale in place) and frees it after, so only the hidden states and one input are held:
+# same ops on the same values, bit-identical. =0 keeps the diffusers forward.
+LTX2_LEAN_CONNECTOR_ENV = "UNSLOTH_LTX2_LEAN_CONNECTOR_FEATURES"
+_LTX2_CONNECTORS_CLS = "LTX2TextConnectors"
+_LTX2_LEAN_CONNECTOR_ATTR = "_unsloth_lean_connector_features"
+# sha256 of ``inspect.getsource(LTX2TextConnectors.forward)`` this copy matches (diffusers 0.42.1); any other source
+# keeps the diffusers forward.
+_LTX2_CONNECTORS_FORWARD_SHA256 = frozenset(
+    {"9764cf89cec9603d1190a95d5e3daa95cde08eb567ce19e2eee31644ed15f6dd"}
+)
+
+
+def ltx2_lean_connector_disabled() -> bool:
+    raw = (os.environ.get(LTX2_LEAN_CONNECTOR_ENV) or "").strip().lower()
+    return raw in ("0", "off", "false", "no")
+
+
+def _ltx2_connectors_forward_matches(cls: Any) -> bool:
+    try:
+        import hashlib
+        import inspect
+        source = inspect.getsource(cls.forward)
+    except Exception:  # noqa: BLE001 - unreadable source: keep the diffusers forward
+        return False
+    return hashlib.sha256(source.encode()).hexdigest() in _LTX2_CONNECTORS_FORWARD_SHA256
+
+
+def _ltx2_lean_connectors_forward(
+    self: Any,
+    text_encoder_hidden_states: Any,
+    attention_mask: Any,
+    padding_side: str = "left",
+    scale_factor: int = 8,
+) -> Any:
+    """``LTX2TextConnectors.forward`` (diffusers 0.42.1) with the per-modality inputs built one at a time."""
+    import math
+
+    import torch
+    from diffusers.pipelines.ltx2.connectors import per_token_rms_norm
+
+    if not self.config.per_modality_projections:
+        return type(self).forward(
+            self,
+            text_encoder_hidden_states,
+            attention_mask,
+            padding_side = padding_side,
+            scale_factor = scale_factor,
+        )
+    if text_encoder_hidden_states.ndim == 3:
+        text_encoder_hidden_states = text_encoder_hidden_states.unflatten(
+            2, (self.config.caption_channels, -1)
+        )
+    keep = attention_mask.bool().unsqueeze(-1)
+
+    def scaled_input(hidden_dim: int) -> Any:
+        # torch.where(keep, norm, 0) * scale, in place on the norm this call owns
+        features = per_token_rms_norm(text_encoder_hidden_states).flatten(2, 3)
+        features.masked_fill_(keep.logical_not(), 0.0)
+        return features.mul_(math.sqrt(hidden_dim / self.config.caption_channels))
+
+    features = scaled_input(self.config.video_hidden_dim)
+    video_text_emb_proj = self.video_text_proj_in(features)
+    del features
+    features = scaled_input(self.config.audio_hidden_dim)
+    audio_text_emb_proj = self.audio_text_proj_in(features)
+    del features
+    self.__dict__["_unsloth_lean_connector_runs"] = (
+        self.__dict__.get("_unsloth_lean_connector_runs", 0) + 1
+    )
+
+    # from here on the diffusers forward, unchanged
+    text_dtype = video_text_emb_proj.dtype
+    attention_mask = (attention_mask.to(torch.int64) - 1).to(text_dtype)
+    attention_mask = attention_mask.reshape(
+        attention_mask.shape[0], 1, -1, attention_mask.shape[-1]
+    )
+    add_attn_mask = attention_mask * torch.finfo(text_dtype).max
+
+    video_text_embedding, video_attn_mask = self.video_connector(video_text_emb_proj, add_attn_mask)
+
+    binary_attn_mask = (video_attn_mask < 1e-6).to(torch.int64)
+    binary_attn_mask = binary_attn_mask.reshape(
+        video_text_embedding.shape[0], video_text_embedding.shape[1], 1
+    )
+    video_text_embedding = video_text_embedding * binary_attn_mask
+
+    audio_text_embedding, _ = self.audio_connector(audio_text_emb_proj, add_attn_mask)
+
+    return video_text_embedding, audio_text_embedding, binary_attn_mask.squeeze(-1)
+
+
+def install_ltx2_lean_connector_features(pipe: Any, logger: Any = None) -> bool:
+    """Give ``pipe.connectors`` the lean forward, before any offload hook wraps it. False (diffusers forward kept)
+    when switched off, not per-modality connectors, a diffusers forward this copy does not match, or a forward
+    already wrapped on the instance (an offload hook would be bypassed)."""
+    if ltx2_lean_connector_disabled():
+        return False
+    connectors = getattr(pipe, "connectors", None)
+    if connectors is None or type(connectors).__name__ != _LTX2_CONNECTORS_CLS:
+        return False
+    if getattr(connectors, _LTX2_LEAN_CONNECTOR_ATTR, False):
+        return True
+    try:
+        if not bool(getattr(connectors.config, "per_modality_projections", False)):
+            return False
+        if "forward" in connectors.__dict__ or not _ltx2_connectors_forward_matches(
+            type(connectors)
+        ):
+            return False
+        import types
+
+        connectors.forward = types.MethodType(_ltx2_lean_connectors_forward, connectors)
+        setattr(connectors, _LTX2_LEAN_CONNECTOR_ATTR, True)
+    except Exception:  # noqa: BLE001 - memory lever only; the diffusers forward stays
+        return False
+    if logger is not None:
+        logger.info(
+            "video.ltx2: connector inputs built one at a time (two fewer prompt-sized copies held)"
+        )
+    return True
+
+
 def ltx23_verbatim_sigmas(pipe: Any) -> Any:
     """Disable scheduler sigma rewrites (dynamic shift, terminal stretch) so sigmas pass through intact."""
     import contextlib
