@@ -126,11 +126,14 @@ _MULTI_STAGE_DP = (
     "(each FSDP2 root must be one stage's module); use one stage per rank (schedule = 'gpipe' / '1f1b') "
     "with a dp mesh, or no dp mesh."
 )
-_MODEL_PARALLEL_DIMS = (
-    "pp",
-    "tp",
-    "cp",
-)  # every other root mesh dimension of size > 1 is data parallel
+# Root mesh dimension names FSDP2 shards over (the base `dp`, the launcher's / torchtitan's `dp_shard`). A
+# replicated dp axis (dp_replicate: DDP-style gradient all-reduce) and model parallel axes under any name
+# compose with several stages per rank; FSDP2 under another name is still refused at shard_model.
+_SHARDED_DP_DIMS = (
+    "dp",
+    "dp_shard",
+    "fsdp",
+)
 _SIMPLE = (bool, int, float, str, type(None))
 
 
@@ -277,17 +280,18 @@ def _root_mesh(mesh):
 
 
 def check_multi_stage_dp(pp_mesh, stages_per_rank):
-    """Several stages per rank do not compose with data parallel: ValueError when the root mesh of `pp_mesh`
-    has a data parallel dimension (any dimension but pp / tp / cp, e.g. dp, dp_shard, dp_replicate, of size
-    > 1). Run before the model is cut or a checkpoint is read; nothing is changed."""
+    """Several stages per rank do not compose with native FSDP2 data parallel: ValueError when the root mesh
+    of `pp_mesh` has an FSDP2 data parallel dimension (dp, dp_shard, fsdp) of size > 1 besides `pp_mesh`'s own
+    dimension (whatever its name). Run before the model is cut or a checkpoint is read; nothing is changed."""
     if stages_per_rank <= 1 or pp_mesh is None:
         return
     root = _root_mesh(pp_mesh)
     if root is None or root is pp_mesh:
         return
+    own = set(getattr(pp_mesh, "mesh_dim_names", None) or ())
     names = tuple(getattr(root, "mesh_dim_names", None) or ())
     for i, name in enumerate(names):
-        if name not in _MODEL_PARALLEL_DIMS and root.size(i) > 1:
+        if name in _SHARDED_DP_DIMS and name not in own and root.size(i) > 1:
             raise ValueError(f"{_MULTI_STAGE_DP} (mesh dimension {name!r} of size {root.size(i)})")
 
 
@@ -2468,11 +2472,10 @@ class PipelineParallel:
                 (mb, seq, width), dtype = self.activation_dtype, device = "meta", requires_grad = True
             )
 
-        # eval_loss on a V schedule (ZBV / DualPipeV): the two stages on this rank are adjacent and hand over
+        # eval_loss with two adjacent stages on this rank (V schedules, loop schedules at pp 1): they hand over
         # their gradients in place, which a forward-only step has none of (torch asserts there).
-        stage_cls = (
-            _forward_only_stage_class() if not train and self.spec.style == "v" else PipelineStage
-        )
+        adjacent = any(k + 1 in self.local_stages for k in self.local_stages)
+        stage_cls = _forward_only_stage_class() if not train and adjacent else PipelineStage
         for index, module in zip(self.local_stages, self.stage_modules):
             if index == 0:
                 example_in = torch.empty((mb, seq), dtype = torch.long, device = "meta")
@@ -2764,6 +2767,10 @@ class PipelineParallel:
         finally:
             schedule._has_backward = has_backward
             self.ctx.num_items_in_batch = None
+            # No backward pops the forward caches: free each micro-batch's stage inputs / outputs now, not at the
+            # next eval_loss (this cached schedule is not the training one).
+            for st in getattr(schedule, "_stages", None) or (schedule._stage,):
+                st.clear_runtime_states()
         return self._batch_loss(m, device, None)
 
     def _average_replicated_grads(self):

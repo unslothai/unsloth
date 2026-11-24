@@ -331,11 +331,11 @@ def _pipeline_loading(
         pp_mesh = _default_load_mesh()
     if not callable(pp_mesh) and pp_mesh.ndim != 1:
         raise ValueError("Unsloth: pipeline_sharded_loading takes a 1-D pp mesh (pass mesh['pp']).")
-    if not callable(pp_mesh):
-        from .pp_native import PPConfig, check_multi_stage_dp
-        from .pp_schedules import resolve_stages_per_rank
+    from .pp_native import PPConfig, check_multi_stage_dp
+    from .pp_schedules import resolve_stages_per_rank
 
-        stages = resolve_stages_per_rank(spec, (config or PPConfig()).stages_per_rank)
+    stages = resolve_stages_per_rank(spec, (config or PPConfig()).stages_per_rank)
+    if not callable(pp_mesh):
         check_multi_stage_dp(pp_mesh, stages)
     state = {
         "mesh": pp_mesh,
@@ -359,6 +359,11 @@ def _pipeline_loading(
         def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
             if not live["active"] and not quantizing["active"]:
                 refuse_hf_distributed_kwargs(kwargs, "pipeline parallel", "apply_pipeline_parallel")
+                if stages > 1 and callable(live["mesh"]):
+                    # A mesh factory: resolve it now, before the checkpoint is sized or read.
+                    mesh = live["mesh"]()
+                    check_multi_stage_dp(mesh, stages)
+                    live["mesh"] = mesh
             if (
                 not live["active"]
                 and not quantizing["active"]

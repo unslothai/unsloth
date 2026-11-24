@@ -3,15 +3,17 @@
 
 """Parallel preflight guards, on CPU (gloo ranks or no process group):
 
-- several pipeline stages per rank over a root mesh with a data parallel dimension under any name (dp,
-  dp_shard, dp_replicate) is refused before the model is cut and before pipeline_sharded_loading reads;
-- the native FSDP2 and pipeline parallel loaders refuse transformers' own tp_plan / tp_size / ... as the
-  tensor parallel loader does, before any load runs;
-- eval_loss on a V schedule (ZBV, DualPipeV) runs forward only and matches the one-process loss;
-- the launcher's mesh refuses a CUDA layout on a PyTorch build without NCCL before init_process_group.
+- several pipeline stages per rank over a root mesh with an FSDP2 data parallel dimension (dp, dp_shard) is
+  refused before the model is cut and before pipeline_sharded_loading reads (a mesh factory too);
+- the native FSDP2, pipeline parallel and launcher (UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE) loaders refuse
+  transformers' own tp_plan / tp_size / ... (any value but None) as the tensor parallel loader does, before any
+  load runs, and the launcher's whole-load fallback does not swallow that refusal;
+- eval_loss with adjacent stages on one rank (V schedules, loop schedules at pp 1) runs forward only, matches
+  the one-process loss and frees its forward caches;
+- the launcher's mesh refuses a CUDA or ROCm layout on a PyTorch build without NCCL before init_process_group.
 
-Legal layouts (pp x dp with one stage per rank, pp 2 x dp 1 with two stages, pp x tp / pp x cp) pass the
-same guards unchanged."""
+Legal layouts (pp x dp with one stage per rank, pp 2 x dp 1 with two stages, several stages over a replicated
+dp_replicate axis, pp x tp / pp x cp under any axis names) pass the same guards unchanged."""
 
 import multiprocessing
 import os
@@ -24,6 +26,7 @@ if multiprocessing.parent_process() is not None or getattr(
 import importlib  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
+import time  # noqa: E402
 
 import pytest  # noqa: E402
 import torch  # noqa: E402
@@ -62,38 +65,97 @@ def _case_mesh4(rank, world, tmp):
     """4 ranks: pp 2 x a data parallel dimension of 2 under the launcher's names."""
     from torch.distributed.device_mesh import init_device_mesh
 
+    from transformers import LlamaForCausalLM
+
     ppl = _load("pp_load")
     out = {}
-    for dp_name in ("dp_shard", "dp_replicate", "dp"):
-        mesh = init_device_mesh("cpu", (2, 2), mesh_dim_names = ("pp", dp_name))
+    for pp_name, dp_name in (("pp", "dp_shard"), ("pp", "dp"), ("pipeline", "dp_shard")):
+        key = dp_name if pp_name == "pp" else f"{pp_name}x{dp_name}"
+        mesh = init_device_mesh("cpu", (2, 2), mesh_dim_names = (pp_name, dp_name))
         model = build(LLAMA, layers = 4)
-        out[dp_name] = _error(
+        out[key] = _error(
             lambda: ppn.apply_pipeline_parallel(
-                model, mesh["pp"], n_microbatches = 4, schedule = "interleaved1f1b"
+                model, mesh[pp_name], n_microbatches = 4, schedule = "interleaved1f1b"
             )
         )
-        out[dp_name + ":uncut"] = _uncut(model)
+        out[key + ":uncut"] = _uncut(model)
 
         def enter():
-            with ppl.pipeline_sharded_loading(mesh["pp"], schedule = "interleaved1f1b"):
+            with ppl.pipeline_sharded_loading(mesh[pp_name], schedule = "interleaved1f1b"):
                 pass
 
-        out[dp_name + ":load"] = _error(enter)
+        out[key + ":load"] = _error(enter)
+
+        def enter_factory():
+            # A mesh factory is resolved and checked at the first from_pretrained, before any read.
+            with ppl.pipeline_sharded_loading(lambda: mesh[pp_name], schedule = "interleaved1f1b"):
+                LlamaForCausalLM.from_pretrained(
+                    tmp
+                )  # an empty local folder: a load would fail there
+
+        out[key + ":factory"] = _error(enter_factory)
         # One stage per rank composes with dp: accepted and cut.
         single = ppn.apply_pipeline_parallel(
-            build(LLAMA, layers = 4), mesh["pp"], n_microbatches = 2, schedule = "gpipe"
+            build(LLAMA, layers = 4), mesh[pp_name], n_microbatches = 2, schedule = "gpipe"
         )
-        out[dp_name + ":single"] = single.stages_per_rank
-    # Model parallel dimensions beside pp are not data parallel: two stages per rank are cut as before.
-    for other in ("tp", "cp"):
-        mesh = init_device_mesh("cpu", (2, 2), mesh_dim_names = ("pp", other))
+        out[key + ":single"] = single.stages_per_rank
+    # Model parallel dimensions beside pp (under any name, pp's own included) and a replicated dp axis are not
+    # FSDP2 data parallel: two stages per rank are cut as before.
+    for names in (
+        ("pp", "tp"),
+        ("pp", "cp"),
+        ("pp", "dp_replicate"),
+        ("pipeline", "tp"),
+        ("pp", "tensor"),
+    ):
+        key = "x".join(names)
+        mesh = init_device_mesh("cpu", (2, 2), mesh_dim_names = names)
         model = build(LLAMA, layers = 4)
-        out[other] = _error(
+        out[key] = _error(
             lambda: ppn.apply_pipeline_parallel(
-                model, mesh["pp"], n_microbatches = 4, schedule = "interleaved1f1b"
+                model, mesh[names[0]], n_microbatches = 4, schedule = "interleaved1f1b"
             )
         )
-        out[other + ":stages"] = getattr(ppn.pipeline_stage_of(model), "stages_per_rank", None)
+        out[key + ":stages"] = getattr(ppn.pipeline_stage_of(model), "stages_per_rank", None)
+    return out
+
+
+LOOP_SCHEDULES = ("interleaved1f1b", "loopedbfs", "interleavedzerobubble")
+
+
+def _fwd_cached(pp):
+    stages = [s for sched in pp._shapes.values() for s in _schedule_stages(sched)]
+    return sum(len(s.fwd_cache) for s in stages)
+
+
+def _schedule_stages(schedule):
+    return getattr(schedule, "_stages", None) or (schedule._stage,)
+
+
+def _case_eval1(rank, world, tmp):
+    """1 rank (pp 1): loop schedules put every stage, consecutive ones included, on this rank."""
+    from torch.distributed.device_mesh import init_device_mesh
+
+    out = {}
+    ref = build(LLAMA, layers = 4)
+    ids, labels = batch(ref)
+    with torch.no_grad():
+        out["ref"] = float(ref(input_ids = ids, labels = labels).loss)
+    mesh = init_device_mesh("cpu", (1,), mesh_dim_names = ("pp",))
+    for schedule in LOOP_SCHEDULES:
+        res = {}
+        try:
+            pp = ppn.apply_pipeline_parallel(
+                build(LLAMA, layers = 4), mesh["pp"], n_microbatches = 4, schedule = schedule
+            )
+            res["eval"] = float(pp.eval_loss(ids, labels))
+            res["cached"] = _fwd_cached(pp)
+            res["train"] = float(pp.step(ids, labels))
+            res["eval_after"] = float(pp.eval_loss(ids, labels))
+            res["error"] = None
+        except Exception as exc:  # noqa: BLE001 - torch asserts with AssertionError
+            res["error"] = f"{type(exc).__name__}: {exc}"
+        out[schedule] = res
     return out
 
 
@@ -120,6 +182,7 @@ def _case_eval2(rank, world, tmp):
         res = {"apply": None}
         try:
             res["eval"] = float(pp.eval_loss(ids, labels))
+            res["cached"] = _fwd_cached(pp)
             res["train"] = float(pp.step(ids, labels))
             res["eval_after"] = float(pp.eval_loss(ids, labels))
             res["error"] = None
@@ -129,7 +192,7 @@ def _case_eval2(rank, world, tmp):
     return out
 
 
-CASES = {"mesh4": _case_mesh4, "eval2": _case_eval2}
+CASES = {"mesh4": _case_mesh4, "eval2": _case_eval2, "eval1": _case_eval1}
 
 
 def _worker(rank, world, port, case, tmp):
@@ -167,8 +230,15 @@ def _spawn(case, world):
         ]
         for p in procs:
             p.start()
-        for p in procs:
-            p.join(300)
+        deadline = time.monotonic() + 300  # one budget for every rank
+        try:
+            for p in procs:
+                p.join(max(deadline - time.monotonic(), 0))
+        finally:
+            for p in procs:
+                if p.is_alive():  # a hung rank must not outlive the result directory
+                    p.terminate()
+                    p.join(10)
         codes = [p.exitcode for p in procs]
         assert codes == [0] * world, f"rank exit codes {codes}"
         return [
@@ -177,22 +247,23 @@ def _spawn(case, world):
         ]
 
 
-def test_multi_stage_pp_x_dp_refused_under_every_dp_name_before_cut_and_load():
+def test_multi_stage_pp_x_fsdp2_dp_refused_before_cut_and_load_other_axes_legal():
     for res in _spawn("mesh4", 4):
-        for dp_name in ("dp_shard", "dp_replicate", "dp"):
-            assert "several stages per rank is not supported" in (res[dp_name] or ""), (
-                dp_name,
-                res,
-            )
-            assert repr(dp_name) in res[dp_name], res[dp_name]
-            assert res[dp_name + ":uncut"], (dp_name, res)
-            assert "several stages per rank is not supported" in (res[dp_name + ":load"] or ""), (
-                dp_name,
-                res,
-            )
-            assert res[dp_name + ":single"] == 1, (dp_name, res)
-        for other in ("tp", "cp"):
-            assert res[other] is None and res[other + ":stages"] == 2, (other, res)
+        for key, dp_name in (
+            ("dp_shard", "dp_shard"),
+            ("dp", "dp"),
+            ("pipelinexdp_shard", "dp_shard"),
+        ):
+            for when in ("", ":load", ":factory"):
+                assert "several stages per rank is not supported" in (res[key + when] or ""), (
+                    key + when,
+                    res,
+                )
+            assert repr(dp_name) in res[key], res[key]
+            assert res[key + ":uncut"], (key, res)
+            assert res[key + ":single"] == 1, (key, res)
+        for key in ("ppxtp", "ppxcp", "ppxdp_replicate", "pipelinextp", "ppxtensor"):
+            assert res[key] is None and res[key + ":stages"] == 2, (key, res)
 
 
 def _v_supported():
@@ -219,6 +290,18 @@ def test_v_schedule_eval_runs_forward_only_and_pp2_x_dp1_multi_stage_is_legal():
                 schedule,
                 got,
             )
+            assert got["cached"] == 0, (schedule, got)  # eval frees its micro-batch forward caches
+
+
+def test_loop_schedule_eval_at_pp1_runs_forward_only():
+    (res,) = _spawn("eval1", 1)
+    for schedule in LOOP_SCHEDULES:
+        got = res[schedule]
+        assert got["error"] is None, (schedule, got)
+        assert got["eval"] == pytest.approx(res["ref"], rel = 1e-5, abs = 1e-6), (schedule, got)
+        assert got["train"] == pytest.approx(res["ref"], rel = 1e-5, abs = 1e-6), (schedule, got)
+        assert got["eval_after"] == pytest.approx(got["eval"], rel = 1e-6, abs = 1e-7), (schedule, got)
+        assert got["cached"] == 0, (schedule, got)
 
 
 # ------------------------------------------------------------------- transformers' own distributed kwargs
@@ -294,6 +377,66 @@ def test_pipeline_sharded_loading_refuses_hf_distributed_kwargs_before_loading(
     assert len(calls) == int(quantize)
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"tp_plan": {}}, {"tp_size": 1}, {"tp_plan": "auto"}],
+    ids = ["empty_plan", "tp_size_1", "auto"],
+)
+def test_hf_distributed_kwargs_refused_by_value_not_truthiness(kwargs):
+    # transformers reads tp_plan / tp_size as given when they are not None (tp_plan = {} is a plan).
+    tpn = _load("tp_native")
+    with pytest.raises(tpn.HFDistributedKwargsError, match = "cannot be combined"):
+        tpn.refuse_hf_distributed_kwargs(kwargs, "tensor parallel", "apply_tensor_parallel")
+    tpn.refuse_hf_distributed_kwargs(
+        {"tp_plan": None, "device_mesh": None}, "tensor parallel", "apply_tensor_parallel"
+    )
+
+
+class _EnvLayout:
+    env_vars = "UNSLOTH_TP_SIZE=2"
+    pp, tp, dp = 1, 2, 1
+
+    def __init__(self, sharded_loading):
+        self.sharded_loading = sharded_loading
+        self.tp_mesh = _Mesh1D()
+
+
+def _env_loader(monkeypatch, layout, inner_kwargs):
+    """A launcher-wrapped FastLanguageModel.from_pretrained stand-in that calls transformers itself."""
+    from transformers import LlamaForCausalLM
+
+    tpe = _load("tp_env")
+    monkeypatch.setattr(tpe, "env_layout", lambda: layout)
+    monkeypatch.setattr(tpe, "_rank0", lambda: False)
+    calls = []
+
+    def from_pretrained(model_name, **kwargs):
+        calls.append(kwargs)
+        return LlamaForCausalLM.from_pretrained(model_name, **inner_kwargs, **kwargs)
+
+    return tpe.tensor_parallel_env_load(from_pretrained), calls
+
+
+@pytest.mark.parametrize("sharded", [True, False], ids = ["sharded", "whole_load"])
+def test_launcher_loader_refuses_hf_distributed_kwargs_on_every_branch(
+    monkeypatch, tmp_path, sharded
+):
+    tpn = _load("tp_native")
+    load, calls = _env_loader(monkeypatch, _EnvLayout(sharded), {})
+    with pytest.raises(tpn.HFDistributedKwargsError, match = "transformers' own tp_plan"):
+        load(str(tmp_path), tp_plan = "auto")
+    assert calls == []  # before transformers sees the kwarg
+
+
+def test_launcher_sharded_load_refusal_is_not_retried_as_a_whole_load(monkeypatch, tmp_path):
+    # The loader adds tp_plan itself: the sharded path refuses it, and the whole-load retry would forward it.
+    tpn = _load("tp_native")
+    load, calls = _env_loader(monkeypatch, _EnvLayout(True), {"tp_plan": "auto"})
+    with pytest.raises(tpn.HFDistributedKwargsError, match = "transformers' own tp_plan"):
+        load(str(tmp_path))
+    assert len(calls) == 1
+
+
 # ------------------------------------------------------------------------------------------- NCCL backend
 
 
@@ -355,3 +498,25 @@ def test_cpu_layout_without_nccl_still_uses_gloo(monkeypatch):
         layout.mesh()
     assert inits == ["gloo"]
     assert dist.is_nccl_available() is False
+
+
+def test_rocm_layout_without_rccl_gives_a_clear_error_before_init_process_group(monkeypatch):
+    env = _parallel_env()
+    inits = _fake_cuda(monkeypatch, nccl = False)
+    monkeypatch.setattr(torch.version, "cuda", None)
+    monkeypatch.setattr(torch.version, "hip", "6.4.0", raising = False)
+    layout = env.ParallelLayout(2, 1, 2, False)
+    with pytest.raises(RuntimeError, match = "RCCL on ROCm GPUs.*has no NCCL backend"):
+        layout.mesh()
+    assert inits == []
+
+
+def test_non_gpu_accelerator_build_without_nccl_is_not_refused(monkeypatch):
+    env = _parallel_env()
+    inits = _fake_cuda(monkeypatch, nccl = False)
+    monkeypatch.setattr(torch.version, "cuda", None)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    layout = env.ParallelLayout(2, 1, 2, False)
+    with pytest.raises(RuntimeError, match = "init_process_group reached"):
+        layout.mesh()
+    assert inits == ["nccl"]

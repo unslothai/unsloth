@@ -4187,12 +4187,17 @@ _UNSUPPORTED_LOAD_KWARGS = (
 )
 
 
+class HFDistributedKwargsError(ValueError):
+    """A from_pretrained under one of Unsloth's sharders also asked transformers to distribute the model."""
+
+
 def refuse_hf_distributed_kwargs(kwargs, label, sharder):
-    """ValueError when a from_pretrained under one of Unsloth's sharded loaders also asks transformers to
-    distribute the model (tp_plan / tp_size / device_mesh / distributed_config): the two would shard it twice."""
-    key = next((k for k in _HF_DISTRIBUTED_KWARGS if kwargs.get(k)), None)
+    """HFDistributedKwargsError (a ValueError) when a from_pretrained under one of Unsloth's sharded loaders also
+    asks transformers to distribute the model (tp_plan / tp_size / device_mesh / distributed_config, any value
+    but None, as transformers reads them: tp_plan = {} is a plan): the two would shard it twice."""
+    key = next((k for k in _HF_DISTRIBUTED_KWARGS if kwargs.get(k) is not None), None)
     if key is not None:
-        raise ValueError(
+        raise HFDistributedKwargsError(
             f"Unsloth: {label} sharded loading cannot be combined with transformers' own {key}; drop it "
             f"({sharder} shards the model)."
         )

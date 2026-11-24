@@ -585,19 +585,22 @@ class ParallelLayout:
         return [(name, size) for name, size in dims if size > 1]
 
     def check_backend(self):
-        """RuntimeError when mesh() would need NCCL (CUDA GPUs, no process group yet) on a PyTorch build without
-        it (native Windows): before any model loads, instead of failing in init_process_group."""
+        """RuntimeError when mesh() would need NCCL (CUDA GPUs; RCCL under the same name on ROCm, no process
+        group yet) on a PyTorch build without it (native Windows): before any model loads, instead of failing in
+        init_process_group."""
         import torch
         import torch.distributed as dist
 
         if not dist.is_available() or dist.is_initialized() or dist.is_nccl_available():
             return
-        if torch.version.cuda is None or not torch.cuda.is_available():
+        rocm = getattr(torch.version, "hip", None) is not None
+        if (torch.version.cuda is None and not rocm) or not torch.cuda.is_available():
             return  # CPU (gloo) or a non-CUDA accelerator build
+        backend, gpus = ("RCCL", "ROCm") if rocm else ("NCCL", "CUDA")
         raise RuntimeError(
-            f"Unsloth: {self.env_vars} ({self}) runs its collectives over NCCL on CUDA GPUs, but this PyTorch "
-            "build has no NCCL backend (torch.distributed.is_nccl_available() is False; native Windows builds "
-            "ship without it). Use a PyTorch build with NCCL (Linux or WSL), or train on one GPU."
+            f"Unsloth: {self.env_vars} ({self}) runs its collectives over {backend} on {gpus} GPUs, but this "
+            "PyTorch build has no NCCL backend (torch.distributed.is_nccl_available() is False; native Windows "
+            f"builds ship without it). Use a PyTorch build with {backend} (Linux or WSL), or train on one GPU."
         )
 
     def mesh(self):
