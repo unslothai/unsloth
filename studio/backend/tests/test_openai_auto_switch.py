@@ -778,6 +778,17 @@ def test_known_unloaded_model_switches_once(monkeypatch):
     assert backend.model_identifier == "unsloth/B-GGUF"
 
 
+def test_a_switch_into_the_primary_counts_as_its_use(monkeypatch):
+    from core.inference import model_slots
+
+    _wired(
+        monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
+    monkeypatch.setattr(model_slots, "primary_last_used", 0.0)
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert model_slots.primary_last_used > 0.0
+
+
 def test_a_late_cancel_keeps_the_completed_switch_metadata(monkeypatch):
     backend = _FakeBackend("unsloth/A-GGUF")
     cancel_event = threading.Event()

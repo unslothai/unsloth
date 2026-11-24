@@ -12944,6 +12944,7 @@ async def _maybe_auto_switch_model(
                                         current_request_counted = True,
                                         **load_internal_kw,
                                     )
+                                    model_slots.mark_used(None)
                                     return
                                 await load_model_gated(
                                     load_request,
