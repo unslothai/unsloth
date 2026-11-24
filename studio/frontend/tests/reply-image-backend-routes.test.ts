@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import {
   isBackendRouteUrl,
+  isSignedGalleryMediaUrl,
   protectedBackendMediaPath,
   resetApiBase,
   setApiBase,
@@ -42,4 +43,22 @@ test("any other backend route in a reply image is recognised so it is never load
   assert.equal(isBackendRouteUrl("/v1/models"), true);
   assert.equal(isBackendRouteUrl("/assets/logo.png"), false);
   assert.equal(isBackendRouteUrl("https://images.example/api/x.png"), false);
+});
+
+test("signed gallery media still loads as a plain image in the browser", () => {
+  for (const url of [
+    "/api/inference/images/gallery/abc/file-signed?token=t0k",
+    "http://localhost/api/inference/images/gallery/abc/file-signed?token=t0k",
+    "/api/inference/audio/gallery/c1/file-signed?token=t0k",
+  ]) {
+    assert.equal(isSignedGalleryMediaUrl(url), true, url);
+  }
+  for (const url of [
+    "/api/inference/images/gallery/abc/file-signed",
+    "/api/hub/modelscope/api/inference/images/gallery/x/file-signed?token=t",
+    "/api/export/moe-info?model=x&token=t",
+    "https://evil.example/api/inference/images/gallery/abc/file-signed?token=t",
+  ]) {
+    assert.equal(isSignedGalleryMediaUrl(url), false, url);
+  }
 });

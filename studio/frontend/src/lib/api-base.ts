@@ -97,6 +97,26 @@ export function protectedBackendMediaPath(url: string): string | null {
     : null
 }
 
+// Signed gallery media (the URL's token is the credential, no session is sent): a plain <img> may load it.
+// Image generation with response_format=url returns these, relative or absolute.
+export function isSignedGalleryMediaUrl(url: string): boolean {
+  if (!isStudioUrl(url)) return false
+  const page = typeof window === 'undefined' ? 'http://localhost/' : window.location.href
+  try {
+    const parsed = new URL(url, apiBase || page)
+    const at = parsed.pathname.search(/\/(?:api|v1)\//)
+    return (
+      at >= 0 &&
+      /^\/(?:api|v1)\/(?:inference\/)?(?:images|video|audio)\/gallery\/[^/]+\/file-signed$/.test(
+        parsed.pathname.slice(at),
+      ) &&
+      parsed.searchParams.has('token')
+    )
+  } catch {
+    return false
+  }
+}
+
 /** A URL naming one of this backend's /api or /v1 routes, however it is spelled. */
 export function isBackendRouteUrl(url: string): boolean {
   if (!isStudioUrl(url)) return false

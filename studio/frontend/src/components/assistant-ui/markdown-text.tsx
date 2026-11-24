@@ -46,6 +46,7 @@ import {
   backendPathUrl,
   desktopSignedMediaPath,
   isBackendRouteUrl,
+  isSignedGalleryMediaUrl,
   protectedBackendMediaPath,
   protectedBackendPath,
 } from "@/lib/api-base";
@@ -254,7 +255,8 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
       protectedBackendMediaPath(src))
     : null;
   // Any other backend route stays unloaded: a plain <img> would still send its query to that route.
-  const otherBackendRoute = file === null && src != null && isBackendRouteUrl(src);
+  const otherBackendRoute =
+    file === null && src != null && isBackendRouteUrl(src) && !isSignedGalleryMediaUrl(src);
   const sandbox = useSandboxImage(file);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   // A sandbox src stays absent, never raw, until the authed fetch produces a blob.
