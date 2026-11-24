@@ -356,3 +356,99 @@ def test_windows_and_linux_gfx1151_builds_each_get_their_own_table():
                 assert other_path not in rt.shipped_tables("gfx1151", validators)
     windows = by_hip["714"][1]
     assert windows["PT_VERSION"] == "2.11.0" and windows["HIPBLASLT_VERSION"].startswith("100401-")
+
+
+def _write_table(
+    tmp_path,
+    fake,
+    name = "gfx1151_train.csv",
+):
+    rt._STATE["owners"].clear()  # earlier tests' pipes may still hold claims
+    d = tmp_path / "tables"
+    d.mkdir(exist_ok = True)
+    rows = [f"Validator,{k},{v}" for k, v in fake.get_validators()]
+    rows.append(
+        "GemmTunableOp_BFloat16_NN,nn_3072_3840_3072_ld_3072_3072_3072,Gemm_Hipblaslt_386,1.96"
+    )
+    (d / name).write_text("\n".join(rows) + "\n", encoding = "utf-8")
+    return d / name
+
+
+def test_training_reads_the_shipped_table_never_tunes_and_release_restores(
+    fake, tmp_path, monkeypatch
+):
+    monkeypatch.delenv(rt.TUNABLEOP_ENV)
+    table = _write_table(tmp_path, fake)
+    assert rt.install_for_training()
+    assert fake.enabled and not fake.tuning
+    assert ("read", str(table)) in fake.calls
+    assert rt.is_active()
+    rt.release_training()
+    assert not fake.enabled and not rt.is_active()
+
+
+def test_training_without_a_matching_table_leaves_torch_alone(fake, monkeypatch):
+    monkeypatch.delenv(rt.TUNABLEOP_ENV)
+    assert not rt.install_for_training()
+    assert not fake.enabled and not rt.is_active()
+
+
+def test_training_release_keeps_a_pipe_claim(fake, tmp_path, monkeypatch):
+    monkeypatch.delenv(rt.TUNABLEOP_ENV)
+    _write_table(tmp_path, fake)
+    pipe = _pipe(fake)
+    assert rt.install_for_pipe(pipe)
+    assert rt.install_for_training()
+    rt.release_training()
+    assert rt.is_active() and fake.enabled  # the render pipe still owns the table
+    rt.release(pipe)
+    assert not rt.is_active() and not fake.enabled
+
+
+@pytest.mark.parametrize("why", ["kill", "user", "arch"])
+def test_training_declines(fake, tmp_path, monkeypatch, why):
+    monkeypatch.delenv(rt.TUNABLEOP_ENV)
+    _write_table(tmp_path, fake)
+    if why == "kill":
+        monkeypatch.setenv(rt.TUNABLEOP_ENV, "0")
+    elif why == "user":
+        monkeypatch.setenv("PYTORCH_TUNABLEOP_ENABLED", "1")
+    else:
+        monkeypatch.setattr(rt, "_arch", lambda device = None: "gfx1100")
+    assert not rt.install_for_training()
+    assert not fake.enabled
+
+
+def test_trainer_installs_only_on_rocm_cuda_and_releases(monkeypatch):
+    from core.training import diffusion_dit_trainer as ddt
+
+    seen = []
+    monkeypatch.setattr(
+        rt, "install_for_training", lambda device = None, logger = None: seen.append("i") or True
+    )
+    monkeypatch.setattr(rt, "release_training", lambda: seen.append("r"))
+    monkeypatch.setattr(ddt, "torch_is_rocm", lambda: False)
+    assert not ddt._install_rocm_tunableop("cuda")
+    monkeypatch.setattr(ddt, "torch_is_rocm", lambda: True)
+    assert not ddt._install_rocm_tunableop("cpu")
+    assert seen == []
+    assert ddt._install_rocm_tunableop("cuda")
+    ddt._release_rocm_tunableop()
+    assert seen == ["i", "r"]
+
+
+def test_shipped_training_table_is_well_formed():
+    from pathlib import Path
+
+    # Training shapes (FLUX.2-klein-base-4B LoRA, nf4, 1024 px) ride in the build's one table: backward GEMMs (NT / NN
+    # LoRA rank-16 products) beside the TN inference rows, with no duplicate key.
+    (path,) = sorted((Path(rt.__file__).parent / "rocm_gemm_tables").glob("gfx1151_*_train.csv"))
+    rows = [
+        ln.split(",")
+        for ln in path.read_text(encoding = "utf-8").splitlines()
+        if ln and not ln.startswith("Validator,")
+    ]
+    keys = [(r[0], r[1]) for r in rows]
+    assert len(keys) == len(set(keys))
+    assert ("GemmTunableOp_BFloat16_NT", "nt_16_3072_3840_ld_16_3072_16") in keys
+    assert ("GemmTunableOp_BFloat16_NN", "nn_3072_3840_3072_ld_3072_3072_3072") in keys

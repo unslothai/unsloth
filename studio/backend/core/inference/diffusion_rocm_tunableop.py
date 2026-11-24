@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """ROCm TunableOp GEMM tables for diffusion denoisers on gfx1151 (hipBLASLt's default pick is 20-38% slow at DiT
-shapes). Tuning costs 17-215 s per shape, so by default only READ the AMD CI tables in ``rocm_gemm_tables/`` whose
+shapes; training GEMMs too). Tuning costs 17-215 s per shape, so by default only READ the AMD CI tables in ``rocm_gemm_tables/`` whose
 validators match exactly. ``UNSLOTH_DIFFUSION_ROCM_TUNABLEOP=tune`` also tunes on steady denoiser calls; ``=0`` off."""
 
 from __future__ import annotations
@@ -415,6 +415,30 @@ def release(pipe: Any) -> None:
             except Exception:  # noqa: BLE001
                 pass
     _remove_hooks(pipe)
+
+
+# A training run's claim on the table: one per process (the training worker), released when the run ends.
+_TRAIN_OWNER = object()
+
+
+def install_for_training(device: Any = None, logger: Any = None) -> bool:
+    """Diffusion LoRA training reads the same validator-matched tables; it never tunes (a cold shape costs minutes).
+
+    AMD CI, gfx1151, FLUX.2-klein-base-4B LoRA (Studio defaults: nf4, 1024 px, rank 16): 8.41 -> 7.41 s/step with
+    the 43 training shapes in ``rocm_gemm_tables/``, loss within 2e-4 of the default pick, +0.15 GiB peak."""
+    ok, why = eligible(device)
+    if not ok:
+        return False
+    with _LOCK:
+        if not _activate(why, logger):
+            return False
+        _STATE["owners"].add(_TRAIN_OWNER)
+    return True
+
+
+def release_training() -> None:
+    """End of a training run: the last owner out restores the pre-activation TunableOp state."""
+    _drop(_TRAIN_OWNER)
 
 
 def is_active() -> bool:
