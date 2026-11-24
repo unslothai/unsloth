@@ -14,6 +14,8 @@ on:
     paths:
       # studio/frontend/** stays: install.ps1 builds it and the dist cache key hashes it.
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this smoke drives.
+      - '!studio/backend/tests/**'
       - 'studio/frontend/**'
       - 'studio/setup.ps1'
       - 'studio/install_*.py'
@@ -43,6 +45,8 @@ on:
     branches: [main]
     paths:
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this smoke drives.
+      - '!studio/backend/tests/**'
       - 'studio/frontend/**'
       - 'studio/setup.ps1'
       - 'studio/install_*.py'
