@@ -6324,10 +6324,10 @@ _LORA_GGUF_OUTTYPES = ("f32", "f16", "bf16", "q8_0", "auto")
 
 
 def _lora_gguf_outtype(quantization_method):
-    """The --outtype for a save_method="lora" GGUF export. Case-insensitive like the merged GGUF path, so "Q8_0" or "BF16" is honoured instead of falling back to f16."""
+    """--outtype for a save_method="lora" GGUF export; case-insensitive like the merged GGUF path."""
     outtype = quantization_method
     if isinstance(outtype, (list, tuple)) and len(outtype) == 1:
-        outtype = outtype[0]  # the gguf API allows a list; unwrap a single outtype
+        outtype = outtype[0]
     if isinstance(outtype, str):
         outtype = outtype.lower()
     if outtype in _LORA_GGUF_OUTTYPES:
@@ -6540,6 +6540,8 @@ def _unsloth_save_lora_gguf(
             "Unsloth: LoRA GGUF export needs a PEFT/LoRA model. "
             "For a full or merged model use save_pretrained_gguf(...) instead."
         )
+    if isinstance(outtype, str):
+        outtype = outtype.lower()
     if outtype not in _LORA_GGUF_OUTTYPES:
         raise ValueError(
             f"Unsloth: LoRA GGUF outtype must be one of {_LORA_GGUF_OUTTYPES} (got '{outtype}')."

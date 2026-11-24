@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""save_method="lora" GGUF exports must read quantization_method the way the merged GGUF path does."""
+"""LoRA GGUF exports read quantization_method / outtype case-insensitively, like the merged GGUF path."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ class _Logger:
 
 
 def _load_helper():
-    """Lifts the helper out of save.py with ast, since importing save.py needs the full ML stack."""
+    # Importing save.py needs the full ML stack, so lift the helper out with ast.
     tree = ast.parse(_SAVE_PY.read_text(encoding = "utf-8"))
     nodes = [
         node
@@ -77,3 +77,50 @@ def test_lora_outtype_unsupported_falls_back_to_f16_with_warning(quantization_me
     outtype, logger = _load_helper()
     assert outtype(quantization_method) == "f16"
     assert len(logger.warnings) == 1
+
+
+class _ReachedPastValidation(Exception):
+    pass
+
+
+class _Peft:
+    pass
+
+
+def _load_writer():
+    tree = ast.parse(_SAVE_PY.read_text(encoding = "utf-8"))
+    nodes = [
+        node
+        for node in tree.body
+        if (isinstance(node, ast.FunctionDef) and node.name == "_unsloth_save_lora_gguf")
+        or (
+            isinstance(node, ast.Assign)
+            and any(getattr(t, "id", None) == "_LORA_GGUF_OUTTYPES" for t in node.targets)
+        )
+    ]
+    for node in nodes:
+        if isinstance(node, ast.FunctionDef):
+            node.decorator_list = []
+
+    def _stop(token):
+        raise _ReachedPastValidation
+
+    namespace = {
+        "PeftModelForCausalLM": _Peft,
+        "PeftModel": _Peft,
+        "_clean_save_token": _stop,
+    }
+    exec(compile(ast.Module(nodes, []), str(_SAVE_PY), "exec"), namespace)
+    return namespace["_unsloth_save_lora_gguf"]
+
+
+@pytest.mark.parametrize("outtype", ["Q8_0", "BF16", "F16", "f32"])
+def test_lora_writer_accepts_any_case_outtype(outtype):
+    with pytest.raises(_ReachedPastValidation):
+        _load_writer()(_Peft(), None, "out", outtype = outtype)
+
+
+@pytest.mark.parametrize("outtype", ["Q4_K_M", "q4_k_m"])
+def test_lora_writer_still_rejects_unsupported_outtype(outtype):
+    with pytest.raises(ValueError, match = "outtype must be one of"):
+        _load_writer()(_Peft(), None, "out", outtype = outtype)
