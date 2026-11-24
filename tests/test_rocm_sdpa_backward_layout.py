@@ -58,6 +58,19 @@ def test_a_kernel_that_ignores_the_query_layout_is_reported():
     assert _mismatches({"flash": _blind, "mem_efficient": _blind}) == ["flash", "mem_efficient"]
 
 
+def _by_head_dim(at_256, otherwise):
+    return lambda q, k, v: (at_256 if q.shape[-1] == 256 else otherwise)(q, k, v)
+
+
+@pytest.mark.parametrize(
+    "probe",
+    [_by_head_dim(_blind, _true), _by_head_dim(_missing, _blind), _by_head_dim(_blind, _missing)],
+    ids = ["blind-only-at-the-issue-shape", "refuses-256", "refuses-64"],
+)
+def test_each_probe_shape_counts_on_its_own(probe):
+    assert _mismatches({"flash": probe}) == ["flash"]
+
+
 def test_a_backend_missing_from_the_build_is_left_alone():
     assert _mismatches({"flash": _missing, "mem_efficient": _true}) == []
 

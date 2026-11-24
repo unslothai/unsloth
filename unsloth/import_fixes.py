@@ -9264,9 +9264,9 @@ def _sdpa_backward_layout_mismatches(
 
     Inductor asserts the fake strides on the real outputs, so a compiled backward through such a
     backend fails ("expected size 4==4, stride 23808==256 ... _scaled_dot_product_flash_attention_
-    backward", torch 2.12+rocm7.14.1 on gfx942) while eager runs fine. Each backend runs one tiny
-    backward for a query in HF's transposed (B, S, H, D) layout and one for a contiguous query. A
-    backend the build lacks, or one that errors, is left out.
+    backward", torch 2.12+rocm7.14.1 on gfx942) while eager runs fine. Each backend runs a tiny
+    backward per shape for a query in HF's transposed (B, S, H, D) layout and for a contiguous one.
+    A shape the backend refuses is skipped; a backend the build lacks is left out.
     """
     import torch
     from torch._subclasses.fake_tensor import FakeTensorMode
@@ -9275,28 +9275,32 @@ def _sdpa_backward_layout_mismatches(
         probes = _SDPA_BACKWARD_PROBES
     g = torch.Generator(device = device).manual_seed(0)
 
-    def inputs(transposed):
-        shape = (1, 16, 2, 64) if transposed else (1, 2, 16, 64)
+    def differs(probe, s, h, d, transposed):
+        shape = (1, s, h, d) if transposed else (1, h, s, d)
         qkv = [torch.randn(shape, device = device, dtype = dtype, generator = g) for _ in range(3)]
-        return [t.transpose(1, 2) for t in qkv] if transposed else qkv
+        if transposed:
+            qkv = [t.transpose(1, 2) for t in qkv]
+        real = probe(*qkv)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)  # a failed launch raises at the next call: keep it here
+        mode = FakeTensorMode()
+        fakes = [mode.from_tensor(t) for t in qkv]
+        with mode:
+            fake = probe(*fakes)
+        return any(r.stride() != f.stride() for r, f in zip(real, fake))
 
     mismatched = []
     # An import under inference_mode would hand fake mode inference tensors.
     with torch.inference_mode(False):
         for name, probe in probes.items():
-            try:
-                for transposed in (True, False):
-                    qkv = inputs(transposed)
-                    real = probe(*qkv)
-                    mode = FakeTensorMode()
-                    fakes = [mode.from_tensor(t) for t in qkv]
-                    with mode:
-                        fake = probe(*fakes)
-                    if any(r.stride() != f.stride() for r, f in zip(real, fake)):
+            # (S, H, D): a tiny one, and #17548's, whose head dim 256 may take another kernel.
+            for shape in ((16, 2, 64), (93, 4, 256)):
+                try:
+                    if any(differs(probe, *shape, t) for t in (True, False)):
                         mismatched.append(name)
                         break
-            except Exception:
-                continue
+                except Exception:
+                    continue
     return mismatched
 
 
