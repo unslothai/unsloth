@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""LoRA GGUF export: an adapter with LoRA on MoE expert weights (PEFT target_parameters) is refused before anything
-is written, since llama.cpp's converter cannot map it, and a converter failure names the converter's own error."""
+"""LoRA GGUF export: refuse MoE expert (target_parameters) adapters up front; name the converter's error."""
 
 import ast
 import pathlib

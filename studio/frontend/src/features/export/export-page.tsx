@@ -449,7 +449,6 @@ export function ExportPage() {
     () => selectedModelData?.checkpoints ?? [],
     [selectedModelData],
   );
-  // llama.cpp's GGUF LoRA converter cannot map LoRA on MoE expert weights (PEFT target_parameters).
   const moeAdapterBlocksGguf =
     sourceMode === "checkpoint" &&
     selectedModelData?.adapter_features?.moe_target_parameters === true;

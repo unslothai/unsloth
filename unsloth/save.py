@@ -6520,7 +6520,6 @@ def _resolve_imatrix_file(model, imatrix_file, token, dest_dir):
 
 
 def _lora_target_parameters(model) -> list:
-    """Parameter names a PEFT model trains through ``target_parameters`` (LoRA on 3D MoE expert weights)."""
     names = set()
     for config in (getattr(model, "peft_config", None) or {}).values():
         names.update(getattr(config, "target_parameters", None) or ())
@@ -6528,7 +6527,6 @@ def _lora_target_parameters(model) -> list:
 
 
 def _converter_error_line(lines) -> str:
-    """The last ``SomethingError: ...`` line a llama.cpp converter printed, or ""."""
     for line in reversed(list(lines)):
         stripped = line.strip()
         if re.match(r"^[A-Za-z_][\w.]*(Error|Exception): ", stripped):
@@ -6570,8 +6568,7 @@ def _unsloth_save_lora_gguf(
     if token is None or token is True:
         token = get_token()
 
-    # llama.cpp's converter maps Linear LoRA only: PEFT target_parameters LoRA on 3D MoE experts stops it with
-    # "Can not map tensor '...experts.base_layer.weight'", after the adapter is already written. Refuse first.
+    # llama.cpp's converter maps Linear LoRA only and fails on target_parameters (MoE expert) LoRA after the adapter is written.
     expert_targets = _lora_target_parameters(model)
     if expert_targets:
         raise NotImplementedError(
@@ -6644,7 +6641,6 @@ def _unsloth_save_lora_gguf(
         _apply_token_to_child_env(env, token, explicit = token_is_explicit)
 
         print(f"Unsloth: Converting LoRA adapter at '{lora_dir}' to GGUF -> '{out_gguf}'")
-        # The converter's own error is the useful part of a failure; a UI shows the raised message, not the stream.
         output_tail = collections.deque(maxlen = 40)
         # Resolve the cache from the live env like the merge, not huggingface_hub's frozen constants: a runtime cache redirect (read-only default, Unsloth) would else miss (#6890).
         try:

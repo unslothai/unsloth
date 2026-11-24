@@ -282,7 +282,6 @@ export function buildQuantSizeLabels(
   return out;
 }
 
-/** Shown on the adapter-GGUF choices for an adapter that trains MoE expert weights. */
 export const MOE_GGUF_ADAPTER_REASON =
   "This adapter trains MoE expert weights, which llama.cpp's GGUF LoRA format cannot hold yet. Export the full model as GGUF instead.";
 
@@ -290,7 +289,6 @@ export function getEstimatedSize(
   method: ExportMethod | null,
   quantLevels: string[],
   fp16Bytes: number | null | undefined,
-  /** Expert LoRA scales with the expert count, so the usual adapter estimate is far too low. */
   moeExpertAdapter = false,
 ): string {
   if (method === "gguf" && quantLevels.length > 0) {
