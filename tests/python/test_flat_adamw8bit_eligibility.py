@@ -544,10 +544,10 @@ def test_row22_row24_offload_and_parking_run_stock(cpu):
 
 
 def test_offload_drops_flat_plans_before_offloading():
-    src = (_ROOT / "unsloth/optimizers/state_offload.py").read_text()
+    src = (_ROOT / "unsloth/optimizers/state_offload.py").read_text(encoding = "utf-8")
     pop = src.index('optimizer.__dict__.pop("_unsloth_flat_plans", None)')
     assert pop < src.index("offloader = _StateOffloader(")
-    rl = (_ROOT / "unsloth/models/rl.py").read_text()
+    rl = (_ROOT / "unsloth/models/rl.py").read_text(encoding = "utf-8")
     park = rl.index('optimizer.__dict__["_unsloth_flat_disabled"] = "rollout parking"')
     assert park < rl.index("    for state, name, host in states:\n        state[name] = host")
 
@@ -735,10 +735,10 @@ def test_hook_env(cpu, monkeypatch, env, value, installs):
 
 
 def test_trainer_offload_branch_uses_offloader_predicate():
-    src = (_ROOT / "unsloth/models/_utils.py").read_text()
+    src = (_ROOT / "unsloth/models/_utils.py").read_text(encoding = "utf-8")
     assert 'os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0") != "0"' not in src
     assert 'if offload.strip().lower() in ("1", "true", "yes", "on"):' in src
-    off = (_ROOT / "unsloth/optimizers/state_offload.py").read_text()
+    off = (_ROOT / "unsloth/optimizers/state_offload.py").read_text(encoding = "utf-8")
     assert 'os.environ.get(_ENV, "0").strip().lower() in ("1", "true", "yes", "on")' in off
 
 
