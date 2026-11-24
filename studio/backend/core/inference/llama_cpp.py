@@ -5359,6 +5359,18 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
 
 # q8_0 banded kernel registration string (survives strip); only llama.cpp#399 builds have it.
 _INKLING2_BANDED_QUANT_KV_RE = re.compile(rb"flash_attn_ext_banded\w*ggml_type8E")
+# Dense multi-slot reserve (unslothai/llama.cpp#386, b12649-mix). b12631-mix also has the #395
+# loader string with the banded reserve, so the build number gates it too.
+_INKLING2_MULTI_SEQ_DENSE_RE = re.compile(rb"inkling2_loop: %zu cache slots exceed")
+_INKLING2_MULTI_SEQ_DENSE_BUILD = 12649
+# The banded-position fix to #386 drops that dense reserve: several slots run banded over cell
+# positions (attn_inp_k_pos*), and short ubatches over the padded cache (attn_inp_rel_shift*).
+# Both graph input names are in libllama only from that fix on, and survive strip.
+_INKLING2_BANDED_POS_RES = (
+    re.compile(rb"attn_inp_k_pos_swa\x00"),
+    re.compile(rb"attn_inp_rel_shift_swa\x00"),
+)
+_LLAMA_LIB_GLOBS = ("libllama.so*", "libllama*.dylib", "llama.dll")
 _GGML_GPU_LIB_GLOBS = {
     "cuda": ("libggml-cuda.so*", "ggml-cuda.dll"),
     "hip": ("libggml-hip.so*", "ggml-hip.dll"),
@@ -5374,9 +5386,9 @@ def _lib_matches(path: str, _mtime_ns: int, _size: int, pattern: "re.Pattern[byt
         return False
 
 
-def _gpu_lib_has_banded_quant_kv(lib_dir: Path, backend: str) -> bool:
-    """Whether the ggml CUDA / HIP library beside llama-server has the quantized banded kernel; fails closed."""
-    for pattern in _GGML_GPU_LIB_GLOBS.get(backend, ()):
+def _lib_dir_matches(lib_dir: Path, globs: Iterable[str], marker: "re.Pattern[bytes]") -> bool:
+    """Whether a library matching ``globs`` in ``lib_dir`` contains ``marker``; fails closed."""
+    for pattern in globs:
         try:
             candidates = sorted(lib_dir.glob(pattern))
         except OSError:
@@ -5388,19 +5400,45 @@ def _gpu_lib_has_banded_quant_kv(lib_dir: Path, backend: str) -> bool:
             except OSError:
                 continue
             if resolved.is_file() and _lib_matches(
-                str(resolved), st.st_mtime_ns, st.st_size, _INKLING2_BANDED_QUANT_KV_RE
+                str(resolved), st.st_mtime_ns, st.st_size, marker
             ):
                 return True
     return False
 
 
+def _gpu_lib_has_banded_quant_kv(lib_dir: Path, backend: str) -> bool:
+    """Whether the ggml CUDA / HIP library beside llama-server has the quantized banded kernel; fails closed."""
+    return _lib_dir_matches(
+        lib_dir, _GGML_GPU_LIB_GLOBS.get(backend, ()), _INKLING2_BANDED_QUANT_KV_RE
+    )
+
+
+def _llama_lib_has_multi_seq_dense(lib_dir: Path) -> bool:
+    """Whether libllama beside llama-server reserves Inkling 2's dense bias for several slots; fails closed."""
+    return _lib_dir_matches(lib_dir, _LLAMA_LIB_GLOBS, _INKLING2_MULTI_SEQ_DENSE_RE)
+
+
+def _llama_lib_has_banded_pos(lib_dir: Path) -> bool:
+    """Whether libllama beside llama-server has the banded-position fix to the #386 reserve; fails
+    closed, so a build without it keeps the dense pricing."""
+    return all(
+        _lib_dir_matches(lib_dir, _LLAMA_LIB_GLOBS, marker) for marker in _INKLING2_BANDED_POS_RES
+    )
+
+
 class _Inkling2BandedSupport(NamedTuple):
     """backend: ggml GPU backend, None if unknown; quant_kv: quantized banded K/V + shared mask;
-    tile_kv: every visible CUDA card dequantizes q8_0 / q4_0 in the tile (Turing MMA)."""
+    tile_kv: every visible CUDA card dequantizes q8_0 / q4_0 in the tile (Turing MMA);
+    multi_seq_dense: the reserve holds the worst case (_inkling2_reserve_bytes); build_known: the
+    build number was read, so that reserve is identified, not assumed; banded_pos: the fix to that
+    reserve, which holds only the KQ masks (_inkling2_banded_pos_reserve_bytes)."""
 
     backend: Optional[str] = None
     quant_kv: bool = False
     tile_kv: bool = False
+    multi_seq_dense: bool = False
+    build_known: bool = False
+    banded_pos: bool = False
 
 
 # Unknown build prices as pre-#399.
@@ -10651,6 +10689,93 @@ class LlamaCppBackend:
             shares[-1] += 0.5
         return shares
 
+    @staticmethod
+    def _byte_balanced_split(
+        gpu_indices: List[int],
+        free_mib: dict[int, float],
+        usable_mib: dict[int, float],
+        layer_mib: List[float],
+        per_device_mib: float = 0.0,
+        main_reserve_mib: float = 0.0,
+        pipeline_mib: float = 0.0,
+    ) -> Optional[List[float]]:
+        """Layer-count ``--tensor-split`` shares over discrete ``gpu_indices`` whose contiguous
+        runs fit each card; None when llama.cpp's own split (layer counts weighted by free
+        memory) already fits; [] when it overflows a card and no split fits. Uneven layers
+        (Unsloth Dynamic quants keep some layers at higher precision) can push a count split
+        past the smaller card."""
+        n = len(layer_mib)
+        if len(gpu_indices) < 2 or n == 0:
+            return None
+        room = [
+            usable_mib.get(i, 0.0) - per_device_mib - (main_reserve_mib if k == 0 else pipeline_mib)
+            for k, i in enumerate(gpu_indices)
+        ]
+        prefix = [0.0]
+        for mib in layer_mib:
+            prefix.append(prefix[-1] + mib)
+
+        def fits(counts: List[int]) -> bool:
+            start = 0
+            for c, r in zip(counts, room):
+                if prefix[start + c] - prefix[start] > max(0.0, r):
+                    return False
+                start += c
+            return True
+
+        # llama.cpp's default: device of rank r is the first whose cumulative free share > r / n.
+        free = [max(0.0, float(free_mib.get(i, 0.0))) for i in gpu_indices]
+        total = sum(free)
+        if total > 0:
+            cum, default, start = 0.0, [], 0
+            for f in free:
+                cum += f / total
+                end = start
+                while end < n and end / n < cum:
+                    end += 1
+                default.append(end - start)
+                start = end
+            default[-1] += n - start
+            if fits(default):
+                return None
+
+        def greedy(scale: float) -> Optional[List[int]]:
+            # Each card up to ``scale`` of its room, in order; the last takes the rest.
+            counts, start = [], 0
+            for k, r in enumerate(room):
+                end = n
+                if k < len(room) - 1:
+                    end = start
+                    while end < n and prefix[end + 1] - prefix[start] <= max(0.0, r) * scale:
+                        end += 1
+                elif prefix[n] - prefix[start] > max(0.0, r) * scale:
+                    return None
+                counts.append(end - start)
+                start = end
+            return counts if fits(counts) else None
+
+        if greedy(1.0) is None:
+            # Every count split overflows a card: the pin cannot load as planned.
+            return []
+        # The lowest fill every card can share: no card runs closer to its limit than needed.
+        lo, hi = 0.0, 1.0
+        for _ in range(30):
+            mid = (lo + hi) / 2
+            if greedy(mid) is None:
+                lo = mid
+            else:
+                hi = mid
+        counts = greedy(hi)
+        if counts is None or sum(1 for c in counts if c > 0) < 2:
+            return None
+        shares = [float(c) for c in counts]
+        # Boundaries half a layer early: float rounding in upper_bound cannot add a layer.
+        first = next(k for k, v in enumerate(shares) if v > 0)
+        if first != len(shares) - 1:
+            shares[first] -= 0.5
+            shares[-1] += 0.5
+        return shares
+
     def _mixed_pin_split(
         self,
         gpu_indices: List[int],
@@ -10663,11 +10788,13 @@ class LlamaCppBackend:
         tensor_parallel: bool,
         pin_owns_devices: bool = False,
     ) -> Optional[List[float]]:
-        """The discrete-first split for a full-offload mixed Vulkan pin, or None to
-        leave llama.cpp's own split (the pre-existing behaviour) wherever its inputs
-        cannot be priced or someone else owns the placement."""
+        """The discrete-first split for a full-offload mixed Vulkan pin; for discrete cards
+        only, a byte-balanced split where llama.cpp's own would overflow one, or [] when no
+        split fits (the caller then lets --fit place the model). None leaves
+        llama.cpp's own split (the pre-existing behaviour) wherever its inputs cannot be
+        priced or someone else owns the placement."""
         if (
-            not shared_gpu_ids
+            (not shared_gpu_ids and len(gpu_indices) < 2)
             or spill_inputs is None
             or tensor_parallel
             # A downgraded tensor request keeps every device in use.
@@ -10763,6 +10890,16 @@ class LlamaCppBackend:
         if 0 < layout.n_attention_layers < n_blocks and len(kv_weights) == n_blocks:
             per_device += kv_total / layout.n_attention_layers
         mib = 1024 * 1024
+        if not set(shared_gpu_ids or ()) & set(gpu_indices):
+            return self._byte_balanced_split(
+                list(gpu_indices),
+                {i: f for i, f in spill_inputs.get("gpus") or ()},
+                spill_inputs["gpu_usable_mib"],
+                [x / mib for x in layer_bytes],
+                per_device / mib,
+                reserve / mib,
+                self._PIPELINE_PER_DEVICE_OVERHEAD_MIB,
+            )
         return self._discrete_first_split(
             list(gpu_indices),
             spill_inputs["gpu_usable_mib"],
@@ -11078,7 +11215,15 @@ class LlamaCppBackend:
                 _llama_lib_dir(binary), backend
             )
             tile_kv = backend == "cuda" and quant_kv and cls._inkling2_cuda_tile_kv(binary)
-            return _Inkling2BandedSupport(backend, quant_kv, tile_kv)
+            build_number = cls.probe_build_number(binary)
+            # An unknown build with the loader prices the dense reserve and the older --fit margin.
+            multi_seq_dense = (
+                build_number is None or build_number >= _INKLING2_MULTI_SEQ_DENSE_BUILD
+            ) and _llama_lib_has_multi_seq_dense(_llama_lib_dir(binary))
+            banded_pos = multi_seq_dense and _llama_lib_has_banded_pos(_llama_lib_dir(binary))
+            return _Inkling2BandedSupport(
+                backend, quant_kv, tile_kv, multi_seq_dense, build_number is not None, banded_pos
+            )
         except Exception as exc:  # noqa: BLE001 -- an unreadable build prices as legacy
             logger.debug("Inkling 2 banded probe failed: %s", exc)
             return _INKLING2_BANDED_LEGACY
@@ -19347,7 +19492,23 @@ class LlamaCppBackend:
     _INKLING2_RUNTIME_BYTES_PER_UB = 800 * 1024
     _INKLING2_BANDED_SHARED_BYTES = 2
     _INKLING2_BANDED_SHARED_RESERVE_BYTES = 4
+    # multi_seq_dense reserve, fitted to b12649-mix (_inkling2_reserve_bytes): 6 B per dense-bias
+    # element, 24 B per cell per ub token, 1.75 B per chunked sliding cell, ub token and head.
+    _INKLING2_DENSE_BIAS_BYTES = 6
+    _INKLING2_DENSE_SWA_BYTES = 1.75
+    _INKLING2_SWA_FULL_CELL_BYTES = 6
+    _INKLING2_DENSE_CELL_BYTES = 24
+    _INKLING2_DENSE_BLOCK_BYTES = 8
+    _INKLING2_DENSE_CHUNK_ELEMS = 1 << 29
+    _INKLING2_RESERVED_RUNTIME_BYTES_PER_UB = 256 * 1024
+    _INKLING2_DENSE_CHUNK_MAX = 64
+    _INKLING2_DENSE_TILE_ROWS = 64
     _INKLING2_SHARED_RUNTIME_BYTES_PER_UB = 1200 * 1024
+    # banded_pos reserve (_inkling2_banded_pos_reserve_bytes), fitted to the fix on B200: one f16
+    # KQ mask per cell and ub token, plus up to 94 KiB per ub token past the flat estimate (and
+    # 48 KiB for mixed K/V types), whatever the slots, K/V type or context.
+    _INKLING2_BANDED_POS_MASK_BYTES = 2
+    _INKLING2_BANDED_POS_BYTES_PER_UB = 160 * 1024
 
     def _compute_activation_width(self) -> int:
         """Widest dense, expert or recurrent block plus per-layer embeddings, floored at 12 * n_embd."""
@@ -19586,6 +19747,91 @@ class LlamaCppBackend:
     _INKLING2_FIT_RUNTIME_ACT = 4.4
     _INKLING2_FIT_RUNTIME_MASK_BYTES = 2.6
 
+    def _inkling2_dense_bias_elems(self, n_ctx: int, ub: int, n_head: int) -> int:
+        """n_kv x rows of one dense-bias chunk. llama.cpp's rows drop at each 2^29-element budget
+        boundary; this bound never falls as the context grows, since the context searches assume
+        monotone memory."""
+        n_kv = max(1, (n_ctx + 255) // 256 * 256)
+        tile = self._INKLING2_DENSE_TILE_ROWS
+        tiles = -(-ub // tile)
+        min_rows = min(ub, max(tile, -(-tiles // self._INKLING2_DENSE_CHUNK_MAX) * tile))
+        budget = self._INKLING2_DENSE_CHUNK_ELEMS // max(1, n_head)
+        return max(min(n_kv * ub, budget), n_kv * min_rows)
+
+    def _inkling2_reserve_bytes(
+        self,
+        n_ctx: int,
+        ub: int,
+        cache_type_kv: Optional[str],
+        *,
+        split_extra: int = 0,
+        n_parallel: int = 1,
+        swa_full: bool = False,
+    ) -> int:
+        """Context scratch of a multi_seq_dense build on the banded path; prompts then only grow
+        the CUDA pool past it."""
+        n_head = self._inkling2_bias_heads()
+        kv_type = (cache_type_kv or "f16").strip().lower()
+        fixed = (
+            self._INKLING2_DENSE_BLOCK_BYTES * n_head * ub * ub
+            + self._INKLING2_RESERVED_RUNTIME_BYTES_PER_UB * ub
+        )
+        if n_parallel <= 1:
+            # The banded mask, or a small ubatch's f32 dense bias and permuted copy over the cache.
+            rows = min(ub, self._INKLING2_BANDED_MIN_UBATCH - 1)
+            dense = 2 * 4 * n_head * rows
+            if kv_type != "f16":
+                dense += self._attention_dequant_width() * 2
+            banded = (
+                self._INKLING2_BANDED_SHARED_RESERVE_BYTES
+                if self._inkling2_banded().quant_kv
+                else self._INKLING2_BANDED_BYTES
+            ) * ub
+            per_cell = max(dense, banded) + split_extra
+            if swa_full:
+                # The sliding layers' mask and distances span the full cache too.
+                per_cell += self._INKLING2_SWA_FULL_CELL_BYTES * ub
+            return int(per_cell * n_ctx + fixed)
+        # Several slots: the dense bias in query-row chunks. A sliding cache that needs chunks too
+        # stacks its own bias on the full layers'; a smaller one reuses theirs.
+        window = self._effective_sliding_window()
+        n_swa = 0
+        if window > 0:
+            n_swa = (
+                n_ctx
+                if swa_full
+                else min(n_ctx, _pad_kv_cells(window * max(1, int(n_parallel)) + ub))
+            )
+            if n_swa * ub <= self._INKLING2_DENSE_CHUNK_ELEMS // max(1, n_head):
+                n_swa = 0
+        elems = self._inkling2_dense_bias_elems(n_ctx, ub, n_head)
+        if n_swa:
+            elems += self._inkling2_dense_bias_elems(n_swa, ub, n_head)
+        return int(
+            (self._INKLING2_DENSE_CELL_BYTES * ub + split_extra) * (n_ctx + n_swa)
+            + self._INKLING2_DENSE_BIAS_BYTES * n_head * elems
+            + self._INKLING2_DENSE_SWA_BYTES * ub * n_head * n_swa
+            + fixed
+        )
+
+    def _inkling2_banded_pos_reserve_bytes(
+        self,
+        n_ctx: int,
+        ub: int,
+        *,
+        split_extra: int = 0,
+        swa_full: bool = False,
+    ) -> int:
+        """Context scratch of a banded_pos build on the banded path, any slot count and K/V type:
+        the f16 KQ mask over the padded cache (the sliding layers' too with --swa-full) and a
+        per-ubatch remainder the flat estimate leaves out."""
+        masks = 2 if swa_full and self._effective_sliding_window() > 0 else 1
+        n_kv = _pad_kv_cells(n_ctx)
+        return int(
+            (self._INKLING2_BANDED_POS_MASK_BYTES * ub + split_extra) * n_kv * masks
+            + self._INKLING2_BANDED_POS_BYTES_PER_UB * ub
+        )
+
     def _inkling2_fit_regrowth_mib(
         self,
         n_ctx: int,
@@ -19607,6 +19853,12 @@ class LlamaCppBackend:
         ub = max(1, int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch))
         if self._inkling2_banded_terms(n_ctx, ub, cache_type_kv, flash_attn = flash_attn) is None:
             return 0
+        build = self._inkling2_banded()
+        if build.banded_pos or (build.multi_seq_dense and build.build_known):
+            # The reserve already holds the worst case (the fix's masks: at most 18 MiB more after
+            # DSpark drafts at 128K): only the CUDA pool grows past it. Its markers identify the
+            # fix without a build number.
+            return math.ceil(self._INKLING2_RESERVED_RUNTIME_BYTES_PER_UB * ub / (1024 * 1024))
         # Mini's activation estimate as a fixed scale, so the growth tracks ub and context
         # like #18919's runtime term instead of a larger model's own activations.
         act = self._INKLING2_FIT_ACT_MIB_PER_UB * ub * 1024 * 1024
@@ -19626,18 +19878,17 @@ class LlamaCppBackend:
                     ctxs.add(knee)
 
         def growth(ctx: int) -> int:
+            # Banded terms: an unknown build may be b12631-mix, and the dense reserve inflates it.
+            reserved, regrown, fixed = self._inkling2_banded_terms(
+                ctx, ub, cache_type_kv, flash_attn = flash_attn
+            )
             if legacy:
                 # Older builds: #18919's 18 B/cell reserve is a planner bound that overtakes the
                 # 15 B/cell runtime rate at long contexts, as the measured reserve does (growth
                 # 270 -> 140 MiB from 32K to 128K), so only the runtime term can grow past it.
-                _, regrown, fixed = self._inkling2_banded_terms(
-                    ctx, ub, cache_type_kv, flash_attn = flash_attn
-                )
                 scratch = regrown + fixed
             else:
-                scratch = self._compute_buffer_ctx_bytes(
-                    ctx, ub, cache_type_kv, flash_attn = flash_attn, n_parallel = n_parallel
-                )
+                scratch = max(reserved, regrown) + fixed
             runtime = max(
                 act + scratch,
                 self._INKLING2_FIT_RUNTIME_ACT * act
@@ -19667,6 +19918,7 @@ class LlamaCppBackend:
         layer_split: bool = False,
         flash_attn: bool = True,
         n_parallel: int = 1,
+        swa_full: bool = False,
     ) -> int:
         """Per-device context scratch: KQ mask and dequant; without flash attention, float32 scores
         and mask."""
@@ -19723,6 +19975,19 @@ class LlamaCppBackend:
                 n_ctx, ub, cache_type_kv, flash_attn = flash_attn, split_extra = split_extra
             )
             if banded is not None:
+                if self._inkling2_banded().banded_pos:
+                    return self._inkling2_banded_pos_reserve_bytes(
+                        n_ctx, ub, split_extra = split_extra, swa_full = swa_full
+                    )
+                if self._inkling2_banded().multi_seq_dense:
+                    return self._inkling2_reserve_bytes(
+                        n_ctx,
+                        ub,
+                        cache_type_kv,
+                        split_extra = split_extra,
+                        n_parallel = n_parallel,
+                        swa_full = swa_full,
+                    )
                 reserve, regrown, fixed = banded
                 return int(max(reserve, regrown) + fixed)
             per_tok = (
@@ -19773,6 +20038,7 @@ class LlamaCppBackend:
         split_extra_for_slots: Optional[Callable[[int], int]] = None,
         ubatch_for_slots: Optional[Callable[[int], Optional[int]]] = None,
         mtp_bytes_for_slots: Optional[Callable[[int, Optional[int]], int]] = None,
+        ctx_compute_for_slots: Optional[Callable[[int], int]] = None,
         ctx_checkpoints: int = 0,
         include_requested: bool = False,
         exact: bool = False,
@@ -19812,9 +20078,12 @@ class LlamaCppBackend:
         count, since a reduced candidate lowers the batch floor and so the ubatch too;
         pricing the reserve at the requested pair over-charged every candidate, so one that
         fits could be rejected and the load kept --fit. ``split_extra_for_slots(slots)``
-        re-prices the split step, whose sliding-window masks also scale with slots."""
+        re-prices the split step, whose sliding-window masks also scale with slots.
+        ``ctx_compute_for_slots(slots)`` adds the per-candidate context compute, which the caller
+        then leaves out of ``base_footprint_bytes`` and ``per_device_overhead_bytes``."""
         for slots in range(n_parallel if include_requested else n_parallel - 1, 0, -1):
             _ub = ubatch_for_slots(slots) if ubatch_for_slots else n_ubatch
+            _cc = ctx_compute_for_slots(slots) if ctx_compute_for_slots else 0
             cb = self._estimate_compute_buffer_bytes(
                 n_ubatch = _ub, n_parallel = slots, per_device_tensor = False
             )
@@ -19836,6 +20105,7 @@ class LlamaCppBackend:
             kv = _kv(ctx_checkpoints)
             total = (
                 base_footprint_bytes
+                + _cc
                 + cb
                 + (mtp_bytes_for_slots(slots, _ub) if mtp_bytes_for_slots else 0)
                 + kv
@@ -19854,7 +20124,7 @@ class LlamaCppBackend:
                 gpus,
                 usable_fraction = pin_fraction,
                 total_by_idx = total_by_idx,
-                per_device_overhead_bytes = per_device_overhead_bytes,
+                per_device_overhead_bytes = per_device_overhead_bytes + _cc,
                 min_gpus = min_gpus,
                 split_extra_bytes = (
                     split_extra_for_slots(slots) if split_extra_for_slots else split_extra_bytes
@@ -23841,7 +24111,12 @@ class LlamaCppBackend:
         def _cc_ctx(ctx: int) -> int:
             # Same state _kv_at prices with: the mask is f32 whenever tensor mode does not answer True.
             return n_dev * self._compute_buffer_ctx_bytes(
-                ctx, n_ubatch, cc_cache_type, flash_attn = flash_attn
+                ctx,
+                n_ubatch,
+                cc_cache_type,
+                flash_attn = flash_attn,
+                n_parallel = n_parallel,
+                swa_full = swa_full,
             )
 
         def _fit_ctx(ctx: int) -> int:
@@ -23977,6 +24252,8 @@ class LlamaCppBackend:
             scratch_cache_type_kv or cache_type_kv,
             # Same state as the KV above.
             flash_attn = flash_attn,
+            n_parallel = n_parallel,
+            swa_full = swa_full,
         )
         total_bytes = model_size + kv_bytes + mtp_bytes + max(0, soft_overhead_bytes)
 
@@ -27432,6 +27709,7 @@ class LlamaCppBackend:
                             layer_split = n_gpus > 1 and not _pipeline_parallel_off,
                             flash_attn = planned_flash_attn,
                             n_parallel = slots or n_parallel,
+                            swa_full = swa_full,
                         )
 
                     def _cc_split_extra(
@@ -29341,9 +29619,7 @@ class LlamaCppBackend:
                         )
                         # Slot-independent footprint (folded compute buffer and the MTP
                         # reserve swapped out so the helper re-prices both per candidate).
-                        _base_footprint = (
-                            model_size_fit - _compute_buffer_pipeline + _cc_bytes(_reduce_ctx)
-                        )
+                        _base_footprint = model_size_fit - _compute_buffer_pipeline
                         _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
                             n_parallel,
                             _reduce_ctx,
@@ -29352,7 +29628,7 @@ class LlamaCppBackend:
                             _base_footprint,
                             cache_type_kv,
                             _pin_fraction,
-                            _pipeline_overhead_bytes + _cc_bytes(_reduce_ctx),
+                            _pipeline_overhead_bytes,
                             _layer_min_gpus,
                             _effective_ubatch,
                             swa_full = swa_full,
@@ -29361,6 +29637,7 @@ class LlamaCppBackend:
                             split_extra_for_slots = lambda s: _cc_split_extra(_reduce_ctx, s),
                             ubatch_for_slots = _ubatch_for_slots,
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
+                            ctx_compute_for_slots = lambda s: _cc_bytes(_reduce_ctx, slots = s),
                             ctx_checkpoints = _placement_ctx_checkpoints,
                             # An explicit device pick skips the discrete tier; host-only accounting still applies.
                             integrated = _integrated_gpus,
@@ -29369,6 +29646,76 @@ class LlamaCppBackend:
                             discrete_host_only_bytes = _discrete_host_only(),
                             shared_gpu_ids = _shared_gpu_ids,
                         )
+
+                        def _cut_pin_splits(slots: int, devices: list[int]) -> bool:
+                            """Whether some layer split puts the cut pin's share within each card
+                            (_mixed_pin_split); one that cannot load is not worth the slots."""
+                            if len(devices) < 2:
+                                return True
+                            _ub = _ubatch_for_slots(slots)
+                            _cut_inputs = dict(
+                                separate_draft_on_gpu = bool(
+                                    _mtp_will_engage and _mtp_draft_for_budget
+                                ),
+                                model_path = model_path,
+                                kv_cache_bytes = self._estimate_kv_cache_bytes(
+                                    _reduce_ctx,
+                                    cache_type_kv,
+                                    swa_full = swa_full,
+                                    n_parallel = slots,
+                                    kv_unified = planned_kv_unified,
+                                    n_ubatch = _ub,
+                                    flash_attn = planned_flash_attn,
+                                ),
+                                kv_layer_weights = self._kv_layer_weights(
+                                    _reduce_ctx,
+                                    swa_full = swa_full,
+                                    n_parallel = slots,
+                                    kv_unified = planned_kv_unified,
+                                    n_ubatch = _ub,
+                                    flash_attn = planned_flash_attn,
+                                    cache_type_kv = cache_type_kv,
+                                ),
+                                mtp_will_engage = bool(_mtp_will_engage),
+                                compute_buffer_flat = int(_layer_compute_buffer(slots)),
+                                extra_gpu_bytes = (
+                                    mmproj_size
+                                    + _shared_pool_mmproj
+                                    + _mtp_bytes(_reduce_ctx, slots, _ub)
+                                ),
+                                ctx_compute_per_device = (
+                                    _cc_bytes(_reduce_ctx, len(devices), slots) // len(devices)
+                                ),
+                                soft_overhead = _soft_overhead,
+                                gpus = list(gpus),
+                                gpu_usable_mib = {
+                                    _idx: max(0.0, _gpu_usable((_idx, _free), _pin_fraction))
+                                    for _idx, _free in gpus
+                                },
+                            )
+                            _cut_split = self._mixed_pin_split(
+                                list(devices),
+                                _cut_inputs,
+                                _shared_gpu_ids,
+                                extra_args,
+                                os.environ,
+                                layer_min_gpus = _layer_min_gpus,
+                                tensor_parallel = tensor_parallel,
+                                pin_owns_devices = _gpu_ids_own_device_flags,
+                            )
+                            return _cut_split is None or bool(_cut_split)
+
+                        if not _uf_slots and not _cut_pin_splits(_slots, list(_gi_slots or ())):
+                            # The fitter then places the model at the slots asked, as it would
+                            # have without the cut.
+                            logger.info(
+                                "Keeping %d serving slots with --fit on: at %d, no layer split "
+                                "over GPUs %s fits each card.",
+                                n_parallel,
+                                _slots,
+                                list(_gi_slots or ()),
+                            )
+                            _uf_slots = True
                         if not _uf_slots:
                             _slots_asked = n_parallel
                             gpu_indices, use_fit, n_parallel = _gi_slots, False, _slots
@@ -29386,10 +29733,10 @@ class LlamaCppBackend:
                                     ctx,
                                     devices,
                                     total_by_idx,
-                                    model_size_fit - _compute_buffer_pipeline + _cc_bytes(ctx),
+                                    model_size_fit - _compute_buffer_pipeline,
                                     cache_type_kv,
                                     _pin_fraction,
-                                    _pipeline_overhead_bytes + _cc_bytes(ctx),
+                                    _pipeline_overhead_bytes,
                                     _layer_min_gpus,
                                     _effective_ubatch,
                                     swa_full = swa_full,
@@ -29398,6 +29745,7 @@ class LlamaCppBackend:
                                     split_extra_bytes = _cc_split_extra(ctx),
                                     ubatch_for_slots = _ubatch_for_slots,
                                     mtp_bytes_for_slots = (lambda s, ub, c = ctx: _mtp_bytes(c, s, ub)),
+                                    ctx_compute_for_slots = (lambda s, c = ctx: _cc_bytes(c, slots = s)),
                                     include_requested = True,
                                     exact = True,  # only n_parallel is accepted below
                                     ctx_checkpoints = _placement_ctx_checkpoints,
@@ -30810,12 +31158,7 @@ class LlamaCppBackend:
                     raise RuntimeError(_metal_ctx_refusal)
                 self._record_load_warning(_metal_ctx_warning)
 
-                if (
-                    intent.refuse_partial_gpu_fit
-                    and (_placement_verdict_partial or _ctx_capped_for_vram)
-                    and gpu_memory_mode != "manual"
-                ):
-                    capped_only = _ctx_capped_for_vram and not _placement_verdict_partial
+                def _refuse_partial_fit(capped_only: bool) -> None:
                     asked_ctx = _ctx_before_fit if capped_only else effective_ctx
                     need_mib = (
                         max(1, gguf_size - _host_input_embd) + mmproj_size + _kv_bytes(asked_ctx)
@@ -30838,6 +31181,13 @@ class LlamaCppBackend:
                         gpu_indices = tuple(idx for idx, _ in gpus),
                         discrete = _shared is not None and not _shared & {idx for idx, _ in gpus},
                     )
+
+                if (
+                    intent.refuse_partial_gpu_fit
+                    and (_placement_verdict_partial or _ctx_capped_for_vram)
+                    and gpu_memory_mode != "manual"
+                ):
+                    _refuse_partial_fit(_ctx_capped_for_vram and not _placement_verdict_partial)
 
                 # Unpinnable explicit Vulkan ordinal: fail loudly rather than fit onto an unselected device; clear raw selection so it never leaks into gpu_ids
                 if _vulkan_explicit_unmatched:
@@ -31206,6 +31556,42 @@ class LlamaCppBackend:
                 manual_tensor_split_emitted = False
                 # The MoE cache's "auto" sizing runs only under llama.cpp's fitter.
                 _placed_by_fitter = False
+                _mixed_split = None
+                if (
+                    not (gpu_memory_mode == "manual" and gpu_layers >= 0)
+                    and not use_fit
+                    and gpu_indices is not None
+                ):
+                    _mixed_split = self._mixed_pin_split(
+                        list(gpu_indices),
+                        _spill_inputs,
+                        _shared_gpu_ids,
+                        extra_args,
+                        env,
+                        layer_min_gpus = _layer_min_gpus,
+                        tensor_parallel = tensor_parallel,
+                        pin_owns_devices = _gpu_ids_own_device_flags,
+                    )
+                    if _mixed_split is not None and not _mixed_split:
+                        # A pooled fit whose layers cannot be cut to fit each card would fail at
+                        # load; let llama.cpp's fitter place it, as when the pool does not fit.
+                        _placement_verdict_partial = bool(_detected_gpus)
+                        # Same refusal as a pooled fit that fails, so the route can evict and retry.
+                        if intent.refuse_partial_gpu_fit and gpu_memory_mode != "manual":
+                            _refuse_partial_fit(False)
+                        logger.info(
+                            "No layer split over GPUs %s fits each card; using --fit on",
+                            list(gpu_indices),
+                        )
+                        use_fit, _mixed_split = True, None
+                        # An explicit pick stays pinned (the mask below needs gpu_indices); an
+                        # auto Vulkan fit keeps its discrete pool, as above; else every card.
+                        if not gpu_ids:
+                            gpu_indices = (
+                                sorted(idx for idx, _free in _detected_gpus)
+                                if is_vulkan_backend and _detected_gpus
+                                else None
+                            )
                 if gpu_memory_mode == "manual" and gpu_layers >= 0:
                     # --fit off: _ctx_integrity_flags must not add --fit-ctx.
                     use_fit = False
@@ -31280,16 +31666,6 @@ class LlamaCppBackend:
                     # --fit off required: otherwise --fit on still offloads ~1 GB at --parallel 4.
                     cmd.extend(["-ngl", "-1", "--fit", "off"])
                     fully_gpu_offloaded = True
-                    _mixed_split = self._mixed_pin_split(
-                        list(gpu_indices),
-                        _spill_inputs,
-                        _shared_gpu_ids,
-                        extra_args,
-                        env,
-                        layer_min_gpus = _layer_min_gpus,
-                        tensor_parallel = tensor_parallel,
-                        pin_owns_devices = _gpu_ids_own_device_flags,
-                    )
                     if _mixed_split is not None:
                         self._mixed_split_flags = [
                             "--tensor-split",
@@ -31302,7 +31678,10 @@ class LlamaCppBackend:
                             )
                         logger.info(
                             "Filling discrete GPU(s) before the shared-memory iGPU: "
-                            "--tensor-split %s over %s",
+                            "--tensor-split %s over %s"
+                            if set(_shared_gpu_ids or ()) & set(gpu_indices)
+                            else "Splitting layers by bytes, since a split by layer count "
+                            "would overflow a card: --tensor-split %s over %s",
                             cmd[-1],
                             list(gpu_indices),
                         )
