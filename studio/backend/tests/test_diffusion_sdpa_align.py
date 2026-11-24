@@ -180,7 +180,9 @@ sys.path.insert(0, sys.argv[1])
 import torch
 import core.training.diffusion_sdpa_align as sa
 
-print("wrapped", sa.install_sdpa_align_without_guard())
+installer = sys.argv[2] == "installer"
+if installer:
+    print("wrapped", sa.install_sdpa_align_without_guard())
 
 
 def attend(q, k, v):
@@ -199,15 +201,13 @@ for n in (27, 24):
     (g,) = torch.autograd.grad(out.sum(), q)
     (g_ref,) = torch.autograd.grad(ref.sum(), q)
     torch.testing.assert_close(g, g_ref, rtol = 1e-4, atol = 1e-4)
-sa.uninstall_sdpa_align_without_guard()
+if installer:
+    sa.uninstall_sdpa_align_without_guard()
 print("COMPILED_SDPA_OK")
 """
 
 
-def test_compiled_sdpa_runs_with_the_installer_on_this_torch():
-    """Real lowering on whatever torch runs the suite (torch 2.6 / 2.7 included), in a fresh interpreter: install,
-    then a dynamic fullgraph masked SDPA forward and backward compiles and matches eager on CPU. On torch 2.6 the
-    unconditional install raised LoweringException (SizeVarAllocator has no guard_or_false)."""
+def _run_compile_check(arm: str):
     import os
     import subprocess
     import sys
@@ -215,16 +215,32 @@ def test_compiled_sdpa_runs_with_the_installer_on_this_torch():
     backend = os.path.dirname(os.path.dirname(os.path.abspath(sa.__file__)))
     env = {k: v for k, v in os.environ.items() if k != sa.SDPA_ALIGN_GUARD_ENV}
     r = subprocess.run(
-        [sys.executable, "-c", _COMPILE_CHECK, os.path.dirname(backend)],
+        [sys.executable, "-c", _COMPILE_CHECK, os.path.dirname(backend), arm],
         capture_output = True,
         text = True,
         env = env,
         timeout = 600,
     )
-    assert r.returncode == 0 and "COMPILED_SDPA_OK" in r.stdout, (
-        r.stdout[-2000:],
-        r.stderr[-4000:],
-    )
+    return r, r.returncode == 0 and "COMPILED_SDPA_OK" in r.stdout
+
+
+def test_compiled_sdpa_runs_with_the_installer_on_this_torch():
+    """Real lowering on whatever torch runs the suite (torch 2.6 / 2.7 included), in a fresh interpreter: install,
+    then a dynamic fullgraph masked SDPA forward and backward compiles and matches eager on CPU. On torch 2.6 the
+    unconditional install raised LoweringException (SizeVarAllocator has no guard_or_false). The same graph is first
+    compiled without the installer: a host whose CPU inductor cannot compile at all (no working C++ toolchain, as on
+    a Windows runner without MSVC) skips with that reason instead of blaming the wrapper."""
+    base, base_ok = _run_compile_check("baseline")
+    if not base_ok:
+        lines = [line.strip() for line in (base.stderr or base.stdout).splitlines() if line.strip()]
+        errors = [line for line in lines if "Error" in line or "Exception" in line]
+        reason = (errors or lines or [f"exit {base.returncode}"])[-1]
+        pytest.skip(
+            "CPU torch.compile of this SDPA graph fails without the installer on this host: "
+            + reason[:300]
+        )
+    r, ok = _run_compile_check("installer")
+    assert ok, (r.stdout[-2000:], r.stderr[-4000:])
 
 
 def _graphs_over_text_lengths(lengths):
