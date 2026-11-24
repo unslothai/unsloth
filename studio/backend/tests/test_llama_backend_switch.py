@@ -1287,8 +1287,6 @@ def test_a_sycl_llama_runtime_pairs_with_the_cpu_slim_whisper(monkeypatch, tmp_p
     assert whisper_upd.run_repair_phase({}, lambda progress: None) == {}
 
 
-# --- why an unavailable backend is unavailable (#12248) ---
-
 import utils.hardware.amd as amd_hw  # noqa: E402
 import utils.llama_cpp_path_settings as path_settings  # noqa: E402
 

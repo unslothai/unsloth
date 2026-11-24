@@ -23,9 +23,7 @@ export function isLlamaBackend(value: unknown): value is LlamaBackend {
 export interface LlamaBackendOption {
   backend: LlamaBackend;
   available: boolean;
-  /** Why it cannot install here, when unavailable: a resolver or ROCm reason code. */
   unavailableReason: string | null;
-  /** What to do about it, from the server (the group command for a closed /dev/kfd). */
   unavailableHint: string | null;
   /** This host has a GPU the backend runs on, so an unavailable one is shown greyed, not hidden. */
   appliesToHost: boolean;
@@ -168,7 +166,7 @@ export function parseLlamaBackendSwitchStarted(
   };
 }
 
-/** Installable backends, plus the unavailable ones this host's GPUs could run (greyed with a reason) and the selection. Keep the selected value as an item even with no options: a Select whose value has no item renders blank. */
+/** Installable backends, greyed ones this host's GPUs could run, and the selection: a Select whose value has no item renders blank. */
 export function visibleLlamaBackendOptions(
   status: LlamaBackendStatus | null,
   selected: LlamaBackend | null,
