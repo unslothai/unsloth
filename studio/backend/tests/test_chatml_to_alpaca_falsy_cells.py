@@ -54,23 +54,34 @@ def test_sharegpt_value_fallback_still_applies_for_missing_content():
     assert converted.to_list() == [{"instruction": "4", "input": "", "output": "0"}]
 
 
-
 @pytest.mark.parametrize("value, expected", [(False, "False"), (0, "0")])
 def test_primary_scalar_wins_when_the_fallback_has_text(value, expected):
-    dataset = Dataset.from_list([{"messages": [
-        {"role": "user", "content": value, "value": "fallback"},
-        {"role": "assistant", "content": value, "value": "fallback"},
-    ]}])
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": value, "value": "fallback"},
+                    {"role": "assistant", "content": value, "value": "fallback"},
+                ]
+            }
+        ]
+    )
 
     converted = convert_chatml_to_alpaca(dataset, num_proc = 1)
     assert converted.to_list() == [{"instruction": expected, "input": "", "output": expected}]
 
 
 def test_an_empty_primary_string_still_falls_back():
-    dataset = Dataset.from_list([{"messages": [
-        {"role": "user", "content": "", "value": "question"},
-        {"role": "assistant", "content": "", "value": "answer"},
-    ]}])
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "", "value": "question"},
+                    {"role": "assistant", "content": "", "value": "answer"},
+                ]
+            }
+        ]
+    )
 
     converted = convert_chatml_to_alpaca(dataset, num_proc = 1)
     assert converted.to_list() == [{"instruction": "question", "input": "", "output": "answer"}]

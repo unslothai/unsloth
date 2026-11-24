@@ -1331,9 +1331,7 @@ def convert_sharegpt_with_images_to_vlm_format(
         conversation = sample[messages_column]
         is_image_list = isinstance(image_data, list)
         if is_image_list:
-            marker_count = sum(
-                _sharegpt_turn_text(msg).count("<image>") for msg in conversation
-            )
+            marker_count = sum(_sharegpt_turn_text(msg).count("<image>") for msg in conversation)
             if not image_data or len(image_data) != marker_count:
                 raise ValueError(
                     f"Image list has {len(image_data)} images but conversation has "
