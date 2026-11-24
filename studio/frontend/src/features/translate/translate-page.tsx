@@ -116,6 +116,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
 import { motion, useReducedMotion } from "motion/react";
 import {
+  memo,
   type ReactNode,
   type RefObject,
   useCallback,
@@ -819,7 +820,9 @@ function pickedModelName(id: string): string {
   return name.replace(/-GGUF$/i, "");
 }
 
-function ModelMenu({
+// Memoized: the page renders on every source keystroke and streamed frame, and this menu
+// holds the hidden model picker, which renders all of its rows.
+const ModelMenu = memo(function ModelMenu({
   value,
   custom,
   onChange,
@@ -1146,7 +1149,7 @@ function ModelMenu({
       </DropdownMenu>
     </div>
   );
-}
+});
 
 function OptionRow({
   label,
@@ -1296,6 +1299,15 @@ export function TranslatePage() {
     })),
   );
   const navigate = useNavigate();
+  const pickTranslateModel = useCallback(
+    (modelId: TranslateModelId) => setPrefs({ modelId }),
+    [setPrefs],
+  );
+  const pickCustomTranslateModel = useCallback(
+    (customModel: CustomTranslateModel) =>
+      setPrefs({ modelId: CUSTOM_TRANSLATE_MODEL, customModel }),
+    [setPrefs],
+  );
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState<Downloaded>({});
   // Names a downloaded subtitle file after the one it came from.
@@ -1673,10 +1685,8 @@ export function TranslatePage() {
           <ModelMenu
             value={prefs.modelId}
             custom={prefs.customModel}
-            onChange={(modelId) => setPrefs({ modelId })}
-            onPickCustom={(customModel) =>
-              setPrefs({ modelId: CUSTOM_TRANSLATE_MODEL, customModel })
-            }
+            onChange={pickTranslateModel}
+            onPickCustom={pickCustomTranslateModel}
             downloaded={downloaded}
           />
           <OptionsPopover />
