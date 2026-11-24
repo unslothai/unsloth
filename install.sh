@@ -4980,6 +4980,13 @@ _amd_sole_index_arch() {
     printf '%s\n' "$_sia"
 }
 
+# KFD's sole wheel-backed arch, only when this process can reach the GPU (lspci too old to name it).
+_amd_kfd_sole_index_arch() {
+    [ -e /dev/kfd ] || return 1
+    _amd_visible_masks_select_no_gpu && return 1
+    _amd_sole_index_arch "$(_kfd_gfx_targets 2>/dev/null || true)"
+}
+
 # Mirrors install.ps1 $archFamilyMap.
 _amd_arch_index_family_for_gfx() {
     case "$1" in
@@ -5602,7 +5609,7 @@ get_torch_index_url() {
                 echo "$_base/cpu"; return
             fi
             # Same deferral when only KFD names the arch; the reroute reads it too.
-            _amd_kfd_gfx=$(_amd_sole_index_arch "$(_kfd_gfx_targets 2>/dev/null || true)" 2>/dev/null) || _amd_kfd_gfx=""
+            _amd_kfd_gfx=$(_amd_kfd_sole_index_arch 2>/dev/null) || _amd_kfd_gfx=""
             if [ -n "$_amd_kfd_gfx" ]; then
                 echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- the kernel driver (KFD) reports $_amd_kfd_gfx." >&2
                 echo "$_base/cpu"; return
@@ -6546,8 +6553,7 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                 || _linux_inferred_gfx=""
             # pci.ids too old to name the card ("Device [1002:7590]"): take KFD's arch, never over a declared one.
             if [ -z "$_linux_inferred_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
-                _linux_inferred_gfx=$(_amd_sole_index_arch "$(_kfd_gfx_targets 2>/dev/null || true)") \
-                    || _linux_inferred_gfx=""
+                _linux_inferred_gfx=$(_amd_kfd_sole_index_arch 2>/dev/null) || _linux_inferred_gfx=""
             fi
             if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
                 _linux_inferred_gfx="${_amd_probed_gfx_first:-}"

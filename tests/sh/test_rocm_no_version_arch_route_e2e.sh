@@ -597,6 +597,12 @@ reset_host
 mock_kfd; mock_pci_amd_display; mock_lspci "Device"
 assert_eq "a KFD node with no gfx_target_version stays on cpu" "$_BASE/cpu" "$(run_index)"
 runtime_less_kfd_host 120000
+assert_eq "a KFD-only host under a mask hiding every GPU stays on cpu" \
+    "$_BASE/cpu" "$(run_index_env HIP_VISIBLE_DEVICES=-1)"
+runtime_less_kfd_host 120000
+rm -f "$_F_KFD"
+assert_eq "a KFD-only host with no /dev/kfd stays on cpu" "$_BASE/cpu" "$(run_index)"
+runtime_less_kfd_host 120000
 assert_eq "a declared arch with no wheels is not swapped for the KFD one" \
     "$_BASE/cpu" "$(run_index_env UNSLOTH_ROCM_GFX_ARCH=gfx1010)"
 
