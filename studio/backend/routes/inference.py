@@ -22866,7 +22866,7 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
 async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     """Routes the unload to llama-server for GGUF models and to Unsloth otherwise."""
     extra = (
-        await _route_to_extra_slot(request.model_path)
+        await _route_to_extra_slot(request.model_path, touch = False)
         if request.cancel_load_request_id is None
         else None
     )
@@ -23285,7 +23285,7 @@ async def get_sampling_defaults(model: str, current_subject: str = Depends(get_c
     """
     # A kept model answers its own requests: route as the request path does, so the backend getters
     # below read that slot rather than the primary.
-    await _route_to_extra_slot(model)
+    await _route_to_extra_slot(model, touch = False)
     return await asyncio.to_thread(_sampling_defaults_for, model)
 
 
@@ -45505,7 +45505,7 @@ async def chat_count_tokens(
     # Admitted only while idle, not atomic by design; also blocks second-tab and /api runs the UI misses.
     from core.chat_memory import apply_to_request
 
-    await _route_to_extra_slot(payload.model)
+    await _route_to_extra_slot(payload.model, touch = False)
     if model_slots.routed_generation_count() > 0:
         raise HTTPException(
             status_code = 503,

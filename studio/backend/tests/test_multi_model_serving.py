@@ -2153,3 +2153,11 @@ def test_long_narration_is_budgeted_against_the_kept_speech_model_not_the_chat_p
 
     with pytest.raises(Reached):
         asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "route", ["get_sampling_defaults", "chat_count_tokens", "_unload_model_impl"]
+)
+def test_reads_and_unloads_route_without_counting_as_use(route):
+    source = inspect.getsource(getattr(inf, route))
+    assert "_route_to_extra_slot(" in source and "touch = False)" in source

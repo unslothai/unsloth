@@ -59,3 +59,8 @@ test("translate in Chat-model mode runs on the selected quant's copy", () => {
   assert.match(fn, /getInferenceStatus\(signal, served \|\| undefined\)/);
   assert.match(fn, /return served !== picked \? served : status\.active_model;/);
 });
+
+test("the Hub's resident status read names the selected quant", () => {
+  const hub = readSrc("features/hub/hub-page.tsx");
+  assert.match(hub, /servedCheckpoint\(loadedModels, selected, activeGgufVariant\)/);
+});
