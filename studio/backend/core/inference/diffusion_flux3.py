@@ -435,10 +435,17 @@ class _Flux3KleinPipelineMixin:
     ) -> None:
         """Install a guider for this call's scale and interval. ``guidance_stop`` < 1 drops the unconditional
         branch for the steps from that fraction on (diffusers ``ClassifierFreeGuidance(stop = ...)``)."""
+        from .diffusion_cfg_batch import set_guided_step_probe
+
         guider = getattr(mp, "guider", None)
+        stop = 1.0 if guidance_stop is None else float(guidance_stop)
+        # CFG batching: the steps past the stop run one branch by design, not a missed second branch
+        set_guided_step_probe(
+            self,
+            None if guider is None or stop >= 1.0 else (lambda: mp.guider.num_conditions > 1),
+        )
         if guider is None:
             return
-        stop = 1.0 if guidance_stop is None else float(guidance_stop)
         current = getattr(guider.config, "guidance_scale", None)
         # No scale keeps the guider's own, but never an interval a previous Fast CFG render left on it.
         scale = guidance_scale if guidance_scale is not None else current

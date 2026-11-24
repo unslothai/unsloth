@@ -18,23 +18,31 @@ export function fastCfgAvailable(
   return !external && status?.loaded === true && status.supports_cfg_interval === true && guidance > 1;
 }
 
-export function fastCfgRequestFields(available: boolean, on: boolean): { cfg_interval_end?: number } {
-  return available && on ? { cfg_interval_end: FAST_CFG_INTERVAL_END } : {};
-}
-
 function intervalOf(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1 ? value : undefined;
+}
+
+/** ``end``: a restored recipe's own stop (e.g. a 0.7 compare cell); otherwise the preset. */
+export function fastCfgRequestFields(
+  available: boolean,
+  on: boolean,
+  end?: number | null,
+): { cfg_interval_end?: number } {
+  return available && on ? { cfg_interval_end: intervalOf(end) ?? FAST_CFG_INTERVAL_END } : {};
 }
 
 export function fastCfgFromRecipe(r: { cfg_interval_end?: unknown }): boolean {
   return intervalOf(r.cfg_interval_end) !== undefined;
 }
 
+/** The recorded stop restore keeps (null: off, or the preset when the switch is turned on by hand). */
+export function fastCfgEndFromRecipe(r: { cfg_interval_end?: unknown }): number | null {
+  return intervalOf(r.cfg_interval_end) ?? null;
+}
+
 export function fastCfgNotApplied(value: unknown, supported: boolean): string[] {
   const end = intervalOf(value);
-  if (end === undefined) return [];
-  if (!supported) return [`Fast CFG ${end} (not available for this model)`];
-  return end !== FAST_CFG_INTERVAL_END ? [`Fast CFG ${end} (restored as ${FAST_CFG_INTERVAL_END})`] : [];
+  return end !== undefined && !supported ? [`Fast CFG ${end} (not available for this model)`] : [];
 }
 
 export function fastCfgLabel(end: number | null | undefined): string | null {

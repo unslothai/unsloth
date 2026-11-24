@@ -11,6 +11,7 @@ import { createCompareRun, gridParameters } from "../src/features/images/compare
 import {
   FAST_CFG_INTERVAL_END,
   fastCfgAvailable,
+  fastCfgEndFromRecipe,
   fastCfgFromRecipe,
   fastCfgLabel,
   fastCfgNotApplied,
@@ -60,7 +61,7 @@ test("a Studio recipe restores the switch; full CFG and other models are handled
   assert.equal(recipeSettings({ prompt: "p", cfg_interval_end: 1 }, DEFAULTS).cfg_interval_end, undefined);
   assert.equal(recipeSettings({ prompt: "p", cfg_interval_end: 1.5 }, DEFAULTS).cfg_interval_end, undefined);
   assert.equal(recipeSettings({ prompt: "p", cfg_interval_end: 0 }, DEFAULTS).cfg_interval_end, undefined);
-  assert.deepEqual(fastCfgNotApplied(0.7, true), ["Fast CFG 0.7 (restored as 0.8)"]);
+  assert.deepEqual(fastCfgNotApplied(0.7, true), []);
   assert.equal(fastCfgLabel(0.8), "On (CFG for the first 80% of steps)");
   assert.equal(fastCfgLabel(null), null);
   assert.equal(fastCfgLabel(1), null);
@@ -121,10 +122,30 @@ test("a Fast CFG compare axis runs full vs fast cells and the grid names a share
 test("the page wires the switch, the request field, the restore and the backend's field names", () => {
   const page = readSrc("features/images/images-page.tsx");
   assert.match(page, /usePersistedToggle\(FAST_CFG_STORAGE_KEY\)/);
-  assert.match(page, /<FastCfgField available=\{fastCfgShown\} enabled=\{fastCfgOn\} onChange=\{setFastCfgOn\} \/>/);
-  assert.match(page, /\.\.\.fastCfgRequestFields\(fastCfgShown, fastCfgOn\),/);
-  assert.match(page, /setFastCfgOn\(fastCfgFromRecipe\(image\)\);/);
+  assert.match(page, /<FastCfgField available=\{fastCfgShown\} enabled=\{fastCfgOn\} onChange=\{changeFastCfg\} \/>/);
+  assert.match(page, /\.\.\.fastCfgRequestFields\(fastCfgShown, fastCfgOn, fastCfgEnd\),/);
+  assert.match(page, /const restoredFastCfgEnd = fastCfgEndFromRecipe\(image\);\s+setFastCfgOn\(restoredFastCfgEnd !== null\);\s+setFastCfgEnd\(restoredFastCfgEnd\);/);
+  assert.match(page, /via === "restore" \? fastCfgNotApplied\(image\.cfg_interval_end, cfgIntervalSupported\) : \[\]/);
+  assert.match(page, /setFastCfgOn\(next\);\s+setFastCfgEnd\(null\);/);
   const backend = readFileSync(new URL("../../backend/models/inference.py", import.meta.url), "utf8");
   assert.match(backend, /^\s+cfg_interval_end: Optional\[float\] = Field\(/m);
   assert.match(backend, /^\s+supports_cfg_interval: bool = Field\(/m);
+});
+
+test("gallery restore of a 0.7 compare cell sends 0.7 again, and warns on a model without Fast CFG", () => {
+  const c = ctx({ cfgInterval: true });
+  const r = planCompare([{ axisId: "cfg_interval_end", text: "1, 0.7" }], c, { keepRandomSeeds: false, rng: () => 0.5 });
+  assert.ok(r.ok, r.ok ? "" : r.error);
+  const run = createCompareRun(r.plan, c, { keepRandomSeeds: false, seedFieldEmpty: false, rng: () => 0.5 });
+  const cell = r.plan.order
+    .map((_, i) => run.request(i, base(), 7) as unknown as Record<string, unknown>)
+    .find((q) => q.cfg_interval_end === 0.7);
+  assert.ok(cell);
+  const end = fastCfgEndFromRecipe(cell);
+  assert.equal(end, 0.7);
+  assert.deepEqual(fastCfgRequestFields(true, end !== null, end), { cfg_interval_end: 0.7 });
+  assert.deepEqual(fastCfgRequestFields(true, true, null), { cfg_interval_end: 0.8 });
+  assert.equal(fastCfgEndFromRecipe({ cfg_interval_end: 1 }), null);
+  assert.equal(fastCfgEndFromRecipe({}), null);
+  assert.deepEqual(fastCfgNotApplied(cell.cfg_interval_end, false), ["Fast CFG 0.7 (not available for this model)"]);
 });

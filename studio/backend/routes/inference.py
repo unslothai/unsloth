@@ -52599,6 +52599,7 @@ async def _external_image_generation(
         or body.hires is not None
         or body.upscale_model
         or body.detailer is not None
+        or body.cfg_interval_end is not None
     ):
         raise HTTPException(
             status_code = 400,

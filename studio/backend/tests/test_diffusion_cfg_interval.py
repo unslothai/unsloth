@@ -4,13 +4,18 @@
 """Fast CFG (limited-interval CFG) on FLUX.3 Klein base: the guider the pipeline installs, its state reset between
 calls, and the route / request surface."""
 
+import sys
 import types
+from pathlib import Path
 
 import pytest
 
 pytest.importorskip("diffusers")
 
 from core.inference.diffusion_flux3 import _Flux3KleinPipelineMixin
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_diffusion_routes import client  # noqa: E402,F401  (fixture)
 
 
 class _MP:
@@ -182,3 +187,115 @@ def test_infotext_names_fast_cfg_only_when_it_applied():
     assert "Fast CFG" not in _params_text(base)
     assert _params_text({**base, "cfg_interval_end": None}) == _params_text(base)
     assert _params_text({**base, "cfg_interval_end": 0.8}).endswith(", Fast CFG: 0.8")
+
+
+def _tiny_flux3_pipe():
+    import torch
+    from diffusers import ClassifierFreeGuidance
+    from diffusers.models.transformers.transformer_flux3 import Flux3Transformer2DModel
+
+    torch.manual_seed(0)
+
+    class _Pipe(_Flux3KleinPipelineMixin):
+        def __init__(self):
+            pass
+
+    pipe = _Pipe()
+    pipe.transformer = Flux3Transformer2DModel(
+        in_channels = 8,
+        cond_in_channels = 8,
+        num_layers = 1,
+        num_single_layers = 1,
+        attention_head_dim = 128,
+        num_attention_heads = 2,
+        joint_attention_dim = 24,
+        timestep_channels = 16,
+    ).eval()
+    pipe.mp = _MP(ClassifierFreeGuidance(guidance_scale = 3.5))
+    pipe.mp.transformer = pipe.transformer
+    return pipe
+
+
+def _render(
+    pipe,
+    stop,
+    steps = 5,
+):
+    import torch
+    from diffusers.modular_pipelines.flux3.denoise import Flux3LoopDenoiser
+    from diffusers.modular_pipelines.modular_pipeline import BlockState
+
+    from core.inference.diffusion_cfg_batch import end_cfg_batch_render
+
+    pipe._set_guidance(pipe.mp, 3.5, stop)
+    rng = torch.Generator().manual_seed(42)
+    ids = torch.zeros(8, 4)
+    state = BlockState(
+        latents = torch.randn(1, 8, 8, generator = rng),
+        num_inference_steps = steps,
+        denoiser_input_fields = {
+            "prompt_embeds": torch.randn(1, 8, 24, generator = rng),
+            "negative_prompt_embeds": torch.randn(1, 8, 24, generator = rng),
+            "txt_ids": ids,
+            "negative_txt_ids": ids,
+            "img_ids": torch.zeros(8, 4),
+        },
+    )
+    try:
+        with torch.no_grad():
+            for i in range(steps):
+                t = torch.tensor(1000.0 - i * (1000.0 / steps))
+                _, state = Flux3LoopDenoiser()(pipe.mp, state, i, t)
+                state.latents = state.latents - 0.1 * state.noise_pred
+    finally:
+        end_cfg_batch_render(pipe)
+
+
+def test_short_fast_cfg_renders_keep_offloaded_cfg_batching():
+    pytest.importorskip("diffusers.models.transformers.transformer_flux3")
+    from core.inference import diffusion_cfg_batch
+
+    pipe = _tiny_flux3_pipe()
+    # an offloaded layout, as group offload leaves it (no tensors move on CPU)
+    hooks = {"group_offloading": object()}
+    pipe.transformer.single_transformer_blocks[0]._diffusers_hook = types.SimpleNamespace(
+        hooks = hooks, get_hook = hooks.get
+    )
+    assert diffusion_cfg_batch.install_cfg_batch(pipe, offload_policy = "group") is None
+    router = diffusion_cfg_batch.router_for(pipe)
+    assert router.offloaded
+    _render(pipe, None)
+    assert router.describe()["hits"] > 0
+    for _ in range(3):
+        _render(pipe, 0.2)
+    before = router.describe()
+    assert before["shape_off"] is None and before["misses"] == 0
+    _render(pipe, None)
+    after = router.describe()
+    assert after["shape_off"] is None
+    # steps 2-5 of the full-CFG render batch, as before any Fast CFG render
+    assert after["hits"] - before["hits"] == 4
+
+
+def test_external_connection_refuses_cfg_interval_end(client, monkeypatch):
+    import routes.inference as inference_routes
+
+    looked_up = []
+    monkeypatch.setattr(
+        inference_routes.providers_db, "get_provider", lambda pid: looked_up.append(pid)
+    )
+    response = client.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "p",
+            "provider_id": "openai-1",
+            "model": "gpt-image-1",
+            "cfg_interval_end": 0.8,
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert (
+        response.json()["detail"]
+        == "An external image connection only supports text to image and image edits."
+    )
+    assert looked_up == []

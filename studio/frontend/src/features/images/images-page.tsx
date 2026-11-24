@@ -449,7 +449,7 @@ import { EmbeddingsField, FastCfgField, ShiftField } from "./shift-embeddings-co
 import {
   FAST_CFG_STORAGE_KEY,
   fastCfgAvailable,
-  fastCfgFromRecipe,
+  fastCfgEndFromRecipe,
   fastCfgLabel,
   fastCfgNotApplied,
   fastCfgRequestFields,
@@ -2046,6 +2046,15 @@ export function ImagesPage({
   const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
   const livePreview = !livePreviewOff;
   const [fastCfgOn, setFastCfgOn] = usePersistedToggle(FAST_CFG_STORAGE_KEY);
+  // A restored recipe's own stop, sent until the switch is touched (null: the preset).
+  const [fastCfgEnd, setFastCfgEnd] = useState<number | null>(null);
+  const changeFastCfg = useCallback(
+    (next: boolean) => {
+      setFastCfgOn(next);
+      setFastCfgEnd(null);
+    },
+    [setFastCfgOn],
+  );
   const oversizedOnce = useRef(false);
   // The compare grid run handleGenerate is to send instead of the form's runs (compare/).
   const compareOnce = useRef<CompareRun | null>(null);
@@ -3124,7 +3133,9 @@ export function ImagesPage({
     setHeight(restored.height);
     setBatchSize(image.batch_size ?? 1);
     setShiftValue(shiftFromRecipe(image));
-    setFastCfgOn(fastCfgFromRecipe(image));
+    const restoredFastCfgEnd = fastCfgEndFromRecipe(image);
+    setFastCfgOn(restoredFastCfgEnd !== null);
+    setFastCfgEnd(restoredFastCfgEnd);
     const m = matchAspect(restored.width, restored.height);
     setAspect(m.key);
     setPortrait(m.portrait);
@@ -3198,13 +3209,14 @@ export function ImagesPage({
       ...(via === "restore" && status?.loaded ? sdControlsNotRestored(image, sdCaps) : []),
       // Restored into the hidden control, which Generate omits: say so, as an import does.
       ...(via === "restore" ? detailerNotApplied(detail.enabled, detailerReady) : []),
+      ...(via === "restore" ? fastCfgNotApplied(image.cfg_interval_end, cfgIntervalSupported) : []),
     ];
     if (notApplied.length > 0) {
       toast.warning("Some settings in this image were not applied", {
         description: `Not applied: ${notApplied.join(", ")}. This model or build does not support them.`,
       });
     }
-  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, detailerReady]);
+  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, detailerReady, cfgIntervalSupported]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -5817,7 +5829,7 @@ export function ImagesPage({
           !controlnetEngaged,
         ),
         ...shiftRequestFields(shiftControl, shiftValue),
-        ...fastCfgRequestFields(fastCfgShown, fastCfgOn),
+        ...fastCfgRequestFields(fastCfgShown, fastCfgOn, fastCfgEnd),
         ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
         ...condFields,
         ...detailerRequestField(detailerOn, detailerReady, detailerOptions),
@@ -6022,7 +6034,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, loraReload, reloadWithLoras, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, fastCfgShown, fastCfgOn, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
+  }, [external, loraReload, reloadWithLoras, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, fastCfgShown, fastCfgOn, fastCfgEnd, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
 
   // Latch FIRST, so a multi-run request stops even if the POST races the finishing run.
   const handleCancelGenerate = useCallback(async () => {
@@ -7592,7 +7604,7 @@ export function ImagesPage({
               </Field>
             )}
             <ShiftField control={shiftControl} value={shiftValue} onChange={setShiftValue} />
-            <FastCfgField available={fastCfgShown} enabled={fastCfgOn} onChange={setFastCfgOn} />
+            <FastCfgField available={fastCfgShown} enabled={fastCfgOn} onChange={changeFastCfg} />
             {hiresVisible(hiresCapability, workflow) ? (
               <HiresControls capability={hiresCapability} choice={hires} onChange={setHires} width={width} height={height} />
             ) : !external && workflow === "create" && status?.hires_unavailable_reason ? (
