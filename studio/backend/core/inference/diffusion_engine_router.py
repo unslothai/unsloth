@@ -1069,6 +1069,9 @@ _CPU_GGUF_DIFFUSERS_PICKED = "diffusers picked"
 _CPU_GGUF_DIFFUSERS_PINNED = "diffusers pinned"
 _CPU_GGUF_NATIVE_DISABLED = "native disabled"
 
+# Native-GGUF image families with no GGUF row in model-catalog.ts: CPU refusal must not point at unlisted GGUFs.
+CPU_NO_CURATED_GGUF_IMAGE_FAMILIES = frozenset({"krea-2"})
+
 _VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 
 
@@ -1109,10 +1112,15 @@ def refuse_cpu_dense_image_pick(fam: Optional[DiffusionFamily], model_kind: Opti
         return
     if resolve_diffusion_device_target().backend != "cpu":
         return
+    label = getattr(fam, "label", None) or fam.name
+    head = f"This device has no GPU PyTorch can use, so {label} runs only as a GGUF on the native engine (sd.cpp)."
+    if fam.name in CPU_NO_CURATED_GGUF_IMAGE_FAMILIES:
+        raise ValueError(
+            f"{head} Studio's model list has no {label} GGUF yet, so the picker offers nothing for it here: load a "
+            f"{label} GGUF from the Hub by its repo id, or use a machine with a supported GPU."
+        )
     raise ValueError(
-        "This device has no GPU PyTorch can use, so "
-        f"{getattr(fam, 'label', None) or fam.name} runs only as a GGUF on the native engine (sd.cpp). "
-        "Pick one of its GGUF files instead of the full-precision or FP8 / INT8 checkpoint."
+        f"{head} Pick one of its GGUF files instead of the full-precision or FP8 / INT8 checkpoint."
     )
 
 
