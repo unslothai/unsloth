@@ -538,15 +538,12 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     return 0
 
 
-# Set only inside smi_rows_snapshot(): one probe's readers share its first nvidia-smi answer, keyed by the spec.
 _SMI_ROWS: ContextVar[Optional[dict]] = ContextVar("unsloth_diffusion_smi_rows", default = None)
 
 
 @contextmanager
 def smi_rows_snapshot():
-    """Within this block, smi_free_total_mib and smi_util_pct share one nvidia-smi reading (memory and utilisation
-    of every card come from one run). Scoped to one probe: nothing is kept after the block, and a failed read is
-    not shared."""
+    """smi_free_total_mib and smi_util_pct share one nvidia-smi reading inside this block; failures are not cached."""
     token = _SMI_ROWS.set({})
     try:
         yield

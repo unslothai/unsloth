@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One nvidia-smi reading per Automatic ``probe_devices`` call, with the same probes the per-helper reads gave.
-CPU only: nvidia-smi is a fake."""
+"""One nvidia-smi reading per probe_devices call, same probes as per-helper reads (CPU, fake smi)."""
 
 from __future__ import annotations
 

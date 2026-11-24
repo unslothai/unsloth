@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The two split previews of an image / video load (_layer_split_expected, _companion_split_expected) share one
-multi-GPU refinement, and the image load asks again after a LoRA bake. CPU only: the refinement is a fake."""
+"""Both split previews share one refinement; the image load re-asks after a LoRA bake (CPU, fake refine)."""
 
 from __future__ import annotations
 

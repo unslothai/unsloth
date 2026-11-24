@@ -2836,10 +2836,7 @@ def _guard_layer_cards(
 
 
 class _SplitPreviewRefine:
-    """The refinement the split previews of one load share (``refine`` for :func:`_layer_split_expected` and
-    :func:`_companion_split_expected`): both ask it about the same pipe and plan back to back, so the second reuses
-    the first answer instead of repeating its nvidia-smi reads, replica pricing and weight walks. The load calls
-    :meth:`clear` when it changes the pipe in between (a LoRA bake). A raise is not kept."""
+    """Memoised refine shared by both split previews of one load; clear() after a LoRA bake changes the pipe."""
 
     def __init__(self, refine: Optional[Callable[..., Any]] = None):
         self._refine = refine
@@ -11798,7 +11795,6 @@ class DiffusionBackend:
                         base,
                         fam.name,
                     )
-                    # Both split previews below ask one refinement, again only after a LoRA bake changes the pipe.
                     split_refine = _SplitPreviewRefine()
                     split_expected = _layer_split_expected(pipe, plan, split_refine)
                     # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower, losing to GGUF.

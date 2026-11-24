@@ -12004,7 +12004,6 @@ class VideoBackend:
         )
         video_refine = lambda p, pl, lg: _video_refine_for_multigpu(fam, p, pl, lg)  # noqa: E731
         _note_video_default_request(fam, pipe)
-        # Both split previews ask one refinement: nothing between them changes the pipe or the plan.
         split_refine = _SplitPreviewRefine(video_refine)
         split_expected = _layer_split_expected(pipe, plan, split_refine)
         # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower.

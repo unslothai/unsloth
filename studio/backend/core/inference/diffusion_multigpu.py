@@ -379,7 +379,6 @@ def probe_devices(ordinals: Sequence[int]) -> dict[int, DeviceProbe]:
     from .diffusion_device import smi_rows_snapshot
 
     out: dict[int, DeviceProbe] = {}
-    # One nvidia-smi run answers memory and utilisation of every card; the next probe reads afresh.
     with smi_rows_snapshot():
         for o in ords:
             free, total = _free_total_mib(o)
