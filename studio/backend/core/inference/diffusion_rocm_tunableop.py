@@ -417,15 +417,11 @@ def release(pipe: Any) -> None:
     _remove_hooks(pipe)
 
 
-# A training run's claim on the table: one per process (the training worker), released when the run ends.
 _TRAIN_OWNER = object()
 
 
 def install_for_training(device: Any = None, logger: Any = None) -> bool:
-    """Diffusion LoRA training reads the same validator-matched tables; it never tunes (a cold shape costs minutes).
-
-    AMD CI, gfx1151, FLUX.2-klein-base-4B LoRA (Studio defaults: nf4, 1024 px, rank 16): 8.34 -> 7.39 s/step with
-    the 39 training shapes in ``rocm_gemm_tables/``, loss within 2e-4 of the default pick, +0.15 GiB peak."""
+    """Read-only (never tunes). gfx1151 FLUX.2-klein-4B LoRA: 8.34 -> 7.39 s/step with the 39 training shapes."""
     ok, why = eligible(device)
     if not ok:
         return False
@@ -437,7 +433,6 @@ def install_for_training(device: Any = None, logger: Any = None) -> bool:
 
 
 def release_training() -> None:
-    """End of a training run: the last owner out restores the pre-activation TunableOp state."""
     _drop(_TRAIN_OWNER)
 
 

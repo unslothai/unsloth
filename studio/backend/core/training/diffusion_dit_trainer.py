@@ -3791,12 +3791,9 @@ def _compile_engagement_warning(before, after) -> Optional[str]:
 
 
 def _install_rocm_tunableop(device) -> bool:
-    """ROCm: read the shipped / cached TunableOp GEMM tables for this run (hipBLASLt's default pick is slow at DiT
-    shapes). Read only, validator-gated, off with UNSLOTH_DIFFUSION_ROCM_TUNABLEOP=0 or any PYTORCH_TUNABLEOP_* set."""
     if device != "cuda" or not torch_is_rocm():
         return False
     import logging
-
     try:
         from core.inference import diffusion_rocm_tunableop as rocm_tunableop
         return bool(rocm_tunableop.install_for_training(None, logging.getLogger(__name__)))
