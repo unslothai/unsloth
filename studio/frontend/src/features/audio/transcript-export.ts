@@ -8,8 +8,19 @@ import {
   paragraphs,
   speakerLabel,
 } from "./transcript-model.ts";
+import type { TranscriptRecord } from "./transcript-stream.ts";
 
 export type TranscriptExportFormat = "txt" | "srt" | "vtt" | "json";
+
+// A listed record carries timing counts only; plain text without speakers needs none of it.
+export function needsSavedTimings(
+  format: TranscriptExportFormat,
+  record: Pick<TranscriptRecord, "segment_count" | "has_words" | "speakers">,
+): boolean {
+  if (format === "txt")
+    return Boolean(record.segment_count && record.speakers?.length);
+  return Boolean(record.segment_count || record.has_words);
+}
 
 export interface TranscriptExport {
   title: string;

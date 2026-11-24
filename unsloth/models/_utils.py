@@ -18,6 +18,7 @@ __all__ = [
     "_requested_float32",
     "_mark_requested_float32",
     "_mark_forced_float32",
+    "_mark_bfloat16_mixed_precision",
     "_drop_float16_overflowing_attention_dropout",
     "_mark_full_finetuning",
     "_is_full_finetuning",
@@ -5840,6 +5841,15 @@ def _mark_requested_float32(model, requested):
     return model
 
 
+def _mark_bfloat16_mixed_precision(model, enabled):
+    """Record whether this model generates under bfloat16 autocast (float32 weights, full finetuning with float32_mixed_precision). UNSLOTH_BFLOAT16_MIXED_PRECISION is process wide and nothing resets it, so a later model would generate in bfloat16 too."""
+    try:
+        model._unsloth_bfloat16_mixed_precision = bool(enabled)
+    except Exception:
+        pass
+    return model
+
+
 def _mark_forced_float32(model, forced):
     """Record whether this model's family forced float32. UNSLOTH_FORCE_FLOAT32 says the same, but every load rewrites it, so a second load before this model trains would answer for the wrong model."""
     try:
@@ -6939,9 +6949,18 @@ def patch_gradient_accumulation_fix(Trainer):
                 install_jit_checkpoint_agreement(self)
             except Exception as e:
                 logger.warning_once(f"Unsloth: rank-agreed JIT checkpoint skipped ({e})")
-            if os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0") != "0":
+            # Same parse as state_offload.optimizer_state_offload_enabled (not imported here: the
+            # optimizers package pulls in unsloth_zoo).
+            offload = os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0")
+            if offload.strip().lower() in ("1", "true", "yes", "on"):
                 from ..optimizers.state_offload import install_optimizer_state_offload
                 install_optimizer_state_offload(self)
+            else:
+                try:
+                    from ..optimizers.flat_adamw8bit import install_flat_adamw8bit_hook
+                    install_flat_adamw8bit_hook(self)
+                except Exception as e:
+                    logger.warning_once(f"Unsloth: fused 8-bit AdamW step not installed ({e})")
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
@@ -10218,6 +10237,9 @@ def _qat_bias_grad_supported(
             device = device, dtype = dtype
         )
         quantize_(probe, QATConfig(base_config, step = "prepare"))
+        # Probe the forward training will run: on CUDA Unsloth's NVFP4 custom op returns the bias
+        # gradient that torchao's own backward drops.
+        _patch_microscaling_qat_forwards(probe)
         x = torch.ones(16, 64, device = device, dtype = dtype, requires_grad = True)
         probe(x).float().sum().backward()
         return probe[0].bias.grad is not None
@@ -10257,6 +10279,7 @@ def _microscaling_qat_filter(
         in_features_multiple = in_features_multiple,
     )
     placements = _eligible_layer_placements(model, candidates)
+    with_adapters = os.environ.get("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "0") == "1"
     unsupported = sorted({str(dtype) for _, dtype in placements if dtype not in dtypes})
     if unsupported:
         raise RuntimeError(
@@ -10286,7 +10309,7 @@ def _microscaling_qat_filter(
         narrow = [
             name
             for name, module in model.named_modules()
-            if not _is_lora_adapter_name(name)
+            if (with_adapters or not _is_lora_adapter_name(name))
             and candidates(module, name)
             and module.out_features in bad_widths
         ]
@@ -10302,11 +10325,14 @@ def _microscaling_qat_filter(
         )
     # Only a trainable bias needs the backward's bias gradient. LoRA freezes the base bias (bias = "none"),
     # and skipping those layers left Qwen2-style q / k / v projections out of QAT while the export still
-    # quantizes them.
+    # quantizes them. Opted-in adapters are quantized too, so a trainable lora_B bias (lora_bias = True)
+    # needs the gradient as much as a base one.
     biased = [
         name
         for name, module in model.named_modules()
-        if not _is_lora_adapter_name(name) and candidates(module, name) and _trainable_bias(module)
+        if (with_adapters or not _is_lora_adapter_name(name))
+        and candidates(module, name)
+        and _trainable_bias(module, name)
     ]
     if biased and not all(_qat_bias_grad_supported(base_config, d, t) for d, t in placements):
         warnings.warn(
@@ -10316,21 +10342,41 @@ def _microscaling_qat_filter(
             + (f", ... ({len(biased) - 8} more)" if len(biased) > 8 else ""),
             stacklevel = 3,
         )
-        return lambda m, fqn, _c = candidates: _c(m, fqn) and not _trainable_bias(m)
+        return lambda m, fqn, _c = candidates: _c(m, fqn) and not _trainable_bias(m, fqn)
     return candidates
 
 
-def _trainable_bias(module) -> bool:
+def _trainable_bias(module, fqn = "") -> bool:
     bias = getattr(module, "bias", None)
-    return isinstance(bias, torch.Tensor) and bias.requires_grad
+    if not isinstance(bias, torch.Tensor):
+        return False
+    # PEFT freezes an inactive adapter's bias and unfreezes it on set_adapter, after QAT prepare, so an
+    # adapter bias counts as trainable whatever its requires_grad is now.
+    return bias.requires_grad or _is_lora_adapter_name(fqn)
 
 
 def _mx_autocast_forward(self, x):
     # torchao's MX QAT matmul returns bfloat16 under autocast and asserts it matches x, whatever the weight dtype.
     from torchao.prototype.qat import MXFakeQuantizedLinear
+
     if x.dtype != torch.bfloat16 and torch.is_autocast_enabled(x.device.type):
         x = x.to(torch.bfloat16)
-    return MXFakeQuantizedLinear.forward(self, x)
+    # torchao flattens the input with .view, which raises on a strided (e.g. transposed) activation.
+    if not x.is_contiguous():
+        x = x.contiguous()
+    out = MXFakeQuantizedLinear.forward(self, x)
+    # Its backward flattens grad_output with .view too; a later transpose hands it a strided gradient.
+    return _ContiguousGrad.apply(out) if out.requires_grad else out
+
+
+class _ContiguousGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad):
+        return grad.contiguous()
 
 
 _NVFP4_QAT_LINEAR = []

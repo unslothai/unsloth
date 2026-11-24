@@ -97,7 +97,12 @@ def _count_backend():
 
 
 _MESSAGES = [{"role": "user", "content": "hello " * 200}]
-_TOOLS = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+_TOOLS = [
+    {
+        "type": "function",
+        "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}},
+    }
+]
 
 
 def test_an_identical_native_count_is_served_from_memory(monkeypatch):
@@ -111,13 +116,19 @@ def test_an_identical_native_count_is_served_from_memory(monkeypatch):
     assert [r[0] for r in server.requests] == [_NATIVE]
 
 
-def test_a_native_hit_still_honours_should_abort(monkeypatch):
+@pytest.mark.parametrize("prefer_native", [True, False])
+def test_a_native_hit_still_honours_should_abort(monkeypatch, prefer_native):
     _Server(monkeypatch)
     backend = _count_backend()
     backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, prefer_native = True)
     with pytest.raises(llama_cpp.CountAborted):
         backend.count_chat_tokens(
-            _MESSAGES, None, _TOOLS, strict = True, prefer_native = True, should_abort = lambda: True
+            _MESSAGES,
+            None,
+            _TOOLS,
+            strict = True,
+            prefer_native = prefer_native,
+            should_abort = lambda: True,
         )
 
 
@@ -173,6 +184,81 @@ def test_native_counts_never_evict_rendered_counts(monkeypatch):
         )
     assert len(llama_cpp._count_memo(backend)[1]) == 1
     assert len(llama_cpp._count_memo(backend, llama_cpp._NATIVE_COUNT_MEMO)[1]) == 2
+
+
+def test_a_render_count_reuses_the_native_count_of_the_same_prompt(monkeypatch):
+    server = _Server(monkeypatch)
+    backend = _count_backend()
+    native = backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, prefer_native = True)
+    assert backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True) == native
+    assert [r[0] for r in server.requests] == [_NATIVE]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "messages",
+        "system",
+        "tools",
+        "tool_key_order",
+        "continue_final",
+        "template_kwargs",
+        "template_options",
+    ],
+)
+def test_a_render_count_of_a_different_prompt_still_renders(monkeypatch, change):
+    server = _Server(monkeypatch)
+    backend = _count_backend()
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, prefer_native = True)
+    messages, system, tools, kw = _MESSAGES, None, _TOOLS, {}
+    if change == "messages":
+        messages = _MESSAGES + [{"role": "assistant", "content": "x"}]
+    elif change == "system":
+        system = "Be terse."
+    elif change == "tools":
+        tools = None
+    elif change == "tool_key_order":
+        tools = copy.deepcopy(_TOOLS)
+        params = tools[0]["function"]["parameters"]
+        tools[0]["function"]["parameters"] = dict(reversed(params.items()))
+    elif change == "continue_final":
+        kw = {"continue_final_message": True}
+    elif change == "template_kwargs":
+        kw = {"chat_template_kwargs": {"enable_thinking": False}}
+    else:
+        kw = {"template_options": {"tool_choice": "required"}}
+    backend.count_chat_tokens(messages, system, tools, strict = True, **kw)
+    assert len(server.paths("/apply-template")) == 1
+
+
+def test_a_render_count_of_reordered_schema_keys_still_renders(monkeypatch):
+    server = _Server(monkeypatch)
+    backend = _count_backend()
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True)
+    tools = copy.deepcopy(_TOOLS)
+    params = tools[0]["function"]["parameters"]
+    tools[0]["function"]["parameters"] = dict(reversed(params.items()))
+    backend.count_chat_tokens(_MESSAGES, None, tools, strict = True)
+    assert len(server.paths("/apply-template")) == 2
+
+
+def test_a_caller_wanting_the_prompt_still_renders_after_a_native_count(monkeypatch):
+    server = _Server(monkeypatch)
+    backend = _count_backend()
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, prefer_native = True)
+    seen = []
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, on_prompt = seen.append)
+    assert len(seen) == 1
+    assert len(server.paths("/apply-template")) == 1
+
+
+def test_a_failed_native_count_leaves_render_counts_rendering(monkeypatch):
+    server = _Server(monkeypatch)
+    backend = _count_backend()
+    server.fail[_NATIVE] = 1
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, prefer_native = True)
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True)
+    assert len(server.paths("/apply-template")) == 2
 
 
 def _sse(delta: dict) -> str:

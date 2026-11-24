@@ -13,7 +13,7 @@ import contextlib
 
 import os
 from functools import lru_cache
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 from . import diffusion_int8_attention as _i8
 from .rocm_bf16 import is_rocm_torch
 
@@ -25,6 +25,12 @@ STRIDED_SAGE_ENV = "UNSLOTH_H3_STRIDED_SAGE"
 
 # Measured at H3's shape (torch 2.11): flash beats cuDNN on sm80 / sm89, ties or loses on sm120; unmeasured keep cuDNN.
 H3_FLASH_FASTER_ARCHS = frozenset({(8, 0), (8, 9)})
+
+# Where H3 video's Auto keeps INT8 attention off. L4 (sm89), 12 rows at Studio defaults: the soundtrack moved past the
+# bf16 noise floor (log-mel L1 vs off 0.48 vs 0.33, 11/12 rows worse), also with the text + audio query rows kept off
+# the kernel. A100 (sm80) and RTX PRO 6000 (sm120) measured inside the floor. Unmeasured arches (sm86 included) keep
+# Auto as before. int8_attention="on" still engages the kernel there.
+H3_INT8_AUTO_OFF_ARCHS = frozenset({(8, 9)})
 
 _CUDNN = "_native_cudnn"
 _FLASH = "_native_flash"
@@ -53,6 +59,76 @@ def _capability(device: Any = None) -> Optional[tuple[int, int]]:
         return tuple(torch.cuda.get_device_capability(device))  # type: ignore[return-value]
     except Exception:  # noqa: BLE001
         return None
+
+
+def cuda_capability(device: Any = None) -> Optional[tuple[int, int]]:
+    """The CUDA capability of ``device``; None off CUDA, on ROCm or on error."""
+    return _capability(device)
+
+
+def h3_int8_auto_off_reason(capability: Optional[tuple]) -> Optional[str]:
+    """Why H3 video's Auto keeps INT8 attention off on a card of ``capability``, or None where Auto may race it."""
+    if capability is None or tuple(capability) not in H3_INT8_AUTO_OFF_ARCHS:
+        return None
+    arch = f"sm{capability[0]}{capability[1]}"
+    return (
+        f"Auto keeps it off for MiniMax-H3 video on {arch} (it moved the audio past the bf16 noise floor on L4); "
+        "int8_attention='on' engages it"
+    )
+
+
+class H3Int8Gate(NamedTuple):
+    """The H3 video load's INT8 attention decision: ``forced`` installs unconditionally, ``auto`` races it, and
+    ``reason`` is the status text when nothing gets installed (None where there is nothing to explain)."""
+
+    forced: bool
+    auto: bool
+    reason: Optional[str]
+
+
+def h3_int8_load_gate(
+    *,
+    mode: str,
+    attention_backend: Any,
+    auto_attention: bool,
+    speed_on: bool,
+    hosted_int8: bool,
+    comfy_checkpoint: bool,
+    adapters: bool,
+    capability: Optional[tuple],
+) -> H3Int8Gate:
+    """``mode`` is the resolved policy (``off`` | ``auto`` | ``force``: per-load On / Off over
+    ``UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL``), ``auto_attention`` whether the load left the attention pick to Studio,
+    ``capability`` the load card's (None on ROCm / unknown). Forced (On, env ``1`` or an explicit INT8 backend pick)
+    never looks at the arch; Auto runs only on the evidenced config and off ``H3_INT8_AUTO_OFF_ARCHS``."""
+    forced = mode == "force" or (mode != "off" and _i8.requested(attention_backend))
+    # Auto only on the evidenced config: Studio attention, speed on, hosted INT8 ConvRot, diffusers, no adapters
+    auto_config = (
+        not forced
+        and mode == "auto"
+        and speed_on
+        and auto_attention
+        and hosted_int8
+        and not comfy_checkpoint
+        and not adapters
+    )
+    arch_off = h3_int8_auto_off_reason(capability) if auto_config else None
+    auto = auto_config and arch_off is None
+    if mode == "off":
+        reason = None
+    elif not speed_on:
+        reason = "speed_mode=off keeps the output bit-identical, so the kernel is not installed"
+    elif forced:
+        reason = None
+    elif not auto_attention:
+        reason = f"attention_backend={attention_backend!r} was picked explicitly; Auto keeps it"
+    elif arch_off is not None:
+        reason = arch_off
+    elif not auto:
+        reason = "Auto engages it on MiniMax-H3 video only over Studio's hosted INT8 denoiser without adapters"
+    else:
+        reason = None
+    return H3Int8Gate(forced = forced, auto = auto, reason = reason)
 
 
 def _flash_sdpa_ready(target: Any = None) -> bool:

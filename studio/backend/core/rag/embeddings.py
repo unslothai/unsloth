@@ -224,7 +224,7 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
         data = _repo_json(name, "modules.json", token)
         subdirs = []
         for module in data or ():
-            sub = str((module or {}).get("path", "")).strip().strip("/")
+            sub = str((module or {}).get("path", "")).strip("/")
             if sub:
                 subdirs.append(sub)
         return tuple(dict.fromkeys(subdirs))
@@ -611,6 +611,9 @@ def _get(model_name: str | None = None):
             from utils.hf_cache_settings import active_hf_hub_cache
 
             _gate_st_custom_modules()
+            from utils.security import st_config_args
+
+            st_config_args.install()
 
             logger.info("loading embedding model %s on %s", name, device)
             st_kwargs = dict(

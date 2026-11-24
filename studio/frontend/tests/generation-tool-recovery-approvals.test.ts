@@ -61,6 +61,31 @@ test("a call that parks after the tab reattaches arms its own card", async () =>
   });
 });
 
+test("a re-armed approval names the tool it is for, not the one the card was drawn with", () => {
+  // A start reusing a saved card (same backend id) is stored before the card redraws as the new tool.
+  const named: (string | undefined)[] = [];
+  const carried = [
+    {
+      at: 0,
+      part: {
+        type: "tool-call",
+        toolCallId: "call-1:run-1:1",
+        toolName: "web_search",
+        backendToolCallId: "call-1",
+        args: {},
+      },
+    },
+  ];
+  const recovery = createGenerationToolRecovery(carried, "run-1", 1, {
+    register: (_partId, _approvalId, _sessionId, toolName) => void named.push(toolName),
+    resolve: () => {},
+  });
+
+  recovery.apply(parkedStart("appr-1"), 0, 2, "sess-1");
+
+  assert.deepEqual(named, ["terminal"]);
+});
+
 test("a call that parked BEFORE the tab closed is re-raised from the seed", async () => {
   const spy = spyConfirmations();
   const carried = [

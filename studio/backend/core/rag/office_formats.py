@@ -555,6 +555,9 @@ def _column_index(ref: str) -> int:
         if not ch.isalpha():
             break
         index = index * 26 + (ord(ch.upper()) - 64)
+        if index > _MAX_COLUMNS:
+            # Past every kept column: more letters would only grow a huge integer (quadratic).
+            return _MAX_COLUMNS
     return index - 1
 
 

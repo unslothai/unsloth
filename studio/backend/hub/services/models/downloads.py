@@ -226,7 +226,8 @@ def _download_cache_paths(download_dir: Optional[str]):
 def _gate_hub_cache(download_dir: Optional[str]) -> Optional[Path]:
     """The Hub cache a job with ``download_dir`` writes into, without registering the folder; None
     (the Models folder) for no folder or one the job itself will refuse."""
-    if not (download_dir or "").strip():
+    # Resolving creates the folder, and a managed account's folder is refused later anyway.
+    if not (download_dir or "").strip() or account_access.managed_account():
         return None
     try:
         from utils.hf_cache_settings import download_cache_paths

@@ -3790,6 +3790,26 @@ def _compile_engagement_warning(before, after) -> Optional[str]:
     return None
 
 
+def _install_rocm_tunableop(device) -> bool:
+    if device != "cuda" or not torch_is_rocm():
+        return False
+    import logging
+    try:
+        from core.inference import diffusion_rocm_tunableop as rocm_tunableop
+        return bool(rocm_tunableop.install_for_training(None, logging.getLogger(__name__)))
+    except Exception as exc:  # noqa: BLE001 - keep torch's default GEMM pick
+        logging.getLogger(__name__).warning("rocm tunableop: %s", exc)
+        return False
+
+
+def _release_rocm_tunableop() -> None:
+    try:
+        from core.inference import diffusion_rocm_tunableop as rocm_tunableop
+        rocm_tunableop.release_training()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def run_dit_lora_training(
     config: DiffusionLoraConfig,
     *,
@@ -3927,6 +3947,7 @@ def run_dit_lora_training(
             )
     # Restore TF32 / cudnn.benchmark on exit, so in-process callers see no lasting change.
     perf_snap = _apply_perf_flags(cfg, device)
+    tunableop = _install_rocm_tunableop(device)
     failed = True
     try:
         out = _train_dit(
@@ -3947,6 +3968,8 @@ def run_dit_lora_training(
         return out
     finally:
         _restore_perf_flags(perf_snap)
+        if tunableop:
+            _release_rocm_tunableop()
         if launched is not None:
             launched.close(failed = failed)
 
