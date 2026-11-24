@@ -287,6 +287,37 @@ test("C1e: a chat opened before any model loads takes the loaded model's samplin
   assert.deepEqual(recommended(w.store().params), recommended(GEMMA));
 });
 
+test("C1f: a custom preset picked in a chat keeps its values that matched the model's", async (t) => {
+  enableCountedTimers(t);
+  const w = await world();
+  const settleNow = () => settle(w.mod, (ms) => t.mock.timers.tick(ms));
+  await settleNow();
+  w.store().setParams({ ...w.store().params, ...QWEN }, { fromModelDefaults: true });
+  await settleNow();
+  w.open("N", null);
+  await settleNow();
+
+  const mine = { ...recommended(QWEN), topP: 0.5 };
+  w.store().setParams(
+    { ...w.store().params, ...mine },
+    { minPChoiceEdited: true, fromPreset: true, pinsSampling: true },
+  );
+  w.store().setActivePreset("Mine");
+  w.store().setActivePresetSource("custom");
+  await settleNow();
+
+  w.open("M", null);
+  await settleNow();
+  w.store().setActivePreset("Default");
+  w.store().setActivePresetSource("builtin-default");
+  w.store().setParams({ ...w.store().params, ...GEMMA }, { fromModelDefaults: true });
+  await settleNow();
+
+  w.open("N");
+  await settleNow();
+  assert.deepEqual(recommended(w.store().params), mine);
+});
+
 test("C2: an empty, null or absent snapshot opens on the installation settings", async (t) => {
   enableCountedTimers(t);
   for (const snapshot of [null, {}, undefined]) {

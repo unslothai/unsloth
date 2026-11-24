@@ -2851,6 +2851,8 @@ type ChatRuntimeStore = {
       /** A preset pick or save: not an edit of the loaded model, so its remembered params are dropped
        *  instead of overwritten, and its recommendation applies again on the next load. */
       fromPreset?: boolean;
+      /** A custom preset pick or save: the open chat owns every recommended value, unchanged ones too. */
+      pinsSampling?: boolean;
     },
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
@@ -4965,6 +4967,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         options?.persist !== false
           ? withoutCapturedThreadEdits(changedParams, fromModelDefaults)
           : changedParams;
+      if (options?.pinsSampling === true && options?.persist !== false) {
+        for (const key of RECOMMENDED_SAMPLING_KEYS) captureThreadScopedEdit(key);
+      }
       // An edit belongs to the model the params now describe, so a call moving checkpoint and
       // sliders at once files them under the destination.
       const fromPreset = options?.fromPreset === true;
