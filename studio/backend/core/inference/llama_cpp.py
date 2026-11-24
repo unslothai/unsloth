@@ -10663,6 +10663,93 @@ class LlamaCppBackend:
             shares[-1] += 0.5
         return shares
 
+    @staticmethod
+    def _byte_balanced_split(
+        gpu_indices: List[int],
+        free_mib: dict[int, float],
+        usable_mib: dict[int, float],
+        layer_mib: List[float],
+        per_device_mib: float = 0.0,
+        main_reserve_mib: float = 0.0,
+        pipeline_mib: float = 0.0,
+    ) -> Optional[List[float]]:
+        """Layer-count ``--tensor-split`` shares over discrete ``gpu_indices`` whose contiguous
+        runs fit each card; None when llama.cpp's own split (layer counts weighted by free
+        memory) already fits; [] when it overflows a card and no split fits. Uneven layers
+        (Unsloth Dynamic quants keep some layers at higher precision) can push a count split
+        past the smaller card."""
+        n = len(layer_mib)
+        if len(gpu_indices) < 2 or n == 0:
+            return None
+        room = [
+            usable_mib.get(i, 0.0) - per_device_mib - (main_reserve_mib if k == 0 else pipeline_mib)
+            for k, i in enumerate(gpu_indices)
+        ]
+        prefix = [0.0]
+        for mib in layer_mib:
+            prefix.append(prefix[-1] + mib)
+
+        def fits(counts: List[int]) -> bool:
+            start = 0
+            for c, r in zip(counts, room):
+                if prefix[start + c] - prefix[start] > max(0.0, r):
+                    return False
+                start += c
+            return True
+
+        # llama.cpp's default: device of rank r is the first whose cumulative free share > r / n.
+        free = [max(0.0, float(free_mib.get(i, 0.0))) for i in gpu_indices]
+        total = sum(free)
+        if total > 0:
+            cum, default, start = 0.0, [], 0
+            for f in free:
+                cum += f / total
+                end = start
+                while end < n and end / n < cum:
+                    end += 1
+                default.append(end - start)
+                start = end
+            default[-1] += n - start
+            if fits(default):
+                return None
+
+        def greedy(scale: float) -> Optional[List[int]]:
+            # Each card up to ``scale`` of its room, in order; the last takes the rest.
+            counts, start = [], 0
+            for k, r in enumerate(room):
+                end = n
+                if k < len(room) - 1:
+                    end = start
+                    while end < n and prefix[end + 1] - prefix[start] <= max(0.0, r) * scale:
+                        end += 1
+                elif prefix[n] - prefix[start] > max(0.0, r) * scale:
+                    return None
+                counts.append(end - start)
+                start = end
+            return counts if fits(counts) else None
+
+        if greedy(1.0) is None:
+            # Every count split overflows a card: the pin cannot load as planned.
+            return []
+        # The lowest fill every card can share: no card runs closer to its limit than needed.
+        lo, hi = 0.0, 1.0
+        for _ in range(30):
+            mid = (lo + hi) / 2
+            if greedy(mid) is None:
+                lo = mid
+            else:
+                hi = mid
+        counts = greedy(hi)
+        if counts is None or sum(1 for c in counts if c > 0) < 2:
+            return None
+        shares = [float(c) for c in counts]
+        # Boundaries half a layer early: float rounding in upper_bound cannot add a layer.
+        first = next(k for k, v in enumerate(shares) if v > 0)
+        if first != len(shares) - 1:
+            shares[first] -= 0.5
+            shares[-1] += 0.5
+        return shares
+
     def _mixed_pin_split(
         self,
         gpu_indices: List[int],
@@ -10675,11 +10762,13 @@ class LlamaCppBackend:
         tensor_parallel: bool,
         pin_owns_devices: bool = False,
     ) -> Optional[List[float]]:
-        """The discrete-first split for a full-offload mixed Vulkan pin, or None to
-        leave llama.cpp's own split (the pre-existing behaviour) wherever its inputs
-        cannot be priced or someone else owns the placement."""
+        """The discrete-first split for a full-offload mixed Vulkan pin; for discrete cards
+        only, a byte-balanced split where llama.cpp's own would overflow one, or [] when no
+        split fits (the caller then lets --fit place the model). None leaves
+        llama.cpp's own split (the pre-existing behaviour) wherever its inputs cannot be
+        priced or someone else owns the placement."""
         if (
-            not shared_gpu_ids
+            (not shared_gpu_ids and len(gpu_indices) < 2)
             or spill_inputs is None
             or tensor_parallel
             # A downgraded tensor request keeps every device in use.
@@ -10775,6 +10864,16 @@ class LlamaCppBackend:
         if 0 < layout.n_attention_layers < n_blocks and len(kv_weights) == n_blocks:
             per_device += kv_total / layout.n_attention_layers
         mib = 1024 * 1024
+        if not set(shared_gpu_ids or ()) & set(gpu_indices):
+            return self._byte_balanced_split(
+                list(gpu_indices),
+                {i: f for i, f in spill_inputs.get("gpus") or ()},
+                spill_inputs["gpu_usable_mib"],
+                [x / mib for x in layer_bytes],
+                per_device / mib,
+                reserve / mib,
+                self._PIPELINE_PER_DEVICE_OVERHEAD_MIB,
+            )
         return self._discrete_first_split(
             list(gpu_indices),
             spill_inputs["gpu_usable_mib"],
@@ -31099,6 +31198,30 @@ class LlamaCppBackend:
                 manual_tensor_split_emitted = False
                 # The MoE cache's "auto" sizing runs only under llama.cpp's fitter.
                 _placed_by_fitter = False
+                _mixed_split = None
+                if (
+                    not (gpu_memory_mode == "manual" and gpu_layers >= 0)
+                    and not use_fit
+                    and gpu_indices is not None
+                ):
+                    _mixed_split = self._mixed_pin_split(
+                        list(gpu_indices),
+                        _spill_inputs,
+                        _shared_gpu_ids,
+                        extra_args,
+                        env,
+                        layer_min_gpus = _layer_min_gpus,
+                        tensor_parallel = tensor_parallel,
+                        pin_owns_devices = _gpu_ids_own_device_flags,
+                    )
+                    if _mixed_split is not None and not _mixed_split:
+                        # A pooled fit whose layers cannot be cut to fit each card would fail at
+                        # load; let llama.cpp's fitter place it, as when the pool does not fit.
+                        logger.info(
+                            "No layer split over GPUs %s fits each card; using --fit on",
+                            list(gpu_indices),
+                        )
+                        use_fit, gpu_indices, _mixed_split = True, None, None
                 if gpu_memory_mode == "manual" and gpu_layers >= 0:
                     # --fit off: _ctx_integrity_flags must not add --fit-ctx.
                     use_fit = False
@@ -31173,16 +31296,6 @@ class LlamaCppBackend:
                     # --fit off required: otherwise --fit on still offloads ~1 GB at --parallel 4.
                     cmd.extend(["-ngl", "-1", "--fit", "off"])
                     fully_gpu_offloaded = True
-                    _mixed_split = self._mixed_pin_split(
-                        list(gpu_indices),
-                        _spill_inputs,
-                        _shared_gpu_ids,
-                        extra_args,
-                        env,
-                        layer_min_gpus = _layer_min_gpus,
-                        tensor_parallel = tensor_parallel,
-                        pin_owns_devices = _gpu_ids_own_device_flags,
-                    )
                     if _mixed_split is not None:
                         self._mixed_split_flags = [
                             "--tensor-split",
@@ -31195,7 +31308,10 @@ class LlamaCppBackend:
                             )
                         logger.info(
                             "Filling discrete GPU(s) before the shared-memory iGPU: "
-                            "--tensor-split %s over %s",
+                            "--tensor-split %s over %s"
+                            if set(_shared_gpu_ids or ()) & set(gpu_indices)
+                            else "Splitting layers by bytes, since a split by layer count "
+                            "would overflow a card: --tensor-split %s over %s",
                             cmd[-1],
                             list(gpu_indices),
                         )
