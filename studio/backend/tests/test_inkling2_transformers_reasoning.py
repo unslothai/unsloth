@@ -143,7 +143,6 @@ def test_a_prompt_that_opens_the_thought_keeps_thought_and_answer():
 
 
 def test_a_continued_answer_keeps_its_text():
-    # continue_final_message resumes inside the trailing <|content_text|> body, not a header.
     normalizer = make_reasoning_normalizer(MARKERS, continued = True)
     assert normalizer.feed(" forecast.") == " forecast."
     rest = "<|end_message|><|message_model|>python<|content_invoke_tool_json|>{}<|end_message|>"

@@ -1944,11 +1944,9 @@ class ReasoningChannelNormalizer:
 
 
 class InklingMessageNormalizer:
-    """Convert Inkling 2's message protocol to ``<think>``. Every block is
-    ``[<|message_model|>][name]<|content_KIND|>body<|end_message|>`` and the generation prompt ends inside the
-    first header. Headers are dropped (a tool name is repeated in its JSON), the first thought becomes
-    ``<think>``, text closers are dropped, and a tool call keeps its opener and closer for the tool-call parser.
-    A later thought shows as text, as the Gemma channel does."""
+    """Convert Inkling 2's ``[<|message_model|>][name]<|content_KIND|>body<|end_message|>`` messages: headers and
+    text closers go, the first thought becomes ``<think>`` (later ones show as text), and a tool call keeps its
+    opener and closer for the tool-call parser."""
 
     def __init__(
         self,
@@ -2054,7 +2052,7 @@ class InklingMessageNormalizer:
         return text
 
     def _tool_call_end(self) -> int:
-        """Index of the closer outside the call's JSON strings, or -1; quoted control text is argument text."""
+        """Index of the closer outside the call's JSON strings, or -1."""
         for index, char in enumerate(self._buffer):
             if self._escape:
                 self._escape = False
