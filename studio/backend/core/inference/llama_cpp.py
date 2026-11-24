@@ -33506,8 +33506,7 @@ class LlamaCppBackend:
                 _spawn_cwd: Optional[str] = None
                 # An inherited LLAMA_ARG_FIT=off belongs to the user, and the flip would override it on the CLI.
                 _did_rocm_retry = False
-                # Set while a bundle-only retry rests on a crash signal alone: the
-                # prepended LD_LIBRARY_PATH to put back if that launch fails too.
+                # Prepended LD_LIBRARY_PATH to restore if a signal-only bundle retry fails too.
                 _rocm_signal_undo_ld: Optional[str] = None
                 _rocm_retry_undone = False
 
@@ -34002,9 +34001,7 @@ class LlamaCppBackend:
                         # Here rather than per rung, so a later rung cannot forget it.
                         self._memory_pending_launch = _mem_settings
                         if _rocm_signal_undo_ld is not None:
-                            # The bundled runtime failed as well, so the signal was not
-                            # the mix; on hosts the bundle cannot drive (#7233) the
-                            # recoveries below only work with the system ROCm.
+                            # The bundle failed too, so no mix: #7233 hosts need the system ROCm.
                             env["LD_LIBRARY_PATH"] = _rocm_signal_undo_ld
                             _rocm_signal_undo_ld = None
                             _rocm_retry_undone = True
@@ -34030,11 +34027,8 @@ class LlamaCppBackend:
                             "\n".join(self._stdout_lines)
                         ) or self._is_tensor_quant_kv_unsupported(_startup_output)
                         _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
-                        # A hard fault inside the prepended system libs prints no
-                        # symbol-lookup line for the check above to match (#18948:
-                        # a GPF in the system libamdhip64 exits -11). While the
-                        # child env still carries the prepend, a signal crash is
-                        # the same HIP/ROCR mix the bundle-only retry undoes.
+                        # A GPF in the prepended system libamdhip64 exits -11 with no
+                        # symbol-lookup line (#18948), so a signal crash also earns the retry.
                         _signal_mix = False
                         if (
                             not _did_rocm_retry

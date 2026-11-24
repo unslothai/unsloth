@@ -1699,9 +1699,7 @@ class TestHipRocrRetryKeepsFitBudget:
 
 
 class TestHipRocrSegfaultRetriesBundleOnly:
-    """A segfault in the prepended system libamdhip64 never reaches the linker's
-    symbol-lookup error, so there is no output line for the mismatch check to
-    catch. The prepended dirs themselves are the evidence the retry can undo."""
+    """A segfault in the prepended system libamdhip64 prints no symbol-lookup error (#18948)."""
 
     def test_startup_segfault_drops_the_prepended_system_dirs(self, monkeypatch, tmp_path):
         launches, loaded, error = _run_full_offload_spawns(
@@ -1738,8 +1736,7 @@ class TestHipRocrSegfaultRetriesBundleOnly:
     def test_a_bundle_only_retry_that_also_crashes_restores_the_system_dirs(
         self, monkeypatch, tmp_path
     ):
-        """A signal is weak evidence: if the bundled runtime crashes too, later
-        recoveries run on the system ROCm the host was configured for."""
+        """If the bundled runtime crashes too, later recoveries go back to system ROCm."""
         launches, loaded, error = _run_full_offload_spawns(
             monkeypatch,
             tmp_path,
