@@ -814,6 +814,43 @@ def planner_model_class(config, trust_remote_code = False):
         return None
 
 
+def explain_weight_conversion_error(error):
+    """transformers 5.x catches each tensor's conversion failure (a CUDA out-of-memory among them) into the load
+    report, which it only logs, then raises a RuntimeError pointing at "the `CONVERSION` entries of the above
+    report". Returns the first recorded failure as the error to raise instead (``torch.OutOfMemoryError`` for an
+    out-of-memory), or None when ``error`` is not that RuntimeError or the report cannot be found."""
+    if not isinstance(error, RuntimeError) or "automatic conversion of the weights" not in str(
+        error
+    ):
+        return None
+    conversion_errors = None
+    tb = error.__traceback__
+    while tb is not None:
+        # log_state_dict_report raises with the report's LoadStateDictInfo still in its frame.
+        info = tb.tb_frame.f_locals.get("loading_info")
+        found = getattr(info, "conversion_errors", None)
+        if isinstance(found, dict) and found:
+            conversion_errors = found
+        tb = tb.tb_next
+    if not conversion_errors:
+        return None
+    key, message = next(iter(conversion_errors.items()))
+    lines = [line.strip() for line in str(message).splitlines() if line.strip()]
+    oom = next((line for line in lines if "out of memory" in line.lower()), None)
+    if oom is not None:
+        import torch
+        oom = oom.split("OutOfMemoryError:", 1)[-1].strip()
+        return torch.OutOfMemoryError(
+            f"Unsloth: the GPU ran out of memory while loading `{key}`: {oom} Load the model in 4-bit, "
+            "use a smaller model, or use more or larger GPUs."
+        )
+    detail = next(
+        (line for line in reversed(lines) if not line.startswith("Error:")),
+        lines[-1] if lines else "",
+    )
+    return RuntimeError(f"Unsloth: converting the checkpoint's weights failed at `{key}`: {detail}")
+
+
 def planner_class_mismatch_reason(loaded_class, planned_class):
     """Why the planner's model differs from the one being loaded, else None. Overriding the config's own choice gets a map for a module tree the model does not have: `num_labels` swaps in a `score` head where `lm_head` was planned, and dispatch refuses with "does not give any device for ... score.weight". Compared as model classes, since two distinct auto classes can resolve to the same VLM."""
     if loaded_class is None or planned_class is None or loaded_class is planned_class:

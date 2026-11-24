@@ -296,8 +296,10 @@ from ._mamba_lora import patch_mamba_fused_lora
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from . import _decode_graphs, _generic_decode_graphs, _flex_decode
+from .inkling2 import is_inkling2_config as _is_inkling2_config
 from .loader_utils import (
     _bnb_bits_requested,
+    explain_weight_conversion_error,
     _kwargs_with_resolved_revision,
     _resolved_revision,
     vlm_gradient_checkpointing_reentrant,
@@ -4554,6 +4556,13 @@ class FastBaseModel:
         _planner_skip_reason = None
         _planner_config = auto_config if text_only_decoder else None
         _planner_config_reason = "text_only loads a decoder the repo config does not describe"
+        # Inkling 2: config.json names a "modelopt" quantization the planner refuses ("Unknown quantization type"),
+        # so it fell back to a split that overfilled the smaller card; auto_config has that marker dropped.
+        if _planner_config is None and _is_inkling2_config(auto_config):
+            _planner_config = auto_config
+            _planner_config_reason = (
+                "this unsloth_zoo cannot plan from the resolved Inkling 2 config"
+            )
         # Re-quantized packed checkpoint: config.json would size it as compressed-tensors and refuse bnb flags.
         if _planner_config is None and compressed_tensors_prepared_config(auto_config) is not None:
             _planner_config = auto_config
@@ -4956,14 +4965,20 @@ class FastBaseModel:
                                 kwargs.get("quantization_config"), model_config
                             ),
                         ):
-                            model = auto_model.from_pretrained(
-                                model_name,
-                                config = model_config,
-                                device_map = device_map,
-                                token = token,
-                                trust_remote_code = trust_remote_code,
-                                **_kwargs_with_resolved_revision(model_name, kwargs, token),
-                            )
+                            try:
+                                model = auto_model.from_pretrained(
+                                    model_name,
+                                    config = model_config,
+                                    device_map = device_map,
+                                    token = token,
+                                    trust_remote_code = trust_remote_code,
+                                    **_kwargs_with_resolved_revision(model_name, kwargs, token),
+                                )
+                            except RuntimeError as error:
+                                explained = explain_weight_conversion_error(error)
+                                if explained is None:
+                                    raise
+                                raise explained from error
                     finally:
                         # The load deep-copied the config; give the caller's object its fp8 block back.
                         disarm_fp8_to_nf4(model_config)
