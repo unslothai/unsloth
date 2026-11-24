@@ -364,6 +364,14 @@ _LLAMA_CLIENT_ERROR_RE = _re.compile(r"llama-server returned (?:4\d\d|501): (.*)
 _LLAMA_SERVER_ERROR_RE = _re.compile(r"llama-server returned 5\d\d: (.*)", _re.DOTALL)
 
 
+_SGLANG_CONTEXT_LIMIT_RE = _re.compile(
+    r"The input \((\d{1,12}) tokens\) is longer than the model's context length \((\d{1,12}) tokens\)"
+)
+_VLLM_CONTEXT_LIMIT_RE = _re.compile(
+    r"This model's maximum context length is (\d{1,12}) tokens\. However, you requested"
+)
+
+
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
     if isinstance(exc, context_refusal.ContextBudgetExceeded):
@@ -393,6 +401,15 @@ def _friendly_error(exc: Exception) -> str:
     if m:
         # llama-server only knows the prompt total; let the fit's diagnosis pick the wording.
         return context_refusal.describe_oversize(int(m.group(1)), int(m.group(2)))
+    m = _SGLANG_CONTEXT_LIMIT_RE.search(msg)
+    if m:
+        return context_refusal.describe_oversize(int(m[1]), int(m[2]))
+    m = _VLLM_CONTEXT_LIMIT_RE.search(msg)
+    if m:
+        return (
+            f"The prompt and requested reply exceed the model's {m[1]}-token context window. "
+            "Shorten the prompt or request fewer output tokens."
+        )
     if "Lost connection to llama-server" in msg:
         return _LOST_CONNECTION_MSG
     template_msg = _template_raise_message(msg, _loaded_chat_template())
@@ -30287,6 +30304,7 @@ def _fit_external_context(
     first_pass: bool = True,
     replays_manual: bool = False,
     keep_ids: Optional[set[int]] = None,
+    count_tokens: Optional[Callable[[list[dict]], int]] = None,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
     queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
@@ -30310,7 +30328,7 @@ def _fit_external_context(
         _sticky_compaction_state,
     )
 
-    _count = _external_token_counter(payload, tools)
+    _count = count_tokens or _external_token_counter(payload, tools)
     prompt_tokens = _count(messages)
     context_length, max_tokens = _external_fit_limits(payload, prompt_tokens)
     policy = _request_context_policy(payload)

@@ -419,6 +419,9 @@ def test_tool_stream_reasoning_reaches_studio_as_reasoning_content():
 
 
 class _Engine:
+    def count_tokens(self, messages, **kwargs):
+        raise RuntimeError("Tokenizer unavailable")
+
     engine = "vllm"
     context = 2048
     reasoning_parser = "qwen3"
@@ -725,6 +728,33 @@ def test_a_window_sized_reply_cap_is_left_to_the_engine():
             assert asyncio.run(fit(prompt))[1] == sent
 
 
+def test_managed_tool_fit_counts_template_and_tools_with_a_window_sized_cap():
+    import asyncio
+
+    from routes.managed_engine_chat import _message_fitter
+
+    engine = _Engine()
+    tools = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+
+    def count_tokens(messages, **kwargs):
+        assert kwargs["tools"] == tools
+        return 1060 + 180 * len(messages), "m"
+
+    engine.count_tokens = count_tokens
+    payload = _tool_payload(context_overflow = "truncate_oldest")
+    payload.max_tokens = engine.context
+    messages = [
+        {"role": role, "content": str(i)}
+        for i, role in enumerate(("user", "assistant", "user", "assistant", "user", "assistant", "user"))
+    ]
+    fit = _message_fitter(payload, engine, "m", tools)
+    fitted, cap, line = asyncio.run(fit(messages))
+    assert fitted[-1] == messages[-1]
+    assert len(fitted) < len(messages)
+    assert count_tokens(fitted, tools = tools)[0] < engine.context
+    assert cap is None and "context_truncated" in line
+
+
 def test_a_managed_refit_recalls_with_the_first_branch_it_saw(monkeypatch):
     import asyncio
 
@@ -738,6 +768,7 @@ def test_a_managed_refit_recalls_with_the_first_branch_it_saw(monkeypatch):
         payload,
         *,
         tools = None,
+        count_tokens = None,
         branch = None,
         tool_loop = False,
     ):
@@ -819,3 +850,22 @@ def test_tokenize_receives_the_effort_inside_the_template_kwargs(monkeypatch):
     assert sent[-1]["chat_template_kwargs"] == {"reasoning_effort": "low", "enable_thinking": True}
     engine.count_tokens([{"role": "user", "content": "hi"}], enable_thinking = False)
     assert sent[-1]["chat_template_kwargs"] == {"enable_thinking": False, "thinking": False}
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "The input (2081 tokens) is longer than the model's context length (2048 tokens).",
+        "This model's maximum context length is 2048 tokens. However, you requested 1 output "
+        "tokens and your prompt contains at least 2048 input tokens.",
+    ],
+)
+def test_managed_overflow_reports_the_window_without_copying_engine_details(message):
+    from routes import inference as api
+
+    error = api._openai_passthrough_error(400, json.dumps({"error": {"message": message + " /private/path"}}))
+    assert error.status_code == 400
+    detail = error.detail["error"]
+    assert detail["code"] == "context_length_exceeded"
+    assert "2048-token context window" in detail["message"]
+    assert "/private/path" not in detail["message"]
