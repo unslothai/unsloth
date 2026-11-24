@@ -1550,7 +1550,14 @@ def _fit_mode(cmd):
     return None
 
 
-def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
+def _run_full_offload_spawns(
+    monkeypatch,
+    tmp_path,
+    *,
+    outputs,
+    returncodes,
+    bundle_devices = ("ROCm0",),
+):
     """Runs load_model with --fit off; use_system_rocm=False skips /opt/rocm/lib, as the retry does."""
 
     def _gguf_string(value: str) -> bytes:
@@ -1594,6 +1601,11 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
         return {"PATH": os.environ.get("PATH", ""), "LD_LIBRARY_PATH": ld}
 
     backend._llama_server_env_for_binary = _env_for_binary
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_list_devices_under",
+        staticmethod(lambda _binary, _env: list(bundle_devices)),
+    )
     backend._prepare_cpu_fallback_launch = lambda *_a, **_kw: None
     # Class-level cache set by a successful retry; reset so it does not leak across tests.
     monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", {})
@@ -1786,4 +1798,20 @@ class TestHipRocrSegfaultRetriesBundleOnly:
         assert len(launches) == 3
         assert launches[2][1]["LD_LIBRARY_PATH"].startswith("/opt/rocm/lib")
         assert _fit_mode(launches[2][0]) == "on"
+        assert not LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")
+
+    def test_a_bundle_that_sees_no_gpu_keeps_the_system_dirs(self, monkeypatch, tmp_path):
+        """#7233: a bundle that lists no GPU would come up on CPU, so no bundle-only retry."""
+        launches, loaded, error = _run_full_offload_spawns(
+            monkeypatch,
+            tmp_path,
+            outputs = ["", ""],
+            returncodes = [-11, None],
+            bundle_devices = (),
+        )
+        assert error is None
+        assert loaded
+        assert len(launches) == 2
+        assert launches[1][1]["LD_LIBRARY_PATH"].startswith("/opt/rocm/lib")
+        assert _fit_mode(launches[1][0]) == "on"
         assert not LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")

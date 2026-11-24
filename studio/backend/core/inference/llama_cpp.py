@@ -34059,10 +34059,16 @@ class LlamaCppBackend:
                             _clean_dirs = _clean_ld.split(":")
                             _env_dirs = env.get("LD_LIBRARY_PATH", "").split(":")
                             # Dropping the prepend only removes dirs (a staged CPU runtime differs).
+                            # The bundle must see a GPU too: on #7233 hosts it passes /health on CPU.
                             _hip_rocr_mismatch = (
                                 bool(_clean_ld)
                                 and len(_clean_dirs) < len(_env_dirs)
                                 and set(_clean_dirs) <= set(_env_dirs)
+                                and bool(
+                                    self._list_devices_under(
+                                        binary, {**env, "LD_LIBRARY_PATH": _clean_ld}
+                                    )
+                                )
                             )
                             _signal_mix = _hip_rocr_mismatch
                         # A startup crash means the spill prediction was wrong, so placement returns to llama.cpp.
