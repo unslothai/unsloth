@@ -13,6 +13,7 @@ import * as jsxRuntime from "react/jsx-runtime";
 import type * as DebugLogsApi from "../src/features/settings/api/debug-logs.ts";
 import * as debugLogBuffer from "../src/features/settings/lib/debug-log-buffer.ts";
 import * as debugLogError from "../src/features/settings/lib/debug-log-error.ts";
+import * as managedEngineLogTarget from "../src/features/settings/lib/managed-engine-log-target.ts";
 import type * as DebuggingTabModule from "../src/features/settings/tabs/debugging-tab.tsx";
 import { en } from "../src/i18n/locales/en.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
@@ -213,6 +214,7 @@ function makeWorld(options: {
     },
     "../lib/debug-log-buffer": debugLogBuffer,
     "../lib/debug-log-error": debugLogError,
+    "../lib/managed-engine-log-target": managedEngineLogTarget,
     "../stores/settings-dialog-store": {
       useSettingsDialogStore: Object.assign(
         (selector?: (state: DialogState) => unknown) =>

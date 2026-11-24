@@ -887,6 +887,13 @@ export const ar = {
     compactEmpty: "لا يوجد ما يمكن ضغطه بعد",
     compactUnsupported: "ضغط المحادثة يتطلب نموذج GGUF أو MLX يدعم الأدوات",
   },
+  chatFiles: {
+    title: "الملفات في هذه المحادثة",
+    code: "مقتطفات التعليمات البرمجية",
+    showInChat: "إظهار في المحادثة",
+    download: "تنزيل {name}",
+    saveFailed: "تعذّر حفظ {name}.",
+  },
   welcome: {
     goodToSeeYou: "سعيد برؤيتك",
     goodToSeeYouName: "سعيد برؤيتك يا {name}",
@@ -935,6 +942,9 @@ export const ar = {
     useModelScopeHint: "ابحث ونزّل من ModelScope بدلًا من ذلك. يمكنك العودة من الإعدادات.",
     useModelScopeFailed: "تعذّر التبديل إلى ModelScope.",
     updateToken: "تحديث الرمز",
+    linkedModelTitle: "تحميل {model}؟",
+    linkedModelBody: "فتح رابط هذه الصفحة وطلب تنزيل هذا النموذج وتحميله.",
+    linkedModelLoad: "تحميل",
     hfToken: {
       label: "توكن HF",
       saved: "محفوظ",
@@ -2600,7 +2610,7 @@ export const ar = {
         off: "إيقاف",
         oldWebkitWarning: "WebKitGTK {version} على Wayland: قد يتعطل العرض عبر GPU عند التشغيل على NVIDIA مع التحجيم الكسري (WebKit bug 280210). إذا حدث ذلك، يعود Unsloth تلقائيًا إلى العرض عبر CPU. على WebKitGTK 2.50.4 لم يُحقق أي تسريع ملموس (8 fps في الحالتين)، لذا لا يُنصح بخيار «تشغيل» هنا.",
         oldDriverWarning:
-          "برنامج تشغيل NVIDIA {version} على X11: يُبقي Unsloth العرض عبر GPU متوقفًا حتى يصبح برنامج التشغيل 610 أو أحدث. تُسرّب برامج التشغيل الأقدم واصف ملف في كل إطار، فتتوقف النافذة عن الرسم خلال دقائق.",
+          "برنامج تشغيل NVIDIA {version} على X11: يُبقي Unsloth العرض عبر GPU متوقفًا حتى يصبح برنامج التشغيل 590 أو أحدث. تُسرّب برامج التشغيل الأقدم واصف ملف في كل إطار، فتتوقف النافذة عن الرسم خلال دقائق.",
         fallbackNote: "تعطّل العرض عبر GPU عند التشغيل على هذا النظام، لذا يستخدم Unsloth العرض عبر CPU.",
         tryAgain: "جرّب GPU مرة أخرى",
         envOverride: "مُعيَّن بواسطة متغير البيئة {name}. لا يكون لهذا الإعداد أي تأثير حتى تتم إزالته.",
@@ -2868,6 +2878,15 @@ export const ar = {
         runningOn: "يعمل llama.cpp حاليًا على {backend}.",
         hint: "يثبّت إصدار llama.cpp الخاص بهذه الخلفية ويحافظ عليه عبر التحديثات. مفيد عندما ينهار الاختيار التلقائي أو لا يدعمه تعريف كرت الشاشة لديك. تظهر فقط الخلفيات التي يتوفر لها إصدار لهذا الجهاز، والتدريب لا يتأثر.",
         autoWith: "تلقائي ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm غير مثبت",
+          rocmNoAccess: "لا يوجد وصول إلى وحدة GPU",
+          otherRelease: "يحتاج إلى تحديث llama.cpp",
+          checkFailed: "تعذر التحقق",
+          noBuild: "لا يوجد إصدار لهذا الجهاز",
+        },
         apply: "تطبيق",
         applying: "جارٍ التثبيت...",
         applyHint: "ينزّل الإصدار الجديد ويعيد تشغيل llama.cpp. سيتم تفريغ النموذج المحمّل.",

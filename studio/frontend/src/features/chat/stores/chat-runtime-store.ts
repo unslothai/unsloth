@@ -65,7 +65,10 @@ import {
   getPresetOwnedParams,
   getPresetSource,
 } from "../presets/preset-policy";
-import { normalizeModelIdentity } from "../../hub/lib/model-identity";
+import {
+  normalizeModelIdentity,
+  withoutNamedQuant,
+} from "../../hub/lib/model-identity";
 import { normalizePresetLoadConfig } from "../presets/preset-load-config";
 import {
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
@@ -2669,6 +2672,8 @@ type ChatRuntimeStore = {
       runId?: string;
       /** A computer call's reasons for asking; absent on a card restored after a reload. */
       computerUse?: ComputerUseAsk;
+      /** The tool the approval is for: only a card naming that tool may ask or answer. */
+      toolName?: string;
     }
   >;
   webFetchToolsEnabled: boolean;
@@ -2920,6 +2925,7 @@ type ChatRuntimeStore = {
     imageDisclosure?: ImageDisclosure,
     runId?: string,
     computerUse?: ComputerUseAsk,
+    toolName?: string,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
@@ -5192,6 +5198,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setModelsError: (modelsError) => set({ modelsError }),
   setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
   setCheckpoint: (modelId, ggufVariant, options) => {
+    modelId = withoutNamedQuant(modelId, ggufVariant);
     let scheduleQwenMigration = false;
     set((state) => {
       // Only external selections persist; a stale local id would race the freshly loaded model.
@@ -6089,6 +6096,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     imageDisclosure,
     runId,
     computerUse,
+    toolName,
   ) =>
     set((state) => ({
       toolConfirmations: {
@@ -6101,6 +6109,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           imageDisclosure,
           runId,
           computerUse,
+          toolName,
         },
       },
     })),

@@ -192,6 +192,16 @@ def test_new_receiver_resends_everything():
     assert len(other.loaded) == full
 
 
+def test_server_mode_non_main_rank_has_no_client():
+    # TRL sets vllm_client on the main process only; under DDP the other ranks must not touch it.
+    model = _tiny_llama_lora()
+    trainer, engine = _merged_trainer(model, "server")
+    del trainer.vllm_client
+    trainer.accelerator.is_main_process = False
+    _patched_method()(trainer)
+    assert engine.loaded == [] and engine.resets == 0
+
+
 def test_unfrozen_or_edited_frozen_weight_is_sent():
     model = _tiny_llama_lora()
     trainer, engine = _merged_trainer(model)

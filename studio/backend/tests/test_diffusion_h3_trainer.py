@@ -1469,7 +1469,7 @@ def _h3_cache_run(
     pipe = types.SimpleNamespace(
         text_encoder = _Placed(), processor = None, vae = _Placed(), audio_vae = _Placed()
     )
-    monkeypatch.setattr(h3, "_load_conditioners", lambda cfg, device: pipe)
+    monkeypatch.setattr(h3, "_load_conditioners", lambda cfg, device, **_k: pipe)
     monkeypatch.setattr(h3, "_encode_prompt", lambda *_a, **_k: torch.zeros(1, 8, 16))
     monkeypatch.setattr(h3, "_dataset_canvas", lambda _path, _short_edge: (64, 64))
     monkeypatch.setattr(h3, "decode_clip", lambda *_a, **_k: (None, None))
@@ -1729,7 +1729,9 @@ def test_h3_routes_its_transformer_through_the_shared_regional_compile(
         order.append("optimizer")
         raise _Stop
 
-    monkeypatch.setattr(diffusion_h3_trainer, "_load_conditioners", lambda cfg, device: _Pipe())
+    monkeypatch.setattr(
+        diffusion_h3_trainer, "_load_conditioners", lambda cfg, device, **_k: _Pipe()
+    )
     monkeypatch.setattr(
         diffusion_h3_trainer, "_encode_prompt", lambda pipe, cap, device: torch.zeros(1, 3, 8)
     )

@@ -317,7 +317,11 @@ def run_token_preview_process(*, cmd_queue: Any, resp_queue: Any, config: dict) 
     load_error = None
     try:
         from utils.transformers_version import activate_transformers_for_subprocess
+        from utils.transformers_backports import install as guard_transformers_parsing
+
         activate_transformers_for_subprocess(config["model_name"], config.get("hf_token"))
+        # The unsloth import below comes too late: the tokenizer load parses the repo's config.json.
+        guard_transformers_parsing()
         tokenizer = _load_tokenizer(config)
     except Exception as exc:  # noqa: BLE001 - reported on every request instead
         load_error = f"Could not load the tokenizer for {config['model_name']}: {exc}"

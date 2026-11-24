@@ -887,6 +887,13 @@ export const de = {
     compactEmpty: "Noch nichts zu komprimieren",
     compactUnsupported: "Die Komprimierung erfordert ein GGUF- oder MLX-Modell mit Tool-Unterstützung",
   },
+  chatFiles: {
+    title: "Dateien in diesem Chat",
+    code: "Code-Schnipsel",
+    showInChat: "Im Chat anzeigen",
+    download: "{name} herunterladen",
+    saveFailed: "{name} konnte nicht gespeichert werden.",
+  },
   welcome: {
     goodToSeeYou: "Schön, dich zu sehen",
     goodToSeeYouName: "Schön, dich zu sehen, {name}",
@@ -937,6 +944,9 @@ export const de = {
     useModelScopeHint: "Stattdessen über ModelScope suchen und herunterladen. Sie können in den Einstellungen zurückwechseln.",
     useModelScopeFailed: "Wechsel zu ModelScope fehlgeschlagen.",
     updateToken: "Token aktualisieren",
+    linkedModelTitle: "{model} laden?",
+    linkedModelBody: "Ein Link hat diese Seite geöffnet und möchte dieses Modell herunterladen und laden.",
+    linkedModelLoad: "Laden",
     hfToken: {
       label: "HF-Token",
       saved: "Gespeichert",
@@ -2629,7 +2639,7 @@ export const de = {
         off: "Aus",
         oldWebkitWarning: "WebKitGTK {version} unter Wayland: GPU-Rendering kann auf NVIDIA mit gebrochener Skalierung beim Start abstürzen (WebKit bug 280210). In diesem Fall wechselt Unsloth von selbst zurück zum CPU-Rendering. Unter WebKitGTK 2.50.4 brachte es keinen messbaren Geschwindigkeitsgewinn (in beiden Fällen 8 fps), daher wird An hier nicht empfohlen.",
         oldDriverWarning:
-          "NVIDIA-Treiber {version} unter X11: Unsloth lässt das GPU-Rendering aus, bis der Treiber 610 oder neuer ist. Ältere Treiber verlieren pro Frame einen Dateideskriptor, und das Fenster zeichnet nach wenigen Minuten nicht mehr.",
+          "NVIDIA-Treiber {version} unter X11: Unsloth lässt das GPU-Rendering aus, bis der Treiber 590 oder neuer ist. Ältere Treiber verlieren pro Frame einen Dateideskriptor, und das Fenster zeichnet nach wenigen Minuten nicht mehr.",
         fallbackNote: "GPU-Rendering ist auf diesem System beim Start abgestürzt, daher verwendet Unsloth CPU-Rendering.",
         tryAgain: "GPU erneut versuchen",
         envOverride: "Durch die Umgebungsvariable {name} festgelegt. Diese Einstellung hat keine Wirkung, solange sie gesetzt ist.",
@@ -2900,6 +2910,15 @@ export const de = {
         runningOn: "llama.cpp läuft derzeit mit {backend}.",
         hint: "Installiert den llama.cpp-Build für dieses Backend und behält ihn über Updates hinweg bei. Nützlich, wenn die automatische Wahl abstürzt oder dein GPU-Treiber sie nicht unterstützt. Es werden nur Backends aufgeführt, für die es einen Build für diesen Rechner gibt; das Training bleibt unberührt.",
         autoWith: "Automatisch ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm nicht installiert",
+          rocmNoAccess: "kein Zugriff auf die GPU",
+          otherRelease: "erfordert ein llama.cpp-Update",
+          checkFailed: "konnte nicht geprüft werden",
+          noBuild: "kein Build für diesen Rechner",
+        },
         apply: "Anwenden",
         applying: "Wird installiert ...",
         applyHint: "Lädt den neuen Build herunter und startet llama.cpp neu. Ein geladenes Modell wird entladen.",

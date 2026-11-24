@@ -513,6 +513,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
             base_model = base_model,
+            adapter_free = bool(cmd.get("adapter_free")),
         )
 
         _send_response(
@@ -749,6 +750,11 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
         quiet_progress_bars = False,
     )
+
+    # REAP calibration loads a Hub dataset in this process: its card may not name host paths either.
+    from utils.security.hub_data_files import install as guard_hub_data_files
+
+    guard_hub_data_files()
 
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
