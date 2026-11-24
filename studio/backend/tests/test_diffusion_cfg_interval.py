@@ -256,7 +256,6 @@ def test_short_fast_cfg_renders_keep_offloaded_cfg_batching():
     from core.inference import diffusion_cfg_batch
 
     pipe = _tiny_flux3_pipe()
-    # an offloaded layout, as group offload leaves it (no tensors move on CPU)
     hooks = {"group_offloading": object()}
     pipe.transformer.single_transformer_blocks[0]._diffusers_hook = types.SimpleNamespace(
         hooks = hooks, get_hook = hooks.get
@@ -273,7 +272,6 @@ def test_short_fast_cfg_renders_keep_offloaded_cfg_batching():
     _render(pipe, None)
     after = router.describe()
     assert after["shape_off"] is None
-    # steps 2-5 of the full-CFG render batch, as before any Fast CFG render
     assert after["hits"] - before["hits"] == 4
 
 

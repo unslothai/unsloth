@@ -549,7 +549,6 @@ class _Flux3KleinPipelineMixin:
                 if not self.is_distilled:
                     cond_blocks.begin_render(transformer)
                 try:
-                    # Per call: a previous batch image may have run past a Fast CFG stop.
                     _reset_guider_step(mp)
                     with self._step_hooks(
                         mp,
