@@ -5666,7 +5666,8 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
     )
 
     assert len(calls) == 2, calls
-    assert len(payloads) == 3, len(payloads)
+    assert len(payloads) == 4, len(payloads)
+    assert "tools" not in payloads[3]
     # The final pass may not call tools (it keeps the schemas for the cache). Its controller feedback stays in
     # the latest tool result rather than opening a newer user turn.
     assert payloads[2]["tool_choice"] == "none", payloads[2].get("tool_choice")
