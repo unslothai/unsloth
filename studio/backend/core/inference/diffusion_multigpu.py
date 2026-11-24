@@ -2504,6 +2504,80 @@ def _trusted_hook(fn: Any) -> bool:
     return _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES) and _portable(fn)
 
 
+def _named_modules(module: Any) -> list:
+    """``list(module.named_modules())`` built by one recursive function instead of a chain of nested generators (each
+    yielded name passes through every enclosing generator; a DiT has thousands of submodules and the CFG router walks
+    it several times per denoise step). Same order, names and de-duplication as torch's recursion; a module whose type
+    or instance replaces ``named_modules`` is asked for its own subtree exactly as torch's recursion asks it."""
+    base = _torch().nn.Module.named_modules
+    if type(module).named_modules is not base or "named_modules" in module.__dict__:
+        return list(module.named_modules())
+    out: list = []
+    memo: set = set()
+    stock: set = set()
+    add = out.append
+
+    def visit(prefix: str, sub: Any) -> None:
+        cls = type(sub)
+        if cls not in stock:
+            if cls.named_modules is not base:
+                out.extend(sub.named_modules(memo, prefix, True))
+                return
+            stock.add(cls)
+        if "named_modules" in sub.__dict__:
+            out.extend(sub.named_modules(memo, prefix, True))
+            return
+        if sub in memo:
+            return
+        memo.add(sub)
+        add((prefix, sub))
+        children = sub._modules
+        if children:
+            dot = prefix + "." if prefix else ""
+            for key, child in children.items():
+                if child is not None:
+                    visit(dot + key, child)
+
+    visit("", module)
+    return out
+
+
+def _plain_lookup(cls: Any) -> bool:
+    """True when attribute reads on ``cls`` instances follow torch's ``Module`` rules and the class itself defines none
+    of the per-instance hook slots :func:`_hooks_present` reads: ``getattr(sub, name, None)`` is then the instance
+    ``__dict__`` entry, else torch's parameter / buffer / submodule fallback, else None."""
+    torch = _torch()
+    return (
+        cls.__getattr__ is torch.nn.Module.__getattr__
+        and cls.__getattribute__ is object.__getattribute__
+        and not any(hasattr(cls, n) for n in _HOOK_SLOTS)
+    )
+
+
+_HOOK_SLOTS = ("_hf_hook", "_forward_hooks", "_forward_pre_hooks")
+
+
+def _nothing_to_report(state: dict) -> bool:
+    """For a :func:`_plain_lookup` module's ``__dict__``: True when :func:`_hooks_present`'s per-module checks provably
+    find nothing (no hook registry, no accelerate hook under any lookup, empty forward hook dicts, no instance
+    ``forward``), so the full checks can be skipped. False just runs them."""
+    if (
+        state.get("_diffusers_hook") is not None
+        or "_hf_hook" in state
+        or state.get("forward") is not None
+        or "_forward_hooks" not in state
+        or "_forward_pre_hooks" not in state
+        or state["_forward_hooks"]
+        or state["_forward_pre_hooks"]
+    ):
+        return False
+    for slot in ("_parameters", "_buffers", "_modules"):
+        members = state.get(slot)
+        if members is not None and "_hf_hook" in members:
+            return False
+    return True
+
+
 def _hooks_present(module: Any) -> Optional[str]:
     """Name of the first submodule carrying state a replica cannot inherit faithfully, else None: a non-offload hook
     registry (step caches), an accelerate hook, or a forward hook / instance forward override below the root whose
@@ -2512,7 +2586,14 @@ def _hooks_present(module: Any) -> Optional[str]:
     ROOT's torch forward hooks run on the source around the router for every branch and the copy does not carry them,
     but whatever per-call state they write must reach the replica: only Studio's own root hooks are accepted, whose
     state is the ``_unsloth_*`` scalars :func:`_mirror_hook_state` copies."""
-    for name, sub in module.named_modules():
+    plain: dict = {}
+    for name, sub in _named_modules(module):
+        cls = type(sub)
+        fast = plain.get(cls)
+        if fast is None:
+            fast = plain[cls] = _plain_lookup(cls)
+        if fast and _nothing_to_report(sub.__dict__):
+            continue  # every check below reads None / an empty dict for this submodule
         kind = _registry_kind(sub)
         if kind == "other":
             return f"{name or '<root>'}._diffusers_hook ({', '.join(sorted(sub._diffusers_hook.hooks))})"
@@ -2773,6 +2854,67 @@ _ADAPTER_ATTRS = (
     "disable_adapters",
     "_disable_adapters",
 )
+_ADAPTER_ATTR_SET = frozenset(_ADAPTER_ATTRS)
+_TRAVERSAL_METHODS = ("named_modules", "named_parameters", "named_buffers", "_named_members")
+
+
+def _stock_traversal(module: Any) -> bool:
+    """True when ``module.named_parameters()`` / ``named_buffers()`` / ``named_modules()`` are torch's own (the root's
+    type and instance replace none of them), so :func:`_stock_fingerprint_parts` over :func:`_named_modules` yields
+    the same."""
+    base = _torch().nn.Module
+    cls = type(module)
+    return all(
+        getattr(cls, n, None) is getattr(base, n) and n not in module.__dict__
+        for n in _TRAVERSAL_METHODS
+    )
+
+
+def _stock_fingerprint_parts(named: list) -> list:
+    """The parts :func:`weights_fingerprint` hashes, from one pass over the already walked ``named_modules`` list
+    instead of three walks: every ``named_parameters()`` entry, then every ``named_buffers()`` entry (torch's
+    ``Module._named_members``: same order, names and de-duplication), then the adapter attributes."""
+    params: list = []
+    buffers: list = []
+    adapters: list = []
+    seen_params: set = set()
+    seen_buffers: set = set()
+    for prefix, sub in named:
+        own_params = sub._parameters
+        own_buffers = sub._buffers
+        if own_params or own_buffers:
+            dot = prefix + "." if prefix else ""
+            if own_params:
+                _member_parts(own_params, dot, seen_params, params)
+            if own_buffers:
+                _member_parts(own_buffers, dot, seen_buffers, buffers)
+        if not _ADAPTER_ATTR_SET.isdisjoint(sub.__dict__):
+            _adapter_parts(prefix, sub, adapters)
+    return params + buffers + adapters
+
+
+def _member_parts(members: dict, dot: str, seen: set, out: list) -> None:
+    for key, value in members.items():
+        if value is None or value in seen:
+            continue
+        seen.add(value)
+        try:
+            version = value._version
+        except Exception:  # noqa: BLE001 - inference tensors carry no version
+            version = -1
+        out.append((dot + key, id(value), version))
+
+
+def _adapter_parts(name: str, sub: Any, parts: list) -> None:
+    for attr in _ADAPTER_ATTRS:
+        value = sub.__dict__.get(attr)
+        if isinstance(value, dict):
+            # A pinned scale tensor: identity + version (an in-place write bumps it), no device read per call.
+            value = {
+                k: (id(v), v._version) if hasattr(v, "_version") else v for k, v in value.items()
+            }
+        if value is not None and not callable(value):
+            parts.append((name, attr, repr(value)))
 
 
 def weights_fingerprint(module: Any) -> int:
@@ -2780,26 +2922,19 @@ def weights_fingerprint(module: Any) -> int:
     keep their packed weights and scales as buffers) replaced, edited in place (fused LoRA bumps the version counter),
     added or removed (PEFT injection), or an adapter's scale / activation changed. A ``.data`` swap to different values
     is not seen; diffusers' LoRA paths do not do that."""
+    # Identity, not the data pointer: an encode-time offload round trip moves the same weights and must not force a
+    # rebuild, while a replaced parameter (new object) or an in-place edit (version) must.
+    if _stock_traversal(module):
+        return hash(tuple(_stock_fingerprint_parts(_named_modules(module))))
     parts: list = []
     for name, param in (*module.named_parameters(), *module.named_buffers()):
         try:
             version = param._version
         except Exception:  # noqa: BLE001 - inference tensors carry no version
             version = -1
-        # Identity, not the data pointer: an encode-time offload round trip moves the same weights and must not force
-        # a rebuild, while a replaced parameter (new object) or an in-place edit (version) must.
         parts.append((name, id(param), version))
     for name, sub in module.named_modules():
-        for attr in _ADAPTER_ATTRS:
-            value = sub.__dict__.get(attr)
-            if isinstance(value, dict):
-                # A pinned scale tensor: identity + version (an in-place write bumps it), no device read per call.
-                value = {
-                    k: (id(v), v._version) if hasattr(v, "_version") else v
-                    for k, v in value.items()
-                }
-            if value is not None and not callable(value):
-                parts.append((name, attr, repr(value)))
+        _adapter_parts(name, sub, parts)
     return hash(tuple(parts))
 
 
@@ -3255,12 +3390,26 @@ def _same_value(a: Any, b: Any) -> bool:
 _STATE_PREFIX = "_unsloth_"
 _STATE_TYPES = (bool, int, float, str, type(None))
 _STATE_KEEP = frozenset({"_unsloth_replica_compiled"})
+_STATE_MARK = "\0" + _STATE_PREFIX
+
+
+def _may_hold_state(state: dict) -> bool:
+    """False only when no key of ``state`` starts with ``_unsloth_`` (one C-level search over the joined keys instead
+    of a ``startswith`` per key on every submodule); True sends the dict through the exact per-key scan."""
+    try:
+        joined = "\0".join(state)
+    except TypeError:  # a non-string key: scan it
+        return True
+    return joined.startswith(_STATE_PREFIX) or _STATE_MARK in joined
 
 
 def _hook_state(pairs: list) -> tuple:
     out = []
     for i, (src, _dst) in enumerate(pairs):
-        for key, value in src.__dict__.items():
+        state = src.__dict__
+        if not _may_hold_state(state):
+            continue
+        for key, value in state.items():
             if key.startswith(_STATE_PREFIX) and isinstance(value, _STATE_TYPES):
                 out.append((i, key, value))
     return tuple(out)
@@ -3273,6 +3422,8 @@ def _mirror_hook_state(pairs: list) -> tuple:
         wanted.setdefault(i, {})[key] = value
     for i, (_src, dst) in enumerate(pairs):
         mine = wanted.get(i, {})
+        if not mine and not _may_hold_state(dst.__dict__):
+            continue  # nothing to delete and nothing to write
         for key in [
             k
             for k, v in dst.__dict__.items()
