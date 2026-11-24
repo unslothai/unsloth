@@ -1047,6 +1047,9 @@ export const nl = {
       "Zoek en download in plaats daarvan via ModelScope. Je kunt terugschakelen in Instellingen.",
     useModelScopeFailed: "Kan niet overschakelen naar ModelScope.",
     updateToken: "Token bijwerken",
+    linkedModelTitle: "{model} laden?",
+    linkedModelBody: "Een link heeft deze pagina geopend en vraagt dit model te downloaden en te laden.",
+    linkedModelLoad: "Laden",
     hfToken: {
       label: "HF-token",
       saved: "Opgeslagen",

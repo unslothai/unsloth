@@ -937,6 +937,9 @@ export const ptBR = {
     useModelScopeHint: "Pesquise e baixe pelo ModelScope. Você pode voltar nas Configurações.",
     useModelScopeFailed: "Não foi possível mudar para o ModelScope.",
     updateToken: "Atualizar token",
+    linkedModelTitle: "Carregar {model}?",
+    linkedModelBody: "Um link abriu esta página e pediu para baixar e carregar este modelo.",
+    linkedModelLoad: "Carregar",
     hfToken: {
       label: "Token do HF",
       saved: "Salvo",
