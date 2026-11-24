@@ -159,6 +159,20 @@ test("a closed /dev/kfd or render node reads as no access", () => {
   assert.equal(rocm.unavailableHint, "sudo usermod -a -G render,video someone");
 });
 
+test("a backend only a newer release ships asks for an update, not a build", () => {
+  const status = parseLlamaBackendStatus({
+    ...FULL_PAYLOAD,
+    options: [
+      { backend: "vulkan", available: false, unavailable_reason: "other_release", applies_to_host: true },
+    ],
+  });
+
+  const [vulkan] = visibleLlamaBackendOptions(status, "auto").filter(
+    (option) => option.backend === "vulkan",
+  );
+  assert.equal(llamaBackendUnavailableKey(vulkan), "otherRelease");
+});
+
 test("a backend for a GPU this host does not have stays hidden", () => {
   const status = parseLlamaBackendStatus({
     ...FULL_PAYLOAD,
@@ -186,7 +200,7 @@ test("the picker renders greyed options disabled with the reason in the label", 
   assert.match(source, /llama-backend-hint-\$\{option\.backend\}/);
   const en = await readFile(new URL("../src/i18n/locales/en.ts", import.meta.url), "utf8");
   assert.doesNotMatch(en, /Only backends with a build for this machine are listed/);
-  for (const key of ["rocmNotInstalled", "rocmNoAccess", "checkFailed", "noBuild"]) {
+  for (const key of ["rocmNotInstalled", "rocmNoAccess", "otherRelease", "checkFailed", "noBuild"]) {
     assert.match(en, new RegExp(`${key}: "`));
   }
 });

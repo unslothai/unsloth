@@ -239,7 +239,8 @@ class LlamaBackendOption(BaseModel):
     unavailable_reason: Optional[str] = Field(
         None,
         description = (
-            "unavailable | no_prebuilt | error | rocm_not_installed | rocm_no_access, "
+            "unavailable | no_prebuilt | other_release | error | rocm_not_installed | "
+            "rocm_no_access, "
             "when available is false."
         ),
     )

@@ -2896,6 +2896,7 @@ export const en = {
         unavailable: {
           rocmNotInstalled: "ROCm not installed",
           rocmNoAccess: "no access to the GPU",
+          otherRelease: "needs a llama.cpp update",
           checkFailed: "could not check",
           noBuild: "no build for this machine",
         },

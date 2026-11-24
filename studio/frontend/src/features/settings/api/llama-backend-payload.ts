@@ -198,6 +198,7 @@ export function visibleLlamaBackendOptions(
 const UNAVAILABLE_REASONS = {
   rocm_not_installed: "rocmNotInstalled",
   rocm_no_access: "rocmNoAccess",
+  other_release: "otherRelease",
   error: "checkFailed",
 } as const;
 

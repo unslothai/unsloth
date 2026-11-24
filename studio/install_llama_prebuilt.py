@@ -11609,9 +11609,12 @@ def resolve_backends_payload(
                     or (installed_release and entry["release_tag"] != installed_release)
                 ):
                     # Slim whisper.cpp bundles are paired to the installed release, so a switch is an update.
-                    entry["available"] = False
-                    entry["detail"] = "switching this backend would leave the installed release"
-                if not entry["available"]:
+                    entry.update(
+                        available = False,
+                        reason = "other_release",
+                        detail = "switching this backend would leave the installed release",
+                    )
+                elif not entry["available"]:
                     entry["reason"] = "no_prebuilt"
             entries.append(entry)
     if entries and all(entry.get("reason") == "error" for entry in entries):
