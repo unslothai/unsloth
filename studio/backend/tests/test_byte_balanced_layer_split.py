@@ -175,3 +175,40 @@ def test_the_launch_lets_the_fitter_place_a_pin_no_cut_fits():
     arm = arm[: arm.index('if gpu_memory_mode == "manual" and gpu_layers >= 0:')]
     assert "and not use_fit" in arm
     assert "use_fit, gpu_indices, _mixed_split = True, None, None" in arm
+
+
+def _two_card_plan(tmp_path, monkeypatch, cut_split):
+    """test_slot_reduction_context_refit's two-card case (4 slots asked, 2 fit on two 8.5 GB
+    cards), with _mixed_pin_split answering ``cut_split`` for every multi-card pin."""
+    tests_dir = str(Path(__file__).resolve().parent)
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    from test_slot_reduction_context_refit import _plan
+
+    seen = []
+
+    def _split(self, gpu_indices, *_a, **_k):
+        seen.append(list(gpu_indices))
+        return cut_split if len(gpu_indices) > 1 else None
+
+    monkeypatch.setattr(LlamaCppBackend, "_mixed_pin_split", _split)
+    got = _plan(tmp_path, weights_mib = 13_800, n_parallel = 4, spec = "off", vram_mib = 8_704, gpus = 2)
+    return got, seen
+
+
+def test_a_slot_cut_no_layer_split_can_hold_keeps_the_slots_asked(tmp_path, monkeypatch):
+    # #19137 at 15360 + 11264 MiB: 3 slots fit the pool but not the small card, so the load
+    # goes to the fitter with the 4 slots asked, as main and #19148 launch it.
+    got, seen = _two_card_plan(tmp_path, monkeypatch, [])
+    assert (got["slots"], got["fit"]) == (4, "on")
+    assert seen and all(len(g) == 2 for g in seen)
+
+
+def test_a_slot_cut_a_byte_split_holds_still_pins(tmp_path, monkeypatch):
+    got, _ = _two_card_plan(tmp_path, monkeypatch, [7.5, 7.5])
+    assert (got["slots"], got["fit"]) == (2, "off")
+
+
+def test_a_slot_cut_llama_cpp_own_split_holds_is_unchanged(tmp_path, monkeypatch):
+    got, _ = _two_card_plan(tmp_path, monkeypatch, None)
+    assert (got["slots"], got["fit"]) == (2, "off")
