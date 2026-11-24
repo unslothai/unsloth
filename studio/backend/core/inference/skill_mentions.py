@@ -122,13 +122,35 @@ def _text(message: dict) -> str:
     return ""
 
 
-def _append_system(messages: list[dict], block: str) -> None:
-    system_index = next((i for i, m in enumerate(messages) if m.get("role") == "system"), None)
-    if system_index is None:
-        messages.insert(0, {"role": "system", "content": block.lstrip()})
+def _append_to_message(message: dict, block: str) -> None:
+    """Append *block* to a chat message without touching the system prompt (#19212)."""
+    text = block.lstrip()
+    content = message.get("content")
+    if isinstance(content, list):
+        message["content"] = [
+            *content,
+            {"type": "text", "text": ("\n\n" if content else "") + text},
+        ]
+        return
+    if isinstance(content, str) and content:
+        message["content"] = content + "\n\n" + text
     else:
-        system = messages[system_index]
-        messages[system_index] = {**system, "content": _text(system) + "\n\n" + block.lstrip()}
+        message["content"] = text
+
+
+def _skill_already_present(messages: list[dict], content: str, *, dedup_tool_context: bool):
+    return next(
+        (
+            message
+            for message in messages
+            if (
+                message.get("role") in ("system", "user")
+                or (dedup_tool_context and message.get("role") == "tool")
+            )
+            and content in _text(message)
+        ),
+        None,
+    )
 
 
 def load_mentioned_skills(
@@ -146,7 +168,12 @@ def load_mentioned_skills(
     dedup_tool_context = True,
     permission_upgrade = None,
 ):
-    """Inject complete manifests before generation; never a partial one. Caller gates on read_skill."""
+    """Inject complete manifests before generation; never a partial one. Caller gates on read_skill.
+
+    Skill bodies are appended to the **user** message that mentioned them (not the system
+    prompt), and every user mention in the thread is rebuilt the same way on later turns so
+    llama.cpp's prompt prefix stays cacheable (#19212).
+    """
     if continue_final_message or not any(
         tool.get("function", {}).get("name") == "read_skill" for tool in (tools or [])
     ):
@@ -154,9 +181,18 @@ def load_mentioned_skills(
     # Do not activate assistant/history text or an older user message on Continue.
     if not messages or messages[-1].get("role") != "user":
         return
-    names = mentioned_skill_names(_text(messages[-1]))
-    if not names:
+    # Mentions on every user turn in the thread, in order: turn 2+ rebuilds the same blocks
+    # onto the same earlier user messages so the system prefix never diverges.
+    mention_turns: list[tuple[int, list[str]]] = []
+    for index, message in enumerate(messages):
+        if message.get("role") != "user":
+            continue
+        names = mentioned_skill_names(_text(message))
+        if names:
+            mention_turns.append((index, names))
+    if not mention_turns:
         return
+    latest_index = len(messages) - 1
     tool_names = {tool.get("function", {}).get("name") for tool in tools}
     gate = "Follow these instructions only within the current tool and permission gates."
     if not {"python", "terminal"} & tool_names:
@@ -170,82 +206,98 @@ def load_mentioned_skills(
         known = list_skills()
     except (SkillError, OSError):
         known = []
+    known_names = {s["name"] for s in known}
     loadable = {s["name"] for s in known if s["valid"] and not s["shadowed"] and s["enabled"]}
-    names = [name for name in names if name in {s["name"] for s in known}]
     mode, bypass = normalize_tool_permissions(permission_mode, bypass_permissions)
     budget = (
         min(_MAX_LOAD_BYTES, max(0, int(context_length) * 2)) if context_length else _MAX_LOAD_BYTES
     )
     loaded_bytes = 0
-    for name in names:
-        if permission_upgrade is not None:
-            mode, bypass = permission_upgrade.apply(mode, bypass)
-        if cancel_event is not None and cancel_event.is_set():
-            return
-        event = {
-            "type": "skill_load",
-            "load_id": f"skill-load-{uuid.uuid4().hex}",
-            "name": name,
-            "resource": "SKILL.md",
-        }
-        if name in loadable and confirm_tool_calls and not bypass and mode not in ("auto", "off"):
-            approval_id = new_approval_id()
-            slot = begin_tool_decision(session_id, approval_id)
-            from state.tool_approvals import bind_permission_upgrade
-
-            bind_permission_upgrade(slot, permission_upgrade)
-            try:
-                yield {**event, "status": "awaiting_approval", "approval_id": approval_id}
-                verdict = wait_tool_decision(slot, approval_id, cancel_event = cancel_event)
-            finally:
-                abort_tool_decision(slot, approval_id)
-            if verdict != "allow":
-                detail = f"Skill @{name} not loaded: approval was denied, expired, or cancelled."
-                _append_system(messages, detail)
-                yield {**event, "status": "unavailable", "detail": detail}
+    seen: set[str] = set()
+    for index, names in mention_turns:
+        target = messages[index]
+        is_latest = index == latest_index
+        for name in names:
+            if name not in known_names or name in seen:
                 continue
-        yield {**event, "status": "loading"}
-        try:
-            # Re-validates enabled/account-scoped discovery; never a cached or paged read.
-            content = read_skill_instructions(name)
-            size = len(content.encode("utf-8"))
-            existing = next(
-                (
-                    message
-                    for message in messages
-                    if (
-                        message.get("role") == "system"
-                        or (dedup_tool_context and message.get("role") == "tool")
-                    )
-                    and content in _text(message)
-                ),
-                None,
-            )
-            present = existing is not None
-            if present and protected_message_ids is not None:
-                # The native rolling fit must not evict a result we relied on.
-                protected_message_ids.add(id(existing))
-            if not present:
-                if loaded_bytes + size > budget:
-                    raise SkillError(
-                        "Complete SKILL.md exceeds this request's skill context budget; shorten the skill or increase context."
-                    )
-                block = (
-                    f"\n\n[Unsloth loaded Agent Skill @{name} · SKILL.md]\n"
-                    f"{gate}\n"
-                    f"{content}\n[End Agent Skill @{name}]"
-                )
-                _append_system(messages, block)
-                loaded_bytes += size
-            yield {
-                **event,
-                "status": "loaded",
-                "characters": len(content),
-                "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-                "already_in_context": present,
-                "detail": f"Complete SKILL.md read ({len(content)} characters) and available in this request's context.",
+            seen.add(name)
+            # Historical rebuild only restores skills that are still loadable; unavailable /
+            # disabled reporting stays on the latest turn that named them.
+            if not is_latest and name not in loadable:
+                continue
+            if permission_upgrade is not None:
+                mode, bypass = permission_upgrade.apply(mode, bypass)
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            event = {
+                "type": "skill_load",
+                "load_id": f"skill-load-{uuid.uuid4().hex}",
+                "name": name,
+                "resource": "SKILL.md",
             }
-        except (SkillError, OSError) as exc:
-            detail = f"Skill @{name} not loaded: {exc}"
-            _append_system(messages, detail)
-            yield {**event, "status": "unavailable", "detail": detail}
+            # Approvals only for a skill newly named on this turn; historical rebuilds stay silent.
+            if (
+                is_latest
+                and name in loadable
+                and confirm_tool_calls
+                and not bypass
+                and mode not in ("auto", "off")
+            ):
+                approval_id = new_approval_id()
+                slot = begin_tool_decision(session_id, approval_id)
+                from state.tool_approvals import bind_permission_upgrade
+
+                bind_permission_upgrade(slot, permission_upgrade)
+                try:
+                    yield {**event, "status": "awaiting_approval", "approval_id": approval_id}
+                    verdict = wait_tool_decision(slot, approval_id, cancel_event = cancel_event)
+                finally:
+                    abort_tool_decision(slot, approval_id)
+                if verdict != "allow":
+                    detail = f"Skill @{name} not loaded: approval was denied, expired, or cancelled."
+                    _append_to_message(target, detail)
+                    yield {**event, "status": "unavailable", "detail": detail}
+                    continue
+            if is_latest:
+                yield {**event, "status": "loading"}
+            try:
+                # Re-validates enabled/account-scoped discovery; never a cached or paged read.
+                content = read_skill_instructions(name)
+                size = len(content.encode("utf-8"))
+                existing = _skill_already_present(
+                    messages, content, dedup_tool_context = dedup_tool_context
+                )
+                present = existing is not None
+                if present and protected_message_ids is not None:
+                    # The native rolling fit must not evict a result we relied on.
+                    protected_message_ids.add(id(existing))
+                if not present:
+                    if loaded_bytes + size > budget:
+                        raise SkillError(
+                            "Complete SKILL.md exceeds this request's skill context budget; "
+                            "shorten the skill or increase context."
+                        )
+                    block = (
+                        f"[Unsloth loaded Agent Skill @{name} · SKILL.md]\n"
+                        f"{gate}\n"
+                        f"{content}\n[End Agent Skill @{name}]"
+                    )
+                    _append_to_message(target, block)
+                    loaded_bytes += size
+                if is_latest:
+                    yield {
+                        **event,
+                        "status": "loaded",
+                        "characters": len(content),
+                        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                        "already_in_context": present,
+                        "detail": (
+                            f"Complete SKILL.md read ({len(content)} characters) and "
+                            "available in this request's context."
+                        ),
+                    }
+            except (SkillError, OSError) as exc:
+                detail = f"Skill @{name} not loaded: {exc}"
+                _append_to_message(target, detail)
+                if is_latest:
+                    yield {**event, "status": "unavailable", "detail": detail}

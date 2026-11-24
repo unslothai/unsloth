@@ -144,22 +144,52 @@ def test_existing_actual_instructions_deduplicate_but_changed_resources_reload(m
     path.write_text(original + "Changed resource.\n")
     messages, events = _load(messages = history)
     assert events[-1]["already_in_context"] is False
-    assert path.read_text() in messages[0]["content"]
+    assert path.read_text() in messages[1]["content"]
 
 
-def test_retry_without_instructions_reloads_and_old_mentions_never_activate(mention_client):
+def test_retry_without_instructions_reloads_and_non_user_mentions_never_activate(mention_client):
     _, _, path = mention_client
     for _ in range(2):
         messages, events = _load()
         assert path.read_text() in messages[0]["content"]
         assert events[-1]["already_in_context"] is False
+    # Assistant / system @mentions never load. A prior user @mention is rebuilt onto that
+    # user turn (no new skill_load events) so the system prefix stays cacheable (#19212).
     for history in [
         [{"role": "assistant", "content": "@skill-creator"}],
-        [{"role": "user", "content": "@skill-creator"}, {"role": "user", "content": "hello"}],
         [{"role": "system", "content": "@skill-creator"}, {"role": "user", "content": "hello"}],
     ]:
         assert _load(messages = history)[1] == []
+    history = [{"role": "user", "content": "@skill-creator"}, {"role": "user", "content": "hello"}]
+    messages, events = _load(messages = history)
+    assert events == []
+    assert path.read_text() in messages[0]["content"]
+    assert messages[1]["content"] == "hello"
     assert _load(continue_final_message = True)[1] == []
+
+
+def test_skill_body_stays_on_the_mentioning_user_turn_for_prompt_cache(mention_client):
+    """#19212: system must not grow on the @skill turn then shrink on the follow-up."""
+    _, _, path = mention_client
+    system = {"role": "system", "content": "Standing instructions."}
+    first = {"role": "user", "content": "@skill-creator please summarise"}
+    messages, events = _load(messages = [system, first])
+    assert events[-1]["status"] == "loaded"
+    assert messages[0]["content"] == "Standing instructions."
+    assert path.read_text() in messages[1]["content"]
+    assert "[Unsloth loaded Agent Skill @skill-creator" in messages[1]["content"]
+
+    follow_up = [
+        messages[0],
+        {"role": "user", "content": "@skill-creator please summarise"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "and the second page?"},
+    ]
+    rebuilt, events = _load(messages = follow_up)
+    assert events == []
+    assert rebuilt[0]["content"] == "Standing instructions."
+    assert path.read_text() in rebuilt[1]["content"]
+    assert rebuilt[3]["content"] == "and the second page?"
 
 
 def test_deduplicated_native_result_is_protected_through_context_fitting(mention_client):
@@ -207,8 +237,8 @@ def test_read_error_preserves_a_single_system_message_and_original_history(menti
     )
     assert events[-1]["status"] == "unavailable"
     assert [m["role"] for m in messages] == ["system", "user"]
-    assert system["content"] == "Standing instructions."
-    assert "Standing instructions." in messages[0]["content"]
+    assert messages[0]["content"] == "Standing instructions."
+    assert "not loaded" in messages[1]["content"]
 
 
 def test_code_or_capability_gate_cannot_be_bypassed_by_a_mention(mention_client, monkeypatch):
@@ -242,7 +272,7 @@ def test_ask_requires_actual_scoped_approval_before_read(mention_client, monkeyp
     assert events[-1]["status"] == ("loaded" if verdict == "allow" else "unavailable")
     assert (path.read_text() in json.dumps(messages).replace("\\n", "\n")) == (verdict == "allow")
     if verdict == "deny":
-        assert messages[0]["role"] == "system"
+        assert messages[0]["role"] == "user"
         assert events[-1]["detail"] in messages[0]["content"]
 
 

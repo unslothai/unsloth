@@ -15,10 +15,10 @@ model is told the named skill was not loaded; a denied skill is never read.
 
 The composer currently serializes a picker selection as plain `@name`, without
 selected-intent metadata. Thus selected mentions and exact typed tokens have the
-same contract: a lowercase, whitespace-delimited skill name in the **latest user
-message**, optionally followed by sentence punctuation. Prefix matching is never
-used. Inline/fenced/indented Markdown code, blockquotes, balanced quotation spans,
-email addresses, URL/path suffixes, and assistant/history mentions do not load
+same contract: a lowercase, whitespace-delimited skill name in a **user message**,
+optionally followed by sentence punctuation. Prefix matching is never used.
+Inline/fenced/indented Markdown code, blockquotes, balanced quotation spans,
+email addresses, URL/path suffixes, and assistant/system mentions do not load
 instructions. Unquoted pasted prose is indistinguishable from typed prose and
 uses the same contract. Use quotation marks or code formatting when discussing a
 mention literally. Code and blockquotes follow CommonMark block structure, with one
@@ -26,6 +26,12 @@ exception: user text is shown unrendered, so a line typed directly under a quote
 without its own `>` is a reply, not quoted text. A backslash-escaped quote mark does
 not end a quotation span, and an apostrophe inside a word is not a quote mark. This
 is deliberately not a Markdown plugin/runtime.
+
+Loaded `SKILL.md` bodies are appended to the **user message that mentioned the
+skill**, not the system prompt. On later turns the same mentions are rebuilt onto
+those earlier user messages so the system prefix stays identical for llama.cpp
+prompt caching. Approval cards still fire only for skills newly named on the
+latest user turn.
 
 ## Context and evidence
 
@@ -47,8 +53,8 @@ sanitized so a provider cannot forge this evidence.
 Automatic loads are request-local. The next explicit mention securely re-reads
 the current resource, including retries and same-chat follow-ups; a saved UI card
 is never taken as proof that instructions survived compaction. If the complete
-current manifest is already in actual system/tool context, it is not injected a
-second time. Continue/partial-assistant resumes do not activate old mentions.
+current manifest is already in actual system/user/tool context, it is not injected a
+second time. Continue/partial-assistant resumes do not activate mentions.
 
 The Unsloth chat-completions path covers local GGUF, safetensors, managed engines,
 and external Unsloth-owned tool loops (including the shared Codex transport). It
