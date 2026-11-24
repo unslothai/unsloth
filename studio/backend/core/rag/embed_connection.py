@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import threading
 import time
 
@@ -68,9 +69,15 @@ def _client_for(provider: dict):
     )
 
 
+# Each digit, symbol and newline, and each letter run, is at least one WordPiece token: an upper
+# bound for the 512-token BERT-family embedders, where an overflow fails the document.
+_TOKEN_UNITS = re.compile(r"\d|[^\W\d_]+|[^\w\s]|_|\n")
+
+
 def _estimate_tokens(text: str) -> int:
-    # The OpenAI API has no tokenizer; 3 bytes/token overestimates, keeping chunks under 512-token embedders.
-    return max(1, math.ceil(len(text.encode("utf-8", "ignore")) / 3))
+    return max(
+        1, len(_TOKEN_UNITS.findall(text)), math.ceil(len(text.encode("utf-8", "ignore")) / 3)
+    )
 
 
 def _remote_http_client() -> httpx.Client:

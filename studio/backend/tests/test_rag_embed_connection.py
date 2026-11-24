@@ -226,3 +226,21 @@ def test_save_refuses_a_failing_probe_unless_forced(client, monkeypatch):
     assert client.saved == {}
     assert client.put("/embedding-model", json = {**put, "force": True}).status_code == 200
     assert client.saved["backend"] == "connection"
+
+
+@pytest.mark.parametrize(
+    "text, bge_tokens",
+    [
+        ("a " * 700, 700),
+        (
+            "\n".join(
+                ",".join(str((r * 37 + c * 101) % 1000) for c in range(8)) for r in range(60)
+            ),
+            1162,
+        ),
+        ("def f(x_1, y_2):\n    return {'k': x_1[0] + y_2.get('a', 3.14)}\n" * 15, 600),
+    ],
+)
+def test_token_estimate_never_undercounts_a_512_token_wordpiece_embedder(text, bge_tokens):
+    # Counts from unsloth/bge-small-en-v1.5's tokenizer; under-counting overflows its 512 limit.
+    assert embed_connection._estimate_tokens(text) >= bge_tokens
