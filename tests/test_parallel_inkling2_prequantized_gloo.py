@@ -21,6 +21,22 @@ import subprocess
 import sys
 import tempfile
 
+
+def test_pp_prequantized_inkling_sharded_load(ckpt):
+    """pipeline_sharded_loading of the pre-quantized checkpoint (the default 4-bit Inkling-2-Mini repo): each rank
+    keeps its stages' 4-bit tensors, bitwise those of a full load, and placeholders for the rest."""
+    results = _run("_case_pp", ckpt)
+    for r in results:
+        assert os.path.realpath(r["pp_load"]).startswith(os.path.realpath(REPO) + os.sep), r[
+            "pp_load"
+        ]
+        assert "sharded_error" not in r, r["sharded_error"]
+        assert r["models"] == 1
+        assert r["stats"].get("prequantized") and r["stats"]["placeholder_tensors"] > 0, r["stats"]
+        assert 0 < r["kept"] < r["want"] and r["stacks_kept"] > 0, r
+        assert not r["diffs"], r["diffs"][:5]
+
+
 if __name__ == "__main__" and sys.argv[1:2] == ["--make"]:
     import unsloth  # noqa: F401  (first, as in user code: before torch / transformers / bitsandbytes)
 
@@ -256,6 +272,32 @@ def _case_fsdp2(rank, world, tmp, path):
     return out
 
 
+def _case_pp(rank, world, tmp, path):
+    import importlib
+
+    from torch.distributed.device_mesh import init_device_mesh
+
+    _zoo()
+    ppl = importlib.import_module("unsloth.models.pp_load")
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))["pp"]
+    out = {"pp_load": ppl.__file__}
+    want = q._snapshot(_load(path))
+    try:
+        with ppl.pipeline_sharded_loading(mesh) as state:
+            model = _load(path)
+    except Exception as exc:
+        out["sharded_error"] = f"{type(exc).__name__}: {exc}"
+        return out
+    out["models"] = len(state["models"])
+    out["stats"] = dict(model.__dict__.get("_unsloth_pp_preload") or {})
+    kept = {n for n, p in model.named_parameters() if not ppl.is_placeholder(p)}
+    have = {n: v for n, v in q._snapshot(model).items() if n in kept}
+    out["want"], out["kept"] = len(want), len(have)
+    out["diffs"] = _diffs({n: want[n] for n in have if n in want}, have)
+    out["stacks_kept"] = sum(1 for n in have if n.endswith(q.STACKS))
+    return out
+
+
 def _worker(rank, world, tmp, case, kwargs):
     q._worker.__globals__.setdefault(
         case, globals()[case]
@@ -275,6 +317,7 @@ def _run(case, path):
             p.join(900)
             if p.is_alive():
                 p.terminate()
+                p.join()  # before reading its result file and removing the directory
         results = [
             torch.load(f, weights_only = False) if os.path.exists(f) else None
             for f in (os.path.join(tmp, f"result_{r}.pt") for r in range(2))

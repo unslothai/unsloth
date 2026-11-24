@@ -181,3 +181,23 @@ def test_merged_export_refuses_to_overwrite_the_prequantized_snapshot(tmp_path, 
     with pytest.raises(RuntimeError, match = "checkpoint it was loaded from"):
         save_inkling2_merged_16bit(model, None, snapshot)
     assert (tmp_path / "snapshot" / "config.json").exists()
+
+
+def test_sharded_fill_refuses_a_converted_buffer_before_reading_any_tensor(tmp_path, monkeypatch):
+    # The pre-quantized fallback retries with transformers' own load: the refusal must come before the first read,
+    # buffers included, or the partial model stays alive through the retry.
+    import torch
+    from safetensors.torch import save_file
+
+    from unsloth.models import tp_native
+
+    save_file({"weight": torch.ones(4, 4)}, str(tmp_path / "model.safetensors"))
+    with torch.device("meta"):
+        model = torch.nn.Linear(4, 4, bias = False)
+    model.register_buffer("table", torch.empty(4, device = "meta"))
+    monkeypatch.setattr(tp_native, "_checkpoint_aliases", lambda *a, **k: {"table": None})
+    with pytest.raises(tp_native._TensorByTensorUnsupported, match = "table"):
+        tp_native._fill_from_checkpoint(
+            model, str(tmp_path), {}, torch.device("cpu"), lambda old, reader, key: None
+        )
+    assert model.weight.is_meta

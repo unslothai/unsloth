@@ -4586,6 +4586,14 @@ def _fill_from_checkpoint(
                 f"{tuple(old.shape)}."
             )
         slots.append((old, where, key, quantized_module))
+    buffers = []
+    for module_name, module in model.named_modules():
+        for bname, buf in list(module._buffers.items()):
+            if buf is None or not buf.is_meta:
+                continue
+            key = f"{module_name}.{bname}" if module_name else bname
+            source = find([key]) if bname not in module._non_persistent_buffers_set else None
+            buffers.append((module, bname, buf, key, source))
     for old, where, key, quantized_module in slots:
         new = read_local(old, reader, key)
         if new is None and quantized_module is not None:
@@ -4601,20 +4609,15 @@ def _fill_from_checkpoint(
         for module, pname in where:
             module._parameters[pname] = new
     skeleton = None
-    for module_name, module in model.named_modules():
-        for bname, buf in list(module._buffers.items()):
-            if buf is None or not buf.is_meta:
-                continue
-            key = f"{module_name}.{bname}" if module_name else bname
-            source = find([key]) if bname not in module._non_persistent_buffers_set else None
-            if source is not None:
-                value = reader.full(source)
-            else:
-                skeleton = skeleton if skeleton is not None else _buffer_skeleton(model)
-                value = skeleton.get_buffer(key)
-                if value.is_meta:
-                    raise ValueError(f"Unsloth: sharded loading cannot rebuild the buffer '{key}'.")
-            module._buffers[bname] = value.to(device = device, dtype = buf.dtype)
+    for module, bname, buf, key, source in buffers:
+        if source is not None:
+            value = reader.full(source)
+        else:
+            skeleton = skeleton if skeleton is not None else _buffer_skeleton(model)
+            value = skeleton.get_buffer(key)
+            if value.is_meta:
+                raise ValueError(f"Unsloth: sharded loading cannot rebuild the buffer '{key}'.")
+        module._buffers[bname] = value.to(device = device, dtype = buf.dtype)
     if isinstance(getattr(model, "hf_device_map", None), dict):
         model.hf_device_map = {"": device.index if device.type == "cuda" else device.type}
     return reader, sharded_numel, full_numel
@@ -5066,12 +5069,15 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
         # A pre-quantized bitsandbytes 4-bit checkpoint whose tensors transformers converts on load (Inkling 2:
         # merged loop queries, the unpadded lm_head, zoo's fused 4-bit expert stacks): transformers' own load,
         # each 4-bit projection / expert stack / FSDP2 chunk kept as it is set (the quantize-on-load path).
-        if chunked is None:
+        # Pipeline parallel registers its per-stage load. A 16-bit checkpoint with a weight conversion keeps the
+        # refusal (those loaders would load it in full).
+        fallback = state.get("prequantized_fallback", chunked)
+        if fallback is None or quantized is None:
             raise
-        del loaded, model
-        loaded = chunked(original, cls, name, args, original_kwargs, mesh, state)
+        del loaded, model, reader
+        loaded = fallback(original, cls, name, args, original_kwargs, mesh, state)
         model = loaded[0] if isinstance(loaded, tuple) else loaded
-        for key in ("_unsloth_tp_load_stats", "_unsloth_fsdp2_load_stats"):
+        for key in ("_unsloth_tp_load_stats", "_unsloth_fsdp2_load_stats", "_unsloth_pp_preload"):
             if isinstance(model.__dict__.get(key), dict):
                 model.__dict__[key]["prequantized"] = True
         return loaded

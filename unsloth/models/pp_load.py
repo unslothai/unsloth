@@ -333,6 +333,15 @@ def _pipeline_loading(
         "prequantized_hint": _QUANTIZED_HINT,
         "mesh_hint": "Unsloth: pipeline_sharded_loading takes a 1-D pp mesh (pass mesh['pp']).",
         "auto": auto,
+        # A pre-quantized bnb 4-bit checkpoint whose tensors transformers converts on load (Inkling 2): its own
+        # load, per stage, as for a quantize-on-load.
+        "prequantized_fallback": lambda original,
+        cls,
+        name,
+        args,
+        kwargs,
+        mesh,
+        live: _load_quantizing(original, cls, name, args, kwargs, live),
     }
     from transformers import PreTrainedModel
 
