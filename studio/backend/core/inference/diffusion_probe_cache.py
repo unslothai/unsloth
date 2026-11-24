@@ -81,11 +81,14 @@ def _version(module: str) -> Optional[str]:
         return None
 
 
-# Distributions that install the ``triton`` module: Windows and ROCm / nightly wheels are not named ``triton``, and
-# kernels are chosen by the Triton version (the INT8 attention rotation on 3.3), so verdicts must key on it there too.
+# Distributions that install the ``triton`` module: Windows, ROCm and XPU wheels (current names and the older
+# pytorch-triton-* ones) are not named ``triton``, and kernels are chosen by the Triton version (the INT8 attention
+# rotation on 3.3), so verdicts must key on it there too.
 _TRITON_DISTS = (
     "triton",
     "triton-windows",
+    "triton-rocm",
+    "triton-xpu",
     "pytorch-triton-rocm",
     "pytorch-triton",
     "pytorch-triton-xpu",

@@ -1973,16 +1973,33 @@ def verdict(
     incumbent: Optional[Callable] = None,
     incumbent_name: str = "native",
     timed: bool = True,
+    impl_only: Optional[str] = None,
 ) -> dict:
     """``_check`` cached per (device, dtype, heads, head dim, incumbent, timed, implementation). A CUDA kernel that
     raises in the check (no NVRTC, a failed compile, module load or launch) is recorded as failed on this card and
     the check runs again on the implementation that serves it now (Triton, where it can), whose verdict is
-    returned."""
+    returned. ``impl_only``: only that implementation may be checked here (a split load's secondary card takes the
+    primary card's raced pick); another one is declined unchecked, so the card keeps native attention."""
     import torch
 
     dev = torch.device(device)
     index = dev.index if dev.index is not None else torch.cuda.current_device()
     hd = int(head_dim)
+
+    def declined(impl: Optional[str]) -> Optional[dict]:
+        if impl_only is None or impl == impl_only:
+            return None
+        return {
+            "ok": False,
+            "ms": {},
+            "min_tokens": None,
+            "impl": impl,
+            "error": f"{impl_only} kernel only (the implementation raced on the primary card)",
+        }
+
+    early = declined(implementation(index, hd))
+    if early is not None:
+        return early
 
     def key_of(impl: Optional[str]) -> tuple:
         return (index, str(dtype), int(heads), hd, incumbent_name, bool(timed), impl)
@@ -1993,6 +2010,9 @@ def verdict(
     with _LOCK:
         while True:
             impl = implementation(index, hd)
+            refused = declined(impl)
+            if refused is not None:
+                return refused
             key = key_of(impl)
             found = _VERDICTS.get(key)
             if found is None and impl is None:
@@ -2027,8 +2047,8 @@ def verdict(
                     hd,
                     found.get("error"),
                     "trying the Triton kernel"
-                    if implementation(index, hd) == "triton"
-                    else f"native attention ({triton_decline(index, hd)})",
+                    if implementation(index, hd) == "triton" and impl_only in (None, "triton")
+                    else f"native attention ({triton_decline(index, hd) if impl_only is None else 'CUDA kernel only here'})",
                 )
                 continue
             return found
@@ -2196,8 +2216,17 @@ def _install(
             for card in _secondary_cards(index, transformer):
                 if implementation(card, head_dim) is None:
                     continue
+                # only the implementation the primary card's floor raced and accepted: a secondary whose CUDA
+                # kernel fails must not adopt an unraced Triton stand-in (or one the family policy rejects)
                 report[(card, int(m.heads), head_dim, name)] = verdict(
-                    torch.device("cuda", card), dtype, int(m.heads), head_dim, fn, name, timed = False
+                    torch.device("cuda", card),
+                    dtype,
+                    int(m.heads),
+                    head_dim,
+                    fn,
+                    name,
+                    timed = False,
+                    impl_only = found.get("impl"),
                 )
             continue
         found = verdict(dev, dtype, int(m.heads), head_dim, fn, name, timed = not force)
