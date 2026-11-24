@@ -33,6 +33,7 @@ import random
 import re
 import sqlite3
 import shlex
+import select
 import posixpath
 import shutil
 import ssl
@@ -13996,6 +13997,9 @@ _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
 _MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
+_MCP_PROJECT_SERVER_IDS: ContextVar[frozenset[str] | None] = ContextVar(
+    "mcp_project_server_ids", default = None
+)
 # A dict set per request, so the listing can fill it from a thread running in a copy of the request's context.
 _MCP_LISTING_MATCHES: ContextVar = ContextVar("mcp_listing_matches", default = None)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
@@ -14876,14 +14880,41 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     return specs
 
 
+def _mcp_project_server_ids(session_id: str | None) -> frozenset[str] | None:
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return None
+    from storage.studio_db import get_chat_project
+
+    project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+    selected = project.get("mcpServerIds") if project else None
+    return frozenset(selected) if selected is not None else None
+
+
+def mcp_project_excludes(server_id: str, session_id: str | None) -> bool:
+    selected = _mcp_project_server_ids(session_id)
+    return selected is not None and server_id not in selected
+
+
+async def set_mcp_project_scope(session_id: str | None) -> None:
+    selected = (
+        await asyncio.to_thread(_mcp_project_server_ids, session_id)
+        if session_id and session_id.startswith(_PROJECT_SESSION_PREFIX)
+        else None
+    )
+    _MCP_PROJECT_SERVER_IDS.set(selected)
+
+
 def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
     from core.inference.studio_tools_mcp import keyless_caller
 
     keyless = keyless_caller(current_account())
+    selected = _MCP_PROJECT_SERVER_IDS.get()
     enabled = [
         server
         for server in servers
-        if server.get("is_enabled") and not (keyless and is_studio_tools(server["url"]))
+        if server.get("is_enabled")
+        and (selected is None or server["id"] in selected)
+        and not (keyless and is_studio_tools(server["url"]))
     ]
     if not any(is_studio_decisions(server["url"]) for server in enabled):
         return enabled
@@ -15272,6 +15303,8 @@ def execute_tool(
         display = server.get("display_name") or server_id
         if not server.get("is_enabled"):
             return f"Error: MCP server '{display}' is disabled"
+        if mcp_project_excludes(server_id, session_id):
+            return f"Error: MCP server '{display}' is not enabled for this project"
         if _runs_local_mcp(server) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"
         mcp_scope = mcp_session_scope(session_id, thread_id)
@@ -15325,6 +15358,7 @@ def execute_tool(
                 and parse_server_headers(row) == headers
                 and bool(row.get("use_oauth")) == use_oauth
                 and _image_still_approved(row)
+                and not mcp_project_excludes(server_id, session_id)
             )
 
         if tool_name == MCP_RESOURCE_TOOL and _mcp_listed_resources(server):
@@ -23710,6 +23744,118 @@ _BACKGROUND_STOPPED_NOTE = (
 )
 
 
+# Huge timeouts overflow the C conversion (CPython gh-154836).
+_EXIT_WAIT_MAX_SLICE_S = 24 * 3600.0
+# Left to Popen.wait so timeouts fire as before: Linux poll() may wake up to 0.1% (max 100 ms) late.
+_EXIT_WAIT_TAIL_S = 0.05
+
+
+def _open_exit_waiter(proc):
+    """pidfd (Linux) or kqueue (macOS) ready on exit, else None. Opened under Popen's waitpid lock so the pid cannot be
+    reaped and reused first; Python 3.15+ does this inside Popen.wait."""
+    if sys.platform == "win32" or not isinstance(proc, subprocess.Popen):
+        return None
+    if hasattr(subprocess.Popen, "_wait_pidfd"):
+        return None
+    lock = getattr(proc, "_waitpid_lock", None)
+    if lock is None or not lock.acquire(False):
+        return None
+    try:
+        if proc.returncode is not None:
+            return None
+        pidfd_open = getattr(os, "pidfd_open", None)
+        if pidfd_open is not None:
+            try:
+                fd = pidfd_open(proc.pid, 0)
+            except OSError:
+                return None
+            try:
+                # An outside waitpid(-1) may have reaped it, freeing the pid for reuse.
+                os.waitid(os.P_PIDFD, fd, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            except (OSError, AttributeError):
+                os.close(fd)
+                return None
+            return ("pidfd", fd)
+        kqueue = getattr(select, "kqueue", None)
+        if kqueue is None or not hasattr(select, "KQ_NOTE_EXIT"):
+            return None
+        try:
+            kq = kqueue()
+        except OSError:
+            return None
+        try:
+            kq.control(
+                [
+                    select.kevent(
+                        proc.pid,
+                        filter = select.KQ_FILTER_PROC,
+                        flags = select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                        fflags = select.KQ_NOTE_EXIT,
+                    )
+                ],
+                0,
+                0,
+            )
+        except OSError:
+            # ESRCH: already exited.
+            kq.close()
+            return None
+        return ("kqueue", kq)
+    finally:
+        lock.release()
+
+
+def _wait_exit_event(waiter, deadline: float) -> bool:
+    """True once the exit fires, False on reaching the tail before *deadline*."""
+    kind, handle = waiter
+    try:
+        if kind == "pidfd":
+            poller = select.poll()
+            poller.register(handle, select.POLLIN)
+        while True:
+            lead = deadline - _EXIT_WAIT_TAIL_S - time.monotonic()
+            if lead <= 0:
+                return False
+            wait_s = min(lead, max(lead / 2, _EXIT_WAIT_TAIL_S), _EXIT_WAIT_MAX_SLICE_S)
+            if kind == "pidfd":
+                ready = poller.poll(wait_s * 1000)
+            else:
+                ready = handle.control(None, 1, wait_s)
+            if ready:
+                return True
+    finally:
+        if kind == "pidfd":
+            os.close(handle)
+        else:
+            handle.close()
+
+
+def _wait_process(proc, timeout) -> None:
+    """proc.wait(timeout) woken by the exit event, not Python <= 3.14's 1-50 ms sleep loop; falls back to proc.wait."""
+    if timeout is None:
+        proc.wait(timeout = timeout)
+        return
+    deadline = time.monotonic() + timeout
+    waiter = None
+    if timeout > _EXIT_WAIT_TAIL_S:
+        try:
+            waiter = _open_exit_waiter(proc)
+        except Exception:  # noqa: BLE001 - the stdlib wait below is always correct
+            logger.debug("exit waiter unavailable", exc_info = True)
+            waiter = None
+    if waiter is None:
+        proc.wait(timeout = timeout)
+        return
+    try:
+        _wait_exit_event(waiter, deadline)
+    except Exception:  # noqa: BLE001 - fall through to the stdlib wait for what is left
+        logger.debug("exit wait failed", exc_info = True)
+    try:
+        proc.wait(timeout = max(deadline - time.monotonic(), 0.0))
+    except subprocess.TimeoutExpired:
+        raise subprocess.TimeoutExpired(proc.args, timeout) from None
+
+
 def _drain_process_output(
     proc,
     timeout,
@@ -23763,14 +23909,14 @@ def _drain_process_output(
     started_at = time.monotonic()
     timed_out = False
     try:
-        proc.wait(timeout = timeout)
+        _wait_process(proc, timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
         _kill_process_tree(proc)
         # Also kill the pre-captured group in case the leader was reaped first.
         _killpg_captured(pgid)
         try:
-            proc.wait(timeout = 5)
+            _wait_process(proc, 5)
         except subprocess.TimeoutExpired:
             pass
     # A grandchild holding the inherited stdout outlives the leader: stop the group once the reader has

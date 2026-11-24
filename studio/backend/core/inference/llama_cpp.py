@@ -461,6 +461,7 @@ from core.inference.tool_call_parser import (
     RAG_SEARCH_CAP_NUDGE,
     RAG_SEARCH_TOOLS,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
+    has_tool_signal,
     strip_leading_bare_json_call,
     strip_llama3_leading_sentinels,
     strip_tool_markup as _shared_strip_tool_markup,
@@ -472,6 +473,7 @@ from core.tool_healing import (
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.child_stdio import utf8_child_env
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+from utils.prebuilt.runtime_libs import oneapi_lib_dirs as _oneapi_lib_dirs
 from utils.log_retention import prune_log_dir
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
@@ -504,6 +506,7 @@ from core.inference.mcp_images import (
     MAX_TOTAL_MODEL_IMAGES as MCP_MAX_TOTAL_MODEL_IMAGES,
     append_image_turn as append_mcp_image_turn,
     is_image_tool as mcp_is_image_tool,
+    is_synthetic_image_turn as mcp_is_synthetic_image_turn,
     mentions_images as mcp_images_mentioned_in,
 )
 from core.inference.tool_facts import STEPWISE, repeatable
@@ -1046,8 +1049,8 @@ def _trace_verbosity_args(caps: dict, extra_args: Optional[Iterable[str]], envir
     return ["--verbosity", str(_LLAMA_TRACE_VERBOSITY)]
 
 
-_GPU_MODEL_BUFFER_RE = re.compile(
-    r"\b(?:CUDA|ROCm|ROCM|HIP|SYCL)(\d+)\s+model buffer size\s*=\s*"
+_GPU_BUFFER_RE = re.compile(
+    r"\b(?:CUDA|ROCm|ROCM|HIP|SYCL)(\d+)\s+([A-Za-z0-9_ ]+?)\s+buffer size\s*=\s*"
     r"([0-9]+(?:\.[0-9]+)?)\s+MiB\b",
     re.IGNORECASE,
 )
@@ -2291,6 +2294,12 @@ def _archive_and_recall(
             else 0
         )
         counts = {"archived_messages": archived}
+        from core.inference import compaction_transcript
+
+        transcript = compaction_transcript.write(thread_id, branch_messages or before)
+        if transcript:
+            conversation = compaction_transcript.link_in_block(conversation, transcript)
+            result["conversation"] = conversation
 
         if recall_done or (cancel_check is not None and cancel_check()):
             result["counts"] = counts
@@ -2457,8 +2466,16 @@ _MAX_TOOL_CALLS_PER_TURN = 8
 _MAX_LENGTH_CONTINUATIONS = 2
 _CONTINUE_AFTER_LENGTH_STATUS = "Continuing after a long thought..."
 _CONTINUE_TRUNCATED_ANSWER_STATUS = "Continuing the answer..."
+_FINAL_ANSWER_TOOL_LIMIT_MESSAGE = (
+    "The model asked for another tool after its tools ran out, so it gave no answer. "
+    "Ask again, or raise Max Tool Calls Per Message if it hit that limit."
+)
+_FINAL_ANSWER_RETRY_NUDGE = (
+    "Tools are no longer available. Write your answer now from the results above, in plain text."
+)
 # Below this a tool result carries only the cut notice; the floor catches a collapse to zero.
 _MIN_USEFUL_RESULT_TOKENS = 64
+_LEAD_RAW_THINK_RE = re.compile(r"\A\s*(?:\[THINK\].*?\[/THINK\]|<think>.*?</think>)", re.DOTALL)
 # llama.cpp's default per-image embedding cap plus mtmd's delimiters, when the admission figure is out of reach.
 _FALLBACK_IMAGE_TOKENS = 4096 + 128
 
@@ -8713,20 +8730,27 @@ def _count_memo_key(backend, *parts) -> Optional[bytes]:
     return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).digest()
 
 
-def _count_memo(backend):
-    memo = vars(backend).get("_count_memo_state")
+_RENDER_COUNT_MEMO = ("_count_memo_state", _COUNT_MEMO_SIZE)
+# Separate from the render memo so native re-costs never evict renders.
+_NATIVE_COUNT_MEMO = ("_native_count_memo_state", 2)
+
+
+def _count_memo(backend, slot = _RENDER_COUNT_MEMO):
+    memo = vars(backend).get(slot[0])
     if memo is None:
         with _COUNT_MEMO_INIT_LOCK:
-            memo = vars(backend).setdefault(
-                "_count_memo_state", (threading.Lock(), collections.OrderedDict())
-            )
+            memo = vars(backend).setdefault(slot[0], (threading.Lock(), collections.OrderedDict()))
     return memo
 
 
-def _count_memo_get(backend, key) -> Optional[int]:
+def _count_memo_get(
+    backend,
+    key,
+    slot = _RENDER_COUNT_MEMO,
+) -> Optional[int]:
     if key is None:
         return None
-    lock, memo = _count_memo(backend)
+    lock, memo = _count_memo(backend, slot)
     with lock:
         count = memo.get(key)
         if count is not None:
@@ -8734,14 +8758,19 @@ def _count_memo_get(backend, key) -> Optional[int]:
         return count
 
 
-def _count_memo_put(backend, key, count) -> None:
+def _count_memo_put(
+    backend,
+    key,
+    count,
+    slot = _RENDER_COUNT_MEMO,
+) -> None:
     if key is None or type(count) is not int or count <= 0:
         return
-    lock, memo = _count_memo(backend)
+    lock, memo = _count_memo(backend, slot)
     with lock:
         memo[key] = count
         memo.move_to_end(key)
-        while len(memo) > _COUNT_MEMO_SIZE:
+        while len(memo) > slot[1]:
             memo.popitem(last = False)
 
 
@@ -9231,13 +9260,13 @@ class LlamaCppBackend:
         )
 
     def resident_memory_mib(self) -> Optional[int]:
-        """Best-effort MiB the loaded model holds: its GPU model buffers when known, else the
-        child's RSS (CPU, and Apple unified memory where RSS covers the Metal buffers). Never raises."""
+        """Best-effort MiB the loaded model holds: everything it allocated on the GPUs when known, else
+        the child's RSS (CPU, and Apple unified memory where RSS covers the Metal buffers). Never raises."""
         process = self._process
         if process is None or process.poll() is not None:
             return None
         try:
-            gpu = self.reclaimable_gpu_memory_gb()
+            gpu = self.gpu_footprint_gb()
             if gpu:
                 return int(round(sum(gpu.values()) * 1024))
             import psutil
@@ -9249,6 +9278,14 @@ class LlamaCppBackend:
     def reclaimable_gpu_memory_gb(self) -> Optional[dict[int, float]]:
         """A conservative lower bound from the startup log's model buffers; a live memory sample
         could race."""
+        return self._gpu_buffers_gb(0)
+
+    def gpu_footprint_gb(self) -> Optional[dict[int, float]]:
+        """Per-GPU weights plus KV cache, compute and every other device buffer from the startup log."""
+        return self._gpu_buffers_gb(1)
+
+    def _gpu_buffers_gb(self, which: int) -> Optional[dict[int, float]]:
+        """``which`` 0: model buffers only, 1: every device buffer."""
         process = self._process
         if process is None or process.poll() is not None:
             return None
@@ -9260,24 +9297,56 @@ class LlamaCppBackend:
         ids = tuple(physical_ids)
         cached = getattr(self, "_reclaimable_gpu_cache", None)
         if cached is not None and cached[0] is process and cached[1] == ids:
-            return dict(cached[2]) if cached[2] else None
+            picked = cached[2][which]
+            return dict(picked) if picked else None
         healthy = bool(getattr(self, "_healthy", False))
-        reported: Optional[dict[int, float]] = {}
-        for line in list(self._stdout_lines):
-            match = _GPU_MODEL_BUFFER_RE.search(line)
-            if match is None:
-                continue
-            ordinal = int(match.group(1))
-            if ordinal >= len(physical_ids):
-                reported = None
-                break
-            physical = int(physical_ids[ordinal])
-            reported[physical] = reported.get(physical, 0.0) + float(match.group(2)) / 1024.0
+        scanned = self._scan_gpu_buffers(physical_ids)
         if self._process is not process or process.poll() is not None:
             return None
         if healthy:
-            self._reclaimable_gpu_cache = (process, ids, dict(reported) if reported else None)
-        return reported or None
+            self._reclaimable_gpu_cache = (process, ids, scanned)
+        picked = scanned[which]
+        return dict(picked) if picked else None
+
+    def _scan_gpu_buffers(
+        self, physical_ids: list
+    ) -> "tuple[Optional[dict[int, float]], Optional[dict[int, float]]]":
+        model: dict[int, float] = {}
+        total: dict[int, float] = {}
+        # Peak compute per (allocator, GPU) per llama_context (target, drafter). Sizes in a context's first
+        # reserve block are its own; later blocks can reprint an earlier context's exact size unnamed.
+        contexts: list[dict[tuple[str, int], float]] = [{}]
+        reserves = 0
+        for line in list(self._stdout_lines):
+            match = _GPU_BUFFER_RE.search(line)
+            if match is None:
+                if "constructing llama_context" in line:
+                    contexts.append({})
+                    reserves = 0
+                elif "reserving ..." in line:
+                    reserves += 1
+                continue
+            ordinal = int(match.group(1))
+            if ordinal >= len(physical_ids):
+                return None, None
+            physical = int(physical_ids[ordinal])
+            kind = match.group(2).strip().lower()
+            gb = float(match.group(3)) / 1024.0
+            if kind == "compute":
+                key = ("".join(line[: match.start()].split()[-1:]), physical)
+                own = contexts[-1]
+                if reserves <= 1 and key not in own:
+                    own[key] = gb
+                elif not any(ctx.get(key) == gb for ctx in contexts[:-1]):
+                    own[key] = max(own.get(key, 0.0), gb)
+                continue
+            if kind == "model":
+                model[physical] = model.get(physical, 0.0) + gb
+            total[physical] = total.get(physical, 0.0) + gb
+        for ctx in contexts:
+            for (_, physical), gb in ctx.items():
+                total[physical] = total.get(physical, 0.0) + gb
+        return model or None, total or None
 
     @property
     def base_url(self) -> str:
@@ -16304,6 +16373,7 @@ class LlamaCppBackend:
         except Exception:
             return None
         gpus = [] if child_has_no_gpu else list(detected_gpus or ())
+        original_model_bytes = model_bytes  # the carve-out verifier prices the whole file
         # _get_gpu_memory returns [] on a failed probe, which looks like a GPU-less host.
         if not model_bytes or (not gpus and not child_has_no_gpu):
             return None
@@ -16335,18 +16405,49 @@ class LlamaCppBackend:
             logger.debug("Lazy-read discount skipped in the host preflight: %s", e)
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
         heap_free_mib, heap_bytes = self._shared_heap_budget(gpus, shared, model_bytes, argv, _env)
-        offload_bytes = model_bytes - free_vram_mib * 1024 * 1024
-        # Skip card-resident loads so a cgroup budget never applies to a nonpositive need.
-        if 0 < offload_bytes and heap_bytes <= heap_free_mib * 1024 * 1024:
-            # A finite cgroup still limits host-backed GPU allocations.
-            cgroup_mib = self._cgroup_available_memory_mib()
-            if cgroup_mib is None:
-                return None
-            return self._apu_ram_shortfall_message(heap_bytes, cgroup_mib)
-        return self._host_offload_shortfall_message(
-            offload_bytes,
-            self._available_system_memory_mib() if avail_mib is None else avail_mib,
-        )
+        avail = self._available_system_memory_mib() if avail_mib is None else avail_mib
+
+        def shortfall(device_bytes: int) -> Optional[str]:
+            offload_bytes = model_bytes - device_bytes
+            # Skip card-resident loads so a cgroup budget never applies to a nonpositive need.
+            if 0 < offload_bytes and heap_bytes <= heap_free_mib * 1024 * 1024:
+                # A finite cgroup still limits host-backed GPU allocations.
+                cgroup_mib = self._cgroup_available_memory_mib()
+                if cgroup_mib is None:
+                    return None
+                return self._apu_ram_shortfall_message(heap_bytes, cgroup_mib)
+            return self._host_offload_shortfall_message(offload_bytes, avail)
+
+        free_bytes = free_vram_mib * 1024 * 1024
+        message = shortfall(free_bytes)
+        # Windows ROCm APU: verified carve-out and free reading are the same pool, so max, never
+        # sum (#18805). The verifier is slow (WDDM counters), so only a warning load pays for it.
+        if (
+            message
+            and sys.platform == "win32"
+            and not child_has_no_gpu
+            and len(gpus) == 1
+            and not shared
+            and not set(integrated_gpu_ids or ())
+            and self._amd_apu_wants_unified_memory([gpus[0][0]])
+        ):
+            try:
+                carve_out_bytes = int(
+                    self._windows_rocm_apu_carve_out_credit(
+                        original_model_bytes,
+                        model_path = model_path,
+                        caps = self.probe_server_capabilities(argv[0]),
+                        gpu_indices = [gpus[0][0]],
+                        extra_args = argv,
+                        env = _env,
+                    )
+                )
+            except Exception:
+                logger.debug("Windows APU carve-out credit unavailable.", exc_info = True)
+            else:
+                if carve_out_bytes > free_bytes:
+                    message = shortfall(carve_out_bytes)
+        return message
 
     @staticmethod
     def _apu_ram_shortfall_message(
@@ -16695,18 +16796,40 @@ class LlamaCppBackend:
 
     @staticmethod
     def _paged_fit_headroom_mib(
-        detected_gpus: Iterable[tuple], vulkan_igpu_ids: Collection[int]
+        detected_gpus: Iterable[tuple],
+        vulkan_igpu_ids: Collection[int],
+        *,
+        is_vulkan_backend: bool = False,
     ) -> float:
-        """The paging headroom, capped at what a lone Vulkan iGPU reads above its free carve-out.
-        The headroom keeps the fit out of shared memory; a flat 15 GiB also starves a carve-out
-        smaller than that (#18001). Unreadable carve-out or usage keeps the flat headroom."""
+        """Limit paging headroom on a single Windows iGPU with a known memory budget."""
         rows = list(detected_gpus or ())
-        if (
-            not _paged_load_needs_fit_headroom()
-            or len(rows) != 1
-            or rows[0][0] not in set(vulkan_igpu_ids or ())
-        ):
+        if not _paged_load_needs_fit_headroom() or len(rows) != 1:
             return _IGPU_PAGED_FIT_HEADROOM_MIB
+
+        idx, usable_mib = rows[0][:2]
+        if idx not in set(vulkan_igpu_ids or ()):
+            if (
+                not is_vulkan_backend
+                and usable_mib > 0
+                and idx
+                in LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+                    LlamaCppBackend._integrated_cuda_mask_key(), ()
+                )
+                and (
+                    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False
+                    or (
+                        (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper() == "PCI_BUS_ID"
+                        and not LlamaCppBackend._visibility_mask_is_unmappable()
+                    )
+                )
+            ):
+                # The base fit target already reserves memory. Bound the extra room for
+                # page-in by a tenth of the CUDA budget so it cannot consume a small pool.
+                free_mib = usable_mib + _IGPU_HOST_RESERVE_MIB
+                return float(min(_IGPU_PAGED_FIT_HEADROOM_MIB, math.ceil(free_mib / 10)))
+            return _IGPU_PAGED_FIT_HEADROOM_MIB
+
+        # Keep the Vulkan fit inside the free carve-out when both readings are available.
         try:
             carve_out = LlamaCppBackend._igpu_dedicated_memory_bytes(
                 [rows[0][0]], ordinals_are_vulkan = True
@@ -17827,6 +17950,7 @@ class LlamaCppBackend:
                 ):
                     lib_dirs.extend(_system_rocm)
             lib_dirs.append(binary_dir)
+            lib_dirs.extend(_oneapi_lib_dirs(binary_dir))
             _arch = platform.machine()  # x86_64, aarch64, etc.
 
             # Pip-installed nvidia libs: the prebuilt links libcudart.so.13 from here, not /usr/local/cuda.
@@ -19169,11 +19293,10 @@ class LlamaCppBackend:
         self._n_weight_layers = n_phys
 
     def _count_loop_weight_layers(self) -> None:
-        """A visit-indexed looped GGUF: block_count is the cache slots, the physical layers are fewer.
-
-        llama.cpp counts -ngl, -ts and --n-cpu-moe in physical layers (llama_model_n_layer_weights), so the
-        offload unit drops the (count - 1) repeat passes over the core [start, end); KV keeps the slots.
-        """
+        """Visit-indexed looped GGUF: block_count is the cache slots, physical layers are fewer;
+        llama.cpp counts -ngl, -ts and --n-cpu-moe in physical layers
+        (llama_model_n_layer_weights), so the offload unit drops the (count - 1) repeat passes
+        over the core [start, end); KV keeps the slots."""
         start, end, count = self._loop_start, self._loop_end, self._loop_count
         n_slots = self._n_layers
         if not (n_slots and count and count > 1 and start is not None and end and 0 <= start < end):
@@ -26557,9 +26680,8 @@ class LlamaCppBackend:
                                 for _idx, _free, _total in _gpu_mem
                             }
 
-                    # Auto keeps llama.cpp's 1024 MiB fitter margin, more than the budget
-                    # reserve on a small card: trim it to that reserve. Discrete cards only,
-                    # and not where WDDM spills an overrun to host RAM instead of failing.
+                    # Auto trims llama.cpp's 1024 MiB fitter margin to the budget reserve on a small
+                    # discrete card, not where WDDM spills overruns to host RAM.
                     if (
                         gpus
                         and not (gpu_memory_mode == "manual" and gpu_layers < 0)
@@ -29397,12 +29519,10 @@ class LlamaCppBackend:
                                 100 * (_share_after or 0.0),
                             )
 
-                    # Inkling 2 with every expert on the GPU: raise the micro-batch to 1024 for
-                    # prompt processing (see _INKLING_RESIDENT_N_UBATCH). After the spill raise,
-                    # which wins when experts sit in host RAM. Only a pinned all-GPU placement
-                    # (--fit off) counts as resident; the raise is repriced on the chosen cards
-                    # as the placement priced the default micro-batch, and kept only when the
-                    # launch stays under the occupancy cap with 256 MiB still free.
+                    # Inkling 2 fully on GPU raises micro-batch to 1024 (_INKLING_RESIDENT_N_UBATCH)
+                    # after the spill raise (wins when experts sit in host RAM); only pinned --fit
+                    # off counts; repriced on chosen cards as the placement priced it; kept only if
+                    # under the occupancy cap with 256 MiB free.
                     _inkling_ub_switch = _moe_switch(_INKLING_UBATCH_ENV)
                     _inkling_resident = bool(
                         gpus
@@ -32673,7 +32793,7 @@ class LlamaCppBackend:
                 )
                 _paged_headroom = []
                 _paged_headroom_mib = self._paged_fit_headroom_mib(
-                    _reachable_gpus, _vulkan_igpu_ids
+                    _reachable_gpus, _vulkan_igpu_ids, is_vulkan_backend = is_vulkan_backend
                 )
                 cmd, _pageable_note = self._page_an_oversized_unmapped_load(
                     cmd,
@@ -34366,7 +34486,7 @@ class LlamaCppBackend:
                             _paged_headroom = []
                         _retry_headroom: list = []
                         _retry_headroom_mib = self._paged_fit_headroom_mib(
-                            _retry_rows, _vulkan_igpu_ids
+                            _retry_rows, _vulkan_igpu_ids, is_vulkan_backend = is_vulkan_backend
                         )
                         cmd, _retry_pageable_note = self._page_an_oversized_unmapped_load(
                             cmd,
@@ -38309,14 +38429,10 @@ class LlamaCppBackend:
         gpu_indices: Iterable[int],
         planner_integrated: Iterable[int] = (),
     ) -> bool:
-        """Whether the Auto fit-margin trim must stay off because a card may be host RAM.
-
-        The discrete-first planner only classifies integrated devices on unpinned
-        multi-GPU loads, so a lone Jetson, an AMD APU or an explicitly picked iGPU
-        is checked here directly. Any integrated device on the host counts, since
-        its ids may not line up with the probed rows: a missed trim only keeps
-        today's margin.
-        """
+        """Whether Auto's fit-margin trim must stay off as a card may be host RAM: the planner only
+        classifies iGPUs on unpinned multi-GPU loads, so a lone Jetson, AMD APU or picked iGPU is
+        checked here; any integrated device counts, since its ids may not match the probed rows
+        (a miss only keeps the margin)."""
         if any(True for _ in planner_integrated):
             return True
         try:
@@ -39517,6 +39633,7 @@ class LlamaCppBackend:
         _allow_respawn_retry: bool = True,
         compact_context: bool = False,
         chat_template_kwargs: Optional[dict] = None,
+        record_cut_thought: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """Streams a chat completion via /v1/chat/completions (llama-server applies template and vision); yields cumulative text like InferenceBackend."""
         if not self.is_loaded:
@@ -39683,6 +39800,11 @@ class LlamaCppBackend:
                     yield {"type": "context_truncated", **truncation}
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
+        _budget = self._window_thinking_budget(
+            openai_messages, None, max_tokens, thinking_budget_tokens, enable_thinking
+        )
+        if _budget is not None:
+            payload["thinking_budget_tokens"] = _budget
         if stop:
             payload["stop"] = stop
         _apply_seeded_llama_request(payload, seed)
@@ -39875,6 +39997,26 @@ class LlamaCppBackend:
                     _metadata_usage = _backfill_usage_from_timings(
                         _metadata_usage, _metadata_timings
                     )
+                    # The window cut the thought (no EOS, no answer): the thread's next request
+                    # compacts and searches it instead of resuming a thought that cannot fit.
+                    _spent = (_metadata_usage or {}).get("completion_tokens") or 0
+                    if (
+                        record_cut_thought
+                        and _metadata_finish_reason == "length"
+                        and reasoning_text.strip()
+                        and not answer_text.strip()
+                        and not (cancel_event is not None and cancel_event.is_set())
+                        and (max_tokens is None or _spent < max_tokens)
+                    ):
+                        from core.inference import cut_thought
+                        _kept, _close = self._close_cut_thought(resumed_reasoning + reasoning_text)
+                        if cut_thought.mark(thread_id, _kept, _close):
+                            logger.info(
+                                "Thought cut by the context window (%d chars); closed with %r and "
+                                "the thread's next request compacts",
+                                len(_kept),
+                                _close,
+                            )
                     yield {
                         "type": "metadata",
                         # Never None: consumers call usage.get(...).
@@ -39915,6 +40057,77 @@ class LlamaCppBackend:
             # Died mid-generation: recover MTP, re-raise unchanged for this request.
             self._maybe_recover_from_mtp_crash(e)
             raise
+
+    def _llama_post_json(self, path: str, body: dict) -> Optional[dict]:
+        """A small JSON call to llama-server; None on any failure."""
+        try:
+            with httpx.Client(
+                timeout = httpx.Timeout(30.0, connect = 10),
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client:
+                resp = client.post(f"{self.base_url}{path}", json = body)
+            return resp.json() if resp.status_code == 200 else None
+        except Exception:
+            return None
+
+    def _window_thinking_budget(
+        self,
+        messages: list[dict],
+        tools: Optional[list],
+        max_tokens: Optional[int],
+        requested: Optional[int],
+        enable_thinking: Optional[bool],
+    ) -> Optional[int]:
+        if enable_thinking is False or not self._supports_reasoning:
+            return requested
+        from core.inference import cut_thought
+
+        server_budget = getattr(self, "_reasoning_budget", -1)
+        if requested is None and server_budget >= 0:
+            requested = server_budget
+        try:
+            prompt = estimate_messages_tokens_dense(self._countable_messages(messages))
+            prompt += estimate_messages_tokens_dense(tools or [])
+        except Exception:
+            return requested
+        return cut_thought.window_budget(
+            self._effective_context_length, prompt, max_tokens, requested
+        )
+
+    def _close_cut_thought(self, thought: str) -> tuple[str, str]:
+        """The cut thought minus its last few tokens, and this model's own thought-closing marker
+        read from its chat template (cached per load). Falls back to the whole thought and no marker."""
+        from core.inference import cut_thought
+
+        kept = thought.strip()
+        tokens = (
+            self._llama_post_json("/tokenize", {"content": kept, "add_special": False}) or {}
+        ).get("tokens")
+        if isinstance(tokens, list) and len(tokens) > cut_thought.BACKTRACK_TOKENS:
+            text = (
+                self._llama_post_json(
+                    "/detokenize", {"tokens": tokens[: -cut_thought.BACKTRACK_TOKENS]}
+                )
+                or {}
+            ).get("content")
+            if isinstance(text, str) and text.strip():
+                kept = text.strip()
+        cache_key = getattr(self, "_model_identifier", None) or self.base_url
+        cached = getattr(self, "_thought_close_marker", None)
+        if cached is not None and cached[0] == cache_key:
+            return kept, cached[1]
+        close = cut_thought.close_marker_from_template(
+            lambda messages: (
+                self._llama_post_json(
+                    "/apply-template", {"messages": messages, "add_generation_prompt": False}
+                )
+                or {}
+            ).get("prompt")
+        )
+        self._thought_close_marker = (cache_key, close)
+        return kept, close
 
     # ── Tool-calling agentic loop ──────────────────────────────
 
@@ -40244,6 +40457,26 @@ class LlamaCppBackend:
                 return cleaned
             return cleaned[: len(cleaned) - len(answer)] + kept
 
+        def _answer_is_call_only(answer: str) -> bool:
+            """Only calls, judged as the display strips them: markup and a leading Llama 3 bare-JSON call."""
+            if not auto_heal_tool_calls or not answer.strip():
+                return False
+            # The strip also drops non-call text (a raw [THINK] block), so require a call outside the reasoning.
+            lead = _LEAD_RAW_THINK_RE.sub("", answer[_lead_think_span(answer) :], count = 1).lstrip()
+            gate = _enabled_names_gate
+            if not has_tool_signal(lead) and not (
+                gate
+                and (
+                    strip_leading_bare_json_call(lead, gate) != lead
+                    or leading_bare_gemma_call_is_promotable(lead, gate)
+                )
+            ):
+                return False
+            kept = _LEAD_RAW_THINK_RE.sub("", _strip_tool_markup(answer, final = True), count = 1)
+            if gate:
+                kept = strip_leading_bare_json_call(kept.lstrip(), gate)
+            return not kept.strip()
+
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
@@ -40513,31 +40746,8 @@ class LlamaCppBackend:
         _compacts_images = bool(
             context_overflow == "truncate_oldest" and self._effective_context_length
         )
-        while True:
-            iteration += 1
-            while _model_note_events:
-                yield _model_note_events.pop(0)
-            # Here rather than at each append: six sites grow the conversation and all of
-            # them pass through this one point before the cache must hold the result.
-            if on_conversation_grew is not None:
-                try:
-                    on_conversation_grew(conversation)
-                except Exception:  # accounting must never break a run in progress
-                    logger.debug("tool loop recost failed", exc_info = True)
-            if iteration >= max_tool_iterations + _extra + _continuation_credits:
-                break
-            if cancel_event is not None and cancel_event.is_set():
-                return
-            # Whether this turn ran a tool; a no-op-only turn stays False and doesn't consume budget.
-            _turn_executed_real_tool = False
-            # Set when a reasoning retry was refused because the CALLER's allowance was
-            # spent rather than the window. Per iteration: it describes this turn only.
-            _reasoning_cap_spent = False
 
-            active_tools = tool_controller.active_tools()
-            if not active_tools:
-                _append_budget_exhausted_nudge = False
-                break
+        def _round_tool_choice(active_tools):
             from core.inference.chat_template_helpers import (
                 neutralize_tool_descriptions,
                 reconciled_tool_choice,
@@ -40561,6 +40771,94 @@ class LlamaCppBackend:
                 if matching_tools:
                     safe_tools = matching_tools
                     requested_choice = "required"
+            return safe_tools, requested_choice, forced_name
+
+        def _round_reasoning_kw():
+            return _with_template_extras(
+                self._request_reasoning_kwargs(
+                    _effective_enable_thinking, _effective_reasoning_effort, preserve_thinking
+                ),
+                chat_template_kwargs,
+            )
+
+        def _fit_count_tokens(fitted, safe_tools, reasoning_kw):
+            from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+            return self.count_chat_tokens(
+                neutralize_control_markup_in_messages(
+                    self._countable_messages(fitted),
+                    _markup_cache,
+                    self.markup_profile,
+                ),
+                None,
+                safe_tools,
+                strict = True,
+                chat_template_kwargs = reasoning_kw,
+                continue_final_message = bool(
+                    continue_final_message and trailing_assistant_resume_kind(fitted) is not None
+                ),
+                should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
+            )
+
+        def _prefetch_fit_count(round_conversation, round_limit):
+            if (
+                context_overflow != "truncate_oldest"
+                or not self._effective_context_length
+                or self._effective_context_length <= 1
+                or iteration >= round_limit
+                or (cancel_event is not None and cancel_event.is_set())
+            ):
+                return None
+            active_tools = tool_controller.active_tools()
+            if not active_tools:
+                return None
+            safe_tools = _round_tool_choice(active_tools)[0]
+            reasoning_kw = _round_reasoning_kw()
+
+            def _count() -> None:
+                try:
+                    _fit_count_tokens(list(round_conversation), safe_tools, reasoning_kw)
+                except Exception:
+                    logger.debug("fit count prefetch failed", exc_info = True)
+
+            worker = threading.Thread(target = _count, name = "fit-count-prefetch", daemon = True)
+            worker.start()
+            return worker
+
+        while True:
+            iteration += 1
+            while _model_note_events:
+                yield _model_note_events.pop(0)
+            _fit_count_prefetch = None
+            # Here rather than at each append: six sites grow the conversation and all of
+            # them pass through this one point before the cache must hold the result.
+            if on_conversation_grew is not None:
+                try:
+                    _fit_count_prefetch = _prefetch_fit_count(
+                        conversation, max_tool_iterations + _extra + _continuation_credits
+                    )
+                except Exception:
+                    logger.debug("fit count prefetch failed to start", exc_info = True)
+                try:
+                    on_conversation_grew(conversation)
+                except Exception:  # accounting must never break a run in progress
+                    logger.debug("tool loop recost failed", exc_info = True)
+            if iteration >= max_tool_iterations + _extra + _continuation_credits:
+                break
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            # Whether this turn ran a tool; a no-op-only turn stays False and doesn't consume budget.
+            _turn_executed_real_tool = False
+            # Set when a reasoning retry was refused because the CALLER's allowance was
+            # spent rather than the window. Per iteration: it describes this turn only.
+            _reasoning_cap_spent = False
+
+            active_tools = tool_controller.active_tools()
+            if not active_tools:
+                _append_budget_exhausted_nudge = False
+                break
+            from core.inference.chat_template_helpers import neutralize_tool_descriptions
+
+            safe_tools, requested_choice, forced_name = _round_tool_choice(active_tools)
             # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
             _enabled_tool_names = {
                 (tool.get("function") or {}).get("name")
@@ -40578,12 +40876,7 @@ class LlamaCppBackend:
                 neutralize_control_markup_in_messages,
             )
 
-            _reasoning_kw = _with_template_extras(
-                self._request_reasoning_kwargs(
-                    _effective_enable_thinking, _effective_reasoning_effort, preserve_thinking
-                ),
-                chat_template_kwargs,
-            )
+            _reasoning_kw = _round_reasoning_kw()
             # On a continuation only the remainder of the caller's cap; read before the payload.
             _iteration_max_tokens = (
                 _continuation_max_tokens if _continuation_max_tokens is not None else max_tokens
@@ -40612,26 +40905,16 @@ class LlamaCppBackend:
                             compaction_headroom_ratio = compaction_headroom_ratio,
                         )
                     )
+                    # Join before the fit: it cuts oversized attachments in place.
+                    if _fit_count_prefetch is not None:
+                        _fit_count_prefetch.join()
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
                         on_compacting = _compaction_reporter(perf_callback),
                         context_length = self._effective_context_length,
                         max_tokens = _iteration_max_tokens,
-                        count_tokens = lambda fitted: self.count_chat_tokens(
-                            neutralize_control_markup_in_messages(
-                                self._countable_messages(fitted),
-                                _markup_cache,
-                                self.markup_profile,
-                            ),
-                            None,
-                            safe_tools,
-                            strict = True,
-                            chat_template_kwargs = _reasoning_kw,
-                            continue_final_message = bool(
-                                continue_final_message
-                                and trailing_assistant_resume_kind(fitted) is not None
-                            ),
-                            should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
+                        count_tokens = lambda fitted: _fit_count_tokens(
+                            fitted, safe_tools, _reasoning_kw
                         ),
                         estimate_message = self._estimate_countable_message,
                         anchor_ids = _rolling_anchor_ids,
@@ -40962,6 +41245,15 @@ class LlamaCppBackend:
                                     _prompt_now,
                                     _reply_target,
                                 )
+                _budget = self._window_thinking_budget(
+                    conversation,
+                    safe_tools,
+                    _iteration_max_tokens,
+                    thinking_budget_tokens,
+                    enable_thinking,
+                )
+                if _budget is not None:
+                    payload["thinking_budget_tokens"] = _budget
 
                 with self._open_chat_stream_with_respawn_retry(
                     payload,
@@ -43395,8 +43687,11 @@ class LlamaCppBackend:
                 stream_payload["logit_bias"] = _with_banned_token(logit_bias, _final_opener_id)
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
-        if thinking_budget_tokens is not None:
-            stream_payload["thinking_budget_tokens"] = thinking_budget_tokens
+        _budget = self._window_thinking_budget(
+            conversation, _final_tools, _final_max_tokens, thinking_budget_tokens, enable_thinking
+        )
+        if _budget is not None:
+            stream_payload["thinking_budget_tokens"] = _budget
         stream_payload["max_tokens"] = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop
@@ -43556,6 +43851,7 @@ class LlamaCppBackend:
         _final_length_continuations = 0
         _continue_final = False
         _final_replayed_chars = 0
+        _final_call_retried = False
 
         def _remaining_output_budget() -> "Optional[int]":
             """What is left of a cap the CALLER set, or None when they set none.
@@ -44007,7 +44303,81 @@ class LlamaCppBackend:
                             )
                             if _meta is not None:
                                 yield _meta
+                    elif (
+                        auto_heal_tool_calls
+                        and not _final_call_retried
+                        and stream_payload.get("tools")
+                        # A continuation prefill would ask the retry to finish the call.
+                        and not stream_payload.get("continue_final_message")
+                        and _metadata_finish_reason != "length"
+                        and _answer_is_call_only(answer_text)
+                        and _remaining_output_budget() != 0
+                    ):
+                        # The answer was only a stripped tool call despite tool_choice "none" (#18802): re-ask once with no tools in the prompt.
+                        _final_call_retried = True
+                        logger.info("Final answer was only a tool call; retrying without tools")
+                        stream_payload.pop("tools", None)
+                        stream_payload.pop("tool_choice", None)
+                        # Appended to the last turn, not a new one: Ministral counts a user turn after a tool result as two in a row.
+                        _last_t = (
+                            stream_payload["messages"][-1] if stream_payload["messages"] else None
+                        )
+                        # A synthetic image turn must stay image-only, or the Ministral alternation fix skips it.
+                        if (
+                            _last_t is not None
+                            and _last_t.get("role") in ("tool", "user")
+                            and not mcp_is_synthetic_image_turn(_last_t)
+                        ):
+
+                            def _noted(message):
+                                return {
+                                    **message,
+                                    "content": with_appended_text(
+                                        message["content"], f"\n\n{_FINAL_ANSWER_RETRY_NUDGE}"
+                                    ),
+                                }
+
+                            stream_payload["messages"] = [
+                                *stream_payload["messages"][:-1],
+                                _noted(_last_t),
+                            ]
+                            # A respawn refit rebuilds from these, so the note must live there too.
+                            if _refit_tail:
+                                _refit_tail = [*_refit_tail[:-1], _noted(_refit_tail[-1])]
+                            elif conversation and conversation[-1].get("role") == _last_t["role"]:
+                                conversation[-1] = _noted(conversation[-1])
+                        # Admission and respawn refits must count the request actually sent.
+                        _final_tools = None
+                        _next_cap_t = _remaining_output_budget()
+                        if _next_cap_t is not None:
+                            stream_payload["max_tokens"] = _next_cap_t
+                        _fu_t = (
+                            _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
+                        )
+                        _accumulated_completion_tokens += _fu_t.get("completion_tokens", 0)
+                        _it_t = _metadata_timings or {}
+                        _accumulated_predicted_ms += _it_t.get("predicted_ms", 0)
+                        _accumulated_predicted_n += _it_t.get("predicted_n", 0)
+                        _stream_done = False
+                        _metadata_finish_reason = None
+                        _metadata_usage = None
+                        _metadata_timings = None
+                        # A fresh pass, as after a tool round: rewinding the shown text in place desyncs the route cursor.
+                        cumulative = _last_emitted = _attempt_started_at = ""
+                        answer_text = reasoning_text = ""
+                        in_thinking = has_content_tokens = False
+                        _prov_entry = _lead_wrap = _final_reasoning_started_at = None
+                        _final_reasoning_summary_emitted = False
+                        _final_answer_stripper.reset()
+                        _continue_final = True
+                        yield {"type": "status", "text": "", "new_pass": True}
                     else:
+                        if _answer_is_call_only(answer_text):
+                            # Call-only and not retried (or retried again): an empty bubble is not actionable.
+                            # Its own segment: the shown snapshot may still hold an unclosed call that would swallow it.
+                            yield {"type": "status", "text": "", "new_pass": True}
+                            _last_emitted = _FINAL_ANSWER_TOOL_LIMIT_MESSAGE
+                            yield {"type": "content", "text": _last_emitted}
                         _cut = _quote_cut_event(
                             reasoning_text,
                             answer_text,
@@ -44173,6 +44543,11 @@ class LlamaCppBackend:
                         if prefer_native and on_prompt is None:
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
+                            # Only native answers are kept; a failed endpoint is retried next time.
+                            native_key = _count_memo_key(self, "native-input-tokens", template_body)
+                            cached = _count_memo_get(self, native_key, _NATIVE_COUNT_MEMO)
+                            if cached is not None:
+                                return cached, False
                             try:
                                 native = client.post(
                                     f"{self.base_url}/v1/chat/completions/input_tokens",
@@ -44181,6 +44556,7 @@ class LlamaCppBackend:
                                 if native.status_code == 200:
                                     count = native.json().get("input_tokens")
                                     if type(count) is int and count > 0:
+                                        _count_memo_put(self, native_key, count, _NATIVE_COUNT_MEMO)
                                         return count, False
                             except Exception:
                                 pass

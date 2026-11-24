@@ -9,7 +9,7 @@ import threading
 from typing import Any, Optional
 
 _LOCK = threading.Lock()
-_CACHE: dict[int, bool] = {}
+_CACHE: dict[int, Optional[bool]] = {}
 
 
 def _device_index(torch: Any, device: Any) -> Optional[int]:
@@ -23,38 +23,43 @@ def _device_index(torch: Any, device: Any) -> Optional[int]:
     return int(dev.index) if dev.index is not None else int(torch.cuda.current_device())
 
 
-def _classify(torch: Any, index: int) -> bool:
+def _classify(torch: Any, index: int) -> Optional[bool]:
     props = torch.cuda.get_device_properties(index)
     from .rocm_bf16 import is_rocm_torch
 
     if is_rocm_torch(torch):
         from utils.hardware.hardware import _rocm_props_unified_status
-        return _rocm_props_unified_status(props) is True
+        return _rocm_props_unified_status(props)
     from utils.hardware.hardware import _cuda_props_are_integrated
 
     return bool(_cuda_props_are_integrated(props))
 
 
-def device_is_integrated(device: Any = None) -> bool:
-    """Never raises: no GPU, a non-CUDA device or an unreadable property answers False (discrete)."""
+def device_integrated_status(device: Any = None) -> Optional[bool]:
+    """True integrated, False discrete, None unknown (no GPU, a non-CUDA device, an unreadable property). Never raises."""
     try:
         import torch
 
         if not torch.cuda.is_available():
-            return False
+            return None
         index = _device_index(torch, device)
         if index is None:
-            return False
+            return None
         with _LOCK:
-            hit = _CACHE.get(index)
-        if hit is not None:
-            return hit
-        answer = bool(_classify(torch, index))
+            if index in _CACHE:
+                return _CACHE[index]
+        answer = _classify(torch, index)
+        answer = None if answer is None else bool(answer)
         with _LOCK:
             _CACHE[index] = answer
         return answer
-    except Exception:  # noqa: BLE001 - unclassifiable: keep the discrete path
-        return False
+    except Exception:  # noqa: BLE001 - unclassifiable
+        return None
+
+
+def device_is_integrated(device: Any = None) -> bool:
+    """Never raises: no GPU, a non-CUDA device or an unreadable property answers False (discrete)."""
+    return device_integrated_status(device) is True
 
 
 def xpu_is_integrated() -> bool:
@@ -109,9 +114,8 @@ def _resolve_get_last_error() -> Any:
         return None
     import os
 
-    # The runtime torch itself links: another package (or LD_PRELOAD) can map a second libcudart, a .so.12
-    # beside torch's .so.13, and the global namespace then resolves the symbol to it, clearing nothing torch
-    # sees. A lookup through torch's own extension searches only its dependency tree.
+    # Lookup goes through torch's own extension (searches only its dependency tree): a global lookup
+    # could hit a second libcudart from another package or LD_PRELOAD.
     fn = getattr(ctypes.CDLL(torch._C.__file__), sym, None)
     if fn is not None:
         return fn

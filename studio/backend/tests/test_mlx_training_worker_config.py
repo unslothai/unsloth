@@ -3,6 +3,7 @@
 import ast
 import importlib.util
 import inspect
+import itertools
 import os
 import sys
 import textwrap
@@ -198,6 +199,38 @@ def test_mlx_dora_requires_the_named_use_dora_parameter():
     ) == {"use_dora": True}
     assert _mlx_dora_peft_kwargs({}, old_zoo) == {}
     assert _mlx_dora_peft_kwargs({"use_dora": False}, old_zoo) == {}
+
+
+@pytest.mark.parametrize("marker", [True, None])
+def test_mlx_text_lora_drops_vision_only_on_a_zoo_that_trains_without_it(monkeypatch, marker):
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    if marker is not None:
+        loader.DROP_VISION_WEIGHTS_TRAINS_LORA = marker
+    mlx = types.ModuleType("unsloth_zoo.mlx")
+    mlx.loader = loader
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx", mlx)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    drops = {"drop_vision_weights": True} if marker else {}
+    for use_lora, image, audio in itertools.product((True, False), repeat = 3):
+        kwargs = _run_mlx_assignment(
+            "drop_vision_kwargs",
+            use_lora = use_lora,
+            is_dataset_image = image,
+            is_dataset_audio = audio,
+        )
+        assert kwargs == (drops if use_lora and not (image or audio) else {})
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
+    loads = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and ast.unparse(n.func) == "FastMLXModel.from_pretrained"
+    ]
+    assert len(loads) == 2
+    assert all(
+        any(kw.arg is None and ast.unparse(kw.value) == "drop_vision_kwargs" for kw in n.keywords)
+        for n in loads
+    )
 
 
 def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():

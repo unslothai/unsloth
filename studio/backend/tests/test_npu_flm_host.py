@@ -268,6 +268,43 @@ def test_flm_errors_printed_with_exit_zero_count_as_failures(tmp_path, monkeypat
     assert [r["id"] for r in flm.catalog()][0] == "qwen3-0.6b-FLM"
 
 
+@pytest.mark.parametrize(
+    "stdout, stderr",
+    [
+        # flm prints the list with dump(4); a line after it used to read as "Extra data".
+        (json.dumps(CATALOG, indent = 4) + "\n", "[XRT] WARNING: device {0} busy\n"),
+        (json.dumps(CATALOG, indent = 4) + "\n[FLM]  done {ok}\n", ""),
+        ("[FLM]  NPU {dev04}\n" + json.dumps(CATALOG, indent = 4) + "\n", ""),
+    ],
+)
+def test_the_model_list_ignores_text_flm_prints_around_it(tmp_path, monkeypatch, stdout, stderr):
+    npu = tmp_path / "bin" / "flm" / "npu"
+    npu.mkdir(parents = True)
+    (npu / ("flm.exe" if sys.platform == "win32" else "flm")).write_text("")
+    flm = fh.Flm(tmp_path)
+
+    class Done:
+        returncode = 0
+
+    Done.stdout, Done.stderr = stdout, stderr
+    monkeypatch.setattr(fh.subprocess, "run", lambda *a, **k: Done())
+    assert [r["id"] for r in flm.catalog()] == [fh.catalog_row(e)["id"] for e in CATALOG["models"]]
+
+
+def test_a_model_list_without_json_names_flms_output(tmp_path, monkeypatch):
+    npu = tmp_path / "bin" / "flm" / "npu"
+    npu.mkdir(parents = True)
+    (npu / ("flm.exe" if sys.platform == "win32" else "flm")).write_text("")
+    flm = fh.Flm(tmp_path)
+
+    class Done:
+        returncode, stdout, stderr = 0, '{"models": [', "terminate called after throwing\n"
+
+    monkeypatch.setattr(fh.subprocess, "run", lambda *a, **k: Done())
+    with pytest.raises(RuntimeError, match = "flm list failed: .*terminate called"):
+        flm.catalog()
+
+
 # Direct install and launcher.
 
 

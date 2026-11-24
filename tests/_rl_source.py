@@ -26,6 +26,7 @@ WRAPPER_NAMES = (
     "_replace_outputs_logits",
     "_minimise_logits_kwarg",
     "_drop_spare_hidden_states",
+    "_cp_last_hidden_state_only",
     "_install_grpo_hidden_states_forward_wrapper",
     "_grpo_pre_head_hidden_divisor",
     "_grpo_hidden_states_reproduce_logits",

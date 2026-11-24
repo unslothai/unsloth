@@ -188,10 +188,10 @@
       "_GGUF_UINT_WIDTHS": {
         "kind": "assign"
       },
-      "_GPU_DEVICE_PREFIXES": {
+      "_GPU_BUFFER_RE": {
         "kind": "assign"
       },
-      "_GPU_MODEL_BUFFER_RE": {
+      "_GPU_DEVICE_PREFIXES": {
         "kind": "assign"
       },
       "_GPU_OFFLOAD_MARKERS": {

@@ -350,9 +350,8 @@ def _tree_logps(model, packed, tree):
 
 
 def test_trl_patch_misses_peft_and_compiled_layers(setup, tree_cpu):
-    # The defect: TRL patches sys.modules[type(model).forward.__module__]. A PEFT model names peft.peft_model, so TRL
-    # refuses it; the bare model names transformers' module, so the compiled forward keeps the unpatched kernels and
-    # its scan runs from one branch into the next.
+    # TRL's sys.modules patch refuses PEFT and misses compiled forwards, which keep unpatched
+    # kernels.
     model = _model(setup.modeling, tree_cpu)
     assert setup.trl_patch(model) is False
     base = model.get_base_model()

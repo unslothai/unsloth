@@ -207,3 +207,163 @@ def test_pass_order_matches_installed_pillow(src, dst):
     ref = np.asarray(Image.fromarray(arr, "RGB").resize((w, h), Image.Resampling.LANCZOS))
     got = _emulate(arr, w, h, rp._pillow_vertical_first(sw, sh, w, h))
     assert np.array_equal(got, ref)
+
+
+def _flux2_request(pipe, img):
+    w, h = img.size
+    proc = pipe.image_processor
+    img = proc._resize_to_target_area(img, 512 * 512)
+    w, h = img.size
+    return proc.preprocess(img, height = h // 16 * 16, width = w // 16 * 16, resize_mode = "crop")
+
+
+def test_warm_probes_at_load_not_on_the_first_request(monkeypatch):
+    """warm() after placement runs the device probe; the first edit request then pays no probe / Triton compile."""
+    monkeypatch.setattr(rp, "_cuda_ok", lambda: True)
+    monkeypatch.setattr(rp, "_PROBED", {})
+    calls = []
+    monkeypatch.setattr(rp, "_probe", lambda proc, a, p, device: calls.append(str(device)) or True)
+    sentinel = torch.zeros(1, 3, 16, 16)
+    monkeypatch.setattr(rp, "_gpu_preprocess", lambda *a, **k: sentinel)
+    pipe = _Pipe(device = None)
+    assert rp.install(pipe) is True
+    assert rp.warm(pipe) is None and calls == []  # not placed yet: nothing to probe
+    pipe._execution_device = torch.device("cuda:0")
+    assert rp.warm(pipe) is True
+    assert calls == ["cuda:0"] and rp._PROBED == {"cuda:0": True}
+
+    def _no_probe(*a, **k):
+        raise AssertionError("probe ran on the request path")
+
+    monkeypatch.setattr(rp, "_probe", _no_probe)
+    assert _flux2_request(pipe, _img(1500, 900, 3)) is sentinel
+    assert rp.warm(pipe) is True  # a second warm is a dict hit
+
+
+def test_request_on_an_unwarmed_device_still_probes(monkeypatch):
+    monkeypatch.setattr(rp, "_cuda_ok", lambda: True)
+    monkeypatch.setattr(rp, "_PROBED", {})
+    calls = []
+    monkeypatch.setattr(rp, "_probe", lambda proc, a, p, device: calls.append(str(device)) or False)
+    pipe = _Pipe(device = torch.device("cuda:1"))
+    stock = flux2_ip.Flux2ImageProcessor(vae_scale_factor = 16)
+    assert rp.install(pipe) is True
+    img = _img(1500, 900, 4)
+    got = _flux2_request(pipe, img)
+    assert calls == ["cuda:1"] and rp._PROBED == {"cuda:1": False}
+    ref = _flux2_request(type("P", (), {"image_processor": stock})(), img)
+    assert torch.equal(got, ref)
+
+
+def test_warm_is_a_no_op_without_the_install(monkeypatch):
+    monkeypatch.setattr(rp, "_PROBED", {})
+    monkeypatch.setattr(
+        rp, "_probe", lambda *a, **k: (_ for _ in ()).throw(AssertionError("probed"))
+    )
+    assert rp.warm(_Pipe(device = torch.device("cuda:0"))) is None
+    assert rp.warm(object()) is None
+
+
+def test_load_warms_after_placement():
+    src = (BACKEND / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8")
+    install_at = src.index("install_ref_preprocess(pipe, logger = logger)")
+    placed_at = src.index("cuda_graph.arm_block_graphs(", install_at)
+    warm_at = src.index("warm_ref_preprocess(pipe, logger = logger)")
+    assert install_at < placed_at < warm_at
+
+
+def test_lanczos_refuses_sizes_past_int32_offsets():
+    """The kernels use 32-bit flat offsets per image: any buffer of 2**31 elements or more must be refused."""
+    pytest.importorskip("triton")
+    from core.inference import diffusion_lanczos_triton as K
+
+    assert K.fits_int32(4000, 6000, 1024, 1536)
+    side = 26755  # 3 * 26755**2 = 2147490075 >= 2**31
+    assert not K.fits_int32(side, side, 1024, 1024)
+    assert not K.fits_int32(1024, 1024, side, side)  # an upscale's output counts too
+    assert not K.fits_int32(side, 100, 100, side)  # either pass order's intermediate
+    assert K.fits_int32(26754, 26754, 1024, 1024)  # 3 * 26754**2 = 2147329548 < 2**31
+
+    class _Huge:
+        is_cuda = True
+        dtype = torch.uint8
+        ndim = 3
+        shape = (side, side, 3)
+        device = "cuda:0"
+
+    from core.inference import rocm_bf16
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rocm_bf16, "is_rocm_torch", lambda _t: False)
+        mp.setattr(K, "_launch", lambda *a, **k: pytest.fail("launched a wrapping kernel"))
+        with pytest.raises(ValueError, match = "32-bit"):
+            K.lanczos_resize(_Huge(), 1024, 1024)
+
+
+def test_huge_reference_is_refused_before_the_upload():
+    """A > 715 MP reference takes the CPU path: _gpu_preprocess raises before it copies the pixels to the GPU."""
+    pytest.importorskip("triton")
+    side = 26755
+
+    class _Src:
+        mode = "RGB"
+        size = (side, side)
+
+        def __array__(self, *a, **k):
+            raise AssertionError("uploaded a reference the kernels cannot index")
+
+    proc = flux2_ip.Flux2ImageProcessor(vae_scale_factor = 16)
+    img = rp.DeferredResize(_Src(), 1024, 1024)
+    with pytest.raises(ValueError, match = "32-bit"):
+        rp._gpu_preprocess(proc, img, 1024, 1024, "cpu")
+
+
+def test_batched_normalize_uses_64_bit_offsets():
+    """The guard bounds one image; the normalize kernel runs flat over the whole NHWC batch, so a [24, 8192, 8192, 3]
+    batch (4.8e9 elements) must not wrap: the program offset is widened to i64 before the multiply."""
+    import re
+
+    triton = pytest.importorskip("triton")
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource
+
+    from core.inference import diffusion_lanczos_triton as K
+
+    assert K.fits_int32(8192, 8192, 8192, 8192) and 24 * 8192 * 8192 * 3 > 2**32
+    signature = {
+        "src": "*u8",
+        "dst": "*fp32",
+        "normalization": "*fp32",
+        "count": "i64",
+        "block": "constexpr",
+    }
+    source = ASTSource(K._normalize_rgb, signature, constexprs = {"block": 256})
+    ir = triton.compile(source, target = GPUTarget("cuda", 80, 32)).asm["ttir"]
+    assert re.search(r"arith\.muli %\S+, %c256_i64 : i64", ir), ir
+    assert "!tt.ptr<i8>>, tensor<256xi64>" in ir and "!tt.ptr<i8>>, tensor<256xi32>" not in ir, ir
+
+
+def test_probe_oom_is_not_cached(monkeypatch):
+    """An OOM during the load-time probe takes the CPU path for now and probes again on the next request; a real
+    probe failure is still cached."""
+    monkeypatch.setattr(rp, "_cuda_ok", lambda: True)
+    monkeypatch.setattr(rp, "_PROBED", {})
+    results = [torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB"), True]
+
+    def probe(proc, a, p, device):
+        r = results.pop(0)
+        if isinstance(r, BaseException):
+            raise r
+        return r
+
+    monkeypatch.setattr(rp, "_probe", probe)
+    pipe = _Pipe(device = torch.device("cuda:0"))
+    assert rp.install(pipe) is True
+    assert rp.warm(pipe) is False and rp._PROBED == {}
+    assert rp.warm(pipe) is True and rp._PROBED == {"cuda:0": True} and results == []
+
+    monkeypatch.setattr(rp, "_PROBED", {})
+    monkeypatch.setattr(
+        rp, "_probe", lambda *a: (_ for _ in ()).throw(RuntimeError("Triton compile failed"))
+    )
+    assert rp.warm(pipe) is False and rp._PROBED == {"cuda:0": False}

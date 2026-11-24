@@ -1517,6 +1517,11 @@ def mlx_serves_chat_only() -> bool:
     return DEVICE == DeviceType.MLX and bool(CHAT_ONLY) and CHAT_ONLY_REASON == "no_torch"
 
 
+def chat_only_mac_install() -> bool:
+    """Apple Silicon --no-torch (Chat only) install: never trains, whatever its MLX state."""
+    return is_apple_silicon() and _installed_without_torch()
+
+
 def verdict_blames_the_mlx_stack() -> bool:
     """Unlocked deliberately: _DETECT_LOCK spans a whole detection pass, imports included, so taking it would park the post-warm worker behind an early request's first import. The overturn re-reads under the lock, so a straddling read costs one needless measurement."""
     return bool(CHAT_ONLY) and CHAT_ONLY_REASON == "mlx_unavailable"
@@ -1860,10 +1865,10 @@ def _detect_hardware_locked() -> DeviceType:
         and _installed_without_torch()
         and (
             _NO_TORCH_SETTLED_EPOCH == current_detection_epoch()
-            or not _mlx_distribution_installed()
+            or (not _mlx_distribution_installed() and _no_torch_mac_without_mlx_wheels())
         )
     ):
-        # GGUF-only by request, not a broken stack, and `unsloth studio update` cannot change it. With mlx on disk the verdict stays mlx_unavailable until the post-warm probe measures it, so a stack that only lost the import race is still overturned and the sidebar keeps polling until settle_the_no_torch_verdict() lands.
+        # A Mac that can install MLX stays mlx_unavailable until the self-heal ran.
         CHAT_ONLY_REASON = "no_torch"
         _MLX_BLOCKERS_MEASURED = None
         logger.info(
@@ -2786,7 +2791,8 @@ def _context_free_cuda_memory_info(
         free_mib, total_mib = _cuda_instance_free_total_mib(idx)
         if free_mib is None or total_mib is None:
             return None
-        if abs(total_mib * 1024**2 - total_bytes) > max(total_bytes // 100, 16 * 1024**2):
+        # 10%: nvidia-smi totals include the driver-reserved framebuffer torch excludes (#18732).
+        if abs(total_mib * 1024**2 - total_bytes) > max(total_bytes // 10, 1024 * 1024**2):
             return None
         return _free_in_torch_scope(total_bytes, (total_mib - free_mib) / 1024)
 
@@ -2812,7 +2818,8 @@ def _context_free_cuda_memory_info(
             if used_gb is None or driver_total_gb is None:
                 break
             driver_total_bytes = round(driver_total_gb * (1024**3))
-            total_tolerance = max(total_bytes // 100, 16 * 1024**2)
+            # 10%: nvidia-smi totals include the driver-reserved framebuffer torch excludes (#18732); partitions differ by GiBs.
+            total_tolerance = max(total_bytes // 10, 1024 * 1024**2)
             if abs(driver_total_bytes - total_bytes) > total_tolerance:
                 logger.debug("Skipping whole-GPU VRAM telemetry for a partitioned GPU device")
                 break

@@ -407,6 +407,11 @@ def _summed_tool_loop_stats(total, turn):
     return summed
 
 
+# ((mode, size), png_base64) on a decoded picture; copy() / convert() drop it. Invalid after an
+# in-place edit (paste, ImageDraw, putalpha), which keeps mode and size.
+PNG_B64_STAMP = "_studio_png_b64"
+
+
 def _encoded_images(images, to_base64) -> list:
     """Replayed MCP pictures arrive already PNG-encoded; a caller's decoded list does not."""
     return [one if isinstance(one, str) else to_base64(one) for one in images or ()]
@@ -4732,8 +4737,7 @@ class InferenceOrchestrator:
         """Resize image preserving aspect ratio (runs locally, no ML imports)."""
         if img is None:
             return None
-        entry = self.models.get(self.active_model_name) or {}
-        max_size = max(max_size, entry.get("max_image_side") or 0)
+        max_size = self.image_max_side(max_size)
         if img.size[0] > max_size or img.size[1] > max_size:
             from PIL import Image
 
@@ -4742,9 +4746,18 @@ class InferenceOrchestrator:
             return img.resize(new_size, Image.Resampling.LANCZOS)
         return img
 
+    def image_max_side(self, max_size: int = 800) -> int:
+        """The longest side resize_image leaves a picture at for the active model."""
+        entry = self.models.get(self.active_model_name) or {}
+        return max(max_size, entry.get("max_image_side") or 0)
+
     @staticmethod
     def _pil_to_base64(img) -> str:
         """Convert a PIL Image to base64 string for IPC."""
+        # A picture the route's history memo handed out carries the PNG it already encoded.
+        stamped = getattr(img, PNG_B64_STAMP, None)
+        if stamped is not None and stamped[0] == (img.mode, img.size):
+            return stamped[1]
         buf = BytesIO()
         img.save(buf, format = "PNG")
         return base64.b64encode(buf.getvalue()).decode("ascii")

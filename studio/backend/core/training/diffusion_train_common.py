@@ -1061,7 +1061,12 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
                 f"base_precision={mode!r} is a torchao NVIDIA tensor-core path (int8 sm_80+, fp8 "
                 "sm_89+, mxfp8 sm_100+) and this is a ROCm/AMD GPU. Use 'nf4', 'bf16', or 'auto'."
             )
-        if mode == "int8" and not has_functional_torchao():
+        # The fp16 path's W8A8 base runs torch._int_mm and never falls back to torchao (the trainer raises instead).
+        if (
+            mode == "int8"
+            and not (w8a8 and dit_fp16_fallback(fam))
+            and not has_functional_torchao()
+        ):
             return (
                 "base_precision='int8' needs a functional torchao install; this host's torchao is "
                 "missing or the non-functional Windows-ROCm stub. Use 'nf4', 'bf16', or 'auto'."
@@ -2085,6 +2090,53 @@ def _tag_compile_cache(torch, snap: dict) -> None:
         cconfig.cache_key_tag = prev + _SDPA_CACHE_TAG
 
 
+DETERMINISTIC_ENV = "UNSLOTH_DIFFUSION_TRAIN_DETERMINISTIC"
+_CUBLAS_ENV = "CUBLAS_WORKSPACE_CONFIG"
+_deterministic_logged = False
+
+
+def deterministic_requested() -> bool:
+    """UNSLOTH_DIFFUSION_TRAIN_DETERMINISTIC=1: bitwise reproducible same-seed runs, at a speed cost."""
+    raw = (os.environ.get(DETERMINISTIC_ENV) or "").strip().lower()
+    return raw in ("1", "on", "true", "yes")
+
+
+def _apply_deterministic(torch, snap: dict) -> None:
+    """Strict torch.use_deterministic_algorithms (flash attention's backward is non-deterministic otherwise, so
+    LoRA weights differ across processes even with the forward pinned). Every DDP rank inherits the env and
+    applies it in its own process. Snapshot into ``snap`` for _restore_perf_flags."""
+    global _deterministic_logged
+    snap["deterministic"] = (
+        bool(torch.are_deterministic_algorithms_enabled()),
+        bool(torch.is_deterministic_algorithms_warn_only_enabled()),
+    )
+    # cuBLAS needs a fixed workspace for deterministic results; strict mode raises without it.
+    snap["cublas_env"] = os.environ.get(_CUBLAS_ENV)
+    if snap["cublas_env"] is None:
+        os.environ[_CUBLAS_ENV] = ":4096:8"
+    torch.use_deterministic_algorithms(True)
+    if not _deterministic_logged:
+        _deterministic_logged = True
+        import logging
+        logging.getLogger(__name__).warning(
+            "%s=1: deterministic training (strict torch.use_deterministic_algorithms, %s=%s). Same-seed runs "
+            "give bitwise identical LoRA weights; about 20%% slower per step (FLUX.2-klein 4B fp8 on L4: "
+            "0.50 vs 0.41 s/step).",
+            DETERMINISTIC_ENV,
+            _CUBLAS_ENV,
+            os.environ[_CUBLAS_ENV],
+        )
+
+
+def _restore_deterministic(torch, snap: dict) -> None:
+    if "deterministic" not in snap:
+        return
+    enabled, warn_only = snap["deterministic"]
+    torch.use_deterministic_algorithms(enabled, warn_only = warn_only)
+    if snap.get("cublas_env") is None:
+        os.environ.pop(_CUBLAS_ENV, None)
+
+
 def _apply_perf_flags(
     cfg: "DiffusionLoraConfig",
     device: str,
@@ -2100,6 +2152,8 @@ def _apply_perf_flags(
         import torch
 
         snap["matmul_precision"] = torch.get_float32_matmul_precision()
+        if deterministic_requested():
+            _apply_deterministic(torch, snap)
         if cfg.enable_tf32:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
@@ -2129,6 +2183,12 @@ def _apply_perf_flags(
                     cuda_backends.enable_cudnn_sdp(False)
     except Exception:  # noqa: BLE001 -- perf flags are never fatal
         pass
+    try:
+        # gfx1151: diffusers hands SDPA strided q/k/v; contiguous copies train faster.
+        from core.inference.diffusion_attention import install_rocm_contiguous_qkv_training
+        snap["rocm_contiguous_qkv"] = install_rocm_contiguous_qkv_training()
+    except Exception:  # noqa: BLE001 -- perf only
+        pass
     return snap
 
 
@@ -2140,9 +2200,16 @@ def _restore_perf_flags(snap: Optional[dict]) -> None:
     from core.inference.diffusion_speed import restore_backend_flags
 
     restore_backend_flags(snap.get("flags"))
+    if snap.get("rocm_contiguous_qkv"):
+        try:
+            from core.inference.diffusion_attention import uninstall_rocm_contiguous_qkv_training
+            uninstall_rocm_contiguous_qkv_training(snap["rocm_contiguous_qkv"])
+        except Exception:  # noqa: BLE001 -- best-effort restore
+            pass
     try:
         import torch
 
+        _restore_deterministic(torch, snap)
         if snap.get("matmul_precision"):
             torch.set_float32_matmul_precision(snap["matmul_precision"])
         if snap.get("sdp_priority"):

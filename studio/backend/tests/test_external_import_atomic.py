@@ -160,6 +160,8 @@ def test_checkpoint_only_failure_keeps_existing_import_intact(source_path):
     before = _messages()
     assert _texts(before) == ["first"]
     assert _mark() == (1, claude._REVISION)
+    # An unchanged re-import does not rewrite an up-to-date mark; a lost one needs the write.
+    _execute("DELETE FROM external_import_sessions")
 
     with (
         _reject_checkpoint(),
@@ -168,7 +170,7 @@ def test_checkpoint_only_failure_keeps_existing_import_intact(source_path):
         run_import(claude.SOURCE)
 
     assert _messages() == before
-    assert _mark() == (1, claude._REVISION)
+    assert _mark() is None
     assert run_import(claude.SOURCE).messages == 0
     assert _messages() == before
     assert _mark() == (1, claude._REVISION)

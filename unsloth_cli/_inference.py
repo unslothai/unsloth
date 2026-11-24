@@ -3,6 +3,7 @@
 
 """Model loading and streaming shared by `inference` and `chat`."""
 
+import copy
 import json
 import os
 import re
@@ -188,6 +189,38 @@ def configure_quiet_logging() -> None:
     except ModuleNotFoundError:
         return
     structlog.configure(wrapper_class = structlog.make_filtering_bound_logger(level))
+    use_plain_tracebacks()
+
+
+def use_plain_tracebacks() -> None:
+    """Plain tracebacks: structlog's rich default highlights each frame's source (~2 s per llama_cpp.py frame).
+
+    Only the console renderer's exception formatter changes; levels, columns and colors are kept."""
+    try:
+        import structlog
+    except ModuleNotFoundError:
+        return
+    plain = getattr(structlog.dev, "plain_traceback", None)
+    renderer_cls = getattr(structlog.dev, "ConsoleRenderer", None)
+    if plain is None or renderer_cls is None:
+        return
+    processors = list(structlog.get_config().get("processors") or ())
+    changed = False
+    for index, processor in enumerate(processors):
+        if not isinstance(processor, renderer_cls):
+            continue
+        # A copy, so structlog's builtin default renderer (used again by reset_defaults()) stays as it was.
+        renderer = copy.copy(processor)
+        if isinstance(getattr(renderer_cls, "exception_formatter", None), property):
+            renderer.exception_formatter = plain  # public setter, structlog >= 25.5
+        elif hasattr(renderer, "_exception_formatter"):
+            renderer._exception_formatter = plain
+        else:
+            continue
+        processors[index] = renderer
+        changed = True
+    if changed:
+        structlog.configure(processors = processors)
 
 
 def _parse_nonnegative_int(value: Optional[str]) -> Optional[int]:

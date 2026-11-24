@@ -51,3 +51,11 @@ export function runningPercent(progress: number): number {
   const value = progress <= 1 ? progress * 100 : progress;
   return Math.max(0, Math.min(99, Math.floor(value)));
 }
+
+/** Only while documents are still embedding; failed and legacy empty rows count on neither side. */
+export function embeddedSummary(kb: { indexedCount?: number; indexingCount?: number }): string {
+  const indexing = kb.indexingCount ?? 0;
+  if (!indexing || kb.indexedCount == null) return "";
+  const total = kb.indexedCount + indexing;
+  return ` · ${kb.indexedCount} of ${total} embedded (${Math.floor((kb.indexedCount * 100) / total)}%)`;
+}

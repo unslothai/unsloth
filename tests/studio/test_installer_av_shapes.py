@@ -1335,8 +1335,7 @@ def test_a_watcher_that_fails_every_attempt_is_still_void(tmp_path) -> None:
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
 def test_a_compiler_seen_while_the_watcher_failed_is_a_hit_not_a_retry(tmp_path) -> None:
-    """4688 is authoritative about what ran, so a compile it saw is reported rather than
-    measured away."""
+    """4688 is authoritative about what ran, so a compile it saw is reported rather than measured away."""
     stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 2, compiled = True)
     assert "RESULT:measured compilers=1 " in stdout, stdout
     assert "MEASUREMENTS:1" in stdout, stdout
