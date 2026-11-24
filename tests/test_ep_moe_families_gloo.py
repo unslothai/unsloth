@@ -28,13 +28,14 @@ FAMILIES = {
     "qwen3_moe": "trl-internal-testing/tiny-Qwen3MoeForCausalLM",
     "olmoe": "hf-internal-testing/tiny-random-OlmoeForCausalLM",
     "glm4_moe": "trl-internal-testing/tiny-Glm4MoeForCausalLM",  # shared experts + grouped routing
+    # (hidden_states, router_indices, routing_weights), transposed stacks, per-expert biases
+    "gpt_oss": "trl-internal-testing/tiny-GptOssForCausalLM",
 }
 REFUSED = {
-    "gpt_oss": "trl-internal-testing/tiny-GptOssForCausalLM",
     "llama": "hf-internal-testing/tiny-random-LlamaForCausalLM",
 }
 EXPERT_LORA = dict(target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"])
-_SEQ = (7, 5, 6)
+_SEQ = (7, 5, 6, 4)
 
 
 def _modules():
@@ -73,13 +74,23 @@ def _build(build, repo):
     return model
 
 
-def _case_family(rank, world, tmp, repo):
+def _case_family(
+    rank,
+    world,
+    tmp,
+    repo,
+    ep = None,
+):
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
     from torch.nn.parallel import DistributedDataParallel
 
     build, tpn, epn = _modules()
-    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    ep = ep or world
+    if ep == world:
+        mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    else:  # replica groups of ep ranks, ep innermost
+        mesh = init_device_mesh("cpu", (world // ep, ep), mesh_dim_names = ("ep_rep", "ep"))
     ref = _build(build, repo)
     vocab = tpn._text_config(ref).vocab_size
     rows = [_rows(vocab, r) for r in range(world)]
@@ -95,10 +106,11 @@ def _case_family(rank, world, tmp, repo):
 
     model = _build(build, repo)
     epn.apply_expert_parallel(model, mesh)
-    group = mesh.get_group()
+    group = epn._mesh(model).get_group()
     ddp = DistributedDataParallel(model)
     loss = _sum_loss(ddp, *rows[rank]) * world / n
     loss.backward()
+    epn.ep_sync_expert_grads(model)
     value = loss.detach() / world
     dist.all_reduce(value)
     got = {
@@ -121,7 +133,92 @@ def _case_family(rank, world, tmp, repo):
         "per_rank": shard.per_rank,
         "experts": shard.experts,
         "blocks": len(tpn.moe_blocks_with_experts(model)),
+        "ep": epn._mesh(model).size(),
+        "has_bias_shards": sorted(
+            {
+                k.rsplit(".", 1)[-1]
+                for k, p in model.named_parameters()
+                if getattr(p, epn._EP, None) and "bias" in k
+            }
+        ),
     }
+
+
+def _case_bypass(rank, world, tmp, repo):
+    """A block forward that computes its experts without the experts call (a fused / decode-only path) raises."""
+    from torch.distributed.device_mesh import init_device_mesh
+
+    build, tpn, epn = _modules()
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    model = _build(build, repo)
+    epn.apply_expert_parallel(model, mesh)
+    block = tpn.moe_blocks_with_experts(model)[0]
+    ids = torch.randint(0, 50, (1, 4), generator = torch.Generator().manual_seed(0))
+    with torch.no_grad():
+        model(input_ids = ids)  # the normal path: no error
+    block.forward = lambda hidden_states, *a, **k: torch.zeros_like(hidden_states)
+    try:
+        with torch.no_grad():
+            model(input_ids = ids)
+        message = None
+    except RuntimeError as exc:
+        message = str(exc)
+    return {"message": message}
+
+
+def _zoo_like_gpt_oss_decode(enable):
+    """GptOssMLP.forward with unsloth_zoo's shape: a 1-token eval decode reads the expert stacks directly
+    (here: the experts class forward called unbound, around the experts call)."""
+    from transformers.models.gpt_oss import modeling_gpt_oss as mod
+
+    if not enable:
+        return
+    original = mod.GptOssMLP.forward
+
+    def forward(self, hidden_states):
+        bsz, qlen, hd = hidden_states.shape
+        if qlen == 1 and not self.training:
+            flat = hidden_states.reshape(-1, hd)
+            _, scores, indices = self.router(flat)
+            out = type(self.experts).forward(self.experts, flat, indices, scores)
+            return out.reshape(bsz, qlen, hd), scores
+        return original(self, hidden_states)
+
+    mod.GptOssMLP.forward = forward
+
+
+def _case_generate(
+    rank,
+    world,
+    tmp,
+    repo,
+    zoo_decode = False,
+    plain_block = True,
+):
+    _zoo_like_gpt_oss_decode(zoo_decode)
+    """generate under expert parallel: each rank its own prompt and max_new_tokens (rank 1 stops 3 tokens early);
+    synced_gpus keeps the finished rank stepping, and every rank's tokens equal one process' greedy decode."""
+    from torch.distributed.device_mesh import init_device_mesh
+
+    build, tpn, epn = _modules()
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    ref = _build(build, repo).eval()
+    model = _build(build, repo).eval()
+    if not plain_block:
+        epn._BLOCK_FORWARDS.clear()
+    epn.apply_expert_parallel(model, mesh)
+    vocab = tpn._text_config(ref).vocab_size
+    prompt = torch.randint(
+        1, vocab, (1, 3 + rank), generator = torch.Generator().manual_seed(40 + rank)
+    )
+    kw = dict(max_new_tokens = 6 - 3 * rank, do_sample = False, pad_token_id = 0, eos_token_id = None)
+    with torch.no_grad():
+        want = ref.generate(input_ids = prompt, **kw)
+        try:
+            got = model.generate(input_ids = prompt, **kw)
+        except RuntimeError as exc:
+            return {"want": want, "got": None, "refused": str(exc)}
+    return {"want": want, "got": got}
 
 
 def _case_refused(rank, world, tmp, repo):
@@ -197,7 +294,12 @@ def _spawn(
 
 @pytest.mark.parametrize("family", sorted(FAMILIES))
 def test_ep_family_matches_one_process(family):
-    _check_family(_spawn("_case_family", repo = FAMILIES[family]), 2)
+    results = _spawn("_case_family", repo = FAMILIES[family])
+    _check_family(results, 2)
+    if family == "gpt_oss":  # its per-expert biases are sharded with the stacks
+        assert results[0]["has_bias_shards"] == ["down_proj_bias", "gate_up_proj_bias"], results[0][
+            "has_bias_shards"
+        ]
 
 
 def test_ep_three_ranks_pad_experts_and_leave_one_rank_only_padding():
@@ -206,10 +308,16 @@ def test_ep_three_ranks_pad_experts_and_leave_one_rank_only_padding():
     _check_family(_spawn("_case_family", world = 3, repo = FAMILIES["olmoe"]), 3)
 
 
-def _check_family(results, world):
+def _check_family(
+    results,
+    world,
+    ep = None,
+):
+    ep = ep or world
     assert all(r is not None and "error" not in r for r in results), results
     for r in results:
-        assert r["blocks"] >= 1 and r["per_rank"] == max(2, -(-r["experts"] // world)), r
+        assert r["ep"] == ep and r["blocks"] >= 1, r
+        assert r["per_rank"] == max(2, -(-r["experts"] // ep)), r
         got, want = r["loss"]
         assert got == pytest.approx(want, rel = 1e-6), r["loss"]
         got, want = r["norm"]
@@ -219,6 +327,40 @@ def _check_family(results, world):
         assert any(".experts." in k and "lora_" in k for k in want)
         for k in want:
             torch.testing.assert_close(got[k], want[k], rtol = 1e-5, atol = 1e-6, msg = k)
+
+
+def test_ep_two_replica_groups_of_two_match_one_process():
+    # ep=2 over 4 ranks: two groups each hold all 4 experts once (2 per rank); expert gradients are summed over
+    # the groups. Each rank its own rows (4 different lengths).
+    _check_family(_spawn("_case_family", world = 4, repo = FAMILIES["olmoe"], ep = 2), 4, ep = 2)
+
+
+def test_ep_refuses_a_block_forward_that_skips_the_experts_call():
+    results = _spawn("_case_bypass", repo = FAMILIES["olmoe"])
+    assert all(r is not None and "error" not in r for r in results), results
+    for r in results:
+        assert r["message"] is not None and "without calling" in r["message"], r["message"]
+
+
+def test_ep_generate_with_uneven_lengths_matches_one_process():
+    results = _spawn("_case_generate", repo = FAMILIES["qwen3_moe"])
+    assert all(r is not None and "error" not in r for r in results), results
+    for r in results:
+        assert torch.equal(r["got"], r["want"]), (r["got"], r["want"])
+    assert results[0]["got"].shape[1] != results[1]["got"].shape[1]
+
+
+def test_ep_gpt_oss_decode_path_around_the_experts_call():
+    # zoo's GptOssMLP decodes 1 token in eval from the stacks directly: under expert parallel the block runs the
+    # plain router -> experts forward instead, and decodes as one process does.
+    results = _spawn("_case_generate", repo = FAMILIES["gpt_oss"], zoo_decode = True)
+    assert all(r is not None and "error" not in r for r in results), results
+    for r in results:
+        assert r["got"] is not None and torch.equal(r["got"], r["want"]), r
+    # Without that replacement the bypass guard refuses rather than decoding from E / ep experts.
+    results = _spawn("_case_generate", repo = FAMILIES["gpt_oss"], zoo_decode = True, plain_block = False)
+    for r in results:
+        assert r is not None and "without calling" in (r.get("refused") or ""), r
 
 
 @pytest.mark.parametrize("family", sorted(REFUSED))

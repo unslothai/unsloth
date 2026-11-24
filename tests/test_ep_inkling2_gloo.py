@@ -219,7 +219,12 @@ def _case_four_bit_on_load(rank, world, tmp, loop):
     }
 
 
-def _case_env_trainer(rank, world, tmp):
+def _case_env_trainer(
+    rank,
+    world,
+    tmp,
+    resume = False,
+):
     """UNSLOTH_PARALLEL="ep=2" (set before `import unsloth`) through transformers' Trainer under Unsloth's
     Trainer.__init__: DDP over 2 ranks of 1 row each vs one process on 2 rows, clipping on, then save_model."""
     from test_tp_native_gloo import _import_checkout_unsloth, _Rows, _trainer_args
@@ -255,9 +260,13 @@ def _case_env_trainer(rank, world, tmp):
         torch.manual_seed(1)
         return get_peft_model(model, config)
 
-    model = tp_env.tensor_parallel_env_peft(peft)(ink.build(True, lora = False))
     g = torch.Generator().manual_seed(1)
-    data = _Rows(list(torch.randint(1, 250, (6, 9), generator = g)))
+    data = _Rows(list(torch.randint(1, 250, (8 if resume else 6, 9), generator = g)))
+    if resume:
+        return _resume_arms(
+            rank, tmp, SequentialTrainer, peft, data, _trainer_args, ep_native, tp_env
+        )
+    model = tp_env.tensor_parallel_env_peft(peft)(ink.build(True, lora = False))
     out = os.path.join(tmp, "out")
     # adam eps 1e-4 as test_tp_env_gloo: the default 1e-8 turns fp32 reduction-order noise into weight drift.
     args = _trainer_args(
@@ -275,6 +284,61 @@ def _case_env_trainer(rank, world, tmp):
         "losses": [h["loss"] for h in logs],
         "grad_norms": [h["grad_norm"] for h in logs],
         "adapter": load_file(os.path.join(out, "adapter_model.safetensors")),
+    }
+
+
+def _resume_arms(rank, tmp, trainer_cls, peft, data, trainer_args, ep_native, tp_env):
+    """4 steps uninterrupted (checkpoint at step 2) vs a fresh model resumed from that checkpoint; then a
+    checkpoint whose expert parallel layout was edited is refused before anything is loaded."""
+    import shutil
+
+    import torch.distributed as dist
+
+    def run(out, resume_from = None):
+        model = tp_env.tensor_parallel_env_peft(peft)(ink.build(True, lora = False))
+        args = trainer_args(
+            out,
+            1,
+            gradient_accumulation_steps = 1,
+            max_steps = 4,
+            max_grad_norm = 0.05,
+            adam_epsilon = 1e-4,
+            save_strategy = "steps",
+            save_steps = 2,
+        )
+        trainer = trainer_cls(model = model, args = args, train_dataset = data)
+        trainer.train(resume_from_checkpoint = resume_from)
+        logs = {h["step"]: h["loss"] for h in trainer.state.log_history if "loss" in h}
+        state = ep_native.ep_full_adapter_state_dict(trainer.model)
+        return logs, {k: v.detach().clone() for k, v in state.items() if "lora_" in k}
+
+    a_logs, a_state = run(os.path.join(tmp, "a"))
+    ckpt = os.path.join(tmp, "a", "checkpoint-2")
+    files = sorted(os.listdir(os.path.join(ckpt, ep_native._CKPT_DIR)))
+    b_logs, b_state = run(os.path.join(tmp, "b"), ckpt)
+    bad = os.path.join(tmp, "bad")
+    if rank == 0:
+        shutil.copytree(ckpt, bad)
+    dist.barrier()
+    path = os.path.join(bad, ep_native._CKPT_DIR, f"rank{rank:05d}.pt")
+    payload = torch.load(path, weights_only = False)
+    payload["layout"]["ep"] = 99
+    torch.save(payload, path)
+    try:
+        run(os.path.join(tmp, "c"), bad)
+        refused = None
+    except ValueError as exc:
+        refused = str(exc)
+    return {
+        "files": files,
+        "a": a_logs,
+        "b": b_logs,
+        "worst_state": max(
+            float((b_state[k] - a_state[k]).norm() / max(float(a_state[k].norm()), 1e-30))
+            for k in a_state
+        ),
+        "experts_in_state": sum(1 for k in a_state if ".experts." in k),
+        "refused": refused,
     }
 
 
@@ -425,12 +489,36 @@ def test_parallel_flag_accepts_ep_over_every_rank():
     assert pe.translate(pe.parse_parallel_spec("ep_size=2,dp=2"), {"WORLD_SIZE": "2"}) == {
         "UNSLOTH_EP_SIZE": "2"
     }
+    # ep < world: replica groups (2 groups of ep 2 over 4 ranks)
+    assert pe.translate(pe.parse_parallel_spec("ep=2"), {"WORLD_SIZE": "4"}) == {
+        "UNSLOTH_EP_SIZE": "2"
+    }
     for raw, world, match in (
         ("ep=2,tp=2", "4", "cannot be combined with tp=2"),
         ("ep=2,fsdp=1", "2", "cannot be combined with fsdp=1"),
-        ("ep=2", "4", "needs dp = WORLD_SIZE = 2"),
+        ("ep=3", "4", "must divide the data parallel size"),
+        ("ep=2,dp=2", "4", "needs dp x pp x cp x tp"),
     ):
         with pytest.raises(ValueError, match = match):
             pe.translate(pe.parse_parallel_spec(raw), {"WORLD_SIZE": world})
     with pytest.raises(ValueError, match = "efsdp"):
         pe.parse_parallel_spec("efsdp=2")
+
+
+def test_ep_resume_restores_expert_optimizer_state():
+    from tests._rendezvous_port import free_port
+
+    env = {"UNSLOTH_PARALLEL": "ep=2", "MASTER_ADDR": "127.0.0.1", "MASTER_PORT": str(free_port())}
+    results = _spawn("_case_env_trainer", env = env, resume = True)
+    if results[0] is not None and "skip" in results[0]:
+        pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
+    assert all(r is not None and "error" not in r for r in results), results
+    for rank, r in enumerate(results):
+        assert r["files"] == ["rank00000.pt", "rank00001.pt"], r["files"]
+        assert sorted(r["b"]) == [1, 2, 3, 4], r[
+            "b"
+        ]  # steps 1-2 come from the checkpoint's trainer state
+        for step in (3, 4):  # the resumed steps equal the uninterrupted run's
+            assert r["b"][step] == pytest.approx(r["a"][step], rel = 1e-6), (step, r["a"], r["b"])
+        assert r["experts_in_state"] > 0 and r["worst_state"] < 1e-6, r["worst_state"]
+        assert r["refused"] is not None and "expert parallel layout" in r["refused"], r["refused"]

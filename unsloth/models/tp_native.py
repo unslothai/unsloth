@@ -1865,6 +1865,8 @@ def _moe_post_hook(module, args, output):
 _MOE_SHARD_ENV = "UNSLOTH_TP_MOE_SHARD"
 _EXPERT_STACKS = ("gate_up_proj", "down_proj")
 _EXPERT_CALL = ("hidden_states", "top_k_index", "top_k_weights")
+# Other names for the same experts call: gpt-oss (hidden_states, router_indices, routing_weights).
+_EXPERT_CALL_ALIASES = {"router_indices": "top_k_index", "routing_weights": "top_k_weights"}
 _EXPERT_DTYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
 
 
@@ -2019,7 +2021,7 @@ def expert_shard_problem(block, tp = None):
         names = tuple(inspect.signature(type(leaf).forward).parameters)[1:]
     except (TypeError, ValueError):
         names = ()
-    if names != _EXPERT_CALL:
+    if tuple(_EXPERT_CALL_ALIASES.get(n, n) for n in names) != _EXPERT_CALL:
         return f"its experts forward takes {names}, not {_EXPERT_CALL}"
     if getattr(type(leaf), "_unsloth_expert_lora_factors_swapped", False):
         return "swapped expert LoRA factors"
@@ -2172,6 +2174,7 @@ def _expert_call_args(args, kwargs):
     values, kwargs = list(args), dict(kwargs)
     if not values and "x" in kwargs:  # PEFT ParamWrapper.forward(x, *args, **kwargs)
         values.append(kwargs.pop("x"))
+    kwargs = {_EXPERT_CALL_ALIASES.get(k, k): v for k, v in kwargs.items()}
     for name in _EXPERT_CALL[len(values) :]:
         if name not in kwargs:
             return None

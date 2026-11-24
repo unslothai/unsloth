@@ -13,8 +13,8 @@ Keys: dp, tp, pp, cp (positive integers; dp may be omitted and then fills the wo
 ring), fsdp (0 / 1: native FSDP2 over the data parallel ranks instead of DDP-style averaging; fsdp=N with N > 1
 is dp_shard=N), dp_shard=N / dp_replicate=N (dp with FSDP2 / DDP), pp_schedule (gpipe, 1f1b; default
 1f1b), pp_microbatches.
-ep=N (ep_size): expert parallel, N = the world size (data parallel ranks that each keep E / N of every MoE block's
-routed experts, models/ep_native.py); not with tp / pp / cp / fsdp yet. transformers' DistributedConfig names are
+ep=N (ep_size): expert parallel, N dividing the world size (data parallel ranks that each keep E / N of every MoE
+block's routed experts; world / N replica groups, models/ep_native.py); not with tp / pp / cp / fsdp yet. transformers' DistributedConfig names are
 accepted too (tp_size, pp_size, fsdp_size, cp_size, ep_size); efsdp is reserved and refused. The flag is parsed once, at `import unsloth`, and translated to the variables
 the existing paths read: UNSLOTH_TP_SIZE, UNSLOTH_PP_SIZE, UNSLOTH_FSDP2, UNSLOTH_PP_SCHEDULE,
 UNSLOTH_PP_MICROBATCHES, UNSLOTH_CP_SIZE and UNSLOTH_CP_BACKEND. Those variables keep working on their own; a
@@ -261,11 +261,14 @@ def translate(spec, environ = None):
             raise ValueError(
                 f'Unsloth: {FLAG}="{given}": expert parallel (ep) cannot be combined with {", ".join(others)} yet.'
             )
-        if spec.get("dp", ep) != ep or (world is not None and world != ep):
+        # Every rank is data parallel; ep ranks share one copy of the experts (replica groups when ep < world).
+        dp = spec.get("dp", world)
+        if (world is not None and (world % ep or (dp is not None and dp != world))) or (
+            dp is not None and dp % ep
+        ):
             raise ValueError(
-                f'Unsloth: {FLAG}="{given}": ep={ep} shards the experts over every rank, so it needs '
-                f"dp = WORLD_SIZE = {ep} (got dp={spec.get('dp', world)}, WORLD_SIZE={world}); launch with "
-                f"torchrun --nproc-per-node {ep}."
+                f'Unsloth: {FLAG}="{given}": ep={ep} must divide the data parallel size, which is every rank '
+                f"(got dp={dp}, WORLD_SIZE={world}); launch with torchrun --nproc-per-node a multiple of {ep}."
             )
     out = {}
     wanted = {
