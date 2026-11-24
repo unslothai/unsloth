@@ -226,7 +226,8 @@ def _inspect_wheel(path: str, name: str, version: str) -> str | None:
     """Why the wheel is malicious-looking, or None. Every member must sit under the package or
     its dist-info, and no .pth (run at every interpreter start) may ride along."""
     module = name.replace("-", "_")
-    allowed_roots = {module, f"{module}-{version}.dist-info", f"{module}-{version}.data"}
+    # No .data root: pip relocates its contents (scripts, purelib, ...) outside the package.
+    allowed_roots = {module, f"{module}-{version}.dist-info"}
     try:
         with zipfile.ZipFile(path) as archive:
             for member in archive.namelist():
@@ -343,21 +344,24 @@ def _check_advisories(pinned: list[tuple[str, str, str]]) -> PackageScanResult:
     results = answer.get("results") if isinstance(answer, dict) else None
     if not isinstance(results, list) or len(results) != len(pinned):
         return PackageScanResult(REVIEW, "the OSV advisory database could not be reached")
+    # Every package is read before answering: a MAL-* entry anywhere outranks an advisory.
+    review = None
     for (spec, _, _), result in zip(pinned, results):
         if not isinstance(result, dict):
-            return PackageScanResult(REVIEW, "the OSV advisory database gave a malformed answer")
-        if result.get("next_page_token"):
-            return PackageScanResult(REVIEW, f"OSV lists many advisories for {spec}")
+            review = review or "the OSV advisory database gave a malformed answer"
+            continue
         ids = [str(v.get("id")) for v in result.get("vulns") or [] if isinstance(v, dict)]
         malicious = [i for i in ids if i.startswith("MAL-")]
         if malicious:
             return PackageScanResult(
                 FLAGGED, f"{spec} is reported as malicious ({', '.join(malicious[:3])})"
             )
-        if ids:
+        if result.get("next_page_token"):
+            review = review or f"OSV lists more advisories for {spec} than one page holds"
+        elif ids:
             shown = ", ".join(ids[:3]) + (" and more" if len(ids) > 3 else "")
-            return PackageScanResult(REVIEW, f"{spec} has known advisories ({shown})")
-    return PackageScanResult(CLEAN, "")
+            review = review or f"{spec} has known advisories ({shown})"
+    return PackageScanResult(REVIEW, review) if review else PackageScanResult(CLEAN, "")
 
 
 _cache_lock = threading.Lock()
@@ -410,13 +414,21 @@ def _scan(packages: Sequence[str], primary: str) -> PackageScanResult:
         return PackageScanResult(REVIEW, f"{primary} is not pinned to an exact release")
     if _offline():
         return PackageScanResult(REVIEW, "Unsloth is offline, so the release could not be scanned")
+    # Run every check before answering: flagged anywhere wins over a review elsewhere, since a
+    # confirmed install still proceeds past review but never past flagged.
     hashes: dict = {}
+    review = None
     for spec, name, version in pinned:
         verdict = _check_release(spec, name, version, primary = name == primary)
-        if not verdict.clean:
+        if verdict.status == FLAGGED:
             return verdict
-        hashes.update(verdict.hashes)
+        if verdict.clean:
+            hashes.update(verdict.hashes)
+        else:
+            review = review or verdict.reason
     advisories = _check_advisories(pinned)
-    if not advisories.clean:
+    if advisories.status == FLAGGED:
         return advisories
-    return PackageScanResult(CLEAN, "", hashes)
+    review = review or (advisories.reason if not advisories.clean else None)
+    # A confirmed install past a review still pins whatever digests were verified.
+    return PackageScanResult(REVIEW if review else CLEAN, review or "", hashes)

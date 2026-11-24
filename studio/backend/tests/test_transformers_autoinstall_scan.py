@@ -144,6 +144,7 @@ def test_tampered_wheel_is_flagged(index):
         ({"transformers/__init__.py": "", "evil.pth": "import os"}, ".pth"),
         ({"transformers/__init__.py": "", "sitecustomize.py": ""}, "top-level"),
         ({"transformers/../../x.py": ""}, "unsafe path"),
+        ({f"transformers-{VERSION}.data/scripts/x": ""}, "top-level"),
     ],
 )
 def test_wheel_content_red_flags(index, members, needle):
@@ -155,6 +156,20 @@ def test_wheel_content_red_flags(index, members, needle):
 
 def test_malicious_osv_entry_is_flagged(index):
     index.vulns = {"transformers": ["MAL-2026-1"]}
+    assert ps.scan_pypi_install(PLAN).status == ps.FLAGGED
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        # An ordinary advisory on one package must not hide a MAL entry on another.
+        lambda i: setattr(i, "vulns", {"transformers": ["GHSA-x"], "huggingface-hub": ["MAL-1"]}),
+        # Nor may an unreachable release check skip the advisory lookup.
+        lambda i: (setattr(i, "pypi_down", True), setattr(i, "vulns", {"hf-xet": ["MAL-2"]})),
+    ],
+)
+def test_malicious_entry_outranks_a_review_elsewhere(index, setup):
+    setup(index)
     assert ps.scan_pypi_install(PLAN).status == ps.FLAGGED
 
 
