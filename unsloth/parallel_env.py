@@ -13,8 +13,9 @@ Keys: dp, tp, pp, cp (positive integers; dp may be omitted and then fills the wo
 ring), fsdp (0 / 1: native FSDP2 over the data parallel ranks instead of DDP-style averaging; fsdp=N with N > 1
 is dp_shard=N), dp_shard=N / dp_replicate=N (dp with FSDP2 / DDP), pp_schedule (gpipe, 1f1b; default
 1f1b), pp_microbatches.
-transformers' DistributedConfig names are accepted too (tp_size, pp_size, fsdp_size, cp_size); ep / ep_size and
-efsdp are reserved and refused until expert parallel lands. The flag is parsed once, at `import unsloth`, and translated to the variables
+ep=N (ep_size): expert parallel, N = the world size (data parallel ranks that each keep E / N of every MoE block's
+routed experts, models/ep_native.py); not with tp / pp / cp / fsdp yet. transformers' DistributedConfig names are
+accepted too (tp_size, pp_size, fsdp_size, cp_size, ep_size); efsdp is reserved and refused. The flag is parsed once, at `import unsloth`, and translated to the variables
 the existing paths read: UNSLOTH_TP_SIZE, UNSLOTH_PP_SIZE, UNSLOTH_FSDP2, UNSLOTH_PP_SCHEDULE,
 UNSLOTH_PP_MICROBATCHES, UNSLOTH_CP_SIZE and UNSLOTH_CP_BACKEND. Those variables keep working on their own; a
 variable that disagrees with the flag is refused.
@@ -70,10 +71,10 @@ _ALIASES = {
 }
 # Kept for compatibility with transformers' naming; refused until Unsloth implements them.
 _RESERVED = {
-    "ep": "expert parallel (ep) is not supported yet; MoE trains with its experts whole on every rank",
     "efsdp": "expert FSDP (efsdp) is not supported yet",
 }
 _KEYS = _SIZE_KEYS + (
+    "ep",
     "dp_shard",
     "dp_replicate",
     "cp_backend",
@@ -92,6 +93,7 @@ _LEGACY = {
     "fsdp": "UNSLOTH_FSDP2",
     "pp_schedule": "UNSLOTH_PP_SCHEDULE",
     "pp_microbatches": "UNSLOTH_PP_MICROBATCHES",
+    "ep": "UNSLOTH_EP_SIZE",
 }
 
 
@@ -149,7 +151,7 @@ def parse_parallel_spec(raw, source = FLAG):
             )
         if key in spec:
             raise ValueError(f"Unsloth: {source}={raw!r} gives {key} twice.")
-        if key in _SIZE_KEYS or key in ("pp_microbatches", "dp_shard", "dp_replicate"):
+        if key in _SIZE_KEYS or key in ("ep", "pp_microbatches", "dp_shard", "dp_replicate"):
             spec[key] = _positive(key, value, source)
         elif key == "fsdp":
             low = value.lower()
@@ -249,13 +251,29 @@ def translate(spec, environ = None):
             f'Unsloth: {FLAG}="{given}": pp x cp x tp = {model_ranks} must divide the number of ranks '
             f"(WORLD_SIZE={world}); launch with torchrun --nproc-per-node {model_ranks} (or a multiple of it)."
         )
+    ep = spec.get("ep", 1)
+    if ep > 1:
+        # Expert parallel v1: the experts sharded over every rank, which are all data parallel.
+        others = [f"{k}={v}" for k, v in sizes.items() if v > 1] + (
+            ["fsdp=1"] if spec.get("fsdp") else []
+        )
+        if others:
+            raise ValueError(
+                f'Unsloth: {FLAG}="{given}": expert parallel (ep) cannot be combined with {", ".join(others)} yet.'
+            )
+        if spec.get("dp", ep) != ep or (world is not None and world != ep):
+            raise ValueError(
+                f'Unsloth: {FLAG}="{given}": ep={ep} shards the experts over every rank, so it needs '
+                f"dp = WORLD_SIZE = {ep} (got dp={spec.get('dp', world)}, WORLD_SIZE={world}); launch with "
+                f"torchrun --nproc-per-node {ep}."
+            )
     out = {}
     wanted = {
         "tp": sizes["tp"],
         "pp": sizes["pp"],
         "cp": sizes["cp"],
     }
-    for key in ("cp_backend", "fsdp", "pp_schedule", "pp_microbatches"):
+    for key in ("cp_backend", "fsdp", "pp_schedule", "pp_microbatches", "ep"):
         if key in spec:
             wanted[key] = spec[key]
     for key, value in wanted.items():
@@ -410,6 +428,7 @@ def parallelize(
     fsdp = None,
     pp_schedule = None,
     pp_microbatches = None,
+    ep = None,
 ):
     """`UNSLOTH_PARALLEL` from Python: call after `import unsloth` and before `from_pretrained`, on every rank.
 
@@ -420,7 +439,7 @@ def parallelize(
     parts = []
     if dp is not None:
         parts.append(f"dp={dp}")
-    for key, value in (("tp", tp), ("pp", pp), ("cp", cp)):
+    for key, value in (("tp", tp), ("pp", pp), ("cp", cp), ("ep", ep)):
         if value is None:
             continue
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:

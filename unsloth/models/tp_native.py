@@ -1873,6 +1873,11 @@ def moe_shard_enabled():
     return os.environ.get(_MOE_SHARD_ENV, "1").strip().lower() not in ("0", "false", "off", "no")
 
 
+def moe_blocks_with_experts(model):
+    """Every module with an `experts` child (the block whose experts call takes the routed tokens)."""
+    return [m for m in model.modules() if isinstance(m._modules.get("experts"), nn.Module)]
+
+
 def _experts_chain(block):
     outer = block._modules.get("experts")
     if not isinstance(outer, nn.Module):
@@ -2238,7 +2243,13 @@ def _tp_experts_forward(shard, prior):
     return forward
 
 
-def _shard_moe_experts(block, mesh, rank, tp):
+def _shard_moe_experts(
+    block,
+    mesh,
+    rank,
+    tp,
+    make_forward = None,
+):
     chain = _experts_chain(block)
     leaf, wrappers = chain[-1], chain[:-1]
     E = leaf.num_experts
@@ -2285,7 +2296,7 @@ def _shard_moe_experts(block, mesh, rank, tp):
     outer = chain[0]
     prior = outer.__dict__.get("forward", outer.forward)
     outer.__dict__["_unsloth_tp_experts_prior_forward"] = outer.__dict__.get("forward", _MISSING)
-    outer.forward = _tp_experts_forward(shard, prior)
+    outer.forward = (make_forward or _tp_experts_forward)(shard, prior)
     block.__dict__["_unsloth_tp_expert_shard"] = shard
     return shard
 
@@ -4739,15 +4750,18 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
 
     def plan_for(model):
         # The meta model as transformers built it (Linear4bit already swapped in): the plan apply derives later.
-        tp_plan = derive_tp_plan(model, tp, state["plan"])
+        # Expert parallel (ep_native.expert_parallel_loading): only the routed expert stacks are cut.
+        experts_only = state.get("experts_only")
+        tp_plan = None if experts_only else derive_tp_plan(model, tp, state["plan"])
         projs = {}
-        for region in tp_plan.regions:
+        for region in tp_plan.regions if tp_plan is not None else ():
             for proj in region.projs:
                 if proj.style != KV_REPLICATED:
                     projs[id(_weight(proj.module)[1])] = (f"{region.path}.{proj.name}", proj)
         experts = {}
-        if moe_shard_enabled() and tp > 1:
-            for block in tp_plan.moe_blocks:
+        if (moe_shard_enabled() or experts_only) and tp > 1:
+            blocks = moe_blocks_with_experts(model) if experts_only else tp_plan.moe_blocks
+            for block in blocks:
                 chain = _experts_chain(block)
                 if chain:
                     experts[id(chain[-1])] = block
@@ -4978,7 +4992,7 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
                 ):
                     return original(cls, name, *args, **original_kwargs)
             return chunked(original, cls, name, args, original_kwargs, mesh, state)
-    if state.get("prequantized_only") and quantized is None:
+    if state.get("experts_only") or (state.get("prequantized_only") and quantized is None):
         return original(cls, name, *args, **original_kwargs)
     if state.get("auto"):
         # Only a checkpoint too large for a whole load on this GPU loads sharded (the full load stays the
