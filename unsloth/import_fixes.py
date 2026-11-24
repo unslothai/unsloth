@@ -9353,11 +9353,12 @@ def fix_rocm_sdpa_backward_layout():
     except Exception as e:
         logger.info(f"Unsloth: Skipping the ROCm SDPA backward layout fix ({e})")
         return
-    names = " or ".join("flash" if b == "flash" else "memory-efficient" for b in mismatched)
+    names = " and ".join("flash" if b == "flash" else "memory-efficient" for b in mismatched)
+    them = "them" if len(mismatched) == 2 else "it"
     logger.warning(
         f"Unsloth: this ROCm torch's {names} attention backward returns gradients in a layout "
-        "torch.compile does not expect, so it is turned off for training "
-        "(set UNSLOTH_ALLOW_ROCM_SDPA_BACKWARD_LAYOUT=1 to keep it)."
+        f"torch.compile does not expect, so Unsloth turns {them} off "
+        f"(set UNSLOTH_ALLOW_ROCM_SDPA_BACKWARD_LAYOUT=1 to keep {them})."
     )
 
 
