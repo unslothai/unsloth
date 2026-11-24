@@ -44,7 +44,7 @@ export async function getInferenceStatus() {
   };
 }
 
-export function resolveInferenceCheckpointId(status: {
+export function servedInferenceCheckpointId(status: {
   active_model: string | null;
 }): string | null {
   return status.active_model ?? null;

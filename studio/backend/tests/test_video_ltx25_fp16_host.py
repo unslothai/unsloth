@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.5 on an fp16-only GPU widens to float32 in host RAM; small hosts are refused before the load."""
+"""LTX-2.5 on an fp16-only GPU widens to float32 in host RAM; small hosts are refused before the load. These price the
+float32 load, which runs where the low-RAM route cannot (test_video_ltx25_lowram covers the route)."""
 
 import pytest
 import torch
@@ -9,6 +10,7 @@ import torch
 import core.inference.diffusion_memory as dm
 import core.inference.diffusion_te_prequant as tp
 import core.inference.video as v
+import core.inference.video_ltx25_lowram as lr
 from core.inference.diffusion_device import DiffusionDeviceTarget
 from core.inference.video_families import _FAMILIES as VIDEO_FAMILIES
 
@@ -43,6 +45,8 @@ def host(monkeypatch):
 
     # an automatic pick takes the hosted int8 encoder only when the Hub confirms it; never ask the Hub here
     monkeypatch.setattr(tp, "te_prequant_sources_confirmed", lambda *a, **k: False)
+    # the float32 load's own pricing: the route is out (as on ROCm, where it cannot serve the load)
+    monkeypatch.setattr(lr, "lowram_ineligible", lambda *a, **k: "route out for these tests")
 
     def _set(dtype, host_gib):
         monkeypatch.setattr(v, "resolve_diffusion_device_target", lambda *a, **k: _target(dtype))
