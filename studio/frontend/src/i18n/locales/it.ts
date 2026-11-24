@@ -2304,12 +2304,16 @@ export const it = {
         label: "Tipo di installazione",
         description:
           "Solo chat (GGUF). L'installazione completa aggiunge addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini.",
+        descriptionMlx:
+          "Solo chat (GGUF/MLX). L'installazione completa aggiunge addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini.",
         descriptionCpu:
           "Solo chat (GGUF). Non è stata trovata una GPU supportata, quindi l'installazione completa aggiunge l'addestramento sulla CPU.",
         action: "Passa all'installazione completa",
         confirmTitle: "Passare all'installazione completa?",
         confirmDescription:
           "Questa installazione solo chat esegue modelli GGUF. L'installazione completa aggiunge PyTorch per la GPU di questa macchina, abilitando addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini. Scarica diversi gigabyte (almeno 5 GB di spazio su disco) e riavvia il server. Le chat, i modelli e le impostazioni vengono mantenuti. L'operazione può richiedere alcuni minuti.",
+        confirmDescriptionMlx:
+          "Questa installazione solo chat esegue modelli GGUF/MLX. L'installazione completa aggiunge PyTorch per la GPU di questa macchina, abilitando addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini. Scarica diversi gigabyte (almeno 5 GB di spazio su disco) e riavvia il server. Le chat, i modelli e le impostazioni vengono mantenuti. L'operazione può richiedere alcuni minuti.",
         confirmDescriptionCpu:
           "Questa installazione solo chat esegue modelli GGUF. Su questa macchina non è stata trovata una GPU supportata, quindi l'installazione completa aggiunge PyTorch per la CPU, abilitando l'addestramento sulla CPU. L'addestramento su CPU è molto più lento che su GPU. Richiede almeno 5 GB di spazio su disco e riavvia il server. Le chat, i modelli e le impostazioni vengono mantenuti. L'operazione può richiedere alcuni minuti.",
         confirmAction: "Aggiorna",
@@ -2505,7 +2509,7 @@ export const it = {
         off: "Disattivo",
         oldWebkitWarning: "WebKitGTK {version} su Wayland: il rendering GPU può bloccarsi all’avvio su NVIDIA con il ridimensionamento frazionario (WebKit bug 280210). In tal caso Unsloth torna da solo al rendering CPU. Su WebKitGTK 2.50.4 non ha dato alcun miglioramento misurabile (8 fps in entrambi i casi), quindi Attivo qui non è consigliato.",
         oldDriverWarning:
-          "Driver NVIDIA {version} su X11: Unsloth mantiene disattivato il rendering GPU finché il driver non è 610 o successivo. I driver precedenti perdono un descrittore di file per fotogramma e la finestra smette di disegnare entro pochi minuti.",
+          "Driver NVIDIA {version} su X11: Unsloth mantiene disattivato il rendering GPU finché il driver non è 590 o successivo. I driver precedenti perdono un descrittore di file per fotogramma e la finestra smette di disegnare entro pochi minuti.",
         fallbackNote: "Il rendering GPU si è bloccato all’avvio su questo sistema, quindi Unsloth usa il rendering CPU.",
         tryAgain: "Riprova con la GPU",
         envOverride: "Impostato dalla variabile d’ambiente {name}. Questa impostazione non ha effetto finché non viene rimossa.",
@@ -2778,6 +2782,15 @@ export const it = {
         runningOn: "llama.cpp è in esecuzione su {backend}.",
         hint: "Installa la build di llama.cpp per questo backend e la mantiene tra un aggiornamento e l'altro. Utile se la scelta automatica va in crash o se il driver della GPU non la supporta. Sono elencati solo i backend con una build per questa macchina; l'addestramento non cambia.",
         autoWith: "Automatico ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm non installato",
+          rocmNoAccess: "nessun accesso alla GPU",
+          otherRelease: "richiede un aggiornamento di llama.cpp",
+          checkFailed: "impossibile verificare",
+          noBuild: "nessuna build per questa macchina",
+        },
         apply: "Applica",
         applying: "Installazione...",
         applyHint: "Scarica la nuova build e riavvia llama.cpp. Il modello caricato verrà scaricato.",
@@ -4009,6 +4022,13 @@ export const it = {
     compactEmpty: "Ancora niente da compattare",
     compactUnsupported: "La compattazione richiede un modello GGUF o MLX con supporto per gli strumenti",
   },
+  chatFiles: {
+    title: "File in questa chat",
+    code: "Frammenti di codice",
+    showInChat: "Mostra nella chat",
+    download: "Scarica {name}",
+    saveFailed: "Impossibile salvare {name}.",
+  },
   welcome: {
     goodToSeeYou: "Che piacere vederti",
     goodToSeeYouName: "Che piacere vederti, {name}",
@@ -4058,6 +4078,9 @@ export const it = {
     useModelScopeHint: "Cerca e scarica da ModelScope. Puoi tornare indietro nelle Impostazioni.",
     useModelScopeFailed: "Impossibile passare a ModelScope.",
     updateToken: "Aggiorna token",
+    linkedModelTitle: "Caricare {model}?",
+    linkedModelBody: "Un link ha aperto questa pagina e chiede di scaricare e caricare questo modello.",
+    linkedModelLoad: "Carica",
     hfToken: {
       label: "Token HF",
       saved: "Salvato",

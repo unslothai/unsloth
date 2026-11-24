@@ -3188,6 +3188,22 @@ def test_voice_fold_and_alias_json_rows_hidden_for_tts_only():
     assert _names("controlfoley", music) == ["complete_track_classes"]
 
 
+def test_options_that_name_host_files_are_never_offered_or_sent():
+    # The spec's type and wording do not decide: VibeVoice's voice_samples is a plain string.
+    rows = [{"name": name, "description": "Plain text."} for name in sorted(acm.FILE_OPTIONS)]
+    rows[0] = {**rows[0], "type": "enum", "values": ["/a.wav", "/b.wav"]}
+    spec = _spec_rows(*rows, {"name": "note"})
+    for family in ("vibevoice", "moss_ttsd", "fish_audio", "controlfoley"):
+        assert _names(family, spec) == ["note"]
+    schema = acm.option_schema(acm.FAMILIES["vibevoice"], spec, None)
+    b, srv = _backend_with(_speech_model("vibevoice", options = schema), SPEECH_WAV)
+    b.generate_audio_response(
+        "Speaker 1: hi", audio_options = {"voice_samples": "/etc/passwd", "note": "n"}
+    )
+    assert srv.calls[0][1]["options"] == {"note": "n"}
+    assert b.last_generation_stats["ignored_options"] == ["voice_samples"]
+
+
 def test_audio_request_inputs_and_seed_row_follow_the_declared_keys():
     def inputs(keys):
         model = _speech_model("kokoro_tts", request_keys = keys and frozenset(keys))

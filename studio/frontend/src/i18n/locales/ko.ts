@@ -887,6 +887,13 @@ export const ko = {
     compactEmpty: "아직 압축할 내용이 없습니다",
     compactUnsupported: "대화 압축에는 도구를 지원하는 GGUF 또는 MLX 모델이 필요합니다",
   },
+  chatFiles: {
+    title: "이 채팅의 파일",
+    code: "코드 스니펫",
+    showInChat: "채팅에서 보기",
+    download: "{name} 다운로드",
+    saveFailed: "{name}을(를) 저장할 수 없습니다.",
+  },
   welcome: {
     goodToSeeYou: "반가워요",
     goodToSeeYouName: "{name}님, 반가워요",
@@ -934,6 +941,9 @@ export const ko = {
     useModelScopeHint: "대신 ModelScope에서 검색하고 다운로드합니다. 설정에서 다시 바꿀 수 있습니다.",
     useModelScopeFailed: "ModelScope로 전환하지 못했습니다.",
     updateToken: "토큰 업데이트",
+    linkedModelTitle: "{model}을(를) 불러올까요?",
+    linkedModelBody: "링크가 이 페이지를 열고 이 모델을 다운로드하고 불러오도록 요청했습니다.",
+    linkedModelLoad: "불러오기",
     hfToken: {
       label: "HF 토큰",
       saved: "저장됨",
@@ -2368,12 +2378,16 @@ export const ko = {
         label: "설치 유형",
         description:
           "채팅 전용(GGUF). 전체 설치에는 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능이 추가됩니다.",
+        descriptionMlx:
+          "채팅 전용(GGUF/MLX). 전체 설치에는 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능이 추가됩니다.",
         descriptionCpu:
           "채팅 전용(GGUF). 지원되는 GPU가 없어 전체 설치에는 CPU 학습이 추가됩니다.",
         action: "전체 설치로 업그레이드",
         confirmTitle: "전체 설치로 업그레이드할까요?",
         confirmDescription:
           "이 채팅 전용 설치는 GGUF 모델을 실행합니다. 전체 설치는 이 컴퓨터의 GPU에 맞는 PyTorch를 추가하여 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능을 사용할 수 있게 합니다. 수 GB(디스크 공간 5GB 이상)를 다운로드하고 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmDescriptionMlx:
+          "이 채팅 전용 설치는 GGUF/MLX 모델을 실행합니다. 전체 설치는 이 컴퓨터의 GPU에 맞는 PyTorch를 추가하여 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능을 사용할 수 있게 합니다. 수 GB(디스크 공간 5GB 이상)를 다운로드하고 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
         confirmDescriptionCpu:
           "이 채팅 전용 설치는 GGUF 모델을 실행합니다. 이 컴퓨터에서 지원되는 GPU를 찾지 못했으므로 전체 설치는 CPU용 PyTorch를 추가하여 CPU에서 학습할 수 있게 합니다. CPU 학습은 GPU 학습보다 훨씬 느립니다. 디스크 공간이 5GB 이상 필요하며 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
         confirmAction: "업그레이드",
@@ -2588,7 +2602,7 @@ export const ko = {
         off: "끄기",
         oldWebkitWarning: "Wayland의 WebKitGTK {version}: 배율을 소수로 설정한 NVIDIA 환경에서는 GPU 렌더링이 시작 시 충돌할 수 있습니다(WebKit bug 280210). 이 경우 Unsloth가 자동으로 CPU 렌더링으로 돌아갑니다. WebKitGTK 2.50.4에서는 측정 가능한 속도 향상이 없었으므로(두 경우 모두 8 fps) 여기서는 켜기를 권장하지 않습니다.",
         oldDriverWarning:
-          "X11의 NVIDIA 드라이버 {version}: 드라이버가 610 이상이 될 때까지 Unsloth는 GPU 렌더링을 끈 상태로 유지합니다. 이전 드라이버는 프레임마다 파일 디스크립터를 누수하며, 몇 분 안에 창이 더 이상 그려지지 않습니다.",
+          "X11의 NVIDIA 드라이버 {version}: 드라이버가 590 이상이 될 때까지 Unsloth는 GPU 렌더링을 끈 상태로 유지합니다. 이전 드라이버는 프레임마다 파일 디스크립터를 누수하며, 몇 분 안에 창이 더 이상 그려지지 않습니다.",
         fallbackNote: "이 시스템에서 GPU 렌더링이 시작 시 충돌하여 Unsloth가 CPU 렌더링을 사용하고 있습니다.",
         tryAgain: "GPU 다시 시도",
         envOverride: "{name} 환경 변수로 설정되어 있습니다. 이 변수를 제거하기 전까지는 이 설정이 적용되지 않습니다.",
@@ -2856,6 +2870,15 @@ export const ko = {
         runningOn: "llama.cpp가 현재 {backend}에서 실행 중입니다.",
         hint: "이 백엔드용 llama.cpp 빌드를 설치하고 업데이트 후에도 유지합니다. 자동 선택이 충돌하거나 GPU 드라이버가 지원하지 않을 때 유용합니다. 이 컴퓨터용 빌드가 있는 백엔드만 표시되며 학습에는 영향이 없습니다.",
         autoWith: "자동 ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm이 설치되어 있지 않음",
+          rocmNoAccess: "GPU에 액세스할 수 없음",
+          otherRelease: "llama.cpp 업데이트 필요",
+          checkFailed: "확인할 수 없음",
+          noBuild: "이 컴퓨터용 빌드 없음",
+        },
         apply: "적용",
         applying: "설치 중...",
         applyHint: "새 빌드를 내려받고 llama.cpp를 다시 시작합니다. 로드된 모델은 언로드됩니다.",

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import inspect
+import io
 import json
 import subprocess
 import sys
@@ -2643,40 +2644,41 @@ def test_local_load_forwards_the_unrequested_context_sentinel(monkeypatch, comma
     assert loads == [8192]
 
 
-def test_chat_server_mode_compare_loads_base_locally(monkeypatch):
-    streamed, closed, base_loads = [], [], []
+def test_chat_server_mode_compare_toggles_the_resident_adapter(monkeypatch):
+    bodies = []
 
-    class _FakeHttpBackend:
-        def stream(self, *a, **k):
-            streamed.append("tuned")
-            return iter(["tuned-answer"])
+    def fake_request(
+        self,
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        bodies.append(payload)
+        tag = "base-reply" if payload.get("use_adapter") is False else "tuned-reply"
+        chunks = [
+            {"choices": [{"delta": {"content": tag}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ]
+        sse = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
+        return io.BytesIO(sse.encode())
 
-        def close(self):
-            closed.append("http")
+    def no_second_load(*a, **k):
+        raise AssertionError("compare loaded a second model next to the Unsloth server")
 
-    class _FakeBaseBackend:
-        def stream(self, *a, **k):
-            streamed.append("base")
-            return iter(["base-answer"])
-
-        def close(self):
-            closed.append("base")
-
-    def fake_local_load(model, **kwargs):
-        base_loads.append((model, kwargs.get("fresh_backend", False)))
-        return _FakeBaseBackend()
-
+    monkeypatch.setattr(HttpChatBackend, "_request", fake_request)
     monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
-    monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: _FakeHttpBackend())
-    monkeypatch.setattr(chatmod, "load_chat_backend", fake_local_load)
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: True)
+    monkeypatch.setattr(
+        chatmod, "connect_studio_server", lambda *a, **k: HttpChatBackend("http://x", "t")
+    )
+    monkeypatch.setattr(chatmod, "load_chat_backend", no_second_load)
 
-    result = CliRunner().invoke(_chat_app(), ["tuned-run"], input = "/compare\nhi\n/exit\n")
+    result = CliRunner().invoke(_chat_app(), ["fake-model", "--compare"], input = "hi\n/exit\n")
 
     assert result.exit_code == 0, result.output
-    assert "(compare on)" in result.output
-    assert base_loads == [("fake/base", True)]
-    assert streamed == ["base", "tuned"]
-    assert set(closed) == {"http", "base"}
+    assert [body.get("use_adapter") for body in bodies] == [False, True]
+    assert "base-reply" in result.output and "tuned-reply" in result.output
 
 
 def test_chat_compare_on_mlx_loads_base_model_side_by_side(monkeypatch):

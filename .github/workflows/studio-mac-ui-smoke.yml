@@ -14,6 +14,8 @@ on:
     paths:
       # Not studio/** or unsloth/**: the install is --no-torch and src-tauri is never built.
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this smoke drives.
+      - '!studio/backend/tests/**'
       - 'studio/frontend/**'
       - 'studio/setup.sh'
       - 'studio/install_*.py'
@@ -49,6 +51,8 @@ on:
     # Same list as the PR filter, to spare the account-wide macOS slots.
     paths:
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this smoke drives.
+      - '!studio/backend/tests/**'
       - 'studio/frontend/**'
       - 'studio/setup.sh'
       - 'studio/install_*.py'

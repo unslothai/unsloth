@@ -89,10 +89,13 @@ export const LENS_HOSTS = [
 export function lensDrawn(material: WindowMaterial, lens: LensMode): boolean {
 	return material !== "solid" && lens !== "off";
 }
-/** Slider (0-100) to --glass-strength (blur scale) and --glass-opacity (fill scale). 0% is clear: no blur, no read floor. */
+/** Slider (0-100) to --glass-strength (blur scale) and --glass-opacity (fill scale); the blur fades in up to GLASS_FADE_IN, as --glass-on does in index.css. */
+export const GLASS_FADE_IN = 15;
 export function glassStrengthVars(strength: number): { blur: number; opacity: number } {
 	return {
-		blur: strength === 0 ? 0 : strength <= 50 ? 0.2 + (0.8 * strength) / 50 : 1 + (strength - 50) / 50,
+		blur:
+			(strength <= 50 ? 0.2 + (0.8 * strength) / 50 : 1 + (strength - 50) / 50) *
+			Math.min(1, strength / GLASS_FADE_IN),
 		opacity: strength <= 50 ? 0.35 + (0.65 * strength) / 50 : 1 + (strength - 50) / 50,
 	};
 }

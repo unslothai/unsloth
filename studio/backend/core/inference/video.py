@@ -246,6 +246,7 @@ from .diffusion_transformer_quant import (
 from .diffusion import (
     _comfy_keep_fp32_pricing,
     _family_override_resolved,
+    _SplitPreviewRefine,
     _companion_split_expected,
     _layer_split_expected,
     _memory_request_forces_offload,
@@ -561,6 +562,24 @@ def assert_video_precision_available(
                 fam, target, model_kind = model_kind, text_encoder_quant = text_encoder_quant
             )
         if shortfall is not None:
+            raise RuntimeError(shortfall)
+    if getattr(fam, "name", None) == "ltx-2.5" and model_kind == "pipeline":
+        # Refuse before eviction / pull / worker start: a host short of RAM is OOM-killed mid-load.
+        with diffusion_device_scope(gpu_ordinal):
+            target = (
+                resolve_diffusion_device_target()
+                if gpu_ordinal is None
+                else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+            )
+            shortfall = ltx25_fp16_host_shortfall(
+                fam,
+                target,
+                model_kind = model_kind,
+                text_encoder_quant = text_encoder_quant,
+                base = checkpoint_repo,
+            )
+        if shortfall is not None:
+            logger.error("video.ltx25_host_ram: refusing load: %s", shortfall)
             raise RuntimeError(shortfall)
     if precision_fallback_allowed():
         return
@@ -1076,6 +1095,61 @@ def h3_fp16_host_shortfall(
         f"{dtype}, about {need_gb:.0f} GB (denoiser {sizes[0] * scale:.1f}, text encoder {te_gb:.1f}, "
         f"VAEs {sizes[2] * scale:.1f}) that must sit in system RAM, which has {host_mib / 953.674:.0f} GB. "
         "Load the MiniMax-H3 GGUF build instead, or use a bfloat16 GPU (NVIDIA Ampere or newer)."
+    )
+
+
+def ltx25_fp16_host_shortfall(
+    fam: Any,
+    target: Any,
+    *,
+    model_kind: str,
+    text_encoder_quant: Optional[str] = None,
+    base: Optional[str] = None,
+) -> Optional[str]:
+    """Why an LTX-2.5 Diffusers load cannot fit host RAM on a non-bf16 GPU, else None.
+
+    fp16 targets widen the pipeline and the encoder worker's Gemma 4 to float32 in host RAM.
+    Never raises; kill switches or an unreadable size refuse nothing."""
+    try:
+        import torch
+
+        if getattr(fam, "name", None) != "ltx-2.5" or model_kind != "pipeline":
+            return None
+        if (
+            getattr(target, "device", None) != "cuda"
+            or getattr(target, "dtype", None) is not torch.float16
+            or not fp16_promotes_to_fp32(fam)
+        ):
+            return None
+        from .diffusion_small_host import (
+            HOST_RAM_CHECK_ENV,
+            host_ram_check_disabled,
+            host_ram_mib,
+            small_host_disabled,
+        )
+
+        if small_host_disabled() or host_ram_check_disabled():
+            return None
+        sizes = tuple(float(x) for x in (getattr(fam, "bf16_components_gb", None) or ()))
+        if len(sizes) != 3:
+            return None
+        from .video_ltx25 import ltx25_te_host_gb
+
+        te_gb = ltx25_te_host_gb(
+            text_encoder_quant, base or getattr(fam, "base_repo", None), bf16_gb = sizes[1], scale = 2.0
+        )
+        need_mib = int(((sizes[0] + sizes[2]) * 2.0 + te_gb) * 1e9 / 1048576)
+        total_mib = host_ram_mib()[0]
+        if not total_mib or need_mib <= int(total_mib):
+            return None
+    except Exception:  # noqa: BLE001 -- a probe must never refuse a load it cannot size
+        return None
+    label = getattr(fam, "label", None) or "LTX-2.5"
+    return (
+        f"Not enough system RAM to load this model: {label} on this GPU (no native bfloat16) loads in float32, "
+        f"which needs about {need_mib / 1024:.1f} GB of host memory (text encoder {te_gb * 1e9 / 1024**3:.1f}) "
+        f"and {int(total_mib) / 1024:.1f} GB is available. Load the {label} GGUF build instead, use a bfloat16 GPU "
+        f"(NVIDIA Ampere or newer), or set {HOST_RAM_CHECK_ENV}=0 to try anyway."
     )
 
 
@@ -11930,7 +12004,8 @@ class VideoBackend:
         )
         video_refine = lambda p, pl, lg: _video_refine_for_multigpu(fam, p, pl, lg)  # noqa: E731
         _note_video_default_request(fam, pipe)
-        split_expected = _layer_split_expected(pipe, plan, video_refine)
+        split_refine = _SplitPreviewRefine(video_refine)
+        split_expected = _layer_split_expected(pipe, plan, split_refine)
         # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower.
         quant_forces_compile = transformer_quant_engaged is not None and (
             native_scheme is None
@@ -11939,7 +12014,7 @@ class VideoBackend:
                 native_scheme,
                 split_expected
                 or plan.offload_policy == "none"
-                or _companion_split_expected(pipe, plan, video_refine),
+                or _companion_split_expected(pipe, plan, split_refine),
             )
         )
         if quant_forces_compile and effective_speed == SPEED_OFF:
@@ -13665,23 +13740,25 @@ class VideoBackend:
                 pass
             from . import diffusion_int8_attention as int8_attention
             from .diffusion_attention import _auto_request
+            from .video_minimax_h3_attn import cuda_capability, h3_int8_load_gate
 
             h3_policy = int8_attention.resolve_policy(int8_policy)
             int8_mode = h3_policy.mode
-            int8_forced = int8_mode == "force" or (
-                int8_mode != "off" and int8_attention.requested(attention_backend)
+            # Forced never looks at the arch; Auto only on the evidenced config, off H3_INT8_AUTO_OFF_ARCHS
+            h3_int8_gate = h3_int8_load_gate(
+                mode = int8_mode,
+                attention_backend = attention_backend,
+                auto_attention = _auto_request(attention_backend),
+                speed_on = effective_speed != SPEED_OFF,
+                hosted_int8 = transformer_quant_engaged == "int8",
+                comfy_checkpoint = bool(comfy_checkpoint),
+                adapters = bool(baked_loras or lora_specs),
+                capability = cuda_capability(
+                    str(getattr(umem_target, "torch_device", None) or device)
+                ),
             )
-            # Auto only on the evidenced config: Studio attention, speed on, hosted INT8 ConvRot, diffusers, no adapters
-            int8_auto = (
-                not int8_forced
-                and int8_mode == "auto"
-                and effective_speed != SPEED_OFF
-                and _auto_request(attention_backend)
-                and transformer_quant_engaged == "int8"
-                and not comfy_checkpoint
-                and not baked_loras
-                and not lora_specs
-            )
+            int8_forced = h3_int8_gate.forced
+            int8_auto = h3_int8_gate.auto
             h3_torch_device = str(getattr(umem_target, "torch_device", None) or device)
             # Install after the strided processors exist, else the dispatch route takes it and loses fused q/k norm + RoPE
             h3_probe_target = types.SimpleNamespace(device = device, dtype = dtype)
@@ -13767,20 +13844,7 @@ class VideoBackend:
                 except Exception as exc:  # noqa: BLE001 -- the stock processors keep their backend
                     logger.warning("video.h3_attn: INT8 attention dispatch skipped: %s", exc)
             if not h3_int8_modules:
-                h3_int8_reason = (
-                    None
-                    if int8_mode == "off"
-                    else "speed_mode=off keeps the output bit-identical, so the kernel is not installed"
-                    if effective_speed == SPEED_OFF
-                    else None
-                    if int8_forced
-                    else f"attention_backend={attention_backend!r} was picked explicitly; Auto keeps it"
-                    if not _auto_request(attention_backend)
-                    else "Auto engages it on MiniMax-H3 video only over Studio's hosted INT8 denoiser "
-                    "without adapters"
-                    if not int8_auto
-                    else None
-                )
+                h3_int8_reason = h3_int8_gate.reason
             if h3_int8_modules:
                 h3_attn_levers += ("h3_int8_attention",)
                 attention_engaged = int8_attention.BACKEND
@@ -13920,7 +13984,11 @@ class VideoBackend:
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
         try:
+            from .video_minimax_h3_ref_cache import clear as clear_h3_ref_latents
             from .video_minimax_h3_ref_encode import install_h3_chunked_reference_encode
+
+            # a new VAE load: no condition latent of an earlier one survives it
+            clear_h3_ref_latents("load", logger)
             install_h3_chunked_reference_encode(logger)
         except Exception as exc:  # noqa: BLE001 -- the render's recipe install retries it
             logger.warning("video.h3_ref_encode: keeping the stock reference encode: %s", exc)
@@ -16669,6 +16737,10 @@ class VideoBackend:
         release_load_budget_fraction("video")
         state, self._state = self._state, None
         self._float_seeds = None
+        # No MiniMax-H3 condition latent outlives the VAE that encoded it.
+        from .video_minimax_h3_ref_cache import clear as clear_h3_ref_latents
+
+        clear_h3_ref_latents("unload", logger)
         if state is not None:
             server_slot = getattr(getattr(state, "pipe", None), "server_slot", None)
             if server_slot is not None:

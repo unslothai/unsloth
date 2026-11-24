@@ -925,6 +925,13 @@ export const he = {
     compactEmpty: "אין עדיין מה לכווץ",
     compactUnsupported: "כיווץ שיחה דורש מודל GGUF או MLX עם תמיכה בכלים",
   },
+  chatFiles: {
+    title: "קבצים בצ׳אט הזה",
+    code: "קטעי קוד",
+    showInChat: "הצג בצ׳אט",
+    download: "הורדת {name}",
+    saveFailed: "לא ניתן היה לשמור את {name}.",
+  },
   welcome: {
     goodToSeeYou: "טוב לראות אותך",
     goodToSeeYouName: "טוב לראות אותך, {name}",
@@ -972,6 +979,9 @@ export const he = {
     useModelScopeHint: "חפש והורד מ-ModelScope במקום. ניתן לחזור בהגדרות.",
     useModelScopeFailed: "המעבר ל-ModelScope נכשל.",
     updateToken: "עדכון טוקן",
+    linkedModelTitle: "לטעון את {model}?",
+    linkedModelBody: "קישור פתח את הדף הזה וביקש להוריד ולטעון את המודל הזה.",
+    linkedModelLoad: "טעינה",
     hfToken: {
       label: "טוקן HF",
       saved: "נשמר",
@@ -2451,12 +2461,16 @@ export const he = {
         label: "סוג התקנה",
         description:
           "צ'אט בלבד (GGUF). ההתקנה המלאה מוסיפה אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות.",
+        descriptionMlx:
+          "צ'אט בלבד (GGUF/MLX). ההתקנה המלאה מוסיפה אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות.",
         descriptionCpu:
           "צ'אט בלבד (GGUF). לא נמצא GPU נתמך, ולכן ההתקנה המלאה מוסיפה אימון על ה-CPU.",
         action: "שדרג להתקנה מלאה",
         confirmTitle: "לשדרג להתקנה המלאה?",
         confirmDescription:
           "התקנה זו של צ'אט בלבד מריצה מודלים של GGUF. ההתקנה המלאה מוסיפה את PyTorch עבור ה-GPU של מכונה זו, ומאפשרת אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות. היא מורידה כמה ג'יגה-בייט (לפחות 5 GB של שטח דיסק) ומפעילה מחדש את השרת. הצ'אטים, המודלים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
+        confirmDescriptionMlx:
+          "התקנה זו של צ'אט בלבד מריצה מודלים של GGUF/MLX. ההתקנה המלאה מוסיפה את PyTorch עבור ה-GPU של מכונה זו, ומאפשרת אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות. היא מורידה כמה ג'יגה-בייט (לפחות 5 GB של שטח דיסק) ומפעילה מחדש את השרת. הצ'אטים, המודלים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
         confirmDescriptionCpu:
           "התקנה זו של צ'אט בלבד מריצה מודלים של GGUF. לא נמצא GPU נתמך במכונה זו, ולכן ההתקנה המלאה מוסיפה את PyTorch עבור ה-CPU, ומאפשרת אימון על ה-CPU. אימון על CPU איטי בהרבה מאימון על GPU. היא דורשת לפחות 5 GB של שטח דיסק ומפעילה מחדש את השרת. הצ'אטים, המודלים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
         confirmAction: "שדרג",
@@ -2652,7 +2666,7 @@ export const he = {
         off: "כבוי",
         oldWebkitWarning: "WebKitGTK {version} ב-Wayland: רינדור ב-GPU עלול לקרוס בהפעלה על NVIDIA עם קנה מידה חלקי (WebKit bug 280210). אם זה קורה, Unsloth חוזר מעצמו לרינדור ב-CPU. ב-WebKitGTK 2.50.4 לא נמדדה שום האצה (8 fps בשני המקרים), ולכן לא מומלץ לבחור כאן במצב מופעל.",
         oldDriverWarning:
-          "מנהל התקן NVIDIA {version} ב-X11: Unsloth משאיר את הרינדור ב-GPU כבוי עד שמנהל ההתקן יהיה 610 ומעלה. מנהלי התקן ישנים יותר מדליפים מתאר קובץ בכל פריים, והחלון מפסיק להצטייר תוך דקות.",
+          "מנהל התקן NVIDIA {version} ב-X11: Unsloth משאיר את הרינדור ב-GPU כבוי עד שמנהל ההתקן יהיה 590 ומעלה. מנהלי התקן ישנים יותר מדליפים מתאר קובץ בכל פריים, והחלון מפסיק להצטייר תוך דקות.",
         fallbackNote: "רינדור ב-GPU קרס בהפעלה במערכת הזו, ולכן Unsloth משתמש ברינדור ב-CPU.",
         tryAgain: "לנסות שוב עם GPU",
         envOverride: "נקבע על ידי משתנה הסביבה {name}. להגדרה הזו אין השפעה עד שהוא יוסר.",
@@ -2918,6 +2932,15 @@ export const he = {
         runningOn: "llama.cpp פועל כעת על {backend}.",
         hint: "מתקין את גרסת llama.cpp עבור סביבה זו ושומר עליה לאורך עדכונים. שימושי כאשר הבחירה האוטומטית קורסת או שמנהל ההתקן של ה-GPU אינו תומך בה. רק סביבות עם גרסה מתאימה למחשב זה מוצגות ברשימה; תהליך האימון אינו מושפע.",
         autoWith: "אוטומטי ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm לא מותקן",
+          rocmNoAccess: "אין גישה ל-GPU",
+          otherRelease: "נדרש עדכון של llama.cpp",
+          checkFailed: "לא ניתן היה לבדוק",
+          noBuild: "אין גרסה למחשב הזה",
+        },
         apply: "החל",
         applying: "מתקין...",
         applyHint:

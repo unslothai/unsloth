@@ -398,6 +398,8 @@ def offload_optimizer_state(
     if not any(p.device.type != "cpu" for group in optimizer.param_groups for p in group["params"]):
         return None
 
+    # The fused 8-bit AdamW (flat_adamw8bit) runs stock under an offloader; drop its packed buffers.
+    optimizer.__dict__.pop("_unsloth_flat_plans", None)
     offloader = _StateOffloader(optimizer, pin_memory = pin_memory, chunk_bytes = chunk_bytes)
     # Step hooks, not a step override: accelerate swaps the instance's step on each fp16 step.
     optimizer.register_step_pre_hook(offloader._pre_step)

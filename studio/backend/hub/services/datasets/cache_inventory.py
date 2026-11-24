@@ -677,7 +677,9 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
         if str(repo_info.repo_id) not in matched_repo_ids:
             continue
         try:
-            strategy = hf_cache.delete_revisions(*(rev.commit_hash for rev in repo_info.revisions))
+            strategy = hf_cache_scan.scan_of_repo(hf_cache, repo_info).delete_revisions(
+                *(rev.commit_hash for rev in repo_info.revisions)
+            )
             strategy.execute()
             deleted = True
         except Exception as exc:

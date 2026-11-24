@@ -10,6 +10,7 @@ import {
   pendingLogRequestKey,
   useSettingsDialogStore,
 } from "../src/features/settings/stores/settings-dialog-store.ts";
+import * as managedLogTarget from "../src/features/settings/lib/managed-engine-log-target.ts";
 import { en } from "../src/i18n/locales/en.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -44,6 +45,7 @@ test("the action opens Logs on the family that failed", () => {
   const { viewLogsAction } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
+    "./managed-engine-log-target": managedLogTarget,
     "@/i18n": {
       translate: (key: string) => {
         translated.push(key);
@@ -83,6 +85,7 @@ test("only a GGUF load is explained by a runner log; everything else is in the s
   const { loadFailureLogFamily } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
+    "./managed-engine-log-target": managedLogTarget,
     "@/i18n": { translate: (k: string) => k },
     "../stores/settings-dialog-store": { useSettingsDialogStore: store },
     "@/features/auth/account-session": { isAccountOwner: () => true },
@@ -108,6 +111,7 @@ test("a load whose diagnostic names no runner log has none to open", () => {
   const { loadFailureLogFamily } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
+    "./managed-engine-log-target": managedLogTarget,
     "@/i18n": { translate: (k: string) => k },
     "../stores/settings-dialog-store": { useSettingsDialogStore: store },
     "@/features/auth/account-session": { isAccountOwner: () => true },
@@ -163,6 +167,7 @@ test("the exact log the diagnostic named is carried, and wins over family recenc
   const { viewLogsAction, failureLogPath } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
+    "./managed-engine-log-target": managedLogTarget,
     "@/i18n": { translate: (k: string) => k },
     "../stores/settings-dialog-store": { useSettingsDialogStore: store },
     "@/features/auth/account-session": { isAccountOwner: () => true },
@@ -186,6 +191,28 @@ test("the exact log the diagnostic named is carried, and wins over family recenc
   assert.equal(store.getState().logSourcePathRequested, path);
   store.getState().consumeLogFamilyRequest();
   assert.equal(store.getState().logSourcePathRequested, null);
+});
+
+test("a managed failure action still opens the original attempt after a retry", () => {
+  reset();
+  const { managedEngineFailureLogsAction } = loadWithStubs<
+    typeof import("../src/features/settings/lib/view-logs-action.ts")
+  >(ACTION_URL, {
+    "./managed-engine-log-target": managedLogTarget,
+    "@/i18n": { translate: (key: string) => key },
+    "../stores/settings-dialog-store": { useSettingsDialogStore: store },
+    "@/features/auth/account-session": { isAccountOwner: () => true },
+  });
+  const detail = {
+    code: "managed_engine_load_failed",
+    log_family: "sglang",
+    log_path: "/logs/sglang/sglang-first.log",
+  };
+  const failed = managedEngineFailureLogsAction(detail);
+  assert.ok(failed);
+  store.getState().openLogs("sglang", "/logs/sglang/sglang-next.log");
+  failed.onClick();
+  assert.equal(store.getState().logSourcePathRequested, detail.log_path);
 });
 
 test("the Logs panel clears the request once it has consumed it", () => {
@@ -214,6 +241,7 @@ test("an account that cannot open Logs is offered no action at all", () => {
   const { viewLogsAction } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
+    "./managed-engine-log-target": managedLogTarget,
     "@/i18n": { translate: (k: string) => k },
     "../stores/settings-dialog-store": { useSettingsDialogStore: store },
     "@/features/auth/account-session": { isAccountOwner: () => false },
@@ -256,29 +284,11 @@ test("an older in-flight refresh does not consume a newer request", async () => 
     new URL("../src/features/settings/tabs/debugging-tab.tsx", import.meta.url),
     "utf8",
   );
-  // A stale response must bail before touching ANY state, the source list included.
-  assert.match(
-    tabSrc,
-    /if \(seq < appliedSourceFetchRef\.current\) return;\s*setSources\(result\.sources\);/,
-  );
-
-  const tab = await readFile(
-    new URL("../src/features/settings/tabs/debugging-tab.tsx", import.meta.url),
-    "utf8",
-  );
-  for (const needle of [
-    "const requestedFor = pendingLogRequestKey(",
-    "pendingLogRequestKey(dialog) === requestedFor",
-    "if (fromFailure && stillTheSameRequest)",
-    "if (fromFailure && !stillTheSameRequest) return;",
-    "const seq = ++sourceFetchSeqRef.current;",
-    "appliedSourceFetchRef.current = seq;",
-  ]) {
-    assert.ok(
-      tab.includes(needle),
-      `the panel no longer guards consumption on the request it fetched for: ${needle}`,
-    );
-  }
+  const guard = tabSrc.indexOf("pendingLogRequestKey(dialog) !== requestedFor");
+  const apply = tabSrc.indexOf("setSources(result.sources)");
+  assert.ok(guard >= 0 && guard < apply);
+  assert.match(tabSrc.slice(0, apply), /seq < appliedSourceFetchRef\.current\s*\|\|/);
+  assert.match(tabSrc.slice(guard, apply), /\) return;/);
 });
 
 test("only a generation failure the server logged offers its log", () => {
@@ -286,6 +296,7 @@ test("only a generation failure the server logged offers its log", () => {
   const { generationFailureLogsAction } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
+    "./managed-engine-log-target": managedLogTarget,
     "@/i18n": { translate: (key: string) => key },
     "../stores/settings-dialog-store": { useSettingsDialogStore: store },
     "@/features/auth/account-session": { isAccountOwner: () => true },

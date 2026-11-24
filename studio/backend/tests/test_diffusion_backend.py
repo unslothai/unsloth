@@ -14887,8 +14887,13 @@ def test_family_render_cudnn_scope_overrides_an_inherited_benchmark():
     torch = pytest.importorskip("torch")
     if not hasattr(torch, "backends") or not hasattr(torch.backends, "cudnn"):
         pytest.skip("torch without cudnn backend flags")
-    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_families import _FAMILIES, detect_family
     from core.inference.diffusion_speed import family_render_cudnn_scope
+
+    # Read from the catalog: which families opt out changes as each one's renders are pinned (Krea-2 in #19077).
+    keeps = [f for f in _FAMILIES if f.cudnn_benchmark]
+    opts_out = [f for f in _FAMILIES if not f.cudnn_benchmark]
+    assert keeps and opts_out
 
     cudnn = torch.backends.cudnn
     before = cudnn.benchmark
@@ -14899,8 +14904,15 @@ def test_family_render_cudnn_scope_overrides_an_inherited_benchmark():
         ):
             assert cudnn.benchmark is False
         assert cudnn.benchmark is True
-        with family_render_cudnn_scope(detect_family("krea/Krea-2-Turbo"), "cuda"):
-            assert cudnn.benchmark is True  # a family that keeps the benchmark is left alone
+        for family in opts_out:
+            with family_render_cudnn_scope(family, "cuda"):
+                assert cudnn.benchmark is False, family.name
+            assert cudnn.benchmark is True, family.name
+        for family in keeps:
+            with family_render_cudnn_scope(family, "cuda"):
+                assert (
+                    cudnn.benchmark is True
+                ), family.name  # a family that keeps the benchmark is left alone
         with family_render_cudnn_scope(
             detect_family("black-forest-labs/FLUX.2-klein-base-4B"), "cpu"
         ):
@@ -15167,3 +15179,58 @@ def test_a_background_compile_render_takes_no_inline_seeds(fake_runtime, tmp_pat
     assert asked == []
     backend.generate(prompt = "a sloth", steps = 2)
     assert asked == [backend._state]
+
+
+class _FakeIntervalPipe(_FakePipe):
+    """A pipeline taking ``guidance_stop`` (FLUX.3 Klein base's limited-interval CFG)."""
+
+    def __call__(
+        self,
+        *,
+        guidance_stop = None,
+        **kwargs,
+    ):
+        out = super().__call__(**kwargs)
+        self.last_kwargs["guidance_stop"] = guidance_stop
+        return out
+
+
+def _load_interval(backend, tmp_path):
+    _load_lumina(backend, tmp_path)
+    backend._state.pipe.__class__ = _FakeIntervalPipe
+
+
+def test_generate_fast_cfg_passes_guidance_stop(fake_runtime, tmp_path):
+    backend = DiffusionBackend()
+    _load_interval(backend, tmp_path)
+    assert backend.status()["supports_cfg_interval"] is True
+    result = backend.generate(prompt = "a sloth", steps = 50, guidance = 3.5, cfg_interval_end = 0.8)
+    assert backend._state.pipe.last_kwargs["guidance_stop"] == 0.8
+    assert result["cfg_interval_end"] == 0.8
+
+
+def test_generate_fast_cfg_off_by_default(fake_runtime, tmp_path):
+    backend = DiffusionBackend()
+    _load_interval(backend, tmp_path)
+    result = backend.generate(prompt = "a sloth", steps = 50, guidance = 3.5)
+    assert backend._state.pipe.last_kwargs["guidance_stop"] is None
+    assert result["cfg_interval_end"] is None
+    result = backend.generate(prompt = "a sloth", steps = 50, guidance = 3.5, cfg_interval_end = 1.0)
+    assert backend._state.pipe.last_kwargs["guidance_stop"] is None
+    assert result["cfg_interval_end"] is None
+
+
+def test_generate_fast_cfg_skipped_without_cfg(fake_runtime, tmp_path):
+    backend = DiffusionBackend()
+    _load_interval(backend, tmp_path)
+    result = backend.generate(prompt = "a sloth", steps = 50, guidance = 1.0, cfg_interval_end = 0.8)
+    assert backend._state.pipe.last_kwargs["guidance_stop"] is None
+    assert result["cfg_interval_end"] is None
+
+
+def test_generate_fast_cfg_refused_on_a_pipeline_without_it(fake_runtime, tmp_path):
+    backend = DiffusionBackend()
+    _load_lumina(backend, tmp_path)
+    assert backend.status()["supports_cfg_interval"] is False
+    with pytest.raises(ValueError, match = "Fast CFG"):
+        backend.generate(prompt = "a sloth", steps = 50, guidance = 4.0, cfg_interval_end = 0.8)

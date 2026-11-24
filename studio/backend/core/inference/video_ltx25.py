@@ -806,6 +806,22 @@ def ltx25_resolve_te_request(
     return LTX25_TE_QUANT_DEFAULT
 
 
+def ltx25_te_host_gb(
+    text_encoder_quant: Optional[str], base: Optional[str], *, bf16_gb: float, scale: float
+) -> float:
+    """Host GB the encoder worker reads Gemma 4 into, loading at ``scale`` x bf16 (2.0 = float32) on the host.
+
+    Hosted int8 widens only its dense tensors; bf16 and load-time int8 (reads dense first) widen fully."""
+    try:
+        ltx25_te_quant_scheme(text_encoder_quant)
+    except ValueError:
+        return 0.0
+    if ltx25_te_prequant_sources(text_encoder_quant, base):
+        dense_part = max(0.0, 2.0 * LTX25_TE_INT8_GB - LTX25_TE_BF16_GB)
+        return LTX25_TE_INT8_GB + dense_part * max(0.0, scale - 1.0)
+    return float(bf16_gb) * scale
+
+
 def ltx25_te_budget_scale(text_encoder_quant: Optional[str], bf16_gb: float) -> float:
     try:
         scheme = ltx25_te_quant_scheme(text_encoder_quant)

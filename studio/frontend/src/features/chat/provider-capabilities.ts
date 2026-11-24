@@ -1194,7 +1194,7 @@ function resolveProviderReasoning(
   }
   if (
     normalizedProvider === "ollama" &&
-    providerModelSupportsThinking(normalizedProvider, modelId) === true
+    providerModelSupportsThinking(normalizedProvider, modelId, options?.baseUrl) === true
   ) {
     return withReasoningEffortStyle({
       supportsReasoning: true,

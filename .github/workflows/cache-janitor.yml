@@ -279,6 +279,11 @@ jobs:
                 # rust-cache restore-key is the key minus its trailing lockfile hash, exactly this
                 # prefix, so a lockfile bump still starts from the surviving generation.
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{8,}$//'); fkeep=1 ;;
+              zoo-inductor-*)
+                # Core zoo's Inductor cache, keyed by leg, compiler stack and CPU target, pyproject hash
+                # and the zoo SHA it was built for; PRs restore by prefix, so only the newest generation
+                # per prefix is ever read.
+                pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{40}$//'); fkeep=1 ;;
               pip-v2-*|uv-*|fe-dist-*)
                 # Strip only the trailing dependency hash, so the job name (pip-v2) or OS (uv,
                 # fe-dist) stays in the prefix and separate keys are not ranked as generations; a

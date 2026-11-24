@@ -477,6 +477,72 @@ def test_prepare_refuses_the_filesystem_root_as_a_workdir(launchable):
         backend.prepare(plan)
 
 
+def _swapped_for_a_link(workdir: Path, target: Path) -> None:
+    workdir.rename(workdir.with_name("moved-away"))
+    workdir.symlink_to(target)
+
+
+def test_prepare_refuses_a_workdir_that_is_a_link(tmp_path, launchable):
+    state = tmp_path / "auth"
+    state.mkdir()
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    _swapped_for_a_link(workdir, state)
+    plan = ToolLaunchPlan(argv = ("/bin/echo",), workdir = str(workdir), env = {})
+    with pytest.raises(WorkdirUnsafeError, match = "symbolic link"):
+        backend.prepare(plan)
+
+
+def test_prepare_refuses_a_workdir_replaced_by_a_link_after_its_check(
+    tmp_path, launchable, monkeypatch
+):
+    """The scan runs for seconds on a large workdir; the profile is built from the path after it."""
+    state = tmp_path / "auth"
+    state.mkdir()
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    built = []
+    real_build = backend.build_profile
+
+    def swap_during_the_scan(path):
+        _swapped_for_a_link(workdir, state)
+        return ()
+
+    def build(**kwargs):
+        built.append(real_build(**kwargs))
+        return built[-1]
+
+    monkeypatch.setattr(backend, "scan_workdir_for_host_channels", swap_during_the_scan)
+    monkeypatch.setattr(backend, "build_profile", build)
+    plan = ToolLaunchPlan(argv = ("/bin/echo",), workdir = str(workdir), env = {})
+    with pytest.raises(WorkdirUnsafeError, match = "was replaced"):
+        backend.prepare(plan)
+    assert (
+        built and str(state) in built[0]
+    ), "the swap was not in the profile, so nothing was refused"
+    private_tmp = re.search(r'\(subpath "([^"]*us-seatbelt-[^"]*)"\)', built[0])[1]
+    assert not os.path.exists(private_tmp)
+
+
+def test_a_link_target_seatbelt_cannot_name_fails_the_call_rather_than_de_isolating_it(
+    tmp_path, launchable, monkeypatch
+):
+    """Plain SandboxUnavailableError here reads as a vanished backend, which `auto` answers with no OS sandbox."""
+    unnameable = tmp_path / "a\nb"
+    unnameable.mkdir()
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+
+    def swap_during_the_scan(path):
+        _swapped_for_a_link(workdir, unnameable)
+        return ()
+
+    monkeypatch.setattr(backend, "scan_workdir_for_host_channels", swap_during_the_scan)
+    plan = ToolLaunchPlan(argv = ("/bin/echo",), workdir = str(workdir), env = {})
+    with pytest.raises(WorkdirUnsafeError, match = "control characters"):
+        backend.prepare(plan)
+
+
 def test_prepare_refuses_when_the_launcher_is_missing(tmp_path):
     """No stub here: argv[0] must never become a sandbox-exec that is not there."""
     if os.path.exists(backend.SANDBOX_EXEC):
