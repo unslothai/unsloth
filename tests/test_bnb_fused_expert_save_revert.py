@@ -162,3 +162,58 @@ def test_patched_revert_keeps_the_converter_of_a_dense_stack():
     assert "model.llm.experts.w13_weight" in got
     for key in want:
         assert torch.equal(got[key], want[key])
+
+
+def _packed_saved(saved, state_dict, prefix):
+    for key, value in state_dict.items():
+        if key.startswith(prefix):
+            assert torch.equal(saved[_saved_name(key)], value), key
+
+
+def test_a_dense_sibling_sharing_the_stack_prefix_does_not_keep_the_converter():
+    # transformers matches a target on a name boundary: `experts.gate_up_proj` is not `experts.gate_up_proj_bias`.
+    cml = _modules()
+    fix_transformers_bnb_prequantized_save()
+    model = _Model(quantized = True)
+    experts = model.model.language_model.experts
+    experts.gate_up_proj_bias = torch.nn.Parameter(torch.randn(4, 64), requires_grad = False)
+    model._weight_conversions = _conversions(cml)
+    state_dict = _state_dict(model)
+    saved = cml.revert_weight_conversion(model, dict(state_dict))
+    assert set(saved) == {_saved_name(k) for k in state_dict}
+    _packed_saved(saved, state_dict, "model.language_model.experts.gate_up_proj")
+
+
+def test_an_aliased_packed_stack_is_skipped_under_every_name():
+    cml = _modules()
+    fix_transformers_bnb_prequantized_save()
+    model = _Model(quantized = True)
+    model.shared = torch.nn.Module()
+    model.shared.experts = (
+        model.model.language_model.experts
+    )  # one module, two names in the state dict
+    model._weight_conversions = _conversions(cml)
+    state_dict = _state_dict(model)
+    alias = "shared.experts.gate_up_proj"
+    state_dict[alias] = state_dict["model.language_model.experts.gate_up_proj"]
+    saved = cml.revert_weight_conversion(model, dict(state_dict))
+    assert torch.equal(saved[alias], state_dict[alias])
+    _packed_saved(saved, state_dict, "model.language_model.experts.gate_up_proj")
+
+
+def test_a_supplied_dense_state_dict_keeps_the_converter():
+    # A packed live model saved from a dense state dict (dequantized by the caller): those tensors are dense, so
+    # they go back to the checkpoint layout, as transformers writes them.
+    cml = _modules()
+    fix_transformers_bnb_prequantized_save()
+    patched = cml.revert_weight_conversion
+    dense = _Model(quantized = False)
+    supplied = _state_dict(dense)
+    model = _Model(quantized = True)
+    model._weight_conversions = _conversions(cml)
+    dense._weight_conversions = _conversions(cml)
+    want = _unwrapped(patched)(dense, dict(supplied))
+    got = patched(model, dict(supplied))
+    assert "model.llm.experts.w13_weight" in got and set(got) == set(want)
+    for key in want:
+        assert torch.equal(got[key], want[key]), key

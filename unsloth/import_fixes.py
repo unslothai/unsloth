@@ -3316,27 +3316,42 @@ def _bare_params4bit_names(model):
         from bitsandbytes.nn import Linear4bit, Params4bit
     except Exception:
         return set()
-    if not isinstance(Params4bit, type) or not callable(getattr(model, "named_modules", None)):
+    if (
+        not isinstance(Params4bit, type)
+        or not isinstance(Linear4bit, type)
+        or not callable(getattr(model, "named_modules", None))
+    ):
         return set()
     names = set()
-    for module_name, module in model.named_modules():
+    # Every alias (a shared module or parameter): the state dict being saved names each of them.
+    for module_name, module in model.named_modules(remove_duplicate = False):
         if isinstance(module, Linear4bit):
             continue
-        for name, param in module.named_parameters(recurse = False):
+        for name, param in module.named_parameters(recurse = False, remove_duplicate = False):
             if isinstance(param, Params4bit) and getattr(param, "quant_state", None) is not None:
                 names.add(f"{module_name}.{name}" if module_name else name)
     return names
 
 
 def _converter_matches(conversion, names):
-    """True when `conversion` is a WeightConverter with operations and one of its target patterns matches one of
-    `names`."""
+    """True when `conversion` is a WeightConverter with operations whose reverse (the one save_pretrained applies)
+    matches one of `names`, by transformers' own rules (scope prefix, name boundaries, capture groups)."""
     operations = getattr(conversion, "operations", None)
     targets = getattr(conversion, "target_patterns", None)
     if not operations or not targets or not names:
         return False
     if type(conversion).__name__ != "WeightConverter":
         return False
+    try:
+        # reverse_transform() would build the reverse ops, which a deserializer cannot: same patterns, forward ops.
+        reverse = conversion.copy(
+            conversion._original_target_patterns,
+            conversion._original_source_patterns,
+            operations = list(operations),
+        )
+        return any(reverse.rename_source_key(name)[1] is not None for name in names)
+    except Exception:
+        pass
     for pattern in targets:
         try:
             regex = re.compile(pattern)
@@ -3347,7 +3362,31 @@ def _converter_matches(conversion, names):
     return False
 
 
-def _dense_param_names(model, skip):
+def _packed_4bit(value):
+    """A tensor as a bitsandbytes 4-bit stack stores it: packed [n, 1] bytes."""
+    shape = getattr(value, "shape", None)
+    return shape is not None and len(shape) == 2 and shape[1] == 1
+
+
+def _dense_param_names(
+    model,
+    skip,
+    state_dict = None,
+):
+    """Names saved as dense tensors: the state dict being saved (parameters and persistent buffers), less the 4-bit
+    stacks in `skip` and their QuantState entries; a stack in `skip` whose saved tensor is dense counts as dense.
+    Without a state dict, the model's parameters not in `skip`."""
+    if isinstance(state_dict, dict):
+        names = set()
+        for name, value in state_dict.items():
+            if not isinstance(name, str):
+                continue
+            if name in skip:
+                if not _packed_4bit(value):
+                    names.add(name)
+            elif not any(name.startswith(f"{s}.") for s in skip):
+                names.add(name)
+        return names
     if not callable(getattr(model, "named_parameters", None)):
         return set()
     return {n for n, _ in model.named_parameters(remove_duplicate = False) if n not in skip}
@@ -3384,7 +3423,11 @@ def fix_transformers_bnb_prequantized_save():
             and all(isinstance(op, broken_ops) for op in operations)
         )
 
-    def _skipped(model, conversions):
+    def _skipped(
+        model,
+        conversions,
+        state_dict = None,
+    ):
         bare = None
         dense = None
         skipped = []
@@ -3398,7 +3441,9 @@ def fix_transformers_bnb_prequantized_save():
                 continue
             if bare is None:
                 bare = _bare_params4bit_names(model)
-                dense = _dense_param_names(model, bare) if bare else set()
+                dense = _dense_param_names(model, bare, state_dict) if bare else set()
+                # A stack the caller saves dense (a supplied state dict) keeps its converter.
+                bare -= dense
             if not bare or not _converter_matches(conversion, bare):
                 continue
             # A converter whose target also matches a dense parameter (one stack skipped from quantization)
@@ -3413,7 +3458,8 @@ def fix_transformers_bnb_prequantized_save():
         conversions = getattr(model, "_weight_conversions", None)
         if not isinstance(conversions, list):
             return original(model, *args, **kwargs)
-        skipped = _skipped(model, conversions)
+        state_dict = kwargs.get("state_dict", args[0] if args else None)
+        skipped = _skipped(model, conversions, state_dict)
         if not skipped:
             return original(model, *args, **kwargs)
         # An empty list, never None: None makes transformers rebuild the default mapping.
