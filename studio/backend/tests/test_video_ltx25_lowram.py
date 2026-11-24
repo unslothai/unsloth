@@ -27,6 +27,8 @@ ROUTE_INT8_TE_GIB = (
 ROUTE_DENSE_TE_GIB = (2.82 * 2 + 23.9 * 2 + 10.5 + 25.11) * _GIB
 # the dense bf16 DiT shards (an explicit "none", a LoRA to merge, the hosted read off) instead of the 25.1 GB file
 ROUTE_DENSE_DIT_GIB = (2.82 * 2 + _DENSE_PART * 2 + 10.5 + 42.0) * _GIB
+# Speed "off" with both precisions unset: the dense encoder and the dense DiT
+ROUTE_DENSE_ALL_GIB = (2.82 * 2 + 23.9 * 2 + 10.5 + 42.0) * _GIB
 FP32_DENSE_TE_GIB = ((42.0 + 9.2) * 2 + 23.9 * 2) * _GIB
 
 
@@ -267,7 +269,8 @@ def test_dense_dit_is_priced_and_refused_on_51_gib(host, monkeypatch, case):
 
 
 def test_speed_off_with_unset_encoder_prices_what_the_loader_prices(host):
-    # speed "off" + both precisions unset: the loader resolves the encoder to the dense one (82.9 GiB on the route)
+    # speed "off" + both precisions unset: the loader resolves the encoder and the DiT to the dense ones (98.7 GiB on
+    # the route); it passes the settled encoder and the raw DiT request with the speed mode
     host(torch.float16, 51)
     loader = lr.decide_lowram(
         LTX25,
@@ -276,14 +279,15 @@ def test_speed_off_with_unset_encoder_prices_what_the_loader_prices(host):
         text_encoder_quant = v.video_te_quant_request(
             LTX25, None, base = LTX25.base_repo, speed_mode = "off"
         )[0],
+        speed_mode = "off",
         resolve_te = False,
     )
-    assert not loader.engaged and abs(loader.need_mib / GIB - ROUTE_DENSE_TE_GIB) < 0.05
+    assert not loader.engaged and abs(loader.need_mib / GIB - ROUTE_DENSE_ALL_GIB) < 0.05
     preflight = lr.decide_lowram(
         LTX25, _target(torch.float16), model_kind = "pipeline", speed_mode = "off"
     )
     assert (preflight.engaged, preflight.need_mib) == (loader.engaged, loader.need_mib)
-    with pytest.raises(RuntimeError, match = f"about {ROUTE_DENSE_TE_GIB:.1f} GB"):
+    with pytest.raises(RuntimeError, match = f"about {ROUTE_DENSE_ALL_GIB:.1f} GB"):
         v.assert_video_precision_available(LTX25, model_kind = "pipeline", speed_mode = "off")
     # the default speed keeps the hosted int8 encoder and the route
     v.assert_video_precision_available(LTX25, model_kind = "pipeline")
@@ -411,3 +415,40 @@ def test_native_cache_is_written_inside_the_load_on_the_route(monkeypatch):
     monkeypatch.setattr(v, "_native_cache_background", lambda: True)
     assert v._native_cache_write_deferred(lowram_engaged = False) is True
     assert v._native_cache_write_deferred(lowram_engaged = True) is False
+
+
+@pytest.mark.parametrize("tq", [None, "auto"])
+def test_speed_off_keeps_an_unset_dit_dense_in_the_price_and_the_plan(host, tq):
+    # Speed "off" resolves an unset / auto DiT to dense bf16 in the load, so the route reads the 42 GB shards
+    host(torch.float16, 51)
+    assert v.video_transformer_quant_request(tq, "off") == "off"
+    assert v.video_transformer_quant_request(tq, None) == "auto"
+    storage = lr.storage_target(_target(torch.float16))
+    assert not v._ltx25_lowram_hosted_dit(LTX25, storage, transformer_quant = tq, speed_mode = "off")
+    assert v._ltx25_lowram_hosted_dit(LTX25, storage, transformer_quant = tq, speed_mode = "default")
+    route = lr.decide_lowram(
+        LTX25,
+        _target(torch.float16),
+        model_kind = "pipeline",
+        text_encoder_quant = "int8",
+        transformer_quant = tq,
+        speed_mode = "off",
+    )
+    assert not route.engaged and abs(route.need_mib / GIB - ROUTE_DENSE_DIT_GIB) < 0.05
+    with pytest.raises(RuntimeError, match = f"about {ROUTE_DENSE_DIT_GIB:.1f} GB"):
+        v.assert_video_precision_available(
+            LTX25,
+            model_kind = "pipeline",
+            transformer_quant = tq,
+            text_encoder_quant = "int8",
+            speed_mode = "off",
+        )
+    # an explicit int8 DiT under Speed "off" still reads the hosted file
+    assert lr.decide_lowram(
+        LTX25,
+        _target(torch.float16),
+        model_kind = "pipeline",
+        text_encoder_quant = "int8",
+        transformer_quant = "int8",
+        speed_mode = "off",
+    ).engaged

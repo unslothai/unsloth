@@ -158,6 +158,7 @@ def decide_lowram(
             transformer_quant = transformer_quant,
             loras_active = loras_active,
             base = base,
+            speed_mode = speed_mode,
         )
         fp32 = fp32_need(fam, text_encoder_quant, base)
         route_gb = lowram_need_gb(fam, text_encoder_quant, base, hosted_dit = hosted)

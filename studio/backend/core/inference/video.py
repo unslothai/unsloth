@@ -1113,6 +1113,18 @@ def h3_fp16_host_shortfall(
     )
 
 
+def video_transformer_quant_request(
+    transformer_quant: Optional[str], speed_mode: Optional[str]
+) -> Optional[str]:
+    """The transformer precision a pipeline load runs: unset / auto is the hardware ladder (``auto``), except under an
+    explicit Speed "off", which stays dense bf16 (``off``, bit-exact: auto-quant would engage int8/fp8 and compile);
+    none / off / a scheme is kept as asked."""
+    if transformer_quant is None or str(transformer_quant).strip().lower() in ("", TQ_AUTO):
+        speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
+        return "off" if speed_off else TQ_AUTO
+    return transformer_quant
+
+
 def _ltx25_lowram_hosted_dit(
     fam: Any,
     storage: Any,
@@ -1120,6 +1132,7 @@ def _ltx25_lowram_hosted_dit(
     transformer_quant: Optional[str],
     loras_active: bool = False,
     base: Optional[str] = None,
+    speed_mode: Optional[str] = None,
 ) -> bool:
     """Whether the low-RAM route reads the hosted int8 DiT (25.1 GB) rather than the dense bf16 shards (42 GB): an
     unset / auto / int8 request, no LoRA to merge, the hosted and offload reads on, the official base, and a native
@@ -1129,10 +1142,9 @@ def _ltx25_lowram_hosted_dit(
         from .diffusion_native_hosted import native_hosted_enabled
         from .model_ids import hf_cache_repo_id
 
-        if (
-            str(transformer_quant or "").strip().lower() not in ("", TQ_AUTO, TQ_INT8)
-            or loras_active
-        ):
+        # What the load resolves the request to (the same call): Speed "off" keeps unset / auto dense.
+        transformer_quant = video_transformer_quant_request(transformer_quant, speed_mode)
+        if str(transformer_quant).strip().lower() not in (TQ_AUTO, TQ_INT8) or loras_active:
             return False
         if not native_hosted_enabled() or not _offload_hosted_read_enabled():
             return False
@@ -8529,7 +8541,11 @@ class VideoBackend:
                     speed_mode = speed_mode,
                 )
                 if target is not card and _ltx25_lowram_hosted_dit(
-                    fam, target, transformer_quant = transformer_quant, base = base
+                    fam,
+                    target,
+                    transformer_quant = transformer_quant,
+                    base = base,
+                    speed_mode = speed_mode,
                 ):
                     # The low-RAM route offloads the DiT on an fp16-only card: read the hosted int8 file (25 GB) as
                     # native Linears instead of pulling the 42 GB dense shards and quantising them at load.
@@ -10511,14 +10527,8 @@ class VideoBackend:
             )
 
         transformer_quant_requested = transformer_quant
-        # Unset/auto: hardware ladder; none/off: dense bf16; a scheme pins it. Pipeline kind only.
-        if transformer_quant is None or str(transformer_quant).strip().lower() in (
-            "",
-            "auto",
-        ):
-            # Explicit Speed=off must stay dense bf16 (bit-exact); auto-quant would engage int8/fp8 and compile.
-            speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
-            transformer_quant = "off" if speed_off else TQ_AUTO
+        # Unset/auto: hardware ladder (dense bf16 under Speed "off"); none/off: dense bf16; a scheme pins it.
+        transformer_quant = video_transformer_quant_request(transformer_quant, speed_mode)
 
         # Settled memory, so the previous pipeline's cached-but-free buffers do not read as used.
         device_memory = settled_snapshot_device_memory(target)
