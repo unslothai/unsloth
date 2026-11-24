@@ -128,3 +128,24 @@ test("a cached URL whose image failed is asked for again on the next mount", asy
   assert.equal(requests.length, 2);
   assert.equal(readCachedHfOwnerAvatar("user-owner"), "https://cdn/user.png");
 });
+
+test("a failed URL held only in memory is expired too", async () => {
+  const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  resetAvatarCacheForTests();
+  useHfOwnerAvatar("user-owner", true);
+  await settle(400);
+  // A read midway promotes user-owner in the cache only, so 256 newer misses evict it
+  // from the persisted list while the cache keeps it.
+  for (let i = 0; i < 128; i++) useHfOwnerAvatar(`gone-${i}`, true);
+  await settle(1000);
+  readCachedHfOwnerAvatar("user-owner");
+  for (let i = 128; i < 256; i++) useHfOwnerAvatar(`gone-${i}`, true);
+  await settle(1000);
+  assert.equal(readCachedHfOwnerAvatar("user-owner"), "https://cdn/user.png");
+  assert.ok(!(localStorage.getItem(STORAGE_KEY) ?? "").includes("::user-owner"));
+  requests.length = 0;
+  expireHfOwnerAvatarUrl("https://cdn/user.png");
+  useHfOwnerAvatar("user-owner", true);
+  await settle(400);
+  assert.equal(requests.length, 2);
+});

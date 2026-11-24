@@ -38,6 +38,11 @@ export class LruMap<K, V> {
   clear(): void {
     this.map.clear();
   }
+
+  /** Iterates without promoting anything. */
+  entries(): IterableIterator<[K, V]> {
+    return this.map.entries();
+  }
 }
 
 /** Trims to max, evicting oldest first but never a protected entry; protectedScans bounds the walk. */

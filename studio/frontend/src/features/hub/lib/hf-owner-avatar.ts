@@ -179,11 +179,15 @@ export function readCachedHfOwnerAvatar(name: string): string | null {
 
 /** An avatar <img> failed: expire every owner cached with that URL so the next mount asks HF again. */
 export function expireHfOwnerAvatarUrl(url: string): void {
+  // The cache and the persisted list evict in different orders, so walk both.
+  const keys = [...cache.entries()]
+    .filter(([, entry]) => entry.kind === "url" && entry.url === url)
+    .map(([key]) => key);
+  for (const key of keys) cache.set(key, { kind: "url", url, expiresAt: 0 });
   let changed = false;
   for (const entry of persisted.values()) {
     if (entry.url !== url || entry.expiresAt === 0) continue;
     entry.expiresAt = 0;
-    cache.set(entry.key, { kind: "url", url, expiresAt: 0 });
     changed = true;
   }
   if (changed) writePersisted();
