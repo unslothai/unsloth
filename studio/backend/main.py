@@ -3848,7 +3848,13 @@ def setup_frontend(
         if not _frontend_request_allowed(request):
             return Response(status_code = 404)
 
-        file_path = (build_path / full_path).resolve()
+        from utils.datasets.remote_images import is_network_share
+
+        joined = build_path / full_path
+        # Unauthenticated: resolve() on a share path makes Windows sign in to that host (NTLM).
+        if is_network_share(full_path) or is_network_share(str(joined)):
+            return Response(status_code = 404)
+        file_path = joined.resolve()
 
         if not file_path.is_relative_to(build_path.resolve()):
             return Response(status_code = 403)
