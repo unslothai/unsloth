@@ -179,9 +179,15 @@ _SHARED_READ_ONLY = "This connection is shared by the installation owner. Only t
 
 
 def _request_extra_headers(payload, via_api_key: bool) -> dict[str, str]:
-    if "extra_headers" in getattr(payload, "model_fields_set", set()):
-        return normalize_provider_extra_headers(payload.extra_headers)
     provider_id = getattr(payload, "provider_id", None)
+    # A shared connection sends the owner's key: only the owner's saved headers go with it.
+    sent_headers = "extra_headers" in getattr(payload, "model_fields_set", set())
+    if sent_headers and (
+        not provider_id
+        or payload.encrypted_api_key
+        or providers_db.get_own_provider(provider_id) is not None
+    ):
+        return normalize_provider_extra_headers(payload.extra_headers)
     # Saved headers can carry credentials: same gate as the saved key.
     if not provider_id or payload.encrypted_api_key or via_api_key:
         return {}
@@ -803,7 +809,8 @@ def _bind_saved_provider_target(payload):
     """Use the saved provider's endpoint whenever its saved credential may be used."""
     if not payload.provider_id or payload.encrypted_api_key:
         return payload
-    config = providers_db.get_provider(payload.provider_id)
+    own = providers_db.get_own_provider(payload.provider_id)
+    config = own if own is not None else providers_db.get_provider(payload.provider_id)
     if config is None:
         raise HTTPException(
             status_code = 404,
@@ -820,8 +827,10 @@ def _bind_saved_provider_target(payload):
     }
     # Pinning the saved endpoint keeps a saved credential off other hosts; a keyless row has none to protect, so an
     # edited base URL is used as sent.
+    # Another account's row is always pinned: whether its key is saved is itself a read that can fail.
     if (
         not payload.base_url
+        or own is None
         or config["provider_type"] == "openai_codex"
         or credential_secrets.provider_api_key_saved(config["id"])
     ):
