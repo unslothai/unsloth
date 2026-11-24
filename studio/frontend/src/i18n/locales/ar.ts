@@ -935,6 +935,9 @@ export const ar = {
     useModelScopeHint: "ابحث ونزّل من ModelScope بدلًا من ذلك. يمكنك العودة من الإعدادات.",
     useModelScopeFailed: "تعذّر التبديل إلى ModelScope.",
     updateToken: "تحديث الرمز",
+    linkedModelTitle: "تحميل {model}؟",
+    linkedModelBody: "فتح رابط هذه الصفحة وطلب تنزيل هذا النموذج وتحميله.",
+    linkedModelLoad: "تحميل",
     hfToken: {
       label: "توكن HF",
       saved: "محفوظ",

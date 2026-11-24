@@ -13665,23 +13665,25 @@ class VideoBackend:
                 pass
             from . import diffusion_int8_attention as int8_attention
             from .diffusion_attention import _auto_request
+            from .video_minimax_h3_attn import cuda_capability, h3_int8_load_gate
 
             h3_policy = int8_attention.resolve_policy(int8_policy)
             int8_mode = h3_policy.mode
-            int8_forced = int8_mode == "force" or (
-                int8_mode != "off" and int8_attention.requested(attention_backend)
+            # Forced never looks at the arch; Auto only on the evidenced config, off H3_INT8_AUTO_OFF_ARCHS
+            h3_int8_gate = h3_int8_load_gate(
+                mode = int8_mode,
+                attention_backend = attention_backend,
+                auto_attention = _auto_request(attention_backend),
+                speed_on = effective_speed != SPEED_OFF,
+                hosted_int8 = transformer_quant_engaged == "int8",
+                comfy_checkpoint = bool(comfy_checkpoint),
+                adapters = bool(baked_loras or lora_specs),
+                capability = cuda_capability(
+                    str(getattr(umem_target, "torch_device", None) or device)
+                ),
             )
-            # Auto only on the evidenced config: Studio attention, speed on, hosted INT8 ConvRot, diffusers, no adapters
-            int8_auto = (
-                not int8_forced
-                and int8_mode == "auto"
-                and effective_speed != SPEED_OFF
-                and _auto_request(attention_backend)
-                and transformer_quant_engaged == "int8"
-                and not comfy_checkpoint
-                and not baked_loras
-                and not lora_specs
-            )
+            int8_forced = h3_int8_gate.forced
+            int8_auto = h3_int8_gate.auto
             h3_torch_device = str(getattr(umem_target, "torch_device", None) or device)
             # Install after the strided processors exist, else the dispatch route takes it and loses fused q/k norm + RoPE
             h3_probe_target = types.SimpleNamespace(device = device, dtype = dtype)
@@ -13767,20 +13769,7 @@ class VideoBackend:
                 except Exception as exc:  # noqa: BLE001 -- the stock processors keep their backend
                     logger.warning("video.h3_attn: INT8 attention dispatch skipped: %s", exc)
             if not h3_int8_modules:
-                h3_int8_reason = (
-                    None
-                    if int8_mode == "off"
-                    else "speed_mode=off keeps the output bit-identical, so the kernel is not installed"
-                    if effective_speed == SPEED_OFF
-                    else None
-                    if int8_forced
-                    else f"attention_backend={attention_backend!r} was picked explicitly; Auto keeps it"
-                    if not _auto_request(attention_backend)
-                    else "Auto engages it on MiniMax-H3 video only over Studio's hosted INT8 denoiser "
-                    "without adapters"
-                    if not int8_auto
-                    else None
-                )
+                h3_int8_reason = h3_int8_gate.reason
             if h3_int8_modules:
                 h3_attn_levers += ("h3_int8_attention",)
                 attention_engaged = int8_attention.BACKEND

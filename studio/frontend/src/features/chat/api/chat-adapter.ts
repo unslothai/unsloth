@@ -7961,6 +7961,7 @@ export function createOpenAIStreamAdapter(
                         toolEvent.image_disclosure as ImageDisclosure | undefined,
                         cancelId,
                         computerUseAsk(toolEvent.computer_use),
+                        toolEvent.tool_name as string,
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {

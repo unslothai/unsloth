@@ -1037,6 +1037,9 @@ export const cs = {
       "Hledat a stahovat raději z ModelScope. Zpět můžete přepnout v Nastavení.",
     useModelScopeFailed: "Na ModelScope se nepodařilo přepnout.",
     updateToken: "Aktualizovat token",
+    linkedModelTitle: "Načíst {model}?",
+    linkedModelBody: "Odkaz otevřel tuto stránku a požádal o stažení a načtení tohoto modelu.",
+    linkedModelLoad: "Načíst",
     hfToken: {
       label: "Token HF",
       saved: "Uloženo",

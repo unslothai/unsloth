@@ -4062,6 +4062,9 @@ export const it = {
     useModelScopeHint: "Cerca e scarica da ModelScope. Puoi tornare indietro nelle Impostazioni.",
     useModelScopeFailed: "Impossibile passare a ModelScope.",
     updateToken: "Aggiorna token",
+    linkedModelTitle: "Caricare {model}?",
+    linkedModelBody: "Un link ha aperto questa pagina e chiede di scaricare e caricare questo modello.",
+    linkedModelLoad: "Carica",
     hfToken: {
       label: "Token HF",
       saved: "Salvato",

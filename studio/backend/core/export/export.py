@@ -879,6 +879,14 @@ def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
     return None
 
 
+def _restaged_checkpoint_refusal(checkpoint_path) -> Optional[str]:
+    """GGUF export of a full model re-stages its folder from disk, so an index written after the load
+    is followed: re-check it right before the conversion."""
+    if checkpoint_path and os.path.isdir(str(checkpoint_path)):
+        return _checkpoint_load_refusal(checkpoint_path, None)
+    return None
+
+
 def _with_base_processor(tokenizer, base_model: str, **load_kw):
     """A text-only VLM adapter saves a bare tokenizer; the export still needs the base's processor (mmproj)."""
     if tokenizer is None or hasattr(tokenizer, "tokenizer"):
@@ -2125,6 +2133,9 @@ class ExportBackend:
                 try:
                     # Pinned to setup.sh's llama.cpp ref so the converter cannot drift past the pinned
                     # llama-quantize gguf API; scoped to the conversion.
+                    refusal = _restaged_checkpoint_refusal(self.current_checkpoint)
+                    if refusal:
+                        return False, refusal, None
                     with _llama_cpp_scripts_pin(), _converter_remote_code(remote_code_approved):
                         result = self.current_model.save_pretrained_gguf(
                             _model_tmp,
@@ -2358,6 +2369,9 @@ class ExportBackend:
                     except Exception as exception:
                         logger.warning(f"Could not publish the model card: {exception}")
                 else:
+                    refusal = _restaged_checkpoint_refusal(self.current_checkpoint)
+                    if refusal:
+                        return False, refusal, None
                     # Converts as well as pushes, so it needs the same scoped pin.
                     with _llama_cpp_scripts_pin(), _converter_remote_code(remote_code_approved):
                         self.current_model.push_to_hub_gguf(
