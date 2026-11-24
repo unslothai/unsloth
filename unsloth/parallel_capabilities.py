@@ -944,7 +944,12 @@ _GPT_OSS_PP = (
     "tests/test_pp_moe_aux_off_gloo.py::"
     "test_pp2_uncarried_moe_with_aux_off_matches_gradient_accumulation"
 )
-_INKLING2_PP = "tests/test_pp_inkling2_gloo.py (pp2 gpipe / 1f1b vs one-process gradient accumulation, bitwise)"
+# Inkling 2 (Mini and Small): pp2 gpipe / 1f1b vs one-process gradient accumulation, bitwise. The Mini cuts after
+# the loop carry a block attention residual stack of 2 and 3 entries; every case counts stage forward calls.
+_INKLING2_PP = "tests/test_pp_inkling2_gloo.py::test_pp2_inkling2_mini_matches_one_process"
+_INKLING2_PP_ENGAGED = (
+    "tests/test_pp_inkling2_gloo.py::test_pp2_inkling2_mini_cut_after_the_loop_matches_one_process"
+)
 _GPT_OSS_PP_CASES = {
     "lora": "gpt_oss_lora_logits_off_1f1b|gpt_oss_lora_logits_off_gpipe_gc",
     "lora+experts": "gpt_oss_lora_experts_logits_off_gpipe|gpt_oss_lora_experts_logits_off_1f1b_gc_reentrant",
@@ -1329,8 +1334,7 @@ CELLS = (
                 "memory": ("none", "gc", "unsloth_gc", "unsloth_offload"),
             },
             _INKLING2_PP,
-            _INKLING2_PP
-            + " (stage forward calls counted per micro-batch; block stack 1 / 2 / 3 entries)",
+            _INKLING2_PP_ENGAGED,
             "eager: Inkling 2 trains with UNSLOTH_COMPILE_DISABLE=partial",
         ),
         Cell(
