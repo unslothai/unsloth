@@ -274,6 +274,7 @@ def test_fingerprint_reads_the_triton_windows_distribution(monkeypatch):
     monkeypatch.setattr(pc, "_driver_identity", lambda hip: "drv")
     versions = {"triton-windows": "3.2.0.post11", "torchao": None}
     monkeypatch.setattr(pc, "_version", lambda name: versions.get(name))
-    assert pc.fingerprint("cuda:0")["triton"] == "3.2.0.post11"
+    # the distribution name rides along, as diffusion_probe_cache._triton_version spells it (#19319)
+    assert pc.fingerprint("cuda:0")["triton"] == "triton-windows==3.2.0.post11"
     versions["triton"] = "3.3.0"
     assert pc.fingerprint("cuda:0")["triton"] == "3.3.0"
