@@ -164,3 +164,54 @@ def test_a_reused_config_gets_its_batch_back(monkeypatch):
     SFT(model = _Model(), args = config, train_dataset = _docs())
     assert seen["trainer_batch"][-2:] == [(1, 1, 600), (1, 1, 600)]
     assert seen["prepare"][-2:] == [("train", True), ("train", False)]
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    ["world_size_env", "world_size_arg", "deepspeed", "fsdp", "fsdp_config", "accelerate_fsdp_env"],
+)
+def test_distributed_deepspeed_or_fsdp_skip_default_packing(monkeypatch, capsys, trigger):
+    SFT, seen = _patched(monkeypatch, docs_per_row = 6.75)
+    config = _config(deepspeed = None, fsdp = "", fsdp_config = None)
+    monkeypatch.delenv("WORLD_SIZE", raising = False)
+    monkeypatch.delenv("ACCELERATE_USE_FSDP", raising = False)
+    monkeypatch.delenv("ACCELERATE_USE_DEEPSPEED", raising = False)
+    if trigger == "world_size_env":
+        monkeypatch.setenv("WORLD_SIZE", "2")
+    elif trigger == "world_size_arg":
+        config.world_size = 2
+    elif trigger == "deepspeed":
+        config.deepspeed = "ds_config.json"
+    elif trigger == "fsdp":
+        config.fsdp = "full_shard auto_wrap"
+    elif trigger == "fsdp_config":
+        config.fsdp_config = {"fsdp_version": 2}
+    else:
+        monkeypatch.setenv("ACCELERATE_USE_FSDP", "true")
+    SFT(model = _Model(), args = config, train_dataset = _docs())
+    # never packed, batch untouched: the padding-free behaviour from before default packing
+    assert seen["prepare"] == [("train", False)]
+    assert seen["trainer_batch"] == [(2, 4, 600)]
+    assert config.packing is False and config.padding_free is True
+    out = capsys.readouterr().out
+    assert "Default packing skipped" in out and (
+        "DeepSpeed" in out or "FSDP" in out or "world size 2" in out
+    )
+
+
+def test_transformers_default_fsdp_config_is_not_fsdp(monkeypatch):
+    # transformers 4.x fills fsdp_config with these defaults on every run
+    SFT, seen = _patched(monkeypatch, docs_per_row = 6.75)
+    monkeypatch.delenv("WORLD_SIZE", raising = False)
+    monkeypatch.delenv("ACCELERATE_USE_FSDP", raising = False)
+    config = _config(
+        fsdp = [],
+        fsdp_config = {
+            "min_num_params": 0,
+            "xla": False,
+            "xla_fsdp_v2": False,
+            "xla_fsdp_grad_ckpt": False,
+        },
+    )
+    SFT(model = _Model(), args = config, train_dataset = _docs())
+    assert seen["trainer_batch"] == [(1, 1, 89)]

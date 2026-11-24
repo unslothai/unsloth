@@ -295,6 +295,51 @@ def _restore_default_packing_batch(config):
         setattr(config, "gradient_accumulation_steps", grad_accum)
 
 
+def _default_packing_batch_fixed_reason(config):
+    """Why default packing may not change this run's batch size and gradient accumulation, or None.
+
+    Multi-GPU (documents per step include the world size), DeepSpeed (its config can hard-code
+    train_batch_size) and FSDP: packing there at the user's batch would cut optimizer steps per epoch."""
+
+    def _env_true(name):
+        return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+    try:
+        world = int(os.environ.get("WORLD_SIZE", "1").strip() or 1)
+    except ValueError:
+        world = 1
+    try:
+        world = max(world, int(getattr(config, "world_size", 1) or 1))
+    except Exception:
+        pass
+    if world > 1:
+        return f"distributed run (world size {world})"
+    if getattr(config, "deepspeed", None) or _env_true("ACCELERATE_USE_DEEPSPEED"):
+        return "DeepSpeed"
+    fsdp_config = getattr(config, "fsdp_config", None)
+    # transformers 4.x fills fsdp_config with defaults ({"min_num_params": 0, "xla": False, ...}) without FSDP.
+    fsdp_config_set = (isinstance(fsdp_config, str) and bool(fsdp_config.strip())) or (
+        isinstance(fsdp_config, dict)
+        and any(v not in (None, 0, False, "", [], {}) for v in fsdp_config.values())
+    )
+    if getattr(config, "fsdp", None) or fsdp_config_set or _env_true("ACCELERATE_USE_FSDP"):
+        return "FSDP"
+    return None
+
+
+def _default_packing_batch_fixed(config):
+    """True (after printing why) when default packing must leave the batch alone and so stays off."""
+    reason = _default_packing_batch_fixed_reason(config)
+    if reason is None:
+        return False
+    print(
+        f"Unsloth: Default packing skipped: {reason}, where Unsloth does not change the batch size or "
+        f"gradient accumulation, and packing at them would cut optimizer steps per epoch. Using padding-free "
+        f"batches; set packing = True in SFTConfig to pack anyway."
+    )
+    return True
+
+
 def _steps_per_epoch(items, per_step, world_size):
     return max(1, math.ceil(items / max(1, per_step * world_size)))
 
@@ -2452,6 +2497,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             if (
                 _default_packing_dataset(train_dataset, config_arg, formatting_func)
                 and _responses_only_masks_packed_rows()
+                and not _default_packing_batch_fixed(config_arg)
             ):
                 setattr(config_arg, "packing", True)
                 if hasattr(config_arg, "eval_packing") and config_arg.eval_packing is None:
