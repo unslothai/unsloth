@@ -88,7 +88,8 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("base_precision", "base precision"),
     # Record actual base precision: fp8/mxfp8 can fall back to bf16, so the request would look clean.
     ("base_precision_effective", "resolved base precision"),
-    # int8 is torchao weight-only or the W8A8 base (UNSLOTH_DIFFUSION_INT8_TRAIN): different base math, one name.
+    # int8 is the W8A8 base or torchao weight-only (UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only): different base math,
+    # one name.
     ("base_int8_kernel", "int8 base kernel"),
     # LoRAEMA uses the INCOMING decay with restored shadows, so a change makes a hybrid EMA.
     ("ema_decay", "EMA decay"),
@@ -1676,6 +1677,22 @@ def recorded_base_precision(path_value: Any) -> tuple[bool, Optional[str]]:
     except Exception:  # noqa: BLE001 -- best effort; the preflight reports the real problem
         pass
     return False, None
+
+
+def recorded_int8_kernel(path_value: Any) -> Optional[str]:
+    """The int8 base kernel ("w8a8" / "weight-only") the resumed bundle trained on, or None (unreadable, not int8,
+    or a bundle that predates the record). Never raises."""
+    try:
+        root = resolve_resume_dir(str(path_value))
+        explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+        candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
+        for _candidate, manifest in candidates:
+            saved = CheckpointIdentity.from_dict((manifest or {}).get("identity"))
+            if saved is not None:
+                return saved.base_int8_kernel
+    except Exception:  # noqa: BLE001 -- best effort; the identity check reports a real mismatch
+        pass
+    return None
 
 
 def recorded_bucketing(path_value: str) -> bool:

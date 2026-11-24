@@ -44,6 +44,7 @@ from core.training.diffusion_block_swap import (
     swap_lowp_mode,
     compile_swapped_blocks,
     install_dit_block_swap,
+    int8_w8a8_env,
     reset_block_swaps,
 )
 from core.training.diffusion_gc_budget import (
@@ -109,6 +110,7 @@ from core.training.diffusion_checkpoint import (
     with_resolved_revision,
     preflight_resume,
     recorded_base_precision,
+    recorded_int8_kernel,
 )
 from core.training.diffusion_samples import (
     discard_samples,
@@ -482,9 +484,20 @@ def _int8_quantize_base(
 INT8_TRAIN_ENV = "UNSLOTH_DIFFUSION_INT8_TRAIN"
 
 
-def _int8_w8a8() -> bool:
-    """PROTOTYPE gate: int8 trains on the frozen W8A8 base (``diffusion_frozen_int8``) instead of torchao weight-only."""
-    return os.environ.get(INT8_TRAIN_ENV, "").strip().lower() == "w8a8"
+def _int8_w8a8(cfg = None) -> bool:
+    """int8 trains on the frozen W8A8 base (``diffusion_frozen_int8``): it traces, so the run compiles, where torchao
+    weight-only int8 runs eager (L4, Qwen-Image-2.1 512 px: 0.57 vs 1.25 s/step, bf16 0.87).
+    UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only keeps the torchao base. Unset, a resume continues the int8 kernel its
+    bundle trained on; an int8 bundle that predates the record trained weight-only."""
+    explicit = int8_w8a8_env()
+    if explicit is not None:
+        return explicit
+    resume = getattr(cfg, "resume_from_checkpoint", None) if cfg is not None else None
+    if resume:
+        found, recorded = recorded_base_precision(resume)
+        if found and recorded == "int8":
+            return recorded_int8_kernel(resume) == "w8a8"
+    return True
 
 
 def _apply_int8_w8a8(
@@ -515,10 +528,10 @@ def _apply_int8_w8a8(
         _emit(
             on_event,
             "warning",
-            message = f"int8 W8A8 prototype: {done} frozen linears ({failed} kept)",
+            message = f"int8 W8A8: {done} frozen linears ({failed} kept)",
         )
         return True
-    except Exception as exc:  # noqa: BLE001 -- prototype: fall back to the torchao weight-only base
+    except Exception as exc:  # noqa: BLE001 -- no int8 GEMM here: fall back to the torchao weight-only base
         if any(isinstance(m, FrozenInt8Linear) for m in transformer.modules()):
             # Failed partway (a device move OOMs between layers): torchao would quantize only the rest, training a
             # mixed base that compile, the caches and the checkpoint all treat as weight-only int8.
@@ -1044,11 +1057,14 @@ def _auto_block_swap_wanted(
     spec = None,
 ) -> bool:
     """auto picked int8 (the dense base fits with little headroom): bf16 + block swap instead on a discrete NVIDIA
-    card. L4, 512 px: FLUX.2-klein 9B bf16 1.62 s/step vs int8 2.35; FLUX.1-dev with 21 of 57 blocks swapped 1.83
-    vs int8 2.83, both at bf16 loss. UNSLOTH_DIT_AUTO_BLOCK_SWAP=0 keeps int8."""
+    card, unless int8 trains the compiled W8A8 base. The swap beat eager weight-only int8 (L4, 512 px: FLUX.2-klein
+    9B bf16 1.62 s/step vs int8 2.35; FLUX.1-dev with 21 of 57 blocks swapped 1.83 vs int8 2.83, both at bf16 loss);
+    compiled W8A8 beats the swap. UNSLOTH_DIT_AUTO_BLOCK_SWAP=0 keeps int8."""
     if (
         getattr(cfg, "base_precision", "") or ""
     ).strip().lower() != "auto" or base_precision != "int8":
+        return False
+    if _auto_int8_w8a8_compiled(cfg, device):
         return False
     if os.environ.get(AUTO_BLOCK_SWAP_ENV, "1").strip().lower() in ("0", "off", "false", "no"):
         return False
@@ -1066,6 +1082,34 @@ def _auto_block_swap_wanted(
         return importlib.util.find_spec("unsloth_zoo.block_swap") is not None
     except Exception:  # noqa: BLE001 -- zoo missing or refusing to import: keep int8
         return False
+
+
+_INT8_MM_PROBE_OK: dict[str, bool] = {}
+
+
+def _int8_mm_probe_ok(device) -> bool:
+    """Whether torch._int_mm runs on ``device`` (the W8A8 base's GEMM); cached per device, never raises."""
+    key = str(device)
+    if key not in _INT8_MM_PROBE_OK:
+        try:
+            import torch
+            a = torch.ones((32, 32), dtype = torch.int8, device = device)
+            ok = bool(torch._int_mm(a, a.t())[0, 0].item() == 32)
+        except Exception:  # noqa: BLE001 -- no int8 GEMM: the run would fall back to weight-only
+            ok = False
+        _INT8_MM_PROBE_OK[key] = ok
+    return _INT8_MM_PROBE_OK[key]
+
+
+def _auto_int8_w8a8_compiled(cfg, device) -> bool:
+    """Auto's int8 pick will train the compiled W8A8 base (not the eager weight-only one the block swap replaced)."""
+    return (
+        device == "cuda"
+        and not torch_is_rocm()
+        and _int8_w8a8(cfg)
+        and _auto_run_compiles(cfg)
+        and _int8_mm_probe_ok(device)
+    )
 
 
 def _device_is_integrated(device) -> bool:
@@ -3609,9 +3653,9 @@ def _should_compile(
     mode = (cfg.compile_transformer or "auto").strip().lower()
     if device != "cuda" or mode == "off":
         return False
-    # torch.compile cannot trace the torchao int8 subclass in training, so int8 runs eager; the W8A8 base traces.
+    # torch.compile cannot trace the torchao int8 subclass in training, so weight-only int8 runs eager; W8A8 traces.
     if base_precision == "int8":
-        return _int8_w8a8() and mode != "off"
+        return _int8_w8a8(cfg) and mode != "off"
     if mode == "on":
         return True
     if base_precision == "nf4":
@@ -3871,7 +3915,7 @@ def run_dit_lora_training(
         # Residual stream stays fp32; only autocast matmuls run fp16.
         weight_dtype = torch.float32
         mode = (cfg.base_precision or "nf4").strip().lower()
-        if mode not in ("nf4", "auto") and not (mode == "int8" and _int8_w8a8()):
+        if mode not in ("nf4", "auto") and not (mode == "int8" and _int8_w8a8(cfg)):
             raise ValueError(dit_fp16_dense_reason(mode))
 
     # A local FLUX.3 pipeline is modular (modular_model_index.json, no model_index.json).
@@ -4175,8 +4219,8 @@ def _train_dit(
         ddp.release("conditioning")
     # Transformer loads last, at resolved precision: nf4 by default, 'auto' picks from free VRAM.
     if fp16_amp:
-        # The W8A8 int8 base computes in the autocast dtype, so the fp16 path can take it too (prototype gate).
-        w8a8_fp16 = (cfg.base_precision or "").strip().lower() == "int8" and _int8_w8a8()
+        # The W8A8 int8 base computes in the autocast dtype, so the fp16 path can take it too.
+        w8a8_fp16 = (cfg.base_precision or "").strip().lower() == "int8" and _int8_w8a8(cfg)
         base_precision = "int8" if w8a8_fp16 else "nf4"
     else:
         base_precision = _resolve_base_precision(cfg, spec, device)
@@ -4306,7 +4350,7 @@ def _train_dit(
     # Convert AFTER the LoRA attaches so the adapter modules stay high precision.
     w8a8_on = lowp_swap == "int8_w8a8" or (
         base_precision == "int8"
-        and _int8_w8a8()
+        and _int8_w8a8(cfg)
         and _apply_int8_w8a8(transformer, on_event, cfg.resolved_family, device = device)
     )
     if base_precision == "int8" and not w8a8_on:

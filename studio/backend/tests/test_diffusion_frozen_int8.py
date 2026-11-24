@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Frozen W8A8 int8 LoRA base (prototype, UNSLOTH_DIFFUSION_INT8_TRAIN=w8a8): numerics against the dense layer,
-quantize-once, streamed conversion, and the trainer gates."""
+"""Frozen W8A8 int8 LoRA base (the int8 default; UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only keeps torchao): numerics
+against the dense layer, quantize-once, streamed conversion, and the trainer gates."""
 
 from __future__ import annotations
 
@@ -149,14 +149,81 @@ def test_compiles_without_graph_breaks():
 
 
 def test_trainer_gates(monkeypatch):
+    """W8A8 is the int8 default and compiles; the weight-only opt-out runs eager."""
     cfg = type("C", (), {"compile_transformer": "auto", "train_steps": 10})()
     monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+    assert dit._int8_w8a8() is True
+    assert dit._should_compile(cfg, False, "cuda", "int8") is True
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "weight-only")
+    assert dit._int8_w8a8() is False
     assert dit._should_compile(cfg, False, "cuda", "int8") is False
     monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "w8a8")
-    assert dit._int8_w8a8() is True
     assert dit._should_compile(cfg, False, "cuda", "int8") is True
     cfg.compile_transformer = "off"
     assert dit._should_compile(cfg, False, "cuda", "int8") is False
+
+
+@pytest.mark.parametrize(
+    "raw, want",
+    [
+        (None, True),
+        ("", True),
+        ("w8a8", True),
+        ("W8A8", True),
+        ("1", True),
+        ("weight-only", False),
+        ("weight_only", False),
+        ("WO", False),
+        ("torchao", False),
+        ("0", False),
+        ("off", False),
+    ],
+)
+def test_int8_kernel_env(monkeypatch, raw, want):
+    from core.training import diffusion_block_swap as bs
+
+    if raw is None:
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raw)
+    assert bs.int8_w8a8_requested() is want
+    assert dit._int8_w8a8() is want
+    assert bs.swap_lowp_mode("int8") == ("int8_w8a8" if want else None)
+
+
+@pytest.mark.parametrize(
+    "recorded, kernel, env, want",
+    [
+        ("int8", "w8a8", None, True),
+        ("int8", "weight-only", None, False),
+        ("int8", None, None, False),  # an int8 bundle from before the record trained weight-only
+        ("bf16", None, None, True),  # a non-int8 bundle says nothing about the int8 kernel
+        (
+            "int8",
+            "weight-only",
+            "w8a8",
+            True,
+        ),  # explicit env wins (the identity check then refuses the switch)
+        ("int8", "w8a8", "weight-only", False),
+    ],
+)
+def test_resume_continues_the_recorded_int8_kernel(monkeypatch, recorded, kernel, env, want):
+    if env is None:
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", env)
+    monkeypatch.setattr(dit, "recorded_base_precision", lambda p: (True, recorded))
+    monkeypatch.setattr(dit, "recorded_int8_kernel", lambda p: kernel)
+    cfg = type("C", (), {"resume_from_checkpoint": "/some/run"})()
+    assert dit._int8_w8a8(cfg) is want
+    fresh = type("C", (), {"resume_from_checkpoint": None})()
+    assert dit._int8_w8a8(fresh) is (env != "weight-only")
+
+
+def test_recorded_int8_kernel_never_raises(tmp_path):
+    from core.training import diffusion_checkpoint as ck
+    assert ck.recorded_int8_kernel(tmp_path / "missing") is None
+    assert ck.recorded_int8_kernel(None) is None
 
 
 def test_apply_lands_the_base_and_reports(monkeypatch):
@@ -176,17 +243,21 @@ def test_apply_lands_the_base_and_reports(monkeypatch):
     assert "W8A8" in events[-1]["message"]
 
 
-def test_fp16_preflight_allows_int8_only_with_the_w8a8_gate(monkeypatch):
+def test_fp16_preflight_allows_int8_only_as_w8a8(monkeypatch):
     import core.training.diffusion_train_common as tc
 
     monkeypatch.setattr(tc, "bf16_unsupported_reason", lambda fam: None)
     monkeypatch.setattr(tc, "dit_accelerator_missing_reason", lambda fam: None)
     monkeypatch.setattr(tc, "dit_fp16_fallback", lambda fam: True)
-    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "weight-only")
     assert "fp16" in (tc.training_precision_preflight_error("flux.2-klein", "int8") or "")
-    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "w8a8")
-    reason = tc.training_precision_preflight_error("flux.2-klein", "int8")
-    assert reason is None or "fp16" not in reason
+    for env in (None, "w8a8"):
+        if env is None:
+            monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+        else:
+            monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", env)
+        reason = tc.training_precision_preflight_error("flux.2-klein", "int8")
+        assert reason is None or "fp16" not in reason
     assert "fp16" in (tc.training_precision_preflight_error("flux.2-klein", "bf16") or "")
 
 

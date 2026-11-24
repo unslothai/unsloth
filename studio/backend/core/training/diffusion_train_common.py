@@ -1023,11 +1023,11 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
         return reason
     fam = (resolved_family or "").strip().lower()
     mode = (base_precision or "").strip().lower()
-    # The W8A8 int8 prototype (UNSLOTH_DIFFUSION_INT8_TRAIN=w8a8) computes in fp16 too, as the trainer allows.
-    w8a8 = (
-        mode == "int8"
-        and os.environ.get("UNSLOTH_DIFFUSION_INT8_TRAIN", "").strip().lower() == "w8a8"
-    )
+    # The W8A8 int8 base (the default; UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only opts out) computes in fp16 too, as
+    # the trainer allows.
+    from core.training.diffusion_block_swap import int8_w8a8_requested
+
+    w8a8 = mode == "int8" and int8_w8a8_requested()
     if mode in ("bf16", "int8", "fp8", "mxfp8") and not w8a8 and dit_fp16_fallback(fam):
         return dit_fp16_dense_reason(mode)
     if w8a8 and dit_fp16_fallback(fam):
