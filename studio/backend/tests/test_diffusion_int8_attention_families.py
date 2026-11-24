@@ -300,9 +300,13 @@ def test_the_measured_families_are_listed():
     for name in (
         "QwenImageTransformer2DModel",
         "HunyuanImageTransformer2DModel",
-        "Krea2Transformer2DModel",
     ):
         assert name not in D.AUTO_DITS and name not in I.SINK_DITS
+    # Krea 2 races on the plain path (its block calls are mask-free over the valid key prefix), no sink path
+    assert (
+        "Krea2Transformer2DModel" in D.AUTO_DITS and "Krea2Transformer2DModel" in D.AUTO_CUDA_ONLY
+    )
+    assert "Krea2Transformer2DModel" not in I.SINK_DITS
 
 
 @pytest.mark.parametrize("name", RACED)

@@ -2673,7 +2673,8 @@ _AUTO_EXEC_MCP_VERB_ONLY_RE = re.compile(
 # Code/command runners run on the MCP server outside the sandbox; whole segments only.
 _AUTO_EXEC_MCP_TOOL_RE = re.compile(
     r"(?:^|[_\-])(?:"
-    r"exec|execute|run|eval|spawn|invoke|launch|"
+    # evaluate: REPL / debugger / browser servers run the expression they are given.
+    r"exec|execute|run|eval|evaluate|spawn|invoke|launch|"
     r"shell|bash|zsh|powershell|pwsh|terminal|subprocess|interpreter|"
     # A bare runtime name is an execution tool even without a verb.
     r"python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|code|script|repl|sandbox|notebook"

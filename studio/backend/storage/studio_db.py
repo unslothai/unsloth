@@ -543,6 +543,17 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS chat_message_tombstones (
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            message_id TEXT NOT NULL,
+            parent_id TEXT,
+            role TEXT,
+            PRIMARY KEY(thread_id, message_id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS chat_clear_operations (
             id TEXT NOT NULL PRIMARY KEY,
             active_research_run_ids_json TEXT NOT NULL,
@@ -4486,6 +4497,11 @@ def insert_server_chat_message(
            VALUES (?, ?, ?, 'assistant', ?, ?, ?)""",
         (message_id, thread_id, parent_id, content_json, metadata_json, created_at),
     )
+    # The server re-creating a deleted id (a run admitted after another tab deleted its placeholder) owns it again.
+    conn.execute(
+        "DELETE FROM chat_message_tombstones WHERE thread_id = ? AND message_id = ?",
+        (thread_id, message_id),
+    )
     if not was_clean:
         return
     tombstones = {
@@ -4597,6 +4613,11 @@ def upsert_chat_message(
             raise ChatMessageProtectedError(
                 "deleted server-managed generation messages cannot be restored"
             )
+        deleted_parents = _deleted_chat_message_parents(conn, message["threadId"], [message])
+        if message["id"] in deleted_parents:
+            conn.commit()
+            raise ChatMessageProtectedError("deleted chat messages cannot be restored")
+        message = _with_surviving_parent(message, deleted_parents)
         if allow_generation_edit:
             _detach_terminal_generation_for_edit(conn, message["threadId"], message)
         _guard_server_managed_messages(
@@ -4676,6 +4697,85 @@ def upsert_chat_message(
         conn.close()
 
 
+def _deleted_chat_message_parents(
+    conn: sqlite3.Connection, thread_id: str, incoming: list[dict]
+) -> dict[str, str | None]:
+    rows = conn.execute(
+        "SELECT message_id, parent_id, role FROM chat_message_tombstones WHERE thread_id = ?",
+        (thread_id,),
+    ).fetchall()
+    deleted = {str(row["message_id"]): row["parent_id"] for row in rows}
+    deleted_user_ids = {str(row["message_id"]) for row in rows if row["role"] == "user"}
+    # Replies to a deleted user turn go with it, as on delete; a stored one is one the delete kept.
+    late_replies = [
+        m
+        for m in incoming
+        if m.get("role") == "assistant" and m.get("parentId") in deleted_user_ids
+    ]
+    if late_replies:
+        stored = {
+            str(row["id"])
+            for row in conn.execute(
+                "SELECT id FROM chat_messages WHERE thread_id = ?", (thread_id,)
+            )
+        }
+        late = {
+            str(m["id"]): m["parentId"]
+            for m in late_replies
+            if str(m["id"]) not in stored and str(m["id"]) not in deleted
+        }
+        conn.executemany(
+            "INSERT OR IGNORE INTO chat_message_tombstones (thread_id, message_id, parent_id, role) "
+            "VALUES (?, ?, ?, 'assistant')",
+            [(thread_id, message_id, parent_id) for message_id, parent_id in late.items()],
+        )
+        deleted.update(late)
+        # A row saved under a reply before that reply turned out late would be left dangling.
+        orphans = conn.execute(
+            f"SELECT id, parent_id FROM chat_messages WHERE thread_id = ? "
+            f"AND parent_id IN ({','.join('?' for _ in late)})",
+            (thread_id, *late),
+        ).fetchall()
+        _reseat_protected_messages(
+            conn,
+            thread_id,
+            {
+                str(row["id"]): _with_surviving_parent({"parentId": row["parent_id"]}, deleted)[
+                    "parentId"
+                ]
+                for row in orphans
+            },
+        )
+    return deleted
+
+
+_RUNTIME_MESSAGE_ORDER = "created_at, CASE role WHEN 'system' THEN 0 WHEN 'user' THEN 1 WHEN 'assistant' THEN 2 ELSE 99 END, id"
+
+
+def _displayed_parent_ids(rows: list) -> dict[str, str | None]:
+    # As the chat runtime orders and reads them: pre-branching rows store NULL and hang off the row before.
+    parents: dict[str, str | None] = {}
+    previous = None
+    recorded = False
+    for row in rows:
+        parent = row["parent_id"]
+        parents[str(row["id"])] = previous if parent is None and not recorded else parent
+        recorded = recorded or parent is not None
+        previous = str(row["id"])
+    return parents
+
+
+def _with_surviving_parent(message: dict, deleted_parents: dict[str, str | None]) -> dict:
+    parent = message.get("parentId")
+    if parent not in deleted_parents:
+        return message
+    seen = set()
+    while parent in deleted_parents and parent not in seen:
+        seen.add(parent)
+        parent = deleted_parents[parent]
+    return {**message, "parentId": parent}
+
+
 class ExternalImportMark(NamedTuple):
     source: str
     session_id: str
@@ -4705,7 +4805,13 @@ def sync_chat_messages(
             for message in messages
             if _references_tombstoned_generation(conn, message)
         }
-        messages = [message for message in messages if str(message["id"]) not in tombstoned_ids]
+        deleted_parents = _deleted_chat_message_parents(conn, thread_id, messages)
+        dropped_ids = tombstoned_ids | deleted_parents.keys()
+        messages = [
+            _with_surviving_parent(message, deleted_parents)
+            for message in messages
+            if str(message["id"]) not in dropped_ids
+        ]
         # Generation-linked messages are server-managed: keep them rather than reject on client drift; the single-message upsert still guards edits.
         research_ids = _research_message_ids(conn, thread_id)
         generation_ids = _generation_message_ids(conn, thread_id)
@@ -4726,7 +4832,8 @@ def sync_chat_messages(
         unseen_ids: set = set()
         if prune_missing:
             stored_rows = conn.execute(
-                "SELECT id, parent_id, role FROM chat_messages WHERE thread_id = ?",
+                "SELECT id, parent_id, role FROM chat_messages WHERE thread_id = ? "
+                f"ORDER BY {_RUNTIME_MESSAGE_ORDER}",
                 (thread_id,),
             ).fetchall()
             unseen_ids = {str(row["id"]) for row in stored_rows} - requested_ids
@@ -4744,6 +4851,12 @@ def sync_chat_messages(
                     }
                     - managed_ids
                 )
+        messages = [
+            {**m, "parentId": _surviving_parent_id(conn, thread_id, str(m["parentId"]), pruned)}
+            if m.get("parentId") in pruned
+            else m
+            for m in messages
+        ]
         protected = generation_ids if allow_research_update else managed_ids
         messages = [
             m
@@ -4831,6 +4944,17 @@ def sync_chat_messages(
             )
         if prune_missing:
             missing_ids = sorted(pruned)
+            if explicitly_deleted_ids:
+                shown_parents = _displayed_parent_ids(stored_rows)
+                conn.executemany(
+                    "INSERT OR IGNORE INTO chat_message_tombstones (thread_id, message_id, parent_id, role) "
+                    "VALUES (?, ?, ?, ?)",
+                    [
+                        (thread_id, str(row["id"]), shown_parents[str(row["id"])], row["role"])
+                        for row in stored_rows
+                        if str(row["id"]) in pruned
+                    ],
+                )
             for start in range(0, len(missing_ids), _SQLITE_IN_CHUNK_SIZE):
                 chunk = missing_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
                 placeholders = ",".join("?" for _ in chunk)
@@ -5084,11 +5208,7 @@ def fork_chat_thread(
                 "This chat is still generating. Fork it once it finishes."
             )
         rows = conn.execute(
-            """SELECT * FROM chat_messages WHERE thread_id = ?
-               ORDER BY created_at,
-                 CASE role WHEN 'system' THEN 0 WHEN 'user' THEN 1
-                           WHEN 'assistant' THEN 2 ELSE 99 END,
-                 id""",
+            f"SELECT * FROM chat_messages WHERE thread_id = ? ORDER BY {_RUNTIME_MESSAGE_ORDER}",
             (source_thread_id,),
         ).fetchall()
         by_id = {row["id"]: row for row in rows}
@@ -5101,18 +5221,7 @@ def fork_chat_thread(
             conn.rollback()
             return None
         branch_message_id = branch_row["id"]
-        # match the runtime's sequential legacy prefix while preserving recorded branches and later roots.
-        parents: dict[str, Optional[str]] = {}
-        previous_id = None
-        saw_recorded_parent = False
-        for row in rows:
-            parent = row["parent_id"]
-            parents[row["id"]] = (
-                previous_id if parent is None and not saw_recorded_parent else parent
-            )
-            if parent is not None:
-                saw_recorded_parent = True
-            previous_id = row["id"]
+        parents = _displayed_parent_ids(rows)
         ancestry: list[sqlite3.Row] = []
         cursor_row = branch_row
         seen: set[str] = set()

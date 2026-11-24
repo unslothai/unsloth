@@ -172,7 +172,7 @@ from .diffusion_hidream import (
     HIDREAM_LLAMA_REPO,
     hidream_te4_kwargs,
 )
-from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
+from .diffusion_krea2 import KREA2_FAMILY_NAME, krea2_hub_patterns, load_krea2_pipeline
 from .diffusion_families import (
     ANIMA_TURBO_KEY,
     MINIMAX_H3_IMAGE_FAMILY_NAME,
@@ -205,6 +205,8 @@ from .diffusion_small_host import (
     host_commit_mib,
     host_ram_mib,
     resolve_snapshot_dir,
+    small_host_forced,
+    small_host_ineligible,
     snapshot_weights_complete,
     spill_capacity_mib,
     mapped_denoiser as small_host_mapped_denoiser,
@@ -1535,6 +1537,25 @@ def _is_trusted_diffusion_repo(repo_id: str) -> bool:
         pass
     rid = repo_id.strip().lower()
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_REPOS
+
+
+def _refuse_escaping_component_weights(*folders) -> None:
+    """transformers opens a component's config.json ``transformers_weights`` as given, so a local
+    pipeline (or base) could load files from anywhere; keep them inside each component folder."""
+    from utils.security.file_security import escaping_weight_references
+    for folder in folders:
+        if not isinstance(folder, str) or not folder.strip():
+            continue
+        try:
+            root = Path(folder).expanduser()
+            if not root.is_dir():
+                continue
+            components = [root, *(child for child in root.iterdir() if child.is_dir())]
+        except OSError:
+            continue
+        for component in components:
+            if escaping_weight_references(component):
+                raise ValueError("This model's weight index names files outside its folder.")
 
 
 def _assert_local_base_is_pipeline(
@@ -4123,13 +4144,19 @@ def _small_host_fetch(
     return lambda: download(repo, **pipe_kwargs)
 
 
-def _moss_small_host_fetch(
-    repo: Any, local_dir: Optional[str], local_files_only: bool, token: Any
+def _per_component_small_host_fetch(
+    repo: Any,
+    local_dir: Optional[str],
+    local_files_only: bool,
+    token: Any,
+    skip: Any = (),
+    allow_patterns: Optional[list] = None,
 ) -> Optional[Callable[[], Any]]:
-    """MOSS-Image's components, fetched before the small-host decision as ``_small_host_fetch`` does for diffusers
-    pipelines (the in-tree pipeline class has no Hub ``download``); None offline or with a staged snapshot."""
+    """Prefetch for per-component loaders (MOSS-Image, Krea 2), which lack a Hub ``download``; ``skip`` components
+    are not fetched, ``allow_patterns`` = the files the loader reads. None offline or with a staged snapshot."""
     if local_files_only or local_dir or not isinstance(repo, str) or _is_local_path(repo):
         return None
+    ignore = [f"{name}/*.safetensors" for name in skip] or None
 
     def _fetch() -> Any:
         from huggingface_hub import snapshot_download
@@ -4137,7 +4164,8 @@ def _moss_small_host_fetch(
             repo,
             cache_dir = hub_cache_dir(),
             token = token,
-            allow_patterns = [
+            allow_patterns = allow_patterns
+            or [
                 "model_index.json",
                 "*/config.json",
                 "*/*.safetensors",
@@ -4145,6 +4173,7 @@ def _moss_small_host_fetch(
                 "scheduler/*",
                 "tokenizer/*",
             ],
+            ignore_patterns = ignore,
         )
 
     return _fetch
@@ -9280,6 +9309,7 @@ class DiffusionBackend:
             model_kind = model_kind,
         )
         _refuse_lora_without_loader(fam, loras)
+        _refuse_escaping_component_weights(repo_id, base_repo)
         install_single_file_fp32_buffers(logger)
         kind = resolve_model_kind(gguf_filename, model_kind)
         # Validate every mode string that can raise BEFORE this load evicts the previous pipeline.
@@ -10818,7 +10848,7 @@ class DiffusionBackend:
                                             dtype,
                                             lora_active = _has_active_lora(loras),
                                             dense_denoiser = small_host_dense,
-                                            fetch = _moss_small_host_fetch(
+                                            fetch = _per_component_small_host_fetch(
                                                 fetch_base,
                                                 _base_local_dir,
                                                 local_files_only,
@@ -10847,6 +10877,23 @@ class DiffusionBackend:
                                     # krea's transformers-5.x configs break the 4.x line: assemble per component from
                                     # pipe_kwargs (pre-cast TE, seeded denoiser or None = dense shards).
                                     try:
+                                        # fp32 on an fp16-only card would widen the DiT to 51 GB in host RAM.
+                                        small_host = self._small_host_decision(
+                                            fetch_base,
+                                            pipe_kwargs,
+                                            target,
+                                            dtype,
+                                            lora_active = _has_active_lora(loras),
+                                            dense_denoiser = small_host_dense,
+                                            fetch = _per_component_small_host_fetch(
+                                                fetch_base,
+                                                None,
+                                                local_files_only,
+                                                hub_token,
+                                                skip = tuple(pipe_kwargs),
+                                                allow_patterns = krea2_hub_patterns(),
+                                            ),
+                                        )
                                         pipe = load_krea2_pipeline(
                                             fetch_base,
                                             dtype,
@@ -10858,6 +10905,9 @@ class DiffusionBackend:
                                             text_encoder = pipe_kwargs.get("text_encoder"),
                                             transformer = pipe_kwargs.get("transformer"),
                                             vae = pipe_kwargs.get("vae"),
+                                            storage_dtypes = small_host.storage_dtypes
+                                            if small_host is not None and small_host.engaged
+                                            else None,
                                         )
                                     finally:
                                         self._stop_load_prefetch()
@@ -14305,8 +14355,15 @@ class DiffusionBackend:
         ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet; ``variant``
         is the weight layout the load reads."""
         snapshot = resolve_snapshot_dir(source, hub_cache_dir())
+        device = str(getattr(target, "backend", None) or getattr(target, "device", ""))
+        total, available = host_ram_mib()
+        # route cannot engage: skip the prefetch, the loader downloads what it reads
+        can_engage = small_host_ineligible(dtype, device = device) is None and (
+            small_host_forced() or (available is not None and not lora_active)
+        )
         if (
             fetch is not None
+            and can_engage
             and small_host_download_first()
             and (
                 snapshot is None
@@ -14330,11 +14387,10 @@ class DiffusionBackend:
             # pre-built components (hosted fp8 encoder, prequant denoiser) are not loaded here
             if name not in pipe_kwargs
         }
-        total, available = host_ram_mib()
         decision = decide_small_host(
             comps,
             dtype,
-            device = str(getattr(target, "backend", None) or getattr(target, "device", "")),
+            device = device,
             host_total_mib = total,
             host_available_mib = available,
             lora_active = lora_active,

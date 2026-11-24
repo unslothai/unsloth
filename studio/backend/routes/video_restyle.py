@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 from typing import Any, Optional
 
@@ -34,6 +35,27 @@ def _save_to_gallery(mp4: bytes, meta: dict) -> Optional[dict]:
         return video_gallery.save(mp4, meta)
     except Exception:  # noqa: BLE001 -- the clip is still served from the job dir
         return None
+
+
+# Each upload is read into memory (up to VIDEO_RESTYLE_UPLOAD_MAX_BYTES) and the runner restyles one clip
+# at a time, so more held at once only fills memory. Counted on the event loop thread only: no lock.
+MAX_HELD_UPLOADS = 4
+_held_uploads = 0
+
+
+@contextlib.contextmanager
+def _upload_slot():
+    global _held_uploads
+    if _held_uploads >= MAX_HELD_UPLOADS:
+        raise HTTPException(
+            status_code = 429,
+            detail = "Restyle is busy reading other uploads. Please try again in a moment.",
+        )
+    _held_uploads += 1
+    try:
+        yield
+    finally:
+        _held_uploads -= 1
 
 
 async def _read_upload(request: Request) -> tuple[dict[str, Any], list[tuple[str, bytes]]]:
@@ -138,33 +160,35 @@ async def cancel_restyle_setup(current_subject: str = Depends(get_current_subjec
 
 @router.post("/video/restyle/preview")
 async def preview_restyle(request: Request, current_subject: str = Depends(get_current_subject)):
-    _, files = await _read_upload(request)
-    try:
-        frames, seconds = await _frames_from_upload(files)
-        return await asyncio.to_thread(video_restyle.preview, frames, seconds)
-    except RestyleError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc))
+    with _upload_slot():
+        _, files = await _read_upload(request)
+        try:
+            frames, seconds = await _frames_from_upload(files)
+            return await asyncio.to_thread(video_restyle.preview, frames, seconds)
+        except RestyleError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc))
 
 
 @router.post("/video/restyle")
 async def start_restyle(request: Request, current_subject: str = Depends(get_current_subject)):
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_allowed, video_restyle.MODEL_ID)
-    # Receive the upload before reserving: a reservation holds the GPU, so a slow or stalled body
-    # must not keep every model load and training start refused while it trickles in.
-    upload = await _read_upload(request)
-    try:
-        reservation = video_restyle.runner.reserve(current_account_id())
-    except RestyleBusy as exc:
-        raise HTTPException(status_code = 409, detail = str(exc))
-    # Released here until the shielded start takes it over, which then releases it itself:
-    # a cancelled request must not free a reservation that start() is still about to use.
-    lease = {"route": True}
-    try:
-        return await _start_reserved(upload, reservation, lease)
-    finally:
-        if lease["route"]:
-            video_restyle.runner.release(reservation)
+    with _upload_slot():
+        # Receive the upload before reserving: a reservation holds the GPU, so a slow or stalled body
+        # must not keep every model load and training start refused while it trickles in.
+        upload = await _read_upload(request)
+        try:
+            reservation = video_restyle.runner.reserve(current_account_id())
+        except RestyleBusy as exc:
+            raise HTTPException(status_code = 409, detail = str(exc))
+        # Released here until the shielded start takes it over, which then releases it itself:
+        # a cancelled request must not free a reservation that start() is still about to use.
+        lease = {"route": True}
+        try:
+            return await _start_reserved(upload, reservation, lease)
+        finally:
+            if lease["route"]:
+                video_restyle.runner.release(reservation)
 
 
 def _admit_and_start(**kwargs: Any) -> dict[str, Any]:

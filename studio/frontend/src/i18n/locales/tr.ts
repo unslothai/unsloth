@@ -1032,6 +1032,9 @@ export const tr = {
       "Bunun yerine ModelScope'ta arayın ve oradan indirin. Ayarlar'dan geri dönebilirsiniz.",
     useModelScopeFailed: "ModelScope'a geçilemedi.",
     updateToken: "Token'ı güncelle",
+    linkedModelTitle: "{model} yüklensin mi?",
+    linkedModelBody: "Bir bağlantı bu sayfayı açtı ve bu modelin indirilip yüklenmesini istedi.",
+    linkedModelLoad: "Yükle",
     hfToken: {
       label: "HF token",
       saved: "Kaydedildi",

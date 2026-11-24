@@ -514,6 +514,7 @@ import {
   varyBlockedReason,
 } from "./lib/sd-controls";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { confirmLinkedModel, modelLinkedFromOutside } from "@/lib/linked-model-arrival";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
 import {
@@ -4793,6 +4794,12 @@ export function ImagesPage({
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
+    if (modelLinkedFromOutside(wanted)) {
+      const linked = { model: wanted, quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
+      void navigateSelf({ to: "/images", search: {}, replace: true });
+      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/images", search: linked, replace: true }));
+      return;
+    }
     // A Download only arrival owns nothing and must leave a staging load its claim.
     const downloadOnlyPick = modelSelectionAction === "download";
     const token = downloadOnlyPick ? undefined : pickGuard.claim();

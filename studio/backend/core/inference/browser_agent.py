@@ -404,6 +404,8 @@ _MAX_SCRIPT_CHARS = 8000
 _MAX_FILE_EDIT_CHARS = 500_000
 _MAX_TAB = 1000
 _HIDDEN_TAIL_RE = re.compile(r"(?:[ \t]*\r?\n){4,}|[ \t]{200,}")
+# JavaScript ends a line at these too; the approval prompt does not reliably break there.
+_UNSHOWN_LINE_END_RE = re.compile(r"\r(?!\n)|[\u2028\u2029]")
 # Past any real screen: a point there is a mistake, not a far corner.
 _MAX_POINT = 100_000
 _MAX_MODEL_CHARS = 24000
@@ -803,13 +805,18 @@ def _validated_request(
             raise ValueError("script must be the JavaScript to run.")
         if len(script) > _MAX_SCRIPT_CHARS:
             raise ValueError(f"script is longer than {_MAX_SCRIPT_CHARS} characters.")
-        # Approved as shown: no bidi overrides, invisible marks, or blank runs hiding a tail.
+        # Approved as shown: no bidi overrides, invisible marks, blank runs hiding a tail,
+        # or line ends the prompt does not show (code after a `//` comment would run).
         if any(unicodedata.category(char) == "Cf" for char in script):
             raise ValueError(
                 "script has invisible or direction-changing characters; write them as \\u escapes."
             )
         if _HIDDEN_TAIL_RE.search(script):
             raise ValueError("script has a long run of blank space; remove it.")
+        if _UNSHOWN_LINE_END_RE.search(script):
+            raise ValueError(
+                "script has a carriage return or Unicode line separator; end lines with \\n."
+            )
         return {"op": op, "script": script}
     if name in ("browser_type", "browser_select"):
         ref = _ref(arguments)

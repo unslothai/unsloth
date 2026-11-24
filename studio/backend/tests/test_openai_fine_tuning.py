@@ -2228,3 +2228,36 @@ def test_a_queue_poll_reads_one_history_row_when_the_backlog_waited(monkeypatch)
     page = openai_fine_tuning._list_job_page(pending, {}, None, None, 1, False)
     assert [job["id"] for job in page["data"]] == ["ftjob_q0"]
     assert page["has_more"] and pulled == ["run300"]
+
+
+def test_job_parameters_too_large_to_keep_are_refused(queue):
+    client, _calls, _live, _gpu = queue
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        return await _create(
+            client, uploaded.id, extra_body = {"custom_format_mapping": {"x": "a" * 2_000_000}}
+        )
+
+    with pytest.raises(openai.BadRequestError, match = "too large"):
+        _run(flow())
+    assert openai_fine_tuning._QUEUE == []
+
+
+def test_an_account_can_queue_only_so_many_jobs(queue, monkeypatch):
+    client, _calls, _live, _gpu = queue
+    monkeypatch.setattr(openai_fine_tuning, "_MAX_QUEUED_PER_ACCOUNT", 3, raising = False)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        queued = [await _create(client, uploaded.id, suffix = f"job{i}") for i in range(3)]
+        try:
+            await _create(client, uploaded.id, suffix = "one too many")
+        except openai.RateLimitError as exc:
+            return queued, exc
+        return queued, None
+
+    queued, refused = _run(flow())
+    assert all(job.status == "queued" for job in queued)
+    assert refused is not None and "At most 3" in str(refused)
+    assert len(openai_fine_tuning._QUEUE) == 3
