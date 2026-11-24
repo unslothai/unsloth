@@ -202,3 +202,15 @@ def test_a_root_owned_cache_is_left_alone(entrypoint, tmp_path):
     _boot(entrypoint, tmp_path, "/", bindir, lambda: False)
 
     assert not calls.exists(), calls.read_text()
+
+
+def test_a_root_user_outside_group_root_hands_nothing_over(entrypoint, tmp_path):
+    hf_home = tmp_path / "hf"
+    hf_home.mkdir()
+    _download_as_root(hf_home / "hub", tmp_path / "outside")
+    bindir, calls = _recording_python(tmp_path)
+    _stub(str(bindir / "id"), '[[ "$1" == -g ]] && echo 2000 || echo 0\n')
+
+    _boot(entrypoint, tmp_path, hf_home, bindir, lambda: False)
+
+    assert not calls.exists(), calls.read_text()
