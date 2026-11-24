@@ -7,6 +7,7 @@ finally block. fold_refusal() lists when it stays off. UNSLOTH_LORA_FOLD_GENERAT
 
 import contextlib
 import functools
+import gc
 import os
 import threading
 import time
@@ -56,16 +57,37 @@ def _refuse(reason):
 # Break-even on L4 1B LoRA: 5-16 tokens eager, 43-216 with decode CUDA graphs.
 _DEFAULT_MIN_TOKENS = 128
 _DEFAULT_MIN_TOKENS_GRAPHS = 512
+# RL rollouts (batched, every step) take the eager threshold: graphed decode still runs each LoRA GEMM on the
+# GPU per token (T4 Qwen3-0.6B GRPO, 8 x 256 tokens: 2.4 ms saved per token for 90 ms of fold + unfold).
+# Not with caller code running inside the fold (it could disable the adapter, or wait on another generate()).
+_CALLBACKS = ("streamer", "logits_processor", "stopping_criteria", "prefix_allowed_tokens_fn")
 
 
-def _min_tokens():
+def _has_callbacks(kwargs):
+    for name in _CALLBACKS:
+        value = (kwargs or {}).get(name, None)
+        if value is not None and not (isinstance(value, (list, tuple)) and len(value) == 0):
+            return True
+    return False
+
+
+def _min_tokens(kwargs = None):
     value = os.environ.get("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS")
     if value is not None:
         try:
             return int(value)
         except ValueError:
             pass
+    if _rl_generating() and not _has_callbacks(kwargs):
+        return _DEFAULT_MIN_TOKENS
     return _DEFAULT_MIN_TOKENS_GRAPHS if _graphs_enabled() else _DEFAULT_MIN_TOKENS
+
+
+def _rl_generating():
+    try:
+        return bool(_decode_graphs().rl_generating())
+    except Exception:
+        return False
 
 
 def _decode_graphs():
@@ -322,8 +344,10 @@ def lora_fold_generate(
     model,
     args = (),
     kwargs = None,
+    retry = False,
 ):
-    """Fold every LoRA adapter into its 16-bit base weight for the body, then restore it bit for bit."""
+    """Fold every LoRA adapter into its 16-bit base weight for the body, then restore it bit for bit.
+    retry: the eager redo after an out-of-memory graphed attempt, which runs unfolded."""
     global _ACTIVE
     me = threading.get_ident()
     with _RESTORED:
@@ -343,11 +367,13 @@ def lora_fold_generate(
         reason, targets = None, None
         if os.environ.get("UNSLOTH_LORA_FOLD_GENERATE", "1") == "0":
             reason = "kill_switch"
+        elif retry:
+            reason = "oom_retry"
         elif not first:
             reason = "nested"
         elif torch.is_grad_enabled():
             reason = "grad_enabled"
-        elif requested_new_tokens(model, args, kwargs) < _min_tokens():
+        elif requested_new_tokens(model, args, kwargs) < _min_tokens(kwargs):
             reason = "short"
         elif (kwargs or {}).get("adapter_names", None) is not None:
             reason = "mixed_adapters"
@@ -386,10 +412,19 @@ def _release(me):
             _RESTORED.notify_all()
 
 
+# Folded fp16 weights at or past this magnitude are refused: under 16x headroom to 65504 for the activation.
+_FP16_FOLD_LIMIT = 2.0**12
+
+
 def _folded_finite(entries, device):
-    """Every folded weight finite: one reduction per weight, one host sync (after the fold's stream)."""
+    """Every folded weight finite (fp16: below _FP16_FOLD_LIMIT): one aminmax per weight (no weight-sized
+    temporary), one host sync (after the fold's stream). NaN fails every comparison."""
     _sync(device)
-    flags = [torch.isfinite(W).all() for _, _, W in entries]
+    flags = []
+    for _, _, W in entries:
+        lo, hi = torch.aminmax(W)
+        limit = _FP16_FOLD_LIMIT if W.dtype == torch.float16 else float("inf")
+        flags.append((hi < limit) & (lo > -limit))
     return bool(torch.stack(flags).all()) if flags else True
 
 
@@ -418,7 +453,8 @@ def _scope(model, entries):
             groups.append(group)
             for key, value in api.exact_fold(group, stream = stream).items():
                 info[key] = info.get(key, 0) + value
-        # A finite low-rank product can still overflow W's dtype (fp16 > 65504) once materialised.
+        # A finite low-rank product can still overflow W's dtype (fp16 > 65504) once materialised, or leave
+        # an fp16 weight too large for its activations.
         finite = _folded_finite(entries, device)
         for module, adapter, _ in entries:
             # Merged = base layer only. Mutated in place so compiled guards see the same list.
@@ -521,7 +557,7 @@ def _restore(model, api, groups, flagged, stream):
     try:
         # One fold group (one store) at a time: the KV cache is still live.
         for group in groups:
-            api.exact_unfold(group, stream = stream)
+            _unfold(model, api, group, stream)
     except BaseException as error:
         # No more folds; this model refuses to generate on its unknown weights.
         _POISONED = repr(error)
@@ -533,3 +569,28 @@ def _restore(model, api, groups, flagged, stream):
             "Unsloth: restoring the base weights after a LoRA-folded generate() failed; the weights may "
             "still hold the folded adapter. Reload the model. Set UNSLOTH_LORA_FOLD_GENERATE=0 to avoid it."
         ) from error
+
+
+def _unfold(model, api, group, stream):
+    try:
+        api.exact_unfold(group, stream = stream)
+        return
+    except torch.cuda.OutOfMemoryError:
+        # The zoo marks a target restoring once its unfold pass ran: before that no weight changed, so free
+        # memory and run it again (a second pass over a restoring target would subtract the delta twice).
+        if not all(hasattr(t, "restoring") and not t.restoring for t in group):
+            raise
+    _free_for_restore(model)
+    api.exact_unfold(group, stream = stream)
+
+
+def _free_for_restore(model):
+    # Decode graphs and their buffers are rebuilt by the next generate(); the base weights are not.
+    try:
+        _decode_graphs().release(model)
+        model.__dict__.pop("_unsloth_generic_call_cache", None)
+    except Exception:
+        pass
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()

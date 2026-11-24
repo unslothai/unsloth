@@ -1037,6 +1037,9 @@ export const vi = {
       "Tìm kiếm và tải xuống từ ModelScope thay thế. Bạn có thể chuyển lại trong Cài đặt.",
     useModelScopeFailed: "Không thể chuyển sang ModelScope.",
     updateToken: "Cập nhật token",
+    linkedModelTitle: "Tải {model}?",
+    linkedModelBody: "Một liên kết đã mở trang này và yêu cầu tải xuống và tải mô hình này.",
+    linkedModelLoad: "Tải",
     hfToken: {
       label: "Token HF",
       saved: "Đã lưu",

@@ -366,6 +366,14 @@ def save_inkling2_merged_16bit(
     else:
         with safe_open(os.path.join(source, "model.safetensors"), "pt") as f:
             weight_map = {k: "model.safetensors" for k in f.keys()}
+    from unsloth_zoo.saving_utils import _shard_name_stays_inside
+
+    # The index comes from the checkpoint's publisher: a shard outside its folder would copy another checkpoint's tensors into the export.
+    escaping = sorted({f for f in weight_map.values() if not _shard_name_stays_inside(f)})
+    if escaping:
+        raise RuntimeError(
+            f"Unsloth: the Inkling 2 checkpoint's weight index names a file outside its folder ({escaping[0]!r})."
+        )
 
     deltas = _inkling2_lora_deltas(model)
     biases = _inkling2_trained_biases(model)

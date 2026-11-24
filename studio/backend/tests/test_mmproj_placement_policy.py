@@ -1618,6 +1618,8 @@ def test_only_the_owner_may_name_a_custom_projector(monkeypatch, flag, managed):
         ["--control-vector", "/home/owner/cv.gguf"],
         ["-md", "/home/owner/draft.gguf"],
         ["--spec-draft-model", "/home/owner/draft.gguf"],
+        ["--shard", "/home/owner/private.gguf"],
+        ["--ple", "/home/owner/private.gguf,/home/owner/other.gguf"],
         ["-lcs", "/home/owner/cache.bin"],
         ["--log-prompts-dir", "/home/owner/.config"],
         ["--video-ffmpeg-dir", "/srv/studio/accounts/m/sandbox"],

@@ -1031,6 +1031,9 @@ export const fa = {
       "به‌جای آن از ModelScope جستجو و دانلود کنید. می‌توانید در «تنظیمات» به حالت قبل برگردید.",
     useModelScopeFailed: "رفتن به ModelScope ممکن نشد.",
     updateToken: "به‌روزرسانی توکن",
+    linkedModelTitle: "{model} بارگذاری شود؟",
+    linkedModelBody: "پیوندی این صفحه را باز کرد و خواست این مدل دانلود و بارگذاری شود.",
+    linkedModelLoad: "بارگذاری",
     hfToken: {
       label: "توکن HF",
       saved: "ذخیره شده",

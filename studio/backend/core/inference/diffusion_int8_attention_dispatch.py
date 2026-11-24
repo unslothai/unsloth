@@ -42,11 +42,13 @@ _DIFFUSERS_DISPATCH = "diffusers.models.attention_dispatch"
 _ROUTED_ATTR = "_unsloth_int8_dispatch"
 # DiTs the unset switch races: kernel per-step error within their shipped INT8 weights' (rel L2 vs bf16; Z-Image-Turbo
 # 0.022/0.048 vs 0.024/0.073). LTX-2 left out: audio stream 0.010 vs 0.008, no sink to fix. Qwen-Image left out: max
-# 0.031 vs 0.013, 50-step images LPIPS 0.14 from native. HunyuanImage-2.1 and Krea-2 mask every call (nothing to route).
+# 0.031 vs 0.013, 50-step images LPIPS 0.14 from native. HunyuanImage-2.1 masks every call (nothing to route). Krea-2
+# block calls run mask-free over the valid key prefix (diffusion_krea2_prefix_kv); a masked call keeps the incumbent.
 AUTO_DITS = frozenset(
     {
         "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
+        "Krea2Transformer2DModel",
         "MOSSImageTransformer",
         "FluxTransformer2DModel",
         "HunyuanVideo15Transformer3DModel",
@@ -85,6 +87,7 @@ AUTO_CUDA_ONLY = frozenset(
     {
         "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
+        "Krea2Transformer2DModel",
         "FluxTransformer2DModel",
         "HunyuanVideo15Transformer3DModel",
         "ZImageTransformer2DModel",

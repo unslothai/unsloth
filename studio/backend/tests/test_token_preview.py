@@ -215,6 +215,56 @@ def test_a_tokenizer_load_failure_ends_the_worker(monkeypatch):
     assert stopped[-1] is True
 
 
+def _run_worker_until_the_tokenizer_load(monkeypatch, calls, guard):
+    """The worker entrypoint in this process, sidecar switch and tokenizer load recorded -> its reply."""
+    import queue
+    from utils import transformers_backports, transformers_version
+    from utils.security import dataset_media, hub_data_files
+
+    # The entrypoint writes both into os.environ; set here, they are restored afterwards.
+    monkeypatch.setenv("TOKENIZERS_PARALLELISM", "false")
+    monkeypatch.setenv("PYTHONWARNINGS", "ignore")
+    monkeypatch.setattr(hub_data_files, "install", lambda: None)
+    monkeypatch.setattr(dataset_media, "install", lambda: None)
+    monkeypatch.setattr(
+        transformers_version,
+        "activate_transformers_for_subprocess",
+        lambda *args: calls.append("activate"),
+    )
+    monkeypatch.setattr(transformers_backports, "install", guard)
+
+    def load(config):
+        calls.append("load")
+        raise OSError("no tokenizer files")
+
+    monkeypatch.setattr(token_preview_worker, "_load_tokenizer", load)
+    commands, replies = queue.Queue(), queue.Queue()
+    commands.put({"id": 1, "text": "hi"})
+    token_preview_worker.run_token_preview_process(
+        cmd_queue = commands, resp_queue = replies, config = {"model_name": "org/model"}
+    )
+    return replies.get_nowait()
+
+
+def test_the_worker_installs_the_transformers_backports_before_the_tokenizer_load(monkeypatch):
+    """The load parses the repo's config.json on the sidecar; unsloth's own import comes after it."""
+    calls = []
+    reply = _run_worker_until_the_tokenizer_load(monkeypatch, calls, lambda: calls.append("guard"))
+    assert calls == ["activate", "guard", "load"]
+    assert reply["fatal"] is True and "no tokenizer files" in reply["error"]
+
+
+def test_the_worker_loads_no_tokenizer_without_the_transformers_backports(monkeypatch):
+    calls = []
+
+    def guard():
+        raise ImportError("unsloth/import_fixes.py was not found")
+
+    reply = _run_worker_until_the_tokenizer_load(monkeypatch, calls, guard)
+    assert calls == ["activate"]
+    assert reply["fatal"] is True and "import_fixes.py was not found" in reply["error"]
+
+
 def test_a_quit_that_races_the_spawn_reaps_the_new_worker(monkeypatch):
     """The latch is checked before the spawn, but a quit can land between that check and adopt_pid,
     after the shutdown sweep took its snapshot. The worker must not outlive it."""

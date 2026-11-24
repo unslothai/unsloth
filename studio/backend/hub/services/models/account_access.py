@@ -1004,6 +1004,70 @@ def _model_visible(reference: str, grants, repo_type: str, offline: bool) -> boo
     return repo_visible(repo_id, repo_type, grants = grants, **access_options)
 
 
+def listed_adapters(identifier) -> list[str]:
+    """The adapters an X-LoRA adapter_config.json lists: PEFT opens each by path or Hub id, past the
+    checks that cover only the adapter and its base."""
+    config = None
+    try:
+        path = Path(str(identifier)).expanduser()
+        if path.is_dir():
+            config = json.loads((path / "adapter_config.json").read_text(encoding = "utf-8-sig"))
+        else:
+            from huggingface_hub import try_to_load_from_cache
+            from utils.hf_cache_settings import active_hf_hub_cache
+
+            cached = try_to_load_from_cache(
+                str(identifier), "adapter_config.json", cache_dir = active_hf_hub_cache()
+            )
+            if isinstance(cached, str):
+                config = json.loads(Path(cached).read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError, TypeError):
+        return []
+    if not isinstance(config, dict) or str(config.get("peft_type") or "").upper() != "XLORA":
+        return []
+    adapters = config.get("adapters")
+    entries = (
+        adapters.values()
+        if isinstance(adapters, dict)
+        else adapters
+        if isinstance(adapters, list)
+        else ()
+    )
+    return [entry.strip() for entry in entries if isinstance(entry, str) and entry.strip()]
+
+
+def require_listed_adapters_access(identifier) -> None:
+    """A managed account may load an X-LoRA adapter only if it may load every adapter it lists."""
+    if managed_account():
+        for entry in listed_adapters(identifier):
+            require_model_access(entry)
+
+
+_MAX_ADAPTER_CHAIN = 4
+
+
+def require_adapter_chain_access(base) -> None:
+    """A base that carries its own adapter_config.json makes transformers load the model named there:
+    a managed account must be allowed every model along that chain, not only the first base."""
+    if not managed_account() or not isinstance(base, str) or not base.strip():
+        return
+    from utils.models.model_config import get_base_model_from_lora_identifier
+
+    seen = {base.strip()}
+    current = base.strip()
+    for _ in range(_MAX_ADAPTER_CHAIN):
+        try:
+            # False: the account's lookup never borrows the operator's token.
+            nxt = get_base_model_from_lora_identifier(current, False)
+        except Exception:
+            return
+        if not isinstance(nxt, str) or not nxt.strip() or nxt.strip() in seen:
+            return
+        current = nxt.strip()
+        seen.add(current)
+        require_model_access(current)
+
+
 def require_model_access(
     reference: str,
     repo_type: str = "model",
@@ -1173,9 +1237,11 @@ def media_component_file_references(request) -> list[str | None]:
     if isinstance(vae_file, str) and vae_file:
         supplied.append(vae_file)
     root = None
+    raw_model_path = str(getattr(request, "model_path", "") or "")
     try:
-        model_path = Path(str(getattr(request, "model_path", "") or "")).expanduser()
-        if model_path.is_absolute():
+        model_path = Path(raw_model_path).expanduser()
+        # The loader roots at any model_path that exists, relative to the server's folder too.
+        if model_path.is_absolute() or (raw_model_path and model_path.exists()):
             root = model_path if model_path.is_dir() else model_path.parent
     except OSError:
         root = None
@@ -1194,6 +1260,9 @@ def media_component_file_references(request) -> list[str | None]:
         ):
             references.append(str(local.resolve()))
         elif local is None and (spec.startswith(".") or "\\" in spec or len(path.parts) < 3):
+            references.append(None)
+        elif ".." in path.parts:
+            # No Hub file is named so; the loader would open it as a local path.
             references.append(None)
         else:
             references.append("/".join(spec.replace("\\", "/").split("/")[:2]))

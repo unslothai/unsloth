@@ -4353,6 +4353,7 @@ def _apply_attention_backend_impl(
             setattr(dit, ROCM_FLASH_GATE_ATTR, None)
         except Exception:  # noqa: BLE001
             pass
+    auto_pick = False
     if backend == ROCM_FLASH_CANDIDATE:
         backend = "flash" if _rocm_flash_block_admitted(pipe, target, logger) else None
     if backend is not None:
@@ -4442,6 +4443,7 @@ def _apply_attention_backend_impl(
                     NATIVE_FLASH_ATTN_ENV,
                 )
             backend = None
+        auto_pick = isinstance(backend, _AutoCudnn)
         if backend is not None:
             backend = str(backend)
         if backend == "flash_4_hub" and not _install_fa4_dispatch_guard():
@@ -4479,7 +4481,7 @@ def _apply_attention_backend_impl(
                     _warn(logger, ATTN_NATIVE, exc)
             engaged = False
         if engaged:
-            _tag_dits(pipe, backend)
+            _tag_dits(pipe, backend, auto_pick = auto_pick)
             if backend == "_native_cudnn" and target is not None and _is_cuda_nvidia(target):
                 from .diffusion_flux3_attn import install as install_flux3_strided
                 from .diffusion_qwenimage21_attn import install as install_q21_strided
@@ -4509,12 +4511,19 @@ def _apply_attention_backend_impl(
 
 # Read by graph_eligible: Sage under a replayed graph renders noise.
 ATTENTION_BACKEND_ATTR = "_unsloth_attention_backend"
+# auto's cuDNN pick, not explicit: diffusion_krea2_prefix_kv may swap it for flash on mask-free calls
+ATTENTION_AUTO_PICK_ATTR = "_unsloth_attention_auto_pick"
 
 
-def _tag_dits(pipe: Any, backend: Optional[str]) -> None:
+def _tag_dits(
+    pipe: Any,
+    backend: Optional[str],
+    auto_pick: bool = False,
+) -> None:
     for dit in _attention_dits(pipe):
         try:
             setattr(dit, ATTENTION_BACKEND_ATTR, backend)
+            setattr(dit, ATTENTION_AUTO_PICK_ATTR, bool(auto_pick and backend is not None))
         except Exception:  # noqa: BLE001
             pass
 

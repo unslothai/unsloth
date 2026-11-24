@@ -937,6 +937,9 @@ export const de = {
     useModelScopeHint: "Stattdessen über ModelScope suchen und herunterladen. Sie können in den Einstellungen zurückwechseln.",
     useModelScopeFailed: "Wechsel zu ModelScope fehlgeschlagen.",
     updateToken: "Token aktualisieren",
+    linkedModelTitle: "{model} laden?",
+    linkedModelBody: "Ein Link hat diese Seite geöffnet und möchte dieses Modell herunterladen und laden.",
+    linkedModelLoad: "Laden",
     hfToken: {
       label: "HF-Token",
       saved: "Gespeichert",
