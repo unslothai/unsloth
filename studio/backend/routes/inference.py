@@ -7034,13 +7034,23 @@ def _strip_tool_xml_for_display(
                     m = _SHIELD_REHEARSAL_RE.search(seg, m.start() + 1)
                 return None
 
-            out, pos, removed = [], 0, False
-            example, call = _next_example(0), _TOOL_XML_RE.search(seg)
+            def _next_call(lo, example):
+                # Ends at the example's end, so an opener quoted in it never scans to EOS; a hit before it is re-matched whole.
+                hi = len(seg) if example is None else example[1]
+                while (call := _TOOL_XML_RE.search(seg, lo, hi)) is not None:
+                    if example is None or call.start() >= example[0]:
+                        return call
+                    full = _TOOL_XML_RE.match(seg, call.start())
+                    if full is not None:
+                        return full
+                    lo = call.start() + 1
+                return None
+
+            out, pos, removed, example = [], 0, False, _next_example(0)
             while True:
                 if example is not None and example[0] < pos:
                     example = _next_example(pos)
-                if call is not None and call.start() < pos:
-                    call = _TOOL_XML_RE.search(seg, pos)
+                call = _next_call(pos, example)
                 if call is not None and (example is None or call.start() < example[0]):
                     out.append(seg[pos : call.start()])
                     pos, removed = call.end(), True
