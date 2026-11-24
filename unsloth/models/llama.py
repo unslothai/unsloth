@@ -2454,6 +2454,9 @@ def CausalLM_fast_forward(fast_forward_inference):
             attentions = outputs.attentions,
         )
 
+    # Audited: reads only outputs[0] and hands outputs.hidden_states on untouched, so under context
+    # parallelism GRPO's hidden-state forward may gather the decoder's last state alone.
+    _CausalLM_fast_forward._unsloth_cp_hidden_states_passthrough = True
     # The UNSLOTH_RETURN_HIDDEN_STATES branch above hands back the head's own input, so GRPO's
     # hidden-state fallback wrapper (unsloth/models/rl.py) must not wrap this forward. The marker is the
     # function itself: a replacement that copied it with functools.wraps does not inherit the capability.

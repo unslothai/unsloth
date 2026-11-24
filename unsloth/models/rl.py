@@ -2232,6 +2232,26 @@ def _grpo_hidden_states_reproduce_logits(model, hidden_states, logits):
         return bool(float((got - want).abs().max()) <= tolerance)
 
 
+def _cp_last_hidden_state_only(target_model, original_forward, kwargs):
+    # Context parallelism gathers each requested hidden state to full length; this caller keeps the last only.
+    # Scoped to the one decoder, and only when no one else can see the other states (the caller did not ask
+    # for them, the forward is audited not to read them); otherwise every state is gathered as before.
+    import sys
+    from contextlib import nullcontext
+
+    module = sys.modules.get("unsloth.context_parallel")
+    scope = getattr(module, "last_hidden_state_scope", None)
+    if scope is None:
+        return nullcontext(None)
+    requested = kwargs.get("output_hidden_states")
+    if requested is None:
+        requested = getattr(getattr(target_model, "config", None), "output_hidden_states", False)
+    # Always a scope, even one that selects nothing: it hides a selection made by an enclosing forward on
+    # this thread. The requested / audit verdicts are rank-local, so they go into the CP vote rather than
+    # deciding locally whether this rank takes part in it.
+    return scope(target_model, original_forward, requested = bool(requested))
+
+
 def _install_grpo_hidden_states_forward_wrapper(model):
     if model is None or getattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, False):
         return False
@@ -2264,6 +2284,8 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs)
         )
         num_logits_to_keep = _get_num_logits_to_keep(forward_signature, args, forward_kwargs)
+        # The caller's own arguments, for the re-run that returns real logits.
+        caller_kwargs = dict(forward_kwargs)
         forward_kwargs["output_hidden_states"] = True
         forward_kwargs["return_dict"] = True
         logits_kwarg = _minimise_logits_kwarg(
@@ -2284,7 +2306,8 @@ def _install_grpo_hidden_states_forward_wrapper(model):
 
         # TRL 0.26+: Config may be in a separate *_config.py module, or reachable by walking the Trainer's MRO to the real implementation module (trl.experimental.bco).
         try:
-            outputs = original_forward(*args, **forward_kwargs)
+            with _cp_last_hidden_state_only(target_model, original_forward, kwargs) as selection:
+                outputs = original_forward(*args, **forward_kwargs)
         except TypeError as error:
             message = str(error)
             if logits_kwarg is None or logits_kwarg not in message:
@@ -2295,7 +2318,10 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             forward_kwargs.pop(logits_kwarg, None)
             logits_kwarg = None
             try:
-                outputs = original_forward(*args, **forward_kwargs)
+                with _cp_last_hidden_state_only(
+                    target_model, original_forward, kwargs
+                ) as selection:
+                    outputs = original_forward(*args, **forward_kwargs)
             except TypeError as retry_error:
                 if not rejected_hidden_states(str(retry_error)):
                     raise
@@ -2308,13 +2334,13 @@ def _install_grpo_hidden_states_forward_wrapper(model):
                 f"Unsloth: GRPO fallback did not receive hidden states for unsupported model {model_name}; using logits directly.",
             )
             if logits_kwarg is None:
+                # The caller gets this object: never one whose hidden states were cut to the last (a mapping can hold them where getattr does not look).
+                if selection is not None and selection.truncated:
+                    return original_forward(*args, **forward_kwargs)
                 return outputs
-            # outputs.logits is the return value now, and one position was asked for only to throw the logits away; GRPO drops the last and slices the completion window, so restore the caller's own limit and re-run.
-            if logits_kwarg in kwargs:
-                forward_kwargs[logits_kwarg] = kwargs[logits_kwarg]
-            else:
-                forward_kwargs.pop(logits_kwarg, None)
-            return original_forward(*args, **forward_kwargs)
+            # outputs.logits is the return value now, and one position was asked for only to throw the logits away; GRPO drops the last and slices the completion window, so re-run with the caller's own arguments (its own limit, and no hidden states it did not ask for).
+            del outputs
+            return original_forward(*args, **caller_kwargs)
 
         hidden_states = hidden_states[-1]
         if divisor is not None:
