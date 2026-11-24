@@ -264,6 +264,48 @@ def test_probe_runs_in_eval_mode_and_keeps_the_rng(monkeypatch):
     assert mixer.training and mixer.dropout.training
 
 
+class SideStateLinear(torch.nn.Module):
+    """Int4PackedLinear's contract: train() keeps a cached copy of the mode outside the training flag."""
+
+    def __init__(self):
+        super().__init__()
+        self.cached_training = False
+
+    def train(self, mode = True):
+        self.cached_training = bool(mode)
+        return super().train(mode)
+
+    def forward(self, x):
+        return x
+
+
+class SideStateGatedDeltaNet(FakeGatedDeltaNet):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.proj = SideStateLinear()
+
+    def forward(
+        self,
+        hidden_states,
+        cache_params = None,
+        attention_mask = None,
+    ):
+        return super().forward(self.proj(hidden_states), cache_params, attention_mask)
+
+
+@pytest.mark.parametrize("conv,accepted", [(conv_exact, True), (conv_leaky, False)])
+def test_probe_restores_train_side_state_on_every_exit(monkeypatch, conv, accepted):
+    monkeypatch.delenv(ENV, raising = False)
+    mixer = SideStateGatedDeltaNet(conv = conv)
+    model = FakeHybrid(mixer)
+    model.train()
+    assert mixer.proj.cached_training is True
+    assert patch_hybrid_linear_attention_varlen(model) is accepted
+    assert mixer.proj.training is True
+    # The mode-synced state must follow the restored flag, accepted or rejected.
+    assert mixer.proj.cached_training is True
+
+
 def test_probe_failure_to_run_is_a_rejection(monkeypatch, caplog):
     monkeypatch.delenv(ENV, raising = False)
 
@@ -551,7 +593,7 @@ def test_default_on_is_cuda_only(monkeypatch, caplog):
     model = FakeHybrid(mixer)
     with caplog.at_level(logging.WARNING, logger = "unsloth.hybrid_packing"):
         assert patch_hybrid_linear_attention_varlen(model) is False
-    assert "only on CUDA" in caplog.text
+    assert "default-on only on CUDA" in caplog.text
     assert _untouched(model, conv_exact, scan_exact)
     monkeypatch.setenv(ENV, "1")
     assert patch_hybrid_linear_attention_varlen(FakeHybrid(FakeGatedDeltaNet())) is True
@@ -794,3 +836,81 @@ def test_a_failed_probe_restores_the_mirrored_alias_namespace(monkeypatch):
     for n, m in zip(names, (modeling, other, stale)):
         for k, fn in before[n].items():
             assert vars(m)[k] is fn, (n, k)
+
+
+@pytest.mark.parametrize("varlen", [True, False])
+def test_rocm_default_on_follows_the_varlen_self_check(monkeypatch, varlen):
+    """ROCm GPUs pack hybrids by default exactly when hf_packed_attention's flash varlen self-check passes."""
+    from unsloth.utils import hf_packed_attention as hpa
+
+    monkeypatch.undo()
+    mixer = FakeGatedDeltaNet()
+    monkeypatch.setattr(
+        mixer, "parameters", lambda: iter([types.SimpleNamespace(device = torch.device("cuda", 0))])
+    )
+    monkeypatch.setattr(torch.version, "hip", "7.1")
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: (lambda *a: None) if varlen else None)
+    assert packing_module._auto_hybrid_device_ok(mixer) is varlen
+    assert packing_module._hybrid_opt_in_device([mixer]) == (None if varlen else "ROCm")
+    monkeypatch.setattr(torch.version, "hip", None)
+    assert packing_module._auto_hybrid_device_ok(mixer)
+
+
+class _CheckpointedHybrid(FakeHybrid):
+    """Checkpoints the mixer, so backward replays it after the forward has returned."""
+
+    def __init__(self, mixer, reentrant):
+        super().__init__(mixer)
+        self.proj = torch.nn.Linear(8, 8)
+        self.reentrant = reentrant
+
+    def forward(
+        self,
+        input_ids = None,
+        **kw,
+    ):
+        from torch.utils.checkpoint import checkpoint
+
+        hidden = self.proj(self.embed(input_ids))
+        if torch.is_grad_enabled():
+            return checkpoint(self.linear_attn, hidden, use_reentrant = self.reentrant)
+        return self.linear_attn(hidden)
+
+
+@pytest.mark.parametrize("reentrant", [True, False])
+@pytest.mark.parametrize("no_grad", ["no_grad", "inference_mode"])
+def test_checkpoint_replay_keeps_boundaries_across_a_no_grad_forward(
+    monkeypatch, no_grad, reentrant
+):
+    """GRPO verifies a packed grad forward with per-row no-grad forwards before backward; the checkpoint replay
+    must still see the packed boundaries, or the LoRA gradient comes from a forward that spans documents."""
+    monkeypatch.delenv(ENV, raising = False)
+    model = _CheckpointedHybrid(FakeGatedDeltaNet(), reentrant)
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    ids = torch.randint(0, 32, (1, 8), generator = torch.Generator().manual_seed(3))
+    lengths = torch.tensor([4, 4], dtype = torch.int32)
+    seen = []
+
+    def record(mixer, args):
+        meta = mixer._unsloth_varlen
+        seen.append(None if meta is None else meta[0].tolist())
+
+    def grads(between):
+        model.zero_grad()
+        out = model(input_ids = ids, packed_seq_lengths = lengths, use_cache = False)
+        between()
+        out.square().sum().backward()
+        return torch.cat([p.grad.flatten().clone() for p in model.proj.parameters()])
+
+    def row_forward():
+        with getattr(torch, no_grad)():
+            model(input_ids = ids[:, :4], use_cache = False)
+
+    expected = grads(lambda: None)
+    with model.linear_attn.register_forward_pre_hook(record):
+        got = grads(row_forward)
+    assert seen == [[0, 4, 8], None, [0, 4, 8]]
+    torch.testing.assert_close(got, expected, rtol = 0, atol = 0)
+    # A grad-enabled forward still owns the stash afterwards, as the replay of its own backward needs.
+    model(input_ids = ids[:, :4], use_cache = False)
+    assert model.linear_attn._unsloth_varlen is None

@@ -15,7 +15,7 @@ function descendants(node: unknown): Node[] {
   return [element, ...descendants(element.props.children)];
 }
 
-function harness({ owner = true, disclosure = false, grantedThread = "", scopedFull = false } = {}) {
+function harness({ owner = true, disclosure = false, grantedThread = "", scopedFull = false, approvalFor = "", alwaysAllowed = [] as string[] } = {}) {
   const requests: unknown[][] = [], grants: ChatFullAccessGrant[] = [], alwaysApps: string[] = [];
   const values: unknown[] = [];
   let index = 0, epoch = 0;
@@ -23,7 +23,7 @@ function harness({ owner = true, disclosure = false, grantedThread = "", scopedF
   let answer: () => Promise<boolean> = async () => true;
   const confirmation = {
     approvalId: "approval-a", sessionId: "project-shared", threadId: "chat-a",
-    runId: "run-a", autoAllowKey: "project-shared:chat-a",
+    runId: "run-a", autoAllowKey: "project-shared:chat-a", toolName: approvalFor as string | undefined,
     ...(disclosure ? { imageDisclosure: { size_bytes: 1, server: "remote", tool: "view", destination: "outside" } } : {}),
   };
   const state = {
@@ -35,7 +35,7 @@ function harness({ owner = true, disclosure = false, grantedThread = "", scopedF
     deepResearchEnabled: false,
     chatPermissionChoiceVersion: 0,
     chatFullAccessGrants: grantedThread ? { other: { runId: "other", threadId: grantedThread, sessionId: "project-shared" } } : {},
-    alwaysAllowToolsBySession: new Map(),
+    alwaysAllowToolsBySession: new Map([["project-shared:chat-a", new Set(alwaysAllowed)]]),
     allowToolAlways: () => {},
     grantChatFullAccess: (grant: ChatFullAccessGrant) => { grants.push(grant); },
     clearToolConfirmation: (id: string) => { delete state.toolConfirmations[id]; },
@@ -82,6 +82,8 @@ function harness({ owner = true, disclosure = false, grantedThread = "", scopedF
     },
   );
   const render = (toolName = "terminal") => {
+    // By default the approval is for the tool the card is drawn for.
+    if (!approvalFor) confirmation.toolName = toolName;
     index = 0;
     effects = [];
     const tree = module.ToolConfirmationControls({ toolCallId: "call", toolName, result: undefined, status: { type: "running" } });
@@ -232,4 +234,18 @@ test("an app new to the chat can be always allowed from its card, a risky call c
   click(asking.get(asking.render("computer"), "Button", "Allow"));
   await settle();
   assert.deepEqual(asking.alwaysApps, []);
+});
+
+test("an approval parked on a card still drawn for another tool is neither answered nor offered", async () => {
+  // tool_start stores the approval before the reused card redraws: the card (terminal here) is not the approval's tool.
+  const allowed = harness({ alwaysAllowed: ["terminal"] });
+  allowed.render(); allowed.runEffects(); await settle();
+  assert.deepEqual(allowed.requests, [["project-shared", "approval-a", "allow", false]], "Always allow answers its own tool");
+  for (const options of [{ alwaysAllowed: ["terminal"] }, { grantedThread: "chat-a" }, {}]) {
+    const h = harness({ ...options, approvalFor: "python" });
+    const nodes = h.render();
+    h.runEffects(); await settle();
+    assert.deepEqual(h.requests, []);
+    assert.ok(!nodes.some((node) => node.type === "Button"));
+  }
 });

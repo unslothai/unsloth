@@ -451,45 +451,51 @@ export function AudioSourceInput({
             </button>
           ) : null}
           {tab === "record" || recording ? (
-            <div className="flex items-center gap-3">
-              <Button
-                type="button"
-                variant={recording ? "destructive" : "outline"}
-                disabled={disabled}
-                onClick={() =>
-                  recording
-                    ? source.stopRecording()
-                    : void source.startRecording()
-                }
-              >
-                {recording ? (
-                  <HugeiconsIcon icon={StopIcon} className="size-4" />
-                ) : (
-                  <MicIcon className="size-4" />
-                )}
-                {recording ? "Stop" : "Record"}
-              </Button>
-              <output
-                aria-live="polite"
-                className="text-ui-12 text-muted-foreground"
-              >
+            <>
+            <button
+              type="button"
+              disabled={disabled}
+              aria-label={recording ? "Stop recording" : "Start recording"}
+              aria-describedby={`${id}-record-status`}
+              onClick={() =>
+                recording
+                  ? source.stopRecording()
+                  : void source.startRecording()
+              }
+              className={cn(
+                "flex min-h-[calc(72px*var(--ui-space-scale,1))] w-full flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-border px-3 text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
+                recording && "border-destructive/50 text-foreground",
+              )}
+            >
+              {recording ? (
+                <HugeiconsIcon icon={StopIcon} className="size-5 text-destructive" />
+              ) : (
+                <MicIcon className="size-5" />
+              )}
+              <span id={`${id}-record-status`} className="text-pretty leading-snug">
                 {recording ? (
                   <>
                     Recording{" "}
                     <span className="font-mono tabular-nums">
                       {formatSeconds(source.elapsed)}
                     </span>
+                    . Press to stop.
                   </>
                 ) : (
                   recordHint
                 )}
-              </output>
-            </div>
+              </span>
+            </button>
+            {/* Outside the button, whose children are not announced. No timer: it would speak every second. */}
+            <output aria-live="polite" className="sr-only">
+              {recording ? "Recording" : ""}
+            </output>
+            </>
           ) : null}
           {tab === "history" && !recording ? (
             history.length === 0 ? (
               <p className="text-ui-12 leading-snug text-muted-foreground">
-                Clips you make in Audio show up here.
+                No clips yet. Audio you generate, such as speech or music, shows up here.
               </p>
             ) : (
               <ul className="hover-scrollbar grid min-w-0 max-h-[calc(196px*var(--ui-space-scale,1))] grid-cols-[minmax(0,1fr)] gap-0.5 overflow-y-auto">
@@ -503,7 +509,7 @@ export function AudioSourceInput({
                       }
                       className="flex w-full min-w-0 items-center gap-2 rounded-full px-3 py-1.5 text-left text-ui-13 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
-                      <span className="min-w-0 flex-1 truncate">
+                      <span className="min-w-0 flex-1 truncate" title={clip.prompt}>
                         {clip.prompt}
                       </span>
                       <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">

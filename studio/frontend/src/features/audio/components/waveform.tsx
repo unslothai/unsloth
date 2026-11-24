@@ -62,6 +62,7 @@ export function Waveform({
   onError,
   size = "default",
   hidePlay = false,
+  timeAlign = "start",
 }: {
   /** 0..1; null draws a flat placeholder while decoding. */
   peaks: readonly number[] | null;
@@ -77,6 +78,7 @@ export function Waveform({
   size?: "default" | "lg";
   /** The host draws its own play button through `controlRef` (the clip card's header). */
   hidePlay?: boolean;
+  timeAlign?: "start" | "end";
 }) {
   const large = size === "lg";
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -213,7 +215,7 @@ export function Waveform({
       ) : (
         slider
       )}
-      <PlaybackTime position={position} duration={duration} />
+      <PlaybackTime position={position} duration={duration} align={timeAlign} />
       {src ? (
         // biome-ignore lint/a11y/useMediaCaption: voice references have no caption track; the clip's text is shown beside it.
         <audio
@@ -312,12 +314,19 @@ export function WaveformBars({
 export function PlaybackTime({
   position,
   duration,
+  align = "start",
 }: {
   position: number;
   duration: number;
+  align?: "start" | "end";
 }) {
   return (
-    <span className="grid shrink-0 justify-items-start font-mono text-ui-11 tabular-nums text-muted-foreground">
+    <span
+      className={cn(
+        "grid shrink-0 font-mono text-ui-11 tabular-nums text-muted-foreground",
+        align === "end" ? "justify-items-end" : "justify-items-start",
+      )}
+    >
       <span aria-hidden="true" className="invisible col-start-1 row-start-1">
         {formatSeconds(duration)}
         <span className="px-0.5">/</span>

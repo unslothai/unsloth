@@ -97,11 +97,13 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   });
   const deviceType = usePlatformStore((s) => s.deviceType);
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const mlxInference = usePlatformStore((s) => s.mlxInference);
   const isMlx = residentIsServedByMlx(
     isGguf,
     deviceType,
     chatOnlyReason,
     loadedIsMlx,
+    mlxInference,
   );
 
   // Null off MLX, or the model compares unequal to its own defaults.
@@ -138,8 +140,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       speculativeType: isNpuModelId(checkpoint) ? null : (speculativeType ?? "auto"),
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
-      reasoningBudget: isGguf ? reasoningBudget : -1,
-      reasoningBudgetMessage: isGguf ? reasoningBudgetMessage : "",
+      reasoningBudget: isGguf || isMlx ? reasoningBudget : -1,
+      reasoningBudgetMessage: isGguf || isMlx ? reasoningBudgetMessage : "",
       nBatch: nBatch ?? null,
       nUbatch: nUbatch ?? null,
       specDraftCacheDtype: specDraftCacheDtype ?? null,

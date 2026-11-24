@@ -331,6 +331,52 @@ def test_resampler_is_torchaudios_default_kernel():
     assert torch.allclose(VM.resample_h3_audio(x, 44100, 32000), expect, atol = 1e-6)
 
 
+@pytest.mark.parametrize("rate", [44100, 22050, 12700, 48000, 96000])
+def test_windowed_resampler_matches_the_dense_kernel(monkeypatch, rate):
+    # force the windowed path on rates whose dense kernel is small enough to compare against
+    x = torch.randn(3, 4410, dtype = torch.float64)
+    monkeypatch.setattr(VM, "_H3_RESAMPLE_DENSE_MAX_ELEMENTS", 0)
+    windowed = VM.resample_h3_audio(x, rate, 32000)
+    dense = _ref_resample(x, rate, 32000)
+    assert windowed.shape == dense.shape
+    assert torch.allclose(windowed, dense, rtol = 0, atol = 1e-12)
+    assert torch.allclose(
+        VM.resample_h3_audio(x.float(), rate, 32000),
+        _ref_resample(x.float(), rate, 32000),
+        rtol = 0,
+        atol = 1e-6,
+    )
+
+
+@pytest.mark.parametrize("rate", [44099, 44101, 8001, 32001])
+def test_resampler_memory_does_not_scale_with_the_rate_ratio(rate):
+    # 44,099 Hz shares no factor with 32 kHz: the dense kernel is [32000, 1, 44117] (5.3 GiB per intermediate)
+    # for any clip length. Run on meta tensors and record the largest tensor any op produces.
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class _Largest(TorchDispatchMode):
+        largest = 0
+
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            out = func(*args, **(kwargs or {}))
+            for value in out if isinstance(out, (tuple, list)) else (out,):
+                if isinstance(value, torch.Tensor):
+                    _Largest.largest = max(_Largest.largest, value.numel() * value.element_size())
+            return out
+
+    x = torch.empty(2, 1024, device = "meta")
+    with _Largest():
+        out = VM.resample_h3_audio(x, rate, 32000)
+    assert out.shape == (2, math.ceil(np.float32(32000 * 1024 / rate)))
+    assert _Largest.largest < 64 * 2**20
+
+
 def test_output_audio_is_limited_and_trimmed():
     quiet = 0.05 * torch.randn(2, 170000)
     out = VM.h3_output_audio(quiet, 32000, 24, 124)

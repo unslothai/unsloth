@@ -103,8 +103,7 @@ def _fake_card(monkeypatch, long_fails = False):
         # the eager hot path launches through _cuda_attention (one pass of the same two steps)
         return I.attend(I.quantise(q, k, v, config, scale, mode))
 
-    # The stand-ins take what the real functions take, so a new argument fails here by name, not as a TypeError
-    # deep inside the check (#18004 added ``mode``).
+    # Stand-ins take the real signatures so a new argument fails by name, not as a TypeError.
     for name, fake in (("quantise", quantise), ("_cuda_attention", cuda_attention)):
         real = list(inspect.signature(getattr(I, name)).parameters)
         assert (

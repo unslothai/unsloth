@@ -363,9 +363,11 @@ def load_ltx25_transformer(
     if is_gguf:
         from .diffusion_gguf_exact import install_exact_dequant
         from .diffusion_gguf_lowbit import install_lowbit_iq
+        from .diffusion_gguf_mmap import install_gguf_mmap
 
         install_lowbit_iq()  # before the read: diffusers' reader refuses unknown types
         install_exact_dequant()
+        install_gguf_mmap()
     state = load_single_file_checkpoint(str(checkpoint_path))
     dit_state = _ltx23_pre_convert({k: v for k, v in state.items() if ltx23_is_dit_key(k)})
     del state
@@ -595,9 +597,11 @@ def _read_tensors(path: str, keep: Callable[[str], bool]) -> dict[str, Any]:
 
         from .diffusion_gguf_exact import install_exact_dequant
         from .diffusion_gguf_lowbit import install_lowbit_iq
+        from .diffusion_gguf_mmap import install_gguf_mmap
 
         install_lowbit_iq()
         install_exact_dequant()
+        install_gguf_mmap()
         return {k: v for k, v in load_single_file_checkpoint(str(path)).items() if keep(k)}
     from safetensors import safe_open
 
@@ -800,6 +804,22 @@ def ltx25_resolve_te_request(
         LTX25_TE_HOSTED_FILE,
     )
     return LTX25_TE_QUANT_DEFAULT
+
+
+def ltx25_te_host_gb(
+    text_encoder_quant: Optional[str], base: Optional[str], *, bf16_gb: float, scale: float
+) -> float:
+    """Host GB the encoder worker reads Gemma 4 into, loading at ``scale`` x bf16 (2.0 = float32) on the host.
+
+    Hosted int8 widens only its dense tensors; bf16 and load-time int8 (reads dense first) widen fully."""
+    try:
+        ltx25_te_quant_scheme(text_encoder_quant)
+    except ValueError:
+        return 0.0
+    if ltx25_te_prequant_sources(text_encoder_quant, base):
+        dense_part = max(0.0, 2.0 * LTX25_TE_INT8_GB - LTX25_TE_BF16_GB)
+        return LTX25_TE_INT8_GB + dense_part * max(0.0, scale - 1.0)
+    return float(bf16_gb) * scale
 
 
 def ltx25_te_budget_scale(text_encoder_quant: Optional[str], bf16_gb: float) -> float:

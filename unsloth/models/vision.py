@@ -283,6 +283,7 @@ from ._utils import (
 )
 from ._utils import *
 from ._utils import _ignore_block_swap_params_for_ddp
+from ._frozen_prefix import install_frozen_prefix_skip
 from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
@@ -296,6 +297,8 @@ from .grouped_linear_lora import register_grouped_linear_lora
 from . import _decode_graphs, _generic_decode_graphs, _flex_decode
 from .loader_utils import (
     _bnb_bits_requested,
+    _kwargs_with_resolved_revision,
+    _resolved_revision,
     vlm_gradient_checkpointing_reentrant,
     set_deepspeed_moe_leaf_modules,
     fsdp2_requested,
@@ -2378,7 +2381,10 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
     FastBaseModel.for_inference(self)
     dtype = _get_dtype(dtype_from_config(self.config))
-    do_bfloat16_mixed_precision = os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1"
+    # Stamped by from_pretrained: the env var stays "1" after one float32 mixed precision load, so it only answers for unstamped models.
+    do_bfloat16_mixed_precision = getattr(self, "_unsloth_bfloat16_mixed_precision", None)
+    if do_bfloat16_mixed_precision is None:
+        do_bfloat16_mixed_precision = os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1"
     if do_bfloat16_mixed_precision:
         dtype = torch.bfloat16
 
@@ -2584,7 +2590,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     def _eager_scope():
         return _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
 
-    def _run(scope, plan):
+    def _run(
+        scope,
+        plan,
+        retry = False,
+    ):
         with (
             _NonFlexGenerate(self, flex_decode = not _wants_attentions(self, kwargs)),
             decode_scope,
@@ -2592,7 +2602,8 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             _decode_graphs.plan_scope(plan),
             _get_inference_mode_context_manager(self),
             autocaster,
-            _lora_fold_generate(self, args, kwargs),
+            # retry: the eager redo after an OOM runs unfolded.
+            _lora_fold_generate(self, args, kwargs, retry = retry),
         ):
             out = self._old_generate(*args, **kwargs)
             if isinstance(scope, _GraphDecodeSteps):
@@ -2623,7 +2634,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                     _clear_generation_caches(self)
                     _generic_decode_graphs.set_rng_state(rng)
                     with _decode_graphs.eager_scope():
-                        output = _run(_eager_scope(), "eager")
+                        output = _run(_eager_scope(), "eager", retry = True)
     finally:
         _clear_generation_caches(self)
 
@@ -3360,6 +3371,14 @@ def _architecture_skip_modules(model_types):
     # for a plain Linear4bit whose forward multiplies every group by the whole weight.
     if any(mt.startswith("deepseek_v41") for mt in model_types):
         skip.append("o_a_proj")
+    # Inkling 2 Mini's loop message gates cast their input to `down_proj.weight.dtype` (uint8 once packed, which
+    # truncates the activations to integers) and declare both gate projections fp32-strict; all three are rank 64.
+    if any(mt.startswith("inkling2_loop") for mt in model_types):
+        skip.extend(
+            f"{gate}_message_gate.{proj}"
+            for gate in ("q", "k", "v", "mlp")
+            for proj in ("down_proj", "forget_gate_proj", "message_gate_proj")
+        )
     # Gemma 3n AltUp clamps prediction_coefs.weight.data in place every training step, which fails on packed
     # uint8 weights; the same four modules unsloth/gemma-3n-*-unsloth-bnb-4bit keeps in 16-bit.
     # transformers 5 matches a skip key as a suffix of each Linear's name, so the ModuleList children are listed too.
@@ -4111,7 +4130,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
-                revision = _revision,
+                revision = _resolved_revision(model_name, _revision, token, local_files_only),
             )
         _text_key_mapping = None
         if text_only and hasattr(auto_config, "vision_config"):
@@ -4388,7 +4407,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
-                revision = _revision,
+                revision = _resolved_revision(model_name, _revision, token, local_files_only),
             )
         backfill_fp8_modules_to_convert(
             auto_config,
@@ -4728,6 +4747,7 @@ class FastBaseModel:
                     "Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA."
                 )
 
+        bfloat16_mixed_precision = False
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
             if do_forced_float32 and not SUPPORTS_BFLOAT16:
@@ -4749,6 +4769,7 @@ class FastBaseModel:
                         "use `float32_mixed_precision = False` during FastLanguageModel.from_pretrained"
                     )
                     os.environ["UNSLOTH_BFLOAT16_MIXED_PRECISION"] = "1"
+                    bfloat16_mixed_precision = True
             elif dtype == torch.float32:
                 print("Unsloth: Using float32 full finetuning.")
             else:
@@ -4777,7 +4798,7 @@ class FastBaseModel:
                     token = token,
                     trust_remote_code = trust_remote_code,
                     local_files_only = local_files_only,
-                    revision = _revision,
+                    revision = _resolved_revision(model_name, _revision, token, local_files_only),
                 )
             if hasattr(auto_config, "quantization_config"):
                 from transformers.quantizers.auto import (
@@ -4867,7 +4888,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
-                revision = _revision,
+                revision = _resolved_revision(model_name, _revision, token, local_files_only),
             )
         _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
@@ -4940,7 +4961,7 @@ class FastBaseModel:
                                 device_map = device_map,
                                 token = token,
                                 trust_remote_code = trust_remote_code,
-                                **kwargs,
+                                **_kwargs_with_resolved_revision(model_name, kwargs, token),
                             )
                     finally:
                         # The load deep-copied the config; give the caller's object its fp8 block back.
@@ -5160,6 +5181,9 @@ class FastBaseModel:
                     )
 
                 llm = load_vllm(**load_vllm_kwargs)
+                if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
+                    from unsloth.utils.run_report import report_memory
+                    report_memory("vLLM init", llm)
 
                 _, quant_state_dict = get_vllm_state_dict(
                     llm,
@@ -5256,6 +5280,10 @@ class FastBaseModel:
         # Functional load chain (AutoProcessor -> get_auto_processor -> manual VLM fallback); offline is already forced upstream, and the error is surfaced for the retry.
         def _acquire_processor(lfo):
             _err = None  # underlying load failure (used by the entry-point retry)
+            # For the transformers loads only; get_auto_processor and the fallback keep the plain ref.
+            _tok_rev = _resolved_revision(
+                tokenizer_name, _tokenizer_revision, token, lfo, kwargs.get("cache_dir")
+            )
             if (whisper_language and whisper_task) or auto_model.__name__.endswith(
                 "ForConditionalGeneration"
             ):
@@ -5269,7 +5297,7 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
-                        revision = _tokenizer_revision,
+                        revision = _tok_rev,
                     )
                 except Exception as _e:
                     _tok = None
@@ -5285,7 +5313,7 @@ class FastBaseModel:
                             trust_remote_code = trust_remote_code,
                             cache_dir = kwargs.get("cache_dir"),
                             local_files_only = lfo,
-                            revision = _tokenizer_revision,
+                            revision = _tok_rev,
                         )
                     except Exception:
                         _tok = None
@@ -5300,7 +5328,7 @@ class FastBaseModel:
                             trust_remote_code = trust_remote_code,
                             cache_dir = kwargs.get("cache_dir"),
                             local_files_only = lfo,
-                            revision = _tokenizer_revision,
+                            revision = _tok_rev,
                         )
                 except Exception as _e:
                     _err = _e
@@ -5458,6 +5486,14 @@ class FastBaseModel:
                 raise _patch_err
         model = post_patch_loss_function(model)
 
+        # Inkling 2 wraps its attention Linears: map the usual LoRA names onto them.
+        from .inkling2 import patch_inkling2_model
+
+        if patch_inkling2_model(model):
+            # Its language attention is eager only upstream; route it through flex (UNSLOTH_INKLING2_FLEX=0 keeps eager).
+            from .inkling2_flex import enable_inkling2_flex
+            enable_inkling2_flex(model)
+
         if hasattr(model, "config"):
             model.config.update({"unsloth_version": __version__})
         patch_saving_functions(model, vision = True)
@@ -5603,6 +5639,7 @@ class FastBaseModel:
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        model = _mark_bfloat16_mixed_precision(model, bfloat16_mixed_precision)
         if _explicit_flex:
             setattr(model, _EXPLICIT_FLEX_ATTR, True)
         # Last, so the host copies carry the fp32 recasts the passes above make.
@@ -5679,26 +5716,57 @@ class FastBaseModel:
         # PEFT < 0.21 drops a scalar layer 0 with layers_pattern.
         if isinstance(layers_to_transform, int) and not isinstance(layers_to_transform, bool):
             layers_to_transform = [layers_to_transform]
-        if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
+        if _is_full_finetuning(model):
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
             _unsloth_install_pretrain_detector(model)
+            install_frozen_prefix_skip(model)
             # checkpoint_skip_layers / UNSLOTH_GC_KEEP_LAYERS apply to full finetuning too.
             skip_checkpointing(model, checkpoint_skip_layers)
             return model
         transformers_set_seed(random_state)
 
+        # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
+        _audio_explicitly_requested = bool(finetune_audio_layers)
+
         # Models with their own projection names (native DeepSeek-V4.1) map the standard aliases to real Linears.
         _remap_targets = getattr(model, "unsloth_lora_target_modules", None)
+        # Multimodal models with their own projection names (Inkling 2) also map the vision tower's leaves.
+        try:
+            _remap_takes_vision = (
+                callable(_remap_targets)
+                and "vision" in inspect.signature(_remap_targets).parameters
+            )
+        except (TypeError, ValueError):
+            _remap_takes_vision = False
+        # "all-linear" means every family, and a multimodal remap reads these flags, so set them before it runs. Every
+        # other model keeps the caller's flags until the all-linear block below (T5 / BART turn all-linear into leaf names
+        # first; forcing finetune_audio_layers here sent those through get_peft_regex, which knows neither).
+        if target_modules == "all-linear" and _remap_takes_vision:
+            finetune_vision_layers = True
+            finetune_language_layers = True
+            finetune_attention_modules = True
+            finetune_mlp_modules = True
+            finetune_audio_layers = True
         _targets_remapped = False
         _remapped_moe_targets = None
-        if callable(_remap_targets) and finetune_language_layers:
+        # A multimodal remap also serves vision-only requests (the vision tower has its own leaf names).
+        if callable(_remap_targets) and (
+            finetune_language_layers or (_remap_takes_vision and finetune_vision_layers)
+        ):
             _requested_targets = target_modules
-            _remapped = _remap_targets(
-                target_modules,
+            _remap_kwargs = dict(
                 attention = finetune_attention_modules,
                 mlp = finetune_mlp_modules,
             )
+            if _remap_takes_vision:
+                _remap_kwargs["vision"] = finetune_vision_layers
+                try:
+                    if "language" in inspect.signature(_remap_targets).parameters:
+                        _remap_kwargs["language"] = finetune_language_layers
+                except (TypeError, ValueError):
+                    pass
+            _remapped = _remap_targets(target_modules, **_remap_kwargs)
             if _remapped is not target_modules:
                 # Routed-expert intent comes from the caller's bare aliases; remapped MLP names are shared-expert only.
                 if _requested_targets is None or _requested_targets == "all-linear":
@@ -5707,6 +5775,7 @@ class FastBaseModel:
                     name
                     for name in _requested_targets
                     if finetune_mlp_modules
+                    and finetune_language_layers
                     and name in ("gate_proj", "up_proj", "down_proj", "gate_up_proj")
                 ]
                 target_modules = _remapped
@@ -5765,8 +5834,6 @@ class FastBaseModel:
                     # Full paths carry the family choice; get_peft_regex would reject them.
                     finetune_attention_modules = finetune_mlp_modules = True
 
-        # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
-        _audio_explicitly_requested = bool(finetune_audio_layers)
         if target_modules == "all-linear":
             finetune_vision_layers = True
             finetune_language_layers = True
@@ -6177,6 +6244,7 @@ class FastBaseModel:
         enable_fp8_lora(model)
         # Detect a stray pre-train forward so train() can drop the torch.compile graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
+        install_frozen_prefix_skip(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
         # Not at load: the frozen set matches across ranks only after PEFT; custom loops skip Trainer.
         _ignore_block_swap_params_for_ddp(model)
@@ -6198,7 +6266,7 @@ class FastBaseModel:
         from ..import_fixes import fix_transformers_voxtral_realtime_inplace_audio_add
 
         fix_transformers_voxtral_realtime_inplace_audio_add()
-        full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
+        full_finetuning = _is_full_finetuning(model)
 
         if type(float32_mixed_precision) is bool:
             pass
@@ -6288,11 +6356,15 @@ class FastBaseModel:
         if "gemma3n" in _model_type.lower() or "gemma4" in _model_type.lower():
             _original_gc_enable = model.gradient_checkpointing_enable
 
-            def _gc_enable_reentrant(**kwargs):
-                gc_kwargs = kwargs.get("gradient_checkpointing_kwargs", {}) or {}
+            # TRL's unwrap_model_for_generation re-enables with gradient_checkpointing_enable(kwargs) positionally.
+            def _gc_enable_reentrant(
+                gradient_checkpointing_kwargs = None,
+                *args,
+                **kwargs,
+            ):
+                gc_kwargs = dict(gradient_checkpointing_kwargs or {})
                 gc_kwargs["use_reentrant"] = True
-                kwargs["gradient_checkpointing_kwargs"] = gc_kwargs
-                return _original_gc_enable(**kwargs)
+                return _original_gc_enable(gc_kwargs, *args, **kwargs)
 
             model.gradient_checkpointing_enable = _gc_enable_reentrant
 

@@ -331,22 +331,22 @@ def test_sidecar_scan_reads_every_tier_and_skips_staging(monkeypatch, tmp_path):
     for name, version in {
         ".venv_t5_530": "5.3.0",
         ".venv_t5_550": "5.5.4",
-        ".venv_t5_510": "5.13.1",
+        ".venv_t5_510": "5.15.1",
         ".venv_t5_latest.staging": "5.2.0",
         ".venv_t5_latest.old": "5.1.0",
     }.items():
         (tmp_path / name / f"transformers-{version}.dist-info").mkdir(parents = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    assert sorted(_REAL_SCAN()) == ["5.13.1", "5.3.0", "5.5.4"]
+    assert sorted(_REAL_SCAN()) == ["5.15.1", "5.3.0", "5.5.4"]
 
 
 def test_the_install_spec_keys_on_the_oldest_transformers_that_imports_kernels(monkeypatch):
     # Main env on 5.13+ would allow any kernels, but the 5.3 / 5.5 sidecars import the same kernels.
     _dists(monkeypatch, transformers = "5.13.1", huggingface_hub = "1.33.0")
-    monkeypatch.setattr(kc, "_sidecar_transformers_versions", lambda: ["5.13.1", "5.5.4", "5.3.0"])
+    monkeypatch.setattr(kc, "_sidecar_transformers_versions", lambda: ["5.15.1", "5.5.4", "5.3.0"])
     assert kc.oldest_transformers_version() == "5.3.0"
     assert kc.current_kernels_install_spec() == "kernels==0.12.3"
-    monkeypatch.setattr(kc, "_sidecar_transformers_versions", lambda: ["5.13.1", "5.17.0"])
+    monkeypatch.setattr(kc, "_sidecar_transformers_versions", lambda: ["5.15.1", "5.17.0"])
     assert kc.current_kernels_install_spec() == "kernels>=0.12.3"
 
 

@@ -287,13 +287,8 @@ def test_stalled_reader_is_abandoned_after_the_idle_grace(monkeypatch):
 
 
 def _write_partial_frame(replies):
-    """Put the first 32 KiB of a 1 MiB frame on the pipe (under one pipe buffer, so the write never
-    blocks), leaving any reader blocked inside that frame.
-
-    Written directly rather than through replies.put: the parent's shutdown drainer reads the same
-    pipe, and a put whose feeder races that drainer can deliver the whole frame (or leave nothing
-    for a poll to see), which made these tests flaky on loaded runners.
-    """
+    """Writes the first 32 KiB of a 1 MiB frame directly, under one pipe buffer so the write never
+    blocks and a reader stays blocked in it; replies.put raced the shutdown drainer and flaked."""
     payload = pickle.dumps({"type": "diffusion_frame", "request_id": "r1", "image": "x" * 1048576})
     writer = replies._writer
     if hasattr(writer, "_send"):

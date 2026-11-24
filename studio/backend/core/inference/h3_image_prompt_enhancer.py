@@ -239,8 +239,7 @@ def prepare_reference(image: Any) -> bytes:
 
 
 def raw_references_hash(images: Optional[list]) -> str:
-    """A digest of the references as uploaded (data URLs, or PIL images), in order: the cache key, computed without
-    decoding or resizing anything."""
+    """Cache-key digest of uploaded references in order, hashed without decoding or resizing."""
     import hashlib
 
     digest = hashlib.sha256()

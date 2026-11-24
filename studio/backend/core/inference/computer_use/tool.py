@@ -226,7 +226,7 @@ class _Run:
         return next((d for d in self.displays if d.primary), self.displays[0])
 
     def _shoot(self) -> screen.Shot:
-        return screen.take(self.backend, self._display())
+        return screen.take(self.backend, self._display(), self.session.budget)
 
     def _adopt(self, shot: screen.Shot) -> None:
         self.session.frame = shot.frame
@@ -372,9 +372,12 @@ class _Run:
             self.wants_shot = True
         elif op == "zoom":
             frame = self._frame()
-            x0, y0 = self._image_point(frame, *action["region"][:2])
-            x1, y1 = self._image_point(frame, *action["region"][2:])
-            self.zoomed = screen.zoom(self._shoot(), (x0, y0, x1, y1))
+            # Through the desktop: the new capture may be another size than the screenshot read.
+            left, top = frame.to_desktop(*self._image_point(frame, *action["region"][:2]))
+            right, bottom = frame.to_desktop(*self._image_point(frame, *action["region"][2:]))
+            shot = self._shoot()
+            region = (*shot.frame.from_desktop(left, top), *shot.frame.from_desktop(right, bottom))
+            self.zoomed = screen.zoom(shot, region, self.session.budget)
         elif op == "cursor":
             pass
         elif op == "wait":

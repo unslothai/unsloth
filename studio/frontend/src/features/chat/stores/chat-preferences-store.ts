@@ -78,7 +78,7 @@ export interface ChatPreferencesState {
 
 export const COMPOSER_POSITION_MIDDLE = 50;
 // A little above the middle, so a model picker opening down has room under the composer.
-export const COMPOSER_POSITION_DEFAULT = 40;
+export const COMPOSER_POSITION_DEFAULT = 45;
 export const COMPOSER_POSITION_BOTTOM = 100;
 // Records from the old on/off setting carry only newChatComposerAtBottom.
 export function normaliseComposerPosition(value: unknown, legacyBottom = false): number {

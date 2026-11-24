@@ -18,6 +18,7 @@ import types
 from functools import lru_cache
 from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 INT8_GEMM_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM"
 INT8_GEMM_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT"
@@ -228,6 +229,7 @@ def arch_config(capability: Optional[tuple], mode: Optional[str] = None) -> Opti
 
 
 @lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _kernels() -> Optional[types.SimpleNamespace]:
     try:
         import triton
@@ -596,6 +598,8 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     _CALLS[0] += 1
     a = a if a.stride(-1) == 1 else a.contiguous()
     index = a.device.index
+    if _CUT_PLAN.get(index):
+        _live_row_race(index, a, w, xs, ws, bias)
     tile = _cutlass_tile(index, a, w, xs, ws, bias)
     if tile is not None:
         import torch
@@ -653,17 +657,159 @@ def _cutlass_tile(
     plan = _CUT_PLAN.get(index)
     if not plan:
         return None
-    entry = plan.get(_cut_key(w.shape[0], w.shape[1], xs.dtype, ws.dtype, bias is not None))
+    key = _cut_key(w.shape[0], w.shape[1], xs.dtype, ws.dtype, bias is not None)
+    entry = plan.get(key)
     if not entry:
         return None
     from . import diffusion_int8_cutlass as cut
 
-    tile = cut.slot(int(a.shape[0]), entry)
+    m = int(a.shape[0])
+    if _CUT_ROWS_PENDING.get(index) or cut._LARGE_M <= m < cut._HUGE_M:
+        _note_rows(index, key, m)
+    tile = cut.slot(m, entry)
     if tile is None:
         return None
     import torch
 
     return tile if cut.eligible(a, w, xs, ws, bias, out_dtype or torch.bfloat16) else None
+
+
+# index -> {shape key: [row buckets of its large calls, first seen first]}; recorded for the next load's plan
+_CUT_ROWS: dict = {}
+_CUT_ROWS_PENDING: dict = {}
+# index -> the race cache key its plan used (hashing the sources per call would cost a file read)
+_CUT_CKEY: dict = {}
+_CUT_ROWS_MAX = 4
+
+
+def _rows_cache_key(ckey: str) -> str:
+    return ckey + "|rows"
+
+
+def _note_rows(index: int, key: tuple, m: int) -> None:
+    """Record a large call's row bucket for the next load's race; writes the cache only outside capture."""
+    from . import diffusion_int8_cutlass as cut
+
+    if cut._LARGE_M <= m < cut._HUGE_M:
+        seen = _CUT_ROWS.setdefault(index, {}).setdefault(key, [])
+        b = cut.row_bucket(m)
+        if b not in seen:
+            seen.append(b)
+            del seen[:-_CUT_ROWS_MAX]
+            _CUT_ROWS_PENDING[index] = True
+    if not _CUT_ROWS_PENDING.get(index):
+        return
+    ckey = _CUT_CKEY.get(index)
+    if not ckey or not cut.row_race_enabled():
+        _CUT_ROWS_PENDING[index] = False
+        return
+    import torch
+
+    try:
+        busy = torch.cuda.is_current_stream_capturing() or torch.compiler.is_compiling()
+    except Exception:  # noqa: BLE001 - no CUDA runtime: nothing records a graph
+        busy = False
+    if busy:
+        return
+    _CUT_ROWS_PENDING[index] = False
+    table = _cut_cache_read()
+    rkey = _rows_cache_key(ckey)
+    stored = table.get(rkey) if isinstance(table.get(rkey), dict) else {}
+    changed = False
+    for k_, buckets in (_CUT_ROWS.get(index) or {}).items():
+        old = [int(b) for b in stored.get(repr(k_), []) if isinstance(b, int)]
+        new = [b for b in old if b not in buckets] + list(buckets)
+        new = new[-_CUT_ROWS_MAX:]
+        if new != old:
+            stored[repr(k_)] = new
+            changed = True
+    if changed:
+        table.pop(rkey, None)
+        table[rkey] = stored
+        _cut_cache_write(table)
+
+
+# index -> {(shape key, row bucket)} raced live this process (or found unsafe to race): each is tried once
+_CUT_LIVE: dict = {}
+# index -> whether the load's plan raced today's Triton path (True) or cuBLAS / the stock epilogue
+_CUT_TRITON_ON: dict = {}
+
+
+def _live_row_race(index: Any, a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> None:
+    """Race a large call's row bucket the first time this load sees it, before it runs, so the first launch already
+    takes the tile its real row count wants (``row_bucket``; a 4176-row FLUX.3 call on the 4096-row winner's 256-row
+    tile leaves a 17th row tile 31% full). Same race and verdict as a later load's plan at that bucket (``cut.race``),
+    stored in the same cache entry, so that load races nothing. Only outside capture / compile, with room for the
+    race's operands; anything else leaves the call on the 4096-row winner, as before. The real weight is timed (a
+    random draw of it would cost a weight-sized allocation). ``UNSLOTH_DIFFUSION_INT8_CUTLASS_LIVE_RACE=0`` keeps the
+    next-load race only."""
+    from . import diffusion_int8_cutlass as cut
+
+    m = int(a.shape[0])
+    if not (cut._LARGE_M <= m < cut._HUGE_M):
+        return
+    key = _cut_key(w.shape[0], w.shape[1], xs.dtype, ws.dtype, bias is not None)
+    entry = (_CUT_PLAN.get(index) or {}).get(key)
+    b = cut.row_bucket(m)
+    if not entry or b in entry:
+        return
+    tried = _CUT_LIVE.setdefault(index, set())
+    if (key, b) in tried or sum(1 for k_, _b in tried if k_ == key) >= cut._MAX_ROW_RACES:
+        return
+    if not cut.live_race_enabled():
+        return
+    import torch
+
+    try:
+        if torch.compiler.is_compiling():
+            return
+        import contextlib
+        with torch.cuda.device(a.device) if a.is_cuda else contextlib.nullcontext():
+            if torch.cuda.is_current_stream_capturing():
+                return
+    except Exception:  # noqa: BLE001 - no CUDA runtime: nothing to race
+        return
+    # a call the prebuilt kernel cannot take (bias dtype, alignment, strides) must not decide its shape's bucket
+    if not cut.eligible(a, w, xs, ws, bias, torch.bfloat16):
+        return
+    from .diffusion_cuda_graph import hold_off_capture
+
+    with hold_off_capture() as safe:
+        if not safe:
+            return  # another thread records a graph: a later call races
+        tried.add((key, b))
+        dev = a.device
+        n, k = int(w.shape[0]), int(w.shape[1])
+        if not _huge_race_fits(dev, b, n, k):
+            return
+        if _CUT_TRITON_ON.get(index):
+            today = lambda a_, w_, x_, s_, b_: _launch_or_ref(index, a_, w_, x_, s_, b_)  # noqa: E731
+        else:
+            today = None  # cuBLAS lower bound, as the plan's large-M race
+        try:
+            r = cut.race(index, w, ws, bias, xs.dtype, today, b)
+        except Exception:  # noqa: BLE001 - a failed race keeps the call on the plan's slot
+            return
+        if not r.get("us"):
+            return  # nothing was timed: no verdict to keep
+        if cut.mode() == "force":
+            best = min((t for t in r["us"] if t.isdigit()), key = lambda t: r["us"][t], default = None)
+            r["tile"] = int(best) if best is not None else None
+        r["live"] = True
+        entry[b] = r["tile"]
+        skey = repr(key)
+        _CUT_RACES.setdefault(index, {}).setdefault(skey, {})[b] = r
+        _note_rows(index, key, m)
+        ckey = _CUT_CKEY.get(index)
+        if ckey:
+            table = _cut_cache_read()
+            cached = table.get(ckey) if isinstance(table.get(ckey), dict) else {}
+            hit = cached.get(skey) if isinstance(cached.get(skey), dict) else {}
+            hit[str(b)] = r["tile"]
+            cached[skey] = hit
+            table.pop(ckey, None)
+            table[ckey] = cached
+            _cut_cache_write(table)
 
 
 def _cutlass_fused(index: Any, n: int, k: int, xs_dtype: Any, ws_dtype: Any, bias: bool) -> bool:
@@ -686,20 +832,189 @@ def cutlass_wanted(capability: Optional[tuple]) -> bool:
         return False
 
 
-def _cut_cache_key(index: int) -> Optional[str]:
-    """Card, toolchain, library build and both sources: any change re-races."""
-    try:
-        import hashlib
+# What decides a CUTLASS race verdict, by module: today's path it races (Triton kernel, launch, tile pick, eager
+# epilogue), the race itself (points, timing, margin, candidates, how a cached entry is read back) and the prebuilt
+# kernels' launch. Hashed as parsed code: a comment, a docstring or an edit anywhere else keeps the cached verdicts.
+_RACE_SOURCES = {
+    "diffusion_int8_gemm": (
+        "_kernels",
+        "_launch",
+        "_prefetch_fix_key",
+        "reference",
+        "_launch_or_ref",
+        "tile_for",
+        "_aligned",
+        "_cutlass_tile",
+        "_cutlass_plan",
+        # the live race of a new row bucket writes its verdict into the same cache entry _cutlass_plan reads back
+        "_live_row_race",
+        "_huge_race_fits",
+        "_HUGE_RACE_HEADROOM",
+        "_CUT_LARGE_M",
+        "_CUT_SKIPPED",
+        "_SHAPE_MIN_M",
+        "_MIN_ROWS",
+        # the probe input that admits a tile to the race
+        "tie_operands",
+        # what the race is handed: the weight payload, the activation-scale dtype and the act quant it is read off
+        "_payload",
+        "_xs_dtype",
+        "_act_quant_v1",
+        "_act_quant_v2",
+        "_cut_key",
+        "cutlass_wanted",
+        "int8_gemm_mode",
+        # which row buckets the next load races, and how a cached entry is written and read back
+        "_note_rows",
+        "_rows_cache_key",
+        "_cut_cache_path",
+        "_cut_cache_read",
+        "_cut_cache_write",
+    ),
+    "diffusion_int8_cutlass": (
+        "ABI_VERSION",
+        "_bind",
+        "_MARGIN",
+        "_RACE_M",
+        "_RACE_M_HUGE",
+        "_HUGE_M",
+        "_LARGE_M",
+        "ROW_BUCKET",
+        "_MAX_ROW_RACES",
+        "live_race_enabled",
+        "row_bucket",
+        "large_points",
+        "race_points",
+        "slot",
+        "large_slots",
+        "family",
+        "out_dtype_for",
+        "_kind",
+        "EPI_TORCHAO",
+        "EPI_NATIVE",
+        "has_kernel",
+        "eligible",
+        "launch",
+        "reference",
+        "reference_native",
+        "_SUSTAIN_S",
+        "sustained_for",
+        "_CLOCK_DRIFT",
+        "sustained_decides",
+        "time_sustained_us",
+        "time_us",
+        "race",
+        # how a race picks among its near-tied winners
+        "_FILL_TIE",
+        "last_tile_fill",
+        "pick",
+        "_NATIVE_LARGE_M",
+        "native_prepare",
+        # which tiles the race times: a probe that admits more tiles must re-race
+        "tiles",
+        "_PROBE_SHAPES",
+        "_scale_dtypes",
+        "_probe_tile",
+        # the probe's out-of-memory check
+        "_is_oom",
+        "probed_tiles",
+        # the switches the race and the pick read (their env values are keyed by _cut_cache_key / race_points)
+        "mode",
+        "fill_ties_enabled",
+        "huge_race_enabled",
+        "row_race_enabled",
+        "sustained_mode",
+        "_native_cache_key",
+        "_native_cache_get",
+        "_native_cache_put",
+    ),
+    # the sm_8x prefetch fix's version: bumped with any change to what it does to the Triton kernel's codegen
+    "diffusion_triton_prefetch": ("_TRITON_PREFETCH_SALT",),
+}
+# Called by keyed code but deliberately unkeyed (call-closure test fails on any other): key builders, the library
+# loader (file hashed by bytes) and tile-probe persistence (keyed by diffusion_probe_cache's file fingerprint).
+_RACE_UNKEYED = {
+    "diffusion_int8_gemm": ("_code", "_sources_digest", "_cut_cache_key", "_today_tiles"),
+    "diffusion_int8_cutlass": (
+        "library",
+        "library_path",
+        "_candidate_paths",
+        "_store_tiles",
+        "_stored_tiles",
+        "_probe_store",
+        "_probe_extra",
+        "_alloc_failures",
+    ),
+    "diffusion_triton_prefetch": (),
+}
+# Bump to re-race every card on purpose: a change outside the code above that moves race results.
+_RACE_FORMAT = 1
 
+
+def _code(path: str, names: tuple) -> str:
+    """``names``' top-level definitions in ``path``, docstrings dropped, as ``ast.unparse`` prints them: formatting and
+    comments do not reach the key, and a name no longer defined there reads ``<missing>``."""
+    import ast
+
+    tree = ast.parse(open(path, "rb").read())
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (
+            isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            node.body = body[1:] or [ast.Pass()]
+    found: dict = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            found[node.name] = node
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            for target in node.targets if isinstance(node, ast.Assign) else (node.target,):
+                if isinstance(target, ast.Name):
+                    found[target.id] = node
+    return "\n".join(
+        f"{name}: " + (ast.unparse(found[name]) if name in found else "<missing>") for name in names
+    )
+
+
+@lru_cache(maxsize = 4)
+def _sources_digest(lib: Optional[str]) -> str:
+    """The race code (``_RACE_SOURCES``) and the loaded library, hashed once per process: the plan asks once per weight
+    shape."""
+    import hashlib
+    import sys
+
+    from . import diffusion_int8_cutlass as cut
+    from . import diffusion_triton_prefetch as prefetch
+
+    h = hashlib.sha256(f"race-format={_RACE_FORMAT}\n".encode())
+    for module in (sys.modules[__name__], cut, prefetch):
+        h.update(_code(module.__file__, _RACE_SOURCES[module.__name__.rsplit(".", 1)[-1]]).encode())
+    if lib:
+        h.update(open(lib, "rb").read())
+    return h.hexdigest()[:20]
+
+
+def _today_tiles(index: int) -> str:
+    """The Triton tiles today's path runs on this card (settled by ``device_config`` before any plan): an arch table,
+    shape rule or unlisted-card race edit re-races only the cards whose tile it moves."""
+    cfg = _DEVICE_CFG.get(index)
+    if cfg is None:
+        return "today=stock"
+    return f"today={cfg}+{_DEVICE_TILES.get(index, ())}+fix={_prefetch_fix_key()}"
+
+
+def _cut_cache_key(index: int) -> Optional[str]:
+    """Card, toolchain, library build, today's tiles and the race code: an unrelated Studio edit keeps the verdicts."""
+    try:
         import torch
 
         from . import diffusion_int8_cutlass as cut
 
-        h = hashlib.sha256(open(__file__, "rb").read())
-        h.update(open(cut.__file__, "rb").read())
-        lib = cut.library_path()
-        if lib:
-            h.update(open(lib, "rb").read())
+        digest = _sources_digest(cut.library_path())
         try:
             import triton as _triton
             tv = _triton.__version__
@@ -717,7 +1032,12 @@ def _cut_cache_key(index: int) -> Optional[str]:
                 os.environ.get(INT8_GEMM_UNLISTED_ENV, ""),
                 # the timing mode decides the huge-race winners: a plan raced the other way is re-raced
                 f"sustained={cut.sustained_mode()}",
-                h.hexdigest()[:20],
+                # force keeps the fastest tile even when it loses to today's path
+                f"cutlass={cut.mode()}",
+                # near-ties broken by the last row tile's fill (FILL_TIE_ENV=0: the fastest winner)
+                f"fill_ties={cut.fill_ties_enabled()}",
+                _today_tiles(index),
+                digest,
             )
         )
     except Exception:  # noqa: BLE001
@@ -811,9 +1131,13 @@ def _cutlass_plan(
         fam = cut.family(cap)
         act = cut.out_dtype_for(fam)
         ckey = _cut_cache_key(index)
+        if ckey:
+            _CUT_CKEY[index] = ckey
         table = _cut_cache_read() if ckey else {}
         cached = table.get(ckey) if ckey else None
         cached = cached if isinstance(cached, dict) else {}
+        recorded = table.get(_rows_cache_key(ckey)) if ckey else None
+        recorded = recorded if isinstance(recorded, dict) else {}
         dev = torch.device("cuda", index)
         g = torch.Generator(device = "cpu").manual_seed(11)
         seen: dict = {}
@@ -834,23 +1158,41 @@ def _cutlass_plan(
             done.add(key)
             skey = repr(key)
             hit = cached.get(skey)
-            points = cut.race_points()
-            if (
-                isinstance(hit, dict)
-                and {int(m) for m in hit} == set(points)
-                and all((v is None or v in cut.probed_tiles(index)) for v in hit.values())
-            ):
-                plan[key] = {int(m): v for m, v in hit.items()}
+            points = cut.race_points(recorded.get(skey))
+            hit = (
+                {int(m): v for m, v in hit.items()}
+                if isinstance(hit, dict)
+                and all(
+                    (v is None or v == _CUT_SKIPPED or v in cut.probed_tiles(index))
+                    for v in hit.values()
+                )
+                else {}
+            )
+            # a cache missing a fixed point (older format) races everything again
+            fixed = {min(cut._RACE_M)} | (
+                {cut._RACE_M_HUGE} if cut._RACE_M_HUGE in points else set()
+            )
+            # a point skipped for memory is raced again (only it), never read as a lost race
+            entry = (
+                {m: hit[m] for m in points if m in hit and hit[m] != _CUT_SKIPPED}
+                if fixed <= set(hit)
+                else {}
+            )
+            if len(entry) == len(points):
+                plan[key] = entry
                 continue
             # random operands: a streamed weight need not be resident
             w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
             wsr = (torch.rand(n, generator = g) * 1e-3 + 1e-5).to(ws.dtype).to(dev)
             br = (torch.randn(n, generator = g) * 0.1).to(act).to(dev) if bias is not None else None
-            entry = {}
+            skipped = set()
             for m in points:
+                if m in entry:
+                    continue
                 if m == cut._RACE_M_HUGE and not _huge_race_fits(dev, m, n, k):
                     # no room to time it: today's path at that size, never an untimed 4096-row winner
                     entry[m] = None
+                    skipped.add(m)
                     races.setdefault(skey, {})[m] = {
                         "tile": None,
                         "us": {},
@@ -877,7 +1219,7 @@ def _cutlass_plan(
                     torch.cuda.synchronize(dev)
                     torch.cuda.empty_cache()
             plan[key] = entry
-            cached[skey] = {str(m): v for m, v in entry.items()}
+            cached[skey] = {str(m): (_CUT_SKIPPED if m in skipped else v) for m, v in entry.items()}
             del w, wsr, br
         if ckey:
             table = _cut_cache_read()
@@ -895,6 +1237,10 @@ def _cutlass_plan(
     _CUT_FAMILY[index] = cut.family(torch.cuda.get_device_capability(index))
     _CUT_RACES[index] = races
     return plan
+
+
+# disk-cache value for a race point skipped for lack of free memory: a later load races that point again
+_CUT_SKIPPED = "skipped"
 
 
 # huge-race free memory, in (operand + output) units: today's output, cached candidate outputs, streaming slack
@@ -1666,8 +2012,108 @@ def _rdna_shared(x: Any, linears: tuple) -> Optional[list]:
     ]
 
 
-def shared_rotq_linears(x: Any, linears: tuple) -> Optional[list]:
-    """``[m(x) for m in linears]`` with one shared rotation + act quant; None when any is not covered."""
+class _MergedWeight:
+    """Merged rows as a weight for the CUTLASS race; other attributes come from the first part."""
+
+    def __init__(self, qdata: Any, scale: Any, part: Any):
+        self.qdata, self.scale, self._part = qdata, scale, part
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.__dict__["_part"], name)
+
+
+def merge_payloads(linears: tuple, logger: Any = None) -> Optional[tuple]:
+    """Concatenate same-input int8 rows into one buffer and repoint each weight to its slice (one copy; LoRA merges
+    write through). Undone if another holder keeps an old payload. Returns ``(wq, ws, n, path)`` or None. Eager only."""
+    import sys
+
+    import torch
+
+    recs = [_swapped_rec(m) for m in linears]
+    if not linears or any(r is None for r in recs):
+        return None
+    if (
+        len({(r[0], r[1], bool(r[2]), bool(r[4])) for r in recs}) != 1
+        or recs[0][0] != "v2"
+        or not recs[0][2]
+    ):
+        return None
+    if any(getattr(m, "bias", None) is not None for m in linears):
+        return None
+    weights = [r[3] for r in recs]
+    if any(type(w) is not type(weights[0]) for w in weights):
+        return None
+    qd = [getattr(w, "qdata", None) for w in weights]
+    sc = [getattr(w, "scale", None) for w in weights]
+    q0, s0 = qd[0], sc[0]
+    for q, s in zip(qd, sc):
+        if not (torch.is_tensor(q) and torch.is_tensor(s)):
+            return None
+        if (
+            q.dtype != torch.int8
+            or q.dim() != 2
+            or not q.is_contiguous()
+            or q.shape[1] != q0.shape[1]
+            or q.device != q0.device
+        ):
+            return None
+        if (
+            s.dim() == 0
+            or s.shape[0] != q.shape[0]
+            or s.shape[1:] != s0.shape[1:]
+            or s.dtype != s0.dtype
+        ):
+            return None
+        if s.device != q.device or not s.is_contiguous():
+            return None
+    wq, ws = torch.cat(qd, 0), torch.cat(sc, 0)
+    olds = list(zip(qd, sc))
+    del qd, sc, q, s, q0, s0
+    rows = 0
+    for w, (q, s) in zip(weights, olds):
+        n = q.shape[0]
+        w.qdata, w.scale = wq[rows : rows + n], ws[rows : rows + n]
+        rows += n
+    del q, s
+    # each old payload is now held by ``olds`` alone (+ the loop name + getrefcount's argument)
+    if any(sys.getrefcount(t) > 3 for pair in olds for t in pair):
+        for w, (q, s) in zip(weights, olds):
+            w.qdata, w.scale = q, s
+        if logger is not None:
+            logger.info(
+                "diffusion.int8_gemm: Q/K/V rows kept apart (another holder keeps their payloads)"
+            )
+        return None
+    del olds
+    fused = bool(recs[0][4])
+    try:
+        index = wq.device.index if wq.is_cuda else None
+        if index is not None and fused and _CUT_PLAN.get(index) is not None:
+            _cutlass_plan(
+                index,
+                [
+                    (
+                        types.SimpleNamespace(bias = None),
+                        ("v2", recs[0][1], ws.reshape(-1), _MergedWeight(wq, ws, weights[0]), True),
+                    )
+                ],
+                device_config(index) is not None,
+                logger,
+            )
+    except Exception as exc:  # noqa: BLE001 - the merged shape runs the Triton path
+        if logger is not None:
+            logger.info("diffusion.int8_gemm: merged Q/K/V shape not raced (%s)", exc)
+    return wq, ws.reshape(-1), len(linears), fused
+
+
+def shared_rotq_linears(
+    x: Any,
+    linears: tuple,
+    merged: Any = None,
+) -> Optional[list]:
+    """``[m(x) for m in linears]`` with one shared rotation + act quant; None when any is not covered. ``merged``
+    (``merge_payloads`` of the first ``merged[2]`` Linears): those run as one GEMM, their outputs column views of
+    it, bit for bit what their own GEMMs give (int32 accumulation, per-row x per-column dequant)."""
     import torch
 
     if linears and rdna_native_rotated(linears[0]):
@@ -1691,9 +2137,39 @@ def shared_rotq_linears(x: Any, linears: tuple) -> Optional[list]:
     if q is None:
         return None
     xq, xs = q
-    lead = x.shape[:-1]
+    return _shared_gemms(xq, xs, x.shape[:-1], x.device, linears, recs, parts, merged)
+
+
+def _shared_gemms(
+    xq: Any,
+    xs: Any,
+    lead: Any,
+    device: Any,
+    linears: tuple,
+    recs: list,
+    parts: list,
+    merged: Any = None,
+) -> list:
+    """The GEMMs of ``shared_rotq_linears`` on its codes ``xq`` / scales ``xs``."""
     outs = []
-    for m, r, (wq, ws) in zip(linears, recs, parts):
+    first = 0
+    if merged is not None:
+        wq_m, ws_m, n_m, fused_m = merged
+        if (
+            n_m <= len(linears)
+            and wq_m.device == device
+            and all(
+                bool(r[4]) == fused_m and m.bias is None for m, r in zip(linears[:n_m], recs[:n_m])
+            )
+        ):
+            if fused_m:
+                y = _OP_HANDLE(xq, wq_m, xs.reshape(-1), ws_m, None)
+            else:
+                y = stock_gemm(xq, wq_m, xs, ws_m, None)
+            y = y.reshape(*lead, y.shape[-1])
+            outs.extend(y.split([int(wq.shape[0]) for wq, _ in parts[:n_m]], dim = -1))
+            first = n_m
+    for m, r, (wq, ws) in zip(linears[first:], recs[first:], parts[first:]):
         if r[4]:
             y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, m.bias)
         else:
@@ -1771,6 +2247,46 @@ def producer_linear(down: Any, prefix: Any, gate: Any, value: Any) -> Optional[A
     q = convrot_producer_act_quant(
         prefix, gate.reshape(-1, f), value.reshape(-1, f), group, kind == "v2"
     )
+    if q is None:
+        return None
+    xq, xs = q
+    if fused:
+        y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, down.bias)
+    else:
+        y = stock_gemm(xq, wq, xs, ws, down.bias)
+    return y.reshape(*lead, y.shape[-1])
+
+
+def gelu_linear(down: Any, prefix: Any, gate: Any) -> Optional[Any]:
+    """``down(cat([prefix.flatten(-2), gelu_tanh(gate)], -1))`` (no prefix: ``down(gelu_tanh(gate))``) for FLUX.1's
+    MLPs, with the activation, concat, rotation and act quant in one kernel reading the producers' buffers, else None
+    (caller: stock). ``gate``: ``[..., F]`` projection output; ``prefix``: the attention output ``[B, S, H, D]``."""
+    import torch
+
+    rec = _swapped_rec(down)
+    if rec is None:
+        return None
+    kind, group, rotq, weight, fused = rec
+    lead = gate.shape[:-1]
+    f = gate.shape[-1]
+    width = f if prefix is None else f + prefix.shape[-2] * prefix.shape[-1]
+    if (
+        not rotq
+        or group != 256
+        or gate.dtype != torch.bfloat16
+        or not gate.is_cuda
+        or width != down.in_features
+        or gate.numel() < _MIN_ROWS * f
+    ):
+        return None
+    if prefix is not None and (prefix.dim() != 4 or prefix.shape[:2] != lead):
+        return None
+    wq, ws = _payload(kind, weight)
+    if wq.device != gate.device:
+        return None
+    from .diffusion_convrot_quant import convrot_gelu_act_quant
+
+    q = convrot_gelu_act_quant(prefix, gate.reshape(-1, f), group, kind == "v2")
     if q is None:
         return None
     xq, xs = q
@@ -2151,6 +2667,188 @@ def _weight_card(module: Any) -> Optional[int]:
     return dev.index if dev is not None and dev.type == "cuda" else None
 
 
+def _gemm_probe_jobs(index: int) -> list:
+    """``device_config``'s cold-card ``_probe`` calls (preferred, fallback and per-shape tiles) as warm-up jobs."""
+    from functools import partial
+
+    import torch
+
+    if index in _DEVICE_CFG or index in _UNLISTED_CARDS:
+        return []
+    if not (_triton_version_ok() and _kernels() is not None):
+        return []
+    cap = torch.cuda.get_device_capability(index)
+    if unlisted_arch(cap):
+        return []
+    want = arch_config(cap)
+    if want is None:
+        return []
+    cfgs: list = []
+    for cfg in (want, _FALLBACK_CONFIG, *(rule[4] for rule in shape_tiles(cap))):
+        if cfg is not None and cfg not in cfgs:
+            cfgs.append(cfg)
+    return [partial(_probe, index, cfg) for cfg in cfgs]
+
+
+# card index -> the early warm-up thread, and once it ran: (rotq, producer, gemm jobs, launches, gelu)
+_EARLY_PREWARM: dict = {}
+_EARLY_DONE: dict = {}
+_EARLY_LOCK = threading.Lock()
+
+
+def _early_prewarm_run(
+    index: int,
+    rotated: bool,
+    producer: bool,
+    logger: Any,
+    gelu: bool = False,
+) -> None:
+    try:
+        from .diffusion_convrot_quant import (
+            gelu_probe_pending,
+            prewarm_probe_kernels,
+            producer_probe_pending,
+            rotq_probes_pending,
+        )
+
+        rotq = bool(rotated) and rotq_probes_pending(index)
+        prod = bool(rotated and producer) and producer_probe_pending(index)
+        gel = bool(rotated and gelu) and gelu_probe_pending(index)
+        extra = tuple(_gemm_probe_jobs(index))
+        ran = (
+            prewarm_probe_kernels(
+                index,
+                rotq = rotq,
+                producer = prod,
+                extra = extra,
+                logger = logger,
+                **({"gelu": True} if gel else {}),
+            )
+            if (extra or rotq or prod or gel)
+            else 0
+        )
+        _EARLY_DONE[index] = (rotq, prod, len(extra), ran, gel)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def start_early_probe_prewarm(
+    index: int,
+    *,
+    rotated: bool,
+    producer: bool,
+    logger: Any = None,
+    gelu: bool = False,
+) -> bool:
+    """Run ``_prewarm_probes``' compiles in a thread during the disk-bound load (saved 10-14 s on a new L4).
+
+    Joined once the pipeline is built, before any timed probe, so no timing runs beside it. Never raises."""
+    try:
+        from .diffusion_convrot_quant import probe_prewarm_enabled
+
+        if int8_gemm_mode() == "off" or not probe_prewarm_enabled():
+            return False
+        from .diffusion_convrot_quant import verdict_file_present
+
+        if verdict_file_present():
+            # Pending checks are unreliable this early (verdict keys not settled yet); the swap loads them.
+            return False
+        import torch
+
+        if not torch.cuda.is_available() or is_rocm_torch(torch):
+            return False
+        with _EARLY_LOCK:
+            if index in _EARLY_PREWARM or index in _EARLY_DONE:
+                return False
+            thread = threading.Thread(
+                target = _early_prewarm_run,
+                args = (index, rotated, producer, logger) + ((True,) if gelu else ()),
+                name = "unsloth-probe-prewarm-early",
+                daemon = True,
+            )
+            # Start before releasing the lock: a joiner that sees the entry must find a started thread
+            # (``join()`` on an unstarted one raises and would return before the warm-up ran).
+            try:
+                thread.start()
+            except Exception:  # noqa: BLE001
+                return False
+            _EARLY_PREWARM[index] = thread
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def join_early_probe_prewarm(index: Optional[int] = None) -> None:
+    """Wait for card ``index``'s early warm-up (all when None). No-op under tracing / graph capture. Never raises."""
+    try:
+        import torch
+
+        if torch.compiler.is_compiling():
+            return
+        try:
+            capturing = torch.cuda.is_available() and torch.cuda.is_current_stream_capturing()
+        except Exception:  # noqa: BLE001
+            capturing = False
+        if capturing:
+            return
+        with _EARLY_LOCK:
+            items = [(i, t) for i, t in _EARLY_PREWARM.items() if index is None or i == index]
+        for i, thread in items:
+            thread.join()
+            with _EARLY_LOCK:
+                _EARLY_PREWARM.pop(i, None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _prewarm_probes(index: int, transformer: Any, rotated: bool, logger: Any) -> int:
+    join_early_probe_prewarm(index)
+    try:
+        from .diffusion_convrot_quant import (
+            gelu_probe_pending,
+            prewarm_probe_kernels,
+            probe_prewarm_enabled,
+            producer_probe_pending,
+            rotq_probes_pending,
+        )
+
+        if not probe_prewarm_enabled():
+            return 0
+        from .diffusion_flux_convrot_fused import gelu_probe_expected, producer_probe_expected
+
+        rotq = bool(rotated) and rotq_probes_pending(index)
+        producer = (
+            bool(rotated) and producer_probe_expected(transformer) and producer_probe_pending(index)
+        )
+        gelu = bool(rotated) and gelu_probe_expected(transformer) and gelu_probe_pending(index)
+        extra = tuple(_gemm_probe_jobs(index))
+        if not (extra or rotq or producer or gelu):
+            return 0
+        early = _EARLY_DONE.get(index)
+        if (
+            early is not None
+            and early[0] >= rotq
+            and early[1] >= producer
+            and early[2] >= len(extra)
+            and (early[4] if len(early) > 4 else False) >= gelu
+        ):
+            return early[3]
+        return prewarm_probe_kernels(
+            index,
+            rotq = rotq,
+            producer = producer,
+            extra = extra,
+            logger = logger,
+            **({"gelu": True} if gelu else {}),
+        )
+    except Exception as exc:  # noqa: BLE001 - a warm-up only
+        if logger is not None:
+            logger.info(
+                "diffusion.int8_gemm: probe prewarm skipped (%s: %s)", type(exc).__name__, exc
+            )
+        return 0
+
+
 def _swap_on(
     transformer: Any,
     logger: Any,
@@ -2183,9 +2881,10 @@ def _swap_on(
         recs = [(m, r) for m, r in recs if _card_dtypes_ok(m, r, True)]
         if not recs:
             return 0
+    rotated = any(r[1] is not None for _, r in recs)
+    _prewarm_probes(index, transformer, rotated, logger)
     gemm = device_config(index) is not None
     triton_gemm = gemm
-    rotated = any(r[1] is not None for _, r in recs)
     rotq = rotated and rotquant_device_config(index) is not None
     if gemm and rotated and not rotq and index in _UNLISTED_CARDS:
         # unlisted card: rotated Linears only with rotq_h16; else the stock fusions keep them, as on main
@@ -2209,6 +2908,7 @@ def _swap_on(
         recs = [(m, r) for m, r in recs if r[0] != "v1"]
     # bf16 cards: the Triton path takes any bias dtype; only the prebuilt kernel needs bf16 bias
     cut_recs = [(m, r) for m, r in recs if f16_card or _card_dtypes_ok(m, r, False)]
+    _CUT_TRITON_ON[index] = bool(triton_gemm)
     plan = _cutlass_plan(index, cut_recs, triton_gemm, logger) if cut_recs else {}
     cut_fused: dict = {}
     if plan:

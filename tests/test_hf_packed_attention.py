@@ -3,8 +3,10 @@
 """Packed rows on the transformers modeling path run varlen attention, and nothing else changes."""
 
 import contextlib
+import gc
 import inspect
 import types
+import weakref
 
 import pytest
 import torch
@@ -1917,6 +1919,83 @@ def test_varlen_in_graph_probe_runs_its_backward_with_grad_enabled(monkeypatch, 
     assert seen == [(True, False)]
 
 
+class _RecordTensors(torch.overrides.TorchFunctionMode):
+    """Weak references to every tensor a probe makes; factory calls land on the CPU."""
+
+    def __init__(self):
+        super().__init__()
+        self.refs = []
+
+    def __torch_function__(
+        self,
+        func,
+        types,
+        args = (),
+        kwargs = None,
+    ):
+        kwargs = dict(kwargs or {})
+        if "device" in kwargs:
+            kwargs["device"] = "cpu"
+        out = func(*args, **kwargs)
+        for tensor in out if isinstance(out, (tuple, list)) else (out,):
+            if isinstance(tensor, torch.Tensor):
+                self.refs.append(weakref.ref(tensor))
+        return out
+
+    def alive(self):
+        gc.collect()
+        return sum(ref() is not None for ref in self.refs)
+
+
+class _BackwardFails(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grad):
+        raise RuntimeError("this build's flash varlen backward refuses the shape")
+
+
+def test_varlen_in_graph_probe_frees_its_graph_when_backward_fails(monkeypatch):
+    """A probe pack hook returning its input saves an output on its own node, a cycle gc cannot break:
+    an aborted probe backward kept the whole probe graph alive for the rest of the run."""
+    from unsloth.utils import flash_impl
+
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_hip_window_ok", lambda device, window: True)
+    monkeypatch.setattr(flash_impl, "flash_impl_allows", lambda *args: True)
+    # sigmoid saves its own output for backward, like the flash kernel's out / logsumexp.
+    monkeypatch.setattr(
+        hpa,
+        "_flash_varlen",
+        lambda q, *args: _BackwardFails.apply(torch.sigmoid(q.transpose(1, 2))),
+    )
+    record = _RecordTensors()
+    with record:
+        assert hpa._varlen_in_graph_probe(0, torch.bfloat16, 16, 2, 2, None) is False
+    assert record.refs, "the probe did not run its forward"
+    assert record.alive() == 0, "the aborted probe's graph outlived the probe"
+
+
+def test_hip_varlen_match_frees_its_comparison_graph(monkeypatch):
+    """ROCm check: the error terms are built from grad-tracked outputs and never backpropagated."""
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN", [object()])
+
+    def matching(q, k, v, cu_seqlens, longest, scale, window):
+        out = hpa._document_reference(
+            q.float(), k.float(), v.float(), hpa._HIP_CHECK_LENGTHS, scale, window
+        )
+        return out.to(q.dtype)
+
+    monkeypatch.setattr(hpa, "_flash_varlen", matching)
+    monkeypatch.setattr(hpa, "_call_torch_varlen", lambda fn, *args: matching(*args))
+    record = _RecordTensors()
+    with record:
+        assert hpa._hip_varlen_matches(torch.device("cpu"), hpa._HIP_CHECK_WINDOW) is True
+    assert record.alive() == 0, "the match's comparison graph outlived the check"
+
+
 @pytest.mark.parametrize("compiled", [False, True])
 def test_varlen_in_graph_probe_inside_a_nonreentrant_checkpoint(monkeypatch, compiled):
     """First trace inside a non-reentrant checkpoint (VLMs under DDP): the probe's own backward must
@@ -2236,3 +2315,50 @@ def test_rocm_window_check_is_separate(monkeypatch):
     assert hpa._torch_varlen(device) is no_window
     assert not hpa._hip_window_ok(device, 4096)
     assert hpa._hip_window_ok(device, None)
+
+
+def _flash_like_op(real_lse_rank):
+    """aten._flash_attention_forward stand-in: (out, logsumexp, ...) whose logsumexp rank differs
+    between real and fake tensors, as ROCm's varlen does against the op's fake kernel."""
+    from torch._subclasses.fake_tensor import FakeTensor
+
+    def op(query, key, value, *args, **kwargs):
+        heads, total = query.shape[1], query.shape[0]
+        fake = isinstance(query, FakeTensor)
+        rank = 2 if fake else real_lse_rank
+        lse = query.new_zeros((heads, total) if rank == 2 else (1, heads, total))
+        return query.clone(), lse, None, None, None
+
+    return op
+
+
+@pytest.mark.parametrize("real_rank, expected", [(2, True), (3, False)])
+def test_flash_meta_check_catches_a_logsumexp_rank_the_fake_kernel_does_not_promise(
+    real_rank, expected
+):
+    """Compiled blocks assert the op's outputs against its fake kernel; a build whose real logsumexp
+    has another rank (ROCm varlen) must keep the eager wrapper instead of failing in the graph."""
+    query = torch.zeros(1, 4, 16, 8)
+    key = torch.zeros(1, 2, 16, 8)
+    cu_seqlens = torch.tensor([0, 7, 16], dtype = torch.int32)
+    got = hpa._flash_meta_matches(query, key, cu_seqlens, 9, None, op = _flash_like_op(real_rank))
+    assert got is expected
+
+
+def test_varlen_in_graph_probe_refuses_when_the_fake_kernel_disagrees(monkeypatch):
+    """The probe's eager forward and backward pass, but the meta check fails: no in-graph varlen."""
+    import unsloth.utils.flash_impl as flash_impl
+
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_hip_window_ok", lambda device, window: True)
+    monkeypatch.setattr(flash_impl, "flash_impl_allows", lambda *args: True)
+    zeros, tensor = torch.zeros, torch.tensor
+    # The probe builds CUDA tensors; this host runs them on CPU.
+    monkeypatch.setattr(torch, "zeros", lambda *a, device = None, **k: zeros(*a, **k))
+    monkeypatch.setattr(torch, "tensor", lambda *a, device = None, **k: tensor(*a, **k))
+    monkeypatch.setattr(hpa, "_flash_varlen", lambda q, k, v, *args: (q * 1.0).transpose(1, 2))
+    verdicts = []
+    for matches in (True, False):
+        monkeypatch.setattr(hpa, "_flash_meta_matches", lambda *args, m = matches: m)
+        verdicts.append(hpa._varlen_in_graph_probe(0, torch.bfloat16, 64, 8, 2, None))
+    assert verdicts == [True, False]

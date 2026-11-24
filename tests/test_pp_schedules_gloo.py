@@ -506,9 +506,8 @@ def test_pp2_zero_bubble_with_non_reentrant_checkpointing_matches_one_process(sc
 def test_pp2_zero_bubble_with_compiled_blocks_matches_one_process(schedule):
     sched = importlib.import_module("unsloth.models.pp_schedules")
     if not sched.split_backward_keeps_function_nodes():
-        # torch <= 2.12: split backward reads _input_metadata of compiled (AOTAutograd) nodes whose graph root
-        # is already released; refused before the model is cut.
-        # V schedules on torch < 2.12 hit the earlier V-placement refusal first.
+        # torch <= 2.12 refuses split backward over compiled AOTAutograd nodes before the model is
+        # cut; on torch < 2.12 V schedules hit the earlier V-placement refusal first
         v_refused = schedule in V_SCHEDULES and not _v_supported()
         for res in _spawn("compiled_refusal", 2, schedule = schedule):
             if v_refused:

@@ -102,6 +102,29 @@ def _link_weights(src: str, dst: str) -> None:
         os.link(src, dst)
 
 
+def _cached_tokenizer_dir(repo: str, common: dict) -> Optional[str]:
+    """Offline, a Hub id with subfolder="tokenizer" raises on the missing tokenizer/config.json (transformers 5.13),
+    so load the cached snapshot folder instead."""
+    if os.path.isdir(os.path.expanduser(repo)):
+        return None
+    try:
+        from huggingface_hub import constants, snapshot_download
+        if not (common.get("local_files_only") or constants.HF_HUB_OFFLINE):
+            return None
+        snapshot = snapshot_download(
+            repo,
+            allow_patterns = ["tokenizer/*"],
+            cache_dir = common.get("cache_dir"),
+            token = common.get("token"),
+            local_files_only = True,
+            **({"revision": common["revision"]} if common.get("revision") else {}),
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    folder = os.path.join(snapshot, "tokenizer")
+    return folder if os.path.isfile(os.path.join(folder, "tokenizer_config.json")) else None
+
+
 def _load(config: dict) -> tuple[Any, Any]:
     import torch
     import transformers
@@ -137,9 +160,13 @@ def _load(config: dict) -> tuple[Any, Any]:
             shutil.rmtree(folder, ignore_errors = True)
     else:
         repo = config["repo"]
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            repo, subfolder = "tokenizer", **common
-        )
+        cached_tokenizer = _cached_tokenizer_dir(repo, common)
+        if cached_tokenizer is not None:
+            tokenizer = transformers.AutoTokenizer.from_pretrained(cached_tokenizer)
+        else:
+            tokenizer = transformers.AutoTokenizer.from_pretrained(
+                repo, subfolder = "tokenizer", **common
+            )
         model = None
         if config.get("te_quant") == TE_QUANT_INT8_CONVROT and config.get("te_prequant"):
             try:

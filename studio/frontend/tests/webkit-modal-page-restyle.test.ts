@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * WebKit restyles the whole page (about 2-2.5 s each on a 100-turn chat) when a window or document
- * wheel / touch / pointer listener set changes, when a <style> is removed, and when a dialog exits
- * with focus inside it. These pin the guards that keep modal layers and the browser pane off those paths.
+ * WebKit restyles the whole page (about 2-2.5 s each on a 100-turn chat) when window or document
+ * wheel, touch or pointer listener sets change, a style is removed, or a dialog exits with focus.
  */
 
 import assert from "node:assert/strict";

@@ -1021,8 +1021,7 @@ def exercise_floating_monitor_geometry(page):
     wait_for_settled(monitor)
     wait_for_box("viewport restore", lambda box: is_inside(box, viewport))
 
-    # Width is the one user-set size: the text stays its size and the height follows the content,
-    # so a corner drag never adds empty space below it.
+    # Only width is user-set; height follows the content, so a corner drag adds no space.
     resize_start = drag_monitor_to(0, 0)
     _, resized_box = resize_monitor_by(40, 40)
     expect_close(resized_box["width"], resize_start["width"] + 40, "resize width")

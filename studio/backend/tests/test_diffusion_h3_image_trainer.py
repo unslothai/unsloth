@@ -350,9 +350,9 @@ def test_backend_runs_only_the_load_time_lora_set_for_h3_image():
     apply = types.MethodType(DiffusionBackend._apply_loras, backend)
     cancel = threading.Event()
     apply(state, [("style", 1.0)], cancel)  # the baked set: a no-op
-    with pytest.raises(ValueError, match = "Load the model again"):
+    with pytest.raises(ValueError, match = "Reload the model with the LoRA selection"):
         apply(state, [("style", 0.5)], cancel)
-    with pytest.raises(ValueError, match = "Load the model again"):
+    with pytest.raises(ValueError, match = "Reload the model with the LoRA selection"):
         apply(state, [], cancel)
     pipe._unsloth_loras = ()
     apply(state, [], cancel)  # nothing baked, nothing asked

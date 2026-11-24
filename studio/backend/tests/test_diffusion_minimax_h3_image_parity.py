@@ -139,8 +139,7 @@ def test_the_initial_noise_is_the_seeded_cpu_stream(h3i, pipe, monkeypatch, requ
 
 
 def test_images_sharing_one_generator_take_successive_batch_noise(h3i, pipe, monkeypatch, request):
-    """num_images_per_prompt > 1 with one generator: image i starts from slice i of one seeded batch draw, so the
-    images differ and each is reproducible."""
+    """Images sharing one generator take successive slices of one seeded noise draw."""
     import torch
 
     seen = _first_forward(pipe, request)

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { audioWorkflowTab } from "./workflows";
 import {
   useCallback,
   useEffect,
@@ -21,6 +22,12 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   CLIPS_HEADER_LINK,
   CLIPS_LIST,
+  CLIP_ROW,
+  CLIP_ROW_DURATION,
+  CLIP_ROW_ICON,
+  CLIP_ROW_MENU,
+  CLIP_ROW_SELECT,
+  CLIP_ROW_TILE,
   ClipsCard,
   ClipsCardEmpty,
 } from "./components/clips-card";
@@ -56,6 +63,7 @@ import { getTranscript } from "./transcribe-api";
 import {
   TRANSCRIPT_EXPORT_FORMATS,
   type TranscriptExportFormat,
+  needsSavedTimings,
 } from "./transcript-export";
 import {
   type TranscriptSource,
@@ -92,13 +100,12 @@ export function TranscriptExportItems({
   });
 }
 
-// The list carries counts only, so timed formats fetch the full record.
 async function downloadRecord(
   record: TranscriptRecord,
   format: TranscriptExportFormat,
 ): Promise<void> {
   let full = record;
-  if ((record.segment_count ?? 0) > 0) {
+  if (needsSavedTimings(format, record)) {
     try {
       full = await getTranscript(record.id);
     } catch (error) {
@@ -131,7 +138,7 @@ export type TranscriptSendHandlers = (transcript: {
 }) => ClipSendHandlers;
 
 const ROW_MENU_TRIGGER =
-  "size-5 text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 any-pointer-coarse:opacity-100";
+  "size-6 rounded-full text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 any-pointer-coarse:opacity-100";
 const TOP_MENU_TRIGGER =
   "size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground";
 
@@ -367,14 +374,19 @@ export function TranscriptGallery({
                 "h-auto px-0 py-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
               )}
             >
-              Clear all
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-3.5" />
+              Delete all
             </Button>
           ) : null
         }
       >
         {topRow}
         {!topRow && !archived && !loading && records.length === 0 ? (
-          <ClipsCardEmpty text={emptyText} />
+          <ClipsCardEmpty
+            icon={audioWorkflowTab("transcribe").icon}
+            title="Transcripts will appear here"
+            text={emptyText}
+          />
         ) : null}
         {/* The open transcript is the top row, so the list leaves it out. */}
         {records.some((record) => !topRow || record.id !== currentId) ||
@@ -393,17 +405,14 @@ export function TranscriptGallery({
           .map((record) => (
           <div
             key={record.id}
-            className="group flex items-center gap-1 rounded-md ps-3 pe-1 transition-colors hover:bg-wash-3"
+            className={CLIP_ROW}
           >
-            <span
-              aria-hidden="true"
-              className="grid w-[calc(40px*var(--ui-space-scale,1))] shrink-0 place-items-center text-muted-foreground"
-            >
-              <HugeiconsIcon icon={ClosedCaptionIcon} className="size-3.5" />
+            <span aria-hidden="true" className={CLIP_ROW_TILE}>
+              <HugeiconsIcon icon={ClosedCaptionIcon} strokeWidth={1.75} className={CLIP_ROW_ICON} />
             </span>
             <button
               type="button"
-              className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pr-3 ps-2 text-left"
+              className={CLIP_ROW_SELECT}
               onClick={() => {
                 if (canSelect()) onSelect(record);
               }}
@@ -418,12 +427,12 @@ export function TranscriptGallery({
                 </span>
               </span>
               {record.duration ? (
-                <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
+                <span className={CLIP_ROW_DURATION}>
                   {formatTimestamp(record.duration)}
                 </span>
               ) : null}
             </button>
-            {recordMenu(record, ROW_MENU_TRIGGER)}
+            <span className={CLIP_ROW_MENU}>{recordMenu(record, ROW_MENU_TRIGGER)}</span>
           </div>
         ))}
         {archived && !loading && !records.length ? (
@@ -444,13 +453,13 @@ export function TranscriptGallery({
       </div>
         ) : null}
       </ClipsCard>
-      <AlertDialog open={confirmingClear} onOpenChange={setConfirmingClear}>
-        <AlertDialogContent>
+      <AlertDialog open={active && confirmingClear} onOpenChange={setConfirmingClear}>
+        <AlertDialogContent size="sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>Clear transcript history</AlertDialogTitle>
+            <AlertDialogTitle>Delete all transcripts?</AlertDialogTitle>
             <AlertDialogDescription>
-              Delete all transcripts in history? Archived transcripts will be
-              kept. This cannot be undone.
+              This permanently deletes all transcripts on this page. Archived transcripts are kept. This
+              cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -459,7 +468,7 @@ export function TranscriptGallery({
               variant="destructive"
               onClick={() => void mutate(() => deleteTranscript(), null)}
             >
-              Clear all
+              Delete all
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

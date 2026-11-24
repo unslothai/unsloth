@@ -247,7 +247,9 @@ _NETWORK_FILES = (
 # Bound at the jail's own HOME with HF_HOME pinned to match.
 _MODEL_CACHE_RELPATH = os.path.join(".cache", "huggingface")
 # Excludes $HF_HOME/token and executable modules; the writable hub is a deliberate tradeoff (#5603).
-_MODEL_CACHE_SUBDIRS = ("hub", "datasets", "xet", "assets")
+# datasets/ is excluded too: Studio memory-maps the prepared Arrow files there, and offsets
+# a tool call rewrote would be read past their buffers. The jail prepares its own under HF_HOME.
+_MODEL_CACHE_SUBDIRS = ("hub", "xet", "assets")
 # NixOS keeps glibc here, so a store interpreter cannot link without it.
 _NIX_STORE = "/nix/store"
 # The NixOS system PATH (and nix-ld's loader) resolve through this link into the store.
@@ -834,7 +836,7 @@ def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
 
 def _cache_hazard_memoized(name: str, path: str) -> "str | None":
     if not os.path.lexists(path):
-        # A fresh HF home has no datasets/ or assets/ yet; create it so the sandbox shares it too.
+        # A fresh HF home has no assets/ yet; create it so the sandbox shares it too.
         try:
             os.makedirs(path, exist_ok = True)
         except OSError as exc:
@@ -882,13 +884,12 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         from utils.hf_cache_settings import effective_cache_home, get_hf_cache_paths
 
         paths = get_hf_cache_paths()
-        # datasets/assets live under the real HF home, not the display home (which can be the hub itself).
+        # assets lives under the real HF home, not the display home (which can be the hub itself).
         home = os.path.abspath(str(effective_cache_home()))
         resolved = {
             "hub": str(paths.hub_cache),
             "xet": str(paths.xet_cache),
-            # Portable installs point these at their own root while HF_HOME stays the default.
-            "datasets": os.path.expanduser(os.environ.get("HF_DATASETS_CACHE", "").strip()),
+            # Portable installs point this at their own root while HF_HOME stays the default.
             "assets": os.path.expanduser(os.environ.get("HF_ASSETS_CACHE", "").strip()),
         }
     except Exception:  # noqa: BLE001 - a launch never fails over a cache lookup
@@ -1048,8 +1049,13 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         for root in system_roots:
             argv += ["--ro-bind-try", root, root]
         # -try: a missing model folder must not fail the launch.
+        # A root under /tmp or /dev/shm is bound after their tmpfs, which would otherwise hide it.
+        tmp_silent_roots = tuple(
+            root for root in silent_roots if _within(root, "/tmp") or _within(root, "/dev/shm")
+        )
         for root in silent_roots:
-            argv += ["--ro-bind-try", root, root]
+            if root not in tmp_silent_roots:
+                argv += ["--ro-bind-try", root, root]
         trusted = tuple(p for p in _ETC_FILES_IF_TRUSTED if _trusted_system_file(p))
         for path in (*_ETC_FILES, *_etc_java_binds(), *trusted, *_NETWORK_FILES):
             argv += ["--ro-bind-try", path, path]
@@ -1069,6 +1075,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         argv += ["--tmpfs", "/dev/shm", "--tmpfs", "/tmp"]
         for path in tmp_runtime_paths:
             argv += ["--ro-bind", path, path]
+        for root in tmp_silent_roots:
+            argv += ["--ro-bind-try", root, root]
         argv += ["--bind", workdir, inner]
         if inner != workdir:
             argv += ["--bind", workdir, workdir]
@@ -1127,7 +1135,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             workdir = workdir,
             env = dict(plan.env),
             # --new-session covers the inner side only; tools.py's killpg still needs the outer setsid.
-            preexec_fn = sandbox_landlock.with_abstract_scope(plan.preexec_fn),
+            preexec_fn = sandbox_landlock.scoped_preexec(plan.preexec_fn),
             backend = BACKEND_NAME,
             pass_fds = (seccomp.fileno(),),
             owned_files = [seccomp],

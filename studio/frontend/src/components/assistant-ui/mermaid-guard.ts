@@ -58,7 +58,7 @@ function shapeDataBlocks(source: string): { start: number; end: number; body: st
   }
   const hintEnd = new Int32Array(source.length + 1).fill(-1);
   for (let index = source.length - 1; index >= 0; index--) {
-    if (source[index] === "\\") hintEnd[index] = index + 1;
+    if (source[index] === "\\" || source[index] === "#") hintEnd[index] = index + 1;
     else if (source.slice(index, index + 3).toLowerCase() === "img") hintEnd[index] = index + 3;
     else hintEnd[index] = hintEnd[index + 1];
   }
@@ -78,8 +78,11 @@ const INERT_OPENER = "#64;{";
 // Overlapping blocks can require quadratic parsing; cap total body bytes.
 const PARSE_BUDGET = 1 << 20;
 
+// Mermaid deletes every %%{...}%% before parsing, so directives between "@" and "{" still open shape data.
+const DIRECTIVE_OPENER = /@(?:[^\S\n]*%%\{[\s\S]*?\}%%)+[^\S\n]*(?=\{)/g;
+
 function withoutRemoteShapeImages(source: string): string {
-  let current = source;
+  let current = source.replace(DIRECTIVE_OPENER, "@");
   let budget = PARSE_BUDGET;
   for (let pass = 0; pass < 8; pass++) {
     // Preserve offsets and prevent comment quotes/openers from hiding later blocks.
@@ -117,17 +120,38 @@ function withoutRemoteShapeImages(source: string): string {
   return current.replaceAll("@{", INERT_OPENER);
 }
 
-function withoutRemoteImage(body: string): string | null {
-  let doc: unknown;
+function parsedShapeData(text: string): unknown {
   try {
-    // Use Mermaid's YAML semantics so escaped keys are decoded.
-    doc = load(body.includes("\n") ? `${body}\n` : `{\n${body}\n}`, { schema: JSON_SCHEMA });
+    return load(text, { schema: JSON_SCHEMA });
   } catch {
-    return /img|\\/i.test(body) ? "" : null;
+    return undefined;
   }
-  if (!isRecord(doc) || !("img" in doc)) return null;
-  if (typeof doc.img === "string" && INLINE_IMAGE.test(doc.img)) return null;
-  const rest = Object.fromEntries(Object.entries(doc).filter(([key]) => key !== "img"));
+}
+
+function withoutRemoteImage(rawBody: string): string | null {
+  // Mermaid replaces #code; references before parsing, so they can spell the key.
+  const body = rawBody.replace(CHAR_REF, (_ref, code: string) => {
+    const point = code[0].toLowerCase() === "x" ? parseInt(code.slice(1), 16) : Number(code);
+    return point <= 0x10ffff ? String.fromCodePoint(point) : "";
+  });
+  // Use Mermaid's YAML semantics so escaped keys are decoded. A newline inside a quoted value is folded
+  // into <br/>, which turns the block into a one-line flow mapping, so read it both ways.
+  const readings = [
+    body.includes("\n") ? parsedShapeData(`${body}\n`) : undefined,
+    parsedShapeData(`{\n${body}\n}`),
+  ].filter((doc) => doc !== undefined);
+  if (readings.length === 0) return /img|\\/i.test(body) ? "" : null;
+  const fetching = readings.find(
+    (doc) => isRecord(doc) && "img" in doc && !(typeof doc.img === "string" && INLINE_IMAGE.test(doc.img)),
+  );
+  if (fetching === undefined) {
+    // Neither reading names a fetching img, but a quoted key or value may still hide one: fail closed.
+    const keyed = readings.some((doc) => isRecord(doc) && "img" in doc);
+    return !keyed && /["']\s*img\s*["']?\s*:|img\s*:\s*["']?\s*(?!data:)[a-z/\\]/i.test(body) ? "" : null;
+  }
+  const rest = Object.fromEntries(
+    Object.entries(fetching as Record<string, unknown>).filter(([key]) => key !== "img"),
+  );
   return Object.keys(rest).length > 0 ? `@{ ${JSON.stringify(rest).slice(1, -1)} }` : "";
 }
 

@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Ulysses context parallelism for Hugging Face attention (any model whose attention calls ALL_ATTENTION_FUNCTIONS
-runs its own attention function after the exchange) and for hybrid models (Gated DeltaNet, Kimi delta and MiniMax
-Lightning attention), whose scans need the full sequence so they run on heads."""
+"""Ulysses CP for HF attention (via ALL_ATTENTION_FUNCTIONS) and hybrid models (Gated DeltaNet, Kimi
+delta, MiniMax Lightning), whose scans need full sequences so they run on heads."""
 
 import builtins
 import functools
@@ -313,10 +312,8 @@ def _kda_gate(f, A_log, dt_bias, lower_bound):
 
 
 def _torch_kda(q, k, v, g, beta):
-    """Exact token-by-token KDA delta rule (CPU reference).
-
-    q, k, g [B, T, H, K]; v [B, T, H, V]; beta [B, T, H].
-    """
+    """Exact token-by-token KDA delta rule (CPU reference); q, k, g [B, T, H, K], v [B, T, H, V],
+    beta [B, T, H]."""
     # fla's use_qk_l2norm_in_kernel: x * rsqrt(sum(x ** 2) + 1e-6), not F.normalize.
     q, k = q.float(), k.float()
     q = q * torch.rsqrt(q.pow(2).sum(-1, keepdim = True) + 1e-6) * q.shape[-1] ** -0.5

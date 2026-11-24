@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Z-Image-Turbo fused QKV GEMM (active LoRA wrappers fall back to stock); UNSLOTH_DIFFUSION_ZIMAGE_FUSED=0"""
+"""Z-Image-Turbo fused QKV GEMM (active LoRA wrappers fall back to stock); UNSLOTH_DIFFUSION_ZIMAGE_FUSED=0.
+
+On the int8 GEMM swap (``diffusion_int8_gemm``) Q / K / V and the MLP's w1 / w3 each read one activation: they share
+one ConvRot rotation + act quant (``shared_rotq_linears``: the same op on the same tensor, so bit-identical)."""
 
 from __future__ import annotations
 
@@ -14,6 +17,13 @@ ZIMAGE_FUSED_ENV = "UNSLOTH_DIFFUSION_ZIMAGE_FUSED"
 _MODULE = "diffusers.models.transformers.transformer_z_image"
 _FINGERPRINTS = {"ZSingleStreamAttnProcessor.__call__": frozenset({"c87f9c27d7df695f"})}
 _QKV_ATTR = "_unsloth_fused_qkv"
+# FeedForward.forward: stock diffusers bodies the shared w1 / w3 quant replaces (0.40 / 0.42 annotate differently)
+_FF_FINGERPRINTS = frozenset({"5afbdd7ffeae3f76", "8da1c726cda22eb3"})
+_FF_MARK = "__unsloth_zimage_shared_ff__"
+# stock FeedForward._forward_silu_gating (``F.silu(x1) * x3``), the product the fused SwiGLU rotation + quant computes
+_GATING_FINGERPRINTS = frozenset({"a1b4d9c056bd0362"})
+ZIMAGE_SWIGLU_ENV = "UNSLOTH_DIFFUSION_ZIMAGE_SWIGLU"
+_SWIGLU_OK: dict = {"on": False}
 
 _LOCK = threading.Lock()
 _STATE: dict = {}
@@ -23,6 +33,10 @@ _FUSION: dict = {}
 
 def zimage_fused_disabled() -> bool:
     return (os.environ.get(ZIMAGE_FUSED_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def zimage_swiglu_disabled() -> bool:
+    return (os.environ.get(ZIMAGE_SWIGLU_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
 def _stock_digest(cls: Any) -> Optional[str]:
@@ -77,10 +91,28 @@ def _qkv_intact(attn: Any) -> Any:
     return lin
 
 
+def _swapped_rotated(lin: Any) -> bool:
+    """``lin`` is a swapped int8 Linear whose act quant the fused rotation covers (traced: plain attribute reads)."""
+    from . import diffusion_int8_gemm as gemm
+
+    rec = gemm._swapped_rec(lin)
+    return rec is not None and bool(rec[2])
+
+
+def _shared_qkv(attn: Any, hidden_states: Any) -> Optional[list]:
+    """``[to_q(x), to_k(x), to_v(x)]`` on one shared rotation + act quant, else None."""
+    from . import diffusion_int8_gemm as gemm
+
+    if not _swapped_rotated(attn.to_q):
+        return None
+    return gemm.shared_rotq_linears(hidden_states, (attn.to_q, attn.to_k, attn.to_v))
+
+
 def _make_call(stock: Any) -> Any:
     import torch
 
     # bound here, not inside the traced __call__
+    from . import diffusion_int8_gemm  # noqa: F401 - imported eagerly: an import under the trace breaks the graph
     from .diffusion_int8_fused import ensure_intmm_module, int8_linear
 
     ensure_intmm_module()  # resolved here, eagerly: an import under the trace is a graph break per Linear
@@ -100,8 +132,11 @@ def _make_call(stock: Any) -> Any:
         from diffusers.models.attention_dispatch import dispatch_attention_fn
 
         fused = _qkv_intact(attn)
+        qkv = None if fused is not None else _shared_qkv(attn, hidden_states)
         if fused is not None:
             query, key, value = int8_linear(fused, hidden_states).chunk(3, dim = -1)
+        elif qkv is not None:
+            query, key, value = qkv
         else:
             query = attn.to_q(hidden_states)
             key = attn.to_k(hidden_states)
@@ -148,6 +183,113 @@ def _make_call(stock: Any) -> Any:
     functools.update_wrapper(__call__, stock, assigned = ("__name__", "__doc__"), updated = ())
     __call__.__unsloth_zimage_fused__ = True
     return __call__
+
+
+def _make_ff_forward(stock: Any) -> Any:
+    """``FeedForward.forward`` with w1 / w3 on one shared rotation + act quant; stock when they are not covered.
+
+    The shared quant is the call each of w1 / w3 makes alone (same tensor, same ``exact`` flag, set per swap), so it
+    is bit-identical eager or traced. The fused SwiGLU runs only while tracing: it keeps ``silu(x1) * x3`` in fp32 like
+    Inductor does, while an eager denoiser (a failed ``compile_repeated_blocks``) rounds the product to bf16 first."""
+    import torch
+
+    from . import diffusion_int8_gemm as gemm
+
+    def forward(self, x):
+        pair = None
+        if _swapped_rotated(self.w1):
+            pair = gemm.shared_rotq_linears(x, (self.w1, self.w3))
+        if pair is None:
+            return stock(self, x)
+        if (
+            _SWIGLU_OK["on"]
+            and torch.compiler.is_compiling()
+            and "_forward_silu_gating" not in self.__dict__
+        ):
+            # w2 reads silu(x1) * x3 straight from x1 / x3 in its rotation + act quant (Inductor's rounding)
+            y = gemm._swiglu_down(self.w2, pair[0], pair[1])
+            if y is not None:
+                return y
+        return self.w2(self._forward_silu_gating(pair[0], pair[1]))
+
+    functools.update_wrapper(
+        forward, stock, assigned = ("__name__", "__qualname__", "__doc__"), updated = ()
+    )
+    setattr(forward, _FF_MARK, True)
+    return forward
+
+
+def _patch_ff(logger: Any = None) -> bool:
+    try:
+        import importlib
+        cls = importlib.import_module(_MODULE).FeedForward
+    except Exception:  # noqa: BLE001
+        return False
+    from .diffusion_qwenimage21_rope import _digest
+
+    with _LOCK:
+        # per load (the kill switch may change between loads); read before the first compile traces the forward
+        _SWIGLU_OK["on"] = (
+            not zimage_swiglu_disabled()
+            and _digest(cls.__dict__.get("_forward_silu_gating")) in _GATING_FINGERPRINTS
+        )
+        current = cls.__dict__.get("forward")
+        if getattr(current, _FF_MARK, False):
+            return True
+
+        digest = _digest(current)
+        if digest not in _FF_FINGERPRINTS:
+            if logger is not None:
+                logger.info(
+                    "diffusion.zimage_fused: stock w1 / w3 kept: FeedForward differs (%s)", digest
+                )
+            return False
+        _STATE["ff_stock"] = current
+        cls.forward = _make_ff_forward(current)
+    return True
+
+
+def _shared_count(root: Any, cls: Any) -> int:
+    """Attention modules whose Q / K / V share one rotation + act quant (swapped rotated int8, not densely fused)."""
+    n = 0
+    for module in root.modules():
+        if type(getattr(module, "processor", None)) is not cls or _QKV_ATTR in module.__dict__:
+            continue
+        parts = [getattr(module, name, None) for name in ("to_q", "to_k", "to_v")]
+        if all(p is not None and _swapped_rotated(p) for p in parts):
+            n += 1
+    return n
+
+
+def _ff_count(root: Any) -> int:
+    """FeedForward modules whose w1 / w3 share one rotation + act quant (both swapped rotated int8)."""
+    try:
+        import importlib
+        ff_cls = importlib.import_module(_MODULE).FeedForward
+    except Exception:  # noqa: BLE001
+        return 0
+    if not getattr(ff_cls.__dict__.get("forward"), _FF_MARK, False):
+        return 0
+    n = 0
+    for module in root.modules():
+        if type(module) is not ff_cls:
+            continue
+        parts = [getattr(module, name, None) for name in ("w1", "w3")]
+        if all(p is not None and _swapped_rotated(p) for p in parts):
+            n += 1
+    return n
+
+
+def _swiglu_state(cards: Any) -> str:
+    """``on`` / ``off (...)`` for the fused SwiGLU w2 quant: the gating fingerprint + switch and each card's probe."""
+    if not _SWIGLU_OK["on"]:
+        return "off (switch or FeedForward gating differs)"
+    try:
+        from .diffusion_int8_gemm import _swiglu_on
+        ok = bool(cards) and all(_swiglu_on(index) for index in cards)
+    except Exception:  # noqa: BLE001
+        ok = False
+    return "on (compiled path only)" if ok else "off (card probe)"
 
 
 def _stock_rope(x_in: Any, freqs_cis: Any) -> Any:
@@ -277,6 +419,7 @@ def install(
         return {"real_rope": False, "fused_qkv": 0}
     if not _patch_class(logger):
         return {"real_rope": False, "fused_qkv": 0}
+    _patch_ff(logger)
     from .diffusion_int8_fused import resident_cuda_cards, run_on_first_call
 
     if resident_cuda_cards(transformer):
@@ -319,6 +462,7 @@ def install_modules(
     result = {"real_rope": False, "fused_qkv": 0}
     if zimage_fused_disabled() or not _patch_class(logger):
         return result
+    _patch_ff(logger)
     import importlib
 
     import torch
@@ -361,11 +505,41 @@ def install_modules(
             result["fused_qkv"] += 1
     if logger is not None:
         logger.info(
-            "diffusion.zimage_fused: real-arithmetic RoPE %s, fused QKV on %d attention module(s)",
+            "diffusion.zimage_fused: real-arithmetic RoPE %s, fused QKV on %d attention module(s); %d share one "
+            "ConvRot rotation + act quant on the int8 GEMM swap; %d MLP(s) share the w1 / w3 act quant; "
+            "SwiGLU-fused w2 quant %s",
             "on" if result["real_rope"] else "off (card's complex multiply not a known fma form)",
             result["fused_qkv"],
+            _shared_count(root, cls),
+            _ff_count(root),
+            _swiglu_state(cards),
         )
     return result
+
+
+def is_replica_record(key: str, value: Any) -> bool:
+    """The fused Q/K/V Linear lives outside the module tree: a CFG replica's deep copy would keep it on the source
+    card (a second copy there, and a stale one the replica's processor skips)."""
+    return key == _QKV_ATTR
+
+
+def rebuild_replica(source: Any, replica: Any) -> int:
+    """Re-fuse on the replica's own card each attention module the source fused (the copy dropped the records)."""
+    n = 0
+    with _LOCK:
+        for src, rep in zip(source.modules(), replica.modules()):
+            if _QKV_ATTR not in src.__dict__:
+                continue
+            parts = [getattr(rep, name, None) for name in ("to_q", "to_k", "to_v")]
+            if any(p is None for p in parts):
+                continue
+            bases = [_lora_base(p) for p in parts]
+            fused = _fuse_linears(bases)
+            if fused is None or not _share_storage(fused, bases):
+                continue
+            rep.__dict__[_QKV_ATTR] = (fused, *parts)
+            n += 1
+    return n
 
 
 def probe_split_cards(cards: Any) -> tuple:
@@ -402,6 +576,16 @@ def uninstall(transformer: Any = None) -> None:
                 cls = importlib.import_module(_MODULE).ZSingleStreamAttnProcessor
                 if getattr(cls.__dict__.get("__call__"), "__unsloth_zimage_fused__", False):
                     cls.__call__ = _STATE.pop("stock")
+            except Exception:  # noqa: BLE001
+                pass
+        if "ff_stock" in _STATE:
+            try:
+                import importlib
+
+                ff = importlib.import_module(_MODULE).FeedForward
+                if getattr(ff.__dict__.get("forward"), _FF_MARK, False):
+                    ff.forward = _STATE.pop("ff_stock")
+                _SWIGLU_OK["on"] = False
             except Exception:  # noqa: BLE001
                 pass
         if transformer is not None:

@@ -53,6 +53,10 @@ def _env_off(name: str) -> bool:
 def _compute_dtype(linear: nn.Module) -> torch.dtype:
     """The dtype a Linear's input is cast to: the reference casts to ``weight.dtype``, which is the storage dtype under
     diffusers' ``GGUFLinear`` (uint8), so a ``compute_dtype`` the layer declares wins. Same dtype for a plain Linear."""
+    # A PEFT wrapper's ``weight`` is its base storage (uint8 under nf4).
+    get_base = getattr(linear, "get_base_layer", None)
+    if callable(get_base):
+        linear = get_base()
     declared = getattr(linear, "compute_dtype", None)
     if isinstance(declared, torch.dtype):
         return declared
@@ -350,19 +354,37 @@ class _RoPE(nn.Module):
         return torch.cat((phase.sin(), phase.cos()), -2).flatten(-2).unsqueeze(0)
 
     def tables(self, height, width, text_length, device, dtype):
-        """``((cos, sin) for image + text, (cos, sin) for the text alone)`` in ``dtype``, cached per key."""
+        """``((cos, sin) for image + text, (cos, sin) for the text alone)`` in ``dtype``, cached per key.
+
+        Uncached during CUDA graph capture: a replay reads them at fixed addresses, and an evicted entry's memory is reused."""
         device = torch.device(device)
+        if _capturing(device):
+            return self._build(height, width, text_length, device, dtype)
         key = (int(height), int(width), int(text_length), device.type, device.index, dtype)
         hit = self._tables.get(key)
         if hit is not None:
             return hit
-        rope = self.forward(height, width, text_length, device).to(dtype)
-        full = _rope_tables(rope)
-        text = _rope_tables(rope[:, height * width :])
+        full, text = self._build(height, width, text_length, device, dtype)
         if len(self._tables) >= self._MAX_CACHED:
             self._tables.pop(next(iter(self._tables)))
         entry = self._tables[key] = (full, text)
         return entry
+
+    def _build(self, height, width, text_length, device, dtype):
+        rope = self.forward(height, width, text_length, device).to(dtype)
+        return _rope_tables(rope), _rope_tables(rope[:, height * width :])
+
+
+def _capturing(device) -> bool:
+    if device.type != "cuda":
+        return False
+    try:
+        if torch.compiler.is_compiling():
+            return False
+        with torch.cuda.device(device):
+            return bool(torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001 - a build without CUDA graphs never records one
+        return False
 
 
 def _model_bases():
@@ -393,6 +415,8 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin, _PeftAdapterMixin):
     _repeated_blocks = ["_Block", "_TextBlock"]
     _no_split_modules = ["_Block", "_TextBlock"]
     _skip_layerwise_casting_patterns = ["rope", "norm"]
+    # Only LoRA training checkpoints; inference runs under no_grad.
+    _supports_gradient_checkpointing = True
 
     @register_to_config
     def __init__(
@@ -422,6 +446,7 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin, _PeftAdapterMixin):
         self.final_norm_video = _RMSNorm(dim)
         self.final_linear_video = nn.Linear(dim, latent_channels, bias = False)
         self.video_head_modulation = nn.Linear(dim, 2 * dim)
+        self.gradient_checkpointing = False
 
     def load_training_state_dict(
         self,
@@ -515,8 +540,13 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin, _PeftAdapterMixin):
             text = self.text_embedder(context, text_tables) if refined_text is None else context
             x = torch.cat((video, text.to(video.dtype)), 1)
             sample_mod = mod[index : index + 1]
+            checkpointed = self.gradient_checkpointing and torch.is_grad_enabled()
             for layer_index, layer in enumerate(self.layers):
-                if layer_index not in skip_layers:
+                if layer_index in skip_layers:
+                    continue
+                if checkpointed:
+                    x = self._gradient_checkpointing_func(layer, x, full_tables, sample_mod)
+                else:
                     x = layer(x, full_tables, sample_mod)
             x = self.final_norm_video(x[:, : height * width].to(self.final_norm_video.weight.dtype))
             x = x * (1 + head[index : index + 1, 1, None]) + head[index : index + 1, 0, None]
@@ -1172,6 +1202,7 @@ def load_moss_image_pipeline(
     checkpoint: Optional[str] = None,
     vae: Any = None,
     storage_dtypes: Optional[dict] = None,
+    with_transformer: bool = True,
 ) -> MOSSImagePipeline:
     """A ready ``MOSSImagePipeline`` for ``repo_id`` (a repo id or a local diffusers folder), on CPU.
 
@@ -1181,7 +1212,8 @@ def load_moss_image_pipeline(
     (else ``repo_id``) picks SFT or Base skip defaults. ``storage_dtypes`` (component -> dtype name, the small-host
     route's ``SmallHostDecision.storage_dtypes``) loads those components at their stored dtype instead of ``dtype``, so
     they stay memory-mapped until the route converts them; a float32 load on an fp16-only card otherwise widens the
-    9B encoder and the DiT in host RAM first (54 GB, more than a 51 GB Colab T4 High-RAM)."""
+    9B encoder and the DiT in host RAM first (54 GB, more than a 51 GB Colab T4 High-RAM). ``with_transformer=False``
+    leaves ``pipe.transformer`` None (LoRA training loads it after encoding)."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     assert_transformers_supported()
@@ -1210,12 +1242,13 @@ def load_moss_image_pipeline(
         # A pre-cast build (the hosted int8 ConvRot encoder) carries the vision tower and needs the same guard.
         drop_vision_tower(text_encoder)
         install_gdn_offload_guard(text_encoder)
-    if transformer is None:
+    if transformer is None and with_transformer:
         transformer = MOSSImageTransformer.from_pretrained(
             repo_id, subfolder = "transformer", torch_dtype = stored.get("transformer", dtype), **common
         )
         check_cancelled()
-    transformer.eval()
+    if transformer is not None:
+        transformer.eval()
     if vae is None:
         vae = diffusers.AutoencoderKLFlux2.from_pretrained(
             repo_id, subfolder = "vae", torch_dtype = vae_dtype or torch.float32, **common

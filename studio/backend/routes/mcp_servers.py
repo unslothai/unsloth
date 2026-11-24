@@ -260,16 +260,27 @@ def list_builtins(
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
     no_credential: WithoutCredential = False,
+    detect: Optional[str] = None,
 ):
+    # Install detection reads the disk (and the registry on Windows): only for the app being set up when asked.
+    def wanted(builtin_id: str) -> bool:
+        return detect is None or detect == builtin_id
+
     if via_api_key or no_credential:
-        items = [blender.catalog_item(), *(editors.catalog_item(key) for key in editors.EDITORS)]
+        items = [
+            blender.catalog_item(detect = wanted("blender")),
+            *(editors.catalog_item(key, detect = wanted(key)) for key in editors.EDITORS),
+        ]
         for item in items:
             item.available = False
             item.unavailable_reason = f"An authenticated Unsloth Studio UI session is required for {item.display_name} MCP."
         return items
     return [
-        blender.catalog_item(_builtin_row()),
-        *(editors.catalog_item(key, _builtin_row(key)) for key in editors.EDITORS),
+        blender.catalog_item(_builtin_row(), detect = wanted("blender")),
+        *(
+            editors.catalog_item(key, _builtin_row(key), detect = wanted(key))
+            for key in editors.EDITORS
+        ),
     ]
 
 
@@ -290,9 +301,17 @@ async def test_blender(
         )
     settings = BlenderSettings(port = payload.port, blender_path = payload.blender_path)
     on_tools = None
-    if row and blender.settings_for(row) == settings:
+    saved = bool(row) and blender.settings_for(row) == settings
+    if saved:
         on_tools = lambda tools: cache_tools(row["id"], tools)
-    return await blender.probe(settings, on_tools = on_tools)
+    result = await blender.probe(settings, on_tools = on_tools)
+    if saved and result.blender_path:
+        mcp_servers_db.update_server(
+            row["id"],
+            {"builtin_config_json": json.dumps({**config, "blender_path": result.blender_path})},
+        )
+        await asyncio.to_thread(close_mcp_sessions, row["url"], parse_server_headers(row))
+    return result
 
 
 @router.put("/builtins/blender", response_model = McpBuiltinResponse)
@@ -870,6 +889,12 @@ def _ui_server_or_404(server_id: str, via_api_key: bool) -> dict:
     return server
 
 
+async def _ui_project_gate(server_id: str, session_id: Optional[str]) -> None:
+    from core.inference.tools import mcp_project_excludes
+    if await asyncio.to_thread(mcp_project_excludes, server_id, session_id):
+        raise HTTPException(status_code = 400, detail = "MCP server is not enabled for this project")
+
+
 def _row_still_matches(server_id: str, server: dict) -> bool:
     current = mcp_servers_db.get_server(server_id)
     return current is not None and all(
@@ -909,7 +934,7 @@ async def _warm_tool_cache(server: dict) -> None:
 
 
 def _ui_call_kwargs(server_id: str, server: dict, thread_id, session_id) -> dict:
-    from core.inference.tools import mcp_session_scope
+    from core.inference.tools import mcp_project_excludes, mcp_session_scope
     return {
         "url": server["url"],
         "headers": parse_server_headers(server),
@@ -918,7 +943,10 @@ def _ui_call_kwargs(server_id: str, server: dict, thread_id, session_id) -> dict
         **oauth_client_kwargs(server),
         # execute_tool's key, so a widget reaches the chat's own stdio subprocess.
         "scope": mcp_session_scope(session_id, thread_id),
-        "config_check": lambda: _row_still_matches(server_id, server),
+        "config_check": lambda: (
+            _row_still_matches(server_id, server)
+            and not mcp_project_excludes(server_id, session_id)
+        ),
     }
 
 
@@ -932,6 +960,7 @@ async def read_mcp_ui_resource(
     via_api_key: ViaApiKey = False,
 ):
     server = _ui_server_or_404(server_id, via_api_key)
+    await _ui_project_gate(server_id, session_id)
     uri = (uri or "").strip()
     # Any ui:// resource (widgets read their own assets), no other scheme: a filesystem server maps file:// onto the host.
     if not uri.startswith(UI_RESOURCE_SCHEME):
@@ -979,6 +1008,7 @@ async def call_mcp_ui_tool(
     if get_tool_policy() is False:
         raise HTTPException(status_code = 403, detail = "Tools are disabled on this server")
     server = _ui_server_or_404(server_id, via_api_key)
+    await _ui_project_gate(server_id, payload.session_id)
     tool_name = (payload.tool_name or "").strip()
     if not tool_name:
         raise HTTPException(status_code = 400, detail = "tool_name must not be empty")

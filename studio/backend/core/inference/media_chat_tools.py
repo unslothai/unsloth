@@ -57,6 +57,10 @@ def offered_media_chat_tools(enabled_tools) -> list[dict]:
             continue
         status = media_chat_status(task)
         if status is None:
+            if name == "generate_image":
+                from core.inference.chat_media_swap import chat_can_swap
+                if chat_can_swap():
+                    tools.append(generate_image_schema({}))
             continue
         if name == "generate_image":
             if offers_txt2img(status):

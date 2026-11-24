@@ -151,11 +151,9 @@ else
     rocm-smi --showid 2>/dev/null | grep 'GPU\[' | head -4 >&2
 fi
 
-# Generic wheels carry gfx1030 but not its RDNA 2 siblings, which segfault on the first kernel
-# unless run as gfx1030 (#17147). KFD, not torch: the override cannot spoof it. Never on a mixed
-# host (a global override misreports the other cards) or for gfx1033, which check 4 refuses.
-# A gfx1035/gfx1036 iGPU counts only on an APU-only host; beside a card it counts as mixed, since
-# a spoofed iGPU reads as covered and Studio would then select it.
+# RDNA 2 siblings of gfx1030 segfault unless run as gfx1030 (17147); KFD not torch, the override
+# cannot spoof it; never on a mixed host or for gfx1033 (check 4 refuses it); gfx1035/gfx1036 iGPU
+# counts only on an APU-only host.
 if [[ -z "$IMAGE_GFX" && -z "${HSA_OVERRIDE_GFX_VERSION:-}" && "$UNSLOTH_ROCM_DEV_PATH" == "kfd" ]]; then
     _gfx_all=()
     _gfx103x=()

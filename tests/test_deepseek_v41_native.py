@@ -36,9 +36,8 @@ def _zoo_resolves_native():
         return False
 
 
-# Capability probes for the companion unsloth_zoo (not version strings): on an unsloth_zoo without them these tests
-# skip; the model falls back (Parameter-backed engram tables, the torch sparse attention, plain-PEFT grouped
-# blocks) or refuses (gradient checkpointing without the replay).
+# unsloth_zoo feature probes, not versions: without them tests skip and the model falls back (engram
+# tables, torch sparse attention, PEFT blocks) or refuses (checkpointing without replay).
 needs_frozen_tables = pytest.mark.skipif(
     not hasattr(_zoo_dsv41(), "make_deepseek_v41_engram_table"),
     reason = "unsloth_zoo without the parameter-free DeepSeek-V4.1 engram table (unsloth-zoo #2510)",

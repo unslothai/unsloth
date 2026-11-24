@@ -171,15 +171,46 @@ def test_in_place_edit_of_cached_source_is_not_a_hit(monkeypatch):
     assert torch.equal(got, want)
 
 
-def test_text_only_render_keeps_stock(monkeypatch):
+def test_text_only_render_caches_text_stream_by_default(monkeypatch):
+    """Text-to-image on a resident denoiser: the text stream runs once per branch, bit-identical to stock."""
+    cls = _flux3()
+    monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_FLUX3_TEXT_COND_CACHE", raising = False)
+    monkeypatch.setenv(cb.COMPACT_MOD_ENV, "0")
+    model = _tiny(cls)
+    cond = _inputs(False, seed = 1)
+    uncond = dict(cond, encoder_hidden_states = torch.randn(1, 7, 24), txt_ids = torch.zeros(7, 4))
+    with torch.no_grad():
+        stock = _steps(model, [cond, uncond])
+        assert cb.prepare(model) and cb.begin_render(model)
+        try:
+            cached = _steps(model, [cond, uncond])
+        finally:
+            cb.end_render(model)
+    for a, b in zip(stock, cached):
+        assert torch.equal(a, b)
+    stats = cb.status(model)
+    assert (stats["misses"], stats["hits"]) == (2, 4)
+    assert not model.__dict__["_unsloth_cond_cache"]
+
+
+@pytest.mark.parametrize("why", ["switch", "offloaded"])
+def test_text_only_render_keeps_stock_when_off(why, monkeypatch):
+    """The kill switch, or an offloaded denoiser (its prefetch order stays as before), keeps the stock forward."""
     cls = _flux3()
     monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
     monkeypatch.setenv(cb.COMPACT_MOD_ENV, "0")
+    if why == "switch":
+        monkeypatch.setenv(cb.TEXT_COND_ENV, "0")
+    else:
+        monkeypatch.delenv(cb.TEXT_COND_ENV, raising = False)
     model = _tiny(cls)
     kw = _inputs(False)
     with torch.no_grad():
         want = model(**kw)[0]
         assert cb.prepare(model) and cb.begin_render(model)
+        if why == "offloaded":
+            model.__dict__[cb._OFFLOADED_ATTR] = True
         got = model(**kw)[0]
         cb.end_render(model)
     assert torch.equal(got, want)
@@ -543,8 +574,7 @@ def _joint_mod_shapes(model):
 @pytest.mark.parametrize("batch", [1, 2])
 @pytest.mark.parametrize("refs", [0, 1, 8])
 def test_span_modulation_matches_per_token_rows_bitwise(dtype, batch, refs, monkeypatch):
-    """One modulation row per span (image, references) is bitwise the per-token rows, and no per-token copy reaches
-    the joint blocks."""
+    """One modulation row per span matches per-token rows bitwise; no per-token copy is made."""
     cls = _flux3()
     monkeypatch.delenv(cb.COMPACT_MOD_ENV, raising = False)
     monkeypatch.delenv(cb.SPAN_MOD_ENV, raising = False)

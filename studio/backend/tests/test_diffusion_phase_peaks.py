@@ -23,6 +23,13 @@ import pytest
 import core.inference.diffusion_measured_peaks as mp
 import core.inference.diffusion_memory as dm
 
+
+@pytest.fixture(autouse = True)
+def _trusted_free_reading(monkeypatch):
+    """The wider encoder room reads free memory as a measurement; a Windows ROCm host (a ceiling) keeps the flat room."""
+    monkeypatch.setattr(dm, "_free_reading_untrusted", lambda: False, raising = False)
+
+
 QWEN_LOADED = {
     "transformer": (6922, "dit"),
     "text_encoder": (8917, "text_encoder"),
@@ -141,7 +148,12 @@ def test_whole_render_peaks_alone_place_as_before(qwen_pipe):
     plan = _qwen_flat_plan()
     _record(B200["peak"])
     later = _refine(qwen_pipe, plan)
-    assert later.resident_text_encoder_mib == 4621
+    # the flat room as before; beside the whole transformer the encoders may keep what free memory leaves
+    assert (
+        later.estimates.get("flat_resident_text_encoder_mib", later.resident_text_encoder_mib)
+        == 4621
+    )
+    assert 4621 <= later.resident_text_encoder_mib < 8917
     assert "decode_lend_text_encoder_mib" not in later.estimates
     assert dm.decode_lend_from_plan(later) is None
 
@@ -179,6 +191,13 @@ def test_phase_kill_switch_restores_the_whole_render_placement(qwen_pipe, monkey
     plan = _qwen_flat_plan()
     _record(**B200)
     monkeypatch.setenv(mp.PHASE_PEAKS_ENV, "0")
+    whole = _refine(qwen_pipe, plan)
+    assert (
+        whole.estimates.get("flat_resident_text_encoder_mib", whole.resident_text_encoder_mib)
+        == 4621
+    )
+    assert "decode_lend_text_encoder_mib" not in whole.estimates
+    monkeypatch.setenv(dm.TE_RESIDENT_ROOM_ENV, "0")
     assert _refine(qwen_pipe, plan).resident_text_encoder_mib == 4621
 
 
@@ -672,3 +691,37 @@ def test_pre_workflow_store_peak_no_longer_sizes_txt2img(qwen_pipe, store):
     assert later.estimates["decode_lend_text_encoder_mib"] == 8917 - 4621
     data = json.loads(store.read_text(encoding = "utf-8"))
     assert data["version"] == mp._VERSION and set(data["entries"]) == {edit, other, base}
+
+
+def test_16gb_later_loads_keep_the_wider_encoder_room_over_a_decode_lend(qwen_pipe, monkeypatch):
+    """Colab L4, 16 GiB budget: after a recorded render the wider room beats the ~2.1 GB decode lend and needs no lend."""
+    monkeypatch.delenv(dm.TE_RESIDENT_ROOM_ENV, raising = False)
+    free, total = 16234, 16376
+    plan = dm.plan_diffusion_memory(
+        target = types.SimpleNamespace(supports_model_cpu_offload = True),
+        device_memory = dm.DeviceMemory("cuda", "cuda", "discrete_vram", free, total),
+        runtime_headroom_mib = dm.estimate_image_runtime_mib(
+            width = None, height = None, family = "qwen-image-2.1"
+        ),
+        requested_mode = None,
+        model_dense_mib = 6922 + 8917 + 254,
+        companion_dense_mib = 8917 + 254,
+        text_encoder_dense_mib = 8917,
+    )
+    if plan.offload_policy == dm.OFFLOAD_MODEL:
+        plan = dm.torchao_streaming_plan(plan)
+    pad = 619  # the denoiser's window only: the encoders' window now pads the encode phase
+    _record(1771 + pad, phases = _phases(900, 1771, pad = pad))
+    later = _refine(qwen_pipe, plan)
+    headroom = later.estimates["measured_runtime_headroom_mib"]
+    slack = later.estimates["resident_te_slack_mib"]
+    assert later.resident_text_encoder_mib == min(8917, free - slack - 254 - headroom - 6922)
+    assert later.resident_text_encoder_mib > later.estimates["lent_resident_text_encoder_mib"]
+    assert "decode_lend_text_encoder_mib" not in later.estimates
+    assert dm.decode_lend_from_plan(later) is None
+    assert 6922 + 254 + later.resident_text_encoder_mib + headroom + slack <= free
+    # kill switch: the lend path as before
+    monkeypatch.setenv(dm.TE_RESIDENT_ROOM_ENV, "0")
+    old = _refine(qwen_pipe, plan)
+    assert old.estimates.get("decode_lend_text_encoder_mib", 0) > 0
+    assert old.resident_text_encoder_mib < later.resident_text_encoder_mib

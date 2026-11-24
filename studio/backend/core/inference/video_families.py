@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 from .diffusion_nvfp4_flag import nvfp4_blocked, without_nvfp4
 from .family_name_match import model_identity, normalize_family_name, token_in_name, token_length
@@ -194,19 +194,6 @@ def assert_local_pipeline_family(path: Optional[str], family: Optional[str]) -> 
         )
 
 
-def ltx25_training_message(subject: str) -> str:
-    return (
-        f"{subject} is LTX-2.5, which Unsloth can run on the Video page but cannot train yet. "
-        "Train on LTX-2 (Lightricks/LTX-2) instead."
-    )
-
-
-def assert_local_pipeline_not_ltx25(path: Optional[str]) -> None:
-    """Training guard: refuse a local diffusers LTX-2.5 folder whose name does not say so; unreadable passes."""
-    if local_ltx_pipeline_family(path) == LTX25_FAMILY:
-        raise ValueError(ltx25_training_message(f"'{path}' (by its model_index.json)"))
-
-
 @dataclass(frozen = True)
 class VideoFamily:
     name: str
@@ -272,8 +259,10 @@ class VideoFamily:
     # One config per reduction instead of a per-process benchmark that can change the render (diffusion_speed.
     # pin_reduction_configs). Off by default: it can keep a slower config (HunyuanVideo-1.5 ~2% per step).
     filter_reduction_configs: bool = False
-    # Same spelling as DiffusionFamily: pin the filter only on these (major, minor) archs.
-    filter_reduction_configs_archs: tuple[tuple[int, int], ...] = field(default_factory = tuple)
+    # Same spelling as DiffusionFamily: pin the filter only on these CUDA (major, minor) archs or ROCm gfx names.
+    filter_reduction_configs_archs: tuple[Union[tuple[int, int], str], ...] = field(
+        default_factory = tuple
+    )
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
     # Subdirectory of gguf_repo a bare repo id means; None keeps the root.
@@ -301,6 +290,8 @@ class VideoFamily:
     prequant_resident_gb_by_scheme: tuple[tuple[str, float], ...] = field(default_factory = tuple)
     # (base_repo, scheme, repo_id) keyed on lowercased base id: a prequant only loads on its own base.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Lowercased base ids no hosted family prequant may stand in for (a distilled student of the family's base).
+    prequant_excluded_bases: tuple[str, ...] = field(default_factory = tuple)
     # Overrides the derived name; keep that fallback so old installs still resolve; task rows get none.
     prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
     # Separate partition, served ONLY by its own (scheme, task, filename) row or it loads the wrong one.
@@ -420,21 +411,32 @@ _COSMOS3_REASONER_REFUSAL = (
     "This is a Cosmos3 Reasoner checkpoint, a vision-language model that answers in text rather than generating "
     "video. Load it from Chat, or load nvidia/Cosmos3-Nano or nvidia/Cosmos3-Edge here."
 )
+# ModelOpt FP8 builds: transformer via diffusion_modelopt_fp8, the rest is the bf16 sibling's pipeline.
 _COSMOS3_CONDITIONED_RE = (
-    _COSMOS3_VARIANT + r"(?:policy|sim|transfer|fp8)(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
+    _COSMOS3_VARIANT + r"(?:policy|sim|transfer)(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
 )
 _COSMOS3_CONDITIONED_REFUSAL = (
-    "This Cosmos3 checkpoint is a Policy, Sim, Transfer or FP8 build. The first three need action or control "
-    "inputs (and their own Diffusers pipelines) that Studio's Video page does not provide, and the FP8 builds are "
-    "untested here. Load nvidia/Cosmos3-Nano or nvidia/Cosmos3-Edge instead."
+    "This Cosmos3 checkpoint is a Policy, Sim or Transfer build. Those need action or control inputs (and their own "
+    "Diffusers pipelines) that Studio's Video page does not provide. Load nvidia/Cosmos3-Nano or nvidia/Cosmos3-Edge "
+    "(or their -FP8 builds) instead."
 )
 _COSMOS3_UNSUPPORTED = (
     (_COSMOS3_REASONER_RE, _COSMOS3_REASONER_REFUSAL),
     (_COSMOS3_CONDITIONED_RE, _COSMOS3_CONDITIONED_REFUSAL),
 )
 # Wan2.2-TI2V-5B VAE: stock tiles leave a 4-latent edge tile at 480 / 832 px; priced at its measured 2.5 MiB/latent px.
-_COSMOS3_PROFILE = FamilyProfile(
-    untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4))
+_COSMOS3_UNTILED_VAE = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4))
+COSMOS3_FP8_REPOS = {
+    COSMOS3_NANO_FAMILY: "nvidia/Cosmos3-Nano-FP8",
+    COSMOS3_EDGE_FAMILY: "nvidia/Cosmos3-Edge-FP8",
+}
+_COSMOS3_NANO_PROFILE = FamilyProfile(
+    untiled_vae = _COSMOS3_UNTILED_VAE,
+    trusted_repos = (COSMOS3_FP8_REPOS[COSMOS3_NANO_FAMILY].lower(),),
+)
+_COSMOS3_EDGE_PROFILE = FamilyProfile(
+    untiled_vae = _COSMOS3_UNTILED_VAE,
+    trusted_repos = (COSMOS3_FP8_REPOS[COSMOS3_EDGE_FAMILY].lower(),),
 )
 # Model-card sampling; the shipped scheduler_config.json's flow_shift 1.0 is used by neither card.
 _COSMOS3_NANO_SCHEDULER = (("flow_shift", 10.0),)
@@ -600,6 +602,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         supports_torch_compile = True,
         # Near-equal inductor norm-reduction configs rendered different clips per fresh process for one seed.
         filter_reduction_configs = True,
+        # The conditioner's Qwen3-VL Conv3d patch embed reads every reference clip / keyframe: cudnn.benchmark's
+        # per-process algorithm pick moved its output (G4: two clip families per seed), so the denoiser diverged.
+        cudnn_benchmark = False,
         # CUDA graph declined: no measurable win (GPU-bound) for ~8 GB extra memory and 31 s capture.
         supports_cuda_graph = False,
         # Streamed, H3's prequant groups onload through diffusers' stream path, which waits on the host per group: a
@@ -644,6 +649,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # reference 1280x720 resolves to the 1280x704 latent canvas it actually renders.
     VideoFamily(
         name = "ltx-2.5",
+        trainable = True,
+        label = "LTX-2.5",
         profile = FamilyProfile(
             # the 2.3 DiT less the video FFN bias
             int8_exclude_tokens = _LTX2_INT8_EXCLUDES,
@@ -665,6 +672,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             preview_factors = "ltx2",
             # The split single-file repo next to the Diffusers pack (safetensors, no remote code).
             trusted_repos = ("lightricks/ltx-2.5",),
+            # An explicit int8 pick on gfx1151 (ROCm 7.13, 512x320x17, 8 steps, 4 repeats) runs W8A8 read from the
+            # hosted ConvRot file; AUTO keeps bf16 (15.11 s/clip). Weight-only quantised at load measured 18.61 s/clip.
+            rdna_explicit_w8a8 = (
+                "hosted int8 W8A8 measured 16.01 vs 18.61 s/clip against weight-only int8 on gfx1151 (512x320x17, "
+                "8 steps), LPIPS 0.102 vs 0.164 against bf16"
+            ),
         ),
         pipeline_class = "LTX2Pipeline",
         transformer_class = "LTX2VideoTransformer3DModel",
@@ -771,11 +784,30 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             auto_static_skip = (
                 ("wan-ai/wan2.2-ti2v-5b-diffusers", (("default", 2), ("max", 3), ("steps", 50))),
             ),
+            # 27 computed steps like every-3, placed by a propagation-weighted guided-error rule (RA-CFGCache,
+            # calibrated offline on one held-out prompt): denser early, wider gaps late. 832x480x49, CFG 5, shift 8,
+            # 4 held-out prompts: mean LPIPS 0.050 vs 0.104 for every-3 at the same 54 calls (lower on all 4).
+            # 40 steps (22 computed, same rule, calibrated through Studio's INT8 compiled path): mean LPIPS 0.093 on
+            # 4 prompts x 2 seeds, under the max-tier bar of 0.10 (every-3 there: 0.132, so 40 never skipped
+            # before). 20 and 30 steps stay unskipped: both schedules measured 0.19-0.27 there.
+            auto_static_skip_masks = (
+                (
+                    "wan-ai/wan2.2-ti2v-5b-diffusers",
+                    (
+                        ("max", "11111111111101010100100100010001001001000100011111"),
+                        ("max", "1111111111101010010001000100010001001111"),
+                    ),
+                ),
+            ),
+            # FastVideo's dense-attention DMD student (video_dmd) loads from its own Diffusers repo.
+            trusted_repos = ("fastvideo/fastwan2.2-ti2v-5b-fullattn-diffusers",),
         ),
         comfy_flow_shift = 8.0,  # ComfyUI ModelSamplingSD3 8 (TI2V-5B template)
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        # The FastWan DMD student shares the architecture, not the weights: it quantizes at load.
+        prequant_excluded_bases = ("fastvideo/fastwan2.2-ti2v-5b-fullattn-diffusers",),
         # fp8 / int8: Wan2.2-TI2V-5B-<SCHEME>.pt; nvfp4: .safetensors only. Sizes from Hub (2026-08-04).
         prequant_repos = (
             ("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),
@@ -785,7 +817,14 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.safetensors"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 2.9), ("fp8", 5.1), ("int8", 5.0)),
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
-        aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
+        # "fastwan2.2-ti2v-5b-fullattn": FastVideo's dense-attention DMD student of this model (video_dmd).
+        aliases = (
+            "wan2.2-5b",
+            "wan-ti2v",
+            "wan2.2-ti2v",
+            "wan-ti2v-5b",
+            "fastwan2.2-ti2v-5b-fullattn",
+        ),
         has_audio = False,
         default_steps = 20,
         default_guidance = 5.0,
@@ -801,6 +840,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
         cudnn_benchmark = False,
+        # gfx1151: fresh processes rendered one seed into up to 4 clips (two reduction kernels benchmark R0_BLOCK 2048
+        # vs 4096 per process); with the filter every process matched bitwise. NVIDIA was already bit-exact.
+        filter_reduction_configs_archs = ("gfx1151",),
         # Streamed: faster than eager with bit-identical latents; two replays per step (CFG), one graph per shape.
         offload_cuda_graph = True,
         # UMT5 keeps its overflowing `wo` in fp32 itself; the VAE stays fp32 (vae_force_fp32).
@@ -887,12 +929,17 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # Wan2.1-T2V-1.3B: 480P only (upstream calls 720P unstable for 1.3B).
     VideoFamily(
         name = "wan2.1-t2v-1.3b",
-        profile = FamilyProfile(untiled_vae = _WAN21_VAE_UNTILED),
+        # FastVideo's DMD student of this model (video_dmd) loads from its own Diffusers repo.
+        profile = FamilyProfile(
+            untiled_vae = _WAN21_VAE_UNTILED,
+            trusted_repos = ("fastvideo/fastwan2.1-t2v-1.3b-diffusers",),
+        ),
         comfy_flow_shift = 8.0,  # reference workflow shift; replaces the repo's flow_shift 3.0
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
-        aliases = ("wan2.1-1.3b", "wan21-t2v-1.3b", "wan21-1.3b"),
+        # "fastwan2.1-t2v-1.3b": FastVideo's DMD student of this model, sampled dense (video_dmd).
+        aliases = ("wan2.1-1.3b", "wan21-t2v-1.3b", "wan21-1.3b", "fastwan2.1-t2v-1.3b"),
         has_audio = False,
         default_steps = 30,
         default_guidance = 6.0,
@@ -1049,7 +1096,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "Cosmos3OmniPipeline",
         transformer_class = "Cosmos3OmniTransformer",
         base_repo = "nvidia/Cosmos3-Nano",
-        profile = _COSMOS3_PROFILE,
+        profile = _COSMOS3_NANO_PROFILE,
         has_audio = False,
         default_steps = 35,
         default_guidance = 6.0,
@@ -1093,7 +1140,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "Cosmos3OmniPipeline",
         transformer_class = "Cosmos3OmniTransformer",
         base_repo = "nvidia/Cosmos3-Edge",
-        profile = _COSMOS3_PROFILE,
+        profile = _COSMOS3_EDGE_PROFILE,
         has_audio = False,
         default_steps = 20,
         default_guidance = 6.0,
@@ -1146,11 +1193,15 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         _H3_IMAGE_NOT_VIDEO,
     ),
     (
-        r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))[^/\\]*[/\\]*$",
-        "This is a FastVideo FastWan checkpoint. FastWan is distilled for FastVideo's own few-step "
-        "sampler and sparse attention (its repos declare WanDMDPipeline, which Diffusers does not "
-        "ship), so Unsloth cannot run it faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
-        "Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
+        # The dense-attention DMD students (FastWan2.2-TI2V-5B-FullAttn, FastWan2.1-T2V-1.3B) run as Diffusers repos
+        # through video_dmd; the sparse-attention releases and any GGUF / single-file copy stay refused.
+        r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))"
+        r"(?!(?![^/\\]*(?:gguf|safetensors))[^/\\]*(?<![a-z0-9])"
+        r"fastwan-?2-(?:2-ti2v-5b-fullattn|1-t2v-1-3b)(?![a-z0-9]))[^/\\]*[/\\]*$",
+        "This is a FastVideo FastWan checkpoint Unsloth cannot run faithfully: the sparse-attention releases need "
+        "FastVideo's own attention kernels, and the dense-attention DMD students load only as their Diffusers "
+        "repos. Load FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers or FastVideo/FastWan2.1-T2V-1.3B-Diffusers "
+        "(3-step students) or Wan-AI/Wan2.1-T2V-1.3B-Diffusers instead.",
     ),
     (
         r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])anyflow(?![a-z]))[^/\\]*[/\\]*$",
@@ -1876,6 +1927,9 @@ def validate_video_reference_conditioning(
 
 # (steps, guidance) per variant, matched by substring, most specific first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
+    # FastWan DMD students: their trained 3 timesteps, no CFG (video_dmd enforces both). Before every Wan key.
+    ("fastwan2.2-ti2v-5b-fullattn", 3, 1.0),
+    ("fastwan2.1-t2v-1.3b", 3, 1.0),
     ("cosmos3-nano", 35, 6.0),
     ("cosmos3-edge", 20, 6.0),
     # MiniMax-H3 PDD baked checkpoints: ComfyUI's recipe is 8 Euler steps on the simple schedule at CFG 1 (shifts 12 / 3
@@ -1902,7 +1956,7 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
 _NAME_SEGMENT_DEFAULT_KEYS = frozenset(
     k
     for k, _s, _g in _VIDEO_GENERATION_DEFAULTS
-    if k.startswith(("wan", "fusionx", "pdd", "cosmos3"))
+    if k.startswith(("wan", "fastwan", "fusionx", "pdd", "cosmos3"))
 )
 # A PDD recipe on another family's checkpoint (a Wan file under /models/pdd/) would silently run 8 steps at CFG 1.
 _FAMILY_SCOPED_DEFAULT_KEYS = {"pdd": "minimax-h3"}

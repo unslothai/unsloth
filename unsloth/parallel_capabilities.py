@@ -269,6 +269,16 @@ RULES = (
         "(dp without fsdp) for another Muon",
     ),
     Rule(
+        "fsdp2 x optimizer",
+        "Adafactor under native FSDP2",
+        lambda q: q.fsdp2 and "adafactor" in q.optim,
+        "Adafactor factors each weight's second moment into whole-row and whole-column means, and "
+        "every rank holds only a shard of the weight: transformers' and torch's Adafactor both fail "
+        "at the first step on DTensor shards",
+        "adamw_torch / adamw_torch_fused / adamw_8bit / paged_adamw_8bit, or DDP (dp without fsdp) "
+        "for Adafactor",
+    ),
+    Rule(
         "fsdp2 x memory",
         "block swap (offload_layers) under native FSDP2",
         lambda q: q.fsdp2 and q.block_swap,
@@ -291,6 +301,17 @@ RULES = (
         lambda q: q.tp > 1 and bool(q.tp_blocker),
         "models/tp_native.py refuses the model before any weight loads (its reason follows the layout below)",
         "drop tp (DDP, or UNSLOTH_FSDP2=1, over the dp axis)",
+    ),
+    Rule(
+        "pp x model",
+        "pipeline parallel composed with tensor / data parallel on Inkling 2 (inkling2, inkling2_loop)",
+        lambda q: q.pp > 1
+        and (q.tp > 1 or q.dp > 1 or q.fsdp2)
+        and q.family in ("inkling2", "inkling2_loop"),
+        "Inkling 2's pipeline stages (models/inkling2.py Inkling2PipelineAdapter) run on a pp-only mesh; pp x tp is "
+        "refused at from_pretrained, pp x dp at the first pipeline step",
+        'one axis at a time: UNSLOTH_PARALLEL="pp=N", "tp=N" (tp dividing the head counts), "dp=N" (DDP) or '
+        '"fsdp=1" (native FSDP2), or device_map = "balanced" in one process',
     ),
     Rule(
         "pp / tp x vLLM",
@@ -684,7 +705,44 @@ _PACKED_ULYSSES = (
     "[gemma3-eager-True|qwen3-sdpa-True]"
 )
 _PACKED_COMPILED = _GLOO + "test_block_compile_packed_rows_under_cp_match_one_process"
+# Inkling 2 (Mini: inkling2_loop, Small: inkling2): sliding / full attention with relative bias and sinks after the
+# Ulysses exchange, short convolutions with a halo from the previous shard (utils/ulysses_inkling2.py).
+_INKLING2_CP = "tests/test_ulysses_inkling2_gloo.py::test_inkling2_ulysses_matches_one_process"
 CELLS = (
+    Cell(
+        "Inkling 2 (attention + short convolutions, MoE) x Ulysses cp (DDP), eager",
+        {
+            "trainer": ("sft",),
+            "family": ("inkling2", "inkling2_loop"),
+            "hybrid": (True,),
+            "multimodal": (False, True),
+            "windowed": (True,),
+            "mode": ("lora", "qlora", "full"),
+            "packing": (False,),
+            "cp_backend": ("ulysses",),
+            "dp": (1,),
+            "cp": (2,),
+            "tp": (1,),
+            "pp": (1,),
+            "fsdp2": (False,),
+            "attention": ("sdpa", "eager"),
+            "compile": ("eager",),
+            "memory": ("none", "gc", "unsloth_offload"),
+            "kernels": (False,),
+            "loss": ("standard",),
+            "vllm": (False,),
+            "moe": (True,),
+            "router_aux_loss": (False,),
+            "block_swap": (False,),
+        },
+        parity = _INKLING2_CP,
+        engagement = _INKLING2_CP
+        + " (one Ulysses attention per layer and pass over the whole sequence, four halo convolutions per layer; "
+        "test_inkling2_ulysses_without_halo_misses_one_process)",
+        compile = "eager: Inkling 2 trains eager (UNSLOTH_COMPILE_DISABLE=partial), the exchange runs outside compile",
+        note = "QLoRA and Unsloth's offloaded checkpoint: SFTTrainer on a tiny Inkling-2-Mini fake, 2x T4 "
+        "(outputs of the PR); FSDP2 x cp, dp > 1 and packing are not measured for this family",
+    ),
     Cell(
         "cp x native FSDP2 (dp_shard x cp), eager",
         {**_CP_DP, "fsdp2": (True,), "compile": ("eager",), "dp": (1, 2), "cp": (2,)},
@@ -886,6 +944,12 @@ _GPT_OSS_PP = (
     "tests/test_pp_moe_aux_off_gloo.py::"
     "test_pp2_uncarried_moe_with_aux_off_matches_gradient_accumulation"
 )
+# Inkling 2 (Mini and Small): pp2 gpipe / 1f1b vs one-process gradient accumulation, bitwise. The Mini cuts after
+# the loop carry a block attention residual stack of 2 and 3 entries; every case counts stage forward calls.
+_INKLING2_PP = "tests/test_pp_inkling2_gloo.py::test_pp2_inkling2_mini_matches_one_process"
+_INKLING2_PP_ENGAGED = (
+    "tests/test_pp_inkling2_gloo.py::test_pp2_inkling2_mini_cut_after_the_loop_matches_one_process"
+)
 _GPT_OSS_PP_CASES = {
     "lora": "gpt_oss_lora_logits_off_1f1b|gpt_oss_lora_logits_off_gpipe_gc",
     "lora+experts": "gpt_oss_lora_experts_logits_off_gpipe|gpt_oss_lora_experts_logits_off_1f1b_gc_reentrant",
@@ -909,15 +973,13 @@ _MOE_PP_MM_CASES = {
 # fp64 against one process, the idle-expert hook and one AdamW step. HF checkpointing only (no Unsloth checkpoint run).
 _KIMI_MOE = "tests/test_ulysses_kimi.py::test_kimi_moe_under_ulysses_matches_one_process"
 _KIMI_EAGER = "eager: remote code, no compiled region"
-# MiniMax (transformers' MiniMaxForCausalLM / MiniMaxM2ForCausalLM, fused experts): M1 Lightning + full attention
-# layers, M2 full attention through the generic route, the MoE block with routed / unrouted experts, right padded
-# rows, fp64 against one process, every gradient and one AdamW step. HF checkpointing only.
+# MiniMax M1 (Lightning + full attention) and M2 (generic route) MoE parity: fp64 vs one process,
+# every gradient, one AdamW step, right padded rows. HF checkpointing only.
 _MINIMAX = "tests/test_ulysses_minimax_parity.py::test_minimax_model_matches_upstream"
 _MINIMAX_EAGER = "eager: block compile not measured for this family"
-# DeepSeek (transformers' DeepseekV2 / V3 / V32 / V4ForCausalLM, fused experts): V2 / V3 MLA (YaRN softmax scale,
-# narrower value heads) on the generic route, V3.2's global DSA indexer top-k and V4's sliding / CSA / HCA sink
-# attention on their own Ulysses forwards; right padded rows, fp64 against one process, every gradient (None vs
-# zero) and one AdamW step. HF checkpointing only. V4 runs eager attention only.
+# DeepSeek V2/V3 MLA (YaRN softmax scale, narrower value heads) on the generic route; V3.2 DSA
+# indexer and V4 sliding / CSA / HCA sink attention on own Ulysses forwards; fp64 parity, all grads,
+# one AdamW step, right padded rows; HF checkpointing only; V4 runs eager attention only.
 _DEEPSEEK = "tests/test_ulysses_deepseek_reference.py::test_deepseek_cp_matches_fp64_reference"
 _DEEPSEEK_EAGER = "eager: block compile not measured for this family"
 _DEEPSEEK_CASES = {
@@ -1249,6 +1311,32 @@ CELLS = (
     CELLS
     + _moe_cells()
     + (
+        # Inkling 2 (no router auxiliary loss): the stage boundary carries hidden states plus the block attention
+        # residual stack, Inkling-2-Mini's looped layers stay on one stage (models/inkling2.py
+        # Inkling2PipelineAdapter); pp-only mesh, text only.
+        Cell(
+            "Inkling 2 x pp",
+            {
+                "family": ("inkling2", "inkling2_loop"),
+                "moe": (True,),
+                "pp": (2, 4, 8),
+                "pp_schedule": ("gpipe", "1f1b"),
+                "dp": _ONE,
+                "tp": _ONE,
+                "cp": _ONE,
+                "fsdp2": (False,),
+                "mode": ("lora", "qlora"),
+                "router_aux_loss": (False,),
+                "packing": (False,),
+                "vllm": (False,),
+                "block_swap": (False,),
+                "compile": ("eager",),
+                "memory": ("none", "gc", "unsloth_gc", "unsloth_offload"),
+            },
+            _INKLING2_PP,
+            _INKLING2_PP_ENGAGED,
+            "eager: Inkling 2 trains with UNSLOTH_COMPILE_DISABLE=partial",
+        ),
         Cell(
             "block swap x tp",
             {"block_swap": (True,), "tp": _AboveOne()},

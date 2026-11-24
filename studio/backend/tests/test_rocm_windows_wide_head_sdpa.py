@@ -57,6 +57,35 @@ def test_other_calls_keep_the_stock_dispatch(recorder, head_dim, device):
     assert entered == []
 
 
+def test_a_nested_cpu_query_reaches_the_stock_dispatch():
+    # A strided NestedTensor raises on ``.shape``: the guard must not ask for it before the device says "not cuda".
+    import torch.nn.functional as F
+
+    q = torch.nested.nested_tensor([torch.randn(2, 5, 32), torch.randn(2, 7, 32)])
+    out = G.guard_sdpa(F.scaled_dot_product_attention)(q, q, q)
+    assert out.is_nested
+    ref = F.scaled_dot_product_attention(q, q, q)
+    for a, b in zip(out.unbind(), ref.unbind()):
+        torch.testing.assert_close(a, b)
+
+
+@pytest.mark.parametrize("head_dim, wide", [(128, False), (512, True)])
+def test_a_nested_cuda_query_is_judged_by_its_head(head_dim, wide):
+    class _Nested:
+        is_nested = True
+        device = types.SimpleNamespace(type = "cuda")
+
+        @property
+        def shape(self):
+            raise RuntimeError("NestedTensorImpl doesn't support sizes")
+
+        def size(self, dim):
+            assert dim == -1
+            return head_dim
+
+    assert G._wide_cuda_head(_Nested()) is wide
+
+
 def test_install_wraps_sdpa_on_windows_rocm_only(monkeypatch):
     F = torch.nn.functional
     stock = F.scaled_dot_product_attention

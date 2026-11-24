@@ -49,8 +49,7 @@ export function mcpAccessFromApi(
   };
 }
 
-// One request at a time, page-wide: the server may finish two in-flight writes in either order,
-// and a read sent during a write can answer with the value before it.
+// One request at a time, page-wide: writes can finish out of order, and reads can be stale.
 let queue: Promise<unknown> = Promise.resolve();
 
 function request(

@@ -559,9 +559,7 @@ def race_winner(times: dict) -> str:
 
 
 def decide_on_card(layer: Any, index: Any) -> None:
-    """Eager, at load or placement: card ``index``'s tuned GEMM, fused rotation + act quant and fused unpack GEMM
-    decisions for a packed layer (a compiled forward only reads them; an offloaded / streamed load may never move the
-    layer with ``.to()``)."""
+    """Eager at load or placement, since compiled forwards only read them and streamed loads skip .to()."""
     if getattr(layer, "_tuned", None) is None:
         layer._tuned = _tuned_on(index)
     if getattr(layer, "_rotq", None) is None:

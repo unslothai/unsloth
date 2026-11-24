@@ -4,6 +4,7 @@
 import contextlib
 import functools
 import json
+import math
 import os
 import re
 import shutil
@@ -79,6 +80,35 @@ def resolve_base_model(model: str) -> Optional[str]:
     except (ValueError, OSError):
         return None
     return data.get("base_model_name_or_path") if isinstance(data, dict) else None
+
+
+_WINDOWS = os.name == "nt"
+_LOCAL_SHARE_HOSTS = ("", ".", "?", "localhost", "127.0.0.1", "wsl$", "wsl.localhost")
+
+
+def _is_network_share(path: str) -> bool:
+    """Same rule as unsloth_zoo.vision_utils._is_network_share, kept import-free: the hf and vllm
+    backends never import unsloth. On Windows a UNC path opens an SMB connection (NTLM leak)."""
+    if not _WINDOWS or not isinstance(path, str):
+        return False
+    p = path.replace("\\", "/")
+    if p[:5].lower() == "file:":
+        p = p[5:]
+    if p[:8].upper() == "//?/UNC/":
+        p = "//" + p[8:]
+    elif p.startswith(("//?/", "//./")):
+        return re.match(r"([A-Za-z]:|Volume\{[0-9A-Fa-f-]+\})(/|$)", p[4:]) is None
+    return p.startswith("//") and p[2:].split("/", 1)[0].lower() not in _LOCAL_SHARE_HOSTS
+
+
+def _refuse_network_share_adapter_base(model: str, base: Optional[str]) -> None:
+    """A Hub adapter's base_model_name_or_path is chosen by the repo; never let it reach a share.
+    Local adapter folders and an explicit --base-model are the user's own and are left alone."""
+    if base and not Path(model).is_dir() and _is_network_share(base):
+        _fail(
+            f"The adapter {model} names a base model on a network share ({base!r}). Refusing to "
+            "load it: download the base model and pass it with --base-model."
+        )
 
 
 def _is_studio_output(path: Path) -> bool:
@@ -243,10 +273,100 @@ def _local_adapter(model: str) -> str:
     return snapshot_download(model)
 
 
+def _adapter_header(adapter_dir: str) -> dict:
+    """The adapter_model.safetensors header (names, shapes; no tensor reads), {} if unreadable."""
+    file = Path(adapter_dir) / "adapter_model.safetensors"
+    try:
+        with open(file, "rb") as f:
+            header = json.loads(f.read(int.from_bytes(f.read(8), "little")))
+    except (OSError, ValueError):
+        return {}
+    return header if isinstance(header, dict) else {}
+
+
 def _adapter_rank(adapter_dir: str) -> int:
     config = _read_config(Path(adapter_dir) / "adapter_config.json") or {}
-    ranks = [config.get("r")] + list((config.get("rank_pattern") or {}).values())
-    return max((r for r in ranks if isinstance(r, int)), default = 0)
+    r = config.get("r")
+    patterns = config.get("rank_pattern") or {}
+    if not isinstance(patterns, dict):
+        patterns = {}
+    names = _adapter_module_names(adapter_dir)
+    if names:
+        # each saved module's rank as PEFT resolves it (first matching rank_pattern key, else r):
+        # unmatched or shadowed patterns do not count, and fused-expert A stacks (E * r rows) are not read as rank
+        ranks = [_pattern_value(patterns, name, r) for name in names]
+    else:
+        # no readable safetensors header (e.g. adapter_model.bin): keep every pattern that may match an adapted
+        # module (it matches a target as PEFT would, or it is a regex); only a literal name that matches no target
+        # module is known to match nothing
+        targets = config.get("target_modules")
+        targets = [t for t in targets if isinstance(t, str)] if isinstance(targets, list) else None
+        ranks = [
+            rank
+            for key, rank in patterns.items()
+            if targets is None
+            or re.escape(key) != key.replace(".", r"\.")
+            or any(_pattern_value({key: rank}, t, None) is not None for t in targets)
+            or key.rsplit(".", 1)[-1] in {t.rsplit(".", 1)[-1] for t in targets}
+        ]
+    ranks.append(r)
+    return max((x for x in ranks if isinstance(x, int) and not isinstance(x, bool)), default = 0)
+
+
+def _adapter_module_names(adapter_dir: str) -> List[str]:
+    """LoRA module names from the adapter_model.safetensors header (no tensor reads)."""
+    header = _adapter_header(adapter_dir)
+    names = set()
+    for key in header:
+        name, sep, _ = key.partition(".lora_")
+        if sep:
+            prefix = "base_model.model."
+            names.add(name[len(prefix) :] if name.startswith(prefix) else name)
+    return sorted(names)
+
+
+def _pattern_value(patterns: dict, module: str, default):
+    # PEFT get_pattern_key: first key matching the module name as a dotted suffix (regex allowed)
+    for key in patterns:
+        try:
+            if re.match(rf"(.*\.)?({key})$", module):
+                return patterns[key]
+        except re.error:
+            continue
+    return default
+
+
+def _mixed_lora_scale(adapter_dir: str) -> bool:
+    """True when rank_pattern / alpha_pattern give a module a scale other than lora_alpha / r.
+
+    vLLM (PEFTHelper) applies that one scale to every module, so such an adapter scores wrong.
+    Patterns are resolved per module like PEFT does, against the module names stored in the
+    adapter weights; without readable weights the pattern keys stand in for module names.
+    """
+    config = _read_config(Path(adapter_dir) / "adapter_config.json") or {}
+    ranks, alphas = config.get("rank_pattern") or {}, config.get("alpha_pattern") or {}
+    if not isinstance(ranks, dict) or not isinstance(alphas, dict):
+        return False
+    if not ranks and not alphas:
+        return False
+    norm = math.sqrt if config.get("use_rslora") else float
+
+    def scale(rank, alpha):
+        ok = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (rank, alpha))
+        return alpha / norm(rank) if ok and rank > 0 else None
+
+    default = scale(config.get("r"), config.get("lora_alpha"))
+    if default is None:
+        return False
+    modules = _adapter_module_names(adapter_dir) or list(dict.fromkeys([*ranks, *alphas]))
+    for name in modules:
+        module = scale(
+            _pattern_value(ranks, name, config["r"]),
+            _pattern_value(alphas, name, config["lora_alpha"]),
+        )
+        if module is not None and not math.isclose(module, default):
+            return True
+    return False
 
 
 def _base_vocab_size(model: str) -> int:
@@ -488,6 +608,31 @@ def _run_dir_name(model: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:200].strip("._-") or "model"
 
 
+def _backend_tokenizer(eval_kwargs: dict):
+    model = eval_kwargs["model"]
+    if not isinstance(model, str):
+        return getattr(model, "tokenizer", None)
+    if model == "vllm":
+        # vLLM may pick Mistral's own tokenizer, which cannot re-encode a rendered template's control tokens
+        from lm_eval.models.vllm_causallms import get_tokenizer as load
+    else:
+        from transformers import AutoTokenizer
+        load = functools.partial(AutoTokenizer.from_pretrained, trust_remote_code = False)
+    args = eval_kwargs["model_args"]
+    with _silence():
+        return load(args.get("tokenizer") or args["pretrained"])
+
+
+def _thinking_off(model_cls) -> dict:
+    # Qwen3-style templates otherwise open a <think> block, which the dataset task's "\n" stop cuts to "<think>"
+    import inspect
+    return (
+        {"enable_thinking": False}
+        if "enable_thinking" in inspect.signature(model_cls).parameters
+        else {}
+    )
+
+
 def _fail(message: str, code: int = 2):
     typer.echo(f"Error: {message}", err = True)
     raise typer.Exit(code = code)
@@ -565,6 +710,12 @@ def evaluate(
         help = "Allow tasks that lm-eval marks unsafe (e.g. humaneval): they execute "
         "model-generated code on this machine. Off by default.",
     ),
+    chat_template: Optional[bool] = typer.Option(
+        None,
+        "--chat-template/--no-chat-template",
+        help = "Prompt through the model's chat template. Default: on when every task is a "
+        ".jsonl/.json/.csv dataset, the tokenizer has a chat template and lm-eval is 0.4.10+.",
+    ),
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "HuggingFace token if needed."
     ),
@@ -621,9 +772,17 @@ def evaluate(
     from lm_eval.models.huggingface import HFLM
     from lm_eval.tasks import TaskManager
 
+    is_dataset = [
+        Path(e.strip()).suffix.lower() in _DATASET_SUFFIXES for e in tasks.split(",") if e.strip()
+    ]
+    # only the dataset task's "\n" stop needs it; built-in reasoning tasks keep lm-eval's default
+    thinking_off = _thinking_off(HFLM) if all(is_dataset) else {}
+
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
     effective_base = base_model or resolve_base_model(model)
+    if not base_model:
+        _refuse_network_share_adapter_base(model, effective_base)
     if backend == "vllm":
         if load_in_4bit:
             typer.echo("Note: --backend vllm loads 16-bit weights; --load-in-4bit has no effect.")
@@ -687,6 +846,7 @@ def evaluate(
                     model_args["tokenizer"] = model
                 typer.echo(f"Evaluating adapter '{model}' on base '{effective_base}'.")
             model_args["max_length"] = max_seq_length
+            model_args.update(thinking_off)
             if load_in_4bit and device.startswith("cuda"):
                 if find_spec("bitsandbytes") is not None:
                     model_args["load_in_4bit"] = True
@@ -705,10 +865,24 @@ def evaluate(
                 model_args["pretrained"] = _vllm_base(effective_base)
                 model_args["lora_local_path"] = _local_adapter(model)
                 rank = _adapter_rank(model_args["lora_local_path"])
-                if rank > 16:
-                    model_args["max_lora_rank"] = next(
-                        (r for r in _VLLM_LORA_RANKS if r >= rank), _VLLM_LORA_RANKS[-1]
+                merge_hint = (
+                    "Use --backend unsloth or --backend hf to evaluate it, or merge it with "
+                    "`unsloth export <adapter> <output_dir> --format merged-16bit` "
+                    "and evaluate the merged model with --backend vllm."
+                )
+                if rank > _VLLM_LORA_RANKS[-1]:
+                    _fail(
+                        f"--backend vllm supports LoRA ranks up to {_VLLM_LORA_RANKS[-1]}, "
+                        f"but this adapter was trained with rank {rank}. {merge_hint}"
                     )
+                if _mixed_lora_scale(model_args["lora_local_path"]):
+                    _fail(
+                        "--backend vllm scales every LoRA module by lora_alpha / r and ignores "
+                        "rank_pattern / alpha_pattern, so this adapter would be scored with the "
+                        f"wrong weights. {merge_hint}"
+                    )
+                if rank > 16:
+                    model_args["max_lora_rank"] = next(r for r in _VLLM_LORA_RANKS if r >= rank)
                 if _has_tokenizer_files(model):
                     model_args["tokenizer"] = model_args["lora_local_path"]
                 typer.echo(
@@ -718,6 +892,10 @@ def evaluate(
                 model_args["pretrained"] = _vllm_base(model)
             if gpu_memory_utilization is not None:
                 model_args["gpu_memory_utilization"] = gpu_memory_utilization
+            with _silence():
+                from lm_eval.models.vllm_causallms import VLLM
+            thinking_off = _thinking_off(VLLM) if all(is_dataset) else {}
+            model_args.update(thinking_off)
             eval_kwargs.update(model = "vllm", model_args = model_args, batch_size = bs)
         else:
             from unsloth import FastLanguageModel
@@ -761,8 +939,46 @@ def evaluate(
                     lmodel = PeftModel.from_pretrained(lmodel, model)
                 FastLanguageModel.for_inference(lmodel)
                 eval_kwargs["model"] = HFLM(
-                    pretrained = lmodel, tokenizer = tokenizer, batch_size = bs, max_length = max_seq_length
+                    pretrained = lmodel,
+                    tokenizer = tokenizer,
+                    batch_size = bs,
+                    max_length = max_seq_length,
+                    **thinking_off,
                 )
+
+        if chat_template is None:
+            # lm-eval < 0.4.10 has no enable_thinking and doubles the BOS of templates that render one
+            chat_template = (
+                all(is_dataset)
+                and bool(thinking_off)
+                and bool(getattr(_backend_tokenizer(eval_kwargs), "chat_template", None))
+            )
+            if all(is_dataset) and not thinking_off:
+                typer.echo(
+                    "Note: dataset tasks run without the chat template on this lm-eval. "
+                    "Upgrade to lm-eval 0.4.10 or newer (`pip install -U lm-eval`) to use it."
+                )
+            elif chat_template:
+                typer.echo(
+                    "Note: prompting with the model's chat template (pass --no-chat-template to turn off)."
+                )
+            elif any(is_dataset) and not all(is_dataset):
+                typer.echo(
+                    "Note: dataset tasks run without the chat template alongside other tasks. "
+                    "Run them on their own to use the model's chat template, if it has one."
+                )
+        elif chat_template:
+            tokenizer = _backend_tokenizer(eval_kwargs)
+            # vLLM renders any HF tokenizer through its own fallback templates; its Mistral tokenizer has none
+            if backend == "vllm":
+                usable = hasattr(tokenizer, "chat_template")
+            else:
+                usable = bool(getattr(tokenizer, "chat_template", None))
+            if not usable:
+                _fail(
+                    f"--chat-template: the tokenizer --backend {backend} loads has no chat template."
+                )
+        eval_kwargs["apply_chat_template"] = chat_template
 
         engine_log = tmp_dir / "vllm.log" if backend == "vllm" else None
         try:
@@ -786,6 +1002,8 @@ def evaluate(
         _fail("evaluation returned no results.", code = 1)
 
     _render_results(results)
+    # lm-eval does not record it, and scores differ with and without the template
+    results.setdefault("config", {})["apply_chat_template"] = bool(chat_template)
     if output_dir is None:
         # Parent first: on Windows a leaf mkdir under a stray eval_results file raises FileExistsError too.
         Path("eval_results").mkdir(exist_ok = True)

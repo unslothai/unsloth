@@ -205,9 +205,8 @@ def non_reentrant_checkpointing_only(model) -> Optional[bool]:
 
 
 def allow_split_backward():
-    """Disable AOTAutograd donated buffers: zero bubble backward uses retain_graph, which a compiled backward
-    with donated buffers refuses. Returns True if changed; call before the first forward (already compiled
-    blocks keep their buffers)."""
+    """Disable AOTAutograd donated buffers: zero bubble backward's retain_graph is refused with them
+    on. True if changed; call before the first forward (compiled blocks keep theirs)."""
     try:
         import torch._functorch.config as functorch_config
     except ImportError:
@@ -220,9 +219,8 @@ def allow_split_backward():
 
 @functools.lru_cache(maxsize = None)
 def split_backward_keeps_function_nodes() -> bool:
-    """True if an autograd.Function node (e.g. CompiledFunctionBackward) keeps `_input_metadata` after its
-    output dies; split backward's weight pass needs it. torch <= 2.12 holds the node by weak_ptr, so it fails.
-    Probed rather than version-checked."""
+    """True if an autograd.Function node keeps _input_metadata after its output dies (split backward
+    needs it). torch <= 2.12 fails by weak_ptr; probed, not version-checked."""
 
     class _Probe(torch.autograd.Function):
         @staticmethod
@@ -316,8 +314,7 @@ def _unwrap_callable(value):
 
 
 def single_backward_kernels(model):
-    """Fused LoRA kernels on `model`: their backward mutates saved tensors, so it cannot run twice as split
-    backward (zero bubble) requires."""
+    """Fused LoRA kernels: backward mutates saved tensors, so split backward cannot run."""
     found = set()
     for module in model.modules():
         candidates = list(module.__dict__.values()) + [getattr(type(module), "forward", None)]

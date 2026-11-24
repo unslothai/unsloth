@@ -170,8 +170,7 @@ def _batch(
 
 
 def _plain_head_logps(model, ids, am, labels):
-    """Per-token logps through the model's own LM head, one row at a time and recomputed in backward,
-    so the [rows, L, vocab] logits are never all alive."""
+    """Logps row by row, recomputed in backward, so [rows, L, vocab] logits never all alive."""
     import torch
     import torch.utils.checkpoint as checkpoint
 
@@ -460,9 +459,8 @@ def test_preference_trainer_runs_shared_and_matches(loaded, tmp_path, monkeypatc
 
 
 def test_training_dropout_keeps_the_forward_unshared(loaded, monkeypatch):
-    """Train mode with LoRA dropout (p > 0): the forward must stay unshared. A shared prompt would give
-    the chosen and rejected rows one dropout mask, and the log-sigmoid of their difference makes that
-    correlation change the expected DPO gradient. Eval mode (dropout inactive) still shares."""
+    """With LoRA dropout (p > 0) in train mode the forward stays unshared: a shared prompt gives
+    chosen and rejected one dropout mask, changing the expected DPO gradient. Eval shares."""
     import torch
     from unsloth.models import dpo_prefix_share as dps
 

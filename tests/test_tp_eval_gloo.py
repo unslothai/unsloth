@@ -199,9 +199,8 @@ def test_trainer_evaluates_a_tensor_parallel_model_like_one_process(dp, tp):
             rank,
             res["predictions"].shape,
         )
-        # Logits after three steps: the tensor-parallel all-reduce sums in another order than one process, and an
-        # element near zero can land just past 1e-5 on some CPUs (seen: 1 of 2,016,000 at 1.07e-5). A real
-        # sharding error moves logits by orders of magnitude more; the losses above stay at rel 1e-5.
+        # TP all-reduce sums in another order than one process, so a near-zero logit can exceed 1e-5
+        # on CPUs.
         torch.testing.assert_close(res["predictions"], ref["predictions"], rtol = 1e-4, atol = 5e-5)
         assert torch.equal(res["label_ids"], ref["label_ids"])
 

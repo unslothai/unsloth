@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Routes an explicit NVFP4 image / video pick to INT8 (or Auto off NVIDIA) on pre-Blackwell GPUs.
-
-Below sm_100 NVFP4 is weight-only, measured slower than INT8 and less accurate than INT8 ConvRot. Every entry point
-(load and download-plan routes, backends' ``begin_load``) asks this one decision. ``UNSLOTH_NVFP4_PRE_BLACKWELL_INT8=0``
-turns it off.
-"""
+"""Explicit NVFP4 pick on pre-sm_100 routes to INT8 (or Auto off NVIDIA); weight-only NVFP4 is
+slower and less accurate than INT8 ConvRot; UNSLOTH_NVFP4_PRE_BLACKWELL_INT8=0 turns it off"""
 
 from __future__ import annotations
 
@@ -60,8 +56,7 @@ _PROFILE_LOCK = threading.Lock()
 
 
 def _smi_visible_capabilities(torch: Any) -> tuple:
-    """nvidia-smi capabilities without a CUDA context (training may run beside us); () unless all cards match,
-    since nvidia-smi rows are not torch ordinals."""
+    """nvidia-smi caps without CUDA init; () unless all cards match (rows aren't ordinals)."""
     try:
         if torch.cuda.is_initialized():
             return ()

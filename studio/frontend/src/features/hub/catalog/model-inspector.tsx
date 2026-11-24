@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
+import {
+  isServedByMlx,
+  useVllmAvailable,
+  useVllmPlatform,
+} from "@/features/model-picker";
 import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   Tooltip,
@@ -53,7 +57,11 @@ import {
   isEmbeddingOnly,
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
-import { hasMlxCardTag, isMlxId } from "../lib/format-filters";
+import {
+  hasMlxCardTag,
+  isMlxId,
+  namedOrTaggedMlx,
+} from "../lib/format-filters";
 import { studioPageForTask } from "../lib/unsloth-support";
 import {
   formatLibrary,
@@ -481,6 +489,8 @@ export const ModelInspector = memo(function ModelInspector({
   const chatOnlyMeasured = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
+  const mlxInference = usePlatformStore((s) => s.mlxInference);
+  const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const hfToken = useHfTokenStore((s) => s.token);
   const datasetRepoId = isDataset && model?.hubRepoId ? model.hubRepoId : null;
   const datasetSize = useDatasetSize(datasetRepoId, {
@@ -593,28 +603,41 @@ export const ModelInspector = memo(function ModelInspector({
   const audioPage =
     mediaPage === undefined && hubModelRunsOnAudioPage(model, mediaTask);
   const runsOnMediaRuntime = mediaPage !== undefined || audioPage;
+  // A precision folder downloads as it loads, so it need not be on device.
+  const isMlx =
+    !model.isGguf && isMlxId(model.hubRepoId ?? "", hasMlxCardTag(model));
+  // A local folder has no hubRepoId: classify it as its inventory row does (inventoryRowFormat).
+  const runsAsMlx =
+    isMlx ||
+    (!model.isGguf &&
+      model.isLocal &&
+      namedOrTaggedMlx({
+        names: [model.path ?? "", model.title, model.displayId],
+        omlx: model.localSource === "omlx",
+      }));
+  const mlxRunsHere =
+    runsAsMlx &&
+    isServedByMlx(false, deviceType, chatOnlyReason, mlxInference);
   const runEligible = isHubModelRunEligible({
     model,
     isDataset,
     mediaRuntime: runsOnMediaRuntime,
     nonGgufRuntimeAvailable:
-      !chatOnlyMeasured && unslothSupport.status !== "unsupported",
+      (!chatOnlyMeasured || mlxRunsHere) &&
+      unslothSupport.status !== "unsupported",
   });
   const runAction =
     runEligible && onRun
       ? (selection: HubModelRunSelection) =>
           onRun(selection, audioPage ? "audio" : mediaPage)
       : undefined;
-  // A precision folder downloads as it loads, so it need not be on device.
-  const isMlx =
-    !model.isGguf && isMlxId(model.hubRepoId ?? "", hasMlxCardTag(model));
   const precisionRunAction =
     isMlx &&
     onRun &&
     !isDataset &&
     !isEmbeddingOnly(model) &&
     !runsOnMediaRuntime &&
-    !chatOnlyMeasured &&
+    (!chatOnlyMeasured || mlxRunsHere) &&
     unslothSupport.status !== "unsupported"
       ? (selection: HubModelRunSelection) => onRun(selection, mediaPage)
       : undefined;
@@ -880,7 +903,7 @@ export const ModelInspector = memo(function ModelInspector({
         <ModelStatusChips
           isDataset={isDataset}
           isGguf={model.isGguf}
-          chatOnly={chatOnly}
+          chatOnly={chatOnly && !mlxRunsHere}
           unslothSupport={unslothSupport}
           vramInfo={vramInfo}
         />

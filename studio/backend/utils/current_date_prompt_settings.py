@@ -139,13 +139,7 @@ PROBE_TOOLS = [
 ]
 
 
-def _render_probe(
-    chat_template: str,
-    messages: list[dict],
-    today: date,
-    tools: list | None = None,
-    controls: dict | None = None,
-) -> str:
+def _compile_probe(chat_template: str, today: date):
     from jinja2.exceptions import TemplateError
     from jinja2.ext import Extension
     from jinja2.sandbox import ImmutableSandboxedEnvironment
@@ -186,13 +180,17 @@ def _render_probe(
     env.globals["raise_exception"] = raise_exception
     # the user's day, so a default that dates itself (or works out yesterday) is dated for them.
     env.globals["strftime_now"] = today.strftime
-    return env.from_string(chat_template).render(
+    return env.from_string(chat_template)
+
+
+def _render_probe(template, messages: list[dict], tools: list | None, controls: dict) -> str:
+    return template.render(
         messages = messages,
         tools = tools,
         documents = None,
         add_generation_prompt = False,
         **_PROBE_SPECIAL_TOKENS,
-        **(controls or {}),
+        **controls,
     )
 
 
@@ -215,13 +213,17 @@ def template_system_turn(
     kwargs = dict(controls)
     renders_chat = False
     prefix = None
+    try:
+        template = _compile_probe(chat_template, today)
+    except Exception:
+        return True, ""
     # some templates read message text only from content parts, as a vision processor sends it.
     for content in (lambda text: text, lambda text: [{"type": "text", "text": text}]):
         user = {"role": "user", "content": content(_PROBE_USER)}
 
         def render(system: str | None) -> str:
             turns = [{"role": "system", "content": content(system)}] if system is not None else []
-            return _render_probe(chat_template, [*turns, user], today, catalog, kwargs)
+            return _render_probe(template, [*turns, user], catalog, kwargs)
 
         try:
             bare = render(None)
@@ -240,7 +242,7 @@ def template_system_turn(
             return True, ""
         if prefix is None:
             try:
-                prefix = _render_probe(chat_template, [], today, catalog, kwargs)
+                prefix = _render_probe(template, [], catalog, kwargs)
             except Exception:
                 prefix = ""
         # what the template writes before any message, like BOS or GLM's [gMASK]<sop>, is no turn.

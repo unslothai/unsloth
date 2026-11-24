@@ -193,8 +193,7 @@ def _reread_after_download(model: AudioCppModel, hf_token: Optional[str]) -> Aud
 # Families that read the request's top-level language, not an option (audio.cpp extract_request_language:
 # VoxCPM1 keeps Cantonese text Traditional with zh-HK; Supertonic generation_options_from_request).
 _READS_TOP_LEVEL_LANGUAGE = frozenset({"voxcpm1", "audio8_tts", "supertonic"})
-# Families that read a voice description only as a leading "(description)" on the text
-# (audio.cpp voxcpm2 split_leading_voice_tag); they read no instruct option.
+# voxcpm2 reads voice only as a leading (description) on the text; it takes no instruct option.
 _DESCRIPTION_IN_TEXT = frozenset({"voxcpm2"})
 # Supertonic's tokenizer refuses anything but a bare ISO code (src/models/supertonic/tokenizer_text.cpp).
 _LANGUAGE_CODE_FAMILIES = frozenset({"supertonic"})

@@ -40,8 +40,7 @@ def tiny_e2b(
     lora = True,
     dtype = torch.float32,
 ):
-    """Gemma4ForConditionalGeneration shaped like E2B: per-layer inputs, the last `shared` layers KV-shared,
-    a vision and an audio tower."""
+    """Gemma4 with E2B's shape: per-layer inputs, last `shared` layers KV-shared, vision/audio towers."""
     from transformers import Gemma4Config, Gemma4ForConditionalGeneration
 
     text = dict(

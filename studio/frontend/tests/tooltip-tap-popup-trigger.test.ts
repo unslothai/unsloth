@@ -23,8 +23,7 @@ test("plain buttons still get the tap-pinned tooltip", () => {
   assert.equal(opensPopup(null), false);
 });
 
-// #18298: the composer model chip wraps a PopoverTrigger in a TooltipTrigger; a tap pinned the
-// tooltip and its preventDefault cancelled the popover open.
+// issue 18298: tap pin skips PopoverTrigger, since preventDefault cancels the popover open.
 test("the tap pin skips popup triggers before preventDefault", () => {
   const src = readFileSync(
     new URL("../src/components/ui/tooltip.tsx", import.meta.url),

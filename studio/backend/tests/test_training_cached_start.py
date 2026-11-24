@@ -276,6 +276,25 @@ def test_hf_dataset_preflight_rejects_invalid_repo_id():
     assert exc_info.value.detail["code"] == "hf_dataset_verification_failed"
 
 
+@pytest.mark.parametrize("builder", ["pandas", "json"])
+def test_hf_dataset_preflight_rejects_datasets_builder_names(builder):
+    """load_dataset takes its own builders ahead of the Hub and reads the worker's cwd with them."""
+    route = _load_route_module("training_route_hf_dataset_preflight_builder_name")
+
+    class FakeApi:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("unexpected Hub metadata call")
+
+    with (
+        patch.dict(sys.modules, _fake_hf_modules(FakeApi)),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        route._preflight_hf_dataset_request(_request(hf_dataset = builder, dataset_known_cached = True))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == "hf_dataset_verification_failed"
+
+
 def test_hf_dataset_preflight_skips_local_sources(tmp_path):
     route = _load_route_module("training_route_local_dataset_skips_hf_preflight")
     dataset_path = tmp_path / "dataset.jsonl"

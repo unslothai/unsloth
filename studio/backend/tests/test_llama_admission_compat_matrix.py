@@ -234,11 +234,12 @@ class TestOldCallers:
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
         assert names.index("sandbox_level") == names.index("instruction_anchor_ids") + 1
-        assert names[-4:] == [
+        assert names[-5:] == [
             "compact_context",
             "website_policy",
             "live_permissions",
             "chat_template_kwargs",
+            "mcp_match_exchange",
         ]
         assert names.index("promote_reasoning_only") == names.index("permission_mode") + 1
 

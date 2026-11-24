@@ -94,8 +94,7 @@ def test_payload_matches_the_templates_text_generator(edit, max_tokens):
             user["content"][0]["image_url"]["url"]
             == "data:image/png;base64," + base64.b64encode(refs[0]).decode()
         )
-    # TextGenerateV2 widgets: max_length, "on", temperature 1, top_k 20, top_p 0.95, min_p 0, repetition 1,
-    # presence 0, seed 0, thinking true.
+    # Values from the TextGenerateV2 widgets: temperature 1, top_k 20, top_p 0.95, min_p 0.
     assert body["max_tokens"] == max_tokens
     assert (body["temperature"], body["top_k"], body["top_p"], body["min_p"]) == (
         1.0,

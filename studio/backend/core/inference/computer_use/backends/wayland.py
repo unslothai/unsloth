@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Linux on Wayland through the desktop's RemoteDesktop + ScreenCast portal.
-
-Wayland shows no other app's windows to a client, so every window is unidentified and the
-policy asks the user before each call.
-"""
+"""Linux on Wayland via the desktop's RemoteDesktop + ScreenCast portal; Wayland shows no other
+app's windows, so every window is unidentified and the policy asks the user before each call."""
 
 from __future__ import annotations
 

@@ -11,10 +11,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Native DeepSeek-V4.1 (``deepseek_v41`` / ``deepseek_v41_text``) for transformers releases that do not ship it.
-
-On transformers 5 the checkpoint renaming table is registered too; a transformers that ships deepseek_v41 wins.
-"""
+"""Native DeepSeek-V4.1 for transformers without it; on v5 the checkpoint renames are registered too."""
 
 import importlib.util
 

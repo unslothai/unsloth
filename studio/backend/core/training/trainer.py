@@ -585,6 +585,9 @@ class UnslothTrainer:
 
         self._lock = threading.Lock()
 
+    def _remember_model_source(self, load_name, revision, local_files_only) -> None:
+        self._model_source = (load_name, revision, bool(local_files_only))
+
     def pre_detect_and_load_tokenizer(
         self,
         model_name: str,
@@ -609,6 +612,7 @@ class UnslothTrainer:
             model_revision,
             load_in_4bit,
         )
+        self._remember_model_source(model_load_name or model_name, model_revision, local_files_only)
 
         if hf_token:
             os.environ["HF_TOKEN"] = hf_token
@@ -1227,6 +1231,7 @@ class UnslothTrainer:
         metadata_name = _metadata_lookup_name(
             model_name, lookup_name, local_files_only, model_revision, load_in_4bit
         )
+        self._remember_model_source(lookup_name, model_revision, local_files_only)
         self.model_load_error = None
         try:
             if self.model is not None:
@@ -2229,9 +2234,15 @@ class UnslothTrainer:
         from datasets import Audio
         import torch
 
+        # The pinned snapshot the consent gate scanned and the tokenizer loaded, never the repo's moving main.
+        source, revision, local_files_only = getattr(
+            self, "_model_source", (self.model_name, None, False)
+        )
         processor = AutoProcessor.from_pretrained(
-            self.model_name,
+            source,
             trust_remote_code = getattr(self, "trust_remote_code", False),
+            revision = revision,
+            local_files_only = local_files_only,
         )
 
         # A leaked pad_to_multiple_of is rejected by EncodecFeatureExtractor.
@@ -3869,6 +3880,8 @@ class UnslothTrainer:
                     tokenizer = self.tokenizer,
                     is_vlm = self.is_vlm,
                     format_type = format_type,
+                    # Eval rows without their own question column score the training prompt; per-row questions stay.
+                    vlm_fallback_instruction = dataset_info.get("vlm_instruction"),
                     dataset_name = dataset_source,
                     dataset_revision = dataset_revision,
                     custom_format_mapping = custom_format_mapping,
@@ -4921,6 +4934,17 @@ class UnslothTrainer:
                     vocab_size = vocab_size,
                     completion_only_loss = completion_only,
                 )
+            elif (
+                raw_text_mode
+                and config_args.get("packing")
+                and eval_dataset is not None
+                and eval_final_format != "raw_text"
+            ):
+                # Raw text packs wrapped, which would join a formatted eval split's examples across rows.
+                logger.info(
+                    "Formatted eval dataset beside raw text: eval sequence packing turned off\n"
+                )
+                config_args["eval_packing"] = False
 
             # Plain-text single-pass runs tokenize in DataLoader workers; other runs keep eager .map().
             self._online_prewarm_batches = 0
@@ -5056,12 +5080,16 @@ class UnslothTrainer:
                         trainer_kwargs["eval_dataset"] = eval_dataset
                     self.trainer = _UnslothCPTTrainer(**trainer_kwargs)
                 else:
+                    sft_args = SFTConfig(**config_args)
+                    if raw_text_mode and config_args.get("packing", False):
+                        sft_args.packing_strategy = "wrapped"
+                        logger.info("Raw-text packing strategy: wrapped\n")
                     trainer_kwargs = {
                         "model": self.model,
                         "tokenizer": sft_tokenizer,
                         "train_dataset": dataset["dataset"],
                         "data_collator": data_collator,
-                        "args": SFTConfig(**config_args),
+                        "args": sft_args,
                     }
                     if eval_dataset is not None:
                         trainer_kwargs["eval_dataset"] = eval_dataset

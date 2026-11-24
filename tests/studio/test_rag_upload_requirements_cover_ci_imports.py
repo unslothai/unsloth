@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UPLOAD_REQS = ROOT / "tests/studio/rag_upload_requirements.txt"
 STUDIO_REQS = ROOT / "studio/backend/requirements/studio.txt"
+HNSW_REQS = ROOT / "studio/hnsw_prebuilt.txt"
 
 
 def _pins(path):
@@ -22,6 +23,11 @@ def _pins(path):
         if m:
             pins[re.sub(r"[-_.]+", "-", m.group(1)).lower()] = m.group(2)
     return pins
+
+
+def _hnsw_catalog_pins():
+    # The pair is not a pip requirement: the installer's hash-pinned file is its one pin.
+    return _pins(HNSW_REQS)
 
 
 def _is_ci_check(node):
@@ -50,7 +56,7 @@ def test_the_scan_finds_the_hnsw_tier_imports():
 
 
 def test_every_ci_only_rag_import_is_pinned_for_the_upload_harness():
-    upload, studio = _pins(UPLOAD_REQS), _pins(STUDIO_REQS)
+    upload, studio = _pins(UPLOAD_REQS), {**_hnsw_catalog_pins(), **_pins(STUDIO_REQS)}
     missing, drifted = [], []
     for test, modules in _ci_imports_by_test().items():
         for module in sorted(modules):
@@ -58,9 +64,13 @@ def test_every_ci_only_rag_import_is_pinned_for_the_upload_harness():
             if name not in upload:
                 missing.append(f"{test}: {module}")
             elif name in studio and studio[name] != upload[name]:
-                drifted.append(f"{module}: upload {upload[name]} vs studio.txt {studio[name]}")
+                drifted.append(f"{module}: upload {upload[name]} vs studio {studio[name]}")
     assert not missing, f"not in {UPLOAD_REQS.name}: {missing}"
-    assert not drifted, f"pin differs from studio.txt: {drifted}"
+    assert not drifted, f"pin differs from studio.txt / the HNSW catalog: {drifted}"
+
+
+def test_the_hnsw_catalog_pins_are_read():
+    assert _hnsw_catalog_pins() == {"usearch": "2.26.6", "numkong": "7.8.6"}
 
 
 # Import names whose wheel is published under another name.

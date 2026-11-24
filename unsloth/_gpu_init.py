@@ -368,6 +368,7 @@ from .import_fixes import (
     fix_transformers_untrusted_config_fields,
     fix_transformers_chat_template_path_traversal,
     fix_transformers_tokenizer_config_vocab_file_override,
+    fix_transformers_mistral_regex_hub_error,
     fix_transformers_chunked_mask_block_sequence_ids,
     fix_transformers_flex_mask_graph_breaks,
     fix_transformers_longcat_lsa_config,
@@ -399,6 +400,7 @@ from .import_fixes import (
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
     fix_inductor_reduction_readback_race,
+    fix_inductor_triton_wrapper_eager_vals,
     fix_flex_attention_eager_saved_tensor_hooks,
     patch_trunc_normal_precision_issue,
     ignore_logger_messages,
@@ -408,6 +410,7 @@ from .import_fixes import (
     patch_psutil_cpu_freq,
     patch_enable_input_require_grads,
     patch_unsafe_trainer_rng_load,
+    patch_peft_bin_load_old_torch,
     patch_torch_export_pt2_unsafe_load,
     fix_openenv_no_vllm,
     patch_openspiel_env_async,
@@ -444,6 +447,7 @@ fix_transformers_flex_mask_graph_breaks()
 fix_transformers_untrusted_config_fields()
 fix_transformers_chat_template_path_traversal()
 fix_transformers_tokenizer_config_vocab_file_override()
+fix_transformers_mistral_regex_hub_error()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
@@ -501,6 +505,8 @@ fix_triton_compiled_kernel_missing_attrs()
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
 fix_dynamo_config_thread_visibility()
 fix_inductor_reduction_readback_race()
+# torch < 2.13: dynamic-shape Triton kernel decomposition assertion (Gemma2 GEGLU under block compile).
+fix_inductor_triton_wrapper_eager_vals()
 # Eager flex_attention inside a non-reentrant checkpoint (DDP) restarted the layer's recompute mid forward.
 fix_flex_attention_eager_saved_tensor_hooks()
 patch_trunc_normal_precision_issue()
@@ -535,6 +541,8 @@ patch_peft_shared_active_adapter()
 fix_peft_stale_torchao_import_error()
 # peft.tuners.lora.model imported dispatch_torchao by value, so both copies must be replaced.
 fix_peft_torchao_missing_tensor_subclass()
+# After the PEFT import shims above: on an import failure the guard would silently not install.
+patch_peft_bin_load_old_torch()
 patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
@@ -543,6 +551,7 @@ del fix_transformers_config_commit_hash
 del fix_transformers_untrusted_config_fields
 del fix_transformers_chat_template_path_traversal
 del fix_transformers_tokenizer_config_vocab_file_override
+del fix_transformers_mistral_regex_hub_error
 del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_bnb_prequantized_save
 del fix_transformers_fp8_modulelist_experts
@@ -572,6 +581,7 @@ del fix_rocm_windows_wide_head_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
 del fix_inductor_reduction_readback_race
+del fix_inductor_triton_wrapper_eager_vals
 del patch_trunc_normal_precision_issue
 del ignore_logger_messages
 del patch_ipykernel_hf_xet

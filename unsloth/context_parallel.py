@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import functools
+import sys
+import threading
 import types
 import weakref
 from typing import Iterator, Optional
@@ -147,9 +150,7 @@ _ULYSSES_HYBRID_PACKING_MODEL_TYPES = {
 
 
 def ulysses_packing_blocker(model, model_types = ()) -> Optional[str]:
-    """Class name of the first module whose Ulysses forward refuses packed batches (Kimi delta,
-    MiniMax Lightning, DeepSeek V3.2 / V4 attention), else None. SFT keeps padding-free off for them.
-    A model ID string (TRL builds it later) is classified by its config's model types instead."""
+    """Class name of the first module refusing packed batches, else None; a model ID uses config types."""
     from .utils.ulysses_deepseek import (
         DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
         DEEPSEEK_ULYSSES_MODEL_TYPES,
@@ -162,21 +163,23 @@ def ulysses_packing_blocker(model, model_types = ()) -> Optional[str]:
                 return DEEPSEEK_ULYSSES_MODEL_TYPES[model_type]
             if model_type in _ULYSSES_HYBRID_PACKING_MODEL_TYPES:
                 return _ULYSSES_HYBRID_PACKING_MODEL_TYPES[model_type]
+            if model_type in INKLING2_MODEL_TYPES:
+                return INKLING2_MODEL_TYPES[model_type]
         return None
     for module in model.modules():
         if (
             type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
             or is_ulysses_kimi_delta(module)
             or is_ulysses_lightning(module)
+            or is_ulysses_inkling2_attention(module)
         ):
             return type(module).__name__
     return None
 
 
 def _ddp_ignore_indexer(model, attn_name: str, attention) -> None:
-    # The DSA indexer only picks keys (a discrete top-k), so its weights never get a gradient. CP
-    # turns DDP's find_unused_parameters off, so trainable indexer weights (LoRA on V3.2 wq_b, V4
-    # q_b_proj) would stall the gradient reduction: DDP leaves them out instead.
+    # Indexer weights get no gradient (discrete top-k); CP turns find_unused_parameters off, so DDP
+    # must ignore them
     names = [
         f"{attn_name}.{sub}.{p}"
         for sub, module in attention.named_modules()
@@ -189,9 +192,8 @@ def _ddp_ignore_indexer(model, attn_name: str, attention) -> None:
 
 
 def _keep_layer_out_of_block_compile(model, attn_name: str) -> None:
-    # The eager Ulysses forward is a graph break; the resume function is shared by all layers, so one
-    # layer failing to compile it (fp32 MoE grouped_mm) makes earlier checkpointed layers recompute it
-    # eagerly: CheckpointError (62 vs 61 saved tensors, V3.2 fp32 CP = 2).
+    # Eager Ulysses is a graph break; if one fp32 MoE grouped_mm layer fails to compile the shared
+    # resume, V3.2 fp32 CP=2 raises CheckpointError (62 vs 61)
     parent = attn_name.rpartition(".")[0]
     if not parent:
         return
@@ -335,10 +337,8 @@ def _seq_len_rope(module) -> bool:
 
 
 def _rope_over_full_positions(module) -> None:
-    """dynamic / longrope pick their frequencies from max(position_ids) + 1 (transformers'
-    dynamic_rope_update): under Ulysses each rank would see only its shard and rotate with its own
-    frequencies. Append the sequence's largest position so the frequencies match, then drop it: the
-    tables stay this rank's size (slicing full-sequence tables would keep them alive for backward)."""
+    """Dynamic/longrope RoPE needs max(position_ids): Ulysses shards append the full max, then drop
+    it; slicing full tables would keep them alive for backward"""
     forward = module.forward
 
     @functools.wraps(forward)
@@ -371,6 +371,15 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
 
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
+from .utils.ulysses_inkling2 import (
+    INKLING2_LAYER_TYPES,
+    INKLING2_MODEL_TYPES,
+    check_inkling2_heads,
+    is_ulysses_inkling2_attention,
+    is_ulysses_inkling2_conv,
+    wrap_inkling2_attention_forward,
+    wrap_inkling2_conv_forward,
+)
 from .utils.ulysses_deepseek import (
     DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
     wrap_deepseek_attention_forward,
@@ -382,6 +391,11 @@ from .utils.ulysses_hybrid import (
     is_hf_registry_attention,
     is_ulysses_mixer,
     wrap_ulysses_mixer_forward,
+)
+
+# Inkling 2: sliding window / full attention with relative bias and sinks (utils/ulysses_inkling2.py).
+_ULYSSES_OWN_MASK_LAYER_TYPES.update(
+    {model_type: INKLING2_LAYER_TYPES for model_type in INKLING2_MODEL_TYPES}
 )
 
 # shift_labels is built before sharding so each shard's last token keeps its next-token target.
@@ -474,10 +488,8 @@ def forget_expert_tokens(block) -> None:
 
 
 def start_expert_window(blocks) -> None:
-    """A new gradient window starts (before its first forward): forget the counts of experts whose
-    gradients are None now. zero_grad(set_to_none = True) clears them all, also after a step the
-    optimizer skipped (fp16 GradScaler overflow); with set_to_none = False the single-process run
-    keeps a zero gradient, which AdamW steps, so the count carries over."""
+    """Forget counts of experts whose grads are None; zero_grad(set_to_none = True) clears all, even
+    after a skipped fp16 step; with set_to_none = False counts carry over"""
     for block in blocks:
         seen = block.__dict__.get(_EXPERT_TOKENS)
         block.__dict__.pop(_EXPERT_STEPPED, None)
@@ -494,12 +506,8 @@ def start_expert_window(blocks) -> None:
 
 
 def drop_idle_expert_grads(blocks, group = None) -> int:
-    """Set .grad = None on experts (incl. their LoRA adapters) that no rank routed a real token to
-    since their gradient was last None. Under CP they ran on no tokens so DDP sees a gradient, but
-    the single-process run leaves them None, so AdamW must not decay them or advance their state.
-    One all-reduce and one host sync for all layers. Returns the number of experts dropped.
-    Acts only on blocks a context parallel forward counted since the last step: with CP off (the
-    optimizer reused by a trainer without it) no block is counted and every gradient is kept."""
+    """Set .grad = None on experts no rank routed real tokens to; only blocks a CP forward counted
+    since the last step, so with CP off every gradient is kept"""
     # Counted: a CP forward ran since the last step (it pops _EXPERT_STEPPED) and no non-CP forward
     # since (forget_expert_tokens). All CP peers run the same forwards, so they agree on the collective.
     blocks = [
@@ -538,10 +546,7 @@ def install_idle_expert_grad_hook(
     group = None,
     window = None,
 ) -> bool:
-    """Once per optimizer: a step pre-hook running drop_idle_expert_grads over model's every-expert
-    MoE blocks. It runs after backward (DDP reduction) and all gradient accumulation micro-steps.
-    ``window`` (the trainer's global_step, read per training_step) starts a new count window when it
-    changes: it advances even when GradScaler skips optimizer.step() and with it the pre-hook."""
+    """Step pre-hook after backward; count window advances even when GradScaler skips optimizer.step()."""
     while not isinstance(optimizer, torch.optim.Optimizer) or (
         # accelerate's AcceleratedOptimizer subclasses Optimizer but steps the one it wraps.
         isinstance(getattr(optimizer, "optimizer", None), torch.optim.Optimizer)
@@ -575,8 +580,7 @@ def install_idle_expert_grad_hook(
 
 
 def _optimizer_window(trainer):
-    # Trainer.state.global_step: constant over a step's gradient accumulation micro-batches, advanced
-    # once per optimizer step attempt (also one GradScaler skips).
+    # global_step is fixed across accumulation micro-batches and advances on each step attempt.
     return getattr(getattr(trainer, "state", None), "global_step", None)
 
 
@@ -628,6 +632,8 @@ def _supports_context_parallel(
         return not _stateful_mixers(model)
     if backend != "ulysses" or _hybrid_config_blocker(model) is not None:
         return False
+    if _inkling2_model(model):
+        return _inkling2_ulysses_ready(model)
     mixers = _stateful_mixers(model)
     if mixers:
         # Hybrids: the family-specific linear attention forwards, and their HF full attention layers.
@@ -640,9 +646,57 @@ def _supports_context_parallel(
     return generic and _generic_hf_attention(model)
 
 
+def _inkling2_model(model) -> bool:
+    return isinstance(model, torch.nn.Module) and any(
+        is_ulysses_inkling2_attention(m) for m in model.modules()
+    )
+
+
+def _inkling2_loss_takes_kwargs(model) -> bool:
+    """The Inkling 2 CausalLM / ConditionalGeneration forward passes its **kwargs to self.loss_function."""
+    import inspect
+
+    seen = set()
+    while model is not None and id(model) not in seen:
+        seen.add(id(model))
+        if type(model).__name__.startswith("Inkling2") and _inkling2_model(model):
+            try:
+                source = inspect.getsource(inspect.unwrap(type(model).forward))
+            except (OSError, TypeError):
+                return False
+            return any(
+                "self.loss_function(" in line and "**kwargs)" in line
+                for line in source.splitlines()
+            )
+        getter = getattr(model, "get_base_model", None)
+        model = getter() if callable(getter) else getattr(model, "module", None)
+    return False
+
+
+def _inkling2_ulysses_ready(model) -> bool:
+    """Inkling 2: every text attention layer is the Inkling 2 attention (Ulysses forward over head shards) and
+    every stateful mixer is one of its short convolutions (halo exchange on the sequence shard)."""
+    modules = _attention_modules(model)
+    return (
+        bool(modules)
+        and all(is_ulysses_inkling2_attention(m) for m in modules)
+        and all(is_ulysses_inkling2_conv(m) for m, _ in _stateful_mixers(model))
+    )
+
+
 def _check_stateful_mixers(model, backend, size) -> None:
     mixers = _stateful_mixers(model)
     if not mixers:
+        return
+    if backend == "ulysses" and _inkling2_model(model):
+        unsupported = sorted(
+            {type(m).__name__ for m, _ in mixers if not is_ulysses_inkling2_conv(m)}
+        )
+        if unsupported:
+            raise NotImplementedError(
+                f"Unsloth: Ulysses context parallelism on Inkling 2 does not support {unsupported}."
+            )
+        check_inkling2_heads(model, size)
         return
     if backend != "ulysses":
         kinds = sorted({type(m).__name__ for m, _ in mixers})
@@ -732,6 +786,11 @@ class ContextParallelManager:
             for module, _ in _stateful_mixers(model):
                 if is_ulysses_mixer(module):
                     wrap_ulysses_mixer_forward(module, get_cp_manager)
+            # Inkling 2's short convolutions (attention k / v and the residual stream) take a halo from the
+            # previous shard; nested ones inside a key / value projection are walked too.
+            for name, module in model.named_modules():
+                if not _in_media_tower(name) and is_ulysses_inkling2_conv(module):
+                    wrap_inkling2_conv_forward(module, get_cp_manager)
             # Fast forwards exchange inside run_attention; other HF layers run their attention after the exchange.
             generic = not _uses_unsloth_attention(model)
             for name, module in model.named_modules() if generic else ():
@@ -742,7 +801,9 @@ class ContextParallelManager:
             for name, module in model.named_modules():
                 if _in_media_tower(name):
                     continue
-                if (
+                if name.endswith("self_attn") and is_ulysses_inkling2_attention(module):
+                    wrap_inkling2_attention_forward(module, get_cp_manager)
+                elif (
                     name.endswith("self_attn")
                     and type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
                 ):
@@ -882,9 +943,8 @@ class ContextParallelManager:
         return positions.lt(padded[1]).expand(input_ids.shape[0], -1).contiguous()
 
     def _note_real_tokens(self, local_ids, local) -> None:
-        # Keyed by the shard's token count, which is all the MoE dispatch sees. Graph-building forwards
-        # of one size are OR-ed (local None = all real): a pad token counted as real only keeps a zero
-        # gradient, while a real token counted as pad would drop a real one.
+        # Same-size forwards OR their masks: counting a pad as real is harmless, a real token as pad
+        # is not.
         if not isinstance(local_ids, torch.Tensor) or not torch.is_grad_enabled():
             return
         masks = self.__dict__.setdefault("_real_token_masks", {})
@@ -922,11 +982,8 @@ class ContextParallelManager:
         store[key] = lengths if seen is None else tuple(max(a, b) for a, b in zip(seen, lengths))
 
     def caller_pad_lengths(self, bsz: int, total: int) -> Optional[tuple]:
-        """Per row, how many leading tokens of the whole [bsz, total] sequence are the caller's real
-        tokens (the rest is right padding), or None when no row is padded. Set only for models whose
-        MoE counts expert usage (the remote shim): one process routes caller padding through the MoE
-        with its own activations (Kimi delta layers zero it, attention masks the padded keys), so the
-        Ulysses mixers reproduce them for the routes, and the expert counts, to match."""
+        """Leading real tokens per row, None if unpadded; set only where MoE expert counts see
+        caller padding."""
         store = self.__dict__.get("_caller_pad_lengths")
         # Hashing the (bsz, total) key specialises a compiled layer's shard length: look up only when set.
         return store.get((bsz, total)) if store else None
@@ -1187,10 +1244,8 @@ def _release_accelerator_state(state) -> None:
 
 @contextlib.contextmanager
 def _cp_state_scope(self):
-    """A CP trainer's entry point (train / evaluate / predict / save_model): its mesh and parallelism config
-    sit on the shared AcceleratorState only while it runs, so a trainer without CP built in the same process
-    keeps the class's original methods and still sees the state it expects. Nested calls (train ->
-    save_model) restore only when the outermost one returns."""
+    """CP state sits on AcceleratorState only during the entry point; nested calls restore it only
+    when the outermost call returns"""
     depth = self.__dict__.get("_unsloth_cp_state_depth", 0)
     self._unsloth_cp_state_depth = depth + 1
     _install_accelerator_state(self)
@@ -1494,9 +1549,8 @@ def _positional_config_to_keyword(
     kwargs,
     require_args = True,
 ):
-    """(args, kwargs) with a positional trainer config passed as `args = ...` instead (every positional bound
-    to its name), so Unsloth's trainer wrapper rebuilds it with the cp values set as kwargs. Unchanged when the
-    signature cannot bind them."""
+    """Binds every positional to its name so the config can be rebuilt with cp values as kwargs;
+    unchanged if the signature cannot bind them"""
     import inspect
 
     try:
@@ -1831,10 +1885,8 @@ def _check_cp_trainer(
 
 
 def patch_sft_trainer(install_cp_methods: bool = False) -> None:
-    # Only __init__ is patched on the class. The CP wrappers are bound per trainer (types.MethodType) when it
-    # asks for CP, so trainers without CP, built before or after one with it, run the class's own methods:
-    # class wrappers slowed torch 2.10 LoRA steps by ~35% with CP off (gemma-4-E2B, L4 / A100).
-    # install_cp_methods = True binds them on every trainer (a test seam for trainers given a manager by hand).
+    # Only __init__ is patched on the class; CP wrappers bind per trainer since class wrappers
+    # slowed torch 2.10 LoRA ~35% with CP off; install_cp_methods=True binds all
     import trl
 
     trainer_cls = trl.SFTTrainer
@@ -1971,6 +2023,12 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 "Unsloth: context parallelism needs loss_type = 'nll' without "
                 "label_smoothing_factor or compute_loss_func."
             )
+        if getattr(
+            self, "model_accepts_loss_kwargs", True
+        ) is False and _inkling2_loss_takes_kwargs(getattr(self, "model", None)):
+            # Inkling 2 declares accepts_loss_kwargs = False but hands **kwargs (num_items_in_batch, shift_labels)
+            # to its loss_function: the sharded loss must be a sum over the global token count.
+            self.model_accepts_loss_kwargs = True
         if getattr(self, "model_accepts_loss_kwargs", True) is False:
             raise NotImplementedError(
                 "Unsloth: context parallelism needs a model whose forward accepts loss kwargs "
@@ -2271,14 +2329,389 @@ def _rl_decoder_pre_hook(module, args, kwargs):
     # blocks on that rank alone.
     if "attention_mask" in kwargs:
         kwargs["attention_mask"] = None
-    stack.append(seq_len)
+    # Claimed by this call alone: a second or nested call of the same decoder gathers every state.
+    selection = getattr(_LAST_HIDDEN, "selection", None)
+    if selection is not None and selection.decoder is module:
+        selection.decoder = None
+        # The first call claims on every rank (the vote needs all of them), but only the call the audited
+        # forward makes itself may truncate: a helper or callback it runs first that calls the decoder
+        # (and may index its hidden_states) votes for every state instead.
+        if (
+            selection.caller is not None
+            and _direct_caller_code(sys._getframe(1)) is not selection.caller
+        ):
+            selection.allowed = False
+    else:
+        selection = None
+    stack.append((seq_len, selection))
     return args, kwargs
 
 
-def _rl_decoder_post_hook(module, args, kwargs, output):
-    seq_len = module._unsloth_cp_rl_stack.pop() if module._unsloth_cp_rl_stack else None
-    if seq_len is None:
+def _direct_caller_code(frame):
+    # The code object that called the module: the first frame above torch's own call machinery
+    # (Module._wrapped_call_impl / _call_impl, compile wrappers).
+    while frame is not None:
+        name = frame.f_globals.get("__name__", "")
+        if name != "torch" and not name.startswith("torch."):
+            return frame.f_code
+        frame = frame.f_back
+    return None
+
+
+class _LastHiddenSelection:
+    __slots__ = ("decoder", "allowed", "truncated", "caller")
+
+    def __init__(
+        self,
+        decoder,
+        allowed = True,
+        caller = None,
+    ):
+        self.decoder = decoder
+        # Code object the claiming decoder call must come from directly (None: any caller).
+        self.caller = caller
+        # This rank's own verdict. The decoder call still claims the selection when it is False, so every
+        # rank reaches the same vote; the vote then keeps every state on all of them.
+        self.allowed = bool(allowed)
+        self.truncated = False
+
+
+# Per thread: a forward on another thread never sees this caller's selection, so whether a decoder call
+# gathers one state or all of them cannot depend on thread timing, which differs between ranks.
+_LAST_HIDDEN = threading.local()
+
+
+@contextlib.contextmanager
+def last_hidden_state_only(
+    decoder,
+    allowed = True,
+    caller = None,
+) -> Iterator[_LastHiddenSelection]:
+    """For a caller that asks for output_hidden_states only to read the last one (GRPO's hidden-state
+    forward): the next call of ``decoder`` on this thread gathers that state alone, not all L + 1 layers
+    to full length. ``decoder = None`` selects nothing (and hides an enclosing selection). The yielded
+    selection's ``truncated`` says whether the decoder did return only the last state. ``allowed = False``
+    claims the decoder call without truncating: it votes against truncation on every rank. With ``caller``
+    (a code object) the claiming call votes against truncation unless that code made it directly."""
+    selection = _LastHiddenSelection(decoder, allowed, caller)
+    previous = getattr(_LAST_HIDDEN, "selection", None)
+    _LAST_HIDDEN.selection = selection
+    try:
+        yield selection
+    finally:
+        _LAST_HIDDEN.selection = previous
+
+
+# Forwards audited to read nothing but the decoder's last state and to hand its hidden_states tuple on untouched.
+_PASSTHROUGH_MARKER = "_unsloth_cp_hidden_states_passthrough"
+_PASSTHROUGH_AUDIT = {}  # code object -> {decoder attribute names: verdict}
+
+
+# The decoder output fields a forward may read anywhere: none of them is (or holds) the hidden-state tuple.
+# Enumerated from the Llama / Qwen2 / Qwen3 / Gemma / Gemma3 / Mistral (and Qwen3-MoE) CausalLM forwards
+# on transformers 4.57 and 5.x (5.x names the cache ``cache``).
+_FREE_OUTPUT_FIELDS = frozenset(
+    ("last_hidden_state", "past_key_values", "cache", "attentions", "router_logits")
+)
+_NESTED_SCOPES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ClassDef,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+# Reach a local by name (locals()["outputs"]) past the checks below.
+_INTROSPECTION = frozenset(("locals", "vars", "globals", "eval", "exec"))
+
+
+def _decoder_output_passthrough(function, attrs) -> bool:
+    """Strict allowlist check of a CausalLM forward: every ``self.<attr>(...)`` decoder call is assigned
+    to a plain name, and every read of that name is one of
+      ``name.last_hidden_state`` / ``.past_key_values`` / ``.cache`` / ``.attentions`` / ``.router_logits``
+      (a field read, not called or written), ``name[0]``, or
+      ``name.hidden_states`` as the ``hidden_states =`` keyword of the ModelOutput constructor the forward
+      itself returns.
+    Any other use (slices, other subscripts, methods, aliasing, passing the output on, starred unpacking,
+    reads from a nested scope or comprehension) and any ``hidden_states`` string: False."""
+    import inspect
+    import textwrap
+
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    except Exception:
+        return False
+    if not tree.body or not isinstance(tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    forward = tree.body[0]
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+        if isinstance(node, ast.Constant) and node.value == "hidden_states":
+            return False
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in _INTROSPECTION
+        ):
+            return False
+
+    def decoder_call(node):
+        func = getattr(node, "func", None)
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(func, ast.Attribute)
+            and func.attr in attrs
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "self"
+        )
+
+    def in_nested_scope(node):
+        node = parents.get(node)
+        while node is not None and node is not forward:
+            if isinstance(node, _NESTED_SCOPES):
+                return True
+            node = parents.get(node)
+        return node is None
+
+    names = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in attrs
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+        ):
+            call = parents.get(node)
+            if not (isinstance(call, ast.Call) and call.func is node):
+                return False  # the decoder handed on whole
+            owner = parents.get(call)
+            if (
+                isinstance(owner, ast.Assign)
+                and len(owner.targets) == 1
+                and isinstance(owner.targets[0], ast.Name)
+            ):
+                names.add(owner.targets[0].id)
+            elif isinstance(owner, ast.AnnAssign) and isinstance(owner.target, ast.Name):
+                names.add(owner.target.id)
+            else:
+                return False  # returned or consumed in place
+    if not names:
+        return False
+
+    def output_class(func):
+        # The callee resolved in the forward's own module: only a ModelOutput subclass counts.
+        path = []
+        while isinstance(func, ast.Attribute):
+            path.append(func.attr)
+            func = func.value
+        if not isinstance(func, ast.Name):
+            return False
+        try:  # getsource above read the innermost function: resolve in its module
+            scope = inspect.unwrap(function).__globals__
+        except Exception:
+            return False
+        if func.id not in scope:
+            return False
+        value = scope[func.id]
+        try:
+            for attr in reversed(path):
+                value = getattr(value, attr)
+            from transformers.utils import ModelOutput
+        except Exception:
+            return False
+        return isinstance(value, type) and issubclass(value, ModelOutput)
+
+    def returned_hidden_states(use):
+        # ``hidden_states = outputs.hidden_states`` straight into the ModelOutput the forward returns.
+        keyword = parents.get(use)
+        if not (isinstance(keyword, ast.keyword) and keyword.arg == "hidden_states"):
+            return False
+        call = parents.get(keyword)
+        return (
+            isinstance(call, ast.Call)
+            and isinstance(parents.get(call), ast.Return)
+            and output_class(call.func)
+        )
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and names.intersection(node.names):
+            return False
+        if isinstance(node, ast.Attribute) and node.attr == "hidden_states":
+            value = node.value
+            if not (
+                isinstance(value, ast.Name)
+                and value.id in names
+                and isinstance(node.ctx, ast.Load)
+                and returned_hidden_states(node)
+            ):
+                return False
+        if not (isinstance(node, ast.Name) and node.id in names):
+            continue
+        if in_nested_scope(node):
+            return False
+        use = parents.get(node)
+        if isinstance(node.ctx, ast.Store):
+            # Only as the target of its own decoder call.
+            if isinstance(use, ast.Assign) and use.targets == [node] and decoder_call(use.value):
+                continue
+            if isinstance(use, ast.AnnAssign) and use.target is node and decoder_call(use.value):
+                continue
+            return False
+        if not isinstance(node.ctx, ast.Load):
+            return False  # del
+        if isinstance(use, ast.Attribute) and use.value is node and isinstance(use.ctx, ast.Load):
+            caller = parents.get(use)
+            if isinstance(caller, ast.Call) and caller.func is use:
+                return False  # a method, never a field read
+            if use.attr in _FREE_OUTPUT_FIELDS or use.attr == "hidden_states":
+                continue  # hidden_states was checked above
+            return False
+        if (
+            isinstance(use, ast.Subscript)
+            and use.value is node
+            and isinstance(use.ctx, ast.Load)
+            and isinstance(use.slice, ast.Constant)
+            and type(use.slice.value) is int
+            and use.slice.value == 0
+        ):
+            continue
+        return False
+    return True
+
+
+_SAFE_WRAPPER_CODES = None
+
+
+def _safe_forward_wrappers() -> frozenset:
+    """Code objects of the transformers forward decorators that return the wrapped forward's output
+    unchanged (can_return_tuple at most calls .to_tuple() on it, deprecate_kwarg renames kwargs). Found by
+    decorating a probe, so a wrapper matches by code identity, not by name."""
+    global _SAFE_WRAPPER_CODES
+    if _SAFE_WRAPPER_CODES is not None:
+        return _SAFE_WRAPPER_CODES
+
+    def probe(self, *args, **kwargs):
         return None
+
+    codes = set()
+    try:
+        from transformers.utils.generic import can_return_tuple
+        codes.add(can_return_tuple(probe).__code__)
+    except Exception:
+        pass
+    try:
+        from transformers.utils.deprecation import deprecate_kwarg
+        codes.add(deprecate_kwarg("_unsloth_probe", version = "0.0.0")(probe).__code__)
+    except Exception:
+        pass
+    _SAFE_WRAPPER_CODES = frozenset(codes)
+    return _SAFE_WRAPPER_CODES
+
+
+def _cp_text_decoder(model):
+    # The one CP-attached text decoder held directly by ``model``, and the attribute names holding it. Module
+    # structure only: attach_rl_hooks runs on every rank, so this is the same on all of them.
+    manager = get_cp_manager()
+    if manager is None or model is None:
+        return None, None
+    decoders = _decoders(model)
+    if len(decoders) != 1 or getattr(decoders[0], "_unsloth_cp_rl_manager", None) is not manager:
+        return None, None
+    decoder = decoders[0]
+    attrs = frozenset(name for name, child in model._modules.items() if child is decoder)
+    if not attrs:
+        return None, None
+    return decoder, attrs
+
+
+def last_hidden_state_decoder(model, forward) -> Optional[torch.nn.Module]:
+    """The decoder a GRPO hidden-state forward of ``model`` may scope with last_hidden_state_only(), or
+    None (gather every state). Only the one CP-attached text decoder held directly by ``model``, and only
+    when ``forward`` is marked or audited to pass the hidden states through without reading them: a forward
+    that reads an intermediate state before returning would get the wrong tensor otherwise. The verdict on
+    ``forward`` is rank-local (a wrapper installed on one rank changes it): last_hidden_state_scope() votes
+    on it over the CP group."""
+    decoder, attrs = _cp_text_decoder(model)
+    if decoder is None:
+        return None
+    return decoder if _forward_passthrough(forward, attrs) else None
+
+
+def last_hidden_state_scope(
+    model,
+    forward,
+    requested = False,
+):
+    """last_hidden_state_only() for GRPO's hidden-state forward of ``model``. The decoder call is claimed
+    from module structure alone, the same on every rank, so all ranks reach one vote; this rank's verdicts
+    (the caller asked for the states itself, ``forward`` fails the passthrough audit) only make that vote
+    keep every state, never skip it on one rank while a peer enters it."""
+    decoder, attrs = _cp_text_decoder(model)
+    if decoder is None:
+        return last_hidden_state_only(None)
+    allowed = not requested and _forward_passthrough(forward, attrs)
+    # Bound to the audited function: only the decoder call it makes itself may be the truncated one.
+    caller = _audited_code(forward)
+    return last_hidden_state_only(decoder, allowed = allowed and caller is not None, caller = caller)
+
+
+def _audited_code(forward):
+    # The code object of the innermost function _forward_passthrough audits.
+    function = getattr(forward, "__func__", forward)
+    for _ in range(16):
+        if not hasattr(function, "__wrapped__"):
+            break
+        function = function.__wrapped__
+    function = getattr(function, "__func__", function)
+    return getattr(function, "__code__", None)
+
+
+def _forward_passthrough(forward, attrs) -> bool:
+    function = getattr(forward, "__func__", forward)
+    chain = [function]
+    while hasattr(chain[-1], "__wrapped__") and len(chain) < 16:
+        chain.append(chain[-1].__wrapped__)
+    # Only the innermost function is audited: every wrapper around it must be a known one that hands the
+    # output back as is. functools.wraps copies the marker outward, so it cannot vouch for a wrapper either.
+    safe = _safe_forward_wrappers()
+    if hasattr(chain[-1], "__wrapped__") or any(
+        getattr(f, "__code__", None) not in safe for f in chain[:-1]
+    ):
+        return False
+    if any(getattr(f, _PASSTHROUGH_MARKER, False) for f in chain):
+        return True
+    inner = getattr(chain[-1], "__func__", chain[-1])
+    try:
+        key = inner.__code__
+    except AttributeError:
+        return False
+    cached = _PASSTHROUGH_AUDIT.setdefault(key, {})
+    if attrs not in cached:
+        cached[attrs] = _decoder_output_passthrough(inner, attrs)
+    return bool(cached[attrs])
+
+
+def _truncation_agreed(module, hidden, manager, allowed) -> bool:
+    """True on every rank when every rank allows the truncation and no rank has a forward hook after the CP
+    post hook on ``module`` (such a hook reads output["hidden_states"] by index). Agreed over the CP group,
+    so a rank-local hook or forward verdict cannot make the peers enter different gathers."""
+    hooks = list(module._forward_hooks)
+    mine = getattr(module, "_unsloth_cp_rl_post_hook_id", None)
+    later = mine not in hooks or hooks.index(mine) != len(hooks) - 1
+    flag = torch.tensor([int(later or not allowed)], dtype = torch.int32, device = hidden.device)
+    dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = manager.group)
+    return not bool(flag.item())
+
+
+def _rl_decoder_post_hook(module, args, kwargs, output):
+    entry = module._unsloth_cp_rl_stack.pop() if module._unsloth_cp_rl_stack else None
+    if entry is None:
+        return None
+    seq_len, selection = entry
     manager = module._unsloth_cp_rl_manager
     last = output[0]
 
@@ -2297,8 +2730,16 @@ def _rl_decoder_post_hook(module, args, kwargs, output):
             )
         return (hidden, *output[1:])
     output[next(iter(output.keys()))] = hidden
-    if layers is not None:
-        # GRPO's hidden-state forward asks for these and reads the last one (the same tensor as above).
+    if (
+        layers is not None
+        and selection is not None
+        and len(layers)
+        and _truncation_agreed(module, last, manager, selection.allowed)
+    ):
+        # Only the last state is read: every other layer would be one more all-gather and a full-length copy.
+        output["hidden_states"] = (hidden if layers[-1] is last else _full(layers[-1]),)
+        selection.truncated = True
+    elif layers is not None:
         output["hidden_states"] = tuple(
             hidden if layer is last else _full(layer) for layer in layers
         )
@@ -2324,7 +2765,8 @@ def attach_rl_hooks(manager, model) -> None:
         decoder._unsloth_cp_rl_stack = []
         if not getattr(decoder, "_unsloth_cp_rl_hooked", False):
             decoder.register_forward_pre_hook(_rl_decoder_pre_hook, with_kwargs = True)
-            decoder.register_forward_hook(_rl_decoder_post_hook, with_kwargs = True)
+            handle = decoder.register_forward_hook(_rl_decoder_post_hook, with_kwargs = True)
+            decoder._unsloth_cp_rl_post_hook_id = handle.id
             decoder._unsloth_cp_rl_hooked = True
     manager.attach_attention_hooks(model)
 
@@ -2374,9 +2816,11 @@ class _OnDevice:
 
 def _broadcast_from_group_root(obj, manager, device):
     """CP rank 0 sends its object (tensors through CPU) so every peer scores the same samples."""
-    payload = [_map_leaves(obj, _OnDevice)]
     group = manager.group
-    dist.broadcast_object_list(payload, src = dist.get_global_rank(group, 0), group = group)
+    src = dist.get_global_rank(group, 0)
+    # Peers overwrite their payload with the root's, so only the root copies its tensors to the host.
+    payload = [_map_leaves(obj, _OnDevice) if dist.get_rank() == src else None]
+    dist.broadcast_object_list(payload, src = src, group = group)
     return _map_leaves(
         payload[0],
         lambda x: x.restore(device),
@@ -2741,8 +3185,7 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
             self.gather_function = _cp_gather_for_metrics(self.accelerator, manager.size)
         return originals["evaluation_loop"](self, *args, **kwargs)
 
-    # Bound per trainer that enables CP (types.MethodType, as for SFT): trainers without CP keep the
-    # class's own methods.
+    # Bound per CP-enabling trainer, as for SFT; trainers without CP keep the class's methods.
     cp_methods = {
         "training_step": _step_wrapper("training_step"),
         "prediction_step": _step_wrapper("prediction_step"),

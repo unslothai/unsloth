@@ -40,8 +40,7 @@ function specKey(specs: readonly LoraSpecInput[] | undefined): string {
     .join("\u0001");
 }
 
-/** True when the picker no longer matches the resident build, so applying it needs a reload. Order-free:
- * the merge is a sum of deltas. */
+/** True when the picker differs from the resident build; order-free, as the merge sums deltas. */
 export function videoLoraReloadNeeded(
   selection: readonly LoraSpecInput[],
   status: VideoStatus | null | undefined,

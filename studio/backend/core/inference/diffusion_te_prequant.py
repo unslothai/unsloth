@@ -776,11 +776,13 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "black-forest-labs/flux.2-klein-base-4b",
         }
     ),
-    # Stock Qwen3-8B (= unsloth/Qwen3-8B): likewise for the 9B pair (compared 2026-10-16)
+    # Stock Qwen3-8B (= unsloth/Qwen3-8B): likewise for the 9B pair (compared 2026-10-16) and the 9B KV checkpoint
+    # (LFS sha256 of all four shards equal to the 9B's, 2026-11-21)
     frozenset(
         {
             "black-forest-labs/flux.2-klein-9b",
             "black-forest-labs/flux.2-klein-base-9b",
+            "black-forest-labs/flux.2-klein-9b-kv",
         }
     ),
     # MOSS-Image SFT and Base share identical text_encoder shards (LFS sha256).
@@ -1698,10 +1700,9 @@ def _dense_component_pickles(
     hf_token: Optional[str],
     cache_dir: Optional[str] = None,
 ) -> list:
-    """ignore_patterns for a dense encoder fetch: every .pt / .pth / .ckpt / .pkl, plus a component's .bin shards when
-    the repo lists a safetensors weight for it. A component whose .bin is already cached and matches the Hub's sha256
-    (and whose safetensors is not cached) skips its safetensors instead, so nothing is downloaded twice. Without a
-    listing only the never-read pickles are dropped, so a component whose only copy is a .bin still loads."""
+    """ignore_patterns for dense encoder: .pt/.pth/.ckpt/.pkl always; .bin dropped when the repo
+    lists safetensors for it, but a component whose cached .bin matches the Hub sha256
+    (safetensors uncached) skips its safetensors; no listing: only pickles dropped"""
     from .diffusers_safetensors import (
         _is_model_safetensors,
         pipeline_pickle_files,

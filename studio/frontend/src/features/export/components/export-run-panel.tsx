@@ -26,7 +26,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { FolderSearchIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { ExportDrafterInfo, ExportLogEntry } from "../api/export-api";
 import {
@@ -34,7 +34,10 @@ import {
   type ExportMethod,
   findMergedFormat,
 } from "../constants";
-import { getExportLogLineClass } from "../lib/log-style";
+import {
+  getExportLogLineClass,
+  groupExportLogLines,
+} from "../lib/log-style";
 import {
   type ExportDestination,
   selectExportProgressPercent,
@@ -150,7 +153,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     useShallow((s) => ({
       phase: s.phase,
       isExporting: s.isExporting,
-      logLines: s.logLines,
+      hasLogs: s.logLines.length > 0,
       connected: s.connected,
       reconnecting: s.reconnecting,
       stage: s.stage,
@@ -175,7 +178,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
   const panelMethod = run.summary?.method ?? exportMethod;
   const showLogPanel =
     isExporting ||
-    run.logLines.length > 0 ||
+    run.hasLogs ||
     panelMethod === "merged" ||
     panelMethod === "gguf" ||
     panelMethod === "lora";
@@ -183,21 +186,8 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
   const elapsedSeconds = useElapsedSeconds(run.startedAt, isExporting);
 
   const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
-  const logScrollRef = useRef<HTMLDivElement | null>(null);
+  // Here, not in ExportLogBox, so it survives box remounts.
   const [followTail, setFollowTail] = useState(true);
-
-  useEffect(() => {
-    if (!followTail) return;
-    const el = logScrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [run.logLines, followTail]);
-
-  const handleLogScroll = () => {
-    const el = logScrollRef.current;
-    if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-    setFollowTail(nearBottom);
-  };
 
   const methodTitle = EXPORT_METHODS.find(
     (m) => m.value === exportMethod,
@@ -568,7 +558,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
         </div>
       )}
 
-      {showLogPanel && (isExporting || run.logLines.length > 0) && (
+      {showLogPanel && (isExporting || run.hasLogs) && (
         <div className="flex flex-col gap-1.5 pt-1">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-medium text-muted-foreground">
@@ -595,28 +585,11 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                   </span>
                 </div>
               </div>
-              <div
-                ref={logScrollRef}
-                onScroll={handleLogScroll}
-                className="h-56 w-full overflow-auto scroll-rounded rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-ui-11 leading-[1.45] text-emerald-200/90"
-              >
-                {run.logLines.length === 0 ? (
-                  <div className="flex h-full items-center justify-center text-muted-foreground/70">
-                    <span className="flex items-center gap-2">
-                      <Spinner className="size-3" />
-                      {waitingMessage(run.phase, run.stage)}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="whitespace-pre-wrap break-words">
-                    {run.logLines.map((entry, idx) => (
-                  <div key={idx} className={getExportLogLineClass(entry)}>
-                        {formatLogLine(entry)}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <ExportLogBox
+                waiting={waitingMessage(run.phase, run.stage)}
+                followTail={followTail}
+                onFollowTailChange={setFollowTail}
+              />
             </div>
         )}
 
@@ -650,6 +623,97 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     </div>
   );
 }
+
+const ExportLogRow = memo(function ExportLogRow({
+  entry,
+}: {
+  entry: ExportLogEntry;
+}) {
+  return (
+    <div className={getExportLogLineClass(entry)}>{formatLogLine(entry)}</div>
+  );
+});
+
+const ExportLogBlock = memo(
+  function ExportLogBlock({
+    start,
+    entries,
+  }: {
+    start: number;
+    entries: ExportLogEntry[];
+  }) {
+    return (
+      <div>
+        {entries.map((entry, idx) => (
+          <ExportLogRow key={start + idx} entry={entry} />
+        ))}
+      </div>
+    );
+  },
+  (a, b) =>
+    a.start === b.start &&
+    a.entries.length === b.entries.length &&
+    a.entries[0] === b.entries[0] &&
+    a.entries[a.entries.length - 1] === b.entries[b.entries.length - 1],
+);
+
+// Own subscription so the 1 s elapsed tick skips the list.
+const ExportLogBox = memo(function ExportLogBox({
+  waiting,
+  followTail,
+  onFollowTailChange,
+}: {
+  waiting: string;
+  followTail: boolean;
+  onFollowTailChange: (follow: boolean) => void;
+}) {
+  const { logLines, logBase } = useExportRuntimeStore(
+    useShallow((s) => ({ logLines: s.logLines, logBase: s.logBase })),
+  );
+  const logScrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!followTail) return;
+    const el = logScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logLines, followTail]);
+
+  const handleLogScroll = () => {
+    const el = logScrollRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    onFollowTailChange(nearBottom);
+  };
+
+  return (
+    <div
+      ref={logScrollRef}
+      onScroll={handleLogScroll}
+      // Head trims would let scroll anchoring drag a scrolled-up view; pin the offset.
+      style={logBase > 0 ? { overflowAnchor: "none" } : undefined}
+      className="h-56 w-full overflow-auto scroll-rounded rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-ui-11 leading-[1.45] text-emerald-200/90"
+    >
+      {logLines.length === 0 ? (
+        <div className="flex h-full items-center justify-center text-muted-foreground/70">
+          <span className="flex items-center gap-2">
+            <Spinner className="size-3" />
+            {waiting}
+          </span>
+        </div>
+      ) : (
+        <div className="whitespace-pre-wrap break-words">
+          {groupExportLogLines(logLines, logBase).map((group) => (
+            <ExportLogBlock
+              key={group.key}
+              start={group.start}
+              entries={group.entries}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
 
 function ExportDrafterNote({ drafter }: { drafter: ExportDrafterInfo }) {
   return (

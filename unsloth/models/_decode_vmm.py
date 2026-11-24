@@ -295,8 +295,7 @@ def in_use(tensor):
 
 
 def sleep(tensor):
-    """Frees the tensor's pages (its addresses stay reserved). Never touch it before wake(). The caller checks
-    in_use() first."""
+    """Frees the pages (addresses stay); do not touch before wake(). Check in_use() first."""
     global SLEEPS
     buffer = buffer_of(tensor)
     if buffer is None or not buffer.awake:

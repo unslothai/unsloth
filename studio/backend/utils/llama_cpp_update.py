@@ -38,6 +38,7 @@ from utils.prebuilt.llama_backend import (
     marker_backend,
     marker_backend_request,
     normalize_backend,
+    normalize_backend_request,
 )
 from utils.update_status import update_checks_disabled
 
@@ -607,7 +608,8 @@ def _backend_options(resolved: Optional[dict], assets: Optional[dict] = None) ->
     """Normalize a resolver payload into the options the picker and the switch planner both read, so both judge a request against the same list."""
     options = []
     for entry in (resolved or {}).get("backends") or []:
-        backend = normalize_backend(entry.get("backend"))
+        # Options must be switchable; actual-only backends (metal, sycl) surface as resolved_backend.
+        backend = normalize_backend_request(entry.get("backend"))
         if backend is None:
             continue
         asset = entry.get("asset")

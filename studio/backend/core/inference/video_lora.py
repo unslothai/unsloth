@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import threading
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -22,6 +23,27 @@ _PREFIXES = ("transformer.", "base_model.model.", "diffusion_model.", "model.dif
 _A_SUFFIXES = (".lora_A.weight", ".lora_A.default.weight", ".lora_down.weight")
 _B_SUFFIXES = (".lora_B.weight", ".lora_B.default.weight", ".lora_up.weight")
 _DENOISER_COMPONENTS = frozenset({"transformer", "transformer_2", "transformer_ref"})
+# Wan's original module names (the lightx2v / kohya adapters) -> diffusers WanTransformer3DModel's.
+_WAN_NATIVE_MODULE = re.compile(r"^(blocks\.\d+\.)(self_attn|cross_attn|ffn)\.(q|k|v|o|0|2)$")
+_WAN_NATIVE_LEAF = {
+    ("self_attn", "q"): "attn1.to_q",
+    ("self_attn", "k"): "attn1.to_k",
+    ("self_attn", "v"): "attn1.to_v",
+    ("self_attn", "o"): "attn1.to_out.0",
+    ("cross_attn", "q"): "attn2.to_q",
+    ("cross_attn", "k"): "attn2.to_k",
+    ("cross_attn", "v"): "attn2.to_v",
+    ("cross_attn", "o"): "attn2.to_out.0",
+    ("ffn", "0"): "ffn.net.0.proj",
+    ("ffn", "2"): "ffn.net.2",
+}
+
+
+def _diffusers_module_name(module: str) -> str:
+    """``module`` in diffusers naming: a Wan original block projection is renamed, anything else is unchanged."""
+    hit = _WAN_NATIVE_MODULE.match(module)
+    leaf = _WAN_NATIVE_LEAF.get((hit.group(2), hit.group(3))) if hit else None
+    return hit.group(1) + leaf if leaf else module
 
 
 def normalize_specs(loras: Any) -> list[tuple[str, float]]:
@@ -67,8 +89,14 @@ def _precision_dense(value: Optional[str]) -> bool:
     return value is not None and str(value).strip().lower() in ("none", "off")
 
 
-def load_refusal(fam: Any, kind: Optional[str], transformer_quant: Optional[str]) -> Optional[str]:
-    """Why this video load cannot bake LoRAs, or None when it can. Network-free."""
+def load_refusal(
+    fam: Any,
+    kind: Optional[str],
+    transformer_quant: Optional[str],
+    loras: Any = None,
+) -> Optional[str]:
+    """Why this video load cannot bake LoRAs, or None when it can. Network-free. With ``loras``, a two-expert
+    family also refuses any pick that is not a catalog high / low-noise pair."""
     if fam is None:
         return None
     label = getattr(fam, "label", None) or getattr(fam, "name", None) or "this model"
@@ -79,11 +107,9 @@ def load_refusal(fam: Any, kind: Optional[str], transformer_quant: Optional[str]
             "checkpoint has none. Load the base repo (no checkpoint file) with the LoRA selected."
         )
     if getattr(fam, "is_moe", False):
-        # One adapter file names one denoiser; a two-expert model needs a pair, which nothing here trains or maps.
-        return (
-            f"LoRAs are not supported for the two-expert {label} yet: an adapter adapts one denoiser, and this "
-            "model swaps between two."
-        )
+        single = next((i for (i, _w) in active_specs(loras) if not _is_pair(i)), None)
+        if single is not None:
+            return _pair_mismatch(single, True)
     if getattr(fam, "modular_workflow", None) and not (
         _precision_unset(transformer_quant) or _precision_dense(transformer_quant)
     ):
@@ -144,9 +170,11 @@ def resolve(
     hf_token: Optional[str],
     cancel_event: Optional[threading.Event] = None,
     local_files_only: bool = False,
-) -> tuple[tuple[str, str, float], ...]:
-    """``(name, path, weight)`` per active spec, resolved and family-gated like the Images load; a cache-only load
-    resolves Hub adapters from the cache alone."""
+    expert_pair: bool = False,
+) -> tuple[tuple[str, str, float, Optional[str]], ...]:
+    """``(name, path, weight, path_2)`` per active spec, resolved and family-gated like the Images load; a cache-only
+    load resolves Hub adapters from the cache alone. ``expert_pair`` (a two-expert model): every spec must be a
+    catalog pair, whose ``path_2`` adapts ``transformer_2``; elsewhere ``path_2`` is None."""
     from core.inference import diffusion_lora
 
     resolved = diffusion_lora.resolve_specs(
@@ -164,20 +192,57 @@ def resolve(
     out: list[tuple[str, str, float]] = []
     seen: set[str] = set()
     for r in resolved:
+        if bool(r.path_2) != expert_pair:
+            raise diffusion_lora.LoraSelectionError(_pair_mismatch(r.id, expert_pair))
         name, n = r.alias, 1
         while name in seen:
             n += 1
             name = f"{r.alias}_{n}"
         seen.add(name)
-        _fetch_hub_adapter_config(r.path, hf_token, local_files_only)
-        unsupported = _unbakeable_feature(r.path)
-        if unsupported:
-            raise diffusion_lora.LoraSelectionError(
-                f"'{r.id}' is a {unsupported} adapter; video loads bake plain LoRA deltas into the weights only, so it "
-                "would merge wrong. Use a plain LoRA adapter."
-            )
-        out.append((name, r.path, r.weight))
+        for path in filter(None, (r.path, r.path_2)):
+            _fetch_hub_adapter_config(path, hf_token, local_files_only)
+            unsupported = _unbakeable_feature(path)
+            if unsupported:
+                raise diffusion_lora.LoraSelectionError(
+                    f"'{r.id}' is a {unsupported} adapter; video loads bake plain LoRA deltas into the weights only, so "
+                    "it would merge wrong. Use a plain LoRA adapter."
+                )
+        out.append((name, r.path, r.weight, r.path_2))
     return tuple(out)
+
+
+def _pair_mismatch(lora_id: str, expert_pair: bool) -> str:
+    if expert_pair:
+        return (
+            f"'{lora_id}' is one adapter, but this two-expert model swaps between a high-noise and a low-noise "
+            "denoiser, so it needs a pair: pick a two-expert LoRA pair from the catalog (for example "
+            "lightx2v/Wan2.2-Distill-Loras)."
+        )
+    return f"'{lora_id}' is a two-expert LoRA pair; it loads only on a two-expert model such as Wan2.2-T2V-A14B."
+
+
+def _is_pair(lora_id: str) -> bool:
+    """A curated two-expert pair (only the in-memory catalog holds pairs; anything else resolves to one file)."""
+    from core.inference import diffusion_lora
+    return any(e.id == lora_id and e.weight_name_2 for e in diffusion_lora._CURATED)
+
+
+def recommended_scheduler(pipe: Any) -> dict:
+    """Scheduler overrides the baked step-distilled adapter wants (lists kept); {} when none."""
+    from core.inference import diffusion_lora
+
+    rows = diffusion_lora.recommended_scheduler(
+        i for (i, _w) in getattr(pipe, BAKED_SPECS_ATTR, ()) or ()
+    )
+    return {k: list(v) if isinstance(v, tuple) else v for k, v in rows}
+
+
+def recommended_params(pipe: Any) -> Optional[tuple[int, float]]:
+    """``(steps, guidance)`` a baked step-distilled adapter asks for (its catalog preset), else None."""
+    from core.inference import diffusion_lora
+    return diffusion_lora.recommended_params(
+        i for (i, _w) in getattr(pipe, BAKED_SPECS_ATTR, ()) or ()
+    )
 
 
 def _unbakeable_feature(path: str) -> Optional[str]:
@@ -315,7 +380,7 @@ def read_deltas(files: Iterable[tuple[str, float]]) -> dict:
             for slot, suffixes in (("a", _A_SUFFIXES), ("b", _B_SUFFIXES), ("alpha", (".alpha",))):
                 hit = next((s for s in suffixes if name.endswith(s)), None)
                 if hit is not None:
-                    parts.setdefault(name[: -len(hit)], {})[slot] = tensor
+                    parts.setdefault(_diffusers_module_name(name[: -len(hit)]), {})[slot] = tensor
                     break
         if not parts:
             raise ValueError(f"{Path(str(path)).name} holds no LoRA weights this loader recognises")
@@ -366,9 +431,18 @@ def bake_into_module_(
     params = dict(module.named_parameters())
     missing = [m for m in deltas if f"{m}.weight" not in params]
     if missing:
-        shown = ", ".join(sorted(missing)[:4]) + (" ..." if len(missing) > 4 else "")
+        modules = dict(module.named_modules())
+        absent = [m for m in missing if m not in modules]
+        names = absent or missing
+        shown = ", ".join(sorted(names)[:4]) + (" ..." if len(names) > 4 else "")
+        if absent:
+            raise ValueError(
+                f"This LoRA adapts layers the {label} does not have ({shown}); it was trained for a different model."
+            )
+        # the layers exist but keep quantized codes (e.g. a ModelOpt FP8 runtime) rather than a float weight
         raise ValueError(
-            f"This LoRA adapts layers the {label} does not have ({shown}); it was trained for a different model."
+            f"The {label} layers {shown} hold quantized weights, not a dense float weight; LoRAs bake only into "
+            "the bfloat16 denoiser."
         )
     for m, terms in deltas.items():
         weight = params[f"{m}.weight"]

@@ -35,6 +35,9 @@ DECODE_FAILURE_ALLOWANCE = 4
 # MIME type has no length bound; metadata must not hide megabytes from the byte budgets on both sides
 MAX_MCP_IMAGE_MIME_CHARS = 256
 MAX_IMAGE_EDGE = 1024
+# Images these tools return are already sized for the model, and x and y are read off them: sent as taken.
+AS_TAKEN_TOOLS = frozenset({"computer"})
+_AS_TAKEN = "as_taken"
 # Bounded off the header: a small PNG can hold tens of gigapixels.
 MAX_IMAGE_PIXELS = 40_000_000
 
@@ -55,7 +58,8 @@ def stepped_keep(
 
 
 def is_image_tool(name: str) -> bool:
-    return name in ("view_image", "browser_screenshot", "computer") or name.startswith(
+    # "Read": Claude Code's file reader, whose images the frontend replays only for imported chats.
+    return name in ("view_image", "browser_screenshot", "computer", "Read") or name.startswith(
         MCP_TOOL_PREFIX
     )
 
@@ -96,7 +100,17 @@ def _split_images(result: str) -> tuple[str, list[dict]]:
         return result, []
     if not all(_is_image(image) for image in images):
         return result, []
-    return head.rstrip(), images
+    # Only Studio marks an image as taken, and only where it knows the tool (mark_as_taken).
+    return head.rstrip(), [
+        {k: v for k, v in image.items() if k != _AS_TAKEN} if _AS_TAKEN in image else image
+        for image in images
+    ]
+
+
+def mark_as_taken(images: list[dict], tool_name: Any) -> list[dict]:
+    if tool_name not in AS_TAKEN_TOOLS:
+        return images
+    return [{**image, _AS_TAKEN: True} for image in images]
 
 
 def _is_image(image: Any) -> bool:
@@ -188,13 +202,15 @@ def _decoded_urls(
         if not _mime_is_bounded(image):
             continue
         data = image.get("data", "")
+        as_taken = image.get(_AS_TAKEN) is True
+        key = (data, True) if as_taken else data
         # cache holds one request's decodes keyed by payload, so a repeated promotion does not decode twice.
-        if cache is not None and data in cache:
-            url = cache[data]
+        if cache is not None and key in cache:
+            url = cache[key]
         else:
-            url = _png_data_url(data)
+            url = _png_data_url(data, as_taken)
             if cache is not None:
-                cache[data] = url
+                cache[key] = url
         if url:
             urls.append(url)
     return urls
@@ -382,17 +398,17 @@ _png_memo_chars = 0
 _PNG_MEMO_LOCK = threading.Lock()
 
 
-def _png_data_url(data: str) -> str | None:
+def _png_data_url(data: str, as_taken: bool = False) -> str | None:
     global _png_memo_chars
     if not isinstance(data, str):
-        return _normalized_png_data_url(data)
-    key = hashlib.sha256(data.encode("utf-8", "surrogatepass")).digest()
+        return _normalized_png_data_url(data, as_taken)
+    key = hashlib.sha256(data.encode("utf-8", "surrogatepass")).digest() + bytes((as_taken,))
     with _PNG_MEMO_LOCK:
         url = _PNG_MEMO.get(key)
         if url is not None:
             _PNG_MEMO.move_to_end(key)
             return url
-    url = _normalized_png_data_url(data)
+    url = _normalized_png_data_url(data, as_taken)
     # Failures are not kept: they are cheap and must keep being refused.
     if url is not None and len(url) <= _PNG_MEMO_MAX_CHARS:
         with _PNG_MEMO_LOCK:
@@ -404,7 +420,7 @@ def _png_data_url(data: str) -> str | None:
     return url
 
 
-def _normalized_png_data_url(data: str) -> str | None:
+def _normalized_png_data_url(data: str, as_taken: bool = False) -> str | None:
     # PNG always: llama-server's stb_image reads few formats (MCP servers often send WebP).
     try:
         raw = base64.b64decode(data, validate = True)
@@ -420,14 +436,15 @@ def _normalized_png_data_url(data: str) -> str | None:
         if width * height > MAX_IMAGE_PIXELS:
             logger.debug("MCP image is %dx%d, past the pixel budget", width, height)
             return None
-        # JPEG decodes straight to a smaller raster; a no-op for every other format.
-        image.draft("RGB", (MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
+        if not as_taken:
+            # JPEG decodes straight to a smaller raster; a no-op for every other format.
+            image.draft("RGB", (MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
         image.load()
         # Apply EXIF orientation, or the model sees camera JPEGs sideways.
         from PIL import ImageOps
 
         image = ImageOps.exif_transpose(image) or image
-        if max(image.size) > MAX_IMAGE_EDGE:
+        if not as_taken and max(image.size) > MAX_IMAGE_EDGE:
             image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
         flattened_rgb(image).save(buffer, format = "PNG")
@@ -1068,6 +1085,7 @@ def _promote(
             text, images = split_images(content)
             # The suffix always comes off; provenance decides only whether it becomes image input.
             name = message.get("name") or call_names.get(position)
+            images = mark_as_taken(images, name)
             if isinstance(name, str) and name and not is_image_tool(name):
                 # A non-MCP result between the images and their turn makes "the tool call above" name web_search.
                 if pending:

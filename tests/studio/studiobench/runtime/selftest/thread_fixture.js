@@ -20,8 +20,7 @@
     "windowed_duplicate_ordinals",
     // Window index published as the thread position, the likeliest accidental bug.
     "windowed_from_one",
-    // Once, halfway up, scrollTop jumps 600px further, as a list re-anchoring on rows that mounted
-    // taller than estimated; a fixed step then skips a row.
+    // Halfway up, scrollTop jumps 600px once re-anchoring on taller rows, skipping a row.
     "windowed_anchor_jump",
   ];
 

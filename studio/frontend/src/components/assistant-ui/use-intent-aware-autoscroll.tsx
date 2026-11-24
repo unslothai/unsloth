@@ -183,9 +183,8 @@ export function useIntentAwareAutoScroll(): {
       let scrollKeyAt = Number.NEGATIVE_INFINITY;
       let pointerHeld = false;
       let insertionRemainder = 0;
-      // distant-rows.ts skipped or released a row since the last scroll event. Chromium can clamp
-      // scrollTop while it swaps the row's size, and the scroll event then reads an unchanged
-      // scrollHeight: without this a long chat opening at its bottom read as a scroll up.
+      // Set when distant-rows.ts skips or releases a row, so a clamped scrollTop is not a scroll
+      // up.
       let rowsToggledSinceScroll = false;
 
       const distanceFromBottom = (): number => {

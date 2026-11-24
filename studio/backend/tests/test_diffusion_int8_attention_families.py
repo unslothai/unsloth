@@ -300,9 +300,13 @@ def test_the_measured_families_are_listed():
     for name in (
         "QwenImageTransformer2DModel",
         "HunyuanImageTransformer2DModel",
-        "Krea2Transformer2DModel",
     ):
         assert name not in D.AUTO_DITS and name not in I.SINK_DITS
+    # Krea 2 races on the plain path (its block calls are mask-free over the valid key prefix), no sink path
+    assert (
+        "Krea2Transformer2DModel" in D.AUTO_DITS and "Krea2Transformer2DModel" in D.AUTO_CUDA_ONLY
+    )
+    assert "Krea2Transformer2DModel" not in I.SINK_DITS
 
 
 @pytest.mark.parametrize("name", RACED)
@@ -333,8 +337,7 @@ def test_a_lost_race_keeps_the_incumbent(card, monkeypatch, name):
 
 @pytest.mark.parametrize("name", RACED)
 def test_speed_unset_rule(card, monkeypatch, name):
-    """Speed unset with no profile to follow (T4's default): the image families race, HunyuanVideo-1.5 waits for its
-    speed profile like Wan."""
+    """Speed unset: image families race; HunyuanVideo-1.5 waits for a speed profile, like Wan."""
     seen = _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": 0})
     dit, _ = _build(name)
     routed = D.install(_Pipe(dit), _TARGET, speed_unset_only = True)
@@ -379,8 +382,7 @@ def test_qwen_image_routes_on_request_only(card, monkeypatch):
 
 
 def test_hunyuan15_trimmed_processor_reads_the_dispatch_at_call_time(card, monkeypatch):
-    """Studio's null-mask processor is a dispatch caller the route can see; without the trim the stock processor
-    passes the text mask."""
+    """The null-mask processor must call dispatch, or the stock one would pass the text mask."""
     _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": 0})
     from core.inference import diffusion_attention as A
 
@@ -534,8 +536,7 @@ def _cuda_case(name, dtype):
 @needs_kernel
 @pytest.mark.parametrize("name", RACED + ("QwenImageTransformer2DModel",))
 def test_cuda_family_routes_and_matches(monkeypatch, name):
-    """Requested by name, each family's joint attention runs the real kernel (sink path) and its output stays close
-    to native attention."""
+    """Named requests run each family's real kernel and stay close to native attention."""
     import torch.nn.functional as F
 
     monkeypatch.setattr(D, "MIN_TOKENS", 1024)

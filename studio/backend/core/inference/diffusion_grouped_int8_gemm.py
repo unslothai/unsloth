@@ -298,8 +298,7 @@ def reference(xq: Any, q8: Any, xs: Any, ws: Any, bias: Any) -> Any:
 
 
 def probe_cases(device: Any) -> list:
-    """Packed operands covering both bit depths, the 4-bit codebook, both group sizes, ragged rows, bias / none,
-    exact .5 ties, subnormal and zero steps."""
+    """Probe cases: both bit depths, 4-bit codebook, group sizes, ragged rows, exact .5 ties."""
     import torch
 
     from .diffusion_grouped_int8 import pack_codes

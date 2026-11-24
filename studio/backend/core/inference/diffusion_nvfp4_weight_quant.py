@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""NVFP4 weight quantisers (``max6`` and ``4over6``); output is the standard NVFP4 layout, so kernels are unchanged.
-
-``4over6`` maps each 16-block max to 6 or 4 (lower squared error); its per-tensor scale is ``amax / (6 * 256)`` so
-the largest block's /4 scale (384) still fits E4M3 (448).
-"""
+"""NVFP4 quantisers max6 and 4over6 (standard NVFP4 layout, kernels unchanged); 4over6 scale
+amax/(6*256) keeps the largest /4 block scale (384) within E4M3 (448)"""
 
 from __future__ import annotations
 

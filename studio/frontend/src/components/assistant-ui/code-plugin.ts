@@ -27,7 +27,7 @@ const NAMED_THEMES = {
   "github-dark": () => import("@shikijs/themes/github-dark"),
 };
 
-const createHighlighter = createBundledHighlighter<
+export const createHighlighter = createBundledHighlighter<
   BundledLanguage,
   NamedTheme
 >({

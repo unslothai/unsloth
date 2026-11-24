@@ -313,18 +313,38 @@ def test_real_processor_decode_call_takes_the_strided_path(monkeypatch, strided)
     assert torch.equal(got, ref)
 
 
-def test_attention_hook_installs_on_cudnn_pins():
-    import inspect
-
+def _apply_with_hooks(monkeypatch, backend, nvidia):
+    """Runs the real ``_apply_attention_backend`` on a fake DiT and records each strided install it calls."""
     from core.inference import diffusion_attention as A
+    from core.inference import diffusion_flux3_attn as F3
 
-    src = inspect.getsource(A._apply_attention_backend)
-    branch = src[
-        src.index(
-            'if backend == "_native_cudnn" and target is not None and _is_cuda_nvidia(target):'
-        ) :
-    ]
-    assert "install_q21_strided(pipe, backend, target, logger)" in branch[:600]
+    pinned, installs = [], []
+    dit = types.SimpleNamespace(set_attention_backend = pinned.append)
+    pipe = types.SimpleNamespace(transformer = dit)
+    monkeypatch.setattr(A, "_attention_dits", lambda p: [dit])
+    monkeypatch.setattr(A, "_is_cuda_nvidia", lambda t: nvidia)
+    monkeypatch.setattr(A, "_cudnn_serves_pipe", lambda *a, **k: True)
+    monkeypatch.setattr(A, "_ensure_attention_backend_installed", lambda *a, **k: None)
+    monkeypatch.setattr(A, "guard_rocm_fused_sdpa", lambda *a, **k: None)
+    monkeypatch.setattr(A, "install_rocm_contiguous_kv", lambda *a, **k: False)
+    monkeypatch.setattr(A, "_reset_global_backend_to_native", lambda *a, **k: None)
+    monkeypatch.setattr(Q, "install", lambda *a: installs.append(("q21", a)))
+    monkeypatch.setattr(F3, "install", lambda *a: installs.append(("flux3", a)))
+    logger = types.SimpleNamespace(info = lambda *a, **k: None, warning = lambda *a, **k: None)
+    engaged = A._apply_attention_backend(pipe, backend, logger = logger, target = _TARGET)
+    return engaged, pinned, installs, pipe, logger
+
+
+def test_attention_hook_installs_on_cudnn_pins(monkeypatch):
+    engaged, pinned, installs, pipe, logger = _apply_with_hooks(monkeypatch, "_native_cudnn", True)
+    assert engaged == "_native_cudnn" and pinned == ["_native_cudnn"]
+    assert ("q21", (pipe, "_native_cudnn", _TARGET, logger)) in installs
+
+
+@pytest.mark.parametrize("backend,nvidia", [("_native_cudnn", False), ("_native_math", True)])
+def test_attention_hook_skips_other_pins(monkeypatch, backend, nvidia):
+    engaged, pinned, installs, _, _ = _apply_with_hooks(monkeypatch, backend, nvidia)
+    assert engaged == backend and pinned == [backend] and installs == []
 
 
 # ----------------------------------------------------------------------------------------------------- CUDA

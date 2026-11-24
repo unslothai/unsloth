@@ -1479,6 +1479,45 @@ def test_a_run_with_no_model_loaded_says_so(monkeypatch):
     assert failure.value.code == "no_model"
 
 
+def test_a_run_on_the_loaded_model_never_answers_with_translates_model(monkeypatch):
+    producer = FakeProducer(completion("Bonjour."))
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: "unsloth/Hy-MT2-1.8B-GGUF")
+    with pytest.raises(RunFailed) as failure:
+        generate(monkeypatch, producer)
+    assert failure.value.code == "no_model"
+    assert producer.payload is None
+
+
+def test_translation_only_repos_match_the_frontend():
+    import re
+
+    source = (
+        Path(__file__).resolve().parents[2] / "frontend/src/lib/translation-models.ts"
+    ).read_text(encoding = "utf-8")
+    block = re.search(r"TRANSLATION_ONLY_REPOS = \[(.*?)\]", source, re.S).group(1)
+    assert {repo.lower() for repo in re.findall(r'"([^"]+)"', block)} == (
+        scheduler_module._TRANSLATION_ONLY_REPOS
+    )
+
+
+def test_a_run_skips_translates_model_for_the_text_model_kept_alongside(monkeypatch):
+    from core.inference import model_slots
+
+    def slot(name):
+        return SimpleNamespace(
+            llama = SimpleNamespace(is_loaded = True, model_identifier = name),
+            orchestrator = SimpleNamespace(active_model_name = None),
+        )
+
+    monkeypatch.setattr(
+        model_slots, "visible", lambda: [slot("unsloth/Hy-MT2-7B-GGUF"), slot("text/model")]
+    )
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: "unsloth/Hy-MT2-1.8B-GGUF")
+    producer = FakeProducer(completion("Dawn light."))
+    generate(monkeypatch, producer)
+    assert producer.payload.model == "text/model"
+
+
 def test_a_refusal_from_a_loaded_model_keeps_its_reason(monkeypatch):
     producer = FakeProducer(
         error = HTTPException(status_code = 400, detail = {"error": {"message": "Too long."}})
@@ -2821,6 +2860,99 @@ def test_a_run_reads_its_chat_before_the_prompt(monkeypatch):
     ]
     assert producer.payload.context_overflow == "truncate_oldest"
     assert producer.payload.context_policy == "rolling"
+
+
+@pytest.mark.usefixtures("projects_home")
+def test_a_run_in_a_chat_keeps_that_chats_system_prompt(monkeypatch):
+    make_chat()
+    _project_with("Be brief.")
+    studio_db.upsert_chat_thread(
+        {
+            "id": "chat-1",
+            "title": "Sheet export",
+            "modelType": "base",
+            "modelId": "m",
+            "createdAt": 1,
+            "settings": {"systemPrompt": "  Always answer in French.  "},
+        }
+    )
+    studio_db.upsert_chat_thread(
+        {
+            "id": "chat-2",
+            "title": "Other",
+            "modelType": "base",
+            "modelId": "m",
+            "createdAt": 100,
+            "settings": {"systemPrompt": "Always answer in German."},
+        }
+    )
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    note = scheduler_module.system_prompt({"timezone": "UTC"}, db.now_ms())
+    producer = FakeProducer(completion("Fait."))
+
+    generate(monkeypatch, producer, task = make_task(threadId = "chat-1", projectId = "proj-1"))
+
+    assert producer.payload.messages[0].content == (
+        "<project_instructions>\nBe brief.\n</project_instructions>\n\n"
+        "Always answer in French.\n\n" + note
+    )
+
+
+def test_a_run_in_a_chat_fills_its_system_prompt_variables(monkeypatch):
+    make_chat()
+    studio_db.upsert_chat_thread(
+        {
+            "id": "chat-1",
+            "title": "Sheet export",
+            "modelType": "base",
+            "modelId": "m",
+            "createdAt": 1,
+            "settings": {
+                "systemPrompt": (
+                    "Today is {{ $date }} {{$time}} ({{$now}}). "
+                    "Team {{team.name}} of {{team.size}}, {{missing}}."
+                ),
+                "systemVariables": '{"team": {"name": "Ops", "size": 3}}',
+            },
+        }
+    )
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T20:00:00+00:00"))
+    note = scheduler_module.system_prompt({"timezone": "Asia/Tokyo"}, db.now_ms())
+    producer = FakeProducer(completion("Done."))
+
+    generate(monkeypatch, producer, task = make_task(threadId = "chat-1", timezone = "Asia/Tokyo"))
+
+    assert producer.payload.messages[0].content == (
+        "Today is 2026-10-15 05:00:00 (2026-10-15T05:00:00+09:00). Team Ops of 3, {{missing}}.\n\n"
+        + note
+    )
+
+
+@pytest.mark.parametrize("settings", [{"systemPrompt": ["Always answer in French."]}, ["legacy"]])
+def test_a_run_in_a_chat_ignores_a_system_prompt_chat_cannot_read(monkeypatch, settings):
+    make_chat()
+    studio_db.upsert_chat_thread(
+        {
+            "id": "chat-1",
+            "title": "Sheet export",
+            "modelType": "base",
+            "modelId": "m",
+            "createdAt": 1,
+            "settings": settings,
+        }
+    )
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    note = scheduler_module.system_prompt({"timezone": "UTC"}, db.now_ms())
+    producer = FakeProducer(completion("Done."))
+
+    generate(monkeypatch, producer, task = make_task(threadId = "chat-1"))
+
+    assert producer.payload.messages[0].content == note
+
+
+def test_system_prompt_variables_with_nan_are_unreadable_as_in_chat():
+    resolve = scheduler_module._resolve_prompt_variables
+    assert resolve("{{a}}", '{"a": "x", "b": NaN}', {"timezone": "UTC"}, 0) == "{{a}}"
 
 
 def test_a_run_without_a_chat_keeps_the_default_overflow(monkeypatch):

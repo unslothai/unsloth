@@ -1935,6 +1935,37 @@ def test_build_speculative_flags_dspark_requires_sidecar_and_leaves_fit_to_place
     assert parsed["--spec-draft-n-max"] == "3"
 
 
+@pytest.mark.parametrize(
+    "architecture, requested, expected",
+    [
+        ("inkling2", None, "2"),
+        ("inkling2_loop", None, "2"),
+        ("inkling2", 3, "3"),
+        ("deepseek4", None, "3"),
+        (None, None, "3"),
+    ],
+)
+def test_build_speculative_flags_dspark_default_depth_by_architecture(
+    monkeypatch, tmp_path, architecture, requested, expected
+):
+    # Inkling 2 drafts 2 by default; a requested depth and every other architecture are unchanged.
+    backend = _resolver_backend(monkeypatch)
+    backend._architecture = architecture
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = requested,
+        extra_args = None,
+        model_identifier = "unsloth/Inkling-2-Mini-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+    )
+    assert _flags_dict(flags)["--spec-draft-n-max"] == expected
+
+
 def test_build_speculative_flags_dspark_missing_sidecar_falls_back(monkeypatch):
     backend = _resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(

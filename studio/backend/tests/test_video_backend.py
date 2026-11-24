@@ -1919,12 +1919,12 @@ def test_load_installs_the_vae_sync_on_mps(fake_runtime, monkeypatch, device, ho
         torch,
         device,
         types.SimpleNamespace(
-            synchronize = lambda: syncs.append(1),
             recommended_max_memory = lambda: 64 * 1024**3,
             driver_allocated_memory = lambda: 0,
         ),
         raising = False,
     )
+    monkeypatch.setattr("core.inference.diffusion_device.mps_synchronize", lambda: syncs.append(1))
     monkeypatch.setattr(
         "core.inference.video.resolve_diffusion_device_target",
         lambda: DiffusionDeviceTarget(
@@ -6777,6 +6777,42 @@ def test_attention_trim_installed_on_every_speed_tier(fake_runtime, monkeypatch,
     assert "hunyuan_attn_trim" in status["speed_optims"]
 
 
+def _ltx2_mask_spy(monkeypatch):
+    """Record every LTX-2.x full-mask install the load makes and report one DiT hooked."""
+    from core.inference import video_ltx2
+
+    calls: list = []
+
+    def _fake(pipe, logger = None):
+        calls.append(pipe)
+        return 1
+
+    # raising=False: a tree without the hook never calls it, so the load-path assertions below fail on it
+    monkeypatch.setattr(video_ltx2, "install_ltx2_full_mask_drop", _fake, raising = False)
+    return calls
+
+
+@pytest.mark.parametrize("mode", ["eager", "default", "max"])
+def test_ltx2_full_mask_drop_installed_and_reported(fake_runtime, monkeypatch, mode):
+    calls = _ltx2_mask_spy(monkeypatch)
+    status = VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = mode
+    )
+    assert status["loaded"] is True
+    assert len(calls) == 1
+    assert "ltx2_full_mask_drop" in status["speed_optims"]
+
+
+def test_ltx2_full_mask_drop_skipped_on_the_off_tier(fake_runtime, monkeypatch):
+    calls = _ltx2_mask_spy(monkeypatch)
+    status = VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "off"
+    )
+    assert status["loaded"] is True
+    assert calls == []
+    assert "ltx2_full_mask_drop" not in status["speed_optims"]
+
+
 def test_every_video_fetch_resolves_both_cache_roots():
     """Every video load fetch must resolve both cache roots, or planner-skipped files get re-pulled."""
     # Every module on the video load path, including video_ltx2.py.
@@ -11586,9 +11622,7 @@ def _patch_events(
     done: bool = False,
     run_ahead: bool = True,
 ):
-    """Hand out fake CUDA events, optionally already complete. Returns the list they land in.
-
-    ``run_ahead`` lets the host outrun events that never finish, as it does when the hold is skipped."""
+    """Fake CUDA events, optionally done; run_ahead lets the host outrun events that never finish."""
     import core.inference.video as video_mod
 
     if run_ahead:
@@ -13629,10 +13663,11 @@ def test_cudnn_benchmark_opt_out_families():
         "ltx-2.5",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
+        "minimax-h3",
     } <= off
     assert all(
         fam.vae_force_fp32
-        or fam.name in ("ltx-2", "ltx-2.5")
+        or fam.name in ("ltx-2", "ltx-2.5", "minimax-h3")
         or fam.name.startswith("hunyuanvideo-1.5")
         or fam.name.startswith("cosmos3-")
         for fam in _FAMILIES
@@ -14315,3 +14350,16 @@ def test_h3_staged_reference_frames_raise_the_first_failure_in_frame_order(tmp_p
     monkeypatch.setattr(Image.Image, "save", failing_save)
     with pytest.raises(OSError, match = "disk full at 3"):
         h3.stage_h3_references(h3.MiniMaxH3References(videos = ((frames, None, None),)), tmp_path)
+
+
+def test_begin_load_refuses_an_unknown_attention_backend_before_loading(monkeypatch):
+    # Like the image backend: inside the load an unknown name only aborted the speed layer and ran it unoptimised.
+    import threading
+
+    started = []
+    monkeypatch.setattr(threading, "Thread", lambda *a, **k: started.append(1))
+    with pytest.raises(ValueError, match = "Unsupported attention_backend"):
+        VideoBackend().begin_load(
+            "Wan-AI/Wan2.2-TI2V-5B-Diffusers", attention_backend = "_native_bogus"
+        )
+    assert started == []

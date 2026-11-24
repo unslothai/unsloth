@@ -1932,6 +1932,89 @@ def fix_transformers_chat_template_path_traversal():
                 logger.info(f"Unsloth: Failed patching {target.__name__}.{name} ({e})")
 
 
+_GEMMA4_TOOL_ARGUMENTS_PATCH_FLAG = "_unsloth_patched_gemma4_tool_arguments"
+_GEMMA4_TOOL_CALL_MARKER = "<|tool_call>call:"
+
+
+def _gemma4_object_arguments(conversations):
+    """JSON-object string arguments -> dicts; returns the input itself when nothing parses."""
+    import json
+
+    changed = False
+    result = []
+    for conversation in conversations:
+        new_conversation = conversation
+        for i, message in enumerate(conversation):
+            calls = message.get("tool_calls") if isinstance(message, dict) else None
+            if not isinstance(calls, list):
+                continue
+            new_calls = None
+            for j, call in enumerate(calls):
+                function = call.get("function") if isinstance(call, dict) else None
+                arguments = function.get("arguments") if isinstance(function, dict) else None
+                if not isinstance(arguments, str):
+                    continue
+                try:
+                    parsed = json.loads(arguments)
+                # RecursionError: deeply nested input; keep the string as before.
+                except (ValueError, RecursionError):
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                if new_calls is None:
+                    new_calls = list(calls)
+                new_calls[j] = {**call, "function": {**function, "arguments": parsed}}
+            if new_calls is not None:
+                if new_conversation is conversation:
+                    new_conversation = list(conversation)
+                new_conversation[i] = {**message, "tool_calls": new_calls}
+                changed = True
+        result.append(new_conversation)
+    return result if changed else conversations
+
+
+def fix_gemma4_string_tool_arguments():
+    """Gemma 4 templates write call:NAME{key:<|"|>value<|"|>} only for mapping arguments and paste an
+    OpenAI-style JSON string verbatim (Google's raises), so training data with string arguments teaches
+    the wrong call syntax. Decode JSON-object strings before rendering any template with that call syntax;
+    anything else renders as before."""
+    try:
+        from transformers.utils import chat_template_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the Gemma 4 tool argument fix ({e})")
+        return
+    original = getattr(chat_template_utils, "render_jinja_template", None)
+    if original is None or getattr(original, _GEMMA4_TOOL_ARGUMENTS_PATCH_FLAG, False):
+        return
+
+    @functools.wraps(original)
+    def render_jinja_template(*args, **kwargs):
+        chat_template = kwargs.get("chat_template", args[3] if len(args) > 3 else None)
+        if isinstance(chat_template, str) and _GEMMA4_TOOL_CALL_MARKER in chat_template:
+            if args:
+                args = (_gemma4_object_arguments(args[0]),) + args[1:]
+            elif "conversations" in kwargs:
+                kwargs["conversations"] = _gemma4_object_arguments(kwargs["conversations"])
+        return original(*args, **kwargs)
+
+    setattr(render_jinja_template, _GEMMA4_TOOL_ARGUMENTS_PATCH_FLAG, True)
+    # Tokenizers and processors call the name they imported, not the module attribute.
+    modules = [chat_template_utils]
+    try:
+        from transformers import tokenization_utils_base
+        modules.append(tokenization_utils_base)
+    except Exception:
+        pass
+    try:
+        from transformers import processing_utils
+        modules.append(processing_utils)
+    except Exception:
+        pass
+    for module in modules:
+        if getattr(module, "render_jinja_template", None) is original:
+            module.render_jinja_template = render_jinja_template
+
+
 _TOKENIZER_VOCAB_PATH_PATCH_FLAG = "_unsloth_patched_tokenizer_config_vocab_paths"
 # Resolved files _from_pretrained reads itself; every other one it hands to the tokenizer class.
 _TOKENIZER_FILES_READ_BY_LOADER = (
@@ -1987,6 +2070,72 @@ def fix_transformers_tokenizer_config_vocab_file_override():
         logger.info(f"Unsloth: Failed patching PreTrainedTokenizerBase._from_pretrained ({e})")
 
 
+_MISTRAL_REGEX_HUB_PATCH_FLAG = "_unsloth_mistral_regex_hub_guard"
+
+
+def _raised_in_frame(exc, name):
+    tb = exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_name == name:
+            return True
+        tb = tb.tb_next
+    return False
+
+
+def fix_transformers_mistral_regex_hub_error():
+    """Back-port of the 5.6.0 guard: below it every tokenizer with a vocab over 100k loaded by repo id
+    asks the Hub for its tags (an anonymous model_info) to spot a Mistral base, and a 429 or outage
+    there fails the load even with the files cached. Treat that failure as not Mistral, as 5.6 does."""
+    try:
+        import transformers  # noqa: F401
+    except Exception:
+        return
+    owners = []
+    for module_name, class_name in (
+        ("transformers.tokenization_utils_base", "PreTrainedTokenizerBase"),
+        ("transformers.tokenization_utils_tokenizers", "TokenizersBackend"),
+    ):
+        try:
+            module = importlib.import_module(module_name)
+            owner = getattr(module, class_name)
+            current = owner.__dict__.get("_patch_mistral_regex")
+            if not isinstance(current, classmethod):
+                continue
+            original = current.__func__
+            if getattr(original, _MISTRAL_REGEX_HUB_PATCH_FLAG, False):
+                continue
+            source = inspect.getsource(original)
+            start = source.find("def is_base_mistral")
+            if start < 0 or "try:" in source[start : start + 120]:
+                continue
+            owners.append((owner, original))
+        except Exception as e:
+            logger.info(f"Unsloth: Skipping the Mistral regex Hub guard for {class_name} ({e})")
+
+    for owner, original in owners:
+
+        def _patch_mistral_regex(
+            cls,
+            tokenizer,
+            *args,
+            _unsloth_original = original,
+            **kwargs,
+        ):
+            try:
+                return _unsloth_original(cls, tokenizer, *args, **kwargs)
+            except Exception as exc:
+                if not _raised_in_frame(exc, "is_base_mistral"):
+                    raise
+                return tokenizer
+
+        functools.update_wrapper(_patch_mistral_regex, original)
+        setattr(_patch_mistral_regex, _MISTRAL_REGEX_HUB_PATCH_FLAG, True)
+        try:
+            owner._patch_mistral_regex = classmethod(_patch_mistral_regex)
+        except Exception as e:
+            logger.info(f"Unsloth: Failed patching {owner.__name__}._patch_mistral_regex ({e})")
+
+
 _SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"
 
 
@@ -2014,22 +2163,159 @@ def _sdpa_mask_is_patched(masking_utils):
         return False
 
 
-def _unmask_rows_attending_to_nothing(mask):
-    """Give a query row that attends to no key uniform attention instead.
+def _unmask_rows_attending_to_nothing(
+    mask,
+    *,
+    cache_position = None,
+    q_offset = None,
+    kv_offset = 0,
+):
+    """Let a query row that attends to no key attend to its own position only.
 
     Separated from the wrapper so it can be tested directly on every dtype the
     mask can arrive as, rather than only through a live transformers.
 
+    Only its own key, not every key: in a left-padded training row the last pad
+    query predicts the first real token, so a pad query opened to every key
+    reads that token and the ones after it and the loss sees them. Its own key
+    is causal and always present, so the row is never empty (no NaN) and
+    carries no information from later tokens. Same rule as the fast path's
+    `_pad_queries_attend_self` in models/llama.py.
+
+    The own key is the query's absolute position in the mask's key columns:
+    column `position - kv_offset`, the coordinates `sdpa_mask` itself builds
+    the mask from (`cache_position` on 4.57, `q_offset` on 5.x). Not "the last
+    q_len keys": a preallocated cache (StaticCache, sliding static layers,
+    Unsloth's growable cache) has more key columns than filled slots, so the
+    tail columns are unfilled slots or other positions. Only a direct call with
+    no coordinates falls back to the tail (prefill on top of a dynamic cache).
+    A column outside the key range is clamped into it: the row still gets one
+    key and is never empty.
+
     `None` means transformers chose `is_causal` over a materialised mask. A
-    FLOATING mask is the eager path, which converts to `finfo(dtype).min` and
-    survives softmax's max-subtraction as uniform attention already, so it
-    neither needs this nor would tolerate a boolean `|`. Bool is the normal sdpa
-    result; int is what a caller who passed an int `attention_mask` gets back,
-    and the correction is right for both.
+    FLOATING mask is left alone: `eager_mask` converts the corrected boolean
+    mask itself. Bool is the normal sdpa result; int is what a caller who passed
+    an int `attention_mask` gets back, and the correction is right for both.
+    One dense result (the scatter); the per-row work is [..., q_len, 1].
     """
-    if mask is None or mask.is_floating_point():
+    if mask is None or mask.is_floating_point() or mask.dim() < 2:
         return mask
-    return mask | ~mask.any(dim = -1, keepdim = True)
+    import torch
+
+    q_len, kv_len = mask.shape[-2], mask.shape[-1]
+    if kv_len == 0:
+        return mask
+    attends_to_nothing = ~mask.bool().any(dim = -1, keepdim = True)
+    positions = None
+    if (
+        isinstance(cache_position, torch.Tensor)
+        and cache_position.dim() == 1
+        and cache_position.shape[0] == q_len
+    ):
+        positions = cache_position.to(device = mask.device, dtype = torch.long)
+    else:
+        if q_offset is None:
+            # A direct call with no coordinates: queries are the last q_len keys.
+            if q_len > kv_len:
+                # No key per query to call its own; any key is still better than NaN.
+                return mask | attends_to_nothing
+            q_offset, kv_offset = kv_len - q_len, 0
+        if isinstance(q_offset, torch.Tensor):
+            q_offset = q_offset.to(device = mask.device, dtype = torch.long)
+        positions = torch.arange(q_len, device = mask.device) + q_offset
+    if isinstance(kv_offset, torch.Tensor):
+        kv_offset = kv_offset.to(device = mask.device, dtype = torch.long)
+    columns = (positions - kv_offset).clamp(0, kv_len - 1)
+    index = columns.view(q_len, 1).expand(*mask.shape[:-1], 1)
+    own = mask.gather(-1, index)
+    if mask.dtype == torch.bool:
+        own = own | attends_to_nothing
+    else:
+        own = torch.where(attends_to_nothing, torch.ones_like(own), own)
+    return mask.scatter(-1, index, own)
+
+
+def _mask_coordinates(builder):
+    """Build `(args, kwargs) -> {cache_position, q_offset, kv_offset}` for one mask builder.
+
+    The slots are read from the builder's signature once, at install time, so
+    each call is a few dict lookups. transformers 4.57 passes the query
+    positions as `cache_position`; 5.x passes `q_offset` (an int, or a tensor
+    for static caches) with `q_length`; a transitional 5.x took the positions
+    tensor in the `q_length` slot. Unknown signature: no coordinates, and the
+    helper falls back to the tail.
+    """
+    try:
+        names = list(inspect.signature(builder).parameters)
+    except Exception:
+        names = []
+    slots = {name: i for i, name in enumerate(names)}
+    has_q_offset = "q_offset" in slots
+
+    def coordinates(args, kwargs):
+        def arg(name):
+            i = slots.get(name)
+            if i is not None and i < len(args):
+                return args[i]
+            return kwargs.get(name)
+
+        cache_position = arg("cache_position")
+        q_offset = arg("q_offset")
+        q_length = arg("q_length")
+        if (
+            cache_position is None
+            and getattr(q_length, "dim", None) is not None
+            and q_length.dim() == 1
+        ):
+            cache_position = q_length
+        if cache_position is None and q_offset is None and has_q_offset:
+            q_offset = 0
+        kv_offset = arg("kv_offset")
+        return {
+            "cache_position": cache_position,
+            "q_offset": q_offset,
+            "kv_offset": 0 if kv_offset is None else kv_offset,
+        }
+
+    return coordinates
+
+
+# Families whose eager attention appends the sink as an extra softmax logit in
+# every layer (a finite column). A fully masked row then puts all of its weight
+# on the sink and outputs 0 (as flex attention does), finite in every dtype, so
+# upstream's all-min row is right for them and opening a key would change the
+# loss. None of them support sdpa, so their sdpa mask is only ever built for
+# eager. Not here, so they get the single own key like sink-free models:
+# - granite_swa / granitemoe_swa scale the output by sigmoid(lse - sink) after a
+#   plain softmax: in fp16 an all-min row overflows to -inf, the softmax is NaN
+#   and the zero scale cannot recover it (NaN pad rows and NaN grads).
+# - mimo_v2_flash has sinks only in its sliding layers; its full layers are
+#   sink-free, where the all-min row is NaN in fp16 the same way.
+# A family missing here still gets a single own key: causal and finite, only
+# not bitwise upstream on pad rows.
+_ATTENTION_SINK_MODEL_TYPES = frozenset(
+    {
+        "gpt_oss",
+        "openai_privacy_filter",
+        "flint",
+        "hy_v4",
+        "hy_v4_vl",
+        "hy_v4_vl_text",
+        "deepseek_v4",
+        "deepseek_v41",
+        "deepseek_v41_text",
+        "inkling2",
+        "inkling2_text",
+    }
+)
+
+
+def _config_has_attention_sinks(config):
+    model_type = getattr(config, "model_type", None)
+    if not isinstance(model_type, str):
+        return False
+    model_type = model_type.lower()
+    return model_type in _ATTENTION_SINK_MODEL_TYPES or model_type.startswith("inkling")
 
 
 def _left_padded_probe_mask(torch):
@@ -2074,7 +2360,7 @@ def _sdpa_mask_leaves_rows_fully_masked():
     sdpa_mask = getattr(masking_utils, "sdpa_mask", None)
     if sdpa_mask is None:
         return False
-    # Unwrap first, or the installed patch reports the bug fixed and a reload drops it.
+    # Probe the underlying implementation if the module binding is wrapped (ours, after install).
     sdpa_mask = getattr(sdpa_mask, "__wrapped__", sdpa_mask)
     # Query arg is q_length on 5.x, cache_position on 4.57.6; ask the signature, since a TypeError would falsely answer no bug.
     kwargs = {
@@ -2125,23 +2411,32 @@ def fix_transformers_fully_masked_rows():
     are byte-identical, so it is deterministic. Reported as unsloth #9708.
 
     A fully masked row makes SDPA produce NaN, and the NaN then spreads along
-    the row through `0 * NaN` where the next layer mixes values. Restoring the
-    correction gives those rows uniform attention instead. They are pad
-    positions whose outputs are discarded, so this does not change any result
-    that is read -- which is what transformers' own docstring said when it did
-    this: "in order to avoid `nan` propagation (this does not change the final
-    result)".
+    the row through `0 * NaN` where the next layer mixes values. The correction
+    lets such a row attend to its own key only (see
+    `_unmask_rows_attending_to_nothing`), not to every key as transformers' old
+    `_unmask_unattended` did: in a left-padded training row the last pad
+    query's logits predict the first real token whenever that label is kept,
+    so a pad query that sees every key reads that token and the later ones, and
+    the loss and the gradients of a left-padded batch then depend on future
+    tokens.
 
-    Self-neutralising: `mask | ~mask.any(-1)` contributes nothing once a row
-    attends to something, so if a future transformers restores the guard this
-    wrapper becomes a no-op rather than permanent damage. The eager path is
-    unaffected either way -- `eager_mask` converts to `finfo(dtype).min` and a
-    uniform-min row survives softmax's max-subtraction as uniform attention.
+    Self-neutralising: the correction contributes nothing once a row attends to
+    something, so if a future transformers restores the guard this wrapper
+    becomes a no-op rather than permanent damage.
+
+    Both bindings are replaced, the `"sdpa"` registry entry and the module
+    global `sdpa_mask`, so `eager_mask` (which builds from the global) and a
+    custom mask registered as `register("name", sdpa_mask)` get the same rows.
+    Eager needs it too: an all-min eager row is uniform attention over every
+    key (the same future-token leak), and in fp16 `score + finfo.min`
+    overflows to -inf once every score in the row is below about -16, which
+    makes the row NaN. The exception is attention sinks (gpt-oss, Inkling, see
+    `_ATTENTION_SINK_MODEL_TYPES`): there an all-min row puts all of its weight
+    on the sink and outputs 0, as flex does, so those keep upstream's rows.
     """
     if not _sdpa_mask_leaves_rows_fully_masked():
         return
     try:
-        import torch
         from transformers import masking_utils
     except Exception as e:
         logger.info(f"Unsloth: Skipping the fully-masked-row fix ({e})")
@@ -2152,10 +2447,15 @@ def fix_transformers_fully_masked_rows():
 
     original = masking_utils.sdpa_mask
     original = getattr(original, "__wrapped__", original)
+    coordinates = _mask_coordinates(original)
 
     @functools.wraps(original)
     def sdpa_mask(*args, **kwargs):
-        return _unmask_rows_attending_to_nothing(original(*args, **kwargs))
+        mask = original(*args, **kwargs)
+        # Sink models (eager only): keep upstream's all-min row, the sink takes its weight.
+        if _config_has_attention_sinks(kwargs.get("config")):
+            return mask
+        return _unmask_rows_attending_to_nothing(mask, **coordinates(args, kwargs))
 
     # Set explicitly: the probe and tests read __wrapped__.
     sdpa_mask.__wrapped__ = original
@@ -2163,7 +2463,7 @@ def fix_transformers_fully_masked_rows():
     setattr(sdpa_mask, _SDPA_MASK_PATCH_FLAG, True)
 
     try:
-        # Both bindings: eager_mask reads the module global; the interface captured the original.
+        # Both bindings: eager_mask and `register("name", sdpa_mask)` aliases read the module global.
         masking_utils.sdpa_mask = sdpa_mask
         interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
         if interface is not None:
@@ -5549,6 +5849,63 @@ def fix_transformers_voxtral_realtime_inplace_audio_add():
     cls.forward = forward
 
 
+def _torch_pickle_load_unsafe():
+    """torch < 2.6 can run code from a .bin / .pt even with weights_only=True (CVE-2025-32434)."""
+    try:
+        import torch
+        return TrueVersion(torch.__version__.split("+")[0]) < TrueVersion("2.6")
+    except Exception:
+        return False
+
+
+def refuse_pickle_checkpoint_on_old_torch(path = None):
+    """Raise before torch.load reads a pickled checkpoint (adapter_model.bin, pytorch_model.bin)
+    on torch < 2.6, where weights_only=True is bypassable (CVE-2025-32434). No-op on torch >= 2.6."""
+    if not _torch_pickle_load_unsafe():
+        return
+    name = os.path.basename(str(path)) if path is not None else "a pickled checkpoint"
+    raise RuntimeError(
+        f"Unsloth: refusing to load `{name}` with torch {__import__('torch').__version__}: torch < 2.6 "
+        "can execute code hidden in .bin / .pt files even with weights_only=True (CVE-2025-32434). "
+        "Upgrade to torch >= 2.6, or use a checkpoint saved as .safetensors "
+        "(for LoRA adapters: adapter_model.safetensors)."
+    )
+
+
+def patch_peft_bin_load_old_torch():
+    """PEFT's load_peft_weights reads adapter_model.bin via torch_load(weights_only=True) with no
+    torch version check, so on torch < 2.6 a Hub LoRA repo could run code (CVE-2025-32434).
+    Refuse there; safetensors adapters never reach torch_load. No-op on torch >= 2.6. Idempotent."""
+    if not _torch_pickle_load_unsafe() or importlib.util.find_spec("peft") is None:
+        return
+    try:
+        import peft.utils.save_and_load as peft_save_and_load
+    except Exception:
+        return
+    torch_load = getattr(peft_save_and_load, "torch_load", None)
+    if torch_load is None or getattr(torch_load, "_unsloth_old_torch_guard", False):
+        return
+
+    @functools.wraps(torch_load)
+    def _guarded_peft_torch_load(f, *args, **kwargs):
+        refuse_pickle_checkpoint_on_old_torch(f)
+        return torch_load(f, *args, **kwargs)
+
+    _guarded_peft_torch_load._unsloth_old_torch_guard = True
+    peft_save_and_load.torch_load = _guarded_peft_torch_load
+    # Modules that did `from peft.utils.save_and_load import torch_load` hold their own reference.
+    for module in list(sys.modules.values()):
+        try:
+            if (
+                getattr(module, "__name__", "").startswith("peft.")
+                and getattr(module, "torch_load", None) is torch_load
+            ):
+                module.torch_load = _guarded_peft_torch_load
+        except Exception:
+            pass
+    logger.info("Unsloth: refusing PEFT adapter_model.bin loads on torch < 2.6 (CVE-2025-32434).")
+
+
 def patch_unsafe_trainer_rng_load():
     """Harden Trainer._load_rng_state against CVE-2026-1839 (RCE from a malicious
     rng_state.pth on resume). Hardens only the rng torch.load, via a thread-local
@@ -7628,21 +7985,102 @@ def fix_inductor_reduction_readback_race():
     )
 
 
+def fix_inductor_triton_wrapper_eager_vals():
+    """torch < 2.13: Inductor asserts equal node counts when tracing a mutating Triton kernel decomposition with
+    eager and Inductor values; dynamic shapes can differ (pytorch/pytorch#181735, Gemma2 GEGLU backward). On that
+    assertion retrace with Inductor values and attach eager values, as torch >= 2.13 does."""
+    try:
+        import torch
+        from torch._inductor import pattern_matcher as pm
+    except Exception:
+        return
+    match_cls = getattr(pm, "Match", None)
+    original = getattr(match_cls, "replace_by_example", None)
+    if original is None or getattr(original, "_unsloth_triton_eager_vals", False):
+        return
+    try:
+        source = inspect.getsource(inspect.unwrap(original))
+    except Exception:
+        return
+    # torch >= 2.13 no longer propagates eager values for Triton kernels inside replace_by_example.
+    if "graph_with_eager_vals" not in source or "triton_kernel_wrapper_functional" not in source:
+        return
+    hops = getattr(torch.ops, "higher_order", None)
+    functional = getattr(hops, "triton_kernel_wrapper_functional", None)
+    mutation = getattr(hops, "triton_kernel_wrapper_mutation", None)
+    if functional is None or mutation is None:
+        return
+
+    @functools.wraps(original)
+    def replace_by_example(self, replacement_fn, args, *rest, **kwargs):
+        try:
+            return original(self, replacement_fn, args, *rest, **kwargs)
+        except AssertionError:
+            nodes = getattr(self, "nodes", None) or []
+            if len(nodes) != 1 or nodes[0].target is not functional:
+                raise
+            hop = nodes[0]
+            eager = hop.meta.get("eager_input_vals")
+            if eager is None:
+                raise
+        # The failed attempt only traced, so the graph is unchanged.
+        graph = hop.graph
+        before = set(graph.find_nodes(op = "call_function", target = mutation))
+        del hop.meta["eager_input_vals"]
+        try:
+            out = original(self, replacement_fn, args, *rest, **kwargs)
+        except BaseException:
+            hop.meta["eager_input_vals"] = eager
+            raise
+        inserted = [
+            n for n in graph.find_nodes(op = "call_function", target = mutation) if n not in before
+        ]
+        if len(inserted) == 1:
+            _, eager_kwargs = eager
+            inserted[0].meta["eager_input_vals"] = (
+                (),
+                {k: v for k, v in eager_kwargs.items() if k != "tensors_to_clone"},
+            )
+        else:
+            logger.warning(
+                f"Unsloth: Inductor inserted {len(inserted)} Triton kernel nodes for one decomposition; "
+                "their eager-mode strides were not attached."
+            )
+        STATS_TRITON_EAGER_VALS["fallbacks"] += 1
+        return out
+
+    replace_by_example._unsloth_triton_eager_vals = True
+    match_cls.replace_by_example = replace_by_example
+    logger.info(
+        "Unsloth: Patched Inductor's Triton kernel decomposition for dynamic size-1 dims (pytorch#181735)."
+    )
+
+
+STATS_TRITON_EAGER_VALS = {"fallbacks": 0}
+
+
 def _same_tensor(tensor):
     return tensor
+
+
+def _detached_tensor(tensor):
+    # Nothing backpropagates the example score_mod forward; an identity pack saves an op's output
+    # (tanh soft-capping) on its own node, a cycle gc cannot break, so every call leaked that graph.
+    return tensor.detach()
 
 
 def fix_flex_attention_eager_saved_tensor_hooks():
     """Eager flex_attention traces its score_mod backward in create_fw_bw_graph during forward; inside a
     non-reentrant checkpoint (DDP) that trace unpacks through the checkpoint's hooks and restarts the
-    recompute mid forward. The traced graph owns no activations, so trace it under identity hooks."""
+    recompute mid forward. The traced graph owns no activations, so trace it under our own hooks
+    (detaching pack, identity unpack)."""
     try:
         import torch
         flex_hop = importlib.import_module("torch._higher_order_ops.flex_attention")
     except Exception:
         return
     original = getattr(flex_hop, "create_fw_bw_graph", None)
-    # torch < 2.7 cannot query the active hooks: always trace under identity hooks there.
+    # Without the getter (torch < 2.7, some 2.7 wheels) the active hooks cannot be read: always use ours.
     top_hooks = getattr(torch._C._autograd, "_top_saved_tensors_default_hooks", None)
     if original is None:
         return
@@ -7657,7 +8095,7 @@ def fix_flex_attention_eager_saved_tensor_hooks():
             active = False
         if not active:
             return original(*args, **kwargs)
-        hooks = torch.autograd.graph.saved_tensors_hooks(_same_tensor, _same_tensor)
+        hooks = torch.autograd.graph.saved_tensors_hooks(_detached_tensor, _same_tensor)
         try:
             # Raises while saved-tensor hooks are disabled; those calls keep torch's behaviour.
             hooks.__enter__()
@@ -10116,6 +10554,8 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "qwen3_omni_moe_thinker": "qwen2_moe",
     "qwen3_omni_moe_text": "qwen2_moe",
     "solar_open": "qwen2_moe",
+    # transformers (main, November 2026) aliases Sarvam's MLA MoE to the qwen2_moe conversion.
+    "sarvam_mla": "qwen2_moe",
     # Keyed by class name, not model type: transformers (main, October 2026) aliases the
     # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
     "UnlimitedOcrTextModel": "qwen2_moe",
@@ -10614,6 +11054,35 @@ def _moe_linear_targets_to_restore(twc, model, before, peft_config):
     return restore
 
 
+def _narrow_regex_leaf_targets(model, before, peft_config):
+    """PEFT >= 0.22 converts a regex target_modules to the bare leaf names it resolves to, so a regex scoped
+    to one layer's projections puts LoRA on every layer's namesakes. A leaf that names only Linears, some of
+    which the regex did not match, goes back to exactly the modules the regex matched."""
+    after = peft_config.target_modules
+    if not isinstance(before, str) or before.lower() == "all-linear":
+        return
+    if after is None or isinstance(after, str):
+        return
+    modules = list(model.named_modules())
+    matched = {name for name, _ in modules if re.fullmatch(before, name)}
+    narrowed = set()
+    for target in after:
+        if not isinstance(target, str) or "." in target:
+            narrowed.add(target)
+            continue
+        hits = [(name, module) for name, module in modules if name.rpartition(".")[-1] == target]
+        if not hits or not all(_is_lora_linear_target(module) for _, module in hits):
+            narrowed.add(target)  # a parameter / non-Linear namesake: PEFT's own scoping applies
+            continue
+        names = {name for name, _ in hits}
+        if names <= matched:
+            narrowed.add(target)
+        else:
+            narrowed.update(names & matched)
+    if narrowed:
+        peft_config.target_modules = narrowed
+
+
 def _patch_peft_moe_keep_linear_targets(twc):
     original_convert = getattr(twc, "convert_peft_config_for_transformers", None)
     if original_convert is None or getattr(
@@ -10628,6 +11097,10 @@ def _patch_peft_moe_keep_linear_targets(twc):
         result = original_convert(peft_config, model, *args, **kwargs)
         if before is None or not hasattr(model, "named_modules"):
             return result
+        try:
+            _narrow_regex_leaf_targets(model, before, peft_config)
+        except Exception as exc:
+            logger.warning("Unsloth: could not keep a regex LoRA target to its matches: %s", exc)
         try:
             restore = _moe_linear_targets_to_restore(twc, model, before, peft_config)
         except Exception as exc:

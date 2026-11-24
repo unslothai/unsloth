@@ -24,6 +24,7 @@ import core.inference.diffusion_int8_gemm as gemm
 import core.inference.diffusion_native_quant as nq
 import core.inference.diffusion_native_w8a8_rdna as rdna
 import core.inference.diffusion_transformer_quant as tq
+import core.inference.rocm_bf16 as rocm_bf16
 
 
 @pytest.fixture()
@@ -188,16 +189,45 @@ def rocm(monkeypatch):
     monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
     monkeypatch.setattr(tq._sys, "platform", "linux")
     monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
+    monkeypatch.setattr(rocm_bf16, "_device_gfx_arch", lambda _torch, _ordinal: "gfx1151")
 
 
 def _target(device = "cuda", dtype = None):
     return types.SimpleNamespace(device = device, dtype = torch.bfloat16 if dtype is None else dtype)
 
 
-def test_explicit_w8a8_ships_for_flux3_klein_only():
-    assert set(tq._FAMILY_RDNA_EXPLICIT_W8A8) == {"flux.3-klein"}
-    # AUTO keeps bf16 for it
+@pytest.mark.parametrize(
+    "arch, engaged",
+    [("gfx1151", True), ("gfx1100", False), ("gfx1101", False), ("gfx1201", False), ("", False)],
+)
+def test_explicit_w8a8_runs_on_the_measured_archs_only(rocm, monkeypatch, arch, engaged):
+    # The RDNA W8A8 kernels accept every gfx11xx / gfx12xx card; the explicit W8A8 rows were measured on gfx1151 only.
+    asked: list = []
+
+    def gfx_arch(_torch, ordinal):
+        asked.append(ordinal)
+        return arch
+
+    monkeypatch.setattr(rocm_bf16, "_device_gfx_arch", gfx_arch)
+    card = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16, ordinal = 1)
+    assert (tq.rdna_explicit_w8a8_reason(card, "flux.3-klein") is not None) is engaged
+    # the weight-only explicit int8 tier itself is unchanged on every RDNA arch
+    assert tq.rdna_explicit_int8_reason(card, "flux.3-klein") is not None
+    assert asked == [1]
+
+
+def test_explicit_w8a8_unreadable_arch_stays_weight_only(rocm, monkeypatch):
+    def boom(_torch, _ordinal):
+        raise RuntimeError("no properties")
+
+    monkeypatch.setattr(rocm_bf16, "_device_gfx_arch", boom)
+    assert tq.rdna_explicit_w8a8_reason(_target(), "flux.3-klein") is None
+
+
+def test_explicit_w8a8_ships_for_the_measured_families_only():
+    assert set(tq._FAMILY_RDNA_EXPLICIT_W8A8) == {"flux.3-klein", "ltx-2.5"}
     assert "flux.3-klein" not in tq._FAMILY_RDNA_AUTO_W8A8
+    assert "ltx-2.5" not in tq._FAMILY_RDNA_AUTO_W8A8
 
 
 def test_explicit_w8a8_reason_follows_the_explicit_compile_gates(rocm, monkeypatch):
@@ -212,8 +242,14 @@ def test_explicit_w8a8_reason_follows_the_explicit_compile_gates(rocm, monkeypat
     monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: False)
     assert tq.rdna_explicit_w8a8_reason(_target(), "flux.3-klein") is None
     monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
+    # Windows ROCm: the regional compile probe decides (a failed probe keeps the eager weight-only path).
+    from core.inference import diffusion_rocm_compile as rc
+
     monkeypatch.setattr(tq._sys, "platform", "win32")
+    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda *_a: False)
     assert tq.rdna_explicit_w8a8_reason(_target(), "flux.3-klein") is None
+    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda *_a: True)
+    assert tq.rdna_explicit_w8a8_reason(_target(), "flux.3-klein")
 
 
 def test_explicit_w8a8_reason_is_rocm_only(monkeypatch):

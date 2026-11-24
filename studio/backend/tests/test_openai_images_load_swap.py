@@ -35,10 +35,8 @@ PIXEL = [{"id": "pixel-lora", "weight": 1.0}]
 
 
 class _ReloadingEngine:
-    """A diffusers-like engine; the first status() read starts a load thread that rebakes ``after``.
-
-    generate() waits for that load to commit before its slot check, which compares the caller's pins
-    with the live load exactly as DiffusionBackend.generate does."""
+    """Its first status() read starts a load that rebakes after; generate() waits for that load to
+    commit before its slot check, which compares pins with the live load."""
 
     def __init__(
         self,
@@ -215,8 +213,7 @@ class _RenderReached(Exception):
 
 
 def test_the_real_diffusers_slot_refuses_a_rebake_that_landed_after_the_read(monkeypatch):
-    """Same interleave against DiffusionBackend.generate itself: its slot check decides, and the render is
-    stubbed at the first step past the check."""
+    """Same interleave on DiffusionBackend.generate: its slot check decides; the render is stubbed."""
     import types
 
     engine = diffusion_module.DiffusionBackend()

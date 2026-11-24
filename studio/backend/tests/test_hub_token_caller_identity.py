@@ -1216,7 +1216,7 @@ def test_the_scan_route_derives_its_caller_rather_than_trusting_an_absent_body_t
     assert (
         "allow_ambient_token" in signature.parameters
     ), "the scan route cannot tell an api key from a ui session"
-    source = inspect.getsource(models_routes.scan_model_remote_code)
+    source = inspect.getsource(models_routes._scan_model_remote_code_sync)
     assert (
         "hf_token_arg(hf_token" in source
     ), "the body token reaches the cache-backed scan target unresolved"
@@ -1359,7 +1359,7 @@ def test_the_offline_autoconfig_read_is_denied_to_an_anonymous_caller(monkeypatc
 def test_the_prefer_local_scan_branch_carries_the_anonymous_guard():
     """Only the exact-snapshot branch was gated; the sibling resolved the cache anyway."""
     # Bound by indentation; a fixed character window drifted with edits.
-    lines = inspect.getsource(models_routes.scan_model_remote_code).splitlines()
+    lines = inspect.getsource(models_routes._scan_model_remote_code_sync).splitlines()
     start = next(i for i, line in enumerate(lines) if "prefer_local_cache is True" in line)
     depth = len(lines[start]) - len(lines[start].lstrip())
     condition = []
@@ -1399,7 +1399,7 @@ def test_every_offline_reachable_route_refuses_before_it_reads(monkeypatch):
     shared_rules = ("anonymous_and_offline", "refuse_unauthorized_dataset_preview")
     for owner, name in (
         (models_routes.get_model_config, "/config"),
-        (models_routes.scan_model_remote_code, "scan-remote-code"),
+        (models_routes._scan_model_remote_code_sync, "scan-remote-code"),
         (formatting.load_preview_slice, "check-format"),
     ):
         source = inspect.getsource(owner)

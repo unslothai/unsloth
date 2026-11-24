@@ -24,12 +24,28 @@ export function npuPickerRows(
       label: npuDisplayName(model),
       tab: onDevice ? DEVICE_TAB : RECOMMENDED_TAB,
       kind: "npu",
-      section: "npu",
+      // A Q4NX folder from the Export page sits with the other exports.
+      section: model.local ? "exported" : "npu",
       npu: model,
       rank,
       sizeBytes:
         onDevice && model.size_gb != null ? model.size_gb * 1e9 : undefined,
     }));
+}
+
+/** Whether Discover shows the NPU notice: setup before the runtime is ready, its spinner while the
+ * first listing loads (else the section vanishes right after Enable), or a failed listing. */
+export function npuNoticeShown(
+  catalog: {
+    ready: boolean;
+    listError: string | null;
+    models: readonly unknown[] | null;
+  } | null,
+): boolean {
+  return (
+    catalog !== null &&
+    (!catalog.ready || catalog.listError !== null || catalog.models === null)
+  );
 }
 
 /** Org whose Hugging Face avatar marks an NPU row: its repo's owner, else FastFlowLM. */

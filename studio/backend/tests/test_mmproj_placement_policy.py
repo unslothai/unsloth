@@ -1618,6 +1618,8 @@ def test_only_the_owner_may_name_a_custom_projector(monkeypatch, flag, managed):
         ["--control-vector", "/home/owner/cv.gguf"],
         ["-md", "/home/owner/draft.gguf"],
         ["--spec-draft-model", "/home/owner/draft.gguf"],
+        ["--shard", "/home/owner/private.gguf"],
+        ["--ple", "/home/owner/private.gguf,/home/owner/other.gguf"],
         ["-lcs", "/home/owner/cache.bin"],
         ["--log-prompts-dir", "/home/owner/.config"],
         ["--video-ffmpeg-dir", "/srv/studio/accounts/m/sandbox"],
@@ -1789,8 +1791,7 @@ def test_inherited_owner_paths_get_the_same_managed_check(monkeypatch, tmp_path)
 
 
 def test_sycl_build_beside_an_nvidia_card_is_not_planned_against_it(tmp_path, monkeypatch):
-    """#17787: a 16.7 GB model on a 32 GB SYCL Arc was capped to 8192 and its projector put on CPU,
-    because the free VRAM came from nvidia-smi's 12 GB card."""
+    """A SYCL Arc build beside an NVIDIA card must not be planned against nvidia-smi's 12 GB."""
     import sys
 
     from utils.hardware import gpu_query, mig, nvidia

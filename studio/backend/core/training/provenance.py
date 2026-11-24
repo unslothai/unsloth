@@ -965,9 +965,8 @@ def exact_resume_resource_requirements(config: dict[str, Any]) -> tuple[bool, bo
 
 
 def local_model_resume_expectation(config: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """The attested base of a stored run whose model is a local folder (a continued adapter).
-    Resume loads that folder as the run did, so its base is checked once loaded instead of
-    pinned as the load target, which would load the bare base."""
+    """Base of a stored run whose model is a local folder (a continued adapter); checked once
+    loaded, since pinning it as load target would load the bare base."""
     from utils.paths import is_local_path
 
     if not is_local_path(str(config.get("model_name") or "")):
