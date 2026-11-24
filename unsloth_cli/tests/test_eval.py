@@ -145,6 +145,45 @@ def test_local_dataset_scores_literal_answers_and_formats_fewshot(
     assert task.fewshot_context(second, num_fewshot = 1) == f"First? {display_answer}\n\nSecond?"
 
 
+def _score_generation(tmp_path, rows, generation):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    from lm_eval.api.instance import Instance
+
+    data = tmp_path / "qa.jsonl"
+    data.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tasks")
+    manager = tasks.TaskManager(include_defaults = False, include_path = includes)
+    task = manager.load_task_or_group(names)["qa"]
+    doc = task.test_docs()[0]
+    for stop in task.config.generation_kwargs["until"]:
+        generation = generation.split(stop)[0]
+    instance = Instance("generate_until", doc, ("", {}), 0)
+    instance.resps = [generation]
+    for ensemble in task._filters:
+        ensemble.apply([instance])
+    return task.process_results(doc, [instance.filtered_resps["strip"]])["exact_match"]
+
+
+@pytest.mark.parametrize(
+    "answer, generation, score",
+    [
+        ("red\nblue", "red\nblue", 1.0),
+        ("red\nblue", " red\nblue\n\nNext question?", 1.0),
+        ("red\nblue", "red", 0.0),
+        ("def f():\n\n    return 1", "def f():\n\n    return 1\n", 1.0),
+        (["red\nblue", "blue\nred"], "blue\nred", 1.0),
+    ],
+)
+def test_local_dataset_scores_multiline_answers(tmp_path, answer, generation, score):
+    rows = [{"question": "Colors?", "answer": answer}, {"question": "1+1?", "answer": "2"}]
+    assert _score_generation(tmp_path, rows, generation) == score
+
+
+def test_single_line_dataset_still_stops_at_the_first_newline(tmp_path):
+    rows = [{"question": "1+1?", "answer": "2"}, {"question": "2+2?", "answer": "4"}]
+    assert _score_generation(tmp_path, rows, "2\nBecause 1+1 is 2.") == 1.0
+
+
 def test_dataset_task_stays_clear_of_names_requested_alongside(tmp_path):
     (tmp_path / "gsm8k.jsonl").write_text("{}\n")
     (tmp_path / "sub").mkdir()

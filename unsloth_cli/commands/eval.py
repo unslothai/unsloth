@@ -396,6 +396,25 @@ def _doc_column(key: str) -> str:
     return key
 
 
+def _stop_sequence(data_file: Path, target_key: str) -> str:
+    # a newline run longer than any answer holds, so multi-line answers are generated whole
+    text = data_file.read_text(encoding = "utf-8-sig")
+    if data_file.suffix.lower() == ".csv":
+        import csv
+        import io
+        rows = list(csv.DictReader(io.StringIO(text)))
+    else:
+        try:
+            rows = json.loads(text)
+        except json.JSONDecodeError:
+            rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+    rows = rows if isinstance(rows, list) else [rows]
+    values = [row.get(target_key) for row in rows if isinstance(row, dict)]
+    targets = [str(t) for v in values for t in (v if isinstance(v, list) else [v])]
+    longest = max((len(run) for t in targets for run in re.findall(r"\n+", t)), default = 0)
+    return "\n" * (longest + 1)
+
+
 def make_dataset_task(
     data_file: Path, input_key: str, target_key: str, out_dir: Path, name: str
 ) -> None:
@@ -409,13 +428,17 @@ def make_dataset_task(
         "fewshot_split": "train",
         "output_type": "generate_until",
         "doc_to_text": _doc_column(input_key),
-        "generation_kwargs": {"until": ["\n"]},
+        "generation_kwargs": {"until": [_stop_sequence(data_file, target_key)]},
         # strip so " 2" matches gold "2"; with one capture group re.findall yields the group text
         "filter_list": [
             {
                 "name": "strip",
                 "filter": [
-                    {"function": "regex", "regex_pattern": r"^\s*(.*?)\s*$", "group_select": 0},
+                    {
+                        "function": "regex",
+                        "regex_pattern": r"(?s)^\s*(.*?)\s*$",
+                        "group_select": 0,
+                    },
                     {"function": "take_first"},
                 ],
             },
