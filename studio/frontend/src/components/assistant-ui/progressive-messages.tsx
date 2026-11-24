@@ -60,6 +60,7 @@ import {
 } from "@/components/assistant-ui/thread-message-slot";
 import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+// eslint-disable-next-line no-restricted-imports -- pure helpers; the barrel would pull character components into the thread.
 import { isHiddenRoleplayTurn } from "@/features/characters/meta";
 import { inputPointerHeld } from "@/lib/input-pointer-state";
 import { isWebKitGTK } from "@/components/ui/theme-view-transition";
