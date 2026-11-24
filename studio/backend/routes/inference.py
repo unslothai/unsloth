@@ -22255,6 +22255,8 @@ async def check_transformers_upgrade_route(
         requires_trust_remote_code = requires_trust_remote_code,
         latest_tier_active = latest_tier_active,
         forces_16bit = active_forces_16bit or install_only_upgrade,
+        # The Configure card reads this: installable && !forces_16bit alone means the custom-code case.
+        sidecar_keeps_4bit = upgrade_keeps_4bit or (latest_tier_active and not active_forces_16bit),
         install_breaks_exact_resume = install_breaks_exact_resume,
     )
 

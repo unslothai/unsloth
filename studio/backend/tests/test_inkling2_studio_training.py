@@ -110,6 +110,36 @@ def test_train_tab_is_not_told_inkling2_loses_4bit(monkeypatch):
     after = _upgrade_route(monkeypatch, None, True, INKLING_CFG)
     assert after.latest_tier_active is True
     assert after.forces_16bit is False
+    # The Configure card reads installable && !forces_16bit as the custom-code case unless told the sidecar keeps 4-bit.
+    assert before.sidecar_keeps_4bit is True
+    assert after.sidecar_keeps_4bit is True
+
+
+def test_other_new_architectures_do_not_claim_4bit(monkeypatch):
+    offer = {
+        "model_type": "muse_glimmer",
+        "pypi_version": "5.24.0",
+        "supported_in_pypi": True,
+        "supported_in_main": True,
+    }
+    before = _upgrade_route(monkeypatch, offer, False, NEW_ARCH_CFG)
+    assert before.forces_16bit is True
+    assert before.sidecar_keeps_4bit is False
+
+
+def test_text_only_inkling2_config_keeps_4bit(monkeypatch):
+    tv = _sidecar(monkeypatch, {"model_type": "inkling2_loop_text"})
+    assert tv.latest_tier_forces_16bit("someone/inkling2-mini-text") is False
+
+
+def test_bnb_checkpoint_is_not_called_16bit(monkeypatch):
+    """A bnb checkpoint loads 4-bit from its own quantization_config, so a 16-bit claim would be false."""
+    cfg = {
+        **NEW_ARCH_CFG,
+        "quantization_config": {"quant_method": "bitsandbytes", "load_in_4bit": True},
+    }
+    tv = _sidecar(monkeypatch, cfg)
+    assert tv.latest_tier_forces_16bit("someone/Muse-Glimmer-30B-bnb-4bit") is False
 
 
 class _InklingTokenizer:

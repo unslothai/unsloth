@@ -21,6 +21,8 @@ interface TransformersUpgradeCheckResponse {
   // biome-ignore lint/style/useNamingConvention: API schema
   forces_16bit?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
+  sidecar_keeps_4bit?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
   install_breaks_exact_resume?: boolean;
 }
 
@@ -59,6 +61,7 @@ export async function checkTransformersUpgrade(
     requiresTrustRemoteCode: Boolean(data.requires_trust_remote_code),
     latestTierActive: Boolean(data.latest_tier_active),
     forces16Bit: Boolean(data.forces_16bit),
+    sidecarKeeps4Bit: Boolean(data.sidecar_keeps_4bit),
     installBreaksExactResume: Boolean(data.install_breaks_exact_resume),
   };
 }
