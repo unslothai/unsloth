@@ -44,19 +44,14 @@ def test_jsonl_manifest_with_utf8_bom_rewrites_every_row(tmp_path, extension):
         for line in manifest.read_text(encoding = "utf-8").splitlines()
         if line.strip()
     ]
-    assert rows == [
-        {"audio": "/dl/clips/a.wav"},
-        {"audio": "/dl/clips/b.wav"},
-    ]
+    assert rows == [{"audio": "/dl/clips/a.wav"}, {"audio": "/dl/clips/b.wav"}]
 
 
 def test_json_manifest_with_utf8_bom_rewrites_the_record(tmp_path):
     manifest = tmp_path / "data.json"
     manifest.write_text(_BOM + json.dumps({"audio": "clips/a.wav"}), encoding = "utf-8")
     s3_dataset._rewrite_json_manifest(str(manifest), _resolve)
-    assert json.loads(manifest.read_text(encoding = "utf-8")) == {
-        "audio": "/dl/clips/a.wav"
-    }
+    assert json.loads(manifest.read_text(encoding = "utf-8")) == {"audio": "/dl/clips/a.wav"}
 
 
 def test_csv_manifest_with_utf8_bom_rewrites_the_first_cell(tmp_path):
