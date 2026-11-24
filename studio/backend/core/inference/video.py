@@ -550,6 +550,17 @@ def assert_video_precision_available(
     refuse_disabled_nvfp4(
         transformer_quant = transformer_quant, text_encoder_quant = text_encoder_quant
     )
+    from .video_cpu_host import refuse_cpu_video_host_shortfall
+
+    # CPU-only torch: refuse a load the float32 host floor cannot fit, before the eviction and the pull.
+    refuse_cpu_video_host_shortfall(
+        fam,
+        model_kind = model_kind,
+        text_encoder_quant = text_encoder_quant,
+        transformer_quant = transformer_quant,
+        logger = logger,
+        resolve_target = lambda: resolve_diffusion_device_target(),
+    )
     if getattr(fam, "name", None) == "minimax-h3" and model_kind == "pipeline":
         # Refuse before the eviction and the pull: without bf16 every precision lands on the dense weights.
         with diffusion_device_scope(gpu_ordinal):
