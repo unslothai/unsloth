@@ -58,6 +58,7 @@ const MODEL_DEFAULTS: Array<{
   { match: "qwen-image-edit-2509", steps: 20, guidance: 4 },
   { match: "qwen-image-edit", steps: 40, guidance: 4 },
   { match: "qwen-image-2512", steps: 50, guidance: 4 },
+  { match: "qwen-image-flash", steps: 4, guidance: 1 },
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 25, guidance: 3 },
   { match: "lumina", steps: 50, guidance: 4 },

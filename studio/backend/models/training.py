@@ -1129,6 +1129,15 @@ class DiffusionTrainingStartRequest(BaseModel):
             ),
         )
     )
+    num_gpus: int = Field(
+        1,
+        ge = 1,
+        le = 64,
+        description = (
+            "DiT families on CUDA: data-parallel training over this many identical visible GPUs (one process each); "
+            "train_batch_size is per GPU. Falls back to one GPU with a warning when the host cannot."
+        ),
+    )
     # DiT-only lever: undeclared, model_dump() silently dropped it. Defaults match DiffusionLoraConfig.
     ema_decay: float = Field(
         0.0, ge = 0.0, lt = 1.0, description = "EMA of the LoRA weights; 0 disables it"

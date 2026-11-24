@@ -36,7 +36,7 @@ DECLARED_TOKENIZERS_WINDOW = {
     "4.57.6": ">=0.22.0,<=0.23.0",
     # Sidecar-only releases (.venv_t5_*): installed --no-deps, they import the main env's tokenizers.
     "5.3.0": ">=0.22.0,<=0.23.0",
-    "5.13.1": ">=0.22.0,<=0.23.0",
+    "5.15.1": ">=0.22.0,<=0.23.0",
 }
 
 # Named, not computed, so the negative control cannot drift with PyPI.

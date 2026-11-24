@@ -383,14 +383,14 @@ def test_selection_installs_the_vulkan_build(monkeypatch):
 
 
 _PINNED_RELEASE_ASSETS = [
-    "sd-master-982-0518b34-u27b9ddc-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
-    "sd-master-982-0518b34-u27b9ddc-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
-    "sd-master-982-0518b34-u27b9ddc-bin-Linux-Ubuntu-22.04-x86_64.zip",
-    "sd-master-982-0518b34-u27b9ddc-bin-Linux-Ubuntu-24.04-aarch64.zip",
-    "sd-master-982-0518b34-u27b9ddc-bin-win-cpu-arm64.zip",
-    "sd-master-982-0518b34-u27b9ddc-bin-win-cpu-x64.zip",
-    "sd-master-982-0518b34-u27b9ddc-bin-win-cuda12-x64.zip",
-    "sd-master-982-0518b34-u27b9ddc-bin-win-vulkan-x64.zip",
+    "sd-master-982-0518b34-u9455ee1-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
+    "sd-master-982-0518b34-u9455ee1-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
+    "sd-master-982-0518b34-u9455ee1-bin-Linux-Ubuntu-22.04-x86_64.zip",
+    "sd-master-982-0518b34-u9455ee1-bin-Linux-Ubuntu-24.04-aarch64.zip",
+    "sd-master-982-0518b34-u9455ee1-bin-win-cpu-arm64.zip",
+    "sd-master-982-0518b34-u9455ee1-bin-win-cpu-x64.zip",
+    "sd-master-982-0518b34-u9455ee1-bin-win-cuda12-x64.zip",
+    "sd-master-982-0518b34-u9455ee1-bin-win-vulkan-x64.zip",
 ]
 
 
@@ -400,9 +400,9 @@ _PINNED_RELEASE_ASSETS = [
         (
             "Linux",
             "x86_64",
-            "sd-master-982-0518b34-u27b9ddc-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
+            "sd-master-982-0518b34-u9455ee1-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
         ),
-        ("Windows", "AMD64", "sd-master-982-0518b34-u27b9ddc-bin-win-vulkan-x64.zip"),
+        ("Windows", "AMD64", "sd-master-982-0518b34-u9455ee1-bin-win-vulkan-x64.zip"),
         ("Linux", "aarch64", None),
         ("Windows", "ARM64", None),
     ],

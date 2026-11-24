@@ -132,14 +132,19 @@ function MemoryLimitRow({
   saving,
   error,
   onSave,
+  onAuto,
 }: {
   memory: SandboxMemoryStatus;
   saving: boolean;
   error: string | null;
   onSave: (memoryLimitGb: number) => void;
+  onAuto: () => void;
 }) {
   const t = useT();
-  const shown = memory.lockedByEnvironment ? memory.limitGb : memory.savedGb;
+  const locked = memory.lockedByEnvironment;
+  const canAuto = memory.auto !== null && !locked;
+  const [auto, setAuto] = useState(memory.auto === true && !locked);
+  const shown = locked ? memory.limitGb : memory.savedGb;
   const [draft, setDraft] = useState(shown === null ? "" : String(shown));
   const [invalid, setInvalid] = useState(false);
   const submit = () => {
@@ -153,9 +158,18 @@ function MemoryLimitRow({
       return;
     }
     setInvalid(false);
-    if (value !== memory.savedGb) onSave(value);
+    if (memory.auto || value !== memory.savedGb) onSave(value);
   };
-  const note = memory.lockedByEnvironment
+  const toggleAuto = (on: boolean) => {
+    setInvalid(false);
+    if (on && !memory.auto) {
+      // The switch turns on once the save lands, so a failed save leaves it off.
+      onAuto();
+      return;
+    }
+    setAuto(on);
+  };
+  const note = locked
     ? t("settings.sandbox.memoryLocked")
     : invalid
       ? t("settings.sandbox.memoryInvalid", {
@@ -174,9 +188,7 @@ function MemoryLimitRow({
           <span
             className={cn(
               NOTE_CLASS,
-              memory.lockedByEnvironment
-                ? "text-muted-foreground"
-                : "text-destructive",
+              locked ? "text-muted-foreground" : "text-destructive",
             )}
           >
             {note}
@@ -184,15 +196,26 @@ function MemoryLimitRow({
         ) : null
       }
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
+        {canAuto ? (
+          <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Switch
+              aria-label={t("settings.sandbox.memoryAuto")}
+              checked={auto}
+              disabled={saving}
+              onCheckedChange={toggleAuto}
+            />
+            {t("settings.sandbox.memoryAuto")}
+          </label>
+        ) : null}
         <div className="flex items-center gap-1.5">
           <Input
             type="number"
             min={memory.minGb}
             max={memory.maxGb}
             step={1}
-            value={draft}
-            disabled={memory.lockedByEnvironment}
+            value={auto ? String(memory.defaultGb) : draft}
+            disabled={locked || auto}
             aria-label={t("settings.sandbox.memoryLabel")}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -204,7 +227,7 @@ function MemoryLimitRow({
             GB
           </span>
         </div>
-        {memory.lockedByEnvironment ? null : (
+        {locked || auto ? null : (
           <Button
             variant="outline"
             size="sm"
@@ -785,11 +808,12 @@ function OsSandboxSections() {
                 {status.memory ? (
                   <MemoryLimitRow
                     // A saved or reloaded value resets the draft.
-                    key={`${status.memory.savedGb}:${status.memory.limitGb}`}
+                    key={`${status.memory.savedGb}:${status.memory.limitGb}:${status.memory.auto}`}
                     memory={status.memory}
                     saving={saving}
                     error={actionError}
                     onSave={(memoryLimitGb) => void save({ memoryLimitGb })}
+                    onAuto={() => void save({ memoryLimitAuto: true })}
                   />
                 ) : null}
               </>

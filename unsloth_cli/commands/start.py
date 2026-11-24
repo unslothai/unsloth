@@ -260,6 +260,15 @@ class _PassthroughCommand(TyperCommand):
             ctx.args = remaining
         return remaining
 
+    def invoke(self, ctx: click.Context):
+        global _agent_ctx
+        _agent_ctx = ctx
+        ctx.meta["unsloth_raw_args"] = list(ctx.args)
+        return super().invoke(ctx)
+
+
+_agent_ctx: Optional[typer.Context] = None
+
 
 # provider routing overrides ANTHROPIC_BASE_URL and would bypass the local server (#9864).
 _CLAUDE_ENV_UNSET = (
@@ -2245,6 +2254,43 @@ def _fields_extras_override(extras, carried: dict) -> set:
     return overridden
 
 
+def _selects_device(extras) -> bool:
+    if not extras:
+        return False
+    try:
+        ensure_studio_backend_path(seed_cache_env = False)
+        from core.inference.llama_server_args import strip_shadowing_flags
+    except ImportError:
+        return True
+    return strip_shadowing_flags(
+        extras,
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+        strip_device = True,
+    ) != list(extras)
+
+
+def _resident_reload_payload(status: dict, payload: dict) -> dict:
+    carried = _resident_runtime_payload(status, payload)
+    # A sent gpu_ids makes the server drop the caller's own --device / --main-gpu (_strip_device_extra_args).
+    if "gpu_ids" in carried and _selects_device(payload.get("llama_extra_args")):
+        carried.pop("gpu_ids")
+        carried.pop("tensor_split", None)
+    # Extras are inherited server-side and shadow-stripped against sent fields, so a carried field would strip its group's flags.
+    for name in _fields_extras_override(status.get("requested_llama_extra_args"), carried):
+        carried.pop(name, None)
+    carried.pop("llama_extra_args", None)
+    # Outside manual, status reports the planner's emitted ratio, not the request (LlamaCppBackend.tensor_split); sending it pins an Auto split and reloads.
+    if {**payload, **carried}.get("gpu_memory_mode") != "manual":
+        carried.pop("tensor_split", None)
+    # Status cannot say whether the slot count was the default, and a sent count stops Auto cutting slots to keep a drafter (n_parallel_from_default).
+    carried.pop("n_parallel", None)
+    return carried
+
+
 def _names_another_quant(status: dict, load: LoadOptions) -> bool:
     """Whether the load asks for a different quant than the resident runs: another checkpoint, with saved settings of its own."""
     return bool(load.gguf_variant and _resident_variant(status)) and not _resident_serves_variant(
@@ -2547,19 +2593,12 @@ def _resolve_model(
             )
         if attach_public_id is not None or loaded_match is not None:
             # A resident reload is a full load, not a PATCH: carry the knobs the user did not name, or changing the context alone drops their KV dtype, slot count, batch sizes and GPU placement.
-            carried = _resident_runtime_payload(status_snapshot, payload) if same_checkpoint else {}
-            if attach_public_id is None:
-                # Extras are inherited server-side and shadow-stripped against sent fields, so a carried field would strip its group's flags.
-                for name in _fields_extras_override(
-                    status_snapshot.get("requested_llama_extra_args"), carried
-                ):
-                    carried.pop(name, None)
-                carried.pop("llama_extra_args", None)
-                # Outside manual, status reports the planner's emitted ratio, not the request (LlamaCppBackend.tensor_split); sending it pins an Auto split and reloads.
-                if {**payload, **carried}.get("gpu_memory_mode") != "manual":
-                    carried.pop("tensor_split", None)
-                # Status cannot say whether the slot count was the default, and a sent count stops Auto cutting slots to keep a drafter (n_parallel_from_default).
-                carried.pop("n_parallel", None)
+            if not same_checkpoint:
+                carried = {}
+            elif attach_public_id is None:
+                carried = _resident_reload_payload(status_snapshot, payload)
+            else:
+                carried = _resident_runtime_payload(status_snapshot, payload)
             payload.update(carried)
             # The server cannot tell an explicit `--context-length 0` reset from the 0 that every UI load sends, so it treats 0 as "no preference" and would answer already_loaded. Say outright that this one is a reload, but only when status PROVED a difference: on an older server _load_settings_differ cannot tell, and forcing there would evict on every attach.
             if attach_public_id is not None and status_snapshot and inferred_differs:
@@ -2942,7 +2981,7 @@ def _fail_agent_needs_gguf(agent: _GgufAgent, model_id: str) -> NoReturn:
     _fail(message)
 
 
-# Mirrors the frontend's NO_MLX_REASONS: an Apple Silicon host that still cannot load MLX.
+# Mirrors the frontend's NO_MLX_REASONS; only for a server that does not send mlx_inference.
 _NO_MLX_REASONS = frozenset(
     {"mlx_unavailable", "no_torch", "intel_mac", "rosetta", "detection_failed"}
 )
@@ -2976,12 +3015,15 @@ def _server_loads_mlx(base: str, key: str) -> bool:
         if time.monotonic() >= deadline:
             return False
         time.sleep(1)
-    return (
+    if not (
         isinstance(health, dict)
         and health.get("device_type") == "mac"
         and health.get("apple_silicon") is True
-        and health.get("chat_only_reason") not in _NO_MLX_REASONS
-    )
+    ):
+        return False
+    if isinstance(health.get("mlx_inference"), bool):
+        return health["mlx_inference"]
+    return health.get("chat_only_reason") not in _NO_MLX_REASONS
 
 
 def _refuse_non_gguf(
@@ -5408,6 +5450,7 @@ def _run(
             typer.echo(f"Unsloth Studio is still running at {base}.")
             typer.echo("Stop it with: unsloth studio stop")
         return
+    _remember_start(base, entry)
     try:
         code = _launch(
             command,
@@ -5438,6 +5481,121 @@ def _run(
 
 def _agents_config_root() -> Path:
     return _studio_auth_root() / "agents"
+
+
+_CONTINUE_ARGS = {
+    "claude": ["--continue"],
+    "opencode": ["--continue"],
+    "vibe": ["--continue"],
+    "codex": ["resume", "--last"],
+    "hermes": ["--continue"],
+    "pi": ["--continue"],
+    # Both reopen their saved sessions on a plain launch of a kept home.
+    "openclaw": [],
+    "dsh": [],
+}
+_OWN_HOME_AGENTS = ("claude", "opencode", "vibe")
+# api_key is cached per server; --yolo is never re-granted silently; --app never reaches _run.
+_NOT_REPLAYED = frozenset({"model", "api_key", "launch", "yolo", "app"})
+
+
+def _last_start_path() -> Path:
+    return _studio_auth_root() / "last_start.json"
+
+
+def _typed_options(ctx) -> list:
+    args = []
+    for param in ctx.command.params:
+        opts = getattr(param, "opts", None)
+        if not opts or param.name in _NOT_REPLAYED:
+            continue
+        try:
+            source = ctx.get_parameter_source(param.name)
+        except Exception:
+            continue
+        if getattr(source, "name", None) != "COMMANDLINE":
+            continue
+        value = ctx.params.get(param.name)
+        if getattr(param, "is_flag", False):
+            flag = opts if value else getattr(param, "secondary_opts", None)
+            args += flag[:1] if flag else []
+        elif value is not None:
+            args += [opts[0], str(value)]
+    return args
+
+
+def _remember_start(base: str, entry: dict) -> None:
+    ctx = _agent_ctx
+    if ctx is None or ctx.info_name not in _CONTINUE_ARGS:
+        return
+    agent = ctx.info_name
+    positional, _ = _consume_positional_model(
+        ctx.params.get("model"), ctx.meta.get("unsloth_raw_args") or []
+    )
+    subagent = ctx.params.get("as_subagent") or ctx.params.get("auto_route")
+    args = _typed_options(ctx)
+    # A path-loaded resident's public id is a bare name that would resolve to unsloth/<name>.
+    model = positional or (entry["id"] if _looks_like_model(entry["id"]) else None)
+    # Pin the resident's quant: subagent entries carry it in the id, primary ones as "quant".
+    resident, quant = _split_repo_variant(entry["id"])
+    quant = quant or entry.get("quant")
+    if model and quant and model == resident and "--gguf-variant" not in args:
+        model = f"{resident}:{quant}"
+    last = {
+        "agent": agent,
+        "model": model,
+        "args": args,
+        # Subagent modes keep the user's own Pi dir, and link the user's Codex sessions dir.
+        "kept": bool(
+            ctx.params.get("persist")
+            or agent in _OWN_HOME_AGENTS
+            or (agent == "pi" and subagent)
+            or (agent == "codex" and subagent and (_codex_source_home() / "sessions").is_dir())
+        ),
+        "server": base,
+    }
+    try:
+        _write_private_json(_last_start_path(), last)
+    except OSError:
+        pass
+
+
+@start_app.callback(invoke_without_command = True)
+def _start_group(
+    ctx: typer.Context,
+    resume: bool = typer.Option(
+        False,
+        "--continue",
+        "-c",
+        help = "Reopen the last launched agent and model in its most recent session.",
+    ),
+):
+    if not resume:
+        return
+    if ctx.invoked_subcommand is not None:
+        _fail(f"Put --continue after the agent: unsloth start {ctx.invoked_subcommand} --continue")
+    last = _read_json_object(_last_start_path()) or {}
+    agent = last.get("agent")
+    args = last.get("args")
+    if (
+        agent not in _CONTINUE_ARGS
+        or not isinstance(last.get("model"), (str, type(None)))
+        or not isinstance(args, list)
+        or not all(isinstance(arg, str) for arg in args)
+    ):
+        _fail("Nothing to continue yet. Start an agent first, e.g. `unsloth start claude`.")
+    if not last.get("kept"):
+        _fail(
+            f"The last {agent} session was not kept, so there is nothing to resume. "
+            f"Start it with `unsloth start {agent} --persist` to keep sessions you can continue."
+        )
+    if isinstance(last.get("server"), str):
+        os.environ.setdefault("UNSLOTH_STUDIO_URL", last["server"])
+    command = ctx.command.get_command(ctx, agent)
+    model = ["--model", last["model"]] if last.get("model") else []
+    argv = [*model, *args, *_CONTINUE_ARGS[agent]]
+    with command.make_context(agent, argv, parent = ctx) as sub:
+        command.invoke(sub)
 
 
 @contextlib.contextmanager

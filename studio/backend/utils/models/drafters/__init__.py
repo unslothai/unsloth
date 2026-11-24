@@ -20,6 +20,7 @@ from utils.models.drafters.preference import (
     dflash_repo_preference_key,
     dspark_precision_rank,
     dspark_preference_key,
+    dspark_preferred_first,
 )
 from utils.models.drafters.budget import dflash_budget_bytes
 from utils.models.drafters.dflash import (
@@ -44,5 +45,6 @@ __all__ = [
     "dflash_repo_preference_key",
     "dspark_precision_rank",
     "dspark_preference_key",
+    "dspark_preferred_first",
     "is_dflash_architecture",
 ]

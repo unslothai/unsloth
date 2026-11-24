@@ -152,6 +152,7 @@ _NVIDIA_EXPECTED = {
     "xformers": ("xformers", "xformers"),
     "aiter": (None, None),
     "unsloth_int8": ("_native_cudnn", "_native_cudnn"),
+    "flash_sdpa": ("_native_flash", "_native_flash"),
 }
 
 

@@ -25,7 +25,13 @@ export interface PickToast {
   show: (modelName?: string) => string;
   dismiss: (id: string | undefined) => void;
   dismissAll: () => void;
-  setPhase: (id: string | undefined, phase: PickToastPhase, plan?: number) => void;
+  /** `modelName` renames the pick, e.g. to the repo its plan actually downloads; omitted keeps the name. */
+  setPhase: (
+    id: string | undefined,
+    phase: PickToastPhase,
+    plan?: number,
+    modelName?: string,
+  ) => void;
   progress: (progress: StagedPlanProgress | null) => void;
   /** Transfer ownership to the load; return undefined if the toast is gone. */
   take: (id: string | undefined) => string | undefined;
@@ -78,9 +84,15 @@ export function createPickToast({ describe, classNames }: PickToastOptions): Pic
       live = null;
       toast.dismiss(gone);
     },
-    setPhase: (id, phase, plan) => {
+    setPhase: (id, phase, plan, modelName) => {
       if (id === undefined || live?.id !== id) return;
-      live = { ...live, phase, plan: phase === "downloading" ? plan : undefined, progress: null };
+      live = {
+        ...live,
+        phase,
+        plan: phase === "downloading" ? plan : undefined,
+        progress: null,
+        modelName: modelName ?? live.modelName,
+      };
       render();
     },
     progress: (progress) => {

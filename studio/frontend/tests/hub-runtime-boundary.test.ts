@@ -255,7 +255,7 @@ test("the Hub routes Run to its owning workflow without owning runtime actions",
   );
   assert.match(
     modelInspector,
-    /nonGgufRuntimeAvailable:\s*!chatOnlyMeasured &&\s*unslothSupport\.status !== "unsupported"/,
+    /nonGgufRuntimeAvailable:\s*\(!chatOnlyMeasured \|\| mlxRunsHere\) &&\s*unslothSupport\.status !== "unsupported"/,
   );
   assert.match(modelInspector, /const runEligible = isHubModelRunEligible\(/);
   assert.match(
@@ -268,7 +268,7 @@ test("the Hub routes Run to its owning workflow without owning runtime actions",
   );
   assert.match(
     modelInspector,
-    /<ModelStatusChips[\s\S]*?chatOnly=\{chatOnly\}/,
+    /<ModelStatusChips[\s\S]*?chatOnly=\{chatOnly && !mlxRunsHere\}/,
   );
   assert.doesNotMatch(
     HUB_RENDER_SOURCES,

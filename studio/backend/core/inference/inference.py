@@ -1658,8 +1658,17 @@ class InferenceBackend:
 
             raise Exception(error_msg)
 
+    def unload_model_for_exit(self, model_name: str) -> bool:
+        """unload_model for an exiting worker: os._exit frees the CUDA context, so skip the cache clear."""
+        return self.unload_model(model_name, process_exiting = True)
+
     @_invalidates_gpu_memory("transformers unload")
-    def unload_model(self, model_name: str) -> bool:
+    def unload_model(
+        self,
+        model_name: str,
+        *,
+        process_exiting: bool = False,
+    ) -> bool:
         """Remove a model from the registry and clear GPU memory."""
         if model_name in self.models:
             try:
@@ -1669,13 +1678,15 @@ class InferenceBackend:
                 logger.info(f"Unloading model '{model_name}' from memory.")
                 model = self.models[model_name].get("model")
                 del self.models[model_name]
-                _release_decode_graphs(model, getattr(self, "_generation_lock", None))
+                if not process_exiting:
+                    _release_decode_graphs(model, getattr(self, "_generation_lock", None))
                 model = None
 
                 if self.active_model_name == model_name:
                     self.active_model_name = None
 
-                clear_gpu_cache()
+                if not process_exiting:
+                    clear_gpu_cache()
 
                 # On spawn platforms keep trainer files so concurrent dataset.map() workers can import them.
                 import sys as _sys
@@ -1869,8 +1880,7 @@ class InferenceBackend:
                 model.base_model.enable_adapter_layers()
 
     def image_tokens(self, width: int, height: int) -> Optional[int]:
-        """Prompt tokens one computer-use screenshot of this size adds under the screenshot budget;
-        None without an image processor."""
+        """Tokens a screenshot this size adds to the budget; None without an image processor."""
         from PIL import Image
 
         processor = (self.models.get(self.active_model_name) or {}).get("processor")

@@ -10,7 +10,10 @@ the race by ``_MARGIN``. ``UNSLOTH_DIFFUSION_INT8_CUTLASS=0`` disables, ``=1`` s
 16384-row race on sustained timings (the 4096-row race on short ones, as before).
 Large calls (1024 to 8191 rows) take the winner of a race at their own row bucket once an earlier load recorded it
 (``row_bucket``: a 1024^2 FLUX.3 joint call has 4176 rows, where the 4096-row winner's 256-row tile leaves a 17th row
-tile 31% full); ``UNSLOTH_DIFFUSION_INT8_CUTLASS_ROW_RACE=0`` keeps the 4096-row race for every large call."""
+tile 31% full); ``UNSLOTH_DIFFUSION_INT8_CUTLASS_ROW_RACE=0`` keeps the 4096-row race for every large call. A bucket
+no earlier load recorded is raced at its first call (``UNSLOTH_DIFFUSION_INT8_CUTLASS_LIVE_RACE=0``: next load only).
+Winners within ``_FILL_TIE`` of the fastest go to the tile whose last row tile is fullest at the race's row count
+(``pick``; ``UNSLOTH_DIFFUSION_INT8_CUTLASS_FILL_TIES=0`` keeps the fastest)."""
 
 from __future__ import annotations
 
@@ -74,8 +77,50 @@ def row_race_enabled() -> bool:
     return raw not in ("0", "off", "false", "no")
 
 
+LIVE_RACE_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_LIVE_RACE"
+
+
+def live_race_enabled() -> bool:
+    """A large call's unrecorded row bucket is raced in this load, at its first call (``diffusion_int8_gemm``)."""
+    raw = (os.environ.get(LIVE_RACE_ENV) or "").strip().lower()
+    return row_race_enabled() and raw not in ("0", "off", "false", "no")
+
+
 def row_bucket(m: int) -> int:
     return -(-int(m) // ROW_BUCKET) * ROW_BUCKET
+
+
+FILL_TIE_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_FILL_TIES"
+# Race timings this close to the fastest winner are a tie. L4, 3072x9216 at 4224 rows: the same tile's sustained race
+# timing moved 1.7-5.7% between loads, and a 256-row tile won by 2.1% while it runs 2.4% slower sustained at 4176 rows
+# (2252 vs 1779 us in the pipeline) than the 128-row tile it beat.
+_FILL_TIE = 0.03
+
+
+def fill_ties_enabled() -> bool:
+    raw = (os.environ.get(FILL_TIE_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def last_tile_fill(m: int, rows: int) -> float:
+    """How full the last of an ``m``-row call's row tiles of ``rows`` rows is (1.0 when ``rows`` divides ``m``)."""
+    rest = int(m) % int(rows)
+    return rest / int(rows) if rest else 1.0
+
+
+def pick(timing: dict, top: Any, base_name: str, m: int, rows: dict) -> tuple:
+    """(tile the race keeps or None for today's path, its fastest winner). A winner beats ``base_name`` by ``_MARGIN``;
+    of the winners within ``_FILL_TIE`` of the fastest, the one whose last row tile is fullest at ``m`` rows (``rows``:
+    tile -> rows per tile) is kept, then the faster. At a row count every tile height divides (512, 4096, 16384) that is
+    the fastest winner, as before; ``UNSLOTH_DIFFUSION_INT8_CUTLASS_FILL_TIES=0`` keeps the fastest everywhere."""
+    wins = [t for t in top if timing[t] < timing[base_name] * (1.0 - _MARGIN)]
+    if not wins:
+        return None, None
+    fastest = min(wins, key = lambda t: timing[t])
+    if not fill_ties_enabled() or any(not rows.get(t) for t in wins):
+        return fastest, fastest
+    near = [t for t in wins if timing[t] <= timing[fastest] * (1.0 + _FILL_TIE)]
+    return max(near, key = lambda t: (last_tile_fill(m, rows[t]), -timing[t])), fastest
 
 
 def large_points(rows: Any = None) -> tuple:
@@ -92,9 +137,8 @@ def race_points(rows: Any = None) -> tuple:
 
 
 def slot(m: int, entry: dict) -> Optional[int]:
-    """The plan entry's tile for an ``m``-row call: below ``_LARGE_M`` the small race, from ``_HUGE_M`` the huge race
-    when the entry has one (None there keeps today's path), else the race at the call's row bucket, else the nearest
-    large race (the 4096-row one when nothing was recorded)."""
+    """Tile for an m-row call: the small race below _LARGE_M, the huge race from _HUGE_M (None if
+    unrecorded, keeping today's path), else the bucket race or nearest large (4096 if none)."""
     if m < _LARGE_M:
         return entry.get(min(_RACE_M))
     if m >= _HUGE_M and _RACE_M_HUGE in entry:
@@ -423,11 +467,83 @@ def _probe_tile(index: int, fam: int, tile: int, pairs: tuple) -> bool:
                 return False
         torch.cuda.synchronize(dev)
         return True
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if _is_oom(exc):
+            _PROBE_OOMS[0] += 1
         return False
 
 
+def _is_oom(exc: BaseException) -> bool:
+    try:
+        import torch
+        if isinstance(exc, torch.OutOfMemoryError):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return "out of memory" in str(exc).lower()
+
+
+# Out-of-memory failures inside ``_probe_tile``, counted here: the allocator's num_ooms stays 0 under
+# PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync, which never fills the native allocator's stats.
+_PROBE_OOMS: list = [0]
 _PROBED: dict = {}
+# The tile verdicts persist per card (uuid), driver, torch / CUDA / Triton / torchao, these module sources and the
+# loaded library's bytes (``_probe_extra``): any change re-probes. UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
+PROBE_PERSIST_SOURCES = ("diffusion_int8_cutlass.py", "diffusion_int8_gemm.py")
+_PROBE_STORE: list = [None]
+
+
+def _probe_extra() -> dict:
+    from .diffusion_int8_gemm import _sources_digest
+
+    lib = library_path()
+    if not lib:
+        raise RuntimeError("no library")
+    return {"abi": ABI_VERSION, "lib": _sources_digest(lib)}
+
+
+def _probe_store() -> Any:
+    if _PROBE_STORE[0] is None:
+        from .diffusion_probe_cache import Namespace
+        _PROBE_STORE[0] = Namespace("int8_cutlass_tiles", PROBE_PERSIST_SOURCES, extra = _probe_extra)
+    return _PROBE_STORE[0]
+
+
+def _stored_tiles(index: int, fam: int) -> Optional[tuple]:
+    """The persisted probe verdict for this card, or None (missing, stale, malformed). Never raises."""
+    try:
+        got = _probe_store().get(f"cuda:{int(index)}", f"tiles|{fam}")
+        n = len(tiles(fam))
+        if (
+            not isinstance(got, dict)
+            or got.get("n") != n
+            or not isinstance(got.get("ok"), list)
+            or not all(isinstance(t, int) and 0 <= t < n for t in got["ok"])
+        ):
+            return None
+        return tuple(got["ok"])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _alloc_failures(index: int) -> Optional[int]:
+    """The caching allocator's out-of-memory count on ``index`` after a sync; None when the context cannot answer
+    (a sticky launch error). Never raises."""
+    try:
+        import torch
+        torch.cuda.synchronize(index)
+        return int(torch.cuda.memory_stats(index).get("num_ooms", 0))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _store_tiles(index: int, fam: int, ok: tuple) -> None:
+    try:
+        _probe_store().put(
+            f"cuda:{int(index)}", f"tiles|{fam}", {"n": len(tiles(fam)), "ok": list(ok)}
+        )
+    except Exception:  # noqa: BLE001 - the next process probes again
+        pass
 
 
 def probed_tiles(index: int) -> tuple:
@@ -438,8 +554,25 @@ def probed_tiles(index: int) -> tuple:
         import torch
         fam = family(torch.cuda.get_device_capability(index))
         if fam is not None and library() is not None:
-            pairs = _scale_dtypes(fam)
-            ok = tuple(t for t in range(len(tiles(fam))) if _probe_tile(index, fam, t, pairs))
+            stored = _stored_tiles(index, fam)
+            if stored is not None:
+                ok = stored
+            else:
+                pairs = _scale_dtypes(fam)
+                ooms = _alloc_failures(index)
+                probe_ooms = _PROBE_OOMS[0]
+                ok = tuple(t for t in range(len(tiles(fam))) if _probe_tile(index, fam, t, pairs))
+                failed = [t for t in range(len(tiles(fam))) if t not in ok]
+                # a failure persists only when it repeats and nothing around it failed: one transient error, an
+                # out-of-memory on a full card or a broken context must not drop a tile for good
+                repeated = not any(_probe_tile(index, fam, t, pairs) for t in failed)
+                after = _alloc_failures(index)
+                if _PROBE_OOMS[0] != probe_ooms or (
+                    ooms is not None and after is not None and after != ooms
+                ):
+                    return ok  # out of memory: not kept in this process either, the next call probes again
+                if repeated and ooms is not None and after == ooms:
+                    _store_tiles(index, fam, ok)
     except Exception:  # noqa: BLE001
         ok = ()
     _PROBED[index] = ok
@@ -618,10 +751,15 @@ def race(
             }
             if decides:
                 timing = sustained
-    best = min(top, key = lambda t: timing[t])
-    keep = timing[best] < timing[base_name] * (1.0 - _MARGIN)
+    dims = tiles(fam)
+    rows = {t: int(dims[t][0]) for t in top if 0 <= t < len(dims)}
+    best, fastest = pick(timing, top, base_name, m, rows)
+    if best != fastest:
+        info["fill_tie"] = (
+            fastest  # the faster winner this race passed over for a fuller last row tile
+        )
     us = {str(k_): round(v, 1) for k_, v in timing.items()}
-    return {"tile": best if keep else None, "us": us, "m": m, **info}
+    return {"tile": best, "us": us, "m": m, **info}
 
 
 # (card, N, K) -> {race M: tile or None}, sm75 NativeWeightOnlyLinear
@@ -675,8 +813,7 @@ def _native_cache_key(index: int) -> Optional[str]:
 
 
 def _native_cache_get(index: int, key: tuple) -> Optional[dict]:
-    """A complete earlier race for this card and shape, else None (race it). The race costs seconds per shape on a
-    T4 (sustained timings at 4096 rows) and runs on the first forward: a fresh process reads it back."""
+    """A complete earlier race for this card and shape (seconds per shape on a T4), else None."""
     try:
         from . import diffusion_int8_gemm as g8
 

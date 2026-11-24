@@ -711,6 +711,11 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         raise WorkdirUnsafeError(str(exc)) from exc
     if not os.path.isdir(workdir):
         raise WorkdirUnsafeError(f"the session workdir does not exist: {workdir}")
+    # Every rule below grants whatever the path resolves to, and tool code can write the workdir's parent
+    # entry: a workdir swapped for a link would move the grants to the link's target.
+    if os.path.islink(workdir):
+        raise WorkdirUnsafeError(f"the session workdir is a symbolic link: {workdir}")
+    resolved = os.path.realpath(workdir)
     if posixpath.dirname(workdir) == workdir:
         # "/" would make the entire filesystem the writable set.
         raise WorkdirUnsafeError(f"the session workdir cannot be a filesystem root: {workdir}")
@@ -737,13 +742,22 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         runtime_paths = tuple(
             path for path in runtime_read_paths(workdir) if not _within(path, workdir)
         ) + ((rc_dir,) if proxy else ())
-        profile = build_profile(
-            workdir = workdir,
-            private_tmp = private_tmp,
-            runtime_paths = runtime_paths,
-            developer_paths = _developer_paths(),
-            egress_port = proxy.port if proxy else None,
-        )
+        try:
+            profile = build_profile(
+                workdir = workdir,
+                private_tmp = private_tmp,
+                runtime_paths = runtime_paths,
+                developer_paths = _developer_paths(),
+                egress_port = proxy.port if proxy else None,
+            )
+        except SandboxUnavailableError as exc:
+            # A refusal here is this workdir's (a link swapped in to a target Seatbelt cannot name): it must
+            # not select auto's unisolated fallback.
+            raise WorkdirUnsafeError(str(exc)) from exc
+        if os.path.islink(workdir) or os.path.realpath(workdir) != resolved:
+            raise WorkdirUnsafeError(
+                f"the session workdir was replaced while it was prepared: {workdir}"
+            )
         env = _sandbox_environment(plan.env, workdir, private_tmp)
         if egress_url:
             env.update(sandbox_egress.proxy_environment(egress_url, rc_dir))

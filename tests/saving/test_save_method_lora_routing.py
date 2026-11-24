@@ -38,6 +38,9 @@ def _load(*names, **env):
     # GGUF path; none of these fixtures is a Mistral-format view, so it never refuses here.
     namespace = {
         "raise_if_merging_mistral_format_view": lambda model, save_method: None,
+        # Same for the Inkling 2 merge refusal: no fixture is an Inkling 2 model.
+        "raise_if_merging_inkling2": lambda model, save_method: None,
+        "is_inkling2_config": lambda config: False,
         "lora_relative_to_original_base": lambda model: contextlib.nullcontext(),
         # Unmerges FSDP2 streamed layers when a save raises; these fixtures never stream.
         "_unmerge_flags_on_error": lambda streamed: contextlib.nullcontext(),
@@ -204,10 +207,15 @@ _GENERIC_SAVE_REAL_HELPERS = (
     "_cast_state_dict_16bit",
     "_requests_float32",
     "_stamp_saved_config_float32",
+    # A non-Gemma model leaves the merged config.json alone.
+    "_gemma_rope_the_zoo_export_drops",
+    "_write_trained_gemma_rope",
+    "_is_main_rank",
 )
 _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
     {
         "patch_saving_functions",
+        "_defer_to_main_process",
         "_push_merged_to_hub_revision",
         "_prewarm_base_model_hub_cache",
         "_is_qwen3_5_vlm",
@@ -224,8 +232,14 @@ _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
         # LFM3-Audio config rewrite: no LFM3-Audio checkpoint in these fixtures.
         "_release_layout_for_merged_save",
         "_push_lfm3_audio_release_config",
+        "_left_padding_side",
+        # Shard-wise cast: these fixtures hold no real tensors, so the eager cast runs.
+        "_restamp_index_total_size",
         # Decorator factory; _load strips decorators.
         "_model_parallel_refuses_save",
+        # Separately trained lm_head: these fixtures train no vocab layers.
+        "_untied_trained_vocab",
+        "_untie_merged_checkpoint",
     }
 )
 
@@ -234,7 +248,7 @@ def _not_reached(*args, **kwargs):
     raise AssertionError("the routing harness does not reach this helper")
 
 
-def _routing_environment(monkeypatch, model):
+def _routing_environment(monkeypatch, model, **overrides):
     calls = {"merge": [], "adapter": [], "prewarm": [], "convert": []}
 
     zoo = types.ModuleType("unsloth_zoo.saving_utils")
@@ -243,6 +257,8 @@ def _routing_environment(monkeypatch, model):
 
     namespace = _load(
         *_GENERIC_SAVE_REAL_HELPERS,
+        # Called by _gemma_rope_the_zoo_export_drops, not by the save itself.
+        "_gemma_live_linear_rope",
         "_collect_garbage",
         "unsloth_generic_save",
         os = os,
@@ -251,6 +267,7 @@ def _routing_environment(monkeypatch, model):
         PreTrainedTokenizerBase = type("Tokenizer", (), {}),
         ProcessorMixin = type("Processor", (), {}),
         patch_saving_functions = lambda tokenizer: tokenizer,
+        _defer_to_main_process = lambda is_main_process, model = None: not is_main_process,
         get_token = lambda: "fixture-token",
         get_model_name = lambda name: name,
         _push_merged_to_hub_revision = lambda kwargs: calls.setdefault("revision", []).append(kwargs),
@@ -264,8 +281,13 @@ def _routing_environment(monkeypatch, model):
         _internal_mtp_save = contextlib.nullcontext,
         _stitch_mtp_head = lambda model, directory: None,
         _mtp_head_tensor_names = lambda model: [],
+        _untied_trained_vocab = lambda model: None,
+        _untie_merged_checkpoint = _not_reached,
         _release_layout_for_merged_save = lambda model, directory, method: False,
         _push_lfm3_audio_release_config = lambda model, save_directory, token = None: False,
+        _left_padding_side = lambda tokenizer: contextlib.nullcontext(),
+        _restamp_index_total_size = _not_reached,
+        _CastShardsOnWrite = _not_reached,
         lora_relative_to_original_base = lambda model: (
             calls["convert"].append(model) or contextlib.nullcontext()
         ),
@@ -278,6 +300,7 @@ def _routing_environment(monkeypatch, model):
             save = lambda *args, **kwargs: None,
             cuda = types.SimpleNamespace(is_bf16_supported = lambda: False),
         ),
+        **overrides,
     )
     return namespace["unsloth_generic_save"], calls
 
@@ -335,7 +358,9 @@ def test_the_adapter_save_method_the_router_forwards_is_one_unsloth_save_model_a
         ), f"unsloth_save_model would reject the forwarded save_method {value!r}"
 
 
-@pytest.mark.parametrize("save_method", ["merged_16bit", "mxfp4", "fp8", "merged_4bit_forced"])
+@pytest.mark.parametrize(
+    "save_method", ["merged_16bit", "mxfp4", "merged_4bit_forced", "forced_merged_4bit"]
+)
 def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
     """The merge is what changed for exactly one value of save_method and no other."""
     model = _PeftModel()
@@ -344,7 +369,52 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
     assert calls["adapter"] == []
     assert len(calls["merge"]) == 1
     assert len(calls["prewarm"]) == 1
-    assert len(calls["convert"]) == (save_method != "merged_4bit_forced")
+    assert len(calls["convert"]) == (
+        save_method not in ("merged_4bit_forced", "forced_merged_4bit")
+    )
+
+
+@pytest.mark.parametrize("is_main_process", [True, False])
+def test_only_the_writing_rank_runs_the_inkling2_writer(monkeypatch, tmp_path, is_main_process):
+    """The Inkling 2 writer has no rank guard: a DDP rank with is_main_process=False must not run it."""
+    written = []
+    writer = lambda *args, **kwargs: written.append(args)
+    model = _PeftModel()
+    generic_save, calls = _routing_environment(
+        monkeypatch,
+        model,
+        is_inkling2_config = lambda config: True,
+        save_inkling2_merged_16bit = writer,
+    )
+    generic_save(
+        model,
+        None,
+        save_directory = str(tmp_path),
+        save_method = "merged_16bit",
+        is_main_process = is_main_process,
+    )
+    assert len(written) == is_main_process
+    assert calls["merge"] == []
+
+    save_model = _load(
+        "unsloth_save_model",
+        torch = types.SimpleNamespace(save = None),
+        _refuse_mtp_variant = lambda model, variant: None,
+        _attached_mtp_head = lambda model: None,
+        PreTrainedTokenizerBase = type("T", (), {}),
+        ProcessorMixin = type("P", (), {}),
+        _normalize_safe_serialization = lambda value: True,
+        get_token = lambda: None,
+        _collect_garbage = lambda before = None: None,
+        clean_gpu_cache = None,
+        is_inkling2_config = lambda config: True,
+        save_inkling2_merged_16bit = writer,
+    )["unsloth_save_model"]
+    written.clear()
+    save_model(
+        model, None, str(tmp_path), save_method = "merged_16bit", is_main_process = is_main_process
+    )
+    assert len(written) == is_main_process
 
 
 @pytest.mark.parametrize(
@@ -355,6 +425,8 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
         ("merged-16bit", "merged_16bit"),
         (" merged_16bit ", "merged_16bit"),
         ("Merged_4bit_Forced", "merged_4bit"),
+        ("Forced_Merged_4bit", "merged_4bit"),
+        ("forced merged 4bit", "merged_4bit"),
     ],
 )
 def test_a_respelled_merge_method_reaches_the_merge_canonically(
@@ -399,6 +471,7 @@ def test_the_fsdp2_gather_placement_reads_the_canonical_method(spelling, canonic
 def test_a_respelled_in_place_merge_is_refused_under_tensor_parallel(spelling):
     refuse = _load(
         "_refuse_tp_in_place_merge",
+        "_is_in_place_merge",
         _TP_IN_PLACE_MERGES = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit"),
     )["_refuse_tp_in_place_merge"]
 
@@ -439,6 +512,79 @@ def test_a_respelled_merged_4bit_still_hits_the_accuracy_guard(monkeypatch, tmp_
     with pytest.raises(RuntimeError, match = "merged_4bit_forced"):
         generic_save(model, None, save_directory = str(tmp_path), save_method = spelling)
     assert calls["merge"] == []
+
+
+@pytest.mark.parametrize(
+    "save_method",
+    ["merged_16bti", "merged_4bit_gguf", "lora_16bit", "4bit", "", None, 17],
+)
+def test_an_unknown_save_method_is_refused_before_the_full_save(monkeypatch, tmp_path, save_method):
+    """A full fine-tune wrote itself for ANY save_method, however mistyped."""
+    model = _FullModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    with pytest.raises(RuntimeError, match = "must select"):
+        generic_save(model, None, save_directory = str(tmp_path), save_method = save_method)
+    assert model.saved == []
+    assert calls["merge"] == [] and calls["adapter"] == []
+
+
+@pytest.mark.parametrize(
+    "save_method",
+    ["merged_16bti", "merged_4bit_gguf", "fp8", "nvfp4", "int8", None],
+)
+def test_an_unknown_save_method_never_reaches_the_merge(monkeypatch, tmp_path, save_method):
+    """The zoo merge wrote 16-bit weights without config.json for a method it did not know."""
+    model = _PeftModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    with pytest.raises(RuntimeError, match = "must select"):
+        generic_save(model, None, save_directory = str(tmp_path), save_method = save_method)
+    assert calls["merge"] == [] and calls["adapter"] == [] and calls["prewarm"] == []
+
+
+@pytest.mark.parametrize("model_kind", ["peft", "full"])
+def test_an_unknown_save_method_is_refused_before_a_hub_push(monkeypatch, tmp_path, model_kind):
+    """The revision route creates the Hub repo first, so the check must run before it."""
+    model = _PeftModel() if model_kind == "peft" else _FullModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    with pytest.raises(RuntimeError, match = "must select"):
+        generic_save(
+            model,
+            None,
+            save_directory = "owner/model",
+            push_to_hub = True,
+            create_pr = True,
+            save_method = "merged_16bti",
+        )
+    assert calls.get("revision", []) == []
+    assert calls["merge"] == [] and calls["adapter"] == []
+
+
+@pytest.mark.parametrize(
+    "save_method",
+    ["lora", "merged_16bit", "merged_4bit_forced", "forced_merged_4bit", "mxfp4"],
+)
+def test_every_real_save_method_still_writes_a_full_finetune(monkeypatch, tmp_path, save_method):
+    model = _FullModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    generic_save(model, None, save_directory = str(tmp_path), save_method = save_method)
+    assert calls["merge"] == [] and calls["adapter"] == []
+    assert len(model.saved) == 1
+
+
+def test_unsloth_save_model_accepts_the_zoo_spelling_of_a_forced_4bit_merge(monkeypatch, tmp_path):
+    """unsloth_zoo's own error tells users to pass `forced_merged_4bit`."""
+    namespace, _ = _adapter_save_environment(monkeypatch)
+    model = _AdapterModel(lambda sink: (lambda **kwargs: sink.append(kwargs)))
+    namespace["unsloth_save_model"](model, None, str(tmp_path), save_method = "forced_merged_4bit")
+    assert len(model.saved) == 1
+
+
+def test_unsloth_save_model_still_rejects_an_unknown_save_method(monkeypatch, tmp_path):
+    namespace, _ = _adapter_save_environment(monkeypatch)
+    model = _AdapterModel(lambda sink: (lambda **kwargs: sink.append(kwargs)))
+    with pytest.raises(RuntimeError, match = "must select one of 3 options"):
+        namespace["unsloth_save_model"](model, None, str(tmp_path), save_method = "forced_4bit")
+    assert model.saved == []
 
 
 @pytest.mark.parametrize(
@@ -518,6 +664,7 @@ def _adapter_save_environment(monkeypatch):
         PreTrainedTokenizerBase = type("Tokenizer", (), {}),
         ProcessorMixin = type("Processor", (), {}),
         patch_saving_functions = lambda tokenizer: tokenizer,
+        _defer_to_main_process = lambda is_main_process, model = None: not is_main_process,
         get_token = lambda: "fixture-token",
         upload_to_huggingface = upload_to_huggingface,
         logger = types.SimpleNamespace(warning_once = lambda *a, **k: None),
@@ -965,3 +1112,100 @@ def test_every_helper_the_generic_save_calls_is_loaded_or_stubbed():
     assert (
         covered <= called
     ), f"{sorted(covered - called)} are no longer called by unsloth_generic_save"
+
+
+class GemmaFixedRotaryEmbedding:
+    """Named as unsloth's Gemma rotary: `scaling_factor` is set only when it applied linear RoPE."""
+
+
+def _gemma_model(scaling_factor = None):
+    model = _PeftModel()
+    model.config = types.SimpleNamespace(
+        _name_or_path = "base/gemma",
+        model_type = "gemma",
+        # What the loader leaves on the in-memory config past the native window.
+        rope_scaling = {"type": "linear", "factor": 2.0},
+        max_position_embeddings = 16384,
+    )
+    rotary = GemmaFixedRotaryEmbedding()
+    if scaling_factor is not None:
+        rotary.scaling_factor = scaling_factor
+    model.modules = lambda: iter([model, rotary])
+    return model
+
+
+# config.json as a zoo export without the RoPE carry-over writes it: the base checkpoint's.
+_BASE_GEMMA_CONFIGS = {
+    "transformers4": {"model_type": "gemma", "max_position_embeddings": 8192, "rope_scaling": None},
+    "transformers5": {
+        "model_type": "gemma",
+        "max_position_embeddings": 8192,
+        "rope_parameters": {"rope_type": "default", "rope_theta": 10000.0},
+    },
+}
+
+
+def _merge_writing(base_config, carries_rope = False):
+    zoo = sys.modules["unsloth_zoo.saving_utils"]
+    if carries_rope:
+        zoo._carry_over_rope_scaling = lambda *args: []
+
+    def merge(*args, **kwargs):
+        with open(os.path.join(kwargs["save_directory"], "config.json"), "w") as f:
+            json.dump(base_config, f)
+
+    zoo.merge_and_overwrite_lora = merge
+
+
+@pytest.mark.parametrize("layout", sorted(_BASE_GEMMA_CONFIGS))
+def test_a_merged_gemma_keeps_the_linear_rope_it_trained_with_on_an_older_zoo(
+    monkeypatch, tmp_path, layout
+):
+    """Gemma / Gemma 2 apply the loader's linear RoPE past the native window; an unsloth_zoo
+    without the RoPE carry-over writes the base config, so the merge reloaded unscaled."""
+    model = _gemma_model(scaling_factor = 2.0)
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    _merge_writing(_BASE_GEMMA_CONFIGS[layout])
+    generic_save(model, None, save_directory = str(tmp_path), save_method = "merged_16bit")
+    saved = json.loads((tmp_path / "config.json").read_text())
+    key = "rope_parameters" if layout == "transformers5" else "rope_scaling"
+    assert saved[key]["rope_type"] == "linear" and saved[key]["factor"] == 2.0
+    assert saved["max_position_embeddings"] == 16384
+    if layout == "transformers5":
+        # transformers 5 reads rope_theta from rope_parameters.
+        assert saved[key]["rope_theta"] == 10000.0
+
+
+@pytest.mark.parametrize(
+    "scaling_factor, carries_rope", [(None, False), (2.0, True)], ids = ["unscaled", "zoo_carries"]
+)
+def test_a_merged_gemma_config_is_left_alone_when_nothing_was_dropped(
+    monkeypatch, tmp_path, scaling_factor, carries_rope
+):
+    """An unscaled rotary trained unscaled, and a newer zoo writes the trained RoPE itself."""
+    model = _gemma_model(scaling_factor = scaling_factor)
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    _merge_writing(_BASE_GEMMA_CONFIGS["transformers5"], carries_rope = carries_rope)
+    generic_save(model, None, save_directory = str(tmp_path), save_method = "merged_16bit")
+    assert (
+        json.loads((tmp_path / "config.json").read_text()) == _BASE_GEMMA_CONFIGS["transformers5"]
+    )
+
+
+def test_a_merged_upload_of_a_scaled_gemma_on_an_older_zoo_is_refused_before_merging(
+    monkeypatch, tmp_path
+):
+    """The streamed upload leaves no local config.json to fix, so refuse rather than upload a
+    model whose RoPE differs from the trained one."""
+    model = _gemma_model(scaling_factor = 2.0)
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    with pytest.raises(RuntimeError, match = "linear RoPE scaling"):
+        generic_save(
+            model,
+            None,
+            save_directory = "owner/model",
+            save_method = "merged_16bit",
+            push_to_hub = True,
+            token = "fixture-token",
+        )
+    assert calls["merge"] == [] and calls["prewarm"] == []

@@ -41,9 +41,11 @@ from .llama import (
     resolve_logit_transforms,
     fake_quantize_lm_head_inputs,
     lm_head_needs_forward,
+    output_head_not_fusable,
     _cache_as_legacy_tuple,
     _cached_prefill_defaults,
     _run_backbone,
+    _scoring_output_hidden_states,
     logits_to_keep_tensor,
     slice_hidden_to_keep,
     unsloth_fsdp_unshard,
@@ -305,7 +307,7 @@ def MistralForCausalLM_fast_forward(
     output_hidden_states = (
         output_hidden_states
         if output_hidden_states is not None
-        else self.config.output_hidden_states
+        else _scoring_output_hidden_states(self.config)
     )
     return_dict = return_dict if return_dict is not None else config_return_dict(self.config)
 
@@ -357,11 +359,17 @@ def MistralForCausalLM_fast_forward(
     keep = logits_to_keep_tensor(num_logits_to_keep, logits_to_keep)
     if keep is not None and (labels is not None or shift_labels is not None):
         keep = None
-    # Merge spellings first so the decode last-token slice hits the normal path; no int max() on tensors
-    if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
+    # Merge spellings first so the decode last-token slice hits the normal path; no int max() on tensors.
+    # Labels span the whole sequence, so a suffix slice would misalign the loss.
+    if (
+        isinstance(num_logits_to_keep, torch.Tensor)
+        or isinstance(logits_to_keep, torch.Tensor)
+        or labels is not None
+        or shift_labels is not None
+    ):
         num_logits_to_keep = 0
     else:
-        num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
+        num_logits_to_keep = max(num_logits_to_keep or 0, logits_to_keep or 0)
 
     # In GRPO mode, return raw hidden states.
     if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
@@ -372,14 +380,20 @@ def MistralForCausalLM_fast_forward(
         return CausalLMOutputWithPast(
             loss = None,
             logits = hidden_states,
-            past_key_values = outputs.past_key_values,
-            hidden_states = outputs.hidden_states,
-            attentions = outputs.attentions,
+            # return_dict = False hands back a tuple: the logits slot is all this branch promises.
+            past_key_values = getattr(outputs, "past_key_values", None),
+            hidden_states = getattr(outputs, "hidden_states", None),
+            attentions = getattr(outputs, "attentions", None),
         )
 
     if keep is not None:
         logits = self.lm_head(slice_hidden_to_keep(hidden_states, keep).to(lm_head.dtype))
-    elif bsz == 1 and q_len == 1 and type(self.lm_head) is torch.nn.Linear:
+    elif (
+        bsz == 1
+        and q_len == 1
+        and type(self.lm_head) is torch.nn.Linear
+        and self.lm_head.bias is None
+    ):
         logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
         logits = logits.unsqueeze(0).unsqueeze(0)
     elif num_logits_to_keep != 0:
@@ -393,7 +407,13 @@ def MistralForCausalLM_fast_forward(
             # unsloth_fused_ce_loss calculates the best chunk size to reduce VRAM usage.
             RETURN_LOGITS = False
 
-        if not RETURN_LOGITS and (labels is not None or shift_labels is not None):
+        # A head bias or a live adapter on the head (the fused CE reads lm_head.weight alone) takes the
+        # logits branch. Checked only with labels, so inference never pays for it.
+        if (
+            not RETURN_LOGITS
+            and (labels is not None or shift_labels is not None)
+            and not output_head_not_fusable(self.lm_head)
+        ):
             n_items = kwargs.get("num_items_in_batch", None)
             if n_items is None:
                 n_items = kwargs.get("n_items", None)
@@ -484,6 +504,13 @@ def MistralForCausalLM_fast_forward(
         hidden_states = outputs.hidden_states,
         attentions = outputs.attentions,
     )
+
+
+# Honours UNSLOTH_RETURN_HIDDEN_STATES itself, so GRPO's hidden-state fallback wrapper must not wrap it. The marker
+# is the function itself, so a replacement that copied it with functools.wraps does not inherit the capability.
+MistralForCausalLM_fast_forward.__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__ = (
+    MistralForCausalLM_fast_forward
+)
 
 
 # Transformers had to update for Mistral Nemo 12b since Attention is (5120, 4096) now.

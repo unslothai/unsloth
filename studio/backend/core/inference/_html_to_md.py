@@ -2081,7 +2081,7 @@ class _MarkdownRenderer(HTMLParser):
             self._link_header_chars = 0
             self._link_open_state = self._link_output_state()
 
-        elif tag in _INLINE_EMPHASIS:
+        elif tag in _INLINE_EMPHASIS and not self._in_pre:
             self._emit(_INLINE_EMPHASIS[tag])
 
         elif tag == "br":
@@ -2268,7 +2268,7 @@ class _MarkdownRenderer(HTMLParser):
                 self._header_stack[-1].link_chars += self._link_header_chars
             self._finish_link()
 
-        elif tag in _INLINE_EMPHASIS:
+        elif tag in _INLINE_EMPHASIS and not self._in_pre:
             self._emit(_INLINE_EMPHASIS[tag])
 
         elif tag == "sup":

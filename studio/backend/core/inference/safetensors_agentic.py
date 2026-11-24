@@ -21,7 +21,7 @@ from typing import Callable, Generator, Optional
 
 from loggers import get_logger
 
-from core.inference.llama_cpp import _has_answer_artifact
+from core.inference.llama_cpp import _FINAL_ANSWER_TOOL_LIMIT_MESSAGE, _has_answer_artifact
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _balanced_brace_end,
@@ -1320,6 +1320,19 @@ def run_safetensors_tool_loop(
             return
 
         if final_attempt_done:
+            # Only another call (reasoning aside), already without tools: an empty bubble is not actionable.
+            if tool_calls and not _reprompt_intent_text(
+                content_text, reasoning_prefilled = reasoning_prefilled, visible_only = True
+            ):
+                # Extend the shown snapshot, never restart it: a prefilled turn needs its </think> in the same snapshot.
+                display = _strip_streaming_display(cumulative_display)
+                sep = "\n\n" if display.strip() else ""
+                yield {
+                    "type": "content",
+                    "text": f"{display}{sep}{_FINAL_ANSWER_TOOL_LIMIT_MESSAGE}",
+                }
+                yield {"type": "status", "text": ""}
+                return
             if content_text:
                 yield {"type": "content", "text": content_text}
             yield {"type": "status", "text": ""}

@@ -142,6 +142,9 @@ export async function syncExportedRepositoryToBackend(
     {
       pruneMissing: options.pruneMissing,
       deletedMessageIds: options.deletedMessageIds,
+      echo:
+        options.pruneMissing === true ||
+        (options.deletedMessageIds?.length ?? 0) > 0,
     },
   );
 }

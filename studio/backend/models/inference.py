@@ -26,6 +26,7 @@ from pydantic import (
     model_validator,
 )
 
+from core.inference.audio_cpp_models import FILE_OPTIONS
 from core.inference.audio_workflows import status_audio_workflows
 from core.inference.diffusion_conditioning import MAX_REQUEST_SIDE
 from core.inference.llama_server_args import (
@@ -2416,9 +2417,10 @@ class LoadProgressResponse(BaseModel):
     phase: Optional[str] = Field(
         None,
         description = (
-            "Load phase: 'mmap' (weights paging into RAM via mmap), "
-            "'ready' (llama-server reported healthy), or null when no "
-            "load is in flight."
+            "Load phase: 'fit' (llama-server's --fit is searching for a layer "
+            "placement and reads no weights yet), 'mmap' (weights paging into "
+            "RAM via mmap), 'ready' (llama-server reported healthy), or null "
+            "when no load is in flight."
         ),
     )
     bytes_loaded: int = Field(
@@ -3515,7 +3517,7 @@ class ChatCompletionRequest(BaseModel):
             "summarise the oldest turns, keeps the recent ones verbatim and "
             "reuses the summary on later turns of a saved thread, so the prompt "
             "and the reply fit within it before forwarding. If the summary call "
-            "fails the oldest turns are dropped instead. "
+            "fails the oldest turns are evicted instead, archived for recall on a saved thread. "
             "Per-provider floors are enforced in the corresponding stream helpers."
         ),
     )
@@ -3526,6 +3528,16 @@ class ChatCompletionRequest(BaseModel):
             'after" setting rather than the default. Anthropic and OpenAI server-side '
             "compaction then use it as given instead of capping it at 200k: it is still "
             "raised to the provider's floor and never exceeds context_window."
+        ),
+    )
+    compaction_percent: Optional[int] = Field(
+        None,
+        ge = 10,
+        le = 100,
+        description = (
+            "[x-unsloth] The connection's \"Auto-compact at\" share of the model's window, in "
+            "percent. Where Unsloth reads the window from a self-hosted server (no "
+            "compaction_threshold, or Ollama's loaded num_ctx), it replaces the 75% default."
         ),
     )
     compaction_mode: Optional[Literal["summary", "rolling", "checkpoint"]] = Field(
@@ -5095,6 +5107,7 @@ class DiffusionLoadRequest(BaseModel):
             "xformers",
             "aiter",
             "unsloth_int8",
+            "flash_sdpa",
         ]
     ] = Field(
         None,
@@ -5104,8 +5117,11 @@ class DiffusionLoadRequest(BaseModel):
         "speed=off). native (alias sdpa) forces default SDPA; cudnn/flash/flash3/flash4 are exact "
         "(kernel/arch-gated); sage is INT8 attention (a small quality cost, consumer "
         "friendly); unsloth_int8 is Studio's own INT8 attention kernel on the families with "
-        "strided attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
-        "unavailable kernel falls back to the default.",
+        "strided attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm (aiter needs "
+        "diffusers' local AITER backend, gone in 0.41+; without it ROCm runs the auto pick); flash_sdpa "
+        "pins torch SDPA's flash kernel. diffusers dispatcher names (_native_flash, _native_cudnn, _flash_3_hub, "
+        "flash_4_hub, sage_hub) are accepted as the matching alias. An unavailable kernel falls back to the auto "
+        "pick (native SDPA when speed=off).",
     )
     int8_attention: Optional[Literal["auto", "on", "off"]] = Field(
         None,
@@ -5158,7 +5174,8 @@ class DiffusionLoadRequest(BaseModel):
     @classmethod
     def _normalize_attention_backend(cls, value):
         # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
-        return value.strip().lower() if isinstance(value, str) else value
+        from core.inference.diffusion_attention import canonical_attention_request
+        return canonical_attention_request(value)
 
     @field_validator("text_encoder_file")
     @classmethod
@@ -5710,6 +5727,15 @@ class DiffusionGenerateRequest(BaseModel):
         description = "How far toward the variation seed's noise: 0 = off, 1 = the variation seed alone. "
         "With a batch, every image keeps the seed and image i uses variation_seed + i.",
     )
+    cfg_interval_end: Optional[float] = Field(
+        None,
+        gt = 0.0,
+        le = 1.0,
+        description = "Fast CFG (lossy, off by default): fraction of the denoising steps after which "
+        "the unconditional branch is skipped, e.g. 0.8 runs CFG for the first 80% of the steps and the "
+        "conditional branch alone for the rest (about 10% faster at 50 steps on FLUX.3 Klein base). Only "
+        "on models whose status has supports_cfg_interval; omitted or 1 keeps full CFG.",
+    )
     shift: Optional[float] = Field(
         None,
         gt = 0.0,
@@ -6030,6 +6056,9 @@ class GalleryImage(BaseModel):
     )
     variation_strength: Optional[float] = Field(
         None, description = "Variation strength; null = no variation"
+    )
+    cfg_interval_end: Optional[float] = Field(
+        None, description = "Fast CFG step fraction the image used; null = full CFG"
     )
     shift: Optional[float] = Field(
         None, description = "Requested static flow shift; null = the model's"
@@ -6666,6 +6695,10 @@ class DiffusionStatusResponse(BaseModel):
         "{min, max, default, recommended}, variation_seed, vary_strength, prediction_type}. Null when "
         "the loaded model has none of them (every non-SDXL family, the native and MLX engines).",
     )
+    supports_cfg_interval: bool = Field(
+        False,
+        description = "Whether generate accepts cfg_interval_end (Fast CFG) for the loaded model.",
+    )
     shift_control: Optional[Dict[str, Any]] = Field(
         None,
         description = "The Shift control the loaded flow-matching model takes, or null to hide it: "
@@ -7005,8 +7038,8 @@ _AUDIO_CLIP_OPTION_ENDINGS = frozenset({"audio", "wav", "ref", "video", "image",
 
 def _names_a_file(name: str, value: Any) -> bool:
     words = re.split(r"[^a-z0-9]+", name.lower())
-    # Vevo2's target_voice is a file, but neither of its words gives that away.
-    if name.lower() == "target_voice" or any(word in _AUDIO_FILE_OPTION_WORDS for word in words):
+    # Vevo2's target_voice, VibeVoice's voice_samples: files, but no word of theirs gives that away.
+    if name.lower() in FILE_OPTIONS or any(word in _AUDIO_FILE_OPTION_WORDS for word in words):
         return True
     return isinstance(value, str) and words[-1] in _AUDIO_CLIP_OPTION_ENDINGS
 
@@ -7714,6 +7747,7 @@ class VideoLoadRequest(BaseModel):
             "xformers",
             "aiter",
             "unsloth_int8",
+            "flash_sdpa",
         ]
     ] = Field(
         None,
@@ -7722,8 +7756,11 @@ class VideoLoadRequest(BaseModel):
         "is active; native SDPA elsewhere and when speed=off). native (alias sdpa) forces "
         "default SDPA; cudnn/flash/flash3/flash4 are exact (kernel/arch-gated); sage is INT8 "
         "attention; unsloth_int8 is Studio's own INT8 attention kernel on the families with strided "
-        "attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
-        "kernel falls back to the default.",
+        "attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm (aiter needs diffusers' "
+        "local AITER backend, gone in 0.41+; without it ROCm runs the auto pick); flash_sdpa pins torch "
+        "SDPA's flash kernel. diffusers dispatcher names (_native_flash, _native_cudnn, _flash_3_hub, "
+        "flash_4_hub, sage_hub) are accepted as the matching alias. An unavailable kernel falls back to the "
+        "auto pick (native SDPA when speed=off).",
     )
     int8_attention: Optional[Literal["auto", "on", "off"]] = Field(
         None,
@@ -7831,7 +7868,8 @@ class VideoLoadRequest(BaseModel):
     @classmethod
     def _normalize_attention_backend(cls, value):
         # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
-        return value.strip().lower() if isinstance(value, str) else value
+        from core.inference.diffusion_attention import canonical_attention_request
+        return canonical_attention_request(value)
 
 
 class VideoReferenceVideo(BaseModel):
@@ -7880,6 +7918,13 @@ class VideoGenerateRequest(BaseModel):
         None,
         description = "Stream a small live preview of the first frame while the clip denoises "
         "(generate-progress 'preview'). Null = the server default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).",
+    )
+    draft_decode: Optional[bool] = Field(
+        None,
+        description = "Wan families only: decode the finished latent with the tiny Wan VAE instead of the full one "
+        "(much faster and lighter, visibly softer; for drafts on CPU, Apple Silicon or small GPUs). Falls back to the "
+        "full decode when the tiny decoder is unavailable. Null = the server default (off unless "
+        "UNSLOTH_VIDEO_DRAFT_DECODE=1).",
     )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds
     # stay a COARSE family-agnostic outer guard: the enforced rule is the LOADED family's own

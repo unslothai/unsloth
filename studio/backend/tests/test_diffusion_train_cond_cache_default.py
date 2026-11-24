@@ -310,8 +310,7 @@ def _h3_cfg(**kw):
 
 
 class _H3Fakes:
-    """Counts conditioner loads and encodes; every encode returns fresh random tensors, so a cache hit is the only
-    way two runs can hand back equal tensors."""
+    """Counts loads and encodes; random encodes differ, so only a cache hit can match."""
 
     def __init__(self, monkeypatch, num_audio):
         from core.training import diffusion_h3_trainer as h3
@@ -326,7 +325,7 @@ class _H3Fakes:
             def to(self, _device):
                 return self
 
-        def load(cfg, device):
+        def load(cfg, device, **_k):
             self.loads += 1
             return SimpleNamespace(
                 text_encoder = _Placed(), processor = None, vae = _Placed(), audio_vae = _Placed()
@@ -508,9 +507,9 @@ def test_h3_an_unresolved_first_run_is_found_by_the_resolved_second_run(monkeypa
     monkeypatch.setattr(extras, "source_revision", lambda *_a: state["rev"])
     load = fakes.h3._load_conditioners
 
-    def downloading_load(cfg, device):
+    def downloading_load(cfg, device, **kw):
         state["rev"] = "rev-abc"  # the fetch writes refs/main
-        return load(cfg, device)
+        return load(cfg, device, **kw)
 
     monkeypatch.setattr(fakes.h3, "_load_conditioners", downloading_load)
     cfg = _h3_cfg()

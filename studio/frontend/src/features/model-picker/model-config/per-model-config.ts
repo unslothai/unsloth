@@ -174,6 +174,7 @@ export const MAX_SEQ_LENGTH_STEP = 128;
 export const DEFAULT_MAX_SEQ_LENGTH = 4096;
 export const CONTEXT_LENGTH_MIN = 128;
 
+// Fallback for a backend that does not send mlx_inference; one that does is answered by it.
 const NO_MLX_REASONS = new Set([
   "mlx_unavailable",
   "no_torch",
@@ -187,12 +188,11 @@ export function isServedByMlx(
   isGguf: boolean,
   deviceType: string | null | undefined,
   chatOnlyReason?: string | null,
+  mlxInference?: boolean | null,
 ): boolean {
-  return (
-    !isGguf &&
-    deviceType === "mac" &&
-    !NO_MLX_REASONS.has(chatOnlyReason ?? "")
-  );
+  if (isGguf || deviceType !== "mac") return false;
+  if (typeof mlxInference === "boolean") return mlxInference;
+  return !NO_MLX_REASONS.has(chatOnlyReason ?? "");
 }
 
 /** Native-audio checkpoints load on Apple Silicon without MLX; `loadedIsMlx` null means not loaded. */
@@ -201,9 +201,11 @@ export function residentIsServedByMlx(
   deviceType: string | null | undefined,
   chatOnlyReason: string | null | undefined,
   loadedIsMlx: boolean | null | undefined,
+  mlxInference?: boolean | null,
 ): boolean {
   return (
-    isServedByMlx(isGguf, deviceType, chatOnlyReason) && loadedIsMlx !== false
+    isServedByMlx(isGguf, deviceType, chatOnlyReason, mlxInference) &&
+    loadedIsMlx !== false
   );
 }
 
@@ -211,11 +213,12 @@ export function presetLoadSettingNames(
   isGguf: boolean,
   deviceType: string | null | undefined,
   chatOnlyReason?: string | null,
+  mlxInference?: boolean | null,
 ): string {
   if (isGguf) {
     return "context window, KV cache dtype, speculative decoding, GPU layers";
   }
-  return isServedByMlx(isGguf, deviceType, chatOnlyReason)
+  return isServedByMlx(isGguf, deviceType, chatOnlyReason, mlxInference)
     ? "max seq length, KV cache dtype"
     : "max seq length";
 }

@@ -1938,9 +1938,8 @@ def test_int8_attention_engages_on_the_blocks_only_and_comes_off(h3i, release, m
 
 
 def test_an_explicit_attention_pick_beats_the_checkpoint_and_its_races(h3i, release, monkeypatch):
-    """The user's "sage" pins SageAttention on the DiT blocks whatever the checkpoint declares, with no race against
-    native and no INT8 race (INT8 only when its control is On); any other explicit pick keeps the checkpoint's
-    SageAttention off. The status reads the blocks' routes off the modules."""
+    """An explicit "sage" pick pins SageAttention on the DiT blocks whatever the checkpoint
+    declares, with no native or INT8 race (INT8 only when its control is On); others keep it off."""
     from core.inference import diffusion_attention as da
 
     root, _ref, te = release

@@ -127,8 +127,10 @@ jobs:
       # only when the tag exists there: unsloth's v* tags are Studio releases
       - name: Resolve unsloth-zoo ref
         id: zoo_ref
+        env:
+          INPUT_ZOO_REF: ${{ github.event.inputs.unsloth_zoo_ref }}
         run: |
-          REF="${{ github.event.inputs.unsloth_zoo_ref }}"
+          REF="$INPUT_ZOO_REF"
           if [ -z "$REF" ] && [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
               # Status 2 means no matching ref; any other non-zero is a transport failure, not a fallback.
               _rc=0

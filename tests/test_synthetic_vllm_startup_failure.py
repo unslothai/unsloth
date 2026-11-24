@@ -288,8 +288,7 @@ def test_no_single_wait_outruns_the_callers_timeout():
 
 
 def test_a_short_timeout_returns_promptly():
-    """The wall clock, not just the arithmetic. An uncapped lap waits the whole
-    poll interval, so a long interval keeps the bound far from runner jitter."""
+    """Checks the wall clock, not just arithmetic: an uncapped lap waits a whole poll interval."""
     kit = _kit(_FakeCapture(ready = False), _FakeCapture(), _FakeProcess())
     started = time.monotonic()
     with pytest.raises(RuntimeError):

@@ -680,6 +680,18 @@ def test_ods_reads_typed_values_without_text(tmp_path):
         (0.25, "0%", "25%"),
         (0.125, "0.0%", "12.5%"),
         (123, "000000", "000123"),
+        (12345678, "000-00-0000", "012-34-5678"),
+        (21341234, "00000-0000", "02134-1234"),
+        (2134123.6, "00000-0000", "00213-4124"),
+        (2125551234, "(000) 000-0000", "(212) 555-1234"),
+        (5551234, "###-####", "555-1234"),
+        (12, "###-####", "-12"),
+        (12, "(###) ###-####", "() -12"),
+        (12, '###"left"###"right"###', "leftright12"),
+        (1, "0-##", "1"),
+        (5551234, "(000) ###-####", "5551234"),
+        (0.5, "# ?/?", "0.5"),
+        (1234.5, "0-0.00", "1234.5"),
         (-1234.5, "#,##0.00", "-1,234.50"),
         (-1234.5, "#,##0.00;(#,##0.00)", "(1,234.50)"),
         (0, "0;-0;;@", ""),
@@ -974,6 +986,44 @@ def test_mhtml_reads_the_page_and_skips_resources(tmp_path):
     text = _text(build_mhtml(tmp_path / "page.mhtml"))
     assert "Zebramarker on the page." in text
     assert "PNG" not in text
+
+
+def test_mhtml_saved_by_chrome_keeps_non_ascii_text(tmp_path):
+    path = tmp_path / "page.mhtml"
+    path.write_bytes(
+        b"From: <Saved by Blink>\r\n"
+        b"Subject: Cafe\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/related;\r\n\ttype="text/html";\r\n\tboundary="----MultipartBoundary--x----"\r\n'
+        b"\r\n------MultipartBoundary--x----\r\n"
+        b"Content-Type: text/html\r\n"
+        b"Content-ID: <frame-1@mhtml.blink>\r\n"
+        b"Content-Transfer-Encoding: quoted-printable\r\n\r\n"
+        b"<html><body><p>Caf=C3=A9 =E6=9D=B1=E4=BA=AC =E2=80=9Cquoted=E2=80=9D</p></body></html>\r\n"
+        b"------MultipartBoundary--x------\r\n"
+    )
+    assert "Café 東京 “quoted”" in _text(path)
+
+
+@pytest.mark.parametrize(
+    "content_type, body, expected",
+    [
+        (b"text/plain", "Café 東京".encode(), "Café 東京"),
+        (b"text/plain", "Café résumé naïve".encode("cp1252"), "Café résumé naïve"),
+        (b"text/plain; charset=x-bogus", "Café 東京".encode(), "Café 東京"),
+        (b"text/html; charset=x-bogus", "<p>Café 東京</p>".encode(), "Café 東京"),
+    ],
+)
+def test_eml_without_a_usable_charset_sniffs_the_bytes(tmp_path, content_type, body, expected):
+    path = tmp_path / "mail.eml"
+    path.write_bytes(
+        b"Subject: Hi\r\nMIME-Version: 1.0\r\nContent-Type: "
+        + content_type
+        + b"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+        + body
+        + b"\r\n"
+    )
+    assert expected in _text(path)
 
 
 def test_xhtml_reads_visible_text(tmp_path):
