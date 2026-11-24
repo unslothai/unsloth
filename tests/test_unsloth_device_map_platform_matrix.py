@@ -4,6 +4,7 @@
 """Across hosts and accelerators, the sentinel never escapes and other device maps are untouched."""
 
 import ast
+import functools
 import itertools
 import os
 import sys
@@ -14,6 +15,39 @@ import pytest
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOADER_UTILS = os.path.join(HERE, "unsloth", "models", "loader_utils.py")
 _SRC = open(LOADER_UTILS, encoding = "utf-8").read()
+
+
+@functools.cache
+def _segments(select):
+    """Code for the top-level nodes of _SRC that select(node) picks, in source order.
+
+    _SRC is read once at import, so the parse and the compile of each segment are done once;
+    every caller still execs them into its own fresh namespace, exactly as exec(<segment>, ns)
+    did (same "<string>" filename, same compile flags)."""
+    return tuple(
+        compile(ast.get_source_segment(_SRC, node), "<string>", "exec")
+        for node in ast.parse(_SRC).body
+        if select(node)
+    )
+
+
+def _is_resolver_node(node):
+    if isinstance(node, ast.FunctionDef):
+        return node.name in ("requested_device_map", "resolve_unsloth_device_map", "_as_bytes")
+    if isinstance(node, ast.ClassDef):
+        return node.name == "_DefaultDeviceMap"
+    return isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in (
+        "UNSLOTH_DEVICE_MAP",
+        "UNSLOTH_BALANCED_DEVICE_MAP",
+        "_PLANNED_DEVICE_MAPS",
+        "DEFAULT_DEVICE_MAP",
+        "_SIZE_UNITS",
+    )
+
+
+def _is_quantization_kwargs_node(node):
+    return isinstance(node, ast.FunctionDef) and node.name == "planner_quantization_kwargs"
+
 
 # (label, sys.platform, os.name, /proc/version marker for WSL)
 HOSTS = [
@@ -120,23 +154,8 @@ def _build(
         "DEVICE_TYPE_TORCH": device_type,
         "is_distributed": lambda: distributed,
     }
-    for node in ast.parse(_SRC).body:
-        if isinstance(node, ast.FunctionDef) and node.name in (
-            "requested_device_map",
-            "resolve_unsloth_device_map",
-            "_as_bytes",
-        ):
-            exec(ast.get_source_segment(_SRC, node), ns)
-        elif isinstance(node, ast.ClassDef) and node.name == "_DefaultDeviceMap":
-            exec(ast.get_source_segment(_SRC, node), ns)
-        elif isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in (
-            "UNSLOTH_DEVICE_MAP",
-            "UNSLOTH_BALANCED_DEVICE_MAP",
-            "_PLANNED_DEVICE_MAPS",
-            "DEFAULT_DEVICE_MAP",
-            "_SIZE_UNITS",
-        ):
-            exec(ast.get_source_segment(_SRC, node), ns)
+    for code in _segments(_is_resolver_node):
+        exec(code, ns)
 
     planner_module = types.ModuleType("unsloth_zoo.device_map_planner")
     if planner_available:
@@ -382,9 +401,8 @@ def test_a_device_count_that_raises_does_not_fail_the_load(host, monkeypatch):
 
 def _planner_quantization_kwargs():
     ns = {"os": os}
-    for node in ast.parse(_SRC).body:
-        if isinstance(node, ast.FunctionDef) and node.name == "planner_quantization_kwargs":
-            exec(ast.get_source_segment(_SRC, node), ns)
+    for code in _segments(_is_quantization_kwargs_node):
+        exec(code, ns)
     return ns["planner_quantization_kwargs"]
 
 
