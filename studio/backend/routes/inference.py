@@ -403,12 +403,7 @@ def _friendly_error(exc: Exception) -> str:
         return exc.friendly
     client_error = _LLAMA_CLIENT_ERROR_RE.match(msg)
     if client_error:
-        body = client_error.group(1)
-        try:
-            body = error_message_from_chunk(json.loads(body)) or body
-        except ValueError:
-            pass
-        return _friendly_upstream_error(body[:500])
+        return _friendly_upstream_error(client_error.group(1))
     # Other 5xx stay redacted; media/KV failures are fixed strings that name no path.
     server_error = _LLAMA_SERVER_ERROR_RE.match(msg)
     if server_error:
@@ -435,10 +430,13 @@ def _refused_parameter(value) -> Optional[str]:
     return param if getattr(value, "public", False) and param else None
 
 
-def _friendly_upstream_error(text: str) -> str:
-    """Rewrite a grammar compile failure from llama-server into advice; other errors keep their own text."""
-    lowered = text.lower()
-    if "failed to parse grammar" in lowered:
+def _friendly_upstream_error(text: str, extracted: bool = False) -> str:
+    """llama-server's message from a JSON error body, else the raw text, cut to 500; an ``extracted`` message is used as is. Grammar compile failures become advice."""
+    try:
+        text = text if extracted else (error_message_from_chunk(json.loads(text)) or text)
+    except ValueError:
+        pass
+    if "failed to parse grammar" in text.lower():
         return (
             "The model couldn't compile a grammar for this request. A top-level grammar or "
             "json_schema is forwarded as sent, so it must compile in llama-server as written. "
@@ -447,7 +445,7 @@ def _friendly_upstream_error(text: str) -> str:
             "which does not depend on the model or quant. Update Unsloth, which drops the "
             "constraints known to break it, and report the schemas if it still fails."
         )
-    return f"llama-server error: {text}"
+    return f"llama-server error: {text if extracted else text[:500]}"
 
 
 def _oversize_counts(text: str):
@@ -460,7 +458,7 @@ def _oversize_counts(text: str):
 
 def _anthropic_upstream_error(text: str, counts_source: Optional[str] = None) -> str:
     """`text` is what the client is told; `counts_source` is the fuller body it came
-    from, used only to recover token counts the message itself does not spell out."""
+    from, used only to recover token counts, and marks `text` as an extracted message, shown whole."""
     # KV starvation means retry, not shorten the conversation.
     if is_kv_starvation(text):
         return KV_STARVATION_MESSAGE
@@ -478,7 +476,7 @@ def _anthropic_upstream_error(text: str, counts_source: Optional[str] = None) ->
             "Prompt is too long. Try increasing the Context Length in Model settings, "
             "or shorten the conversation."
         )
-    return _friendly_upstream_error(text)
+    return _friendly_upstream_error(text, extracted = counts_source is not None)
 
 
 def _clamp_finish_reason(value) -> str:
@@ -1006,7 +1004,7 @@ def _openai_passthrough_error(status_code, text) -> "HTTPException":
         )
     return HTTPException(
         status_code = status_code,
-        detail = _friendly_upstream_error(text[:500]),
+        detail = _friendly_upstream_error(text),
     )
 
 
@@ -43999,7 +43997,7 @@ async def _responses_stream(
                                 "output": [],
                                 "error": {
                                     "code": _responses_error_code(RuntimeError(err_text)),
-                                    "message": _friendly_upstream_error(err_text[:500]),
+                                    "message": _friendly_upstream_error(err_text),
                                 },
                             },
                         },
@@ -49090,7 +49088,6 @@ async def _anthropic_passthrough_stream(
                         pass
                     resp = None
                     continue
-                _err_text = _err_text[:500]
                 # The outer 200 stream headers are already flushed, so flag the failure: the
                 # middleware must not claim a preview-owned model on a passthrough whose
                 # upstream errored before any SSE.
@@ -49388,7 +49385,7 @@ async def _anthropic_passthrough_non_streaming(
             resp = await upstream.post(body, timeout = _timeout)
 
         if resp.status_code != 200:
-            _err_text = resp.text[:500]
+            _err_text = resp.text
             _over = bool(_classify_llama_generation_error(Exception(_err_text)))
             raise HTTPException(
                 status_code = 400 if _over else resp.status_code,

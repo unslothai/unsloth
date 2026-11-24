@@ -247,3 +247,77 @@ def test_only_truncate_oldest_pays_for_the_cut_replay(monkeypatch, policy):
         0,
     )
     assert body["messages"] == _history()
+
+
+# A sampler rejection whose message starts past character 500 of the body.
+_LATE_MESSAGE = "Failed to initialize samplers: penalty_repeat must be finite and greater than 0"
+_LATE_REJECTION = json.dumps(
+    {"error": {"code": 400, "detail": "d" * 600, "message": _LATE_MESSAGE, "type": "invalid"}}
+).encode()
+
+
+def _install_responses(monkeypatch, response):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return response()
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod.httpx,
+        "AsyncClient",
+        lambda *_a, **kw: real_client(transport = transport, timeout = kw.get("timeout", 600)),
+    )
+
+
+def test_non_streaming_rejection_shows_a_message_past_character_500(monkeypatch):
+    from fastapi import HTTPException
+
+    _install_responses(monkeypatch, lambda: httpx.Response(400, content = _LATE_REJECTION))
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(_non_streaming())
+
+    assert f"llama-server error: {_LATE_MESSAGE}" in json.dumps(excinfo.value.detail)
+    assert "dddd" not in json.dumps(excinfo.value.detail)
+
+
+def test_stream_rejection_shows_a_message_past_character_500(monkeypatch):
+    _install_responses(monkeypatch, lambda: httpx.Response(400, content = _LATE_REJECTION))
+
+    text = asyncio.run(_stream_text())
+
+    assert "event: error" in text
+    assert f"llama-server error: {_LATE_MESSAGE}" in text
+    assert "dddd" not in text
+
+
+def test_stream_in_band_error_message_is_not_parsed_again(monkeypatch):
+    message = '{"error":"invalid sampler","parameter":"penalty_repeat"}'
+    error = json.dumps({"error": {"code": 400, "message": message}})
+    content = f"data: {error}\n\ndata: [DONE]\n\n"
+    _install_responses(
+        monkeypatch,
+        lambda: httpx.Response(
+            200, content = content.encode(), headers = {"content-type": "text/event-stream"}
+        ),
+    )
+
+    text = asyncio.run(_stream_text())
+
+    assert "penalty_repeat" in text
+
+
+def test_stream_in_band_error_message_is_not_cut(monkeypatch):
+    message = "Failed to process the image: " + "m" * 520
+    error = json.dumps({"error": {"code": 400, "message": message}})
+    content = f"data: {error}\n\ndata: [DONE]\n\n"
+    _install_responses(
+        monkeypatch,
+        lambda: httpx.Response(
+            200, content = content.encode(), headers = {"content-type": "text/event-stream"}
+        ),
+    )
+
+    text = asyncio.run(_stream_text())
+
+    assert "event: error" in text
+    assert message in text
