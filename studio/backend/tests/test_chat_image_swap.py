@@ -12,31 +12,31 @@ from models.inference import ChatImageSwapRequest, InferenceStatusResponse, Load
 from routes import inference
 
 
-@pytest.mark.parametrize("gguf", [False, True], ids=["transformers", "gguf"])
+@pytest.mark.parametrize("gguf", [False, True], ids = ["transformers", "gguf"])
 @pytest.mark.parametrize("failure", [None, "load", "render", "restore"])
 def test_swap_lifecycle(monkeypatch, gguf, failure):
     resident = "text"
     token = None
     events = []
     recipe = LoadRequest(
-        model_path="text", max_seq_length=4096, gguf_variant="Q4_K_M" if gguf else None
+        model_path = "text", max_seq_length = 4096, gguf_variant = "Q4_K_M" if gguf else None
     )
     monkeypatch.setattr(chat_image_swap, "text_load_to_restore", lambda: (recipe, True))
     payload = ChatImageSwapRequest(
-        text_id="text",
-        image_load={"model_path": "image"},
-        prompt="A lighthouse",
+        text_id = "text",
+        image_load = {"model_path": "image"},
+        prompt = "A lighthouse",
     )
     monkeypatch.setattr(
         inference,
         "get_status",
         AsyncMock(
-            return_value=InferenceStatusResponse(
-                active_model="text",
-                loaded=["text"],
-                loading=[],
-                is_gguf=gguf,
-                inference={},
+            return_value = InferenceStatusResponse(
+                active_model = "text",
+                loaded = ["text"],
+                loading = [],
+                is_gguf = gguf,
+                inference = {},
             )
         ),
     )
@@ -56,13 +56,13 @@ def test_swap_lifecycle(monkeypatch, gguf, failure):
 
     async def status(**kwargs):
         return SimpleNamespace(
-            loaded=resident == "image",
-            load_id=token,
-            resident_load_id=token,
-            repo_id="image",
-            family="fixture",
-            base_repo=None,
-            model_dump=lambda: {},
+            loaded = resident == "image",
+            load_id = token,
+            resident_load_id = token,
+            repo_id = "image",
+            family = "fixture",
+            base_repo = None,
+            model_dump = lambda: {},
         )
 
     async def unload_text(req, subject):
@@ -88,7 +88,7 @@ def test_swap_lifecycle(monkeypatch, gguf, failure):
         events.append("render")
         if failure == "render":
             raise RuntimeError("render")
-        return SimpleNamespace(images=[SimpleNamespace(id="saved")])
+        return SimpleNamespace(images = [SimpleNamespace(id = "saved")])
 
     async def unload_image(req, subject, via_api_key):
         nonlocal resident, token
@@ -121,7 +121,7 @@ def test_swap_lifecycle(monkeypatch, gguf, failure):
 
     request = Request({"type": "http", "headers": []}, receive)
     if failure:
-        with pytest.raises((RuntimeError, HTTPException), match=failure):
+        with pytest.raises((RuntimeError, HTTPException), match = failure):
             asyncio.run(generate_and_restore(payload, request, "owner"))
     else:
         assert asyncio.run(generate_and_restore(payload, request, "owner")).images[0].id == "saved"

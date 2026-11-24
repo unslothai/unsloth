@@ -41,7 +41,7 @@ def remember_text_load(request, *, user_initiated):
     # Keep the actual launch request in server memory. Never retain a user's Hub credential.
     _last_text_load = (
         _text_runtime(),
-        request.model_copy(update={"hf_token": None}),
+        request.model_copy(update = {"hf_token": None}),
         user_initiated,
     )
 
@@ -51,8 +51,8 @@ def text_load_to_restore():
     if runtime is not None and _last_text_load and _last_text_load[0] == runtime:
         return _last_text_load[1:]
     raise HTTPException(
-        status_code=409,
-        detail="Select the text model in Unsloth once so its load settings can be restored.",
+        status_code = 409,
+        detail = "Select the text model in Unsloth once so its load settings can be restored.",
     )
 
 
@@ -68,7 +68,7 @@ async def generate_and_restore(request, http_request, subject):
     key = (current_account_id(), request.swap_id or uuid.uuid4().hex)
     if _active.setdefault(key, ticket) is not ticket:
         raise HTTPException(
-            status_code=409, detail="An image swap with this ID is already running."
+            status_code = 409, detail = "An image swap with this ID is already running."
         )
     try:
         return await _run(request, http_request, subject, ticket)
@@ -86,7 +86,7 @@ async def _run(request, http_request, subject, ticket):
     from routes import inference
 
     def busy(message):
-        return HTTPException(status_code=409, detail=message)
+        return HTTPException(status_code = 409, detail = message)
 
     def require_empty():
         if (
@@ -97,10 +97,10 @@ async def _run(request, http_request, subject, ticket):
             raise busy("Another model took the slot during the image call.")
 
     async def image_status():
-        return await inference.diffusion_status(current_subject=subject, via_api_key=False)
+        return await inference.diffusion_status(current_subject = subject, via_api_key = False)
 
     token = uuid.uuid4().hex
-    image_load = request.image_load.model_copy(update={"load_token": token})
+    image_load = request.image_load.model_copy(update = {"load_token": token})
     # A manual load arriving between the last status read and restore wins. The existing loader
     # checks this precondition again while holding the actual model lifecycle gate.
     restore_request = Request(dict(http_request.scope))
@@ -109,7 +109,7 @@ async def _run(request, http_request, subject, ticket):
         chat = await inference.get_status(subject)
         recipe, user_initiated = text_load_to_restore()
         text_load = recipe.model_copy(
-            update={
+            update = {
                 "force_cancel_active": False,
                 "force_reload": False,
                 "alongside": False,
@@ -141,7 +141,7 @@ async def _run(request, http_request, subject, ticket):
             raise busy("Another model already occupies the image or GPU slot.")
         if ticket.cancelled() or await http_request.is_disconnected():
             raise busy("The chat disconnected before the model swap.")
-        await inference._unload_model_impl(UnloadRequest(model_path=request.text_id), subject)
+        await inference._unload_model_impl(UnloadRequest(model_path = request.text_id), subject)
         saved = None
         try:
             async with (
@@ -151,7 +151,7 @@ async def _run(request, http_request, subject, ticket):
                 media_keepwarm.admission_gate(gpu_arbiter.VIDEO),
             ):
                 require_empty()
-                if inference.active_generations.count(include_external=False):
+                if inference.active_generations.count(include_external = False):
                     raise busy("Another chat is running.")
                 try:
                     with preparing_load("image", token):
@@ -166,7 +166,7 @@ async def _run(request, http_request, subject, ticket):
                         progress = await inference.diffusion_load_progress(subject, False)
                         if progress.phase == "error":
                             raise HTTPException(
-                                status_code=503, detail=progress.error or "Image load failed."
+                                status_code = 503, detail = progress.error or "Image load failed."
                             )
                         if state.load_id != token or time.monotonic() >= deadline:
                             raise busy("The selected image model did not finish loading.")
@@ -176,15 +176,15 @@ async def _run(request, http_request, subject, ticket):
                     if not offers_txt2img(status):
                         raise busy("The selected image model only supports editing.")
                     options = request.model_dump(
-                        include={"width", "height", "seed", "negative_prompt"}, exclude_none=True
+                        include = {"width", "height", "seed", "negative_prompt"}, exclude_none = True
                     )
                     with generation_ticket(ticket):
                         saved = await inference._generate_diffusion_image_core(
-                            _build_request(options, request.prompt, status), pinned_load=identity
+                            _build_request(options, request.prompt, status), pinned_load = identity
                         )
                 finally:
                     await inference.unload_diffusion_model(
-                        MediaUnloadRequest(expected_load_id=token),
+                        MediaUnloadRequest(expected_load_id = token),
                         subject,
                         False,
                     )
@@ -192,7 +192,7 @@ async def _run(request, http_request, subject, ticket):
             try:
                 require_empty()
                 await inference.load_model_gated(
-                    text_load, restore_request, subject, user_initiated=user_initiated
+                    text_load, restore_request, subject, user_initiated = user_initiated
                 )
             except Exception as exc:
                 detail = getattr(exc, "detail", str(exc))
@@ -202,7 +202,7 @@ async def _run(request, http_request, subject, ticket):
                     else ""
                 )
                 raise HTTPException(
-                    status_code=503,
-                    detail=f"Could not restore {request.text_id}: {detail}.{gallery}",
+                    status_code = 503,
+                    detail = f"Could not restore {request.text_id}: {detail}.{gallery}",
                 ) from exc
         return saved

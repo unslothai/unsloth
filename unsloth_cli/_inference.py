@@ -1269,11 +1269,16 @@ class HttpChatBackend:
                 )
 
             def show_image(image):
-                typer.echo(f"Saved gallery image {image['gallery_image_id']}: {image['url']}", err = True)
+                typer.echo(
+                    f"Saved gallery image {image['gallery_image_id']}: {image['url']}", err = True
+                )
 
             choice, history = image_tool_turn(
-                api, body, self._text_id,
-                {"model_path": self.image_generator}, show_image,
+                api,
+                body,
+                self._text_id,
+                {"model_path": self.image_generator},
+                show_image,
             )
             if not history:
                 self.reply_hit_token_limit = choice.get("finish_reason") == "length"
@@ -1282,7 +1287,12 @@ class HttpChatBackend:
                 if reply.get("reasoning_content"):
                     text = _THINK_OPEN + reply["reasoning_content"] + "</think>" + text
                 return iter([text])
-            body.update(model = self._text_id, messages = [*msgs, *history], enable_tools = False, tool_choice = "none")
+            body.update(
+                model = self._text_id,
+                messages = [*msgs, *history],
+                enable_tools = False,
+                tool_choice = "none",
+            )
         resp = self._request("POST", "/v1/chat/completions", body)
 
         self.reply_hit_token_limit = False
@@ -1341,9 +1351,11 @@ class HttpChatBackend:
                 raise RuntimeError("Stream ended before the reply completed.")
 
         if self.image_generator:
+
             def with_tool_history():
                 yield from cumulative()
                 messages.extend(history)
+
             return with_tool_history()
         return cumulative()
 

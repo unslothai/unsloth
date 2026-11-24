@@ -276,7 +276,8 @@ def chat(
         False, "--verbose", "-v", help = "Show backend and llama-server logs."
     ),
     image_generator: Optional[str] = typer.Option(
-        None, "--image-generator",
+        None,
+        "--image-generator",
         help = "Let chat swap to this local text-to-image model for image requests, then restore the text model.",
     ),
     no_server: bool = typer.Option(
@@ -403,7 +404,9 @@ def chat(
         raise typer.Exit(code = 1)
     if image_generator:
         if not server_mode or compare or npu_path:
-            raise typer.BadParameter("--image-generator requires a local Unsloth server and a single GGUF or Transformers chat.")
+            raise typer.BadParameter(
+                "--image-generator requires a local Unsloth server and a single GGUF or Transformers chat."
+            )
         chat_backend.image_generator = image_generator
         compare_blocked = "image swapping needs the model slot for one text model"
     if server_mode and should_print:

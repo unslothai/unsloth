@@ -23,7 +23,7 @@ def roundtrip(api, text_load, image_load, question):
     messages = [{"role": "user", "content": question}]
     body = {"model": model, "messages": messages, "enable_tools": False}
     _, history = image_tool_turn(
-        api, body, model, image_load, lambda image: print("Saved", image["url"], flush=True)
+        api, body, model, image_load, lambda image: print("Saved", image["url"], flush = True)
     )
     if not history:
         raise RuntimeError("The text model did not call generate_image.")
@@ -34,22 +34,22 @@ def roundtrip(api, text_load, image_load, question):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--text-load", type=Path, required=True)
-    parser.add_argument("--image-load", type=Path, required=True)
-    parser.add_argument("--port", type=int, default=8888)
+    parser = argparse.ArgumentParser(description = __doc__)
+    parser.add_argument("--text-load", type = Path, required = True)
+    parser.add_argument("--image-load", type = Path, required = True)
+    parser.add_argument("--port", type = int, default = 8888)
     parser.add_argument("prompt")
     args = parser.parse_args()
     token = os.environ["UNSLOTH_TOKEN"]
 
-    def api(path, body=None):
+    def api(path, body = None):
         request = Request(
             f"http://127.0.0.1:{args.port}{path}",
-            data=json.dumps(body).encode() if body is not None else None,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            data = json.dumps(body).encode() if body is not None else None,
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         )
         return read_json_checking_deferred_error(
-            request.full_url, urlopen_no_redirect(request, timeout=1200)
+            request.full_url, urlopen_no_redirect(request, timeout = 1200)
         )
 
     answer = roundtrip(

@@ -5478,6 +5478,7 @@ class DiffusionDetailerSpec(BaseModel):
 
 class ChatImageSwapRequest(BaseModel):
     """A local chat has completed a tool call and released its inference request."""
+
     swap_id: Optional[str] = Field(None, min_length = 1, max_length = 96, pattern = r"^[A-Za-z0-9_-]+$")
     text_id: str = Field(min_length = 1)
     image_load: DiffusionLoadRequest

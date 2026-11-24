@@ -52829,7 +52829,9 @@ async def cancel_chat_image_swap(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     if via_api_key or account_access.account_scope() is not None:
-        raise HTTPException(status_code = 403, detail = "Image swaps require a single-user Unsloth session.")
+        raise HTTPException(
+            status_code = 403, detail = "Image swaps require a single-user Unsloth session."
+        )
     from core.inference.chat_image_swap import cancel
     return {"cancelled": cancel(swap_id)}
 
@@ -52845,9 +52847,10 @@ async def generate_chat_image_with_swap(
     # Model control is an explicit action of the signed-in local user. A chat tools key may
     # load beside its model only and must never acquire this ability.
     if via_api_key or not _loads_anything() or account_access.account_scope() is not None:
-        raise HTTPException(status_code = 403, detail = "Image swaps require a single-user Unsloth session.")
+        raise HTTPException(
+            status_code = 403, detail = "Image swaps require a single-user Unsloth session."
+        )
     from core.inference.chat_image_swap import generate_and_restore
-
     return await _tunnel_safe_json(
         generate_and_restore(request, http_request, current_subject), label = "Chat image generation"
     )
