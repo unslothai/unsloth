@@ -3345,14 +3345,20 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             indent_match = re.match(r"(\s*)", line)
             indent = indent_match.group(1) if indent_match else ""
 
+            # The sleep level is read and checked before wake_up: a bad VLLM_SLEEP_MODE fails before the
+            # rollout, not after it. Unset / blank is level 1 (offload weights); vLLM documents 0, 1 and 2.
             wrapped = (
+                f"{indent}_unsloth_sleep_level = None\n"
                 f"{indent}if hasattr(self, 'llm'):\n"
                 f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+                f"{indent}        _unsloth_sleep_level = (os.environ.get('VLLM_SLEEP_MODE') or '').strip() or '1'\n"
+                f"{indent}        if _unsloth_sleep_level not in ('0', '1', '2'):\n"
+                f"{indent}            raise ValueError(f'Unsloth: VLLM_SLEEP_MODE must be 0, 1 or 2, got {{_unsloth_sleep_level!r}}.')\n"
+                f"{indent}        _unsloth_sleep_level = int(_unsloth_sleep_level)\n"
                 f"{indent}        self.llm.wake_up()\n"
                 f"{line}\n\n"
-                f"{indent}if hasattr(self, 'llm'):\n"
-                f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-                f"{indent}        self.llm.sleep(int(os.environ.get('VLLM_SLEEP_MODE', 1)))\n"
+                f"{indent}if _unsloth_sleep_level is not None:\n"
+                f"{indent}    self.llm.sleep(_unsloth_sleep_level)\n"
             )
 
             patched = patched[: match.start()] + wrapped + patched[match.end() :]
