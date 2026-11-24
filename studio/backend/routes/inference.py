@@ -22780,11 +22780,16 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     )
 
 
-async def _unload_model_impl(request: UnloadRequest, current_subject: str):
+async def _unload_model_impl(
+    request: UnloadRequest,
+    current_subject: str,
+    *,
+    before_unload: Callable[[], None] | None = None,
+):
     """Routes the unload to llama-server for GGUF models and to Unsloth otherwise."""
     extra = (
         await _route_to_extra_slot(request.model_path)
-        if request.cancel_load_request_id is None
+        if request.cancel_load_request_id is None and before_unload is None
         else None
     )
     if extra is not None:
@@ -22804,7 +22809,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             event = "unload", model = _lifecycle_model_label(request.model_path), reason = "manual"
         )
         return UnloadResponse(status = "unloaded", model = request.model_path)
-    filling = model_slots.visible_loading()
+    filling = model_slots.visible_loading() if before_unload is None else None
     if filling and _names_the_loading_model(filling[1], request.model_path):
         routed_slot.set(filling[0])
     on_primary = routed_slot.get() is None
@@ -22837,7 +22842,11 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             "chat", _loaded_slot_ident() if account_access.managed_account() else None
         )
     # Drop the idle reload stash so a /v1 request can't resurrect a deliberately unloaded model.
-    from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
+    from core.inference.llama_keepwarm import (
+        inference_lifecycle_gate,
+        model_load_gate,
+        note_model_unloaded,
+    )
     from core.inference.npu_backend import MODEL_PREFIX, is_npu_model_path, peek_npu_backend
 
     if not on_primary:
@@ -22926,37 +22935,39 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             finally:
                 attempt.cancel_complete.set()
 
-        # cancel_load only kills the loading subprocess, so it runs off-gate and must stay ahead of the active-generation refusal.
-        backend = await asyncio.to_thread(get_inference_backend)
-        loading = getattr(backend, "get_loading_model", lambda: None)()
-        if (
-            loading is not None
-            and hasattr(backend, "cancel_load")
-            and _names_the_loading_model(loading, request.model_path)
-        ):
-            # Cancel under the name the load runs as, which a pinned row states as a path.
-            if await asyncio.to_thread(backend.cancel_load, loading):
-                note_model_unloaded()
-                logger.info(f"Cancelled in-flight load: {request.model_path}")
-                return UnloadResponse(status = "unloaded", model = request.model_path)
+        if before_unload is None:
+            # A guarded unload owns one resident runtime and cannot cancel an in-flight load.
+            # cancel_load only kills the loading subprocess, so it runs off-gate and must stay ahead of the active-generation refusal.
+            backend = await asyncio.to_thread(get_inference_backend)
+            loading = getattr(backend, "get_loading_model", lambda: None)()
+            if (
+                loading is not None
+                and hasattr(backend, "cancel_load")
+                and _names_the_loading_model(loading, request.model_path)
+            ):
+                # Cancel under the name the load runs as, which a pinned row states as a path.
+                if await asyncio.to_thread(backend.cancel_load, loading):
+                    note_model_unloaded()
+                    logger.info(f"Cancelled in-flight load: {request.model_path}")
+                    return UnloadResponse(status = "unloaded", model = request.model_path)
 
-        # Still-loading GGUF: unload_model sets cancel_event with no worker command, safe off-gate; gated on the loading model so other unloads cannot cancel it.
-        llama_backend = get_llama_cpp_backend()
-        if (
-            llama_backend.is_active
-            and not llama_backend.is_loaded
-            and (
-                llama_backend.model_identifier == request.model_path
-                or is_registered_native_path_label(
-                    llama_backend.model_identifier, request.model_path
+            # Still-loading GGUF: unload_model sets cancel_event with no worker command, safe off-gate; gated on the loading model so other unloads cannot cancel it.
+            llama_backend = get_llama_cpp_backend()
+            if (
+                llama_backend.is_active
+                and not llama_backend.is_loaded
+                and (
+                    llama_backend.model_identifier == request.model_path
+                    or is_registered_native_path_label(
+                        llama_backend.model_identifier, request.model_path
+                    )
+                    or _names_the_resident_model(llama_backend.model_identifier, request.model_path)
                 )
-                or _names_the_resident_model(llama_backend.model_identifier, request.model_path)
-            )
-        ):
-            await asyncio.to_thread(llama_backend.unload_model)
-            note_model_unloaded()
-            logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
-            return UnloadResponse(status = "unloaded", model = request.model_path)
+            ):
+                await asyncio.to_thread(llama_backend.unload_model)
+                note_model_unloaded()
+                logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
+                return UnloadResponse(status = "unloaded", model = request.model_path)
         if not on_primary:
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
@@ -22969,7 +22980,12 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             )
 
         # Serialize with /load: otherwise a new subprocess could receive this unload command.
-        async with inference_lifecycle_gate():
+        async with (
+            model_load_gate() if before_unload is not None else nullcontext(),
+            inference_lifecycle_gate(),
+        ):
+            if before_unload is not None:
+                before_unload()
             # Rechecked under the gate, like /load: a chat can register while this queues.
             if await asyncio.to_thread(_unload_may_evict, request.model_path):
                 _raise_or_cancel_active_generations(

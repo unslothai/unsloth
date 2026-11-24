@@ -49,7 +49,7 @@ def remember_text_load(request, *, user_initiated):
 def text_load_to_restore():
     runtime = _text_runtime()
     if runtime is not None and _last_text_load and _last_text_load[0] == runtime:
-        return _last_text_load[1:]
+        return _last_text_load
     raise HTTPException(
         status_code = 409,
         detail = "Select the text model in Unsloth once so its load settings can be restored.",
@@ -106,8 +106,8 @@ async def _run(request, http_request, subject, ticket):
     restore_request = Request(dict(http_request.scope))
     inference.require_for_model_switch(restore_request.scope, require_empty)
     async with gpu_switch_lock():
+        runtime, recipe, user_initiated = text_load_to_restore()
         chat = await inference.get_status(subject)
-        recipe, user_initiated = text_load_to_restore()
         if recipe.native_path_lease:
             # The desktop file picker grants a single load. The already-used lease
             # cannot restore the chat model once it has been unloaded.
@@ -145,7 +145,16 @@ async def _run(request, http_request, subject, ticket):
             raise busy("Another model already occupies the image or GPU slot.")
         if ticket.cancelled() or await http_request.is_disconnected():
             raise busy("The chat disconnected before the model swap.")
-        await inference._unload_model_impl(UnloadRequest(model_path = request.text_id), subject)
+
+        def require_current_runtime():
+            if _text_runtime() != runtime or inference.model_slots.busy():
+                raise busy("The chat model changed before the image swap.")
+
+        await inference._unload_model_impl(
+            UnloadRequest(model_path = request.text_id),
+            subject,
+            before_unload = require_current_runtime,
+        )
         saved = None
         try:
             async with (

@@ -1264,8 +1264,9 @@ class HttpChatBackend:
 
             def api(path, payload = None):
                 method = "GET" if payload is None else "POST"
+                timeout = 5 if path.endswith("/cancel") else 1200
                 return read_json_checking_deferred_error(
-                    self._base + path, self._request(method, path, payload, timeout = 1200)
+                    self._base + path, self._request(method, path, payload, timeout = timeout)
                 )
 
             def show_image(image):

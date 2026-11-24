@@ -13,7 +13,8 @@ from unsloth_cli._chat_image_swap import image_tool_turn
         {"model_path": "transformers", "load_in_4bit": True},
     ],
 )
-def test_image_swap(text_load):
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_image_swap(text_load, interrupted):
     text_id = text_load["model_path"]
     call = {
         "id": "call-42",
@@ -24,7 +25,12 @@ def test_image_swap(text_load):
         },
     }
 
+    paths = []
+    swap_id = None
+
     def api(path, body):
+        nonlocal swap_id
+        paths.append(path)
         if path == "/v1/chat/completions":
             assert body["tools"][0]["function"]["name"] == "generate_image"
             assert body["parallel_tool_calls"] is False
@@ -33,17 +39,30 @@ def test_image_swap(text_load):
                     {"message": {"role": "assistant", "content": None, "tool_calls": [call]}}
                 ]
             }
+        if path.endswith("/cancel"):
+            assert path == f"/api/inference/images/chat-swap/{swap_id}/cancel"
+            assert body == {}
+            return {"cancelled": True}
         assert path == "/api/inference/images/chat-swap"
+        swap_id = body.pop("swap_id", None)
         assert body == {
             "text_id": text_id,
             "image_load": {"model_path": "image"},
             "prompt": "A lighthouse",
         }
+        if interrupted:
+            raise KeyboardInterrupt
         return {"images": [{"id": "image-1", "url": "/gallery/image-1"}]}
 
+    if interrupted:
+        with pytest.raises(KeyboardInterrupt):
+            image_tool_turn(api, {"messages": []}, text_id, {"model_path": "image"}, None)
+        assert swap_id and paths[-1] == f"/api/inference/images/chat-swap/{swap_id}/cancel"
+        return
     _, history = image_tool_turn(
         api, {"messages": []}, text_id, {"model_path": "image"}, lambda image: None
     )
+    assert swap_id
     assert history[0]["tool_calls"] == [call]
     assert history[1]["tool_call_id"] == "call-42"
     assert json.loads(history[1]["content"])["gallery_image_id"] == "image-1"

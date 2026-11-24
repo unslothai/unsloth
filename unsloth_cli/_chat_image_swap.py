@@ -2,6 +2,7 @@
 """Run a client-side image tool between two completed text inference requests."""
 
 import json
+import uuid
 
 
 IMAGE_TOOL = {
@@ -43,14 +44,25 @@ def image_tool_turn(api, body, text_id, image_load, on_image):
     prompt = json.loads(call["function"]["arguments"]).get("prompt")
     if not isinstance(prompt, str) or not prompt.strip() or not call.get("id"):
         raise ValueError("The image call needs a prompt and a tool-call ID.")
-    response = api(
-        "/api/inference/images/chat-swap",
-        {
-            "text_id": text_id,
-            "image_load": image_load,
-            "prompt": prompt,
-        },
-    )
+    swap_path = "/api/inference/images/chat-swap"
+    swap_id = uuid.uuid4().hex
+    try:
+        response = api(
+            swap_path,
+            {
+                "swap_id": swap_id,
+                "text_id": text_id,
+                "image_load": image_load,
+                "prompt": prompt,
+            },
+        )
+    except KeyboardInterrupt:
+        try:
+            api(f"{swap_path}/{swap_id}/cancel", {})
+        except Exception:
+            # A failed cancellation request must not swallow the user's interrupt.
+            pass
+        raise
     generated = response["images"][0]
     image = {"gallery_image_id": generated["id"], "url": generated["url"]}
     on_image(image)

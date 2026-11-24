@@ -13,18 +13,23 @@ from routes import inference
 
 
 @pytest.mark.parametrize("gguf", [False, True], ids = ["transformers", "gguf"])
-@pytest.mark.parametrize("failure", [None, "load", "render", "restore", "native lease"])
+@pytest.mark.parametrize(
+    "failure", [None, "load", "render", "restore", "native lease", "runtime replaced"]
+)
 def test_swap_lifecycle(monkeypatch, gguf, failure):
     resident = "text"
     token = None
     events = []
+    original_runtime = object()
+    runtime = original_runtime
     recipe = LoadRequest(
         model_path = "text",
         max_seq_length = 4096,
         gguf_variant = "Q4_K_M" if gguf else None,
         native_path_lease = "one-time-lease" if failure == "native lease" else None,
     )
-    monkeypatch.setattr(chat_image_swap, "text_load_to_restore", lambda: (recipe, True))
+    monkeypatch.setattr(chat_image_swap, "_text_runtime", lambda: runtime)
+    monkeypatch.setattr(chat_image_swap, "_last_text_load", (original_runtime, recipe, True))
     payload = ChatImageSwapRequest(
         text_id = "text",
         image_load = {"model_path": "image"},
@@ -58,6 +63,9 @@ def test_swap_lifecycle(monkeypatch, gguf, failure):
     )
 
     async def status(**kwargs):
+        nonlocal runtime
+        if failure == "runtime replaced":
+            runtime = object()
         return SimpleNamespace(
             loaded = resident == "image",
             load_id = token,
@@ -68,8 +76,15 @@ def test_swap_lifecycle(monkeypatch, gguf, failure):
             model_dump = lambda: {},
         )
 
-    async def unload_text(req, subject):
+    async def unload_text(
+        req,
+        subject,
+        *,
+        before_unload = None,
+    ):
         nonlocal resident
+        if before_unload:
+            before_unload()
         assert req.model_path == resident == "text"
         assert not req.force_cancel_active
         events.append("unload text")
@@ -130,6 +145,12 @@ def test_swap_lifecycle(monkeypatch, gguf, failure):
         assert events == []
         assert resident == "text"
         return
+    if failure == "runtime replaced":
+        with pytest.raises(HTTPException, match = "chat model changed"):
+            asyncio.run(generate_and_restore(payload, request, "owner"))
+        assert events == []
+        assert resident == "text"
+        return
     if failure:
         with pytest.raises((RuntimeError, HTTPException), match = failure):
             asyncio.run(generate_and_restore(payload, request, "owner"))
@@ -143,3 +164,33 @@ def test_swap_lifecycle(monkeypatch, gguf, failure):
         "restore",
     ]
     assert resident == (None if failure == "restore" else "text")
+
+
+def test_guarded_unload_checks_runtime_after_an_inflight_load(monkeypatch):
+    from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
+    from models.inference import UnloadRequest
+
+    checked = []
+    monkeypatch.setattr(inference, "_unload_may_evict", lambda _model: False)
+
+    def require_original_runtime():
+        checked.append(True)
+        raise HTTPException(status_code = 409, detail = "runtime replaced")
+
+    async def exercise():
+        async with model_load_gate(), inference_lifecycle_gate():
+            pending = asyncio.create_task(
+                inference._unload_model_impl(
+                    UnloadRequest(model_path = "text"),
+                    "owner",
+                    before_unload = require_original_runtime,
+                )
+            )
+            await asyncio.sleep(0.05)
+            assert not pending.done()
+            assert not checked
+        with pytest.raises(HTTPException, match = "runtime replaced"):
+            await pending
+
+    asyncio.run(exercise())
+    assert checked == [True]
