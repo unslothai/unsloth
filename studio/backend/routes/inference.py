@@ -19304,12 +19304,17 @@ async def load_model_gated(
                             request.model_path,
                         )
                         extra.llama._last_kill_monotonic = time.monotonic()
-            if new_slot and extra is not None and await asyncio.to_thread(_served_twice, extra):
+            twin, survivor = (
+                await asyncio.to_thread(_served_twice, extra)
+                if new_slot and extra is not None
+                else (False, None)
+            )
+            if twin:
                 # A low-disk fallback can land on a quant already served beside it: keep that one.
-                routed_slot.set(None)
                 model_slots.loading = None
                 await asyncio.to_thread(model_slots.drop, extra)
                 await asyncio.to_thread(release_chat_gpu_claim)
+                routed_slot.set(survivor)
                 extra = None
             if extra is not None:
                 from core.inference.llama_keepwarm import _note_activity
@@ -19382,18 +19387,21 @@ class _QuantShortBesideItsRepo(Exception):
     pass
 
 
-def _served_twice(slot) -> bool:
+def _served_twice(slot) -> tuple[bool, Optional[_ExtraSlot]]:
+    """Whether another slot serves this one's exact checkpoint and quant, and which."""
+
     def identity(llama):
         if not getattr(llama, "is_loaded", False) or not getattr(llama, "hf_variant", None):
             return None
-        return (str(llama.model_identifier).casefold(), llama.hf_variant.casefold())
+        # Case kept: two local paths differing only in case are two files on most filesystems.
+        return (str(llama.model_identifier), llama.hf_variant.casefold())
 
     own = identity(slot.llama)
-    return own is not None and any(
-        identity(model_slots.in_slot(other, get_llama_cpp_backend)) == own
-        for other in (None, *model_slots.visible())
-        if other is not slot
-    )
+    for other in (None, *model_slots.visible()):
+        if other is not slot and own is not None:
+            if identity(model_slots.in_slot(other, get_llama_cpp_backend)) == own:
+                return True, other
+    return False, None
 
 
 def _repo_loaded_beside(repo: str, exclude) -> bool:

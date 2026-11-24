@@ -1078,6 +1078,21 @@ def test_a_fallback_onto_a_served_quant_keeps_one_copy(backends, monkeypatch):
     assert model_slots.slots == [extra] and _loaded() == [("org/B-GGUF", "Q8_0")]
     assert (primary.model_identifier, primary.hf_variant) == ("org/A-GGUF", "Q4_K_M")
 
+    async def onto_the_kept_copy(request, *args, **kwargs):
+        return await fake(request.model_copy(update = {"gguf_variant": "Q8_0"}), *args, **kwargs)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", onto_the_kept_copy)
+    primary._loaded_by_user_action = extra.llama._loaded_by_user_action = False
+    request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q4_K_M", alongside = True)
+    asyncio.run(inf.load_model_gated(request, None, "s", user_initiated = True))
+    assert model_slots.slots == [extra] and extra.llama._loaded_by_user_action
+    assert not primary._loaded_by_user_action
+
+    lower, upper, twin = (_slot(p, "Q8_0") for p in ("/m/b.gguf", "/m/B.gguf", "/m/b.gguf"))
+    model_slots.slots += [lower, upper, twin]
+    assert inf._served_twice(upper) == (False, None)
+    assert inf._served_twice(twin) == (True, lower)
+
 
 def test_an_alongside_load_counts_as_activity(backends, monkeypatch):
     stamped = []
