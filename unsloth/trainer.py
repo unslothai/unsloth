@@ -344,6 +344,10 @@ def _steps_per_epoch(items, per_step, world_size):
     return max(1, math.ceil(items / max(1, per_step * world_size)))
 
 
+class _DefaultPackingSkipped(Exception):
+    """Raised from the train split's preparation to restart the trainer's __init__ without packing."""
+
+
 def _guard_default_packing_steps(trainer):
     """Wrap this trainer's `_prepare_dataset` so default packing keeps optimizer steps per epoch.
 
@@ -388,17 +392,15 @@ def _guard_default_packing_steps(trainer):
                 setattr(config, "_unsloth_packing_auto", False)
             if getattr(config, "eval_packing", None) is False:
                 setattr(config, "eval_packing", None)
-            if "packing" in pkwargs:
-                pkwargs["packing"] = False
-            else:
-                pargs = pargs[:3] + (False,) + pargs[4:]
             trainer._unsloth_default_packing_note = (
                 f"Unsloth: Default packing skipped: {documents} documents fit {rows} packed rows, so batch size "
                 f"{batch_size} x gradient accumulation {grad_accum} would train {packed_steps} optimizer steps "
                 f"per epoch instead of {unpacked_steps}. Using padding-free batches; set packing = True in "
                 f"SFTConfig to pack anyway."
             )
-            return prepare(*pargs, **pkwargs)
+            # Restart __init__ unpacked rather than re-preparing here: the generated trainer caps pre-tokenized
+            # rows at max_length (and drops unsupervised ones) before _prepare_dataset, only when not packing.
+            raise _DefaultPackingSkipped()
         new_batch, new_accum = chosen
         if (new_batch, new_accum) != (batch_size, grad_accum):
             setattr(config, "per_device_train_batch_size", new_batch)
@@ -2539,8 +2541,18 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 setattr(config_arg, "_unsloth_padding_free_auto", True)
         if default_packing:
             _guard_default_packing_steps(self)
+
+        def _init_restarting_unpacked():
+            try:
+                original_init(self, *args, **kwargs)
+            except _DefaultPackingSkipped as skipped:
+                # Default packing would cut optimizer steps: build the trainer exactly as an unpacked run.
+                skipped.__traceback__ = None
+                self.__dict__.pop("_prepare_dataset", None)
+                original_init(self, *args, **kwargs)
+
         try:
-            original_init(self, *args, **kwargs)
+            _init_restarting_unpacked()
         except ValueError as exc:
             if processor_text_only and not blocked and _is_trl_vlm_packing_rejection(exc):
                 if requested_pack:

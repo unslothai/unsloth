@@ -215,3 +215,58 @@ def test_transformers_default_fsdp_config_is_not_fsdp(monkeypatch):
     )
     SFT(model = _Model(), args = config, train_dataset = _docs())
     assert seen["trainer_batch"] == [(1, 1, 89)]
+
+
+def test_fallback_keeps_the_unpacked_length_cap(monkeypatch):
+    # The generated SFTTrainer caps pre-tokenized rows at max_length before _prepare_dataset, only when
+    # `padding_free and not packing` (unsloth/models/rl.py); Zoo's unpacked prep leaves input_ids rows alone.
+    # The fallback must therefore restart init unpacked, not just re-prepare under the packed init.
+    seen = {"inits": [], "max_row": []}
+
+    class _GeneratedSFTTrainer:
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            data_collator = None,
+            train_dataset = None,
+            **kwargs,
+        ):
+            seen["inits"].append(bool(args.packing))
+            self.model, self.args, self.data_collator = model, args, data_collator
+            if args.padding_free and not args.packing and args.max_length:
+                train_dataset = train_dataset.map(
+                    lambda r: {"input_ids": r["input_ids"][: args.max_length]}
+                )
+            self.train_dataset = self._prepare_dataset(
+                train_dataset, None, args, args.packing, None, "train"
+            )
+            seen["max_row"].append(max(len(x) for x in self.train_dataset["input_ids"]))
+
+        def _prepare_dataset(
+            self, dataset, processing_class, args, packing, formatting_func, dataset_name
+        ):
+            if not packing:
+                return dataset  # Zoo: already-tokenized rows pass through untouched
+            return datasets.Dataset.from_dict(
+                {"input_ids": [[1] * args.max_length] * math.ceil(len(dataset) / 50)}
+            )
+
+    for name in ("enable_sample_packing", "enable_padding_free_metadata"):
+        monkeypatch.setattr(trainer_module, name, lambda m, t: None)
+    monkeypatch.setattr(trainer_module, "install_token_budget", lambda t: None)
+    monkeypatch.setattr(
+        trainer_module, "_responses_only_masks_packed_rows", lambda: True, raising = False
+    )
+    monkeypatch.delenv("UNSLOTH_DEFAULT_PACKING", raising = False)
+    monkeypatch.delenv("WORLD_SIZE", raising = False)
+    module = SimpleNamespace(SFTTrainer = _GeneratedSFTTrainer)
+    trainer_module._patch_sft_trainer_auto_packing(module)
+    rows = [[5] * 20] * 600 + [[7] * 3000]  # many short documents and one overlength row
+    config = _config(batch_size = 1, grad_accum = 1, max_length = 1024)
+    trainer = module.SFTTrainer(
+        model = _Model(), args = config, train_dataset = datasets.Dataset.from_dict({"input_ids": rows})
+    )
+    assert config.packing is False and len(trainer.train_dataset) == 601
+    assert seen["max_row"][-1] == 1024  # capped, as an unpacked run is
+    assert seen["inits"][-1] is False
