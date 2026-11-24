@@ -60,6 +60,23 @@ class TestComposerCore extends BaseComposerRuntimeCore {
     };
     this.setAttachments([attachment]);
   }
+
+  setDictationForTest(): void {
+    const state = this as unknown as {
+      _dictation: unknown;
+      _dictationSession: unknown;
+      _notifySubscribers: () => void;
+    };
+    state._dictation = {
+      status: { type: "running" },
+      inputDisabled: false,
+    };
+    state._dictationSession = {
+      cancel: () => undefined,
+      stop: async () => undefined,
+    };
+    state._notifySubscribers();
+  }
 }
 
 function composerFor(core: TestComposerCore): ThreadComposerRuntimeImpl {
@@ -307,7 +324,7 @@ test("observer teardown unsubscribes once and releases ownership", () => {
   dispose();
 });
 
-test("an unavailable runtime is non-observing but still permits the send", async () => {
+test("an unavailable runtime is reported without claiming ownership", () => {
   const core = new TestComposerCore();
   core.setText("send without observer");
   const { accessor, dispose } = accessorFor(core);
@@ -324,11 +341,6 @@ test("an unavailable runtime is non-observing but still permits the send", async
       { expectedContextId: null },
     );
     assert.equal(unavailable.kind, "unavailable");
-
-    accessor.send();
-    await Promise.resolve();
-    await Promise.resolve();
-    assert.equal(core.sent.length, 1);
   } finally {
     runtime.unstable_on = original;
     dispose();
@@ -561,4 +573,194 @@ test("only tagged in-flight attachment failures are suppressed", () => {
       (globalThis as { window?: unknown }).window = previous;
     }
   }
+});
+
+test("a detached attempt still reports a later attachment failure", () => {
+  const core = new TestComposerCore();
+  core.setText("x");
+  const { accessor, dispose } = accessorFor(core);
+  const token = Symbol("reservation");
+  let failed = 0;
+  const attempt = observing(
+    observeComposerSend(
+      accessor,
+      ["thread-1"],
+      token,
+      {
+        onSent: () => undefined,
+        onFailed: () => {
+          failed += 1;
+        },
+      },
+      { expectedContextId: null },
+    ),
+  );
+
+  attempt.detach();
+  assert.equal(attempt.isDetached(), true);
+  assert.equal(attempt.isActive(), true);
+
+  reportComposerAttachmentFailure(
+    token,
+    ["thread-1"],
+    new Error("upload failed"),
+  );
+
+  assert.equal(failed, 1);
+  assert.equal(attempt.isActive(), false);
+  dispose();
+});
+
+test("a detached attempt still observes a successful send", async () => {
+  const core = new TestComposerCore();
+  core.setText("x");
+  const { accessor, dispose } = accessorFor(core);
+  let sent = 0;
+  const attempt = observing(
+    observeComposerSend(
+      accessor,
+      ["thread-1"],
+      Symbol("reservation"),
+      {
+        onSent: () => {
+          sent += 1;
+        },
+        onFailed: () => undefined,
+      },
+      { expectedContextId: null },
+    ),
+  );
+
+  attempt.detach();
+  accessor.send();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(sent, 1);
+  assert.equal(attempt.isActive(), false);
+  assert.equal(attempt.isDetached(), true);
+  dispose();
+});
+
+test("detach keeps same-runtime single-flight but permits a different runtime", () => {
+  const firstCore = new TestComposerCore();
+  firstCore.setText("x");
+  const first = accessorFor(firstCore);
+  const firstAttempt = observing(
+    observeComposerSend(
+      first.accessor,
+      ["thread-1"],
+      Symbol("first"),
+      { onSent: () => undefined, onFailed: () => undefined },
+      { expectedContextId: null },
+    ),
+  );
+  firstAttempt.detach();
+
+  const sameRuntime = observeComposerSend(
+    first.accessor,
+    ["thread-1"],
+    Symbol("second"),
+    { onSent: () => undefined, onFailed: () => undefined },
+    { expectedContextId: null },
+  );
+  assert.equal(sameRuntime.kind, "busy");
+
+  const secondCore = new TestComposerCore();
+  secondCore.setText("x");
+  const second = accessorFor(secondCore);
+  const differentRuntime = observeComposerSend(
+    second.accessor,
+    ["thread-1"],
+    Symbol("third"),
+    { onSent: () => undefined, onFailed: () => undefined },
+    { expectedContextId: null },
+  );
+  assert.equal(differentRuntime.kind, "observing");
+
+  if (differentRuntime.kind === "observing") {
+    differentRuntime.attempt.stop();
+  }
+  firstAttempt.stop();
+  first.dispose();
+  second.dispose();
+});
+
+test("detach preserves the rejection guard until the tagged failure is handled", async () => {
+  const listeners = new Set<(event: Event) => void>();
+  const fakeWindow = {
+    addEventListener: (_: string, callback: (event: Event) => void) => {
+      listeners.add(callback);
+    },
+    removeEventListener: (_: string, callback: (event: Event) => void) => {
+      listeners.delete(callback);
+    },
+  };
+  const previous = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = fakeWindow;
+  try {
+    const core = new TestComposerCore();
+    core.setText("x");
+    const { accessor, dispose } = accessorFor(core);
+    const token = Symbol("reservation");
+    const attempt = observing(
+      observeComposerSend(
+        accessor,
+        ["thread-1"],
+        token,
+        { onSent: () => undefined, onFailed: () => undefined },
+        { expectedContextId: null },
+      ),
+    );
+    assert.equal(listeners.size, 1);
+
+    attempt.detach();
+    assert.equal(listeners.size, 1, "detach must keep the rejection guard");
+
+    reportComposerAttachmentFailure(
+      token,
+      ["thread-1"],
+      new Error("upload failed"),
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(listeners.size, 0);
+    dispose();
+  } finally {
+    if (previous === undefined) {
+      (globalThis as { window?: unknown }).window = undefined;
+    } else {
+      (globalThis as { window?: unknown }).window = previous;
+    }
+  }
+});
+
+test("dictation state does not suppress a supported send", async () => {
+  const core = new TestComposerCore();
+  core.setText("x");
+  core.setDictationForTest();
+  const { accessor, dispose } = accessorFor(core);
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  let sent = 0;
+  const registration = observeComposerSend(
+    accessor,
+    ["thread-1"],
+    Symbol("dictation"),
+    {
+      onSent: () => {
+        sent += 1;
+      },
+      onFailed: () => undefined,
+    },
+    { expectedContextId: null },
+  );
+
+  assert.equal(registration.kind, "observing");
+  accessor.send();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(sent, 1);
+  assert.equal(core.sent.length, 1);
+  dispose();
 });

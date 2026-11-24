@@ -188,10 +188,7 @@ function makeTarget(id: string) {
       }
       this.appended.push(prompt);
       this.onCompletion = onCompletion ?? null;
-      let resolve!: () => void;
-      const completion = new Promise<void>((r) => {
-        resolve = r;
-      });
+      const completion = new Promise<void>(() => undefined);
       this.completions.push(completion);
       onCompletion?.(completion);
       return;

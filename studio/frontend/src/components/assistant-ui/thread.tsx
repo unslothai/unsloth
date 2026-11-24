@@ -39,6 +39,7 @@ import {
 import { AutoReadAloud } from "@/components/assistant-ui/auto-read-aloud";
 import { CompactionDivider } from "@/components/assistant-ui/compaction-divider";
 import {
+  type ComposerSendAccessor,
   type ComposerSendAttempt,
   ComposerAttachmentPreparationError,
   observeComposerSend,
@@ -6160,6 +6161,7 @@ const Composer: FC<{
         }
         sendFailed = true;
         const attempt = sendObserver;
+        const detached = attempt?.isDetached() === true;
         sendObserver = null;
         attempt?.stop();
         if (composerSendObserverRef.current === attempt) {
@@ -6169,7 +6171,9 @@ const Composer: FC<{
           const contextId = dispatch.contextId;
           markQuoteDispatchSendFailed(contextId);
           releaseDispatch();
-          clearOurQuote(contextId);
+          if (!detached) {
+            clearOurQuote(contextId);
+          }
         }
         if (
           releaseReservation &&
@@ -6180,15 +6184,17 @@ const Composer: FC<{
         if (releaseReservation) {
           preStreamRunReservationRef.current = null;
         }
-        toast.error(
-          error instanceof ComposerAttachmentPreparationError
-            ? "Could not prepare attachments"
-            : "Could not send message",
-          {
-            description:
-              error instanceof Error ? error.message : "Please retry the send.",
-          },
-        );
+        if (!detached) {
+          toast.error(
+            error instanceof ComposerAttachmentPreparationError
+              ? "Could not prepare attachments"
+              : "Could not send message",
+            {
+              description:
+                error instanceof Error ? error.message : "Please retry the send.",
+            },
+          );
+        }
       };
 
       try {
@@ -6276,21 +6282,35 @@ const Composer: FC<{
           failSend(new Error("The composer has nothing to send."));
           return;
         }
+        if (registration.kind === "unavailable") {
+          // Without the runtime we cannot observe the send, report attachment
+          // failure, or read fresh quote state. Fail closed instead of sending
+          // an unobserved message with reservations held.
+          failSend(new Error("The composer runtime is unavailable."));
+          return;
+        }
         if (registration.kind === "observing") {
           sendObserver = registration.attempt;
           composerSendObserverRef.current = sendObserver;
         }
-        // `unavailable` still sends through the public store accessor. There
-        // is no observer to settle, but history and the attachment adapter
-        // keep their own reservation/acceptance paths.
         // Public ComposerRuntimeImpl.send() returns void. The installed core
         // reports success through the send event and failure through the
         // attachment adapter; never inspect this return value.
         aui.composer().send();
         if (dispatch !== null) {
-          const activeDispatch = dispatch as QuoteDispatch;
-          const contextId = activeDispatch.contextId;
-          if (aui.composer().getState().quote !== undefined) {
+          // The accessor's memoized state is one tap macrotask stale after
+          // send() clears the quote. Use the runtime's synchronous state.
+          const composerRuntime = (
+            aui.composer() as ComposerSendAccessor
+          ).__internal_getRuntime?.();
+          if (
+            composerRuntime === undefined ||
+            typeof composerRuntime.getState !== "function"
+          ) {
+            failSend(new Error("The composer runtime became unavailable."));
+            return;
+          }
+          if (composerRuntime.getState().quote !== undefined) {
             // The composer ignored the send; the quote was not consumed.
             failSend(new Error("The composer ignored the send."));
             return;
@@ -6469,7 +6489,7 @@ const Composer: FC<{
 
   useEffect(
     () => () => {
-      composerSendObserverRef.current?.stop();
+      composerSendObserverRef.current?.detach();
       composerSendObserverRef.current = null;
       pendingSendRef.current = false;
       pendingFollowUpBehaviorRef.current = "queue";

@@ -28,17 +28,21 @@ export class ComposerAttachmentPreparationError extends Error {
   }
 }
 
+export type ComposerSendState = {
+  readonly isEmpty?: boolean;
+  readonly dictation?: unknown;
+  readonly quote?: unknown;
+};
+
 /** The actual runtime object that owns the send event. */
 export type ComposerSendRuntime = {
+  getState?: () => ComposerSendState;
   unstable_on(event: "send", callback: (payload: unknown) => void): () => void;
 };
 
 /** `aui.composer()` returns this store accessor, not the runtime itself. */
 export type ComposerSendAccessor = {
-  getState(): {
-    readonly isEmpty?: boolean;
-    readonly dictation?: unknown;
-  };
+  getState(): ComposerSendState;
   __internal_getRuntime?: () => ComposerSendRuntime | undefined;
 };
 
@@ -51,7 +55,9 @@ type SendCallbacks = {
 export type ComposerSendAttempt = {
   readonly token: symbol | null;
   readonly stop: () => void;
+  readonly detach: () => void;
   readonly isActive: () => boolean;
+  readonly isDetached: () => boolean;
 };
 
 export type ComposerSendRegistration =
@@ -59,7 +65,7 @@ export type ComposerSendRegistration =
   | { readonly kind: "busy"; readonly activeToken: symbol | null }
   | {
       readonly kind: "ignored";
-      readonly reason: "empty" | "dictating";
+      readonly reason: "empty";
     }
   | { readonly kind: "unavailable"; readonly reason: "runtime" };
 
@@ -70,6 +76,7 @@ type SendAttempt = {
   readonly expectedContextId: string | null;
   readonly callbacks: SendCallbacks;
   active: boolean;
+  detached: boolean;
   sendEventSeen: boolean;
   historyContextSeen: boolean;
   sendUnsubscribe: (() => void) | null;
@@ -191,32 +198,34 @@ export function observeComposerSend(
   callbacks: SendCallbacks,
   options: ObserveComposerSendOptions = { expectedContextId: null },
 ): ComposerSendRegistration {
-  // BaseComposerRuntimeCore.send() returns before emitting `send` when the
-  // composer is empty or dictation is active. Do not occupy the composer with
-  // an observer that can never receive a terminal signal.
-  let state: ReturnType<ComposerSendAccessor["getState"]>;
-  try {
-    state = composer.getState();
-  } catch {
-    return { kind: "unavailable", reason: "runtime" };
-  }
-  if (state.isEmpty === true) {
-    return { kind: "ignored", reason: "empty" };
-  }
-  if (state.dictation !== undefined) {
-    return { kind: "ignored", reason: "dictating" };
-  }
-
-  // `aui.composer()` is a store accessor. The event emitter lives on the
-  // runtime it owns, not on the accessor itself.
+  // `aui.composer()` is a store accessor. The event emitter and the fresh
+  // state live on the runtime it owns, not on the accessor itself.
   let runtime: ComposerSendRuntime | undefined;
   try {
     runtime = composer.__internal_getRuntime?.();
   } catch {
     return { kind: "unavailable", reason: "runtime" };
   }
-  if (runtime === undefined || typeof runtime.unstable_on !== "function") {
+  if (
+    runtime === undefined ||
+    typeof runtime.unstable_on !== "function" ||
+    typeof runtime.getState !== "function"
+  ) {
     return { kind: "unavailable", reason: "runtime" };
+  }
+
+  // BaseComposerRuntimeCore.send() returns without emitting `send` only when
+  // the composer is empty. Dictation is cancelled and the send continues.
+  // Read the runtime directly: the store accessor is one tap macrotask stale
+  // for mutations that happen synchronously inside send().
+  let state: ComposerSendState;
+  try {
+    state = runtime.getState();
+  } catch {
+    return { kind: "unavailable", reason: "runtime" };
+  }
+  if (state.isEmpty === true) {
+    return { kind: "ignored", reason: "empty" };
   }
 
   const active = activeByComposer.get(runtime);
@@ -233,6 +242,7 @@ export function observeComposerSend(
     expectedContextId: options.expectedContextId,
     callbacks,
     active: true,
+    detached: false,
     sendEventSeen: false,
     historyContextSeen: false,
     sendUnsubscribe: null,
@@ -350,8 +360,17 @@ export function observeComposerSend(
     }
     attempt.active = false;
     cleanup();
-    // An unmount before the failure cannot know a rejection is coming.
+    // A forced stop cannot know whether a tagged rejection is still coming.
     releaseGuard();
+  };
+
+  const detach = (): void => {
+    if (!attempt.active) {
+      return;
+    }
+    // UI ownership only: keep the subscription, lookup registrations, and
+    // rejection guard alive until the in-flight send reaches a terminal state.
+    attempt.detached = true;
   };
 
   return {
@@ -359,7 +378,9 @@ export function observeComposerSend(
     attempt: {
       token,
       stop,
+      detach,
       isActive: () => attempt.active,
+      isDetached: () => attempt.detached,
     },
   };
 }

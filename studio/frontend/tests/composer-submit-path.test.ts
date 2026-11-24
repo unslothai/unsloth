@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
+import {
+  BaseComposerRuntimeCore,
+  ThreadComposerRuntimeImpl,
+} from "@assistant-ui/core/internal";
 import ts from "@typescript/typescript6";
 import {
   ComposerAttachmentPreparationError,
@@ -11,7 +15,13 @@ import {
   imeKeydownBlocksComposerSubmit,
   parkedSendSteer,
 } from "../src/features/chat/utils/composer-preferences.ts";
+import {
+  closeTapMessageChannels,
+  composerStoreAccessor,
+} from "./helpers/composer-store-accessor.ts";
 import { readSrc } from "./helpers/kit.ts";
+
+after(() => closeTapMessageChannels());
 
 const text = readSrc("components/assistant-ui/thread.tsx");
 const source = ts.createSourceFile(
@@ -69,6 +79,43 @@ function createCallback(
   deps: Record<string, unknown>,
 ): () => void {
   return new Function(...Object.keys(deps), code)(...Object.values(deps));
+}
+
+class RealComposerCore extends BaseComposerRuntimeCore {
+  readonly path = { ref: "thread.composer", threadId: "thread-1" };
+  readonly sent: Array<{
+    metadata?: { custom?: Record<string, unknown> };
+  }> = [];
+
+  protected getAttachmentAdapter(): undefined {
+    return undefined;
+  }
+
+  protected getDictationAdapter(): undefined {
+    return undefined;
+  }
+
+  get canCancel(): boolean {
+    return false;
+  }
+
+  protected handleSend(message: {
+    metadata?: { custom?: Record<string, unknown> };
+  }): void {
+    this.sent.push(message);
+  }
+
+  protected handleCancel(): void {}
+}
+
+function realAccessorFor(core: RealComposerCore) {
+  const runtime = new ThreadComposerRuntimeImpl({
+    path: core.path,
+    getState: () => core,
+    subscribe: (callback: () => void) => core.subscribe(callback),
+  } as never);
+  const fixture = composerStoreAccessor(runtime);
+  return { accessor: fixture.accessor, dispose: fixture.dispose, runtime };
 }
 
 test("the shipped main composer key handler protects IME and mention selection", () => {
@@ -353,6 +400,7 @@ test("main cancels an audio upload only after a normal send reservation succeeds
             token: null,
             stop: () => calls.push("stop"),
             isActive: () => true,
+            isDetached: () => false,
           },
         };
       },
@@ -395,7 +443,7 @@ test("a reported attachment failure releases the send exactly once", () => {
       }),
     },
     preStreamRunReservationRef: { current: null },
-    toast: { error: (_message: string) => calls.push("toast") },
+    toast: { error: () => calls.push("toast") },
     cancelAudioUpload: () => undefined,
     claimThreadCreation: () => undefined,
     projectScope: null,
@@ -424,6 +472,7 @@ test("a reported attachment failure releases the send exactly once", () => {
             stopCalls += 1;
           },
           isActive: () => true,
+          isDetached: () => false,
         },
       };
     },
@@ -455,11 +504,12 @@ test("a quoted attachment failure releases quote and pre-stream reservations onc
           composerState.quote = quote;
         },
         send: () => {
-          // BaseComposerRuntimeCore clears the quote synchronously before it
-          // awaits attachments; a mock that kept it would look ignored.
           composerState.quote = undefined;
           calls.push("send");
         },
+        __internal_getRuntime: () => ({
+          getState: () => ({ quote: undefined, isEmpty: false }),
+        }),
       }),
     },
     reservePreStreamRun: () => Symbol("reservation"),
@@ -521,6 +571,7 @@ test("a quoted attachment failure releases quote and pre-stream reservations onc
           token: null,
           stop: () => calls.push("stop-observer"),
           isActive: () => true,
+          isDetached: () => false,
         },
       };
     },
@@ -663,6 +714,7 @@ test("a stale observer is reclaimed without releasing the new reservation", () =
           token: reservation,
           stop: () => calls.push("stop-current"),
           isActive: () => true,
+          isDetached: () => false,
         },
       };
     },
@@ -688,66 +740,54 @@ test("a stale observer is reclaimed without releasing the new reservation", () =
   );
 });
 
-test("an unavailable observer still sends and uses the generic setup toast", () => {
-  const run = (sendImpl: (calls: unknown[]) => void) => {
-    const calls: unknown[] = [];
-    const deps = {
-      aui: {
-        threads: () => ({ __internal_getAssistantRuntime: () => undefined }),
-        composer: () => ({
-          getState: () => ({
-            text: "Draft",
-            quote: undefined,
-            isEmpty: false,
-          }),
-          __internal_getRuntime: () => undefined,
-          send: () => sendImpl(calls),
-        }),
-      },
-      reservePreStreamRun: () => Symbol("reservation"),
-      preStreamThreadIds: ["chat"],
-      parseExternalModelId: () => null,
-      useChatRuntimeStore: {
+test("an unavailable observer fails before sending", () => {
+  const calls: unknown[] = [];
+  const deps = {
+    aui: {
+      threads: () => ({ __internal_getAssistantRuntime: () => undefined }),
+      composer: () => ({
         getState: () => ({
-          params: { checkpoint: "local/model" },
-          incognito: false,
-          activeGgufVariant: null,
+          text: "Draft",
+          quote: undefined,
+          isEmpty: false,
         }),
-      },
-      preStreamRunReservationRef: { current: null },
-      toast: {
-        error: (title: string) => calls.push(["toast", title]),
-      },
-      cancelAudioUpload: () => undefined,
-      claimThreadCreation: () => undefined,
-      projectScope: null,
-      armJustSent: () => calls.push("arm"),
-      releasePreStreamRunReservation: () => {
-        calls.push("release");
-        return true;
-      },
-      notifyPromptQueueRunFailed: () => calls.push("queue-failed"),
-      referenceThreadId: "chat",
-      isPreStreamRunReservationActive: () => false,
-      ComposerAttachmentPreparationError,
-      composerSendObserverRef: { current: null },
-      observeComposerSend,
-    };
-    const send = createCallback(reservedSendCallback, deps);
-    send();
-    return calls;
+        __internal_getRuntime: () => undefined,
+        send: () => calls.push("send"),
+      }),
+    },
+    reservePreStreamRun: () => Symbol("reservation"),
+    preStreamThreadIds: ["chat"],
+    parseExternalModelId: () => null,
+    useChatRuntimeStore: {
+      getState: () => ({
+        params: { checkpoint: "local/model" },
+        incognito: false,
+        activeGgufVariant: null,
+      }),
+    },
+    preStreamRunReservationRef: { current: null },
+    toast: {
+      error: (title: string) => calls.push(["toast", title]),
+    },
+    cancelAudioUpload: () => undefined,
+    claimThreadCreation: () => undefined,
+    projectScope: null,
+    armJustSent: () => calls.push("arm"),
+    releasePreStreamRunReservation: () => {
+      calls.push("release");
+      return true;
+    },
+    notifyPromptQueueRunFailed: () => calls.push("queue-failed"),
+    referenceThreadId: "chat",
+    isPreStreamRunReservationActive: () => false,
+    ComposerAttachmentPreparationError,
+    composerSendObserverRef: { current: null },
+    observeComposerSend,
   };
+  const send = createCallback(reservedSendCallback, deps);
+  send();
 
-  assert.deepEqual(
-    run((calls) => calls.push("send")),
-    ["send", "arm"],
-  );
-  const failed = run((calls) => {
-    calls.push("send");
-    throw new TypeError("send setup failed");
-  });
-  assert.deepEqual(failed, [
-    "send",
+  assert.deepEqual(calls, [
     "release",
     "queue-failed",
     ["toast", "Could not send message"],
@@ -776,4 +816,215 @@ test("main, edit and comparison composers use the setting and expose settings ac
     page,
     /showContextWindowUsage &&[\s\S]{0,100}view\.mode === "project" && activeThreadId != null/,
   );
+});
+
+test("a real quoted send is not misclassified by the production ignored-send check", async () => {
+  const core = new RealComposerCore();
+  core.setText("x");
+  core.setQuote({
+    messageId: "__unsloth_quote_context_v1__",
+    text: "unsloth-quote-context:v1\n{}",
+  });
+  const fixture = realAccessorFor(core);
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+  let released = 0;
+  let toasts = 0;
+  const deps = {
+    aui: {
+      threads: () => ({ __internal_getAssistantRuntime: () => undefined }),
+      composer: () => fixture.accessor,
+    },
+    reservePreStreamRun: () => Symbol("reservation"),
+    preStreamThreadIds: ["thread-1"],
+    parseExternalModelId: () => null,
+    useChatRuntimeStore: {
+      getState: () => ({
+        params: { checkpoint: "local/model" },
+        incognito: false,
+        activeGgufVariant: null,
+      }),
+    },
+    preStreamRunReservationRef: { current: null },
+    toast: {
+      error: () => {
+        toasts += 1;
+      },
+    },
+    cancelAudioUpload: () => undefined,
+    claimThreadCreation: () => undefined,
+    projectScope: null,
+    armJustSent: () => undefined,
+    releasePreStreamRunReservation: () => true,
+    notifyPromptQueueRunFailed: () => undefined,
+    referenceThreadId: "thread-1",
+    quoteThreadId: "thread-1",
+    reserveQuoteDispatch: () => ({
+      kind: "reserved",
+      dispatch: {
+        contextId: "ctx-1",
+        quoteIds: ["q1"],
+        envelope: { quotes: [] },
+        origin: "composer",
+      },
+    }),
+    getQuoteDispatch: () => null,
+    quoteInfoForDispatch: () => ({
+      messageId: "__unsloth_quote_context_v1__",
+      text: "unsloth-quote-context:v1\n{}",
+    }),
+    parseQuoteContext: () => ({
+      kind: "valid",
+      envelope: { contextId: "ctx-1" },
+    }),
+    markQuoteDispatchSendStarted: () => undefined,
+    markQuoteDispatchSendSettled: () => undefined,
+    markQuoteDispatchSendFailed: () => undefined,
+    releaseQuoteDispatch: () => {
+      released += 1;
+    },
+    isPreStreamRunReservationActive: () => false,
+    ComposerAttachmentPreparationError,
+    composerSendObserverRef: { current: null },
+    observeComposerSend,
+  };
+  const send = createCallback(
+    reservedSendCallback,
+    deps,
+  ) as unknown as (options?: { attachQuotes?: boolean }) => void;
+  send({ attachQuotes: true });
+
+  assert.equal(toasts, 0, "the real quoted send must not fail");
+  assert.equal(released, 0, "the quote dispatch must not be released");
+
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(core.sent.length, 1);
+  assert.deepEqual(core.sent[0]?.metadata?.custom?.quote, {
+    messageId: "__unsloth_quote_context_v1__",
+    text: "unsloth-quote-context:v1\n{}",
+  });
+  assert.equal(toasts, 0);
+  assert.equal(released, 0);
+
+  const observer = (
+    deps.composerSendObserverRef as {
+      current: { stop: () => void } | null;
+    }
+  ).current;
+  observer?.stop();
+  fixture.dispose();
+});
+
+test("a detached attachment failure releases reservations without a toast", () => {
+  const calls: string[] = [];
+  let onFailed: ((error: unknown) => void) | null = null;
+  const composerState: { text: string; quote: unknown } = {
+    text: "Draft",
+    quote: undefined,
+  };
+  const deps = {
+    aui: {
+      threads: () => ({ __internal_getAssistantRuntime: () => undefined }),
+      composer: () => ({
+        getState: () => composerState,
+        setQuote: (quote: unknown) => {
+          composerState.quote = quote;
+        },
+        send: () => {
+          composerState.quote = undefined;
+          calls.push("send");
+        },
+        __internal_getRuntime: () => ({
+          getState: () => ({ quote: undefined, isEmpty: false }),
+        }),
+      }),
+    },
+    reservePreStreamRun: () => Symbol("reservation"),
+    preStreamThreadIds: ["chat"],
+    parseExternalModelId: () => null,
+    useChatRuntimeStore: {
+      getState: () => ({
+        params: { checkpoint: "local/model" },
+        incognito: false,
+        activeGgufVariant: null,
+      }),
+    },
+    preStreamRunReservationRef: { current: null },
+    toast: { error: () => calls.push("toast") },
+    cancelAudioUpload: () => undefined,
+    claimThreadCreation: () => undefined,
+    projectScope: null,
+    armJustSent: () => undefined,
+    releasePreStreamRunReservation: () => {
+      calls.push("release-pre-stream");
+      return true;
+    },
+    notifyPromptQueueRunFailed: () => calls.push("queue-failed"),
+    referenceThreadId: "chat",
+    quoteThreadId: "thread-1",
+    reserveQuoteDispatch: () => ({
+      kind: "reserved",
+      dispatch: {
+        contextId: "ctx-1",
+        quoteIds: ["q1"],
+        envelope: { quotes: [] },
+        origin: "composer",
+      },
+    }),
+    quoteInfoForDispatch: () => ({
+      messageId: "__unsloth_quote_context_v1__",
+      text: "ctx-1",
+    }),
+    parseQuoteContext: () => ({
+      kind: "valid",
+      envelope: { contextId: "ctx-1" },
+    }),
+    markQuoteDispatchSendStarted: () => calls.push("send-started"),
+    markQuoteDispatchSendFailed: () => calls.push("send-failed"),
+    releaseQuoteDispatch: () => calls.push("release-quote"),
+    isPreStreamRunReservationActive: () => false,
+    ComposerAttachmentPreparationError,
+    composerSendObserverRef: { current: null },
+    observeComposerSend: (
+      _composer: unknown,
+      _threads: unknown,
+      _token: unknown,
+      callbacks: { onFailed: (error: unknown) => void },
+    ) => {
+      onFailed = callbacks.onFailed;
+      return {
+        kind: "observing",
+        attempt: {
+          token: null,
+          stop: () => calls.push("stop-observer"),
+          isActive: () => true,
+          detach: () => undefined,
+          isDetached: () => true,
+        },
+      };
+    },
+  };
+  const send = createCallback(
+    reservedSendCallback,
+    deps,
+  ) as unknown as (options?: { attachQuotes?: boolean }) => void;
+  send({ attachQuotes: true });
+  assert.deepEqual(calls, ["send-started", "send"]);
+
+  const fail = onFailed as ((error: unknown) => void) | null;
+  assert.ok(fail);
+  fail(new Error("upload failed"));
+  assert.deepEqual(calls, [
+    "send-started",
+    "send",
+    "stop-observer",
+    "send-failed",
+    "release-quote",
+    "release-pre-stream",
+    "queue-failed",
+  ]);
 });
