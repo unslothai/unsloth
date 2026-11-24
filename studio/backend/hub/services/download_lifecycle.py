@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -499,32 +500,29 @@ def spawn_worker(
             hf_xet_fallback.bind_worker_budget(proc.pid if proc is not None else None)
 
 
-def drain_stderr_excerpt(stream, edge_bytes: int = 500) -> bytes:
-    """Drain a worker's stderr to EOF, retaining the first and last bytes. Incremental reads keep the pipe from filling while bounding memory; long messages keep both ends since stderr prefixes often name the failing repo."""
+def drain_stderr_excerpt(stream, hf_token: Optional[str] = None) -> str:
+    """Drain a worker's stderr to EOF and return it redacted, keeping the first and last 500 characters. Incremental reads keep the pipe from filling while bounding memory; long messages keep both ends since stderr prefixes often name the failing repo. Each end is redacted with 4 KiB of context past the cut, so a long signed URL cannot keep a value whose parameter name was cut off."""
     if stream is None:
-        return b""
-    edge_bytes = max(1, edge_bytes)
-    max_bytes = edge_bytes * 2
+        return ""
+    edge, window = 500, 500 + 4096 + 1
     full = bytearray()
-    head = bytearray()
-    tail = bytearray()
-    truncated = False
+    head = tail = None
     for chunk in iter(lambda: stream.read(4096), b""):
-        if not truncated:
+        if head is None:
             full.extend(chunk)
-            if len(full) <= max_bytes:
-                continue
-            truncated = True
-            head.extend(full[:edge_bytes])
-            tail.extend(full[-edge_bytes:])
-            full.clear()
+            if len(full) > 2 * window:
+                # Each cut drops the line it splits (the extra byte shows whether it split one), so a credential whose header or parameter name was cut off is never shown.
+                head, tail, full = re.sub(rb"[^\n]*\Z", b"", full[:window]), full[-window:], None
             continue
         tail.extend(chunk)
-        if len(tail) > edge_bytes:
-            del tail[:-edge_bytes]
-    if not truncated:
-        return bytes(full)
-    return bytes(head + b"\n...[stderr truncated]...\n" + tail)
+        del tail[:-window]
+    texts = [
+        download_registry.scrub_secrets(part.decode("utf-8", "replace"), hf_token = hf_token)
+        for part in ((full,) if head is None else (head, re.sub(rb"\A[^\n]*\n?", b"", tail)))
+    ]
+    if len(texts) == 1 and len(texts[0]) <= 2 * edge:
+        return texts[0]
+    return texts[0][:edge] + "\n...[stderr truncated]...\n" + texts[-1][-edge:]
 
 
 def _cancellation_return_codes() -> frozenset[int]:
@@ -606,16 +604,12 @@ def finalize_worker_exit(
     largest_file_bytes: Optional[int] = None,
 ) -> str:
     """deferred_error_out captures a deferred error for callers that exhaust all retry rungs."""
-    stderr_data = drain_stderr_excerpt(proc.stderr)
+    stderr_text = drain_stderr_excerpt(proc.stderr, hf_token = hf_token).strip()
     rc = proc.wait()
     _cleanup_worker_files(proc)
     cancel_requested = registry.cancel_requested(key)
     if not registry.drop_process(key, proc):
         return "idle"
-    stderr_text = download_registry.scrub_secrets(
-        (stderr_data or b"").decode("utf-8", "replace").strip(),
-        hf_token = hf_token,
-    )
     metadata = registry.get_job_metadata(key)
     state = classify_exit(rc, cancel_requested = cancel_requested)
     if repo_type == "model" and state == "complete":

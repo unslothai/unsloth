@@ -123,6 +123,97 @@ def test_completion_invalidates_inventory_before_publishing_state(monkeypatch):
     assert events == ["invalidate", "complete"]
 
 
+# drain_stderr_excerpt's raw window: 500 shown characters, 4 KiB of redaction context and one byte to see a line boundary.
+WINDOW = 4597
+
+
+def _failed_job_error(stderr):
+    jobs = []
+
+    class _Registry:
+        def cancel_requested(self, _key):
+            return False
+
+        def drop_process(self, _key, _proc):
+            return True
+
+        def get_job_metadata(self, _key):
+            return None
+
+        def set_job(self, _key, *job):
+            jobs.append(job)
+
+    state = download_lifecycle.finalize_worker_exit(
+        _Registry(),
+        "org/model",
+        _Proc(1, stderr.encode()),
+        hf_token = None,
+        label = "Org/Model",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+    )
+    assert state == "error"
+    [(_, error)] = jobs
+    return error
+
+
+FILLER = "Downloading Org/Model\n" + "progress line\n" * 1000
+
+
+def test_worker_error_hides_a_signature_whose_name_the_excerpt_cut_off():
+    signature = "0123456789abcdef" * 4
+    # The kept tail starts inside "X-Amz-Signature=", after the "&" the rule anchors on.
+    url = (
+        "https://cas-bridge.xethub.hf.co/xet-bridge-us/abc?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+        f"&X-Amz-Signature={signature}&response-content-disposition={'x' * 400}"
+    )
+    stderr = FILLER + f"403 Forbidden for url: {url}"
+    assert stderr[-500:].startswith("ature=" + signature)
+
+    error = _failed_job_error(stderr)
+    assert error.startswith("Downloading Org/Model")
+    assert "[stderr truncated]" in error
+    assert signature not in error
+
+
+def test_worker_error_hides_a_signature_split_by_the_redaction_window():
+    signature = "".join(f"{i:02d}" for i in range(32))
+    trailer = "&x-id=GetObject\nhuggingface_hub.errors.HfHubHTTPError: 403 Forbidden"
+    # The tail window starts 20 characters into the signature, and the long security token after it shrinks to one marker once redacted.
+    token = "T" * (WINDOW - 44 - len("&X-Amz-Security-Token=") - len(trailer))
+    stderr = (
+        FILLER
+        + "403 Forbidden for url: https://cas-bridge.xethub.hf.co/xet-bridge-us/abc"
+        + f"?X-Amz-Signature={signature}&X-Amz-Security-Token={token}{trailer}"
+    )
+    assert stderr[-WINDOW:].startswith(signature[20:] + "&")
+
+    error = _failed_job_error(stderr)
+    assert error.endswith("403 Forbidden")
+    assert signature[20:28] not in error
+    assert "TTTT" not in error
+
+
+def test_worker_error_hides_a_credential_whose_header_the_window_cut_off():
+    trailer = "\nrequests.exceptions.HTTPError: 401 Client Error"
+    # The tail window starts inside "Basic", so the long credential after it has no header in view.
+    credential = "".join(f"{i:05d}" for i in range(1000))[: WINDOW - len("sic ") - len(trailer)]
+    stderr = FILLER + f"Authorization: Basic {credential}{trailer}"
+    assert stderr[-WINDOW:].startswith("sic " + credential)
+
+    error = _failed_job_error(stderr)
+    assert error.endswith("401 Client Error")
+    assert credential[-30:] not in error
+
+
+def test_worker_error_keeps_a_complete_last_line_that_fills_the_window():
+    last_line = "RuntimeError: " + "".join(f"{i:05d}" for i in range(1000))[: WINDOW - 1 - 14]
+    stderr = FILLER + last_line
+    assert stderr[-WINDOW:] == "\n" + last_line
+
+    assert _failed_job_error(stderr).endswith(last_line[-500:])
+
+
 def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
