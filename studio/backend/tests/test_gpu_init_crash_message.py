@@ -1734,3 +1734,22 @@ class TestHipRocrSegfaultRetriesBundleOnly:
         assert len(launches) == 2
         assert "/opt/rocm/lib" in launches[1][1]["LD_LIBRARY_PATH"].split(":")
         assert not LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")
+
+    def test_a_bundle_only_retry_that_also_crashes_restores_the_system_dirs(
+        self, monkeypatch, tmp_path
+    ):
+        """A signal is weak evidence: if the bundled runtime crashes too, later
+        recoveries run on the system ROCm the host was configured for."""
+        launches, loaded, error = _run_full_offload_spawns(
+            monkeypatch,
+            tmp_path,
+            outputs = ["", "", ""],
+            returncodes = [-11, -11, None],
+        )
+        assert error is None
+        assert loaded
+        assert len(launches) == 3
+        assert "/opt/rocm/lib" not in launches[1][1]["LD_LIBRARY_PATH"].split(":")
+        assert launches[2][1]["LD_LIBRARY_PATH"].startswith("/opt/rocm/lib")
+        assert _fit_mode(launches[2][0]) == "on"
+        assert not LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")

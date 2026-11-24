@@ -33506,6 +33506,10 @@ class LlamaCppBackend:
                 _spawn_cwd: Optional[str] = None
                 # An inherited LLAMA_ARG_FIT=off belongs to the user, and the flip would override it on the CLI.
                 _did_rocm_retry = False
+                # Set while a bundle-only retry rests on a crash signal alone: the
+                # prepended LD_LIBRARY_PATH to put back if that launch fails too.
+                _rocm_signal_undo_ld: Optional[str] = None
+                _rocm_retry_undone = False
 
                 def _enable_managed_fit_for_no_flash(fa_cmd: list) -> list:
                     """Restores Unsloth's own --fit on for a --flash-attn off respawn, which is re-
@@ -33591,6 +33595,7 @@ class LlamaCppBackend:
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
                     nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
+                    nonlocal _rocm_signal_undo_ld, _rocm_retry_undone
                     nonlocal _sched_abort_seen, _sidecar_fit_reserve_mib, effective_ctx
                     # Single revocation point for the tensor-spill plan; label is empty only on the first spawn.
                     if label:
@@ -33980,7 +33985,7 @@ class LlamaCppBackend:
                             cancelled = _load_cancelled,
                             **_wait_kwargs,
                         ):
-                            if _did_rocm_retry:
+                            if _did_rocm_retry and not _rocm_retry_undone:
                                 # Proved on this host: every later child skips the
                                 # prepend instead of crashing into it first.
                                 self._remember_bundle_only_rocm(binary)
@@ -33996,6 +34001,13 @@ class LlamaCppBackend:
                         # captured settings while a crashed child leaves is_active false.
                         # Here rather than per rung, so a later rung cannot forget it.
                         self._memory_pending_launch = _mem_settings
+                        if _rocm_signal_undo_ld is not None:
+                            # The bundled runtime failed as well, so the signal was not
+                            # the mix; on hosts the bundle cannot drive (#7233) the
+                            # recoveries below only work with the system ROCm.
+                            env["LD_LIBRARY_PATH"] = _rocm_signal_undo_ld
+                            _rocm_signal_undo_ld = None
+                            _rocm_retry_undone = True
                         # Read once, like the wait itself: a cleared reference is a
                         # teardown, not a startup crash, and re-reading the
                         # attribute per term would race the shutdown thread again.
@@ -34023,8 +34035,13 @@ class LlamaCppBackend:
                         # a GPF in the system libamdhip64 exits -11). While the
                         # child env still carries the prepend, a signal crash is
                         # the same HIP/ROCR mix the bundle-only retry undoes.
-                        if not _hip_rocr_mismatch and self._is_signal_crash(
-                            _crashed_proc.returncode if _crashed_proc is not None else None
+                        _signal_mix = False
+                        if (
+                            not _did_rocm_retry
+                            and not _hip_rocr_mismatch
+                            and self._is_signal_crash(
+                                _crashed_proc.returncode if _crashed_proc is not None else None
+                            )
                         ):
                             _clean_env = self._llama_server_env_for_binary(
                                 binary, use_system_rocm = False
@@ -34033,6 +34050,7 @@ class LlamaCppBackend:
                             _hip_rocr_mismatch = bool(_clean_ld) and _clean_ld != env.get(
                                 "LD_LIBRARY_PATH"
                             )
+                            _signal_mix = _hip_rocr_mismatch
                         # A startup crash means the spill prediction was wrong, so placement returns to llama.cpp.
                         _capability_crash = _tensor_capability_crash or self._is_kv_unified_refused(
                             "\n".join(self._stdout_lines)
@@ -34061,6 +34079,8 @@ class LlamaCppBackend:
                                     _crashed_proc.returncode,
                                     self._llama_log_path,
                                 )
+                                if _signal_mix:
+                                    _rocm_signal_undo_ld = env.get("LD_LIBRARY_PATH")
                                 env["LD_LIBRARY_PATH"] = _retry_ld
                                 _did_rocm_retry = True
                                 continue
