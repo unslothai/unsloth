@@ -44,13 +44,14 @@ _ROUTED_ATTR = "_unsloth_int8_dispatch"
 # 0.022/0.048 vs 0.024/0.073). LTX-2 left out: audio stream 0.010 vs 0.008, no sink to fix. Qwen-Image left out: max
 # 0.031 vs 0.013, 50-step images LPIPS 0.14 from native. HunyuanImage-2.1 masks every call (nothing to route). Krea-2
 # block calls run mask-free over the valid key prefix (diffusion_krea2_prefix_kv); a masked call keeps the incumbent.
+# FLUX.1 and FLUX.2 left out (route on request): Studio defaults on L4, 1024 px, 8 prompts, against the kernel off
+# (whose fresh-process repeat is bit-identical): FLUX.1 schnell LPIPS mean 0.107 / max 0.204, FLUX.2 klein 4B
+# 0.037 / 0.081, above the 0.02 default-path bar.
 AUTO_DITS = frozenset(
     {
-        "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
         "Krea2Transformer2DModel",
         "MOSSImageTransformer",
-        "FluxTransformer2DModel",
         "HunyuanVideo15Transformer3DModel",
         "QwenImage21Transformer2DModel",
         "WanTransformer3DModel",
@@ -75,9 +76,7 @@ def two_expert_pipeline(pipe: Any) -> bool:
 # Also race with speed unset and no profile (e.g. offloaded INT8 DiT on T4): only the families measured that way.
 SPEED_UNSET_DITS = frozenset(
     {
-        "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
-        "FluxTransformer2DModel",
         "QwenImage21Transformer2DModel",
         "ZImageTransformer2DModel",
     }
@@ -85,10 +84,8 @@ SPEED_UNSET_DITS = frozenset(
 # Accuracy measured on the CUDA kernel only: with the switch unset a Triton stand-in keeps the incumbent.
 AUTO_CUDA_ONLY = frozenset(
     {
-        "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
         "Krea2Transformer2DModel",
-        "FluxTransformer2DModel",
         "HunyuanVideo15Transformer3DModel",
         "ZImageTransformer2DModel",
     }
