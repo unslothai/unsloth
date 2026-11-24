@@ -105,7 +105,6 @@ def test_failed_launch_stays_selectable_after_retry(tmp_path, monkeypatch, engin
     failed_path = Path(failure.value.managed_engine_log_path)
     assert engine.process is None and engine._attempt_log is None
 
-    # The orchestrator creates a fresh engine instance for a manual retry.
     retry = managed_engine.ManagedEngine(ENGINE)
     retry.adapter = engine.adapter
     _arrange_process(retry, monkeypatch, host, attempt = "second", fail = False)

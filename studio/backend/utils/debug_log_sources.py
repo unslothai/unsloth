@@ -14,7 +14,6 @@ from typing import Optional
 
 from utils.log_retention import DEFAULT_KEEP
 
-# One file per launch attempt (core/inference/managed_engine_log.py).
 MANAGED_ENGINE_LOG_FAMILIES = {
     "sglang": ("logs/sglang", "sglang-*.log"),
 }
