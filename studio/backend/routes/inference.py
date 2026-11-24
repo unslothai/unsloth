@@ -19704,8 +19704,13 @@ def _require_resolved_base_access(config) -> None:
         account_access.require_model_access(base.strip())
         account_access.require_adapter_chain_access(base.strip())
     account_access.require_listed_adapters_access(getattr(config, "identifier", None))
-    # A local merged vision export's processor comes from the base_model its export_metadata.json names.
-    if getattr(config, "is_local", False) and not getattr(config, "is_lora", False):
+    # A local merged vision export's processor comes from the base_model its export_metadata.json names;
+    # text exports are self-contained and never open it.
+    if (
+        getattr(config, "is_vision", False)
+        and getattr(config, "is_local", False)
+        and not getattr(config, "is_lora", False)
+    ):
         meta_base = _export_metadata_base(getattr(config, "path", None))
         if meta_base:
             account_access.require_model_access(meta_base)

@@ -15,11 +15,17 @@ from fastapi import HTTPException
 import routes.inference as routes
 
 
-def _export(tmp_path, base):
+def _export(
+    tmp_path,
+    base,
+    is_vision = True,
+):
     folder = tmp_path / "mine"
     folder.mkdir(parents = True)
     (folder / "export_metadata.json").write_text(json.dumps({"base_model": base}))
-    return SimpleNamespace(is_local = True, is_lora = False, path = str(folder), base_model = None)
+    return SimpleNamespace(
+        is_local = True, is_lora = False, is_vision = is_vision, path = str(folder), base_model = None
+    )
 
 
 def _deny_owner_paths(reference, *args, **kwargs):
@@ -46,3 +52,13 @@ def test_reachable_bases_and_the_owner_are_unchanged(monkeypatch, tmp_path):
     monkeypatch.setattr(routes.account_access, "managed_account", lambda: False)
     monkeypatch.setattr(routes.account_access, "require_model_access", _deny_owner_paths)
     routes._require_resolved_base_access(_export(tmp_path / "o", "/srv/owner/exports/x"))
+
+
+def test_a_self_contained_text_export_does_not_need_its_metadata_base(monkeypatch, tmp_path):
+    # Only the vision path reads export_metadata.json's base (for the processor); a merged text export
+    # copied from another machine names a base path nobody here has and still loads.
+    monkeypatch.setattr(routes.account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(routes.account_access, "require_model_access", _deny_owner_paths)
+    routes._require_resolved_base_access(
+        _export(tmp_path, "/srv/owner/exports/old-box", is_vision = False)
+    )
