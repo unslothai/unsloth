@@ -6,6 +6,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import time
 
 import pytest
@@ -14,8 +15,8 @@ _DOCKER = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "docker"
 )
 pytestmark = pytest.mark.skipif(
-    os.name != "posix" or shutil.which("bash") is None or shutil.which("stat") is None,
-    reason = "POSIX shell required",
+    not sys.platform.startswith("linux") or shutil.which("bash") is None,
+    reason = "container entrypoints need Linux bash and GNU stat/chown",
 )
 
 
