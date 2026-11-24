@@ -171,9 +171,9 @@ def _with_normalized_book(fields: dict) -> dict:
         # the round trip also turns NaN and Infinity, which cannot be served, into null.
         book = fields["characterBook"]
         if isinstance(book.get("entries"), list):
-            book = cards._export_book(book)
+            book = cards.export_book(book)
         try:
-            book = cards._json_loads(json.dumps(book))
+            book = cards.json_loads(json.dumps(book))
         except cards.CardError as exc:
             raise HTTPException(status_code = 422, detail = str(exc)) from None
         return {**fields, "characterBook": cards.normalize_book(book)}

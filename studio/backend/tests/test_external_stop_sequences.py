@@ -69,3 +69,31 @@ def test_a_held_back_tail_is_sent_when_the_provider_closes_without_done():
     out, closed = _run([_chunk("ends with \nR")], ["\nRin:"])
     assert _text(out) == "ends with \nR"
     assert closed == [True]
+
+
+def test_held_back_text_is_sent_before_a_tool_call():
+    tool = "data: " + json.dumps(
+        {
+            "id": "c1",
+            "object": "chat.completion.chunk",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"tool_calls": [{"index": 0, "id": "t1", "function": {"name": "f"}}]},
+                    "finish_reason": None,
+                }
+            ],
+        }
+    )
+    out, _ = _run(
+        [_chunk("Hello\nRi"), tool, _chunk(finish = "tool_calls"), "data: [DONE]"], ["\nRin:"]
+    )
+    events = []
+    for line in out:
+        if line.startswith("data: {"):
+            delta = json.loads(line[6:])["choices"][0]["delta"]
+            if delta.get("content"):
+                events.append(delta["content"])
+            if delta.get("tool_calls"):
+                events.append("TOOL")
+    assert "".join(events[: events.index("TOOL")]) == "Hello\nRi"

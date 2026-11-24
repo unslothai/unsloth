@@ -91,7 +91,7 @@ def _well_formed(value: Any) -> Any:
     return value
 
 
-def _json_loads(text: str):
+def json_loads(text: str):
     # NaN, Infinity and 1e309 read as null: they cannot be served back as JSON.
     try:
         return _well_formed(
@@ -161,7 +161,7 @@ def _decode_card_text(raw: bytes) -> Optional[dict]:
     for candidate in candidates:
         for encoding in ("utf-8", "latin-1"):
             try:
-                value = _json_loads(candidate.decode(encoding))
+                value = json_loads(candidate.decode(encoding))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 continue
             if isinstance(value, dict):
@@ -285,7 +285,7 @@ def _read_charx(data: bytes) -> tuple[dict, Optional[bytes]]:
         if names["card.json"].file_size > MAX_CARD_BYTES:
             raise CardError("card.json is too large.")
         try:
-            card = _json_loads(_read_member(archive, names["card.json"]).decode("utf-8"))
+            card = json_loads(_read_member(archive, names["card.json"]).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise CardError("card.json is not valid JSON.") from exc
         if not isinstance(card, dict):
@@ -599,7 +599,7 @@ def parse_card_file(data: bytes, filename: str = "") -> ParsedCard:
     else:
         try:
             text = data.decode("utf-8-sig")
-            card = _json_loads(text)
+            card = json_loads(text)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             if sniff_image_type(data):
                 raise CardError("This image has no character card inside it.") from exc
@@ -652,7 +652,7 @@ def _overlay(character: dict, data: dict) -> dict:
     data["extensions"] = extensions
     book = character.get("characterBook")
     if book:
-        data["character_book"] = _export_book(book)
+        data["character_book"] = export_book(book)
     else:
         data.pop("character_book", None)
     return data
@@ -661,7 +661,7 @@ def _overlay(character: dict, data: dict) -> dict:
 _EXT_POSITION = {"before_char": 0, "after_char": 1, "at_depth": 4}
 
 
-def _export_book(book: dict) -> dict:
+def export_book(book: dict) -> dict:
     """The book with each entry's edits also in SillyTavern's extensions, which importers read first."""
     entries = []
     for entry in book.get("entries") or []:

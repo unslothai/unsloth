@@ -45888,8 +45888,11 @@ async def _enforce_stop_sequences(gen, stops: list[str], model: str):
             delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else None
             if delta is not None and isinstance(delta.get("content"), str):
                 delta["content"] = stop.feed(delta["content"])
-            if choice.get("finish_reason") is not None and stop.held:
-                # The reply ended partway into a stop sequence, so what was held back is text.
+            if (
+                choice.get("finish_reason") is not None or (delta or {}).get("tool_calls")
+            ) and stop.held:
+                # The reply ended, or turned to a tool call, partway into a stop sequence: what was
+                # held back is text, and it goes out before the tool call.
                 choice["delta"] = {
                     **(delta or {}),
                     "content": ((delta or {}).get("content") or "") + stop.flush(),
