@@ -48,7 +48,6 @@ _VIDEO_REFERENCE_AUDIO_MAX_CHARS = ((24 * 1024 * 1024 + 2) // 3) * 4 + 64 * 1024
 
 
 def strip_named_quant(request):
-    # Status names each of two loaded quants of a repo repo:QUANT; the repo is what loads.
     variant = request.gguf_variant
     if variant and request.model_path.lower().endswith(f":{variant.lower()}"):
         from hub.utils.paths import is_valid_repo_id

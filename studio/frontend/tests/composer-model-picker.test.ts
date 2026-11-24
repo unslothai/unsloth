@@ -1406,7 +1406,6 @@ test("Eject on the chosen model takes the host's guarded unload; other rows name
     "/cache/b.gguf",
   );
   assert.equal(ejectTargetId({ id: "unsloth/b" }, undefined), "unsloth/b");
-  // Two loaded quants of the chosen repo: only the chosen copy is the host's.
   const q4 = { quant: "Q4_K_M", id: "unsloth/a-GGUF:Q4_K_M" };
   const q8 = { quant: "Q8_0", id: "unsloth/a-GGUF:Q8_0" };
   const both = { id: "unsloth/a-GGUF", loadedId: q8.id, loadedCopies: [q4, q8] };

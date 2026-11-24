@@ -82,7 +82,6 @@ export function ggufVariantsMatch(
 
 const HUB_REPO_ID_RE = /^[^/:\\\s]+\/[^/:\\\s]+$/;
 
-// Status names each of two loaded quants of a repo repo:QUANT; settings and loads key on the repo.
 export function withoutNamedQuant(
   id: string,
   quant: string | null | undefined,

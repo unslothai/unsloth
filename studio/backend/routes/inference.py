@@ -19175,7 +19175,6 @@ async def load_model_gated(
                             if exc.capped and not request.force_alongside:
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
-                            # Nothing else is unloaded to keep two quants of one repo.
                             raise _QuantShortBesideItsRepo() from exc
                         from utils.multi_model_settings import get_multi_model_mode
 
@@ -23687,7 +23686,6 @@ async def get_status(current_subject: str, model: Optional[str] = None):
                     if key not in served:
                         response.serving.append(e["id"])
                         served.append(key)
-        # Two quants of one repo share a checkpoint, so each is named repo:QUANT while both are loaded.
         names = [c for c, _ in served]
         response.serving_checkpoints = [
             f"{c}:{q}" if q and names.count(c) > 1 else c for c, q in served
@@ -38872,7 +38870,6 @@ def _openai_model_objects() -> list[dict]:
     for slot in (None, *model_slots.visible()):
         entries, quant = model_slots.in_slot(slot, objects_and_quant)
         for entry in entries:
-            # A second loaded quant of a listed repo is its pinned row.
             if quant and any(m["id"] == entry["id"] and m.get("quant") != quant for m in models):
                 entry = {**entry, "id": f"{entry['id']}:{quant}", "quant": quant}
             models.append(entry)

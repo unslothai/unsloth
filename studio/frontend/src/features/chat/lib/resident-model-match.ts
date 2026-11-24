@@ -58,7 +58,6 @@ export function residentModelMatchesPick(
   }
   // Only the raw identifier says which snapshot is resident.
   if (status.model_identifier) {
-    // Beside another loaded quant of its repo the identifier reads repo:QUANT.
     return modelIdsMatch(
       withoutNamedQuant(status.model_identifier, status.gguf_variant),
       pick.loadPath ?? pick.id,

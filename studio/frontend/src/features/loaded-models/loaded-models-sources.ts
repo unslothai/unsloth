@@ -276,7 +276,6 @@ export function describeInferenceStatus(
         : checkpoint === activeCheckpoint || name === active;
     if (!name || (active && isActive)) continue;
     if (entries.some((entry) => entry.id === `chat:${checkpoint}`)) continue;
-    // Two loaded quants of one repo share its name, so each row names its quant.
     const quant = status.serving_quants?.[i];
     const twin = quant && serving.filter((other) => other === name).length > 1;
     entries.push({

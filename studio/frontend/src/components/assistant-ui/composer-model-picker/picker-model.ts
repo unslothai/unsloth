@@ -120,7 +120,6 @@ export interface PickerRow {
 
 export interface LoadedCopy {
   quant: string;
-  /** What status serves it as: repo:QUANT. */
   id: string;
 }
 
@@ -343,7 +342,6 @@ export function expandQuantFavorites<
       return {
         ...row,
         key: `${row.key}::${quant}`,
-        // Disk state is keyed by the repo's row.
         inventoryKey: row.key,
         favoriteQuant: quant,
         ...(row.loadedCopies
@@ -642,7 +640,6 @@ export function ejectTargetId(
   if (row.id !== chosenId) {
     return row.loadedId ?? row.id;
   }
-  // Another loaded quant of the chosen repo is ejected by its own id.
   return row.loadedCopies?.every((c) => norm(c.id) !== norm(checkpoint))
     ? row.loadedId
     : undefined;

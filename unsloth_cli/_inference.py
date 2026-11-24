@@ -1211,7 +1211,6 @@ class HttpChatBackend:
         if not loaded:
             return False
         loaded = str(loaded)
-        # Beside another loaded quant of its repo the identifier reads repo:QUANT.
         quant = status.get("gguf_variant")
         if quant and "/" in loaded and loaded.casefold().endswith(f":{quant}".casefold()):
             loaded = loaded[: -len(quant) - 1]

@@ -40,7 +40,6 @@ LOADED = {
 }
 STATUS = {"loaded": [LLM], "serving": [LLM], "serving_checkpoints": ["/srv/models/llama.gguf"]}
 EMPTY_STATUS = {"loaded": [], "serving": [], "serving_checkpoints": []}
-# Two loaded quants of one repo are each served as repo:QUANT; one alone is the repo again.
 TWO_QUANTS = {
     "loaded": [LLM],
     "serving": [LLM, LLM],

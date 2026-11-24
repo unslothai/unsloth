@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Two loaded quants of one repo are served as repo:QUANT; the selection and its settings stay on the repo.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -47,7 +46,6 @@ test("a repo's settings survive its second quant loading, switching and unloadin
   state().setCheckpoint(REPO, "Q8_0");
   setTemperature(0.3);
 
-  // The sibling loads, so this copy is now served as repo:Q8_0.
   state().setCheckpoint(Q8, "Q8_0");
   assert.equal(state().params.checkpoint, REPO);
   assert.equal(state().params.temperature, 0.3);
@@ -57,7 +55,6 @@ test("a repo's settings survive its second quant loading, switching and unloadin
   assert.equal(state().params.checkpoint, REPO);
   assert.equal(state().params.temperature, 0.5);
 
-  // The sibling is ejected, so the copy is the bare repo again.
   state().setCheckpoint(REPO, "Q4_K_M");
   assert.equal(state().params.temperature, 0.5);
 

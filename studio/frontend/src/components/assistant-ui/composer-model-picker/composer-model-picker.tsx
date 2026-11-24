@@ -273,7 +273,6 @@ interface Row extends PickerRow {
   hub?: ModelOption;
   npu?: NpuModel;
   loadedQuant?: string | null;
-  /** Every loaded quant of the repo, set only when more than one is. */
   loadedCopies?: LoadedCopy[];
   partial?: boolean;
   resumable?: boolean;
