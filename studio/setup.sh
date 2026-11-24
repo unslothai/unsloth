@@ -3865,7 +3865,9 @@ if _setup_has_usable_nvidia_gpu; then
     _setup_nvidia_usable=true
 fi
 _setup_follow_rocm_torch=false
+# The helper runs only where an AMD probe below could fire.
 if [ "$_setup_nvidia_usable" = true ] && \
+   { command -v rocminfo >/dev/null 2>&1 || command -v amd-smi >/dev/null 2>&1 || [ -e /dev/kfd ]; } && \
    python "$SCRIPT_DIR/install_llama_prebuilt.py" --follows-rocm-torch >/dev/null 2>&1; then
     _setup_follow_rocm_torch=true
 fi
@@ -3908,8 +3910,7 @@ if [ "$_setup_nvidia_usable" != true ] || [ "$_setup_follow_rocm_torch" = true ]
         _setup_amd_records=""
     fi
 fi
-# Live AMD only: a stale ROCm torch on an NVIDIA-only host keeps CUDA. Physical stays true, so a
-# source build with no hipcc still falls back to CUDA rather than the CPU.
+# Live AMD only (stale ROCm torch on NVIDIA-only keeps CUDA); physical stays true, so no hipcc -> CUDA, not CPU.
 if [ "$_setup_follow_rocm_torch" = true ] && [ "$_setup_amd_detected" = true ]; then
     _setup_nvidia_usable=false
 else
