@@ -450,6 +450,77 @@ def sticky_cuda_error(exc: Optional[BaseException]) -> bool:
     return False
 
 
+PARTNER_TILES_ENV = "UNSLOTH_VIDEO_VAE_PARTNER_TILES"
+_TILE_ATTRS = (
+    "tile_sample_min_height",
+    "tile_sample_stride_height",
+    "tile_sample_min_width",
+    "tile_sample_stride_width",
+)
+_PARTNER_TILE_STEP = 32
+_PARTNER_TILE_OVERLAP = 64
+_PARTNER_TILE_MIN = 256
+
+
+def partner_tiles_enabled() -> bool:
+    """Partner-sized tiles when the stock-size split does not fit the partner: on under Automatic placement (the
+    CFG copy leaves the partner too little for the stock tiles), ``UNSLOTH_VIDEO_VAE_PARTNER_TILES=1`` also for an
+    explicit card pick, ``=0`` off. Never used when the stock-size split fits."""
+    raw = (os.environ.get(PARTNER_TILES_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return False
+    if raw in ("1", "on", "true", "yes", "force"):
+        return True
+    try:
+        from .diffusion_multigpu import current_selection
+        selection = current_selection()
+    except Exception:  # noqa: BLE001 - unknown placement: the stock tiles only
+        return False
+    return bool(selection is not None and selection.automatic)
+
+
+def partner_sized_tiles(vae: Any, z: Any, usable_mib: int) -> Optional[tuple]:
+    """(min_h, stride_h, min_w, stride_w): the largest tiles (the larger side shrunk first, 32 px steps, the stock
+    64 px blend overlap, 256 px floor) whose split need fits ``usable_mib`` on the partner, or None."""
+    h = int(vae.tile_sample_min_height)
+    w = int(vae.tile_sample_min_width)
+    saved = tuple(getattr(vae, a) for a in _TILE_ATTRS)
+    try:
+        while True:
+            for attr, value in zip(
+                _TILE_ATTRS, (h, h - _PARTNER_TILE_OVERLAP, w, w - _PARTNER_TILE_OVERLAP)
+            ):
+                setattr(vae, attr, value)
+            if need_mib(vae, z) <= usable_mib:
+                return (h, h - _PARTNER_TILE_OVERLAP, w, w - _PARTNER_TILE_OVERLAP)
+            if h >= w and h - _PARTNER_TILE_STEP >= _PARTNER_TILE_MIN:
+                h -= _PARTNER_TILE_STEP
+            elif w - _PARTNER_TILE_STEP >= _PARTNER_TILE_MIN:
+                w -= _PARTNER_TILE_STEP
+            elif h - _PARTNER_TILE_STEP >= _PARTNER_TILE_MIN:
+                h -= _PARTNER_TILE_STEP
+            else:
+                return None
+    finally:
+        for attr, value in zip(_TILE_ATTRS, saved):
+            setattr(vae, attr, value)
+
+
+@contextlib.contextmanager
+def _tiles(vae: Any, tiles: Optional[tuple]):
+    if tiles is None:
+        yield
+        return
+    saved = tuple(getattr(vae, a) for a in _TILE_ATTRS)
+    for attr, value in zip(_TILE_ATTRS, tiles):
+        setattr(vae, attr, value)
+    try:
+        yield
+    finally:
+        for attr, value in zip(_TILE_ATTRS, saved):
+            setattr(vae, attr, value)
+
+
 def _try_split(vae: Any, z: Any, state: dict, logger: Any) -> tuple[Optional[Any], str]:
     import torch
 
@@ -469,12 +540,18 @@ def _try_split(vae: Any, z: Any, state: dict, logger: Any) -> tuple[Optional[Any
         return None, f"cuda:{partner} unreadable ({exc})"
     need = need_mib(vae, z)
     reserve = _partner_reserve_mib(torch, partner, free)
+    resized = None
     if free - reserve < need:
-        return None, (
-            f"cuda:{partner} has {free} MiB free ({reserve} MiB kept free), the copy needs ~{need}"
-        )
+        resized = partner_sized_tiles(vae, z, free - reserve) if partner_tiles_enabled() else None
+        if resized is None:
+            return None, (
+                f"cuda:{partner} has {free} MiB free ({reserve} MiB kept free), the copy needs ~{need}"
+            )
     try:
-        return split_tiled_decode(vae, z, partner), "split"
+        with _tiles(vae, resized):
+            out = split_tiled_decode(vae, z, partner)
+        state["resized"] = resized
+        return out, "split" if resized is None else f"split, partner-sized tiles {resized}"
     except Exception as exc:  # noqa: BLE001 - the stock decode reruns every tile on the load card
         if sticky_cuda_error(exc):
             raise  # the context is lost: a one-card retry would fail on its first kernel

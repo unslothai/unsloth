@@ -625,3 +625,112 @@ def test_the_split_estimate_adds_the_partner_tiles_frames_beyond_the_fitted_clip
         math.ceil(1.25 * (_WAN_WEIGHTS_MIB + 169 + 3714 / 283648 * 704 * 496 + extra))
     )
     assert vm.need_mib(vae, object()) == fitted
+
+
+def test_partner_sized_tiles_fit_the_partner_and_leave_the_vae_as_it_was(monkeypatch):
+    vae = _wan_sized(monkeypatch, 704, 704)
+    vae.tile_sample_stride_height, vae.tile_sample_stride_width = 704, 640
+    before = tuple(getattr(vae, a) for a in vm._TILE_ATTRS)
+    usable = 5185 - 1024  # the uncapped partner beside a CFG copy
+    tiles = vm.partner_sized_tiles(vae, None, usable)
+    assert tuple(getattr(vae, a) for a in vm._TILE_ATTRS) == before
+    h, sh, w, sw = tiles
+    assert (h - sh, w - sw) == (64, 64) and min(h, w) >= 256
+    sized = _wan_sized(monkeypatch, h, w)
+    assert vm.need_mib(sized) <= usable
+    bigger = _wan_sized(monkeypatch, h + 32, w + 32)
+    assert vm.need_mib(bigger) > usable
+    assert vm.partner_sized_tiles(vae, None, 1000) is None  # nothing at the 256 px floor fits
+
+
+def test_partner_sized_split_matches_the_stock_decode_at_those_tiles(monkeypatch):
+    vae = _vae()
+    z = _latents(vae)
+    tiles = (32, 16, 32, 16)
+    with torch.no_grad():
+        vae.clear_cache()
+        with vm._tiles(vae, tiles):
+            ref = vae.tiled_decode(z, return_dict = False)[0]
+        before = tuple(getattr(vae, a) for a in vm._TILE_ATTRS)
+        with vm._tiles(vae, tiles):
+            out = vm.split_tiled_decode(vae, z, torch.device("cpu"))
+    assert tuple(getattr(vae, a) for a in vm._TILE_ATTRS) == before
+    assert torch.equal(out, ref)
+
+
+def _automatic_wan_split(
+    monkeypatch,
+    free_mib,
+    total_mib,
+    automatic = True,
+):
+    # A 1280x704 Wan decode at the stock wide plan (704x704, stride 704x640) reaching _try_split without a GPU.
+    import core.inference.diffusion_memory as dmem
+    import core.inference.diffusion_multigpu as dmg
+
+    monkeypatch.setattr(dmem, "_user_budget_reserve_mib", lambda base: 0)
+    monkeypatch.setattr(
+        dmg, "current_selection", lambda: types.SimpleNamespace(automatic = automatic)
+    )
+    monkeypatch.delenv(vm.PARTNER_TILES_ENV, raising = False)
+    vae = types.SimpleNamespace(
+        post_quant_conv = types.SimpleNamespace(parameters = lambda: []),
+        named_modules = lambda: [],
+        tile_sample_min_height = 704,
+        tile_sample_stride_height = 704,
+        tile_sample_min_width = 704,
+        tile_sample_stride_width = 640,
+    )
+    monkeypatch.setattr(vm, "_module_mib", lambda module: _WAN_WEIGHTS_MIB)
+    z = types.SimpleNamespace(device = torch.device("cuda", 0))
+    monkeypatch.setattr(vm, "_partner_free_mib", lambda torch_, partner: free_mib)
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda d = None: (free_mib << 20, total_mib << 20)
+    )
+    seen = []
+
+    def split(v, z_, partner):
+        seen.append(tuple(getattr(v, a) for a in vm._TILE_ATTRS))
+        return "decoded"
+
+    monkeypatch.setattr(vm, "split_tiled_decode", split)
+    return vae, z, {"partner": 1}, seen
+
+
+_STOCK_WIDE = (704, 704, 704, 640)
+
+
+def test_partner_sized_tiles_engage_under_automatic_when_the_stock_split_does_not_fit(monkeypatch):
+    # The uncapped 2x T4 with a CFG copy on the partner: 5185 MiB free, the stock 704x704 split needs ~10360.
+    vae, z, state, seen = _automatic_wan_split(monkeypatch, 5185, 15360)
+    out, why = vm._try_split(vae, z, state, None)
+    assert out == "decoded" and "partner-sized tiles" in why
+    (tiles,) = seen
+    assert tiles != _STOCK_WIDE and tiles[0] - tiles[1] == tiles[2] - tiles[3] == 64
+    sized = _wan_sized(monkeypatch, tiles[0], tiles[2])
+    assert vm.need_mib(sized) <= 5185 - 1024
+    assert tuple(getattr(vae, a) for a in vm._TILE_ATTRS) == _STOCK_WIDE  # restored
+
+
+def test_the_stock_split_keeps_its_tiles_when_it_fits(monkeypatch):
+    # The 12 GiB-capped partner fits the stock 704x704 split: partner-sized tiles never engage (bit-identical).
+    vae, z, state, seen = _automatic_wan_split(monkeypatch, 11692, 12288)
+    assert vm._try_split(vae, z, state, None) == ("decoded", "split")
+    assert seen == [_STOCK_WIDE]
+
+
+def test_partner_sized_tiles_decline_when_even_the_floor_does_not_fit(monkeypatch):
+    vae, z, state, seen = _automatic_wan_split(monkeypatch, 3000, 15360)
+    out, why = vm._try_split(vae, z, state, None)
+    assert out is None and "kept free" in why and seen == []
+
+
+def test_partner_sized_tiles_opt_out_and_explicit_selection(monkeypatch):
+    vae, z, state, seen = _automatic_wan_split(monkeypatch, 5185, 15360)
+    monkeypatch.setenv(vm.PARTNER_TILES_ENV, "0")
+    assert vm._try_split(vae, z, state, None)[0] is None and seen == []
+    # an explicit card pick keeps the stock tiles unless forced
+    vae, z, state, seen = _automatic_wan_split(monkeypatch, 5185, 15360, automatic = False)
+    assert vm._try_split(vae, z, state, None)[0] is None and seen == []
+    monkeypatch.setenv(vm.PARTNER_TILES_ENV, "1")
+    assert vm._try_split(vae, z, state, None)[0] == "decoded" and len(seen) == 1
