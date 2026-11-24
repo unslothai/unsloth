@@ -82,8 +82,11 @@ export function ToolConfirmationControls({
   const [failure, setFailure] = useState<"retry" | "gone" | null>(null);
   const failed = failure !== null;
 
+  // tool_start stores the approval before a reused card redraws: until the card names the approval's
+  // tool it neither asks nor answers, so another tool's "Always allow" cannot approve this call.
   const awaiting =
     confirmation !== undefined &&
+    confirmation.toolName === toolName &&
     result === undefined &&
     status?.type === "running";
   const showControls = awaiting && !decided;
