@@ -116,8 +116,9 @@ class _Slot:
 
 def _register(slot: _Slot) -> None:
     _SLOTS[slot.starts.data_ptr()] = weakref.ref(slot)
-    for key in [k for k, ref in _SLOTS.items() if ref() is None]:
-        del _SLOTS[key]
+    # list() first: one atomic snapshot, the replica's worker thread may register at the same time
+    for key in [k for k, ref in list(_SLOTS.items()) if ref() is None]:
+        _SLOTS.pop(key, None)
 
 
 def _slot_of(starts: Any) -> Optional[_Slot]:
@@ -231,8 +232,11 @@ def mask_plan(mask: Any, batch: int) -> Optional[list]:
     first, pads = torch.stack((m.int().argmax(dim = 1), (~m).sum(dim = 1))).tolist()
     plan = first if first == pads and all(p < m.shape[1] for p in pads) else None
     try:
-        if len(_MASK_MEMO) >= _MASK_MEMO_MAX:
-            for key in [k for k, v in _MASK_MEMO.items() if v[0]() is None] or list(_MASK_MEMO)[:1]:
+        items = list(
+            _MASK_MEMO.items()
+        )  # one atomic snapshot: the replica's worker thread writes it too
+        if len(items) >= _MASK_MEMO_MAX:
+            for key in [k for k, v in items if v[0]() is None] or [items[0][0]]:
                 _MASK_MEMO.pop(key, None)
         # keyed per mask (a replica's worker thread and the source each keep theirs)
         _MASK_MEMO[id(mask)] = (weakref.ref(mask), plan)
