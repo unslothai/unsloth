@@ -2505,10 +2505,7 @@ def _trusted_hook(fn: Any) -> bool:
 
 
 def _named_modules(module: Any) -> list:
-    """``list(module.named_modules())`` built by one recursive function instead of a chain of nested generators (each
-    yielded name passes through every enclosing generator; a DiT has thousands of submodules and the CFG router walks
-    it several times per denoise step). Same order, names and de-duplication as torch's recursion; a module whose type
-    or instance replaces ``named_modules`` is asked for its own subtree exactly as torch's recursion asks it."""
+    """``list(module.named_modules())`` without nested generators (hot on large DiTs); same order and de-duplication."""
     base = _torch().nn.Module.named_modules
     if type(module).named_modules is not base or "named_modules" in module.__dict__:
         return list(module.named_modules())
@@ -2543,9 +2540,7 @@ def _named_modules(module: Any) -> list:
 
 
 def _plain_lookup(cls: Any) -> bool:
-    """True when attribute reads on ``cls`` instances follow torch's ``Module`` rules and the class itself defines none
-    of the per-instance hook slots :func:`_hooks_present` reads: ``getattr(sub, name, None)`` is then the instance
-    ``__dict__`` entry, else torch's parameter / buffer / submodule fallback, else None."""
+    """True when ``cls`` uses torch's ``Module`` attribute lookup and defines none of ``_HOOK_SLOTS``."""
     torch = _torch()
     return (
         cls.__getattr__ is torch.nn.Module.__getattr__
@@ -2558,9 +2553,7 @@ _HOOK_SLOTS = ("_hf_hook", "_forward_hooks", "_forward_pre_hooks")
 
 
 def _nothing_to_report(state: dict) -> bool:
-    """For a :func:`_plain_lookup` module's ``__dict__``: True when :func:`_hooks_present`'s per-module checks provably
-    find nothing (no hook registry, no accelerate hook under any lookup, empty forward hook dicts, no instance
-    ``forward``), so the full checks can be skipped. False just runs them."""
+    """True when :func:`_hooks_present` provably finds nothing in this ``__dict__``; False just runs the full checks."""
     if (
         state.get("_diffusers_hook") is not None
         or "_hf_hook" in state
@@ -2593,7 +2586,7 @@ def _hooks_present(module: Any) -> Optional[str]:
         if fast is None:
             fast = plain[cls] = _plain_lookup(cls)
         if fast and _nothing_to_report(sub.__dict__):
-            continue  # every check below reads None / an empty dict for this submodule
+            continue
         kind = _registry_kind(sub)
         if kind == "other":
             return f"{name or '<root>'}._diffusers_hook ({', '.join(sorted(sub._diffusers_hook.hooks))})"
@@ -2859,9 +2852,7 @@ _TRAVERSAL_METHODS = ("named_modules", "named_parameters", "named_buffers", "_na
 
 
 def _stock_traversal(module: Any) -> bool:
-    """True when ``module.named_parameters()`` / ``named_buffers()`` / ``named_modules()`` are torch's own (the root's
-    type and instance replace none of them), so :func:`_stock_fingerprint_parts` over :func:`_named_modules` yields
-    the same."""
+    """True when the root replaces none of torch's traversal methods, so :func:`_named_modules` is equivalent."""
     base = _torch().nn.Module
     cls = type(module)
     return all(
@@ -2909,7 +2900,6 @@ def _adapter_parts(name: str, sub: Any, parts: list) -> None:
     for attr in _ADAPTER_ATTRS:
         value = sub.__dict__.get(attr)
         if isinstance(value, dict):
-            # A pinned scale tensor: identity + version (an in-place write bumps it), no device read per call.
             value = {
                 k: (id(v), v._version) if hasattr(v, "_version") else v for k, v in value.items()
             }
@@ -2922,8 +2912,7 @@ def weights_fingerprint(module: Any) -> int:
     keep their packed weights and scales as buffers) replaced, edited in place (fused LoRA bumps the version counter),
     added or removed (PEFT injection), or an adapter's scale / activation changed. A ``.data`` swap to different values
     is not seen; diffusers' LoRA paths do not do that."""
-    # Identity, not the data pointer: an encode-time offload round trip moves the same weights and must not force a
-    # rebuild, while a replaced parameter (new object) or an in-place edit (version) must.
+    # Identity + version, not data pointer: offload round trips must not force a rebuild.
     if _stock_traversal(module):
         return hash(tuple(_stock_fingerprint_parts(_named_modules(module))))
     parts: list = []
@@ -3394,8 +3383,7 @@ _STATE_MARK = "\0" + _STATE_PREFIX
 
 
 def _may_hold_state(state: dict) -> bool:
-    """False only when no key of ``state`` starts with ``_unsloth_`` (one C-level search over the joined keys instead
-    of a ``startswith`` per key on every submodule); True sends the dict through the exact per-key scan."""
+    """False only when no key starts with ``_unsloth_``; True means run the exact per-key scan."""
     try:
         joined = "\0".join(state)
     except TypeError:  # a non-string key: scan it
@@ -3423,7 +3411,7 @@ def _mirror_hook_state(pairs: list) -> tuple:
     for i, (_src, dst) in enumerate(pairs):
         mine = wanted.get(i, {})
         if not mine and not _may_hold_state(dst.__dict__):
-            continue  # nothing to delete and nothing to write
+            continue
         for key in [
             k
             for k, v in dst.__dict__.items()

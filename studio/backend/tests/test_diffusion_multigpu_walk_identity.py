@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The CFG replica router's per-step checks (weights fingerprint, hook refusal, ``_unsloth_*`` state mirror) walk
-the denoiser with one shared pass instead of torch's nested generators. These tests pin every answer to the previous
-implementation, kept verbatim below as the reference, across the mutations a render can make mid-flight."""
+"""Pins the single-walk router checks (fingerprint, hook refusal, state mirror) to the verbatim previous implementation."""
 
 from __future__ import annotations
 
@@ -182,10 +180,10 @@ def test_fingerprint_identical_through_every_mutation():
     dit.blocks[0].attn.weight = torch.nn.Parameter(torch.randn(4, 4))  # parameter replaced
     step()
     with torch.no_grad():
-        dit.blocks[1].ff[0].bias.add_(1.0)  # in-place edit
+        dit.blocks[1].ff[0].bias.add_(1.0)
     step()
     with torch.no_grad():
-        dit.scale.mul_(2.0)  # in-place buffer edit
+        dit.scale.mul_(2.0)
     step()
     dit.blocks[2].attn.scaling = {"default": 1.0}  # PEFT-like adapter state
     dit.blocks[2].attn._active_adapter = ["default"]
@@ -209,7 +207,7 @@ def test_fingerprint_identical_through_every_mutation():
     step()
     dit.blocks[1].register_buffer("packed", torch.zeros(3, dtype = torch.uint8))
     step()
-    del dit.blocks[1].lora_A  # adapter removed
+    del dit.blocks[1].lora_A
     step()
     with torch.inference_mode():
         frozen = torch.ones(2)
@@ -317,7 +315,7 @@ def test_hooks_present_identical_for_accelerate_registry_and_overrides():
             self.hooks = {n: object() for n in names}
 
     dit = _Dit()
-    dit.blocks[1].attn._hf_hook = object()  # accelerate hook
+    dit.blocks[1].attn._hf_hook = object()
     _assert_hooks_same(dit)
     assert mg._hooks_present(dit) == "blocks.1.attn._hf_hook"
     dit.blocks[1].attn._hf_hook = None
@@ -332,9 +330,9 @@ def test_hooks_present_identical_for_accelerate_registry_and_overrides():
     dit.blocks[0].ff._diffusers_hook = Registry("first_block_cache")  # step cache registry
     _assert_hooks_same(dit)
     assert "first_block_cache" in mg._hooks_present(dit)
-    dit.blocks[0].ff._diffusers_hook = Registry()  # empty registry
+    dit.blocks[0].ff._diffusers_hook = Registry()
     _assert_hooks_same(dit)
-    dit.blocks[0].ff.forward = lambda x: x  # instance forward override
+    dit.blocks[0].ff.forward = lambda x: x
     _assert_hooks_same(dit)
     assert mg._hooks_present(dit) == "blocks.0.ff.forward (instance override)"
     del dit.blocks[0].ff.forward
@@ -397,10 +395,10 @@ def test_hook_state_and_mirror_identical_through_every_state_change():
         assert mg._hook_state(new_pairs) == _ref_hook_state(ref_pairs)
 
     step()
-    src._unsloth_null_mask = True  # root scalar
+    src._unsloth_null_mask = True
     src.blocks[1].ff._unsloth_trim = 3
     step()
-    src.blocks[1].ff._unsloth_trim = 4  # value changed
+    src.blocks[1].ff._unsloth_trim = 4
     step()
     src.blocks[1].ff._unsloth_trim = True  # equal value, other type
     step()
