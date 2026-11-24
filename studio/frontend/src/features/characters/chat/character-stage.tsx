@@ -11,7 +11,7 @@ import { useAvatarUrl, useIsCutout, viewAvatar } from "../images";
 import { chatViewOf } from "../chat-view";
 import { useStageFocus } from "../stage-focus";
 import type { Character } from "../types";
-import { NovelNameplate, NovelScene, SpeakingDots } from "./novel-scene";
+import { NovelScene, SpeakingDots } from "./novel-scene";
 import { useAskToReply } from "./ask-bridge";
 import { GroupRoundController } from "./group-round-controller";
 import { CharacterChatContext } from "./character-chat-context";
@@ -32,7 +32,7 @@ export function CharacterStage({ threadId, children }: { threadId: string | null
       className={cn(
         "relative flex min-h-0 min-w-0 flex-1 basis-0",
         stage ? "character-stage-layout flex-col [container-type:inline-size] md:flex-row" : "flex-col",
-        novel && "character-novel isolate",
+        novel && "character-novel isolate [container-type:size]",
       )}
     >
       {thread ? <GroupRoundController /> : null}
@@ -46,7 +46,6 @@ export function CharacterStage({ threadId, children }: { threadId: string | null
         )}
       >
         {children}
-        {novel && thread ? <NovelNameplate threadId={id} cast={thread.cast} /> : null}
       </div>
     </div>
     </CharacterChatContext.Provider>

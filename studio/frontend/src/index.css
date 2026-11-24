@@ -8276,6 +8276,16 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
     max-width: 60%;
   }
 }
+/* Group scenes name the figure in front just above the dialogue panel, which hides its base:
+   the panel's top (its height, at least the minimum) less the figure strip's bottom. */
+.character-novel-figure-name {
+  bottom: calc(max(52cqh, var(--character-novel-panel-min)) - 34cqh + 0.75rem);
+}
+@media (max-width: 767.98px) {
+  .character-novel-figure-name {
+    bottom: calc(max(58cqh, var(--character-novel-panel-min)) - 44cqh + 0.75rem);
+  }
+}
 /* Waiting characters stand a step back, shaded rather than see-through. */
 .character-novel-figure-waiting {
   filter: drop-shadow(0 20px 26px rgb(0 0 0 / .28)) brightness(.78) saturate(.75);
