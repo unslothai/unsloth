@@ -22226,7 +22226,6 @@ async def check_transformers_upgrade_route(
     keeps_4bit = False
     if latest_tier_active or install_only_upgrade:
         from utils.transformers_version import latest_tier_keeps_4bit
-
         try:
             keeps_4bit = await asyncio.to_thread(
                 _offline_guarded,
