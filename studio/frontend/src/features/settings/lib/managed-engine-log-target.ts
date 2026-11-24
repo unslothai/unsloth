@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-const MANAGED_ENGINE_LOG_FAMILIES = ["sglang"] as const;
+const MANAGED_ENGINE_LOG_FAMILIES = ["sglang", "vllm"] as const;
 export type ManagedEngineLogFamily = (typeof MANAGED_ENGINE_LOG_FAMILIES)[number];
 
 export function isManagedEngineLogFamily(value: unknown): value is ManagedEngineLogFamily {

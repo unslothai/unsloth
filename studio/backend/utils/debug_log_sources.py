@@ -16,6 +16,7 @@ from utils.log_retention import DEFAULT_KEEP
 
 MANAGED_ENGINE_LOG_FAMILIES = {
     "sglang": ("logs/sglang", "sglang-*.log"),
+    "vllm": ("logs/vllm", "vllm-*.log"),
 }
 # (subdirectory under a studio home, filename glob). backend-* is the Tauri shell's capture of backend stdout, and the only record that exists when the backend dies before disk logging starts. Python writers are run.py:_setup_server_disk_logging and the llama / diffusion runners in core/inference/llama_cpp.py; the desktop families come from src-tauri/src/diagnostics/phase_log.rs and land in the logs directory ITSELF, with tauri.log at the home root.
 FAMILIES: dict[str, tuple[str, str]] = {
