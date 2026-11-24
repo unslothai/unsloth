@@ -31,6 +31,7 @@ export type ChatFolder = { sessionId: string; names: readonly string[] };
 type PartLike = {
   type?: string;
   text?: unknown;
+  image?: unknown;
   toolName?: string;
   args?: unknown;
   result?: unknown;
@@ -128,6 +129,17 @@ function collectMessageFiles(message: MessageLike): Found[] {
           messageId: message.id,
           text: block.source,
         });
+      });
+      return;
+    }
+    if (part.type === "image" && typeof part.image === "string" && part.image) {
+      const mime = /^data:([^;,]+)/.exec(part.image)?.[1] ?? "image/png";
+      found.push({
+        id: base,
+        name: `generated-image.${extFromMime(mime)}`,
+        kind: "image",
+        messageId: message.id,
+        dataUrl: part.image,
       });
       return;
     }

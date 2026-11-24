@@ -189,3 +189,17 @@ test("a fence in a list item's continuation paragraph is found with its indentat
     [["snippet.py", "x = 1"]],
   );
 });
+
+test("standard assistant image parts (imported chats) are listed", () => {
+  const files = collectChatFiles([
+    {
+      id: "a1",
+      role: "assistant",
+      content: [{ type: "image", image: "data:image/jpeg;base64,AA" }],
+    },
+  ]);
+  assert.deepEqual(
+    files.map((f) => [f.name, f.kind, f.dataUrl]),
+    [["generated-image.jpg", "image", "data:image/jpeg;base64,AA"]],
+  );
+});
