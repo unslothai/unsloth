@@ -109,6 +109,26 @@ def _is_own_blob(blob: Optional[Path], repo_dir: Optional[Path]) -> bool:
         return False
 
 
+def _own_blob_link(blob: Optional[Path], repo_dir: Optional[Path]) -> Optional[Path]:
+    """The repo's own ``blobs/<hash>`` entry for ``blob``: the scan's path itself, or, for a repo recovered from a
+    shared blob store (whose scan paths are fully resolved into the cache-wide store), the repo-local first hop
+    when it really leads to that same file. None when the blob is not the repo's to free."""
+    if blob is None or repo_dir is None:
+        return None
+    if _is_own_blob(blob, repo_dir):
+        return blob
+    blob_hash = _blob_hash_from_path(Path(blob))
+    if not blob_hash:
+        return None
+    local = repo_dir / "blobs" / blob_hash
+    try:
+        if _is_own_blob(local, repo_dir) and local.resolve() == Path(blob).resolve():
+            return local
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return None
+
+
 def _is_own_snapshot_entry(snap: Path, repo_dir: Optional[Path]) -> bool:
     """True only for an entry really kept under ``<repo_dir>/snapshots``. Behind a ``snapshots``, revision or variant folder that is a link it is another folder's own file (see :func:`_is_own_blob`); only the repo folder itself may sit behind a link."""
     if repo_dir is None:
@@ -485,7 +505,8 @@ def _delete_gguf_variant_from_repos(
         seen_blobs: set[Path] = set()
         for _snap, blob, name in [*matched, *companion_matches]:
             # the scan's blob is wherever the snapshot link leads; only the repo's own blobs are this delete's to free.
-            if blob is None or not _is_own_blob(blob, repo_dir):
+            blob = _own_blob_link(blob, repo_dir)
+            if blob is None:
                 continue
             blob_hash = _blob_hash_from_path(blob)
             if blob_hash:
@@ -773,10 +794,11 @@ def reclaim_replaced_gguf_variant(
             if commit in protected_revisions:
                 continue
             # prune confirmed stale blobs only; non-symlink snapshot files lack identifiable hashes.
-            blob_hash = _blob_hash_from_path(blob) if _is_own_blob(blob, repo_dir) else None
+            own = _own_blob_link(blob, repo_dir)
+            blob_hash = _blob_hash_from_path(own) if own is not None else None
             if blob_hash is None or blob_hash in keep_main_hashes:
                 continue
-            stale_matches.append((snap, blob, name))
+            stale_matches.append((snap, own, name))
 
         if not stale_matches:
             continue

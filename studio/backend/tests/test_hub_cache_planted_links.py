@@ -107,3 +107,25 @@ def test_chat_template_walk_does_not_read_a_linked_host_file(tmp_path, monkeypat
         json.dumps({"chat_template": "IN_CACHE"}), encoding = "utf-8"
     )
     assert service.read_default_chat_template("org/model") == "IN_CACHE"
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "symlinked blob layout")
+def test_a_recovered_shared_store_blob_maps_back_to_the_repos_own_link(tmp_path):
+    # A repo recovered from a shared blob store has scan paths resolved into the cache-wide store; its
+    # own blobs/<hash> link must still be found so the delete can unlink it and sweep the shared payload.
+    from hub.services.models import deletion
+
+    digest = "a" * 64
+    shared = tmp_path / "blobs" / digest
+    shared.parent.mkdir()
+    shared.write_bytes(b"payload")
+    repo = tmp_path / "models--org--m"
+    (repo / "blobs").mkdir(parents = True)
+    (repo / "blobs" / digest).symlink_to(shared)
+    assert deletion._own_blob_link(shared, repo) == repo / "blobs" / digest
+    assert deletion._own_blob_link(repo / "blobs" / digest, repo) == repo / "blobs" / digest
+    # Same name elsewhere, not where the repo's link leads: not the repo's to free.
+    stray = tmp_path / "elsewhere" / digest
+    stray.parent.mkdir()
+    stray.write_bytes(b"host file")
+    assert deletion._own_blob_link(stray, repo) is None
