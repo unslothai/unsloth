@@ -750,6 +750,11 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         quiet_progress_bars = False,
     )
 
+    # REAP calibration loads a Hub dataset in this process: its card may not name host paths either.
+    from utils.security.hub_data_files import install as guard_hub_data_files
+
+    guard_hub_data_files()
+
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
     checkpoint_path = config["checkpoint_path"]
