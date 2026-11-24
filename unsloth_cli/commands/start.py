@@ -5394,6 +5394,8 @@ def _connect(
             and server is None
             and any(
                 entry.get("loaded") is not False
+                # A loaded quant's own repo:QUANT alias is a split, not a tagged id.
+                and not entry.get("quant")
                 and _model_id_matches(
                     entry.get("id"), requested, allow_casefold = is_loopback_url(base)
                 )
