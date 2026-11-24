@@ -1965,3 +1965,27 @@ def test_short_data_compiles_static_buckets_and_long_data_dynamic(
     assert all(layer._compiled_call_impl is None for layer in layers)
     assert model._unsloth_pad_multiple == 0
     assert torch._dynamo.config.recompile_limit == limit
+
+
+def test_a_push_refuses_a_bad_save_method_before_creating_the_repo(monkeypatch):
+    # create_repo is a remote side effect: a save_method the merge then rejects must not
+    # leave an empty repo behind.
+    import huggingface_hub
+
+    calls = []
+
+    class FakeApi:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def create_repo(self, repo_id, *args, **kwargs):
+            calls.append(("create_repo", repo_id))
+            return types.SimpleNamespace(repo_id = repo_id)
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", FakeApi)
+    model = types.SimpleNamespace(
+        save_pretrained_merged = lambda *args, **kwargs: calls.append(("save", args))
+    )
+    with pytest.raises(NotImplementedError, match = "16-bit"):
+        decision.push_to_hub_merged(model, "user/repo", save_method = "merged_4bit")
+    assert calls == []
