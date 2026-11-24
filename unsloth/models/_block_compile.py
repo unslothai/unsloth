@@ -570,14 +570,18 @@ def _flex_block_mask_call(
     return False
 
 
-# Auto: graphs start when launch time exceeds GPU time by _AUTO_RATIO and all calls had one shape.
+# Auto: graphs start when launch time is at least _AUTO_RATIO x GPU time and all calls had one shape.
+# The ratio is measured on forward block calls only; the checkpoint recompute and backward launch more
+# per GPU millisecond, so a forward ratio near 1 already gains a lot. A100 Qwen3-4B QLoRA 2x1024 measured
+# 1.16-1.51 across fresh processes and ran 310 ms/step with graphs vs 390 ms without, so the old 1.2
+# split one run setup into two speeds by host jitter. Ratios 0.55-0.92 gained nothing (-1.2% to +1.0%).
 _AUTO_WARMUP_PASSES = 2
 _AUTO_MEASURE_CALLS = 4
 _AUTO_SLEEP_CYCLES = 20_000_000  # ~10-15 ms: the block's launches queue behind it
 try:
-    _AUTO_RATIO = float(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_AUTO_RATIO", "1.2"))
+    _AUTO_RATIO = float(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_AUTO_RATIO", "1.0"))
 except ValueError:
-    _AUTO_RATIO = 1.2
+    _AUTO_RATIO = 1.0
 # 2.13+: the graphed region gets its own recompile bucket (isolate_recompiles) instead of sharing
 # the stock region's cache limit. Before 2.11 FastLanguageModel LoRA blocks are not compiled at all.
 _AUTO_MIN_TORCH = "2.13"

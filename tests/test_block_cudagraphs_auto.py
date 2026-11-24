@@ -159,12 +159,22 @@ def test_auto_keeps_graphs_off_when_gpu_bound(monkeypatch):
 
 
 def test_auto_ratio_threshold(monkeypatch):
-    """Launching must be clearly slower than running: A100 ratios 0.55-0.92 gained nothing with graphs
-    forced on (-1.2% to +1.0%), 1.26 gained 12.6%."""
-    layers, calls, _, _ = _harness(monkeypatch, host = 1.1e-3, gpu = 1e-3)
+    """Launching must be at least as slow as running: A100 ratios 0.55-0.92 gained nothing with graphs
+    forced on (-1.2% to +1.0%)."""
+    layers, calls, _, _ = _harness(monkeypatch, host = 0.95e-3, gpu = 1e-3)
     for _ in range(6):
         assert _step(layers, calls) == ["plain", "plain"]
     assert bc._CUDAGRAPH_STATE["auto"]["phase"] == "off"
+
+
+def test_auto_ratio_just_above_one_turns_graphs_on(monkeypatch):
+    """A100 Qwen3-4B QLoRA 2x1024 measured forward ratios 1.16-1.51 per process and ran 21% faster
+    with graphs; the old 1.2 threshold left 1 in 4 processes on the slow path."""
+    layers, calls, _, _ = _harness(monkeypatch, host = 1.16e-3, gpu = 1e-3)
+    for _ in range(6):
+        out = _step(layers, calls)
+    assert bc._CUDAGRAPH_STATE["auto"]["phase"] == "on"
+    assert out == ["graphs", "graphs"]
 
 
 def test_auto_shape_change_while_probing_keeps_graphs_off(monkeypatch):
