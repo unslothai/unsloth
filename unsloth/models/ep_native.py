@@ -400,22 +400,40 @@ def _gpt_oss_block_forward(block):
 _BLOCK_FORWARDS = {"GptOssMLP": _gpt_oss_block_forward}
 
 
+def _bypass_message(block, shard):
+    return (
+        f"Unsloth: {type(block).__name__}.forward computed its experts without calling "
+        f"{type(shard.leaf).__name__} (a fused or decode-only path), which under expert parallel holds only "
+        f"{shard.per_rank} of {shard.experts} experts. Disable that path (for example generate in "
+        "training mode or the zoo inference MoE path) or train without expert parallel."
+    )
+
+
 def _guard_bypass(block, shard):
     """A block forward that never reached its experts call (a fused / decode path computing all E experts from
-    this rank's E / ep) would silently be wrong under expert parallel: refuse it."""
+    this rank's E / ep) would silently be wrong under expert parallel: refuse it. Such a path reading the local
+    stacks with a global expert id >= E / ep raises IndexError before the post hook can run: that is refused the
+    same way (the IndexError chained), so the outcome does not depend on which experts the router picked."""
 
     def pre(module, args):
         module.__dict__["_unsloth_ep_calls"] = shard.calls
 
     def post(module, args, output):
         if shard.calls == module.__dict__.get("_unsloth_ep_calls"):
-            raise RuntimeError(
-                f"Unsloth: {type(module).__name__}.forward computed its experts without calling "
-                f"{type(shard.leaf).__name__} (a fused or decode-only path), which under expert parallel holds only "
-                f"{shard.per_rank} of {shard.experts} experts. Disable that path (for example generate in "
-                "training mode or the zoo inference MoE path) or train without expert parallel."
-            )
+            raise RuntimeError(_bypass_message(module, shard))
 
+    inner = block.forward
+
+    def forward(*args, **kwargs):
+        before = shard.calls
+        try:
+            return inner(*args, **kwargs)
+        except IndexError as exc:
+            if shard.calls == before:
+                raise RuntimeError(_bypass_message(block, shard)) from exc
+            raise
+
+    block.forward = forward
     block.register_forward_pre_hook(pre)
     block.register_forward_hook(post)
 

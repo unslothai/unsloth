@@ -166,9 +166,10 @@ def _case_bypass(rank, world, tmp, repo):
     return {"message": message}
 
 
-def _zoo_like_gpt_oss_decode(enable):
+def _zoo_like_gpt_oss_decode(enable, last_expert = False):
     """GptOssMLP.forward with unsloth_zoo's shape: a 1-token eval decode reads the expert stacks directly
-    (here: the experts class forward called unbound, around the experts call)."""
+    (here: the experts class forward called unbound, around the experts call). last_expert routes every token
+    to expert E - 1, a global id past this rank's E / ep local stacks."""
     from transformers.models.gpt_oss import modeling_gpt_oss as mod
 
     if not enable:
@@ -180,6 +181,8 @@ def _zoo_like_gpt_oss_decode(enable):
         if qlen == 1 and not self.training:
             flat = hidden_states.reshape(-1, hd)
             _, scores, indices = self.router(flat)
+            if last_expert:
+                indices = torch.full_like(indices, self.router.num_experts - 1)
             out = type(self.experts).forward(self.experts, flat, indices, scores)
             return out.reshape(bsz, qlen, hd), scores
         return original(self, hidden_states)
@@ -194,8 +197,9 @@ def _case_generate(
     repo,
     zoo_decode = False,
     plain_block = True,
+    last_expert = False,
 ):
-    _zoo_like_gpt_oss_decode(zoo_decode)
+    _zoo_like_gpt_oss_decode(zoo_decode, last_expert = last_expert)
     """generate under expert parallel: each rank its own prompt and max_new_tokens (rank 1 stops 3 tokens early);
     synced_gpus keeps the finished rank stepping, and every rank's tokens equal one process' greedy decode."""
     from torch.distributed.device_mesh import init_device_mesh
@@ -359,6 +363,21 @@ def test_ep_gpt_oss_decode_path_around_the_experts_call():
         assert r["got"] is not None and torch.equal(r["got"], r["want"]), r
     # Without that replacement the bypass guard refuses rather than decoding from E / ep experts.
     results = _spawn("_case_generate", repo = FAMILIES["gpt_oss"], zoo_decode = True, plain_block = False)
+    for r in results:
+        assert r is not None and "without calling" in (r.get("refused") or ""), r
+
+
+def test_ep_bypass_reading_a_global_expert_id_is_refused():
+    # A decode path around the experts call that indexes this rank's E / ep local stacks with a global id >= E / ep
+    # raised IndexError before the bypass guard's post hook (AMD gfx1151 hosts, torch 2.11: the router picked
+    # expert 3 of 4 with 2 local). Every token routed to expert E - 1 makes that deterministic.
+    results = _spawn(
+        "_case_generate",
+        repo = FAMILIES["gpt_oss"],
+        zoo_decode = True,
+        plain_block = False,
+        last_expert = True,
+    )
     for r in results:
         assert r is not None and "without calling" in (r.get("refused") or ""), r
 
