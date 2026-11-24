@@ -5752,6 +5752,51 @@ def classifying_under(sandbox_level: "str | None"):
         _classifying_sandbox_level.reset(token)
 
 
+class PythonCallAnalyses:
+    """One tool call's static Python analyses, made while it is classified and reused when it runs.
+
+    Keyed by the exact source text, so code that differs (a rewrite, a nested payload) is analysed
+    afresh. Make one per tool call; never share one across calls."""
+
+    __slots__ = ("_by_source",)
+
+    def __init__(self) -> None:
+        self._by_source: "dict[str, tuple]" = {}
+
+
+_python_call_analyses: "ContextVar[PythonCallAnalyses | None]" = ContextVar(
+    "unsloth_python_call_analyses", default = None
+)
+
+
+@contextlib.contextmanager
+def using_python_call_analyses(analyses: "PythonCallAnalyses | None"):
+    """Scope ``analyses`` to the block (one call's classification or its run); None changes nothing."""
+    if analyses is None:
+        yield
+        return
+    token = _python_call_analyses.set(analyses)
+    try:
+        yield
+    finally:
+        _python_call_analyses.reset(token)
+
+
+def _signal_escape_analysis(code: str):
+    """`_check_signal_escape_patterns`, run once per source within one call's scope.
+
+    The analysis reads only the source and process constants, so the classification's result is
+    the one the run would compute."""
+    analyses = _python_call_analyses.get()
+    if analyses is None or type(code) is not str:
+        return _check_signal_escape_patterns(code)
+    found = analyses._by_source.get(code)
+    if found is None:
+        found = _check_signal_escape_patterns(code)
+        analyses._by_source[code] = found
+    return found
+
+
 # Both run the command through cmd.exe: the isolated one inside MXC, the fallback on a host without Git Bash.
 _CMD_PROFILES = ("cmd_isolated", "cmd_fallback")
 
@@ -9074,7 +9119,7 @@ def _python_is_high_risk(code: str) -> bool:
     if not code or not code.strip():
         return False
     # A confirmation beats a silent refusal at execution time.
-    analysis = _check_signal_escape_patterns(code)
+    analysis = _signal_escape_analysis(code)
     if _check_code_safety(code, analysis = analysis) is not None:
         return True
     if any(_terminal_is_high_risk(command) for command in analysis[1].get("shell_commands", ())):
@@ -15139,6 +15184,7 @@ def execute_tool(
     host_access_approved: bool = False,
     mcp_image = None,
     started_read: "StartedUrlRead | None" = None,
+    python_analyses: "PythonCallAnalyses | None" = None,
 ) -> str:
     """Runs a tool by name; disable_sandbox skips python/terminal checks, blocklist and caps (secrets stay stripped); tool_execution_mode full is refused here."""
     from state.tool_policy import require_tool_access
@@ -15441,7 +15487,8 @@ def execute_tool(
         )
     # Both run with the session's sandbox as cwd, so a chat deleted mid-call must not unlink it from under them.
     if name == "python":
-        with _session_in_flight(session_id):
+        # This call's classification already analysed its code; the run reuses it for the same source.
+        with _session_in_flight(session_id), using_python_call_analyses(python_analyses):
             return _python_exec(
                 arguments.get("code", ""),
                 cancel_event,
@@ -22320,7 +22367,7 @@ def _check_code_safety(
 ) -> str | None:
     """Validate code safety via static analysis. Returns an error message string if the code is
     unsafe, or None if OK. host_approved lets an approved call reach hosts off the allowlist."""
-    safe, info = analysis or _check_signal_escape_patterns(code)
+    safe, info = analysis or _signal_escape_analysis(code)
     # A literal `python -c PROGRAM` the code launches runs PROGRAM unscreened; screen it the same way.
     if _depth < 3 and not info.get("error"):
         for command in info.get("shell_commands", ()):
