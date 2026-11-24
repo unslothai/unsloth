@@ -245,8 +245,15 @@ jobs:
 
       - name: python floor compatibility (HARD GATE)
         # Every job pins 3.12, so this AST check guards the requires-python floor from pyproject.
+        # One leg: it reads only pyproject.toml and the .py files on disk under the packaged roots
+        # (unsloth/, unsloth_cli/, studio/) through ast/compile, never an installed package, so
+        # every leg computed the same verdict. !cancelled() plus the pytest fallback and
+        # --noconftest (the conftest imports unsloth) keep the verdict when setup failed on this
+        # leg, which the other legs used to cover.
+        if: ${{ !cancelled() && matrix.combo.id == 'pyproject' }}
         run: |
-          python -m pytest -v --tb=short tests/test_python39_compatibility.py
+          python -c 'import pytest' 2> /dev/null || python -m pip install pytest==9.0.3
+          python -m pytest -v --tb=short --noconftest -p no:cacheprovider tests/test_python39_compatibility.py
 
       - name: SFT assistant-mask fallback through the real trainer (HARD GATE)
         # Needs real torch, TRL and unsloth, so it cannot ride the pytest-only version-compat bundle.
