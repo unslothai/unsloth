@@ -111,7 +111,7 @@ import {
   QUANT_OPTIONS,
   buildQuantSizeLabels,
   getEstimatedSize,
-  MOE_GGUF_ADAPTER_REASON,
+  MOE_GGUF_ADAPTER_HINT,
   mergedFormatPayload,
 } from "./constants";
 import {
@@ -449,7 +449,7 @@ export function ExportPage() {
     () => selectedModelData?.checkpoints ?? [],
     [selectedModelData],
   );
-  const moeAdapterBlocksGguf =
+  const moeExpertAdapter =
     sourceMode === "checkpoint" &&
     selectedModelData?.adapter_features?.moe_target_parameters === true;
 
@@ -709,17 +709,11 @@ export function ExportPage() {
     ) {
       setExportMethod(null);
     }
-    if (
-      (diffusionDisabledMethods.includes("gguf") || moeAdapterBlocksGguf) &&
-      loraAsGguf
-    ) {
+    if (diffusionDisabledMethods.includes("gguf") && loraAsGguf) {
       setLoraAsGguf(false);
     }
     // The GGUF LoRA target only applies to an adapter checkpoint on a non-Mac host.
-    if (
-      (!effectiveIsAdapter || isMacHost || moeAdapterBlocksGguf) &&
-      ggufTarget !== "model"
-    ) {
+    if ((!effectiveIsAdapter || isMacHost) && ggufTarget !== "model") {
       setGgufTarget("model");
     }
   }, [
@@ -730,7 +724,6 @@ export function ExportPage() {
     ggufTarget,
     diffusionDisabledMethods,
     loraAsGguf,
-    moeAdapterBlocksGguf,
   ]);
 
   const handleSourceTabChange = useCallback((next: string) => {
@@ -770,14 +763,15 @@ export function ExportPage() {
     }
   };
 
-  const estimatedSize = getEstimatedSize(
+  const estimateMethod =
     exportMethod === "gguf" && ggufTarget === "lora" && effectiveIsAdapter
       ? "lora"
-      : exportMethod,
-    quantLevels,
-    fp16Bytes,
-    moeAdapterBlocksGguf,
-  );
+      : exportMethod;
+  // Expert LoRA scales with the expert count (1.6 GB for Inkling 2 Mini at rank 16), so "~100 MB" would mislead.
+  const estimatedSize =
+    estimateMethod === "lora" && moeExpertAdapter
+      ? ""
+      : getEstimatedSize(estimateMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
   // Derived, not reset in an effect: an imatrix is calibrated for one model only.
@@ -1868,16 +1862,13 @@ export function ExportPage() {
                                     variant={loraAsGguf ? "dark" : "outline"}
                                     size="sm"
                                     onClick={() => setLoraAsGguf(true)}
-                                    disabled={
-                                      diffusionDisabledMethods.includes("gguf") ||
-                                      moeAdapterBlocksGguf
-                                    }
+                                    disabled={diffusionDisabledMethods.includes(
+                                      "gguf",
+                                    )}
                                     title={
                                       diffusionDisabledMethods.includes("gguf")
                                         ? (diffusionLmInfo?.reason ?? undefined)
-                                        : moeAdapterBlocksGguf
-                                          ? MOE_GGUF_ADAPTER_REASON
-                                          : "llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
+                                        : "llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
                                     }
                                   >
                                     GGUF adapter
@@ -1892,6 +1883,11 @@ export function ExportPage() {
                                       ? "Adapter weights only; pick the on-disk format below."
                                       : "Standard PEFT adapter files. Pair with the base model at inference."}
                                 </div>
+                                {loraAsGguf && moeExpertAdapter && (
+                                  <div className="text-xs text-muted-foreground">
+                                    {MOE_GGUF_ADAPTER_HINT}
+                                  </div>
+                                )}
                               </div>
 
                               {!loraAsGguf && isMacHost && (
@@ -2047,12 +2043,7 @@ export function ExportPage() {
                                       }
                                       size="sm"
                                       onClick={() => setGgufTarget("lora")}
-                                      disabled={moeAdapterBlocksGguf}
-                                      title={
-                                        moeAdapterBlocksGguf
-                                          ? MOE_GGUF_ADAPTER_REASON
-                                          : "Export just the adapter as a GGUF LoRA (llama.cpp `--lora`); the base model stays separate."
-                                      }
+                                      title="Export just the adapter as a GGUF LoRA (llama.cpp `--lora`); the base model stays separate."
                                     >
                                       LoRA adapter
                                     </Button>
@@ -2062,6 +2053,11 @@ export function ExportPage() {
                                       ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
                                       : "Merges the adapter into the base model, then quantizes the full model to GGUF."}
                                   </div>
+                                  {ggufTarget === "lora" && moeExpertAdapter && (
+                                    <div className="text-xs text-muted-foreground">
+                                      {MOE_GGUF_ADAPTER_HINT}
+                                    </div>
+                                  )}
                                 </div>
                               )}
 

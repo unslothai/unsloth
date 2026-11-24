@@ -6534,6 +6534,39 @@ def _converter_error_line(lines) -> str:
     return ""
 
 
+def _lora_gguf_conversion_error(returncode, cause, expert_targets) -> Exception:
+    """The converter's failure as one message. LoRA on MoE expert weights (PEFT target_parameters) that the
+    converter cannot map yet gets its own wording; nothing refuses it up front, so a converter that learns it just works.
+    """
+    if expert_targets and "Can not map tensor" in cause and ".experts" in cause:
+        return NotImplementedError(
+            "Unsloth: llama.cpp's LoRA GGUF converter cannot map this adapter's MoE expert weights "
+            f"(target_parameters: {', '.join(expert_targets)}) yet: {cause}. Export the merged model as "
+            "GGUF instead, or save the adapter as safetensors."
+        )
+    return RuntimeError(
+        f"Unsloth: LoRA -> GGUF conversion failed (exit {returncode})"
+        + (f": {cause}" if cause else ". See the output above for details.")
+    )
+
+
+def _remove_new_entries(directory, existing, created) -> None:
+    """Delete the entries a failed export wrote into ``directory``, and the directory if the export created it."""
+    try:
+        for name in os.listdir(directory):
+            if name in existing:
+                continue
+            path = os.path.join(directory, name)
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path, ignore_errors = True)
+            else:
+                os.remove(path)
+        if created and not os.listdir(directory):
+            os.rmdir(directory)
+    except OSError:
+        pass
+
+
 @_model_parallel_refuses_save("save_pretrained_gguf")
 def _unsloth_save_lora_gguf(
     model,
@@ -6568,14 +6601,8 @@ def _unsloth_save_lora_gguf(
     if token is None or token is True:
         token = get_token()
 
-    # llama.cpp's converter maps Linear LoRA only and fails on target_parameters (MoE expert) LoRA after the adapter is written.
+    # Not refused up front: the converter decides, so expert LoRA works as soon as llama.cpp can map it.
     expert_targets = _lora_target_parameters(model)
-    if expert_targets:
-        raise NotImplementedError(
-            "Unsloth: this adapter trains MoE expert weights (target_parameters: "
-            f"{', '.join(expert_targets)}), which llama.cpp's LoRA GGUF converter cannot map yet. Export the "
-            "merged model as GGUF instead, or save the adapter as safetensors."
-        )
 
     # Resolve the dequantized base id, since the adapter usually references a 4bit repo.
     base_model_id = _lora_base_model_id(model)
@@ -6595,7 +6622,10 @@ def _unsloth_save_lora_gguf(
     if push_to_hub:
         lora_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-")
     else:
+        # A failed conversion removes what this export wrote, and only that.
+        created_save_dir = not os.path.isdir(save_directory)
         os.makedirs(save_directory, exist_ok = True)
+        existing_entries = set(os.listdir(save_directory))
         lora_dir = save_directory
 
     try:
@@ -6661,10 +6691,10 @@ def _unsloth_save_lora_gguf(
                 if sp.returncode != 0:
                     raise subprocess.CalledProcessError(sp.returncode, sp.args)
         except subprocess.CalledProcessError as e:
-            cause = _converter_error_line(output_tail)
-            raise RuntimeError(
-                f"Unsloth: LoRA -> GGUF conversion failed (exit {e.returncode})"
-                + (f": {cause}" if cause else ". See the output above for details.")
+            if not push_to_hub:
+                _remove_new_entries(lora_dir, existing_entries, created_save_dir)
+            raise _lora_gguf_conversion_error(
+                e.returncode, _converter_error_line(output_tail), expert_targets
             )
 
         if not os.path.isfile(out_gguf):
