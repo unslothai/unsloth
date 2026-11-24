@@ -90,6 +90,20 @@ def _mask_tool_responses(trainer, start_id, end_id, turn_id):
     return trainer
 
 
+# Templates that close every message with shared end tokens and open each role with one special token
+# (TML Inkling). Auto-detection glues the previous turn's end tokens onto both markers, so every
+# non-final assistant turn's end-of-turn tokens were masked; the role tokens alone are exact.
+_ROLE_TOKEN_MARKERS = (("<|message_user|>", "<|message_model|>"),)
+
+
+def role_token_markers(vocab):
+    """(instruction, response) role tokens when the tokenizer's added vocab has both, else None."""
+    for instruction, response in _ROLE_TOKEN_MARKERS:
+        if instruction in (vocab or {}) and response in (vocab or {}):
+            return instruction, response
+    return None
+
+
 def apply_completion_masking(
     trainer,
     model_name,
@@ -169,6 +183,20 @@ def apply_completion_masking(
         notify(
             "info",
             "Train on responses only configured via tokenizer preset markers",
+        )
+        return trainer, True
+    role_markers = role_token_markers(vocab)
+    if role_markers:
+        trainer = train_fn(
+            trainer,
+            instruction_part = role_markers[0],
+            response_part = role_markers[1],
+            **kwargs,
+        )
+        notify(
+            "info",
+            "Train on responses only configured with role token markers "
+            f"({role_markers[0]} / {role_markers[1]})",
         )
         return trainer, True
     auto_instruction = auto_response = None

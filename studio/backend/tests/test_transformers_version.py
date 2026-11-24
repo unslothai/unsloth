@@ -3025,9 +3025,9 @@ class TestLatestTierForces16Bit:
 
     def test_worker_guard_present(self):
         src = self._read("core/inference/worker.py")
-        assert "latest_tier_active_for" in src, (
+        assert "latest_tier_forces_16bit" in src, (
             "core/inference/worker.py must force load_in_4bit=False when "
-            "latest_tier_active_for(model) is true: transformers' grouped-MoE "
+            "latest_tier_forces_16bit(model) is true: transformers' grouped-MoE "
             "kernels crash on bnb-quantized expert weights for brand-new "
             "architectures."
         )
@@ -3043,7 +3043,7 @@ class TestLatestTierForces16Bit:
         # Without the same flip, /validate sizes 4-bit and /load then 409s.
         src = self._read("routes/inference.py")
         body = src.split("async def validate_model", 1)[1].split("\nasync def ", 1)[0]
-        assert "latest_tier_active_for" in body, (
+        assert "latest_tier_forces_16bit" in body, (
             "validate_model must apply the latest-sidecar 16-bit flip before "
             "_guard_chat_load_against_training so /validate and /load agree."
         )

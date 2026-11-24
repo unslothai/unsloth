@@ -573,6 +573,31 @@ def latest_tier_active_for(model_name: str, hf_token: str | None = None) -> bool
         return False
 
 
+# Latest-sidecar architectures whose bnb 4-bit load Unsloth core validates, so they keep QLoRA.
+# Inkling 2: Mini QLoRA trained on Kaggle 2x T4, Colab L4, A100 and G4 (transformers 5.24).
+LATEST_TIER_4BIT_MODEL_TYPES = frozenset({"inkling2", "inkling2_loop"})
+
+
+def latest_tier_keeps_4bit(model_type) -> bool:
+    return isinstance(model_type, str) and model_type in LATEST_TIER_4BIT_MODEL_TYPES
+
+
+def latest_tier_forces_16bit(model_name: str, hf_token: str | None = None) -> bool:
+    """latest_tier_active_for, minus architectures validated in 4-bit; never raises."""
+    if not latest_tier_active_for(model_name, hf_token):
+        return False
+    try:
+        if _is_lora_adapter_dir(Path(model_name)):
+            resolved = _resolve_base_model(model_name)
+        else:
+            resolved = _remote_lora_base(model_name, hf_token = hf_token) or model_name
+        cfg = _load_config_json(resolved, hf_token)
+        types = _model_types_from_config(cfg) if isinstance(cfg, dict) else []
+        return not (types and latest_tier_keeps_4bit(types[0]))
+    except Exception:
+        return True
+
+
 def _has_adapter_weights(path: Path) -> bool:
     """True if *path* holds LoRA adapter weight files (``adapter_model.*``)."""
     try:
