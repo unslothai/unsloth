@@ -513,6 +513,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
             base_model = base_model,
+            adapter_free = bool(cmd.get("adapter_free")),
         )
 
         _send_response(
