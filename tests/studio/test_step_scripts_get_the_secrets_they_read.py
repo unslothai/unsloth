@@ -85,15 +85,6 @@ _SECRET_FOR = {
 _INDEXED_FOR = {
     "KAGGLE_API_TOKEN": ("matrix.secret_name", {"KAGGLE_API_TOKEN", "KAGGLE_API_TOKEN_2"}),
 }
-# The scheduled collector runs both accounts in one job, so the secret behind KAGGLE_API_TOKEN
-# is fixed by the step's "(account N)" suffix instead of a matrix index.
-_PER_ACCOUNT_STEPS = {
-    "kaggle-collect.yml": (
-        "KAGGLE_API_TOKEN",
-        {"1": "KAGGLE_API_TOKEN", "2": "KAGGLE_API_TOKEN_2"},
-    ),
-}
-_ACCOUNT_SUFFIX = re.compile(r"\(account (\d+)\)$")
 # The Tauri smoke build blanks the signing key on purpose so debug builds are never signed.
 _DELIBERATELY_BLANK = {
     ("studio-tauri-smoke.yml", "TAURI_SIGNING_PRIVATE_KEY"),
@@ -325,57 +316,14 @@ def _misdrawn(doc: dict, name: str) -> list[str]:
             _check_mapping(key, value, job, name, wrong)
         for step in (job or {}).get("steps") or []:
             for key, value in (step.get("env") or {}).items():
-                if _per_account_mapping(key, value, step, name, wrong):
-                    continue
                 _check_mapping(key, value, job, name, wrong)
     return wrong
-
-
-def _per_account_mapping(key, value, step, name, wrong) -> bool:
-    """True when the step's "(account N)" suffix decides the secret; records a wrong one."""
-    if name not in _PER_ACCOUNT_STEPS or key != _PER_ACCOUNT_STEPS[name][0]:
-        return False
-    accounts = _PER_ACCOUNT_STEPS[name][1]
-    m = _ACCOUNT_SUFFIX.search(step.get("name") or "")
-    if not m or m.group(1) not in accounts:
-        wrong.append(f"{name}: step {step.get('name')!r} maps {key} but names no known account")
-        return True
-    expected = "${{ secrets.%s }}" % accounts[m.group(1)]
-    if value != expected:
-        wrong.append(f"{name}: {key} in {step.get('name')!r} is {value!r}, not {expected}")
-    return True
 
 
 @pytest.mark.parametrize("path", WORKFLOWS, ids = [p.name for p in WORKFLOWS])
 def test_every_secret_mapping_draws_on_the_secret_its_key_is_known_by(path):
     wrong = _misdrawn(yaml.safe_load(path.read_text(encoding = "utf-8")) or {}, path.name)
     assert not wrong, "\n".join(wrong)
-
-
-def test_a_swapped_account_token_in_the_collector_is_caught():
-    def doc(step_name, secret):
-        return {
-            "jobs": {
-                "collect": {
-                    "steps": [
-                        {
-                            "name": step_name,
-                            "env": {"KAGGLE_API_TOKEN": "${{ secrets.%s }}" % secret},
-                        }
-                    ]
-                }
-            }
-        }
-
-    w = "kaggle-collect.yml"
-    assert _misdrawn(doc("Collect (account 1)", "KAGGLE_API_TOKEN"), w) == []
-    assert _misdrawn(doc("Collect (account 2)", "KAGGLE_API_TOKEN_2"), w) == []
-    assert _misdrawn(doc("Collect (account 1)", "KAGGLE_API_TOKEN_2"), w)
-    assert _misdrawn(doc("Collect (account 2)", "KAGGLE_API_TOKEN"), w)
-    assert _misdrawn(doc("Collect (account 3)", "KAGGLE_API_TOKEN"), w)
-    assert _misdrawn(doc("Collect", "KAGGLE_API_TOKEN"), w)
-    # Elsewhere the cross mapping is still a swap.
-    assert _misdrawn(doc("Collect (account 2)", "KAGGLE_API_TOKEN_2"), "other.yml")
 
 
 def test_a_misspelled_or_swapped_secret_is_caught():

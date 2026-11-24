@@ -118,7 +118,16 @@
       "severity": "warn",
       "reason": "pre-existing warning",
       "digests": {
-        "5713a6ca35ae670f": 2,
+        "5713a6ca35ae670f": 1
+      }
+    },
+    {
+      "file": ".github/workflows/studio-windows-installer-smoke.yml",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning (moved from studio-windows-inference-smoke.yml with small-checks)",
+      "digests": {
+        "5713a6ca35ae670f": 1,
         "cd9e19e6cca8085a": 1
       }
     },

@@ -27,6 +27,8 @@ on:
       - 'tests/_shared/**'
       - 'pyproject.toml'
       - 'studio/install_llama_prebuilt.py'
+      # Read by Studio.Setup.BlockedInstallCause.Tests.ps1.
+      - 'studio/install_node_prebuilt.py'
       - 'studio/prebuilt_core.py'
       - 'studio/nvidia_probe.py'
       - 'studio/backend/__init__.py'
@@ -48,6 +50,8 @@ on:
       - 'tests/_shared/**'
       - 'pyproject.toml'
       - 'studio/install_llama_prebuilt.py'
+      # Read by Studio.Setup.BlockedInstallCause.Tests.ps1.
+      - 'studio/install_node_prebuilt.py'
       - 'studio/prebuilt_core.py'
       - 'studio/nvidia_probe.py'
       - 'studio/backend/__init__.py'
