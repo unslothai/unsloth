@@ -562,11 +562,13 @@ test("extractPdfAttachmentText destroys the PDF proxy after success and failure"
       _pdfInfo: {},
       numPages: 1,
       getPage: async () => ({
+        view: [0, 0, 200, 200],
         getTextContent: async () => ({
           items: [
-            { str: "page one", hasEOL: true },
-            { str: "page two", hasEOL: false },
+            { str: "page one", hasEOL: true, transform: [1, 0, 0, 1, 20, 100] },
+            { str: "page two", hasEOL: false, transform: [1, 0, 0, 1, 20, 90] },
           ],
+          styles: {},
         }),
       }),
       getFieldObjects: async () => null,

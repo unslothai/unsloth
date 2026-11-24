@@ -42,7 +42,7 @@ const typedPage = (words: string, font: number) => ({
   resources: `<< /Font << /F1 ${font} 0 R >> >>`,
 });
 const scannedPage = (image: number, stamp?: { words: string; font: number }) => ({
-  content: `q 200 0 0 200 0 0 cm /Im1 Do Q${stamp ? ` BT /F1 8 Tf 90 5 Td (${stamp.words}) Tj ET` : ""}`,
+  content: `q 200 0 0 200 0 0 cm /Im1 Do Q${stamp ? ` BT /F1 8 Tf 10 5 Td (${stamp.words}) Tj ET` : ""}`,
   resources: `<< /XObject << /Im1 ${image} 0 R >>${stamp ? ` /Font << /F1 ${stamp.font} 0 R >>` : ""} >>`,
 });
 const FONT = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
@@ -109,6 +109,16 @@ test("a scanned page carrying a page number stamp is still read by the server", 
     { type: "application/pdf" },
   );
   assert.equal(await extractPdfAttachmentText(stamped), "Contract terms\n\nANNEX B");
+  assert.equal(requests.length, 1);
+});
+
+test("a scanned page with a selectable footer is still read by the server", async () => {
+  const requests = serve({ filename: "invoice.pdf", text: "Invoice total: 4,250.00 EUR", truncated: false });
+  const footer = { words: "ACME Corp Confidential - Page 1 of 1", font: 5 };
+  const invoice = new File([pdf([scannedPage(6, footer)], [FONT, IMAGE])], "invoice.pdf", {
+    type: "application/pdf",
+  });
+  assert.equal(await extractPdfAttachmentText(invoice), "Invoice total: 4,250.00 EUR");
   assert.equal(requests.length, 1);
 });
 

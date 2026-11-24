@@ -1831,7 +1831,7 @@ const SCANNED_PAGE_MAX_CHARS = 16;
 
 export async function extractPdfAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "PDF");
-  const [{ extractText, getDocumentProxy, getResolvedPDFJS }, buffer] = await Promise.all([
+  const [{ extractTextItems, getDocumentProxy, getResolvedPDFJS }, buffer] = await Promise.all([
     import("unpdf"),
     file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
   ]);
@@ -1840,7 +1840,10 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
   let hasScannedPage = false;
   try {
     // per page rather than merged: mergePages folds every newline pdf.js marks into one space
-    const { text } = await extractText(pdf);
+    const { items } = await extractTextItems(pdf);
+    const text = items.map((page) =>
+      page.map(({ str, hasEOL }) => str + (hasEOL ? "\n" : "")).join(""),
+    );
     // getAnnotations re-reads the text under each link, so only forms call it
     const hasFields = await pdf.getFieldObjects().then(Boolean, () => false);
     pages = await Promise.all(
@@ -1855,9 +1858,18 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
         return [pageText, ...fields].filter(Boolean).join("\n");
       }),
     );
-    const short = [...text.keys()].filter(
-      (index) => text[index]!.trim().length < SCANNED_PAGE_MAX_CHARS,
-    );
+    // A selectable header or footer does not make the scanned body readable, as on the server.
+    const short = await Promise.all(
+      items.map(async (page, index) => {
+        const [, bottom, , top] = (await pdf.getPage(index + 1)).view;
+        const margin = (top - bottom) * 0.1;
+        const body = page
+          .filter(({ y }) => y > bottom + margin && y < top - margin)
+          .map(({ str, hasEOL }) => str + (hasEOL ? "\n" : ""))
+          .join("");
+        return body.trim().length < SCANNED_PAGE_MAX_CHARS ? [index] : [];
+      }),
+    ).then((indexes) => indexes.flat());
     if (short.length) {
       const { OPS } = await getResolvedPDFJS();
       const imageOps = new Set<number>([
