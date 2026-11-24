@@ -113,9 +113,16 @@ def load_native_from_hosted(
     logger: Any = None,
     tag: str = "video.native_hosted",
     keep_fp32: bool = False,
+    compute_dtype: Any = None,
 ) -> Any:
     """The native ``component`` built from hosted ``path``, or None (the caller falls back to the dense build). Never
-    raises. Refuses unless the file holds exactly the layers, rotation and activation path the runtime build makes."""
+    raises. Refuses unless the file holds exactly the layers, rotation and activation path the runtime build makes.
+
+    ``compute_dtype`` (float16 on an fp16-only card): the native Linears compute in it and every other floating
+    tensor is held in it, as a float16 ``from_pretrained`` would hold it (``keep_fp32`` modules in float32).
+    Safetensors files only; None keeps the bf16 build."""
+    if compute_dtype is not None and not str(path).endswith(".safetensors"):
+        return None
     if not str(path).endswith(".safetensors"):
         return _load_native_from_pickle(
             path,
@@ -234,7 +241,7 @@ def load_native_from_hosted(
                 int(lin.out_features),
                 bias = lin.bias is not None,
                 device = "meta",
-                dtype = torch.bfloat16,
+                dtype = compute_dtype or torch.bfloat16,
             )
             codes = state.pop(fqn + _QDATA)
             scale = state.pop(fqn + _SCALE).to(torch.float32).reshape(-1).contiguous()
@@ -279,6 +286,8 @@ def load_native_from_hosted(
                 logger, "info", "hosted int8 checkpoint not used (a non-bf16 dense tensor)", tag = tag
             )
             return None
+        if compute_dtype is not None:
+            _hold_in_compute_dtype(model, compute_dtype, kept)
         model.eval()
         try:
             model._unsloth_runtime_quant = "int8"
@@ -305,6 +314,31 @@ def load_native_from_hosted(
             tag = tag,
         )
         return None
+
+
+def _hold_in_compute_dtype(model: Any, compute_dtype: Any, kept: set) -> None:
+    """Every dense floating parameter / buffer of ``model`` in ``compute_dtype`` (``kept`` modules in float32), as a
+    ``from_pretrained(torch_dtype = compute_dtype)`` of the released shards holds them. Native Linears keep their int8
+    codes and float32 scales (integer views); their bias goes to the compute dtype, as the runtime build casts it."""
+    import torch
+    for name, module in model.named_modules():
+        keep = bool(kept & set(name.split("."))) if name else False
+        want = torch.float32 if keep else compute_dtype
+        for pname, param in list(module.named_parameters(recurse = False)):
+            if param.is_floating_point() and param.dtype != want:
+                setattr(
+                    module,
+                    pname,
+                    torch.nn.Parameter(param.detach().to(want), requires_grad = False),
+                )
+        for bname, buf in list(module.named_buffers(recurse = False)):
+            if (
+                buf is not None
+                and buf.is_floating_point()
+                and buf.dtype != want
+                and bname != "rot_h"
+            ):
+                module._buffers[bname] = buf.to(want)
 
 
 _PICKLE_ACT_QUANT = "_int8_symm_per_token_reduced_range_quant"

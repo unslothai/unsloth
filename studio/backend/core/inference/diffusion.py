@@ -461,6 +461,11 @@ from .diffusion_lora_memory import price_attached_loras
 from . import diffusion_lora_quant_merge as lora_quant_merge
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
+from .diffusion_fp16_hosted_int8 import (
+    fp16_card_hosted_int8_cached,
+    fp16_card_hosted_int8_reason,
+    fp16_card_hosted_int8_transformer,
+)
 from .diffusion_hosted_vae import hosted_vae_pipe_kwargs, hosted_vae_plan_files
 from .diffusion_fp16_variant import (
     fp16_variant_enabled,
@@ -10547,6 +10552,8 @@ class DiffusionBackend:
                 pending_cache_write = None
                 pending_cast_write = None
                 native_streamed = False
+                # Set when an fp16-only card read its int8 DiT from the hosted ConvRot file (no at-load quantise).
+                hosted_native_scheme = None
                 try:
                     self._raise_if_load_cancelled(_load_token)
                     if (
@@ -10727,6 +10734,21 @@ class DiffusionBackend:
                                 self._stop_load_prefetch()
                                 if pipeline_seed_scheme == "int8":
                                     _kick_early_probe_prewarm(fam, target)
+                                # The fp16-card hosted int8 read replaces the dense DiT: do not warm its shards.
+                                _hosted_fp16_dit = (
+                                    ("transformer",)
+                                    if pipeline_seed_scheme is None
+                                    and not _has_active_lora(loras)
+                                    and not _pipeline_prequant_skipped
+                                    and fp16_card_hosted_int8_cached(
+                                        fam,
+                                        native_scheme,
+                                        target,
+                                        base = base,
+                                        cache_dir = hub_cache_dir(),
+                                    )
+                                    else ()
+                                )
                                 self._load_prefetch = start_load_prefetch(
                                     fam,
                                     _base_local_dir or fetch_base,
@@ -10734,7 +10756,8 @@ class DiffusionBackend:
                                     prequant_path_override = transformer_prequant_path,
                                     prequant_base_repo = base,
                                     text_encoders_replaced = tuple(_te_replaced or ())
-                                    + tuple(_image_cast_cached(_cast_cands, _fp16_variant)),
+                                    + tuple(_image_cast_cached(_cast_cands, _fp16_variant))
+                                    + _hosted_fp16_dit,
                                     cache_dir = hub_cache_dir(),
                                     logger = logger,
                                     variant = _fp16_variant,
@@ -10914,6 +10937,29 @@ class DiffusionBackend:
                                         pipe_kwargs["transformer"] = native_cached
                                         native_scheme = native_offload_scheme
                                         transformer_quant_engaged = native_offload_scheme
+                                if (
+                                    pipeline_seed_scheme is None
+                                    and not _has_active_lora(loras)
+                                    and not _pipeline_prequant_skipped
+                                    and "transformer" not in pipe_kwargs
+                                    and fp16_card_hosted_int8_reason(fam, native_scheme, target)
+                                    is not None
+                                ):
+                                    # An fp16-only card's int8 build is the hosted ConvRot file: read it, not the dense DiT.
+                                    hosted_native = fp16_card_hosted_int8_transformer(
+                                        fam,
+                                        target,
+                                        transformer_cls,
+                                        base = base,
+                                        config_source = _base_local_dir or fetch_base,
+                                        hf_token = hf_token,
+                                        cache_dir = hub_cache_dir(),
+                                        local_files_only = local_files_only,
+                                        logger = logger,
+                                    )
+                                    if hosted_native is not None:
+                                        pipe_kwargs["transformer"] = hosted_native
+                                        hosted_native_scheme = native_scheme
                                 if pipeline_seed_scheme is None and _pipeline_prequant_skipped:
                                     # from_pretrained cannot re-fetch these from a local snapshot dir, so top them up here.
                                     _base_local_dir = self._restore_skipped_transformer_shards(
@@ -11831,7 +11877,12 @@ class DiffusionBackend:
                                             hf_token = hf_token,
                                         )
                                         if native_scheme is None
-                                        else None
+                                        else (
+                                            hosted_native_scheme
+                                            if hosted_native_scheme == native_scheme
+                                            and [attr for attr, _m in denoisers] == ["transformer"]
+                                            else None
+                                        )
                                     )
                                 if cached_scheme is not None:
                                     engaged.append(cached_scheme)
