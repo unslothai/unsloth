@@ -12,7 +12,11 @@
 import logging
 import copy
 
-from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
+from .loader import (
+    FastModel,
+    DISABLE_SDPA_MODEL_NAMES,
+    _refuse_network_share_raw_adapter_base,
+)
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     _PLANNED_DEVICE_MAPS,
@@ -2699,6 +2703,14 @@ class FastSentenceTransformer(FastModel):
             # pin the validated commit so a moving branch cannot change between checking and loading.
             if _validated:
                 st_kwargs["revision"] = _validated
+            _refuse_network_share_raw_adapter_base(
+                model_name,
+                token = token,
+                revision = st_kwargs.get("revision"),
+                # hf_hub_download ignores SENTENCE_TRANSFORMERS_HOME; SentenceTransformer reads it.
+                cache_dir = st_kwargs.get("cache_folder")
+                or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+            )
             st_model = SentenceTransformer(model_name, **st_kwargs)
             check_mixed_gpu_placement(getattr(st_model[0], "auto_model", st_model), dtype)
             # unsupported GPUs emulate bfloat16 slowly; float16 can yield non-finite activations.
@@ -2834,6 +2846,14 @@ class FastSentenceTransformer(FastModel):
                 trust_remote_code,
                 cache_dir = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
                 revision = revision,
+            )
+            _refuse_network_share_raw_adapter_base(
+                model_name,
+                token = token,
+                revision = _validated or revision,
+                cache_dir = kwargs.get("cache_dir")
+                or kwargs.get("cache_folder")
+                or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             )
             # the delegated route has the same race and revision pin.
             st_model = SentenceTransformer(
