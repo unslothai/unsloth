@@ -361,9 +361,8 @@ def test_is_bfloat16_supported_follows_set_device_on_hip(monkeypatch):
 
 
 class _FakeQKV:
-    dtype = __import__("torch").float32
-
-    def __init__(self, index):
+    def __init__(self, index, dtype):
+        self.dtype = dtype
         self.device = types.SimpleNamespace(index = index)
 
     def to(self, dtype):
@@ -373,11 +372,10 @@ class _FakeQKV:
 @pytest.mark.parametrize("index, expected", [(0, "bfloat16"), (2, "float16"), (None, "bfloat16")])
 def test_fp32_attention_downcast_keeps_fp16_on_a_gfx10_card(monkeypatch, index, expected):
     """Import on an RDNA4 card leaves SUPPORTS_BFLOAT16 True; a tensor on the gfx10 iGPU must still get fp16 (#7922)."""
-    import torch
-
+    torch = pytest.importorskip("torch")
     ad = pytest.importorskip("unsloth.utils.attention_dispatch")
     monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
     monkeypatch.setattr(ad, "_BF16_LACKING_DEVICES", frozenset({2}))
     monkeypatch.setattr(torch, "is_autocast_enabled", lambda *a, **k: False)
-    q = _FakeQKV(index)
+    q = _FakeQKV(index, torch.float32)
     assert ad._downcast_fp32_qkv(q, q, q) == (getattr(torch, expected),) * 3
