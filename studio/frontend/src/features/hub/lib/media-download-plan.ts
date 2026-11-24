@@ -14,14 +14,12 @@ import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
 
 export type MediaPlanPage = "images" | "video";
 
-/** The fields both plan routes share; the Hub cards send nothing else. */
 export type MediaPlanBody = Pick<
   DiffusionLoadRequest,
   "model_path" | "gguf_filename" | "model_kind" | "hf_token"
 >;
 
-// The card's two asks start ~200 ms apart; a plan still pending past this is not joined, so a
-// stalled request cannot hold every later open of the same file.
+// Plans pending longer than this are not joined, so a stalled request cannot pin later opens.
 const SHARE_WINDOW_MS = 5_000;
 
 const inFlight = new Map<
@@ -29,7 +27,6 @@ const inFlight = new Map<
   { request: Promise<DiffusionDownloadPlan>; started: number }
 >();
 
-/** One request for identical concurrent plans; dropped once settled, so nothing outlives the request. */
 export function inFlightMediaDownloadPlan(
   page: MediaPlanPage,
   body: MediaPlanBody,

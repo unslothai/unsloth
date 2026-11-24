@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** A Hub media card asks the same download plan twice on open (companion bytes and the
- * required-assets check); identical concurrent asks share one request, nothing is kept after. */
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
