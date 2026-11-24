@@ -594,7 +594,7 @@ def _race_wins(
 ) -> bool:
     """Whether the kernel beats the incumbent by more than ``RACE_MARGIN`` at ``tokens`` tokens on this card. Timed
     like the card race (interleaved, median); cached per card, dtype, geometry, incumbent, size and serving implementation; an out-of-memory
-    probe counts as a loss."""
+    probe is retried once, then counts as a loss for this call only (not cached, not persisted)."""
     import torch
 
     from . import diffusion_int8_attention as I8
@@ -619,27 +619,34 @@ def _race_wins(
     if isinstance(stored, bool):
         _LONG_VERDICTS[key] = stored
         return stored
-    q = k = v = None
-    timed = False
-    try:
-        # The timing events record on the current device's stream, so a secondary card must be current here.
-        with torch.no_grad(), torch.cuda.device(device):
-            q, k, v = I8.probe_inputs(device, dtype, tokens, heads, head_dim, seed = tokens)
-            ms = I8._median_ms(
-                {
-                    "incumbent": lambda: incumbent(q, k, v),
-                    "int8": lambda: I8.int8_attention(q, k, v),
-                }
-            )
-        won = ms["int8"] < I8.RACE_MARGIN * ms["incumbent"]
-        timed = True
-    except torch.OutOfMemoryError:
-        won = False
-    finally:
+    won = timed = False
+    # an out-of-memory probe is retried once (after freeing the cache); a second one counts as a loss for this call
+    # only: neither cached for the process nor persisted, so a later load races again
+    for _ in range(2):
         q = k = v = None
-        torch.cuda.empty_cache()
+        try:
+            # The timing events record on the current device's stream, so a secondary card must be current here.
+            with torch.no_grad(), torch.cuda.device(device):
+                q, k, v = I8.probe_inputs(device, dtype, tokens, heads, head_dim, seed = tokens)
+                ms = I8._median_ms(
+                    {
+                        "incumbent": lambda: incumbent(q, k, v),
+                        "int8": lambda: I8.int8_attention(q, k, v),
+                    }
+                )
+            won = ms["int8"] < I8.RACE_MARGIN * ms["incumbent"]
+            timed = True
+        except torch.OutOfMemoryError:
+            won = False
+        finally:
+            q = k = v = None
+            torch.cuda.empty_cache()
+        if timed:
+            break
+    if not timed:
+        return won
     _LONG_VERDICTS[key] = won
-    if timed and impl is not None:  # an out-of-memory loss is this moment's, not the card's
+    if impl is not None:
         try:
             I8.persisted().put(card, stored_key, won)
         except Exception:  # noqa: BLE001
