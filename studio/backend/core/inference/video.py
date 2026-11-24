@@ -4958,6 +4958,7 @@ def _video_seed_plan(
         companion_dense_mib = int(companions_gb * mib_per_gb),
         text_encoder_dense_mib = int(text_encoder_gb * mib_per_gb),
         requested_mode = normalize_memory_mode(memory_mode),
+        streamed_companion_mib = _video_streamed_companion_mib(fam, target, vae_scale),
     )
     return planned
 
@@ -5233,6 +5234,29 @@ def _video_denoise_phase_headroom_mib(plan: Any) -> int:
     return min(runtime, _VIDEO_DENOISE_ACTIVATION_MIB) + DEFAULT_BASE_OVERHEAD_MIB
 
 
+def _video_streamed_companion_mib(
+    fam: Any,
+    target: Any,
+    scale: float = 1.0,
+) -> int:
+    """MiB of the family's companion term a streamed-DiT group plan streams (LTX-2.5's text connectors), 0 if none.
+    Needs a copy stream like ``_apply_group_offload``'s: a CUDA card that is not integrated."""
+    if getattr(fam, "name", None) != "ltx-2.5" or getattr(target, "device", None) != "cuda":
+        return 0
+    try:
+        from .diffusion_memory import group_streams_run_once_companions
+        from .host_pinning import host_pinning_allowed
+        from .video_ltx25 import LTX25_CONNECTORS_GB
+
+        if not group_streams_run_once_companions() or not host_pinning_allowed(
+            getattr(target, "torch_device", None)
+        ):
+            return 0
+        return int(LTX25_CONNECTORS_GB * float(scale) * 1000.0**3 / (1024.0 * 1024.0))
+    except Exception:  # noqa: BLE001 -- unknown: priced resident, as before
+        return 0
+
+
 def _video_prefer_whole_module(
     plan: Any,
     *,
@@ -5475,6 +5499,15 @@ def _video_offload_vram_floor_mib(
             )
             if bool(getattr(plan, "stream_text_encoders", False)):
                 streamed |= encoders
+            from .diffusion_memory import group_streams_run_once_companions, run_once_companions
+
+            if group_streams_run_once_companions(
+                stream_transformer = bool(getattr(plan, "stream_transformer", True))
+            ):
+                # streamed leaf by leaf beside the DiT (``_apply_group_offload``); ``applied`` reads their hooks
+                companions = {n for n in run_once_companions(pipe) if n in sizes}
+                encoders |= companions
+                streamed |= companions
         elif policy == OFFLOAD_STREAMING:
             from .diffusion_memory import run_once_companions
             encoders |= {n for n in run_once_companions(pipe) if n in sizes}
@@ -10582,6 +10615,11 @@ class VideoBackend:
                 int(scaled_companions_gb * mib_per_gb) if components is not None else None
             )
             text_encoder_mib = int(scaled_te_gb * mib_per_gb) if components is not None else None
+            streamed_companion_mib = (
+                _video_streamed_companion_mib(fam, target, vae_scale)
+                if components is not None
+                else 0
+            )
             if kind == "pipeline":
                 transformer_gb = (
                     components[0] * dtype_scale if denoiser_gb is None else float(denoiser_gb)
@@ -10612,6 +10650,7 @@ class VideoBackend:
                     companion_dense_mib = companion_mib,
                     text_encoder_dense_mib = text_encoder_mib,
                     requested_mode = normalize_memory_mode(memory_mode),
+                    streamed_companion_mib = streamed_companion_mib,
                 ),
                 denoiser_mib = None if dit_mib is None else dit_mib // experts,
                 text_encoder_mib = text_encoder_mib,
@@ -10675,6 +10714,7 @@ class VideoBackend:
                             companion_dense_mib = companion_mib,
                             text_encoder_dense_mib = text_encoder_mib,
                             requested_mode = normalize_memory_mode(memory_mode),
+                            streamed_companion_mib = streamed_companion_mib,
                         ),
                         denoiser_mib = int(components[0] * factor * mib_per_gb) // experts,
                         text_encoder_mib = text_encoder_mib,

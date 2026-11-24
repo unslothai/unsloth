@@ -72,6 +72,9 @@ TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
 # What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
 # Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
 LTX25_WORKER_RESIDENT_GB = 1.0
+# The text connectors' share of the family table's companion term (bf16 ``connectors/``, 5.91 GiB loaded). A
+# streamed-DiT group plan streams them leaf by leaf (``group_run_once_companions``), so its floors leave them out.
+LTX25_CONNECTORS_GB = 6.34
 # Auto takes the hosted int8 file only when confirmed, else bf16 (never quantizes at load). A100-40 LPIPS vs bf16
 # 0.133 (bf16 encoder 0.141), peak host 71 -> 52 GiB. Env =0 keeps bf16 auto, =1 makes auto an explicit int8.
 LTX25_TE_QUANT_DEFAULT = "int8"

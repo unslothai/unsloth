@@ -81,10 +81,14 @@ def test_kill_switch_and_other_tiers_keep_the_connectors_resident(monkeypatch):
 
     pipe = _pipe()
     monkeypatch.delenv(_ENV, raising = False)
+    monkeypatch.setenv("UNSLOTH_VIDEO_GROUP_RUN_ONCE_COMPANIONS", "0")
     assert _video_offload_vram_floor_mib(pipe, _plan("group")) == 3 + 6 + 4
     assert _video_offload_vram_floor_mib(pipe, _plan("group", te = True)) == 3 + 6 + 4
+    monkeypatch.delenv("UNSLOTH_VIDEO_GROUP_RUN_ONCE_COMPANIONS")
     monkeypatch.setenv(_ENV, "0")
     assert _video_offload_vram_floor_mib(pipe, _plan("streaming")) == 3 + 6 + 4
+    # the streaming switch keeps them resident under group offload too
+    assert _video_offload_vram_floor_mib(pipe, _plan("group")) == 3 + 6 + 4
 
 
 def _stub_streaming(monkeypatch, budget_mib):
