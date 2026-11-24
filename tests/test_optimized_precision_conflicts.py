@@ -150,6 +150,8 @@ def loader():
         _revision_for_tokenizer_repo = lambda *args: None,
         _raise_if_modeling_ignores_config = lambda *args: None,
         raise_if_fast_inference_under_fsdp2 = lambda fast_inference: None,
+        _refuse_network_share_raw_adapter_base = lambda *args, **kwargs: None,
+        _resolved_revision = lambda model_name, revision, *args, **kwargs: revision,
     )
     # No fixture is Mistral-format: stub each loader.py helper deciding that, new ones included.
     for name in _mistral_format_names(tree):
@@ -306,6 +308,25 @@ def test_modelscope_conflicts_do_not_download_weights(
     assert "adapter_config.json" in downloaded
     assert "configuration_custom.py" in downloaded
     assert len(calls) == 1
+
+
+def test_modelscope_adapter_with_network_share_base_is_refused(
+    loader, modelscope_snapshot, monkeypatch
+):
+    env, captured = loader
+    cache, _, _ = modelscope_snapshot
+    env["USE_MODELSCOPE"] = True
+    use_modelscope_adapter(env, cache, r"\\evil.example\share\model")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "unsloth_zoo.vision_utils",
+        SimpleNamespace(_is_network_share = lambda path: path.startswith("\\\\")),
+    )
+
+    with pytest.raises(ValueError, match = "network share"):
+        env["from_pretrained"](model_name = "owner/model", load_in_4bit = False)
+    assert "dispatch" not in captured
 
 
 @pytest.mark.parametrize(

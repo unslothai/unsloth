@@ -411,6 +411,11 @@ def _with_repos_dropped_by_scan(
         return scan
 
 
+def scan_of_repo(scan, repo_info):
+    """*scan* narrowed to *repo_info*, to delete from. ``delete_revisions`` looks a commit hash up in every repo of its scan and takes the first that has it, but a hash is only a ``snapshots/`` folder name: a mirror, or anything able to write the cache (sandboxed tool code), can repeat it under another repo."""
+    return replace(scan, repos = frozenset((repo_info,)))
+
+
 @in_scan_memo
 def _compute_all_hf_cache_scans() -> list:
     from huggingface_hub import HFCacheInfo, scan_cache_dir

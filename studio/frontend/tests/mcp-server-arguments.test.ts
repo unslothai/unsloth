@@ -748,6 +748,7 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
   assert.deepEqual(listOccurrences, [
     "api/mcp-servers-api.ts",
     "chat-mcp-servers-dialog.tsx",
+    "components/edit-project-dialog.tsx",
     "mcp-composer-button.tsx",
     "runtime-provider.tsx",
   ]);
@@ -788,6 +789,11 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
   assert.match(
     composerRefresh,
     /await listMcpServers\(\{\s*waitForPendingMutations,\s*minimumMutationEpoch,\s*\}\)/,
+  );
+  // Project edits need a settled list so a just-disabled server is never preselected.
+  assert.match(
+    readFileSync(join(chatRoot, "components/edit-project-dialog.tsx"), "utf8"),
+    /\blistMcpServers\(\)/,
   );
   assert.match(
     CHAT_MCP_SERVERS_DIALOG,

@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from core.inference.load_policy import LoadPolicy, current_load_policy
 
@@ -199,6 +199,46 @@ def media_load_keeps_chat(owner: str) -> bool:
         return True
     # Unpriced (no need_mib), so When they fit counts as evicting: a doubtful case refuses.
     return not gpu_arbiter.would_evict(owner, policy = get_multi_model_mode())
+
+
+def media_load_spares_chat(
+    owner: str, kind: str, model: Optional[str], mode: Optional[str]
+) -> bool:
+    """True when a direct image or video load must keep the chat model (a chat's own tools key), so the
+    arbiter refuses instead of evicting; refuses at once when Off would surely evict."""
+    policy = current_load_policy()
+    if policy is LoadPolicy.ANY:
+        return False
+    if policy is LoadPolicy.NEVER or (mode == "off" and not media_load_keeps_chat(owner)):
+        raise chat_kept_refusal(kind, model, mode)
+    return True
+
+
+def chat_kept_refusal(
+    kind: str,
+    model: Optional[str],
+    mode: Optional[str],
+    *,
+    priced: bool = True,
+) -> Any:
+    """The refusal for a load that would unload the chat model, naming only a change that lets it load."""
+    if mode == "off":
+        reason = (
+            f"{MULTI_MODEL_SETTING} is Off, so loading it would unload the model serving this chat",
+            "set it to When they fit",
+        )
+    elif not priced:
+        reason = (
+            "Unsloth Studio cannot size it yet, so it cannot tell whether it fits beside the model serving "
+            "this chat",
+            None,
+        )
+    else:
+        reason = (
+            "It does not fit in the GPU memory left beside the model serving this chat",
+            "free GPU memory by unloading another image or video model",
+        )
+    return needs_user_load(kind, model, reason = reason).http_exception(None)
 
 
 def ensure_media_load(owner: str, kind: str, model: str, *, openai_errors: bool) -> None:

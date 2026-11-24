@@ -953,8 +953,14 @@ def _no_saved_tensor_hooks():
     # Only the innermost pair applies. Pushing raises while torch has hooks disabled: keep the ambient state.
     enabled = getattr(torch._C._autograd, "_saved_tensors_hooks_is_enabled", lambda: True)
     if enabled():
-        return torch.autograd.graph.saved_tensors_hooks(_identity, _identity)
+        return torch.autograd.graph.saved_tensors_hooks(_detach_saved, _identity)
     return contextlib.nullcontext()
+
+
+def _detach_saved(tensor):
+    # A pack hook returning its input saves an op's output on that op's own node, a cycle gc cannot
+    # break: a probe graph whose backward never runs (aborted, or the ROCm check's error terms) leaks.
+    return tensor.detach()
 
 
 def _identity(tensor):

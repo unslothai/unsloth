@@ -30,12 +30,14 @@ import {
 } from "@/features/model-picker/model-config/per-model-config";
 import {
   DRAFT_N_MAX_SPEC_TYPES,
+  DRAFTER_MODEL_SPEC_TYPES,
   SPECULATIVE_TYPES,
 } from "@/lib/speculative-modes";
 import {
   GPU_LAYERS_AUTO,
   useChatRuntimeStore,
   normalizeSpeculativeType,
+  readPersistedSpeculativeType,
 } from "../stores/chat-runtime-store";
 import { usePlatformStore } from "@/config/env";
 import { capturedContextLength } from "./preset-policy";
@@ -235,7 +237,12 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     checkpoint: store.params.checkpoint,
   });
   const platform = usePlatformStore.getState();
-  const isMlx = isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason);
+  const isMlx = isServedByMlx(
+    isGguf,
+    platform.deviceType,
+    platform.chatOnlyReason,
+    platform.mlxInference,
+  );
   const effectiveContextLength = requestableContextLength(
     capturedContextLength({
       isGguf,
@@ -309,9 +316,17 @@ export function applyPresetLoadConfig(config?: PresetLoadConfig | null): void {
     return;
   }
   const store = useChatRuntimeStore.getState();
+  const current = currentRuntimePerModelConfig();
+  const speculativeType =
+    normalizeSpeculativeType(config.speculativeType) ??
+    readPersistedSpeculativeType();
   applyPerModelConfigToRuntime(
     {
-      ...DEFAULT_PER_MODEL_CONFIG,
+      // A preset sets only its own fields, plus what its values rule out (drafter, split).
+      ...current,
+      specDraftModel: DRAFTER_MODEL_SPEC_TYPES.has(speculativeType)
+        ? current.specDraftModel
+        : null,
       maxSeqLength: normalizeMaxSeqLength(config.maxSeqLength) ?? DEFAULT_MAX_SEQ_LENGTH,
       customContextLength: config.customContextLength ?? null,
       kvCacheDtype: config.kvCacheDtype ?? null,
@@ -329,20 +344,12 @@ export function applyPresetLoadConfig(config?: PresetLoadConfig | null): void {
       reasoningBudgetMessage: config.reasoningBudgetMessage ?? "",
       tensorParallel: config.tensorParallel ?? false,
       disableVision: config.disableVision ?? false,
-      chatTemplateOverride: null,
-      // Not carried by presets: enabling it always goes through its confirmation.
-      mlxInt8Prefill: store.mlxInt8Prefill,
-      mlxAnePrefill: store.mlxAnePrefill,
-      mlxFastVerify: store.mlxFastVerify,
-      mlxPleOffload: store.mlxPleOffload,
-      mlxExpertOffload: store.mlxExpertOffload,
-      // Model specific, so a preset keeps the current table.
-      engramPrecision: store.engramPrecision,
       gpuMemoryMode: config.gpuMemoryMode,
       gpuLayers: config.gpuLayers,
       nCpuMoe: config.nCpuMoe,
-      selectedGpuIds: store.selectedGpuIds,
-      selectedGpuIndexKind: store.selectedGpuIndexKind,
+      ...(config.gpuMemoryMode === "manual" && (config.gpuLayers ?? 0) > 0
+        ? {}
+        : { tensorSplit: null }),
     },
     { isDiffusion: store.loadedIsDiffusion },
   );

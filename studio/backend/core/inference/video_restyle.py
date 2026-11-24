@@ -345,9 +345,8 @@ def binary_supports_cosmos3(binary: str) -> bool:
 
 
 def server_args(binary: Optional[str], platform: Optional[str] = None) -> list[str]:
-    """sd-server flags for this host. On Metal, a build without IM2COL_3D runs the Wan2.2 VAE's conv3d through
-    ggml-metal's naive direct kernel, about 4.5x slower than Accelerate, so the VAE goes to the CPU there
-    (a paravirtual GPU is already all-CPU)."""
+    """sd-server flags. Metal without IM2COL_3D runs Wan2.2 VAE conv3d on ggml-metal's naive kernel
+    (~4.5x slower than Accelerate), so the VAE goes to CPU; paravirtual GPUs already do."""
     platform = sys.platform if platform is None else platform
     if platform != "darwin":
         return []

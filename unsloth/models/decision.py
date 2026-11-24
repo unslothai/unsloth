@@ -688,11 +688,19 @@ def _load_clef(
     adapter = _is_clef_adapter(folder)
     if adapter:
         # LoRA adapters over the base LLM: the base comes from where it was trained from.
-        base = config.get("base_model") or json.loads(
-            (folder / _ADAPTER_CONFIG).read_text(encoding = "utf-8")
-        ).get("base_model_name_or_path")
+        adapter_base = json.loads((folder / _ADAPTER_CONFIG).read_text(encoding = "utf-8")).get(
+            "base_model_name_or_path"
+        )
+        base = config.get("base_model") or adapter_base
         if not base:
             raise ValueError(f"Unsloth: {folder} has adapters but does not name their base model.")
+        # A Hub repo resolves to a local snapshot, so the loader's own check would see a folder.
+        from .loader import _refuse_network_share_adapter_base
+
+        for named in {str(base), str(adapter_base or base)}:
+            _refuse_network_share_adapter_base(
+                str(model_name or folder), types.SimpleNamespace(base_model_name_or_path = named)
+            )
         if full_finetuning:
             # PEFT would freeze the base and the adapters, leaving only the head to train.
             raise ValueError(
@@ -1231,7 +1239,11 @@ class DecisionTrainer(Trainer):
             args.gradient_checkpointing = False
             if hasattr(args, "activation_checkpointing"):
                 args.activation_checkpointing = False
-            if not clef and not model.encoder.is_gradient_checkpointing:
+            from unsloth.models._gc_config_default import (
+                is_activation_checkpointing as _is_activation_checkpointing,
+            )
+
+            if not clef and not _is_activation_checkpointing(model.encoder):
                 _gradient_checkpointing(model, True)
         if kwargs.get("processing_class") is None:
             kwargs["processing_class"] = tokenizer
@@ -1714,9 +1726,13 @@ class FastDecisionModel:
         model.train()
         if getattr(model, "is_clef", False):
             return model
+        from unsloth.models._gc_config_default import (
+            is_activation_checkpointing as _is_activation_checkpointing,
+        )
+
         if not use_gradient_checkpointing:
             model.encoder.gradient_checkpointing_disable()
-        elif not model.encoder.is_gradient_checkpointing:
+        elif not _is_activation_checkpointing(model.encoder):
             _gradient_checkpointing(model, use_gradient_checkpointing)
         return model
 

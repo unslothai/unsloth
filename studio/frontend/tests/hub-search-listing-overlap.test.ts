@@ -225,7 +225,7 @@ test("the Unsloth pass asks the Hub for the three rows it reads, unless a filter
   const plain = search.open("coder").next();
   await ticks();
   assert.equal(hub.requests[0].url.searchParams.get("limit"), "3");
-  assert.equal(hub.requests[1].url.searchParams.get("limit"), "500");
+  assert.equal(hub.requests[1].url.searchParams.get("limit"), "192");
   search.controller().abort();
   await assert.rejects(plain, { name: "AbortError" });
 
@@ -239,6 +239,34 @@ test("the Unsloth pass asks the Hub for the three rows it reads, unless a filter
   search.controller().abort();
   await assert.rejects(filtered, { name: "AbortError" });
   await ticks();
+  assert.deepEqual(hub.unhandled, []);
+});
+
+test("a newest-first typed search floats every Unsloth match, a popularity sort only three", { timeout: 5_000 }, async (t) => {
+  const hub = fakeHub();
+  t.after(hub.dispose);
+  const search = load(hub);
+  const rowsFor = async (sortBy: SearchModule.HfSortKey) => {
+    hub.requests.length = 0;
+    const iter = search.open("coder", { sortBy });
+    const first = iter.next();
+    await ticks();
+    const limit = hub.requests.find((r) => kind(r) === "unsloth")?.url.searchParams.get("limit");
+    for (const request of hub.requests) request.release();
+    const rows = [nameOf((await first).value)];
+    for await (const row of iter) rows.push(nameOf(row));
+    return { limit, head: rows.slice(0, 4) };
+  };
+  for (const sortBy of ["fresh", "createdAt", "lastModified"] as const) {
+    assert.deepEqual(await rowsFor(sortBy), { limit: "20", head: UNSLOTH }, sortBy);
+  }
+  for (const sortBy of ["downloads", "likes", "trendingScore"] as const) {
+    assert.deepEqual(
+      await rowsFor(sortBy),
+      { limit: "3", head: [...UNSLOTH.slice(0, 3), "org/Coder-1"] },
+      sortBy,
+    );
+  }
   assert.deepEqual(hub.unhandled, []);
 });
 
@@ -331,7 +359,7 @@ test("channel first pages and the fresh trending pool ask only for the rows they
     hub.requests.map((r) => [r.url.searchParams.get("sort"), r.url.searchParams.get("limit")]),
   );
   // The newest listing is read past its pool of 100; the trending one never is.
-  assert.deepEqual(limits, { createdAt: "500", trendingScore: "100" });
+  assert.deepEqual(limits, { createdAt: "192", trendingScore: "100" });
   for (const request of hub.requests) request.release();
   await fresh;
   assert.deepEqual(hub.unhandled, []);

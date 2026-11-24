@@ -228,3 +228,29 @@ def test_push_with_mtp_head(hub, monkeypatch, private, existing, refused):
     else:
         with pytest.raises(_Reached):
             save_mod._push_with_mtp_head(save_kwargs)
+
+
+@pytest.mark.parametrize("fn", ["upload_to_huggingface", "create_huggingface_repo"])
+@pytest.mark.parametrize("private, existing, refused", CASES)
+def test_dataset_names_not_written_to_public_repo(hub, monkeypatch, fn, private, existing, refused):
+    """An existing repo makes create_repo(exist_ok=False) raise; the dataset-name metadata update
+    in that branch must not reach a public repo when private=True was requested."""
+    h = hub(existing)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "metadata_update",
+        lambda *a, **kw: h.calls.append("metadata_update"),
+        raising = False,
+    )
+    extra = ("finetuned",) if fn == "upload_to_huggingface" else ()
+    run = lambda: getattr(save_mod, fn)(
+        _model(h), "u/repo", "t", *extra, private = private, datasets = ["org/private-data"]
+    )
+    if refused:
+        with pytest.raises(RuntimeError, match = "already exists and is public"):
+            run()
+        assert "metadata_update" not in h.calls, h.calls
+    else:
+        run()
+        if existing in ("public", "private"):
+            assert "metadata_update" in h.calls

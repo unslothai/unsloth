@@ -228,11 +228,15 @@ RULES = (
         "one stage per rank in v1",
         "pp_schedule=gpipe or 1f1b",
     ),
-    # Kept: flex backward cannot run on CPU (no parity evidence) and generic would lose block sparsity.
+    # Kept: flex backward cannot run on CPU (no parity evidence) and generic would lose block sparsity. Inkling 2's
+    # own flex (models/inkling2_flex.py) is the exception: its Ulysses path builds the mask over the whole sequence
+    # after the head exchange (utils/ulysses_inkling2.py), measured with flex's reference math on CPU.
     Rule(
         "cp x attention",
         "context parallel with flex attention block masks",
-        lambda q: q.cp > 1 and q.attention in ("flex", "flex_sparse"),
+        lambda q: q.cp > 1
+        and q.attention in ("flex", "flex_sparse")
+        and not (q.family in ("inkling2", "inkling2_loop") and q.cp_backend == "ulysses"),
         "the BlockMask is built for the whole sequence, not for the rank-local (permuted) shard",
         "attention sdpa / flash, or drop cp",
     ),
@@ -269,6 +273,16 @@ RULES = (
         "(dp without fsdp) for another Muon",
     ),
     Rule(
+        "fsdp2 x optimizer",
+        "Adafactor under native FSDP2",
+        lambda q: q.fsdp2 and "adafactor" in q.optim,
+        "Adafactor factors each weight's second moment into whole-row and whole-column means, and "
+        "every rank holds only a shard of the weight: transformers' and torch's Adafactor both fail "
+        "at the first step on DTensor shards",
+        "adamw_torch / adamw_torch_fused / adamw_8bit / paged_adamw_8bit, or DDP (dp without fsdp) "
+        "for Adafactor",
+    ),
+    Rule(
         "fsdp2 x memory",
         "block swap (offload_layers) under native FSDP2",
         lambda q: q.fsdp2 and q.block_swap,
@@ -291,6 +305,17 @@ RULES = (
         lambda q: q.tp > 1 and bool(q.tp_blocker),
         "models/tp_native.py refuses the model before any weight loads (its reason follows the layout below)",
         "drop tp (DDP, or UNSLOTH_FSDP2=1, over the dp axis)",
+    ),
+    Rule(
+        "pp x model",
+        "pipeline parallel composed with tensor / data parallel on Inkling 2 (inkling2, inkling2_loop)",
+        lambda q: q.pp > 1
+        and (q.tp > 1 or q.dp > 1 or q.fsdp2)
+        and q.family in ("inkling2", "inkling2_loop"),
+        "Inkling 2's pipeline stages (models/inkling2.py Inkling2PipelineAdapter) run on a pp-only mesh; pp x tp is "
+        "refused at from_pretrained, pp x dp at the first pipeline step",
+        'one axis at a time: UNSLOTH_PARALLEL="pp=N", "tp=N" (tp dividing the head counts), "dp=N" (DDP) or '
+        '"fsdp=1" (native FSDP2), or device_map = "balanced" in one process',
     ),
     Rule(
         "pp / tp x vLLM",
@@ -684,7 +709,60 @@ _PACKED_ULYSSES = (
     "[gemma3-eager-True|qwen3-sdpa-True]"
 )
 _PACKED_COMPILED = _GLOO + "test_block_compile_packed_rows_under_cp_match_one_process"
+# Inkling 2 (Mini: inkling2_loop, Small: inkling2): sliding / full attention with relative bias and sinks after the
+# Ulysses exchange, short convolutions with a halo from the previous shard (utils/ulysses_inkling2.py).
+_INKLING2_CP = "tests/test_ulysses_inkling2_gloo.py::test_inkling2_ulysses_matches_one_process"
+_INKLING2_CP_MATCH = {
+    "trainer": ("sft",),
+    "family": ("inkling2", "inkling2_loop"),
+    "hybrid": (True,),
+    "multimodal": (False, True),
+    "windowed": (True,),
+    "mode": ("lora", "qlora", "full"),
+    "packing": (False,),
+    "cp_backend": ("ulysses",),
+    "dp": (1,),
+    "cp": (2,),
+    "tp": (1,),
+    "pp": (1,),
+    # flex: Inkling 2's own FlexAttention (enable_inkling2_flex, the default on sm80+), read from the text config.
+    "attention": ("sdpa", "eager", "flex"),
+    "compile": ("eager",),
+    "memory": ("none", "gc", "unsloth_offload"),
+    "kernels": (False,),
+    "loss": ("standard",),
+    "vllm": (False,),
+    "moe": (True,),
+    "router_aux_loss": (False,),
+    "block_swap": (False,),
+}
+_INKLING2_CP_FSDP2 = (
+    "tests/test_ulysses_inkling2_fsdp2_gloo.py::test_inkling2_ulysses_fsdp2_matches_one_process"
+)
 CELLS = (
+    Cell(
+        "Inkling 2 (attention + short convolutions, MoE) x Ulysses cp (DDP), eager",
+        {**_INKLING2_CP_MATCH, "fsdp2": (False,)},
+        parity = _INKLING2_CP,
+        engagement = _INKLING2_CP
+        + " (one Ulysses attention per layer and pass over the whole sequence, four halo convolutions per layer; "
+        "test_inkling2_ulysses_without_halo_misses_one_process)",
+        compile = "eager: Inkling 2 trains eager (UNSLOTH_COMPILE_DISABLE=partial), the exchange runs outside compile",
+        note = "QLoRA and Unsloth's offloaded checkpoint: SFTTrainer on a tiny Inkling-2-Mini fake, 2x T4 "
+        "(outputs of the PR); Inkling 2 flex: the mini-flex case (flex's reference math on CPU); dp > 1 and "
+        "packing are not measured for this family",
+    ),
+    Cell(
+        "Inkling 2 x Ulysses cp x native FSDP2 (dp_shard x cp), eager",
+        {**_INKLING2_CP_MATCH, "fsdp2": (True,)},
+        parity = _INKLING2_CP_FSDP2,
+        engagement = _INKLING2_CP_FSDP2
+        + " (FSDP2 shards over the cp group, the Ulysses exchanges and halos run inside the sharded layers)",
+        compile = "eager: Inkling 2 trains eager (UNSLOTH_COMPILE_DISABLE=partial), the exchange runs outside compile",
+        note = "the FSDP2 sharded 4-bit quantize-on-load shards over the same ranks, so each cp rank holds half of "
+        "the 4-bit weights; real Inkling-2-Mini QLoRA on 2x T4 in the PR; Inkling 2 flex: the mini-flex-lora case "
+        "(flex's reference math on CPU)",
+    ),
     Cell(
         "cp x native FSDP2 (dp_shard x cp), eager",
         {**_CP_DP, "fsdp2": (True,), "compile": ("eager",), "dp": (1, 2), "cp": (2,)},
@@ -885,6 +963,12 @@ _DSV41_PP = (
 _GPT_OSS_PP = (
     "tests/test_pp_moe_aux_off_gloo.py::"
     "test_pp2_uncarried_moe_with_aux_off_matches_gradient_accumulation"
+)
+# Inkling 2 (Mini and Small): pp2 gpipe / 1f1b vs one-process gradient accumulation, bitwise. The Mini cuts after
+# the loop carry a block attention residual stack of 2 and 3 entries; every case counts stage forward calls.
+_INKLING2_PP = "tests/test_pp_inkling2_gloo.py::test_pp2_inkling2_mini_matches_one_process"
+_INKLING2_PP_ENGAGED = (
+    "tests/test_pp_inkling2_gloo.py::test_pp2_inkling2_mini_cut_after_the_loop_matches_one_process"
 )
 _GPT_OSS_PP_CASES = {
     "lora": "gpt_oss_lora_logits_off_1f1b|gpt_oss_lora_logits_off_gpipe_gc",
@@ -1247,6 +1331,32 @@ CELLS = (
     CELLS
     + _moe_cells()
     + (
+        # Inkling 2 (no router auxiliary loss): the stage boundary carries hidden states plus the block attention
+        # residual stack, Inkling-2-Mini's looped layers stay on one stage (models/inkling2.py
+        # Inkling2PipelineAdapter); pp-only mesh, text only.
+        Cell(
+            "Inkling 2 x pp",
+            {
+                "family": ("inkling2", "inkling2_loop"),
+                "moe": (True,),
+                "pp": (2, 4, 8),
+                "pp_schedule": ("gpipe", "1f1b"),
+                "dp": _ONE,
+                "tp": _ONE,
+                "cp": _ONE,
+                "fsdp2": (False,),
+                "mode": ("lora", "qlora"),
+                "router_aux_loss": (False,),
+                "packing": (False,),
+                "vllm": (False,),
+                "block_swap": (False,),
+                "compile": ("eager",),
+                "memory": ("none", "gc", "unsloth_gc", "unsloth_offload"),
+            },
+            _INKLING2_PP,
+            _INKLING2_PP_ENGAGED,
+            "eager: Inkling 2 trains with UNSLOTH_COMPILE_DISABLE=partial",
+        ),
         Cell(
             "block swap x tp",
             {"block_swap": (True,), "tp": _AboveOne()},
@@ -1549,8 +1659,17 @@ def _compile_mode(model):
     return "eager"
 
 
-def _attention(model, packing):
+def _attention(
+    model,
+    packing,
+    inkling2_cp = False,
+):
     config = getattr(model, "config", None)
+    if inkling2_cp:
+        # enable_inkling2_flex routes only the text attention through flex; the outer config stays eager.
+        text = getattr(config, "text_config", None) or config
+        if getattr(text, "_attn_implementation", None) == "unsloth_inkling2_flex":
+            return "flex"
     impl = str(getattr(config, "_attn_implementation", None) or "sdpa")
     if impl.startswith("flex"):
         return "flex"
@@ -1566,8 +1685,12 @@ def _memory(model, args):
     except Exception:
         fn = None
     name = getattr(fn, "__name__", "")
+    from unsloth.models._gc_config_default import (
+        is_activation_checkpointing as _is_activation_checkpointing,
+    )
+
     gc = bool(getattr(args, "gradient_checkpointing", False)) or bool(
-        getattr(model, "is_gradient_checkpointing", False)
+        _is_activation_checkpointing(model)
     )
     if not gc:
         return "none"
@@ -1750,6 +1873,7 @@ def query_from(
         # check runs before: the released behaviour, not a refusal.
         packing = False
     kernels = _kernels(model)
+    cp_size = cp if cp is not None else getattr(layout, "cp", 1)
     return Query(
         trainer = _trainer_kind(trainer_cls),
         family = family,
@@ -1766,13 +1890,15 @@ def query_from(
         dp = getattr(layout, "dp", 1),
         tp = getattr(layout, "tp", 1),
         pp = getattr(layout, "pp", 1),
-        cp = cp if cp is not None else getattr(layout, "cp", 1),
+        cp = cp_size,
         fsdp2 = bool(getattr(layout, "fsdp2", False)),
         vllm = bool(
             getattr(model, "vllm_engine", None) is not None or getattr(args, "use_vllm", False)
         ),
         pp_schedule = getattr(layout, "schedule", None) if getattr(layout, "pp", 1) > 1 else None,
-        attention = _attention(model, packing),
+        attention = _attention(
+            model, packing, inkling2_cp = cp_size > 1 and family in ("inkling2", "inkling2_loop")
+        ),
         compile = _compile_mode(model),
         memory = _memory(model, args),
         kernels = kernels,

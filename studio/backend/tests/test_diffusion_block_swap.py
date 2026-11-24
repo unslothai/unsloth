@@ -66,7 +66,7 @@ def test_default_config_is_off(monkeypatch):
 def test_gating():
     assert bs.block_swap_error(None, "nf4", "cpu", False) is None
     assert "CUDA" in bs.block_swap_error("auto", "bf16", "cpu", True)
-    for mode in ("nf4", "int8", "fp8", "mxfp8"):
+    for mode in ("nf4", "int8", "mxfp8"):
         assert "bf16" in bs.block_swap_error("auto", mode, "cuda", True)
     assert "gradient_checkpointing" in bs.block_swap_error(4, "bf16", "cuda", False)
     assert bs.block_swap_error(4, "bf16", "cuda", True) is None
@@ -138,7 +138,9 @@ def test_maybe_compile_routes_swap_to_forward_compile(monkeypatch):
     monkeypatch.setattr(dit, "_compile_toolchain_missing", lambda: None)
     used = []
     monkeypatch.setattr(
-        dit, "compile_swapped_blocks", lambda t, fullgraph, dynamic: used.append(fullgraph) or 3
+        dit,
+        "compile_swapped_blocks",
+        lambda t, fullgraph, dynamic, **kw: used.append(fullgraph) or 3,
     )
     m = _Model()
     m.compile_repeated_blocks = lambda **kw: used.append("regional")

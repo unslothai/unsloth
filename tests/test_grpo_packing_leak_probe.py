@@ -16,6 +16,7 @@ transformers = pytest.importorskip("transformers")
 SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_replacements.py"
 HELPER = "_unsloth_grpo_refuse_boundary_blind_packing"
 PROBE = "_unsloth_grpo_packing_leaks"
+VARLEN = "_unsloth_grpo_enable_packed_varlen"
 FLAGS = (
     "_unsloth_seq_packing_nograd_ok",
     "_unsloth_seq_packing_grad_ok",
@@ -45,7 +46,9 @@ def packing_module(monkeypatch):
 
 def _namespace():
     tree = ast.parse(SOURCE_PATH.read_text(encoding = "utf-8"))
-    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in (HELPER, PROBE)]
+    nodes = [
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in (HELPER, PROBE, VARLEN)
+    ]
     namespace = {"os": os, "torch": torch, "UNSLOTH_ENABLE_LOGGING": False}
     exec(compile(ast.Module(body = nodes, type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
     return namespace

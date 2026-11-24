@@ -73,23 +73,32 @@ test("a plain checkpoint the listing already sized costs no file listing; MLX st
 
 test("the Safetensors filter lists plain checkpoints on any host that runs them", () => {
   const { discoverListsCheckpoints } = pickerModel;
-  // isMac, formatFilter, chatOnly, isMlx
-  assert.equal(discoverListsCheckpoints(true, "all", false, false), true);
-  assert.equal(discoverListsCheckpoints(true, "all", false, true), true);
-  assert.equal(discoverListsCheckpoints(false, "all", false, false), false);
-  assert.equal(discoverListsCheckpoints(false, "gguf", false, false), false);
+  assert.equal(discoverListsCheckpoints(true, "all", false, false, true, false), true);
+  assert.equal(discoverListsCheckpoints(true, "all", false, true, true, false), true);
+  assert.equal(discoverListsCheckpoints(false, "all", false, false, false, false), false);
+  assert.equal(discoverListsCheckpoints(false, "gguf", false, false, false, false), false);
   assert.equal(
-    discoverListsCheckpoints(false, "safetensors", false, false),
+    discoverListsCheckpoints(false, "safetensors", false, false, false, false),
     true,
   );
   assert.equal(
-    discoverListsCheckpoints(false, "safetensors", false, true),
+    discoverListsCheckpoints(false, "safetensors", false, true, false, false),
     false,
   );
   assert.equal(
-    discoverListsCheckpoints(false, "safetensors", true, false),
+    discoverListsCheckpoints(false, "safetensors", true, false, false, true),
     false,
   );
+});
+
+test("a Chat only Mac lists checkpoints in Discover only where it serves MLX", () => {
+  const { discoverListsCheckpoints } = pickerModel;
+  assert.equal(discoverListsCheckpoints(true, "all", true, true, true, true), true);
+  assert.equal(discoverListsCheckpoints(true, "all", true, false, true, true), true);
+  assert.equal(discoverListsCheckpoints(true, "all", true, true, false, true), false);
+  assert.equal(discoverListsCheckpoints(true, "all", true, false, false, true), false);
+  // Every Mac guesses Chat only until measured; that guess must not hide checkpoints.
+  assert.equal(discoverListsCheckpoints(true, "all", true, false, true, false), true);
 });
 
 test("the picker gates Discover checkpoints on the format filter and chat-only state", () => {
@@ -99,7 +108,7 @@ test("the picker gates Discover checkpoints on the format filter and chat-only s
   const memo = picker.slice(picker.indexOf("const recommended = useMemo"));
   assert.match(
     memo,
-    /discoverListsCheckpoints\(\s+isMac,\s+formatFilter,\s+chatOnly,/,
+    /discoverListsCheckpoints\(\s+isMac,\s+formatFilter,\s+chatOnly,\s+isMlxId\(r\.id, hasMlxCardTag\(r\)\),\s+servesMlx,\s+chatOnlyKnown,/,
   );
   assert.ok(
     picker.indexOf('useState<FormatFilter>("all")') <
@@ -115,5 +124,35 @@ test("a failed size listing waits before it is asked again", () => {
   assert.match(
     src,
     /!sizes\.has\(keyOf\(id\)\) && !coolingDown\(keyOf\(id\)\)/,
+  );
+});
+
+test("a Chat only host lists cached checkpoints only where it serves MLX", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const servesMlx = usePlatformStore\(\(s\) =>\s*isServedByMlx\(false, s\.deviceType, s\.chatOnlyReason, s\.mlxInference\),/,
+  );
+  const loop = picker.slice(picker.indexOf("for (const repo of inventory.cachedModels)"));
+  assert.match(
+    loop.slice(0, loop.indexOf("device.push")),
+    /if \(!audio && hidesCheckpoints\) \{\s*continue;/,
+  );
+  assert.match(
+    picker,
+    /const hidesCheckpoints = usePlatformStore\(\s*\(s\) => chatOnlyKnown && !servesMlx && !s\.isCpuTrainingHost\(\),/,
+  );
+});
+
+test("a Chat only host lists local checkpoints beyond GGUF only where it serves MLX", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  const loop = picker.slice(picker.indexOf("for (const lora of loraModels ?? [])"));
+  assert.match(
+    loop.slice(0, loop.indexOf("device.push")),
+    /lora\.source === "local" &&\s*!lora\.audioType &&\s*hidesCheckpoints &&\s*format !== "gguf"\s*\)/,
   );
 });

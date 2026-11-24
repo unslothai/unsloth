@@ -265,6 +265,10 @@ def main() -> int:
             browser = playwright.chromium.launch(headless = True, args = chromium_launch_args())
             try:
                 api = MockApi()
+                # Two adjacent images share a prompt; the next changes only near its end.
+                api.images[0]["prompt"] = "a detailed prompt " * 20 + "at sunrise"
+                api.images[1]["prompt"] = api.images[0]["prompt"]
+                api.images[2]["prompt"] = "a detailed prompt " * 20 + "at sunset"
                 context = browser.new_context(viewport = {"width": 1280, "height": 900})
                 context.add_init_script(
                     "localStorage.setItem('unsloth_auth_token','x.eyJleHAiOjk5OTk5OTk5OTl9.y');"
@@ -280,6 +284,15 @@ def main() -> int:
                 # A first visit to each page lets the dev server finish optimizing dependencies, whose
                 # reload would otherwise land in the middle of a measurement.
                 open_strip(page, "/images", "[data-image-id]")
+                assert (
+                    page.locator("[data-image-id='img00000'] [data-prompt-boundary]").count() == 0
+                )
+                assert (
+                    page.locator("[data-image-id='img00001'] [data-prompt-boundary]").count() == 0
+                )
+                assert (
+                    page.locator("[data-image-id='img00002'] [data-prompt-boundary]").count() == 1
+                )
                 open_strip(page, "/video", "[data-clip-id]")
                 page.wait_for_timeout(2000)
                 menus = {

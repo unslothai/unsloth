@@ -297,8 +297,22 @@ def test_wait_for_server_accepts_the_whisper_server_page(monkeypatch):
     server, port = _serve(b"<html><title>Whisper.cpp Server</title></html>")
     try:
         monkeypatch.setattr(ggml_module, "_SERVER_START_TIMEOUT_SECONDS", 5.0)
-        GgmlSttSidecar._wait_for_server(_fake_alive_process(), port)
+        # This process holds the listener, so it stands in for the sidecar child.
+        GgmlSttSidecar._wait_for_server(SimpleNamespace(poll = lambda: None, pid = os.getpid()), port)
     finally:
+        server.shutdown()
+
+
+def test_wait_for_server_refuses_a_whisper_page_from_another_process(monkeypatch):
+    server, port = _serve(b"<html><title>Whisper.cpp Server</title></html>")
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        monkeypatch.setattr(ggml_module, "_SERVER_START_TIMEOUT_SECONDS", 5.0)
+        with pytest.raises(SttEngineUnavailableError):
+            GgmlSttSidecar._wait_for_server(child, port)
+    finally:
+        child.kill()
+        child.wait()
         server.shutdown()
 
 

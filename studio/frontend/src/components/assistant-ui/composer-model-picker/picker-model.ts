@@ -118,6 +118,11 @@ export interface PickerRow {
   updatedAt?: number;
 }
 
+export interface LoadedCopy {
+  quant: string;
+  id: string;
+}
+
 export type DeviceSort = "recent" | "size" | "name";
 export const DEVICE_SORT_LABEL: Record<DeviceSort, string> = {
   recent: "Recent",
@@ -309,6 +314,8 @@ export function expandQuantFavorites<
   T extends PickerRow & {
     favoriteQuant?: string;
     loadedQuant?: string | null;
+    loadedId?: string;
+    loadedCopies?: LoadedCopy[];
     inventoryKey?: string;
   },
 >(rows: readonly T[], pinned: readonly string[]): T[] {
@@ -330,16 +337,27 @@ export function expandQuantFavorites<
     if (quants.length === 0) {
       return [row];
     }
-    const perQuant = quants.map((quant) => ({
-      ...row,
-      key: `${row.key}::${quant}`,
-      // Disk state is keyed by the repo's row.
-      inventoryKey: row.key,
-      favoriteQuant: quant,
-      loaded:
-        row.loaded === true &&
-        (!row.loadedQuant || norm(row.loadedQuant) === norm(quant)),
-    }));
+    const perQuant = quants.map((quant) => {
+      const copy = row.loadedCopies?.find((c) => norm(c.quant) === norm(quant));
+      return {
+        ...row,
+        key: `${row.key}::${quant}`,
+        inventoryKey: row.key,
+        favoriteQuant: quant,
+        ...(row.loadedCopies
+          ? {
+              loaded: copy !== undefined,
+              loadedQuant: copy?.quant ?? null,
+              loadedId: copy?.id,
+              loadedCopies: copy ? [copy] : [],
+            }
+          : {
+              loaded:
+                row.loaded === true &&
+                (!row.loadedQuant || norm(row.loadedQuant) === norm(quant)),
+            }),
+      };
+    });
     return whole ? [row, ...perQuant] : perQuant;
   });
 }
@@ -482,9 +500,9 @@ export function pickerMinHeight(
   zoomOut: number,
 ): number {
   const screenHeight = innerHeight / zoomOut;
-  if (innerWidth > innerHeight && screenHeight <= 900) return 400;
+  if (innerWidth > innerHeight && screenHeight <= 900) return 420;
   const t = Math.min(1, Math.max(0, (screenHeight - 1080) / 300));
-  return Math.round(420 + 120 * t);
+  return Math.round(440 + 100 * t);
 }
 
 /** Short of room below, a downward panel rides up over the composer, never past the window top. */
@@ -577,13 +595,17 @@ export function hubSizeIds<
 }
 
 /** Discover lists plain safetensors on a Mac, and under the Safetensors filter on any host that runs
- * them; a chat-only host runs GGUF only. */
+ * them; a chat-only host runs GGUF, plus checkpoints where it serves MLX. On a Mac `chatOnly` is a guess
+ * until measured, so only `chatOnlyKnown` narrows it. */
 export function discoverListsCheckpoints(
   isMac: boolean,
   formatFilter: string,
   chatOnly: boolean,
   isMlx: boolean,
+  servesMlx: boolean,
+  chatOnlyKnown: boolean,
 ): boolean {
+  if (isMac && chatOnlyKnown) return servesMlx;
   return isMac || (formatFilter === "safetensors" && !chatOnly && !isMlx);
 }
 
@@ -611,8 +633,14 @@ export async function readBounded<T, R>(
 
 /** The chosen model goes to the host's guarded unload (no id), as the header picker's Eject did. */
 export function ejectTargetId(
-  row: { id: string; loadedId?: string },
+  row: { id: string; loadedId?: string; loadedCopies?: LoadedCopy[] },
   chosenId: string | undefined,
+  checkpoint?: string | null,
 ): string | undefined {
-  return row.id === chosenId ? undefined : (row.loadedId ?? row.id);
+  if (row.id !== chosenId) {
+    return row.loadedId ?? row.id;
+  }
+  return row.loadedCopies?.every((c) => norm(c.id) !== norm(checkpoint))
+    ? row.loadedId
+    : undefined;
 }

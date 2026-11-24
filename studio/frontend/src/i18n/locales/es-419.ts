@@ -119,7 +119,7 @@ export const es419 = {
     materialMenusDescription: "Los desplegables, menús y selectores también usan vidrio.",
     materialStrength: "Intensidad del vidrio",
     lens: "Lente de vidrio",
-    lensDescription: "Curva la imagen bajo el cuadro de texto como un vidrio real.",
+    lensDescription: "Curva la imagen bajo cada superficie de vidrio como un vidrio real.",
     lensOff: "Desactivado",
     lensMagnify: "Ampliar",
     lensShrink: "Reducir",
@@ -756,6 +756,7 @@ export const es419 = {
       anyApp: "Uso de la computadora",
       anyAppDescription: "Permite que los modelos vean la pantalla y controlen el <b>mouse y el teclado</b>. Los chats piden permiso antes de empezar, antes de usar una app nueva y antes de cualquier acción arriesgada. Las capturas de pantalla se envían al modelo con el que chateas.",
       browser: "Navegador",
+      desktopOnlyDescription: "El uso de la computadora funciona en la app de escritorio de Unsloth. Abre esta configuración allí para activarlo.",
       browserDescription: "Permite que los modelos abran páginas en el panel del navegador de Unsloth, las lean y hagan clic y escriban por ti.",
       screen: "Ver la pantalla",
       screenDescription: "macOS lo pide en «Grabación de pantalla y audio del sistema».",
@@ -1029,6 +1030,13 @@ export const es419 = {
     compactUnsupported:
       "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
   },
+  chatFiles: {
+    title: "Archivos en este chat",
+    code: "Fragmentos de código",
+    showInChat: "Mostrar en el chat",
+    download: "Descargar {name}",
+    saveFailed: "No se pudo guardar {name}.",
+  },
   welcome: {
     goodToSeeYou: "Me alegra verte",
     goodToSeeYouName: "Me alegra verte, {name}",
@@ -1080,6 +1088,9 @@ export const es419 = {
       "Busca y descarga desde ModelScope en su lugar. Puedes volver a cambiarlo en Configuración.",
     useModelScopeFailed: "No se pudo cambiar a ModelScope.",
     updateToken: "Actualizar token",
+    linkedModelTitle: "¿Cargar {model}?",
+    linkedModelBody: "Un enlace abrió esta página y pidió descargar y cargar este modelo.",
+    linkedModelLoad: "Cargar",
     hfToken: {
       label: "Token de HF",
       saved: "Guardado",
@@ -1538,6 +1549,7 @@ export const es419 = {
       voice: "Voz",
       connections: "Conexiones",
       data: "Datos",
+      knowledge: "Conocimiento",
       apiKeys: "API",
       remoteLan: "Remoto y LAN",
       agents: "Agentes",
@@ -1867,6 +1879,7 @@ export const es419 = {
       memoryLabel: "Límite de memoria",
       memoryDescription:
         "Memoria máxima que puede reservar una llamada de Python o Terminal en el sandbox. Se aplica desde la próxima llamada. El valor predeterminado es {defaultSize} GB.",
+      memoryAuto: "Automático",
       memoryLocked: "Definido por UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Ingresa un número entero de {min} a {max}.",
       restored: "Se quitó el acceso a {count} carpetas.",
@@ -2659,12 +2672,16 @@ export const es419 = {
         label: "Tipo de instalación",
         description:
           "Solo chat (GGUF). La instalación completa agrega entrenamiento, exportación, video, modelos safetensors y más funciones de generación de imágenes.",
+        descriptionMlx:
+          "Solo chat (GGUF/MLX). La instalación completa agrega entrenamiento, exportación, video, modelos safetensors y más funciones de generación de imágenes.",
         descriptionCpu:
           "Solo chat (GGUF). No se encontró una GPU compatible, así que la instalación completa agrega entrenamiento en la CPU.",
         action: "Actualizar a la instalación completa",
         confirmTitle: "¿Actualizar a la instalación completa?",
         confirmDescription:
           "Esta instalación de solo chat ejecuta modelos GGUF. La instalación completa agrega PyTorch para la GPU de esta computadora, lo que habilita el entrenamiento, la exportación, el video, los modelos safetensors y más funciones de generación de imágenes. Descarga varios gigabytes (al menos 5 GB de espacio en disco) y reinicia el servidor. Se conservan los chats, los modelos y la configuración. Puede tardar varios minutos.",
+        confirmDescriptionMlx:
+          "Esta instalación de solo chat ejecuta modelos GGUF/MLX. La instalación completa agrega PyTorch para la GPU de esta computadora, lo que habilita el entrenamiento, la exportación, el video, los modelos safetensors y más funciones de generación de imágenes. Descarga varios gigabytes (al menos 5 GB de espacio en disco) y reinicia el servidor. Se conservan los chats, los modelos y la configuración. Puede tardar varios minutos.",
         confirmDescriptionCpu:
           "Esta instalación de solo chat ejecuta modelos GGUF. No se encontró una GPU compatible en esta computadora, así que la instalación completa agrega PyTorch para la CPU, lo que habilita el entrenamiento en la CPU. Entrenar en la CPU es mucho más lento que en una GPU. Necesita al menos 5 GB de espacio en disco y reinicia el servidor. Se conservan los chats, los modelos y la configuración. Puede tardar varios minutos.",
         confirmAction: "Actualizar",
@@ -2863,7 +2880,7 @@ export const es419 = {
         oldWebkitWarning:
           "WebKitGTK {version} en Wayland: el renderizado por GPU puede fallar al iniciar en NVIDIA con escalado fraccionario (WebKit bug 280210). Si ocurre, Unsloth vuelve por sí solo al renderizado por CPU. En WebKitGTK 2.50.4 no mostró ninguna mejora medible (8 fps en ambos casos), así que no se recomienda Activado aquí.",
         oldDriverWarning:
-          "Controlador NVIDIA {version} en X11: Unsloth mantiene desactivado el renderizado por GPU hasta que el controlador sea 610 o posterior. Los controladores anteriores pierden un descriptor de archivo por fotograma y la ventana deja de dibujarse en pocos minutos.",
+          "Controlador NVIDIA {version} en X11: Unsloth mantiene desactivado el renderizado por GPU hasta que el controlador sea 590 o posterior. Los controladores anteriores pierden un descriptor de archivo por fotograma y la ventana deja de dibujarse en pocos minutos.",
         fallbackNote:
           "El renderizado por GPU falló al iniciar en este sistema, así que Unsloth usa el renderizado por CPU.",
         tryAgain: "Volver a probar la GPU",
@@ -3144,6 +3161,15 @@ export const es419 = {
         runningOn: "llama.cpp se ejecuta actualmente en {backend}.",
         hint: "Instala la compilación de llama.cpp para este backend y la mantiene entre actualizaciones. Útil cuando la elección automática falla o el controlador de tu GPU no la admite. Solo se muestran los backends con una compilación para esta computadora; el entrenamiento no se ve afectado.",
         autoWith: "Automático ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm no está instalado",
+          rocmNoAccess: "sin acceso a la GPU",
+          otherRelease: "necesita una actualización de llama.cpp",
+          checkFailed: "no se pudo verificar",
+          noBuild: "no hay build para esta computadora",
+        },
         apply: "Aplicar",
         applying: "Instalando...",
         applyHint:
@@ -3518,7 +3544,7 @@ export const es419 = {
       rememberParamsPerModelHint:
         "Si está desactivado, todos los modelos usan la misma configuración.",
       autoCompactHint:
-        "Chats GGUF y MLX locales: los turnos expulsados se indexan para que el modelo pueda recuperarlos con una búsqueda, y un reinicio cita palabra por palabra las instrucciones permanentes que quepan, dando prioridad a las más antiguas y a las más recientes sobre las intermedias. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto que configuraste, no la VRAM disponible. Modelos de API: el proveedor resume los turnos antiguos cuando puede; si no, se descartan los más antiguos cuando el chat se acerca a la ventana de contexto publicada del modelo.",
+        "Chats GGUF y MLX locales: los turnos expulsados se indexan para que el modelo pueda recuperarlos con una búsqueda, y un reinicio cita palabra por palabra las instrucciones permanentes que quepan, dando prioridad a las más antiguas y a las más recientes sobre las intermedias. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto que configuraste, no la VRAM disponible. Modelos de API: el proveedor resume los turnos antiguos cuando puede; si no, los más antiguos salen del contexto cuando el chat se acerca a la ventana de contexto publicada del modelo y se indexan de la misma forma.",
       pastedTextShortDescription:
         "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt.",
       pastedTextOffDescription:
@@ -5376,7 +5402,7 @@ export const es419 = {
     translate: "Traducir",
     stop: "Detener",
     sourceLabel: "Texto para traducir",
-    sourcePlaceholder: "Escribe o pega texto, o suelta un documento o una imagen",
+    sourcePlaceholder: "Escribe o pega texto, o suelta un documento, una imagen o un archivo de audio",
     outputLabel: "Traducción",
     outputEmpty: "La traducción aparece aquí.",
     firstRunHint:
@@ -5387,13 +5413,22 @@ export const es419 = {
     downloadConfirm: "Descargar",
     clear: "Borrar",
     paste: "Pegar",
-    openFile: "Abrir un documento o una imagen",
+    openFile: "Abrir un documento, una imagen o un archivo de audio",
     dropFile: "Suelta un archivo para traducir su texto",
     fileNotText: "Este archivo no tiene texto para traducir.",
     truncated: "Solo se conservaron los primeros {max} caracteres.",
     copy: "Copiar traducción",
     copied: "Copiado",
     useAsSource: "Traducir este texto",
+    downloadSubtitles: "Descargar subtítulos",
+    imageOverlay: {
+      show: "Mostrar en la imagen",
+      title: "Traducción sobre la imagen",
+      description: "El texto traducido se dibuja sobre la imagen donde estaba el texto original.",
+      working: "Traduciendo el texto de la imagen…",
+      download: "Descargar imagen",
+      failed: "No se pudo dibujar la traducción sobre la imagen.",
+    },
     stale:
       "El texto o la configuración cambiaron. Vuelve a traducir para actualizar.",
     stopped: "Se detuvo antes del final. Traduce de nuevo para obtener el resto.",
@@ -6369,7 +6404,7 @@ export const es419 = {
     checking: "Verificando...",
     installPrompt: "Para instalar Unsloth, haz clic en Empezar.",
     getStarted: "Empezar",
-    chatOnly: "Solo chat (GGUF): instalación más ligera, sin entrenamiento",
+    chatOnly: "Solo chat: instalación más ligera, sin entrenamiento",
     installLocation: "Ubicación de instalación:",
     changeLocation: "Cambiar",
     useDefaultLocation: "Usar predeterminada",
@@ -6570,5 +6605,77 @@ export const es419 = {
       inVram: "{amount} en VRAM",
       inRam: "{amount} en RAM",
     },
+  },
+  onboarding: {
+    dialogTitle: "Configurar Unsloth",
+    close: "Cerrar",
+    back: "Atrás",
+    continue: "Continuar",
+    skipSetup: "Omitir configuración",
+    getStarted: "Comenzar",
+    progress: "Paso {current} de {total}",
+    welcome: {
+      title: "Te damos la bienvenida a Unsloth",
+      titleName: "Hola, {name}",
+      body: "Ejecuta y entrena modelos abiertos, directamente en tu computadora.",
+    },
+    profile: {
+      label: "Tu nombre",
+      placeholder: "¿Cómo te llamamos?",
+      initials: "Iniciales",
+      sloth: "Perezoso",
+      upload: "Subir",
+      uploading: "Subiendo…",
+      yours: "Tu foto",
+      uploadError: "No se pudo usar esa imagen. Prueba con JPEG, PNG, WebP o GIF.",
+    },
+    look: {
+      title: "Hazlo tuyo",
+      body: "Puedes cambiar todo después en Configuración.",
+      theme: "Tema",
+    },
+    scene: {
+      wallpaper: "Fondo de pantalla",
+      none: "Ninguno",
+      upload: "Subir",
+      error: "No se pudo usar esa imagen. Prueba con JPEG, PNG o WebP.",
+      solid: "Sólido",
+      glassOn: "Vidrio",
+    },
+    device: {
+      checking: "Revisando esta computadora…",
+      error: "No se pudo revisar esta computadora. Igual puedes empezar a chatear.",
+      cpuOnly: "No se encontró GPU, se ejecuta en la CPU",
+      appleSilicon: "Apple Silicon, acelerado con Metal",
+      moreGpus: "+{count} más",
+      vram: "{size} GB de VRAM",
+      unified: "{size} GB de memoria unificada",
+      ram: "{size} GB de RAM",
+      chat: "Chat",
+      train: "Entrenamiento",
+      image: "Imágenes",
+      video: "Video",
+    },
+    done: {
+      title: "Todo listo",
+      titleName: "Todo listo, {name}",
+      startChat: "Ahora elige un modelo para descargar y empieza a chatear.",
+      tour: "Muéstrame cómo funciona",
+      tourBody: "Un breve recorrido guiado por el chat.",
+      open: "Empezar a chatear",
+    },
+    connect: {
+      title: "Usa tus propias cuentas",
+      body: "Opcional. Úsalas en el chat junto a tus modelos locales.",
+      chatgpt: "ChatGPT",
+      chatgptBody: "Inicia sesión con tu plan de ChatGPT.",
+      claude: "Claude",
+      claudeBody: "Agrega una clave de API de Anthropic.",
+      connect: "Conectar",
+      connected: "Conectada",
+    },
+    settingsLabel: "Guía de bienvenida",
+    settingsDescription: "Repite la configuración inicial.",
+    settingsOpen: "Abrir",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -367,8 +367,26 @@ def _section_plan(tokens: list[tuple[str, str]]):
         return "".join(text for kind, text in tokens if kind == "lit")
     marks = [i for i, (kind, _) in enumerate(tokens) if kind in ("ph", "exp")]
     first, last = marks[0], marks[-1]
+    inserts: list[tuple[int, str]] = []
     if any(kind == "lit" for kind, _ in tokens[first:last]):
-        return None
+        # Only 000-00-0000 style: fractions, decimals, grouping, exponents and a # right of a 0
+        # (0-## would pad globally and show 1 as -1) stay unsupported.
+        span = tokens[first : last + 1]
+        if any(ch not in "0#" if kind == "ph" else kind != "lit" or "/" in ch for kind, ch in span):
+            return None
+        if "".join(ch for kind, ch in span if kind == "ph").lstrip("#").strip("0"):
+            return None
+        digits = 0
+        for kind, text in reversed(span):
+            if kind == "ph":
+                digits += 1
+            elif inserts and inserts[-1][0] == digits:
+                inserts[-1] = (digits, text + inserts[-1][1])
+            else:
+                inserts.append((digits, text))
+        inserts.reverse()  # leftmost first
+        tokens = tokens[:first] + [token for token in span if token[0] == "ph"] + tokens[last + 1 :]
+        last = first + digits - 1
     prefix = "".join(text for kind, text in tokens[:first] if kind == "lit")
     suffix = "".join(text for kind, text in tokens[last + 1 :] if kind == "lit")
     pattern = "".join(ch if kind == "ph" else "E" + ch for kind, ch in tokens[first : last + 1])
@@ -398,6 +416,7 @@ def _section_plan(tokens: list[tuple[str, str]]):
         max(len(whole), 1),
         "#" in whole,
         exponent.count("0"),
+        tuple(inserts),
     )
 
 
@@ -423,6 +442,7 @@ def _apply_section(value: float, plan) -> str | None:
         width,
         hashed,
         exp_digits,
+        inserts,
     ) = plan
     value *= 100 ** len(percent)
     for _ in range(thousands):
@@ -442,6 +462,13 @@ def _apply_section(value: float, plan) -> str | None:
     int_part = "" if int_part == "0" and min_whole == 0 else int_part.zfill(min_whole)
     if grouped and int_part:
         int_part = _group(int_part)
+    if inserts:  # digits beyond the placeholders stay in the leftmost group
+        pieces, start = [], 0
+        for count, insert in inserts:
+            at = max(len(int_part) - count, 0)
+            pieces += [int_part[start:at], insert]
+            start = at
+        int_part = "".join(pieces) + int_part[start:]
     text = int_part + (dot + frac_part if dot else "")
     if sign_style:
         exp_sign = "-" if power < 0 else ("+" if sign_style == "+" else "")
@@ -528,6 +555,9 @@ def _column_index(ref: str) -> int:
         if not ch.isalpha():
             break
         index = index * 26 + (ord(ch.upper()) - 64)
+        if index > _MAX_COLUMNS:
+            # Past every kept column: more letters would only grow a huge integer (quadratic).
+            return _MAX_COLUMNS
     return index - 1
 
 
@@ -1034,14 +1064,22 @@ def _email_parts(part, html_text) -> list[str]:
         return []
     if part.get_content_type() not in ("text/plain", "text/html"):
         return []
-    try:
-        content = part.get_content()
-    except (LookupError, ValueError):
-        content = part.get_payload(decode = True) or b""
-        content = content.decode("utf-8", "replace") if isinstance(content, bytes) else content
-    if part.get_content_subtype() == "html":
-        return [html_text(content.encode("utf-8") if isinstance(content, str) else content)]
-    return [content]
+    is_html = part.get_content_subtype() == "html"
+    content = None
+    # The stdlib reads an undeclared charset as ASCII (Chrome MHTML omits it), so sniff the bytes.
+    if part.get_content_charset() is not None:
+        try:
+            content = part.get_content()
+        except (LookupError, ValueError):
+            pass
+    if not isinstance(content, str):
+        raw = part.get_payload(decode = True) or b""
+        if is_html:
+            return [html_text(raw)]
+        from .parsers import _decode_text
+
+        return [_decode_text(raw)]
+    return [html_text(content.encode("utf-8")) if is_html else content]
 
 
 def _email_text(message, html_text) -> str:
@@ -1768,10 +1806,13 @@ def ppt(path: str) -> list[Section]:
                 slides[-1][2][-1] = _ppt_text(data, child, child_body, child_stop)
 
     notes: dict[int, list[str]] = {}
+    read_notes: set[int] = set()
     for ref in notes_refs:
-        page = _ppt_record_at(data, persist.get(ref), _PPT_NOTES)
-        if page is None:
+        offset = persist.get(ref)
+        page = _ppt_record_at(data, offset, _PPT_NOTES)
+        if page is None or offset in read_notes:
             continue
+        read_notes.add(offset)
         atom = next(
             (r for r in _ppt_records(data, *page) if r[0] == _PPT_NOTES_ATOM and r[3] - r[2] >= 4),
             None,
@@ -1780,11 +1821,21 @@ def ppt(path: str) -> list[Section]:
         if atom is not None and lines:
             notes[struct.unpack_from("<I", data, atom[2])[0]] = lines
 
+    # A slide list can name one slide (or one slide id's notes) many times: charge the reuses.
+    budget, drawn, noted = _Budget(), set(), set()
     sections: list[Section] = []
     for number, (ref, slide_id, listed) in enumerate(slides, 1):
-        slide = _ppt_record_at(data, persist.get(ref), _PPT_SLIDE)
+        offset = persist.get(ref)
+        slide = _ppt_record_at(data, offset, _PPT_SLIDE)
+        if slide:
+            if offset in drawn:
+                budget.spend(slide[1] - slide[0])
+            drawn.add(offset)
         lines = _ppt_sheet_lines(data, *slide, listed) if slide else [t for t in listed if t]
         if slide_id in notes:
+            if slide_id in noted:
+                budget.spend(sum(map(len, notes[slide_id])))
+            noted.add(slide_id)
             lines += ["Notes:"] + notes[slide_id]
         if lines:
             sections.append(("\n".join(lines), number))

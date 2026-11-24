@@ -5059,6 +5059,9 @@ def _expected_torch_flavor_tag() -> str:
     unknown_pin = _explicit_unknown_family_torch_index_url()
     if unknown_pin is not None:
         return "" if unknown_pin else (_RECORDED_TORCH_TAG or "")
+    # The swap _ensure_rocm_torch makes, or a manifest / NVIDIA probe would put CUDA back.
+    if IS_WINDOWS and _windows_forced_rocm_is_viable():
+        return "rocm"
     if _RECORDED_TORCH_TAG:
         return _RECORDED_TORCH_TAG
     if _explicit_torch_index_family() is None and not _has_usable_nvidia_gpu():
@@ -5845,6 +5848,55 @@ def _rocm_torch_family_needs_repair(
     ) or _generic_only_target_below_floor(runtime_gfx, _installed_tag)
 
 
+def _windows_forced_rocm_is_viable() -> bool:
+    """UNSLOTH_FORCE_ROCM_TORCH beside a usable NVIDIA GPU, with an AMD card _ensure_rocm_torch can serve.
+
+    A non-ROCm handover means setup.ps1 found no AMD route; its answer wins over this probe."""
+    if not (_rocm_torch_explicitly_requested() and _has_usable_nvidia_gpu()):
+        return False
+    if _handover_torch_flavor_tag() not in ("", "rocm"):
+        return False
+    gfx_arch = _detect_windows_gfx_arch()
+    if not gfx_arch or _windows_rocm_index_url(gfx_arch) is None:
+        return False
+    return _windows_amd_hardware_is_corroborated()
+
+
+def _windows_amd_hardware_is_corroborated() -> bool:
+    """UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo, amd-smi or WMI must see one.
+
+    Presence, not a second arch inference: the override exists for cards WMI names generically."""
+    _override = os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
+    if not (_override or "").strip():
+        return True
+    os.environ.pop("UNSLOTH_ROCM_GFX_ARCH")
+    try:
+        if _detect_windows_gfx_arch():
+            return True
+    finally:
+        os.environ["UNSLOTH_ROCM_GFX_ARCH"] = _override
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "@(Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'AMD|Radeon' }).Count",
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 30,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:  # noqa: BLE001 - no answer is no evidence
+        return False
+    return result.returncode == 0 and result.stdout.decode(errors = "replace").strip() not in (
+        "",
+        "0",
+    )
+
+
 def _windows_rocm_device_packs_need_dependency_pass() -> bool:
     """For setup.ps1's fast path: would _ensure_rocm_torch repair this multi-arch ROCm torch?
 
@@ -5857,7 +5909,7 @@ def _windows_rocm_device_packs_need_dependency_pass() -> bool:
             _explicit_unknown_family_torch_index_url() is not None
             or _explicit_torch_index_is_unusable()
             or _explicit_rocm_torch_index_url() is not None
-            or _has_usable_nvidia_gpu()
+            or (_has_usable_nvidia_gpu() and not _rocm_torch_explicitly_requested())
         ):
             return False
         gfx_arch = _detect_windows_gfx_arch()
@@ -5912,9 +5964,11 @@ def _ensure_rocm_torch() -> "bool | None":
     if IS_WINDOWS:
         # An explicit ROCm pin overrides the per-arch index: retry the PINNED one, not repo.amd.com.
         _win_rocm_pin = _explicit_rocm_torch_index_url()
-        # UNSLOTH_FORCE_ROCM_TORCH is deliberately not read: install.ps1 / setup.ps1 would restore CUDA,
-        # making this a multi-GB round trip.
-        if _win_rocm_pin is None and _has_usable_nvidia_gpu():
+        if (
+            _win_rocm_pin is None
+            and _has_usable_nvidia_gpu()
+            and not _windows_forced_rocm_is_viable()
+        ):
             return
         gfx_arch = _detect_windows_gfx_arch()
         if not gfx_arch and _win_rocm_pin is None:
@@ -10217,7 +10271,7 @@ def _has_working_git() -> bool:
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.4", "mlx-metal==0.32.4")
 # A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
 _MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
-_MLX_VLM_SPEC = "mlx-vlm>=0.6.4,<=0.8.0"
+_MLX_VLM_SPEC = "mlx-vlm>=0.6.4,<=0.8.1"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + (
@@ -10225,9 +10279,13 @@ _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PIN
     "mlx-vlm",
 )
 # mflux is --no-deps so its torch and transformers floors cannot move the MLX pins; best-effort, and
-# a failure must never mark the MLX stack broken; Pillow is capped below 13 since 13.0.0 breaks
-# mflux on CPython 3.11-3.14.
-_MLX_DIFFUSION_PINS: tuple[str, ...] = ("mflux==0.22.0",)
+# a failure must never mark the MLX stack broken. Pillow < 13: 13.0.0 breaks mflux 0.22; 0.24 runs on 12.
+# 0.24 needs Python 3.11, so 3.10 venvs keep 0.22.
+_MFLUX_PIN = "mflux==0.24.0"
+_MFLUX_PY310_PIN = "mflux==0.22.0"
+_MLX_DIFFUSION_PINS: tuple[str, ...] = (
+    _MFLUX_PIN if sys.version_info >= (3, 11) else _MFLUX_PY310_PIN,
+)
 _MLX_DIFFUSION_DEPS: tuple[str, ...] = (
     "pillow>=12.3.0,<13",
     "piexif>=1.1.3,<2",
@@ -10490,6 +10548,7 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
     """Advisory only, and must not be silent: names what keeps Train off on Apple Silicon; runs out
     of process since a half-installed mlx can abort; recorded verdict stands only if MLX was
     skipped, nothing installed, and the last run was healthy."""
+    ready = "chat stack ready" if NO_TORCH else "training stack ready"
     fingerprint = _mlx_health_fingerprint()
     recorded = (_PASS_EVIDENCE or {}).get("mlx_health")
     if (
@@ -10504,7 +10563,7 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
         and recorded.get("imports") == fingerprint["imports"]
         and _mlx_payload_present()
     ):
-        _step("mlx", "training stack ready")
+        _step("mlx", ready)
         # Written back so the record does not age out of the manifest.
         install_manifest.update_manifest(mlx_health = {**fingerprint, "ok": True})
         return
@@ -10529,9 +10588,15 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
     # After the manifest write, so a kill during the 180 s probe cannot lose a finished install.
     install_manifest.update_manifest(mlx_health = {**fingerprint, "ok": not blockers})
     if not blockers:
-        _step("mlx", "training stack ready")
+        _step("mlx", ready)
         return
-    _step("mlx", "Train and Export will stay off until this is resolved:", _warn)
+    _step(
+        "mlx",
+        "MLX models will not load until this is resolved:"
+        if NO_TORCH
+        else "Train and Export will stay off until this is resolved:",
+        _warn,
+    )
     for blocker in blockers:
         _step("", blocker, _warn)
 
@@ -11929,7 +11994,7 @@ def install_python_stack() -> int:
             base_total += 1  # torch final repair (step 13), Linux
         else:
             base_total += 1  # torch flavor invariant (step 13w), Windows
-    if IS_MAC_ARM and not NO_TORCH:
+    if IS_MAC_ARM:
         base_total += 1  # MLX stack, same gate as the step itself
         # Re-resolve after the core phase may move unsloth-zoo; same gate, so the slot is always spent.
         base_total += 1  # MLX stack re-resolve
@@ -12041,11 +12106,11 @@ def install_python_stack() -> int:
     if not _repair_damaged_core_payload(_core_package_names(package_name), local_repo = local_repo):
         return 1
 
-    # macOS arm64: not keyed off skip_base (fresh installs still need MLX), not on --no-torch. Pins align
-    # with utils/mlx_repair.py and unsloth-zoo. None when the MLX step did not run.
+    # macOS arm64: not keyed off skip_base (fresh installs still need MLX); --no-torch too, MLX needs no
+    # torch. Pins align with utils/mlx_repair.py and unsloth-zoo. None when the MLX step did not run.
     _mlx_vlm_spec_used: Optional[str] = None
     _mlx_lm_spec_used: Optional[str] = None
-    if IS_MAC_ARM and not NO_TORCH:
+    if IS_MAC_ARM:
         # Both branches spend the slot, so the denominator does not depend on the host.
         if _mlx_pins_are_installable():
             # _may_skip_on_evidence too, and the arm64 overrides digest: UV_OVERRIDE shapes MLX's graph.
@@ -12069,8 +12134,9 @@ def install_python_stack() -> int:
                     _mlx_vlm_spec_for_installed_zoo(),
                 )
             # Inside the MLX slot, after the pins it runs on; its own check, so a satisfied
-            # stack still gets a missing engine.
-            _install_mlx_diffusion_engine()
+            # stack still gets a missing engine. Not on --no-torch: mflux declares torch.
+            if not NO_TORCH:
+                _install_mlx_diffusion_engine()
             _mlx_vlm_spec_used = _mlx_vlm_spec_for_installed_zoo()
             _mlx_lm_spec_used = _mlx_lm_spec_for_installed_zoo()
         else:
@@ -12164,7 +12230,7 @@ def install_python_stack() -> int:
 
     # The MLX step honoured the OLD zoo's mlx-vlm range; re-resolve when the declared range moved,
     # since the startup self-heal will not correct it.
-    if IS_MAC_ARM and not NO_TORCH:
+    if IS_MAC_ARM:
         _mlx_vlm_spec_now = _mlx_vlm_spec_for_installed_zoo()
         _mlx_lm_spec_now = _mlx_lm_spec_for_installed_zoo()
         if _mlx_vlm_spec_used is None or (_mlx_vlm_spec_now, _mlx_lm_spec_now) == (
@@ -12696,7 +12762,7 @@ def install_python_stack() -> int:
 
     # 16. Apple Silicon: warn when the installed MLX stack is unusable, or the app silently comes up
     # chat-only. After the manifest: the probe can hang its full timeout.
-    if IS_MAC_ARM and not NO_TORCH:
+    if IS_MAC_ARM:
         _report_mlx_stack_health(skipped = _STEP_RESULTS.get("mlx") == "skipped")
 
     _step(_LABEL, "installed")

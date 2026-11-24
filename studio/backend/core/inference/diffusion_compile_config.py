@@ -33,7 +33,8 @@ def reduction_config_filter_available() -> bool:
 
 
 def family_filters_reductions(family: Any) -> bool:
-    """``filter_reduction_configs`` on every arch, or the current CUDA device listed in ``filter_reduction_configs_archs``."""
+    """``filter_reduction_configs`` on every arch, or the current device listed in ``filter_reduction_configs_archs``:
+    a CUDA (major, minor) capability, or a ROCm gfx name such as ``"gfx1151"``."""
     if family is None:
         return False
     if bool(getattr(family, "filter_reduction_configs", False)):
@@ -41,8 +42,31 @@ def family_filters_reductions(family: Any) -> bool:
     archs = getattr(family, "filter_reduction_configs_archs", None) or ()
     if not archs:
         return False
-    cap = _device_capability()
-    return cap is not None and cap in {tuple(int(v) for v in a) for a in archs}
+    gfx = {str(a).strip().lower() for a in archs if isinstance(a, str)}
+    caps = {tuple(int(v) for v in a) for a in archs if not isinstance(a, str)}
+    if caps:
+        cap = _device_capability()
+        if cap is not None and cap in caps:
+            return True
+    if gfx:
+        arch = _rocm_gfx_arch()
+        if arch and arch in gfx:
+            return True
+    return False
+
+
+def _rocm_gfx_arch() -> Any:
+    """The current ROCm device's gfx name (``gfx1151``), else None (CUDA, CPU, unreadable)."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available() or not is_rocm_torch(torch):
+            return None
+        props = torch.cuda.get_device_properties(torch.cuda.current_device())
+        name = str(getattr(props, "gcnArchName", "") or "").split(":", 1)[0].strip().lower()
+        return name or None
+    except Exception:  # noqa: BLE001 - no device: nothing pinned
+        return None
 
 
 def _device_capability() -> Any:

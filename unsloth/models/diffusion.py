@@ -270,6 +270,9 @@ class FastDiffusionModel:
             )
         except Exception:
             pass
+        if adapter_name is not None:
+            from .loader import _refuse_network_share_adapter_base
+            _refuse_network_share_adapter_base(adapter_name, adapter_config)
 
         config = kwargs.pop("config", None)
         if config is None:

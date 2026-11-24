@@ -445,7 +445,7 @@ test("composer search keeps Mac-native repos, as the header picker did", () => {
   );
   assert.match(
     picker,
-    /discoverListsCheckpoints\(\s+isMac,[\s\S]{0,120}?\) &&\s+isRecommendableFormat\(r\.id, r\.isGguf, true, r\.quantMethod\)/,
+    /discoverListsCheckpoints\(\s+isMac,[\s\S]{0,240}?\) &&\s+isRecommendableFormat\(r\.id, r\.isGguf, true, r\.quantMethod\)/,
   );
 });
 
@@ -724,7 +724,7 @@ test("the open picker has one fixed height on every tab, whatever each tab lists
   const css = readSrc("index.css");
   assert.match(
     css,
-    /--composer-picker-min-h: min\(calc\(var\(--picker-min-base, 420px\) \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-floor, calc\(100dvh - 16px\)\)\);/,
+    /--composer-picker-min-h: min\(calc\(var\(--picker-min-base, 440px\) \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-floor, calc\(100dvh - 16px\)\)\);/,
   );
   assert.doesNotMatch(css, /--composer-picker-max-h/);
   assert.match(picker, /composer-model-list flex min-h-0 flex-1 flex-col/);
@@ -735,20 +735,20 @@ test("the open picker has one fixed height on every tab, whatever each tab lists
   );
 });
 
-test("the picker height follows the screen: 400px short landscape, 420px most windows, up to 540px on very large monitors", () => {
-  assert.equal(pickerMinHeight(1366, 768, 1), 400);
-  assert.equal(pickerMinHeight(1280, 640, 1), 400);
-  assert.equal(pickerMinHeight(1440, 900, 1), 400);
-  assert.equal(pickerMinHeight(1920, 1080, 1), 420);
-  assert.equal(pickerMinHeight(1728, 1000, 1), 420);
-  assert.equal(pickerMinHeight(390, 844, 1), 420);
-  assert.equal(pickerMinHeight(2560, 1230, 1), 480);
+test("the picker height follows the screen: 420px short landscape, 440px most windows, up to 540px on very large monitors", () => {
+  assert.equal(pickerMinHeight(1366, 768, 1), 420);
+  assert.equal(pickerMinHeight(1280, 640, 1), 420);
+  assert.equal(pickerMinHeight(1440, 900, 1), 420);
+  assert.equal(pickerMinHeight(1920, 1080, 1), 440);
+  assert.equal(pickerMinHeight(1728, 1000, 1), 440);
+  assert.equal(pickerMinHeight(390, 844, 1), 440);
+  assert.equal(pickerMinHeight(2560, 1230, 1), 490);
   assert.equal(pickerMinHeight(2560, 1380, 1), 540);
   assert.equal(pickerMinHeight(2560, 1600, 1), 540);
   // 1366x768 at 67% zoom.
-  assert.equal(pickerMinHeight(2039, 1146, 1.49), 400);
+  assert.equal(pickerMinHeight(2039, 1146, 1.49), 420);
   // A 1080p window zoomed out to 50% is still a 1080p screen.
-  assert.equal(pickerMinHeight(3840, 2160, 2), 420);
+  assert.equal(pickerMinHeight(3840, 2160, 2), 440);
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
@@ -1406,6 +1406,13 @@ test("Eject on the chosen model takes the host's guarded unload; other rows name
     "/cache/b.gguf",
   );
   assert.equal(ejectTargetId({ id: "unsloth/b" }, undefined), "unsloth/b");
+  const q4 = { quant: "Q4_K_M", id: "unsloth/a-GGUF:Q4_K_M" };
+  const q8 = { quant: "Q8_0", id: "unsloth/a-GGUF:Q8_0" };
+  const both = { id: "unsloth/a-GGUF", loadedId: q8.id, loadedCopies: [q4, q8] };
+  assert.equal(ejectTargetId(both, "unsloth/a-GGUF", q8.id), undefined);
+  const other = { id: "unsloth/a-GGUF", loadedId: q4.id, loadedCopies: [q4] };
+  assert.equal(ejectTargetId(other, "unsloth/a-GGUF", q8.id), q4.id);
+  assert.equal(ejectTargetId(other, "unsloth/a-GGUF", q4.id), undefined);
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
@@ -1950,5 +1957,36 @@ test("Run settings for an MLX repo open as one checkpoint, never the Hub, and sk
   assert.match(
     settings,
     /if \(row\.kind === "cached"\) \{\s*return cachedMeta\(row\);/,
+  );
+});
+
+test("each pinned quant of a repo with two loaded quants is its own loaded copy", async () => {
+  const { expandQuantFavorites } = await import(
+    "../src/components/assistant-ui/composer-model-picker/picker-model.ts"
+  );
+  const id = "unsloth/a-GGUF";
+  const q4 = { quant: "Q4_K_M", id: `${id}:Q4_K_M` };
+  const q8 = { quant: "Q8_0", id: `${id}:Q8_0` };
+  const repo = {
+    key: `gguf:${id}`,
+    id,
+    label: "a",
+    tab: "device",
+    kind: "gguf" as const,
+    loaded: true,
+    loadedQuant: "Q8_0",
+    loadedId: q8.id,
+    loadedCopies: [q4, q8],
+    favoriteQuant: undefined as string | undefined,
+  };
+  const pinned = ["Q4_K_M", "Q8_0", "Q2_K"].map((quant) => `${id}::${quant}`);
+  const rows = expandQuantFavorites([repo], pinned);
+  assert.deepEqual(
+    rows.map((row) => [row.favoriteQuant, row.loaded, row.loadedId]),
+    [
+      ["Q4_K_M", true, q4.id],
+      ["Q8_0", true, q8.id],
+      ["Q2_K", false, undefined],
+    ],
   );
 });

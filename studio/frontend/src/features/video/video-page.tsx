@@ -183,6 +183,7 @@ import {
 import {
   VIDEO_CATALOG,
   catalogToModelOptions,
+  downloadRepoIdFor,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import {
@@ -209,6 +210,7 @@ import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { confirmLinkedModel, modelLinkedFromOutside } from "@/lib/linked-model-arrival";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { MediaHeaderActions } from "@/components/media-header-actions";
 import { isTauri } from "@/lib/api-base";
@@ -238,7 +240,11 @@ import {
   int8AttentionSelection,
   type Int8AttentionChoice,
 } from "@/lib/int8-attention";
-import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
+import {
+  diffusionPipelineLoadTarget,
+  diffusionStagingEntries,
+  stagedDownloadRepoId,
+} from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
   routedGgufLabel,
@@ -3260,7 +3266,8 @@ function VideoGenerator({
       if (!owns()) return true;
       const advanced = currentLoadAdvanced(opts.kind, familyOverrideRequired);
       if (source !== "hub") return handleLoadRef.current(repoId, opts, advanced);
-      const pickToastId = pickToast.show(opts.displayRepoId ?? repoId);
+      // Label with the repo actually fetched (a vendor id's unsloth mirror), not the picked id.
+      const pickToastId = pickToast.show(downloadRepoIdFor(opts.displayRepoId ?? repoId, VIDEO_CATALOG));
       // Read before the await: a newer pick replaces quantRevert.
       const ownRevert = quantRevert.current;
       let incompatible: string | null = null;
@@ -3303,7 +3310,12 @@ function VideoGenerator({
           };
           stagedQuantRevert.current = ownRevert;
           const staged = stage(entries);
-          pickToast.setPhase(pickToastId, "downloading", staged);
+          pickToast.setPhase(
+            pickToastId,
+            "downloading",
+            staged,
+            stagedDownloadRepoId(entries, opts.displayRepoId ?? repoId),
+          );
           return true;
         }
       } catch {
@@ -3426,6 +3438,12 @@ function VideoGenerator({
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
+    if (modelLinkedFromOutside(wanted)) {
+      const linked = { model: wanted, quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
+      void navigateSelf({ to: "/video", search: {}, replace: true });
+      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/video", search: linked, replace: true }));
+      return;
+    }
     setFamilyOverride("auto");
     // Owns the page like a direct pick, so an earlier staged download cannot land on top.
     const token = pickGuard.claim();

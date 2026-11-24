@@ -1,15 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""AdaLN modulation precompute for FLUX.1 / Qwen-Image: the modulation Linears read only the timestep embedding,
-so they move to host and every request's rows are computed in one pass (each step at its own batch shape:
-bit-identical). Shared-modulation families (FLUX.2/3, Z-Image, Qwen-Image-2.1) save 1-4% and are skipped.
-
-UNSLOTH_DIFFUSION_ADALN_PRECOMPUTE: 0 / 1 / auto (default, on when offloaded / streamed / split).
-UNSLOTH_DIFFUSION_ADALN_VERIFY=1 checks each served row against the real module (eager only)."""
+"""AdaLN modulation precompute for FLUX.1 / Qwen-Image (Linears read only the timestep embedding,
+bit-identical); shared-modulation families save 1-4% and are skipped;
+UNSLOTH_DIFFUSION_ADALN_PRECOMPUTE: 0 / 1 / auto (on when offloaded / streamed / split);
+UNSLOTH_DIFFUSION_ADALN_VERIFY=1 checks rows against the real module (eager only)."""
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import inspect
 import os
@@ -71,6 +70,15 @@ def _table_budget_bytes() -> int:
 def _torch() -> Any:
     import torch
     return torch
+
+
+def _logger() -> Any:
+    try:
+        from loggers import get_logger
+        return get_logger(__name__)
+    except Exception:  # noqa: BLE001 - Studio's structured logger is optional here
+        import logging
+        return logging.getLogger(__name__)
 
 
 class AdaLNTable(_torch().nn.Module):
@@ -311,6 +319,19 @@ def _device_clone(mod: Any, device: Any) -> Any:
         n: (None if c is None else _device_clone(c, device)) for n, c in mod._modules.items()
     }
     return clone
+
+
+def _host_copy(mod: Any) -> Any:
+    """Deep host copy of ``mod``. GGUFParameter's deepcopy rebuilds it without its quant_type (KeyError), so those
+    are copied through the memo (``.to`` keeps the subclass and quant_type); the rest deep-copies as before."""
+    import copy
+
+    memo = {
+        id(t): t.detach().to("cpu", copy = True)
+        for t in _tensors(mod)
+        if getattr(t, "quant_type", None) is not None
+    }
+    return copy.deepcopy(mod, memo).to("cpu")
 
 
 def _key_of(tensors: list) -> tuple:
@@ -565,7 +586,12 @@ def _pre_hook(model: Any, args: tuple, kwargs: dict) -> None:
         hs = kwargs.get("hidden_states", args[0] if args else None)
         if hs is not None and hasattr(hs, "device"):
             device = hs.device
-        uninstall(model, device = device, reason = f"unsupported call: {exc}")
+        uninstall(
+            model,
+            device = device,
+            logger = _logger(),
+            reason = f"unsupported call: {exc}",
+        )
     return None
 
 
@@ -731,7 +757,6 @@ def install(
                 "diffusion.adaln_precompute: off (unrecognised %s layout)", type(model).__name__
             )
         return False
-    import copy
 
     # NVFP4 per-step protected layers and hook-bound layers stay live (a row would ignore the step's mode).
     def _stays_live(mod: Any) -> bool:
@@ -770,9 +795,11 @@ def install(
     st = _State(model, adapter, sites, stands, pipe)
     st.host_bytes = moved
     try:
-        st.tte_host = copy.deepcopy(model.time_text_embed).to("cpu")
-    except Exception:  # noqa: BLE001
+        st.tte_host = _host_copy(model.time_text_embed)
+    except Exception as exc:  # noqa: BLE001
         st.tte_host = None
+        if logger is not None:
+            logger.info("diffusion.adaln_precompute: no host copy of the time embedder (%s)", exc)
     model.__dict__[STATE_ATTR] = st
     # Always eager: a whole-module compile graph-breaks here instead of tracing the keyed lookup.
     torch = _torch()
@@ -823,7 +850,7 @@ def _group_host_copy(go: Any, t: Any, low_cpu_mem_usage: bool) -> Any:
 def _rebuild_streamed(model: Any, restored: list) -> set:
     """Registers restored modules with the offload group streaming their block (cpu_param_dict, prefetcher
     re-size). Returns the ids of the modules a group now owns."""
-    from .diffusion_memory import _offload_groups
+    from .diffusion_memory import TOP_GROUP_HOST_ATTR, _offload_groups
 
     groups = _offload_groups(model)
     if not groups:
@@ -854,11 +881,16 @@ def _rebuild_streamed(model: Any, restored: list) -> set:
         mine = {id(t) for t in list(orig.parameters()) + list(orig.buffers())}
         others = [t for t in _group_tensors(group) if id(t) not in mine]
         onloaded = any(t.device.type != "cpu" for t in others)
+        # Studio's pinned / no-copy-back top-level group onloads only the tensors in this map
+        top_host = getattr(group, TOP_GROUP_HOST_ATTR, None)
         for t in list(orig.parameters()) + list(orig.buffers()):
             if getattr(group, "stream", None) is not None:
                 group.cpu_param_dict[t] = _group_host_copy(
                     go, t, bool(getattr(group, "low_cpu_mem_usage", False))
                 )
+            if isinstance(top_host, dict) and t not in top_host:
+                # onload uploads the install-time host copy
+                top_host[t] = t.data if t.data.device.type == "cpu" else t.data.cpu()
             if onloaded:
                 t.data = t.data.to(group.onload_device)
         owned.add(id(orig))
@@ -940,14 +972,57 @@ def uninstall(
                 continue
             if target is not None and str(target) not in ("cpu", "meta"):
                 orig.to(target)
+        # recorded CUDA graphs read these buffers: they must outlive every graph of the pipe
+        held = (dict(st.layouts), dict(st.rows))
+        pipe = st.pipe_ref() if st.pipe_ref is not None else None
         st.rows.clear()
         st.layouts.clear()
     del model.__dict__[STATE_ATTR]
     if logger is not None:
         logger.info("diffusion.adaln_precompute: removed (%s)", reason or "requested")
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    _drop_graphs_then_free(model, pipe, held, torch)
     return True
+
+
+def _keep(_held: Any) -> None:
+    pass
+
+
+def _drop_graphs_then_free(model: Any, pipe: Any, held: tuple, torch: Any) -> None:
+    """Reset graphs over ``model`` before freeing ``held``; found via the model, as a bound workflow pipe lacks the handles."""
+    from .diffusion_cuda_graph import (
+        _holds_graphs,
+        recording_here,
+        release_when_capture_idle,
+        reset_all,
+        wrappers_over,
+    )
+
+    handles = list(getattr(pipe, "_unsloth_cuda_graphs", ()) or ()) if pipe is not None else []
+    for wrapper in wrappers_over(model):
+        if not any(wrapper is h for h in handles):
+            handles.append(wrapper)
+
+    def drop(held = held) -> None:  # the default holds the buffers until this ran
+        if handles:
+            reset_all(handles)
+            for handle in handles:
+                if _holds_graphs(handle):
+                    # a reset that failed: the buffers live as long as the graph that may still replay them
+                    with contextlib.suppress(TypeError):
+                        weakref.finalize(handle, _keep, held)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    capturing = False
+    try:
+        capturing = bool(torch.cuda.is_available() and torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001
+        pass
+    if capturing or recording_here():
+        release_when_capture_idle(drop)
+    else:
+        drop()
 
 
 def bind_pipe(pipe: Any) -> None:

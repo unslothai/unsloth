@@ -190,7 +190,7 @@ def test_health_reads_the_detail_inside_the_guarded_snapshot(monkeypatch):
 
     snapshot = main._hardware_snapshot()
     assert snapshot is not None
-    assert len(snapshot) == 3, "the detail has to come out of the same guarded read"
+    assert len(snapshot) == 4, "the detail has to come out of the same guarded read"
     assert snapshot[1] == "mlx_unavailable"
     assert snapshot[2] == "mlx-vlm 0.1.0 is older than 0.4.4"
 

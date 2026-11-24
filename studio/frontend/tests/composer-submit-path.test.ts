@@ -420,6 +420,7 @@ test("main cancels an audio upload only after a normal send reservation succeeds
   ]);
 });
 
+
 test("a reported attachment failure releases the send exactly once", () => {
   const calls: string[] = [];
   let onFailed: ((error: unknown) => void) | null = null;
@@ -793,6 +794,20 @@ test("an unavailable observer fails before sending", () => {
     ["toast", "Could not send message"],
   ]);
 });
+test("the composer's right controls keep their element across keystrokes", () => {
+  const memo = text.slice(
+    text.indexOf("const rightControls = useMemo("),
+    text.indexOf("const documentsBar = useMemo("),
+  );
+  assert.match(memo, /<ComposerRightControls/);
+  for (const prop of ["onSendClick", "onDictateClick", "onQueueClick"]) {
+    assert.match(memo, new RegExp(`${prop}=\\{onRightControls\\w+\\}`));
+  }
+  assert.match(memo, /audioUploadBusy=\{audioUploadBusy\}/);
+  assert.doesNotMatch(memo, /audioUpload=\{|=\{\(\) =>|=\{handleSubmit\}|=\{startDictation\}/);
+  assert.match(text, /rightControlHandlersRef\.current = \{ handleSubmit, startDictation \};/);
+  assert.match(text, /\{rightControls\}/);
+});
 
 test("main, edit and comparison composers use the setting and expose settings access", () => {
   assert.match(text, /submitMode="none"/);
@@ -802,8 +817,9 @@ test("main, edit and comparison composers use the setting and expose settings ac
   );
   assert.match(
     text,
-    /onQueueClick=\{\(\) => formRef.current\?\.requestSubmit\(\)\}/,
+    /const onRightControlsQueue = useCallback\(\s*\(\) => formRef\.current\?\.requestSubmit\(\),/,
   );
+  assert.match(text, /onQueueClick=\{onRightControlsQueue\}/);
   assert.match(text, /scrollTarget: "chat-composer"/);
   const compare = readSrc("features/chat/shared-composer.tsx");
   assert.match(

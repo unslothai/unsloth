@@ -116,9 +116,12 @@ def score_hidden_states(
     mask = None,
     entropy = False,
     head_info = None,
+    *,
+    entropy_requires_grad = False,
 ):
-    """Returns (logps, entropy or None) from the final hidden states, else None; entropy is detached
-    since callers log it under no_grad; rows outside mask are 0"""
+    """Returns (logps, entropy or None) from the final hidden states, else None; rows outside mask are 0.
+    The entropy is detached by default since PPO / RLOO log it under no_grad; ``entropy_requires_grad=None``
+    keeps it differentiable (the kernel recomputes its gradient only if one arrives)."""
     from .rl_replacements import _unsloth_pref_returns_hidden_states
 
     head, transforms, _ = head_info if head_info is not None else fused_head(model)
@@ -138,11 +141,13 @@ def score_hidden_states(
         logit_scale_divide = divide,
         logit_softcapping = softcap,
         return_entropy = bool(entropy),
-        entropy_requires_grad = False,
+        entropy_requires_grad = entropy_requires_grad,
     )
     if entropy:
         logps, ent = out
-        return logps.to(targets.device), ent.detach().to(targets.device)
+        if entropy_requires_grad is False:
+            ent = ent.detach()
+        return logps.to(targets.device), ent.to(targets.device)
     return out.to(targets.device), None
 
 

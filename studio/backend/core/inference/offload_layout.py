@@ -71,6 +71,13 @@ class ModelLayout:
     has_swa: bool = False
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
+    # Looped GGUFs: the layer row (physical layer, the -ngl unit) of each KV cache slot; empty = one slot per row.
+    cache_slot_rows: tuple[int, ...] = ()
+
+    @property
+    def n_cache_slots(self) -> int:
+        """KV cache slots: a looped GGUF has one per visit, more than its n_layers weight rows."""
+        return len(self.cache_slot_rows) or self.n_layers
 
     @property
     def spillable_bytes(self) -> int:
@@ -178,6 +185,39 @@ def layout_from_gguf(
         return ModelLayout()
 
 
+def _loop_slot_rows(reader, arch: str, n_blocks: int) -> Optional[tuple[int, tuple[int, ...]]]:
+    """(physical layers, physical layer of each cache slot) for a looped GGUF, None otherwise.
+
+    llama.cpp counts -ngl / -ts in physical layers (llama_model_n_layer_weights) and keeps KV per slot. The
+    physical-layer layout (``loop.start/end/count``) stores block_count physical layers and appends the repeat
+    passes as slots n_phys + k -> start + k % span; the visit-indexed one (``loop.core_start/core_end``,
+    ``num_loops``) counts visits in block_count and stores only the physical layers.
+    """
+    visit_indexed = _field(reader, f"{arch}.loop.start") is None
+    prefix = f"{arch}.loop.core_" if visit_indexed else f"{arch}.loop."
+    start = _field(reader, f"{prefix}start")
+    end = _field(reader, f"{prefix}end")
+    count = _field(reader, f"{arch}.num_loops" if visit_indexed else f"{arch}.loop.count")
+    try:
+        start, end, count = int(start), int(end), int(count)
+    except (TypeError, ValueError):
+        return None
+    if count <= 1 or not 0 <= start < end:
+        return None
+    span = end - start
+    repeats = (count - 1) * span
+    n_phys = n_blocks - repeats if visit_indexed else n_blocks
+    if end > n_phys:
+        return None
+    if visit_indexed:
+        rows = (
+            list(range(end)) + [start + k % span for k in range(repeats)] + list(range(end, n_phys))
+        )
+    else:
+        rows = list(range(n_phys)) + [start + k % span for k in range(repeats)]
+    return n_phys, tuple(rows)
+
+
 def _layout_from_reader(reader) -> ModelLayout:
     return _layout_from_readers([reader])
 
@@ -202,6 +242,7 @@ def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
     # MTP blocks sit outside llama.cpp's target context, so the attention count excludes them.
     nextn = int(_field(reader, f"{arch}.nextn_predict_layers") or 0)
     n_layers = max(0, blocks_total - nextn)
+    loop = _loop_slot_rows(reader, arch, n_layers)
 
     # Hybrid: only 1 in full_attention_interval layers carries a KV cache, the rest are recurrent. Absent (or 0) means
     # every layer is attention.
@@ -234,6 +275,20 @@ def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
         )
         n_attention = sum(1 for h in heads if h > 0)
         n_recurrent = sum(1 for h, f in zip(heads, ffn) if h == 0 and f == 0)
+        kv_per_token = sum(heads) * (int(key_len) + int(val_len)) * 2
+    elif loop is not None:
+        # Rows are the physical layers; every slot carries its own cache, at its physical layer's heads.
+        n_rows, slot_rows = loop
+        if isinstance(n_kv_head, (list, tuple)):
+            heads = [int(h) for h in n_kv_head]
+            if len(heads) == n_rows:
+                heads = [heads[r] for r in slot_rows]
+            if len(heads) != len(slot_rows):
+                return ModelLayout()
+        else:
+            heads = [int(n_kv_head)] * len(slot_rows)
+        n_layers = n_rows
+        n_attention = len(slot_rows)
         kv_per_token = sum(heads) * (int(key_len) + int(val_len)) * 2
     else:
         kv_per_token = int(n_attention) * int(n_kv_head) * (int(key_len) + int(val_len)) * 2
@@ -336,6 +391,7 @@ def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
         has_excluded_blocks = has_excluded,
         excluded_block_bytes = excluded_bytes,
         complete = True,
+        cache_slot_rows = loop[1] if loop is not None else (),
     )
 
 
