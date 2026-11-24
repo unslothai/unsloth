@@ -308,6 +308,10 @@ class JobManager:
         with self._lock:
             if self._job is None or self._job.job_id != job_id:
                 return False
+            if self._job.status in {"completed", "error", "cancelled"}:
+                # The job already settled while its worker is still exiting: a cancel now must
+                # not flip it to cancelling or SIGTERM a finishing worker.
+                return True
             if self._proc is None or not self._proc.is_alive():
                 return True
             self._job.status = "cancelling"
