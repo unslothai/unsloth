@@ -141,7 +141,6 @@ def _reset_thread(tmp_root, n: int) -> None:
 
 
 def _old_app(subject: bool) -> FastAPI:
-    """The save route as FastAPI registers it without the off-loop JSON route class."""
     app = FastAPI()
     install_api_error_handlers(app)
     app.put(
@@ -193,7 +192,6 @@ def test_every_body_class_gets_the_same_response_and_rows(
             _reset_thread(tmp_path, next(cases))
             after = _exchange(new, body, content_type)
             assert after == before, (name, content_type, before[0], before[2][:300])
-    # The new path really ran (and fell back where it must).
     assert any(accepted) and not all(accepted)
 
 
@@ -277,11 +275,9 @@ def test_split_decode_matches_json_loads_on_random_bodies():
         body = _random_body(rng)
         expected = json.loads(body)
         got = chat_history._split_json_loads(body)
-        # Every top-level object within the depth bound is accepted, with an identical value.
         assert got is not FALLBACK, body[:200]
         assert _same(got, expected), body[:200]
         accepted += 1
-        # Corrupt it: whatever the split decoder accepts, json.loads accepts with the same value.
         for _ in range(4):
             raw = bytearray(body)
             for _ in range(rng.randrange(1, 4)):

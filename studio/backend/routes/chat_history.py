@@ -2223,11 +2223,8 @@ def _split_json_array(s: str, idx: int) -> tuple[list, int]:
 
 
 def _split_json_loads(body: bytes) -> Any:
-    """json.loads(body) for a top-level object, decoding each top-level array one element at a time.
-
-    Every key and value goes through the same C scanner json.loads uses, so an accepted body yields
-    the same value. Anything else (another top-level type, invalid JSON, deep nesting) returns the
-    fallback marker and the caller runs json.loads as before, so errors keep their exact form."""
+    """json.loads for a top-level object, top-level arrays decoded per element via the same C scanner.
+    Anything else returns the fallback marker so json.loads runs and errors keep their exact form."""
     try:
         s = body.decode(json.detect_encoding(body), "surrogatepass")
         scan, ws = _JSON_DECODER.scan_once, _JSON_WS.match
@@ -2269,7 +2266,6 @@ def _split_json_loads(body: bytes) -> Any:
 
 class _OffLoopJSONRequest(Request):
     async def json(self) -> Any:
-        # Same contract as Starlette's Request.json; a large body is decoded in the threadpool.
         if not hasattr(self, "_json"):
             body = await self.body()
             value = _SPLIT_JSON_FALLBACK
@@ -2280,8 +2276,7 @@ class _OffLoopJSONRequest(Request):
 
 
 class _OffLoopJSONRoute(APIRoute):
-    """FastAPI decodes a JSON body on the event loop in one GIL-holding call before a sync route
-    reaches the threadpool; an image chat's whole-thread save stalled every stream for it."""
+    """FastAPI decodes JSON on the event loop in one GIL-holding call; big image saves stalled streams."""
 
     def get_route_handler(self):
         handler = super().get_route_handler()
