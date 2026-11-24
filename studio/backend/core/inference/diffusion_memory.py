@@ -3644,6 +3644,10 @@ def refine_memory_plan_for_components(
         if _pipe_denoisers_hold_torchao(pipe):
             return plan
         streamable = _streamable_components(pipe, torch)
+        # the streaming tier streams run-once companions (LTX-2 text connectors) leaf by leaf too
+        for name, module in run_once_companions(pipe).items():
+            if name not in streamable and isinstance(module, torch.nn.Module):
+                streamable[name] = (module, "leaf_level")
 
         sizes: dict[str, int] = {}
         mib = 1024 * 1024

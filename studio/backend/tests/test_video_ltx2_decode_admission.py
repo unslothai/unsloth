@@ -211,3 +211,62 @@ def test_budgeted_tile_is_never_priced_above_the_room_it_was_budgeted_in(monkeyp
     assert _price(vae, 7_000) == 7_000
     # unbudgeted keeps the full price (the decode may still OOM and is refused up front)
     assert _price(vae, 3_465) > 3_465
+
+
+# ── load: whole-module offload refined to streaming with the connectors streamed ──
+
+
+class LTX2TextConnectors(torch.nn.Module):
+    def __init__(self, mib):
+        super().__init__()
+        self.w = torch.nn.Parameter(torch.zeros(mib * 2**19, dtype = torch.bfloat16))
+
+
+def _mib_module(mib):
+    m = torch.nn.Module()
+    m.w = torch.nn.Parameter(torch.zeros(mib * 2**19, dtype = torch.bfloat16))
+    return m
+
+
+def _ltx_pipe():
+    import types as _t
+
+    pipe = _t.SimpleNamespace()
+    # small-card shape: a 24 MiB DiT, 6 MiB connectors, 2 MiB VAE, against an 8 MiB budget
+    pipe.transformer = _mib_module(24)
+    pipe.connectors = LTX2TextConnectors(6)
+    pipe.vae = _mib_module(2)
+    pipe.components = {
+        "transformer": pipe.transformer,
+        "connectors": pipe.connectors,
+        "vae": pipe.vae,
+    }
+    return pipe
+
+
+def _model_plan(budget_mib):
+    import core.inference.diffusion_memory as dm
+    return dm.MemoryPlan(
+        requested_mode = "auto",
+        offload_policy = dm.OFFLOAD_MODEL,
+        vae_tiling = True,
+        vae_slicing = True,
+        device_memory = dm.DeviceMemory("cuda", "cuda", "discrete_vram", budget_mib, budget_mib),
+        estimates = {"safe_device_budget_mib": budget_mib},
+        reasons = (),
+    )
+
+
+def test_small_card_load_streams_instead_of_counting_the_connectors_resident(monkeypatch):
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.delenv(dm.STREAM_RUN_ONCE_COMPANIONS_ENV, raising = False)
+    out = dm.refine_memory_plan_for_components(_ltx_pipe(), _model_plan(7))
+    # streamed: only the 2 MiB VAE stays; the 6 MiB connectors no longer count as resident
+    assert out.offload_policy == dm.OFFLOAD_STREAMING
+    assert out.estimates["streaming_resident_mib"] == 2
+    # the streaming switch keeps them resident, and then streaming cannot fit either: the plan stands
+    monkeypatch.setenv(dm.STREAM_RUN_ONCE_COMPANIONS_ENV, "0")
+    assert dm.refine_memory_plan_for_components(_ltx_pipe(), _model_plan(7)).offload_policy == (
+        dm.OFFLOAD_MODEL
+    )
