@@ -390,7 +390,16 @@ def save_inkling2_merged_16bit(
         return torch.float32 if float32 and W.is_floating_point() else W.dtype
 
     base = model.get_base_model() if hasattr(model, "get_base_model") else model
-    conversions = getattr(base, "_weight_conversions", None)
+    source = getattr(base.config, "_name_or_path", None)
+    if not source:
+        raise RuntimeError("Unsloth: cannot find the Inkling 2 base checkpoint to merge into.")
+    loaded_from = source
+    source, revision = inkling2_merge_source(
+        source, getattr(base.config, "_commit_hash", None), token = token
+    )
+    # A pre-quantized load's converters map that repo's layout (packed stacks under the model's names); the
+    # original checkpoint read below needs the model's own mapping.
+    conversions = getattr(base, "_weight_conversions", None) if source == loaded_from else None
     if not conversions:
         from transformers.conversion_mapping import get_model_conversion_mapping
         conversions = get_model_conversion_mapping(base, add_legacy = False)
@@ -398,12 +407,6 @@ def save_inkling2_merged_16bit(
     converters = [c for c in conversions if isinstance(c, WeightConverter)]
     pattern_to_converter = {p: c for c in converters for p in c.source_patterns}
 
-    source = getattr(base.config, "_name_or_path", None)
-    if not source:
-        raise RuntimeError("Unsloth: cannot find the Inkling 2 base checkpoint to merge into.")
-    source, revision = inkling2_merge_source(
-        source, getattr(base.config, "_commit_hash", None), token = token
-    )
     if not os.path.isdir(source):
         from huggingface_hub import snapshot_download
         source = snapshot_download(
