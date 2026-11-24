@@ -3193,6 +3193,7 @@ def test_local_sglang_checkpoint_served_name(isolated, monkeypatch):
         )
     assert ":" not in managed.model
 
+
 @pytest.mark.parametrize(
     ("name", "platform", "version", "wsl", "expected"),
     [
