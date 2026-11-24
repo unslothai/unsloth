@@ -693,6 +693,7 @@ export async function syncInferenceStatusToStore(options?: {
   setModelsError(null);
   try {
     const selectedAtStart = useChatRuntimeStore.getState().params.checkpoint;
+    const variantAtStart = useChatRuntimeStore.getState().activeGgufVariant;
     const [listRes, statusRes, , idleUnloadArmed] = await Promise.all([
       listModels(),
       getInferenceStatus(signal, servedSelection()),
@@ -736,7 +737,10 @@ export async function syncInferenceStatusToStore(options?: {
 
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
-    const selectionChanged = selectedCheckpoint !== selectedAtStart;
+    const variantNow = useChatRuntimeStore.getState().activeGgufVariant;
+    const selectionChanged =
+      selectedCheckpoint !== selectedAtStart ||
+      (variantNow ?? null) !== (variantAtStart ?? null);
     // Read a TTS-owned or Translate-owned slot as empty so the eviction branch clears the stale chat pick.
     const chatActiveModel =
       statusRes.active_model &&
@@ -3769,7 +3773,7 @@ export function useChatModelRuntime() {
       // Eject stops chats too but leaves no model loaded, so word it as an unload.
       const scope =
         !confirmed && useChatRuntimeStore.getState().loadedModels.length > 1
-          ? checkpoint
+          ? servedSelection()
           : undefined;
       const stopDecision =
         confirmed ??
