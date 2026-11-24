@@ -37,10 +37,7 @@ from .engine_install import (
     stale,
     support_reason,
 )
-
-
 from .managed_engine_log import ManagedEngineLog
-
 from .engine_adapters import (
     ADAPTERS,
     gpu_memory_fraction,
@@ -555,8 +552,7 @@ def _token_file_token(env, *, for_log = False) -> str | None:
     try:
         token_path = Path(os.path.expandvars(os.path.expanduser(path)))
         if for_log:
-            # A credential helper can supply a FIFO. Only the actual credential consumer
-            # may read it. Bound diagnostic reads of ordinary files as well.
+            # A credential helper's FIFO belongs to the real consumer; bound reads of plain files.
             if not token_path.is_file():
                 return None
             with token_path.open("rb") as stream:
