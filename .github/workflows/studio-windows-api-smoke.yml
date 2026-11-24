@@ -274,6 +274,11 @@ jobs:
           fi
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
 
+      # `wait:` takes no `if:` (the workflow is rejected), so the units are collected here, after the
+      # shared setup and before either phase, as the update smoke did on its own.
+      - name: Collect the PowerShell unit tests
+        wait: [ps-uninstall-units, ps-modulepath-units, ps51-uninstall-guard]
+
       - name: Install pyjwt for the JWT-expiry forge test
         run: python -m pip install 'pyjwt>=2.6'
 
@@ -343,10 +348,6 @@ jobs:
       # ---------------------------------------------------------------
       # Update phase, on the same install. It must stay after the API phase: uninstall is last.
       # ---------------------------------------------------------------
-      - name: Collect the PowerShell unit tests
-        if: ${{ !cancelled() }}
-        wait: [ps-uninstall-units, ps-modulepath-units, ps51-uninstall-guard]
-
       - name: First update should be a no-op (prebuilt already validated)
         id: update_first
         # Runs whether or not the API phase passed: each phase reports its own failure.
