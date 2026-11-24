@@ -15,6 +15,12 @@ class _Stop(Exception):
     pass
 
 
+@pytest.fixture(autouse = True)
+def _cuda_trainer(monkeypatch):
+    # On Apple Silicon UnslothTrainer() hands back the MLX adapter, which has no CSM path.
+    monkeypatch.setattr(tmod, "should_use_mlx_training_backend", lambda: False)
+
+
 def test_csm_processor_loads_the_pinned_snapshot(monkeypatch):
     seen = {}
 
