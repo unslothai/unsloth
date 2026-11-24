@@ -3392,6 +3392,47 @@ def test_mlx_prompt_cache_never_returns_empty_remainder(monkeypatch):
     assert rest == tokens, "untrimmable entry must not be reused"
 
 
+def _kv_cache(rows, *layer):
+    import mlx.core as mx
+
+    layer = (*layer, pytest.importorskip("mlx_lm.models.cache").KVCache())[0]
+    layer.update_and_fetch(mx.zeros((1, 1, rows, 4)), mx.zeros((1, 1, rows, 4)))
+    return [layer]
+
+
+def test_mlx_single_stream_borrows_its_prefix_and_puts_back_only_its_rows(monkeypatch):
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    upstream = pytest.importorskip("mlx_lm.models.cache")
+    _install_fake_prompt_cache_api(monkeypatch)
+    history, turn = _MLXPromptCacheHistory(6, 10_000), list(range(10))
+    history._lru = upstream.LRUPromptCache(max_size = 6)
+    for key in ("k", "o"):
+        history.insert(key, turn, _kv_cache(10))
+    before, charged = list(history._lru._lru._lrus["assistant"]), history._lru.nbytes
+    cache, rest = history.fetch(object(), "k", turn + [10, 11], lend = True)
+    assert rest == [10, 11] and history._lru._trie.search("k", turn).exact is None
+    _kv_cache(300, cache[0])  # decoded, then stopped before its insert
+    history.fetch(object(), "o", turn + [10])
+    assert list(history._lru._lru._lrus["assistant"]) == before and history._newest[0] == "o"
+    assert (
+        history._lru.nbytes == charged and history._lru._trie.get("k", turn).prompt_cache == cache
+    )
+    assert history.fetch(object(), "o", turn, lend = True)[1] == turn[-1:]
+    cache, _rest = history.fetch(object(), "k", turn + [10, 11], lend = True)
+    _kv_cache(300, cache[0])
+    history.insert("k", turn + list(range(10, 310)), cache)
+    kept, held = history._lru._trie.get("k", turn).prompt_cache[0], cache[0]
+    assert history._oversized[2] == cache and kept is not held and kept.offset == 10
+    for key, layer in (("c", upstream.ChunkedKVCache(256)), ("r", upstream.RotatingKVCache(16))):
+        history.insert(key, turn, _kv_cache(10, layer))
+        assert history.fetch(object(), key, turn + [10], lend = True)[0][0] is not layer
+    history.insert("b", turn + [20, 21, 22], _kv_cache(13))
+    history.insert("b", turn, _kv_cache(10))
+    cache, rest = history.fetch(object(), "b", turn + [20, 21, 99], lend = True)
+    assert (cache[0].offset, rest, held.offset) == (12, [99], 310)
+
+
 def test_mlx_prompt_cache_key_isolates_adapter_state(monkeypatch):
     from core.inference.mlx_inference import MLXInferenceBackend
 
@@ -5149,6 +5190,8 @@ def _text_family_backend(
     monkeypatch.setattr(
         model_config, "_read_raw_config_json", lambda name, token: configs.get(name)
     )
+    # The stub loader builds families no installed mlx-vlm / mlx-lm ships (mm_family).
+    monkeypatch.setattr(mlx_inference, "_mlx_unsupported_model_type", lambda *a: None)
     monkeypatch.setattr(mlx_inference, "_classify_mlx_audio_type", lambda *a, **k: None)
     monkeypatch.setattr(mlx_inference, "_row_quantized_cache_gap", lambda: None)
     monkeypatch.setattr(
@@ -7022,9 +7065,7 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
 
 
 def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
-    """The pinned mlx-vlm has no seed parameter, and a newer one ignores it at
-    Unsloth's default min_p/top_k -- so the seed must ride on the sampler, built
-    with the whole filtering chain the runtime would otherwise have built."""
+    """Older mlx-vlm has no seed and newer ignores it at default min_p/top_k, so it rides on the sampler."""
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend
 
@@ -7411,11 +7452,6 @@ def test_the_speculative_decoding_stream_is_drained_too(monkeypatch):
     mlx_inference._drain_generation_streams(mx)
 
     assert events == ["synchronize:speculative", "synchronize:default"]
-
-
-def test_a_runtime_without_synchronize_is_not_an_error():
-    from core.inference import mlx_inference
-    mlx_inference._drain_generation_streams(types.SimpleNamespace())
 
 
 @pytest.mark.parametrize("name", ["n_ctx", "original_max_position_embeddings", "model_max_length"])
@@ -11327,7 +11363,7 @@ def _run_text_budget(
         monkeypatch.setattr(
             backend,
             "_prepare_prompt_cache",
-            lambda _p, _a: ("TAIL", object(), "k", cached, len(cached) - 4),
+            lambda _p, _a, **_k: ("TAIL", object(), "k", cached, len(cached) - 4),
         )
     list(backend._generate_text(_TEXT_TURN, 0.0, 1.0, 0, 0.0, max_new_tokens, 1.0, None))
     return seen["max_tokens"]
@@ -11506,8 +11542,6 @@ def _require_video_stack_module():
 
 
 def _require_video_stack():
-    """Both halves: guarding on one alone let a test needing both run on a runner with only the
-    other, and the decoder lands in 0.5.0 while the install floor is 0.4.4."""
     utils = pytest.importorskip("mlx_vlm.utils")
     if not callable(getattr(utils, "load_video", None)):
         pytest.skip("the installed mlx-vlm predates the 0.5.0 clip decoder")
@@ -12012,7 +12046,6 @@ def test_mlx_generate_chat_response_attaches_the_video_part_and_forwards_the_cli
 
 
 def test_mlx_vlm_decodes_video_only_with_its_clip_decoder(monkeypatch):
-    """The declared mlx-vlm range starts before load_video existed."""
     from core.inference import mlx_inference
 
     mlx_vlm = _require_video_stack_module()

@@ -140,16 +140,20 @@ except:
 
 def _import_torchao_blockwise_gemm():
     # torchao <= 0.17 ships blockwise_fp8_gemm under prototype; 0.18 moved it to torchao.kernel.
+    # A class is not the kernel: on Windows ROCm without torchao, unsloth_zoo stubs every torchao
+    # import with sentinel classes, and calling one raises "blockwise_fp8_gemm() takes no arguments".
     try:
         from torchao.prototype.blockwise_fp8_inference.blockwise_quantization import (
             blockwise_fp8_gemm,
         )
-        return blockwise_fp8_gemm
+        if callable(blockwise_fp8_gemm) and not isinstance(blockwise_fp8_gemm, type):
+            return blockwise_fp8_gemm
     except Exception:
         pass
     try:
         from torchao.kernel.blockwise_quantization import blockwise_fp8_gemm
-        return blockwise_fp8_gemm
+        if callable(blockwise_fp8_gemm) and not isinstance(blockwise_fp8_gemm, type):
+            return blockwise_fp8_gemm
     except Exception:
         pass
     logger.info("Unsloth: Could not find torchao blockwise_fp8_gemm")

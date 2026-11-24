@@ -114,6 +114,26 @@ def test_hub_repo_id_never_reports_a_deleted_file(no_hub):
     assert no_hub, "the Hub branch is where a relative reference belongs"
 
 
+@pytest.mark.parametrize("dataset_name", ["pandas", "json", "text"])
+def test_a_datasets_builder_name_is_not_a_hub_repo_id(dataset_name, no_hub):
+    """load_dataset takes its own builders ahead of the Hub and reads the server's cwd with them."""
+    error = _check(dataset_name)
+
+    assert error.status_code == 400
+    assert no_hub == []
+
+
+def test_a_folder_under_the_working_directory_is_not_a_hub_repo_id(tmp_path, monkeypatch, no_hub):
+    """load_dataset opens a relative folder that exists ahead of the Hub repo of the same name."""
+    started_from = tmp_path / "started-from"
+    (started_from / "org" / "taxes").mkdir(parents = True)
+    monkeypatch.chdir(started_from)
+
+    for dataset_name in ("org", "org/taxes"):
+        assert _check(dataset_name).status_code == 400
+    assert no_hub == []
+
+
 @pytest.mark.parametrize(
     ("dataset_name", "expected"),
     [

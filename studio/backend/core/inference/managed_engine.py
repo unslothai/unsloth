@@ -747,6 +747,9 @@ class ManagedEngine:
                     raise RuntimeError("The selected engine is no longer installed.")
                 port = _free_port(_PORT_LIMIT if self.engine == "sglang" else None)
                 self.base_url = f"http://127.0.0.1:{port}"
+                if self.engine == "sglang" and model_path and ":" in model:
+                    # SGLang reserves colons for LoRA aliases. Keep the real path separate.
+                    model = "unsloth-local-" + hashlib.sha256(model.encode()).hexdigest()[:16]
                 self.model, self.context = model, context or 4096
                 self.reasoning_parser = (options or {}).get("reasoning_parser")
                 self.opens_thought = bool((options or {}).get("opens_thought"))
@@ -863,6 +866,8 @@ class ManagedEngine:
                 self.stop()
                 raise
         started = self._last_output = time.monotonic()
+        from core.inference.llama_cpp import LlamaCppBackend
+
         try:
             with httpx.Client(trust_env = False, timeout = 2) as client:
                 while (
@@ -880,6 +885,12 @@ class ManagedEngine:
                         if self._mamba_blocks:
                             raise _MambaSeqLimit(message, self._mamba_blocks)
                         raise _EngineExited(message)
+                    # The port was released before the engine binds it: probe (with the key) only our own listener.
+                    if not LlamaCppBackend._health_listener_is_ours(
+                        self.process, int(self.base_url.rsplit(":", 1)[1])
+                    ):
+                        self._cancel.wait(0.25)
+                        continue
                     try:
                         response = client.get(self.base_url + "/health", headers = self.headers)
                         if response.status_code == 200:

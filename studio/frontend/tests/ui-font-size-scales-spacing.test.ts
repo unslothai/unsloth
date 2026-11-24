@@ -168,12 +168,19 @@ test("the composer's two-row floor is two rows at any size", () => {
   assert.equal(frames.length, 2, "the editor frame fallback is not two rows");
   assert.match(
     readSrc("components/assistant-ui/thread.tsx"),
-    /\(16 \+ 24 \* \(threadEmpty \? COMPOSER_MIN_ROWS : 1\)\) \* uiSpaceScale/,
+    /\(16 \+ 24 \* \(threadEmpty \? COMPOSER_MIN_ROWS : 1\) - \(newChatPage \? 8 : 0\)\) \*\s+uiSpaceScale/,
     "a conversation's composer is not one row",
+  );
+  assert.match(readSrc("components/assistant-ui/thread.tsx"), /const newChatPage = threadEmpty && welcomeShown;/);
+  assert.match(readSrc("components/assistant-ui/thread.tsx"), /data-new-chat=\{newChatPage \|\| undefined\}/);
+  assert.match(
+    readSrc("index.css"),
+    /\.unsloth-composer-editor\[data-new-chat\] \.unsloth-composer-input \{\s+padding-bottom: calc\(0\.5rem \* var\(--ui-space-scale, 1\) - 8px\);/,
   );
   assert.match(
     readSrc("features/chat/shared-composer.tsx"),
-    /\(16 \+ 24 \* COMPOSER_MIN_ROWS\) \* uiSpaceScale/,
+    /Math\.round\(\(16 \+ 24\) \* uiSpaceScale\)/,
+    "the Compare composer is not one row",
   );
   for (const file of ["components/assistant-ui/thread.tsx", "features/chat/shared-composer.tsx"]) {
     const src = readSrc(file);

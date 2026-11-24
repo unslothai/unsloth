@@ -1379,10 +1379,17 @@ def _compile_repeated_blocks(
             return _compile_unet_blocks(unet, unet_kwargs, logger)
         try:
             unet.compile(**unet_kwargs)
-            return True
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "unet whole-module compile", exc)
             return False
+        try:
+            # A static step skip in the forward slot decides in front of the compiled call: inside a fullgraph trace
+            # its dynamo-disabled frames leave no compiled frame (torch 2.13+ raises on the first render).
+            from .diffusion_step_skip import front_compiled_call
+            front_compiled_call(unet)
+        except Exception as exc:  # noqa: BLE001 - the compile stands; only the skip placement failed
+            _warn(logger, "static skip in front of the compiled unet", exc)
+        return True
     # Compile every denoiser DiT (dual-DiT families run both); a per-DiT failure degrades only that one to eager.
     engaged = False
     for transformer in dits:
@@ -1893,13 +1900,13 @@ def _fused_vae_planned(pipe: Any) -> bool:
 
 
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """U-Nets always; DiTs only in max mode or when the env forces it; never on Windows ROCm, where
-    compiled decode skips routing."""
+    """U-Nets always; DiTs only in max mode or when the env forces it; never for a VAE with an attention head wider
+    than 256 on Windows ROCm, where compiled decode skips the routing that keeps it off the broken fused kernels."""
     if _fused_vae_planned(pipe):
         return False
-    from .diffusion_vae_attn_chunked import windows_rocm
+    from .diffusion_vae_attn_chunked import vae_has_untrusted_head, windows_rocm
 
-    if windows_rocm():
+    if windows_rocm() and vae_has_untrusted_head(getattr(pipe, "vae", None)):
         return False
     if _denoiser_unet(pipe) is not None:
         return True

@@ -183,7 +183,7 @@ def test_a_folder_deletes_by_checkpoint_even_for_a_model_the_catalog_hides(npu_h
     assert "embed-gemma-300m-FLM" not in [model.id for model in npu_home.catalog()]
     assert npu_home.delete_checkpoint("embed-gemma:300m") == "embed-gemma-300m-FLM"
     assert npu_home.deleted == ["embed-gemma-300m-FLM"]
-    with pytest.raises(NpuError, match = "no FastFlowLM model for gone:1b"):
+    with pytest.raises(NpuError, match = "FastFlowLM has no model for gone:1b"):
         npu_home.delete_checkpoint("gone:1b")
     assert npu_home.deleted == ["embed-gemma-300m-FLM"]
 

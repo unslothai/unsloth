@@ -977,6 +977,17 @@ def capture_suppressed() -> bool:
 
 
 @contextlib.contextmanager
+def no_capture():
+    """No CUDA graph record or replay: a two-card split call (diffusion_sequence_parallel) issues
+    CUDA work on two threads, so a recording would wait out the other's hold (OUTSIDE_WAIT_S)."""
+    token = _NO_CAPTURE.set(True)
+    try:
+        yield
+    finally:
+        _NO_CAPTURE.reset(token)
+
+
+@contextlib.contextmanager
 def no_record():
     token = _NO_RECORD.set(True)
     try:
@@ -1169,6 +1180,8 @@ def _capture_armed(module: Any) -> bool:
         outer = _outer_layer(module)
         if outer is not None:
             candidates.append(getattr(outer, "inner", None))
+            # A static skip fronting a whole-compiled U-Net holds its graphed compiled call.
+            candidates.append(getattr(outer, "compiled_call", None))
     except Exception:  # noqa: BLE001
         pass
     return any(

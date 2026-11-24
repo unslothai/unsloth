@@ -80,7 +80,7 @@ def _record_launches(monkeypatch):
             seen.append((key, threading.current_thread().name))
 
     monkeypatch.setattr(
-        cq, "_warm_input", lambda m, k, dev: torch.zeros(m, k, dtype = torch.bfloat16)
+        cq, "_warm_input", lambda m, k, dev, seed = 0: torch.zeros(m, k, dtype = torch.bfloat16)
     )
     monkeypatch.setattr(
         cq, "_rotq_launch", lambda x, group, kind, cfg: note(("rotq", tuple(x.shape), kind, cfg))

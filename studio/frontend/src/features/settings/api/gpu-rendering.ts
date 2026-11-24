@@ -20,6 +20,8 @@ export interface GpuRenderingStatus {
   oldDriverWarning: string | null;
   /** This launch's web view paints on the CPU (Linux). Missing from older shells. */
   cpuPainting?: boolean;
+  /** WebKitGTK before 2.54, which composites with TextureMapper (Linux). Missing from older shells. */
+  legacyCompositor?: boolean;
 }
 
 export async function loadGpuRendering(): Promise<GpuRenderingStatus> {

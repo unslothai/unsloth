@@ -266,12 +266,20 @@ if _IS_MLX:
             fix_transformers_untrusted_config_fields as _fix_untrusted_config,
             fix_transformers_chat_template_path_traversal as _fix_template_names,
             fix_transformers_tokenizer_config_vocab_file_override as _fix_vocab_paths,
+            fix_transformers_mistral_regex_hub_error as _fix_mistral_hub,
         )
 
         _fix_untrusted_config()
         _fix_template_names()
         _fix_vocab_paths()
-        del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths
+        _fix_mistral_hub()
+        del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths, _fix_mistral_hub
+    except Exception:
+        pass
+    try:
+        from .import_fixes import fix_gemma4_string_tool_arguments as _fix_gemma4_tool_args
+        _fix_gemma4_tool_args()
+        del _fix_gemma4_tool_args
     except Exception:
         pass
     try:
@@ -1487,6 +1495,70 @@ if _IS_MLX:
                 f"cannot be ignored safely: {', '.join(unsupported)}."
             )
 
+    def _mlx_is_text_list(value):
+        return (
+            isinstance(value, list) and bool(value) and all(isinstance(text, str) for text in value)
+        )
+
+    def _mlx_detached(value):
+        # Copies containers but shares other objects: copying a lazy image would load it.
+        shared = {}
+
+        def share(item):
+            if isinstance(item, (dict, list, tuple, set, frozenset)):
+                for child in item.values() if isinstance(item, dict) else item:
+                    share(child)
+            else:
+                shared[id(item)] = item
+
+        try:
+            share(value)
+            return _copy.deepcopy(value, shared)
+        except Exception:
+            return value
+
+    def _mlx_row_formatting_func(formatting_func):
+        # Unsloth's CUDA SFT path calls formatting_func on batches for a list of texts; TRL calls it
+        # per row for one text. MLX formats per row, so a function that returns a list of texts for
+        # a row is batched and gets each row as a one-row batch. Decided on the first row formatted.
+        batched = None
+
+        def one_row_batch(example):
+            return {key: [value] for key, value in example.items()}
+
+        def formatting_func_per_row(example):
+            nonlocal batched
+            if not isinstance(example, dict):
+                return formatting_func(example)
+            if batched is None:
+                # Built first, apart from the row: the row call may change the row in place.
+                batch = one_row_batch(_mlx_detached(example))
+                try:
+                    texts = formatting_func(example)
+                except (IndexError, TypeError):
+                    # A batched function can fail on a row, e.g. indexing past a short string.
+                    # Other errors are the function's own validation and must surface.
+                    try:
+                        texts = formatting_func(batch)
+                    except Exception:
+                        texts = None
+                    if not _mlx_is_text_list(texts):
+                        raise
+                    batched = True
+                    return texts
+                if not _mlx_is_text_list(texts):
+                    # An empty list fits both styles, so the next row decides.
+                    if not (isinstance(texts, list) and not texts):
+                        batched = False
+                    return texts
+                batched = True
+                return formatting_func(batch)
+            if batched:
+                return formatting_func(one_row_batch(example))
+            return formatting_func(example)
+
+        return formatting_func_per_row
+
     class UnslothTrainer(MLXTrainer):
         """Backend-aware public trainer that routes supported SFT notebooks to MLX."""
 
@@ -1596,6 +1668,8 @@ if _IS_MLX:
                         "trainer's native batching path."
                     )
 
+            if kwargs.get("formatting_func") is not None:
+                kwargs["formatting_func"] = _mlx_row_formatting_func(kwargs["formatting_func"])
             trainer_kwargs, config_kwargs, ignored_kwargs = _split_mlx_trainer_kwargs(
                 kwargs,
                 self._unsloth_mlx_extra_kwargs,
@@ -2223,6 +2297,12 @@ else:
         from .import_fixes import fix_transformers_deepseek_v41_native as _fix_dsv41
         _fix_dsv41()
         del _fix_dsv41
+    except Exception:
+        pass
+    try:
+        from .import_fixes import fix_gemma4_string_tool_arguments as _fix_gemma4_tool_args
+        _fix_gemma4_tool_args()
+        del _fix_gemma4_tool_args
     except Exception:
         pass
 

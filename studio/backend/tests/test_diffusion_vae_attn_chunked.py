@@ -474,6 +474,33 @@ def test_bf16_vae_keeps_half_math_at_the_same_scores(rocm, monkeypatch):
     torch.testing.assert_close(out.double(), ref, atol = 0.25, rtol = 0)
 
 
+def test_bf16_vae_under_fp16_autocast_gates_on_the_fp16_it_runs(rocm, monkeypatch):
+    """The gate saw the caller's bf16 while autocast ran fp16 scores: every score overflowed and the decode was NaN.
+    It now gates on the autocast dtype, so the call takes the fp32 upcast and stays finite."""
+    monkeypatch.delenv(C.VAE_ATTN_HALF_MATH_ENV, raising = False)
+    _gate_on_cuda(monkeypatch)
+    q, k, v = _flux1_vae_scale_qkv(torch.bfloat16)
+    mode = C.chunked_attention_mode(1 << 40)
+    with torch.autocast("cpu", dtype = torch.float16), mode:
+        out = F.scaled_dot_product_attention(q, k, v)
+    assert mode.half == 0
+    assert out.dtype == torch.float16
+    assert torch.isfinite(out).all()
+
+
+def test_fp16_vae_under_bf16_autocast_keeps_half_math(rocm, monkeypatch):
+    monkeypatch.delenv(C.VAE_ATTN_HALF_MATH_ENV, raising = False)
+    _gate_on_cuda(monkeypatch)
+    g = torch.Generator().manual_seed(0)
+    q, k, v = (torch.randn(1, 1, 128, 64, generator = g).half() for _ in range(3))
+    mode = C.chunked_attention_mode(1 << 40)
+    with torch.autocast("cpu", dtype = torch.bfloat16), mode:
+        out = F.scaled_dot_product_attention(q, k, v)
+    assert mode.half == 1 and out.dtype == torch.bfloat16
+    want = C.half_math_sdpa(*(t.to(torch.bfloat16) for t in (q, k, v)))
+    assert torch.equal(out, want)
+
+
 def test_half_math_gates(monkeypatch):
     cuda_bf16 = types.SimpleNamespace(
         device = types.SimpleNamespace(type = "cuda"), dtype = torch.bfloat16

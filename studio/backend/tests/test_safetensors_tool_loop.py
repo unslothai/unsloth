@@ -5614,3 +5614,42 @@ def test_a_forced_tool_search_is_released_once_discovery_runs(monkeypatch):
     _collect_events(loop)
     assert [name for name, _ in exec_fn.calls] == ["mcp_tool_search"]
     assert exec_fn.offered == [["mcp_tool_search"], ["web_search", "mcp_tool_search"]]
+
+
+@pytest.mark.parametrize("tool_choice, injected", [(None, True), ("none", False)])
+def test_mcp_matches_arrive_as_a_search_after_the_message(tool_choice, injected):
+    from core.inference.tools import build_synthetic_search_exchange
+
+    exchange = build_synthetic_search_exchange(
+        tool_name = "mcp_tool_search",
+        call_prefix = "mcp_auto_",
+        status_label = "Finding MCP tools",
+        query = "move my page",
+        text = "Loaded 1 MCP tool.",
+        sources = None,
+    )
+    seen = []
+
+    def single_turn(messages, **_kwargs):
+        seen.append([dict(m) for m in messages])
+        yield "done"
+
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "move it"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool([]),
+            tool_choice = tool_choice,
+            mcp_match_exchange = {**exchange, "names": []},
+        )
+    )
+    roles = [m["role"] for m in seen[0]]
+    if injected:
+        assert roles[-3:] == ["user", "assistant", "tool"]
+        assert seen[0][-1]["content"] == "Loaded 1 MCP tool."
+        assert any(
+            e.get("type") == "tool_end" and e["tool_name"] == "mcp_tool_search" for e in events
+        )
+    else:
+        assert roles[-1] == "user"

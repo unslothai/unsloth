@@ -95,6 +95,26 @@ def _ns():
         "Version": Version,
         "transformers_version": transformers.__version__,
     }
+    # The helpers run outside the package, so `from ..import_fixes import ...` (the torch < 2.6 pickle guard in
+    # _adapter_fits_text_model) would raise ImportError inside its own try and read every .bin adapter as unreadable.
+    # Serve that one relative import with the real guard functions, without importing the unsloth package. It is set
+    # before the helpers are defined: a function keeps the builtins of the globals it was defined in.
+    import builtins
+
+    fixes = _import_fixes_namespace()
+
+    def _import(
+        name,
+        globals = None,
+        locals = None,
+        fromlist = (),
+        level = 0,
+    ):
+        if level == 2 and name == "import_fixes":
+            return fixes
+        return builtins.__import__(name, globals, locals, fromlist, level)
+
+    ns["__builtins__"] = {**vars(builtins), "__import__": _import}
     for n in tree.body:
         if isinstance(n, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id in _CONSTANTS for t in n.targets
@@ -104,6 +124,25 @@ def _ns():
         if name in funcs:
             exec(funcs[name], ns)
     return ns
+
+
+def _import_fixes_namespace():
+    import os
+    import types
+
+    from packaging.version import Version
+
+    source = (UTILS_PATH.parents[1] / "import_fixes.py").read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    module = types.ModuleType("unsloth.import_fixes")
+    module.__dict__.update(os = os, TrueVersion = Version)
+    for n in tree.body:
+        if isinstance(n, ast.FunctionDef) and n.name in (
+            "_torch_pickle_load_unsafe",
+            "refuse_pickle_checkpoint_on_old_torch",
+        ):
+            exec(ast.get_source_segment(source, n), module.__dict__)
+    return module
 
 
 # Nemotron-3-Nano-Omni shape: llm_config text decoder, vision config, CausalLM as `language_model`.

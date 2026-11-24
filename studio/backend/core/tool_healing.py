@@ -7,9 +7,10 @@ import itertools
 import json
 import re
 
-# Markerless forms are indistinguishable from quoted prose, so execution-class tools and
-# create_skill need a wrapper. Same rule for mcp__*. Must cover the route's _LOCAL_CODE_TOOLS.
-EXECUTION_CLASS_TOOL_NAMES = frozenset({"python", "terminal", "edit_file", "create_skill"})
+# Bare calls read as quoted prose, so these and mcp__* need a wrapper. Must cover _LOCAL_CODE_TOOLS.
+EXECUTION_CLASS_TOOL_NAMES = frozenset(
+    {"python", "terminal", "edit_file", "create_skill", "update_memory"}
+)
 _MCP_TOOL_PREFIX = "mcp__"
 
 
@@ -1336,6 +1337,10 @@ def _tool_call_markup_spans(text: str) -> list[tuple[int, int]]:
         # Parameter-aware block bounds, so a quoted closer cannot end the span; lazy, as that module imports this one.
         from core.inference.tool_call_parser import _minimax_block_spans
         spans.extend((start, end) for start, end, _closed in _minimax_block_spans(text))
+    if "<|tool_call_start|>" in text:
+        # LFM blocks close outside quoted arguments, so a literal think tag in a value stays argument data.
+        from core.inference.tool_call_parser import _lfm_block_spans
+        spans.extend((start, end) for start, end, _closed in _lfm_block_spans(text))
     # An unclosed opener is a real incomplete call only outside closed/bracket spans.
     for pat in _TOOL_OPEN_XML_TAIL_PATS:
         for m in pat.finditer(text):

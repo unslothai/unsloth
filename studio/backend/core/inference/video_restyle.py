@@ -11,6 +11,7 @@ import io
 import os
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -310,31 +311,50 @@ def preview(frames: list[Any], source_seconds: Optional[float] = None) -> dict[s
 
 # The progress line ``parse_progress`` reads; only an sd.cpp build with the Cosmos3 port prints it.
 _COSMOS3_MARKER = b"cosmos3: latent frame"
-_MARKER_CACHE: dict[tuple[str, int, int], bool] = {}
+# The embedded Metal kernel of builds whose ggml-metal runs IM2COL_3D, the Wan2.2 VAE's conv3d path.
+_METAL_IM2COL_3D_MARKER = b"kernel_im2col_3d"
+_MARKER_CACHE: dict[tuple[str, int, int, bytes], bool] = {}
 
 
-def _file_has_marker(path: Path) -> bool:
+def _file_has_marker(path: Path, marker: bytes) -> bool:
     import mmap
     try:
         stat = path.stat()
-        key = (str(path), stat.st_mtime_ns, stat.st_size)
+        key = (str(path), stat.st_mtime_ns, stat.st_size, marker)
         if key not in _MARKER_CACHE:
             with path.open("rb") as f, mmap.mmap(f.fileno(), 0, access = mmap.ACCESS_READ) as m:
-                _MARKER_CACHE[key] = m.find(_COSMOS3_MARKER) >= 0
+                _MARKER_CACHE[key] = m.find(marker) >= 0
         return _MARKER_CACHE[key]
     except (OSError, ValueError):
         return False
 
 
-def binary_supports_cosmos3(binary: str) -> bool:
-    """The sd-server binary, or a stable-diffusion library next to it, carries the Cosmos3 port."""
+def _binary_has_marker(binary: str, marker: bytes) -> bool:
+    """The sd-server binary, or a stable-diffusion library next to it, carries ``marker``."""
     path = Path(binary)
     candidates = [
         path,
         *sorted(path.parent.glob("*stable-diffusion*")),
         *sorted(path.parent.glob("libsd*")),
     ]
-    return any(c.is_file() and _file_has_marker(c) for c in candidates)
+    return any(c.is_file() and _file_has_marker(c, marker) for c in candidates)
+
+
+def binary_supports_cosmos3(binary: str) -> bool:
+    return _binary_has_marker(binary, _COSMOS3_MARKER)
+
+
+def server_args(binary: Optional[str], platform: Optional[str] = None) -> list[str]:
+    """sd-server flags. Metal without IM2COL_3D runs Wan2.2 VAE conv3d on ggml-metal's naive kernel
+    (~4.5x slower than Accelerate), so the VAE goes to CPU; paravirtual GPUs already do."""
+    platform = sys.platform if platform is None else platform
+    if platform != "darwin":
+        return []
+    from core.inference.sd_cpp_args import metal_is_paravirtual
+
+    if metal_is_paravirtual() or (binary and _binary_has_marker(binary, _METAL_IM2COL_3D_MARKER)):
+        return []
+    return ["--backend", "vae=cpu"]
 
 
 def env_overrides_weights(env: Optional[dict[str, str]] = None) -> bool:
@@ -699,7 +719,7 @@ class RestyleRunner:
         try:
             if self._cancel.is_set():
                 server.stop()
-            server.start(files)
+            server.start(files, extra_args = server_args(getattr(server, "binary", None)))
         finally:
             self._loading = None
         self._server, self._server_files = server, files

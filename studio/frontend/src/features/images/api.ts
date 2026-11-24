@@ -13,6 +13,7 @@ import {
   MEMORY_REFUSAL_HEADER,
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
+import { isLoraReloadRefusal, LoraReloadRefusalError } from "./lib/lora-reload";
 import type { DetailerRecord, DetailerRequest } from "./lib/detailer";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
 import type { HiresCapability, HiresRequest } from "./lib/hires-choice";
@@ -67,6 +68,8 @@ export interface DiffusionStatus {
   attention_backend?: string | null;
   transformer_cache?: string | null;
   baked_loras?: string[] | null;
+  // The {id, weight} pairs the load baked in (int8 / fp8 builds); absent on older backends.
+  baked_lora_specs?: LoraSpecInput[] | null;
   vae_tiling?: boolean;
   workflows?: string[];
   // Absent on older backends: callers keep the historical limits (4 images, RGB, 16 px, 2048).
@@ -78,6 +81,8 @@ export interface DiffusionStatus {
   engine_forced?: string | null;
   // A loaded GGUF the native sd.cpp engine can run (drives the Advanced Engine select).
   native_engine_eligible?: boolean;
+  // False on CPU-only torch: Diffusers engine choice is hidden.
+  gguf_diffusers_allowed?: boolean;
   // LoRA is unavailable on this engine, but a reload on the native engine would apply LoRAs.
   lora_via_native?: boolean;
   // LoRA is off only because Speed=Auto compiled the model on its 3rd image; a reload brings it back.
@@ -218,7 +223,8 @@ export interface DiffusionLoadRequest {
     | "flash4"
     | "sage"
     | "xformers"
-    | "aiter";
+    | "aiter"
+    | "flash_sdpa";
   int8_attention?: "auto" | "on" | "off";
   memory_mode?: "auto" | "fast" | "balanced" | "low_vram";
   // Neither engine shards, so several cards resolve to the one with the most free VRAM.
@@ -321,6 +327,11 @@ export interface DiffusionLoraInfo {
   size_bytes: number;
   weight_default: number;
   fine_tuned?: boolean;
+  /** Step-distilled adapters: the publisher's steps / guidance, applied when the adapter is picked. */
+  recommended_steps?: number | null;
+  recommended_guidance?: number | null;
+  /** A two-expert pair (high- and low-noise files) for a two-expert video model. */
+  expert_pair?: boolean;
 }
 
 export interface GalleryImage {
@@ -585,6 +596,9 @@ export async function generateDiffusionImage(
   ) {
     throw new MemoryEstimateRefusalError(await readFastApiError(response));
   }
+  if (!response.ok && isLoraReloadRefusal(response.status, response.headers.get(MEMORY_REFUSAL_HEADER))) {
+    throw new LoraReloadRefusalError(await readFastApiError(response));
+  }
   return parseJson(response);
 }
 
@@ -774,6 +788,8 @@ export interface DiffusionTrainingStartRequest {
   lr_warmup_steps?: number;
   base_precision?: "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto";
   compile_transformer?: "off" | "on" | "auto";
+  // bf16 DiT bases only: blocks streamed from host RAM. Omitted = the server default (off).
+  block_swap?: "off" | "auto" | number;
   cache_latents?: boolean;
   cache_variants?: number;
   enable_tf32?: boolean;
@@ -847,6 +863,13 @@ export interface DiffusionTrainingStatus {
   base_model?: string | null;
   samples_per_second?: number | null;
   peak_memory_gb?: number | null;
+  // What block_swap resolved to once the base loaded; absent when it did not run.
+  block_swap?: {
+    swapped_blocks?: number;
+    total_blocks?: number;
+    host_gib?: number;
+    pinned_gib?: number;
+  } | null;
   checkpoint_path?: string | null;
   checkpoint_step?: number | null;
   resume_blocked_reason?: string | null;
@@ -969,6 +992,8 @@ export interface DiffusionTrainableFamily {
   precision_modes?: string[];
   recommended_precision?: string;
   supports_compile?: boolean;
+  // DiT trainer with bf16 on this host; absent on an older backend, which has no block_swap field.
+  supports_block_swap?: boolean;
   // Whether the family loop writes checkpoint bundles; undefined on an older backend reads as true.
   supports_checkpoints?: boolean;
   // Absent on an older backend: "Sample every" hidden.

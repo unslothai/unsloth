@@ -707,6 +707,49 @@ H3_AUDIO_HOP = 800
 H3_AUDIO_CHANNELS = 2
 
 
+# The dense kernel is [new, 1, 2 * width + orig] after reducing the rates by their gcd. Common rates stay tiny
+# (44.1 kHz -> 32 kHz is 147k elements), but a rate sharing almost nothing with 32 kHz (44,099 Hz) needs
+# 1.4G elements per intermediate. Past this size only the taps inside the filter window are built.
+_H3_RESAMPLE_DENSE_MAX_ELEMENTS = 1 << 22
+_H3_RESAMPLE_TAPS_CHUNK = 1 << 16
+
+
+def _resample_h3_audio_taps(
+    waveform: Any, orig: int, new: int, base_freq: float, width: int, lowpass_filter_width: int
+) -> Any:
+    """Same filter as the dense path in ``resample_h3_audio``, evaluated only on the ``2 * width + 1`` taps around
+    each output sample. Every other tap is clamped to the window edge, where the dense kernel is below 1e-20, so
+    the result matches the dense path to float rounding while memory scales with the output length."""
+    import numpy as np
+    import torch
+    import torch.nn.functional as F
+
+    dtype, device = waveform.dtype, waveform.device
+    shape = waveform.shape
+    length = shape[-1]
+    flat = F.pad(waveform.reshape(-1, length), (width, width + orig))
+    target_length = math.ceil(np.float32(new * length / orig))
+    taps = torch.arange(2 * width + 1, device = device)
+    out = flat.new_empty((flat.shape[0], target_length))
+    for begin in range(0, target_length, _H3_RESAMPLE_TAPS_CHUNK):
+        n = torch.arange(begin, min(begin + _H3_RESAMPLE_TAPS_CHUNK, target_length), device = device)
+        frame, phase = n // new, n % new
+        # first padded input index the filter can reach for this output sample
+        start = (phase * orig) // new
+        offset = (
+            start[:, None] + taps[None]
+        ) - width  # tap position relative to the frame, as in the dense ``idx``
+        t = (-phase.to(dtype) / new)[:, None] + offset.to(dtype) / orig
+        t = (t * base_freq).clamp_(-lowpass_filter_width, lowpass_filter_width)
+        window = torch.cos(t * math.pi / lowpass_filter_width / 2) ** 2
+        t *= math.pi
+        kernel = torch.where(t == 0, 1.0, t.sin() / t)
+        kernel *= window * (base_freq / orig)
+        index = (frame * orig + start)[:, None] + taps[None]
+        out[:, begin : begin + n.shape[0]] = (flat[:, index] * kernel).sum(-1)
+    return out.reshape(*shape[:-1], -1)
+
+
 def resample_h3_audio(waveform: Any, orig_freq: int, new_freq: int) -> Any:
     """Bandlimited sinc resampling along the last axis: torchaudio's default kernel (hann window, width 6, rolloff
     0.99), computed in the waveform's dtype like ``torchaudio.functional.resample``, without needing torchaudio."""
@@ -723,6 +766,8 @@ def resample_h3_audio(waveform: Any, orig_freq: int, new_freq: int) -> Any:
     base_freq = min(orig, new) * rolloff
     width = math.ceil(lowpass_filter_width * orig / base_freq)
     dtype, device = waveform.dtype, waveform.device
+    if new * (2 * width + orig) > _H3_RESAMPLE_DENSE_MAX_ELEMENTS:
+        return _resample_h3_audio_taps(waveform, orig, new, base_freq, width, lowpass_filter_width)
     idx = torch.arange(-width, width + orig, dtype = dtype, device = device)[None, None] / orig
     t = torch.arange(0, -new, -1, dtype = dtype, device = device)[:, None, None] / new + idx
     t = (t * base_freq).clamp_(-lowpass_filter_width, lowpass_filter_width)

@@ -19,7 +19,8 @@ _MARGIN_BYTES = 3 << 29
 _PIN_RESERVE_MIN_BYTES = 4 << 30
 _PIN_RESERVE_FRACTION = 0.15
 STREAMER_ATTR = "_unsloth_te_streamer"
-LAST_ERROR: Optional[BaseException] = None
+# Only the "Type: message" string: the exception would keep its traceback frames alive.
+LAST_ERROR: Optional[str] = None
 
 
 def te_stream_mode() -> str:
@@ -95,6 +96,8 @@ class _Registered:
         self.buf, self.ptr, self.stream = buf, None, stream
         rc = torch.cuda.cudart().cudaHostRegister(buf.data_ptr(), nbytes, 0)
         if int(rc) != 0:
+            from core.inference.host_pinning import consume_cuda_error
+            consume_cuda_error()
             raise RuntimeError(f"cudaHostRegister failed: {rc}")
         self.ptr = buf.data_ptr()
 
@@ -401,7 +404,7 @@ def place_text_encoders(pipe: Any, device: str) -> list[str]:
         return streamed_attrs
     except Exception as exc:  # noqa: BLE001 -- an encoder half-streamed is undone; the caller moves the rest whole
         global LAST_ERROR
-        LAST_ERROR = exc
+        LAST_ERROR = f"{type(exc).__name__}: {exc}"
         for attr in TEXT_ENCODER_ATTRS:
             enc = getattr(pipe, attr, None)
             streamer = getattr(enc, STREAMER_ATTR, None) if enc is not None else None

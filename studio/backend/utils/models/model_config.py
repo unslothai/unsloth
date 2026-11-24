@@ -57,6 +57,7 @@ from utils.models.gguf_metadata import (
     read_gguf_general_metadata,
     read_gguf_nextn_predict_layers,
 )
+from glob import escape as _glob_escape
 import structlog
 from loggers import get_logger
 import contextlib as _contextlib
@@ -2517,6 +2518,7 @@ from utils.models.drafters import (  # noqa: E402
     _drafter_total_size,
     detect_dflash_file,
     dspark_precision_rank,
+    dspark_preferred_first,
     is_published_drafter_filename,
 )
 from utils.models.drafters import (  # noqa: E402
@@ -2525,7 +2527,7 @@ from utils.models.drafters import (  # noqa: E402
 from utils.paths.path_utils import is_appledouble_metadata
 
 
-def dspark_preference_key(name: str) -> Tuple[int, str]:
+def dspark_preference_key(name: str) -> Tuple[int, int, str]:
     """Delegates instead of re-exporting: repointing routes/inference.py's import trips the lint rule."""
     return _drafters_dspark_preference_key(name)
 
@@ -2658,9 +2660,10 @@ def detect_dspark_file(
 ) -> Optional[str]:
     """Requires a published drafter name even in dspark/, so a parked weight never loads as --model-draft."""
 
-    def _rank(candidate: Path) -> tuple[int, int, int, str]:
-        # Most specific family, then precision, then total size, then name.
+    def _rank(candidate: Path) -> tuple[int, int, int, int, str]:
+        # A model's preferred published drafter, then most specific family, then precision, then total size, then name.
         return (
+            dspark_preferred_first(candidate.name),
             _drafter_stem_rank(candidate.name, kind = "dspark"),
             dspark_precision_rank(candidate.name),
             _drafter_total_size(candidate),
@@ -4265,6 +4268,14 @@ def get_base_model_from_lora_identifier(
         except Exception as exc:
             logger.warning("Could not parse adapter_config.json for '%s': %s", identifier, exc)
             return None
+        from utils.datasets.remote_images import is_network_share
+
+        if isinstance(base_model, str) and is_network_share(base_model):
+            # Touching a share path makes Windows sign in to its host (NTLM); the Hub repo picked it.
+            logger.warning(
+                "Ignoring a network share base in adapter_config.json of '%s'", identifier
+            )
+            return None
         if base_model:
             logger.info(
                 "Detected base model from remote adapter_config.json (%s): %s",
@@ -4346,7 +4357,7 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
 
         # Runs after the registry so an alias never loses to a filename.
         for name in lookup_names:
-            for config_path in defaults_dir.rglob(name.replace("/", "_") + ".yaml"):
+            for config_path in defaults_dir.rglob(_glob_escape(name.replace("/", "_")) + ".yaml"):
                 if config_path.is_file():
                     with open(config_path, "r", encoding = "utf-8") as f:
                         config = yaml.safe_load(f) or {}

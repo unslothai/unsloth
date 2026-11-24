@@ -50,6 +50,15 @@ if str(_BACKEND) not in sys.path:
 import utils.hardware.hardware as hw  # noqa: E402
 
 
+@pytest.fixture(autouse = True)
+def _torch_import_state(monkeypatch):
+    """_has_torch() caches a failed import per detection epoch (TORCH_IMPORT_ERROR + _TORCH_IMPORT_FAILED_EPOCH).
+    Restore both after every test and start each from "no failure cached", so a broken-torch test cannot leave
+    the epoch behind for the next one to short-circuit on (the tests below only ever restored the error)."""
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
+    monkeypatch.setattr(hw, "_TORCH_IMPORT_FAILED_EPOCH", None)
+
+
 class _NeverStarts:
     """Stand-in for threading.Thread that records the call and runs nothing."""
 
@@ -626,17 +635,23 @@ def test_health_snapshot_returns_a_settled_verdict(monkeypatch):
     monkeypatch.setattr(hw_mod, "DEVICE", hw_mod.DeviceType.CPU, raising = False)
     monkeypatch.setattr(hw_mod, "CHAT_ONLY", True, raising = False)
     monkeypatch.setattr(hw_mod, "CHAT_ONLY_REASON", "mlx_unavailable", raising = False)
-    # Pin the detail too: _hardware_snapshot reads three fields.
+    # Pin the detail too: _hardware_snapshot reads four fields.
     monkeypatch.setattr(hw_mod, "CHAT_ONLY_DETAIL", None, raising = False)
     hw_mod.DETECTION_COMPLETE.set()
-    assert main_mod._hardware_snapshot() == (True, "mlx_unavailable", None)
+    assert main_mod._hardware_snapshot() == (True, "mlx_unavailable", None, False)
 
     monkeypatch.setattr(hw_mod, "CHAT_ONLY_DETAIL", "mlx-vlm 0.4.3 (needs >=0.4.4)", raising = False)
     assert main_mod._hardware_snapshot() == (
         True,
         "mlx_unavailable",
         "mlx-vlm 0.4.3 (needs >=0.4.4)",
+        False,
     )
+
+    monkeypatch.setattr(hw_mod, "DEVICE", hw_mod.DeviceType.MLX, raising = False)
+    monkeypatch.setattr(hw_mod, "CHAT_ONLY_REASON", "no_torch", raising = False)
+    monkeypatch.setattr(hw_mod, "CHAT_ONLY_DETAIL", None, raising = False)
+    assert main_mod._hardware_snapshot() == (True, "no_torch", None, True)
 
 
 def test_health_rereads_the_verdict_after_authentication():

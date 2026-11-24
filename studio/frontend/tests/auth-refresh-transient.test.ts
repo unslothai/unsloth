@@ -440,6 +440,46 @@ test("without Web Locks a 401 after a peer stored the rotation replays instead o
   assert.equal(f.location.href, "");
 });
 
+// The server re-rotates a just-spent token, so the slower tab gets its own 200 after a peer stored a pair.
+test("without Web Locks a re-rotation that lands after a peer's pair keeps both tabs signed in", async (t) => {
+  const f = fixture(t, [
+    () => new Promise<Response>((resolve) =>
+      setImmediate(() => setImmediate(() => resolve(rotated())))),
+    () => Response.json({
+      access_token: "peer-access",
+      refresh_token: "peer-refresh",
+      must_change_password: false,
+    }),
+  ]);
+  const otherWindow = f.makeApi();
+  const results = await Promise.all([
+    f.api.refreshSessionOutcome(),
+    otherWindow.refreshSessionOutcome(),
+  ]);
+  assert.deepEqual(results, ["ok", "ok"]);
+  assert.deepEqual(f.tokens, { access: "peer-access", refresh: "peer-refresh" });
+  assert.equal(f.clears(), 0);
+});
+
+test("without Web Locks authFetch replays with the peer's pair when its own re-rotation lands late", async (t) => {
+  const f = fixture(t, [() => {
+    f.tokens.access = "new-access";
+    f.tokens.refresh = "new-refresh";
+    return Response.json({
+      access_token: "late-access",
+      refresh_token: "late-refresh",
+      must_change_password: false,
+    });
+  }]);
+  const response = await f.api.authFetch("/api/models");
+  assert.equal(response.status, 200);
+  assert.deepEqual(f.apiTokens, ["Bearer old-access", "Bearer new-access"]);
+  assert.deepEqual(f.tokens, { access: "new-access", refresh: "new-refresh" });
+  assert.equal(f.clears(), 0);
+  await f.settle();
+  assert.equal(f.location.href, "");
+});
+
 test("without Web Locks a sign-in that replaced the session is not taken for a peer's rotation", async (t) => {
   const f = fixture(t, [() => {
     f.state.mark = "another-session";

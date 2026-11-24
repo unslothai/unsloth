@@ -23,6 +23,10 @@ def pre_sm89(monkeypatch):
     fp8._rocm_bytes_dequant_arch.cache_clear()
     if CUDA and torch.version.hip is None and torch.cuda.get_device_capability() >= (8, 9):
         monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
+    elif CUDA and torch.version.hip is not None:
+        # ROCm routes on the gfx arch + triton version, not the capability: a gfx arch with fp8e4nv
+        # (gfx1151 on triton 3.5+) would otherwise take the fp8 GEMM instead of the dequant path.
+        monkeypatch.setattr(fp8, "_rocm_fp8e4nv_kernel_supported", lambda device: False)
     yield
     fp8._fp8_device_lacks_kernel.cache_clear()
     fp8._rocm_bytes_dequant_arch.cache_clear()

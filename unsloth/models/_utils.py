@@ -18,8 +18,10 @@ __all__ = [
     "_requested_float32",
     "_mark_requested_float32",
     "_mark_forced_float32",
+    "_mark_bfloat16_mixed_precision",
     "_drop_float16_overflowing_attention_dropout",
     "_mark_full_finetuning",
+    "_is_full_finetuning",
     "is_vLLM_available",
     "prepare_model_for_kbit_training",
     "xformers",
@@ -1842,11 +1844,25 @@ def _flex_preferred_fits(config, dtype = None):
         return True
 
 
+def _flex_float32_compile_too_slow(config, dtype = None):
+    """True when attention runs in float32 above head_dim 128: Inductor then takes minutes per flex
+    kernel (B200, torch 2.15, head_dim 256: 174 s forward, 211 s with backward, against 7 s / 16 s
+    in bf16), and a model compiles several, so the load looks hung. SDPA / eager are used instead;
+    UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM=1 or an explicit flex_attention request keeps flex."""
+    if not _flex_attention_runs_float32(dtype):
+        return False
+    if _flex_large_head_dim_override() is True:
+        return False
+    head_dim = _text_attention_head_dim(config)
+    return head_dim is not None and head_dim > _SDPA_FLASH_MAX_HEAD_DIM
+
+
 def _supports_flex_attention(
     model_class,
     config,
     model_type,
     dtype = None,
+    automatic = True,
 ):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
@@ -1857,6 +1873,9 @@ def _supports_flex_attention(
     if not _flex_attention_gpu_is_supported():
         return False
     if _config_prefers_flex_attention(config) and not _flex_preferred_fits(config, dtype):
+        return False
+    # A compile-time preference for automatic selection only: an explicit flex request keeps flex.
+    if automatic and _flex_float32_compile_too_slow(config, dtype):
         return False
     for attention_config in _iter_attention_configs(config):
         attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
@@ -3292,7 +3311,10 @@ def _adapter_fits_text_model(
             else:
                 import torch
 
-                # An adapter is small; weights_only never runs pickled code.
+                from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+                # weights_only is only safe on torch >= 2.6 (CVE-2025-32434).
+                refuse_pickle_checkpoint_on_old_torch(path)
                 names = list(torch.load(path, map_location = "cpu", weights_only = True))
             break
         except Exception:
@@ -3336,13 +3358,16 @@ def resolve_attention_implementation(
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
     ) and not _is_flash_excluded(model_type)
-    supports_flex_attention = _supports_flex_attention(model_class, config, model_type, dtype)
+    automatic_flex = not requests_flex_attention(requested_attn_implementation)
+    supports_flex_attention = _supports_flex_attention(
+        model_class, config, model_type, dtype, automatic = automatic_flex
+    )
     # Before the ladder, since every branch below reads supports_flex_attention.
     prefers_flex_for_head_dim = _prefers_flex_for_head_dim(config)
     if prefers_flex_for_head_dim and not supports_flex_attention:
         if _enable_flex_attention_support(model_class, model_type):
             supports_flex_attention = _supports_flex_attention(
-                model_class, config, model_type, dtype
+                model_class, config, model_type, dtype, automatic = automatic_flex
             )
     # An explicit 1 forces flex over flash_attention_2 too, but only when flex can be scoped to the decoder
     flex_forced_for_head_dim = (
@@ -5249,11 +5274,16 @@ def _statistics_environment(statistics = None):
 def _download_statistics(names):
     # Basic stats on which environment is in use: a README.md is downloaded from HF, all data public, so broken envs can be detected. Disable with UNSLOTH_DISABLE_STATISTICS.
     # All repos are fetched concurrently in ONE time-limited child: one child per repo, one after another, cost a slow proxy minutes per load (#14366).
+    import multiprocessing as mp
     import tempfile
     from concurrent.futures import ThreadPoolExecutor
     from huggingface_hub import snapshot_download
     from unsloth_zoo.rl_environments import execute_with_time_limit
 
+    # The time-limited child below needs fork; without it (Windows) it never starts, so skip the 8.8.8.8 probe too.
+    if "fork" not in mp.get_all_start_methods():
+        logger.debug("Unsloth: stats_check failed with an exception.")
+        return
     if has_internet():
 
         def download(statistics):
@@ -5276,20 +5306,87 @@ def _download_statistics(names):
         try:
             time_limited_stats_check()
         except TimeoutError:
-            raise TimeoutError(
-                "Unsloth: HuggingFace seems to be down after trying for 120 seconds :(\n"
-                "Check https://status.huggingface.co/ for more details.\n"
-                "As a temporary measure, use modelscope with the same model name ie:\n"
-                "```\n"
-                "pip install modelscope\n"
-                "import os; os.environ['UNSLOTH_USE_MODELSCOPE'] = '1'\n"
-                "from unsloth import FastLanguageModel\n"
-                "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"
-                "```"
-            )
+            raise TimeoutError(_HF_DOWN_MESSAGE)
         except Exception:
             logger.debug("Unsloth: stats_check failed with an exception.")
             # Do not retry without a time limit: it would freeze offline.
+
+
+_STATISTICS_LIMIT_S = 120
+_HF_DOWN_MESSAGE = (
+    "Unsloth: HuggingFace seems to be down after trying for 120 seconds :(\n"
+    "Check https://status.huggingface.co/ for more details.\n"
+    "As a temporary measure, use modelscope with the same model name ie:\n"
+    "```\n"
+    "pip install modelscope\n"
+    "import os; os.environ['UNSLOTH_USE_MODELSCOPE'] = '1'\n"
+    "from unsloth import FastLanguageModel\n"
+    "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"
+    "```"
+)
+
+
+def _statistics_child(names):
+    # Runs in the forked child: the 8.8.8.8 probe (up to 3 s when filtered) and the downloads both stay off the load.
+    import tempfile
+    from concurrent.futures import ThreadPoolExecutor
+    from huggingface_hub import snapshot_download
+
+    if not has_internet():
+        return
+
+    def download(statistics):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
+            snapshot_download(
+                f"unslothai/{statistics}",
+                force_download = True,
+                cache_dir = f,
+                local_dir = f,
+            )
+
+    with ThreadPoolExecutor(max_workers = len(names)) as pool:
+        futures = [pool.submit(download, name) for name in names]
+    for future in futures:
+        future.result()
+
+
+def _reap_statistics(proc, limit_s):
+    proc.join(limit_s)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(1.0)
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+        # The model load already went ahead; a real Hub outage also surfaces from its own requests.
+        logger.warning(_HF_DOWN_MESSAGE)
+    elif proc.exitcode:
+        logger.debug("Unsloth: stats_check failed with an exception.")
+
+
+def _download_statistics_background(names):
+    """Fork the statistics child on the caller's thread (same fork point as the blocking path), then reap it on a
+    daemon thread, so from_pretrained no longer waits on the four Hub round trips. Returns the child, or None when
+    this platform has no fork start method and the caller should use the blocking path."""
+    import multiprocessing as mp
+    import sys
+
+    if sys.platform != "linux" or "fork" not in mp.get_all_start_methods():
+        return None
+    proc = mp.get_context("fork").Process(target = _statistics_child, args = (names,), daemon = True)
+    try:
+        proc.start()
+    except Exception:
+        # e.g. inside a daemonic multiprocessing worker ("daemonic processes are not allowed to have children"):
+        # the blocking path starts its child inside its own try, so statistics never fail the load.
+        return None
+    threading.Thread(
+        target = _reap_statistics,
+        args = (proc, _STATISTICS_LIMIT_S),
+        daemon = True,
+        name = "unsloth-statistics",
+    ).start()
+    return proc
 
 
 def get_statistics(local_files_only = False):
@@ -5343,14 +5440,18 @@ def get_statistics(local_files_only = False):
         vram = 80
     else:
         vram = 96
-    _download_statistics(
-        [
-            _statistics_environment(),
-            "repeat",
-            f"vram-{vram}",
-            f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}",
-        ]
-    )
+    names = [
+        _statistics_environment(),
+        "repeat",
+        f"vram-{vram}",
+        f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}",
+    ]
+    # UNSLOTH_STATISTICS_BLOCKING=1 keeps the old wait (and the raised HF-down TimeoutError) on the load path.
+    if (
+        os.environ.get("UNSLOTH_STATISTICS_BLOCKING", "0") == "1"
+        or _download_statistics_background(names) is None
+    ):
+        _download_statistics(names)
     if disabled:
         enable_progress_bars()
 
@@ -5730,6 +5831,22 @@ def _mark_requested_float32(model, requested):
         model._unsloth_user_float32 = bool(requested)
     except Exception:
         pass
+    # Every from_pretrained return passes here, so this is the opt-in UNSLOTH_MEMORY_REPORT "load" point.
+    if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
+        try:
+            from unsloth.utils.run_report import report_memory
+            report_memory("load", model)
+        except Exception:
+            pass
+    return model
+
+
+def _mark_bfloat16_mixed_precision(model, enabled):
+    """Record whether this model generates under bfloat16 autocast (float32 weights, full finetuning with float32_mixed_precision). UNSLOTH_BFLOAT16_MIXED_PRECISION is process wide and nothing resets it, so a later model would generate in bfloat16 too."""
+    try:
+        model._unsloth_bfloat16_mixed_precision = bool(enabled)
+    except Exception:
+        pass
     return model
 
 
@@ -5771,6 +5888,14 @@ def _mark_full_finetuning(model, full_finetuning):
     except Exception:
         pass
     return model
+
+
+def _is_full_finetuning(model):
+    """The model's own answer when the stamp exists. UNSLOTH_ENABLE_FULL_FINETUNING describes the last load, not this model, so it is only the fallback for a model this process never stamped."""
+    full_finetuning = getattr(model, "_unsloth_full_finetuning", None)
+    if full_finetuning is None:
+        return os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
+    return bool(full_finetuning)
 
 
 def is_vLLM_available():
@@ -6819,9 +6944,23 @@ def patch_gradient_accumulation_fix(Trainer):
             from ._ddp_defaults import install_unsloth_ddp_comm_defaults
 
             install_unsloth_ddp_comm_defaults(self)
-            if os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0") != "0":
+            try:
+                from ._jit_checkpoint import install_jit_checkpoint_agreement
+                install_jit_checkpoint_agreement(self)
+            except Exception as e:
+                logger.warning_once(f"Unsloth: rank-agreed JIT checkpoint skipped ({e})")
+            # Same parse as state_offload.optimizer_state_offload_enabled (not imported here: the
+            # optimizers package pulls in unsloth_zoo).
+            offload = os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0")
+            if offload.strip().lower() in ("1", "true", "yes", "on"):
                 from ..optimizers.state_offload import install_optimizer_state_offload
                 install_optimizer_state_offload(self)
+            else:
+                try:
+                    from ..optimizers.flat_adamw8bit import install_flat_adamw8bit_hook
+                    install_flat_adamw8bit_hook(self)
+                except Exception as e:
+                    logger.warning_once(f"Unsloth: fused 8-bit AdamW step not installed ({e})")
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
@@ -8496,7 +8635,7 @@ def unsloth_compile_transformers(
             f"You have Torch version {torch_version}. Please upgrade your Torch version by visiting https://pytorch.org/\n"
             "For now your models will not get optimized, but will still work for now!"
         )
-        return
+        return model_types, False
     if trust_remote_code and unsloth_force_compile == False:
         print(
             "Unsloth: We can't trace models if `trust_remote_code = True`, "
@@ -9948,6 +10087,9 @@ def _default_qat_linear_filter(module, fqn):
         from torchao.quantization.quant_api import _is_linear
     except Exception:
         return isinstance(module, torch.nn.Linear)
+    if not callable(_is_linear) or isinstance(_is_linear, type):
+        # A torchao stub (unsloth_zoo's sentinel classes when torchao is absent) is not the filter.
+        return isinstance(module, torch.nn.Linear)
     return _is_linear(module, fqn)
 
 
@@ -10095,6 +10237,9 @@ def _qat_bias_grad_supported(
             device = device, dtype = dtype
         )
         quantize_(probe, QATConfig(base_config, step = "prepare"))
+        # Probe the forward training will run: on CUDA Unsloth's NVFP4 custom op returns the bias
+        # gradient that torchao's own backward drops.
+        _patch_microscaling_qat_forwards(probe)
         x = torch.ones(16, 64, device = device, dtype = dtype, requires_grad = True)
         probe(x).float().sum().backward()
         return probe[0].bias.grad is not None
@@ -10134,6 +10279,7 @@ def _microscaling_qat_filter(
         in_features_multiple = in_features_multiple,
     )
     placements = _eligible_layer_placements(model, candidates)
+    with_adapters = os.environ.get("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "0") == "1"
     unsupported = sorted({str(dtype) for _, dtype in placements if dtype not in dtypes})
     if unsupported:
         raise RuntimeError(
@@ -10163,7 +10309,7 @@ def _microscaling_qat_filter(
         narrow = [
             name
             for name, module in model.named_modules()
-            if not _is_lora_adapter_name(name)
+            if (with_adapters or not _is_lora_adapter_name(name))
             and candidates(module, name)
             and module.out_features in bad_widths
         ]
@@ -10177,10 +10323,16 @@ def _microscaling_qat_filter(
         candidates = lambda m, fqn, _c = candidates, _bad = frozenset(bad_widths): (
             _c(m, fqn) and m.out_features not in _bad
         )
+    # Only a trainable bias needs the backward's bias gradient. LoRA freezes the base bias (bias = "none"),
+    # and skipping those layers left Qwen2-style q / k / v projections out of QAT while the export still
+    # quantizes them. Opted-in adapters are quantized too, so a trainable lora_B bias (lora_bias = True)
+    # needs the gradient as much as a base one.
     biased = [
         name
         for name, module in model.named_modules()
-        if not _is_lora_adapter_name(name) and candidates(module, name) and module.bias is not None
+        if (with_adapters or not _is_lora_adapter_name(name))
+        and candidates(module, name)
+        and _trainable_bias(module, name)
     ]
     if biased and not all(_qat_bias_grad_supported(base_config, d, t) for d, t in placements):
         warnings.warn(
@@ -10190,16 +10342,41 @@ def _microscaling_qat_filter(
             + (f", ... ({len(biased) - 8} more)" if len(biased) > 8 else ""),
             stacklevel = 3,
         )
-        return lambda m, fqn, _c = candidates: _c(m, fqn) and m.bias is None
+        return lambda m, fqn, _c = candidates: _c(m, fqn) and not _trainable_bias(m, fqn)
     return candidates
+
+
+def _trainable_bias(module, fqn = "") -> bool:
+    bias = getattr(module, "bias", None)
+    if not isinstance(bias, torch.Tensor):
+        return False
+    # PEFT freezes an inactive adapter's bias and unfreezes it on set_adapter, after QAT prepare, so an
+    # adapter bias counts as trainable whatever its requires_grad is now.
+    return bias.requires_grad or _is_lora_adapter_name(fqn)
 
 
 def _mx_autocast_forward(self, x):
     # torchao's MX QAT matmul returns bfloat16 under autocast and asserts it matches x, whatever the weight dtype.
     from torchao.prototype.qat import MXFakeQuantizedLinear
+
     if x.dtype != torch.bfloat16 and torch.is_autocast_enabled(x.device.type):
         x = x.to(torch.bfloat16)
-    return MXFakeQuantizedLinear.forward(self, x)
+    # torchao flattens the input with .view, which raises on a strided (e.g. transposed) activation.
+    if not x.is_contiguous():
+        x = x.contiguous()
+    out = MXFakeQuantizedLinear.forward(self, x)
+    # Its backward flattens grad_output with .view too; a later transpose hands it a strided gradient.
+    return _ContiguousGrad.apply(out) if out.requires_grad else out
+
+
+class _ContiguousGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad):
+        return grad.contiguous()
 
 
 _NVFP4_QAT_LINEAR = []
@@ -10230,7 +10407,8 @@ def _nvfp4_qat_linear_op():
         weight.use_triton_kernel = triton
         return weight
 
-    name = "unsloth::nvfp4_qat_linear"
+    # Compile caches key on the op name, not its body: bump the version on schema / autograd changes.
+    name = "unsloth::nvfp4_qat_linear_v2"
     forward_schema = (
         "(Tensor x, Tensor weight, Tensor? bias, bool act_per_tensor, bool w_per_tensor, "
         "bool w_swizzled, bool w_triton, ScalarType? mm_dtype) "
@@ -10239,7 +10417,8 @@ def _nvfp4_qat_linear_op():
     backward_schema = (
         "(Tensor grad, Tensor x_qdata, Tensor x_scale, Tensor x_per_tensor_scale, Tensor w_qdata, "
         "Tensor w_scale, Tensor w_per_tensor_scale, ScalarType x_dtype, ScalarType w_dtype, "
-        "bool act_per_tensor, bool w_per_tensor, bool w_swizzled, ScalarType? mm_dtype) -> (Tensor, Tensor)"
+        "bool act_per_tensor, bool w_per_tensor, bool w_swizzled, ScalarType? mm_dtype, bool need_x, "
+        "bool need_w) -> (Tensor, Tensor)"
     )
 
     def per_tensor(t, like):
@@ -10296,31 +10475,43 @@ def _nvfp4_qat_linear_op():
         w_per_tensor,
         w_swizzled,
         mm_dtype,
+        need_x,
+        need_w,
     ):
-        x_q = NVFP4Tensor(
-            x_qdata,
-            x_scale,
-            16,
-            x_dtype,
-            per_tensor_scale = x_per_tensor_scale if act_per_tensor else None,
-        )
-        x_dq = x_q.dequantize(x_dtype)
-        # Positional: the swizzle flag is `_is_swizzled_scales` in torchao 0.15, `is_swizzled_scales` later.
-        w_q = NVFP4Tensor(
-            w_qdata,
-            w_scale,
-            16,
-            w_dtype,
-            w_per_tensor_scale if w_per_tensor else None,
-            None,
-            w_swizzled,
-        )
-        w_dq = w_q.dequantize(w_dtype)
+        # Unrequested grads (frozen LoRA base weight, first layer input) skip their dequant + GEMM. Requested
+        # operands dequantize activation first, then weight, then cast, then GEMM: the pre-skip order, so no
+        # GEMM output or dense weight is live while the activation dequantizes (full fine-tuning peak).
+        x_dq = w_dq = None
+        if need_w:
+            x_dq = NVFP4Tensor(
+                x_qdata,
+                x_scale,
+                16,
+                x_dtype,
+                per_tensor_scale = x_per_tensor_scale if act_per_tensor else None,
+            ).dequantize(x_dtype)
+        if need_x:
+            # Positional: the swizzle flag is `_is_swizzled_scales` in torchao 0.15, `is_swizzled_scales` later.
+            w_dq = NVFP4Tensor(
+                w_qdata,
+                w_scale,
+                16,
+                w_dtype,
+                w_per_tensor_scale if w_per_tensor else None,
+                None,
+                w_swizzled,
+            ).dequantize(w_dtype)
         if (
             mm_dtype is not None
         ):  # torchao's backward runs under the forward's autocast (custom_bwd)
-            grad, x_dq, w_dq = grad.to(mm_dtype), x_dq.to(mm_dtype), w_dq.to(mm_dtype)
-        return torch.mm(grad, w_dq), torch.mm(grad.t(), x_dq)
+            grad = grad.to(mm_dtype)
+            x_dq = None if x_dq is None else x_dq.to(mm_dtype)
+            w_dq = None if w_dq is None else w_dq.to(mm_dtype)
+        # A fresh empty per omitted output: custom op outputs must not alias each other.
+        grad_x = grad.new_empty(0) if w_dq is None else torch.mm(grad, w_dq)
+        w_dq = None  # release the dense weight before the dW GEMM allocates
+        grad_w = grad.new_empty(0) if x_dq is None else torch.mm(grad.t(), x_dq)
+        return grad_x, grad_w
 
     @backward_op.register_fake
     def _(
@@ -10337,13 +10528,96 @@ def _nvfp4_qat_linear_op():
         w_per_tensor,
         w_swizzled,
         mm_dtype,
+        need_x,
+        need_w,
     ):
         dtype = grad.dtype if mm_dtype is None else mm_dtype
-        N, K = w_qdata.shape[0], w_qdata.shape[1] * 2
-        return (
-            grad.new_empty((grad.shape[0], K), dtype = dtype),
-            grad.new_empty((N, K), dtype = dtype),
+        # Read each payload only for its own requested grad: an omitted one is a rank-1 placeholder.
+        x_shape = (grad.shape[0], w_qdata.shape[1] * 2) if need_x else (0,)
+        w_shape = (grad.shape[1], x_qdata.shape[1] * 2) if need_w else (0,)
+        return grad.new_empty(x_shape, dtype = dtype), grad.new_empty(w_shape, dtype = dtype)
+
+    def setup_context(ctx, inputs, output):
+        x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, _, mm_dtype = inputs
+        need_x, need_w = ctx.needs_input_grad[0], ctx.needs_input_grad[1]
+        ctx.mark_non_differentiable(*output[1:])
+        # The six payload outputs never get a grad: do not materialize zeros for them each backward.
+        ctx.set_materialize_grads(False)
+        # dX needs only the weight payload, dW only the activation payload: save just what is used.
+        saved = list(output[1:])
+        if not (need_x and need_w):
+            empty = output[0].new_empty(0)
+            saved[:3] = saved[:3] if need_w else (empty,) * 3
+            saved[3:] = saved[3:] if need_x else (empty,) * 3
+        ctx.save_for_backward(*saved)
+        ctx.args = (
+            x.dtype,
+            weight.dtype,
+            act_per_tensor,
+            w_per_tensor,
+            w_swizzled,
+            mm_dtype,
+            need_x,
+            need_w,
         )
+
+    def backward(ctx, grad, *_):
+        if grad is None:  # set_materialize_grads(False): the output itself got no grad
+            return (None,) * 8
+        need_x, need_w = ctx.args[-2:]
+        grad_x, grad_w = (
+            backward_op(grad, *ctx.saved_tensors, *ctx.args) if need_x or need_w else (None, None)
+        )
+        grad_bias = grad.sum(0) if ctx.needs_input_grad[2] else None
+        return (
+            grad_x if need_x else None,
+            grad_w if need_w else None,
+            grad_bias,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+    forward.register_autograd(backward, setup_context = setup_context)
+    _register_nvfp4_qat_linear_v1(forward, backward_op, forward_schema)
+    _NVFP4_QAT_LINEAR.append(forward)
+    return forward
+
+
+def _register_nvfp4_qat_linear_v1(forward_v2, backward_v2, forward_schema):
+    """Keep the pre-versioning names `unsloth::nvfp4_qat_linear` (+ `_backward`) resolvable.
+
+    torch.export archives and compile caches store the qualified op name, so graphs saved before the `_v2`
+    bump still call the v1 ops. Both forward to the v2 kernels; the v1 backward keeps its original schema and
+    always computes both grads, and the v1 autograd saves every payload, exactly as before the bump."""
+    name = "unsloth::nvfp4_qat_linear"
+    backward_schema = (
+        "(Tensor grad, Tensor x_qdata, Tensor x_scale, Tensor x_per_tensor_scale, Tensor w_qdata, "
+        "Tensor w_scale, Tensor w_per_tensor_scale, ScalarType x_dtype, ScalarType w_dtype, "
+        "bool act_per_tensor, bool w_per_tensor, bool w_swizzled, ScalarType? mm_dtype) -> (Tensor, Tensor)"
+    )
+
+    @torch.library.custom_op(name, mutates_args = (), schema = forward_schema)
+    def forward(x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, w_triton, mm_dtype):
+        return forward_v2(
+            x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, w_triton, mm_dtype
+        )
+
+    @forward.register_fake
+    def _(x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, w_triton, mm_dtype):
+        return forward_v2(
+            x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, w_triton, mm_dtype
+        )
+
+    @torch.library.custom_op(name + "_backward", mutates_args = (), schema = backward_schema)
+    def backward_op(grad, *saved_and_args):
+        return backward_v2(grad, *saved_and_args, True, True)
+
+    @backward_op.register_fake
+    def _(grad, *saved_and_args):
+        return backward_v2(grad, *saved_and_args, True, True)
 
     def setup_context(ctx, inputs, output):
         x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, _, mm_dtype = inputs
@@ -10358,7 +10632,6 @@ def _nvfp4_qat_linear_op():
         return grad_x, grad_w, grad_bias, None, None, None, None, None
 
     forward.register_autograd(backward, setup_context = setup_context)
-    _NVFP4_QAT_LINEAR.append(forward)
     return forward
 
 
@@ -10786,6 +11059,11 @@ def patch_hf_quantizer():
 
 patch_hf_quantizer()
 
+# DoRA: PEFT rebuilds the dense B @ A update per forward for the row norm; use the rank-r factored identity instead.
+from ..kernels.dora import patch_peft_dora_factored_norm
+
+patch_peft_dora_factored_norm()
+
 
 def _fp8_checkpoint_dequantizes_below_sm89():
     # transformers 5.x dequantizes FP8 below sm89 (same release added `dequantize`); 4.57.x raises.
@@ -10801,10 +11079,21 @@ def _fp8_checkpoint_dequantizes_below_sm89():
 
 def verify_fp8_support_if_applicable(model_config, fast_inference = False):
     quant_method = get_quant_type(model_config)
-    if quant_method in ["fbgemm_fp8", "fp8"] and DEVICE_TYPE not in ("cuda", "xpu"):
-        # In case of block quantized, we allow L4 because we fall back to torchao kernels.
+    if quant_method == "fbgemm_fp8" and DEVICE_TYPE not in ("cuda", "xpu"):
         raise ValueError(
-            f"Unsloth: FP8 quantization is only supported on CUDA and XPU GPUs. You are using {DEVICE_TYPE}."
+            f"Unsloth: FBGEMM FP8 quantization is only supported on CUDA and XPU GPUs. You are using {DEVICE_TYPE}."
+        )
+    # ROCm: Unsloth's FP8 kernels pick the Triton fp8e4nv path, the gfx11 byte decoder or the torch dequant
+    # per device (unsloth/kernels/fp8.py), so a fine-grained FP8 checkpoint loads like on an Ada / Hopper GPU.
+    if quant_method == "fp8" and DEVICE_TYPE not in ("cuda", "xpu", "hip"):
+        raise ValueError(
+            f"Unsloth: FP8 quantization is only supported on CUDA, ROCm and XPU GPUs. You are using {DEVICE_TYPE}."
+        )
+    if quant_method == "fp8" and DEVICE_TYPE == "hip" and fast_inference:
+        # The vLLM handoff (weight export, FNUZ scales, MoE preflight) is CUDA-only for FP8 checkpoints today.
+        raise ValueError(
+            "Unsloth: FP8 checkpoints load on AMD ROCm GPUs with fast_inference = False; "
+            "fast_inference (vLLM) with FP8 weights is not supported on ROCm yet."
         )
 
     if DEVICE_TYPE == "cuda":
@@ -12926,13 +13215,14 @@ def _embedding_leaves(names):
 
 
 def _vllm_unmovable_embedding_modules(model, target_modules):
-    """Names to leave in `target_modules` under fast inference. vLLM cannot sync a trainable embedding, so modules_to_save is refused below. Only lm_head is spared: LoRA on it never trained here either, so redirecting it would newly raise on scripts that run today. embed_tokens still redirects, so still raises."""
+    """Names to leave in `target_modules` under fast inference. vLLM cannot sync a trainable embedding, so modules_to_save is refused below. Only lm_head is spared and stays a LoRA target, since redirecting it would newly raise on scripts that run today: SFT trains that LoRA through the head's own forward, while vLLM sampling never applies it, so GRPO keeps it frozen to stay on-policy. embed_tokens still redirects, so still raises."""
     if getattr(model, "vllm_engine", None) is None:
         return ()
     if type(target_modules) in (list, tuple) and "lm_head" in _embedding_leaves(target_modules):
         logger.warning_once(
-            "Unsloth: Fast inference cannot train `lm_head`, so it is left as an "
-            "untrained LoRA target.\nUse `fast_inference = False` to train it."
+            "Unsloth: With fast inference, `lm_head` stays a LoRA target. SFT trains it, but vLLM "
+            "sampling does not apply an lm_head LoRA, so GRPO keeps it frozen to stay on-policy.\n"
+            "Use `fast_inference = False` to train it with GRPO."
         )
     return ("lm_head",)
 
@@ -12944,7 +13234,7 @@ def _redirect_embedding_targets(
     allow_redirect = True,
     skip = (),
 ):
-    """Move embed_tokens/lm_head into modules_to_save. Returns (targets, saved, moved). LoRA on either is silently dead here: the fused CE loss reads `lm_head.weight` instead of calling the module, and PEFT's `lora_embedding_A/B` are never unfrozen."""
+    """Move embed_tokens/lm_head into modules_to_save. Returns (targets, saved, moved). LoRA on lm_head would make the loss leave the fused CE (which reads `lm_head.weight`) for the head's own forward and its full logits, and PEFT's `lora_embedding_A/B` are never unfrozen, so both train as full modules instead."""
     if type(target_modules) not in (list, tuple) or not allow_redirect:
         return target_modules, modules_to_save, ()
 

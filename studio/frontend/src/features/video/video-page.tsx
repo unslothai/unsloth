@@ -64,6 +64,8 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildVideoTourSteps } from "./tour";
 import { VideoRestylePanel } from "./restyle-panel";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { FullInstallDialog } from "@/features/settings/components/full-install-dialog";
+import { useFullInstallBringsVideo } from "@/hooks/use-full-install-upgrade";
 import {
   applyPin,
   fetchNextPage,
@@ -181,6 +183,7 @@ import {
 import {
   VIDEO_CATALOG,
   catalogToModelOptions,
+  downloadRepoIdFor,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import {
@@ -207,6 +210,7 @@ import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { confirmLinkedModel, modelLinkedFromOutside } from "@/lib/linked-model-arrival";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { MediaHeaderActions } from "@/components/media-header-actions";
 import { isTauri } from "@/lib/api-base";
@@ -220,9 +224,11 @@ import {
   PRECISION_REFUSAL_TITLE,
   denseTextEncoderBuildLabel,
   denseTransformerBuildLabel,
+  engagedAttentionBackend,
   formatResolvedValue,
   isPrecisionRefusal,
   resolvedBadge,
+  resolvedRequestSelectValue,
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
@@ -234,7 +240,11 @@ import {
   int8AttentionSelection,
   type Int8AttentionChoice,
 } from "@/lib/int8-attention";
-import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
+import {
+  diffusionPipelineLoadTarget,
+  diffusionStagingEntries,
+  stagedDownloadRepoId,
+} from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
   routedGgufLabel,
@@ -772,8 +782,8 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
       <BuildRow
         label="Attention"
         value={
-          status.attention_backend
-            ? formatResolvedValue("attention_backend", status.attention_backend)
+          engagedAttentionBackend(status)
+            ? formatResolvedValue("attention_backend", engagedAttentionBackend(status))
             : "Native SDPA"
         }
       />
@@ -1236,6 +1246,12 @@ export function VideoPage({
   onInitialReady?: () => void;
 }) {
   const hardware = useHardwareInfo();
+  // Only offered: the generator still gates on the backend's own verdict alone.
+  const fullInstall = useFullInstallBringsVideo();
+  const [fullInstallOpen, setFullInstallOpen] = useState(false);
+  const offerFullInstall =
+    fullInstall !== null &&
+    hardware.videoUnsupportedReason === "pytorch_not_installed";
 
   useEffect(() => {
     if (active && hardware.loaded && hardware.videoSupported === false) {
@@ -1261,9 +1277,23 @@ export function VideoPage({
           className="size-7 shrink-0 text-muted-foreground/70"
         />
         <p className="max-w-sm text-balance">
-          {hardware.videoUnsupportedMessage ??
-            "Video generation is not supported on this machine."}
+          {offerFullInstall
+            ? "Video generation was left out of this install (Chat only). Upgrade to the full install to add it."
+            : (hardware.videoUnsupportedMessage ??
+              "Video generation is not supported on this machine.")}
         </p>
+        {offerFullInstall && fullInstall && (
+          <>
+            <Button size="sm" onClick={() => setFullInstallOpen(true)}>
+              Upgrade to full install
+            </Button>
+            <FullInstallDialog
+              open={fullInstallOpen}
+              onOpenChange={setFullInstallOpen}
+              onConfirm={() => void fullInstall.repairInstall()}
+            />
+          </>
+        )}
       </VideoGate>
     );
   }
@@ -2014,7 +2044,7 @@ function VideoGenerator({
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
     );
     if (memory) setMemoryMode(memory);
-    const attention = resolvedSelectValue(record.attention_backend, (v) =>
+    const attention = resolvedRequestSelectValue(record.attention_backend, (v) =>
       // Map the dispatcher's name back to the option.
       (["auto", "native", "cudnn", "flash3", "sage"] as const).find(
         (o) => o === v || `_native_${o}` === v,
@@ -3236,7 +3266,8 @@ function VideoGenerator({
       if (!owns()) return true;
       const advanced = currentLoadAdvanced(opts.kind, familyOverrideRequired);
       if (source !== "hub") return handleLoadRef.current(repoId, opts, advanced);
-      const pickToastId = pickToast.show(opts.displayRepoId ?? repoId);
+      // Label with the repo actually fetched (a vendor id's unsloth mirror), not the picked id.
+      const pickToastId = pickToast.show(downloadRepoIdFor(opts.displayRepoId ?? repoId, VIDEO_CATALOG));
       // Read before the await: a newer pick replaces quantRevert.
       const ownRevert = quantRevert.current;
       let incompatible: string | null = null;
@@ -3279,7 +3310,12 @@ function VideoGenerator({
           };
           stagedQuantRevert.current = ownRevert;
           const staged = stage(entries);
-          pickToast.setPhase(pickToastId, "downloading", staged);
+          pickToast.setPhase(
+            pickToastId,
+            "downloading",
+            staged,
+            stagedDownloadRepoId(entries, opts.displayRepoId ?? repoId),
+          );
           return true;
         }
       } catch {
@@ -3402,6 +3438,12 @@ function VideoGenerator({
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
+    if (modelLinkedFromOutside(wanted)) {
+      const linked = { model: wanted, quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
+      void navigateSelf({ to: "/video", search: {}, replace: true });
+      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/video", search: linked, replace: true }));
+      return;
+    }
     setFamilyOverride("auto");
     // Owns the page like a direct pick, so an earlier staged download cannot land on top.
     const token = pickGuard.claim();

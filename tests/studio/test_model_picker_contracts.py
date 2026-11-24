@@ -1171,7 +1171,8 @@ def test_compare_pane_non_gguf_falls_back_to_app_default():
     assert (
         "const effectiveMaxSeqLength = savedContextPin(ownConfig) ?? "
         "unpinnedLoadContext( targetIsGguf, "
-        "isServedByMlx(targetIsGguf, platform.deviceType, platform.chatOnlyReason), "
+        "isServedByMlx( targetIsGguf, platform.deviceType, platform.chatOnlyReason, "
+        "platform.mlxInference, ), "
         "DEFAULT_MAX_SEQ_LENGTH, );" in src
     )
     assert "(isGgufLoad ? 0 : maxSeqLength)" not in src
@@ -1181,10 +1182,16 @@ def test_compare_pane_non_gguf_falls_back_to_app_default():
 def test_every_load_path_asks_the_backend_before_it_asks_for_a_window():
     """Load paths take the serving backend and its reported window, never a literal or raw context field."""
     load_paths = ("chat/hooks/use-chat-model-runtime.ts", "chat/api/chat-adapter.ts")
-    derived_backend = r"isMlx: isServedByMlx\(\s*[\w.=\" ]+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,?\s*\)"
+    derived_backend = (
+        r"isMlx: isServedByMlx\(\s*[\w.=\" ]+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,"
+        r"\s*platform\.mlxInference,?\s*\)"
+    )
     # A name bound to that same call counts; the binding is checked below.
     hoisted = r"isMlx: (\w+),"
-    hoist_source = r"const {name} = isServedByMlx\(\s*\w+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,?\s*\);"
+    hoist_source = (
+        r"const {name} = isServedByMlx\(\s*\w+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,"
+        r"\s*platform\.mlxInference,?\s*\);"
+    )
     for name in load_paths:
         src = _read(f"features/{name}")
         calls = src.count("resolveLoadMaxSeqLength({") + src.count("retainedContextPin({")
@@ -1250,8 +1257,8 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "update(contextPinPatch(value, pinsContextLength, config.npuPrefillChunkLen))" in page
     # "Anything not GGUF" would relabel CUDA; the platform decides.
     assert (
-        "isServedByMlx(\n    target.isGguf,\n    platformDeviceType,\n    platformChatOnlyReason,\n  )"
-        in page
+        "isServedByMlx(\n    target.isGguf,\n    platformDeviceType,\n    platformChatOnlyReason,\n"
+        "    platformMlxInference,\n  )" in page
     )
     assert "const targetIsMlx = servedByMlx;" in page
     # Both props are optional, so dropping either still typechecks.
@@ -1753,9 +1760,10 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         assert seq < text.index(
             'if (source !== "hub"'
         ), f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
+        # The guard may release the pick first (dropReleasedPick, #18420); it must still return true.
         guards = re.findall(
             r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} "
-            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*)?return (\w+);",
+            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*(?:\w+\([^;{}]*\);\s*)*)?return (\w+);",
             text,
         )
         assert guards, f"{rel}: a superseded plan is not dropped"
@@ -1765,7 +1773,7 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         tail = text[text.rindex("} catch") :]
         assert re.search(
             r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} "
-            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*)?return true;.*?return handleLoadRef",
+            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*(?:\w+\([^;{}]*\);\s*)*)?return true;.*?return handleLoadRef",
             tail,
             re.S,
         ), f"{rel}: a plan that rejected after a newer pick still reaches the fallback load"
@@ -2452,8 +2460,7 @@ def test_batch_sizes_reach_an_api_load_through_the_server_mirror():
     assert "n_ubatch = payload.n_ubatch," in route
     store = _read_backend("utils/openai_auto_switch_settings.py")
     assert '("n_batch", "n_ubatch")' in store
-    # Read through the builder rather than its source: the fields may be copied for GGUF alone or
-    # for GGUF and MLX alike (#18426).
+    # Read through the builder: fields may be copied for GGUF alone or for GGUF and MLX (ref 18426).
     assert _override_load_kwargs({"n_batch": 1024, "n_ubatch": 256}, is_gguf = True) == {
         "n_batch": 1024,
         "n_ubatch": 256,
@@ -3635,11 +3642,22 @@ def test_the_default_is_preflighted_before_the_managed_download():
 
 
 def test_cached_non_gguf_rows_get_the_chat_only_platform_gate():
-    """The picker hides them outright there (visibleCachedModelRows)."""
+    """The picker hides them there (visibleCachedModelRows), unless the Mac serves MLX.
+
+    The served-by-MLX verdict is the shared isServedByMlx rule fed the server's mlx_inference,
+    so auto-load and the pickers cannot disagree; the scenarios in
+    test_chat_autoload_failure_gate.py run that rule as shipped.
+    """
     src = _read("features/chat/api/chat-adapter.ts")
-    gate = src.split("function cachedModelsRunOnThisPlatform", 1)[1].split("\n}", 1)[0]
-    assert "return platform.capabilitiesUnknown() || !platform.isChatOnly();" in gate
-    assert "cachedModelsRunOnThisPlatform()\n          ? allModelRepos.filter(" in src
+    gate = src.split("function cachedModelRunsOnThisPlatform", 1)[1].split("\n}", 1)[0]
+    assert "if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;" in gate
+    assert "return platformServesMlx(platform);" in gate
+    serves = src.split("function platformServesMlx(", 1)[1].split("\n}", 1)[0]
+    assert "isServedByMlx(" in serves
+    assert "platform.mlxInference" in serves
+    assert re.search(
+        r"isChattableCachedRepo\(repo\) && cachedModelRunsOnThisPlatform\([^)]*\)", src
+    )
     assert "allGgufRepos.filter(isChattableCachedRepo)," in src
 
 

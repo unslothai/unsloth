@@ -646,8 +646,7 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     # Both need a reference clip on every run (mira_tts/session.cpp, sopro_tts/session.cpp).
     AudioCppFamily("mira_tts", "tts", speaks = False, clone = CloneSpec("unused")),
     AudioCppFamily("sopro_tts", "tts", speaks = False, clone = CloneSpec("unused")),
-    # Its spec lists only tts, yet every run needs a reference clip (xtts_v2: "voice cloning
-    # requires a reference WAV").
+    # Spec lists only tts, yet each run needs a reference clip (xtts_v2 needs a reference WAV).
     AudioCppFamily("xtts_v2", "tts", speaks = False, clone = CloneSpec("unused")),
     # Plain tts fails with "VieNeu-TTS TTS requires a voice": the voices its package ships are
     # reference codes the runtime does not pick up by name.
@@ -1503,7 +1502,7 @@ def snapshot_dirs(repo_id: str, hub_cache: Optional[Path] = None) -> list[Path]:
         return snapshot_dirs(match.name[len("models--") :].replace("--", "/"), root)
     try:
         main_sha = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         main_sha = ""
 
     def order(p: Path) -> tuple[int, float]:
@@ -1751,8 +1750,7 @@ def _package_variants(
 
 
 def _local_package_complete(spec: Optional[dict], local_path: str) -> bool:
-    """False when a local GGUF belongs to a package of several GGUFs and is not its primary, or one
-    of the package's files is not beside it."""
+    """False when a local GGUF isn't its package's primary, or a package file is not beside it."""
     path = Path(local_path)
     split = [
         p
@@ -1776,10 +1774,9 @@ def _local_package_complete(spec: Optional[dict], local_path: str) -> bool:
 def spec_package_variants(
     spec: Optional[dict], repo_id: Optional[str], folder: str, files: Sequence[RepoFile]
 ) -> Optional[list[AudioCppVariant]]:
-    """The variants of a repo whose runtime spec lays it out as packages of several files (weights
-    split over GGUFs, or a GGUF with files it reads beside it), recommended first. None when the
-    spec gives this repo no such package: its GGUFs then load one by one. Empty when the repo lacks
-    a file of every package."""
+    """Variants of a repo with multi-file packages in its runtime spec (weights split over GGUFs, or
+    a GGUF with side files), recommended first; None when the spec gives the repo no package (its
+    GGUFs then load one by one); empty when the repo lacks a file of every package."""
     every = spec_packages.spec_packages(spec)
     packages = spec_packages.packages_for_repo(every, repo_id or "", AUDIO_CPP_REPO, folder)
     if not packages and len(recommended_gguf_files(spec)) > 1:
@@ -1952,6 +1949,19 @@ CONVERT_DRIVEN_OPTIONS = frozenset(
         "style_ref_text",
     }
 )
+# Options the runtime opens host files from, though their names do not end in _file, _path or _dir:
+# a clip path (Vevo2), WAV paths per speaker (VibeVoice, MOSS-TTSD) and JSON rows that name clips
+# (Audio8, Fish Audio, Plapre). Most are typed string, so the name is what keeps them out of a run.
+FILE_OPTIONS = frozenset(
+    {
+        "target_voice",
+        "voice_samples",
+        "multi_reference_cond",
+        "references",
+        "previous_takes",
+        "pronunciations",
+    }
+)
 _RENDERABLE_TYPES = frozenset({"bool", "int", "float", "string", "enum"})
 _MAX_STRING_OPTION = 4000
 
@@ -2085,6 +2095,8 @@ def _clean_option(raw: Any) -> Optional[dict]:
     if not name or "." in name or kind not in _RENDERABLE_TYPES:
         return None
     if name in _STUDIO_DRIVEN_OPTIONS or name.endswith(("_file", "_path", "_dir")):
+        return None
+    if name in FILE_OPTIONS:
         return None
     option: dict[str, Any] = {
         "name": name,

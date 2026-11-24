@@ -42,13 +42,15 @@ _DIFFUSERS_DISPATCH = "diffusers.models.attention_dispatch"
 _ROUTED_ATTR = "_unsloth_int8_dispatch"
 # DiTs the unset switch races: kernel per-step error within their shipped INT8 weights' (rel L2 vs bf16; Z-Image-Turbo
 # 0.022/0.048 vs 0.024/0.073). LTX-2 left out: audio stream 0.010 vs 0.008, no sink to fix. Qwen-Image left out: max
-# 0.031 vs 0.013, 50-step images LPIPS 0.14 from native. HunyuanImage-2.1 and Krea-2 mask every call (nothing to route).
+# 0.031 vs 0.013, 50-step images LPIPS 0.14 from native. HunyuanImage-2.1 masks every call (nothing to route). Krea-2
+# block calls run mask-free over the valid key prefix (diffusion_krea2_prefix_kv); a masked call keeps the incumbent.
+# FLUX.1 and FLUX.2 left out (route on request): 30 prompts vs fp32 attention, INT8 minus bf16 LPIPS CI above the
+# bf16 kernel-swap floor on L4 and A100-40 (schnell +0.018 [0.010, 0.027] vs 0.006, klein 4B +0.012 vs 0.001).
 AUTO_DITS = frozenset(
     {
-        "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
+        "Krea2Transformer2DModel",
         "MOSSImageTransformer",
-        "FluxTransformer2DModel",
         "HunyuanVideo15Transformer3DModel",
         "QwenImage21Transformer2DModel",
         "WanTransformer3DModel",
@@ -58,12 +60,22 @@ AUTO_DITS = frozenset(
 # AUTO_DITS members raced only when their own weights are quantized (an INT8 / FP8 checkpoint): measured against its
 # INT8-ConvRot default only, so a bf16 load (the accuracy reference) keeps its attention.
 AUTO_QUANTIZED_ONLY = frozenset({"MOSSImageTransformer"})
+# AUTO_DITS members the unset switch leaves alone in a two-expert pipeline (a ``transformer_2``): Wan 2.2 A14B on A100
+# (hosted INT8 pair, 832x480x33, 10 steps) ran 10% faster per step with the kernel, but the clip drifts step over step
+# through both experts (latent rel L2 0.20 / 0.39 at the end, LPIPS 0.135 / 0.277 against the kernel off, whose own
+# fresh-process repeat is bit-identical): a different clip, not a near copy. Wan 2.2 5B (one expert) keeps its race.
+AUTO_SINGLE_EXPERT_ONLY = frozenset({"WanTransformer3DModel"})
+
+
+def two_expert_pipeline(pipe: Any) -> bool:
+    """Whether ``pipe`` denoises with a second expert (Wan 2.2 A14B's ``transformer_2``)."""
+    return getattr(pipe, "transformer_2", None) is not None
+
+
 # Also race with speed unset and no profile (e.g. offloaded INT8 DiT on T4): only the families measured that way.
 SPEED_UNSET_DITS = frozenset(
     {
-        "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
-        "FluxTransformer2DModel",
         "QwenImage21Transformer2DModel",
         "ZImageTransformer2DModel",
     }
@@ -71,9 +83,8 @@ SPEED_UNSET_DITS = frozenset(
 # Accuracy measured on the CUDA kernel only: with the switch unset a Triton stand-in keeps the incumbent.
 AUTO_CUDA_ONLY = frozenset(
     {
-        "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
-        "FluxTransformer2DModel",
+        "Krea2Transformer2DModel",
         "HunyuanVideo15Transformer3DModel",
         "ZImageTransformer2DModel",
     }
@@ -147,10 +158,21 @@ def _backend_name(backend: Any) -> str:
     return str(getattr(backend, "value", backend))
 
 
-def _race_name(incumbent: Any) -> str:
-    """Verdict-cache name; a strided cuDNN pin runs a different call, so it is cached apart."""
+def _race_name(
+    incumbent: Any,
+    card: Optional[int] = None,
+    dtype: Any = None,
+) -> str:
+    """Verdict-cache name; a strided cuDNN pin is cached apart, but only on a probed card and dtype
+    where it takes the strided call; elsewhere it shares diffusers' verdict."""
     name = f"dispatch:{_backend_name(incumbent)}"
-    return name + ":strided" if isinstance(incumbent, _Q21.StridedCudnn) else name
+    if not isinstance(incumbent, _Q21.StridedCudnn):
+        return name
+    if card is not None and int(card) not in incumbent.cards:
+        return name
+    if dtype is not None and incumbent.dtype is not None and dtype != incumbent.dtype:
+        return name
+    return name + ":strided"
 
 
 class Int8Route(str):
@@ -793,6 +815,7 @@ def _install(
             type(dit).__name__ not in auto_dits
             or (speed_unset_only and type(dit).__name__ not in SPEED_UNSET_DITS)
             or (type(dit).__name__ in AUTO_QUANTIZED_ONLY and not quantized_weights(dit))
+            or (type(dit).__name__ in AUTO_SINGLE_EXPERT_ONLY and two_expert_pipeline(pipe))
         ):
             continue
         native = set() if forced else native_block_modules(dit)
@@ -831,7 +854,6 @@ def _install(
         if head_dim is None:
             continue
         incumbent = proc._attention_backend
-        name = _race_name(incumbent)
 
         def run(
             q: Any,
@@ -849,6 +871,7 @@ def _install(
             impl_here = I8.implementation(card, head_dim)
             if impl_here is None or (id(m) in cuda_only and impl_here != "cuda"):
                 continue
+            name = _race_name(incumbent, card, dtype)
             found, minimum = _card_floor(
                 torch.device("cuda", card),
                 dtype,

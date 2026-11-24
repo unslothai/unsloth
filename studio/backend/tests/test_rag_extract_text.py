@@ -48,6 +48,18 @@ def test_works_without_sqlite_vec(rag_home, monkeypatch):
     assert result["text"] == "hello"
 
 
+@pytest.mark.parametrize(
+    "name, text",
+    [
+        ("export.tsv.txt", "\tName\tCity\n1\tJosé\tParis\n"),
+        ("notes.md", "    first\n    second\n"),
+    ],
+)
+def test_a_text_file_keeps_its_boundary_whitespace(rag_home, name, text):
+    result = rag_routes.extract_text(_upload(name, text.encode("cp1252")), subject = "owner")
+    assert result["text"] == text
+
+
 def test_unsupported_type_is_refused(rag_home):
     with pytest.raises(HTTPException) as exc:
         rag_routes.extract_text(_upload("model.gguf", b"GGUF"), subject = "owner")
@@ -218,6 +230,174 @@ def test_an_upright_photo_stays_upright_after_shrinking(rag_home, monkeypatch):
     rag_routes.extract_text(_upload("phone.jpg", out.getvalue()), subject = "owner")
     width, height = Image.open(io.BytesIO(seen[0])).size
     assert height > width and width * height <= rag_routes._IMAGE_MAX_PIXELS
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_a_rotated_uncompressed_tiff_stays_upright(rag_home, monkeypatch, count):
+    from PIL import Image, ImageDraw
+
+    from core.rag import captioner
+
+    page = Image.new("L", (80, 40), 255)
+    ImageDraw.Draw(page).rectangle((0, 0, 19, 19), fill = 0)
+    out = io.BytesIO()
+    page.save(out, "TIFF", save_all = True, append_images = [page] * (count - 1), tiffinfo = {0x0112: 6})
+    seen = {}
+    monkeypatch.setattr(
+        captioner, "ocr_pages", lambda pngs: seen.update(pngs) or dict.fromkeys(pngs, "ok")
+    )
+    rag_routes.extract_text(_upload("scan.tif", out.getvalue()), subject = "owner")
+    upright = page.transpose(Image.Transpose.ROTATE_270).tobytes()
+    pages = [Image.open(io.BytesIO(png)).convert("L").tobytes() for png in seen.values()]
+    assert pages == [upright] * count
+    assert _uploads_left() == []
+
+
+def _tiff_pages(
+    *shades: int,
+    big = (),
+    unsupported = (),
+    broken_tail = False,
+) -> bytes:
+    import struct
+
+    from PIL import Image
+
+    pages = [
+        Image.new("L", (80, 60) if number in big else (40, 30), shade)
+        for number, shade in enumerate(shades, 1)
+    ]
+    out = io.BytesIO()
+    pages[0].save(out, "TIFF", save_all = True, append_images = pages[1:])
+    data = bytearray(out.getvalue())
+    offset, number = struct.unpack_from("<I", data, 4)[0], 1
+    while offset:
+        count = struct.unpack_from("<H", data, offset)[0]
+        for entry in range(offset + 2, offset + 2 + 12 * count, 12):
+            if number in unsupported and struct.unpack_from("<H", data, entry)[0] == 259:
+                struct.pack_into("<H", data, entry + 8, 9999)  # a compression Pillow lacks
+        link = offset + 2 + 12 * count
+        offset, number = struct.unpack_from("<I", data, link)[0], number + 1
+        if not offset and broken_tail:
+            # Past the end of the file, so walking every page fails.
+            struct.pack_into("<I", data, link, len(data) + 4096)
+    return bytes(data)
+
+
+def _shade(png: bytes) -> str:
+    from PIL import Image
+    return f"shade {Image.open(io.BytesIO(png)).getpixel((0, 0))[0]}"
+
+
+def test_every_page_of_a_tiff_is_read(rag_home, monkeypatch):
+    import tempfile
+
+    from core.rag import captioner
+
+    def no_scratch_dir():
+        raise AssertionError("nothing is left for Tesseract")
+
+    monkeypatch.setattr(
+        captioner, "ocr_pages", lambda pngs: {n: _shade(png) for n, png in pngs.items()}
+    )
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", no_scratch_dir)
+    result = rag_routes.extract_text(_upload("fax.tif", _tiff_pages(10, 120, 250)), subject = "owner")
+    assert result["text"] == "shade 10\n\nshade 120\n\nshade 250"
+    assert "warning" not in result
+    assert _uploads_left() == []
+
+
+def test_gif_frames_are_animation_not_pages(rag_home, monkeypatch):
+    from PIL import Image
+
+    from core.rag import captioner
+
+    monkeypatch.setattr(
+        captioner, "ocr_pages", lambda pngs: {n: _shade(png) for n, png in pngs.items()}
+    )
+    frames = [Image.new("L", (40, 30), shade) for shade in (10, 120)]
+    out = io.BytesIO()
+    frames[0].save(out, "GIF", save_all = True, append_images = frames[1:])
+    result = rag_routes.extract_text(_upload("wave.gif", out.getvalue()), subject = "owner")
+    assert result["text"] == "shade 10" and "warning" not in result
+    assert _uploads_left() == []
+
+
+def test_the_tiff_page_cap_is_reported(rag_home, monkeypatch):
+    from core.rag import captioner, pdf_ocr
+
+    def tesseract(path, pages):
+        with open(path, "rb") as handle:
+            return {1: _shade(handle.read())}
+
+    # Vision reads only the middle page, so Tesseract's pages sit on both sides of it.
+    monkeypatch.setattr(captioner, "ocr_pages", lambda pngs: {2: _shade(pngs[2])})
+    monkeypatch.setattr(pdf_ocr, "ocr_pages", tesseract)
+    monkeypatch.setattr(rag_routes.config, "OCR_MAX_PAGES", 3)
+    tiff = _tiff_pages(10, 120, 250, 60, unsupported = {4}, broken_tail = True)
+    result = rag_routes.extract_text(_upload("scan.tiff", tiff), subject = "owner")
+    assert result["text"] == "shade 10\n\nshade 120\n\nshade 250"
+    assert result["warning"] == "Only the first 3 pages of scan.tiff were read."
+    monkeypatch.setattr(rag_routes.config, "OCR_MAX_PAGES", 0)
+    monkeypatch.setattr(captioner, "ocr_pages", lambda pngs: {})
+    with pytest.raises(HTTPException) as exc:
+        rag_routes.extract_text(_upload("scan.tiff", tiff), subject = "owner")
+    assert exc.value.detail == "Only the first 0 pages of scan.tiff were read."
+    assert _uploads_left() == []
+
+
+def test_a_full_disk_costs_only_the_tesseract_pages(rag_home, monkeypatch):
+    import tempfile
+
+    from core.rag import captioner
+
+    def full_disk():
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(captioner, "ocr_pages", lambda pngs: {1: _shade(pngs[1])})
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", full_disk)
+    result = rag_routes.extract_text(_upload("scan.tif", _tiff_pages(10, 120)), subject = "owner")
+    assert result["text"] == "shade 10"
+    assert result["warning"] == rag_routes._unread_pages_warning("scan.tif", [2])
+    # With nothing read, the disk error is the cause.
+    monkeypatch.setattr(captioner, "ocr_pages", lambda pngs: {})
+    with pytest.raises(HTTPException) as exc:
+        rag_routes.extract_text(_upload("one.png", _png()), subject = "owner")
+    assert exc.value.detail == "one.png could not be read: [Errno 28] No space left on device"
+    assert _uploads_left() == []
+
+
+def test_unreadable_tiff_pages_are_named_and_the_rest_read(rag_home, monkeypatch):
+    from core.rag import captioner
+
+    monkeypatch.setattr(
+        captioner, "ocr_pages", lambda pngs: {n: _shade(png) for n, png in pngs.items()}
+    )
+    monkeypatch.setattr(rag_routes, "_IMAGE_DECODE_MAX_PIXELS", 40 * 30)
+    tiff = _tiff_pages(10, 120, 200, 250, big = {2}, unsupported = {3})
+    result = rag_routes.extract_text(_upload("big.tif", tiff), subject = "owner")
+    assert result["text"] == "shade 10\n\nshade 250"
+    assert result["warning"] == (
+        "Could not read pages 2, 3 of big.tif; page 2: the image is too large (80 x 60 pixels)."
+    )
+    assert _uploads_left() == []
+
+
+def test_a_tiff_with_no_text_names_its_unreadable_page(rag_home, monkeypatch):
+    from core.rag import captioner, pdf_ocr
+
+    monkeypatch.setattr(captioner, "ocr_pages", lambda pngs: {})
+    monkeypatch.setattr(pdf_ocr, "ocr_pages", lambda path, pages: {})
+    monkeypatch.setattr(rag_routes, "_IMAGE_DECODE_MAX_PIXELS", 40 * 30)
+    with pytest.raises(HTTPException) as exc:
+        rag_routes.extract_text(
+            _upload("blank.tif", _tiff_pages(255, 255, big = {2})), subject = "owner"
+        )
+    assert exc.value.status_code == 422
+    assert exc.value.detail == (
+        "Could not read page 2 of blank.tif: the image is too large (80 x 60 pixels). "
+        + rag_routes._unread_pages_warning("blank.tif", [1])
+    )
 
 
 def _scan(doc, rect = None):

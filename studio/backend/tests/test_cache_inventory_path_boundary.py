@@ -1102,10 +1102,8 @@ _WIRING = {
         "echo = (model_name,)",
         "resolve_inventory_handle(",
     ),
-    ("models.scan_model_remote_code", "exact"): (
-        "resolve_inventory_handle(",
-        "restore_inventory_handles(",
-    ),
+    ("models.scan_model_remote_code", "exact"): ("resolve_inventory_handle(",),
+    ("models._scan_model_remote_code_sync", "exact"): ("restore_inventory_handles(",),
     ("inference.load_diffusion_model", "exact"): (
         "except HTTPException",
         "raised_inventory_detail",

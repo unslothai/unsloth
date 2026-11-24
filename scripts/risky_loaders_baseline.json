@@ -175,7 +175,7 @@
       "rule": "dynamic-import",
       "sink": "import_module",
       "digest": "0d420008334333ee",
-      "count": 3,
+      "count": 6,
       "reason": "Module name comes from a fixed table or constant in this file, not from a model, request or download."
     },
     {
@@ -443,6 +443,14 @@
       "reason": "Loads the repo's own scripts/scan_packages.py scanner from this checkout or install."
     },
     {
+      "file": "studio/backend/utils/security/st_config_args.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "59e72c01edb14c86",
+      "count": 1,
+      "reason": "Imports sentence_transformers.models and sentence_transformers.sparse_encoder.models from a fixed tuple, to wrap their load_config."
+    },
+    {
       "file": "studio/backend/utils/ssm_runtime.py",
       "rule": "dynamic-import",
       "sink": "__import__",
@@ -465,6 +473,14 @@
       "digest": "59e72c01edb14c86",
       "count": 1,
       "reason": "Iterates the fixed _DIFFUSERS_PREWARM_MODEL_MODULES tuple."
+    },
+    {
+      "file": "studio/backend/utils/transformers_backports.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "3a02e64348d87116",
+      "count": 1,
+      "reason": "Loads import_fixes.py from the installed unsloth package's own directory (find_spec('unsloth')), never a model or download path."
     },
     {
       "file": "studio/backend/utils/utils.py",
@@ -531,6 +547,14 @@
       "reason": "Loads unsloth/dataprep/raw_text.py and ebooks.py on the CPU backend from a fixed path derived from this package's __file__, with only those two constant names passed and the helper deleted after import, to skip dataprep/__init__ (which needs a GPU device type); never a dataset-provided or downloaded code path."
     },
     {
+      "file": "unsloth/_cpu_init.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "78b864cf6acb1555",
+      "count": 1,
+      "reason": "Unsloth's own unsloth/utils/run_report.py, loaded by its fixed path next to _cpu_init.py (importing unsloth.utils would pull in the GPU model stack on the CPU route), not external input."
+    },
+    {
       "file": "unsloth/_gpu_init.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
@@ -567,8 +591,8 @@
       "rule": "dynamic-import",
       "sink": "import_module",
       "digest": "59e72c01edb14c86",
-      "count": 4,
-      "reason": "Module names come from fixed in-file tables (_PEFT_TORCHAO_TENSOR_SUBCLASSES, _TORCHAO_IMPORT_TIME_MODULES and the transformers symbol homes); remote code can only name an attribute, which resolves inside an already installed transformers module."
+      "count": 5,
+      "reason": "Module names come from fixed in-file tables (_PEFT_TORCHAO_TENSOR_SUBCLASSES, _TORCHAO_IMPORT_TIME_MODULES, the transformers symbol homes and the two literal tokenizer owners of _patch_mistral_regex); remote code can only name an attribute, which resolves inside an already installed transformers module."
     },
     {
       "file": "unsloth/import_fixes.py",
@@ -743,8 +767,16 @@
       "rule": "dynamic-import",
       "sink": "import_module",
       "digest": "8a43c55c018acccf",
+      "count": 2,
+      "reason": "Two TRL module loads, neither from external input: the async GRPO trainer from a fixed tuple of two literal names (trl.trainer.async_grpo_trainer, trl.experimental.async_grpo.async_grpo_trainer), and the tree gated DeltaNet kernels from the literal trl.kernels.tree_gated_delta_rule or, on TRL 1.17, the sibling of TRL's own packing function module (original.__module__)."
+    },
+    {
+      "file": "unsloth/models/rl.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "d5aa483b6d3b65d5",
       "count": 1,
-      "reason": "TRL's async GRPO trainer module, from a fixed tuple of two literal names (trl.trainer.async_grpo_trainer, trl.experimental.async_grpo.async_grpo_trainer), not external input."
+      "reason": "Imports {prefix}.{module} with prefix in ('trl.kernels', the package of TRL's own patch_tree_recurrent) and module from the fixed _TREE_RECURRENT_OPS table."
     },
     {
       "file": "unsloth/models/rl.py",
@@ -761,6 +793,14 @@
       "digest": "180573f5aeefdb98",
       "count": 3,
       "reason": "Gated: classes outside sentence_transformers.* need trust_remote_code; inside it the path must be dotted identifiers resolving to a module class (#12436). The WordEmbeddings tokenizer_class check imports only after the caller refuses anything outside sentence_transformers.* (#14437)."
+    },
+    {
+      "file": "unsloth/models/sentence_transformer.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "59e72c01edb14c86",
+      "count": 1,
+      "reason": "Imports sentence_transformers.models and sentence_transformers.sparse_encoder.models from a fixed tuple, to wrap their load_config."
     },
     {
       "file": "unsloth/models/sentence_transformer.py",

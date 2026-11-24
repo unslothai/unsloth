@@ -97,6 +97,62 @@ def _skills_home_root(tmp_path_factory):
 _skills_home_counter = itertools.count()
 
 
+@pytest.fixture
+def tmp_cache_home_allowed(monkeypatch, tmp_path_factory):
+    """Lets a Hugging Face cache home live under pytest's base temp directory.
+
+    macOS denies /private/var as a system folder, and pytest's tmp_path is always under /private/var/folders,
+    so set_hf_cache_home(tmp_path / ...) raises "System folders cannot be used" there. Only paths inside the
+    base temp are exempt; every other path keeps the real verdict.
+    """
+    from hub.storage import scan_folders
+
+    base = os.path.realpath(str(tmp_path_factory.getbasetemp()))
+    real = scan_folders.is_denied_system_path
+
+    def is_denied_system_path(path):
+        return False if scan_folders.is_within_any(path, [base]) else real(path)
+
+    monkeypatch.setattr(scan_folders, "is_denied_system_path", is_denied_system_path)
+
+
+@pytest.fixture(scope = "session", autouse = True)
+def _plain_structlog_tracebacks():
+    """Without setup_logging, structlog's default rich formatter lexes each frame's file from line 1:
+    seconds per logged exception in the 2 MB llama_cpp.py, which the tool-loop tests log constantly."""
+    try:
+        import structlog
+        from structlog import _config as structlog_config
+    except ImportError:
+        yield
+        return
+    renderer_cls = structlog.dev.ConsoleRenderer
+    plain = structlog.dev.plain_traceback
+    # The builtin list too: reset_defaults() copies it shallowly, so its renderer comes back.
+    candidates = [
+        *getattr(structlog_config, "_BUILTIN_DEFAULT_PROCESSORS", ()),
+        *structlog.get_config()["processors"],
+    ]
+    renderers = list({id(p): p for p in candidates if isinstance(p, renderer_cls)}.values())
+    # structlog 25.5 added the public property; 24.1 to 25.4 keep the formatter in _exception_formatter.
+    attr = (
+        "exception_formatter"
+        if isinstance(getattr(renderer_cls, "exception_formatter", None), property)
+        else "_exception_formatter"
+    )
+    previous = [
+        (renderer, getattr(renderer, attr)) for renderer in renderers if hasattr(renderer, attr)
+    ]
+    for renderer, _ in previous:
+        setattr(renderer, attr, plain)
+
+    try:
+        yield
+    finally:
+        for renderer, formatter in previous:
+            setattr(renderer, attr, formatter)
+
+
 @pytest.fixture(autouse = True)
 def _no_vae_structural_verdict_cache(monkeypatch):
     """Structural VAE fusion verdicts persist under Studio's cache root; tests must not read or write the real one
@@ -269,6 +325,12 @@ def _sd_cpp_windows_rocm_ignores_the_host_dlls(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _cpu_test_host_is_not_a_cpu_only_studio(monkeypatch):
+    # The CPU-only GGUF rule would refuse mocked GPU-path loads here; tests of the rule delete this env.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK", "1")
+
+
+@pytest.fixture(autouse = True)
 def _no_real_mxc_drive_aliases(monkeypatch):
     # Windows hosts would map real drive letters; MXC tests opt back in.
     monkeypatch.setenv("UNSLOTH_MXC_DRIVE_ALIAS", "0")
@@ -281,6 +343,19 @@ def _forget_hub_unreachable_verdict():
         reach = sys.modules.get("core.inference.hub_reachability")
         if reach is not None:
             reach._UNREACHABLE.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _forget_hub_gguf_listings():
+    def _forget():
+        gguf = sys.modules.get("hub.utils.gguf")
+        if gguf is not None:
+            gguf._hub_listings.clear()
+            gguf._hub_rate_limited.clear()
 
     _forget()
     yield
@@ -973,6 +1048,11 @@ def _assume_bare_metal(monkeypatch):
     from core.inference import llama_cpp
 
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
+    monkeypatch.setattr(llama_cpp, "_metal_device_looks_paravirtual_quick", lambda: False)
+    # A test that hides MLX and torch must not reach the host's real Metal device instead.
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "_metal_framework_working_set_bytes", lambda: 0)
     # The route rebinds the detector as a module global, so patching llama_cpp alone is not enough.
     try:
         from routes import inference as routes_inference

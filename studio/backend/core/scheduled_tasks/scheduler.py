@@ -401,13 +401,22 @@ def _speech_only(llama: Any, orchestrator: Any) -> bool:
     return bool(info.get("is_audio"))
 
 
+# Translate's models (frontend lib/translation-models.ts): Chat reads their slot as empty, so a run does too.
+_TRANSLATION_ONLY_REPOS = frozenset({"unsloth/hy-mt2-1.8b-gguf", "unsloth/hy-mt2-7b-gguf"})
+
+
+def _translation_only(name: Optional[str]) -> bool:
+    return (name or "").strip().lower() in _TRANSLATION_ONLY_REPOS
+
+
 def _slot_model(slot: Any) -> Optional[str]:
     if _speech_only(slot.llama, slot.orchestrator):
         return None
     if getattr(slot.llama, "is_loaded", False) and getattr(slot.llama, "model_identifier", None):
-        return str(slot.llama.model_identifier)
-    name = getattr(slot.orchestrator, "active_model_name", None)
-    return str(name) if name else None
+        name = slot.llama.model_identifier
+    else:
+        name = getattr(slot.orchestrator, "active_model_name", None)
+    return str(name) if name and not _translation_only(name) else None
 
 
 def _sole_kept_model() -> Optional[str]:
@@ -423,6 +432,7 @@ def _sole_kept_model() -> Optional[str]:
             account_access.managed_account() and account_access.resident_hidden("chat", primary)
         )
         and not _speech_only(get_llama_cpp_backend(), _peek_inference_backend())
+        and not _translation_only(primary)
     ):
         return None
     names = [name for name in map(_slot_model, model_slots.visible()) if name]
@@ -707,6 +717,7 @@ async def generate_answer(
     from models.inference import ChatCompletionRequest
     from routes.inference import (
         _chat_completion_from_connection_stream,
+        _loaded_slot_ident,
         _relay_split_thinking,
         allow_model_switch_for_request,
         load_alongside_for_request,
@@ -766,6 +777,8 @@ async def generate_answer(
             # Built once admitted: a model kept alongside is chosen as it stands now, not before a load or unload.
             if not task.get("model") and (kept := _sole_kept_model()):
                 model_fields = {"model": kept}
+            elif not task.get("model") and _translation_only(_loaded_slot_ident()):
+                raise RunFailed("no_model")
             # A project folder on a stalled mount must not keep the scheduler from every other task.
             try:
                 instructions, (history, chat_parent_id) = await asyncio.wait_for(
@@ -977,6 +990,7 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
                     "createdAt": answered_at,
                 },
             ],
+            return_rows = False,
         )
     except Exception:
         # Never leave an empty chat behind.

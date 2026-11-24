@@ -75,6 +75,8 @@ _REQUEST_POOL = ThreadPoolExecutor(max_workers = 8, thread_name_prefix = "browse
 # Queued plus running; held until the worker ends, which a disconnect does not cut short, so a page
 # that aborts and resends can't pile request bodies up behind a stalled site.
 _PAGE_REQUEST_SLOTS = threading.BoundedSemaphore(64)
+# The same bound for page loads: each queued fetch keeps its request (up to a 1 MB body).
+_FETCH_SLOTS = threading.BoundedSemaphore(64)
 _MAX_PAGE_REQUEST_BODY = 1024 * 1024
 _MAX_PAGE_RESPONSE_BYTES = 10 * 1024 * 1024
 _HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}")
@@ -2094,13 +2096,23 @@ def _fetch(
         on_redirect = on_redirect,
         proxy_hostname = True,
     )
+    body = body if isinstance(body, bytes) else b""
     if jar is not None:
         final_url = meta.get("url") or at["url"]
         store_cookies(jar, final_url, meta.get("headers"))
-        meta["cookies_version"], meta["cookies"], meta["site_cookies"] = site_cookie_state(
-            jar, final_url
-        )
-    return error, body if isinstance(body, bytes) else b"", content_type, meta
+        # Only _build_response's HTML branch reads the cookie state.
+        if _is_html(body, content_type):
+            meta["cookies_version"], meta["cookies"], meta["site_cookies"] = site_cookie_state(
+                jar, final_url
+            )
+    return error, body, content_type, meta
+
+
+def _is_html(body: bytes, content_type: str) -> bool:
+    looks_html = not content_type and body[:512].removeprefix(
+        codecs.BOM_UTF8
+    ).lstrip().lower().startswith((b"<!doctype html", b"<html"))
+    return content_type in _HTML_TYPES or looks_html
 
 
 def _attachment_name(meta: dict) -> Optional[str]:
@@ -2129,10 +2141,7 @@ def _build_response(
     cancel_event: Optional[threading.Event] = None,
 ) -> Response:
     """build the panel response in the fetch pool to keep large pages off the event loop."""
-    looks_html = not content_type and body[:512].removeprefix(
-        codecs.BOM_UTF8
-    ).lstrip().lower().startswith((b"<!doctype html", b"<html"))
-    is_html = content_type in _HTML_TYPES or looks_html
+    is_html = _is_html(body, content_type)
     if error is not None and (meta.get("bot_check") or not (is_html and body.strip())):
         # log the host only because page URLs can carry sign-in tokens.
         try:
@@ -2546,6 +2555,7 @@ async def browser_fetch(
         lambda request, cancel: _fetch_and_build(request, cancel, jar_key),
         request,
         http_request,
+        slots = _FETCH_SLOTS,
     )
 
 

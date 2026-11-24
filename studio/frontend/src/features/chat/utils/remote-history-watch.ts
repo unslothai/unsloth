@@ -5,6 +5,7 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   type ChatHistoryUpdatedDetail,
   getChatHistoryRevision,
+  subscribeOwnChatHistoryWrites,
 } from "../api/chat-api";
 import {
   REMOTE_HISTORY_POLL_MS,
@@ -47,8 +48,10 @@ function start(current: RemoteHistorySync): void {
   window.addEventListener("pageshow", poll);
   window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onLocal);
   document.addEventListener("visibilitychange", onVisible);
+  const unsubscribeOwn = subscribeOwnChatHistoryWrites(current.noteOwnWrite);
   timer = setInterval(poll, REMOTE_HISTORY_POLL_MS);
   detach = () => {
+    unsubscribeOwn();
     window.removeEventListener("focus", poll);
     window.removeEventListener("online", poll);
     window.removeEventListener("pageshow", poll);

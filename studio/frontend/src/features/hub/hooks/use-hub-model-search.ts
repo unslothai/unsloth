@@ -44,7 +44,11 @@ import {
   parameterRange,
   type ModelSearchFilters,
 } from "../lib/model-search-filters";
-import { pullBatch, useHubPaginatedSearch } from "./use-hub-paginated-search";
+import {
+  MAX_RAW_ITEMS_PER_BATCH,
+  pullBatch,
+  useHubPaginatedSearch,
+} from "./use-hub-paginated-search";
 
 // "gguf" is not in the SDK's expandable-key type, but listModels passes it through at runtime;
 // it fills m.gguf.total for repos whose id has no "<n>B" token.
@@ -154,12 +158,15 @@ function makeHfFetch(signal?: AbortSignal): typeof fetch {
     );
 }
 
+// `firstPageLimit` caps only the first request; an SDK `limit` would end the listing instead.
 function makeSortFetch(
   sortBy: HfSortKey | undefined,
   direction: HfSortDirection,
   signal?: AbortSignal,
   parameterFilter = "",
+  firstPageLimit?: number,
 ): typeof fetch {
+  let pageLimit: string | null = null;
   return (input, init) => {
     const rawUrl =
       typeof input === "string"
@@ -170,6 +177,17 @@ function makeSortFetch(
     const url = new URL(rawUrl);
     if (parameterFilter)
       url.searchParams.set("num_parameters", parameterFilter);
+    if (firstPageLimit) {
+      if (!url.searchParams.has("cursor")) {
+        pageLimit = url.searchParams.get("limit");
+        if (!pageLimit || Number(pageLimit) > firstPageLimit) {
+          url.searchParams.set("limit", String(firstPageLimit));
+        }
+      } else if (pageLimit) {
+        // The Hub's next link repeats the first page's limit.
+        url.searchParams.set("limit", pageLimit);
+      }
+    }
 
     if (sortBy && !url.searchParams.has("sort")) {
       url.searchParams.set("sort", hubListingSort(sortBy));
@@ -293,6 +311,8 @@ function makeMapModel(
 
 const UNSLOTH_PREFETCH = 20;
 const UNSLOTH_QUERY_PREFETCH = 3;
+// Newest-first lists a release's FP8 / bnb / NVFP4 / GGUF by upload time: three rows can miss the GGUF.
+const POPULARITY_SORTS = new Set<HfSortKey>(["downloads", "likes", "trendingScore"]);
 /** Rejected unsloth rows a filtered search scans before moving on to general results. */
 const UNSLOTH_FILTER_REJECT_LIMIT = 40;
 
@@ -313,6 +333,41 @@ type ModelListingTransform = (
   iterator: AsyncGenerator<unknown>,
 ) => AsyncGenerator<unknown>;
 
+/** Prefetches a listing's first item so its Hub round trip overlaps earlier reads; errors surface in `read()`. */
+function prefetchListing(
+  create: (signal: AbortSignal) => AsyncGenerator<unknown>,
+  signal?: AbortSignal,
+) {
+  const controller = new AbortController();
+  const follow = () => controller.abort(signal?.reason);
+  if (signal?.aborted) follow();
+  else signal?.addEventListener("abort", follow, { once: true });
+  const unfollow = () => signal?.removeEventListener("abort", follow);
+  const iter = create(controller.signal);
+  // A tick later, so the listing read first still sends its request first.
+  const first = Promise.resolve().then(() => iter.next());
+  // Handled here so a cancelled or failed head start is never an unhandled rejection.
+  first.catch(() => {});
+  return {
+    async *read(): AsyncGenerator<unknown> {
+      try {
+        const head = await first;
+        if (head.done) return;
+        yield head.value;
+        yield* iter;
+      } finally {
+        unfollow();
+        await iter.return(undefined);
+      }
+    },
+    cancel() {
+      unfollow();
+      controller.abort();
+      iter.return(undefined).catch(() => {});
+    },
+  };
+}
+
 /** Merged generator yielding unsloth-owned models first, then deduped general results. */
 async function* mergedModelIterator(
   query: string,
@@ -330,6 +385,10 @@ async function* mergedModelIterator(
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
 
+  const limit =
+    query.trim() && POPULARITY_SORTS.has(sortBy) ? UNSLOTH_QUERY_PREFETCH : UNSLOTH_PREFETCH;
+  // Unfiltered phase 1 reads at most `limit` rows; avoids the Hub's default 500 (megabytes).
+  const unslothRows = filterPriority || parameterFilter ? {} : { limit };
   const unslothIter = mergeTaskIterators(
     tasks,
     (task, taskSignal) =>
@@ -337,48 +396,64 @@ async function* mergedModelIterator(
         hubUrl: getHfEndpoint(),
         search: { query, owner: "unsloth", ...(task ? { task } : {}) },
         fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
+        ...unslothRows,
         ...common,
       }) as AsyncGenerator<unknown>,
     signal,
   );
-  const generalIter = mergeTaskIterators(
-    tasks,
-    (task, taskSignal) =>
-      listModels({
-        hubUrl: getHfEndpoint(),
-        search: { query, ...(task ? { task } : {}) },
-        fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
-        ...common,
-      }) as AsyncGenerator<unknown>,
+  const general = prefetchListing(
+    (generalSignal) =>
+      mergeTaskIterators(
+        tasks,
+        (task, taskSignal) =>
+          listModels({
+            hubUrl: getHfEndpoint(),
+            search: { query, ...(task ? { task } : {}) },
+            fetch: makeSortFetch(
+              sortBy,
+              direction,
+              taskSignal,
+              parameterFilter,
+              MAX_RAW_ITEMS_PER_BATCH,
+            ),
+            ...common,
+          }) as AsyncGenerator<unknown>,
+        generalSignal,
+      ),
     signal,
   );
-
-  const limit = query.trim() ? UNSLOTH_QUERY_PREFETCH : UNSLOTH_PREFETCH;
 
   // Phase 1: unsloth models first
   const seen = new Set<string>();
   let count = 0;
   let rejected = 0;
-  for await (const model of filterPriority
-    ? filterPriority(unslothIter)
-    : unslothIter) {
-    if (model === null) {
-      yield null;
-      if (++rejected >= UNSLOTH_FILTER_REJECT_LIMIT) break;
-      continue;
+  let phase1Done = false;
+  try {
+    for await (const model of filterPriority
+      ? filterPriority(unslothIter)
+      : unslothIter) {
+      if (model === null) {
+        yield null;
+        if (++rejected >= UNSLOTH_FILTER_REJECT_LIMIT) break;
+        continue;
+      }
+      const m = model as { name?: string };
+      if (m.name) {
+        seen.add(m.name);
+        primeFromListing(m.name, accessToken, model);
+      }
+      yield model;
+      count++;
+      if (count >= limit) break;
     }
-    const m = model as { name?: string };
-    if (m.name) {
-      seen.add(m.name);
-      primeFromListing(m.name, accessToken, model);
-    }
-    yield model;
-    count++;
-    if (count >= limit) break;
+    phase1Done = true;
+  } finally {
+    // A failed Unsloth listing or a consumer that stops here never reads the general one.
+    if (!phase1Done) general.cancel();
   }
 
   // Phase 2: general results, skipping already-seen models
-  for await (const model of generalIter) {
+  for await (const model of general.read()) {
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
     if (m.name) {
@@ -472,7 +547,7 @@ async function* priorityThenListingIterator(
 
   // Phase 1: priority models in parallel via modelInfo
   const seen = new Set<string>();
-  const settled = await Promise.allSettled(
+  const priority = Promise.allSettled(
     priorityIds.map((id) =>
       cachedModelInfo({
         hubUrl: getHfEndpoint(),
@@ -483,27 +558,37 @@ async function* priorityThenListingIterator(
       }),
     ),
   );
-  for (const result of settled) {
-    if (result.status === "fulfilled") {
-      const m = result.value as { name?: string; pipeline_tag?: string };
-      if (!taskMatches(m.pipeline_tag, tasks)) continue;
-      if (m.name) seen.add(m.name);
-      yield result.value;
-    }
-  }
-
-  const generalIter = mergeTaskIterators(
-    tasks,
-    (task, taskSignal) =>
-      listModels({
-        hubUrl: getHfEndpoint(),
-        search: { owner: "unsloth", ...(task ? { task } : {}) },
-        fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
-        ...common,
-      }) as AsyncGenerator<unknown>,
+  const listing = prefetchListing(
+    (listingSignal) =>
+      mergeTaskIterators(
+        tasks,
+        (task, taskSignal) =>
+          listModels({
+            hubUrl: getHfEndpoint(),
+            search: { owner: "unsloth", ...(task ? { task } : {}) },
+            fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
+            ...common,
+          }) as AsyncGenerator<unknown>,
+        listingSignal,
+      ),
     signal,
   );
-  for await (const model of generalIter) {
+  let phase1Done = false;
+  try {
+    for (const result of await priority) {
+      if (result.status === "fulfilled") {
+        const m = result.value as { name?: string; pipeline_tag?: string };
+        if (!taskMatches(m.pipeline_tag, tasks)) continue;
+        if (m.name) seen.add(m.name);
+        yield result.value;
+      }
+    }
+    phase1Done = true;
+  } finally {
+    if (!phase1Done) listing.cancel();
+  }
+
+  for await (const model of listing.read()) {
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
     if (m.name) {
@@ -566,7 +651,13 @@ async function* providerUnslothFirstIterator(
       hubUrl: getHfEndpoint(),
       search,
       additionalFields: ALL_FIELDS,
-      fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal, opts.parameterFilter),
+      fetch: makeSortFetch(
+        opts.sortBy,
+        opts.sortDirection,
+        opts.signal,
+        opts.parameterFilter,
+        PROVIDER_POOL,
+      ),
       sort: hubListingSort(opts.sortBy),
       ...(opts.accessToken ? { credentials: { accessToken: opts.accessToken } } : {}),
     }) as AsyncGenerator<unknown>;
@@ -664,7 +755,7 @@ async function* freshChannelIterator(
   },
 ): AsyncGenerator<unknown> {
   const { tasks = [], ...listingOpts } = opts;
-  const listing = (sortBy: HfSortKey) =>
+  const listing = (sortBy: HfSortKey, limit?: number) =>
     mergeTaskIterators(
       tasks,
       (task, signal) =>
@@ -674,6 +765,8 @@ async function* freshChannelIterator(
           sortDirection: "desc",
           signal,
           task,
+          // Replaces any caller limit: the newest listing is read past its pool.
+          limit,
         }),
       opts.signal,
     );
@@ -690,7 +783,8 @@ async function* freshChannelIterator(
     }
     return items;
   };
-  const trending = listing("trendingScore");
+  // Only its pool is read, and no task listing can give more than the whole pool: fetch no more.
+  const trending = listing("trendingScore", poolSize);
   const [byDate, byTrend] = await Promise.all([take(newest), take(trending)]);
   void trending.return(undefined);
   const pool = new Map<string, FreshRankable>();
@@ -715,6 +809,7 @@ function createChannelIterator(
     signal: AbortSignal;
     parameterFilter?: string;
     task?: PipelineType;
+    limit?: number;
   },
 ): AsyncGenerator<unknown> {
   if (opts.sortBy === "fresh") {
@@ -737,8 +832,10 @@ function createChannelIterator(
       opts.sortDirection,
       opts.signal,
       opts.parameterFilter,
+      opts.limit ? undefined : MAX_RAW_ITEMS_PER_BATCH,
     ),
     sort: hubListingSort(opts.sortBy),
+    ...(opts.limit ? { limit: opts.limit } : {}),
     ...(opts.accessToken
       ? { credentials: { accessToken: opts.accessToken } }
       : {}),
@@ -866,6 +963,7 @@ export async function fetchChannelFirstPage(
       sortDirection,
       accessToken,
       signal,
+      limit: MAX_RAW_ITEMS_PER_BATCH,
     });
     for await (const model of iter) {
       const name = (model as { name?: string }).name;
@@ -1105,7 +1203,13 @@ export function useHubModelSearch(
           hubUrl: getHfEndpoint(),
           search: { query: searchQuery, owner: "unsloth" },
           additionalFields: ALL_FIELDS,
-          fetch: makeSortFetch(sortBy, sortDirection, signal, filterRange),
+          fetch: makeSortFetch(
+            sortBy,
+            sortDirection,
+            signal,
+            filterRange,
+            MAX_RAW_ITEMS_PER_BATCH,
+          ),
           sort: hubListingSort(sortBy),
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;

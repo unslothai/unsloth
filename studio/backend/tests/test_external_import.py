@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import base64
 import dataclasses
 import gc
 import json
@@ -275,6 +276,7 @@ def test_claude_keeps_the_conversation_and_drops_the_harness(claude_home):
     assert t.messages[0]["createdAt"] == 1785578400000
 
 
+JPEG = "/9j/4AAQSkZJRg=="
 PNG = "iVBORw0KGgoAAAANSUhEUgAAACgAAAAeCAIAAADRv8uKAAAAK0lEQVR4nO3NMQ0AAAgDsCmZfynIQgYcTfo3056IWCwWi8VisVgsFov/xgvk2cL9h1Oh3gAAAABJRU5ErkJggg=="
 
 
@@ -354,6 +356,90 @@ def test_claude_keeps_command_requests_and_pasted_images(claude_home):
     ]
     ids = [m["id"] for m in messages]
     assert [m["parentId"] for m in messages] == [None, *ids[:-1]]
+
+
+def _read_image(claude_home, content):
+    return _session(
+        claude_home,
+        records = [
+            c_user("u1", "What's wrong in ./shot.png?"),
+            c_asst(
+                "a1",
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "Read",
+                        "input": {"file_path": "shot.png"},
+                    }
+                ],
+                parent = "u1",
+            ),
+            c_user(
+                "r1",
+                [{"type": "tool_result", "tool_use_id": "t1", "content": content}],
+                parent = "a1",
+            ),
+            c_asst("a2", [{"type": "text", "text": "The disk is full."}], parent = "r1"),
+        ],
+    )
+
+
+IMAGE_RESULT = {
+    "type": "image",
+    "source": {"type": "base64", "media_type": "image/png", "data": PNG},
+}
+PNG_IMAGE = {"data": PNG, "mimeType": "image/png"}
+JPEG_RESULT = {
+    "type": "image",
+    "source": {"type": "base64", "media_type": "image/jpeg", "data": "/9j/"},
+}
+
+
+@pytest.mark.parametrize(
+    "content, text, images",
+    [
+        ([IMAGE_RESULT], "", [PNG_IMAGE]),
+        (
+            [
+                {"type": "text", "text": "Page 1"},
+                IMAGE_RESULT,
+                {"type": "image", "source": "malformed"},
+                JPEG_RESULT,
+            ],
+            "Page 1",
+            [PNG_IMAGE, {"data": "/9j/", "mimeType": "image/jpeg"}],
+        ),
+    ],
+)
+def test_claude_keeps_images_a_tool_returned(claude_home, content, text, images):
+    _read_image(claude_home, content)
+    run_import(claude.SOURCE)
+
+    call = _messages(claude.SOURCE, "s1")[1]["content"][0]
+    assert call["result"] == {"text": text, "images": images}
+
+
+def test_claude_parallel_tool_images_reach_their_own_calls(claude_home):
+    def use(tool_id):
+        return {"type": "tool_use", "id": tool_id, "name": "Read", "input": {}}
+
+    def result(tool_id, image):
+        return {"type": "tool_result", "tool_use_id": tool_id, "content": [image]}
+
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "Compare them"),
+            c_asst("a1", [use("t1"), use("t2")], parent = "u1"),
+            c_user("r1", [result("t2", JPEG_RESULT), result("t1", IMAGE_RESULT)], parent = "a1"),
+        ],
+    )
+    calls = claude.read_transcript(path, "t", "s1").messages[1]["content"]
+    assert {c["toolCallId"]: c["result"]["images"][0]["mimeType"] for c in calls} == {
+        "t1": "image/png",
+        "t2": "image/jpeg",
+    }
 
 
 def test_claude_rewinds_keep_their_branch(claude_home):
@@ -628,6 +714,52 @@ def test_cursor_reads_the_query_and_strips_injected_context(cursor_home):
     assert t.messages[1]["parentId"] == t.messages[0]["id"]
 
 
+def test_cursor_keeps_pasted_images(cursor_home):
+    project = cursor_home / "projects" / "p"
+    image = project / "assets" / "image-1.png"
+    image.parent.mkdir(parents = True)
+    image.write_bytes(base64.b64decode(PNG))
+    path = _write(
+        project / "agent-transcripts" / "s1" / "s1.jsonl",
+        [
+            k_turn(
+                "user",
+                "[Image]\n<image_files>\nThe following images were provided by the user and saved"
+                f" to the workspace for future use:\n1. {image}\n2. {project}/assets/gone.png\n"
+                "</image_files>\n<user_query>\nWhy does this button look broken?\n</user_query>",
+            ),
+            k_turn("assistant", "The padding is off."),
+        ],
+    )
+    t = cursor.read_transcript(path, "t", "s1")
+
+    assert t.messages[0]["content"] == [
+        {"type": "image", "image": f"data:image/png;base64,{PNG}"},
+        {"type": "text", "text": "Why does this button look broken?"},
+    ]
+    assert t.title == "Why does this button look broken?"
+
+
+def test_cursor_drops_the_placeholder_beside_an_image_only_paste(cursor_home):
+    project = cursor_home / "projects" / "p"
+    image = project / "assets" / "image-1.png"
+    image.parent.mkdir(parents = True)
+    image.write_bytes(base64.b64decode(PNG))
+    pasted = f"[Image]\n<image_files>\n1. {image}\n</image_files>\n<user_query>\n</user_query>"
+    path = _write(
+        project / "agent-transcripts" / "s1" / "s1.jsonl",
+        [
+            k_turn("user", pasted),
+            k_turn("assistant", "A button."),
+            k_turn("user", pasted.replace(str(image), str(project / "assets" / "gone.png"))),
+        ],
+    )
+    t = cursor.read_transcript(path, "t", "s1")
+
+    assert t.messages[0]["content"] == [{"type": "image", "image": f"data:image/png;base64,{PNG}"}]
+    assert len(t.messages) == 3 and t.messages[2]["content"][0]["type"] == "text"
+
+
 def test_codex_replays_events_not_the_injected_context(codex_home):
     t = codex.read_transcript(_rollout(codex_home), "t", "s1")
 
@@ -682,7 +814,7 @@ def test_codex_without_a_zstd_decoder_warns_instead_of_failing(codex_home, monke
     real_import = builtins.__import__
 
     def no_zstd(name, *args, **kwargs):
-        if name in ("zstandard", "compression"):
+        if name in ("zstandard", "compression", "backports"):
             raise ImportError(name)
         return real_import(name, *args, **kwargs)
 
@@ -690,6 +822,102 @@ def test_codex_without_a_zstd_decoder_warns_instead_of_failing(codex_home, monke
     summary = run_import(codex.SOURCE)
     assert summary.new_chats == 0
     assert summary.warnings and "zstandard" in summary.warnings[0]
+
+
+def _fake_zstandard(monkeypatch, stream_reader):
+    import sys
+    import types
+
+    fake = types.ModuleType("zstandard")
+    fake.ZstdError = type("ZstdError", (Exception,), {})
+    fake.ZstdDecompressor = lambda: types.SimpleNamespace(stream_reader = stream_reader)
+    monkeypatch.setitem(sys.modules, "compression", None)
+    monkeypatch.setitem(sys.modules, "backports", None)
+    monkeypatch.setitem(sys.modules, "zstandard", fake)
+    return fake
+
+
+def _ends_badly(head: bytes, error: Exception):
+    import io
+    class EndsBadly(io.BytesIO):
+        def read(self, size = -1):
+            return super().read(size) or self._fail()
+
+        def read1(self, size = -1):
+            return super().read1(size) or self._fail()
+
+        def readinto(self, buf):
+            return super().readinto(buf) or self._fail()
+
+        def _fail(self):
+            raise error
+
+    return EndsBadly(head)
+
+
+def test_codex_a_corrupt_zst_rollout_is_skipped_without_crashing(client, codex_home, monkeypatch):
+    fake = _fake_zstandard(
+        monkeypatch, lambda _raw: _ends_badly(b"", fake.ZstdError("corrupt archive"))
+    )
+    _rollout(codex_home, sid = "ok")
+    bad = _rollout(codex_home, cwd = "/srv/api", sid = "bad")
+    bad.rename(bad.with_name(bad.name + ".zst"))
+
+    assert len(codex.list_projects(codex_home)) == 2
+    response = client.post("/api/import/codex")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["new_chats"], body["skipped"], body["warnings"]) == (1, 1, [])
+
+
+def test_codex_a_truncated_zst_rollout_keeps_its_decoded_prefix(codex_home, monkeypatch):
+    path = _rollout(codex_home)
+    head = b"".join(path.read_bytes().splitlines(keepends = True)[:4])
+    path.rename(path.with_name(path.name + ".zst"))
+    fake = _fake_zstandard(
+        monkeypatch, lambda _raw: _ends_badly(head, fake.ZstdError("truncated frame"))
+    )
+
+    summary = run_import(codex.SOURCE)
+
+    assert (summary.new_chats, summary.messages, summary.warnings) == (1, 1, [])
+    assert _messages(codex.SOURCE, "019a")[0]["content"] == [
+        {"type": "text", "text": "List the files"}
+    ]
+
+
+def _real_zstd():
+    for name in ("compression.zstd", "backports.zstd"):
+        try:
+            return __import__(name, fromlist = ["zstd"])
+        except ImportError:
+            pass
+    pytest.skip("no stdlib-style zstd module")
+
+
+@pytest.mark.parametrize("cut", [None, 0.5])
+def test_codex_a_real_zst_rollout_imports_with_the_installed_decoder(codex_home, cut):
+    zstd = _real_zstd()
+    path = _rollout(codex_home)
+    blob = zstd.compress(path.read_bytes())
+    path.with_name(path.name + ".zst").write_bytes(blob[: int(len(blob) * cut)] if cut else blob)
+    path.unlink()
+
+    summary = run_import(codex.SOURCE)
+
+    assert summary.warnings == []
+    assert summary.new_chats == (0 if cut else 1)
+
+
+def test_codex_a_valid_zst_rollout_still_imports(codex_home, monkeypatch):
+    _fake_zstandard(monkeypatch, lambda raw: raw)
+    path = _rollout(codex_home)
+    path.rename(path.with_name(path.name + ".zst"))
+
+    summary = run_import(codex.SOURCE)
+
+    assert (summary.new_chats, summary.messages, summary.warnings) == (1, 4, [])
 
 
 # Discovery
@@ -835,6 +1063,40 @@ def test_a_tool_result_that_arrives_later_reaches_the_stored_call(claude_home):
 
     call = _messages(claude.SOURCE, "s1")[1]["content"][0]
     assert call["result"] == "out"
+
+
+@pytest.mark.parametrize(
+    "content, legacy",
+    [([IMAGE_RESULT], ""), ([{"type": "text", "text": "Page 1"}, IMAGE_RESULT], "Page 1")],
+)
+def test_a_chat_imported_before_tool_images_were_kept_gets_them_on_reimport(
+    claude_home, content, legacy
+):
+    _read_image(claude_home, content)
+    run_import(claude.SOURCE)
+    tid = thread_id_for(claude.SOURCE, "s1")
+    _, call, answer = _messages(claude.SOURCE, "s1")
+    emptied = {**call, "content": [{**call["content"][0], "result": legacy}]}
+    edited = {**answer, "content": [{"type": "text", "text": "edited"}]}
+    studio_db.sync_chat_messages(tid, [emptied, edited], prune_missing = False)
+
+    assert run_import(claude.SOURCE).messages == 1
+    rows = _messages(claude.SOURCE, "s1")
+    assert rows[1]["content"][0]["result"]["images"] == [{"data": PNG, "mimeType": "image/png"}]
+    assert rows[2]["content"] == [{"type": "text", "text": "edited"}]
+    assert run_import(claude.SOURCE).messages == 0
+
+
+def test_reimport_keeps_a_tool_result_that_differs_from_the_new_text(claude_home):
+    _read_image(claude_home, [{"type": "text", "text": "Page 1"}, IMAGE_RESULT])
+    run_import(claude.SOURCE)
+    tid = thread_id_for(claude.SOURCE, "s1")
+    call = _messages(claude.SOURCE, "s1")[1]
+    kept = {**call, "content": [{**call["content"][0], "result": "Page 1 (edited)"}]}
+    studio_db.sync_chat_messages(tid, [kept], prune_missing = False)
+
+    run_import(claude.SOURCE)
+    assert _messages(claude.SOURCE, "s1")[1]["content"][0]["result"] == "Page 1 (edited)"
 
 
 def test_an_interrupted_import_is_retried(claude_home):
@@ -1261,6 +1523,120 @@ def test_codex_reimport_after_images_keeps_studio_edits(codex_home):
     assert run_import(codex.SOURCE).messages == 1
 
 
+def _tool_images_rollout(
+    home,
+    generated = True,
+    pasted = True,
+):
+    def call(call_id, name, output):
+        return [
+            x_line(
+                "response_item",
+                {"type": "function_call", "name": name, "arguments": "{}", "call_id": call_id},
+            ),
+            x_line(
+                "response_item",
+                {"type": "function_call_output", "call_id": call_id, "output": output},
+            ),
+        ]
+
+    body = [
+        *_pasted("", pasted),
+        _completed("AgentMessage", "Taking a look."),
+        *call(
+            "c1",
+            "view_image",
+            [{"type": "input_image", "image_url": f"data:application/octet-stream;base64,{PNG}"}],
+        ),
+        *call(
+            "c2",
+            "mcp__playwright__browser_take_screenshot",
+            [
+                {"type": "input_text", "text": "Took the screenshot"},
+                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{JPEG}"},
+            ],
+        ),
+        _completed("AgentMessage", "A login form. Here is an icon for it."),
+        x_line(
+            "response_item",
+            {
+                "type": "image_generation_call",
+                "id": "ig_1",
+                "status": "completed",
+                "revised_prompt": "A flat login icon",
+                "result": PNG,
+            },
+        ),
+        _completed("AgentMessage", "Done."),
+    ]
+    if not generated:
+        # A skipped record, so later records keep their ordinals and message ids.
+        body = [
+            x_line("response_item", {"type": "reasoning"})
+            if line["payload"]["type"] == "image_generation_call"
+            else line
+            for line in body
+        ]
+    return _rollout(home, sid = "tools", history_mode = "paginated", body = body)
+
+
+def test_codex_keeps_images_tools_viewed_and_generated(codex_home):
+    shot = {"data": PNG, "mimeType": "image/png"}
+    messages = codex.read_transcript(_tool_images_rollout(codex_home), "t", "s1").messages
+    calls = [m["content"][0] for m in messages if m["content"][0]["type"] == "tool-call"]
+
+    assert [(c["toolName"], c["result"]) for c in calls] == [
+        ("view_image", {"text": "", "images": [shot]}),
+        (
+            "mcp__playwright__browser_take_screenshot",
+            {"text": "Took the screenshot", "images": [{"data": JPEG, "mimeType": "image/jpeg"}]},
+        ),
+        ("image_generation", {"image_b64": PNG, "image_mime": "image/png"}),
+    ]
+    assert calls[2]["args"] == {"prompt": "A flat login icon", "_server_tool": True}
+    assert messages[-1]["content"] == [{"type": "text", "text": "Done."}]
+
+
+# Without the pasted image the first import is marked ":items", with it ":images".
+@pytest.mark.parametrize("pasted", [True, False])
+def test_codex_reimport_after_generated_images_keeps_studio_edits(codex_home, pasted):
+    _tool_images_rollout(codex_home, generated = False, pasted = pasted)
+    assert run_import(codex.SOURCE).messages == 5 + pasted
+    tid = thread_id_for(codex.SOURCE, "tools")
+    reply = next(
+        m for m in _messages(codex.SOURCE, "tools") if m["content"][0].get("text") == "Done."
+    )
+    edited = [{"type": "text", "text": "Done, edited in Studio"}]
+    # Results as stored before tool images were kept: text only.
+    legacy = [
+        {**m, "content": [{**m["content"][0], "result": m["content"][0]["result"]["text"]}]}
+        for m in _messages(codex.SOURCE, "tools")
+        if isinstance(m["content"][0].get("result"), dict)
+    ]
+    studio_db.sync_chat_messages(tid, [{**reply, "content": edited}, *legacy], prune_missing = False)
+
+    path = _tool_images_rollout(codex_home, pasted = pasted)
+    _append(path, [_completed("UserMessage", "Continued in Codex")])
+    assert run_import(codex.SOURCE).messages == 3
+    assert "Continued in Codex" in _texts("tools")
+    stored = {m["id"]: m for m in _messages(codex.SOURCE, "tools")}
+    restored = {
+        stored[m["id"]]["content"][0]["toolName"]: stored[m["id"]]["content"][0]["result"]
+        for m in legacy
+    }
+    assert restored == {
+        "view_image": {"text": "", "images": [{"data": PNG, "mimeType": "image/png"}]},
+        "mcp__playwright__browser_take_screenshot": {
+            "text": "Took the screenshot",
+            "images": [{"data": JPEG, "mimeType": "image/jpeg"}],
+        },
+    }
+    assert stored[reply["id"]]["content"] == edited
+
+    _append(path, [_completed("UserMessage", "One more")])
+    assert run_import(codex.SOURCE).messages == 1
+
+
 def _image_revert(
     home,
     cut,
@@ -1295,6 +1671,10 @@ def _texts(sid):
     [
         (True, [_completed("UserMessage", "Try again")]),
         (False, [*_pasted("")]),
+        (
+            False,
+            [x_line("response_item", {"type": "image_generation_call", "id": "ig", "result": PNG})],
+        ),
     ],
 )
 def test_codex_revert_across_image_turns_leaves_a_deleted_turn_deleted(codex_home, image, tail):

@@ -68,9 +68,11 @@ def load_whole_pipeline_gguf(
 
     from .diffusion_gguf_exact import install_exact_dequant
     from .diffusion_gguf_lowbit import install_lowbit_iq
+    from .diffusion_gguf_mmap import install_gguf_mmap
 
     install_lowbit_iq()  # diffusers' reader refuses unknown types, so before the read
     install_exact_dequant()
+    install_gguf_mmap()
     checkpoint = load_single_file_checkpoint(
         path,
         local_files_only = pipe_kwargs.get("local_files_only"),

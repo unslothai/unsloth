@@ -1103,7 +1103,8 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
         requested = None,
         speed_active = True,
         speed_unset_only = False,
-        int8_policy = None: backend,
+        int8_policy = None,
+        fallback = None: backend,
     )
     monkeypatch.setattr(
         dmod,
@@ -1405,7 +1406,8 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
         requested = None,
         speed_active = True,
         speed_unset_only = False,
-        int8_policy = None: backend,
+        int8_policy = None,
+        fallback = None: backend,
     )
 
     def fake_select(
@@ -5867,7 +5869,10 @@ def test_apply_loras_quant_unbaked_requires_reload(monkeypatch):
     # Topology is frozen after quantize_ + compile, so a new adapter needs a reload (clean 400).
     backend = DiffusionBackend()
     pipe = _BakePipe()
-    with pytest.raises(ValueError, match = "Reload the model with the adapter selection"):
+    # The typed refusal the routes key on (X-Unsloth-Refusal: lora-reload), and its remedy.
+    from core.inference.diffusion_lora import LoraReloadRequiredError
+
+    with pytest.raises(LoraReloadRequiredError, match = "Reload the model with the LoRA selection"):
         backend._apply_loras(_quant_lora_state(pipe), [("sloth", 1.0)], threading.Event())
     backend._apply_loras(_quant_lora_state(pipe), [], threading.Event())
     assert pipe.calls == []
@@ -5904,7 +5909,10 @@ def test_apply_loras_quant_baked_matrix(monkeypatch):
     backend._apply_loras(_quant_lora_state(pipe), [], ev)
     assert len(pipe.calls) == 1
     pipe = baked_pipe()
-    with pytest.raises(ValueError, match = "Reload the model with the new adapter selection"):
+    # The typed refusal the routes key on (X-Unsloth-Refusal: lora-reload), and its remedy.
+    from core.inference.diffusion_lora import LoraReloadRequiredError
+
+    with pytest.raises(LoraReloadRequiredError, match = "Reload the model with the LoRA selection"):
         backend._apply_loras(_quant_lora_state(pipe), [("other", 1.0)], ev)
 
 
@@ -6906,6 +6914,9 @@ def test_diffusion_status_response_carries_resolved():
             "artifact": None,
             "replaced": None,
             "steps": None,
+            "engaged": None,
+            "modules": None,
+            "routed": None,
         }
     }
     assert DiffusionStatusResponse(loaded = False).resolved is None
@@ -6930,6 +6941,9 @@ def test_diffusion_status_response_carries_requested_precision():
             "artifact": None,
             "replaced": None,
             "steps": None,
+            "engaged": None,
+            "modules": None,
+            "routed": None,
         }
     }
 
@@ -14873,8 +14887,13 @@ def test_family_render_cudnn_scope_overrides_an_inherited_benchmark():
     torch = pytest.importorskip("torch")
     if not hasattr(torch, "backends") or not hasattr(torch.backends, "cudnn"):
         pytest.skip("torch without cudnn backend flags")
-    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_families import _FAMILIES, detect_family
     from core.inference.diffusion_speed import family_render_cudnn_scope
+
+    # Read from the catalog: which families opt out changes as each one's renders are pinned (Krea-2 in #19077).
+    keeps = [f for f in _FAMILIES if f.cudnn_benchmark]
+    opts_out = [f for f in _FAMILIES if not f.cudnn_benchmark]
+    assert keeps and opts_out
 
     cudnn = torch.backends.cudnn
     before = cudnn.benchmark
@@ -14885,8 +14904,15 @@ def test_family_render_cudnn_scope_overrides_an_inherited_benchmark():
         ):
             assert cudnn.benchmark is False
         assert cudnn.benchmark is True
-        with family_render_cudnn_scope(detect_family("krea/Krea-2-Turbo"), "cuda"):
-            assert cudnn.benchmark is True  # a family that keeps the benchmark is left alone
+        for family in opts_out:
+            with family_render_cudnn_scope(family, "cuda"):
+                assert cudnn.benchmark is False, family.name
+            assert cudnn.benchmark is True, family.name
+        for family in keeps:
+            with family_render_cudnn_scope(family, "cuda"):
+                assert (
+                    cudnn.benchmark is True
+                ), family.name  # a family that keeps the benchmark is left alone
         with family_render_cudnn_scope(
             detect_family("black-forest-labs/FLUX.2-klein-base-4B"), "cpu"
         ):

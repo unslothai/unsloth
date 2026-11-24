@@ -140,6 +140,9 @@ import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
 import { resolveQwenThinkingParams } from "./utils/qwen-sampling-table";
 
 const SamplingFooter = lazy(() => import("./components/sampling-footer"));
+const CHAT_SETTINGS_TOP =
+  "var(--chat-settings-top, var(--studio-custom-titlebar-height, 0px))";
+const CHAT_SETTINGS_DOCKED_WIDTH_VAR = "--studio-chat-settings-docked-width";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -528,6 +531,38 @@ export function ChatSettingsPanel({
       uiSpaceScale,
     );
   }, [open, isCompact, settingsWidth, settingsScale, uiSpaceScale]);
+  useEffect(() => {
+    const panel = asideRef.current;
+    if (!open || isCompact || !panel) return;
+    // On the strip, not <html>: an inherited root var restyles the thread every drag frame.
+    let frame: HTMLElement | null = null;
+    const apply = () => {
+      const next = document.querySelector<HTMLElement>(
+        '[data-slot="sidebar-container"][data-windows-glass-frame]',
+      );
+      if (frame && frame !== next) {
+        frame.style.removeProperty(CHAT_SETTINGS_DOCKED_WIDTH_VAR);
+      }
+      frame = next;
+      // Unrounded: offsetWidth leaves a sub-pixel seam.
+      frame?.style.setProperty(
+        CHAT_SETTINGS_DOCKED_WIDTH_VAR,
+        `${panel.getBoundingClientRect().width}px`,
+      );
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(panel);
+    const pinObserver = new MutationObserver(apply);
+    pinObserver.observe(document.documentElement, {
+      attributeFilter: ["data-sidebar-glass-frame"],
+    });
+    return () => {
+      observer.disconnect();
+      pinObserver.disconnect();
+      frame?.style.removeProperty(CHAT_SETTINGS_DOCKED_WIDTH_VAR);
+    };
+  }, [open, isCompact]);
   const currentCheckpoint = params.checkpoint;
   const activeModelIsLocal = useChatRuntimeStore(
     (s) => s.activeModelIsLocal,
@@ -549,10 +584,12 @@ export function ChatSettingsPanel({
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
   const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const platformMlxInference = usePlatformStore((s) => s.mlxInference);
   const loadSettingNames = presetLoadSettingNames(
     isGguf,
     platformDeviceType,
     platformChatOnlyReason,
+    platformMlxInference,
   );
   // The backend's own classification: the native token survives a switch to a remote GGUF, and
   // org/name.gguf is a repo id, not a file.
@@ -1879,12 +1916,13 @@ export function ChatSettingsPanel({
   if (isCompact) {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="right" className="w-[min(calc(18rem*var(--ui-space-scale,1)),100vw)] p-0 font-heading">
+        <SheetContent side="right" data-chat-settings-sheet="" className="w-[min(calc(18rem*var(--ui-space-scale,1)),100vw)] p-0 font-heading">
           <SheetHeader className="sr-only">
             <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
           </SheetHeader>
-          <div data-tour="chat-settings" className="flex h-full flex-col">
+          {/* The docked panel's slot, so the sheet gets its glass. */}
+          <div data-tour="chat-settings" data-slot="chat-settings-panel" className="relative flex h-full flex-col">
             {settingsContent}
           </div>
         </SheetContent>
@@ -1905,8 +1943,8 @@ export function ChatSettingsPanel({
       style={
         {
           "--chat-settings-width": `${settingsWidth * settingsScale}px`,
-          height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
-          marginTop: "var(--studio-custom-titlebar-height, 0px)",
+          height: `calc(100% - ${CHAT_SETTINGS_TOP})`,
+          marginTop: CHAT_SETTINGS_TOP,
         } as CSSProperties
       }
     >
@@ -1935,6 +1973,7 @@ export function ChatSettingsPanel({
       />
       ) : null}
       <div
+        data-chat-settings-content=""
         className={cn(
           "h-full w-full overflow-hidden",
           open && "border-l border-panel-edge",

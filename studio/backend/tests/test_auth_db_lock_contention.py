@@ -69,6 +69,16 @@ def _issue(username):
     return token
 
 
+def _end_reuse_window() -> None:
+    # A rotated token stays exchangeable for REFRESH_REUSE_GRACE_SECONDS; age it past that.
+    conn = storage.get_connection()
+    try:
+        conn.execute("UPDATE refresh_token_reuse SET consumed_at = '1970-01-01T00:00:00+00:00'")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _synchronous(conn) -> int:
     return int(conn.execute("PRAGMA synchronous").fetchone()[0])
 
@@ -145,6 +155,7 @@ def test_busy_auth_db_answers_retryable_503_and_keeps_the_token(client, owner, m
     assert body["must_change_password"] is False
 
     assert _refresh(client, body["refresh_token"]).status_code == 200
+    _end_reuse_window()
     assert _refresh(client, token).status_code == 401
 
 
@@ -226,6 +237,7 @@ def test_refresh_token_stays_single_use_and_logout_revokes_the_rotation(client, 
     token = _issue(owner)
     first = _refresh(client, token)
     assert first.status_code == 200
+    _end_reuse_window()
     assert _refresh(client, token).status_code == 401
 
     storage.revoke_user_refresh_tokens(owner)

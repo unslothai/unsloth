@@ -70,6 +70,7 @@ import { GenerationStatsUpdatesRow } from "../components/generation-stats-update
 import { SettingsRow } from "../components/settings-row";
 import {
   ComposerFormatRows,
+  RichTextPasteRow,
   ComposerSettings,
   ContextWindowUsageRow,
 } from "../components/composer-settings";
@@ -546,6 +547,74 @@ export function ChatTab() {
         <ComposerSettings embedded={true} />
         <ComposerFormatRows />
         <SettingsRow
+          label={t("settings.chat.autoScroll")}
+          description={t("settings.chat.autoScrollDescription")}
+        >
+          <div
+            className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+            role="group"
+            aria-label={t("settings.chat.autoScroll")}
+          >
+            {([true, false] as const).map((follow) => (
+              <button
+                key={String(follow)}
+                type="button"
+                aria-pressed={autoScrollWhileGenerating === follow}
+                onClick={() => setAutoScrollWhileGenerating(follow)}
+                className={cn(
+                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  autoScrollWhileGenerating === follow
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {autoScrollWhileGenerating === follow && (
+                  <SegmentedPill group={`${pillId}-auto-scroll`} />
+                )}
+                {t(
+                  follow
+                    ? "settings.chat.autoScrollAuto"
+                    : "settings.chat.autoScrollManual",
+                )}
+              </button>
+            ))}
+          </div>
+        </SettingsRow>
+        <GenerationStatsUpdatesRow />
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.chat.groups.customization.title")}>
+        <SettingsRow
+          label={t("settings.appearance.custom.chatWidth.label")}
+          description={t("settings.appearance.custom.chatWidth.description")}
+        >
+          <ChatWidthSelect />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.composerPosition")}
+          description={t("settings.chat.composerPositionDescription")}
+        >
+          <ComposerPositionSliderRow />
+        </SettingsRow>
+        <SettingsRow label={t("chatBackground.outline")}>
+          <ComposerOutlineSliderRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
+          description={t(
+            "settings.chat.modelSelection.pickerMonochromeIconsDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
+            checked={pickerMonochromeIcons}
+            onCheckedChange={setPickerMonochromeIcons}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.chatDefaults")}>
+        <SettingsRow
           label={t("settings.chat.pastedTextThreshold")}
           description={
             pastedTextMinChars > 0
@@ -581,21 +650,6 @@ export function ChatTab() {
         </SettingsRow>
         <ContextWindowUsageRow />
         <SettingsRow
-          label={t("settings.appearance.custom.chatWidth.label")}
-          description={t("settings.appearance.custom.chatWidth.description")}
-        >
-          <ChatWidthSelect />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.composerPosition")}
-          description={t("settings.chat.composerPositionDescription")}
-        >
-          <ComposerPositionSliderRow />
-        </SettingsRow>
-        <SettingsRow label={t("chatBackground.outline")}>
-          <ComposerOutlineSliderRow />
-        </SettingsRow>
-        <SettingsRow
           label={t("settings.appearance.custom.sentAttachments.label")}
           description={t(
             "settings.appearance.custom.sentAttachments.description",
@@ -603,44 +657,7 @@ export function ChatTab() {
         >
           <SentAttachmentsSelect />
         </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.general.chatDefaults")}>
-        <SettingsRow
-          label={t("settings.chat.autoScroll")}
-          description={t("settings.chat.autoScrollDescription")}
-        >
-          <div
-            className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
-            role="group"
-            aria-label={t("settings.chat.autoScroll")}
-          >
-            {([true, false] as const).map((follow) => (
-              <button
-                key={String(follow)}
-                type="button"
-                aria-pressed={autoScrollWhileGenerating === follow}
-                onClick={() => setAutoScrollWhileGenerating(follow)}
-                className={cn(
-                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  autoScrollWhileGenerating === follow
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {autoScrollWhileGenerating === follow && (
-                  <SegmentedPill group={`${pillId}-auto-scroll`} />
-                )}
-                {t(
-                  follow
-                    ? "settings.chat.autoScrollAuto"
-                    : "settings.chat.autoScrollManual",
-                )}
-              </button>
-            ))}
-          </div>
-        </SettingsRow>
-        <GenerationStatsUpdatesRow />
+        <RichTextPasteRow />
       </SettingsSection>
 
       <LazyImportBoundary fallback={null}>
@@ -954,18 +971,6 @@ export function ChatTab() {
             aria-label={t("settings.chat.modelSelection.pickerExpandLoaded")}
             checked={pickerExpandLoaded}
             onCheckedChange={setPickerExpandLoaded}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
-          description={t(
-            "settings.chat.modelSelection.pickerMonochromeIconsDescription",
-          )}
-        >
-          <Switch
-            aria-label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
-            checked={pickerMonochromeIcons}
-            onCheckedChange={setPickerMonochromeIcons}
           />
         </SettingsRow>
       </SettingsSection>

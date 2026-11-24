@@ -47,7 +47,8 @@ test("a set outline reaches every composer, and 0 drops the glass edge too", () 
   // !important: the glass composer rules are more specific and would otherwise keep their 14% ring.
   assert.match(css, /html\[data-composer-outline="on"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\s*--composer-shadow: inset 0 0 0 1px [^;]*var\(--composer-outline\)[^;]*!important;/);
   // macOS glass has no background image, so its 14% ring needs its own selector.
-  assert.match(css, /html\[data-glass="macos"\]\[data-composer-outline="off"\] \.unsloth-composer-surface,[^{]*\[data-wallpaper-ready\]\[data-wallpaper-ready\] \.unsloth-composer-surface,[^{]*\{\s*--composer-shadow: none !important;/);
+  assert.match(css, /html\[data-glass="macos"\]\[data-composer-outline="off"\] \.unsloth-composer-surface \{\s*--composer-shadow: none !important;/);
+  assert.match(css, /html\[data-composer-outline="off"\] :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\)\[data-wallpaper-ready\]\[data-wallpaper-ready\] \.unsloth-composer-surface,[^{]*\{\s*--composer-shadow: var\(--wallpaper-composer-drop\) !important;/);
   assert.match(css, /var\(--composer-outline, var\(--wallpaper-outline, 30%\)\)/);
 });
 
@@ -77,13 +78,15 @@ test("light glass outlines its controls by default", () => {
   assert.ok(preferences.indexOf("<ElementOutlineSliderRow />") > preferences.indexOf("<InterfaceScaleRow />"));
 });
 
-test("the composer appearance rows live only in Chat's Composer section", () => {
+test("the composer appearance rows live only in Chat's Customization section", () => {
   const chat = readSrc("features/settings/tabs/chat-tab.tsx");
-  const start = chat.indexOf('<SettingsSection title={t("composerSettings.title")}>');
+  const start = chat.indexOf('<SettingsSection title={t("settings.chat.groups.customization.title")}>');
   assert.ok(start !== -1);
   const section = chat.slice(start, chat.indexOf("</SettingsSection>", start));
-  for (const control of ["ComposerPositionSliderRow", "ComposerOutlineSliderRow", "ChatWidthSelect", "SentAttachmentsSelect"]) {
-    assert.ok(section.includes(`<${control} />`), `${control} is in Composer`);
+  for (const control of ["ComposerPositionSliderRow", "ComposerOutlineSliderRow", "ChatWidthSelect"]) {
+    assert.ok(section.includes(`<${control} />`), `${control} is in Customization`);
     assert.ok(!readSrc("features/settings/tabs/appearance-tab.tsx").includes(control));
   }
+  assert.ok(chat.includes("<SentAttachmentsSelect />"));
+  assert.ok(!readSrc("features/settings/tabs/appearance-tab.tsx").includes("SentAttachmentsSelect"));
 });
