@@ -173,6 +173,14 @@ test("a backend only a newer release ships asks for an update, not a build", () 
   assert.equal(llamaBackendUnavailableKey(vulkan), "otherRelease");
 });
 
+test("the recorded selection with no options is not called a missing build", () => {
+  const status = parseLlamaBackendStatus({ ...FULL_PAYLOAD, supported: false, reason: "source_build", options: [] });
+
+  const [cuda] = visibleLlamaBackendOptions(status, "cuda");
+  assert.equal(cuda.backend, "cuda");
+  assert.equal(llamaBackendUnavailableKey(cuda), null);
+});
+
 test("a backend for a GPU this host does not have stays hidden", () => {
   const status = parseLlamaBackendStatus({
     ...FULL_PAYLOAD,

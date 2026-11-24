@@ -208,10 +208,11 @@ export type LlamaBackendUnavailableKey =
 export function llamaBackendUnavailableKey(
   option: LlamaBackendOption,
 ): LlamaBackendUnavailableKey | null {
-  if (option.available) {
+  // No reason = never diagnosed (the placeholder for the recorded selection), not a missing build.
+  const reason = option.unavailableReason;
+  if (option.available || reason === null) {
     return null;
   }
-  const reason = option.unavailableReason ?? "";
   return Object.hasOwn(UNAVAILABLE_REASONS, reason)
     ? UNAVAILABLE_REASONS[reason as keyof typeof UNAVAILABLE_REASONS]
     : "noBuild";
