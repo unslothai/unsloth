@@ -370,6 +370,50 @@ def test_kernel_under_triton_interpreter(tmp_path):
     assert p.returncode == 0 and "INTERP_OK" in p.stdout, (p.stdout[-2000:], p.stderr[-3000:])
 
 
+_INTERP_SPLIT_K = textwrap.dedent(
+    """
+    import importlib.util, os, sys
+    os.environ["TRITON_INTERPRET"] = "1"
+    import torch
+    torch.version.hip, torch.version.cuda = None, torch.version.cuda or "12.8"
+    spec = importlib.util.spec_from_file_location("rsl", sys.argv[1])
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    assert m.pick_config(64, 256)[3] == 2  # the NVIDIA schedule splits K = 256 in two
+    X = torch.ones(4, 256, dtype = torch.float16)
+    A = torch.zeros(16, 256, dtype = torch.float16)
+    B = torch.zeros(64, 16, dtype = torch.float16); B[:, 0] = 1
+    # Base partials +2^22 and -2^22 cancel; the 2^-8 LoRA term must not be rounded into one of them first.
+    W = torch.zeros(64, 256, dtype = torch.float16); W[:, :128], W[:, 128:] = 2**15, -2**15
+    A[0, 0] = 2**-8
+    y = m.skinny_linear(X, W, A, B, 1.0)
+    assert (y == 2**-8).all(), y[0, :4]
+    # X @ A^T split partials +256 and -256 at scale 2^120 overflow to +Inf and -Inf if scaled per split.
+    W = torch.zeros(64, 256, dtype = torch.float16); W[:, 0] = 1
+    A[0, 0], A[0, :128], A[0, 128:] = 0, 2, -2
+    y = m.skinny_linear(X, W, A, B, 2.0**120)
+    assert (y == 1).all(), y[0, :4]
+    print("SPLIT_K_OK")
+    """
+)
+
+
+@pytest.mark.skipif(
+    not _interpreter_ok(), reason = "needs the Triton >= 3.8 interpreter on a host without gfx1151"
+)
+def test_split_k_adds_the_scaled_lora_term_after_the_reduction(tmp_path):
+    script = tmp_path / "interp_split_k.py"
+    script.write_text(_INTERP_SPLIT_K, encoding = "utf-8")
+    p = subprocess.run(
+        [sys.executable, "-I", str(script), str(KERNEL)],
+        capture_output = True,
+        text = True,
+        timeout = 900,
+        env = dict(os.environ, TRITON_INTERPRET = "1"),
+        cwd = str(tmp_path),
+    )
+    assert p.returncode == 0 and "SPLIT_K_OK" in p.stdout, (p.stdout[-2000:], p.stderr[-3000:])
+
+
 def _rocm_skinny_gpu():
     # The GPU tests import the real module: UNSLOTH_ROCM_SKINNY_LINEAR=0 leaves it without Triton.
     return (
@@ -442,6 +486,26 @@ def test_gpu_accuracy_vs_rocblas_sequence(dtype, M, shape):
     assert torch.equal(
         S.skinny_linear(X[:1], W, A, B, 2.0)[0], y[0]
     ), "row 0 depends on the other rows"
+
+
+@pytest.mark.skipif(not _cuda_skinny_gpu(), reason = "needs an NVIDIA card the CUDA gate takes")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_gpu_split_k_cancellation_matches_cublas(dtype):
+    # The compiled split-K schedule on the two cases of the interpreter test above.
+    from unsloth.kernels import rocm_skinny_linear as S
+
+    X = torch.ones(4, 256, dtype = dtype, device = "cuda")
+    A = torch.zeros(16, 256, dtype = dtype, device = "cuda")
+    B = torch.zeros(64, 16, dtype = dtype, device = "cuda")
+    B[:, 0] = 1
+    W = torch.zeros(64, 256, dtype = dtype, device = "cuda")
+    W[:, :128], W[:, 128:] = 2**15, -(2**15)
+    A[0, 0] = 2**-8
+    assert (S.skinny_linear(X, W, A, B, 1.0) == 2**-8).all()
+    W.zero_()
+    W[:, 0] = 1
+    A[0, 0], A[0, :128], A[0, 128:] = 0, 2, -2
+    assert (S.skinny_linear(X, W, A, B, 2.0**120) == 1).all()
 
 
 @gpu
