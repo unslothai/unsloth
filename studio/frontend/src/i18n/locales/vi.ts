@@ -3570,6 +3570,9 @@ export const vi = {
       firstTokenKeywords:
         "timeout first token prefill slow CPU overnight unlimited waiting limit thời gian chờ token đầu tiên chậm qua đêm không giới hạn",
       toolResultLimit: "Độ dài đầu ra công cụ",
+      toolResultLimitAutomatic: "Tự động (mặc định)",
+      toolResultLimitAdaptiveDescription: "Lượng nội dung mô hình đọc từ mỗi kết quả Python, Terminal hoặc MCP. Chế độ tự động sử dụng ngữ cảnh còn trống cho các mô hình cục bộ.",
+      toolResultLimitAdaptiveHint: "Khi không đo được ngữ cảnh, chế độ tự động dùng {count} ký tự. Nhập một số để đặt giới hạn tối đa cố định; ngữ cảnh còn trống có thể làm giảm giới hạn này. Đầu ra Python và Terminal dài hơn được lưu vào tệp để mô hình đọc từng phần.",
       toolResultLimitDescription:
         "Số ký tự của một kết quả công cụ Python, Terminal hoặc MCP mà mô hình đọc. Mặc định là {count}.",
       toolResultLimitHint:

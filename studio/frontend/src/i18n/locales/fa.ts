@@ -3558,6 +3558,9 @@ export const fa = {
       firstTokenKeywords:
         "مهلت زمانی نخستین توکن prefill کند CPU شبانه نامحدود انتظار محدودیت timeout",
       toolResultLimit: "طول خروجی ابزار",
+      toolResultLimitAutomatic: "خودکار (پیش‌فرض)",
+      toolResultLimitAdaptiveDescription: "مقداری که مدل از هر نتیجهٔ Python، Terminal یا MCP می‌خواند. حالت خودکار برای مدل‌های محلی از ظرفیت زمینهٔ موجود استفاده می‌کند.",
+      toolResultLimitAdaptiveHint: "اگر اندازه‌گیری زمینه ممکن نباشد، حالت خودکار از {count} نویسه استفاده می‌کند. وارد کردن عدد یک سقف ثابت تعیین می‌کند که ظرفیت زمینهٔ موجود می‌تواند آن را کاهش دهد. خروجی‌های طولانی‌تر Python و Terminal در فایلی ذخیره می‌شوند که مدل می‌تواند آن را بخش‌بخش بخواند.",
       toolResultLimitDescription:
         "تعداد نویسه‌هایی از نتیجهٔ یک ابزار Python، Terminal یا MCP که مدل می‌خواند. پیش‌فرض {count} است.",
       toolResultLimitHint:

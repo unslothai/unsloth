@@ -169,7 +169,7 @@ def test_hidden_final_call_gets_one_answer_only_retry(monkeypatch, shape, step):
     assert len(payloads) == 3
     assert "tools" not in payloads[-1]
     assert "tool_choice" not in payloads[-1]
-    assert "Give your final answer" in payloads[-1]["messages"][-1]["content"]
+    assert "Tools are no longer available" in payloads[-1]["messages"][-1]["content"]
     assert events[-1]["usage"]["completion_tokens"] == 40
     shown = [e["text"] for e in events if e["type"] == "content"]
     assert shown[-1] == "Verified result: safe."
@@ -185,7 +185,7 @@ def test_hidden_final_call_gets_one_answer_only_retry(monkeypatch, shape, step):
     )
 
 
-def test_repeated_hidden_final_call_is_an_error_not_empty_success(monkeypatch):
+def test_repeated_hidden_final_call_is_explained_not_empty_success(monkeypatch):
     hidden = _answer('{"name":"web_search","parameters":{"query":"again"}}')
     backend, payloads = _backend_and_payloads(
         monkeypatch,
@@ -201,8 +201,8 @@ def test_repeated_hidden_final_call_is_an_error_not_empty_success(monkeypatch):
     )
     monkeypatch.setattr(backend, "count_chat_tokens", lambda *a, **kw: 300)
     _record_tool_calls(monkeypatch, "safe")
-    with pytest.raises(RuntimeError, match = "could not produce a final answer"):
-        _run_tool_loop(backend, [{"role": "user", "content": "Search."}], [_web_search_tool()])
+    events = _run_tool_loop(backend, [{"role": "user", "content": "Search."}], [_web_search_tool()])
+    assert "its tools ran out" in [e["text"] for e in events if e["type"] == "content"][-1]
     assert len(payloads) == 3
 
 
@@ -226,21 +226,15 @@ def test_final_recovery_keeps_the_callers_remaining_output_cap(
     )
     monkeypatch.setattr(backend, "count_chat_tokens", lambda *a, **kw: 300)
     calls = _record_tool_calls(monkeypatch, "safe")
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Search."}],
+        [_web_search_tool()],
+        max_tokens = max_tokens,
+    )
     if max_tokens == 30:
-        with pytest.raises(RuntimeError, match = "could not produce a final answer"):
-            _run_tool_loop(
-                backend,
-                [{"role": "user", "content": "Search."}],
-                [_web_search_tool()],
-                max_tokens = max_tokens,
-            )
+        assert "its tools ran out" in [e["text"] for e in events if e["type"] == "content"][-1]
     else:
-        events = _run_tool_loop(
-            backend,
-            [{"role": "user", "content": "Search."}],
-            [_web_search_tool()],
-            max_tokens = max_tokens,
-        )
         assert payloads[-1]["max_tokens"] == 70
         assert events[-1]["usage"]["completion_tokens"] == 40
     assert len(payloads) == expected_payloads
@@ -278,13 +272,12 @@ def test_empty_answer_after_final_retry_is_not_success(monkeypatch):
     )
     monkeypatch.setattr(backend, "count_chat_tokens", lambda *a, **kw: 300)
     _record_tool_calls(monkeypatch, "safe")
-    with pytest.raises(RuntimeError, match = "could not produce a final answer"):
-        _run_tool_loop(backend, [{"role": "user", "content": "Search."}], [_web_search_tool()])
+    events = _run_tool_loop(backend, [{"role": "user", "content": "Search."}], [_web_search_tool()])
+    assert "its tools ran out" in [e["text"] for e in events if e["type"] == "content"][-1]
     assert len(payloads) == 3
 
 
-@pytest.mark.parametrize("charge_schemas", [False, True])
-def test_final_retry_after_user_nudge_uses_servable_prompt(monkeypatch, charge_schemas):
+def test_final_retry_merges_user_nudge_and_removes_tool_schemas(monkeypatch):
     from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
 
     # Skipping two different tools creates a user notice after the tool results.
@@ -301,16 +294,7 @@ def test_final_retry_after_user_nudge_uses_servable_prompt(monkeypatch, charge_s
             _answer("Verified result: safe."),
         ],
     )
-    retry_counts = []
-
-    def count(messages, _system, schemas, **kwargs):
-        if "Give your final answer now" in messages[-1]["content"]:
-            retry_counts.append((schemas, kwargs.get("continue_final_message")))
-            if charge_schemas and schemas:
-                return 4096
-        return 300
-
-    monkeypatch.setattr(backend, "count_chat_tokens", count)
+    monkeypatch.setattr(backend, "count_chat_tokens", lambda *a, **kw: 300)
     executed = _record_tool_calls(monkeypatch, "safe")
     _run_tool_loop(
         backend,
@@ -324,11 +308,12 @@ def test_final_retry_after_user_nudge_uses_servable_prompt(monkeypatch, charge_s
     assert original_nudge["role"] == "user"
     assert "more tool call(s)" in original_nudge["content"]
     retry = payloads[-1]
-    assert retry["messages"][-3] == original_nudge
-    assert [m["role"] for m in retry["messages"][-3:]] == ["user", "assistant", "user"]
-    assert retry_counts == [(None, False)]
-    assert "tools" not in retry
-    assert retry["add_generation_prompt"] is True
+    assert len(retry["messages"]) == len(payloads[1]["messages"])
+    assert retry["messages"][-1]["role"] == "user"
+    assert retry["messages"][-1]["content"].startswith(original_nudge["content"])
+    assert "Tools are no longer available" in retry["messages"][-1]["content"]
+    assert "tools" not in retry and "tool_choice" not in retry
+    assert not retry.get("continue_final_message")
 
 
 @pytest.mark.parametrize("reasoning", ["", "I should return the requested XML."])

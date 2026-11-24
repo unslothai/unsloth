@@ -3433,6 +3433,9 @@ export const th = {
       firstTokenKeywords:
         "หมดเวลา โทเค็นแรก ช้า ข้ามคืน ไม่จำกัด รอ จำกัด timeout first token prefill slow CPU overnight unlimited waiting limit",
       toolResultLimit: "ความยาวผลลัพธ์ของเครื่องมือ",
+      toolResultLimitAutomatic: "อัตโนมัติ (ค่าเริ่มต้น)",
+      toolResultLimitAdaptiveDescription: "ปริมาณผลลัพธ์จาก Python, Terminal หรือ MCP แต่ละรายการที่โมเดลอ่าน โหมดอัตโนมัติใช้บริบทที่มีอยู่สำหรับโมเดลภายในเครื่อง",
+      toolResultLimitAdaptiveHint: "หากวัดบริบทไม่ได้ โหมดอัตโนมัติจะใช้ {count} อักขระ การระบุตัวเลขจะกำหนดขีดจำกัดสูงสุดคงที่ ซึ่งบริบทที่มีอยู่อาจลดลงได้อีก ผลลัพธ์ Python และ Terminal ที่ยาวกว่าจะถูกบันทึกเป็นไฟล์ที่โมเดลอ่านทีละส่วนได้",
       toolResultLimitDescription:
         "จำนวนอักขระของผลลัพธ์จากเครื่องมือ Python, Terminal หรือ MCP หนึ่งรายการที่โมเดลอ่าน ค่าเริ่มต้นคือ {count}",
       toolResultLimitHint:

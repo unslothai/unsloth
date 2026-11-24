@@ -3415,6 +3415,9 @@ export const zhTW = {
       firstTokenKeywords:
         "逾時 首個 token 預填 緩慢 CPU 整夜 無限制 等待 上限 timeout first token prefill slow overnight unlimited waiting limit",
       toolResultLimit: "工具輸出長度",
+      toolResultLimitAutomatic: "自動（預設）",
+      toolResultLimitAdaptiveDescription: "模型讀取每筆 Python、終端機或 MCP 結果的內容量。自動模式會利用本機模型的可用上下文。",
+      toolResultLimitAdaptiveHint: "無法測量上下文時，自動模式使用 {count} 個字元。輸入數字可設定固定上限，可用上下文可能會進一步降低此上限。較長的 Python 和終端機輸出會儲存至檔案，供模型分段讀取。",
       toolResultLimitDescription:
         "模型讀取單一 Python、終端機或 MCP 工具結果的字元數。預設為 {count}。",
       toolResultLimitHint:

@@ -498,21 +498,26 @@ def _tool_call_sse(index: int) -> str:
     )
 
 
-def test_a_request_that_never_stalls_keeps_the_bound_it_always_had(monkeypatch):
-    """Continuation credit is granted on use, not reserved, so requests that never stall are unchanged."""
+def test_tool_turn_limit_is_preserved_when_final_answer_needs_recovery(monkeypatch):
+    """The answer-only retry must not grant another executable tool turn."""
 
     streams = [[_tool_call_sse(i), _done()] for i in range(6)]
     streams.append([_sse({"content": "Done."}), _done()])
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
+    executed = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_kwargs: "a result",
+        lambda name, arguments, **_kwargs: executed.append((name, arguments)) or "a result",
     )
 
-    _run(backend, max_tool_iterations = 3)
+    events = _run(backend, max_tool_iterations = 3)
 
-    assert len(payloads) == 4
+    assert len(executed) == 3
+    assert len(payloads) == 5
+    assert payloads[3]["tool_choice"] == "none"
+    assert "tools" not in payloads[4]
+    assert "its tools ran out" in "".join(_texts(events, "content"))
 
 
 def test_a_stall_does_not_eat_the_tool_budget(monkeypatch):

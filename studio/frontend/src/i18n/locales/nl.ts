@@ -3614,6 +3614,9 @@ export const nl = {
       firstTokenKeywords:
         "time-out eerste token prefill traag CPU nacht onbeperkt wachten limiet timeout first token slow overnight unlimited waiting limit",
       toolResultLimit: "Lengte van tooluitvoer",
+      toolResultLimitAutomatic: "Automatisch (standaard)",
+      toolResultLimitAdaptiveDescription: "Hoeveel het model van elk Python-, Terminal- of MCP-resultaat leest. Automatisch gebruikt de beschikbare context voor lokale modellen.",
+      toolResultLimitAdaptiveHint: "Als de context niet kan worden gemeten, gebruikt Automatisch {count} tekens. Een getal stelt een vaste bovengrens in, die de beschikbare context verder kan verlagen. Langere Python- en Terminal-uitvoer wordt opgeslagen in een bestand dat het model in delen kan lezen.",
       toolResultLimitDescription:
         "Aantal tekens van één Python-, Terminal- of MCP-toolresultaat dat het model leest. Standaard is {count}.",
       toolResultLimitHint:

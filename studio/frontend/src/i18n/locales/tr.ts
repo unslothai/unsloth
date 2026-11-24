@@ -3569,6 +3569,9 @@ export const tr = {
       firstTokenKeywords:
         "zaman aşımı ilk token prefill yavaş CPU gece boyu sınırsız bekleme sınırı timeout",
       toolResultLimit: "Araç çıktısı uzunluğu",
+      toolResultLimitAutomatic: "Otomatik (varsayılan)",
+      toolResultLimitAdaptiveDescription: "Modelin her Python, Terminal veya MCP sonucunun ne kadarını okuduğu. Otomatik mod, yerel modeller için kullanılabilir bağlamı kullanır.",
+      toolResultLimitAdaptiveHint: "Bağlam ölçülemediğinde otomatik mod {count} karakter kullanır. Bir sayı, kullanılabilir bağlamın daha da azaltabileceği sabit bir üst sınır belirler. Daha uzun Python ve Terminal çıktıları, modelin parçalar halinde okuyabileceği bir dosyaya kaydedilir.",
       toolResultLimitDescription:
         "Modelin okuduğu tek bir Python, Terminal veya MCP araç sonucunun karakter sayısı. Varsayılan: {count}.",
       toolResultLimitHint:

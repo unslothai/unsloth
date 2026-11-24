@@ -3618,6 +3618,9 @@ export const es419 = {
       firstTokenKeywords:
         "tiempo de espera primer token procesamiento del prompt lento CPU toda la noche sin límite límite de espera timeout first token prefill slow overnight unlimited waiting limit",
       toolResultLimit: "Longitud de la salida de herramientas",
+      toolResultLimitAutomatic: "Automático (predeterminado)",
+      toolResultLimitAdaptiveDescription: "Cuánto lee el modelo de cada resultado de Python, Terminal o MCP. El modo automático usa el contexto disponible para los modelos locales.",
+      toolResultLimitAdaptiveHint: "Si no se puede medir el contexto, el modo automático usa {count} caracteres. Un número establece un máximo fijo que el contexto disponible puede reducir aún más. Las salidas más largas de Python y Terminal se guardan en un archivo que el modelo puede leer por partes.",
       toolResultLimitDescription:
         "Caracteres de un resultado de herramienta de Python, Terminal o MCP que lee el modelo. El valor predeterminado es {count}.",
       toolResultLimitHint:

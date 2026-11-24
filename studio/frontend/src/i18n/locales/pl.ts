@@ -3609,6 +3609,9 @@ export const pl = {
       firstTokenKeywords:
         "timeout first token prefill slow CPU overnight unlimited waiting limit limit czasu pierwszy token wolny noc bez limitu oczekiwanie",
       toolResultLimit: "Długość wyniku narzędzia",
+      toolResultLimitAutomatic: "Automatycznie (domyślnie)",
+      toolResultLimitAdaptiveDescription: "Ile model odczytuje z każdego wyniku Pythona, terminala lub MCP. Tryb automatyczny wykorzystuje dostępny kontekst modeli lokalnych.",
+      toolResultLimitAdaptiveHint: "Jeśli nie można zmierzyć kontekstu, tryb automatyczny używa {count} znaków. Liczba ustawia stałą górną granicę, którą dostępny kontekst może dodatkowo obniżyć. Dłuższe wyniki Pythona i terminala są zapisywane w pliku, który model może czytać częściami.",
       toolResultLimitDescription:
         "Liczba znaków jednego wyniku narzędzia Python, Terminal lub MCP odczytywana przez model. Domyślnie {count}.",
       toolResultLimitHint:

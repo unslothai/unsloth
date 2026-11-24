@@ -40555,8 +40555,10 @@ class LlamaCppBackend:
 
         def _answer_is_call_only(answer: str) -> bool:
             """Only calls, judged as the display strips them: markup and a leading Llama 3 bare-JSON call."""
-            if not auto_heal_tool_calls or not answer.strip():
+            if not auto_heal_tool_calls:
                 return False
+            if not answer.strip():
+                return _final_structured_call
             # The strip also drops non-call text (a raw [THINK] block), so require a call outside the reasoning.
             lead = _LEAD_RAW_THINK_RE.sub("", answer[_lead_think_span(answer) :], count = 1).lstrip()
             gate = _enabled_names_gate
@@ -44316,7 +44318,6 @@ class LlamaCppBackend:
 
         # A caller cap yields only its remainder, never a fresh one, so continuations cannot exceed the limit; None when unset or the whole window.
         _final_length_continuations = 0
-        _final_tool_retry = False
         _final_structured_call = False
         _continue_final = False
         _final_replayed_chars = 0
@@ -44351,8 +44352,6 @@ class LlamaCppBackend:
             candidate_messages,
             continue_flag: bool,
             reasoning_kw = _UNSET,
-            *,
-            tools_override = _UNSET,
         ) -> bool:
             """Whether the continuation fits once the partial is appended; an uncountable prompt
             fails open."""
@@ -44362,7 +44361,7 @@ class LlamaCppBackend:
                 _tokens = self.count_chat_tokens(
                     self._countable_messages(candidate_messages),
                     None,
-                    _final_tools if tools_override is _UNSET else tools_override,
+                    _final_tools,
                     strict = True,
                     chat_template_kwargs = (
                         stream_payload.get("chat_template_kwargs")
@@ -44546,94 +44545,7 @@ class LlamaCppBackend:
                             yield {"type": "content", "text": _flushed}
                     # Commit the candidate only once another stream runs, so usage is not double counted; replay only new text, or the fragment is repeated.
                     _shown_this_attempt = _last_emitted[len(_attempt_started_at) :]
-                    # Some templates still emit calls despite tool_choice="none".
-                    # The sanitizer hides those calls; don't report an empty success.
-                    # Streaming snapshots may contain an unfinished marker that the
-                    # route holds back. Judge the completed, sanitized answer instead.
-                    # answer_text holds content only, including any literal think tags.
-                    _completed_answer = _strip_tool_markup(answer_text, final = True)
-                    _final_visible_answer = _final_answer_visible(
-                        _completed_answer, _completed_answer, at_end = True
-                    )
-                    _hidden_final_call = (
-                        auto_heal_tool_calls
-                        and not _final_visible_answer.strip()
-                        and (
-                            answer_text.strip()
-                            or _final_structured_call
-                            or (_final_tool_retry and _metadata_finish_reason == "stop")
-                        )
-                        and _metadata_finish_reason in ("stop", "tool_calls", "length")
-                    )
-                    if _hidden_final_call:
-                        _answer_note = {
-                            "role": "user",
-                            "content": (
-                                "Tool use has ended. Your last response attempted another "
-                                "tool call and was not executed. Give your final answer now "
-                                "in ordinary text, using only the results already available. "
-                                "Do not emit tool calls or claim unverified work is complete. "
-                                "If information is missing, state exactly what is incomplete."
-                            ),
-                        }
-                        _answer_tail = _recovery_notice_tail(
-                            stream_payload["messages"],
-                            _answer_note,
-                            "I have not given a final answer yet.",
-                        )
-                        _answer_messages = list(stream_payload["messages"]) + _answer_tail
-                        _answer_cap = _remaining_output_budget()
-                        if (
-                            not _final_tool_retry
-                            and _answer_cap != 0
-                            and _continuation_would_be_served(
-                                _answer_messages, False, tools_override = None
-                            )
-                        ):
-                            _final_tool_retry = True
-                            stream_payload["messages"] = _answer_messages
-                            _record_refit_tail(_answer_messages, _answer_tail, False)
-                            # Remove the declarations as well as forbidding calls: some
-                            # model templates otherwise keep steering toward execution.
-                            stream_payload.pop("tools", None)
-                            stream_payload.pop("tool_choice", None)
-                            _final_tools = None
-                            stream_payload["continue_final_message"] = False
-                            stream_payload["add_generation_prompt"] = True
-                            if _answer_cap is not None:
-                                stream_payload["max_tokens"] = _answer_cap
-                            _answer_usage = (
-                                _backfill_usage_from_timings(_metadata_usage, _metadata_timings)
-                                or {}
-                            )
-                            _accumulated_completion_tokens += _answer_usage.get(
-                                "completion_tokens", 0
-                            )
-                            _answer_timing = _metadata_timings or {}
-                            _accumulated_predicted_ms += _answer_timing.get("predicted_ms", 0)
-                            _accumulated_predicted_n += _answer_timing.get("predicted_n", 0)
-                            # The route has already hidden the call and shown any
-                            # reasoning. Reset its snapshot cursor for the fresh answer.
-                            cumulative = _last_emitted = answer_text = ""
-                            reasoning_text = ""
-                            _lead_wrap = _prov_entry = None
-                            in_thinking = has_content_tokens = False
-                            _final_structured_call = False
-                            _final_answer_stripper = _StreamingMarkupStripper(
-                                _enabled_names_gate, seg_final = False
-                            )
-                            _stream_done = False
-                            _metadata_usage = _metadata_timings = _metadata_finish_reason = None
-                            _attempt_started_at = _last_emitted
-                            _continue_final = True
-                            yield {"type": "status", "text": ""}
-                            yield {"type": "status", "text": "Preparing the final answer"}
-                        else:
-                            raise RuntimeError(
-                                "The model could not produce a final answer after tool use. "
-                                "Try increasing the context window or narrowing the task."
-                            )
-                    elif (
+                    if (
                         _metadata_finish_reason == "length"
                         and has_content_tokens
                         and _shown_this_attempt.strip()
@@ -44930,10 +44842,13 @@ class LlamaCppBackend:
                         _prov_entry = _lead_wrap = _final_reasoning_started_at = None
                         _final_reasoning_summary_emitted = False
                         _final_answer_stripper.reset()
+                        _final_structured_call = False
                         _continue_final = True
                         yield {"type": "status", "text": "", "new_pass": True}
                     else:
-                        if _answer_is_call_only(answer_text):
+                        if _answer_is_call_only(answer_text) or (
+                            _final_call_retried and not answer_text.strip()
+                        ):
                             # Call-only and not retried (or retried again): an empty bubble is not actionable.
                             # Its own segment: the shown snapshot may still hold an unclosed call that would swallow it.
                             yield {"type": "status", "text": "", "new_pass": True}

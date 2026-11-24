@@ -3573,6 +3573,9 @@ export const id = {
       firstTokenKeywords:
         "timeout first token prefill slow CPU overnight unlimited waiting limit batas waktu token pertama lambat tanpa batas tunggu",
       toolResultLimit: "Panjang output alat",
+      toolResultLimitAutomatic: "Otomatis (default)",
+      toolResultLimitAdaptiveDescription: "Seberapa banyak dari setiap hasil Python, Terminal, atau MCP yang dibaca model. Mode otomatis menggunakan konteks yang tersedia untuk model lokal.",
+      toolResultLimitAdaptiveHint: "Mode otomatis menggunakan {count} karakter jika konteks tidak dapat diukur. Angka menetapkan batas maksimum tetap yang dapat dikurangi lagi oleh konteks yang tersedia. Output Python dan Terminal yang lebih panjang disimpan ke file yang dapat dibaca model per bagian.",
       toolResultLimitDescription:
         "Jumlah karakter dari satu hasil alat Python, Terminal, atau MCP yang dibaca model. Default-nya {count}.",
       toolResultLimitHint:

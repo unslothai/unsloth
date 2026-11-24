@@ -3587,6 +3587,9 @@ export const cs = {
       firstTokenKeywords:
         "časový limit první token pomalé CPU přes noc neomezeně čekání limit timeout first token prefill slow overnight unlimited waiting",
       toolResultLimit: "Délka výstupu nástroje",
+      toolResultLimitAutomatic: "Automaticky (výchozí)",
+      toolResultLimitAdaptiveDescription: "Kolik z každého výsledku Pythonu, terminálu nebo MCP model přečte. Automatický režim využívá dostupný kontext místních modelů.",
+      toolResultLimitAdaptiveHint: "Pokud nelze kontext změřit, automatický režim použije {count} znaků. Číslo nastaví pevné maximum, které může dostupný kontext dále snížit. Delší výstup Pythonu a terminálu se uloží do souboru, který může model číst po částech.",
       toolResultLimitDescription:
         "Počet znaků jednoho výsledku nástroje Python, Terminál nebo MCP, který model přečte. Výchozí hodnota je {count}.",
       toolResultLimitHint:
