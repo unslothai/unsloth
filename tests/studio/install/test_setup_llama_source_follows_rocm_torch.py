@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """setup.sh's llama.cpp source build follows ROCm torch on a mixed NVIDIA+AMD host, by the same
 rule (install_llama_prebuilt.py --follows-rocm-torch) the prebuilt path applies."""
 
