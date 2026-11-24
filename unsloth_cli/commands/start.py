@@ -5543,9 +5543,12 @@ def _remember_start(base: str, entry: dict) -> None:
         # A path-loaded resident's public id is a bare name that would resolve to unsloth/<name>.
         "model": positional or (entry["id"] if _looks_like_model(entry["id"]) else None),
         "args": args,
-        # Pi's subagent mode keeps the user's own Pi dir; only the bridge config is temporary.
+        # Subagent modes keep the user's own Pi dir, and link the user's Codex sessions dir.
         "kept": bool(
-            ctx.params.get("persist") or agent in _OWN_HOME_AGENTS or (agent == "pi" and subagent)
+            ctx.params.get("persist")
+            or agent in _OWN_HOME_AGENTS
+            or (agent == "pi" and subagent)
+            or (agent == "codex" and subagent and (_codex_source_home() / "sessions").is_dir())
         ),
         "server": base,
     }

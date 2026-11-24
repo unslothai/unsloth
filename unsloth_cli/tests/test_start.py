@@ -10419,6 +10419,26 @@ def test_continue_keeps_the_quant_a_subagent_resolved(fake_studio, tmp_path, mon
     )
 
 
+@pytest.mark.parametrize("has_sessions", [True, False])
+def test_continue_codex_subagent_kept_only_with_shared_sessions(
+    fake_studio, tmp_path, monkeypatch, has_sessions
+):
+    source = tmp_path / "user_codex"
+    (source / "sessions" if has_sessions else source).mkdir(parents = True)
+    monkeypatch.setattr(start, "_codex_source_home", lambda **_: source)
+    start._agent_ctx = SimpleNamespace(
+        info_name = "codex",
+        params = {"model": MODEL["id"], "as_subagent": True},
+        meta = {"unsloth_raw_args": []},
+        command = SimpleNamespace(params = []),
+    )
+    try:
+        start._remember_start(BASE, {"id": MODEL["id"]})
+    finally:
+        start._agent_ctx = None
+    assert json.loads((tmp_path / "last_start.json").read_text())["kept"] is has_sessions
+
+
 def test_continue_refuses_a_session_that_was_not_kept(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/hermes")
     _capture_launch(monkeypatch, ["hermes"])
