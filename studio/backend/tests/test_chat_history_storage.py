@@ -561,6 +561,32 @@ def test_a_late_reply_to_a_deleted_turn_is_dropped(tmp_path, monkeypatch):
     assert parents == {"u1": None, "a1": "u1", "u3": "a1", "u4": "a1"}
 
 
+def test_a_stale_delete_does_not_reparent_onto_a_row_it_prunes(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [
+        _turn("u1", None, 1),
+        _turn("a1", "u1", 2),
+        _turn("u2", "a1", 3),
+        _turn("a2", "u2", 4),
+        _turn("u3", "a2", 5),
+    ]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u2", "a2"]
+    )
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1",
+        [turns[0], {**turns[2], "parentId": "u1"}, *turns[3:]],
+        prune_missing = True,
+        deleted_message_ids = ["a1"],
+    )
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "u3": "u1"}
+
+
 def test_a_recreated_thread_can_reuse_deleted_message_ids(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())

@@ -4809,6 +4809,12 @@ def sync_chat_messages(
                     }
                     - managed_ids
                 )
+        messages = [
+            {**m, "parentId": _surviving_parent_id(conn, thread_id, str(m["parentId"]), pruned)}
+            if m.get("parentId") in pruned
+            else m
+            for m in messages
+        ]
         protected = generation_ids if allow_research_update else managed_ids
         messages = [
             m
