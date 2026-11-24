@@ -15,8 +15,12 @@ CPU, one process, no DTensor."""
 
 import ast
 import importlib.util
+import inspect
+import linecache
 import os
+import re
 import sys
+import textwrap
 
 import pytest
 import torch
@@ -26,8 +30,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_tp_native_oracle import tpn  # noqa: E402  (tp_native without the GPU-only unsloth import)
 
 
-def _zoo_templates():
-    """COMPILED_LORA_FORWARD(_forced_float32) source from unsloth_zoo/compiler.py, or None."""
+def _zoo_tree():
+    """unsloth_zoo/compiler.py parsed, without importing zoo, or None."""
     try:
         spec = importlib.util.find_spec("unsloth_zoo")
     except (ImportError, ValueError):
@@ -38,65 +42,93 @@ def _zoo_templates():
     if not os.path.exists(path):
         return None
     with open(path, encoding = "utf-8") as f:
-        tree = ast.parse(f.read())
-    found = {}
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id.startswith("COMPILED_LORA_FORWARD"):
-                    found[target.id] = node.value.value
-    if {"COMPILED_LORA_FORWARD", "COMPILED_LORA_FORWARD_forced_float32"} - found.keys():
+        return ast.parse(f.read())
+
+
+_PATCHERS = (
+    "_patch_lora_update",
+    "_patch_lora_input_cast",
+    "_patch_lora_base_layer_input_cast",
+)
+
+
+def _zoo_parts():
+    """zoo's two COMPILED_LORA_FORWARD templates and its real PEFT-forward rewriters, or None."""
+    tree = _zoo_tree()
+    if tree is None:
         return None
-    return found
+    templates, nodes = {}, []
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            if isinstance(node.value, ast.Constant) and any(
+                n.startswith("COMPILED_LORA_FORWARD") for n in names
+            ):
+                for n in names:
+                    templates[n] = node.value.value
+            elif "_LORA_INPUT_CASTS" in names:
+                nodes.append(node)
+        elif isinstance(node, ast.FunctionDef) and node.name in _PATCHERS:
+            nodes.append(node)
+    scope = {"os": os, "re": re}
+    exec(compile(ast.Module(body = nodes, type_ignores = []), "<unsloth_zoo compiler>", "exec"), scope)
+    if {"COMPILED_LORA_FORWARD", "COMPILED_LORA_FORWARD_forced_float32"} - templates.keys():
+        return None
+    if set(_PATCHERS) - scope.keys():
+        return None
+    return templates, scope
 
 
-_ZOO = _zoo_templates()
+_ZOO = _zoo_parts()
 
 
-def _hand_lora_forward(forced, no_compiled_addmm):
-    """A copy of zoo's two templates, for an environment without unsloth_zoo."""
-
-    def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
-        if forced:
-            xA = dropout(x.to(torch.float16)) @ lora_A.weight.to(torch.float16).t()
+def _peft_forward_of(peft):
+    """PEFT's own forward for "dense" (lora Linear) or "bnb" (lora Linear4bit), or None."""
+    try:
+        if peft == "dense":
+            from peft.tuners.lora.layer import Linear
         else:
-            xA = dropout(x).to(result.dtype) @ lora_A.weight.to(result.dtype).t()
-        dtype = result.dtype
-        if no_compiled_addmm:
-            return result + scaling * (xA.to(dtype) @ lora_B.weight.to(dtype).t())
-        shape = result.shape
-        return torch.addmm(
-            result.view(-1, shape[-1]),
-            xA.view(-1, xA.shape[-1]).to(dtype),
-            lora_B.weight.to(dtype).t(),
-            alpha = scaling,
-            beta = 1,
-        ).view(shape)
-
-    return lora_forward
+            from peft.tuners.lora.bnb import Linear4bit as Linear
+    except Exception:
+        return None
+    return Linear.forward
 
 
-def _lora_forward(forced, no_compiled_addmm = False):
-    """zoo's lora_forward for one template; `no_compiled_addmm` takes its torch < 2.10 compiled branch."""
+def _generated_forward(flag, peft):
+    """Unsloth's generated unsloth_forward (zoo compiler patch_lora_forwards) over PEFT's real forward, built with
+    zoo's own rewriters and template; the source registered so inspect reads it like unsloth_compiled_cache."""
     if _ZOO is None:
-        return _hand_lora_forward(forced, no_compiled_addmm)
-    name = "COMPILED_LORA_FORWARD_forced_float32" if forced else "COMPILED_LORA_FORWARD"
-    scope = {"torch": torch}
-    exec(_ZOO[name], scope)
-    scope["torch_lora_no_compiled_addmm"] = no_compiled_addmm
-    scope["torch_is_compiling"] = lambda: no_compiled_addmm
-    return scope["lora_forward"]
-
-
-# Stand-ins for PEFT's original forwards: zoo keeps PEFT's own x cast when the source branches on autocast
-# (bitsandbytes Linear4bit / 8bitLt), else casts result and x to the LoRA dtype (dense Linear).
-def _peft_dense_forward(self, x):
-    return x
-
-
-def _peft_bnb_forward(self, x):
-    requires_conversion = not torch.is_autocast_enabled()
-    return x if requires_conversion else x
+        pytest.skip("unsloth_zoo is not installed")
+    original = _peft_forward_of(peft)
+    if original is None:
+        pytest.skip(f"PEFT {peft} LoRA layer is not importable")
+    templates, z = _ZOO
+    child = "Linear" if peft == "dense" else "Linear4bit"
+    forced = str(flag) != "0"
+    source = textwrap.dedent(inspect.getsource(original))
+    source = source.replace("result = result.clone()", "")
+    source = z["_patch_lora_update"](source)
+    source = source.replace("def forward", "def unsloth_forward", 1)
+    source = z["_patch_lora_input_cast"](source, force_float32 = forced)
+    check = "self._check_forward_args(x, *args, **kwargs)"
+    inline = "4bit" in child.lower() and check in source
+    source = source.replace(
+        check,
+        "if not x.is_floating_point(): x = _unsloth_lora_integer_input(self, x)" if inline else "",
+    )
+    source = z["_patch_lora_base_layer_input_cast"](source)
+    template = templates[
+        "COMPILED_LORA_FORWARD_forced_float32" if forced else "COMPILED_LORA_FORWARD"
+    ]
+    full = template + source
+    filename = f"<unsloth_compiled_cache {child}_peft_forward {flag}>"
+    linecache.cache[filename] = (len(full), None, full.splitlines(True), filename)
+    scope = dict(sys.modules[original.__module__].__dict__)
+    exec(compile(full, filename, "exec"), scope)
+    forward = scope["unsloth_forward"]
+    forward._unsloth_force_float32 = flag
+    forward._unsloth_original_forward = original
+    return forward
 
 
 class _LoraProj(nn.Module):
@@ -109,6 +141,8 @@ class _LoraProj(nn.Module):
         seed = 0,
         scaling = 2.0,
         dropout = 0.0,
+        adapters = ("default",),
+        active = None,
     ):
         super().__init__()
         g = torch.Generator().manual_seed(seed)
@@ -116,17 +150,19 @@ class _LoraProj(nn.Module):
         with torch.no_grad():
             self.base_layer.weight.copy_(torch.randn(out_features, in_features, generator = g) * 0.05)
         self.base_layer.weight.requires_grad_(False)
-        self.lora_A = nn.ModuleDict({"default": nn.Linear(in_features, r, bias = False)})
-        self.lora_B = nn.ModuleDict({"default": nn.Linear(r, out_features, bias = False)})
+        self.lora_A = nn.ModuleDict({a: nn.Linear(in_features, r, bias = False) for a in adapters})
+        self.lora_B = nn.ModuleDict({a: nn.Linear(r, out_features, bias = False) for a in adapters})
         with torch.no_grad():
-            self.lora_A["default"].weight.copy_(torch.randn(r, in_features, generator = g) * 0.05)
-            self.lora_B["default"].weight.copy_(torch.randn(out_features, r, generator = g) * 0.05)
-        drop = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        self.lora_dropout = nn.ModuleDict({"default": drop})
-        self.scaling = {"default": scaling}
+            for a in adapters:
+                self.lora_A[a].weight.copy_(torch.randn(r, in_features, generator = g) * 0.05)
+                self.lora_B[a].weight.copy_(torch.randn(out_features, r, generator = g) * 0.05)
+        drop = (lambda: nn.Dropout(dropout)) if dropout > 0 else nn.Identity
+        self.lora_dropout = nn.ModuleDict({a: drop() for a in adapters})
+        self.scaling = {a: scaling * (1 + i / 4) for i, a in enumerate(adapters)}
+        self.lora_variant = {}
         self.disable_adapters = False
         self.merged = False
-        self.active_adapters = ["default"]
+        self.active_adapters = list(adapters if active is None else active)
         self._unsloth_tp_style = tpn.COLWISE
 
     def _cast_input_dtype(self, x, dtype):
@@ -138,15 +174,7 @@ def _with_forward(flag, peft = "dense"):
     ("dense" Linear or "bnb" Linear4bit) forward, or PEFT's own forward (flag None)."""
     if flag is None:
         return _LoraProj
-
-    def unsloth_forward(self, x):
-        return _one_gpu_forward(self, x, flag, peft)
-
-    unsloth_forward._unsloth_force_float32 = flag
-    unsloth_forward._unsloth_original_forward = (
-        _peft_dense_forward if peft == "dense" else _peft_bnb_forward
-    )
-    return type("CompiledLoraProj", (_LoraProj,), {"forward": unsloth_forward})
+    return type("CompiledLoraProj", (_LoraProj,), {"forward": _generated_forward(flag, peft)})
 
 
 def _peft_forward(proj, x):
@@ -160,29 +188,14 @@ def _peft_forward(proj, x):
     ).to(result.dtype)
 
 
-def _one_gpu_forward(
-    proj,
-    x,
-    flag,
-    peft,
-    no_compiled_addmm = False,
-):
-    """The generated Linear / Linear4bit unsloth_forward (unsloth_compiled_cache/*_peft_forward.py), autocast off."""
-    forced = str(flag) != "0"
-    lora_A, lora_B = proj.lora_A["default"], proj.lora_B["default"]
-    result = torch.nn.functional.linear(x, proj.base_layer.weight)
-    result_dtype = result.dtype
-    if not forced:
-        if (
-            peft == "dense"
-        ):  # zoo: `result, x = result.to(lora_A.weight.dtype), x.to(lora_A.weight.dtype)`
-            result, x = result.to(lora_A.weight.dtype), x.to(lora_A.weight.dtype)
-        else:  # PEFT bnb: `x = self._cast_input_dtype(x, lora_A.weight.dtype)`
-            x = proj._cast_input_dtype(x, lora_A.weight.dtype)
-    result = _lora_forward(forced, no_compiled_addmm)(
-        result, lora_A, lora_B, proj.lora_dropout["default"], x, proj.scaling["default"]
+def _guarded_zoo():
+    """True when zoo casts a dense single vanilla adapter's result and x only for variants / several adapters."""
+    if _ZOO is None:
+        return False
+    line = "x = self._cast_input_dtype(x, lora_A.weight.dtype)"
+    return "len(self.active_adapters) > 1" in _ZOO[1]["_patch_lora_input_cast"](
+        "lora_forward(\n" + line, force_float32 = False
     )
-    return result.to(result_dtype)
 
 
 def _run(
@@ -192,16 +205,13 @@ def _run(
     g,
     seed = 3,
 ):
-    for p in (proj.lora_A["default"].weight, proj.lora_B["default"].weight):
+    params = [m.weight for name in proj.lora_A for m in (proj.lora_A[name], proj.lora_B[name])]
+    for p in params:
         p.grad = None
     torch.manual_seed(seed)  # the same dropout mask in both arms
     y = fn(proj, x)
     y.backward(g)
-    return (
-        y.detach(),
-        proj.lora_A["default"].weight.grad.clone(),
-        proj.lora_B["default"].weight.grad.clone(),
-    )
+    return (y.detach(), *(p.grad.clone() for p in params))
 
 
 def _bits(t):
@@ -218,7 +228,9 @@ def _inputs(dtype):
 
 
 def _assert_same(ref, got):
-    for name, a, b in zip(("output", "lora_A grad", "lora_B grad"), ref, got):
+    assert len(ref) == len(got)
+    names = ["output"] + [f"lora {i // 2} {'AB'[i % 2]} grad" for i in range(len(ref) - 1)]
+    for name, a, b in zip(names, ref, got):
         assert a.dtype == b.dtype and a.shape == b.shape, name
         bad = int((_bits(a) != _bits(b)).sum())
         assert (
@@ -232,8 +244,9 @@ def _check(
     peft = "dense",
     scaling = 2.0,
     dropout = 0.0,
+    **kwargs,
 ):
-    proj = _with_forward(flag, peft)(dtype, scaling = scaling, dropout = dropout)
+    proj = _with_forward(flag, peft)(dtype, scaling = scaling, dropout = dropout, **kwargs)
     x, grad = _inputs(dtype)
     one_gpu = (lambda p, xx: p.forward(xx)) if flag is not None else _peft_forward
     _assert_same(_run(one_gpu, proj, x, grad), _run(tpn._tp_projection_compute, proj, x, grad))
@@ -262,13 +275,61 @@ def test_tp_lora_dropout_matches_one_gpu_forward(flag, dtype, peft):
     _check(flag, dtype, peft, dropout = 0.25)
 
 
-def test_dense_default_product_runs_in_lora_dtype():
-    """Dense Linear without forced float32: the generated forward casts result and x to the float32 LoRA dtype,
-    so a bfloat16 product on the tp ranks is not the one-GPU arithmetic."""
+@pytest.mark.parametrize("scaling", [2.0, 1.7])
+@pytest.mark.parametrize("dropout", [0.0, 0.25])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_tp_lora_several_active_adapters_match_one_gpu_forward(dtype, dropout, scaling):
+    """Several active adapters (this layer holds one, another adapter targets other modules): zoo's guard then
+    casts result and x to the float32 LoRA dtype, as for every dense adapter in older zoo."""
+    _check("0", dtype, "dense", scaling, dropout, active = ("default", "other"))
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_tp_lora_two_adapters_on_one_layer_match_one_gpu_forward(dtype):
+    """Two adapters on one layer: the generated forward keeps result in the LoRA dtype across the loop and
+    restores the base output's dtype once at the end; the tp loop must not round between adapters."""
+    _check("0", dtype, "dense", adapters = ("default", "second"))
+
+
+def test_dense_mode_follows_zoo_input_cast():
+    """Dense Linear without forced float32 follows zoo's generated cast line: always cast ("lora"), or in newer zoo
+    only for a variant or several active adapters ("lora_guarded"); bitsandbytes keeps PEFT's x cast."""
+    want = "lora_guarded" if _guarded_zoo() else "lora"
     proj = _with_forward("0", "dense")(torch.bfloat16)
-    assert tpn._one_gpu_lora_mode(proj) == "lora"
-    proj = _with_forward("0", "bnb")(torch.bfloat16)
-    assert tpn._one_gpu_lora_mode(proj) == "output"
+    assert tpn._one_gpu_lora_mode(proj) == want
+    if _peft_forward_of("bnb") is not None:
+        proj = _with_forward("0", "bnb")(torch.bfloat16)
+        assert tpn._one_gpu_lora_mode(proj) == "output"
+
+
+def test_single_vanilla_adapter_keeps_the_base_dtype_under_guarded_zoo():
+    """The case zoo's guard exists for: one vanilla adapter, bfloat16 base, float32 LoRA. The one-GPU product runs
+    in bfloat16, so a float32 tp product (result and x cast) is not the one-GPU arithmetic."""
+    if not _guarded_zoo():
+        pytest.skip("this unsloth_zoo casts every dense adapter")
+    proj = _with_forward("0", "dense")(torch.bfloat16)
+    x, grad = _inputs(torch.bfloat16)
+    ref = _run(lambda p, xx: p.forward(xx), proj, x, grad)
+    proj.__dict__["_unsloth_tp_lora_mode"] = "lora"  # the always-cast arithmetic
+    cast = _run(tpn._tp_projection_compute, proj, x, grad)
+    assert any(bool((_bits(a) != _bits(b)).any()) for a, b in zip(ref, cast))
+    proj.__dict__.pop("_unsloth_tp_lora_mode")
+    _assert_same(ref, _run(tpn._tp_projection_compute, proj, x, grad))
+
+
+def test_unknown_cast_guard_is_not_guessed():
+    """A generated cast line under a guard tp does not know: PEFT's float32 fallback, never a guess."""
+    known = tpn._generated_lora_cast_mode(
+        "    if not torch.is_autocast_enabled(): result, x = result.to(lora_A.weight.dtype), "
+        "x.to(lora_A.weight.dtype)\n"
+    )
+    assert known == "lora"
+    unknown = tpn._generated_lora_cast_mode(
+        "    if not torch.is_autocast_enabled() and self.foo: result, x = result.to(lora_A.weight.dtype), "
+        "x.to(lora_A.weight.dtype)\n"
+    )
+    assert unknown is None
+    assert tpn._generated_lora_cast_mode("x = x.to(lora_A.weight.dtype)\n") is None
 
 
 @pytest.mark.parametrize("flag", ["true", "True", "2"])
@@ -286,36 +347,18 @@ def test_mode_needs_the_original_peft_forward():
     assert tpn._one_gpu_lora_mode(cls(torch.bfloat16)) is None
 
 
-def test_real_peft_forwards_map_to_their_mode():
-    peft_layer = pytest.importorskip("peft.tuners.lora.layer")
-    cases = [(peft_layer.Linear, "lora")]
-    try:
-        from peft.tuners.lora.bnb import Linear4bit
-        cases.append((Linear4bit, "output"))
-    except Exception:
-        pass
-    for cls, want in cases:
-
-        def unsloth_forward(self, x):
-            return x
-
-        unsloth_forward._unsloth_force_float32 = "0"
-        unsloth_forward._unsloth_original_forward = cls.forward
-        fake = type("Fake", (_LoraProj,), {"forward": unsloth_forward})
-        assert tpn._one_gpu_lora_mode(fake(torch.bfloat16)) == want, cls
-
-
 @pytest.mark.parametrize("peft", ["dense", "bnb"])
 @pytest.mark.parametrize("flag", ["1", "0"])
 def test_old_torch_compiled_branch_matches_zoo(monkeypatch, flag, peft):
     """torch < 2.10 under torch.compile: zoo skips addmm (unsloth#3271); the tp update must take the same branch."""
+    proj = _with_forward(flag, peft)(torch.float16, scaling = 1.7)
+    scope = type(proj).forward.__globals__
+    x, grad = _inputs(torch.float16)
+    monkeypatch.setitem(scope, "torch_lora_no_compiled_addmm", True)
+    monkeypatch.setitem(scope, "torch_is_compiling", lambda: True)
+    ref = _run(lambda p, xx: p.forward(xx), proj, x, grad)
     monkeypatch.setattr(tpn, "_TP_LORA_NO_COMPILED_ADDMM", True, raising = False)
     monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
-    proj = _with_forward(flag, peft)(torch.float16, scaling = 1.7)
-    x, grad = _inputs(torch.float16)
-    ref = _run(
-        lambda p, xx: _one_gpu_forward(p, xx, flag, peft, no_compiled_addmm = True), proj, x, grad
-    )
     _assert_same(ref, _run(tpn._tp_projection_compute, proj, x, grad))
 
 
