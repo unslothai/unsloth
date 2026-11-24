@@ -6257,6 +6257,7 @@ const Composer: FC<{
   );
   const rightControlsDisabled =
     disabled || !hasSendableContent || isComposing || hasPendingAttachments;
+  // disableQueue makes running threads show Stop instead of Queue.
   const rightControlsQueueDisabled =
     disableQueue ||
     !(
