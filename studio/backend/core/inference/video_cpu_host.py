@@ -115,12 +115,14 @@ def _denoiser_gb(
         if gguf_copy_gb is None:
             return 0.0, True
         return float(gguf_copy_gb), False
-    if model_kind == "single_file" and single_file_packed_gb is not None:
-        # An fp8 checkpoint the loader keeps packed when widening would not fit (fp8_storage_wanted): its stored size.
-        return float(single_file_packed_gb), False
     from .diffusion_transformer_quant import normalize_transformer_quant
 
     pinned = normalize_transformer_quant(transformer_quant)
+    # The loader keeps the checkpoint's quantization (comfy_keep) unless the request pins the dense DiT ("none" / "off").
+    keeps_packed = transformer_quant is None or pinned is not None
+    if model_kind == "single_file" and single_file_packed_gb is not None and keeps_packed:
+        # An fp8 checkpoint the loader keeps packed when widening would not fit (fp8_storage_wanted): its stored size.
+        return float(single_file_packed_gb), False
     if pinned is not None and pinned != "auto":
         stored = dict(getattr(fam, "prequant_resident_gb_by_scheme", None) or ())
         return float(stored.get(pinned, bf16_gb / 2.0)), False
@@ -262,11 +264,12 @@ def gguf_copy_gb(
         if mapped:
             return None
         size, _local = _checkpoint_size(repo, filename)
-        gb = size / 1e9 if size else None
-        if gb is None:
-            sizes = _sizes(fam)
-            gb = sizes[0] * GGUF_MIN_BF16_FRACTION if sizes else 0.0
-        return gb * (2.0 if getattr(fam, "is_moe", False) else 1.0)
+        if size:
+            # One expert's file; a dual-expert family loads both.
+            return size / 1e9 * (2.0 if getattr(fam, "is_moe", False) else 1.0)
+        # Unreadable: the table's denoiser term already covers both experts.
+        sizes = _sizes(fam)
+        return sizes[0] * GGUF_MIN_BF16_FRACTION if sizes else 0.0
     except Exception:  # noqa: BLE001 -- unsized: price the mapped floor
         return None
 

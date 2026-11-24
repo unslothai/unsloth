@@ -434,6 +434,38 @@ def test_fp8_single_file_is_priced_at_its_packed_size(host, tmp_path):
     )
 
 
+@pytest.mark.parametrize("pin", ["none", "off"])
+def test_fp8_single_file_with_the_dense_dit_pinned_is_priced_float32(host, tmp_path, pin):
+    """transformer_quant "none" / "off" sets comfy_keep False, so the loader dequantizes the fp8 file: no packed
+    discount (47.1 GB for Wan 5B, as a dense float32 DiT), and a 34 GB host refuses it before any download."""
+    host("cpu", 64 * GB_PER_GIB, 34.0)
+    name = _sparse_safetensors(
+        tmp_path / "wan2.2_ti2v_5B_scaled.safetensors", "F8_E4M3", 5_000_000_000
+    )
+    packed = vch.single_file_packed_gb(WAN5B, str(tmp_path), name)
+    kept = vch.cpu_video_host_need(WAN5B, model_kind = "single_file", single_file_packed_gb = packed)
+    dense = vch.cpu_video_host_need(
+        WAN5B, model_kind = "single_file", transformer_quant = pin, single_file_packed_gb = packed
+    )
+    assert kept.denoiser_gb == pytest.approx(5.0, abs = 0.01)
+    assert dense.denoiser_gb == pytest.approx(20.0, abs = 0.01) and dense.total_gb == pytest.approx(
+        47.1, abs = 0.05
+    )
+
+
+def test_unsized_dual_expert_gguf_copy_is_not_doubled(monkeypatch):
+    """Unreadable GGUF size: the table's denoiser term already holds both A14B experts, so the fallback is that share
+    once (57.2 GB x the smallest quant fraction), while a measured single-expert file still counts twice."""
+    monkeypatch.setattr(vch, "_checkpoint_size", lambda repo, filename: (None, None))
+    table = vch._sizes(A14B)[0]
+    assert vch.gguf_copy_gb(A14B, "x/y", "a.gguf", mapped = False) == pytest.approx(
+        table * vch.GGUF_MIN_BF16_FRACTION
+    )
+    monkeypatch.setattr(vch, "_checkpoint_size", lambda repo, filename: (7_000_000_000, None))
+    assert vch.gguf_copy_gb(A14B, "x/y", "a.gguf", mapped = False) == pytest.approx(14.0)
+    assert vch.gguf_copy_gb(WAN5B, "x/y", "a.gguf", mapped = False) == pytest.approx(7.0)
+
+
 def test_fp8_single_file_by_name_without_the_file(host):
     host("cpu", 64 * GB_PER_GIB, 34.0)
     # Not local, Hub size unread: half the bf16 table (10.0 / 2).
