@@ -16,12 +16,18 @@ _CASES = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_CASES)
 
 
-def _push(tmp_path, monkeypatch):
+def _push(
+    tmp_path,
+    monkeypatch,
+    before = None,
+):
     calls: list[str] = []
     seen: dict = {}
     backend = _CASES._non_mlx_backend(
         monkeypatch, "test_export_quantized_reused_backend", calls, seen
     )
+    if before is not None:
+        before(backend)
     success, message, output_path = backend.export_merged_model(
         str(tmp_path / "export"),
         push_to_hub = True,
@@ -53,10 +59,24 @@ def test_untracked_reused_quantized_sibling_is_rebuilt_in_a_fresh_folder(tmp_pat
     (sibling / "notes.txt").write_text("private")
     # Written moments ago: a rewrite cannot be told apart from it, so the sibling is not uploaded.
 
-    backend, calls, seen, output_path = _push(tmp_path, monkeypatch)
+    sidecars: list[tuple] = []
 
-    assert "upload_folder" not in calls
-    assert backend.current_model.merges == ["torchao_fp8", "push_to_hub_merged"]
+    def spy(backend):
+        backend._package_drafter_merged = lambda folder, repo_id, **kw: sidecars.append(
+            ("drafter", folder)
+        )
+        backend._sync_reap_report = lambda folder: sidecars.append(("reap", folder))
+
+    backend, calls, seen, output_path = _push(tmp_path, monkeypatch, spy)
+
+    # Rebuilt in a fresh staging folder and uploaded from there, so the Studio sidecars
+    # (drafter, REAP report) go up with it; the reused sibling's own files never do.
+    assert backend.current_model.merges == ["torchao_fp8", "torchao_fp8"]
+    assert "upload_folder" in calls
+    assert seen["folder"] != output_path
+    assert seen["uploaded"] == ["model.safetensors"]
+    assert (sibling / "notes.txt").read_text() == "private"
+    assert ("drafter", seen["folder"]) in sidecars and ("reap", seen["folder"]) in sidecars
 
 
 def test_fresh_quantized_sibling_is_uploaded_as_before(tmp_path, monkeypatch):

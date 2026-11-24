@@ -1847,18 +1847,27 @@ class ExportBackend:
                                 )
                                 self._package_drafter_merged(upload_dir, repo_id)
                                 self._sync_reap_report(upload_dir)
-                            # An untracked reused quantized sibling is not uploaded: the merging push below
-                            # rebuilds it in a fresh folder.
-                            quantized_untracked = (
+                            if (
                                 (is_compressed or is_torchao)
                                 and reused_writes is not None
                                 and written is None
-                            )
+                            ):
+                                # An untracked reused quantized sibling is rebuilt in a fresh folder, sidecars too.
+                                staged = stack.enter_context(_staging_dir(Path(output_path).parent))
+                                rebuilt = os.path.join(staged, "model")
+                                self.current_model.save_pretrained_merged(
+                                    rebuilt,
+                                    self.current_tokenizer,
+                                    save_method = save_method,
+                                    **consent_kw,
+                                    **merged_token_kw,
+                                )
+                                upload_dir = f"{rebuilt}-{compressed_suffix}"
+                                self._package_drafter_merged(upload_dir, repo_id, allow_mtp = False)
+                                self._sync_reap_report(upload_dir)
                             # Whatever was built, only weights are worth a repo; without them the
                             # merging push below runs instead, as it did before this was uploaded.
-                            if not quantized_untracked and _holds_checkpoint_weights(
-                                upload_dir, written
-                            ):
+                            if _holds_checkpoint_weights(upload_dir, written):
                                 hf_api = HfApi(token = hf_token)
                                 repo_url = hf_api.create_repo(
                                     repo_id, private = private, exist_ok = True
