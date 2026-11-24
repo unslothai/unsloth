@@ -79,6 +79,101 @@ def test_replica_need_adds_only_a_working_set_over_the_reserve(monkeypatch):
     assert mg.replica_need_mib(small) == weights + 1200 - 1024
 
 
+# Denoiser stand-ins on the meta device: real configs (transformer/config.json), weights the size the Kaggle 2x T4
+# sweep recorded as replica_need_mib on main, at the default request's tokens.
+_WAN_5B = dict(
+    config = dict(num_attention_heads = 24, attention_head_dim = 128, ffn_dim = 14336, num_layers = 30),
+    weights_mib = 9558,
+    dtype = torch.float16,
+    tokens = 27280,
+)
+_MOSS = dict(
+    config = dict(dim = 3072, num_heads = 24, ffn_dim = 8192, num_layers = 42),
+    weights_mib = 4857,
+    dtype = torch.float32,
+    tokens = 4096,
+)
+
+
+class _Denoiser(torch.nn.Module):
+    def __init__(self, config, weights_mib, dtype):
+        super().__init__()
+        self.config = types.SimpleNamespace(**config) if config is not None else None
+        self.w = torch.nn.Parameter(
+            torch.empty((weights_mib << 20) // dtype.itemsize, dtype = dtype, device = "meta")
+        )
+
+
+class _Pipe:
+    pass
+
+
+def _family(spec, monkeypatch):
+    model = _Denoiser(spec["config"], spec["weights_mib"], spec["dtype"])
+    pipe = _Pipe()
+    pipe.transformer = model
+    monkeypatch.setattr(mg, "_DEFAULT_REQUESTS", mg.weakref.WeakKeyDictionary())
+    mg.note_default_request(pipe, guided = True, steps = 20, tokens = spec["tokens"])
+    return pipe, model
+
+
+def test_replica_activation_matches_the_measured_wan_peak():
+    wan = _Denoiser(_WAN_5B["config"], 1, torch.float16)
+    # Kaggle T4, 1280x704x49 (11440 tokens): replica card peaked 10956 MiB allocated over 9558 of weights
+    assert abs(mg.replica_activation_mib(wan, 11440) - (10956 - 9558)) < 100
+    # one branch: linear in tokens, no batch-2 term
+    assert mg.replica_activation_mib(wan, 2 * 11440) <= 2 * mg.replica_activation_mib(wan, 11440)
+
+
+def test_replica_need_prices_the_default_request_tokens(monkeypatch):
+    pipe, wan = _family(_WAN_5B, monkeypatch)
+    activation = mg.replica_activation_mib(wan, 27280)
+    assert activation > 3000
+    assert mg.replica_need_mib(wan) == 9558 + activation
+    # no default request on record: the 1024px canvas
+    monkeypatch.setattr(mg, "_DEFAULT_REQUESTS", mg.weakref.WeakKeyDictionary())
+    assert mg.replica_need_mib(wan) == 9558 + mg.replica_activation_mib(wan, 4096)
+
+
+@pytest.mark.parametrize(
+    "config", [None, dict(attention_head_dim = [5, 10, 20]), dict(sample_size = 128)]
+)
+def test_a_denoiser_without_a_dit_width_keeps_the_weights_only_need(config):
+    unet = _Denoiser(config, 2048, torch.float16)
+    assert mg.replica_activation_mib(unet) == 0
+    assert mg.replica_need_mib(unet) == 2048
+
+
+def _pair(total, name):
+    # the replay's idle pair: 400 MiB in use on each card
+    return [mg.DeviceProbe(o, name, total, total - 400, util_pct = 0.0) for o in (0, 1)]
+
+
+@pytest.mark.parametrize(
+    "spec, total, admitted",
+    [
+        (_MOSS, 15360, True),  # 2x T4 (the recorded host)
+        (_MOSS, 23034, True),  # 2x L4
+        (_MOSS, 40960, True),  # 2x A100-40
+        (_MOSS, 24564, True),  # 2x RTX 4090
+        (_MOSS, 12288, True),  # 2x 12 GB
+        (_WAN_5B, 15360, True),
+        (_WAN_5B, 23034, True),
+        (_WAN_5B, 40960, True),
+        (_WAN_5B, 24564, True),
+        # 9558 + 1024 fits 11888 free, but the replica peaked 11756 MiB allocated on a T4: no replica here
+        (_WAN_5B, 12288, False),
+    ],
+)
+def test_automatic_replica_admission_counts_activations(monkeypatch, spec, total, admitted):
+    _pipe, model = _family(spec, monkeypatch)
+    primary, secondary = _pair(total, f"GPU {total}")
+    pick, why = mg.automatic_partner(primary, [secondary], mg.replica_need_mib(model))
+    assert (pick == 1) is admitted, why
+    if not admitted:
+        assert "short of the" in why
+
+
 def test_video_default_tokens_follow_the_vae_and_patch():
     wan = types.SimpleNamespace(
         vae_scale_factor_spatial = 16,
