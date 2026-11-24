@@ -6237,8 +6237,7 @@ const Composer: FC<{
     [],
   );
   const toolStatus = useMemo(() => <ToolStatusDisplay />, []);
-  // Send and dictate change with the draft, so the right controls call the committed ones at
-  // click time; with that their element survives a keystroke and the model picker is not re-run.
+  // Read send/dictate at click time so the controls survive keystrokes without re-running the picker.
   const rightControlHandlersRef = useRef({ handleSubmit, startDictation });
   useLayoutEffect(() => {
     rightControlHandlersRef.current = { handleSubmit, startDictation };
@@ -6258,7 +6257,6 @@ const Composer: FC<{
   );
   const rightControlsDisabled =
     disabled || !hasSendableContent || isComposing || hasPendingAttachments;
-  // disableQueue makes running threads show Stop instead of Queue.
   const rightControlsQueueDisabled =
     disableQueue ||
     !(
