@@ -106,7 +106,6 @@ function ConfirmAllScripts({ open, onConfirm, onCancel }: { open: boolean; onCon
 
 // Fixed columns, not auto-fit: auto-fit left a choice alone on its own row at odd widths.
 const CHOICES = "grid grid-cols-1 gap-x-4 gap-y-3 @[30rem]/perms:grid-cols-2 @[44rem]/perms:grid-cols-3";
-// Site exceptions scroll inside their own box, so a long list never pushes the rest of the tab away.
 const SITE_LIST = "relative -mx-4 max-h-[min(28rem,55vh)] overflow-y-auto overscroll-contain px-4";
 
 function PermissionsTable() {
@@ -120,19 +119,11 @@ function PermissionsTable() {
   const siteList = useRef<HTMLDivElement>(null);
   const sites = Object.keys(permissions.sites).sort();
 
-  // Sites are sorted, so a new one can land out of view inside the capped list: scroll the list to it.
+  // Sorted, so a new site can land out of view. "nearest" also scrolls the settings panel: focusing the add form scrolled it.
   useEffect(() => {
     const site = added.current;
-    const list = siteList.current;
-    if (site === null || !list) return;
     added.current = null;
-    // The store can turn a site away (the list is full); then there is nothing to show.
-    if (!Object.hasOwn(permissions.sites, site)) return;
-    const item = Array.from(list.children).find((child) => child instanceof HTMLElement && child.dataset.site === site);
-    if (!(item instanceof HTMLElement)) return;
-    // Line the new site's name up with the top of the list when any of it is out of view.
-    const top = item.offsetTop;
-    if (top < list.scrollTop || top + item.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = top;
+    if (site !== null) siteList.current?.querySelector(`[data-site="${CSS.escape(site)}"]`)?.scrollIntoView({ block: "nearest" });
   }, [permissions.sites]);
   const columns: Array<[Column, string]> = [
     ["browsing", t("browser.agentSettings.browsing")],
@@ -162,7 +153,6 @@ function PermissionsTable() {
       className={cn(
         "flex flex-col gap-2.5 border-b border-border/60 py-4",
         site === null ? "pt-3" : null,
-        // The last row closes the card, unless the add-site form follows it.
         draft === null && (site === null ? sites.length === 0 : site === sites[sites.length - 1]) ? "border-b-0 pb-5" : null,
       )}
     >
