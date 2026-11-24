@@ -142,38 +142,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Cross-OS key: the hf-cache tree is byte-identical on every OS.
-      - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
-        id: cache-hf
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        continue-on-error: true
-        with:
-          path: hf-cache
-          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
-          enableCrossOsArchive: true
-
-      - name: Prime HF_HOME with the GGUF
-        id: prime-hf
-        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
-        env:
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          python -m pip install --upgrade huggingface_hub
-          mkdir -p hf-cache
-          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
-          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
-
-      - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        # Save on main only: PR-scoped caches only serve that PR and evict main's shared copies
-        # from the near-full repo cache budget.
-        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: hf-cache
-          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
-          enableCrossOsArchive: true
-
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
         # npm >= 11 and Defender exclusions, which the install needs on the Windows image.
@@ -281,9 +249,47 @@ jobs:
       - name: Collect the PowerShell unit tests
         wait: [ps-uninstall-units, ps-modulepath-units, ps51-uninstall-guard]
 
+      # API-phase fixture: after the shared install, so a failed download costs the API phase
+      # only and the update phase still runs on the install, as when it was its own workflow.
+      # Cross-OS key: the hf-cache tree is byte-identical on every OS.
+      - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
+        id: cache-hf
+        if: ${{ !cancelled() && steps.shim.outcome == 'success' }}
+        timeout-minutes: 15
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: hf-cache
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
+
+      - name: Prime HF_HOME with the GGUF
+        id: prime-hf
+        timeout-minutes: 15
+        # Also on the silent restore-failure mode above.
+        if: ${{ !cancelled() && steps.shim.outcome == 'success' && (steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success') }}
+        env:
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p hf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
+
+      - name: Save HF_HOME for ${{ env.GGUF_REPO }}
+        # Save on main only: PR-scoped caches only serve that PR and evict main's shared copies
+        # from the near-full repo cache budget.
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: hf-cache
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
+
       - name: Install pyjwt for the JWT-expiry forge test
         id: api_pyjwt
-        if: ${{ !cancelled() && steps.shim.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.shim.outcome == 'success' && (steps.prime-hf.outcome == 'success' || steps.prime-hf.outcome == 'skipped') }}
         run: python -m pip install 'pyjwt>=2.6'
 
       - name: Reset auth + boot Unsloth (API-only)
@@ -325,16 +331,19 @@ jobs:
       # file: a llama-server.exe the API test loaded, or the studio process, would keep its files
       # open after a bash kill, so anything left is stopped, and the step fails if it cannot be.
       - name: Stop API-phase Unsloth
+        id: api_stop
         if: always()
         shell: pwsh
         run: |
-          if ($env:STUDIO_PID) { & bash -c "kill $env:STUDIO_PID 2>/dev/null || true" }
+          # The PID goes to bash as an argument, never into its source.
+          if ($env:STUDIO_PID -match '^[0-9]+$') { & bash -c 'kill "$1" 2>/dev/null || true' _ $env:STUDIO_PID }
           Start-Sleep -Seconds 2
-          # Anything executing from ~/.unsloth: the studio venv's python, llama-server, the shim.
-          $root = Join-Path $env:USERPROFILE '.unsloth'
+          # Anything executing from ~/.unsloth (the studio venv's python, llama-server, the shim),
+          # on a path-component boundary as uninstall.ps1 matches it: not ~/.unsloth-backup.
+          $root = (Join-Path $env:USERPROFILE '.unsloth').TrimEnd('\', '/')
           function Get-UnslothProcess {
             Get-Process -ErrorAction SilentlyContinue |
-              Where-Object { $_.Path -and $_.Path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase) }
+              Where-Object { $_.Path -and ($_.Path -ieq $root -or $_.Path -ilike "$root\*") }
           }
           Get-UnslothProcess | ForEach-Object {
             Write-Host "stopping leftover $($_.ProcessName) (pid $($_.Id)): $($_.Path)"
@@ -345,6 +354,12 @@ jobs:
           if ($left.Count) {
             $left | Format-Table Id, ProcessName, Path | Out-String | Write-Host
             throw "processes from ~/.unsloth still running after the API phase"
+          }
+          # A studio running from an interpreter outside ~/.unsloth escapes the path scan above.
+          $listen = @(Get-NetTCPConnection -LocalPort ([int]$env:STUDIO_PORT) -State Listen -ErrorAction SilentlyContinue)
+          if ($listen.Count) {
+            $listen | Format-Table LocalAddress, LocalPort, OwningProcess | Out-String | Write-Host
+            throw "port $env:STUDIO_PORT is still listening after the API phase"
           }
 
       - name: Upload API smoke logs
@@ -363,7 +378,9 @@ jobs:
       - name: First update should be a no-op (prebuilt already validated)
         id: update_first
         # Runs whether or not the API phase passed: each phase reports its own failure.
-        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' && steps.shim.outcome == 'success' }}
+        # As in the standalone update smoke: it needs green PowerShell units (collected there before
+        # the install) and an API phase that left nothing running.
+        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' && steps.shim.outcome == 'success' && steps.api_stop.outcome == 'success' && steps.ps-uninstall-units.outcome == 'success' && steps.ps-modulepath-units.outcome == 'success' && steps.ps51-uninstall-guard.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -389,6 +406,7 @@ jobs:
           echo "update path took the prebuilt fast path"
 
       - name: Update must keep the --no-torch install GGUF-only
+        id: update_gguf_only
         if: ${{ !cancelled() && steps.update_first.outcome == 'success' }}
         run: |
           # setup.ps1 must recover --no-torch from the manifest or it deletes its own venv. The skip
@@ -412,7 +430,7 @@ jobs:
 
       - name: Second update must also be a no-op
         id: update_second
-        if: ${{ !cancelled() && steps.update_first.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.update_gguf_only.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
