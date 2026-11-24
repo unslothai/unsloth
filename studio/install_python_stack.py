@@ -5904,7 +5904,6 @@ def _ensure_rocm_torch() -> "bool | None":
     if IS_WINDOWS:
         # An explicit ROCm pin overrides the per-arch index: retry the PINNED one, not repo.amd.com.
         _win_rocm_pin = _explicit_rocm_torch_index_url()
-        # install.ps1 / setup.ps1 honour UNSLOTH_FORCE_ROCM_TORCH too, so this no longer undoes them.
         if (
             _win_rocm_pin is None
             and _has_usable_nvidia_gpu()

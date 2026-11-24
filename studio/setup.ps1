@@ -3999,7 +3999,6 @@ $HasNvidiaDriverEvidence = $HasNvidiaSmi -and -not $script:NvidiaPresenceOnly
 $NvidiaGpuName = $null
 $NvidiaSmArch = $null
 $NvidiaDriverVersion = $null
-# In step with install.ps1's copies (install.sh's _cvd_hides_nvidia / _rocm_torch_explicitly_requested).
 function Test-CudaMaskHidesNvidia {
     if ($null -eq $env:CUDA_VISIBLE_DEVICES) { return $false }
     $mask = $env:CUDA_VISIBLE_DEVICES -replace '\s', ''
@@ -4008,7 +4007,7 @@ function Test-CudaMaskHidesNvidia {
 function Test-RocmTorchExplicitlyRequested {
     return ("$env:UNSLOTH_FORCE_ROCM_TORCH".Trim() -match '^(?i)(1|true|yes|on)$')
 }
-# Mirrors install.sh's _warn_if_cuda_mask_hides_amd: HIP reads the mask too.
+# install.sh _warn_if_cuda_mask_hides_amd: HIP reads the mask too.
 function Write-CudaMaskHidesAmdWarning {
     Write-StudioLine ""
     Write-StudioLine "[WARN] CUDA_VISIBLE_DEVICES=`"$env:CUDA_VISIBLE_DEVICES`" hid the NVIDIA GPU, so ROCm torch was selected." -ForegroundColor Yellow
@@ -4238,8 +4237,7 @@ function Resolve-ShadowingGfxPick {
     substep "Run 'setx HIP_VISIBLE_DEVICES $discreteIdx' and reopen your terminal so Unsloth uses $discreteArch at runtime too, not just at install time" "Cyan"
     return $discreteArch
 }
-# UNSLOTH_FORCE_ROCM_TORCH, or a mask hiding every NVIDIA device, hands a mixed host's torch to the
-# AMD card, as install.ps1 did; without them the AMD probe stays skipped, so an update keeps CUDA.
+# Only the flag or a hiding mask probes AMD beside NVIDIA, so a plain update keeps CUDA.
 $script:ProbeAmdBesideNvidia = $HasNvidiaSmi -and -not (Get-PinnedTorchIndexUrl) -and
     ((Test-RocmTorchExplicitlyRequested) -or $nvMaskHidesAll)
 if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
@@ -4611,7 +4609,7 @@ if ($script:ProbeAmdBesideNvidia) {
         if ((Test-RocmTorchExplicitlyRequested) -and $env:SKIP_STUDIO_BASE -ne "1") {
             substep "[WARN] UNSLOTH_FORCE_ROCM_TORCH is set, but no ROCm wheel index could be selected for this host; keeping CUDA." "Yellow"
         }
-        # NVIDIA keeps torch: forget the AMD card so the rest runs as it did before the probe.
+        # NVIDIA keeps torch: forget the AMD probe.
         $HasROCm = $false; $HipSdkInstalled = $false; $ROCmGpuLabel = $null; $ROCmGpuName = $null
         $script:ROCmGpuLabels = @(); $script:ROCmPeerLabels = @(); $script:ROCmGfxArch = $null
         $script:ROCmUnsupportedGfxArch = $null; $script:ROCmVersion = $null; $script:ROCmVersionFull = $null
