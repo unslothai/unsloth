@@ -10,6 +10,8 @@ settings changes the environment the tests run in, or grows a saved cache, witho
 """
 
 import pathlib
+import re
+import shlex
 
 import pytest
 import yaml
@@ -35,9 +37,42 @@ PARITY_ENV = {
     "UV_COMPILE_BYTECODE": "1",
     "UV_LINK_MODE": "copy",
     "UV_CACHE_DIR": "${{ runner.temp }}/uv-cache",
+    # No uv.toml / user config can add an index or change resolution (pip reads none either here).
+    "UV_NO_CONFIG": "1",
 }
-# The only pip calls left: pip upgrading itself and installing uv.
-PIP_ALLOWED = ("pip install --upgrade pip", 'pip install --target "$RUNNER_TEMP/uv-tool" uv')
+# The only pip calls left: pip upgrading itself and installing uv off PATH.
+PIP_ALLOWED = (["--upgrade", "pip"], ["--target", "$RUNNER_TEMP/uv-tool", "uv"])
+TORCH_INDEX = ["--index-url", "https://download.pytorch.org/whl/cpu"]
+PYPI_EXTRA = ["--extra-index-url", "https://pypi.org/simple"]
+_SEPARATORS = {";", "&&", "||", "|", "(", ")", "then", "do", "if", "!", "else", "fi", "done"}
+
+
+def _installs(run: str):
+    """(installer, args) for every `pip install` command in a run block, comments dropped."""
+    out = []
+    for line in run.replace("\\\n", " ").splitlines():
+        lexer = shlex.shlex(line, posix = True, punctuation_chars = True)
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            continue
+        segment = []
+        for token in tokens + [";"]:
+            if token not in _SEPARATORS:
+                segment.append(token)
+                continue
+            for i in range(1, len(segment)):
+                if segment[i] == "install" and segment[i - 1] in ("pip", "pip3"):
+                    before = segment[: i - 1]
+                    if before[-1:] in (["uv"], ["$UV"]):
+                        out.append(("uv", segment[i + 1 :]))
+                    else:
+                        out.append(("pip", segment[i + 1 :]))
+                    break
+            segment = []
+    return out
 
 
 def _step(workflow, job, name):
@@ -62,20 +97,40 @@ def test_uv_resolves_like_pip(workflow, job, name):
 @pytest.mark.parametrize("workflow,job,name", STEPS)
 def test_every_package_install_goes_through_uv(workflow, job, name):
     step, _ = _step(workflow, job, name)
-    run = str(step.get("run", ""))
-    installs = [line.strip() for line in run.splitlines() if "pip install" in line]
-    via_uv = [line for line in installs if "uv pip install" in line or '"$UV" pip install' in line]
-    assert via_uv, f"{workflow}:{job} {name!r} no longer installs through uv"
-    for line in installs:
-        if line in via_uv:
-            assert (
-                "--system" in line
-            ), f"{workflow}:{job}: {line!r} installs outside the job's Python"
+    installs = _installs(str(step.get("run", "")))
+    assert any(kind == "uv" for kind, _ in installs), f"{workflow}:{job} {name!r} no longer uses uv"
+    for kind, args in installs:
+        if kind == "pip":
+            assert args in PIP_ALLOWED, (
+                f"{workflow}:{job}: `pip install {' '.join(args)}` is a plain pip install next to "
+                f"uv ones; mixing the two resolvers in one sequence is how the environment drifts"
+            )
             continue
-        assert line.endswith(PIP_ALLOWED), (
-            f"{workflow}:{job}: {line!r} is a plain pip install next to uv ones; mixing the two "
-            f"resolvers in one sequence is how the environment drifts"
-        )
+        assert "--system" in args, f"{workflow}:{job}: uv install {args} skips the job's Python"
+        for override in ("--python", "-p", "--target", "--prefix"):
+            assert override not in args, f"{workflow}:{job}: uv install {args} sets {override}"
+
+
+@pytest.mark.parametrize("workflow,job,name", STEPS)
+def test_torch_comes_from_the_cpu_index_with_pypi_as_extra(workflow, job, name):
+    """Without the CPU index, uv picks the CUDA torch build and its CUDA wheels."""
+    step, _ = _step(workflow, job, name)
+    torch = [
+        a
+        for k, a in _installs(str(step.get("run", "")))
+        if k == "uv" and any(re.match(r"torch(?:$|[<>=!~\[;])", x) for x in a)
+    ]
+    assert torch, f"{workflow}:{job} no longer installs torch through uv"
+    for args in torch:
+        joined = " ".join(args)
+        assert (
+            " ".join(TORCH_INDEX) in joined and " ".join(PYPI_EXTRA) in joined
+        ), f"{workflow}:{job}: torch install {args} lost the CPU index or the PyPI extra index"
+
+
+def test_the_parser_sees_through_comments_and_continuations():
+    run = "# --system\nuv pip install foo\npip3 install bar\nif uv pip install --system \\\n  baz; then :; fi\n"
+    assert _installs(run) == [("uv", ["foo"]), ("pip", ["bar"]), ("uv", ["--system", "baz"])]
 
 
 @pytest.mark.parametrize("workflow,job,name", STEPS)
@@ -91,8 +146,16 @@ def test_the_uv_cache_is_never_saved(workflow, job, name):
 
 def test_the_pytest_job_keeps_uv_off_path():
     """The backend tests never had uv importable or on PATH; some skip without it."""
-    step, _ = _step(*STEPS[0])
+    step, steps = _step(*STEPS[0])
     run = str(step.get("run", ""))
-    assert '--target "$RUNNER_TEMP/uv-tool" uv' in run
+    assert ("pip", ["--target", "$RUNNER_TEMP/uv-tool", "uv"]) in _installs(run)
+    assert all(not (k == "uv" and "$UV" not in run) for k, _ in _installs(run))
     assert "uv pip install" not in run.replace('"$UV" pip install', "")
     assert str(step["env"]["UV"]) == "${{ runner.temp }}/uv-tool/bin/uv"
+    for s in steps:
+        body = str(s.get("run", ""))
+        assert not ("uv-tool" in body and "GITHUB_PATH" in body), f"{s.get('name')} puts uv on PATH"
+        assert "uv-tool" not in str((s.get("env") or {}).get("PATH", "")), s.get("name")
+        assert "uv-tool" not in str((s.get("env") or {}).get("PYTHONPATH", "")), s.get("name")
+        if s is not step:
+            assert ("pip", ["uv"]) not in _installs(body), f"{s.get('name')} installs uv on PATH"

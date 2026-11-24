@@ -180,6 +180,8 @@ jobs:
           UV_COMPILE_BYTECODE: '1'
           UV_LINK_MODE: copy
           UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+          # No uv.toml or user config may add an index or change how it resolves.
+          UV_NO_CONFIG: '1'
         run: |
           python -m pip install --upgrade pip
           uv pip install --system -r studio/backend/requirements/studio.txt
