@@ -4038,6 +4038,10 @@ def _safe_generation_assistant_update(
     conn: sqlite3.Connection, thread_id: str, message: dict
 ) -> bool:
     """Allow only monotonic writes to the assistant row owned by one run."""
+    message_id = str(message["id"])
+    # Checked first: a user row of a run never matches, so its join is skipped (same answer).
+    if str(message.get("role")) != "assistant":
+        return False
     row = conn.execute(
         """SELECT r.id AS run_id, r.status AS run_status, r.last_event_seq,
                   m.parent_id, m.role, m.content_json, m.metadata_json,
@@ -4045,20 +4049,31 @@ def _safe_generation_assistant_update(
            FROM chat_generation_runs r
            JOIN chat_messages m ON m.id = r.assistant_message_id
            WHERE r.thread_id = ? AND r.assistant_message_id = ?""",
-        (thread_id, str(message["id"])),
+        (thread_id, message_id),
     ).fetchone()
-    if row is None or str(message.get("role")) != "assistant":
+    if row is None:
         return False
     if (message.get("parentId") or None) != (row["parent_id"] or None):
         return False
     if int(message.get("createdAt", row["created_at"])) != int(row["created_at"]):
         return False
 
-    stored_attachments = json.loads(row["attachments_json"]) if row["attachments_json"] else None
-    if json.dumps(message.get("attachments"), sort_keys = True) != json.dumps(
-        stored_attachments, sort_keys = True
-    ):
-        return False
+    # The chat writers store json.dumps(value) with default settings, so an identical string is an
+    # identical value; only a differing string pays for the key-order-blind comparison.
+    incoming_attachments = message.get("attachments")
+    if row["attachments_json"]:
+        attachments_match = json.dumps(incoming_attachments) == row["attachments_json"]
+    else:
+        # No stored attachments compares as null, so only a null incoming value matches.
+        attachments_match = incoming_attachments is None
+    if not attachments_match:
+        stored_attachments = (
+            json.loads(row["attachments_json"]) if row["attachments_json"] else None
+        )
+        if json.dumps(incoming_attachments, sort_keys = True) != json.dumps(
+            stored_attachments, sort_keys = True
+        ):
+            return False
 
     incoming = message.get("metadata")
     stored = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
@@ -4080,10 +4095,13 @@ def _safe_generation_assistant_update(
         or incoming_seq > int(row["last_event_seq"])
     ):
         return False
-    if incoming_seq == stored_seq and json.dumps(
-        message.get("content", []), sort_keys = True
-    ) != json.dumps(json.loads(row["content_json"] or "[]"), sort_keys = True):
-        return False
+    if incoming_seq == stored_seq:
+        incoming_content = message.get("content", [])
+        stored_content_json = row["content_json"] or "[]"
+        if json.dumps(incoming_content) != stored_content_json and json.dumps(
+            incoming_content, sort_keys = True
+        ) != json.dumps(json.loads(stored_content_json), sort_keys = True):
+            return False
 
     # A settled terminal row is immutable; an old tab must not overwrite finish metadata.
     if stored.get("generationSettled") is True:
