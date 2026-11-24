@@ -55,7 +55,8 @@ def hand_over(name, dfd):
 
 
 for _, dirs, files, dfd in os.fwalk(top, follow_symlinks = False):
-    for name in dirs + files:
+    # Studio resumes only partials it owns; they are handed over once published as blobs.
+    for name in dirs + [f for f in files if not f.endswith(".incomplete")]:
         try:
             hand_over(name, dfd)
         except OSError:

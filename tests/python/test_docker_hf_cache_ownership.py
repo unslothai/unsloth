@@ -72,13 +72,14 @@ def _download_as_root(hub, outside):
         (hub / "models--x" / "blobs" / "f00").write_text("{}")
         (hub / "models--x" / "refs" / "main").write_text("abc")
         (hub / ".locks" / "models--x" / "f00.lock").write_text("")
+        (hub / "models--x" / "blobs" / "f01.incomplete").write_text("partial")
         outside.write_text("secret")
     finally:
         os.umask(old)
     os.symlink("../../blobs/f00", hub / "models--x" / "snapshots" / "abc" / "config.json")
     os.symlink(outside, hub / "models--x" / "escape")
     os.link(outside, hub / "models--x" / "hardlink")
-    return [p for p in [hub, *hub.rglob("*")] if p.name != "hardlink"]
+    return [p for p in [hub, *hub.rglob("*")] if p.name != "hardlink" and p.suffix != ".incomplete"]
 
 
 def _handed_over(path, uid):
@@ -111,6 +112,7 @@ def test_a_model_root_downloaded_into_a_host_owned_cache_is_handed_to_the_host_u
 
     assert [str(p) for p in entries if not _handed_over(p, 1000)] == []
     assert os.lstat(hf_home).st_gid == 1000
+    assert os.lstat(hf_home / "hub" / "models--x" / "blobs" / "f01.incomplete").st_uid == 0
     st = os.stat(outside)
     assert (st.st_uid, stat.S_IMODE(st.st_mode)) == (0, 0o600)
 
