@@ -4039,7 +4039,6 @@ def _safe_generation_assistant_update(
 ) -> bool:
     """Allow only monotonic writes to the assistant row owned by one run."""
     message_id = str(message["id"])
-    # Checked first: a user row of a run never matches, so its join is skipped (same answer).
     if str(message.get("role")) != "assistant":
         return False
     row = conn.execute(
@@ -4058,13 +4057,11 @@ def _safe_generation_assistant_update(
     if int(message.get("createdAt", row["created_at"])) != int(row["created_at"]):
         return False
 
-    # The chat writers store json.dumps(value) with default settings, so an identical string is an
-    # identical value; only a differing string pays for the key-order-blind comparison.
+    # Writers store default json.dumps, so equal strings mean equal values.
     incoming_attachments = message.get("attachments")
     if row["attachments_json"]:
         attachments_match = json.dumps(incoming_attachments) == row["attachments_json"]
     else:
-        # No stored attachments compares as null, so only a null incoming value matches.
         attachments_match = incoming_attachments is None
     if not attachments_match:
         stored_attachments = (

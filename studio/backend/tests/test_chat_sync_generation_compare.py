@@ -108,7 +108,6 @@ def _thread():
 
 
 def _turn(i, *, settle):
-    """One user turn and its generated reply; settle=False leaves the run streaming."""
     user_id, assistant_id, run_id = f"u{i}", f"a{i}", f"r{i}"
     studio_db.upsert_chat_message(
         {
@@ -165,7 +164,6 @@ def _reorder(value):
 
 
 def _variants(stored):
-    """Messages a tab might send for a stored reply: unchanged, reordered, and every kind of drift."""
     yield "unchanged", copy.deepcopy(stored)
     yield "key_order", _reorder(copy.deepcopy(stored))
     yield "content_tuple", {**copy.deepcopy(stored), "content": tuple(stored["content"])}
@@ -229,7 +227,6 @@ def test_guard_decisions_match_the_old_comparison(settle, attachments):
     conn = studio_db.get_connection()
     try:
         if attachments is not None:
-            # The guard never lets a tab add attachments to a run's reply, so seed them directly.
             conn.execute(
                 "UPDATE chat_messages SET attachments_json = ? WHERE id = 'a0'",
                 (json.dumps(attachments),),
@@ -239,7 +236,7 @@ def test_guard_decisions_match_the_old_comparison(settle, attachments):
         assert stored.get("attachments") == attachments
         for compact in (False, True):
             if compact:
-                # A row written by another serializer misses the string check and takes the full comparison.
+                # Another serializer's row takes the full comparison.
                 row = conn.execute(
                     "SELECT content_json, attachments_json FROM chat_messages WHERE id = 'a0'"
                 ).fetchone()
@@ -262,7 +259,6 @@ def test_guard_decisions_match_the_old_comparison(settle, attachments):
                 new = studio_db._safe_generation_assistant_update(conn, "t", message)
                 assert new == old, (name, compact)
                 decisions[name] = new
-            # Not vacuous: an unchanged reply passes and real drift is refused.
             assert decisions["unchanged"] and decisions["key_order"]
             assert not decisions["content_text"] and not decisions["role_user"]
             assert not decisions["attachments_new"]
