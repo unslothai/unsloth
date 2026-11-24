@@ -31,6 +31,12 @@ print("Traceback (most recent call last):")
 print({_UNMAPPED!r})
 sys.exit(1)
 """
+_CONVERTER_WITH_CHECKPOINT = """
+import os, sys
+ckpt = os.environ["_TEST_CHECKPOINT"]
+os.makedirs(ckpt)
+open(os.path.join(ckpt, "adapter_model.safetensors"), "wb").write(b"ckpt")
+""" + _CONVERTER_TODAY
 _CONVERTER_FUTURE = """
 import sys
 out = sys.argv[sys.argv.index("--outfile") + 1]
@@ -63,6 +69,7 @@ def _writer(tmp_path, converter_source):
     (llama_dir / "convert_lora_to_gguf.py").write_text(converter_source, encoding = "utf-8")
 
     def save_lora_to_custom_dir(model, tokenizer, directory):
+        os.makedirs(directory, exist_ok = True)
         (pathlib.Path(directory) / "adapter_model.safetensors").write_bytes(b"x" * 1024)
         (pathlib.Path(directory) / "adapter_config.json").write_text("{}", encoding = "utf-8")
 
@@ -93,7 +100,7 @@ def _writer(tmp_path, converter_source):
         "_lora_target_parameters",
         "_converter_error_line",
         "_lora_gguf_conversion_error",
-        "_remove_new_entries",
+        "_move_into",
     }
     exec(compile(ast.Module(_load(names), []), str(_SAVE), "exec"), namespace)
     return namespace["_unsloth_save_lora_gguf"]
@@ -122,11 +129,28 @@ def test_existing_files_in_the_save_folder_survive_a_failed_export(tmp_path):
     assert sorted(p.name for p in out_dir.iterdir()) == ["notes.txt"]
 
 
+def test_a_failed_export_leaves_what_another_writer_added_meanwhile(tmp_path, monkeypatch):
+    # A trainer writing checkpoint-<step> into the same folder while the converter runs (#19325 review).
+    out_dir = tmp_path / "export"
+    out_dir.mkdir()
+    monkeypatch.setenv("_TEST_CHECKPOINT", str(out_dir / "checkpoint-5"))
+    save = _writer(tmp_path, _CONVERTER_WITH_CHECKPOINT)
+    with pytest.raises(NotImplementedError):
+        save(_Peft(_EXPERTS), None, str(out_dir), outtype = "q8_0")
+    assert sorted(p.name for p in out_dir.iterdir()) == ["checkpoint-5"]
+    assert (out_dir / "checkpoint-5" / "adapter_model.safetensors").read_bytes() == b"ckpt"
+
+
 def test_expert_adapter_exports_once_the_converter_can_map_it(tmp_path):
     out_dir = tmp_path / "export"
     save = _writer(tmp_path, _CONVERTER_FUTURE)
     gguf = save(_Peft(_EXPERTS), None, str(out_dir), outtype = "q8_0")
     assert pathlib.Path(gguf).read_bytes() == b"GGUF"
+    assert sorted(p.name for p in out_dir.iterdir()) == [
+        "Inkling-2-Mini-lora-q8_0.gguf",
+        "adapter_config.json",
+        "adapter_model.safetensors",
+    ]
 
 
 def test_other_failures_name_the_converters_error():
