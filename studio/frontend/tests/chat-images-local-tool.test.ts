@@ -6,7 +6,7 @@
 // keeps the provider's own image_generation.
 
 import assert from "node:assert/strict";
-import { register } from "node:module";
+import { register, stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
@@ -204,4 +204,56 @@ test("a hidden or edit-only resident is not ready; one this account may use is",
     image: false,
     video: false,
   });
+});
+
+test("image swap skips audio and video turns before checking model status", async () => {
+  const source = readSrc("features/chat/api/chat-image-swap.ts");
+  const start = source.indexOf("export async function imageSwapForRequest(");
+  const end = source.indexOf("\nfunction sameSession(", start);
+  const imageSwapForRequest = new Function(
+    "chatImageSwapSelection",
+    stripTypeScriptTypes(source.slice(start, end).replace("export ", "")) +
+      "\nreturn imageSwapForRequest;",
+  )(() => assert.fail("a media question must stay on the normal chat path"));
+  const signal = new AbortController().signal;
+  for (const media of [{ video_base64: "clip" }, { audio_base64: "audio" }]) {
+    assert.equal(
+      await imageSwapForRequest({ enabled_tools: ["generate_image"], ...media }, signal),
+      null,
+    );
+  }
+});
+
+test("image swap replay sends the gallery reference and keeps the PNG out of model context", () => {
+  const source = readSrc("features/chat/api/chat-adapter.ts");
+  const start = source.indexOf("function serializeToolResultPart(");
+  const end = source.indexOf("\nfunction canReplayToolCallWithoutRoleTool(", start);
+  const serialize = new Function(
+    "getToolPartReplayMetadata",
+    "getToolReplayProvenance",
+    "toolModelSuffixExtraContent",
+    "isMcpUiToolResult",
+    "isMcpImageToolResult",
+    "isSearchImagesToolResult",
+    "isSandboxWrapper",
+    stripTypeScriptTypes(source.slice(start, end)) + "\nreturn serializeToolResultPart;",
+  )(
+    () => ({ isServerSideBuiltin: false }),
+    () => undefined,
+    () => ({}),
+    () => false,
+    () => false,
+    () => false,
+    () => false,
+  );
+  const part = {
+    toolName: "generate_image",
+    toolCallId: "call-1",
+    result: { image_b64: "PNG_BYTES", text: "Saved image /gallery/example" },
+  };
+  assert.equal(serialize(part).content, "Saved image /gallery/example");
+  assert.doesNotMatch(
+    serialize({ ...part, result: { image_b64: "PNG_BYTES" } }).content,
+    /PNG_BYTES/,
+  );
 });

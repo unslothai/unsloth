@@ -34,6 +34,9 @@ export async function imageSwapForRequest(
     body.enabled_tools[0] !== "generate_image" ||
     body.mcp_enabled ||
     body.deep_research_armed ||
+    body.video_base64 ||
+    body.audio_base64 ||
+    body.extra_audio_base64?.length ||
     body.provider_id ||
     body.external_model
   )

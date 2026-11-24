@@ -1262,6 +1262,15 @@ function serializeToolResultPart(
     // Backend ChatMessage rejects role="tool" with empty content; a sentinel JSON round-trips it.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
   } else if (
+    tc.toolName === "generate_image" &&
+    typeof result === "object" &&
+    "image_b64" in result &&
+    typeof result.image_b64 === "string"
+  ) {
+    content = "text" in result && typeof result.text === "string" && result.text
+      ? result.text
+      : "Generated an image.";
+  } else if (
     isMcpUiToolResult(result, tc.toolName ?? "") ||
     // Unwrap the live parser's exact {text, images} wrapper by shape, or JSON.stringify replays the
     // base64 as prompt text; a client tool's result with other fields keeps normal serialization.
@@ -8041,6 +8050,7 @@ export function createOpenAIStreamAdapter(
                       | {
                           image_b64: string;
                           image_mime: string;
+                          text?: string;
                           size?: string;
                           quality?: string;
                           background?: string;
@@ -8059,6 +8069,9 @@ export function createOpenAIStreamAdapter(
                       // The backend keeps base64 on separate image_b64 / image_mime fields to keep logs small.
                       parsedResult = {
                         image_b64: imageB64,
+                        ...(toolCallParts[idx].toolName === "generate_image"
+                          ? { text: rawResult }
+                          : {}),
                         image_mime:
                           (toolEvent.image_mime as string | undefined) ??
                           "image/png",
