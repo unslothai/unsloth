@@ -4720,8 +4720,6 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
     4-bit projection weight of the plan and each 4-bit routed expert stack replaced by this rank's shard as soon
     as transformers sets it (bitwise what apply_tensor_parallel cuts from a full load), so a rank holds its
     shards, the replicated tensors and the one tensor being converted. transformers 4.x loads in full."""
-    import os
-
     from .fsdp2_load import sharded_load_memory
 
     try:

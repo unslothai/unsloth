@@ -31,17 +31,15 @@ from test_pp_load_quantize_on_load_gloo import _load4  # noqa: E402
 
 def _record_warmup():
     """Replace caching_allocator_warmup with a recorder of the bytes it would reserve (and the async setting it
-    runs under); returns (records, undo)."""
+    runs under); returns (records, undo, modeling_utils, bypass). Setting bypass["on"] makes the recorder put
+    transformers' own set_param_for_module back after asking for the bytes: a load whose warmup planned the
+    stages but whose tensors never reach the pipeline setter."""
     from transformers import core_model_loading, modeling_utils as mu
 
-    if not callable(getattr(core_model_loading, "set_param_for_module", None)):
-        pytest.skip(
-            "transformers without core_model_loading.set_param_for_module (4.x) loads in full"
-        )
-    if not callable(mu.__dict__.get("get_total_byte_count")):
-        pytest.skip("transformers without get_total_byte_count")
     records = []
+    bypass = {"on": False}
     original = mu.caching_allocator_warmup
+    own_setter = core_model_loading.set_param_for_module
 
     def recorder(model, expanded_device_map, hf_quantizer):
         cuda = {n: torch.device("cuda", 0) for n in expanded_device_map}
@@ -52,13 +50,25 @@ def _record_warmup():
                 "async_off": os.environ.get("HF_DEACTIVATE_ASYNC_LOAD"),
             }
         )
+        if bypass["on"]:
+            core_model_loading.set_param_for_module = own_setter
 
     mu.caching_allocator_warmup = recorder
 
     def undo():
         mu.caching_allocator_warmup = original
 
-    return records, undo, mu
+    return records, undo, mu, bypass
+
+
+def _stage_bytes(model, rank):
+    """Independent of the loader under test: the bytes of the whole quantized model's parameters that the [4, 4]
+    split leaves on `rank` (its 4 layers, the final norm, the embedding on rank 0 or the head on rank 1)."""
+    owned = tuple(f"model.layers.{i}." for i in range(4 * rank, 4 * rank + 4))
+    owned += ("model.norm.", "model.embed_tokens." if rank == 0 else "lm_head.")
+    return sum(
+        p.numel() * p.element_size() for n, p in model.named_parameters() if n.startswith(owned)
+    )
 
 
 def _case(rank, world, ckpt):
@@ -66,20 +76,34 @@ def _case(rank, world, ckpt):
 
     ppl = _pp_load()
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))["pp"]
-    records, undo, mu = _record_warmup()
+    records, undo, mu, bypass = _record_warmup()
     counter = mu.get_total_byte_count
+    config = ppn.PPConfig(layers_per_stage = [4, 4])
     try:
         whole = _load4(ckpt)  # outside the pipeline context: the whole model
-        config = ppn.PPConfig(layers_per_stage = [4, 4])
         with ppl.pipeline_sharded_loading(mesh, schedule = "gpipe", config = config) as state:
             model = _load4(ckpt)
+        # The warmup plans the stages, then no tensor goes through the pipeline setter: refused, not registered.
+        bypass["on"] = True
+        bypass_error = None
+        try:
+            with ppl.pipeline_sharded_loading(mesh, schedule = "gpipe", config = config) as bstate:
+                _load4(ckpt)
+        except RuntimeError as exc:
+            bypass_error = str(exc)
     finally:
         undo()
+    expected = _stage_bytes(whole, rank)
+    whole_bytes = sum(p.numel() * p.element_size() for p in whole.parameters())
     del whole
     return {
         "records": records,
         "loaded": len(state["models"]),
         "kept_bytes": model.__dict__["_unsloth_pp_preload"]["kept_bytes"],
+        "expected_stage_bytes": expected,
+        "whole_bytes": whole_bytes,
+        "bypass_error": bypass_error,
+        "bypass_registered": len(bstate["models"]) if bypass_error is None else 0,
         "counter_restored": mu.get_total_byte_count is counter,
         "async_after": os.environ.get("HF_DEACTIVATE_ASYNC_LOAD"),
     }
@@ -118,6 +142,16 @@ def _worker(rank, world, port, tmp, ckpt):
 
 
 def test_pp_quantize_on_load_warms_only_this_ranks_stages():
+    # Capability checks in the parent, before a fixture is written or a rank spawned (transformers 4.x loads whole).
+    loading = pytest.importorskip("transformers.core_model_loading")
+    from transformers import modeling_utils as mu
+
+    if not callable(getattr(loading, "set_param_for_module", None)):
+        pytest.skip(
+            "transformers without core_model_loading.set_param_for_module (4.x) loads in full"
+        )
+    if not callable(mu.__dict__.get("get_total_byte_count")):
+        pytest.skip("transformers without get_total_byte_count")
     world = 2
     with tempfile.TemporaryDirectory() as tmp:
         ckpt = _save_checkpoint("llama", os.path.join(tmp, "ckpt"))
@@ -140,17 +174,22 @@ def test_pp_quantize_on_load_warms_only_this_ranks_stages():
             pytest.skip(r["error"])
         assert "error" not in r, r
     for r in res:
-        assert r["loaded"] == 1 and len(r["records"]) == 2, r
-        (plain, staged) = r["records"]
+        # The plain load, the pipeline load and the bypassed pipeline load each warm up once.
+        assert r["loaded"] == 1 and len(r["records"]) == 3, r
+        (plain, staged, _) = r["records"]
         # A load outside the pipeline context: the whole model, transformers' own async setting.
         assert plain["async_off"] is None, r
         # The pipeline load: synchronous, and only this rank's stages reserved.
         assert staged["async_off"] == "1", r
         assert 0 < staged["bytes"] < plain["bytes"], r
         assert r["counter_restored"] and r["async_after"] is None, r
-    whole = res[0]["records"][0]["bytes"]
-    assert res[1]["records"][0]["bytes"] == whole
-    # Each rank reserves what it keeps: its layers, the embedding or head of its stage (the final norm on both).
+        # A warmup that planned the stages does not stand in for the setter.
+        assert r["bypass_error"] and "set no tensor" in r["bypass_error"], r
+        assert r["bypass_registered"] == 0, r
+    whole = res[0]["whole_bytes"]
+    assert res[1]["whole_bytes"] == whole, res
+    # Each rank reserves what it keeps (its layers, the embedding or head of its stage, the final norm on both),
+    # checked against the whole model's parameters, not the estimator under test.
     for r in res:
-        assert r["records"][1]["bytes"] == r["kept_bytes"], r
-    assert sum(r["records"][1]["bytes"] for r in res) < 1.01 * whole, [r["records"] for r in res]
+        assert r["records"][1]["bytes"] == r["expected_stage_bytes"] == r["kept_bytes"], r
+    assert sum(r["records"][1]["bytes"] for r in res) < 1.01 * whole, res

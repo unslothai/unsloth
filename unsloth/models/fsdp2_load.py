@@ -342,6 +342,31 @@ def _keep_chunk(module, p, world, rank, ranks):
 _ASYNC_LOAD_ENV = "HF_DEACTIVATE_ASYNC_LOAD"
 
 
+def _kept_byte_count(
+    model,
+    device_map,
+    hf_quantizer = None,
+):
+    """Bytes each device holds for the parameters in device_map, counted whole: what a pipeline stage retains.
+    transformers' own get_total_byte_count (5.0-5.18) divides every parameter its tp_plan names by the world size
+    once a process group is up, which undercounts a stage that keeps those weights unsplit. Tied weights count
+    once and a DTensor counts its local shard, as upstream does."""
+    tied = getattr(model, "all_tied_weights_keys", None) or {}
+    counts = collections.defaultdict(int)
+    for name, device in device_map.items():
+        if name in tied:
+            continue
+        param = model.get_parameter_or_buffer(name)
+        if hf_quantizer is not None:
+            size = hf_quantizer.param_element_size(model, name, param)
+        else:
+            size = param.element_size()
+        local = getattr(param, "_local_tensor", None)
+        numel = local.numel() if isinstance(local, torch.Tensor) else param.numel()
+        counts[device] += numel * size
+    return counts
+
+
 def _shard_allocator_warmup(world, keep = None):
     """transformers 5 reserves the whole (quantized) model on each GPU before loading (caching_allocator_warmup,
     capped by total, not free, memory), which can OOM a rank that only keeps part of it. For a sharded load size it
@@ -364,7 +389,7 @@ def _shard_allocator_warmup(world, keep = None):
                 except Exception:
                     kept = None  # no stage plan for this model: the 1/world floor below
                 if kept is not None:
-                    return counter(model, kept, *args, **kwargs)
+                    return _kept_byte_count(model, kept, *args, **kwargs)
             counts = counter(model, device_map, *args, **kwargs)
             for device in list(counts):
                 counts[device] = -(-int(counts[device]) // world)
