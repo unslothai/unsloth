@@ -1913,6 +1913,13 @@ def _native_sdpa_fused_serves(
         return False
 
 
+def block_activation_bytes(hidden: int, inner: int, width: int, elem: int) -> tuple[int, int]:
+    """(per-query, per-key) token bytes of a DiT block's widest activations, fused SDPA; ``width`` = key hidden size."""
+    per_query = (11 * int(hidden) + 3 * int(inner)) * int(elem) + 2 * int(inner) * 4
+    per_key = (int(width) + 2 * int(inner)) * int(elem)
+    return per_query, per_key
+
+
 def _rocm_flash_probe_bytes(
     geometry: tuple,
     tokens: int,
@@ -1931,8 +1938,7 @@ def _rocm_flash_probe_bytes(
     inner = heads * head_dim
     elem = getattr(dtype, "itemsize", 2) or 2
     weights = (4 * inner * hidden + 8 * hidden * hidden + 2 * inner * width) * elem
-    per_query = (11 * hidden + 3 * inner) * elem + 2 * inner * 4
-    per_key = (width + 2 * inner) * elem
+    per_query, per_key = block_activation_bytes(hidden, inner, width, elem)
     fused = _native_sdpa_fused_serves(device, dtype, heads, head_dim, tokens, kv_tokens, batch)
     scores = 0 if fused else 2 * batch * heads * tokens * kv_tokens * 4
     return weights + batch * (tokens * per_query + kv_tokens * per_key) + scores
