@@ -5444,6 +5444,21 @@ def _video_group_hooked(module: Any) -> bool:
     return False
 
 
+def _video_calibration_companions(pipe: Any) -> dict[str, str]:
+    """The peak calibration key's run-once companion entry: whether the LTX-2 text connectors stream or sit resident
+    (a resident sample omits their streamed window, so the two placements never share peaks). Empty without them,
+    leaving every other family's key as it was."""
+    try:
+        from .diffusion_memory import run_once_companions
+        companions = run_once_companions(pipe)
+    except Exception:  # noqa: BLE001 -- unreadable: the key as before
+        return {}
+    if not companions:
+        return {}
+    streamed = any(_video_group_hooked(m) for m in companions.values())
+    return {"run_once_companions": "streamed" if streamed else "resident"}
+
+
 def _video_offload_vram_floor_mib(
     pipe: Any,
     plan: Any,
@@ -15206,6 +15221,7 @@ class VideoBackend:
                         last_frame = last_pil is not None,
                         references = len(references or ()),
                         cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
+                        **_video_calibration_companions(state.pipe),
                     )
                     # Tag BEFORE the residency fit: after a reload the fit reads process-wide peaks through this key.
                     video_stream_residency.arm_request(

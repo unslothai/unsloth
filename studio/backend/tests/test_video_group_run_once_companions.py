@@ -363,3 +363,35 @@ def test_video_streamed_companion_mib_is_ltx25_on_a_discrete_cuda_card(monkeypat
     monkeypatch.delenv(_GROUP_ENV)
     monkeypatch.setattr(hp, "host_pinning_allowed", lambda *a, **k: False)
     assert _video_streamed_companion_mib(ltx25, cuda) == 0
+
+
+# ── peak calibration key ───────────────────────────────────────────────────────
+
+
+def test_calibration_key_separates_streamed_and_resident_connectors(monkeypatch):
+    import core.inference.video as video
+
+    pipe = _pipe()
+    monkeypatch.setattr(video, "_video_group_hooked", lambda module: True)
+    streamed = video._video_calibration_companions(pipe)
+    monkeypatch.setattr(video, "_video_group_hooked", lambda module: False)
+    resident = video._video_calibration_companions(pipe)
+    assert streamed == {"run_once_companions": "streamed"}
+    assert resident == {"run_once_companions": "resident"}
+    from core.inference.video_stream_residency import calibration_key
+
+    assert calibration_key("ltx-2.5", "r", "group", "cuda:0", **streamed) != calibration_key(
+        "ltx-2.5", "r", "group", "cuda:0", **resident
+    )
+
+
+def test_calibration_key_is_unchanged_without_run_once_companions():
+    import inspect
+
+    import core.inference.video as video
+
+    pipe = _pipe()
+    del pipe.components["connectors"]
+    assert video._video_calibration_companions(pipe) == {}
+    # the request path keys its peaks with the entry
+    assert "**_video_calibration_companions(state.pipe)" in inspect.getsource(video)
