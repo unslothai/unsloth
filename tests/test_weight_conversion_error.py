@@ -1,8 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""transformers 5.x logs each tensor's conversion failure in its load report and raises a RuntimeError that only
-says "look at the CONVERSION entries of the above report". explain_weight_conversion_error recovers the first
-failure from the report's LoadStateDictInfo, so a CUDA out-of-memory reaches the caller as one."""
 
 import ast
 import pathlib
@@ -74,5 +71,4 @@ def test_unrelated_errors_are_left_alone():
     explain = _explain()
     assert explain(RuntimeError("something else")) is None
     assert explain(ValueError(_CONVERSION_MESSAGE)) is None
-    # The message without a reachable report: nothing better to say.
     assert explain(RuntimeError(_CONVERSION_MESSAGE)) is None

@@ -815,10 +815,7 @@ def planner_model_class(config, trust_remote_code = False):
 
 
 def explain_weight_conversion_error(error):
-    """transformers 5.x catches each tensor's conversion failure (a CUDA out-of-memory among them) into the load
-    report, which it only logs, then raises a RuntimeError pointing at "the `CONVERSION` entries of the above
-    report". Returns the first recorded failure as the error to raise instead (``torch.OutOfMemoryError`` for an
-    out-of-memory), or None when ``error`` is not that RuntimeError or the report cannot be found."""
+    """The first failure transformers 5.x only logged (a CUDA OOM among them) before its generic RuntimeError, else None."""
     if not isinstance(error, RuntimeError) or "automatic conversion of the weights" not in str(
         error
     ):

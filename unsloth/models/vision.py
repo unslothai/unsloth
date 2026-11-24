@@ -4556,8 +4556,7 @@ class FastBaseModel:
         _planner_skip_reason = None
         _planner_config = auto_config if text_only_decoder else None
         _planner_config_reason = "text_only loads a decoder the repo config does not describe"
-        # Inkling 2: config.json names a "modelopt" quantization the planner refuses ("Unknown quantization type"),
-        # so it fell back to a split that overfilled the smaller card; auto_config has that marker dropped.
+        # Inkling 2: the planner refuses config.json's "modelopt" quantization; auto_config has that marker dropped.
         if _planner_config is None and _is_inkling2_config(auto_config):
             _planner_config = auto_config
             _planner_config_reason = (
