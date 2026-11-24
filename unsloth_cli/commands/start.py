@@ -2371,6 +2371,15 @@ def _pin_loaded_quant(
     return {**entry, "id": pinned} if sibling or alone else entry
 
 
+def _pin_served_quant(base: str, key: str, entry: dict, variant: str) -> dict:
+    # A low-disk fallback can serve another quant than the one asked for: pin what runs.
+    named = _inference_status(base, key, f"{entry.get('id')}:{variant}")
+    if str(named.get("gguf_variant") or "").casefold() != variant.casefold():
+        named = _inference_status(base, key, entry["id"])
+        variant = named.get("gguf_variant") or variant
+    return _pin_loaded_quant(entry, _loaded_models(base, key), variant, bool(named.get("is_gguf")))
+
+
 def _resolve_model(
     base: str,
     key: str,
@@ -5425,8 +5434,7 @@ def _connect(
             infer_resident = server is None,
         )
         if load.gguf_variant:
-            gguf = bool(_inference_status(base, key, entry["id"]).get("is_gguf"))
-            entry = _pin_loaded_quant(entry, _loaded_models(base, key), load.gguf_variant, gguf)
+            entry = _pin_served_quant(base, key, entry, load.gguf_variant)
         status = _inference_status(base, key, entry["id"]) if model else {}
         # A GGUF can be active while the resolved entry is another resident model.
         if status.get("memory_warning") and any(

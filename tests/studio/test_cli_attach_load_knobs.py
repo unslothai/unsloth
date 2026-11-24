@@ -1257,3 +1257,18 @@ def test_a_named_quant_beside_its_twin_is_pinned_by_its_own_id():
     assert pin({"id": repo}, twins[:1], "Q4_K_M")["id"] == repo
     assert pin({"id": repo}, twins[:1], "Q4_K_M", gguf = True)["id"] == f"{repo}:Q4_K_M"
     assert pin({"id": "qwen.gguf"}, [], "Q4_K_M", gguf = True)["id"] == "qwen.gguf"
+
+
+def test_a_low_disk_fallback_pins_the_quant_that_is_served(monkeypatch):
+    repo = RESIDENT["id"]
+    served = {f"{repo}:Q4_K_M": "Q4_K_M", repo: "Q4_K_M"}
+    monkeypatch.setattr(
+        start_cli,
+        "_inference_status",
+        lambda base, key, model = None: {"is_gguf": True, "gguf_variant": served.get(model)},
+    )
+    monkeypatch.setattr(
+        start_cli, "_loaded_models", lambda base, key: [{"id": repo, "loaded": True}]
+    )
+    assert start_cli._pin_served_quant(BASE, KEY, {"id": repo}, "Q8_0")["id"] == f"{repo}:Q4_K_M"
+    assert start_cli._pin_served_quant(BASE, KEY, {"id": repo}, "Q4_K_M")["id"] == f"{repo}:Q4_K_M"
