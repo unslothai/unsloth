@@ -2975,7 +2975,6 @@ def test_our_own_wrapper_is_still_handed_straight_back():
 
 
 def _counted_hf_stream(n, width):
-    """A `datasets.IterableDataset` tokenized by a batched map, counting the source rows it pulls."""
     import datasets
 
     pulled = {"rows": 0, "batches": 0}
@@ -3004,9 +3003,7 @@ def _chain_depth(dataset):
 
 
 def test_a_streamed_eval_split_is_capped_once_per_evaluate():
-    """evaluate() and get_eval_dataloader both cap, and a stream has no fingerprint to re-recognise
-    the first cap by, so the second re-probed one more upstream batch (the whole split when it is
-    under one batch) and stacked a second slice + filter. The view the first cap built is trusted."""
+    """evaluate() and get_eval_dataloader both cap; the second must trust the first's stream view."""
     from unsloth.models.rl import _wrap_sft_evaluate_cap
 
     cap, n = 16, 300
@@ -3053,8 +3050,7 @@ def test_a_streamed_eval_split_is_capped_once_per_evaluate():
 
 
 def test_only_a_stream_the_cap_built_is_trusted_without_a_fingerprint():
-    """The caller's own stream can be changed under the same identity, so its mark never stands in
-    for a rescan; nor does a map-style copy get the flag, as its fingerprint already answers."""
+    """A caller's stream can mutate under the same identity, so its mark never skips a rescan."""
     from datasets import Dataset
 
     from unsloth.models import rl

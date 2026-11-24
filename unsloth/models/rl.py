@@ -1420,7 +1420,7 @@ def _mark_capped(dataset, cap, drop_unsupervised):
     return dataset
 
 
-# Set on a lazy stream view that _cap itself built with map/filter. Nobody else holds that object, and every row it yields passes through the slice and filter it was built with, whatever happens upstream, so the mark cannot go stale. A stream carries no _fingerprint, so without this the get_eval_dataloader half of one evaluate() call re-probed and re-capped it: one more upstream batch re-tokenized and a second slice + filter stacked on.
+# Marks a stream view _cap built: its rows always pass its own slice + filter, so the mark cannot go stale. Streams lack _fingerprint; without this get_eval_dataloader re-probed and stacked a second cap.
 _CAP_OWN_STREAM_ATTR = "_unsloth_cap_own_stream"
 
 
@@ -1887,7 +1887,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                     new = new if len(kept) == len(new) else kept
                 except Exception:
                     new = kept
-            # Only a stream we just built: the caller's own split never gets this, and a map-style copy is already re-recognised by its fingerprint.
+            # Never the caller's split; map-style copies use their fingerprint.
             if new is not dataset and _is_stream(new):
                 _mark_own_stream(new)
             return _mark_capped(new, cap, drop_unsupervised)
