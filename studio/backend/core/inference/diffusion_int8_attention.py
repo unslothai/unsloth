@@ -432,17 +432,24 @@ def triton_available() -> bool:
     try:
         from . import diffusion_int8_attention_triton as triton_kernel
 
-        if triton_kernel.triton is None:
-            return False
-        # NVIDIA Triton 3.3 cannot compile the Q / K rotation ('tt.join' op); a rewrite that does was 1.3-2.9x
-        # slower than native attention (L4, A100), so the race would keep native anyway.
-        try:
-            version = tuple(int(x) for x in triton_kernel.triton.__version__.split(".")[:2])
-        except Exception:  # noqa: BLE001 -- unparsable: read as a current Triton
-            return True
-        return not (version == (3, 3) and not triton_kernel._rocm_build())
+        # NVIDIA Triton 3.3 compiles the join-free rotation (``join_free_rotation``); the race still decides
+        return triton_kernel.triton is not None
     except Exception:  # noqa: BLE001
         return False
+
+
+def triton_decline(index: int, head_dim: int) -> str:
+    """Why the Triton kernel does not stand in on this device and head dim (for the fallback's log line)."""
+    if impl_setting() == "cuda":
+        return f"{IMPL_ENV}=cuda"
+    if not triton_available():
+        return "Triton is not installed"
+    try:
+        import torch
+        capability = tuple(torch.cuda.get_device_capability(index))
+    except Exception:  # noqa: BLE001
+        return "no Triton config for this card"
+    return f"no Triton config for sm_{capability[0]}{capability[1]} head_dim={int(head_dim)}"
 
 
 def _serving(index: int, head_dim: int) -> tuple:
@@ -1994,7 +2001,7 @@ def verdict(
                     "ms": {},
                     "min_tokens": None,
                     "impl": None,
-                    "error": _CUDA_FAILED.get((index, hd)) or "no kernel for this card",
+                    "error": _no_kernel_reason(index, hd),
                 }
                 _VERDICTS[key] = found
             if found is None:
@@ -2021,10 +2028,19 @@ def verdict(
                     found.get("error"),
                     "trying the Triton kernel"
                     if implementation(index, hd) == "triton"
-                    else "native attention",
+                    else f"native attention ({triton_decline(index, hd)})",
                 )
                 continue
             return found
+
+
+def _no_kernel_reason(index: int, head_dim: int) -> str:
+    """Why no kernel serves this device and head dim: the CUDA kernel's failure and why Triton cannot stand in."""
+    if _is_rocm():
+        return "no ROCm config for this card"
+    cuda = _CUDA_FAILED.get((index, head_dim))
+    triton = f"Triton: {triton_decline(index, head_dim)}"
+    return f"{cuda}; {triton}" if cuda else f"no kernel for this card ({triton})"
 
 
 def _head_dim(attn: Any) -> Optional[int]:
@@ -2223,7 +2239,7 @@ def _install(
             card, heads, head_dim, name = key if len(key) == 4 else (index, *key)
             logger.info(
                 "diffusion.int8_attention: cuda:%d heads=%d head_dim=%d vs %s: impl=%s ok=%s cos=%s ms=%s "
-                "min_tokens=%s%s%s%s",
+                "min_tokens=%s%s%s%s%s",
                 card,
                 heads,
                 head_dim,
@@ -2242,6 +2258,7 @@ def _install(
                     else ""
                 ),
                 " (forced)" if force else "",
+                f" error={found['error']}" if found.get("error") else "",
             )
         if engaged:
             logger.info(
