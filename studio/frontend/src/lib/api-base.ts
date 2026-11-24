@@ -82,4 +82,30 @@ export function protectedBackendPath(url: string): string | null {
     : null
 }
 
+// The media a reply image may load with the session: gallery files and video frames. Other routes can forward
+// their query to a third party (the Hub relay) or act on it, so an image naming one is never fetched.
+// The first /api or /v1 segment is the backend's, so a relay path that nests one cannot pass.
+export function protectedBackendMediaPath(url: string): string | null {
+  const path = protectedBackendPath(url)
+  if (path === null) return null
+  const at = path.search(/\/(?:api|v1)\//)
+  return at >= 0 &&
+    /^\/(?:api|v1)\/(?:inference\/)?(?:images|video|audio)\/gallery\/[^/?#]+\/(?:file|frame)(?:\?[^#]*)?$/.test(
+      path.slice(at),
+    )
+    ? path
+    : null
+}
+
+/** A URL naming one of this backend's /api or /v1 routes, however it is spelled. */
+export function isBackendRouteUrl(url: string): boolean {
+  if (!isStudioUrl(url)) return false
+  const page = typeof window === 'undefined' ? 'http://localhost/' : window.location.href
+  try {
+    return /\/(?:api|v1)(?:\/|$)/.test(new URL(url, apiBase || page).pathname)
+  } catch {
+    return false
+  }
+}
+
 export { isTauri }
