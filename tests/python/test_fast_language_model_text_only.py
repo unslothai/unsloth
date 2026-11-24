@@ -1,13 +1,28 @@
 """Text-only FastLanguageModel routing for vision-capable configs."""
 
 import ast
+import sys
+import importlib.util
 import copy
 from pathlib import Path
 
 import pytest
-from source_segments import (
-    cached_source_segment,
-)  # tests/_shared, on sys.path via tests/conftest.py
+
+
+def _load_source_segments():
+    """tests/_shared/source_segments.py, by path: collects without tests/conftest.py too."""
+    name = "unsloth_tests_shared_source_segments"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).resolve().parents[1] / "_shared" / "source_segments.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+cached_source_segment = _load_source_segments().cached_source_segment
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

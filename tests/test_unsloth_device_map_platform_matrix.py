@@ -4,15 +4,30 @@
 """Across hosts and accelerators, the sentinel never escapes and other device maps are untouched."""
 
 import ast
+from pathlib import Path
+import importlib.util
 import itertools
 import os
 import sys
 import types
 
 import pytest
-from source_segments import (
-    cached_source_segment,
-)  # tests/_shared, on sys.path via tests/conftest.py
+
+
+def _load_source_segments():
+    """tests/_shared/source_segments.py, by path: collects without tests/conftest.py too."""
+    name = "unsloth_tests_shared_source_segments"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).resolve().parent / "_shared" / "source_segments.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+cached_source_segment = _load_source_segments().cached_source_segment
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOADER_UTILS = os.path.join(HERE, "unsloth", "models", "loader_utils.py")
