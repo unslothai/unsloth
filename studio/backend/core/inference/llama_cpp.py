@@ -7863,6 +7863,11 @@ _PINNED_HOST_SAFE_FRAC_WINDOWS = 0.4
 _SMALL_CARD_SINGLE_SLOT_MIB = 12 * 1024
 # Below this a prompt cache cannot hold a useful saved state; 0 turns it off instead.
 _CACHE_RAM_MIN_USEFUL_MIB = 256
+# Share of the room a lowered --cache-ram may take on Windows CUDA (WDDM sysmem fallback): the
+# driver spills over-budget VRAM into the same RAM and the desktop compositor holds more of it,
+# so a tight host keeps half of that room free. Puts the 8 GB + 16 GB Inkling-2-Mini plan's
+# projected peak under 9 GiB, as on Linux.
+_CACHE_RAM_LOWERED_SHARE_SYSMEM = 0.5
 
 
 def _prompt_cache_host_bytes(
@@ -17350,12 +17355,16 @@ class LlamaCppBackend:
         return None
 
     def _sized_cache_ram_mib(
-        self, fit_kwargs: Mapping[str, Any], state_bytes: int
+        self,
+        fit_kwargs: Mapping[str, Any],
+        state_bytes: int,
+        *,
+        sysmem_fallback: bool = False,
     ) -> Optional[int]:
         """Largest --cache-ram up to one saved full-context state (target + draft + checkpoints,
         server-task.cpp skips a bigger one) the fit still holds; None keeps the default. When
         the default itself does not fit beside the load, the largest size below it that does
-        (0 turns the cache off)."""
+        (0 turns the cache off); with ``sysmem_fallback`` (Windows CUDA) only a share of it."""
         mib = 1024 * 1024
         avail = self._available_system_memory_mib()
         if avail is not None:
@@ -17389,6 +17398,8 @@ class LlamaCppBackend:
                     low = mid
                 else:
                     high = mid - 1
+            if sysmem_fallback:
+                low = int(low * _CACHE_RAM_LOWERED_SHARE_SYSMEM)
             return low if low >= _CACHE_RAM_MIN_USEFUL_MIB else 0
         high = -(-state_bytes // mib)
         while low < high:
@@ -17516,6 +17527,19 @@ class LlamaCppBackend:
 
     # Only ever reassigned, so the shared default is safe; the --cache-ram pair this launch sized.
     _sized_cache_ram_flags: list[str] = []
+
+    def _retry_dropped_cache_ram_flags(self) -> list[str]:
+        """The sized --cache-ram pair a retry that gives up the fit's proof drops: only a raise
+        above the default rested on that proof. A lowered cache (or "auto", which never raises)
+        is the safe side of host RAM, so a retry keeps it instead of going back to the default."""
+        flags = list(self._sized_cache_ram_flags or ())
+        if not flags:
+            return []
+        try:
+            raised = int(str(flags[-1]).strip()) > _LLAMA_CACHE_RAM_DEFAULT_MIB
+        except (TypeError, ValueError):
+            raised = False
+        return flags if raised else []
 
     # Chosen by measurement: dio was fastest cold on large models; kept at none because that was
     # requested. dio has no pre-enum spelling, so old builds would emit nothing.
@@ -25056,7 +25080,7 @@ class LlamaCppBackend:
         if replay is None:
             return None
         # Replay runs on no GPU, so give the CPU attempt llama.cpp's auto mmap back.
-        replay = _without_subsequence(replay, self._sized_cache_ram_flags)
+        replay = _without_subsequence(replay, self._retry_dropped_cache_ram_flags())
         if self._fit_load_mode_flags:
             replay = _without_subsequence(replay, self._fit_load_mode_flags)
             logger.info(
@@ -30696,6 +30720,7 @@ class LlamaCppBackend:
                             _cache_fit["kv_cache_bytes"]
                             + _cache_fit["mtp_bytes"]
                             + _ckpt_host_bytes,
+                            sysmem_fallback = self._sysmem_fallback_risk(binary),
                         )
                         if (
                             _planned_cache_ram is not None
@@ -33130,7 +33155,7 @@ class LlamaCppBackend:
 
                 def _drop_fit_load_mode_for_no_flash(fa_cmd: list) -> list:
                     """Drops Unsloth's --load-mode on a --flash-attn off respawn (OOM instead of paging); do NOT clear the record, since the CPU fallback replays these tokens."""
-                    fa_cmd = _without_subsequence(fa_cmd, self._sized_cache_ram_flags)
+                    fa_cmd = _without_subsequence(fa_cmd, self._retry_dropped_cache_ram_flags())
                     if not self._fit_load_mode_flags:
                         return fa_cmd
                     stripped = _without_subsequence(fa_cmd, self._fit_load_mode_flags)
@@ -33730,7 +33755,7 @@ class LlamaCppBackend:
                             # the load fits, and that proof is what just failed, so
                             # give the retry llama.cpp's auto back. Only Unsloth's
                             # own tokens; a user's --load-mode is untouched.
-                            _run = _without_subsequence(_run, self._sized_cache_ram_flags)
+                            _run = _without_subsequence(_run, self._retry_dropped_cache_ram_flags())
                             if self._fit_load_mode_flags:
                                 _run = _without_subsequence(_run, self._fit_load_mode_flags)
                                 # The record is NOT cleared: it describes `cmd`, which
@@ -34588,8 +34613,10 @@ class LlamaCppBackend:
                         self._record_load_warning(_retry_host_msg)
                         # Restore what cmd means: a --fit retry may have recorded a page-lock that cmd never carried.
                         _fit_mode_left_cmd = bool(self._fit_load_mode_flags)
-                        cmd = _without_subsequence(cmd, self._sized_cache_ram_flags)
-                        self._sized_cache_ram_flags = []
+                        _dropped_cache_ram = self._retry_dropped_cache_ram_flags()
+                        cmd = _without_subsequence(cmd, _dropped_cache_ram)
+                        if _dropped_cache_ram:
+                            self._sized_cache_ram_flags = []
                         if self._fit_load_mode_flags:
                             cmd = _without_subsequence(cmd, self._fit_load_mode_flags)
                             self._fit_load_mode_flags = []
@@ -35226,7 +35253,7 @@ class LlamaCppBackend:
                             # the fallbacks below respawn from an argv that carries these
                             # tokens and has to be able to name them.
                             _cpu_projector_cmd = _without_subsequence(
-                                _cpu_projector_cmd, self._sized_cache_ram_flags
+                                _cpu_projector_cmd, self._retry_dropped_cache_ram_flags()
                             )
                             if self._fit_load_mode_flags:
                                 _stripped_cpu_projector_cmd = _without_subsequence(
