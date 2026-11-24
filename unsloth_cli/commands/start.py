@@ -5534,14 +5534,16 @@ def _remember_start(base: str, entry: dict) -> None:
     )
     subagent = ctx.params.get("as_subagent") or ctx.params.get("auto_route")
     args = _typed_options(ctx)
-    # Subagent entries carry the resident's quant (org/name:Q8_0); keep it over a bare request.
-    if positional and "--gguf-variant" not in args:
-        if _split_repo_variant(entry["id"])[0] == positional:
-            positional = entry["id"]
+    # A path-loaded resident's public id is a bare name that would resolve to unsloth/<name>.
+    model = positional or (entry["id"] if _looks_like_model(entry["id"]) else None)
+    # Pin the resident's quant: subagent entries carry it in the id, primary ones as "quant".
+    resident, quant = _split_repo_variant(entry["id"])
+    quant = quant or entry.get("quant")
+    if model and quant and model == resident and "--gguf-variant" not in args:
+        model = f"{resident}:{quant}"
     last = {
         "agent": agent,
-        # A path-loaded resident's public id is a bare name that would resolve to unsloth/<name>.
-        "model": positional or (entry["id"] if _looks_like_model(entry["id"]) else None),
+        "model": model,
         "args": args,
         # Subagent modes keep the user's own Pi dir, and link the user's Codex sessions dir.
         "kept": bool(

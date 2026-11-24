@@ -10439,6 +10439,15 @@ def test_continue_codex_subagent_kept_only_with_shared_sessions(
     assert json.loads((tmp_path / "last_start.json").read_text())["kept"] is has_sessions
 
 
+def test_continue_pins_a_primary_residents_quant(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    fake_studio.state["models"] = [{**MODEL, "quant": "Q8_0"}]
+    _capture_launch(monkeypatch, ["claude"])
+    last = json.loads((tmp_path / "last_start.json").read_text())
+    assert last["model"] == f"{MODEL['id']}:Q8_0"
+
+
 def test_continue_refuses_a_session_that_was_not_kept(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/hermes")
     _capture_launch(monkeypatch, ["hermes"])
