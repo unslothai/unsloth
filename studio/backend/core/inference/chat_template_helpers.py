@@ -1949,13 +1949,18 @@ class InklingMessageNormalizer(ReasoningChannelNormalizer):
 
     _CONTROLS = (_INKLING_MESSAGE_END, _INKLING_TOOL_CALL_OPEN, _INKLING_THOUGHT_OPEN)
 
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self,
+        *args,
+        continued: bool = False,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._header = ""
         self._role_partial = ""
         # The generation prompt ends with <|message_model|>, so the stream starts inside a header
-        # unless the prompt already opened the thought.
-        self._in_header = not self._in_reasoning
+        # unless the prompt already opened the thought or a continued message's content.
+        self._in_header = not (self._in_reasoning or continued)
         self._held = ""
         self._in_tool_call = False
 
@@ -2208,12 +2213,17 @@ class RecipientChannelNormalizer:
         return output
 
 
-def make_reasoning_normalizer(markers: tuple[str, ...], *, in_reasoning: bool = False):
+def make_reasoning_normalizer(
+    markers: tuple[str, ...],
+    *,
+    in_reasoning: bool = False,
+    continued: bool = False,
+):
     if markers and markers[0] == _ATEM_REASONING_RECIPIENT:
         # The generation prompt ends at "<|start|>assistant", so the model always writes its own header.
         return RecipientChannelNormalizer(*markers)
     if tuple(markers) == (_INKLING_THOUGHT_OPEN, _INKLING_MESSAGE_END):
-        return InklingMessageNormalizer(*markers, in_reasoning = in_reasoning)
+        return InklingMessageNormalizer(*markers, in_reasoning = in_reasoning, continued = continued)
     return ReasoningChannelNormalizer(*markers, in_reasoning = in_reasoning)
 
 
@@ -2252,6 +2262,7 @@ def normalize_reasoning_snapshots(
     normalizer = make_reasoning_normalizer(
         markers,
         in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
+        continued = continued,
     )
     raw_output = ""
     normalized_output = ""

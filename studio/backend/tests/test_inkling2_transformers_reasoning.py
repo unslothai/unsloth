@@ -157,3 +157,12 @@ def test_a_prompt_that_opens_the_thought_keeps_thought_and_answer():
     raw = "Short thought.<|end_message|><|message_model|><|content_text|>42<|end_message|>"
     out = _stream(make_reasoning_normalizer(MARKERS, in_reasoning = in_reasoning), _token_chunks(raw))
     assert out == "<think>Short thought.</think>42"
+
+
+def test_a_continued_answer_keeps_its_text():
+    # continue_final_message resumes inside the trailing <|content_text|> body, not a header.
+    normalizer = make_reasoning_normalizer(MARKERS, continued = True)
+    assert normalizer.feed(" forecast.") == " forecast."
+    rest = "<|end_message|><|message_model|>python<|content_invoke_tool_json|>{}<|end_message|>"
+    out = _stream(normalizer, _token_chunks(rest))
+    assert out == "<|content_invoke_tool_json|>{}<|end_message|>"
