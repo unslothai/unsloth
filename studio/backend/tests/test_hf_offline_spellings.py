@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF listing and audio.cpp downloads read offline mode through hf_env_offline, so every spelling
-huggingface_hub accepts (1/ON/YES/TRUE) and TRANSFORMERS_OFFLINE keep them off the Hub."""
-
 from __future__ import annotations
 
 import os
