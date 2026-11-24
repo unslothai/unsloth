@@ -1245,7 +1245,7 @@ def _build_sft_trainer(
         "dataset_kwargs": {"skip_prepare_dataset": True},
         "dataloader_num_workers": 0,
     }
-    apply_save_strategy(args, config.get("save_steps", 0))
+    apply_save_strategy(args, config.get("save_steps", 0), config.get("save_total_limit", 2))
     micro_total = total * grad_accum
 
     class _Steps(TrainerCallback):

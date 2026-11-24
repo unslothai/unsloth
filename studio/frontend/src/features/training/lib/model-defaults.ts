@@ -137,6 +137,8 @@ export function mapBackendModelConfigToTrainingPatch(
 
   const saveSteps = toNumber(training?.save_steps);
   if (saveSteps !== undefined) patch.saveSteps = saveSteps;
+  const saveTotalLimit = toNumber(training?.save_total_limit);
+  if (saveTotalLimit !== undefined) patch.saveTotalLimit = saveTotalLimit;
 
   const evalSteps = toNumber(training?.eval_steps);
   if (evalSteps !== undefined) patch.evalSteps = evalSteps;

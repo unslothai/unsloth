@@ -46,6 +46,7 @@ export interface TrainingStartRequest {
   warmup_ratio: number | null;
   max_steps: number | null;
   save_steps: number;
+  save_total_limit?: number;
   eval_steps: number;
   early_stopping_patience?: number;
   weight_decay: number;

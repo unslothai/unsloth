@@ -162,6 +162,7 @@ export const DEFAULT_HYPERPARAMS = {
   warmupSteps: 5,
   maxSteps: 60,
   saveSteps: 0,
+  saveTotalLimit: 2,
   evalSteps: 0.0,
   earlyStoppingPatience: 0,
   drafterEnabled: false,

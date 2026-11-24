@@ -2226,6 +2226,7 @@ async def _admit_training_request(
         "warmup_ratio": request.warmup_ratio,
         "max_steps": request.max_steps,
         "save_steps": request.save_steps,
+        "save_total_limit": request.save_total_limit,
         "weight_decay": request.weight_decay,
         "max_grad_norm": request.max_grad_norm,
         "max_grad_value": request.max_grad_value,

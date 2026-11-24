@@ -22,6 +22,7 @@ const defaultState = {
   weightDecay: DEFAULT_HYPERPARAMS.weightDecay,
   warmupSteps: DEFAULT_HYPERPARAMS.warmupSteps,
   saveSteps: DEFAULT_HYPERPARAMS.saveSteps,
+  saveTotalLimit: DEFAULT_HYPERPARAMS.saveTotalLimit,
   evalSteps: DEFAULT_HYPERPARAMS.evalSteps,
   randomSeed: DEFAULT_HYPERPARAMS.randomSeed,
   packing: DEFAULT_HYPERPARAMS.packing,

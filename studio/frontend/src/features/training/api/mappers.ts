@@ -271,6 +271,7 @@ export function buildTrainingStartPayload(
     warmup_ratio: isEmbedding ? 0.03 : null,
     max_steps: config.maxSteps,
     save_steps: config.saveSteps,
+    save_total_limit: config.saveTotalLimit,
     eval_steps: config.evalSteps,
     early_stopping_patience:
       config.evalSteps > 0 && !isDecision && !isEmbedding

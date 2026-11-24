@@ -551,6 +551,9 @@ class TrainingStartRequest(BaseModel):
     warmup_ratio: Optional[float] = Field(None, description = "Warmup ratio")
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
     save_steps: int = Field(100, description = "Steps between checkpoints")
+    save_total_limit: int = Field(
+        2, ge = 0, le = 100, description = "How many checkpoints to keep; 0 keeps every one"
+    )
     # NaN clears _check_weight_decay's 0..10 range check (every comparison with it is False), so it is refused here.
     weight_decay: float = Field(0.001, allow_inf_nan = False, description = "Weight decay")
     # Reject inf too: JSON 1e309 parses to inf, which passes ge=0 but never binds the clip.

@@ -1119,7 +1119,9 @@ class UnslothTrainer:
         else:
             config["num_train_epochs"] = training_args.get("num_epochs", 3)
 
-        apply_save_strategy(config, training_args.get("save_steps", 0))
+        apply_save_strategy(
+            config, training_args.get("save_steps", 0), training_args.get("save_total_limit", 2)
+        )
 
         if extra_args:
             config.update(extra_args)
@@ -4779,7 +4781,11 @@ class UnslothTrainer:
                 config_args["warmup_steps"] = 5
                 logger.info("Using default warmup_steps: 5\n")
 
-            apply_save_strategy(config_args, training_args.get("save_steps", 0))
+            apply_save_strategy(
+                config_args,
+                training_args.get("save_steps", 0),
+                training_args.get("save_total_limit", 2),
+            )
 
             max_steps_val = training_args.get("max_steps", 0)
             if max_steps_val and max_steps_val > 0:

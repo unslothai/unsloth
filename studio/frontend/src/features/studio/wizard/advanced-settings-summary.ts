@@ -37,6 +37,7 @@ const SCALAR_DEFAULTS = {
   weightDecay: DEFAULT_HYPERPARAMS.weightDecay,
   warmupSteps: DEFAULT_HYPERPARAMS.warmupSteps,
   saveSteps: DEFAULT_HYPERPARAMS.saveSteps,
+  saveTotalLimit: DEFAULT_HYPERPARAMS.saveTotalLimit,
   evalSteps: DEFAULT_HYPERPARAMS.evalSteps,
   randomSeed: DEFAULT_HYPERPARAMS.randomSeed,
   packing: DEFAULT_HYPERPARAMS.packing,
@@ -52,6 +53,7 @@ const SCALAR_DEFAULTS = {
 const DECISION_IGNORED_SETTINGS: ReadonlySet<string> = new Set([
   "optimizerType",
   "saveSteps",
+  "saveTotalLimit",
   "packing",
   "trainOnCompletions",
   "visionImageSize",

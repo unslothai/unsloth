@@ -127,6 +127,7 @@ export interface TrainingConfigState {
   warmupSteps: number;
   maxSteps: number;
   saveSteps: number;
+  saveTotalLimit: number;
   evalSteps: number;
   /** Evaluations without a lower eval loss before the run stops; 0 = off. */
   earlyStoppingPatience: number;
@@ -192,6 +193,7 @@ export type AdvancedSettingsBaseline = Partial<
     | "weightDecay"
     | "warmupSteps"
     | "saveSteps"
+    | "saveTotalLimit"
     | "evalSteps"
     | "randomSeed"
     | "packing"
@@ -283,6 +285,7 @@ export interface TrainingConfigActions {
   setWarmupSteps: (value: number) => void;
   setMaxSteps: (value: number) => void;
   setSaveSteps: (value: number) => void;
+  setSaveTotalLimit: (value: number) => void;
   setEvalSteps: (value: number) => void;
   setEarlyStoppingPatience: (value: number) => void;
   setDrafterEnabled: (value: boolean) => void;
