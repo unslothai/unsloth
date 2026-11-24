@@ -695,6 +695,7 @@ def test_dedicated_cache_paths_are_expanded(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / "portable" / "assets").mkdir(parents = True)
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # what expanduser reads on Windows
     monkeypatch.setenv("HF_ASSETS_CACHE", " ~/portable/assets ")
     monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
     monkeypatch.setattr(
