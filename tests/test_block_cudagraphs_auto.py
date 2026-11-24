@@ -159,12 +159,51 @@ def test_auto_keeps_graphs_off_when_gpu_bound(monkeypatch):
 
 
 def test_auto_ratio_threshold(monkeypatch):
-    """Launching must be clearly slower than running: A100 ratios 0.55-0.92 gained nothing with graphs
-    forced on (-1.2% to +1.0%), 1.26 gained 12.6%."""
-    layers, calls, _, _ = _harness(monkeypatch, host = 1.1e-3, gpu = 1e-3)
+    """Launching must be at least as slow as running on sm80+: A100 ratios 0.55-0.92 gained nothing
+    with graphs forced on (-1.2% to +1.0%)."""
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (8, 0))
+    layers, calls, _, _ = _harness(monkeypatch, host = 0.95e-3, gpu = 1e-3)
     for _ in range(6):
         assert _step(layers, calls) == ["plain", "plain"]
     assert bc._CUDAGRAPH_STATE["auto"]["phase"] == "off"
+
+
+def test_auto_ratio_just_above_one_turns_graphs_on_sm80(monkeypatch):
+    """A100 Qwen3-4B QLoRA 2x1024 measured forward ratios 1.14-1.51 per process and ran 21% faster
+    with graphs; a 1.2 threshold left 1 in 4 processes on the slow path."""
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (8, 0))
+    layers, calls, _, _ = _harness(monkeypatch, host = 1.16e-3, gpu = 1e-3)
+    for _ in range(6):
+        out = _step(layers, calls)
+    assert bc._CUDAGRAPH_STATE["auto"]["phase"] == "on"
+    assert out == ["graphs", "graphs"]
+
+
+@pytest.mark.parametrize("capability", [(7, 5), None])
+def test_auto_ratio_below_sm80_keeps_old_threshold(monkeypatch, capability):
+    """T4 Qwen3-0.6B LoRA 2x1024: graphs were 4-7% slower at ratios 0.66-1.11, so pre-Ampere (and a
+    device whose capability cannot be read) keeps 1.2."""
+
+    def cap(device = None):
+        if capability is None:
+            raise RuntimeError("no capability")
+        return capability
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", cap)
+    layers, calls, _, _ = _harness(monkeypatch, host = 1.16e-3, gpu = 1e-3)
+    for _ in range(6):
+        assert _step(layers, calls) == ["plain", "plain"]
+    auto = bc._CUDAGRAPH_STATE["auto"]
+    assert auto["phase"] == "off" and auto["why"].startswith("GPU-bound")
+
+
+def test_auto_ratio_environment_overrides_every_device(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (7, 5))
+    monkeypatch.setattr(bc, "_AUTO_RATIO", 1.1)
+    layers, calls, _, _ = _harness(monkeypatch, host = 1.16e-3, gpu = 1e-3)
+    for _ in range(6):
+        out = _step(layers, calls)
+    assert bc._CUDAGRAPH_STATE["auto"]["phase"] == "on" and out == ["graphs", "graphs"]
 
 
 def test_auto_shape_change_while_probing_keeps_graphs_off(monkeypatch):

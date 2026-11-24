@@ -44,8 +44,11 @@ def inject_with_loaded_model(monkeypatch, *, gguf):
     monkeypatch.setitem(
         sys.modules, "routes.inference", SimpleNamespace(get_llama_cpp_backend = lambda: llama)
     )
+    no_kept = SimpleNamespace(visible = lambda: [], in_slot = lambda slot, fn: fn())
     monkeypatch.setitem(
-        sys.modules, "core.inference", SimpleNamespace(get_inference_backend = lambda: backend)
+        sys.modules,
+        "core.inference",
+        SimpleNamespace(get_inference_backend = lambda: backend, model_slots = no_kept),
     )
     monkeypatch.setattr(
         route, "_resolve_local_v1_endpoint", lambda request: "http://127.0.0.1:8888/v1"
@@ -108,3 +111,45 @@ def test_the_injected_response_format_is_what_a_non_gguf_backend_refuses(monkeyp
 
     assert caught.value.status_code == 400
     assert caught.value.detail["error"]["param"] == "response_format"
+
+
+def test_a_kept_non_gguf_model_beside_a_gguf_primary_keeps_prompt_level_json(monkeypatch):
+    kept, current = object(), [None]
+    llama = {
+        None: SimpleNamespace(
+            is_loaded = True, model_identifier = "unsloth/Other-GGUF", hf_variant = "Q4_K_M"
+        ),
+        kept: SimpleNamespace(is_loaded = False, model_identifier = "", hf_variant = ""),
+    }
+    backend = {
+        None: SimpleNamespace(active_model_name = ""),
+        kept: SimpleNamespace(active_model_name = MODEL),
+    }
+
+    def in_slot(slot, fn):
+        current[0] = slot
+        try:
+            return fn()
+        finally:
+            current[0] = None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "routes.inference",
+        SimpleNamespace(get_llama_cpp_backend = lambda: llama[current[0]]),
+    )
+    slots = SimpleNamespace(visible = lambda: [kept], in_slot = in_slot)
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference",
+        SimpleNamespace(get_inference_backend = lambda: backend[current[0]], model_slots = slots),
+    )
+    monkeypatch.setattr(
+        route, "_resolve_local_v1_endpoint", lambda request: "http://127.0.0.1:8888/v1"
+    )
+    monkeypatch.setattr(storage, "create_api_key", lambda **kwargs: ("sk-unsloth-test", {"id": 7}))
+    recipe = structured_recipe()
+    assert route._inject_local_providers(recipe, SimpleNamespace()) == 7
+
+    assert response_formats(recipe) == {}
+    assert recipe["columns"] == structured_recipe()["columns"]

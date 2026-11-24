@@ -76,7 +76,8 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
     # The store keeps a checkpoint across idle unloads and deletions, so it must be in the catalog.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
-    assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
+    assert 'catalog?.filter((m) => sameBaseModelId(m.id, checkpoint ?? "")) ?? [];' in hook
+    assert ") ?? sameBase[0];" in hook
     assert "entry.loaded || (!keylessOnly && autoSwitch)" in hook
     assert "autoSwitch ||\n" not in hook
 
@@ -195,7 +196,7 @@ def test_monitor_can_unload_the_loaded_model():
         r"eject: \(modelId\) => \{\s*if \(!busy\) \{\s*handleEject\(modelId\);", controls
     )
     # /unload matches on the internal id, omitted here (a host path), so read it from status.
-    assert "resolveInferenceCheckpointId(status)" in src
+    assert "servedInferenceCheckpointId(status)" in src
     assert "unloadModel({ model_path: checkpoint })" in src
 
 

@@ -22,12 +22,28 @@ __all__ = [
     "EXPLICIT_FLAG",
     "track_explicit_gradient_checkpointing",
     "honour_gradient_checkpointing_off",
+    "is_activation_checkpointing",
 ]
 
 EXPLICIT_FLAG = "_unsloth_gradient_checkpointing_explicit"
 _WRAPPED_FLAG = "_unsloth_tracks_explicit_gradient_checkpointing"
 _NOTED = set()
 _FIELDS = ("gradient_checkpointing", "activation_checkpointing")
+
+
+def is_activation_checkpointing(model, default = False):
+    """Whether checkpointing is on for ``model``, without transformers' deprecated alias.
+
+    transformers 5.23 renamed ``is_gradient_checkpointing`` to ``is_activation_checkpointing``
+    and the old name now warns on every read. New name first, then the old one (4.57.6 ..
+    5.22, TRL wrappers that set it as a plain attribute), then ``default``.
+    """
+    for name in ("is_activation_checkpointing", "is_gradient_checkpointing"):
+        try:
+            return getattr(model, name)
+        except AttributeError:
+            continue
+    return default
 
 
 def _note(key, message):

@@ -172,6 +172,31 @@ def test_long_and_mid_races_persist_but_an_out_of_memory_loss_does_not(machine, 
     assert len(timed) == 2
 
 
+def test_a_transient_out_of_memory_race_is_retried_and_never_cached(machine, monkeypatch):
+    # the family race (H3 at 16384 tokens): one OOM, then memory is back
+    timed = []
+    script = {"ooms": 1}
+
+    def median_ms(fns, rounds = 5):
+        if script["ooms"]:
+            script["ooms"] -= 1
+            raise torch.OutOfMemoryError("CUDA out of memory")
+        timed.append(1)
+        return {"incumbent": 10.0, "int8": 5.0}
+
+    monkeypatch.setattr(I, "_median_ms", median_ms)
+    monkeypatch.setattr(I, "probe_inputs", lambda *a, **k: (None, None, None))
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    # retried within the call: the second probe wins
+    assert D._race_wins("cuda:0", torch.bfloat16, 2, 64, None, "native", 16384)
+    assert len(timed) == 1
+    # two OOMs in a row lose this call only: the same process races again on the next load
+    script["ooms"] = 2
+    assert not D._race_wins("cuda:0", torch.bfloat16, 2, 64, None, "native", 8192)
+    assert D._race_wins("cuda:0", torch.bfloat16, 2, 64, None, "native", 8192)
+    assert len(timed) == 2
+
+
 class _Event:
     def synchronize(self):
         pass
