@@ -57,7 +57,8 @@ test("translate in Chat-model mode runs on the selected quant's copy", () => {
   const fn = TRANSLATE.slice(TRANSLATE.indexOf("async function chatModel("));
   assert.match(fn, /servedCheckpoint\(loadedModels, picked, activeGgufVariant\)/);
   assert.match(fn, /getInferenceStatus\(signal, served \|\| undefined\)/);
-  assert.match(fn, /return served !== picked \? served : status\.active_model;/);
+  assert.match(fn, /const pinned = pinnedCheckpoint\(served, activeGgufVariant\);/);
+  assert.match(fn, /return pinned !== picked \? pinned : status\.active_model;/);
 });
 
 test("the Hub's resident status read names the selected quant", () => {

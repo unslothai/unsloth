@@ -25,6 +25,7 @@ import {
 } from "@/features/hub/download-manager/download-manager-controller";
 import {
   modelIdsMatch,
+  pinnedCheckpoint,
   servedCheckpoint,
 } from "@/features/hub/lib/model-identity";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
@@ -334,7 +335,9 @@ async function chatModel(signal: AbortSignal): Promise<string> {
   ) {
     throw new TranslateRunError("noChatModel");
   }
-  return served !== picked ? served : status.active_model;
+  // Pinned: a quant loaded beside it mid-translation would take the bare repo id.
+  const pinned = pinnedCheckpoint(served, activeGgufVariant);
+  return pinned !== picked ? pinned : status.active_model;
 }
 
 /** A provider's model by its own id, never the internal `external::...` one. */
