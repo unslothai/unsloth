@@ -127,10 +127,17 @@ def install(
         if logger is not None:
             logger.info("video.vae_multigpu: not installed (%s)", why)
         return False
+    automatic = _selection_automatic()
     if _ATTR in vae.__dict__:
-        vae.__dict__[_ATTR]["partner"] = int(partner)
+        vae.__dict__[_ATTR].update(partner = int(partner), automatic = automatic)
         return True
-    state = {"partner": int(partner), "split": 0, "one_card": 0, "last": None}
+    state = {
+        "partner": int(partner),
+        "split": 0,
+        "one_card": 0,
+        "last": None,
+        "automatic": automatic,
+    }
     vae.__dict__[_ATTR] = state
     stock = _stock_tiled_decode(vae)
 
@@ -459,7 +466,18 @@ _PARTNER_TILE_OVERLAP = 64
 _PARTNER_TILE_MIN = 256
 
 
-def partner_tiles_enabled() -> bool:
+def _selection_automatic() -> bool:
+    """Whether the load's selection is Automatic placement. Read at install (the load): the selection is a context
+    variable of the load and is not set on the render thread that runs the decode."""
+    try:
+        from .diffusion_multigpu import current_selection
+        selection = current_selection()
+    except Exception:  # noqa: BLE001 - unknown placement: treated as an explicit pick
+        return False
+    return bool(selection is not None and selection.automatic)
+
+
+def partner_tiles_enabled(automatic: bool) -> bool:
     """Partner-sized tiles when the stock-size split does not fit the partner: on under Automatic placement (the
     CFG copy leaves the partner too little for the stock tiles), ``UNSLOTH_VIDEO_VAE_PARTNER_TILES=1`` also for an
     explicit card pick, ``=0`` off. Never used when the stock-size split fits."""
@@ -468,12 +486,7 @@ def partner_tiles_enabled() -> bool:
         return False
     if raw in ("1", "on", "true", "yes", "force"):
         return True
-    try:
-        from .diffusion_multigpu import current_selection
-        selection = current_selection()
-    except Exception:  # noqa: BLE001 - unknown placement: the stock tiles only
-        return False
-    return bool(selection is not None and selection.automatic)
+    return bool(automatic)
 
 
 def partner_sized_tiles(vae: Any, z: Any, usable_mib: int) -> Optional[tuple]:
@@ -539,7 +552,8 @@ def _try_split(vae: Any, z: Any, state: dict, logger: Any) -> tuple[Optional[Any
     reserve = _partner_reserve_mib(torch, partner, free)
     resized = None
     if free - reserve < need:
-        resized = partner_sized_tiles(vae, z, free - reserve) if partner_tiles_enabled() else None
+        if partner_tiles_enabled(bool(state.get("automatic"))):
+            resized = partner_sized_tiles(vae, z, free - reserve)
         if resized is None:
             return None, (
                 f"cuda:{partner} has {free} MiB free ({reserve} MiB kept free), the copy needs ~{need}"

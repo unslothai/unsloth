@@ -693,7 +693,7 @@ def _automatic_wan_split(
         return "decoded"
 
     monkeypatch.setattr(vm, "split_tiled_decode", split)
-    return vae, z, {"partner": 1}, seen
+    return vae, z, {"partner": 1, "automatic": automatic}, seen
 
 
 _STOCK_WIDE = (704, 704, 704, 640)
@@ -733,3 +733,27 @@ def test_partner_sized_tiles_opt_out_and_explicit_selection(monkeypatch):
     assert vm._try_split(vae, z, state, None)[0] is None and seen == []
     monkeypatch.setenv(vm.PARTNER_TILES_ENV, "1")
     assert vm._try_split(vae, z, state, None)[0] == "decoded" and len(seen) == 1
+
+
+def test_the_load_time_selection_decides_partner_tiles_on_the_render_thread(monkeypatch):
+    # The selection is a context variable of the load; the decode runs on the render thread where it is unset, so
+    # install records whether the load was Automatic and the decode reads that record.
+    import core.inference.diffusion_multigpu as dmg
+
+    vae = _vae()
+    pipe = types.SimpleNamespace(vae = vae)
+    monkeypatch.setattr(vm, "eligible", lambda v: None)
+    monkeypatch.setattr(vm, "_automatic_partner", lambda v, p: (int(p), "selected"))
+    monkeypatch.setattr(dmg, "current_selection", lambda: types.SimpleNamespace(automatic = True))
+    assert vm.install(pipe, 1)
+    assert vae.__dict__[vm._ATTR]["automatic"] is True
+    vm.uninstall(pipe)
+    monkeypatch.setattr(dmg, "current_selection", lambda: types.SimpleNamespace(automatic = False))
+    assert vm.install(pipe, 1)
+    assert vae.__dict__[vm._ATTR]["automatic"] is False
+    vm.uninstall(pipe)
+    # at decode time the selection is gone: the recorded flag still engages the partner tiles
+    w, z, state, seen = _automatic_wan_split(monkeypatch, 5185, 15360)
+    monkeypatch.setattr(dmg, "current_selection", lambda: None)
+    out, why = vm._try_split(w, z, state, None)
+    assert out == "decoded" and "partner-sized tiles" in why
