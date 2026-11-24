@@ -125,14 +125,14 @@ def test_the_load_defers_the_native_save_and_starts_it_after_the_pins():
     ]
     names = [n for _l, n in calls]
     assert "_NativeCacheWrites" in names and "_save_native_quant_to_cache" in names
-    # the sync save is only the kill-switch branch
+    # the sync save is only the kill-switch (and LTX-2.5 low-RAM route) branch
     for node in ast.walk(tree):
-        if isinstance(node, ast.If) and "_native_cache_background" in ast.unparse(node.test):
+        if isinstance(node, ast.If) and "_native_cache_write_deferred" in ast.unparse(node.test):
             assert "_NativeCacheWrites" in ast.unparse(node.body[0])
             assert "_save_native_quant_to_cache" in ast.unparse(node.orelse[0])
             break
     else:
-        raise AssertionError("no _native_cache_background branch in load_pipeline")
+        raise AssertionError("no _native_cache_write_deferred branch in load_pipeline")
     pins = min(line for line, n in calls if n == "start_background_pins")
     held = [line for line, n in calls if n in ("_HeldCacheWrites", "_start_cache_writes")]
     assert held and min(held) > pins
