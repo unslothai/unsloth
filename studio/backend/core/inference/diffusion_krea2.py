@@ -237,7 +237,7 @@ def load_krea2_pipeline(
             cache_dir = cache_dir,
         )
         check_cancelled()
-    return diffusers.Krea2Pipeline(
+    pipe = diffusers.Krea2Pipeline(
         scheduler = scheduler,
         vae = vae,
         text_encoder = text_encoder,
@@ -247,3 +247,8 @@ def load_krea2_pipeline(
         is_distilled = bool(model_index.get("is_distilled", False)),
         patch_size = int(model_index.get("patch_size", 2)),
     )
+    if transformer is not None:
+        # before the attention backend / INT8 route, which read the block processors
+        from .diffusion_krea2_prefix_kv import install as install_prefix_kv
+        install_prefix_kv(transformer, logger)
+    return pipe
