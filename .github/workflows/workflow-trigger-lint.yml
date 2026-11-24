@@ -96,6 +96,7 @@ jobs:
             tests/studio/test_ci_parallel_browser_results.py \
             tests/studio/test_ci_shell_suite_coverage.py \
             tests/studio/test_pip_cache_naming.py \
+            tests/studio/test_backend_uv_install_parity.py \
             tests/studio/test_compile_caches_are_per_worker.py \
             tests/studio/test_browser_simulations_retry_once.py \
             tests/studio/test_step_scripts_get_the_secrets_they_read.py \
