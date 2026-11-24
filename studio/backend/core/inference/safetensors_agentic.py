@@ -1471,7 +1471,6 @@ def run_safetensors_tool_loop(
             permission_mode, bypass_permissions = live_permissions.apply(
                 permission_mode, bypass_permissions
             )
-            # This call's code analysis, kept from its classification for its run.
             python_analyses = PythonCallAnalyses() if decision.tool_name == "python" else None
             needs_confirm = needs_tool_confirmation(
                 confirm_tool_calls = bool(confirm_tool_calls),

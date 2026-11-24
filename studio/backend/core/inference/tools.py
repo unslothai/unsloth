@@ -5753,10 +5753,7 @@ def classifying_under(sandbox_level: "str | None"):
 
 
 class PythonCallAnalyses:
-    """One tool call's static Python analyses, made while it is classified and reused when it runs.
-
-    Keyed by the exact source text, so code that differs (a rewrite, a nested payload) is analysed
-    afresh. Make one per tool call; never share one across calls."""
+    """Per-call cache of static Python analyses keyed by exact source; never share across calls."""
 
     __slots__ = ("_by_source",)
 
@@ -5771,7 +5768,6 @@ _python_call_analyses: "ContextVar[PythonCallAnalyses | None]" = ContextVar(
 
 @contextlib.contextmanager
 def using_python_call_analyses(analyses: "PythonCallAnalyses | None"):
-    """Scope ``analyses`` to the block (one call's classification or its run); None changes nothing."""
     if analyses is None:
         yield
         return
@@ -5783,10 +5779,7 @@ def using_python_call_analyses(analyses: "PythonCallAnalyses | None"):
 
 
 def _signal_escape_analysis(code: str):
-    """`_check_signal_escape_patterns`, run once per source within one call's scope.
-
-    The analysis reads only the source and process constants, so the classification's result is
-    the one the run would compute."""
+    """Cached `_check_signal_escape_patterns`; safe because it reads only the source and constants."""
     analyses = _python_call_analyses.get()
     if analyses is None or type(code) is not str:
         return _check_signal_escape_patterns(code)
@@ -15487,7 +15480,6 @@ def execute_tool(
         )
     # Both run with the session's sandbox as cwd, so a chat deleted mid-call must not unlink it from under them.
     if name == "python":
-        # This call's classification already analysed its code; the run reuses it for the same source.
         with _session_in_flight(session_id), using_python_call_analyses(python_analyses):
             return _python_exec(
                 arguments.get("code", ""),

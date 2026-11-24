@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One python tool call analyses its code once: the approval check's analysis is handed to the run
-for the same source only, and every block / allow decision and message stays the same."""
+"""A python tool call analyses its code once; decisions and messages are unchanged."""
 
 import sys
 from pathlib import Path
@@ -20,7 +19,6 @@ _EGRESS = (
     "import urllib.request\n"
     "print(urllib.request.urlopen('http://169.254.169.254/latest', timeout=5).status)\n"
 )
-# Runs unasked.
 _ALLOWED = (
     "import json\n",
     "import pandas as pd\ndf = pd.DataFrame({'a': [1, 2]})\nprint(df.describe())\n",
@@ -29,13 +27,11 @@ _ALLOWED = (
     "try:\n    1 / 0\nexcept ZeroDivisionError:\n    print('nan')\n",
     "import subprocess\nsubprocess.run(['python', '-c', 'print(1)'])\n",
 )
-# Asks in auto mode, runs once approved.
 _ASKS = (
     "import shutil\nshutil.rmtree('/home')\n",
     "import os\nprint(open(os.path.expanduser('~/.ssh/id_rsa')).read())\n",
     "import os, signal\nos.kill(os.getppid(), signal.SIGKILL)\n",
 )
-# Refused by the static screen.
 _REFUSED = (
     "import signal\nsignal.signal(signal.SIGALRM, signal.SIG_IGN)\n",
     _EGRESS,

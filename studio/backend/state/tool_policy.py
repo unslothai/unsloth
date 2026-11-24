@@ -174,9 +174,7 @@ def _classify(
     sandbox_level: Optional[str],
     python_analyses = None,
 ) -> bool:
-    """The risk check, told the level: under Low the Terminal's shell is the host's.
-
-    python_analyses (one call's `PythonCallAnalyses`) keeps the code analysis for that call's run."""
+    """The risk check, told the level: under Low the Terminal's shell is the host's."""
     from core.inference.tools import classifying_under, using_python_call_analyses
     with classifying_under(sandbox_level), using_python_call_analyses(python_analyses):
         return bool(is_high_risk(name, arguments))

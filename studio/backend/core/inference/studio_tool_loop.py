@@ -2047,7 +2047,6 @@ async def _stream_with_studio_tools(
             permission_mode, bypass_permissions = live_permissions.apply(
                 permission_mode, bypass_permissions
             )
-            # This call's code analysis, kept from its classification for its run.
             python_analyses = PythonCallAnalyses() if name == "python" else None
             needs_confirmation = needs_tool_confirmation(
                 confirm_tool_calls = confirm_tool_calls,

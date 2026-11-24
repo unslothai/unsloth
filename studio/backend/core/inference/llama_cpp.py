@@ -42643,7 +42643,6 @@ class LlamaCppBackend:
                     permission_mode, bypass_permissions = live_permissions.apply(
                         permission_mode, bypass_permissions
                     )
-                    # This call's code analysis, kept from its classification for its run.
                     python_analyses = (
                         PythonCallAnalyses() if decision.tool_name == "python" else None
                     )
