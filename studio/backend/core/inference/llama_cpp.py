@@ -29098,9 +29098,10 @@ class LlamaCppBackend:
                         )
                         _host_avail_mib = self._available_system_memory_mib()
                         if _host_avail_mib is not None:
+                            _host_budget_mib = _host_avail_mib - _HOST_RAM_HEADROOM_MIB
                             effective_ctx = self._fit_context_to_vram(
                                 effective_ctx,
-                                _host_avail_mib - _HOST_RAM_HEADROOM_MIB,
+                                _host_budget_mib,
                                 model_size_fit,
                                 cache_type_kv,
                                 min_ctx = _FIT_MIN_CTX,
@@ -29117,6 +29118,9 @@ class LlamaCppBackend:
                                 total_mib = None,
                                 ctx_checkpoints = _fit_ctx_checkpoints,
                             )
+                            # Weights over budget come back unfitted at the requested size.
+                            if model_size_fit >= _host_budget_mib * 1024 * 1024:
+                                effective_ctx = min(effective_ctx, _FIT_MIN_CTX)
 
                     # Prefer fewer serving slots on GPU over --fit on offload: when the extra
                     # --parallel slots push the footprint past the pin budget, llama-server
