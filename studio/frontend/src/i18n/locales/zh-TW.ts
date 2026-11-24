@@ -983,6 +983,9 @@ export const zhTW = {
       "改從 ModelScope 搜尋和下載。您可以在「設定」中切換回來。",
     useModelScopeFailed: "無法切換到 ModelScope。",
     updateToken: "更新權杖",
+    linkedModelTitle: "載入 {model}？",
+    linkedModelBody: "某個連結開啟了此頁面，並要求下載並載入此模型。",
+    linkedModelLoad: "載入",
     hfToken: {
       label: "HF 權杖",
       saved: "已儲存",

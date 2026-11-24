@@ -986,6 +986,9 @@ export const th = {
       "ค้นหาและดาวน์โหลดจาก ModelScope แทน คุณสามารถสลับกลับได้ในการตั้งค่า",
     useModelScopeFailed: "ไม่สามารถสลับไปใช้ ModelScope ได้",
     updateToken: "อัปเดตโทเค็น",
+    linkedModelTitle: "โหลด {model} หรือไม่",
+    linkedModelBody: "ลิงก์เปิดหน้านี้และขอให้ดาวน์โหลดและโหลดโมเดลนี้",
+    linkedModelLoad: "โหลด",
     hfToken: {
       label: "โทเค็น HF",
       saved: "บันทึกแล้ว",
