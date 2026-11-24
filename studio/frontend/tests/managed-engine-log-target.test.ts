@@ -26,3 +26,15 @@ test("log targets require a structured managed launch failure and a path", () =>
   assert.equal(managedEngineFailureLogTarget({ code: "managed_engine_load_failed", log_family: "server", log_path: "/tmp/server.log" }), null);
   assert.equal(managedEngineFailureLogTarget({ code: "managed_engine_load_failed", log_family: "sglang", log_path: "" }), null);
 });
+
+test("vLLM failures select the vLLM family and keep the launch path", () => {
+  const log = {
+    code: "managed_engine_load_failed",
+    log_family: "vllm",
+    log_path: "/tmp/logs/vllm/vllm-123.log",
+  };
+  assert.deepEqual(managedEngineFailureLogTarget(log), {
+    family: "vllm",
+    path: log.log_path,
+  });
+});
