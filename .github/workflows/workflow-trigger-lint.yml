@@ -117,6 +117,7 @@ jobs:
             tests/studio/test_settings_smoke_covers_every_tab.py \
             tests/studio/test_playwright_install_avoids_with_deps.py \
             tests/studio/test_macos_slots_per_commit.py \
+            tests/studio/test_tauri_native_paths_cover_inputs.py \
             tests/studio/test_main_runs_survive_merge_bursts.py \
             tests/studio/test_pull_requests_cancel_superseded_runs.py \
             tests/studio/test_push_filters_match_pull_request_filters.py \

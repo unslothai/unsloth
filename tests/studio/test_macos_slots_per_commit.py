@@ -77,7 +77,7 @@ def test_the_scan_finds_the_macos_workflows_it_claims_to():
     for expected in (
         "studio-mac-ui-smoke.yml",
         "studio-mac-install-matrix.yml",
-        "studio-tauri-smoke.yml",
+        "studio-tauri-native-ci.yml",
         "mlx-ci.yml",
         "clean-machine-install-ci.yml",
     ):
@@ -107,6 +107,7 @@ def test_no_macos_workflow_runs_on_every_push_to_main():
         "studio-mac-ui-smoke.yml",
         "studio-mac-install-matrix.yml",
         "studio-tauri-smoke.yml",
+        "studio-tauri-native-ci.yml",
         "clean-machine-install-ci.yml",
         "mlx-ci.yml",
     ],
@@ -144,6 +145,7 @@ def _covered(path: str, patterns) -> bool:
         "studio-mac-ui-smoke.yml",
         "studio-mac-install-matrix.yml",
         "studio-tauri-smoke.yml",
+        "studio-tauri-native-ci.yml",
     ],
 )
 def test_every_helper_a_workflow_executes_is_in_its_trigger(name):
@@ -181,6 +183,7 @@ def test_every_helper_a_workflow_executes_is_in_its_trigger(name):
         "studio-mac-ui-smoke.yml",
         "studio-mac-install-matrix.yml",
         "studio-tauri-smoke.yml",
+        "studio-tauri-native-ci.yml",
     ],
 )
 def test_a_listed_python_input_brings_its_sibling_imports(name):
