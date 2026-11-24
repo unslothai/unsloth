@@ -1349,7 +1349,7 @@ def strip_segment(
     seg_final: bool,
     enabled_tool_names: Optional[set] = None,
 ) -> str:
-    """Strips markup from one non-think segment; seg_final enables end-of-turn arms. routes/inference.py differs, pinned by tests/test_route_strip_drift.py."""
+    """Strips markup from one non-think segment; seg_final enables end-of-turn arms. routes/inference.py keeps its own arms for the marker formats."""
     seg = _strip_mistral_closed_calls(segment)
     seg = _strip_minimax_calls(seg, final = seg_final)
     seg = _strip_lfm_calls(seg, final = seg_final)

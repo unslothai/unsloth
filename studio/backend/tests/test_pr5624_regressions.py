@@ -279,7 +279,9 @@ def test_deepseek_v3_1_truncated_after_end_marker_still_yields_call():
     ],
 )
 def test_routes_layer_strip_removes_tool_envelopes(text):
-    from routes.inference import _strip_tool_xml as _routes_strip
+    from routes.inference import _strip_tool_xml_for_display
+
+    _routes_strip = lambda t: _strip_tool_xml_for_display(t, auto_heal_tool_calls = True)
     stripped = _routes_strip(text)
     assert stripped == "before  after"
 
@@ -393,7 +395,9 @@ def test_strip_tool_markup_non_final_removes_bare_kimi_call():
 
 
 def test_routes_layer_strip_removes_wrapperless_gemma_call():
-    from routes.inference import _strip_tool_xml as _routes_strip
+    from routes.inference import _strip_tool_xml_for_display
+
+    _routes_strip = lambda t: _strip_tool_xml_for_display(t, auto_heal_tool_calls = True)
 
     text = 'before\ncall:web_search{query:"weather in Sydney"} after'
     stripped = _routes_strip(text)

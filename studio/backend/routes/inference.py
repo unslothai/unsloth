@@ -6911,8 +6911,7 @@ def _date_a_fitted_system_turn(
 #   3. bare orphan close (open was DRAINED)
 #   4. tail-only `</parameter>` (outer close truncated by EOS); anchored to
 #      `\Z` so mid-text `<parameter>` in user code samples survives.
-#   5. Mistral `[TOOL_CALLS]name{json}` / rehearsal `name[ARGS]{json}`: the balanced
-#      scan removes the whole call (a non-greedy regex would truncate nested JSON).
+#   5. Mistral `[TOOL_CALLS]name{json}`; a rehearsal `name[ARGS]{json}` is the bracket scan's.
 # DeepSeek/GLM/Kimi envelopes are covered by the parser's own arms/scans, so a signal
 # we parse is never left un-stripped; the DeepSeek opener alternation is the parser's own.
 from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
@@ -6930,10 +6929,8 @@ _TOOL_XML_RE = _re.compile(
     r"|\[/TOOL_CALLS\]"
     # Truncated [TOOL_CALLS] array (lost ']' to EOS): strip its tail.
     r"|\[TOOL_CALLS\]\s*\[.*\Z"
-    # Named / v11 forms and bare rehearsal; arms aligned with the parser regexes.
+    # Named / v11 forms; arms aligned with the parser regexes.
     r"|\[TOOL_CALLS\]\s*[\w-]+(?:\[CALL_ID\][\w-]+)?(?:\[ARGS\])?\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|.*?\Z)"
-    # Rehearsal: match only at EOS so prose like foo[ARGS] survives; NAME captured as reh.
-    r"|(?<!\[CALL_ID\])\b(?P<reh>[\w-]+)\[ARGS\]\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\{.*\Z|\Z)"
     # DeepSeek envelopes, Kimi blocks and bare Kimi calls; a call-shaped lookahead keeps prose safe.
     r"|"
     + _DS_OPEN_SRC
@@ -6994,17 +6991,13 @@ def _strip_tool_xml_for_display(
     ):
         return text
     from core.tool_healing import (
-        _markerless_promotable,
+        _REHEARSAL_TAIL_STRIP_RE,
+        _balanced_json_span,
+        _code_spans,
         _strip_bracket_tag_calls,
+        apply_tool_strip_patterns,
         strip_outside_think,
     )
-
-    def _keep_inactive_rehearsal(m) -> str:
-        # Deleting a call the parser will not promote leaves the turn empty.
-        name = m.groupdict().get("reh")
-        if name is not None and not _markerless_promotable(name, enabled_tool_names):
-            return m.group(0)
-        return ""
 
     def _strip_segment(seg: str, is_last: bool) -> str:
         # Strips close at each call's real terminator, so a quoted </function> cannot truncate them.
@@ -7018,7 +7011,21 @@ def _strip_tool_xml_for_display(
         seg = _strip_glm_calls(seg, final = is_last)
         seg = _strip_function_xml_calls(seg, final = is_last)
         if is_last:
-            return _TOOL_XML_RE.sub(_keep_inactive_rehearsal, seg)
+            # A rehearsal the bracket scan kept is an example: hide it whole, never past the code span it sits in.
+            kept, parts, pos, spans = [], [], 0, _code_spans(seg)
+            for m in _re.finditer(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*\{", seg):
+                end = _balanced_json_span(seg, m.end() - 1)
+                code_end = next((e - 1 for b, e in spans if b <= m.start() < e), None)
+                if code_end is not None:
+                    end = code_end if end is None else min(end, code_end)
+                if m.start() >= pos and end is not None:
+                    parts += [seg[pos : m.start()], f"\0{len(kept)}\0"]
+                    kept.append(seg[m.start() : end + 1])
+                    pos = end + 1
+            seg = _TOOL_XML_RE.sub("", "".join(parts) + seg[pos:])
+            seg = _re.sub(r"\0(\d+)\0", lambda m: kept[int(m[1])], seg)
+            # Then the truncated rehearsal tail, gated and code-aware as in strip_segment, once outer calls are gone.
+            return apply_tool_strip_patterns(seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
     # Mask blocked-call bodies and lone backticked tags (prose) so these passes do not edit them.
@@ -7367,14 +7374,6 @@ class _ReasoningSpanGuard:
                 None if enabled_tool_names is None else frozenset(enabled_tool_names),
             )
         return self._display
-
-
-def _strip_tool_xml(text: str, enabled_tool_names: Optional[set] = None) -> str:
-    # Mistral pre-strip kept explicit so the regression guards see it.
-    text = _strip_mistral_closed_calls(text)
-    return _strip_tool_xml_for_display(
-        text, auto_heal_tool_calls = True, enabled_tool_names = enabled_tool_names
-    )
 
 
 logger = get_logger(__name__)

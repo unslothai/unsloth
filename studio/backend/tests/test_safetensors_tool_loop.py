@@ -4206,8 +4206,8 @@ class TestRoutesPythonTagStrip:
 
     def _strip(self, text: str) -> str:
         # Imported inside the test so a routes import error does not break collection.
-        from routes.inference import _strip_tool_xml
-        return _strip_tool_xml(text)
+        from routes.inference import _strip_tool_xml_for_display
+        return _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
 
     @pytest.mark.parametrize(
         "text, expected",
