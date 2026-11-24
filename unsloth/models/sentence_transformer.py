@@ -2703,7 +2703,6 @@ class FastSentenceTransformer(FastModel):
             # pin the validated commit so a moving branch cannot change between checking and loading.
             if _validated:
                 st_kwargs["revision"] = _validated
-            # sentence-transformers loads through transformers, which opens an adapter repo's named base.
             _refuse_network_share_raw_adapter_base(
                 model_name,
                 token = token,

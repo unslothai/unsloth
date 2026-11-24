@@ -538,8 +538,7 @@ def _refuse_network_share_adapter_base(model_name, peft_config):
 
 
 def _refuse_network_share_raw_adapter_base(model_name, **hub_kwargs):
-    """transformers reads a Hub repo's adapter_config.json itself and loads the base it names, also when
-    PEFT cannot parse the file or the load never goes through PEFT (sentence-transformers)."""
+    """transformers loads the base a Hub repo's raw adapter_config.json names, even when PEFT cannot parse it."""
     if os.path.isdir(model_name):
         return
     try:
@@ -548,7 +547,7 @@ def _refuse_network_share_raw_adapter_base(model_name, **hub_kwargs):
         with open(find_adapter_config_file(model_name, **hub_kwargs), encoding = "utf-8") as file:
             base = json.load(file).get("base_model_name_or_path")
     except Exception:
-        # No adapter_config.json, or not JSON: transformers loads no other base either.
+        # No adapter_config.json or not JSON: transformers swaps in no base either.
         return
     from types import SimpleNamespace
 

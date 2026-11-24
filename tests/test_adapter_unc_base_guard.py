@@ -122,7 +122,6 @@ def test_raw_adapter_config_with_unc_base_is_refused(windows, monkeypatch, tmp_p
         guard("someone/model", token = None)
     config.write_text(json.dumps({"peft_type": peft_type, "base_model_name_or_path": "owner/base"}))
     guard("someone/model", token = None)
-    # A repo without adapter_config.json, and a local folder, are left alone.
     monkeypatch.setattr(utils, "find_adapter_config_file", lambda name, **kwargs: None)
     guard("someone/model")
     monkeypatch.setattr(utils, "find_adapter_config_file", lambda name, **kwargs: 1 / 0)
@@ -130,7 +129,6 @@ def test_raw_adapter_config_with_unc_base_is_refused(windows, monkeypatch, tmp_p
 
 
 def test_routes_that_hand_a_hub_id_to_transformers_check_the_raw_config():
-    # Both loaders when PEFT did not parse an adapter, and both sentence-transformers routes.
     source = LOADER.read_text(encoding = "utf-8")
     assert source.count("        else:\n            _refuse_network_share_raw_adapter_base(") == 2
     st = LOADER.with_name("sentence_transformer.py").read_text(encoding = "utf-8")
