@@ -137,7 +137,6 @@ def test_routes_that_hand_a_hub_id_to_transformers_check_the_raw_config():
     ]
     assert len(calls) == 2
     for c in calls:
-        # Same snapshot the config probe pinned and the weight load reuses, not the moving branch.
         assert "revision = _resolved_revision(model_name, base_revision," in source[c : c + 300]
     st = LOADER.with_name("sentence_transformer.py").read_text(encoding = "utf-8")
     checks = [
@@ -150,7 +149,6 @@ def test_routes_that_hand_a_hub_id_to_transformers_check_the_raw_config():
         if st.startswith("st_model = SentenceTransformer(", i) and "model_name" in st[i : i + 70]
     ]
     assert len(checks) == 2 and len(loads) == 2
-    # SentenceTransformer reads SENTENCE_TRANSFORMERS_HOME, hf_hub_download does not.
     for c in checks:
         assert "SENTENCE_TRANSFORMERS_HOME" in st[c : st.index("SentenceTransformer(", c)]
     assert all(c < l for c, l in zip(checks, loads))

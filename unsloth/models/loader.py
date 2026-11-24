@@ -2824,7 +2824,6 @@ class FastModel(FastBaseModel):
             # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
             _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
         else:
-            # The snapshot the config probe pinned, which the weight load reuses.
             _refuse_network_share_raw_adapter_base(
                 model_name,
                 token = token,
