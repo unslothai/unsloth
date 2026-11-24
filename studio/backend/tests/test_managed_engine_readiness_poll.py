@@ -27,8 +27,7 @@ def _engine(
     status = 200,
     limit = 1.5,
 ):
-    """A started engine whose child never binds; ``listen`` holds the port in this test process.
-    ``owned``: None runs the real ownership check, else a list of its successive answers."""
+    """Engine whose child never binds. ``owned``: None = real ownership check, else successive answers."""
     events, errors, holder = [], [], []
     monkeypatch.setattr(managed_engine, "engine_lease", lambda _: nullcontext())
     monkeypatch.setattr(

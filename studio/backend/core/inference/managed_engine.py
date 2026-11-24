@@ -515,8 +515,7 @@ def _free_port(limit: int | None = _PORT_LIMIT) -> int:
 
 
 def _port_accepts(base_url: str, timeout: float = 2) -> bool:
-    """True once something accepts a TCP connection at ``base_url``'s host and port. Sends nothing,
-    so a squatter learns no key; the ownership check still decides whether to probe /health."""
+    """True if ``base_url``'s port accepts a TCP connect. Sends nothing, so a squatter learns no key."""
     from urllib.parse import urlsplit
 
     target = urlsplit(base_url)
@@ -898,8 +897,7 @@ class ManagedEngine:
                         if self._mamba_blocks:
                             raise _MambaSeqLimit(message, self._mamba_blocks)
                         raise _EngineExited(message)
-                    # Nothing listens until the engine binds: skip the costly ownership scan (and its
-                    # false "not listening" error) until a plain connect, sending nothing, succeeds.
+                    # Skip the costly ownership scan (and its false "not listening" error) until bound.
                     if not _port_accepts(self.base_url):
                         self._cancel.wait(0.25)
                         continue
