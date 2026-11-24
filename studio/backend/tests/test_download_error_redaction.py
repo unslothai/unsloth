@@ -107,6 +107,17 @@ def test_recipe_job_log_keeps_the_old_github_and_studio_key_coverage(worker):
     assert message.startswith("wrote run-") and message.endswith(".json, token <redacted> cut")
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Repository Not Found for url: https://huggingface.co/api/models/org/disk-unsloth-test",
+        "loading task-unsloth-lora adapter",
+    ],
+)
+def test_scrub_secrets_keeps_a_name_that_merely_contains_sk_unsloth(text):
+    assert scrub_secrets(text) == text
+
+
 def test_a_dotted_github_app_token_is_masked_whole(worker):
     token = "ghs_123456_eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiIxMjMifQ.c2lnbmF0dXJl"
     assert (

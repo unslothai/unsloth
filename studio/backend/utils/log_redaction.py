@@ -99,9 +99,10 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})"), "hf_" + REDACTED),
     # OpenAI and other sk- keys (project, Anthropic, OpenRouter). Not a word boundary: that also fires after a hyphen, eating checkpoint-sk-9f8a... in a filename.
     (
-        # Studio's own sk-unsloth- keys are masked after a hyphen too (run-sk-unsloth-....json).
+        # Studio's own sk-unsloth- keys are masked after a hyphen too (run-sk-unsloth-....json), but not inside a word (task-unsloth-lora).
         re.compile(
-            r"(?<![A-Za-z0-9-])sk-(?:proj-|ant-api\d{2}-|or-v1-)?[A-Za-z0-9_-]{16,}|sk-unsloth-\w+"
+            r"(?<![A-Za-z0-9-])sk-(?:proj-|ant-api\d{2}-|or-v1-)?[A-Za-z0-9_-]{16,}"
+            r"|(?<![A-Za-z0-9])sk-unsloth-\w+"
         ),
         "sk-" + REDACTED,
     ),
