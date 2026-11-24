@@ -244,3 +244,16 @@ def test_save_refuses_a_failing_probe_unless_forced(client, monkeypatch):
 def test_token_estimate_never_undercounts_a_512_token_wordpiece_embedder(text, bge_tokens):
     # Counts from unsloth/bge-small-en-v1.5's tokenizer; under-counting overflows its 512 limit.
     assert embed_connection._estimate_tokens(text) >= bge_tokens
+
+
+def test_requests_stay_within_the_tei_default_client_batch(monkeypatch):
+    monkeypatch.setattr(config, "EMBED_BATCH", 64)
+    calls, http = _server(_vectors)
+    backend = embed_connection.ConnectionEmbeddingBackend()
+    backend._http = http
+    backend.encode([str(i) for i in range(40)], model_name = "connection:Scheduler/bge")
+    assert [len(json.loads(c.content)["input"]) for c in calls] == [32, 8]
+
+
+def test_planner_reports_the_connection_backend():
+    assert embeddings.resolved_backend_for_model("connection:Scheduler/bge") == "connection"

@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 _RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 _ATTEMPTS = 3
+# Text Embeddings Inference refuses more inputs per request by default (--max-client-batch-size 32).
+_MAX_BATCH = 32
 _TIMEOUT = httpx.Timeout(120.0, connect = 10.0)
 
 
@@ -149,7 +151,7 @@ class ConnectionEmbeddingBackend:
         if not texts:
             return np.zeros((0, self.dim(model_name = name)), dtype = np.float32)
         rows: list[list[float]] = []
-        batch = max(1, config.EMBED_BATCH)
+        batch = max(1, min(config.EMBED_BATCH, _MAX_BATCH))
         for start in range(0, len(texts), batch):
             rows.extend(self._post(name, texts[start : start + batch]))
         arr = np.asarray(rows, dtype = np.float32)

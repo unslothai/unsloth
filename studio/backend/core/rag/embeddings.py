@@ -1146,6 +1146,8 @@ def _st_load_preflight(model_name: str, token: str | bool | None = None) -> bool
 
 def resolved_backend_for_model(model_name: str, token: str | bool | None = None) -> str:
     """Backend a fresh operation for ``model_name`` would actually select."""
+    if config.is_connection_model(model_name):
+        return "connection"
     raw = _raw_backend()
     forced = _forced_backends.get(model_name)
     key = forced or (_resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw)

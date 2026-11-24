@@ -1261,6 +1261,18 @@ def test_a_connection_embedder_answers_to_its_configured_name(studio_embedder):
     assert inference_route._names_studio_embedder("connection:Other/bge-m3") is None
 
 
+def test_a_connection_embedder_needs_a_session_that_may_use_saved_keys(studio_embedder):
+    studio_embedder.setattr(
+        rag_config, "effective_embedding_model", lambda: "connection:Scheduler/bge-m3"
+    )
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    assert _call({"input": ["alpha"]})["data"][0]["embedding"] == [1.0, 0.0]
+    studio_embedder.setattr(inference_route, "_request_may_use_saved_provider_key", lambda r: False)
+    assert _http_error({"input": ["alpha"]}).status_code == 403
+
+
 def test_untagged_aliases_never_probe_the_backend(studio_embedder):
     def boom(*_args, **_kwargs):
         raise AssertionError("embedding_identity must not run for untagged names")

@@ -3946,12 +3946,13 @@ def _resolve_embedding_model_plan(
             return False
         return not cached_read_refused(token, repo_id = repo, is_cached = lambda: True)
 
-    # Cache lookups are authorized per matched repo; a pre-gate would probe the Hub on every
-    # resolve.
     from core.rag import config as rag_config
 
     if rag_config.is_connection_model(resolved):
         return _connection_embedding_plan(resolved)
+
+    # Cache lookups are authorized per matched repo; a pre-gate would probe the Hub on every
+    # resolve.
 
     # Resolve for the model being selected.
     on_llama = _llama_backend_active(resolved, token)
