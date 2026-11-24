@@ -224,7 +224,7 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
         data = _repo_json(name, "modules.json", token)
         subdirs = []
         for module in data or ():
-            sub = str((module or {}).get("path", "")).strip().strip("/")
+            sub = str((module or {}).get("path", "")).strip("/")
             if sub:
                 subdirs.append(sub)
         return tuple(dict.fromkeys(subdirs))
