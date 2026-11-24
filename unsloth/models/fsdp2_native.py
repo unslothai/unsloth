@@ -1943,11 +1943,22 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         layout.replicate_frozen = False
         layout.root_only = False
         layout.reasons.append("replicate_frozen=False (fully_shard has no ignored_params)")
-    layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch = _agree_over_ranks(
-        dist,
-        device,
-        [layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch],
-        config.mesh,
+    from .fsdp2_reduce import half_transport_enabled
+
+    # The opt-in 16-bit reduce transport changes which collective runs, so its switch rides this agreement.
+    layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch, half_transport = (
+        _agree_over_ranks(
+            dist,
+            device,
+            [
+                layout.fits,
+                layout.replicate_frozen,
+                layout.root_only,
+                layout.prefetch,
+                half_transport_enabled(),
+            ],
+            config.mesh,
+        )
     )
     # reshard_after_forward is derived from `fits` (when not set by config / env): derive it again from
     # the agreed value, or a rank that fit alone keeps its blocks gathered while the others reshard, and
@@ -2163,6 +2174,13 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     # The replicated-gradient average and the media agreement run over this mesh's ranks only.
     model.__dict__["_unsloth_fsdp2_mesh"] = mesh
     _post_shard(model, units, device, root_only = layout.root_only)
+    from .fsdp2_reduce import install_half_transport_reduce
+
+    # Opt-in: 16-bit gradients cross the wire as 16-bit and add in float32 (the float32 reduce's sum, half
+    # the bytes). Off (the default) installs nothing.
+    model._unsloth_fsdp2_half_transport = install_half_transport_reduce(
+        [*wrapped, *model._unsloth_fsdp2_extra_units, model], enabled = half_transport
+    )
     from .fsdp2_vision import install_vision_dummy
 
     install_vision_dummy(model)  # mixed image / text ranks
@@ -4671,9 +4689,8 @@ def _scaler_for_native(trainer):
             # Same race for a fused optimizer's grad_scale / found_inf on CPU parameters: use host copies.
             if not (
                 self.is_enabled()
-                and self._device != "cpu"
                 and getattr(optimizer, "_step_supports_amp_scaling", False)
-                and _has_cpu_tensors(optimizer)
+                and (self._device == "cpu" or _has_cpu_tensors(optimizer))
             ):
                 return super().step(optimizer, *args, **kwargs)
             had = "step" in optimizer.__dict__
@@ -4685,6 +4702,13 @@ def _scaler_for_native(trainer):
                     t = getattr(optimizer, name, None)
                     if isinstance(t, torch.Tensor) and t.device.type != "cpu":
                         setattr(optimizer, name, t.cpu())
+                # GradScaler calls a fused optimizer's step on inf grads too (the kernel skips), so
+                # accelerate counts a step and the Trainer advances the lr schedule; a foreach
+                # optimizer is not called. Skip here as well (found_inf is a host tensor, no sync):
+                # CPU offload switches adamw_torch to fused and would run one lr step ahead.
+                found_inf = getattr(optimizer, "found_inf", None)
+                if isinstance(found_inf, torch.Tensor) and bool(found_inf.sum() > 0):
+                    return None
                 return real(*a, **k)
 
             optimizer.step = step_with_host_flags
@@ -5263,7 +5287,8 @@ def _refuse_q_galore(training_args):
 def _refuse_projection_optim(training_args):
     """GaLore and APOLLO (optim = 'galore_*' / 'apollo_*', layerwise or not) project whole 2-D weights,
     like Q-GaLore, and the layerwise variants register per-parameter post-gradient hooks that
-    transformers documents as single-GPU only. Native FSDP2 hands them DTensor shards."""
+    transformers documents as single-GPU only. Adafactor (optim = 'adafactor') factors over whole rows
+    and columns. Native FSDP2 hands them DTensor shards."""
     optim = getattr(training_args, "optim", None) if training_args is not None else None
     if optim is None:
         return
@@ -5274,6 +5299,14 @@ def _refuse_projection_optim(training_args):
             "APOLLO project whole 2-D weights (the layerwise variants are single-GPU only), and native "
             "FSDP2 hands the optimizer DTensor shards. Use optim = 'adamw_torch', or launch without "
             "UNSLOTH_FSDP2."
+        )
+    if "adafactor" in name:
+        # Factored second moments need whole rows / columns; step one fails on DTensor shards.
+        raise ValueError(
+            f"Unsloth: native FSDP2 (UNSLOTH_FSDP2=1) cannot train with optim = '{name}': Adafactor "
+            "factors each weight's second moment over whole rows and columns, and native FSDP2 hands "
+            "the optimizer DTensor shards (its first step would fail). Use optim = 'adamw_torch' / "
+            "'adamw_torch_fused' / 'adamw_8bit' / 'paged_adamw_8bit', or launch without UNSLOTH_FSDP2."
         )
 
 

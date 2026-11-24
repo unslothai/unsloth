@@ -899,7 +899,10 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     _apply_data_designer_seed_uri_quote_patch()
     _apply_data_designer_sql_inline_config_patch()
     _apply_data_designer_python_validator_path_patch()
-    from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
+    from data_designer.interface.data_designer import (  # pyright: ignore[reportMissingImports]
+        DEFAULT_SEED_READERS,
+        DataDesigner,
+    )
 
     if artifact_path is None:
         # Packaged Unsloth can run with cwd=/, so pin the artifact root.
@@ -925,6 +928,9 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
         artifact_path = artifact_path,
         model_providers = model_providers,
         mcp_providers = build_mcp_providers(recipe),
+        # The defaults are shared module-level instances and attach() stores the source on them:
+        # concurrent in-process validations would read each other's (other accounts') seeds.
+        seed_readers = [type(reader)() for reader in DEFAULT_SEED_READERS],
     )
 
 

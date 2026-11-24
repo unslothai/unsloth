@@ -336,14 +336,17 @@ def test_h3_block_installs_strided_then_int8_then_reports_it():
 
 def test_h3_block_auto_is_gated_to_the_evidenced_configuration():
     block = _h3_block()
-    auto = block[block.index("int8_auto = (") : block.index("h3_torch_device =")]
+    # the decision itself is h3_int8_load_gate (behaviour in test_h3_int8_auto_arch.py); these are its inputs
+    auto = block[
+        block.index("h3_int8_gate = h3_int8_load_gate(") : block.index("h3_torch_device =")
+    ]
     for gate in (
-        'int8_mode == "auto"',
-        "effective_speed != SPEED_OFF",
-        "_auto_request(attention_backend)",
-        'transformer_quant_engaged == "int8"',
-        "not comfy_checkpoint",
-        "not baked_loras",
+        "mode = int8_mode",
+        "speed_on = effective_speed != SPEED_OFF",
+        "auto_attention = _auto_request(attention_backend)",
+        'hosted_int8 = transformer_quant_engaged == "int8"',
+        "comfy_checkpoint = bool(comfy_checkpoint)",
+        "adapters = bool(baked_loras or lora_specs)",
     ):
         assert gate in auto, gate
 

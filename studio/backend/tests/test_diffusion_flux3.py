@@ -335,7 +335,12 @@ class _Face(_Flux3KleinPipelineMixin):
     def modular_pipeline(self):
         return self.mp
 
-    def _set_guidance(self, mp, guidance_scale):
+    def _set_guidance(
+        self,
+        mp,
+        guidance_scale,
+        guidance_stop = None,
+    ):
         self.guidance.append(guidance_scale)
 
     def progress_bar(self, total = None):

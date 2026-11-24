@@ -555,6 +555,9 @@ def _column_index(ref: str) -> int:
         if not ch.isalpha():
             break
         index = index * 26 + (ord(ch.upper()) - 64)
+        if index > _MAX_COLUMNS:
+            # Past every kept column: more letters would only grow a huge integer (quadratic).
+            return _MAX_COLUMNS
     return index - 1
 
 
@@ -1803,10 +1806,13 @@ def ppt(path: str) -> list[Section]:
                 slides[-1][2][-1] = _ppt_text(data, child, child_body, child_stop)
 
     notes: dict[int, list[str]] = {}
+    read_notes: set[int] = set()
     for ref in notes_refs:
-        page = _ppt_record_at(data, persist.get(ref), _PPT_NOTES)
-        if page is None:
+        offset = persist.get(ref)
+        page = _ppt_record_at(data, offset, _PPT_NOTES)
+        if page is None or offset in read_notes:
             continue
+        read_notes.add(offset)
         atom = next(
             (r for r in _ppt_records(data, *page) if r[0] == _PPT_NOTES_ATOM and r[3] - r[2] >= 4),
             None,
@@ -1815,11 +1821,21 @@ def ppt(path: str) -> list[Section]:
         if atom is not None and lines:
             notes[struct.unpack_from("<I", data, atom[2])[0]] = lines
 
+    # A slide list can name one slide (or one slide id's notes) many times: charge the reuses.
+    budget, drawn, noted = _Budget(), set(), set()
     sections: list[Section] = []
     for number, (ref, slide_id, listed) in enumerate(slides, 1):
-        slide = _ppt_record_at(data, persist.get(ref), _PPT_SLIDE)
+        offset = persist.get(ref)
+        slide = _ppt_record_at(data, offset, _PPT_SLIDE)
+        if slide:
+            if offset in drawn:
+                budget.spend(slide[1] - slide[0])
+            drawn.add(offset)
         lines = _ppt_sheet_lines(data, *slide, listed) if slide else [t for t in listed if t]
         if slide_id in notes:
+            if slide_id in noted:
+                budget.spend(sum(map(len, notes[slide_id])))
+            noted.add(slide_id)
             lines += ["Notes:"] + notes[slide_id]
         if lines:
             sections.append(("\n".join(lines), number))

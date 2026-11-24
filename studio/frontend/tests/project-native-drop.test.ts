@@ -143,6 +143,7 @@ function consumerContexts(view: View, targetKey: string, dragging = true) {
       ProjectLanding: "project",
       SingleContent: "single",
       TemporaryChatSaveBridge: "temporary-save",
+      ChatFilesBridge: "chat-files",
       currentProject: { name: "Project" },
       currentProjectItems: [],
       rotateProjectNewThreadNonce: () => {},

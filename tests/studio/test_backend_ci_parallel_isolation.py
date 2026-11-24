@@ -13,6 +13,8 @@ import pytest
 import yaml
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "studio-backend-ci.yml"
+# The multi-rank Repo tests shards moved here; their parallel runs need the same isolation checks.
+DISTRIBUTED = WORKFLOW.with_name("distributed-cpu-ci.yml")
 
 # (ignored path, why it cannot share a worker)
 ISOLATED = [
@@ -25,7 +27,11 @@ ISOLATED = [
 
 
 def _jobs() -> dict:
-    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]
+    jobs = dict(yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"])
+    moved = yaml.safe_load(DISTRIBUTED.read_text(encoding = "utf-8"))["jobs"]
+    assert not set(jobs) & set(moved), f"job ids shared by both workflows: {set(jobs) & set(moved)}"
+    jobs.update(moved)
+    return jobs
 
 
 def _entries(job_name: str) -> list[dict]:
@@ -114,7 +120,11 @@ def _ignore_glob_hits(pattern: str, path: str) -> bool:
 
 
 def _over_the_repo_tests(command: str) -> bool:
-    return any(selection in command for selection in _selections("repo-cpu-tests"))
+    return any(
+        selection in command
+        for job_name in ("repo-cpu-tests", "distributed-cpu-tests")
+        for selection in _selections(job_name)
+    )
 
 
 # Ignored in the parallel run and rerun serially; dropping the rerun would be silent.

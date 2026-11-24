@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Inkling 2 under the parallel axes: pipeline parallel is refused from the config (before any weight loads) and by
-the capability table, with the reason and the data parallel alternatives; tensor parallel only for a tp size that
-does not divide the attention head counts; DDP / FSDP2 / tensor parallel stay allowed."""
+"""Inkling 2 under the parallel axes: tensor parallel with a tp size that does not divide the attention head
+counts, and pipeline parallel composed with tensor / data parallel, are refused from the config (before any
+weight loads) and by the capability table, with the reason and the alternatives; DDP / FSDP2 / tensor parallel /
+pipeline parallel alone stay allowed."""
 
 import ast
 import importlib.util
@@ -48,20 +49,12 @@ def _config(model_type):
     "env, words",
     [
         (
-            {"UNSLOTH_PP_SIZE": "2"},
-            [
-                "pipeline parallel (UNSLOTH_PP_SIZE=2)",
-                "block attention residuals",
-                "UNSLOTH_PP_SIZE",
-            ],
-        ),
-        (
             {"UNSLOTH_TP_SIZE": "2", "UNSLOTH_PP_SIZE": "2"},
-            ["pipeline parallel (UNSLOTH_PP_SIZE=2)", "UNSLOTH_PP_SIZE"],
+            ["pipeline parallel x tensor parallel", "UNSLOTH_PP_SIZE / UNSLOTH_TP_SIZE"],
         ),
     ],
 )
-def test_pp_refused_from_the_config(monkeypatch, model_type, env, words):
+def test_pp_x_tp_refused_from_the_config(monkeypatch, model_type, env, words):
     ink = _inkling2(monkeypatch)
     for key in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE"):
         monkeypatch.delenv(key, raising = False)
@@ -130,6 +123,11 @@ def test_data_parallel_and_other_models_pass(monkeypatch):
     monkeypatch.setenv("UNSLOTH_TP_SIZE", "1")
     monkeypatch.setenv("UNSLOTH_PP_SIZE", "1")
     ink.raise_if_inkling2_parallel_unsupported(_config("inkling2"))
+    monkeypatch.setenv(
+        "UNSLOTH_PP_SIZE", "2"
+    )  # pipeline parallel: models/inkling2.py Inkling2PipelineAdapter
+    ink.raise_if_inkling2_parallel_unsupported(_config("inkling2_loop"))
+    monkeypatch.setenv("UNSLOTH_PP_SIZE", "1")
     monkeypatch.setenv("UNSLOTH_TP_SIZE", "2")
     ink.raise_if_inkling2_parallel_unsupported(_config("qwen3_moe"), ["qwen3_moe"])
 
@@ -156,14 +154,30 @@ def test_loader_refuses_in_the_inkling2_branch_before_loading():
 
 
 @pytest.mark.parametrize("family", ["inkling2", "inkling2_loop"])
-def test_capability_table_refuses_pp(monkeypatch, family):
+def test_capability_table_inkling2_rules(monkeypatch, family):
     cap = _capabilities(monkeypatch)
-    for layout in (dict(pp = 2), dict(pp = 2, pp_schedule = "gpipe")):
+    for layout in (dict(tp = 2, pp = 2), dict(pp = 2, dp = 2), dict(pp = 2, dp = 2, fsdp2 = True)):
         with pytest.raises(Exception) as info:
             cap.check(cap.Query(family = family, moe = True, expert_lora = True, **layout))
         assert "Inkling 2" in str(info.value) and "fsdp=1" in str(info.value)
-    # data parallel (DDP / FSDP2) and tensor parallel are not refused by the rule
-    for layout in (dict(dp = 2), dict(dp = 2, fsdp2 = True), dict(tp = 2)):
+    # pipeline parallel alone has its cell (tests/test_pp_inkling2_gloo.py)
+    for schedule in ("gpipe", "1f1b"):
+        for mode in ("lora", "qlora"):
+            query = cap.Query(
+                family = family,
+                moe = True,
+                expert_lora = True,
+                pp = 2,
+                pp_schedule = schedule,
+                mode = mode,
+                trainer = "sft",
+                attention = "eager",
+                memory = "unsloth_offload",
+            )
+            cap.check(query)
+            assert cap.cell_status(query)[0] == "supported", cap.cell_status(query)
+    # data parallel (DDP / FSDP2), tensor parallel and pipeline parallel alone are not refused by the rule
+    for layout in (dict(dp = 2), dict(dp = 2, fsdp2 = True), dict(tp = 2), dict(pp = 2)):
         rules = [r for r in cap.RULES if r.applies(cap.Query(family = family, **layout))]
         assert not rules, [r.when for r in rules]
     assert "Inkling 2" in cap.markdown_table("rules")

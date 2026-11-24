@@ -105,6 +105,7 @@ from core.inference.mcp_client import (
     is_studio_tools,
     is_stdio,
     list_tools_async,
+    needs_discovery,
     oauth_client_kwargs,
     parse_server_headers,
     parse_stdio_command,
@@ -2673,7 +2674,8 @@ _AUTO_EXEC_MCP_VERB_ONLY_RE = re.compile(
 # Code/command runners run on the MCP server outside the sandbox; whole segments only.
 _AUTO_EXEC_MCP_TOOL_RE = re.compile(
     r"(?:^|[_\-])(?:"
-    r"exec|execute|run|eval|spawn|invoke|launch|"
+    # evaluate: REPL / debugger / browser servers run the expression they are given.
+    r"exec|execute|run|eval|evaluate|spawn|invoke|launch|"
     r"shell|bash|zsh|powershell|pwsh|terminal|subprocess|interpreter|"
     # A bare runtime name is an execution tool even without a verb.
     r"python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|code|script|repl|sandbox|notebook"
@@ -14975,12 +14977,7 @@ async def get_enabled_mcp_tools(
 
     # cool-off avoids blocking every send for the full probe timeout when a server is down. The in-process
     # Unsloth Studio row is re-listed every send, so tool toggles apply at once.
-    uncached = [
-        s
-        for s in servers
-        if is_studio_tools(s["url"])
-        or (get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"]))
-    ]
+    uncached = [s for s in servers if is_studio_tools(s["url"]) or needs_discovery(s["id"])]
     if uncached:
         results = await asyncio.gather(
             *(_discover_mcp_tools(s) for s in uncached), return_exceptions = True

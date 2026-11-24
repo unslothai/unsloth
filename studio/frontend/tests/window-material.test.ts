@@ -7,6 +7,7 @@ import {
 	inScope,
 	LENS_CLEAR_HOSTS,
 	LENS_HOSTS,
+	GLASS_FADE_IN,
 	glassStrengthVars,
 	lensDrawn,
 	sanitizeScope,
@@ -683,52 +684,76 @@ test("glass strength scales the blur and the fill of every glass surface, with n
 	assert.match(css, /html\[data-glass="macos"\] :is\(\[data-slot="sidebar-inset"\], \[data-slot="window-titlebar"\]\) \{\n  background-color: color-mix\(in srgb, var\(--background\) min\(96%, calc\(52% \* var\(--glass-opacity, 1\)\)\), transparent\);/);
 });
 
-test("every glass surface keeps a readable blur floor at any strength, lens copy included", () => {
+test("every glass surface and the lens copy share the read floor that glass fades in to", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\] \{\n  --glass-tint: var\(--glass-tint-base\);\n  --glass-on: min\(1, var\(--glass-strength, 1\) \* 100\);\n  --glass-read-blur: calc\(12px \* var\(--glass-on\)\);\n  --glass-blur: calc\(max\(var\(--glass-read-blur\), var\(--glass-blur-base\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
+	assert.match(css, /html\[data-glass\] \{\n  --glass-tint: var\(--glass-tint-base\);\n  --glass-on: min\(1, var\(--glass-level, \.5\) \/ \.15\);\n  --glass-rise: max\(0, \(var\(--glass-level, \.5\) - \.15\) \/ \.85\);\n  --glass-read-blur: calc\(12px \* var\(--glass-on\)\);\n  --glass-blur: calc\(max\(var\(--glass-read-blur\) \+ var\(--glass-rise\) \* max\(0px, 2 \* var\(--glass-blur-base\) - 12px\), var\(--glass-blur-base\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
 	// The open chat's composer redefines --glass-blur, so it carries the floor too.
-	assert.match(css, /--glass-blur: calc\(max\(var\(--glass-read-blur\), \(var\(--glass-blur-base\) \+ 5px\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
+	assert.match(css, /--glass-blur: calc\(max\(var\(--glass-read-blur\) \+ var\(--glass-rise\) \* max\(0px, 2 \* \(var\(--glass-blur-base\) \+ 5px\) - 12px\), \(var\(--glass-blur-base\) \+ 5px\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
 	// Every other --glass-blur definition goes through the floor.
 	for (const [, value] of css.matchAll(/--glass-blur: ([^;]+);/g)) assert.match(value, /var\(--glass-read-blur\)/, value);
 	// The lens copy blurs with the same variable.
 	assert.match(css, /\.glass-lens-fill \.glass-lens-copy \{\n  filter: blur\(var\(--glass-blur, 12px\)\)/);
 });
 
-// Evaluates a glass blur() argument from index.css at a given --glass-strength (Liquid Glass base 10px, no repaint nudge).
-function glassBlurPx(expr: string, strength: number): number {
-	const on = Math.min(1, strength * 100);
-	const read = 12 * on;
-	const js = expr
-		.replaceAll("var(--glass-on)", String(on))
-		.replaceAll("var(--glass-strength, 1)", String(strength))
-		.replaceAll("var(--glass-read-blur)", `${read}px`)
-		.replaceAll("var(--glass-blur)", `max(${read}px, 10px * ${strength})`)
-		.replaceAll("var(--glass-blur-base)", "10px")
-		.replaceAll("var(--glass-repaint, 0)", "0")
-		.replaceAll("calc(", "(")
-		.replaceAll("max(", "Math.max(")
-		.replaceAll("min(", "Math.min(")
-		.replaceAll("px", "");
-	assert.match(js, /^[\d\s.+*(),Mathmxin-]+$/, `unexpected token in ${expr}`);
-	return Function(`return ${js}`)() as number;
+const glassCss = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+const glassRootVar = (name: string) =>
+	new RegExp(`html\\[data-glass\\] \\{[^}]*--${name}: ([^;]+);`).exec(glassCss)?.[1] ?? assert.fail(`no --${name}`);
+
+// Evaluates a glass blur() argument from index.css at a slider value and material base blur (no repaint nudge).
+// Unset (as material.ts leaves them at 50%), --glass-level and --glass-strength take their CSS fallbacks.
+function glassBlurPx(expr: string, slider: number, base = 10, unset = false): number {
+	const env: Record<string, number> = { "glass-blur-base": base, "glass-repaint": 0 };
+	if (!unset) Object.assign(env, { "glass-level": slider / 100, "glass-strength": glassStrengthVars(slider).blur });
+	const evaluate = (source: string) => {
+		const js = source
+			.replace(/var\(--([\w-]+)(?:, ([^()]*))?\)/g, (_, name: string, fallback?: string) =>
+				`(${env[name] ?? fallback ?? assert.fail(`unknown --${name}`)})`)
+			.replaceAll("calc(", "(")
+			.replaceAll("max(", "Math.max(")
+			.replaceAll("min(", "Math.min(")
+			.replaceAll("px", "");
+		assert.match(js, /^[\d\s.+*/(),Mathmxin-]+$/, `unexpected token in ${source}`);
+		return Function(`return ${js}`)() as number;
+	};
+	for (const name of ["glass-on", "glass-rise", "glass-read-blur", "glass-blur"]) env[name] = evaluate(glassRootVar(name));
+	return evaluate(expr);
 }
 
-test("glass strength 0% is clear on every surface, and 1% keeps the 12px read floor", () => {
+test("glass strength 0% is clear on every surface and fades in to the 12px read floor with no jump", () => {
 	assert.deepEqual(glassStrengthVars(0), { blur: 0, opacity: 0.35 });
-	assert.ok(glassStrengthVars(1).blur > 0);
 	assert.equal(glassStrengthVars(50).blur, 1);
-	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /--glass-on: min\(1, var\(--glass-strength, 1\) \* 100\);\n  --glass-read-blur: calc\(12px \* var\(--glass-on\)\);/);
-	assert.match(css, /--glass-blur: calc\(max\(var\(--glass-read-blur\), var\(--glass-blur-base\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
-	const blurs = [...css.matchAll(/(?<!-webkit-)backdrop-filter: blur\(((?:[^()]|\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))*)\)/g)]
+	const material = readFileSync(new URL("../src/features/chat-background/material.ts", import.meta.url), "utf8");
+	// At 50% every override is removed, so CSS falls back to the values checked below.
+	assert.match(
+		material,
+		/if \(material === "solid" \|\| strength === 50\) \{\n(?:\s+root\.style\.removeProperty\("--glass-[a-z]+"\);\n)*\s+root\.style\.removeProperty\("--glass-level"\);\n\s+\} else \{\n(?:\s+root\.style\.setProperty\([^\n]+\n)*\s+root\.style\.setProperty\("--glass-level", \(strength \/ 100\)\.toFixed\(2\)\);/,
+	);
+	const blurs = [...glassCss.matchAll(/(?<!-webkit-)backdrop-filter: blur\(((?:[^()]|\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))*)\)/g)]
 		.map((m) => m[1])
 		.filter((arg) => arg.includes("var(--glass-"));
 	assert.ok(blurs.length >= 10, `only ${blurs.length} glass blurs found`);
-	const at1 = glassStrengthVars(1).blur;
-	for (const arg of blurs) {
-		assert.equal(glassBlurPx(arg, 0), 0, `not clear at 0%: blur(${arg})`);
-		assert.ok(glassBlurPx(arg, at1) >= 12, `under the read floor at 1%: blur(${arg})`);
-	}
+	for (const base of [10, 48])
+		for (const arg of blurs) {
+			assert.equal(glassBlurPx(arg, 0, base), 0, `not clear at 0%: blur(${arg})`);
+			assert.ok(glassBlurPx(arg, 1, base) < 2, `jumps at 1%: blur(${arg})`);
+			assert.ok(glassBlurPx(arg, GLASS_FADE_IN, base) >= 12, `under the read floor at ${GLASS_FADE_IN}%: blur(${arg})`);
+			assert.equal(glassBlurPx(arg, 50, base, true), glassBlurPx(arg, 50, base), `50% fallbacks disagree: blur(${arg})`);
+		}
+});
+
+test("above the fade-in every material's blur rises with each step and never drops below its scaled base", () => {
+	const shared = `calc(${glassRootVar("glass-blur")})`;
+	const composer = /--glass-composer-boost: 9%;\n  --glass-blur: ([^;]+);/.exec(glassCss)?.[1] ?? assert.fail("no composer blur");
+	// Liquid's 10px base sits under the read floor; Blurred's 48px does not.
+	for (const base of [10, 26, 48])
+		for (const [expr, own] of [[shared, base], [composer, base + 5]] as const)
+			for (let slider = 1; slider <= 100; slider++) {
+				const px = glassBlurPx(expr, slider, base);
+				assert.ok(px > glassBlurPx(expr, slider - 1, base), `flat at ${slider}% (base ${base}px): ${expr}`);
+				assert.ok(px >= own * glassStrengthVars(slider).blur - 1e-9, `under the scaled base at ${slider}% (base ${base}px)`);
+			}
+	assert.equal(glassBlurPx(shared, 50, 48), 48);
+	assert.equal(glassBlurPx(shared, 100, 10), 20);
 });
 
 test("at glass strength 0% the lens stays on the composer only, as on main", () => {
