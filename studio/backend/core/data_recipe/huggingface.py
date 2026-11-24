@@ -135,10 +135,17 @@ def publish_recipe_dataset(
         # Data Designer drops the explicit token, so push the card ourselves to keep auth request-local.
         card.push_to_hub(repo_id, token = hf_token, repo_type = "dataset")
 
-        client._upload_main_dataset_files(
-            repo_id = repo_id,
-            parquet_folder = dataset_path / FINAL_DATASET_FOLDER_NAME,
-        )
+        try:
+            client._api.upload_folder(
+                repo_id = repo_id,
+                folder_path = str(dataset_path / FINAL_DATASET_FOLDER_NAME),
+                path_in_repo = "data",
+                repo_type = "dataset",
+                commit_message = "Upload main dataset files",
+                delete_patterns = ["*.parquet"],
+            )
+        except Exception as exc:
+            raise HuggingFaceHubClientUploadError(f"Failed to upload parquet files: {exc}") from exc
         client._upload_images_folder(
             repo_id = repo_id,
             images_folder = dataset_path / "images",
