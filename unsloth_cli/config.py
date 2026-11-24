@@ -122,8 +122,11 @@ class Config(BaseModel):
 
     def model_kwargs(self, use_lora: bool, is_vision: bool) -> dict:
         """Return kwargs for trainer.prepare_model_for_training()."""
-        if use_lora and is_vision:
-            # Vision models expect a string (e.g. "all-linear"); None uses trainer defaults
+        if (
+            use_lora
+            and is_vision
+            and (self.lora.vision_all_linear or "target_modules" not in self.lora.model_fields_set)
+        ):
             target_modules = "all-linear" if self.lora.vision_all_linear else None
         else:
             parsed = [
