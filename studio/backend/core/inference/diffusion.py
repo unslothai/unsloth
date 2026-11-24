@@ -393,6 +393,7 @@ from . import diffusion_te_residency as te_residency
 from . import diffusion_gguf_compile as gguf_compile
 from . import diffusion_bg_compile as bg_compile
 from . import diffusion_cuda_graph as cuda_graph
+from . import diffusion_int8_cutlass_defer as int8_defer
 from .diffusion_block_graph import compile_below_hooks_enabled, compile_pipe_below_offload_hooks
 from . import diffusion_render_thread as render_thread
 from .diffusion_postprocess import install as install_device_postprocess
@@ -6366,6 +6367,31 @@ class DiffusionBackend:
         ).start()
         return self.status()
 
+    def _bg_compile_running(self) -> bool:
+        state = self._state
+        bg = getattr(state, "bg_compile", None) if state is not None else None
+        return bool(bg is not None and bg.compiling())
+
+    @contextmanager
+    def _int8_defer_render(self):
+        """The deferred CUTLASS race (diffusion_int8_cutlass_defer) runs only between renders: this render waits for a
+        race unit in flight (one weight shape), re-records its CUDA graphs once winners landed, and lets the race go
+        on once it ends and Studio stays idle."""
+        refresh = int8_defer.render_begin()
+        try:
+            if refresh:
+                with self._lock:
+                    state = self._state
+                    if state is not None and getattr(state, "cuda_graphs", ()):
+                        cuda_graph.reset_all(state.cuda_graphs)
+                        logger.info(
+                            "diffusion.int8_gemm: CUDA graphs re-record on the deferred CUTLASS race's winners"
+                        )
+            with int8_defer.allow():
+                yield
+        finally:
+            int8_defer.render_end(busy = self._bg_compile_running)
+
     # Outermost, so the resolved record reports the NVFP4 ask it replaced.
     @with_route_scope
     @scoped_allow_oversized_load
@@ -6385,6 +6411,8 @@ class DiffusionBackend:
             gate_torch_stack_import("image load", logger)
         except Exception as exc:  # noqa: BLE001 - a safety net, never a new failure
             logger.debug("dynamo import gate skipped: %r", exc)
+        # An image load: a CUTLASS race no earlier load stored runs after the first image (diffusion_int8_cutlass_defer)
+        defer_token = int8_defer.arm()
         try:
             # Resolve the base repo and estimate sizes here (both network) so begin_load returns instantly.
             fam = detect_family_for_pick(
@@ -6843,6 +6871,7 @@ class DiffusionBackend:
                     self._loading.error = redact_native_paths(text)
                     self._loading.error_code = unified_memory_refusal_code(exc)
         finally:
+            int8_defer.disarm(defer_token)
             # Nothing else knows when the prefetch returned, so this is the drain's only owner.
             with self._load_cancel_lock:
                 self._draining_repos.pop(token, None)
@@ -15941,7 +15970,10 @@ class DiffusionBackend:
 
         if _hires_pass is None:
             bind_generation_cancel(cancel)
-        with nullcontext() if _hires_pass is not None else self._generation_slot(cancel):
+        with (
+            nullcontext() if _hires_pass is not None else self._generation_slot(cancel),
+            self._int8_defer_render(),
+        ):
             # Wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)
             paused_bg = _wait_or_pause_bg_compile(pending_bg, self._state, loras, cancel)
@@ -17584,6 +17616,13 @@ class DiffusionBackend:
 
     def _unload_locked(self) -> None:
         release_load_budget_fraction("image")
+        int8_gemm_mod = sys.modules.get(f"{__package__}.diffusion_int8_gemm")
+        if int8_gemm_mod is not None:
+            try:
+                # a queued race holds a module of this load per weight shape
+                int8_gemm_mod.cancel_deferred_race()
+            except Exception:  # noqa: BLE001 - teardown is best effort
+                pass
         # Let a background prequant write finish so the next load never shares host RAM with it.
         prequant_cache = sys.modules.get(f"{__package__}.diffusion_prequant_cache")
         if prequant_cache is not None:

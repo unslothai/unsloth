@@ -598,6 +598,8 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     _CALLS[0] += 1
     a = a if a.stride(-1) == 1 else a.contiguous()
     index = a.device.index
+    if _CUT_DEFER_KEYS.get(index):
+        _defer_note_rows(index, a, w, xs, ws, bias)
     if _CUT_PLAN.get(index):
         _live_row_race(index, a, w, xs, ws, bias)
     tile = _cutlass_tile(index, a, w, xs, ws, bias)
@@ -1263,6 +1265,197 @@ def _launch_or_ref(index: int, a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> A
     if cfg is not None and _aligned(a, w):
         return _launch(a, w, xs, ws, bias, cfg)
     return reference(a, w, xs, ws, bias)
+
+
+# index -> shape keys whose CUTLASS race waits for the first image to end (diffusion_int8_cutlass_defer)
+_CUT_DEFER_KEYS: dict = {}
+
+
+def _cut_misses(index: int, recs: list) -> tuple:
+    """(recs whose every race point ``_cutlass_plan`` would read back from the race cache, [(module, rec, shape key)]
+    of the ones it would race). Reads the cache as ``_cutlass_plan`` does, without probing a tile or racing; a stored
+    tile verdict missing counts every shape as a miss. Advisory only: a shape called ready that the plan still races
+    is raced at load, as before."""
+    import torch
+
+    from . import diffusion_int8_cutlass as cut
+
+    fam = cut.family(torch.cuda.get_device_capability(index))
+    if fam is None:
+        return list(recs), []
+    act = cut.out_dtype_for(fam)
+    ckey = _cut_cache_key(index)
+    if ckey:
+        _CUT_CKEY[index] = (
+            ckey  # rows of the first image's calls are recorded under it for the deferred race
+        )
+    table = _cut_cache_read() if ckey else {}
+    cached = table.get(ckey) if ckey else None
+    cached = cached if isinstance(cached, dict) else {}
+    recorded = table.get(_rows_cache_key(ckey)) if ckey else None
+    recorded = recorded if isinstance(recorded, dict) else {}
+    stored = cut._PROBED[index] if index in cut._PROBED else cut._stored_tiles(index, fam)
+    planned = _CUT_PLAN.get(index) or {}
+    done = _CUT_DONE.get(index) or set()
+    dev = torch.device("cuda", index)
+    seen: dict = {}
+    ready, missed = [], []
+    for module, rec in recs:
+        kind, weight = rec[0], rec[3]
+        wq, ws = _payload(kind, weight)
+        k = int(wq.shape[1])
+        if (kind, k) not in seen:
+            seen[(kind, k)] = _xs_dtype(kind, weight, k, dev, act)
+        key = _cut_key(
+            wq.shape[0], k, seen[(kind, k)], ws.dtype, getattr(module, "bias", None) is not None
+        )
+        if key in planned or key in done:
+            ready.append((module, rec))
+            continue
+        skey = repr(key)
+        hit = cached.get(skey)
+        points = cut.race_points(recorded.get(skey))
+        try:
+            hit = (
+                {int(m): v for m, v in hit.items()}
+                if isinstance(hit, dict)
+                and stored is not None
+                and all(v is None or v == _CUT_SKIPPED or v in stored for v in hit.values())
+                else {}
+            )
+        except (TypeError, ValueError):
+            hit = {}
+        fixed = {min(cut._RACE_M)} | ({cut._RACE_M_HUGE} if cut._RACE_M_HUGE in points else set())
+        if fixed <= set(hit) and all(m in hit and hit[m] != _CUT_SKIPPED for m in points):
+            ready.append((module, rec))
+        else:
+            missed.append((module, rec, key))
+    return ready, missed
+
+
+def _plan_or_defer(
+    index: int,
+    recs: list,
+    triton_gemm: bool,
+    f16_card: bool,
+    logger: Any = None,
+) -> dict:
+    """``_cutlass_plan``, except on an image load (``diffusion_int8_cutlass_defer.allow``) whose shapes lack a stored
+    verdict: the stored ones are planned now and the rest race after the first image. Until then those shapes run the
+    probed Triton kernel, bit for bit the same output (both pass ``_probe``'s check against the same eager epilogue).
+    Only where the Triton path serves (the race's incumbent) and the race picks (``cutlass`` auto); the sm75 family
+    and ``UNSLOTH_DIFFUSION_INT8_CUTLASS_DEFER=0`` race at load, as before."""
+    from . import diffusion_int8_cutlass as cut
+    from . import diffusion_int8_cutlass_defer as defer
+
+    ready: list = []
+    missed: list = []
+    try:
+        import torch
+        if (
+            recs
+            and triton_gemm
+            and not f16_card
+            and defer.allowed()
+            and cut.mode() == "auto"
+            and cut.family(torch.cuda.get_device_capability(index)) == 80
+            and cutlass_wanted(torch.cuda.get_device_capability(index))
+            and not torch.compiler.is_compiling()
+            and not torch.cuda.is_current_stream_capturing()
+        ):
+            ready, missed = _cut_misses(index, recs)
+    except Exception:  # noqa: BLE001 - anything unreadable races at load, as before
+        missed = []
+    if not missed:
+        return _cutlass_plan(index, recs, triton_gemm, logger)
+    if ready:
+        _cutlass_plan(index, ready, triton_gemm, logger)
+    else:
+        import torch
+        _CUT_PLAN.setdefault(index, {})
+        _CUT_FAMILY[index] = cut.family(torch.cuda.get_device_capability(index))
+    from functools import partial
+
+    keys = _CUT_DEFER_KEYS.setdefault(index, set())
+    units = []
+    for module, rec, key in missed:
+        if key not in keys:
+            keys.add(key)
+            units.append(partial(_defer_unit, index, module, rec, logger))
+    if units:
+        defer.schedule(
+            index,
+            units,
+            logger,
+            before = partial(_defer_before, index),
+            after = partial(_defer_after, index),
+        )
+        if logger is not None:
+            logger.info(
+                "diffusion.int8_gemm: CUTLASS race of %d weight shape(s) on cuda:%d runs after the first image; "
+                "until then they run the Triton kernel, same output (%s=0 races at load)",
+                len(units),
+                index,
+                defer.DEFER_ENV,
+            )
+    return _CUT_PLAN.get(index) or {}
+
+
+def _defer_note_rows(index: Any, a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> None:
+    """A deferred shape's large-call row bucket, recorded as ``_cutlass_tile`` records a planned one's: the deferred
+    race then times the real row count (4176 rows for a 1024^2 FLUX.3 joint call), as the live race would have."""
+    from . import diffusion_int8_cutlass as cut
+
+    m = int(a.shape[0])
+    if not (cut._LARGE_M <= m < cut._HUGE_M) and not _CUT_ROWS_PENDING.get(index):
+        return
+    key = _cut_key(w.shape[0], w.shape[1], xs.dtype, ws.dtype, bias is not None)
+    if key in (_CUT_DEFER_KEYS.get(index) or ()):
+        _note_rows(index, key, m)
+
+
+def _defer_before(index: int) -> bool:
+    """Ahead of the deferred race: write the row buckets the first image recorded (a capture held them back)."""
+    if _CUT_ROWS.get(index):
+        _CUT_ROWS_PENDING[index] = True
+        _note_rows(index, None, 0)
+    return True
+
+
+def _defer_unit(index: int, module: Any, rec: tuple, logger: Any) -> bool:
+    """One deferred weight shape: the load-time race and verdict (``_cutlass_plan``), outside every capture.
+    False = a graph was recording elsewhere: retried."""
+    import torch
+
+    from .diffusion_cuda_graph import hold_off_capture
+
+    with hold_off_capture() as safe:
+        if not safe:
+            return False
+        with torch.cuda.device(index):
+            _cutlass_plan(index, [(module, rec)], bool(_CUT_TRITON_ON.get(index)), logger)
+    return True
+
+
+def _defer_after(index: int) -> int:
+    """The deferred shapes that won (their tile now serves the next render's calls)."""
+    keys = _CUT_DEFER_KEYS.pop(index, None) or set()
+    plan = _CUT_PLAN.get(index) or {}
+    return sum(1 for k_ in keys if k_ in plan)
+
+
+def deferred_race_status() -> dict:
+    """The deferred CUTLASS race: state none / pending / running / done / cancelled, wall times, shape counts."""
+    from . import diffusion_int8_cutlass_defer as defer
+    return defer.status()
+
+
+def cancel_deferred_race() -> None:
+    """Unload / a new load: drop the queued shapes (they race again on the next load that needs them)."""
+    from . import diffusion_int8_cutlass_defer as defer
+
+    defer.cancel()
+    _CUT_DEFER_KEYS.clear()
 
 
 def cutlass_call_count() -> int:
@@ -2089,7 +2282,7 @@ def merge_payloads(linears: tuple, logger: Any = None) -> Optional[tuple]:
     try:
         index = wq.device.index if wq.is_cuda else None
         if index is not None and fused and _CUT_PLAN.get(index) is not None:
-            _cutlass_plan(
+            _plan_or_defer(
                 index,
                 [
                     (
@@ -2098,6 +2291,7 @@ def merge_payloads(linears: tuple, logger: Any = None) -> Optional[tuple]:
                     )
                 ],
                 device_config(index) is not None,
+                False,
                 logger,
             )
     except Exception as exc:  # noqa: BLE001 - the merged shape runs the Triton path
@@ -2909,7 +3103,7 @@ def _swap_on(
     # bf16 cards: the Triton path takes any bias dtype; only the prebuilt kernel needs bf16 bias
     cut_recs = [(m, r) for m, r in recs if f16_card or _card_dtypes_ok(m, r, False)]
     _CUT_TRITON_ON[index] = bool(triton_gemm)
-    plan = _cutlass_plan(index, cut_recs, triton_gemm, logger) if cut_recs else {}
+    plan = _plan_or_defer(index, cut_recs, triton_gemm, f16_card, logger) if cut_recs else {}
     cut_fused: dict = {}
     if plan:
         import torch as _torch
