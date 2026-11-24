@@ -54,6 +54,8 @@ def strip_named_quant(request):
         from hub.utils.paths import is_valid_repo_id
         repo = request.model_path[: -len(variant) - 1]
         if "/" in repo and is_valid_repo_id(repo):
+            if "_submitted_model_path" in type(request).__private_attributes__:
+                request._submitted_model_path = request.model_path
             request.model_path = repo
     return request
 
@@ -120,6 +122,8 @@ class LoadRequest(BaseModel):
     _override_alias_id: Optional[str] = PrivateAttr(default = None)
     # The catalog id a load by path should keep advertising (Open WebUI /models/load).
     _advertised_id: Optional[str] = PrivateAttr(default = None)
+    # The model_path as sent, before its own ":QUANT" is stripped: a scoped cancel names this one.
+    _submitted_model_path: Optional[str] = PrivateAttr(default = None)
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,

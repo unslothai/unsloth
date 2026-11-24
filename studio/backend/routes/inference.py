@@ -18627,6 +18627,13 @@ class _ScopedLoadAttempt(NamedTuple):
     subject: str
     cancel_event: threading.Event
     cancel_complete: threading.Event
+    # The model_path as the client sent it; a scoped cancel may name either spelling.
+    submitted: str = ""
+
+
+def _names_attempt(attempt: _ScopedLoadAttempt, model_path: str) -> bool:
+    wanted = model_path.strip().casefold()
+    return wanted in {p.strip().casefold() for p in (attempt.model_path, attempt.submitted) if p}
 
 
 _scoped_load_attempts_lock = threading.Lock()
@@ -18704,6 +18711,7 @@ def _begin_load_attempt(request: LoadRequest, current_subject: str) -> _ScopedLo
         subject = current_subject,
         cancel_event = threading.Event(),
         cancel_complete = threading.Event(),
+        submitted = getattr(request, "_submitted_model_path", None) or request.model_path,
     )
     if attempt.request_id is None:
         return attempt
@@ -18717,10 +18725,7 @@ def _begin_load_attempt(request: LoadRequest, current_subject: str) -> _ScopedLo
                 detail = "A load with this request ID is already in progress",
             )
         tombstone = _scoped_load_cancel_tombstones.pop(key, None)
-        if (
-            tombstone is not None
-            and tombstone[0].strip().casefold() == attempt.model_path.strip().casefold()
-        ):
+        if tombstone is not None and _names_attempt(attempt, tombstone[0]):
             attempt.cancel_event.set()
             attempt.cancel_complete.set()
         _scoped_load_attempts[key] = attempt
@@ -18766,7 +18771,7 @@ def _cancel_scoped_load_attempt(
                 now + _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S,
             )
             return None, False
-        if attempt.model_path.strip().casefold() != request.model_path.strip().casefold():
+        if not _names_attempt(attempt, request.model_path):
             return None, False
         attempt.cancel_event.set()
         is_running = _running_load_attempt is attempt

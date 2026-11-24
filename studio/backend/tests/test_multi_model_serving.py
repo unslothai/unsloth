@@ -981,6 +981,20 @@ def test_a_load_or_validate_naming_its_own_quant_names_the_repo():
     assert other.model_path == "org/A-GGUF:Q8_0"
 
 
+@pytest.mark.parametrize("cancel_as", ["org/A-GGUF:Q8_0", "org/A-GGUF"])
+def test_a_scoped_cancel_reaches_a_load_named_with_its_own_quant(cancel_as):
+    from models.inference import UnloadRequest
+
+    load = LoadRequest(model_path = "org/A-GGUF:Q8_0", gguf_variant = "Q8_0", load_request_id = "q8")
+    attempt = inf._begin_load_attempt(load, "tester")
+    try:
+        cancel = UnloadRequest(model_path = cancel_as, cancel_load_request_id = "q8")
+        found, _ = inf._cancel_scoped_load_attempt(cancel, "tester")
+        assert found is attempt and attempt.cancel_event.is_set()
+    finally:
+        inf._finish_load_attempt(attempt)
+
+
 @pytest.mark.parametrize(
     "name",
     [

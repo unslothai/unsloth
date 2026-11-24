@@ -2347,8 +2347,13 @@ def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset)
     return False
 
 
-def _pin_loaded_quant(entry: dict, models: list, variant: str) -> dict:
-    """Two loaded quants of a repo both answer to its bare id, routed to whichever was used last."""
+def _pin_loaded_quant(
+    entry: dict,
+    models: list,
+    variant: str,
+    gguf: bool = False,
+) -> dict:
+    """A bare repo id reaches whichever of its loaded quants was used last, so name the chosen one."""
     model_id = str(entry.get("id") or "")
     if not model_id or model_id.casefold().endswith(f":{variant}".casefold()):
         return entry
@@ -2361,7 +2366,9 @@ def _pin_loaded_quant(entry: dict, models: list, variant: str) -> dict:
         return named
     prefix = f"{model_id}:".casefold()
     sibling = any(str(m.get("id") or "").casefold().startswith(prefix) for m in loaded)
-    return {**entry, "id": pinned} if sibling else entry
+    # Pinned up front too: a sibling loaded later would take the agent's bare id mid-session.
+    alone = gguf and _is_hub_model_id(model_id)
+    return {**entry, "id": pinned} if sibling or alone else entry
 
 
 def _resolve_model(
@@ -5418,7 +5425,8 @@ def _connect(
             infer_resident = server is None,
         )
         if load.gguf_variant:
-            entry = _pin_loaded_quant(entry, _loaded_models(base, key), load.gguf_variant)
+            gguf = bool(_inference_status(base, key, entry["id"]).get("is_gguf"))
+            entry = _pin_loaded_quant(entry, _loaded_models(base, key), load.gguf_variant, gguf)
         status = _inference_status(base, key, entry["id"]) if model else {}
         # A GGUF can be active while the resolved entry is another resident model.
         if status.get("memory_warning") and any(

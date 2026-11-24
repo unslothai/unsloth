@@ -1255,3 +1255,5 @@ def test_a_named_quant_beside_its_twin_is_pinned_by_its_own_id():
     assert pin(twins[0], twins, "Q8_0") == twins[1]
     assert pin({"id": f"{repo}:Q8_0"}, twins, "q8_0")["id"] == f"{repo}:Q8_0"
     assert pin({"id": repo}, twins[:1], "Q4_K_M")["id"] == repo
+    assert pin({"id": repo}, twins[:1], "Q4_K_M", gguf = True)["id"] == f"{repo}:Q4_K_M"
+    assert pin({"id": "qwen.gguf"}, [], "Q4_K_M", gguf = True)["id"] == "qwen.gguf"
