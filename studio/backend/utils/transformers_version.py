@@ -573,6 +573,30 @@ def latest_tier_active_for(model_name: str, hf_token: str | None = None) -> bool
         return False
 
 
+# bnb 4-bit is validated for these on the latest sidecar (core QLoRA support).
+_LATEST_TIER_4BIT_MODEL_TYPES = frozenset({"inkling2", "inkling2_loop"})
+
+
+def latest_tier_keeps_4bit(model_name: str, hf_token: str | None = None) -> bool:
+    try:
+        if _is_lora_adapter_dir(Path(model_name)):
+            resolved = _resolve_base_model(model_name)
+        else:
+            resolved = _remote_lora_base(model_name, hf_token = hf_token) or model_name
+        cfg = _load_config_json(resolved, hf_token)
+        if not isinstance(cfg, dict):
+            return False
+        return bool(_LATEST_TIER_4BIT_MODEL_TYPES.intersection(_model_types_from_config(cfg)))
+    except Exception:
+        return False
+
+
+def latest_tier_forces_16bit(model_name: str, hf_token: str | None = None) -> bool:
+    return latest_tier_active_for(model_name, hf_token) and not latest_tier_keeps_4bit(
+        model_name, hf_token
+    )
+
+
 def _has_adapter_weights(path: Path) -> bool:
     """True if *path* holds LoRA adapter weight files (``adapter_model.*``)."""
     try:

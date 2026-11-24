@@ -22223,6 +22223,20 @@ async def check_transformers_upgrade_route(
         install_breaks_exact_resume = await asyncio.to_thread(
             _install_breaks_exact_resume, request.resume_run_id
         )
+    keeps_4bit = False
+    if latest_tier_active or install_only_upgrade:
+        from utils.transformers_version import latest_tier_keeps_4bit
+
+        try:
+            keeps_4bit = await asyncio.to_thread(
+                _offline_guarded,
+                tuple(targets),
+                latest_tier_keeps_4bit,
+                load_target,
+                request.hf_token,
+            )
+        except Exception as exc:
+            logger.debug("4-bit check failed for '%s': %s", model_name, exc)
     from hub.utils.host_paths import restore_inventory_handles
 
     return TransformersUpgradeCheckResponse(
@@ -22232,7 +22246,7 @@ async def check_transformers_upgrade_route(
         # Already booleans; bool() here would trip the GGUF consistency guard's raw-YAML check.
         requires_trust_remote_code = requires_trust_remote_code,
         latest_tier_active = latest_tier_active,
-        forces_16bit = latest_tier_active or install_only_upgrade,
+        forces_16bit = (latest_tier_active or install_only_upgrade) and not keeps_4bit,
         install_breaks_exact_resume = install_breaks_exact_resume,
     )
 
