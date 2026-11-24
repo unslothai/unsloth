@@ -30,7 +30,6 @@ test("VRAM has its own rounded row with the exact value on hover", () => {
   assert.match(row, /title=\{`\$\{gpu\.memoryTotalGb\} GiB`\}/);
 });
 
-// memoryTotalGb sums every GPU, so a lone first-GPU name would read as one big card.
 test("a multi-GPU host names the extra GPUs and labels VRAM as a total", () => {
   const hardware = metaRow("studio.preview.hardware");
   assert.match(hardware, /gpu\.deviceCount > 1/);

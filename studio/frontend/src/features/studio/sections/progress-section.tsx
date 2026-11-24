@@ -361,7 +361,6 @@ export function ProgressSection({
             <Progress value={pct} className="h-2 bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]" />
           </div>
 
-          {/* A past run offers the finished-run actions only while its output is still on disk. */}
           {(!isHistorical || hasFinishedOutput) && (
             <MilestoneCallout
               showCompletedHint={showCompletedHint}
