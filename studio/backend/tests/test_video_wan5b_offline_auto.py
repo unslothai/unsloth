@@ -17,6 +17,8 @@
 """Wan2.2 TI2V-5B Auto on a resident card: bf16 online, but an offline install whose cache holds only the hosted
 INT8 DiT (staged by the older Auto) keeps loading that INT8 checkpoint instead of failing on missing dense shards."""
 
+import faulthandler
+import socket
 import sys
 
 import pytest
@@ -30,6 +32,46 @@ from .test_video_backend import (  # noqa: F401
 from .test_video_quantised_offload import _spoof
 
 REPO = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+MIRROR = "unsloth/Wan2.2-TI2V-5B-FP8"
+
+
+@pytest.fixture(autouse = True)
+def _hermetic(monkeypatch):
+    """No network, no Hub, no hang: every reachability / mirror / Hub lookup is pinned, sockets refuse to connect,
+    and a stuck test dumps its stacks after 60 s instead of eating the CI job."""
+    import huggingface_hub
+    from huggingface_hub import constants
+
+    import core.inference.diffusion_families as families
+    import core.inference.video as V
+
+    faulthandler.dump_traceback_later(60, exit = False)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("HF_HUB_DISABLE_TELEMETRY", "1")
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True, raising = False)
+    monkeypatch.setattr(V, "_can_download", lambda: False)
+    monkeypatch.setattr(V, "_video_fetch_repo", lambda repo_id, *a, **k: repo_id)
+    monkeypatch.setattr(
+        families, "mirror_repo", lambda repo_id: MIRROR if repo_id == REPO else None
+    )
+
+    def _no_hub(*a, **k):
+        raise OSError("hermetic test: no Hub access")
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _no_hub)
+    for name in ("hf_hub_download", "snapshot_download", "model_info", "list_repo_files"):
+        if hasattr(huggingface_hub, name):
+            monkeypatch.setattr(huggingface_hub, name, _no_hub)
+
+    def _no_connect(self, *a, **k):
+        raise OSError("hermetic test: network disabled")
+
+    monkeypatch.setattr(socket.socket, "connect", _no_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", _no_connect)
+    try:
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 
 def _cache(monkeypatch, *, int8: bool, dense) -> None:
@@ -62,9 +104,6 @@ def _assemble(monkeypatch, *, dense: bool, offline: bool) -> None:
 @pytest.mark.parametrize("via", ["local_files_only", "hf_offline_env"])
 @pytest.mark.usefixtures("fake_runtime")
 def test_offline_int8_only_cache_loads_int8(monkeypatch, requested, via):
-    if via == "hf_offline_env":
-        monkeypatch.setattr("core.inference.video._can_download", lambda: False)
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     spy = _spoof(monkeypatch, tier_gib = 48)
     _cache(monkeypatch, int8 = True, dense = False)
     _assemble(monkeypatch, dense = False, offline = True)
@@ -77,7 +116,6 @@ def test_offline_int8_only_cache_loads_int8(monkeypatch, requested, via):
 
 @pytest.mark.usefixtures("fake_runtime")
 def test_offline_dense_cached_auto_keeps_bf16(monkeypatch):
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     spy = _spoof(monkeypatch, tier_gib = 48)
     _cache(monkeypatch, int8 = True, dense = True)
     _assemble(monkeypatch, dense = True, offline = True)
@@ -90,13 +128,13 @@ def test_offline_dense_cached_auto_keeps_bf16(monkeypatch):
 @pytest.mark.usefixtures("fake_runtime")
 def test_offline_dense_cached_under_resolved_repo_auto_keeps_bf16(monkeypatch):
     # The dense shards sit only in the unsloth mirror the load resolves the base to, not under the upstream id.
-    from core.inference.diffusion_families import mirror_repo
+    import core.inference.video as V
 
-    resolved = mirror_repo(REPO)
-    assert resolved and resolved != REPO
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(
+        V, "_video_fetch_repo", lambda repo_id, *a, **k: MIRROR if repo_id == REPO else repo_id
+    )
     spy = _spoof(monkeypatch, tier_gib = 48)
-    _cache(monkeypatch, int8 = True, dense = {resolved})
+    _cache(monkeypatch, int8 = True, dense = {MIRROR})
     _assemble(monkeypatch, dense = True, offline = True)
     result = VideoBackend().load_pipeline(REPO, local_files_only = True, transformer_quant = "auto")
     assert result["loaded"]
@@ -105,20 +143,48 @@ def test_offline_dense_cached_under_resolved_repo_auto_keeps_bf16(monkeypatch):
 
 
 @pytest.mark.usefixtures("fake_runtime")
-def test_online_no_cache_auto_plans_bf16(monkeypatch):
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.setattr("core.inference.video._can_download", lambda: True)
+def test_offline_no_mirror_dense_only_in_mirror_falls_back_to_int8(monkeypatch):
+    # UNSLOTH_DIFFUSION_NO_MIRROR=1: dense shards cached only in the mirror are unusable, so the cached int8 loads.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     spy = _spoof(monkeypatch, tier_gib = 48)
-    _cache(monkeypatch, int8 = False, dense = False)
+    _cache(monkeypatch, int8 = True, dense = {MIRROR})
+    _assemble(monkeypatch, dense = False, offline = True)
+    result = VideoBackend().load_pipeline(REPO, local_files_only = True, transformer_quant = "auto")
+    assert result["loaded"] and result["transformer_quant"] == "int8"
+    assert spy.seeded == ["int8"]
+
+
+@pytest.mark.usefixtures("fake_runtime")
+def test_online_no_cache_auto_plans_bf16(monkeypatch):
+    # Online is _can_download() True; the Hub itself stays unreachable, so only the plan is checked, not a load.
     from core.inference import video as V
     from core.inference.video_families import detect_video_family
 
+    monkeypatch.setattr(V, "_can_download", lambda: True)
+    _spoof(monkeypatch, tier_gib = 48)
+    _cache(monkeypatch, int8 = False, dense = False)
     fam = detect_video_family(REPO)
     assert not V._auto_offline_keeps_cached_seed(fam, "int8", REPO, local_files_only = False)
     planned = VideoBackend()._video_planned_auto_denoiser_scheme(
         fam, base = REPO, kind = "pipeline", transformer_quant = "auto", speed_mode = None
     )
     assert planned is None
-    result = VideoBackend().load_pipeline(REPO, transformer_quant = "auto")
-    assert result["loaded"]
-    assert spy.seeded == []
+
+
+@pytest.mark.usefixtures("fake_runtime")
+def test_online_int8_cached_auto_still_plans_bf16(monkeypatch):
+    # A cached hosted int8 does not pull an ONLINE auto load off the bf16 rule.
+    from core.inference import video as V
+    from core.inference.video_families import detect_video_family
+
+    monkeypatch.setattr(V, "_can_download", lambda: True)
+    _spoof(monkeypatch, tier_gib = 48)
+    _cache(monkeypatch, int8 = True, dense = False)
+    fam = detect_video_family(REPO)
+    assert not V._auto_offline_keeps_cached_seed(fam, "int8", REPO, local_files_only = False)
+    assert (
+        VideoBackend()._video_planned_auto_denoiser_scheme(
+            fam, base = REPO, kind = "pipeline", transformer_quant = "auto", speed_mode = None
+        )
+        is None
+    )

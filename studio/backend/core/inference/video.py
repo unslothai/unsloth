@@ -2672,6 +2672,11 @@ def _h3_te_canonical(repo_id: Optional[str]) -> str:
     return canonical_base(repo_id).strip().lower()
 
 
+def _video_no_mirror() -> bool:
+    """``UNSLOTH_DIFFUSION_NO_MIRROR``: base components are fetched from the upstream id, never its unsloth mirror."""
+    return bool(os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip())
+
+
 def _video_fetch_repo(
     repo_id: Optional[str],
     hf_token: Optional[str] = None,
@@ -2692,7 +2697,7 @@ def _video_fetch_repo(
     # ``checkpoint``: the user-selected file itself. The opt-out folds a mirror back onto its upstream only for BASE
     # components; an unsloth carrier repo's own root FP8 / GGUF checkpoints do not exist upstream, so a pick stays in
     # the repo it was selected from.
-    no_mirror = bool(os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip())
+    no_mirror = _video_no_mirror()
     if checkpoint and no_mirror:
         return repo_id
     from .diffusion_families import (
@@ -4851,7 +4856,9 @@ def _auto_offline_keeps_cached_seed(
         from .diffusion_families import mirror_repo
 
         dense_repos = []
-        for candidate in (base, *fetch_repos, _video_fetch_repo(base, hf_token), mirror_repo(base)):
+        # The mirror counts only where this load may read from it.
+        mirror = None if _video_no_mirror() else mirror_repo(base)
+        for candidate in (base, *fetch_repos, _video_fetch_repo(base, hf_token), mirror):
             if candidate and candidate not in dense_repos:
                 dense_repos.append(candidate)
         if any(DiffusionBackend._released_transformer_cached(r) for r in dense_repos):
