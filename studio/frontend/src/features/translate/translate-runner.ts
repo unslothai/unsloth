@@ -23,7 +23,10 @@ import {
   subscribeJobListeners,
   useDownloadManagerStore,
 } from "@/features/hub/download-manager/download-manager-controller";
-import { modelIdsMatch } from "@/features/hub/lib/model-identity";
+import {
+  modelIdsMatch,
+  servedCheckpoint,
+} from "@/features/hub/lib/model-identity";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
@@ -315,10 +318,14 @@ async function ensureLocalModel(
 }
 
 async function chatModel(signal: AbortSignal): Promise<string> {
-  const picked = useChatRuntimeStore.getState().params.checkpoint;
+  const { params, loadedModels, activeGgufVariant } =
+    useChatRuntimeStore.getState();
+  const picked = params.checkpoint;
   if (isExternalModelId(picked)) return picked;
+  // Two loaded quants of a repo both answer to its bare id: only the quant's own name reaches it.
+  const served = servedCheckpoint(loadedModels, picked, activeGgufVariant);
   // The slot serving Chat's pick, which is not the primary under Keep multiple models loaded.
-  const status = await getInferenceStatus(signal, picked || undefined);
+  const status = await getInferenceStatus(signal, served || undefined);
   if (
     !status.active_model ||
     status.is_audio ||
@@ -327,7 +334,7 @@ async function chatModel(signal: AbortSignal): Promise<string> {
   ) {
     throw new TranslateRunError("noChatModel");
   }
-  return status.active_model;
+  return served !== picked ? served : status.active_model;
 }
 
 /** A provider's model by its own id, never the internal `external::...` one. */

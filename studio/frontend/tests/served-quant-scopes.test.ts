@@ -50,3 +50,12 @@ test("the API picker shares Chat's live settings only for the same quant", () =>
     /!\(runtimeVariant && activeGgufVariant\) \|\|\s*ggufVariantsMatch\(runtimeVariant, activeGgufVariant\)/,
   );
 });
+
+const TRANSLATE = readSrc("features/translate/translate-runner.ts");
+
+test("translate in Chat-model mode runs on the selected quant's copy", () => {
+  const fn = TRANSLATE.slice(TRANSLATE.indexOf("async function chatModel("));
+  assert.match(fn, /servedCheckpoint\(loadedModels, picked, activeGgufVariant\)/);
+  assert.match(fn, /getInferenceStatus\(signal, served \|\| undefined\)/);
+  assert.match(fn, /return served !== picked \? served : status\.active_model;/);
+});
