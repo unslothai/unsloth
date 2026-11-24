@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -175,6 +176,7 @@ def test_a_saved_manifest_pointing_outside_its_folder_is_refused(tmp_path, escap
         load_saved_dataset(folder)
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "Windows cannot name a folder with '::'")
 @pytest.mark.parametrize("where", ["folder", "split"])
 def test_a_url_chain_in_a_saved_dataset_path_is_refused(tmp_path, where):
     # datasets reads "notes::1" as the URL chain "notes" :: "1" and loads "notes", not the folder that was checked.
