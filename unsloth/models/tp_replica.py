@@ -212,6 +212,8 @@ def _full_params4bit(weight, base, group, device, keep):
     import bitsandbytes as bnb
 
     style, parts, rank, tp = weight._unsloth_tp_layout
+    if style == tpn.EXPERT_STACK:
+        return _full_expert_params4bit(weight, base, group, device, keep, tp)
     state = weight.quant_state
     blocksize = state.blocksize
     out_local, in_local = state.shape
@@ -266,6 +268,35 @@ def _full_params4bit(weight, base, group, device, keep):
     )
     if device.type == "cpu" and weight.device.type != "cpu":
         # CPU-staged export replica: save.py _merge_lora dequantizes it on its original GPU.
+        full._unsloth_tp_stage_device = weight.device
+    return full
+
+
+def _full_expert_params4bit(weight, base, group, device, keep, tp):
+    """The whole 4-bit expert stack: every rank's experts (packed bytes and float32 absmax) in expert order."""
+    import bitsandbytes as bnb
+
+    state = weight.quant_state
+    codes = _gather_cat(weight.data.reshape(-1), 0, group, tp)
+    absmax = _gather_cat(state.absmax.float().reshape(-1), 0, group, tp)
+    if not keep:
+        return None
+    shape = torch.Size((state.shape[0] * tp,) + tuple(state.shape[1:]))
+    full = torch.Tensor._make_subclass(type(weight), codes.to(device).unsqueeze(-1), False)
+    for attr, value in weight.__dict__.items():
+        if attr != "_unsloth_tp_layout":
+            full.__dict__[attr] = value
+    full.quant_state = bnb.functional.QuantState(
+        absmax = absmax.to(device),
+        shape = shape,
+        code = state.code.to(device),
+        blocksize = state.blocksize,
+        quant_type = state.quant_type,
+        dtype = state.dtype,
+    )
+    full.module = base
+    full._original_shape = shape
+    if device.type == "cpu" and weight.device.type != "cpu":
         full._unsloth_tp_stage_device = weight.device
     return full
 
