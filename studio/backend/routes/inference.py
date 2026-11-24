@@ -44701,13 +44701,12 @@ def _normalize_openai_image_parts_for_llama(openai_messages: list[dict], on_imag
             url = image_url.get("url", "")
             if not url.startswith("data:"):
                 url = fetches.inline(url)
-                if not url.startswith("data:"):
-                    # llama-server also accepts bare base64 payloads.
-                    continue
-                image_url["url"] = url
+                if url.startswith("data:"):
+                    image_url["url"] = url
 
             try:
-                _, b64data = url.split(",", 1)
+                # llama-server also accepts bare base64; decode it here too, or FFmpeg reads it unchecked.
+                b64data = url.split(",", 1)[1] if url.startswith("data:") else url
                 data_url = _llama_image_data_url_from_b64(b64data)
             except Exception:
                 raise HTTPException(
