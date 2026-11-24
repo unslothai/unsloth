@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { Nodes } from "mdast";
+import { fromMarkdown } from "mdast-util-from-markdown";
 import { getCodeFilename } from "../../../components/assistant-ui/code-filename.ts";
 import {
   IMAGE_SENTINEL_TOOLS,
@@ -41,77 +43,29 @@ type MessageLike = {
 };
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
-const LIST_MARKER_RE = /^(?:[-*+]|\d{1,9}[.)])[ \t]+/;
-const FENCE_RE = /^(`{3,}|~{3,})[ \t]*([^\s`]*)/;
+// Cheap gate before parsing: a fence opener or an indented code line.
+const MAY_HOLD_CODE_RE = /```|~~~|^(?: {4}|\t)/m;
 
-type FenceOpen = {
-  container: number;
-  column: number;
-  fence: string;
-  language: string;
-};
-
-// List markers are the fence's container (`- ```py`). One pass per marker: no backtracking regex,
-// since this runs on every assistant message during render.
-function fenceOpener(line: string): FenceOpen | null {
-  let container = 0;
-  let rest = line;
-  for (;;) {
-    const marker = LIST_MARKER_RE.exec(rest.replace(/^ {0,3}/, ""));
-    if (!marker) {
-      break;
-    }
-    const consumed =
-      rest.length - rest.replace(/^ {0,3}/, "").length + marker[0].length;
-    container += consumed;
-    rest = rest.slice(consumed);
-  }
-  const indent = rest.length - rest.replace(/^ {0,3}/, "").length;
-  const open = FENCE_RE.exec(rest.slice(indent));
-  if (!open) {
-    return null;
-  }
-  return {
-    container,
-    column: container + indent,
-    fence: open[1],
-    language: open[2],
-  };
-}
-
+/** Code blocks as the renderer sees them (CommonMark: lists, indentation, CRLF). */
 export function extractCodeFences(
   markdown: string,
 ): { language: string | null; source: string }[] {
-  const blocks: { language: string | null; source: string }[] = [];
-  const lines = markdown.split(/\r?\n/);
-  let i = 0;
-  while (i < lines.length) {
-    const open = fenceOpener(lines[i]);
-    if (!open) {
-      i += 1;
-      continue;
-    }
-    const { fence } = open;
-    // CommonMark: body lines lose up to the opener's column; the closer sits within 3 of the container.
-    const indentRe = open.column ? new RegExp(`^ {0,${open.column}}`) : null;
-    const closeRe = new RegExp(
-      `^ {0,${open.container + 3}}${fence[0]}{${fence.length},}[ \\t]*$`,
-    );
-    const body: string[] = [];
-    i += 1;
-    while (i < lines.length && !closeRe.test(lines[i])) {
-      body.push(indentRe ? lines[i].replace(indentRe, "") : lines[i]);
-      i += 1;
-    }
-    if (i >= lines.length) {
-      break;
-    }
-    i += 1;
-    const source = body.join("\n");
-    if (source.trim()) {
-      blocks.push({ language: open.language || null, source });
-    }
+  if (!MAY_HOLD_CODE_RE.test(markdown)) {
+    return [];
   }
+  const blocks: { language: string | null; source: string }[] = [];
+  const visit = (node: Nodes) => {
+    if (node.type === "code") {
+      if (node.value.trim()) {
+        blocks.push({ language: node.lang ?? null, source: node.value });
+      }
+      return;
+    }
+    if ("children" in node) {
+      node.children.forEach(visit);
+    }
+  };
+  visit(fromMarkdown(markdown));
   return blocks;
 }
 
@@ -251,7 +205,7 @@ const sandboxKey = (sessionId: string, name: string) =>
  */
 export function collectChatFiles(
   messages: readonly MessageLike[],
-  folder: ChatFolder | null = null,
+  folders: readonly ChatFolder[] = [],
 ): ChatFile[] {
   const seen = new Set<string>();
   const found: Found[] = [];
@@ -271,9 +225,16 @@ export function collectChatFiles(
       collectMessageFiles(message).forEach(add);
     }
   }
-  for (const name of folder?.names ?? []) {
-    if (folder) {
-      add(sandboxFound(`folder:${name}`, null, folder.sessionId, name));
+  for (const folder of folders) {
+    for (const name of folder.names) {
+      add(
+        sandboxFound(
+          `folder:${folder.sessionId}:${name}`,
+          null,
+          folder.sessionId,
+          name,
+        ),
+      );
     }
   }
   const used = new Map<string, number>();

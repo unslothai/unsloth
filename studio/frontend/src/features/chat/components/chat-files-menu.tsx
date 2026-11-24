@@ -52,22 +52,31 @@ const KIND_ICON = {
   file: File01Icon,
 } as const;
 
+const NO_FOLDERS: ChatFolder[] = [];
+
 export function ChatFilesBridge() {
   const messages = useAuiState(({ thread }) => thread.messages);
   const running = useAuiState(({ thread }) => thread.isRunning);
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const projectId = useChatProjectScope();
-  const sessionId = sandboxSessionIdFor(
-    remoteId ?? activeThreadId ?? undefined,
-    projectId,
-  );
-  const [folder, setFolder] = useState<ChatFolder | null>(null);
+  const threadId = remoteId ?? activeThreadId ?? undefined;
+  // A chat moved into a project keeps its earlier files in its own thread folder.
+  const sessionKey = [
+    ...new Set([sandboxSessionIdFor(threadId, projectId), threadId]),
+  ]
+    .filter((id): id is string => Boolean(id))
+    .join("\u0000");
+  const [listed, setListed] = useState<{
+    key: string;
+    folders: ChatFolder[];
+  } | null>(null);
   const [uploads, setUploads] = useState(0);
 
   useEffect(() => {
+    const sessions = sessionKey.split("\u0000");
     const listener = (uploaded: string) => {
-      if (uploaded === sessionId) {
+      if (sessions.includes(uploaded)) {
         setUploads((count) => count + 1);
       }
     };
@@ -75,29 +84,44 @@ export function ChatFilesBridge() {
     return () => {
       sandboxUploadListeners.delete(listener);
     };
-  }, [sessionId]);
+  }, [sessionKey]);
 
   // Re-read after each run and upload: tools write to the folder without always naming the file.
   // biome-ignore lint/correctness/useExhaustiveDependencies: uploads only triggers a re-list.
   useEffect(() => {
-    if (!sessionId || running) return;
+    if (!sessionKey || running) {
+      return;
+    }
     let live = true;
-    listSandboxFiles(sessionId)
-      .then((names) => live && setFolder({ sessionId, names }))
-      .catch(() => live && setFolder(null));
+    const sessions = sessionKey.split("\u0000");
+    Promise.all(
+      sessions.map((sessionId) =>
+        listSandboxFiles(sessionId)
+          .then((names) => ({ sessionId, names }))
+          .catch(() => ({ sessionId, names: [] })),
+      ),
+    ).then((folders) => {
+      if (live) {
+        setListed({ key: sessionKey, folders });
+      }
+    });
     return () => {
       live = false;
     };
-  }, [sessionId, running, uploads]);
+  }, [sessionKey, running, uploads]);
 
-  const current = folder?.sessionId === sessionId ? folder : null;
+  const folders = listed?.key === sessionKey ? listed.folders : NO_FOLDERS;
+  // A streaming reply changes every token; collect once it settles.
+  const settled = running ? null : messages;
   const files = useMemo(
-    () => collectChatFiles(messages, current),
-    [messages, current],
+    () => (settled ? collectChatFiles(settled, folders) : null),
+    [settled, folders],
   );
 
   useEffect(() => {
-    useChatFiles.setState({ files });
+    if (files) {
+      useChatFiles.setState({ files });
+    }
   }, [files]);
   useEffect(() => () => useChatFiles.setState({ files: [] }), []);
 

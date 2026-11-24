@@ -80,16 +80,17 @@ test("the same sandbox file named twice is listed once; equal names get a suffix
 test("folder files no message names are appended without a message", () => {
   const files = collectChatFiles(
     [python("a1", sandboxResult("t1", ["a.txt"]))],
-    {
-      sessionId: "t1",
-      names: ["a.txt", "uploaded.xlsx"],
-    },
+    [
+      { sessionId: "t1", names: ["a.txt", "uploaded.xlsx"] },
+      { sessionId: "project-p", names: ["shared.md"] },
+    ],
   );
   assert.deepEqual(
     files.map((f) => [f.name, f.messageId]),
     [
       ["a.txt", "a1"],
       ["uploaded.xlsx", null],
+      ["shared.md", null],
     ],
   );
   assert.deepEqual(files[1].sandbox, {
@@ -118,10 +119,7 @@ test("a hostile image mime cannot inject path characters into the file name", ()
 test("a deleted folder file stays listed: the listing may be cut short, so absence proves nothing", () => {
   const files = collectChatFiles(
     [python("a1", sandboxResult("t1", ["kept.txt"]))],
-    {
-      sessionId: "t1",
-      names: [],
-    },
+    [{ sessionId: "t1", names: [] }],
   );
   assert.deepEqual(
     files.map((f) => f.name),
@@ -180,4 +178,14 @@ test("a four-space-indented fence line is code, not a top-level closer", () => {
 test("CRLF replies keep their code blocks", () => {
   const files = fenceText("```python\r\nprint(1)\r\n```\r\n");
   assert.equal(files[0].text, "print(1)");
+});
+
+test("a fence in a list item's continuation paragraph is found with its indentation removed", () => {
+  const files = fenceText(
+    "1. Step one\n\n   Then:\n\n   ```python\n   x = 1\n   ```\n",
+  );
+  assert.deepEqual(
+    files.map((f) => [f.name, f.text]),
+    [["snippet.py", "x = 1"]],
+  );
 });
