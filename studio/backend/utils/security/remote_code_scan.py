@@ -739,7 +739,11 @@ def external_auto_map_repos(
                 root = root.parent
             cfg_names = list(remote_code_config_paths(load_subdirs))
             for cfg_name in itertools.chain([None] if direct is not None else [], cfg_names):
-                p = direct if cfg_name is None else root.joinpath(*pathlib.PurePosixPath(cfg_name).parts)
+                p = (
+                    direct
+                    if cfg_name is None
+                    else root.joinpath(*pathlib.PurePosixPath(cfg_name).parts)
+                )
                 if not p.is_file():
                     continue
                 try:
