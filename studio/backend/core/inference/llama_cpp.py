@@ -40931,7 +40931,6 @@ class LlamaCppBackend:
             if anchor is not None:
                 current[:] = updated
                 result["conversation"] = current
-                result["recalled"] = True
                 result["anchored"] = [*result["anchored"], anchor]
                 result["counts"] = {**result["counts"], "working_evidence": True}
                 _rolling_anchor_ids.add(id(anchor))
@@ -41288,7 +41287,13 @@ class LlamaCppBackend:
             )
             # A continuation spends the caller's output budget once, not per attempt.
             if _continuation_max_tokens is not None:
-                payload["max_tokens"] = _continuation_max_tokens
+                # Preflight evidence generation may have spent more of the caller's cap.
+                _remaining_cap = _loop_budget_left(0)
+                payload["max_tokens"] = (
+                    min(_continuation_max_tokens, _remaining_cap)
+                    if _remaining_cap is not None
+                    else _continuation_max_tokens
+                )
                 _continuation_max_tokens = None
             if stop:
                 payload["stop"] = stop
