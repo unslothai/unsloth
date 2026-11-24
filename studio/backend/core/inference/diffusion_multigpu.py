@@ -1188,16 +1188,56 @@ def replica_activation_mib(module: Any, tokens: Optional[int] = None) -> int:
         return 0
 
 
-def replica_need_mib(module: Any) -> int:
-    """MiB beyond :func:`_replica_reserve_mib`: weights, one branch's activations, working set over the reserve."""
+def latent_tokens(module: Any, latent: Any) -> Optional[int]:
+    """Tokens per sample of a denoiser call on ``latent``: (B, C, F, H, W) and (B, C, H, W) after patching, the
+    sequence of a packed (B, N, C) latent; None when unreadable."""
+    try:
+        shape = tuple(int(s) for s in latent.shape)
+        if len(shape) == 3:
+            return shape[1] or None
+        if len(shape) not in (4, 5):
+            return None
+        config = getattr(module, "config", None)
+        patch = getattr(config, "patch_size", None)
+        if patch is None and isinstance(config, Mapping):
+            patch = config.get("patch_size")
+        if isinstance(patch, (tuple, list)):
+            sides = [max(1, int(p)) for p in patch]
+            pt, ph, pw = (1, sides[0], sides[-1]) if len(sides) < 3 else tuple(sides[-3:])
+        else:
+            pt = 1
+            ph = pw = max(1, int(patch or 1))
+        if len(shape) == 5:
+            pt = max(1, int(getattr(config, "patch_size_t", None) or pt))
+            return (-(-shape[2] // pt) * (shape[3] // ph) * (shape[4] // pw)) or None
+        return ((shape[2] // ph) * (shape[3] // pw)) or None
+    except Exception:  # noqa: BLE001 - unknown shape: the default request prices the replica
+        return None
+
+
+def replica_need_mib(
+    module: Any,
+    tokens: Optional[int] = None,
+    *,
+    activations: bool = True,
+) -> int:
+    """MiB beyond :func:`_replica_reserve_mib`: weights, one branch's activations, working set over the reserve.
+    ``tokens``: the actual request's tokens per branch (else the default request's); ``activations=False``: weights
+    and working set only, for a selection the user made, which the first guided branch prices on its real shape."""
     weights = sum(
         t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
     ) // (1 << 20)
     return (
         int(weights)
-        + replica_activation_mib(module)
+        + (replica_activation_mib(module, tokens) if activations else 0)
         + max(0, replica_working_mib(module) - _REPLICA_BASE_RESERVE_MIB)
     )
+
+
+def _prices_default_request(selection: Any) -> bool:
+    """Only Automatic placement declines a replica on the load-time default request's activations: an explicit or
+    forced selection is priced on each render's actual shape when the replica is built."""
+    return bool(getattr(selection, "automatic", False)) and cfg_parallel_mode() != "force"
 
 
 def replica_fits(free_mib: Optional[int], total_mib: Optional[int], need_mib: int) -> bool:
@@ -1357,7 +1397,7 @@ def replica_layout(
             "background compile replays through the denoiser (UNSLOTH_DIFFUSION_BG_COMPILE)",
         )
     try:
-        need = replica_need_mib(denoiser)
+        need = replica_need_mib(denoiser, activations = _prices_default_request(selection))
         partner, why = _replica_card(selection, need)
     except Exception as exc:  # noqa: BLE001 - unsized: the old order
         return None, f"replica card unknown ({type(exc).__name__})"
@@ -3614,7 +3654,7 @@ class CfgParallelRouter:
             self.singles = 0
             if self.replica is None:
                 self.cfg_seen = True
-                self._build_replica()
+                self._build_replica(latent)
                 if self.branch == 1 and not prefill:
                     self._record_template(args, kwargs, latent)
             elif prefill:
@@ -3746,7 +3786,7 @@ class CfgParallelRouter:
         self._drop_pending()
         self.template = None
         if self.replica is None and self.disabled_reason is None:
-            self._build_replica()
+            self._build_replica(latent)
         if self.replica is None or self.worker is None or self.disabled_reason is not None:
             self.stats["sequence_split_skip"] = f"replica unavailable ({self.disabled_reason})"
             self.prev_latent = latent
@@ -3822,7 +3862,7 @@ class CfgParallelRouter:
         if self.replica is not None:
             self._drop_if_stale()
         if self.replica is None and self.disabled_reason is None:
-            self._build_replica()
+            self._build_replica(_latent_arg(args, kwargs))
         if self.replica is None or self.worker is None or self.disabled_reason is not None:
             return None
         if self._refused_this_capture():
@@ -4029,7 +4069,7 @@ class CfgParallelRouter:
         if hooked is not None:
             self.disable(f"denoiser gained hooks after the replica was built ({hooked})")
 
-    def _build_replica(self) -> None:
+    def _build_replica(self, latent: Any = None) -> None:
         module = self.module_ref()
         if module is None:
             return
@@ -4040,7 +4080,8 @@ class CfgParallelRouter:
             hooked = _hooks_present(module)
             if hooked is not None:
                 raise RuntimeError(f"denoiser carries hooks ({hooked})")
-            need_mib = replica_need_mib(module)
+            # the first guided branch's own shape, not the load-time default request
+            need_mib = replica_need_mib(module, latent_tokens(module, latent))
             automatic = getattr(self, "automatic_idle_only", False)
             # Outside the load scope: read the card directly, before the memory read opens our context (3-7% busy).
             util = _smi_util_pct(self.secondary.index) if automatic else None
@@ -4646,7 +4687,7 @@ def install_cfg_parallel(
         elif not candidates:
             reason = "secondary card is a different model (bit-identity needs the same kernels)"
         else:
-            need_mib = replica_need_mib(denoiser)
+            need_mib = replica_need_mib(denoiser, activations = automatic)
 
             def usable(o: int) -> int:
                 free_o = probes[o].free_mib

@@ -170,6 +170,64 @@ def test_automatic_replica_admission_counts_activations(monkeypatch, spec, total
         assert "short of the" in why
 
 
+_WAN_T4 = dict(_WAN_5B, config = dict(_WAN_5B["config"], patch_size = (1, 2, 2)))
+
+
+def _wan_latent(frames):
+    # 1280x704 through the Wan 2.2 5B VAE (16x spatial, 4x temporal)
+    return torch.empty(1, 48, (frames - 1) // 4 + 1, 704 // 16, 1280 // 16, device = "meta")
+
+
+@pytest.mark.parametrize("frames, tokens", [(49, 11440), (121, 27280)])
+def test_latent_tokens_read_the_actual_request(frames, tokens):
+    model = _Denoiser(_WAN_T4["config"], 1, torch.float16)
+    assert mg.latent_tokens(model, _wan_latent(frames)) == tokens
+    assert mg.latent_tokens(model, torch.empty(1, 4096, 64, device = "meta")) == 4096
+    assert mg.latent_tokens(model, None) is None
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_an_explicit_selection_is_not_declined_on_the_default_request(monkeypatch, force):
+    # the 121-frame Wan default prices 12915 + 1024 MiB; a 49-frame render needs 10966 + 1024 of the 13000 free
+    pipe, model = _family(_WAN_T4, monkeypatch)
+    if force:
+        monkeypatch.setenv(mg.CFG_PARALLEL_ENV, "force")
+    else:
+        monkeypatch.delenv(mg.CFG_PARALLEL_ENV, raising = False)
+    selection = mg.MultiGpuSelection(0, (1,), automatic = False)
+    probes = {0: mg.DeviceProbe(0, "T4", 15360, 14000), 1: mg.DeviceProbe(1, "T4", 15360, 13000)}
+    monkeypatch.setattr(mg, "current_selection", lambda *a, **k: selection)
+    monkeypatch.setattr(mg, "probe_devices", lambda *a, **k: probes)
+    monkeypatch.setattr(mg, "_execution_device", lambda *a, **k: torch.device("cuda:0"))
+    assert mg.install_cfg_parallel(pipe, offload_policy = "none") is None
+    assert isinstance(model.forward, mg.CfgParallelRouter)
+
+
+@pytest.mark.parametrize("frames, built", [(49, True), (121, False)])
+def test_the_lazy_replica_build_prices_the_first_guided_branch(monkeypatch, frames, built):
+    _pipe, model = _family(_WAN_T4, monkeypatch)
+    router = mg.CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    monkeypatch.setattr(router, "_secondary_free_total_mib", lambda: (13000, 15360))
+
+    def past_the_memory_gate(module):
+        raise RuntimeError("past the memory gate")
+
+    monkeypatch.setattr(mg, "weights_fingerprint", past_the_memory_gate)
+    router._build_replica(_wan_latent(frames))
+    if built:
+        assert "past the memory gate" in router.disabled_reason
+    else:
+        assert "replica needs 12915 MiB, 13000 MiB free" in router.disabled_reason
+
+
+def test_automatic_still_prices_the_default_request(monkeypatch):
+    monkeypatch.delenv(mg.CFG_PARALLEL_ENV, raising = False)
+    assert mg._prices_default_request(mg.MultiGpuSelection(0, (1,), automatic = True))
+    assert not mg._prices_default_request(mg.MultiGpuSelection(0, (1,), automatic = False))
+    monkeypatch.setenv(mg.CFG_PARALLEL_ENV, "force")
+    assert not mg._prices_default_request(mg.MultiGpuSelection(0, (1,), automatic = True))
+
+
 def test_video_default_tokens_follow_the_vae_and_patch():
     wan = types.SimpleNamespace(
         vae_scale_factor_spatial = 16,
