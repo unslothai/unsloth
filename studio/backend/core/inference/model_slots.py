@@ -130,13 +130,14 @@ async def route(
     candidates = visible()
     if not candidates:
         return None
-    slot = await asyncio.to_thread(serving_slot, requested, candidates, satisfies)
+
+    def pick():
+        slot = serving_slot(requested, candidates, satisfies)
+        return slot, slot is None and touch and in_slot(None, lambda: satisfies(requested))
+
+    slot, primary_serves = await asyncio.to_thread(pick)
     if slot is None or not reserve(slot):
-        if (
-            slot is None
-            and touch
-            and await asyncio.to_thread(in_slot, None, lambda: satisfies(requested))
-        ):
+        if primary_serves:
             mark_used(None)
         return None
     routed_slot.set(slot)
