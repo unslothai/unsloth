@@ -120,8 +120,32 @@ def test_another_servers_cache_cap_is_held_back(launch, monkeypatch):
     assert sized == avail_mib - 16384 - 2048 - 1024
 
 
-def test_a_host_without_room_keeps_the_default(launch):
-    assert "--cache-ram" not in launch(avail_mib = 9 * 1024)
+def test_a_host_without_room_for_the_default_lowers_the_cache(launch):
+    # The default 8192 MiB no longer fits beside the load: what does fit, after the server.
+    assert last(launch(avail_mib = 9 * 1024), "--cache-ram") == str(9 * 1024 - 2048 - 1024)
+
+
+def test_a_cache_too_small_to_hold_a_state_is_turned_off(launch):
+    assert last(launch(avail_mib = 2048 + 1024 + 100), "--cache-ram") == "0"
+
+
+def test_a_load_that_pages_anyway_keeps_the_default(launch):
+    # Not even the server fits: the weights page whatever the cache is, so nothing is lowered.
+    assert "--cache-ram" not in launch(avail_mib = 2048)
+
+
+def test_a_lowered_cache_is_recorded_for_the_retry_rungs_and_other_servers(launch):
+    backends = []
+    real_backend = placement._backend
+
+    def tracked(*args, **kwargs):
+        backend, gguf = real_backend(*args, **kwargs)
+        backends.append(backend)
+        return backend, gguf
+
+    with mock.patch.object(placement, "_backend", tracked):
+        cmd = launch(avail_mib = 9 * 1024)
+    assert backends[-1]._sized_cache_ram_flags == ["--cache-ram", last(cmd, "--cache-ram")]
 
 
 def test_a_full_cache_leaves_the_server_its_own_memory(launch):
