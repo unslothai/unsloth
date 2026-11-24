@@ -33984,6 +33984,8 @@ class LlamaCppBackend:
                             cancelled = _load_cancelled,
                             **_wait_kwargs,
                         ):
+                            # A later failure (an MTP probe respawn) must not undo a proven runtime.
+                            _rocm_signal_undo = None
                             if _did_rocm_retry and not _rocm_retry_undone:
                                 # Proved on this host: every later child skips the
                                 # prepend instead of crashing into it first.
