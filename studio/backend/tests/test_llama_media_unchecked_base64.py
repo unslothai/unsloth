@@ -83,3 +83,39 @@ def test_bare_base64_image_still_reaches_the_model():
     assert url.startswith("data:image/png;base64,")
     with Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1]))) as img:
         assert img.getpixel((0, 0)) == (200, 10, 10)
+
+
+def test_an_id3_tag_does_not_hide_a_playlist():
+    from utils.media_playlist import refuse_playlist
+
+    body = b"#EXTM3U\n/srv/meetings/board-call.flac\n"
+    tag = b"ID3\x04\x00\x00\x00\x00\x00\x00"
+    with pytest.raises(PlaylistRefused):
+        refuse_playlist(tag + body)
+    # A tag holding the words is still just a tag.
+    refuse_playlist(b"ID3\x04\x00\x00\x00\x00\x00\x10TIT2 <MPD> notes")
+
+
+def test_decision_api_refuses_playlists_in_audio_and_state():
+    from routes import systemone
+
+    clip = "data:audio/wav;base64," + base64.b64encode(PLAYLIST).decode("ascii")
+    with pytest.raises(HTTPException) as err:
+        systemone._validate_audio([clip])
+    assert err.value.status_code == 422
+    state = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64," + _padded_playlist().rstrip("=")},
+                },
+                {"type": "text", "text": "what colour"},
+            ],
+        }
+    ]
+    with pytest.raises(HTTPException) as err:
+        systemone._refuse_state_playlists(state)
+    assert err.value.status_code == 422
+    systemone._refuse_state_playlists([{"role": "user", "content": "plain text"}])

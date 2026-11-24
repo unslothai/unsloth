@@ -38,6 +38,12 @@ def _head(source: Any) -> bytes:
 def refuse_playlist(source: Any) -> None:
     """Raise ``PlaylistRefused`` when ``source`` looks like an HLS, concat or DASH playlist."""
     raw = _head(source)
+    # FFmpeg skips leading ID3v2 tags before it probes the format.
+    while raw[:3] == b"ID3" and len(raw) >= 10:
+        size = 10 + (
+            (raw[6] & 0x7F) << 21 | (raw[7] & 0x7F) << 14 | (raw[8] & 0x7F) << 7 | (raw[9] & 0x7F)
+        )
+        raw = raw[size + (10 if raw[5] & 0x10 else 0) :]
     head = raw.lstrip(b"\xef\xbb\xbf \t\r\n")
     # Mirrors FFmpeg's dash_probe: case-insensitive "<MPD" plus a DASH profile, up to the first NUL.
     text = raw.split(b"\x00", 1)[0].lower()
