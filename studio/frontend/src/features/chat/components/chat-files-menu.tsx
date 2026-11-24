@@ -2,14 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  completeProgressiveMounts,
-  revealProgressiveRow,
-} from "@/components/assistant-ui/progressive-messages";
-import {
   listSandboxFiles,
   saveSandboxFile,
 } from "@/components/assistant-ui/sandbox-download";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
+import { requestJumpToMessage } from "@/components/assistant-ui/message-jump";
 import {
   Popover,
   PopoverContent,
@@ -108,33 +105,6 @@ async function saveChatFile(file: ChatFile): Promise<void> {
   }
 }
 
-async function jumpToMessage(messageId: string): Promise<void> {
-  const selector = `[data-message-id="${CSS.escape(messageId)}"]`;
-  const viewports = [
-    ...document.querySelectorAll<HTMLElement>(".aui-thread-viewport"),
-  ].filter((viewport) => !viewport.closest("[inert]") && viewport.offsetParent);
-  for (const viewport of viewports) {
-    let target = viewport.querySelector<HTMLElement>(selector);
-    if (!target && revealProgressiveRow(viewport, messageId)) {
-      target = viewport.querySelector<HTMLElement>(selector);
-    }
-    if (!target) {
-      await completeProgressiveMounts((candidate) => candidate === viewport);
-      target = viewport.querySelector<HTMLElement>(selector);
-    }
-    if (!target) continue;
-    const inset = Number.parseFloat(getComputedStyle(viewport).paddingTop) || 0;
-    viewport.scrollBy({
-      top:
-        target.getBoundingClientRect().top -
-        viewport.getBoundingClientRect().top -
-        inset,
-      behavior: "smooth",
-    });
-    return;
-  }
-}
-
 function ChatFileRow({ file, onJump }: { file: ChatFile; onJump: () => void }) {
   const t = useT();
   const save = () =>
@@ -211,7 +181,7 @@ export function ChatFilesMenu() {
 
   const jump = (file: ChatFile) => {
     setOpen(false);
-    if (file.messageId) void jumpToMessage(file.messageId);
+    if (file.messageId) requestJumpToMessage(file.messageId);
   };
   const title = t("chatFiles.title");
 

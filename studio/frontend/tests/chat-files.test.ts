@@ -6,8 +6,6 @@ import test from "node:test";
 
 import { collectChatFiles } from "../src/features/chat/lib/chat-files.ts";
 
-import { readText } from "./helpers/kit.ts";
-
 const sandboxResult = (
   sessionId: string,
   files: string[],
@@ -100,34 +98,6 @@ test("folder files no message names are appended without a message", () => {
   });
 });
 
-test("a file the folder no longer holds is dropped, but only for that folder's session", () => {
-  const messages = [
-    python("a1", sandboxResult("t1", ["gone.txt", "kept.txt"])),
-    python("a2", sandboxResult("other", ["elsewhere.txt"])),
-  ];
-  const files = collectChatFiles(messages, {
-    sessionId: "t1",
-    names: ["kept.txt"],
-  });
-  assert.deepEqual(
-    files.map((f) => f.name),
-    ["kept.txt", "elsewhere.txt"],
-  );
-});
-
-test("a listing at the backend cap is not trusted to prove absence", () => {
-  const names = Array.from({ length: 2000 }, (_, i) => `f${i}.txt`);
-  const files = collectChatFiles(
-    [python("a1", sandboxResult("t1", ["late.txt"]))],
-    {
-      sessionId: "t1",
-      names,
-    },
-  );
-  assert.equal(files[0].name, "late.txt");
-  assert.equal(files.length, 2001);
-});
-
 test("a hostile image mime cannot inject path characters into the file name", () => {
   const files = collectChatFiles([
     {
@@ -145,10 +115,32 @@ test("a hostile image mime cannot inject path characters into the file name", ()
   assert.match(files[0].name, /^generated-image\.[a-z0-9]+$/);
 });
 
-test("the listing cap mirrors the backend's _MAX_SNAPSHOT_FILES", () => {
-  const backend = readText("../../backend/core/inference/tools.py");
-  const source = readText("../src/features/chat/lib/chat-files.ts");
-  const cap = /^_MAX_SNAPSHOT_FILES = (\d+)/m.exec(backend)?.[1];
-  assert.ok(cap);
-  assert.match(source, new RegExp(`FOLDER_LISTING_CAP = ${cap};`));
+test("a deleted folder file stays listed: the listing may be cut short, so absence proves nothing", () => {
+  const files = collectChatFiles(
+    [python("a1", sandboxResult("t1", ["kept.txt"]))],
+    {
+      sessionId: "t1",
+      names: [],
+    },
+  );
+  assert.deepEqual(
+    files.map((f) => f.name),
+    ["kept.txt"],
+  );
+});
+
+test("an indented fence downloads without the opener's indentation", () => {
+  const files = collectChatFiles([
+    {
+      id: "a1",
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: "1. Run:\n   ```python\n   def answer():\n       return 42\n   ```\n",
+        },
+      ],
+    },
+  ]);
+  assert.equal(files[0].text, "def answer():\n    return 42");
 });

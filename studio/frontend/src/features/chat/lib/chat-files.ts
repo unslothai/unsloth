@@ -41,9 +41,7 @@ type MessageLike = {
 };
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
-const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)/;
-// Mirrors _MAX_SNAPSHOT_FILES: a listing this long may be cut, so absence proves nothing.
-const FOLDER_LISTING_CAP = 2000;
+const FENCE_OPEN_RE = /^( {0,3})(`{3,}|~{3,})\s*([^\s`]*)/;
 
 export function extractCodeFences(
   markdown: string,
@@ -57,18 +55,20 @@ export function extractCodeFences(
       i += 1;
       continue;
     }
-    const fence = open[1];
+    const fence = open[2];
+    // CommonMark strips the opener's indentation from body lines.
+    const indentRe = open[1] ? new RegExp(`^ {0,${open[1].length}}`) : null;
     const closeRe = new RegExp(`^ {0,3}${fence[0]}{${fence.length},}\\s*$`);
     const body: string[] = [];
     i += 1;
     while (i < lines.length && !closeRe.test(lines[i])) {
-      body.push(lines[i]);
+      body.push(indentRe ? lines[i].replace(indentRe, "") : lines[i]);
       i += 1;
     }
     if (i >= lines.length) break;
     i += 1;
     const source = body.join("\n");
-    if (source.trim()) blocks.push({ language: open[2] || null, source });
+    if (source.trim()) blocks.push({ language: open[3] || null, source });
   }
   return blocks;
 }
@@ -206,46 +206,32 @@ const sandboxKey = (sessionId: string, name: string) =>
 
 /**
  * Everything downloadable from a chat, in message order, then folder files no message names.
- * With the folder listed, a named file it no longer holds is dropped (its download would 404).
  */
 export function collectChatFiles(
   messages: readonly MessageLike[],
   folder: ChatFolder | null = null,
 ): ChatFile[] {
-  const folderId = folder?.sessionId;
-  const present = new Set(folder?.names ?? []);
-  const trustAbsence =
-    folder !== null && folder.names.length < FOLDER_LISTING_CAP;
   const seen = new Set<string>();
   const found: Found[] = [];
-  for (const message of messages) {
-    if (message.role !== "assistant") {
-      continue;
+  const add = (file: Found) => {
+    const key = file.sandbox
+      ? sandboxKey(file.sandbox.sessionId, file.sandbox.name)
+      : null;
+    if (key === null || !seen.has(key)) {
+      found.push(file);
     }
-    for (const file of collectMessageFiles(message)) {
-      const key = file.sandbox
-        ? sandboxKey(file.sandbox.sessionId, file.sandbox.name)
-        : null;
-      if (key !== null && seen.has(key)) {
-        continue;
-      }
-      if (key !== null) {
-        seen.add(key);
-      }
-      const gone =
-        trustAbsence &&
-        file.sandbox?.sessionId === folderId &&
-        !present.has(file.sandbox?.name ?? "");
-      if (!gone) {
-        found.push(file);
-      }
+    if (key !== null) {
+      seen.add(key);
+    }
+  };
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      collectMessageFiles(message).forEach(add);
     }
   }
-  if (folderId !== undefined) {
-    for (const name of present) {
-      if (!seen.has(sandboxKey(folderId, name))) {
-        found.push(sandboxFound(`folder:${name}`, null, folderId, name));
-      }
+  for (const name of folder?.names ?? []) {
+    if (folder) {
+      add(sandboxFound(`folder:${name}`, null, folder.sessionId, name));
     }
   }
   const used = new Map<string, number>();
