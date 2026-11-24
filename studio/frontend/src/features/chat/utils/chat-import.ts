@@ -103,7 +103,7 @@ export function nativeImportSource(handle: {
   return {
     name: handle.name,
     size: handle.size,
-    // Fatal decoding: invalid UTF-8 is rejected rather than saved as U+FFFD.
+    // Fatal decoding: malformed input is rejected rather than saved as U+FFFD.
     chunks: () => decodeTextChunks(nativeBytes(handle), true),
   };
 }
