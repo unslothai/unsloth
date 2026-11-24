@@ -141,6 +141,46 @@ def _in_subfolder(sub: str, name: str) -> str:
     return posixpath.join(sub.replace("\\", "/"), name)
 
 
+def _transformers_weights(folder: Path) -> list:
+    """Every ``transformers_weights`` in config.json, nested sections included, and in the
+    config.*.json files its ``configuration_files`` can select."""
+    found: list = []
+
+    def walk(value, depth = 0):
+        if depth > 16:
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "transformers_weights":
+                    found.extend(
+                        [item]
+                        if isinstance(item, str)
+                        else item
+                        if isinstance(item, (list, tuple))
+                        else []
+                    )
+                else:
+                    walk(item, depth + 1)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, depth + 1)
+
+    try:
+        config = json.loads((folder / "config.json").read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError):
+        config = None
+    walk(config)
+    extra = config.get("configuration_files") if isinstance(config, dict) else None
+    for name in extra if isinstance(extra, list) else []:
+        if not isinstance(name, str) or name == "config.json" or _escapes(folder, name):
+            continue
+        try:
+            walk(json.loads((folder / name).read_text(encoding = "utf-8-sig")))
+        except (OSError, ValueError):
+            continue
+    return [name for name in found if isinstance(name, str)]
+
+
 def _weight_names(folder: Path) -> list:
     names = []
     for index_name in _TORCH_INDEX_FILES:
@@ -151,14 +191,7 @@ def _weight_names(folder: Path) -> list:
         weight_map = payload.get("weight_map") if isinstance(payload, dict) else None
         if isinstance(weight_map, dict):
             names.extend(v for v in weight_map.values() if isinstance(v, str))
-    try:
-        config = json.loads((folder / "config.json").read_text(encoding = "utf-8-sig"))
-    except (OSError, ValueError):
-        config = None
-    weights = config.get("transformers_weights") if isinstance(config, dict) else None
-    if isinstance(weights, str):
-        weights = [weights]
-    for name in weights if isinstance(weights, (list, tuple)) else []:
+    for name in _transformers_weights(folder):
         if not isinstance(name, str):
             continue
         names.append(name)
@@ -180,6 +213,19 @@ def escaping_weight_references(folder) -> list:
     the text, so Hub cache snapshots whose files link into the blob store still pass, except that
     a ``..`` is judged where the kernel sends it. A Sentence Transformers folder's modules.json
     module folders are read too, judged against the model folder."""
+    names = _escaping_weight_references(folder)
+    # Loaders open the forward-slash spelling (normalize_path), which can be another folder.
+    try:
+        from utils.paths.path_utils import normalize_path
+        spelled = normalize_path(str(folder))
+    except Exception:
+        spelled = str(folder)
+    if spelled != str(folder):
+        names = list(dict.fromkeys(names + _escaping_weight_references(spelled)))
+    return names
+
+
+def _escaping_weight_references(folder) -> list:
     try:
         folder = Path(str(folder)).expanduser()
         if not folder.is_dir():
