@@ -933,6 +933,9 @@ export const zhCN = {
     useModelScopeHint: "改为从 ModelScope 搜索和下载。可随时在设置中切换回来。",
     useModelScopeFailed: "无法切换到 ModelScope。",
     updateToken: "更新令牌",
+    linkedModelTitle: "加载 {model}？",
+    linkedModelBody: "某个链接打开了此页面，并请求下载和加载此模型。",
+    linkedModelLoad: "加载",
     hfToken: {
       label: "HF token",
       saved: "已保存",

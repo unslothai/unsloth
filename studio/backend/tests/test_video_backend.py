@@ -13663,10 +13663,11 @@ def test_cudnn_benchmark_opt_out_families():
         "ltx-2.5",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
+        "minimax-h3",
     } <= off
     assert all(
         fam.vae_force_fp32
-        or fam.name in ("ltx-2", "ltx-2.5")
+        or fam.name in ("ltx-2", "ltx-2.5", "minimax-h3")
         or fam.name.startswith("hunyuanvideo-1.5")
         or fam.name.startswith("cosmos3-")
         for fam in _FAMILIES

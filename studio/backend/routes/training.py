@@ -1795,6 +1795,10 @@ def _token_preview_rows(request: TokenPreviewRequest, hf_token) -> list[dict]:
     return rows.to_list()
 
 
+# Previews wait on one worker for up to 300 s; queued ones wait here, not on the shared default executor.
+_token_preview_pool = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "token-preview")
+
+
 @router.post("/token-preview")
 async def token_preview(
     request: TokenPreviewRequest,
@@ -1866,7 +1870,9 @@ async def token_preview(
         )
 
     try:
-        return await asyncio.to_thread(_run)
+        return await asyncio.get_running_loop().run_in_executor(
+            _token_preview_pool, contextvars.copy_context().run, _run
+        )
     except TokenPreviewError as exc:
         from hub.utils import download_registry
         detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token)

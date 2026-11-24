@@ -937,6 +937,9 @@ export const fr = {
     useModelScopeHint: "Rechercher et télécharger depuis ModelScope à la place. Vous pouvez revenir en arrière dans les Paramètres.",
     useModelScopeFailed: "Impossible de passer à ModelScope.",
     updateToken: "Mettre à jour le jeton",
+    linkedModelTitle: "Charger {model} ?",
+    linkedModelBody: "Un lien a ouvert cette page et demande de télécharger et de charger ce modèle.",
+    linkedModelLoad: "Charger",
     hfToken: {
       label: "Token HF",
       saved: "Enregistré",

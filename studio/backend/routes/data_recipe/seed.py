@@ -1417,6 +1417,9 @@ async def upload_unstructured_file(
             _BLOCK_UPLOAD_LOCKS.pop(block_id, None)
     ext = Path(original_filename).suffix.lower()
     size_bytes = len(content)
+    # On disk already: extraction reads raw_path, and an upload waiting for an extraction slot
+    # must not keep the whole document in memory meanwhile.
+    del content
 
     extracted_path = block_dir / f"{file_id}.extracted.txt"
     try:

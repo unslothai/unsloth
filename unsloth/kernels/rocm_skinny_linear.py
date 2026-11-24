@@ -9,6 +9,9 @@
 # fp32 partials go to a [SPLIT_K, 16, N] scratch buffer and a second small launch sums them in a fixed
 # order, so the result is deterministic. On by default only where measured (gfx1151, Radeon 8060S / Strix Halo); UNSLOTH_ROCM_SKINNY_LINEAR=all
 # enables it on every gfx11 part, =0 disables it.
+# NVIDIA: on by default on L4 (sm89) for 2 to 16 rows, where cuBLAS runs the two rank-r GEMMs as extra
+# tile passes; UNSLOTH_CUDA_SKINNY_LINEAR=all enables it on every sm80+ card, =0 disables it. Turing (T4)
+# never takes it: Triton ran these shapes 3-10x slower than cuBLAS there.
 
 import os
 
@@ -28,11 +31,17 @@ STATS = {"calls": 0}
 _SUPPORTED = {}
 _ENV = os.environ.get("UNSLOTH_ROCM_SKINNY_LINEAR", "1")
 _CONFIG_ENV = os.environ.get("UNSLOTH_ROCM_SKINNY_LINEAR_CONFIG", "")
+_CUDA_ENV = os.environ.get("UNSLOTH_CUDA_SKINNY_LINEAR", "1")
+_HIP = torch.version.hip is not None
 triton = None
-if _ENV != "0" and torch.version.hip is not None:
+if (_ENV != "0") if _HIP else (_CUDA_ENV != "0" and torch.version.cuda is not None):
     try:
         import triton
         import triton.language as tl
+
+        # Without a Triton package, `import unsloth` binds unsloth_zoo's triton_stub here: nothing can launch.
+        if getattr(triton, "__name__", None) != "triton":
+            triton = None
     except Exception:
         triton = None
 
@@ -170,7 +179,8 @@ def _parse_config(text):
     return values
 
 
-_FORCED = _parse_config(_CONFIG_ENV) if _CONFIG_ENV else None
+# ROCm tuning only: the CUDA schedule below was measured on its own.
+_FORCED = _parse_config(_CONFIG_ENV) if _HIP and _CONFIG_ENV else None
 
 
 def pick_config(N, K):
@@ -179,6 +189,10 @@ def pick_config(N, K):
     within 5% of it for every Qwen3-0.6B projection; the split is capped so wide outputs keep one pass."""
     if _FORCED is not None:
         return _FORCED
+    if not _HIP:
+        # L4 sweep (weights streamed from DRAM, M = 8 / 16, Qwen3 0.6B-8B and Llama 3.x 1B-8B shapes): within
+        # 1% of the best of 19 configs on average, at most 5.4% off.
+        return 64, 128, 4, 2, 2
     split = max(1, min(8, round(K / 256)))
     tiles = -(-N // 64)
     while split > 1 and tiles * split > 512:
@@ -189,20 +203,37 @@ def pick_config(N, K):
 def routed(N, K):
     """Shapes the kernel takes. Measured on gfx1151 (Linux and Windows, M = 1 to 16, LoRA r32): faster than
     rocBLAS for every Qwen3-0.6B / Qwen3-4B projection with K <= 3072 and for Llama-3-8B k / v (N = 1024);
-    slower for K = 4096 with N >= 2560 (Qwen3-4B o_proj, Llama-3-8B q / gate_up), which keep rocBLAS."""
+    slower for K = 4096 with N >= 2560 (Qwen3-4B o_proj, Llama-3-8B q / gate_up), which keep rocBLAS.
+    L4 (LoRA r32, M = 8 / 16): 0.50-0.99x the cuBLAS base + LoRA time below 48M weight elements (median 0.84x),
+    even from there (8B gate / up / down), which keep cuBLAS; one row is CUDA_MIN_ROWS."""
+    if not _HIP:
+        return N * K < 48 * 2**20
     return K <= 3072 or N <= 1024
+
+
+# L4, one row: at most 17% faster for small weights and up to 12% slower for 8B ones, so cuBLAS keeps it.
+CUDA_MIN_ROWS = 2
 
 
 # Archs with a measured decode win; others keep rocBLAS / hipBLASLt unless UNSLOTH_ROCM_SKINNY_LINEAR=all.
 _ARCHS = ("gfx1151",)
+# NVIDIA compute capabilities with a measured decode win (L4); others keep cuBLAS unless =all (sm80+).
+_CUDA_ARCHS = ((8, 9),)
 
 
 def skinny_linear_supported(device):
-    """Triton on a measured gfx11 ROCm device (any gfx11 with UNSLOTH_ROCM_SKINNY_LINEAR=all)."""
+    """Triton on a measured gfx11 ROCm device (any gfx11 with UNSLOTH_ROCM_SKINNY_LINEAR=all), or a measured
+    NVIDIA one (any sm80+ with UNSLOTH_CUDA_SKINNY_LINEAR=all)."""
     if triton is None or device.type != "cuda":
         return False
     index = device.index if device.index is not None else torch.cuda.current_device()
     ok = _SUPPORTED.get(index)
+    if ok is None and not _HIP:
+        try:
+            cc = tuple(torch.cuda.get_device_capability(index))
+        except Exception:
+            cc = (0, 0)
+        ok = _SUPPORTED[index] = cc in _CUDA_ARCHS or (_CUDA_ENV == "all" and cc[0] >= 8)
     if ok is None:
         try:
             arch = torch.cuda.get_device_properties(index).gcnArchName.split(":")[0]
@@ -223,6 +254,10 @@ def skinny_linear(
 ):
     """X [M, K] @ W[N, K].T (+ scale * (X @ A[R, K].T) @ B[N, R].T) into out [M, N] (strided ok).
     Raw pointers: plain dense tensors on one device only (skinny_decode_linear checks the rest)."""
+    if triton is None:
+        raise RuntimeError(
+            "skinny_linear needs Triton (missing, or disabled by the backend's kill switch)"
+        )
     M, K = X.shape
     N = W.shape[0]
     if not (1 <= M <= MAX_ROWS) or K < 1 or N < 1 or W.shape[1] != K:
@@ -344,9 +379,14 @@ def _compile_failure(error):
 
 def _warn_broken(error):
     import warnings
+    backend, blas, flag = (
+        ("ROCm", "rocBLAS", "UNSLOTH_ROCM_SKINNY_LINEAR")
+        if _HIP
+        else ("CUDA", "cuBLAS", "UNSLOTH_CUDA_SKINNY_LINEAR")
+    )
     warnings.warn(
-        f"Unsloth: the ROCm skinny decode linear failed to compile ({type(error).__name__}: {error}); "
-        "decode uses rocBLAS on this device (UNSLOTH_ROCM_SKINNY_LINEAR=0 skips the kernel).",
+        f"Unsloth: the {backend} skinny decode linear failed to compile ({type(error).__name__}: {error}); "
+        f"decode uses {blas} on this device ({flag}=0 skips the kernel).",
         stacklevel = 3,
     )
 
@@ -356,6 +396,9 @@ _STRIDED = torch.strided
 _functorch_active = getattr(torch._C, "_are_functorch_transforms_active", lambda: False)
 _forward_ad = torch.autograd.forward_ad
 _increment_version = torch.autograd.graph.increment_version
+_function_mode_on = getattr(torch._C, "_is_torch_function_mode_enabled", lambda: False)
+_dispatch_depth = getattr(torch._C, "_len_torch_dispatch_stack", lambda: 0)
+_jit_tracing = torch.jit.is_tracing
 
 
 def _autocast_changes(dtype):
@@ -374,10 +417,10 @@ def skinny_decode_linear(X, W, A, B, scale, out):
     dense tensor (the exact type: a wrapper subclass such as TorchAO's NF4Tensor reports a float dtype and a
     2D shape over packed storage and only dequantizes through its own dispatch), and out must not overlap
     itself or any operand. Lazily negated views (is_neg) keep the dispatched ops: the raw storage holds the
-    un-negated values. Forward-mode AD, torch.func transforms and a different autocast dtype need the
-    dispatched ops. A supplied out gets its version counter bumped like an out= op, so a tensor autograd saved
-    for backward still raises when backward reads it. This runs per projection per token in eager decode, so
-    the checks stay arithmetic."""
+    un-negated values. Forward-mode AD, torch.func transforms, function / dispatch modes, JIT tracing and a
+    different autocast dtype need the dispatched ops. A supplied out gets its version counter bumped like an
+    out= op, so a tensor autograd saved for backward still raises when backward reads it. This runs per
+    projection per token in eager decode, so the checks stay arithmetic."""
     if triton is None:
         return None
     if type(X) is not torch.Tensor or X.dim() != 3 or X.shape[1] != 1:
@@ -393,7 +436,7 @@ def skinny_decode_linear(X, W, A, B, scale, out):
         return None
     if X.layout != _STRIDED or W.layout != _STRIDED or X.is_neg() or W.is_neg():
         return None
-    if not routed(N, K):
+    if not routed(N, K) or (not _HIP and bsz < CUDA_MIN_ROWS):
         return None
     device = X.device
     if W.device != device or not skinny_linear_supported(device):
@@ -405,9 +448,14 @@ def skinny_decode_linear(X, W, A, B, scale, out):
     grad = torch.is_grad_enabled()
     if grad and (X.requires_grad or W.requires_grad):
         return None
+    # A TorchFunctionMode / TorchDispatchMode (make_fx's proxy, fake tensors) or a JIT trace would never see
+    # the raw-pointer write: they keep the dispatched ops.
     if (
         getattr(_forward_ad, "_current_level", -1) >= 0
         or _functorch_active()
+        or _function_mode_on()
+        or _dispatch_depth() != 0
+        or _jit_tracing()
         or _autocast_changes(dtype)
     ):
         return None
@@ -416,6 +464,9 @@ def skinny_decode_linear(X, W, A, B, scale, out):
     # [first, last + 1) element spans; strides are never negative.
     spans = [(X, (bsz - 1) * xs0 + (K - 1) * xs1 + 1), (W, (N - 1) * ws0 + (K - 1) * ws1 + 1)]
     if A is None:
+        if not _HIP:
+            # NVIDIA was measured against cuBLAS base + LoRA only: a plain 16-bit GEMM keeps cuBLAS.
+            return None
         # No active LoRA (a base layer, or an adapter folded for this generate()): lora_S is None.
         B, scale = None, 1.0
     else:
@@ -423,6 +474,8 @@ def skinny_decode_linear(X, W, A, B, scale, out):
             type(A) not in _PLAIN
             or type(B) not in _PLAIN
             or type(scale) not in (int, float)
+            # BLAS never reads the adapters at alpha = 0; here 0 * (a NaN or an fp16 overflow in X @ A) is NaN.
+            or scale == 0
             or A.dtype != dtype
             or B.dtype != dtype
             or A.dim() != 2

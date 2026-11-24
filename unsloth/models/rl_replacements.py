@@ -4205,6 +4205,9 @@ def _unsloth_vllm_sync_peft_merged(trainer):
         "server" if getattr(trainer, "vllm_client", None) is not None else "colocate"
     )
     is_main = getattr(trainer.accelerator, "is_main_process", True)
+    # TRL creates vllm_client on the main process only; the other ranks have nothing to send.
+    if mode == "server" and not is_main:
+        return None
     llm_model = None
     if mode == "colocate":
         llm_model = trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model
@@ -4228,11 +4231,10 @@ def _unsloth_vllm_sync_peft_merged(trainer):
         if not frozen_sync.keep(name, tensor, param):
             continue
         if mode == "server":
-            if is_main:
-                trainer.vllm_client.update_named_param(name, tensor)
+            trainer.vllm_client.update_named_param(name, tensor)
         elif mode == "colocate":
             llm_model.load_weights([(name, tensor)])
-    if mode == "server" and is_main:
+    if mode == "server":
         trainer.vllm_client.reset_prefix_cache()
     elif mode == "colocate":
         trainer.llm.reset_prefix_cache()

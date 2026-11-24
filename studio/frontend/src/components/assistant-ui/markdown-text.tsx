@@ -42,7 +42,14 @@ import {
 import { preprocessLaTeX } from "@/lib/latex";
 import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled, urlToBlob } from "@/lib/native-files";
-import { backendPathUrl, desktopSignedMediaPath, protectedBackendPath } from "@/lib/api-base";
+import {
+  backendPathUrl,
+  desktopSignedMediaPath,
+  isBackendRouteUrl,
+  isSignedGalleryMediaUrl,
+  protectedBackendMediaPath,
+  protectedBackendPath,
+} from "@/lib/api-base";
 import { openLink } from "@/lib/open-link";
 import { videoMimeForName } from "@/lib/video-utils";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
@@ -245,18 +252,24 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
         projectId,
       }) ??
       desktopSignedMediaPath(src) ??
-      protectedBackendPath(src))
+      protectedBackendMediaPath(src))
     : null;
+  // Any other backend route stays unloaded: a plain <img> would still send its query to that route.
+  const otherBackendRoute =
+    file === null && src != null && isBackendRouteUrl(src) && !isSignedGalleryMediaUrl(src);
   const sandbox = useSandboxImage(file);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   // A sandbox src stays absent, never raw, until the authed fetch produces a blob.
   const resolved =
     file === null
-      ? src
+      ? otherBackendRoute
+        ? undefined
+        : src
       : sandbox.state.status === "loaded"
         ? sandbox.state.url
         : undefined;
   const failedNow =
+    otherBackendRoute ||
     (resolved != null && failedSrc === resolved) ||
     (file !== null && sandbox.state.status === "failed");
   const sized = dom.width != null || dom.height != null;
