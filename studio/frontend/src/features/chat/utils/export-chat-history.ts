@@ -3,7 +3,10 @@
 
 import { downloadFile } from "@/lib/native-files";
 
-import { filterArchivedChatExport } from "./archived-chat-export";
+import {
+  type ChatExportData,
+  filterArchivedChatExport,
+} from "./archived-chat-export";
 import { buildStoredChatExport } from "./chat-history-storage";
 
 export const buildChatExport = buildStoredChatExport;
@@ -12,17 +15,30 @@ function dateStamp(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+// Per message: a backup with videos can outgrow the browser's longest string.
+function chatExportBlob({ messages, ...rest }: ChatExportData): Blob {
+  const parts = [
+    JSON.stringify(rest, null, 2).slice(0, -2),
+    ',\n  "messages": [',
+  ];
+  messages.forEach((message, i) => {
+    parts.push(i ? ",\n    " : "\n    ", JSON.stringify(message));
+  });
+  parts.push("\n  ]\n}");
+  return new Blob(parts, { type: "application/json" });
+}
+
 export async function downloadChatExport(): Promise<void> {
   const data = await buildChatExport();
   await downloadFile(
-    JSON.stringify(data, null, 2),
+    chatExportBlob(data),
     `unsloth-chats-${dateStamp()}.json`,
     "application/json",
   );
 }
 
 export async function buildArchivedChatExport() {
-  return filterArchivedChatExport(await buildChatExport());
+  return filterArchivedChatExport(await buildChatExport(true));
 }
 
 export async function downloadArchivedChatExport(): Promise<number> {
@@ -31,7 +47,7 @@ export async function downloadArchivedChatExport(): Promise<number> {
     return 0;
   }
   await downloadFile(
-    JSON.stringify(data, null, 2),
+    chatExportBlob(data),
     `unsloth-archived-chats-${dateStamp()}.json`,
     "application/json",
   );

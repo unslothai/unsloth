@@ -3053,13 +3053,21 @@ def lookup_chat_sidebar_row_ids(thread_ids: list[str]) -> dict[str, str]:
         conn.close()
 
 
-def build_chat_history_export() -> tuple[list[dict], list[dict], list[dict]]:
+def build_chat_history_export(
+    archived_only: bool = False,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    archived = "WHERE archived = 1" if archived_only else ""
+    in_archived = (
+        "WHERE thread_id IN (SELECT id FROM chat_threads WHERE archived = 1)"
+        if archived_only
+        else ""
+    )
     conn = get_connection()
     try:
         conn.execute("BEGIN")
         thread_rows = conn.execute(
-            """
-            SELECT * FROM chat_threads
+            f"""
+            SELECT * FROM chat_threads {archived}
             ORDER BY COALESCE(updated_at, created_at) DESC, created_at DESC
             """
         ).fetchall()
@@ -3067,7 +3075,7 @@ def build_chat_history_export() -> tuple[list[dict], list[dict], list[dict]]:
             "SELECT * FROM chat_projects ORDER BY updated_at DESC"
         ).fetchall()
         message_rows = conn.execute(
-            "SELECT * FROM chat_messages ORDER BY created_at ASC, id ASC"
+            f"SELECT * FROM chat_messages {in_archived} ORDER BY created_at ASC, id ASC"
         ).fetchall()
         conn.commit()
         return (
