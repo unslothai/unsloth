@@ -7054,7 +7054,7 @@ def _strip_tool_xml_for_display(
                     lo = call.start() + 1
                 return None
 
-            out, pos, removed, example = [], 0, False, _next_example(0)
+            out, pos, removed, example, kept_tail = [], 0, False, _next_example(0), ""
             while True:
                 if example is not None and example[0] < pos:
                     example = _next_example(pos)
@@ -7062,6 +7062,11 @@ def _strip_tool_xml_for_display(
                 if call is not None and (example is None or call.start() < example[0]):
                     out.append(seg[pos : call.start()])
                     pos, removed = call.end(), True
+                elif example is not None and example[1] == len(seg):
+                    # An example running to the end stays out of the passes below, so a prefix quoted in it cannot cut it.
+                    out.append(seg[pos : example[0]])
+                    kept_tail, pos = seg[example[0] :], len(seg)
+                    break
                 elif example is not None:
                     out.append(seg[pos : example[1]])
                     pos = example[1]
@@ -7073,7 +7078,10 @@ def _strip_tool_xml_for_display(
                 # A removed call can hold a backtick that made a later complete call read as code: rescan without it.
                 seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
             # Then the truncated rehearsal tail, gated and code-aware as in strip_segment, once outer calls are gone.
-            return apply_tool_strip_patterns(seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names)
+            return (
+                apply_tool_strip_patterns(seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names)
+                + kept_tail
+            )
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
     # Mask blocked-call bodies and lone backticked tags (prose) so these passes do not edit them.
