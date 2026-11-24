@@ -25613,7 +25613,6 @@ class LlamaCppBackend:
 
             # Resolve the canonical MTP mode once; it decides which drafter is downloaded and launched.
             _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
-            _vulkan_inkling_skip_dspark = False
             # #11308: DFlash2 + --split-mode tensor aborts at startup (ggml-org/llama.cpp#27819) and the
             # route falls back to layer split, so Auto prefers a loadable MTP sidecar on tensor instead.
             # _estimate_gguf_required_gb mirrors this.
@@ -25896,28 +25895,6 @@ class LlamaCppBackend:
 
             # Read GGUF metadata (context_length, chat_template); header-only.
             self._read_gguf_metadata(model_path)
-
-            # Auto DSpark on Vulkan Inkling can abort mid-decode (Windows
-            # 0xC0000409 / STATUS_STACK_BUFFER_OVERRUN) even with CPU draft
-            # sampling (#19239). Demote before the fit prices the sidecar so
-            # ngram-mod keeps the full context window; forced DSpark still
-            # launches and the mid-generation recovery below can drop it.
-            if (
-                _spec_canon == "dspark"
-                and (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
-                and not _extra_args_set_spec_type(extra_args)
-                and self._architecture in _INKLING2_ARCHS
-                and self._is_vulkan_backend(binary)
-            ):
-                logger.info(
-                    "Auto: skipping draft-dspark on Vulkan for Inkling; "
-                    "llama-server can abort mid-decode on this path (#19239). "
-                    "ngram-mod will take its place. Choose DSpark in Speculative "
-                    "Decoding to force it."
-                )
-                _spec_canon = "auto"
-                mtp_draft_path = None
-                _vulkan_inkling_skip_dspark = True
 
             if (
                 self._nextn_predict_layers
@@ -31420,11 +31397,6 @@ class LlamaCppBackend:
                     ),
                     draft_device = _draft_device,
                 )
-                if _vulkan_inkling_skip_dspark and self._spec_fallback_reason is None:
-                    # Policy stand-down: the Auto path never handed DSpark to
-                    # _build_speculative_flags, so stamp the reason the UI shows.
-                    self._spec_fallback_reason = "vulkan_inkling_dspark"
-                    self._spec_drafter_kind = "dspark"
                 # Restore the requested spec view, or the spec-mode compare never matches.
                 if _extra_args_set_spec_type(_pv_suppressed_spec_extra_args):
                     self._requested_spec_mode = None
@@ -34721,9 +34693,10 @@ class LlamaCppBackend:
                 ) or _extra_args_requests_dflash(extra_args, env = _launch_spec_env)
                 # A paired EAGLE-3 drafter (Studio export) can abort the server the same way.
                 _spec_requested_eagle3 = any("draft-eagle3" in str(t).lower() for t in spec_flags)
-                # Any draft speculative launch, not only MTP/tensor: a respawn would
-                # replay a drafter that aborts every decode (#13253, DSpark on Vulkan
-                # Inkling #19239). Cleared if the drafter-drop fallback wins.
+                # Arms mid-generation recovery for every draft speculative mode
+                # (MTP, DSpark, DFlash, EAGLE-3), not only MTP: a respawn would
+                # otherwise replay a drafter that aborts every decode (#13253,
+                # #19239). Cleared if the drafter-drop fallback wins.
                 _mtp_active_for_launched_server = bool(
                     _spec_requested_mtp
                     or _spec_requested_dspark

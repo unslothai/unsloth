@@ -1448,7 +1448,6 @@ test("an Auto-mode policy downgrade is not a repair the load can make", () => {
   for (const reason of [
     "drafter_no_vram",
     "mla_mtp_disabled",
-    "vulkan_inkling_dspark",
     "runtime_error",
   ]) {
     assert.equal(
