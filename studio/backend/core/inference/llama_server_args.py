@@ -138,6 +138,9 @@ OWNER_ONLY_PATH_FLAGS: frozenset[str] = frozenset(
         "--model-draft",
         "-mv",
         "--model-vocoder",
+        # Extra GGUF files the model's tensors are read from; --ple is an alias.
+        "--shard",
+        "--ple",
         "--lora",
         "--lora-scaled",
         "--control-vector",
