@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""LoRA GGUF export of an adapter with LoRA on MoE expert weights (PEFT target_parameters): llama.cpp's converter
-decides. Today it cannot map those tensors, so the export stops with a plain reason and leaves nothing behind;
-a converter that learns them makes the same export succeed with no Unsloth change. Runs the real
-_unsloth_save_lora_gguf against a stand-in converter script, without `import unsloth` (which wants a GPU)."""
+"""LoRA GGUF export of an MoE expert (PEFT target_parameters) adapter: llama.cpp's converter decides, and its failure
+is named. Runs the real _unsloth_save_lora_gguf on a stand-in converter, without `import unsloth` (which wants a GPU)."""
 
 import ast
 import collections
@@ -31,15 +29,6 @@ print("Traceback (most recent call last):")
 print({_UNMAPPED!r})
 sys.exit(1)
 """
-_CONVERTER_WITH_CHECKPOINT = (
-    """
-import os, sys
-ckpt = os.environ["_TEST_CHECKPOINT"]
-os.makedirs(ckpt)
-open(os.path.join(ckpt, "adapter_model.safetensors"), "wb").write(b"ckpt")
-"""
-    + _CONVERTER_TODAY
-)
 _CONVERTER_FUTURE = """
 import sys
 out = sys.argv[sys.argv.index("--outfile") + 1]
@@ -72,7 +61,6 @@ def _writer(tmp_path, converter_source):
     (llama_dir / "convert_lora_to_gguf.py").write_text(converter_source, encoding = "utf-8")
 
     def save_lora_to_custom_dir(model, tokenizer, directory):
-        os.makedirs(directory, exist_ok = True)
         (pathlib.Path(directory) / "adapter_model.safetensors").write_bytes(b"x" * 1024)
         (pathlib.Path(directory) / "adapter_config.json").write_text("{}", encoding = "utf-8")
 
@@ -103,13 +91,12 @@ def _writer(tmp_path, converter_source):
         "_lora_target_parameters",
         "_converter_error_line",
         "_lora_gguf_conversion_error",
-        "_move_into",
     }
     exec(compile(ast.Module(_load(names), []), str(_SAVE), "exec"), namespace)
     return namespace["_unsloth_save_lora_gguf"]
 
 
-def test_expert_adapter_stops_with_the_converters_reason_and_leaves_nothing(tmp_path):
+def test_expert_adapter_stops_with_the_converters_reason(tmp_path):
     out_dir = tmp_path / "export"
     save = _writer(tmp_path, _CONVERTER_TODAY)
     with pytest.raises(NotImplementedError) as raised:
@@ -118,46 +105,6 @@ def test_expert_adapter_stops_with_the_converters_reason_and_leaves_nothing(tmp_
     assert "MoE expert weights" in message and "mlp.experts.gate_up_proj" in message
     assert _UNMAPPED in message
     assert "merged model as GGUF" in message
-    # The export created the folder, so the 1 KB stand-in adapter and the folder are both gone.
-    assert not out_dir.exists()
-
-
-def test_existing_files_in_the_save_folder_survive_a_failed_export(tmp_path):
-    out_dir = tmp_path / "export"
-    out_dir.mkdir()
-    (out_dir / "notes.txt").write_text("keep me", encoding = "utf-8")
-    save = _writer(tmp_path, _CONVERTER_TODAY)
-    with pytest.raises(NotImplementedError):
-        save(_Peft(_EXPERTS), None, str(out_dir), outtype = "q8_0")
-    assert sorted(p.name for p in out_dir.iterdir()) == ["notes.txt"]
-
-
-def test_a_failed_export_leaves_what_another_writer_added_meanwhile(tmp_path, monkeypatch):
-    # A trainer writing checkpoint-<step> into the same folder while the converter runs (#19325 review).
-    out_dir = tmp_path / "export"
-    out_dir.mkdir()
-    monkeypatch.setenv("_TEST_CHECKPOINT", str(out_dir / "checkpoint-5"))
-    save = _writer(tmp_path, _CONVERTER_WITH_CHECKPOINT)
-    with pytest.raises(NotImplementedError):
-        save(_Peft(_EXPERTS), None, str(out_dir), outtype = "q8_0")
-    assert sorted(p.name for p in out_dir.iterdir()) == ["checkpoint-5"]
-    assert (out_dir / "checkpoint-5" / "adapter_model.safetensors").read_bytes() == b"ckpt"
-
-
-def test_a_parent_directory_destination_stays_staged(tmp_path, monkeypatch):
-    out_dir = tmp_path / "export"
-    locked = out_dir / "locked"
-    locked.mkdir(parents = True)
-    (out_dir / "sub").mkdir()
-    monkeypatch.chdir(out_dir / "sub")
-    save = _writer(tmp_path, _CONVERTER_FUTURE)
-    locked.chmod(0)
-    try:
-        gguf = save(_Peft(_EXPERTS), None, "..", outtype = "q8_0")
-    finally:
-        locked.chmod(0o755)
-    assert pathlib.Path(gguf).resolve() == out_dir / "Inkling-2-Mini-lora-q8_0.gguf"
-    assert not [p for p in out_dir.iterdir() if p.name.startswith(".unsloth-lora-gguf-")]
 
 
 def test_expert_adapter_exports_once_the_converter_can_map_it(tmp_path):

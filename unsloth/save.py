@@ -6550,16 +6550,6 @@ def _lora_gguf_conversion_error(returncode, cause, expert_targets) -> Exception:
     )
 
 
-def _move_into(src, dst) -> None:
-    """Move ``src``'s entries into ``dst`` as if written there: same-named files are replaced, folders merged."""
-    for name in os.listdir(src):
-        source, target = os.path.join(src, name), os.path.join(dst, name)
-        if os.path.isdir(source) and os.path.isdir(target):
-            _move_into(source, target)
-        else:
-            os.replace(source, target)
-
-
 @_model_parallel_refuses_save("save_pretrained_gguf")
 def _unsloth_save_lora_gguf(
     model,
@@ -6615,13 +6605,8 @@ def _unsloth_save_lora_gguf(
     if push_to_hub:
         lora_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-")
     else:
-        # Stage inside the destination (same filesystem for os.replace) so a failure never touches its other entries,
-        # e.g. a trainer's checkpoint-N. Same basename: the converter derives the GGUF's name from the folder.
-        created_save_dir = not os.path.isdir(save_directory)
         os.makedirs(save_directory, exist_ok = True)
-        stage_dir = tempfile.mkdtemp(prefix = ".unsloth-lora-gguf-", dir = save_directory)
-        lora_dir = os.path.join(stage_dir, os.path.basename(os.path.abspath(save_directory)))
-    exported = False
+        lora_dir = save_directory
 
     try:
         save_lora_to_custom_dir(model, tokenizer, lora_dir)
@@ -6697,9 +6682,6 @@ def _unsloth_save_lora_gguf(
             )
 
         if not push_to_hub:
-            _move_into(lora_dir, save_directory)
-            exported = True
-            out_gguf = os.path.join(save_directory, os.path.basename(out_gguf))
             print(f"Unsloth: Done. Saved LoRA GGUF to '{out_gguf}'")
             return out_gguf
 
@@ -6744,13 +6726,6 @@ def _unsloth_save_lora_gguf(
     finally:
         if push_to_hub:
             shutil.rmtree(lora_dir, ignore_errors = True)
-        else:
-            shutil.rmtree(stage_dir, ignore_errors = True)
-            if created_save_dir and not exported:
-                try:
-                    os.rmdir(save_directory)  # only if still empty
-                except OSError:
-                    pass
         if base_config_dir is not None:
             shutil.rmtree(base_config_dir, ignore_errors = True)
 
