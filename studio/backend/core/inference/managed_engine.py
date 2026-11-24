@@ -640,6 +640,19 @@ class ManagedEngine:
         # A URL-safe token can start with '-', which CLI parsers read as an option.
         self.key = "studio-" + secrets.token_urlsafe(32)
 
+    def _native_runtime_env(self, info, gpu_count):
+        from utils.paths.path_utils import _is_wsl
+
+        env = self.adapter.environment(gpu_count)
+        if self.engine == "vllm":
+            # The 0.26 CUDA worker allocates a UVA buffer during startup. Its
+            # WSL2 default disables the pinned host memory that buffer needs.
+            if info.get("platform") == "cuda" and info.get("version") == "0.26.0" and _is_wsl():
+                env["VLLM_WSL2_ENABLE_PIN_MEMORY"] = "1"
+            if _deep_gemm_unloadable(info["path"]):
+                env["VLLM_USE_DEEP_GEMM"] = "0"
+        return env
+
     def alive(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
@@ -836,10 +849,8 @@ class ManagedEngine:
                         RESERVE_SHARE,
                         measure,
                     )
-                    child_env.update(self.adapter.environment(len(gpu_ids or [0])))
+                    child_env.update(self._native_runtime_env(info, len(gpu_ids or [0])))
                     child_env.update(self.adapter.key_environment(self.key))
-                    if self.engine == "vllm" and _deep_gemm_unloadable(info["path"]):
-                        child_env["VLLM_USE_DEEP_GEMM"] = "0"
                     command = self.adapter.command(
                         info["path"] + "/bin/python",
                         model_path or model,
