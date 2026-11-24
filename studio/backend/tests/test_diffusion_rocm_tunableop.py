@@ -473,7 +473,6 @@ def test_trainer_installs_only_on_rocm_cuda_and_releases(monkeypatch):
 def test_shipped_training_table_is_well_formed():
     from pathlib import Path
 
-    # Training GEMMs (NT / NN) share the inference table with no duplicate key.
     (path,) = sorted((Path(rt.__file__).parent / "rocm_gemm_tables").glob("gfx1151_*_train.csv"))
     rows = [
         ln.split(",")

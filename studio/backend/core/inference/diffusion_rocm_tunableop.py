@@ -40,7 +40,7 @@ _STATE: dict = {
 
 
 _TABLE_DIR = Path(__file__).resolve().parent / "rocm_gemm_tables"
-# A shipped table whose stem ends with this also carries training GEMM rows (NT / NN); the others are inference-only.
+# Tables with this stem suffix also carry training GEMM rows (NT / NN).
 TRAIN_SUFFIX = "_train"
 # Tables were measured at torch's default hipBLASLt workspace; torch 2.11-2.14 drops a saved solution needing more
 # without falling back, which can leave the GEMM output unwritten.
