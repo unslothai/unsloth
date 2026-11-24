@@ -296,7 +296,7 @@ from ._mamba_lora import patch_mamba_fused_lora
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from . import _decode_graphs, _generic_decode_graphs, _flex_decode
-from .inkling2 import is_inkling2_config as _is_inkling2_config
+from .inkling2 import inkling2_owns_modelopt_quantization
 from .loader_utils import (
     _bnb_bits_requested,
     explain_weight_conversion_error,
@@ -4487,6 +4487,8 @@ class FastBaseModel:
         _explicit_bnb_4bit = user_quantization_config is not None and (
             quantization_config_selects_bnb_4bit(user_quantization_config)
         )
+        # Read before the call below drops the marker; merged exports never had it and plan from the repo as before.
+        _inkling2_modelopt = inkling2_owns_modelopt_quantization(auto_config)
         _checked_4bit, _checked_8bit, _ = check_and_disable_bitsandbytes_loading(
             auto_config,
             load_in_4bit = load_in_4bit or _explicit_bnb_4bit,
@@ -4557,7 +4559,7 @@ class FastBaseModel:
         _planner_config = auto_config if text_only_decoder else None
         _planner_config_reason = "text_only loads a decoder the repo config does not describe"
         # Inkling 2: the planner refuses config.json's "modelopt" quantization; auto_config has that marker dropped.
-        if _planner_config is None and _is_inkling2_config(auto_config):
+        if _planner_config is None and _inkling2_modelopt:
             _planner_config = auto_config
             _planner_config_reason = (
                 "this unsloth_zoo cannot plan from the resolved Inkling 2 config"
