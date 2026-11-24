@@ -136,12 +136,11 @@ def standardize_chat_format(
         role_index = 0 if len(distinct[0]) < len(distinct[1]) else 1
         other = 1 - role_index
         if len(distinct[0]) == len(distinct[1]):
-            # Tie: mostly-alias values mark the role column.
             role_like = [2 * hits[i] >= len(distinct[i]) for i in (0, 1)]
             if role_like[0] != role_like[1]:
                 role_index = 0 if role_like[0] else 1
         elif hits[other] == len(distinct[other]) and hits[role_index] == 0:
-            # Only all-alias vs alias-free overrules cardinality (identical canned replies); "Human" lines in text must not.
+            # Canned replies (identical text) only; a few "Human" lines in text must not overrule cardinality.
             role_index = other
         role_key = keys[role_index]
         content_key = keys[1 - role_index]

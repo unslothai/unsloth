@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. See /studio/LICENSE.AGPL-3.0
 
-"""`standardize_chat_format` must not swap role/content keys on a distinct-count
-tie: a canned-response chat log where role and text columns have equal unique
-counts used to train every message's text as its role."""
+"""`standardize_chat_format` must not swap role/content keys on a distinct-count tie."""
 
 import sys
 from pathlib import Path
@@ -18,7 +16,6 @@ from utils.datasets.format_conversion import standardize_chat_format  # noqa: E4
 
 
 def _canned_log(rows = 50):
-    # Two distinct roles and two distinct contents: a distinct-count tie.
     return Dataset.from_list(
         [
             {
@@ -44,7 +41,6 @@ def test_tied_cardinality_keeps_role_column():
 
 
 def test_tied_cardinality_sharegpt_ordering():
-    # Same tie, keys ordered content-first: correct pick must be 'speaker2'.
     dataset = Dataset.from_list(
         [
             {
@@ -62,7 +58,6 @@ def test_tied_cardinality_sharegpt_ordering():
 
 
 def test_cardinality_still_applies_without_alias_evidence():
-    # No alias evidence on either side: fewer distinct values still marks the role key.
     dataset = Dataset.from_list(
         [
             {
