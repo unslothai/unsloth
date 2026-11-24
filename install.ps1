@@ -150,9 +150,9 @@ function Install-UnslothStudio {
     $env:PYTHONUTF8 = '1'
     $env:PYTHONIOENCODING = 'utf-8'
 
+    $script:StudioMuteLines = $false
     # Resolved once: it picks the sink in Write-StudioLine. Same probe as studio/setup.ps1.
     $script:StudioStdoutRedirected = $false
-    $script:StudioMuteLines = $false
     try { $script:StudioStdoutRedirected = [Console]::IsOutputRedirected } catch { }
 
     # 5.1's Write-Host uses the OEM code page, and the desktop app decodes the pipe as UTF-8,
