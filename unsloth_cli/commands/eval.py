@@ -608,6 +608,31 @@ def _run_dir_name(model: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:200].strip("._-") or "model"
 
 
+def _backend_tokenizer(eval_kwargs: dict):
+    model = eval_kwargs["model"]
+    if not isinstance(model, str):
+        return getattr(model, "tokenizer", None)
+    if model == "vllm":
+        # vLLM may pick Mistral's own tokenizer, which cannot re-encode a rendered template's control tokens
+        from lm_eval.models.vllm_causallms import get_tokenizer as load
+    else:
+        from transformers import AutoTokenizer
+        load = functools.partial(AutoTokenizer.from_pretrained, trust_remote_code = False)
+    args = eval_kwargs["model_args"]
+    with _silence():
+        return load(args.get("tokenizer") or args["pretrained"])
+
+
+def _thinking_off(model_cls) -> dict:
+    # Qwen3-style templates otherwise open a <think> block, which the dataset task's "\n" stop cuts to "<think>"
+    import inspect
+    return (
+        {"enable_thinking": False}
+        if "enable_thinking" in inspect.signature(model_cls).parameters
+        else {}
+    )
+
+
 def _fail(message: str, code: int = 2):
     typer.echo(f"Error: {message}", err = True)
     raise typer.Exit(code = code)
@@ -685,6 +710,12 @@ def evaluate(
         help = "Allow tasks that lm-eval marks unsafe (e.g. humaneval): they execute "
         "model-generated code on this machine. Off by default.",
     ),
+    chat_template: Optional[bool] = typer.Option(
+        None,
+        "--chat-template/--no-chat-template",
+        help = "Prompt through the model's chat template. Default: on when every task is a "
+        ".jsonl/.json/.csv dataset, the tokenizer has a chat template and lm-eval is 0.4.10+.",
+    ),
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "HuggingFace token if needed."
     ),
@@ -740,6 +771,12 @@ def evaluate(
     import lm_eval
     from lm_eval.models.huggingface import HFLM
     from lm_eval.tasks import TaskManager
+
+    is_dataset = [
+        Path(e.strip()).suffix.lower() in _DATASET_SUFFIXES for e in tasks.split(",") if e.strip()
+    ]
+    # only the dataset task's "\n" stop needs it; built-in reasoning tasks keep lm-eval's default
+    thinking_off = _thinking_off(HFLM) if all(is_dataset) else {}
 
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
@@ -809,6 +846,7 @@ def evaluate(
                     model_args["tokenizer"] = model
                 typer.echo(f"Evaluating adapter '{model}' on base '{effective_base}'.")
             model_args["max_length"] = max_seq_length
+            model_args.update(thinking_off)
             if load_in_4bit and device.startswith("cuda"):
                 if find_spec("bitsandbytes") is not None:
                     model_args["load_in_4bit"] = True
@@ -854,6 +892,10 @@ def evaluate(
                 model_args["pretrained"] = _vllm_base(model)
             if gpu_memory_utilization is not None:
                 model_args["gpu_memory_utilization"] = gpu_memory_utilization
+            with _silence():
+                from lm_eval.models.vllm_causallms import VLLM
+            thinking_off = _thinking_off(VLLM) if all(is_dataset) else {}
+            model_args.update(thinking_off)
             eval_kwargs.update(model = "vllm", model_args = model_args, batch_size = bs)
         else:
             from unsloth import FastLanguageModel
@@ -897,8 +939,46 @@ def evaluate(
                     lmodel = PeftModel.from_pretrained(lmodel, model)
                 FastLanguageModel.for_inference(lmodel)
                 eval_kwargs["model"] = HFLM(
-                    pretrained = lmodel, tokenizer = tokenizer, batch_size = bs, max_length = max_seq_length
+                    pretrained = lmodel,
+                    tokenizer = tokenizer,
+                    batch_size = bs,
+                    max_length = max_seq_length,
+                    **thinking_off,
                 )
+
+        if chat_template is None:
+            # lm-eval < 0.4.10 has no enable_thinking and doubles the BOS of templates that render one
+            chat_template = (
+                all(is_dataset)
+                and bool(thinking_off)
+                and bool(getattr(_backend_tokenizer(eval_kwargs), "chat_template", None))
+            )
+            if all(is_dataset) and not thinking_off:
+                typer.echo(
+                    "Note: dataset tasks run without the chat template on this lm-eval. "
+                    "Upgrade to lm-eval 0.4.10 or newer (`pip install -U lm-eval`) to use it."
+                )
+            elif chat_template:
+                typer.echo(
+                    "Note: prompting with the model's chat template (pass --no-chat-template to turn off)."
+                )
+            elif any(is_dataset) and not all(is_dataset):
+                typer.echo(
+                    "Note: dataset tasks run without the chat template alongside other tasks. "
+                    "Run them on their own to use the model's chat template, if it has one."
+                )
+        elif chat_template:
+            tokenizer = _backend_tokenizer(eval_kwargs)
+            # vLLM renders any HF tokenizer through its own fallback templates; its Mistral tokenizer has none
+            if backend == "vllm":
+                usable = hasattr(tokenizer, "chat_template")
+            else:
+                usable = bool(getattr(tokenizer, "chat_template", None))
+            if not usable:
+                _fail(
+                    f"--chat-template: the tokenizer --backend {backend} loads has no chat template."
+                )
+        eval_kwargs["apply_chat_template"] = chat_template
 
         engine_log = tmp_dir / "vllm.log" if backend == "vllm" else None
         try:
@@ -922,6 +1002,8 @@ def evaluate(
         _fail("evaluation returned no results.", code = 1)
 
     _render_results(results)
+    # lm-eval does not record it, and scores differ with and without the template
+    results.setdefault("config", {})["apply_chat_template"] = bool(chat_template)
     if output_dir is None:
         # Parent first: on Windows a leaf mkdir under a stray eval_results file raises FileExistsError too.
         Path("eval_results").mkdir(exist_ok = True)

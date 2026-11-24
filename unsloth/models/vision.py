@@ -2381,7 +2381,10 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
     FastBaseModel.for_inference(self)
     dtype = _get_dtype(dtype_from_config(self.config))
-    do_bfloat16_mixed_precision = os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1"
+    # Stamped by from_pretrained: the env var stays "1" after one float32 mixed precision load, so it only answers for unstamped models.
+    do_bfloat16_mixed_precision = getattr(self, "_unsloth_bfloat16_mixed_precision", None)
+    if do_bfloat16_mixed_precision is None:
+        do_bfloat16_mixed_precision = os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1"
     if do_bfloat16_mixed_precision:
         dtype = torch.bfloat16
 
@@ -2587,7 +2590,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     def _eager_scope():
         return _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
 
-    def _run(scope, plan):
+    def _run(
+        scope,
+        plan,
+        retry = False,
+    ):
         with (
             _NonFlexGenerate(self, flex_decode = not _wants_attentions(self, kwargs)),
             decode_scope,
@@ -2595,7 +2602,8 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             _decode_graphs.plan_scope(plan),
             _get_inference_mode_context_manager(self),
             autocaster,
-            _lora_fold_generate(self, args, kwargs),
+            # retry: the eager redo after an OOM runs unfolded.
+            _lora_fold_generate(self, args, kwargs, retry = retry),
         ):
             out = self._old_generate(*args, **kwargs)
             if isinstance(scope, _GraphDecodeSteps):
@@ -2626,7 +2634,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                     _clear_generation_caches(self)
                     _generic_decode_graphs.set_rng_state(rng)
                     with _decode_graphs.eager_scope():
-                        output = _run(_eager_scope(), "eager")
+                        output = _run(_eager_scope(), "eager", retry = True)
     finally:
         _clear_generation_caches(self)
 
@@ -4739,6 +4747,7 @@ class FastBaseModel:
                     "Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA."
                 )
 
+        bfloat16_mixed_precision = False
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
             if do_forced_float32 and not SUPPORTS_BFLOAT16:
@@ -4760,6 +4769,7 @@ class FastBaseModel:
                         "use `float32_mixed_precision = False` during FastLanguageModel.from_pretrained"
                     )
                     os.environ["UNSLOTH_BFLOAT16_MIXED_PRECISION"] = "1"
+                    bfloat16_mixed_precision = True
             elif dtype == torch.float32:
                 print("Unsloth: Using float32 full finetuning.")
             else:
@@ -5629,6 +5639,7 @@ class FastBaseModel:
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        model = _mark_bfloat16_mixed_precision(model, bfloat16_mixed_precision)
         if _explicit_flex:
             setattr(model, _EXPLICIT_FLEX_ATTR, True)
         # Last, so the host copies carry the fp32 recasts the passes above make.

@@ -1050,6 +1050,9 @@ export const pl = {
       "Wyszukuj i pobieraj z ModelScope. Możesz wrócić w Ustawieniach.",
     useModelScopeFailed: "Nie udało się przełączyć na ModelScope.",
     updateToken: "Zaktualizuj token",
+    linkedModelTitle: "Wczytać {model}?",
+    linkedModelBody: "Link otworzył tę stronę i prosi o pobranie i wczytanie tego modelu.",
+    linkedModelLoad: "Wczytaj",
     hfToken: {
       label: "Token HF",
       saved: "Zapisano",

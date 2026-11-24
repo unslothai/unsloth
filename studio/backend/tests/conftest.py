@@ -97,6 +97,25 @@ def _skills_home_root(tmp_path_factory):
 _skills_home_counter = itertools.count()
 
 
+@pytest.fixture
+def tmp_cache_home_allowed(monkeypatch, tmp_path_factory):
+    """Lets a Hugging Face cache home live under pytest's base temp directory.
+
+    macOS denies /private/var as a system folder, and pytest's tmp_path is always under /private/var/folders,
+    so set_hf_cache_home(tmp_path / ...) raises "System folders cannot be used" there. Only paths inside the
+    base temp are exempt; every other path keeps the real verdict.
+    """
+    from hub.storage import scan_folders
+
+    base = os.path.realpath(str(tmp_path_factory.getbasetemp()))
+    real = scan_folders.is_denied_system_path
+
+    def is_denied_system_path(path):
+        return False if scan_folders.is_within_any(path, [base]) else real(path)
+
+    monkeypatch.setattr(scan_folders, "is_denied_system_path", is_denied_system_path)
+
+
 @pytest.fixture(scope = "session", autouse = True)
 def _plain_structlog_tracebacks():
     """Without setup_logging, structlog's default rich formatter lexes each frame's file from line 1:

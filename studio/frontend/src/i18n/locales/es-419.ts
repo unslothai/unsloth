@@ -1049,6 +1049,9 @@ export const es419 = {
       "Busca y descarga desde ModelScope en su lugar. Puedes volver a cambiarlo en Configuración.",
     useModelScopeFailed: "No se pudo cambiar a ModelScope.",
     updateToken: "Actualizar token",
+    linkedModelTitle: "¿Cargar {model}?",
+    linkedModelBody: "Un enlace abrió esta página y pidió descargar y cargar este modelo.",
+    linkedModelLoad: "Cargar",
     hfToken: {
       label: "Token de HF",
       saved: "Guardado",

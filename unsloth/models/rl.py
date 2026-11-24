@@ -1092,6 +1092,10 @@ def _park_optimizer_to_host(trainer):
                 grads.append((param, park(grad, (id(param), ".grad"))))
     if not states and not grads:
         return None
+    # The fused 8-bit AdamW (flat_adamw8bit) runs stock once state is parked between steps: drop its
+    # packed chunk buffers with the state.
+    optimizer.__dict__.pop("_unsloth_flat_plans", None)
+    optimizer.__dict__["_unsloth_flat_disabled"] = "rollout parking"
     for state, name, host in states:
         state[name] = host
     for param, _ in grads:
@@ -1563,6 +1567,46 @@ _DENSE_ROUTER_AUX_LOSS_OFF = (
     "    if _n_experts and all(_n <= 1 for _n in _n_experts):\n"
     "        self.aux_loss_enabled = False\n"
     "        _text_config.output_router_logits = False\n"
+    "pass\n"
+)
+
+# Reentrant checkpointing runs each layer's first forward under no_grad, so the router logits transformers
+# records there carry no graph: the aux loss is logged but adds no gradient. FastModel MoE loads already
+# checkpoint non-reentrantly (vision.py, _router_aux_loss_on); a model from a plain from_pretrained still gets
+# the config's use_reentrant pin, so undo it when the aux loss is on. Gemma 3n / 4 keep reentrant, as in vision.py.
+# TRL (SFT / DPO / GRPO / KTO / RLOO / reward / distillation) forces reentrant under DeepSpeed ZeRO-3 on DeepSpeed
+# < 0.19.3 for correct training (deepspeedai/DeepSpeed#8148), so that case keeps it too. ZeRO-3 is read as TRL
+# reads it (args.deepspeed_plugin.zero_stage), falling back to transformers' is_deepspeed_zero3_enabled().
+_ROUTER_AUX_LOSS_NON_REENTRANT_GC = (
+    "def _unsloth_zero3_needs_reentrant(args):\n"
+    "    _ds_plugin = getattr(args, 'deepspeed_plugin', None)\n"
+    "    _zero3 = _ds_plugin is not None and getattr(_ds_plugin, 'zero_stage', None) == 3\n"
+    "    if not _zero3:\n"
+    "        try:\n"
+    "            from transformers.integrations import is_deepspeed_zero3_enabled as _is_z3\n"
+    "            _zero3 = bool(_is_z3())\n"
+    "        except Exception:\n"
+    "            _zero3 = False\n"
+    "    if not _zero3:\n"
+    "        return False\n"
+    "    try:\n"
+    "        from importlib.metadata import version as _ds_version\n"
+    "        from packaging.version import Version as _V\n"
+    "        return _V(_ds_version('deepspeed')) < _V('0.19.3')\n"
+    "    except Exception:\n"
+    "        return True\n"
+    "if getattr(self, 'aux_loss_enabled', False) and getattr(getattr(self, 'args', None), 'gradient_checkpointing', False):\n"
+    "    _gc_kwargs = getattr(self.args, 'gradient_checkpointing_kwargs', None)\n"
+    "    _gc_type = str(getattr(getattr(getattr(self, 'model', None), 'config', None), 'model_type', '') or '').lower()\n"
+    "    if (\n"
+    "        isinstance(_gc_kwargs, dict) and _gc_kwargs.get('use_reentrant') is True\n"
+    "        and getattr(self.args, '_unsloth_pinned_reentrant', False)\n"
+    "        and not _gc_type.startswith(('gemma3n', 'gemma4'))\n"
+    "        and not _unsloth_zero3_needs_reentrant(self.args)\n"
+    "    ):\n"
+    "        _gc_kwargs['use_reentrant'] = False\n"
+    "        if isinstance(getattr(self.args, 'activation_checkpointing_kwargs', None), dict):\n"
+    "            self.args.activation_checkpointing_kwargs['use_reentrant'] = False\n"
     "pass\n"
 )
 
@@ -2151,6 +2195,10 @@ def _replace_outputs_logits(outputs, hidden_states):
 # Sticky per model: its head input is not hidden_states[-1] in a way we can reproduce, so every call returns real logits.
 _UNSLOTH_GRPO_HIDDEN_STATES_UNSAFE_ATTR = "_unsloth_grpo_hidden_states_unsafe"
 _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR = "_unsloth_grpo_hidden_states_verified"
+# Train/eval modes in which the fallback saw the forward return the head input itself (see wrapped_forward).
+_UNSLOTH_GRPO_HIDDEN_STATES_RETURNS_HEAD_INPUT_ATTR = (
+    "_unsloth_grpo_hidden_states_returns_head_input"
+)
 
 
 def _grpo_pre_head_hidden_divisor(model):
@@ -2192,6 +2240,43 @@ def _grpo_hidden_states_reproduce_logits(model, hidden_states, logits):
         return bool(float((got - want).abs().max()) <= tolerance)
 
 
+def _grpo_head_input_match_is_decisive(model, hidden_states):
+    """The forward's .logits equalled its last hidden state: does that prove it returned the head input?
+
+    Only when real logits could not have looked the same. A head of another width can never give a hidden-width
+    output; a square head can, when the head maps this input to itself (an all-zero row, an identity block), and
+    then the match says nothing about later inputs.
+    """
+    get_output_embeddings = getattr(model, "get_output_embeddings", None)
+    head = get_output_embeddings() if callable(get_output_embeddings) else None
+    weight = getattr(head, "weight", None)
+    if not isinstance(weight, torch.Tensor) or weight.is_meta or weight.ndim != 2:
+        return False
+    if weight.shape[0] != hidden_states.shape[-1]:
+        return True
+    return _grpo_hidden_states_reproduce_logits(model, hidden_states, hidden_states) is False
+
+
+def _cp_last_hidden_state_only(target_model, original_forward, kwargs):
+    # Context parallelism gathers each requested hidden state to full length; this caller keeps the last only.
+    # Scoped to the one decoder, and only when no one else can see the other states (the caller did not ask
+    # for them, the forward is audited not to read them); otherwise every state is gathered as before.
+    import sys
+    from contextlib import nullcontext
+
+    module = sys.modules.get("unsloth.context_parallel")
+    scope = getattr(module, "last_hidden_state_scope", None)
+    if scope is None:
+        return nullcontext(None)
+    requested = kwargs.get("output_hidden_states")
+    if requested is None:
+        requested = getattr(getattr(target_model, "config", None), "output_hidden_states", False)
+    # Always a scope, even one that selects nothing: it hides a selection made by an enclosing forward on
+    # this thread. The requested / audit verdicts are rank-local, so they go into the CP vote rather than
+    # deciding locally whether this rank takes part in it.
+    return scope(target_model, original_forward, requested = bool(requested))
+
+
 def _install_grpo_hidden_states_forward_wrapper(model):
     if model is None or getattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, False):
         return False
@@ -2224,6 +2309,8 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs)
         )
         num_logits_to_keep = _get_num_logits_to_keep(forward_signature, args, forward_kwargs)
+        # The caller's own arguments, for the re-run that returns real logits.
+        caller_kwargs = dict(forward_kwargs)
         forward_kwargs["output_hidden_states"] = True
         forward_kwargs["return_dict"] = True
         logits_kwarg = _minimise_logits_kwarg(
@@ -2244,7 +2331,8 @@ def _install_grpo_hidden_states_forward_wrapper(model):
 
         # TRL 0.26+: Config may be in a separate *_config.py module, or reachable by walking the Trainer's MRO to the real implementation module (trl.experimental.bco).
         try:
-            outputs = original_forward(*args, **forward_kwargs)
+            with _cp_last_hidden_state_only(target_model, original_forward, kwargs) as selection:
+                outputs = original_forward(*args, **forward_kwargs)
         except TypeError as error:
             message = str(error)
             if logits_kwarg is None or logits_kwarg not in message:
@@ -2255,7 +2343,10 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             forward_kwargs.pop(logits_kwarg, None)
             logits_kwarg = None
             try:
-                outputs = original_forward(*args, **forward_kwargs)
+                with _cp_last_hidden_state_only(
+                    target_model, original_forward, kwargs
+                ) as selection:
+                    outputs = original_forward(*args, **forward_kwargs)
             except TypeError as retry_error:
                 if not rejected_hidden_states(str(retry_error)):
                     raise
@@ -2268,13 +2359,13 @@ def _install_grpo_hidden_states_forward_wrapper(model):
                 f"Unsloth: GRPO fallback did not receive hidden states for unsupported model {model_name}; using logits directly.",
             )
             if logits_kwarg is None:
+                # The caller gets this object: never one whose hidden states were cut to the last (a mapping can hold them where getattr does not look).
+                if selection is not None and selection.truncated:
+                    return original_forward(*args, **forward_kwargs)
                 return outputs
-            # outputs.logits is the return value now, and one position was asked for only to throw the logits away; GRPO drops the last and slices the completion window, so restore the caller's own limit and re-run.
-            if logits_kwarg in kwargs:
-                forward_kwargs[logits_kwarg] = kwargs[logits_kwarg]
-            else:
-                forward_kwargs.pop(logits_kwarg, None)
-            return original_forward(*args, **forward_kwargs)
+            # outputs.logits is the return value now, and one position was asked for only to throw the logits away; GRPO drops the last and slices the completion window, so re-run with the caller's own arguments (its own limit, and no hidden states it did not ask for).
+            del outputs
+            return original_forward(*args, **caller_kwargs)
 
         hidden_states = hidden_states[-1]
         if divisor is not None:
@@ -2282,21 +2373,37 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         # A forward that honours UNSLOTH_RETURN_HIDDEN_STATES itself, behind a wrapper the capability check does not
         # know, already returns the head input as .logits: nothing to verify, and with a square head the check below
         # would compare hidden states with hidden states, call the input unsafe and degrade every later call.
-        native = getattr(outputs, "logits", None)
-        returned_head_input = (
-            isinstance(native, torch.Tensor)
-            and native.ndim == hidden_states.ndim
-            and native.shape[-1] == hidden_states.shape[-1]
-            and native.shape[-2] >= 1
-            and torch.equal(
-                native[..., -1:, :], hidden_states[..., -1:, :].to(device = native.device)
-            )
+        # The comparison reads its result back to the host (a sync on CUDA, a data-dependent branch under
+        # Dynamo), so it only runs until this model has a verdict: either answer is then kept per model.
+        # A match is kept only when it is decisive, and only for the train/eval mode it was seen in: a
+        # coincidental match (or a forward whose return depends on the mode) must not switch off the head check.
+        verified = getattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR, None)
+        mode = bool(getattr(target_model, "training", False))
+        head_input_modes = getattr(
+            target_model, _UNSLOTH_GRPO_HIDDEN_STATES_RETURNS_HEAD_INPUT_ATTR, ()
         )
+        returned_head_input = mode in head_input_modes
+        if verified is None and not returned_head_input:
+            native = getattr(outputs, "logits", None)
+            returned_head_input = (
+                isinstance(native, torch.Tensor)
+                and native.ndim == hidden_states.ndim
+                and native.shape[-1] == hidden_states.shape[-1]
+                and native.shape[-2] >= 1
+                and torch.equal(
+                    native[..., -1:, :], hidden_states[..., -1:, :].to(device = native.device)
+                )
+            )
+            if returned_head_input and _grpo_head_input_match_is_decisive(
+                target_model, hidden_states[..., -1:, :]
+            ):
+                setattr(
+                    target_model,
+                    _UNSLOTH_GRPO_HIDDEN_STATES_RETURNS_HEAD_INPUT_ATTR,
+                    frozenset(head_input_modes) | {mode},
+                )
         # Once per model: a head input we do not reproduce (another pre-head transform) would silently train a different objective.
-        if (
-            not returned_head_input
-            and getattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR, None) is None
-        ):
+        if not returned_head_input and verified is None:
             verdict = _grpo_hidden_states_reproduce_logits(
                 target_model, hidden_states, getattr(outputs, "logits", None)
             )
@@ -3452,6 +3559,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     if "model" in call_args:
         RLTrainer_post += _DENSE_ROUTER_AUX_LOSS_OFF
+        RLTrainer_post += _ROUTER_AUX_LOSS_NON_REENTRANT_GC
 
     # MoE CausalLMs cache router_aux_loss_coef at init, so a forward that adds its own aux loss reads the checkpoint
     # value. Hand them the trainer's resolved coefficient: TRL 1.7-1.17 also wrote it to the config, TRL >= 1.18 only
@@ -3894,6 +4002,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "        if getattr(self, 'gradient_checkpointing', False):\n"
         "            _gc_kwargs = getattr(self, 'gradient_checkpointing_kwargs', None) or {}\n"
         "            if _gc_kwargs.get('context_fn') is None and not _gc_kwargs.get('debug', False):\n"
+        "                # Remember a pin the user did not ask for: the MoE router aux loss needs it undone.\n"
+        "                self._unsloth_pinned_reentrant = _gc_kwargs.get('use_reentrant') is not True\n"
         "                _gc_kwargs['use_reentrant'] = True\n"
         "                self.gradient_checkpointing_kwargs = _gc_kwargs\n"
         "                if hasattr(self, 'activation_checkpointing_kwargs'):\n"

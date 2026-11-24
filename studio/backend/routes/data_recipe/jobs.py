@@ -371,6 +371,42 @@ def _inject_local_structured_response_format(
         model_configs.extend(new_configs)
 
 
+# Generation settings a recipe may send to the loaded model. Every other field Studio's own /v1 chat
+# request declares (tools, permission / sandbox level, provider rerouting, MCP) is control, not sampling:
+# a shared recipe must not set it behind a "Local model" label, nor a keyless caller reach it this way.
+_LOCAL_EXTRA_BODY_GENERATION_KEYS = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "max_tokens",
+        "max_completion_tokens",
+        "presence_penalty",
+        "frequency_penalty",
+        "repetition_penalty",
+        "logit_bias",
+        "stop",
+        "seed",
+        "n",
+        "logprobs",
+        "top_logprobs",
+        "response_format",
+        "enable_thinking",
+        "reasoning_effort",
+        "preserve_thinking",
+        "thinking",
+        "continue_final_message",
+        "use_adapter",
+    }
+)
+
+
+def _local_extra_body_control_keys() -> frozenset[str]:
+    from models.inference import ChatCompletionRequest
+    return frozenset(ChatCompletionRequest.model_fields) - _LOCAL_EXTRA_BODY_GENERATION_KEYS
+
+
 def _inject_local_providers(
     recipe: dict[str, Any],
     request: Request,
@@ -447,6 +483,8 @@ def _inject_local_providers(
             extra_body = params.get("extra_body")
             if not isinstance(extra_body, dict):
                 extra_body = {}
+            control = _local_extra_body_control_keys()
+            extra_body = {key: value for key, value in extra_body.items() if key not in control}
             tpl_kwargs = extra_body.get("chat_template_kwargs")
             if not isinstance(tpl_kwargs, dict):
                 tpl_kwargs = {}

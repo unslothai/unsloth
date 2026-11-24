@@ -251,16 +251,19 @@ def test_remote_oversized_jinja_falls_through_to_tokenizer_template(tmp_path, mo
     import huggingface_hub
     from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
-    big_jinja = tmp_path / "chat_template.jinja"
+    selected_cache = tmp_path / "selected-cache" / "hub"
+    # Downloads land in the cache they were asked for; the picker reads nothing outside it.
+    snapshot = selected_cache / "models--org--big-jinja-model" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    big_jinja = snapshot / "chat_template.jinja"
     big_jinja.write_text("{{ x }}" * (MAX_CHAT_TEMPLATE_BYTES // 4), encoding = "utf-8")
     assert MAX_CHAT_TEMPLATE_BYTES < big_jinja.stat().st_size < MAX_TEMPLATE_METADATA_BYTES
-    tokenizer_config = tmp_path / "tokenizer_config.json"
+    tokenizer_config = snapshot / "tokenizer_config.json"
     tokenizer_config.write_text(json.dumps({"chat_template": "SMALL_TEMPLATE"}), encoding = "utf-8")
     files = {
         "chat_template.jinja": big_jinja,
         "tokenizer_config.json": tokenizer_config,
     }
-    selected_cache = tmp_path / "selected-cache" / "hub"
     observed_cache_dirs = []
 
     monkeypatch.setattr("picker.service.resolve_cached_repo_id_case", lambda name: name)
