@@ -178,7 +178,6 @@ class TestFriendlyUpstreamError:
         expected = f"llama-server error: {message}"
         assert _openai_passthrough_error(400, raw).detail == expected
         assert _anthropic_upstream_error(raw) == expected
-        # A body past 500 chars still parses; only the shown message is capped.
         long_raw = json.dumps({"error": {"code": 400, "message": "x" * 800}})
         assert _friendly_upstream_error(long_raw) == "llama-server error: " + "x" * 500
 

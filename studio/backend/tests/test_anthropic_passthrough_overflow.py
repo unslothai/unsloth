@@ -249,7 +249,6 @@ def test_only_truncate_oldest_pays_for_the_cut_replay(monkeypatch, policy):
     assert body["messages"] == _history()
 
 
-# A sampler rejection whose message starts past character 500 of the body.
 _LATE_MESSAGE = "Failed to initialize samplers: penalty_repeat must be finite and greater than 0"
 _LATE_REJECTION = json.dumps(
     {"error": {"code": 400, "detail": "d" * 600, "message": _LATE_MESSAGE, "type": "invalid"}}
