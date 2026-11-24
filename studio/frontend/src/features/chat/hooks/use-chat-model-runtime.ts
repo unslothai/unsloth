@@ -3772,10 +3772,12 @@ export function useChatModelRuntime() {
       const toastId = toast.loading("Unloading model", {
         description: "Checking for running chats.",
       });
+      // Resolved once: a refresh during the confirmation can move the selection.
+      const target = servedSelection();
       // Eject stops chats too but leaves no model loaded, so word it as an unload.
       const scope =
         !confirmed && useChatRuntimeStore.getState().loadedModels.length > 1
-          ? servedSelection()
+          ? target
           : undefined;
       const stopDecision =
         confirmed ??
@@ -3792,7 +3794,7 @@ export function useChatModelRuntime() {
       async function performUnload(): Promise<void> {
         stopQueuedRuns(stopDecision, Boolean(scope));
         await unloadModel({
-          model_path: servedSelection(),
+          model_path: target,
           force_cancel_active: stopDecision.forceCancelActive,
         });
         if (!scope) {
@@ -3826,10 +3828,11 @@ export function useChatModelRuntime() {
   }, [checkpoint, clearCheckpoint, refresh, setModelsError]);
 
   const ejectAllModels = useCallback(async (): Promise<boolean> => {
+    const selected = servedSelection();
     const others = useChatRuntimeStore
       .getState()
       .loadedModels.map((m) => m.checkpoint ?? m.id)
-      .filter((id) => id !== servedSelection());
+      .filter((id) => id !== selected);
     const selectedLocal =
       Boolean(checkpoint) && !isExternalModelId(checkpoint);
     const decision = await confirmStopRunningChatsIfNeeded(

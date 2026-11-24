@@ -139,5 +139,7 @@ test("a refresh in flight does not undo a newer quant pick of the same repo", ()
 });
 
 test("eject checks running chats on the quant it unloads", () => {
-  assert.match(SOURCE, /loadedModels\.length > 1\s*\? servedSelection\(\)\s*: undefined;/);
+  assert.match(SOURCE, /const target = servedSelection\(\);/);
+  assert.match(SOURCE, /loadedModels\.length > 1\s*\? target\s*: undefined;/);
+  assert.match(SOURCE, /model_path: target,/);
 });

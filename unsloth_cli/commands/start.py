@@ -2352,13 +2352,16 @@ def _pin_loaded_quant(entry: dict, models: list, variant: str) -> dict:
     model_id = str(entry.get("id") or "")
     if not model_id or model_id.casefold().endswith(f":{variant}".casefold()):
         return entry
-    prefix = f"{model_id}:".casefold()
-    sibling = any(
-        str(m.get("id") or "").casefold().startswith(prefix)
-        for m in models
-        if m.get("loaded") is not False
+    pinned = f"{model_id}:{variant}"
+    loaded = [m for m in models if m.get("loaded") is not False]
+    named = next(
+        (m for m in loaded if str(m.get("id") or "").casefold() == pinned.casefold()), None
     )
-    return {**entry, "id": f"{model_id}:{variant}"} if sibling else entry
+    if named is not None:
+        return named
+    prefix = f"{model_id}:".casefold()
+    sibling = any(str(m.get("id") or "").casefold().startswith(prefix) for m in loaded)
+    return {**entry, "id": pinned} if sibling else entry
 
 
 def _resolve_model(
