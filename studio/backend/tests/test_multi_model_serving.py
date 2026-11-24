@@ -1084,8 +1084,11 @@ def test_a_fallback_onto_a_served_quant_keeps_one_copy(backends, monkeypatch):
     monkeypatch.setattr(inf, "_run_tracked_load_model_impl", onto_the_kept_copy)
     primary._loaded_by_user_action = extra.llama._loaded_by_user_action = False
     request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q4_K_M", alongside = True)
+    stamped = []
+    monkeypatch.setattr(keepwarm, "_note_activity", lambda: stamped.append(True))
     extra.last_used = 0.0
     asyncio.run(inf.load_model_gated(request, None, "s", user_initiated = True))
+    assert stamped
     assert model_slots.slots == [extra] and extra.llama._loaded_by_user_action
     assert not primary._loaded_by_user_action and extra.last_used > 0.0
 
@@ -1100,6 +1103,21 @@ def test_a_fallback_onto_a_served_quant_keeps_one_copy(backends, monkeypatch):
         "/m/b.gguf", n_ctx = 4096, refuse_partial_gpu_fit = True, gpu_ids = (1,)
     )
     assert inf._served_twice(twin) == (True, lower)
+
+
+def test_a_fallback_copy_a_request_already_reached_is_kept(backends, monkeypatch):
+    primary, extra = backends
+    _gated_load_fakes(monkeypatch, short_fits = [])
+    fake = inf._run_tracked_load_model_impl
+
+    async def reached_then_fell_back(request, *args, **kwargs):
+        model_slots.reserve(inf.routed_slot.get())
+        return await fake(request.model_copy(update = {"gguf_variant": "Q4_K_M"}), *args, **kwargs)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", reached_then_fell_back)
+    request = LoadRequest(model_path = "org/A-GGUF", gguf_variant = "Q8_0", alongside = True)
+    asyncio.run(inf.load_model_gated(request, None, "s"))
+    assert len(model_slots.slots) == 2 and model_slots.slots[1].llama.is_active
 
 
 def test_an_alongside_load_counts_as_activity(backends, monkeypatch):

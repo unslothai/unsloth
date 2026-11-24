@@ -19309,17 +19309,19 @@ async def load_model_gated(
                 if new_slot and extra is not None
                 else (False, None)
             )
-            if twin:
+            from core.inference.llama_keepwarm import _note_activity
+
+            # A request that already reached the new copy keeps it.
+            if twin and model_slots.claim_victim(extra):
                 # A low-disk fallback can land on a quant already served beside it: keep that one.
                 model_slots.loading = None
                 await asyncio.to_thread(model_slots.drop, extra)
                 await asyncio.to_thread(release_chat_gpu_claim)
                 routed_slot.set(survivor)
                 model_slots.mark_used(survivor)
+                _note_activity()
                 extra = None
             if extra is not None:
-                from core.inference.llama_keepwarm import _note_activity
-
                 extra.request = request
                 extra.last_used = time.monotonic()
                 # A fresh load is use: without it the idle loop drops the slot on its next tick.
