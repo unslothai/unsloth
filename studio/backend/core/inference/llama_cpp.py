@@ -39827,6 +39827,8 @@ class LlamaCppBackend:
             thinking_budget_tokens,
             enable_thinking,
             _reasoning_kw,
+            bool(payload.get("continue_final_message")),
+            cancel_event,
         )
         if _budget is not None:
             payload["thinking_budget_tokens"] = _budget
@@ -40105,8 +40107,14 @@ class LlamaCppBackend:
         requested: Optional[int],
         enable_thinking: Optional[bool],
         chat_template_kwargs: Optional[dict],
+        continue_final_message: bool = False,
+        cancel_event = None,
     ) -> Optional[int]:
-        if enable_thinking is False or not self._supports_reasoning:
+        if (
+            enable_thinking is False
+            or not self._supports_reasoning
+            or (cancel_event is not None and cancel_event.is_set())
+        ):
             return requested
         from core.inference import cut_thought
 
@@ -40120,6 +40128,8 @@ class LlamaCppBackend:
                 tools,
                 strict = True,
                 chat_template_kwargs = chat_template_kwargs,
+                continue_final_message = continue_final_message,
+                should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
             )
         except Exception:
             try:
@@ -41286,7 +41296,9 @@ class LlamaCppBackend:
                     _iteration_max_tokens,
                     thinking_budget_tokens,
                     enable_thinking,
-                    _reasoning_kw,
+                    payload.get("chat_template_kwargs"),
+                    bool(payload.get("continue_final_message")),
+                    cancel_event,
                 )
                 if _budget is not None:
                     payload["thinking_budget_tokens"] = _budget
@@ -43730,6 +43742,7 @@ class LlamaCppBackend:
             thinking_budget_tokens,
             enable_thinking,
             _reasoning_kw,
+            cancel_event = cancel_event,
         )
         if _budget is not None:
             stream_payload["thinking_budget_tokens"] = _budget
