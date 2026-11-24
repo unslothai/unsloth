@@ -284,7 +284,9 @@ export async function isLocalModelAlreadyLoaded(
     reasoningBudgetMessage,
   } = selection;
   try {
-    const status = await getInferenceStatus();
+    const named = `${target}:${ggufVariant}`;
+    const served = ggufVariant && withoutNamedQuant(named, ggufVariant) === target;
+    const status = await getInferenceStatus(undefined, served ? named : undefined);
     if (
       !(await localSelectionMatchesResident({
         target,
