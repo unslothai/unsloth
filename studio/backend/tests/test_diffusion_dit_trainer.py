@@ -373,9 +373,13 @@ def test_mx_module_filter_rejects_non_linear():
     assert _mx_module_filter(nn.LayerNorm(3072), "blocks.0.norm") is False
 
 
-def test_should_compile_auto_mxfp8_on_cuda():
+def test_should_compile_auto_mxfp8_on_cuda(monkeypatch):
     cfg = DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o")
     assert _should_compile(cfg, False, "cuda", base_precision = "mxfp8") is True
+    # int8 compiles as the default W8A8 base; the torchao weight-only opt-out cannot trace.
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+    assert _should_compile(cfg, False, "cuda", base_precision = "int8") is True
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "weight-only")
     assert _should_compile(cfg, False, "cuda", base_precision = "int8") is False
     off = DiffusionLoraConfig(
         base_model = "b", data_dir = "d", output_dir = "o", compile_transformer = "off"
