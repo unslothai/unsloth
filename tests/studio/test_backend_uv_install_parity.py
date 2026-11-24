@@ -4,9 +4,9 @@
 """The Backend CI installs moved from pip to uv without changing what gets installed.
 
 That holds only while uv is told to resolve like pip: pick the best version across both
-indexes (pip's --extra-index-url), compile bytecode, and keep its downloads inside the pip
-cache the job already restores (no second cache family). Dropping any of these settings
-changes the environment the tests run in, or adds an unsaved cache, without failing a step.
+indexes (pip's --extra-index-url) and compile bytecode. Its cache stays in the runner's temp
+dir, outside every saved cache, so the pip cache entries keep their size. Dropping any of these
+settings changes the environment the tests run in, or grows a saved cache, without failing a step.
 """
 
 import pathlib
@@ -34,7 +34,7 @@ PARITY_ENV = {
     "UV_INDEX_STRATEGY": "unsafe-best-match",
     "UV_COMPILE_BYTECODE": "1",
     "UV_LINK_MODE": "copy",
-    "UV_CACHE_DIR": "${{ steps.pip-cache.outputs.dir }}/uv",
+    "UV_CACHE_DIR": "${{ runner.temp }}/uv-cache",
 }
 # The only pip calls left: pip upgrading itself and installing uv.
 PIP_ALLOWED = ("pip install --upgrade pip", 'pip install --target "$RUNNER_TEMP/uv-tool" uv')
@@ -79,16 +79,14 @@ def test_every_package_install_goes_through_uv(workflow, job, name):
 
 
 @pytest.mark.parametrize("workflow,job,name", STEPS)
-def test_the_uv_cache_lives_in_the_restored_pip_cache(workflow, job, name):
-    step, steps = _step(workflow, job, name)
-    index = steps.index(step)
-    restores = [
-        s
-        for s in steps[:index]
-        if str(s.get("uses", "")).endswith("actions/pip-cache-restore")
-        and s.get("id") == "pip-cache"
-    ]
-    assert restores, f"{workflow}:{job} lost the pip-cache restore that UV_CACHE_DIR points into"
+def test_the_uv_cache_is_never_saved(workflow, job, name):
+    """uv's cache would grow the pip cache entries (unpacked wheels) if it sat inside them."""
+    _, steps = _step(workflow, job, name)
+    for s in steps:
+        path = str((s.get("with") or {}).get("path", ""))
+        assert (
+            "uv-cache" not in path
+        ), f"{workflow}:{job} saves or restores uv's cache: {s.get('name')}"
 
 
 def test_the_pytest_job_keeps_uv_off_path():
