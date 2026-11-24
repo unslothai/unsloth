@@ -65,7 +65,10 @@ import {
   getPresetOwnedParams,
   getPresetSource,
 } from "../presets/preset-policy";
-import { normalizeModelIdentity } from "../../hub/lib/model-identity";
+import {
+  normalizeModelIdentity,
+  withoutNamedQuant,
+} from "../../hub/lib/model-identity";
 import { normalizePresetLoadConfig } from "../presets/preset-load-config";
 import {
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
@@ -5195,6 +5198,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setModelsError: (modelsError) => set({ modelsError }),
   setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
   setCheckpoint: (modelId, ggufVariant, options) => {
+    modelId = withoutNamedQuant(modelId, ggufVariant);
     let scheduleQwenMigration = false;
     set((state) => {
       // Only external selections persist; a stale local id would race the freshly loaded model.

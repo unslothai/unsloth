@@ -594,7 +594,7 @@ def test_checkpointing_flag_falls_back_to_old_name_and_default():
 def test_no_unsloth_site_reads_the_deprecated_model_alias():
     offenders = []
     for path in (ROOT / "unsloth").rglob("*.py"):
-        text = path.read_text(errors = "ignore")
+        text = path.read_text(encoding = "utf-8", errors = "ignore")
         for pattern in ('"is_gradient_checkpointing", False', ".encoder.is_gradient_checkpointing"):
             if pattern in text:
                 offenders.append(f"{path.relative_to(ROOT)}: {pattern}")
