@@ -16070,7 +16070,9 @@ class LlamaCppBackend:
                     # ROCm free is unreliable on a shared pool (Windows free==total); cap at system RAM before taking the reserve.
                     avail = LlamaCppBackend._available_system_memory_mib()
                     if avail is not None:
-                        raw_mib = min(raw_mib, avail)
+                        # A Linux BIOS carve-out is outside MemAvailable but HIP can use it.
+                        carveout = LlamaCppBackend._linux_apu_carveout_mib()
+                        raw_mib = min(raw_mib, avail + (carveout or 0))
                 elif integrated:
                     # cudaMemGetInfo free is MemFree, which counts page cache as used; MemAvailable
                     # adds it back.
@@ -16334,6 +16336,22 @@ class LlamaCppBackend:
         return _host_memory.usable_mib(
             _host_memory.system_available_mib(), LlamaCppBackend._cgroup_available_memory_mib()
         )
+
+    @staticmethod
+    def _linux_apu_carveout_mib() -> Optional[int]:
+        """BIOS carve-out of the host's only AMD GPU, from amdgpu sysfs; None off bare-metal Linux,
+        with more than one AMD card (no HIP-to-DRM join), or when unreadable."""
+        if not sys.platform.startswith("linux") or _is_wsl():
+            return None
+        try:
+            from utils.hardware.hardware import _linux_drm_sysfs_records
+            records = _linux_drm_sysfs_records(distinguish_failure = True)
+        except Exception:
+            return None
+        amd = [r for r in records or () if r.get("vendor") == "amd"]
+        if len(amd) != 1 or not amd[0].get("memory_total_gb"):
+            return None
+        return int(amd[0]["memory_total_gb"] * 1024)
 
     @staticmethod
     def _total_system_memory_mib() -> Optional[int]:
