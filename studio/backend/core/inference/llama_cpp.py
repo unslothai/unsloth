@@ -34104,6 +34104,42 @@ class LlamaCppBackend:
                                 _did_fit_retry = True
                                 self._vram_fit_context_length = None
                                 continue
+                        # Prefer a smaller Studio-chosen context while still fully
+                        # offloaded over --fit on spilling MoE experts to host
+                        # (#19275). llama.cpp treats our -c as user-fixed, so a
+                        # same-ctx --fit on retry cannot shrink it and leaves VRAM
+                        # peaked with overflowing layers. Halving keeps -ngl -1.
+                        if (
+                            _studio_chose_ctx
+                            and fully_gpu_offloaded
+                            and _startup_crashed
+                            and not _capability_crash
+                            and not _hip_rocr_mismatch
+                            and _ctx_halvings < _CTX_HALVE_MAX
+                            and not _load_cancelled()
+                        ):
+                            _half_before_fit = _halved_ctx_after_oom(
+                                run_cmd,
+                                "\n".join(self._stdout_lines[-200:]),
+                                self._is_gpu_memory_start_failure,
+                            )
+                            if _half_before_fit is not None:
+                                _ctx_was = run_cmd[run_cmd.index("-c") + 1]
+                                logger.warning(
+                                    "llama-server could not allocate its context at %s "
+                                    "tokens with full GPU offload; Studio chose that "
+                                    "length, retrying at %d before enabling --fit on. "
+                                    "Crash log: %s",
+                                    _ctx_was,
+                                    _half_before_fit,
+                                    self._llama_log_path,
+                                )
+                                run_cmd = list(run_cmd)
+                                run_cmd[run_cmd.index("-c") + 1] = str(_half_before_fit)
+                                self._vram_fit_context_length = None
+                                self._record_memory_state(run_cmd, env)
+                                _ctx_halvings += 1
+                                continue
                         if (
                             not _did_fit_retry
                             and fully_gpu_offloaded
