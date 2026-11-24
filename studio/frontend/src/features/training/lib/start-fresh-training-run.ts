@@ -6,8 +6,9 @@ import { isAccountOwner } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { getHfToken, useHfTokenStore } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
-import { translate } from "@/i18n";
+import { getLocale, translate } from "@/i18n";
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
+import { formatLocalMinute } from "@/lib/schedule-time";
 import { toast } from "@/lib/toast";
 import { DatasetFormatError, checkDatasetFormat } from "../api/datasets-api";
 import { getCachedSystemInfo } from "@/hooks/use-system";
@@ -18,11 +19,13 @@ import {
   startTraining,
 } from "../api/train-api";
 import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
+import { useScheduledTrainingStore } from "../stores/scheduled-training-store";
 import {
   clearDeletedDataset,
   useTrainingConfigStore,
 } from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
+import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 import type { CheckFormatResponse } from "../types/datasets";
 import { cacheLocalPathMatchesSelection } from "./cache-reference";
@@ -261,50 +264,9 @@ export async function startFreshTrainingRun(): Promise<boolean> {
     return false;
   }
 
-  const validation = validateTrainingConfig(
-    attempt.config,
-    usePlatformStore.getState().deviceType,
-    isAccountOwner(),
-  );
-  if (!validation.ok) {
-    return attempt.cancel(translate(validation.errorKey));
-  }
-
   try {
-    const tokenResult = await prepareAttemptHfToken(attempt);
-    if (!tokenResult.ready) {
-      return false;
-    }
-    primeNativeNotificationPermission().catch(() => undefined);
-
-    if (!(await prepareSelectedDataset(attempt, tokenResult.token))) {
-      return false;
-    }
-    if (useTrainingRuntimeStore.getState().stopRequested) {
-      return attempt.cancel();
-    }
-    // Upgrade consent first, as in chat, since a newer transformers changes what loads. Carry its
-    // custom-code verdict forward; the gate's fallback reads a flag a fresh run leaves false.
-    const upgradeVerdict = { requiresTrustRemoteCode: false };
-    if (
-      !(await confirmSelectedModelTransformersUpgrade(
-        attempt,
-        tokenResult.token,
-        upgradeVerdict,
-      ))
-    ) {
-      return false;
-    }
-    if (
-      !(await confirmSelectedModelRemoteCode(
-        attempt,
-        tokenResult.token,
-        upgradeVerdict.requiresTrustRemoteCode,
-      ))
-    ) {
-      return false;
-    }
-    return await submitFreshTrainingRun(attempt, tokenResult.token);
+    const prepared = await preflightFreshTrainingRun(attempt);
+    return prepared.ready && (await submitFreshTrainingRun(attempt, prepared.token));
   } catch (error) {
     if (isTrainingStartOutcomeUnknownError(error)) {
       const recovery = await attempt.recoverTransportFailure();
@@ -320,17 +282,96 @@ export async function startFreshTrainingRun(): Promise<boolean> {
       toast.warning(message);
       return attempt.settleUnconfirmed(message);
     }
-    if (attempt.abortIfInputsChanged()) {
-      return false;
-    }
-    return attempt.cancel(
-      normalizeTrainingStartError(
-        error instanceof Error
-          ? error
-          : translate("studio.training.startFailed"),
-      ),
-    );
+    return failFreshTrainingAttempt(attempt, error);
   }
+}
+
+/** Save this setup to start at `startAt`, a wall clock in `timezone`, instead of starting now. */
+export async function scheduleFreshTrainingRun(
+  startAt: string,
+  timezone: string,
+): Promise<boolean> {
+  const attempt = FreshTrainingStartAttempt.begin();
+  if (!attempt) {
+    return false;
+  }
+
+  try {
+    const prepared = await preflightFreshTrainingRun(attempt);
+    return (
+      prepared.ready &&
+      (await submitScheduledTrainingRun(attempt, prepared.token, startAt, timezone))
+    );
+  } catch (error) {
+    return failFreshTrainingAttempt(attempt, error);
+  }
+}
+
+function failFreshTrainingAttempt(
+  attempt: FreshTrainingStartAttempt,
+  error: unknown,
+): false {
+  if (attempt.abortIfInputsChanged()) {
+    return false;
+  }
+  return attempt.cancel(
+    normalizeTrainingStartError(
+      error instanceof Error ? error : translate("studio.training.startFailed"),
+    ),
+  );
+}
+
+/** Validates the setup, or cancels the attempt with the reason. */
+function freshTrainingConfigValid(attempt: FreshTrainingStartAttempt): boolean {
+  const validation = validateTrainingConfig(
+    attempt.config,
+    usePlatformStore.getState().deviceType,
+    isAccountOwner(),
+  );
+  return validation.ok || attempt.cancel(translate(validation.errorKey));
+}
+
+type PreparedFreshTrainingRun =
+  | { ready: false }
+  | { ready: true; token: string | null };
+
+/** The checks a fresh start makes, whether it starts now or at a later time. */
+async function preflightFreshTrainingRun(
+  attempt: FreshTrainingStartAttempt,
+): Promise<PreparedFreshTrainingRun> {
+  const notReady = { ready: false } as const;
+  if (!freshTrainingConfigValid(attempt)) {
+    return notReady;
+  }
+
+  const tokenResult = await prepareAttemptHfToken(attempt);
+  if (!tokenResult.ready) {
+    return notReady;
+  }
+  primeNativeNotificationPermission().catch(() => undefined);
+
+  if (!(await prepareSelectedDataset(attempt, tokenResult.token))) {
+    return notReady;
+  }
+  if (useTrainingRuntimeStore.getState().stopRequested) {
+    attempt.cancel();
+    return notReady;
+  }
+  // Upgrade consent first, as in chat, since a newer transformers changes what loads. Carry its
+  // custom-code verdict forward; the gate's fallback reads a flag a fresh run leaves false.
+  const upgradeVerdict = { requiresTrustRemoteCode: false };
+  const confirmed =
+    (await confirmSelectedModelTransformersUpgrade(
+      attempt,
+      tokenResult.token,
+      upgradeVerdict,
+    )) &&
+    (await confirmSelectedModelRemoteCode(
+      attempt,
+      tokenResult.token,
+      upgradeVerdict.requiresTrustRemoteCode,
+    ));
+  return confirmed ? tokenResult : notReady;
 }
 
 type AttemptHfTokenResult =
@@ -530,26 +571,29 @@ async function confirmSelectedModelRemoteCode(
   return approved || attempt.cancel();
 }
 
-async function submitFreshTrainingRun(
+/** The request the setup sends, once it still validates; null when the attempt ended instead. */
+function enterFreshTrainingTransport(
   attempt: FreshTrainingStartAttempt,
   hfToken: string | null,
-): Promise<boolean> {
-  const validation = validateTrainingConfig(
-    attempt.config,
-    usePlatformStore.getState().deviceType,
-    isAccountOwner(),
-  );
-  if (!validation.ok) {
-    return attempt.cancel(translate(validation.errorKey));
+): TrainingStartRequest | null {
+  if (!freshTrainingConfigValid(attempt)) {
+    return null;
   }
-
   const payload = buildTrainingStartPayload(
     attempt.config,
     hfToken,
     getCachedSystemInfo(),
     usePlatformStore.getState().isCpuTrainingHost(),
   );
-  if (!attempt.enterTransport()) {
+  return attempt.enterTransport() ? payload : null;
+}
+
+async function submitFreshTrainingRun(
+  attempt: FreshTrainingStartAttempt,
+  hfToken: string | null,
+): Promise<boolean> {
+  const payload = enterFreshTrainingTransport(attempt, hfToken);
+  if (!payload) {
     return false;
   }
 
@@ -571,6 +615,35 @@ async function submitFreshTrainingRun(
   }
 
   return attempt.settleAccepted(response.job_id, response.message);
+}
+
+async function submitScheduledTrainingRun(
+  attempt: FreshTrainingStartAttempt,
+  hfToken: string | null,
+  startAt: string,
+  timezone: string,
+): Promise<boolean> {
+  const request = enterFreshTrainingTransport(attempt, hfToken);
+  if (!request) {
+    return false;
+  }
+
+  const schedules = useScheduledTrainingStore.getState();
+  try {
+    await schedules.create({ start_at: startAt, timezone, request });
+  } catch (error) {
+    // A reply that timed out may still have saved the start; let the list show what the server has.
+    void schedules.refresh();
+    throw error;
+  }
+  // Nothing starts now, so the start lease is free again.
+  attempt.cancel();
+  toast.success(
+    translate("studio.schedule.created", {
+      when: formatLocalMinute(startAt, getLocale()),
+    }),
+  );
+  return true;
 }
 
 async function checkSelectedDataset(
