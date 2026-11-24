@@ -934,6 +934,13 @@ export const zhTW = {
     compactEmpty: "目前還沒有可壓縮的內容",
     compactUnsupported: "壓縮需要支援工具的 GGUF 或 MLX 模型",
   },
+  chatFiles: {
+    title: "此聊天中的檔案",
+    code: "程式碼片段",
+    showInChat: "在聊天中顯示",
+    download: "下載 {name}",
+    saveFailed: "無法儲存 {name}。",
+  },
   welcome: {
     goodToSeeYou: "很高興見到您",
     goodToSeeYouName: "很高興見到您，{name}",
