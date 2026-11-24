@@ -29,6 +29,7 @@ except (
 _REAL_CAPACITY = dm._host_ram_capacity_mib
 _REAL_AVAILABLE = dm._available_system_memory_mib
 _REAL_MMAP = gguf_mmap.gguf_mmap_enabled
+_REAL_RELEASE = getattr(v, "_resident_video_cpu_release_gb", None)
 
 # Declared on-disk sizes of the tiny test checkpoints: NTFS allocates sparse files in full, so the files hold only
 # their headers and the size the guard reads comes from here.
@@ -480,3 +481,30 @@ def test_fp8_dual_expert_partner_unread_counts_the_pick_twice(host, tmp_path):
     assert "denoiser 28.6" in _refusal(
         A14B, "single_file", checkpoint_repo = str(tmp_path), checkpoint_filename = low
     )
+
+
+def test_resident_copied_gguf_is_credited_at_its_copy(host, monkeypatch, tmp_path):
+    """mmap hook off (Windows, UNSLOTH_DIFFUSION_GGUF_MMAP=0): a resident LTX-2.5 GGUF holds its 14 GB copy, so
+    replacing it releases about 40.9 GB, not the 26.9 GB a mapped GGUF would."""
+    import types
+
+    host("cpu", 64 * GB_PER_GIB, 8.0)
+    monkeypatch.setattr(v, "_resident_video_cpu_release_gb", _REAL_RELEASE)
+    monkeypatch.setattr(vch, "_process_tree_pss_mib", lambda: int(45e9 / 2**20), raising = False)
+    monkeypatch.setattr(gguf_mmap, "gguf_mmap_enabled", lambda: False)
+    name = "ltx-2.5-22b-distilled-UD-Q4_K_XL.gguf"
+    (tmp_path / name).write_bytes(b"GGUF")
+    _DECLARED_SIZES[name] = 14_000_234_880
+    state = types.SimpleNamespace(
+        device = "cpu",
+        family = LTX25,
+        kind = "gguf",
+        repo_id = str(tmp_path),
+        gguf_filename = name,
+        text_encoder_quant = "int8",
+        transformer_quant = None,
+    )
+    monkeypatch.setattr(v, "_backend", types.SimpleNamespace(_state = state))
+    assert v._resident_video_cpu_release_gb() == pytest.approx(40.9, abs = 0.05)
+    # The same pick again (42.4 GB) fits in 8 GB free plus the 40.9 GB it releases.
+    _load(LTX25, "gguf", checkpoint_repo = str(tmp_path), checkpoint_filename = name)

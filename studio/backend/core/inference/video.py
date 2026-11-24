@@ -563,19 +563,32 @@ def _resident_video_cpu_release_gb() -> float:
         state = getattr(_backend, "_state", None) if _backend is not None else None
         if state is None or getattr(state, "device", None) != "cpu":
             return 0.0
-        from .video_cpu_host import cpu_video_host_need, cpu_video_working_set_gb
+        from .video_cpu_host import (
+            cpu_video_host_need,
+            cpu_video_working_set_gb,
+            gguf_copy_gb,
+            single_file_packed_gb,
+        )
 
         fam = state.family
+        kind = state.kind
+        repo = getattr(state, "repo_id", None)
+        filename = getattr(state, "gguf_filename", None)
+        # The resident checkpoint's own storage: a GGUF copied into memory (mmap hook off) or packed fp8 single file.
+        copy_gb = gguf_copy_gb(fam, repo, filename) if kind == "gguf" else None
+        packed_gb = single_file_packed_gb(fam, repo, filename) if kind == "single_file" else None
         scheme = getattr(state, "text_encoder_quant", None)
         scheme = (
             None if str(scheme or "").strip().lower() in ("", "none", "off", "auto") else scheme
         )
         need = cpu_video_host_need(
             fam,
-            model_kind = state.kind,
+            model_kind = kind,
             te_scheme = scheme,
             te_hosted = bool(scheme) and getattr(fam, "name", None) == "ltx-2.5",
             transformer_quant = getattr(state, "transformer_quant", None),
+            gguf_copy_gb = copy_gb,
+            single_file_packed_gb = packed_gb,
         )
         return max(0.0, need.total_gb - cpu_video_working_set_gb(fam)) if need is not None else 0.0
     except Exception:  # noqa: BLE001 -- no reading credits nothing
