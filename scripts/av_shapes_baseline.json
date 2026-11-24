@@ -132,15 +132,6 @@
       }
     },
     {
-      "file": ".github/workflows/studio-windows-update-smoke.yml",
-      "rule": "AV006",
-      "severity": "error",
-      "reason": "Hosted runner excludes its own throwaway workspace to keep smoke timings stable; never on a user machine.",
-      "digests": {
-        "f4108753aa3288a5": 1
-      }
-    },
-    {
       "file": ".github/workflows/windows-amsi-defender-differential-ci.yml",
       "rule": "AV006",
       "severity": "error",
