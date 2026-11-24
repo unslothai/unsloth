@@ -6,6 +6,7 @@ CPU; test_video_vae_multigpu_cuda-style coverage runs on Kaggle 2x T4), gated of
 
 from __future__ import annotations
 
+import math
 import types
 
 import pytest
@@ -492,7 +493,7 @@ def _fake_cuda_split(monkeypatch, free_mib, total_mib, need):
     )
     z = types.SimpleNamespace(device = torch.device("cuda", 0))
     monkeypatch.setattr(vm, "_partner_free_mib", lambda torch_, partner: free_mib)
-    monkeypatch.setattr(vm, "need_mib", lambda v: need)
+    monkeypatch.setattr(vm, "need_mib", lambda v, z = None: need)
     monkeypatch.setattr(
         torch.cuda, "mem_get_info", lambda d = None: (free_mib << 20, total_mib << 20)
     )
@@ -637,3 +638,24 @@ def test_a_12_gib_partner_admits_the_704x496_split_and_a_smaller_one_does_not(mo
     # the busy partner of the uncapped run (a CFG copy on it: 5185 MiB free) is refused too
     vae, z, state = _fake_cuda_split(monkeypatch, 5185, 15360, need)
     assert vm._try_split(vae, z, state, None)[0] is None
+
+
+def test_the_split_estimate_adds_the_partner_tiles_frames_beyond_the_fitted_clip(monkeypatch):
+    import torch
+
+    vae = _wan_sized(monkeypatch, 704, 496)
+    vae.config = types.SimpleNamespace(scale_factor_temporal = 4)
+    vae.spatial_compression_ratio = 16
+    vae.tile_sample_stride_height, vae.tile_sample_stride_width = 576, 368
+    vae.parameters = lambda: iter([torch.empty(1, dtype = torch.float16)])
+    fitted = vm.need_mib(vae)
+    # 1280x704 latents at 16x: 44 x 80; 49 frames = 13 latent frames is the fitted clip
+    assert vm.need_mib(vae, torch.empty(1, 48, 13, 44, 80)) == fitted
+    longer = vm.need_mib(vae, torch.empty(1, 48, 31, 44, 80))  # 121 frames
+    partner_tiles = (len(range(0, 44, 36)) * len(range(0, 80, 23))) // 2
+    extra = (121 - 49) * 3 * 704 * 496 * 2 * 2 * partner_tiles / 2**20
+    assert longer == int(
+        math.ceil(1.25 * (_WAN_WEIGHTS_MIB + 169 + 3714 / 283648 * 704 * 496 + extra))
+    )
+    # a shape it cannot read keeps the fitted size
+    assert vm.need_mib(vae, object()) == fitted

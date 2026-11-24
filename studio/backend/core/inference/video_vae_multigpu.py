@@ -37,6 +37,7 @@ _KNOWN_BODIES = frozenset({"3b78672ea534d444"})
 _WORKING_FIXED_MIB = 169
 _WORKING_MIB_PER_TILE_PX = 3714 / 283648  # (6370 - 2656) MiB over (704 * 496 - 256 * 256) px
 _NEED_MARGIN = 1.25
+_FITTED_FRAMES = 49  # the clip length the line was fitted at
 
 
 def enabled() -> bool:
@@ -225,11 +226,30 @@ def _partner_free_mib(torch: Any, partner: int) -> int:
     return int(free) >> 20
 
 
-def need_mib(vae: Any) -> int:
+def _extra_frames_mib(vae: Any, z: Any, tile_px: int) -> float:
+    """Decoded frames the partner keeps beyond the fitted 49: every partner tile holds its whole clip (the per-frame
+    list plus its concatenation) until the blend."""
+    try:
+        _, _, latent_frames, height, width = z.shape
+        ratio = int(getattr(vae.config, "scale_factor_temporal", None) or 4)
+        frames = 1 + (int(latent_frames) - 1) * ratio
+        spatial = int(vae.spatial_compression_ratio)
+        rows = len(range(0, int(height), max(1, int(vae.tile_sample_stride_height) // spatial)))
+        cols = len(range(0, int(width), max(1, int(vae.tile_sample_stride_width) // spatial)))
+        itemsize = next(vae.parameters()).element_size()
+    except Exception:  # noqa: BLE001 - shape unknown: the fitted size alone
+        return 0.0
+    partner_tiles = (rows * cols) // 2
+    return max(0, frames - _FITTED_FRAMES) * 3 * tile_px * itemsize * 2 * partner_tiles / 2**20
+
+
+def need_mib(vae: Any, z: Any = None) -> int:
     tile_px = int(getattr(vae, "tile_sample_min_height", 256)) * int(
         getattr(vae, "tile_sample_min_width", 256)
     )
     working = _WORKING_FIXED_MIB + _WORKING_MIB_PER_TILE_PX * tile_px
+    if z is not None:
+        working += _extra_frames_mib(vae, z, tile_px)
     return int(math.ceil(_NEED_MARGIN * (_module_mib(vae) + working)))
 
 
@@ -466,7 +486,7 @@ def _try_split(vae: Any, z: Any, state: dict, logger: Any) -> tuple[Optional[Any
         free = _partner_free_mib(torch, partner)
     except Exception as exc:  # noqa: BLE001
         return None, f"cuda:{partner} unreadable ({exc})"
-    need = need_mib(vae)
+    need = need_mib(vae, z)
     reserve = _partner_reserve_mib(torch, partner, free)
     if free - reserve < need:
         return None, (
