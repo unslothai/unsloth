@@ -73,10 +73,19 @@ def has_acl(fd):
         return False
 
 
+def still_here(name, dfd, st, is_dir):
+    """The name is still this inode, its only link: an unlinked cache name could leave it living outside the cache."""
+    try:
+        now = os.stat(name, dir_fd = dfd, follow_symlinks = False)
+    except OSError:
+        return False
+    return (now.st_dev, now.st_ino) == (st.st_dev, st.st_ino) and (is_dir or now.st_nlink == 1)
+
+
 def hand_over(name, dfd):
     st = os.stat(name, dir_fd = dfd, follow_symlinks = False)
     # Symlinks stay root's: removing one only needs the parent directory, and a path-based lchown can be redirected.
-    if (st.st_uid, st.st_gid) != (src, src_gid) or stat.S_ISLNK(st.st_mode):
+    if (st.st_uid, st.st_gid) != (src, src_gid) or stat.S_ISLNK(st.st_mode) or (st.st_nlink > 1 and not stat.S_ISDIR(st.st_mode)):
         return
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd = dfd)
     try:
@@ -84,12 +93,17 @@ def hand_over(name, dfd):
         is_dir = stat.S_ISDIR(st.st_mode)
         if (st.st_uid, st.st_gid) != (src, src_gid) or not (is_dir or (stat.S_ISREG(st.st_mode) and st.st_nlink == 1)):
             return
+        if not still_here(name, dfd, st, is_dir):
+            return
         # Under an ACL the group bits set the mask, not group root's entry, so the grant below would not hold.
         if has_acl(fd):
             return
         mode = stat.S_IMODE(st.st_mode) | (0o070 if is_dir or st.st_mode & 0o111 else 0o060)
         os.fchmod(fd, mode if is_dir else mode & ~0o6000)
         os.fchown(fd, uid, -1)
+        if not still_here(name, dfd, st, is_dir):
+            os.fchown(fd, src, -1)
+            os.fchmod(fd, stat.S_IMODE(st.st_mode))
     finally:
         os.close(fd)
 

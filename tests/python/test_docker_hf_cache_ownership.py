@@ -138,6 +138,18 @@ import os, sys
 log = open(sys.argv[1], "a", buffering = 1)
 here = lambda fd: os.readlink(f"/proc/self/fd/{fd}")
 os.fchown = lambda fd, u, g: log.write(f"{here(fd)} {u}:{g}\\n")
+real_open, out = os.open, os.path.join(os.path.dirname(sys.argv[1]), "racy_out")
+
+
+def racy_open(name, flags, mode = 0o777, *, dir_fd = None):
+    fd = real_open(name, flags, mode, dir_fd = dir_fd)
+    if name == "racy":  # moves the cache name outside right after it is opened
+        os.link(name, out, src_dir_fd = dir_fd)
+        os.unlink(name, dir_fd = dir_fd)
+    return fd
+
+
+os.open = racy_open
 sys.argv = ["-", sys.argv[2], sys.argv[3], str(os.getuid()), str(os.getgid())]
 exec(compile(sys.stdin.read(), "<entrypoint>", "exec"), {"__name__": "__main__"})
 """
@@ -167,6 +179,9 @@ def test_root_written_entries_go_to_the_cache_owner_and_stay_group_root_usable(
     hf_home.mkdir()
     outside = tmp_path / "outside"
     entries, _ = _download_as_root(hf_home / "hub", outside)
+    racy = hf_home / "hub" / "models--x" / "blobs" / "racy"
+    racy.write_text("{}")
+    racy.chmod(0o600)
     bindir, calls = _recording_python(tmp_path)
 
     _boot(entrypoint, tmp_path, hf_home, bindir, lambda: len(_logged(calls)) >= len(entries))
@@ -176,6 +191,8 @@ def test_root_written_entries_go_to_the_cache_owner_and_stay_group_root_usable(
     assert {str(p) for p in entries} == set(logged), sorted(logged)
     assert set(logged.values()) == {owner}
     weak = [str(p) for p in entries if not _handed_over_mode(p)]
+    assert stat.S_IMODE(os.stat(tmp_path / "racy_out").st_mode) == 0o600
+    assert [p for p in logged if "racy" in p] == []
     assert weak == []
     assert stat.S_IMODE(os.stat(outside).st_mode) == 0o600
 
