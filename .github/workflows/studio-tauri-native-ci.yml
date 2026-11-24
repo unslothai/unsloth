@@ -41,6 +41,11 @@ on:
       - 'studio/frontend/src/index.css'
       - 'studio/frontend/src/lib/mac-stray-key-text.ts'
       - 'studio/frontend/src/features/browser/dangerous-file-types.json'
+      # Bundled by tauri.windows.conf.json / tauri.macos.conf.json; `tauri build` copies them.
+      - 'install.ps1'
+      - 'install.sh'
+      # `npm run build` runs it before vite build, with OS-specific spawnSync handling.
+      - 'studio/frontend/scripts/typecheck.mjs'
   push:
     branches: [main]
     # Same list as the PR filter, to spare the account-wide macOS slots.
@@ -70,6 +75,11 @@ on:
       - 'studio/frontend/src/index.css'
       - 'studio/frontend/src/lib/mac-stray-key-text.ts'
       - 'studio/frontend/src/features/browser/dangerous-file-types.json'
+      # Bundled by tauri.windows.conf.json / tauri.macos.conf.json; `tauri build` copies them.
+      - 'install.ps1'
+      - 'install.sh'
+      # `npm run build` runs it before vite build, with OS-specific spawnSync handling.
+      - 'studio/frontend/scripts/typecheck.mjs'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}

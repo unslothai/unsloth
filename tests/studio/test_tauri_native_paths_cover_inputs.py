@@ -3,6 +3,7 @@
 """studio-tauri-native-ci.yml runs only on what the Windows/macOS Rust jobs compile or read, so every
 file the Rust code embeds or opens outside studio/src-tauri must match its path filters."""
 
+import json
 import re
 from pathlib import Path
 
@@ -36,6 +37,19 @@ def _outside_inputs() -> set[str]:
             found.add((source.parent / rel).resolve())
         for rel in _MANIFEST_JOIN.findall(text):
             found.add((TAURI / rel).resolve())
+    # Bundle resources ("../../install.ps1": "install.ps1") are copied by `tauri build`, relative
+    # to studio/src-tauri.
+    for conf in TAURI.glob("tauri*.conf.json"):
+        resources = json.loads(conf.read_text(encoding = "utf-8")).get("bundle", {}).get("resources")
+        if isinstance(resources, dict):
+            resources = list(resources)
+        for rel in resources or []:
+            found.add((TAURI / rel).resolve())
+    # `npm run build` (the frontendDist both jobs build) runs scripts/<name>.mjs first.
+    frontend = REPO / "studio" / "frontend"
+    build = json.loads((frontend / "package.json").read_text(encoding = "utf-8"))["scripts"]["build"]
+    for rel in re.findall(r"node\s+(\S+\.mjs)", build):
+        found.add((frontend / rel).resolve())
     outside = set()
     for path in found:
         try:
@@ -55,6 +69,9 @@ def test_the_scan_finds_the_known_outside_inputs():
         "studio/frontend/src/features/auth/api.ts",
         "studio/backend/tests/fixtures/access_log_records.json",
         "unsloth_cli/_system_dir_guard.py",
+        "install.ps1",
+        "install.sh",
+        "studio/frontend/scripts/typecheck.mjs",
     ):
         assert expected in inputs, f"{expected} is no longer found by the scan: {sorted(inputs)}"
 
