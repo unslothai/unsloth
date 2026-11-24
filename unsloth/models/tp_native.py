@@ -2624,10 +2624,54 @@ def _tp_projection_compute(self, x):
         if rows is not None:
             B = B.narrow(0, *rows)
         scaling = self.scaling[adapter]
+        mode = self.__dict__.get("_unsloth_tp_lora_mode", _MISSING)
+        if mode is _MISSING:  # a projection not sharded by apply_tensor_parallel (tests)
+            mode = _one_gpu_lora_mode(self)
+        dtype = None
+        if mode is not None and not torch.is_autocast_enabled():
+            dtype = torch.float16 if mode == "float16" else out.dtype
+        if dtype is not None:
+            out = _tp_lora_update(self, adapter, out, x, A, B, scaling, dtype)
+            continue
         x_lora = x if torch.is_autocast_enabled() else x.to(A.dtype)
         x_lora = _lora_dropout(self, adapter, x_lora)
         out = out + (F.linear(F.linear(x_lora, A), B) * scaling).to(out.dtype)
     return out
+
+
+def _one_gpu_lora_mode(proj):
+    """How the one-GPU run computes this layer's low-rank product: Unsloth's compiled LoRA forward (unsloth_zoo
+    compiler `lora_forward`) in the base output's dtype ("output"), or in float16 when the layer was built
+    under forced float32 ("float16", Gemma 3 / 4 on float16 GPUs). None when the class keeps PEFT's forward,
+    which casts x to the LoRA weights' dtype (the float32 product). Read once when the projection is sharded."""
+    forward = getattr(type(proj), "forward", None)
+    if getattr(forward, "__name__", "") != "unsloth_forward":
+        return None
+    # The flag the compiled forward dispatches on: the layer's stamp, its base layer's, else the build's.
+    flag = proj.__dict__.get("_unsloth_force_float32")
+    if flag is None:
+        flag = getattr(proj._modules.get("base_layer"), "__dict__", {}).get(
+            "_unsloth_force_float32"
+        )
+    if flag is None:
+        flag = getattr(forward, "_unsloth_force_float32", "0")
+    return "float16" if str(flag) == "1" else "output"
+
+
+def _tp_lora_update(proj, adapter, out, x, A, B, scaling, dtype):
+    """out + scaling * B(A(x)) rounded as the one-GPU compiled LoRA forward: x @ A in `dtype`, then one addmm
+    in the output's dtype. The float32 product used before gave the tp ranks LoRA gradients the one-GPU run
+    never computes (under forced float32 the one-GPU float16 product flushes the small loss-scaled gradients
+    of Gemma-4's upper layers), so Gemma-4 tp=2 trained off the one-GPU curve."""
+    xA = _lora_dropout(proj, adapter, x.to(dtype)) @ A.to(dtype).t()
+    shape = out.shape
+    flat = torch.addmm(
+        out.reshape(-1, shape[-1]),
+        xA.reshape(-1, xA.shape[-1]).to(out.dtype),
+        B.to(out.dtype).t(),
+        alpha = scaling,
+    )
+    return flat.view(shape)
 
 
 def _tp_grouped_compute(self, base, x, W, bias):
@@ -3763,6 +3807,7 @@ def _shard_projection(region, proj, mesh, rank, tp):
     module._unsloth_tp_local = (
         _tp_lora_parameters  # read by kernels/utils.py get_lora_parameters(_bias)
     )
+    module.__dict__["_unsloth_tp_lora_mode"] = _one_gpu_lora_mode(module)
     module.forward = types.MethodType(_tp_projection_forward, module)
 
 
