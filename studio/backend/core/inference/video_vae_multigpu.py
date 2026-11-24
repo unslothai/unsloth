@@ -283,41 +283,38 @@ def _rebound(value: Any, mapping: dict, seen: dict) -> Any:
         )
         out = value if same else _ft.partial(func, *args, **kw)
     elif isinstance(value, types.FunctionType):
+        if not any(id(item) in mapping for item in _captured(value, set())):
+            return value
+        # Built before its captures are rebound, so a closure that reaches itself (a wrapper that checks
+        # ``vae.decode is <itself>``, mutually recursive helpers) gets the new function, not the source's. Cells
+        # shared by sibling closures stay shared between their rebuilt copies.
         cells = value.__closure__ or ()
-        contents = []
+        closure = []
+        filled = []
         for cell in cells:
-            try:
-                contents.append(cell.cell_contents)
-            except ValueError:  # an empty cell
-                contents.append(cell)
-        new = [
-            c if isinstance(c, types.CellType) and c in cells else _rebound(c, mapping, seen)
-            for c in contents
-        ]
+            new_cell = seen.get(("cell", id(cell)))
+            if new_cell is None:
+                new_cell = types.CellType()
+                seen[("cell", id(cell))] = new_cell
+                try:
+                    filled.append((new_cell, cell.cell_contents))
+                except ValueError:  # an empty cell stays empty
+                    pass
+            closure.append(new_cell)
+        out = types.FunctionType(
+            value.__code__, value.__globals__, value.__name__, None, tuple(closure) or None
+        )
+        seen[key] = out
+        for new_cell, contents in filled:
+            new_cell.cell_contents = _rebound(contents, mapping, seen)
         defaults = tuple(_rebound(d, mapping, seen) for d in (value.__defaults__ or ()))
+        out.__defaults__ = defaults or None
         kwdefaults = {
             k: _rebound(v, mapping, seen) for k, v in (value.__kwdefaults__ or {}).items()
         }
-        if (
-            all(a is b for a, b in zip(new, contents))
-            and all(a is b for a, b in zip(defaults, value.__defaults__ or ()))
-            and all(kwdefaults[k] is v for k, v in (value.__kwdefaults__ or {}).items())
-        ):
-            out = value
-        else:
-            closure = (
-                tuple(
-                    c if isinstance(c, types.CellType) and c in cells else types.CellType(c)
-                    for c in new
-                )
-                or None
-            )
-            out = types.FunctionType(
-                value.__code__, value.__globals__, value.__name__, defaults or None, closure
-            )
-            out.__kwdefaults__ = kwdefaults or None
-            out.__dict__.update(value.__dict__)
-            out.__qualname__ = value.__qualname__
+        out.__kwdefaults__ = kwdefaults or None
+        out.__dict__.update(value.__dict__)
+        out.__qualname__ = value.__qualname__
     else:
         out = value
     seen[key] = out
@@ -550,13 +547,18 @@ def split_tiled_decode(
                         with _without_hooks(vae):
                             copy = build_replica(vae, partner)
                     _rebind_forwards(vae, copy)
+                    # checked before the caller is released: a copy it cannot use must not start the source's
+                    # half of the tiles (the fallback decodes every tile again on the load card)
+                    stray = _stray_tensors(copy, partner)
+                    if stray:
+                        raise RuntimeError(
+                            f"the copy holds tensors on another card: {', '.join(stray[:4])}"
+                        )
+                except BaseException as exc:  # noqa: BLE001 - recorded before the caller is released
+                    errors.append(exc)
+                    return
                 finally:
                     copied.set()
-                stray = _stray_tensors(copy, partner)
-                if stray:
-                    raise RuntimeError(
-                        f"the copy holds tensors on another card: {', '.join(stray[:4])}"
-                    )
                 box["copy"] = copy
                 run(copy, z.to(partner), todo)
         except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
@@ -596,6 +598,11 @@ def split_tiled_decode(
             rows = [[decoded[(i, j)].to(home) for j in col_starts] for i in row_starts]
     finally:
         if on_cuda:
+            # the load card's tiles (all of them when the partner failed mid-way) may still be running on the
+            # caller's stream: the collect and empty_cache below free and release blocks on every card, so both
+            # cards' work has to be finished first (Kaggle 2x T4: without this an aborted split's next decode
+            # hit an illegal memory access)
+            caller.synchronize()
             side.synchronize()
         decoded.clear()
         box.clear()

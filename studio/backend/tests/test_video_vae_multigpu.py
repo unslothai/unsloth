@@ -401,3 +401,85 @@ def test_a_partner_setup_failure_releases_the_caller(monkeypatch):
     t.join(timeout = 60)
     assert not t.is_alive(), "the caller hung waiting for the partner's copy"
     assert "partner setup failed" in str(box.get("error"))
+
+
+def _self_referencing_decode(vae):
+    # video_vae_untiled's untiled_when_fits re-installs itself (``vae.decode = untiled_when_fits``) from its own body,
+    # so its closure reaches itself as well as the source VAE.
+    inner = vae.decode
+
+    def untiled_when_fits(*args, **kwargs):
+        try:
+            return inner(*args, **kwargs)
+        finally:
+            if vae.__dict__.get("decode") is not untiled_when_fits:
+                vae.decode = untiled_when_fits
+
+    vae.decode = untiled_when_fits
+    return untiled_when_fits
+
+
+def test_a_self_referencing_decode_wrapper_is_rebound_to_the_copy():
+    from core.inference.diffusion_multigpu import build_replica
+
+    vae = _vae()
+    _self_referencing_decode(vae)
+    copy = build_replica(vae, torch.device("cpu"))
+    assert any("captured" in s for s in vm._stray_tensors(copy, torch.device("cpu")))
+    assert vm._rebind_forwards(vae, copy) >= 1
+    assert vm._stray_tensors(copy, torch.device("cpu")) == []
+    fn = copy.__dict__["decode"]
+    cells = {id(c.cell_contents) for c in fn.__closure__}
+    assert id(fn) in cells and id(copy) in cells and id(vae) not in cells
+    # the source's wrapper is untouched
+    src = vae.__dict__["decode"]
+    assert id(vae) in {id(c.cell_contents) for c in src.__closure__}
+
+
+def test_mutually_recursive_forwards_are_rebound_together():
+    vae = _vae()
+    block = next(m for m in vae.decoder.modules() if type(m).__name__.endswith("ResidualBlock"))
+
+    def make(b):
+        def first(x, *a, **k):
+            return second(x, *a, **k)
+
+        def second(x, *a, **k):
+            if x is None:
+                return first(x)
+            return type(b).forward(b, x, *a, **k)
+
+        return first
+
+    block.forward = make(block)
+    from core.inference.diffusion_multigpu import build_replica
+
+    copy = build_replica(vae, torch.device("cpu"))
+    vm._rebind_forwards(vae, copy)
+    assert vm._stray_tensors(copy, torch.device("cpu")) == []
+
+
+def test_an_unusable_copy_never_starts_the_source_tiles(monkeypatch):
+    # A copy the stray check refuses must fail the split before the load card decodes any tile: the caller then
+    # reruns every tile on one card, so a half decoded in the meantime is wasted work on a card that is short.
+    vae = _vae()
+    z = _latents(vae)
+    import time
+
+    def stray(module, device):
+        time.sleep(0.5)  # a caller released before this check would be decoding its tiles by now
+        return ["x.y (captured AutoencoderKLWan)"]
+
+    monkeypatch.setattr(vm, "_stray_tensors", stray)
+    calls = []
+    real = type(vae.post_quant_conv).forward
+
+    def counted(self, *a, **k):
+        if self is vae.post_quant_conv:
+            calls.append(1)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(type(vae.post_quant_conv), "forward", counted)
+    with torch.no_grad(), pytest.raises(RuntimeError, match = "holds tensors on another card"):
+        vm.split_tiled_decode(vae, z, torch.device("cpu"))
+    assert calls == []
