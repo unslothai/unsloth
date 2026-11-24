@@ -2823,6 +2823,10 @@ _MISS = object()
 
 # GGUF unsigned value-type id -> byte width (uint8, uint16, uint32, uint64).
 _GGUF_UINT_WIDTHS = {0: 1, 2: 2, 4: 4, 10: 8}
+# The GGUF is the publisher's: counts it declares size lists built here, so past these a value is
+# treated as absent. Real files stay far below (a few hundred layers, chat templates of kilobytes).
+_GGUF_MAX_LAYERS = 1 << 16
+_GGUF_MAX_TEXT_BYTES = 16 * 1024 * 1024
 _GGUF_MARKUP_FIRST_BYTES = frozenset(b"<[")
 
 
@@ -8722,7 +8726,7 @@ def _count_memo_key(backend, *parts) -> Optional[bytes]:
                 time.strftime("%Y-%m-%d"),
                 *parts,
             ],
-            sort_keys = True,
+            # Unsorted: llama-server renders tool schema keys in the order sent, which moves the count.
             ensure_ascii = False,
         )
     except Exception:  # unserialisable content: count it, never guess a key
@@ -19279,6 +19283,8 @@ class LlamaCppBackend:
         ):
             return
         span = end - start
+        if n_phys + (count - 1) * span > _GGUF_MAX_LAYERS:
+            return
         phys = list(range(n_phys)) + [start + k % span for k in range((count - 1) * span)]
         for attr in (
             "_n_kv_heads_by_layer",
@@ -20170,6 +20176,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _gguf_read_array_value(f, atype: int, alen: int) -> Optional[list]:
+        if atype in (4, 5, 7) and alen > _GGUF_MAX_LAYERS:
+            f.seek(LlamaCppBackend._GGUF_TYPE_SIZE[atype] * alen, 1)
+            return None
         if atype == 4:  # UINT32
             return [struct.unpack("<I", f.read(4))[0] for _ in range(alen)]
         if atype == 5:  # INT32
@@ -20601,6 +20610,9 @@ class LlamaCppBackend:
                         ):
                             if vtype == 8:  # STRING
                                 slen = struct.unpack("<Q", f.read(8))[0]
+                                if slen > _GGUF_MAX_TEXT_BYTES:
+                                    f.seek(slen, 1)
+                                    continue
                                 val_s = f.read(slen).decode("utf-8")
                                 if key.endswith(".decision.type"):
                                     decision_by_arch[key] = val_s
@@ -20717,6 +20729,14 @@ class LlamaCppBackend:
                         break
                 else:
                     kv_complete = True
+
+            if self._n_layers is not None and self._n_layers > _GGUF_MAX_LAYERS:
+                logger.warning(
+                    "GGUF declares %d layers; treating the layer count as unknown", self._n_layers
+                )
+                self._n_layers = None
+            if self._loop_count is not None and self._loop_count > _GGUF_MAX_LAYERS:
+                self._loop_count = None
 
             # Bind buffered metadata after discovering the architecture namespace.
             if arch is not None:
@@ -39805,7 +39825,14 @@ class LlamaCppBackend:
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
         _budget = self._window_thinking_budget(
-            openai_messages, None, max_tokens, thinking_budget_tokens, enable_thinking
+            openai_messages,
+            None,
+            max_tokens,
+            thinking_budget_tokens,
+            enable_thinking,
+            _reasoning_kw,
+            bool(payload.get("continue_final_message")),
+            cancel_event,
         )
         if _budget is not None:
             payload["thinking_budget_tokens"] = _budget
@@ -40083,8 +40110,15 @@ class LlamaCppBackend:
         max_tokens: Optional[int],
         requested: Optional[int],
         enable_thinking: Optional[bool],
+        chat_template_kwargs: Optional[dict],
+        continue_final_message: bool = False,
+        cancel_event = None,
     ) -> Optional[int]:
-        if enable_thinking is False or not self._supports_reasoning:
+        if (
+            enable_thinking is False
+            or not self._supports_reasoning
+            or (cancel_event is not None and cancel_event.is_set())
+        ):
             return requested
         from core.inference import cut_thought
 
@@ -40092,10 +40126,21 @@ class LlamaCppBackend:
         if requested is None and server_budget >= 0:
             requested = server_budget
         try:
-            prompt = estimate_messages_tokens_dense(self._countable_messages(messages))
-            prompt += estimate_messages_tokens_dense(tools or [])
+            prompt = self.count_chat_tokens(
+                self._countable_messages(messages),
+                None,
+                tools,
+                strict = True,
+                chat_template_kwargs = chat_template_kwargs,
+                continue_final_message = continue_final_message,
+                should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
+            )
         except Exception:
-            return requested
+            try:
+                prompt = estimate_messages_tokens_dense(self._countable_messages(messages))
+                prompt += estimate_messages_tokens_dense(tools or [])
+            except Exception:
+                return requested
         return cut_thought.window_budget(
             self._effective_context_length, prompt, max_tokens, requested
         )
@@ -41255,6 +41300,9 @@ class LlamaCppBackend:
                     _iteration_max_tokens,
                     thinking_budget_tokens,
                     enable_thinking,
+                    payload.get("chat_template_kwargs"),
+                    bool(payload.get("continue_final_message")),
+                    cancel_event,
                 )
                 if _budget is not None:
                     payload["thinking_budget_tokens"] = _budget
@@ -43692,7 +43740,13 @@ class LlamaCppBackend:
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
         _budget = self._window_thinking_budget(
-            conversation, _final_tools, _final_max_tokens, thinking_budget_tokens, enable_thinking
+            conversation,
+            _final_tools,
+            _final_max_tokens,
+            thinking_budget_tokens,
+            enable_thinking,
+            _reasoning_kw,
+            cancel_event = cancel_event,
         )
         if _budget is not None:
             stream_payload["thinking_budget_tokens"] = _budget
@@ -44544,14 +44598,16 @@ class LlamaCppBackend:
                         if continue_final_message:
                             template_body["continue_final_message"] = True
                             template_body["add_generation_prompt"] = False
-                        if prefer_native and on_prompt is None:
+                        if on_prompt is None:
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
-                            # Only native answers are kept; a failed endpoint is retried next time.
+                            # The native endpoint renders and tokenizes this same body, so a render count reuses it.
                             native_key = _count_memo_key(self, "native-input-tokens", template_body)
                             cached = _count_memo_get(self, native_key, _NATIVE_COUNT_MEMO)
                             if cached is not None:
                                 return cached, False
+                        if prefer_native and on_prompt is None:
+                            # Only native answers are kept; a failed endpoint is retried next time.
                             try:
                                 native = client.post(
                                     f"{self.base_url}/v1/chat/completions/input_tokens",

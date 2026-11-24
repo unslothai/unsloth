@@ -2454,6 +2454,9 @@ def CausalLM_fast_forward(fast_forward_inference):
             attentions = outputs.attentions,
         )
 
+    # Audited: reads only outputs[0] and hands outputs.hidden_states on untouched, so under context
+    # parallelism GRPO's hidden-state forward may gather the decoder's last state alone.
+    _CausalLM_fast_forward._unsloth_cp_hidden_states_passthrough = True
     # The UNSLOTH_RETURN_HIDDEN_STATES branch above hands back the head's own input, so GRPO's
     # hidden-state fallback wrapper (unsloth/models/rl.py) must not wrap this forward. The marker is the
     # function itself: a replacement that copied it with functools.wraps does not inherit the capability.
@@ -3406,12 +3409,13 @@ def unsloth_fast_generate(self, *args, **kwargs):
                 _decode_graphs.plan_scope("graph" if graphs else "eager"),
                 _get_inference_mode_context_manager(self),
                 torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
-                # After eager_scope: the fold's graphs-on threshold follows this call's plan.
-                _lora_fold_generate(self, args, kwargs),
             ):
+                # Inside eager_scope: the fold's graphs-on threshold follows this call's plan. Per attempt:
+                # an OOM restores the weights before the eager redo, which runs unfolded.
                 output = _decode_graphs.generate_with_fallback(
-                    self, self._old_generate, graphs, args, kwargs
-                )
+                    self, self._old_generate, graphs, args, kwargs,
+                    fold = lambda retry: _lora_fold_generate(self, args, kwargs, retry = retry),
+                )  # fmt: skip
         finally:
             if graphs:
                 _decode_graphs.end_generation()
@@ -5432,16 +5436,6 @@ class FastLlamaModel:
             _moved_embedding_modules,
             target_parameters,
         )
-        ensure_weight_tying = _effective_weight_tying(
-            model,
-            modules_to_save,
-            ensure_weight_tying,
-        )
-        modules_to_save = _drop_tied_output_module(
-            model,
-            modules_to_save,
-            ensure_weight_tying,
-        )
         for module in _moved_embedding_modules:
             if _embedding_leaf(module) == "embed_tokens":
                 train_embed_tokens = True
@@ -5492,6 +5486,21 @@ class FastLlamaModel:
                         modules_to_save = ["lm_head"]
                     elif "lm_head" not in modules_to_save:
                         modules_to_save.append("lm_head")
+
+        # After the add_new_tokens appends, as FastBaseModel does, so a tied pair they complete trains one copy.
+        ensure_weight_tying = _effective_weight_tying(
+            model,
+            modules_to_save,
+            ensure_weight_tying,
+        )
+        modules_to_save = _drop_tied_output_module(
+            model,
+            modules_to_save,
+            ensure_weight_tying,
+        )
+        if ensure_weight_tying and "lm_head" not in _embedding_leaves(modules_to_save):
+            # PEFT rebuilds the head from the embedding's copy, so there is no second matrix to offload or upcast.
+            train_lm_head = False
 
         # Fixing untrained tokens here is wrong: it can cause reserved tokens to pop out.
 

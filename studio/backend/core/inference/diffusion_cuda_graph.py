@@ -3109,6 +3109,15 @@ def set_bypass(handles: Any, on: bool) -> None:
             pass
 
 
+def wrappers_over(model: Any) -> tuple:
+    """Live graph wrappers over ``model`` or its submodules, wherever their handle is stashed."""
+    try:
+        ids = {id(m) for m in model.modules()} if hasattr(model, "modules") else {id(model)}
+    except Exception:  # noqa: BLE001
+        ids = {id(model)}
+    return tuple(w for w in tuple(_LIVE_WRAPPERS) if id(getattr(w, "module", None)) in ids)
+
+
 def _holds_graphs(handle: Any) -> bool:
     """True while ``handle`` (or its fallback handle) still holds a captured graph."""
     if getattr(handle, "cache", None):

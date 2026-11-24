@@ -304,6 +304,11 @@ from utils.happy_eyeballs import activate_happy_eyeballs
 activate_native_tls()
 activate_happy_eyeballs()
 
+# accelerate's meta init patches torch process-wide; Studio builds skeletons from several threads at once.
+from utils.meta_init import install_on_import as _install_thread_safe_meta_init
+
+_install_thread_safe_meta_init()
+
 # `uvicorn main:app` bypasses run.py; seed thread caps here too.
 from utils.cpu_threads import configure_cpu_threads
 
@@ -3847,8 +3852,17 @@ def setup_frontend(
             raise HTTPException(status_code = 404, detail = "Not Found")
         if not _frontend_request_allowed(request):
             return Response(status_code = 404)
+        # No asset is this long, and resolving a deep path costs the square of its parts on the event loop.
+        if len(full_path) > 1024:
+            return Response(status_code = 404)
 
-        file_path = (build_path / full_path).resolve()
+        from utils.datasets.remote_images import is_network_share
+
+        joined = build_path / full_path
+        # Unauthenticated: resolve() on a share path makes Windows sign in to that host (NTLM).
+        if is_network_share(full_path) or is_network_share(str(joined)):
+            return Response(status_code = 404)
+        file_path = joined.resolve()
 
         if not file_path.is_relative_to(build_path.resolve()):
             return Response(status_code = 403)

@@ -24,6 +24,7 @@ from utils.security.remote_code_scan import (
     config_declares_auto_map,
     hub_config_path,
     remote_code_config_paths,
+    versioned_config_paths,
     remote_code_fingerprint,
     repo_remote_code_files,
     scan_remote_code_files,
@@ -118,9 +119,10 @@ def _is_direct_gguf_file_ref(model_name: str) -> bool:
     if not name.lower().endswith(".gguf"):
         return False
     try:
-        from utils.paths import is_local_path
+        from utils.paths import is_local_path, normalize_path
         if is_local_path(name):
-            return True
+            # A folder named *.gguf is a model folder, auto_map and all.
+            return not os.path.isdir(os.path.expanduser(normalize_path(name)))
     except Exception:
         pass
     # Remote: a file reference is repo_id ("org/name") + filename => >= 2 slashes.
@@ -140,17 +142,28 @@ def _load_remote_code_configs(
     try:
         from utils.paths import is_local_path, normalize_path
 
+        names = list(remote_code_config_paths(load_subdirs))
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
             configs = []
-            for name in remote_code_config_paths(load_subdirs):
+            if root.is_file():
+                # A JSON file path loads as the config itself: AutoConfig reads it and imports its auto_map.
+                try:
+                    configs.append(json.loads(root.read_text(encoding = "utf-8-sig")))
+                except ValueError:
+                    pass
+                root = root.parent
+            for name in names:
                 p = root.joinpath(*Path(name).parts)
                 if p.is_file():
                     configs.append(json.loads(p.read_text(encoding = "utf-8-sig")))
+                    names.extend(
+                        [n for n in versioned_config_paths(name, configs[-1]) if n not in names]
+                    )
             return configs
 
         configs = []
-        for name in remote_code_config_paths(load_subdirs):
+        for name in names:
             try:
                 p = hub_config_path(model_name, name, hf_token)
             except Exception:
@@ -158,6 +171,9 @@ def _load_remote_code_configs(
                 return None
             if p is not None:
                 configs.append(json.loads(Path(p).read_text(encoding = "utf-8-sig")))
+                names.extend(
+                    [n for n in versioned_config_paths(name, configs[-1]) if n not in names]
+                )
         # Every config was read or a genuine 404 -> an empty list is a definitive "no auto_map".
         return configs
     except Exception as exc:

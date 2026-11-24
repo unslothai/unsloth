@@ -141,6 +141,46 @@ def _in_subfolder(sub: str, name: str) -> str:
     return posixpath.join(sub.replace("\\", "/"), name)
 
 
+def _transformers_weights(folder: Path) -> list:
+    """Every ``transformers_weights`` in config.json, nested sections included, and in the
+    config.*.json files its ``configuration_files`` can select."""
+    found: list = []
+
+    def walk(value, depth = 0):
+        if depth > 16:
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "transformers_weights":
+                    found.extend(
+                        [item]
+                        if isinstance(item, str)
+                        else item
+                        if isinstance(item, (list, tuple))
+                        else []
+                    )
+                else:
+                    walk(item, depth + 1)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, depth + 1)
+
+    try:
+        config = json.loads((folder / "config.json").read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError):
+        config = None
+    walk(config)
+    extra = config.get("configuration_files") if isinstance(config, dict) else None
+    for name in extra if isinstance(extra, list) else []:
+        if not isinstance(name, str) or name == "config.json" or _escapes(folder, name):
+            continue
+        try:
+            walk(json.loads((folder / name).read_text(encoding = "utf-8-sig")))
+        except (OSError, ValueError):
+            continue
+    return [name for name in found if isinstance(name, str)]
+
+
 def _weight_names(folder: Path) -> list:
     names = []
     for index_name in _TORCH_INDEX_FILES:
@@ -151,14 +191,7 @@ def _weight_names(folder: Path) -> list:
         weight_map = payload.get("weight_map") if isinstance(payload, dict) else None
         if isinstance(weight_map, dict):
             names.extend(v for v in weight_map.values() if isinstance(v, str))
-    try:
-        config = json.loads((folder / "config.json").read_text(encoding = "utf-8-sig"))
-    except (OSError, ValueError):
-        config = None
-    weights = config.get("transformers_weights") if isinstance(config, dict) else None
-    if isinstance(weights, str):
-        weights = [weights]
-    for name in weights if isinstance(weights, (list, tuple)) else []:
+    for name in _transformers_weights(folder):
         if not isinstance(name, str):
             continue
         names.append(name)
@@ -180,6 +213,19 @@ def escaping_weight_references(folder) -> list:
     the text, so Hub cache snapshots whose files link into the blob store still pass, except that
     a ``..`` is judged where the kernel sends it. A Sentence Transformers folder's modules.json
     module folders are read too, judged against the model folder."""
+    names = _escaping_weight_references(folder)
+    # Loaders open the forward-slash spelling (normalize_path), which can be another folder.
+    try:
+        from utils.paths.path_utils import normalize_path
+        spelled = normalize_path(str(folder))
+    except Exception:
+        spelled = str(folder)
+    if spelled != str(folder):
+        names = list(dict.fromkeys(names + _escaping_weight_references(spelled)))
+    return names
+
+
+def _escaping_weight_references(folder) -> list:
     try:
         folder = Path(str(folder)).expanduser()
         if not folder.is_dir():
@@ -228,7 +274,8 @@ def escaping_weight_references(folder) -> list:
 
 def _normalize_repo_path(path: str) -> str:
     """Strip ``./`` prefixes and normalize separators for repo-relative comparison."""
-    p = (path or "").strip().replace("\\", "/")
+    # Whitespace is part of a file or folder name: the loader opens the path as written.
+    p = (path or "").replace("\\", "/")
     while p.startswith("./"):
         p = p[2:]
     return p
@@ -262,11 +309,13 @@ def _hf_cache_snapshot_ref(local_path: str) -> Optional[tuple[str, str, Path]]:
 
 def _load_relative_path(norm: str, load_subdirs) -> str:
     """``norm`` relative to a ``from_pretrained`` load root. Some loads read from a snapshot SUBDIRECTORY (Spark-TTS / BiCodec load ``<snapshot>/LLM``), where a file directly under the subdir is root-level, not nested. Strips the matching load-subdir prefix, or returns ``norm`` unchanged when it is not under one."""
+    relative = norm
     for subdir in load_subdirs or ():
         prefix = _normalize_repo_path(subdir).strip("/")
         if prefix and norm.startswith(prefix + "/"):
-            return norm[len(prefix) + 1 :]
-    return norm
+            # Load roots nest in the publisher's modules.json order: the innermost one decides.
+            relative = min(relative, norm[len(prefix) + 1 :], key = len)
+    return relative
 
 
 def _index_prefixes(load_subdirs) -> tuple:
@@ -331,6 +380,8 @@ def _indexed_shard_paths(
                     if prefix and not shard_norm.startswith(prefix):
                         shard_norm = prefix + shard_norm
                     paths.add(shard_norm)
+                    # The loader joins the entry onto the folder, so weights/./x.bin opens weights/x.bin.
+                    paths.add(posixpath.normpath(shard_norm))
             except Exception:
                 inconclusive = True
     # Any transient failure -> inconclusive (the shard could be listed only by the index we could not read), so fail closed. No index files -> empty set, a definitive "nothing sharded".
@@ -488,7 +539,7 @@ def _st_load_roots(snapshot: Path, load_subdirs = ()) -> list:
     for module in modules if isinstance(modules, list) else ():
         if not isinstance(module, dict):
             continue
-        path = str(module.get("path", "")).strip()
+        path = str(module.get("path", ""))
         native_path = Path(path)
         if not path:
             continue

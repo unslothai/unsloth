@@ -837,6 +837,48 @@ def stream_exposure(
     return transfer, compute, exposed
 
 
+# Code buffers of fused quantized modules; float buffers are scales or tables.
+_QUANT_CODE_DTYPES = frozenset(
+    ("int8", "uint8", "float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2", "float8_e5m2fnuz")
+)
+
+
+def logical_weight_elements(module: Any) -> int:
+    """Logical weight count for the ``2 x params x tokens`` price; ``parameters()`` misses quantized/packed layouts.
+
+    Leaf linears count ``in x out`` + bias; other modules count own params and integer / fp8 code buffers."""
+    seen: set[int] = set()
+    total = 0
+    for sub in module.modules():
+        in_f, out_f = getattr(sub, "in_features", None), getattr(sub, "out_features", None)
+        linear_like = (
+            isinstance(in_f, int)
+            and isinstance(out_f, int)
+            and in_f > 0
+            and out_f > 0
+            and next(sub.children(), None) is None
+        )
+        if linear_like:
+            own = [*sub.parameters(recurse = False), *sub.buffers(recurse = False)]
+            if any(id(t) in seen for t in own):
+                continue  # tied to a layer already counted
+            seen.update(id(t) for t in own)
+            total += int(in_f) * int(out_f)
+            bias = getattr(sub, "bias", None)
+            if bias is not None and hasattr(bias, "numel"):
+                total += int(bias.numel())
+            continue
+        for t in sub.parameters(recurse = False):
+            if id(t) not in seen:
+                seen.add(id(t))
+                total += int(t.numel())
+        for t in sub.buffers(recurse = False):
+            if id(t) not in seen and str(t.dtype).replace("torch.", "") in _QUANT_CODE_DTYPES:
+                seen.add(id(t))
+                total += int(t.numel())
+    return total
+
+
 def _hidden_stream_reason(pipe: Any, plan: Any, sizes: dict, selection: Any) -> Optional[str]:
     """Why Automatic keeps the one-card streamed plan instead of a layer split, or None (try the split as before).
 
@@ -878,7 +920,7 @@ def _hidden_stream_reason(pipe: Any, plan: Any, sizes: dict, selection: Any) -> 
         dit = _denoiser_mib(sizes)
         resident = int(getattr(plan, "resident_transformer_mib", None) or 0)
         streamed = max(0, dit - resident)
-        params = sum(p.numel() for p in denoiser.parameters())
+        params = logical_weight_elements(denoiser)
         transfer, compute, exposed = stream_exposure(
             streamed, params, h2d_gib_s = measured[0], tflops = tflops, side_px = _COST_CANVAS_PX
         )
@@ -1099,12 +1141,99 @@ def replica_working_mib(module: Any) -> int:
     return max(int(_WORKING_SET_MIN_MIB), int(_WORKING_SET_BLOCKS) * int(largest))
 
 
-def replica_need_mib(module: Any) -> int:
-    """MiB beyond :func:`_replica_reserve_mib`: weights plus working set over the reserve."""
+def _config_int(config: Any, *names: str) -> int:
+    for name in names:
+        value = getattr(config, name, None)
+        if value is None and isinstance(config, Mapping):
+            value = config.get(name)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return int(value)
+    return 0
+
+
+def _replica_tokens(module: Any) -> int:
+    """Tokens per branch of ``module``'s default request, else the 1024px canvas (as :func:`replica_layout`)."""
+    with contextlib.suppress(Exception):
+        for pipe, request in list(_DEFAULT_REQUESTS.items()):
+            if request.tokens and any(
+                getattr(pipe, n, None) is module for n in ("transformer", "unet")
+            ):
+                return int(request.tokens)
+    from .diffusion_memory import _COST_CANVAS_PX, _DIT_PIXELS_PER_TOKEN
+
+    return (_COST_CANVAS_PX // _DIT_PIXELS_PER_TOKEN) ** 2
+
+
+def replica_activation_mib(module: Any, tokens: Optional[int] = None) -> int:
+    """MiB one batch-1 guidance branch holds in the widest block over the weights; 0 without a DiT width (U-Nets)."""
+    try:
+        config = getattr(module, "config", None)
+        heads = _config_int(config, "num_attention_heads", "num_heads")
+        head_dim = _config_int(config, "attention_head_dim", "head_dim")
+        inner = heads * head_dim
+        hidden = _config_int(config, "hidden_size", "dim", "inner_dim") or inner
+        if hidden <= 0:
+            return 0
+        dtype = getattr(module, "dtype", None)
+        if not getattr(dtype, "is_floating_point", False):
+            dtype = next((p.dtype for p in module.parameters() if p.is_floating_point()), None)
+        # quantized weights still compute in >= 16-bit activations
+        elem = max(2, int(getattr(dtype, "itemsize", 2) or 2))
+        from .diffusion_attention import block_activation_bytes
+
+        per_query, per_key = block_activation_bytes(hidden, inner or hidden, hidden, elem)
+        n = int(tokens) if tokens else _replica_tokens(module)
+        return int(-(-n * (per_query + per_key) // (1 << 20)))
+    except Exception:  # noqa: BLE001 - unreadable config: the weights-only need, as before
+        return 0
+
+
+def latent_tokens(module: Any, latent: Any) -> Optional[int]:
+    """Tokens per sample for a (B, C, [F,] H, W) latent after patching, or a packed (B, N, C) one; None if unreadable."""
+    try:
+        shape = tuple(int(s) for s in latent.shape)
+        if len(shape) == 3:
+            return shape[1] or None
+        if len(shape) not in (4, 5):
+            return None
+        config = getattr(module, "config", None)
+        patch = getattr(config, "patch_size", None)
+        if patch is None and isinstance(config, Mapping):
+            patch = config.get("patch_size")
+        if isinstance(patch, (tuple, list)):
+            sides = [max(1, int(p)) for p in patch]
+            pt, ph, pw = (1, sides[0], sides[-1]) if len(sides) < 3 else tuple(sides[-3:])
+        else:
+            pt = 1
+            ph = pw = max(1, int(patch or 1))
+        if len(shape) == 5:
+            pt = max(1, int(getattr(config, "patch_size_t", None) or pt))
+            return (-(-shape[2] // pt) * (shape[3] // ph) * (shape[4] // pw)) or None
+        return ((shape[2] // ph) * (shape[3] // pw)) or None
+    except Exception:  # noqa: BLE001 - unknown shape: the default request prices the replica
+        return None
+
+
+def replica_need_mib(
+    module: Any,
+    tokens: Optional[int] = None,
+    *,
+    activations: bool = True,
+) -> int:
+    """MiB beyond :func:`_replica_reserve_mib`. ``activations=False`` for user selections, priced later on the real shape."""
     weights = sum(
         t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
     ) // (1 << 20)
-    return int(weights) + max(0, replica_working_mib(module) - _REPLICA_BASE_RESERVE_MIB)
+    return (
+        int(weights)
+        + (replica_activation_mib(module, tokens) if activations else 0)
+        + max(0, replica_working_mib(module) - _REPLICA_BASE_RESERVE_MIB)
+    )
+
+
+def _prices_default_request(selection: Any) -> bool:
+    """Only Automatic declines on the default request; explicit/forced selections are priced at replica build."""
+    return bool(getattr(selection, "automatic", False)) and cfg_parallel_mode() != "force"
 
 
 def replica_fits(free_mib: Optional[int], total_mib: Optional[int], need_mib: int) -> bool:
@@ -1264,7 +1393,7 @@ def replica_layout(
             "background compile replays through the denoiser (UNSLOTH_DIFFUSION_BG_COMPILE)",
         )
     try:
-        need = replica_need_mib(denoiser)
+        need = replica_need_mib(denoiser, activations = _prices_default_request(selection))
         partner, why = _replica_card(selection, need)
     except Exception as exc:  # noqa: BLE001 - unsized: the old order
         return None, f"replica card unknown ({type(exc).__name__})"
@@ -1298,7 +1427,7 @@ def replica_layout(
         )
     h2d = float(measured[0])
     tokens = int(request.tokens or (_COST_CANVAS_PX // _DIT_PIXELS_PER_TOKEN) ** 2)
-    params = float(sum(p.numel() for p in denoiser.parameters()))
+    params = float(logical_weight_elements(denoiser))
     compute = denoiser_compute_s(params, tokens, tflops)
     dit = int(sizes.get("transformer", (0, "dit"))[0] or _denoiser_mib(dict(sizes)))
     streamed = 0
@@ -3521,7 +3650,7 @@ class CfgParallelRouter:
             self.singles = 0
             if self.replica is None:
                 self.cfg_seen = True
-                self._build_replica()
+                self._build_replica(latent)
                 if self.branch == 1 and not prefill:
                     self._record_template(args, kwargs, latent)
             elif prefill:
@@ -3653,7 +3782,7 @@ class CfgParallelRouter:
         self._drop_pending()
         self.template = None
         if self.replica is None and self.disabled_reason is None:
-            self._build_replica()
+            self._build_replica(latent)
         if self.replica is None or self.worker is None or self.disabled_reason is not None:
             self.stats["sequence_split_skip"] = f"replica unavailable ({self.disabled_reason})"
             self.prev_latent = latent
@@ -3729,7 +3858,7 @@ class CfgParallelRouter:
         if self.replica is not None:
             self._drop_if_stale()
         if self.replica is None and self.disabled_reason is None:
-            self._build_replica()
+            self._build_replica(_latent_arg(args, kwargs))
         if self.replica is None or self.worker is None or self.disabled_reason is not None:
             return None
         if self._refused_this_capture():
@@ -3936,7 +4065,7 @@ class CfgParallelRouter:
         if hooked is not None:
             self.disable(f"denoiser gained hooks after the replica was built ({hooked})")
 
-    def _build_replica(self) -> None:
+    def _build_replica(self, latent: Any = None) -> None:
         module = self.module_ref()
         if module is None:
             return
@@ -3947,7 +4076,7 @@ class CfgParallelRouter:
             hooked = _hooks_present(module)
             if hooked is not None:
                 raise RuntimeError(f"denoiser carries hooks ({hooked})")
-            need_mib = replica_need_mib(module)
+            need_mib = replica_need_mib(module, latent_tokens(module, latent))
             automatic = getattr(self, "automatic_idle_only", False)
             # Outside the load scope: read the card directly, before the memory read opens our context (3-7% busy).
             util = _smi_util_pct(self.secondary.index) if automatic else None
@@ -4553,7 +4682,7 @@ def install_cfg_parallel(
         elif not candidates:
             reason = "secondary card is a different model (bit-identity needs the same kernels)"
         else:
-            need_mib = replica_need_mib(denoiser)
+            need_mib = replica_need_mib(denoiser, activations = automatic)
 
             def usable(o: int) -> int:
                 free_o = probes[o].free_mib
