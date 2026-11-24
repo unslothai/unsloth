@@ -7108,16 +7108,19 @@ def _prebuilt_optimizer(trainer, init, args, kwargs):
     return None
 
 
-def _cp_trainer_refusal(trainer_cls, cp) -> str:
+def _cp_trainer_refusal(
+    trainer_cls,
+    cp,
+    requested = None,
+) -> str:
     """Why a trainer class carries no context parallel wrapper under UNSLOTH_CP_SIZE, and what to do."""
     import sys
 
     name = trainer_cls.__name__
     bases = {c.__name__.removeprefix("Unsloth").removeprefix("_CPU") for c in trainer_cls.__mro__}
     kind = next((k for k in ("SFTTrainer", "DPOTrainer", "GRPOTrainer") if k in bases), None)
-    head = (
-        f"Unsloth: cp x trainer: context parallel (UNSLOTH_CP_SIZE={cp}) was requested, but {name} "
-    )
+    requested = requested or f"UNSLOTH_CP_SIZE={cp}"
+    head = f"Unsloth: cp x trainer: context parallel ({requested}) was requested, but {name} "
     if sys.modules.get("unsloth._cpu_init") is not None or getattr(
         trainer_cls, "_unsloth_cpu", False
     ):
@@ -7195,6 +7198,17 @@ def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
         for what, on in (("fsdp2", native_fsdp2), ("tp", tp_env_set)):
             if on:
                 refuse_shard_unaware_optimizer(optimizer, what)
+    if not getattr(type(trainer), "__unsloth_context_parallel__", False):
+        # A config-only request: without the wrapper every rank would silently train as plain data parallel.
+        config_cp = getattr(
+            _trainer_init_args(trainer, init, args, kwargs), "context_parallel_size", 1
+        )
+        if isinstance(config_cp, int) and not isinstance(config_cp, bool) and config_cp > 1:
+            raise NotImplementedError(
+                _cp_trainer_refusal(
+                    type(trainer), config_cp, f"context_parallel_size = {config_cp}"
+                )
+            )
     if not any(
         os.environ.get(name, "").strip() not in ("", "1")
         for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
