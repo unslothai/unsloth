@@ -297,6 +297,37 @@ def dataset_snapshot_contains_file(snapshot: str | Path, source_path: str) -> bo
     return resolved_dataset_snapshot_file(snapshot, source_path) is not None
 
 
+def _snapshot_entry_stays_in_cache(snapshot: Path, entry: Path) -> bool:
+    """Same rule as resolved_dataset_snapshot_file: into the snapshot or to a blob file. *snapshot* is resolved."""
+    try:
+        resolved = entry.resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if resolved.is_relative_to(snapshot):
+        return True
+    repo_dir = snapshot.parent.parent
+    # A linked blob directory would be followed without its own links being looked at.
+    return not resolved.is_dir() and (
+        resolved.is_relative_to(repo_dir / "blobs")
+        or resolved.is_relative_to(repo_dir.parent / "blobs")
+    )
+
+
+def _snapshot_links_stay_in_cache(snapshot: Path) -> bool:
+    """Tool sandboxes can write the Hub cache and datasets follows every link in a folder (and globs a file
+    path it is handed), so a snapshot holding a link out of the cache is not read at all."""
+    try:
+        snapshot = snapshot.resolve(strict = True)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    for directory, dirnames, filenames in os.walk(snapshot, followlinks = False):
+        for name in (*dirnames, *filenames):
+            entry = Path(directory, name)
+            if entry.is_symlink() and not _snapshot_entry_stays_in_cache(snapshot, entry):
+                return False
+    return True
+
+
 def complete_dataset_snapshot_path(local_path: Optional[str], repo_id: str) -> Optional[Path]:
     snapshot = dataset_snapshot_from_cache_path(local_path, repo_id)
     if snapshot is None:
@@ -488,6 +519,10 @@ def load_cached_hf_dataset(
     )
     if processed is None and snapshot is None:
         raise FileNotFoundError(f"Cached dataset path for {repo_id} is unavailable")
+    if snapshot is not None and not _snapshot_links_stay_in_cache(snapshot):
+        raise UnsafeDatasetCachePathError(
+            f"Dataset snapshot for {repo_id} holds a link that leaves the cache: {snapshot}"
+        )
 
     from datasets import DownloadConfig
 
@@ -585,6 +620,9 @@ def cached_dataset_candidates(
     extensions: tuple[str, ...],
     preferred_extensions: tuple[str, ...] = TRAINING_DATA_EXTS,
 ) -> list[Path]:
+    # Not per candidate: the loader globs a file named "*.txt" and reads the link beside it too.
+    if not _snapshot_links_stay_in_cache(snapshot):
+        return []
     try:
         files = drop_appledouble_metadata(
             [p for p in snapshot.rglob("*") if p.is_file() and p.name.lower().endswith(extensions)]

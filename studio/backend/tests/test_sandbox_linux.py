@@ -620,9 +620,11 @@ def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(
         shared = _pairs(launch.argv, "--bind-try")
         assert sorted(shared) == sorted(
             (os.path.join(str(cache), name), os.path.join(inner, name))
-            for name in ("hub", "datasets", "xet", "assets")
+            for name in ("hub", "xet", "assets")
         )
-        assert not any("modules" in destination for _, destination in shared)
+        # Studio runs modules/ and memory-maps datasets/: neither is the jail's to write.
+        for unshared in ("modules", "datasets"):
+            assert not any(unshared in destination for _, destination in shared), unshared
         assert launch.argv[launch.argv.index("HF_HOME") + 1] == inner
         for credential in ("token", "stored_tokens"):
             host_path = os.path.join(str(cache), credential)
@@ -1671,7 +1673,7 @@ def test_the_cache_studio_actually_uses_is_the_one_shared(tmp_path, monkeypatch)
         path.mkdir(parents = True)
     import utils.hf_cache_settings as cache_settings
 
-    # datasets/assets follow the real HF home, which a Studio-selected folder leaves in place.
+    # assets follows the real HF home, which a Studio-selected folder leaves in place.
     monkeypatch.setenv("HF_HOME", str(home))
     monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
     monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
@@ -1685,7 +1687,8 @@ def test_the_cache_studio_actually_uses_is_the_one_shared(tmp_path, monkeypatch)
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
     assert binds["hub"] == str(hub)
     assert binds["xet"] == str(xet)
-    assert binds["datasets"] == str(home / "datasets")
+    assert binds["assets"] == str(home / "assets")
+    assert "datasets" not in binds
     assert "hub" not in sandbox_linux._model_cache_binds(str(hub.parent))
 
 
@@ -3074,8 +3077,9 @@ def test_a_cache_folder_a_fresh_hf_home_lacks_is_created_and_shared(
     (cache / "hub").mkdir(parents = True)
     _share_cache_paths(monkeypatch, cache)
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
-    for name in ("hub", "datasets", "assets", "xet"):
+    for name in ("hub", "assets", "xet"):
         assert name in binds and os.path.isdir(cache / name), name
+    assert "datasets" not in binds and not os.path.exists(cache / "datasets")
     assert cache_log.warnings == []
 
 
@@ -3086,32 +3090,32 @@ def test_a_cache_folder_that_cannot_be_created_is_skipped_quietly(tmp_path, monk
     real = os.makedirs
 
     def refuse(path, *a, **k):
-        if os.path.basename(path) == "datasets":
+        if os.path.basename(path) == "assets":
             raise PermissionError(13, "Permission denied", path)
         return real(path, *a, **k)
 
     monkeypatch.setattr(sandbox_linux.os, "makedirs", refuse)
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
-    assert "datasets" not in binds and "hub" in binds
+    assert "assets" not in binds and "hub" in binds
     assert cache_log.warnings == []
 
 
 def test_a_cache_entry_that_is_not_a_folder_still_warns(tmp_path, monkeypatch, cache_log):
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
-    (cache / "datasets").write_text("not a folder")
+    (cache / "assets").write_text("not a folder")
     _share_cache_paths(monkeypatch, cache)
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
-    assert "datasets" not in binds
+    assert "assets" not in binds
     assert cache_log.warnings == [
-        "Not sharing the datasets cache into the sandbox: it is not a directory"
+        "Not sharing the assets cache into the sandbox: it is not a directory"
     ]
 
 
 def test_the_same_cache_warning_is_logged_once_a_minute(tmp_path, monkeypatch, cache_log):
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
-    (cache / "datasets").write_text("not a folder")
+    (cache / "assets").write_text("not a folder")
     _share_cache_paths(monkeypatch, cache)
     session = str(tmp_path / "session")
     clock = [1000.0]

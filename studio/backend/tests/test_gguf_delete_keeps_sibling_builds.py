@@ -399,6 +399,129 @@ def test_copies_of_the_listed_build_still_go_with_it(tmp_path):
     assert not (snap / "Model.Q4_K_M.gguf").is_symlink()
 
 
+def _planted_revision(link: Path, blob: Path):
+    entry = SimpleNamespace(file_name = link.name, file_path = str(link), blob_path = str(blob))
+    return SimpleNamespace(files = [entry], snapshot_path = str(link.parent))
+
+
+def _outside_the_cache(tmp_path: Path, name: str):
+    """the user's own files, which no delete of a cached quant may touch."""
+    outside = tmp_path / "home"
+    (outside / "models").mkdir(parents = True)
+    (outside / "empty").mkdir()
+    thesis = outside / "thesis.txt"
+    thesis.write_text("chapter 1")
+    (outside / "thesis.txt.incomplete").write_text("chapter 2")
+    (outside / "models" / name).write_bytes(b"x" * 64)
+    return outside, thesis
+
+
+def test_deleting_a_quant_leaves_files_outside_the_repo_folder(tmp_path):
+    """sandboxed tool calls can write the hub cache, so the scan may name links that lead out of it."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    name = "Model-Q4_K_M.gguf"
+    outside, thesis = _outside_the_cache(tmp_path, name)
+    repo, snap = _cache_repo(tmp_path / "cache", [name])
+    snapshots = snap.parent
+    # another revision of the same file that points out of the cache, directly and through a linked folder.
+    (snapshots / "rev2").mkdir()
+    (snapshots / "rev2" / name).symlink_to(thesis)
+    (repo.repo_path / "elsewhere").symlink_to(outside, target_is_directory = True)
+    (snapshots / "rev3").mkdir()
+    (snapshots / "rev3" / name).symlink_to(repo.repo_path / "elsewhere" / thesis.name)
+    # a revision folder that is itself a link: its entries are another folder's own files.
+    (snapshots / "rev4").symlink_to(outside / "models", target_is_directory = True)
+    repo.revisions += [
+        _planted_revision(snapshots / "rev2" / name, thesis),
+        _planted_revision(snapshots / "rev3" / name, repo.repo_path / "elsewhere" / thesis.name),
+        _planted_revision(snapshots / "rev4" / name, snapshots / "rev4" / name),
+    ]
+
+    _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path / "cache")
+    # the repo's own copy and the planted links go; what they pointed at stays.
+    assert not (snap / name).is_symlink()
+    assert not (repo.repo_path / "blobs" / "sha0").exists()
+    assert not (snapshots / "rev2" / name).is_symlink()
+    assert thesis.read_text() == "chapter 1"
+    assert (outside / "models" / name).exists()
+
+
+def test_deleting_a_quant_leaves_files_behind_a_linked_blobs_folder(tmp_path):
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    name = "Model-Q4_K_M.gguf"
+    outside, thesis = _outside_the_cache(tmp_path, name)
+    repo, snap = _cache_repo(tmp_path / "cache", [name])
+    # ``blobs`` is a link, so the entry's blob is in the repo by name only.
+    blobs = repo.repo_path / "blobs"
+    (blobs / "sha0").unlink()
+    blobs.rmdir()
+    blobs.symlink_to(outside, target_is_directory = True)
+    (snap / name).unlink()
+    (snap / name).symlink_to(blobs / thesis.name)
+    repo.revisions = [_planted_revision(snap / name, blobs / thesis.name)]
+
+    _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path / "cache")
+    assert not (snap / name).is_symlink()
+    assert thesis.read_text() == "chapter 1"
+    # its name is not one of the repo's blob hashes either, so no partial is looked up under it.
+    assert (outside / "thesis.txt.incomplete").exists()
+
+
+def test_deleting_a_quant_leaves_files_behind_a_linked_snapshots_folder(tmp_path):
+    import pytest
+    from fastapi import HTTPException
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    name = "Model-Q4_K_M.gguf"
+    outside, _thesis = _outside_the_cache(tmp_path, name)
+    repo_path = tmp_path / "models--huihui-ai--Model-GGUF"
+    (repo_path / "blobs").mkdir(parents = True)
+    # ``snapshots`` is a link, so its revisions are another folder's subfolders.
+    (repo_path / "snapshots").symlink_to(outside, target_is_directory = True)
+    entry = repo_path / "snapshots" / "models" / name
+    repo = SimpleNamespace(
+        repo_id = "huihui-ai/Model-GGUF",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [_planted_revision(entry, entry)],
+    )
+
+    # nothing here is the repo's own, so there is nothing to delete.
+    with pytest.raises(HTTPException) as refused:
+        _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
+    assert refused.value.status_code == 404
+    assert (outside / "models" / name).exists()
+    assert (outside / "empty").is_dir()
+
+
+def test_reclaiming_an_update_leaves_files_behind_a_linked_blobs_folder(monkeypatch, tmp_path):
+    from hub.services.models import cache_inventory as CI
+    from hub.services.models import deletion as D
+
+    name = "Model-Q4_K_M.gguf"
+    outside, thesis = _outside_the_cache(tmp_path, name)
+    repo_path = tmp_path / "cache" / "models--org--Model-GGUF"
+    link = repo_path / "snapshots" / ("a" * 40) / name
+    link.parent.mkdir(parents = True)
+    (repo_path / "blobs").symlink_to(outside, target_is_directory = True)
+    link.symlink_to(repo_path / "blobs" / thesis.name)
+    repo_info = SimpleNamespace(
+        repo_id = "org/Model-GGUF",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [_planted_revision(link, repo_path / "blobs" / thesis.name)],
+    )
+    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
+
+    D.reclaim_replaced_gguf_variant(
+        repo_info.repo_id, "Q4_K_M", frozenset({"NEWsha"}), hub_cache = tmp_path / "cache"
+    )
+    assert thesis.read_text() == "chapter 1"
+
+
 def test_an_unnamed_checkpoint_is_not_a_wildcard_for_named_builds(tmp_path):
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
 

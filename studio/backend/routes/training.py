@@ -751,10 +751,15 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
     if not dataset_id:
         return
 
+    from core.training.account_jobs import _dataset_builder_name
     from huggingface_hub.utils import HFValidationError, validate_repo_id
 
     try:
         validate_repo_id(dataset_id)
+        # Well formed, but load_dataset takes its own builder names ahead of the Hub and reads the
+        # worker's cwd with them.
+        if _dataset_builder_name(dataset_id):
+            raise HFValidationError(f"'{dataset_id}' is a datasets builder, not a repository")
     except HFValidationError as error:
         raise _hf_preflight_error(
             400,
@@ -5311,10 +5316,22 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
             ],
         )
     )
+    from hub.utils.dataset_cache import resolved_dataset_snapshot_file
+
+    def _in_cache(path: Path) -> Optional[Path]:
+        # Tool sandboxes can write the Hub cache: an entry that leads out of it (a planted link) is skipped.
+        try:
+            return resolved_dataset_snapshot_file(snap, path.relative_to(snap).as_posix())
+        except ValueError:
+            return None
+
     # Map basename -> caption from every jsonl carrying file_name + caption column.
     captions: dict[str, str] = {}
     # read_text on a companion raises and fails the whole import.
     for jf in drop_appledouble_metadata(sorted(snap.rglob("*.jsonl"))):
+        jf = _in_cache(jf)
+        if jf is None:
+            continue
         for line in jf.read_text(encoding = "utf-8").split("\n"):
             line = line.strip()
             if not line:
@@ -5342,8 +5359,11 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
     for src in images:
         if written >= cap:
             break
+        resolved = _in_cache(src)
+        if resolved is None:
+            continue
         stem = f"img_{written:04d}"
-        shutil.copyfile(src, dest / f"{stem}{src.suffix.lower()}")
+        shutil.copyfile(resolved, dest / f"{stem}{src.suffix.lower()}")
         cap_text = captions.get(src.name)
         if cap_text:
             (dest / f"{stem}.txt").write_text(cap_text.strip(), encoding = "utf-8")
