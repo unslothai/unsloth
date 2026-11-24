@@ -8,6 +8,7 @@ import { AUDIO_WORKFLOWS, clipWorkflow } from "../workflows";
 
 const INVALID_CHARS = new Set('<>:"/\\|?*');
 const MAX_TITLE_CHARS = 120;
+const MAX_NAME_BYTES = 255;
 // prompts can span paragraphs; 60 characters keeps CJK and emoji names under 255 bytes.
 const MAX_CLIP_TITLE_CHARS = 60;
 const FALLBACK_TITLE = "Separated track";
@@ -25,19 +26,32 @@ export function sanitizeFileNamePart(part: string, fallback: string): string {
   return cleaned || fallback;
 }
 
-function shortTitle(title: string, max: number, fallback: string): string {
+function shortTitle(
+  title: string,
+  max: number,
+  fallback: string,
+  maxBytes = Infinity,
+): string {
   const bare = title.replace(/\.(wav|mp3|flac|ogg|m4a|aac|opus|webm)$/i, "");
-  const safe = [...sanitizeFileNamePart(bare, fallback)]
-    .slice(0, max)
-    .join("")
-    .trim();
-  return safe || fallback;
+  let safe = "";
+  let bytes = 0;
+  for (const char of [...sanitizeFileNamePart(bare, fallback)].slice(0, max)) {
+    bytes += utf8Bytes(char);
+    if (bytes > maxBytes) break;
+    safe += char;
+  }
+  return safe.trim() || fallback;
+}
+
+function utf8Bytes(text: string): number {
+  return new TextEncoder().encode(text).byteLength;
 }
 
 /** the title is capped so the stem label always survives. */
 export function stemFileName(title: string, label: string): string {
-  const safeLabel = sanitizeFileNamePart(label, "Stem");
-  return `${shortTitle(title, MAX_TITLE_CHARS, FALLBACK_TITLE)} - ${safeLabel}.wav`;
+  const suffix = ` - ${sanitizeFileNamePart(label, "Stem")}.wav`;
+  const maxBytes = MAX_NAME_BYTES - utf8Bytes(suffix);
+  return `${shortTitle(title, MAX_TITLE_CHARS, FALLBACK_TITLE, maxBytes)}${suffix}`;
 }
 
 /** gallery clips are always WAV. */
