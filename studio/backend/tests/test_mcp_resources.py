@@ -185,6 +185,135 @@ def test_slow_resource_listing_keeps_the_tools(monkeypatch):
     assert tools == [{"name": "ping"}] and tools.resources is None
 
 
+def test_a_failed_resource_listing_keeps_the_oauth_cool_off(monkeypatch):
+    import time
+
+    class _Tool:
+        def model_dump(self, **_):
+            return {"name": "ping"}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def list_tools(self):
+            return [_Tool()]
+
+        async def list_resources_mcp(self, cursor = None):
+            raise RuntimeError("resources/list failed")
+
+    monkeypatch.setattr(mcp_client, "_client", lambda *a, **k: _Client())
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    tools = asyncio.run(
+        mcp_client.list_tools_async("https://x.example/mcp", timeout = 5, use_oauth = True)
+    )
+    assert tools == [{"name": "ping"}] and not tools.complete
+    mcp_client.cache_tools("srv1", tools)
+    (until,) = mcp_client._probe_cooloff_until.values()
+    assert until - time.monotonic() > mcp_client.FAILED_PROBE_COOLOFF_SECONDS
+
+
+@pytest.mark.parametrize("failure", ["slow", "error"])
+def test_a_send_after_a_failed_resource_listing_retries_it(failure, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    calls = {"tools": 0, "resources": 0}
+    broken = {"on": True}
+
+    class _Tool:
+        def model_dump(self, **_):
+            return {"name": "ping"}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def list_tools(self):
+            calls["tools"] += 1
+            return [_Tool()]
+
+        async def list_resources_mcp(self, cursor = None):
+            calls["resources"] += 1
+            if broken["on"]:
+                if failure == "slow":
+                    await asyncio.sleep(30)
+                raise RuntimeError("resources/list failed")
+            return SimpleNamespace(
+                resources = [SimpleNamespace(uri = "docs://readme", name = "readme")],
+                next_cursor = None,
+            )
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
+    mcp_servers_db.create_server(id = "srv1", display_name = "Docs", url = "https://x.example/mcp")
+    monkeypatch.setattr(mcp_client, "_client", lambda *a, **k: _Client())
+    monkeypatch.setattr(tools_mod, "probe_timeout", lambda *a: 0.5)
+
+    assert _names(asyncio.run(tools_mod.get_enabled_mcp_tools())) == ["mcp__srv1__ping"]
+    broken["on"] = False
+    assert _names(asyncio.run(tools_mod.get_enabled_mcp_tools())) == ["mcp__srv1__ping"]
+    assert calls == {"tools": 1, "resources": 1}
+
+    mcp_client._probe_cooloff_until.clear()
+    specs = asyncio.run(tools_mod.get_enabled_mcp_tools())
+    assert _names(specs) == ["mcp__srv1__ping", READ]
+    assert "docs://readme" in specs[1]["function"]["description"]
+    asyncio.run(tools_mod.get_enabled_mcp_tools())
+    assert calls == {"tools": 2, "resources": 2}
+
+
+def _paged_client(second_page):
+    from types import SimpleNamespace
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def list_tools(self):
+            return []
+
+        async def list_resources_mcp(self, cursor = None):
+            if cursor is None:
+                return SimpleNamespace(
+                    resources = [SimpleNamespace(uri = "docs://a", name = "a")], next_cursor = "2"
+                )
+            return await second_page()
+
+    return lambda *a, **k: _Client()
+
+
+@pytest.mark.parametrize("failure", ["slow", "error"])
+def test_a_cut_off_resource_listing_keeps_its_first_page(failure, monkeypatch):
+    async def second_page():
+        if failure == "slow":
+            await asyncio.sleep(30)
+        raise RuntimeError("resources/list failed")
+
+    monkeypatch.setattr(mcp_client, "_client", _paged_client(second_page))
+    tools = asyncio.run(mcp_client.list_tools_async("https://x.example/mcp", timeout = 0.5))
+    assert tools.resources == [{"uri": "docs://a", "name": "a"}] and not tools.complete
+
+
+def test_method_not_found_on_resources_is_not_retried(monkeypatch):
+    from mcp.shared.exceptions import MCPError
+
+    async def second_page():
+        raise MCPError(-32601, "Method not found")
+
+    monkeypatch.setattr(mcp_client, "_client", _paged_client(second_page))
+    tools = asyncio.run(mcp_client.list_tools_async("https://x.example/mcp"))
+    assert tools.resources == [{"uri": "docs://a", "name": "a"}] and tools.complete
+
+
 def test_a_resource_only_server_stays_loadable_by_search(tmp_path, monkeypatch):
     _server(tmp_path, monkeypatch)
     tools = mcp_client.McpToolList()
