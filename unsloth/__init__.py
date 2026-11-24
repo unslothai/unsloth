@@ -429,10 +429,13 @@ if _IS_MLX:
             elif kwargs.get("dtype") is None:
                 kwargs["dtype"] = "float16"
         model, tokenizer = FastMLXModel.from_pretrained(*args, **kwargs)
-        from unsloth_zoo.mlx import vllm_utils
+        try:
+            from unsloth_zoo.mlx import vllm_utils
+        except ImportError:  # a zoo build older than vllm-metal support keeps MLX generation
+            vllm_utils = None
 
         # fast_inference uses vLLM (vllm-metal) when it is installed, else zoo's batched MLX generation.
-        if vllm_utils.use_vllm(fast_inference):
+        if vllm_utils is not None and vllm_utils.use_vllm(fast_inference):
             engine = vllm_utils.load_vllm(
                 model,
                 max_seq_length = options["max_seq_length"],

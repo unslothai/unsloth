@@ -146,9 +146,11 @@ def _mlx_from_pretrained(
 
     from_pretrained.__signature__ = inspect.signature(signature)
 
-    vllm_utils = vllm_utils or types.SimpleNamespace(use_vllm = lambda fast_inference: False)
+    if vllm_utils is None:
+        vllm_utils = types.SimpleNamespace(use_vllm = lambda fast_inference: False)
     zoo_mlx = types.ModuleType("unsloth_zoo.mlx")
-    zoo_mlx.vllm_utils = vllm_utils
+    if vllm_utils is not False:  # False: a zoo build without vllm_utils
+        zoo_mlx.vllm_utils = vllm_utils
     monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx", zoo_mlx)
     namespace = {
@@ -250,3 +252,6 @@ def test_fast_inference_starts_vllm_metal_only_when_zoo_picks_it(monkeypatch):
         enable_lora = True,
         seed = 3407,
     )
+    load, _ = _mlx_from_pretrained(True, monkeypatch, vllm_utils = False)
+    model, _ = load("m", fast_inference = True)
+    assert not hasattr(model, "load_lora")
