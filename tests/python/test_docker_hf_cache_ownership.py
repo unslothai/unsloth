@@ -16,11 +16,11 @@ _DOCKER = os.path.join(
 )
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux") or shutil.which("bash") is None,
-    reason="container entrypoints need Linux bash and GNU stat/chown",
+    reason = "container entrypoints need Linux bash and GNU stat/chown",
 )
 
 
-@pytest.fixture(params=["entrypoint.sh", "entrypoint-rocm.sh"])
+@pytest.fixture(params = ["entrypoint.sh", "entrypoint-rocm.sh"])
 def entrypoint(request):
     return os.path.join(_DOCKER, request.param)
 
@@ -41,13 +41,13 @@ def _boot(entrypoint, tmp_path, hf_home, bindir, until):
     }
     proc = subprocess.Popen(
         ["bash", entrypoint, "true"],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        env = env,
+        stdout = subprocess.DEVNULL,
+        stderr = subprocess.DEVNULL,
+        start_new_session = True,
     )
     try:
-        assert proc.wait(timeout=120) == 0
+        assert proc.wait(timeout = 120) == 0
         deadline = time.monotonic() + 5
         while not until() and time.monotonic() < deadline:
             time.sleep(0.1)
@@ -68,7 +68,7 @@ def _download_as_root(hub, outside):
             hub / "models--x" / "snapshots" / "abc",
             hub / ".locks" / "models--x",
         ):
-            d.mkdir(parents=True, exist_ok=True)
+            d.mkdir(parents = True, exist_ok = True)
         (hub / "models--x" / "blobs" / "f00").write_text("{}")
         (hub / "models--x" / "refs" / "main").write_text("abc")
         (hub / ".locks" / "models--x" / "f00.lock").write_text("")
@@ -92,7 +92,7 @@ def _handed_over(path, uid):
 
 
 @pytest.mark.skipif(
-    os.name != "posix" or os.geteuid() != 0, reason="chown to another uid needs root"
+    os.name != "posix" or os.geteuid() != 0, reason = "chown to another uid needs root"
 )
 def test_a_model_root_downloaded_into_a_host_owned_cache_is_handed_to_the_host_user(
     entrypoint, tmp_path
@@ -143,7 +143,7 @@ def _recording_python(tmp_path):
 
 
 @pytest.mark.skipif(
-    os.name == "posix" and os.geteuid() == 0, reason="root runs the real chown test above"
+    os.name == "posix" and os.geteuid() == 0, reason = "root runs the real chown test above"
 )
 def test_root_written_entries_go_to_the_cache_owner_and_stay_group_root_usable(
     entrypoint, tmp_path
