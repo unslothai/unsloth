@@ -120,8 +120,8 @@ def test_a_model_root_downloaded_into_a_host_owned_cache_is_handed_to_the_host_u
     assert os.lstat(hf_home).st_gid == 1000
     assert os.lstat(hf_home / "hub" / "models--x" / "blobs" / "f01.incomplete").st_uid == 0
     shared = hf_home / "hub" / "shared"
-    assert (os.lstat(shared).st_gid, os.lstat(shared / "blob").st_gid) == (2000, 2000)
-    assert os.lstat(shared / "blob").st_mode & 0o060 == 0o060
+    blob = os.lstat(shared / "blob")
+    assert (blob.st_uid, blob.st_gid, stat.S_IMODE(blob.st_mode)) == (0, 2000, 0o640)
     st = os.stat(outside)
     assert (st.st_uid, stat.S_IMODE(st.st_mode)) == (0, 0o600)
 
@@ -134,7 +134,7 @@ os.fchown = lambda fd, u, g: log.write(f"{here(fd)} {u}:{g}\\n")
 os.chown = lambda p, u, g, dir_fd, follow_symlinks: log.write(
     f"{os.path.join(here(dir_fd), p)} {u}:{g} {follow_symlinks}\\n"
 )
-sys.argv = ["-", sys.argv[2], sys.argv[3], str(os.getuid())]
+sys.argv = ["-", sys.argv[2], sys.argv[3], str(os.getuid()), str(os.getgid())]
 exec(compile(sys.stdin.read(), "<entrypoint>", "exec"), {"__name__": "__main__"})
 """
 

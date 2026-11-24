@@ -22,8 +22,9 @@ if [[ -x /usr/local/bin/unsloth-studio-home ]]; then
 fi
 
 # Studio and JupyterLab run as root, so hand what they download into a host-owned HF cache mount back to its owner.
-# The entry keeps its group (root, or a setgid cache's) with rwX, so Studio's tool sandbox (uid 0, no capabilities,
-# umask 077) can still use it; that sandbox writes this cache, hence fd-relative no-follow updates and no hardlinks.
+# Only root:root entries, which keep group root with rwX (granted first) so Studio's tool sandbox (uid 0, no
+# capabilities, umask 077) can still use them; a setgid cache's entries stay as they are, since one group cannot serve
+# both. That sandbox writes this cache, hence fd-relative no-follow updates and no hardlinks.
 hf_cache_uid="$(stat -c '%u' "${HF_HOME:-}" 2>/dev/null || true)"
 if [[ "$(id -u)" == 0 && -n "${hf_cache_uid}" && "${hf_cache_uid}" != 0 ]] && command -v python3 >/dev/null 2>&1; then
     while :; do
@@ -31,12 +32,12 @@ if [[ "$(id -u)" == 0 && -n "${hf_cache_uid}" && "${hf_cache_uid}" != 0 ]] && co
 import os, stat, sys
 
 top, uid = sys.argv[1], int(sys.argv[2])
-src = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+src, src_gid = (int(sys.argv[3]), int(sys.argv[4])) if len(sys.argv) > 4 else (0, 0)
 
 
 def hand_over(name, dfd):
     st = os.stat(name, dir_fd = dfd, follow_symlinks = False)
-    if st.st_uid != src:
+    if (st.st_uid, st.st_gid) != (src, src_gid):
         return
     if stat.S_ISLNK(st.st_mode):
         os.chown(name, uid, -1, dir_fd = dfd, follow_symlinks = False)
@@ -45,11 +46,11 @@ def hand_over(name, dfd):
     try:
         st = os.fstat(fd)
         is_dir = stat.S_ISDIR(st.st_mode)
-        if st.st_uid != src or not (is_dir or (stat.S_ISREG(st.st_mode) and st.st_nlink == 1)):
+        if (st.st_uid, st.st_gid) != (src, src_gid) or not (is_dir or (stat.S_ISREG(st.st_mode) and st.st_nlink == 1)):
             return
         mode = stat.S_IMODE(st.st_mode) | (0o070 if is_dir or st.st_mode & 0o111 else 0o060)
-        os.fchown(fd, uid, -1)
         os.fchmod(fd, mode if is_dir else mode & ~0o6000)
+        os.fchown(fd, uid, -1)
     finally:
         os.close(fd)
 
