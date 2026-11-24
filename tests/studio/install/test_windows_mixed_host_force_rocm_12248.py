@@ -460,48 +460,34 @@ class TestStackWindowsForce:
         assert not self._run(force = False).called
 
 
-HIPINFO_CALL = slice_between(
-    INSTALL_SRC,
-    "                # Notice-only probe: a device-naming CUDA mask",
-    "                if ($hipOut -match",
-)
+PROBE_MUTE = slice_between(INSTALL_SRC, "    $script:StudioMuteLines = $ProbeAmdBesideNvidia", "\n")
+HIPINFO_GATE = slice_between(INSTALL_SRC, "        if ($hipinfoExe -and ", "\n")
 
 
 @requires_pwsh
 @pytest.mark.parametrize(
-    "beside, env, seen",
+    "beside, env, runs",
     [
-        (True, {"CUDA_VISIBLE_DEVICES": "0"}, "<unset>"),
-        (False, {"CUDA_VISIBLE_DEVICES": "0"}, "0"),
-        (True, {"CUDA_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": "1"}, "0"),
-        (True, {"CUDA_VISIBLE_DEVICES": "-1"}, "-1"),
-        (True, {"CUDA_VISIBLE_DEVICES": "1", "UNSLOTH_FORCE_ROCM_TORCH": "1"}, "1"),
+        (True, {}, "False"),
+        (True, {"UNSLOTH_FORCE_ROCM_TORCH": "1"}, "True"),
+        (True, {"CUDA_VISIBLE_DEVICES": "-1"}, "True"),
+        (False, {}, "True"),
     ],
-    ids = [
-        "nvidia-mask-beside-nvidia",
-        "amd-only-host",
-        "hip-mask-wins",
-        "hiding-mask",
-        "forced-keeps-mask",
-    ],
+    ids = ["notice-only", "forced", "hiding-mask", "amd-only-host"],
 )
-def test_hipinfo_beside_nvidia_ignores_a_cuda_mask_naming_nvidia_cards(beside, env, seen):
+def test_hipinfo_runs_only_where_its_answer_can_route_torch(beside, env, runs):
     kv = _ps_kv(
         _script(
-            SETUP_HELPERS,
+            INSTALL_HELPERS,
             _env(**env),
             "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
             f"$ProbeAmdBesideNvidia = ${str(beside).lower()}",
-            slice_between(INSTALL_SRC, "    $script:StudioMuteLines = $ProbeAmdBesideNvidia", "\n"),
-            "function Invoke-FakeHipinfo { if ($null -eq $env:CUDA_VISIBLE_DEVICES) { '<unset>' } else { $env:CUDA_VISIBLE_DEVICES } }",
-            "$hipinfoExe = [pscustomobject]@{ Source = 'Invoke-FakeHipinfo' }",
-            HIPINFO_CALL,
-            'Write-Output "SEEN=$($hipOut.Trim())"',
-            'Write-Output "AFTER=$env:CUDA_VISIBLE_DEVICES"',
+            PROBE_MUTE,
+            "$hipinfoExe = [pscustomobject]@{ Source = 'hipinfo.exe' }",
+            HIPINFO_GATE.strip() + " 'RUNS=True' } else { 'RUNS=False' }",
         )
     )
-    assert kv["SEEN"] == seen
-    assert kv["AFTER"] == env["CUDA_VISIBLE_DEVICES"]
+    assert kv["RUNS"] == runs
 
 
 def test_install_ps1_shadowing_list_matches_setup_ps1():
@@ -512,9 +498,6 @@ def test_install_ps1_shadowing_list_matches_setup_ps1():
         _function_source(INSTALL_SRC, "Resolve-MixedHostShadowingArch"), "$shadowing = @(", ")"
     )
     assert re.findall(r"gfx\w+", install) == re.findall(r"gfx\w+", setup)
-
-
-PROBE_MUTE = slice_between(INSTALL_SRC, "    $script:StudioMuteLines = $ProbeAmdBesideNvidia", "\n")
 
 
 @requires_pwsh

@@ -9092,16 +9092,11 @@ main()
                 Write-StudioLine "         https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
             }
         }
-        if ($hipinfoExe) {
+        # The notice-only probe runs no HIP tool: an unbounded hipinfo must not hold up an install that keeps CUDA.
+        if ($hipinfoExe -and -not $script:StudioMuteLines) {
             $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
             try {
-                # Notice-only probe: a device-naming CUDA mask addresses the NVIDIA cards. A ROCm route keeps it,
-                # as HIP applies it at runtime and setup.ps1 probes with it.
-                $_hipCvd = $env:CUDA_VISIBLE_DEVICES
-                $_hipDropCvd = $script:StudioMuteLines -and $null -ne $_hipCvd -and -not $nvMaskHidesAll -and $null -eq $env:HIP_VISIBLE_DEVICES
-                if ($_hipDropCvd) { Remove-Item Env:CUDA_VISIBLE_DEVICES }
-                try { $hipOut = & $hipinfoExe.Source 2>&1 | Out-String }
-                finally { if ($_hipDropCvd) { $env:CUDA_VISIBLE_DEVICES = $_hipCvd } }
+                $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
                 if ($hipOut -match "(?i)gcnArchName") {
                     # hipinfo can crash after printing gcnArchName (#6043).
                     # Once the arch is printed, keep the ROCm wheel path.
