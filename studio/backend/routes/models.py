@@ -3106,7 +3106,9 @@ async def discard_remote_code_download(
         revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
         if not revision_hashes:
             return {"deleted": False, "reason": "not_cached"}
-        hf_cache.delete_revisions(*revision_hashes).execute()
+        from hub.utils.inventory_scan import scan_of_repo
+
+        scan_of_repo(hf_cache, target_repo).delete_revisions(*revision_hashes).execute()
         logger.info("Discarded declined remote-code download: %s", model_name)
         return {"deleted": True}
     except Exception as e:

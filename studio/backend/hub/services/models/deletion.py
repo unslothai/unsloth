@@ -98,6 +98,27 @@ def _blob_hash_from_path(blob: Path) -> Optional[str]:
     return name
 
 
+def _is_own_blob(blob: Optional[Path], repo_dir: Optional[Path]) -> bool:
+    """True only for a blob in the repo's own ``blobs`` folder, the only kind a variant delete may unlink. The scan follows snapshot links and sandboxed tool calls can write the hub cache, so a planted entry can name any host file as its blob."""
+    if not cache_inventory._is_real_cache_blob(blob, repo_dir):
+        return False
+    try:
+        # _is_real_cache_blob resolves ``blobs`` too, so a ``blobs`` that is itself a link to another folder passes it.
+        return (repo_dir / "blobs").resolve() == repo_dir.resolve() / "blobs"
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _is_own_snapshot_entry(snap: Path, repo_dir: Optional[Path]) -> bool:
+    """True only for an entry really kept under ``<repo_dir>/snapshots``. Behind a ``snapshots``, revision or variant folder that is a link it is another folder's own file (see :func:`_is_own_blob`); only the repo folder itself may sit behind a link."""
+    if repo_dir is None:
+        return False
+    try:
+        return snap.parent.resolve().is_relative_to(repo_dir.resolve() / "snapshots")
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _unlink_variant_blob(blob: Path, cache_dir: Optional[Path]) -> int:
     shared_target = None
     if shared_blob_target is not None:
@@ -124,9 +145,11 @@ def _path_exists_or_symlink(path: Path) -> bool:
         return False
 
 
-def _unlink_snapshot_entry(snap: Path) -> int:
-    """unlink a snapshot entry and its AppleDouble sidecar, counting only the entry."""
+def _unlink_snapshot_entry(snap: Path, repo_dir: Optional[Path]) -> int:
+    """unlink a snapshot entry and its AppleDouble sidecar, counting only the entry; one that is not the repo's own stays."""
     removed = 0
+    if not _is_own_snapshot_entry(snap, repo_dir):
+        return removed
     if _path_exists_or_symlink(snap):
         snap.unlink()
         removed += 1
@@ -202,7 +225,7 @@ def _remove_empty_variant_dirs(
         if not repo_path:
             continue
         snapshots = Path(repo_path) / "snapshots"
-        if not snapshots.is_dir():
+        if snapshots.is_symlink() or not snapshots.is_dir():
             continue
         try:
             snap_dirs = [s for s in snapshots.iterdir() if s.is_dir() and not s.is_symlink()]
@@ -247,7 +270,7 @@ def _remove_empty_snapshot_dirs(
         if not repo_path:
             continue
         snapshots = Path(repo_path) / "snapshots"
-        if not snapshots.is_dir():
+        if snapshots.is_symlink() or not snapshots.is_dir():
             continue
         try:
             snap_dirs = [s for s in snapshots.iterdir() if s.is_dir() and not s.is_symlink()]
@@ -429,7 +452,7 @@ def _delete_gguf_variant_from_repos(
 
         for snap, _blob, name in matched:
             try:
-                removed_snapshots += _unlink_snapshot_entry(snap)
+                removed_snapshots += _unlink_snapshot_entry(snap, repo_dir)
             except OSError as e:
                 failures.append(f"{name}: {e}")
 
@@ -451,7 +474,7 @@ def _delete_gguf_variant_from_repos(
             )
             for snap, _blob, name in companion_matches:
                 try:
-                    removed_snapshots += _unlink_snapshot_entry(snap)
+                    removed_snapshots += _unlink_snapshot_entry(snap, repo_dir)
                 except OSError as e:
                     failures.append(f"{name}: {e}")
 
@@ -461,7 +484,8 @@ def _delete_gguf_variant_from_repos(
             cache_dir = repo_dir.parent
         seen_blobs: set[Path] = set()
         for _snap, blob, name in [*matched, *companion_matches]:
-            if blob is None:
+            # the scan's blob is wherever the snapshot link leads; only the repo's own blobs are this delete's to free.
+            if blob is None or not _is_own_blob(blob, repo_dir):
                 continue
             blob_hash = _blob_hash_from_path(blob)
             if blob_hash:
@@ -749,11 +773,7 @@ def reclaim_replaced_gguf_variant(
             if commit in protected_revisions:
                 continue
             # prune confirmed stale blobs only; non-symlink snapshot files lack identifiable hashes.
-            blob_hash = (
-                _blob_hash_from_path(blob)
-                if cache_inventory._is_real_cache_blob(blob, repo_dir)
-                else None
-            )
+            blob_hash = _blob_hash_from_path(blob) if _is_own_blob(blob, repo_dir) else None
             if blob_hash is None or blob_hash in keep_main_hashes:
                 continue
             stale_matches.append((snap, blob, name))
@@ -763,7 +783,7 @@ def reclaim_replaced_gguf_variant(
 
         for snap, _blob, name in stale_matches:
             try:
-                removed_snapshots += _unlink_snapshot_entry(snap)
+                removed_snapshots += _unlink_snapshot_entry(snap, repo_dir)
             except OSError as e:
                 failures.append(f"{name}: {e}")
 
@@ -1471,7 +1491,9 @@ def _delete_cached_model_blocking(
             ]
             if not revision_hashes:
                 continue
-            delete_strategy = hf_cache.delete_revisions(*revision_hashes)
+            delete_strategy = hf_cache_scan.scan_of_repo(hf_cache, repo_info).delete_revisions(
+                *revision_hashes
+            )
             logger.info(
                 f"Deleting cached model {repo_id} from "
                 f"{getattr(hf_cache, 'cache_dir', '<unknown>')}: "
