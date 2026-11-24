@@ -10,6 +10,7 @@ backend runs inside the strided processor instead of the stock one); all but the
 from __future__ import annotations
 
 import contextlib
+import itertools
 import logging
 import os
 from functools import lru_cache
@@ -273,6 +274,7 @@ def _strided_processor_for(base: Any) -> Any:
         # set by install_int8_exact_start: INT8 calls go through the step-gated op (16-bit kernel code, _EXACT_KERNELS)
         _unsloth_int8_exact = False
         _unsloth_int8_exact_kernel = 0
+        _unsloth_int8_exact_flag = None
 
         def __call__(
             self,
@@ -345,9 +347,14 @@ def _strided_processor_for(base: Any) -> Any:
             ):
                 mode = self._unsloth_int8_sinks
                 if self._unsloth_int8_exact:
-                    # opaque op: the per-step choice is made at run time, so it never guards or recompiles a block
+                    # opaque op on the denoiser's flag tensor: the per-step choice is made at run time, so it never
+                    # guards or recompiles a block
                     hidden_states = torch.ops.unsloth_h3.int8_attention_exact_start(
-                        query, key, value, self._unsloth_int8_exact_kernel
+                        query,
+                        key,
+                        value,
+                        self._unsloth_int8_exact_flag,
+                        self._unsloth_int8_exact_kernel,
                     )
                 else:
                     hidden_states = (
@@ -502,14 +509,17 @@ def strided_attention_count(transformer: Any) -> int:
 # ── INT8 attention exact start: the first denoise steps on the 16-bit kernel, INT8 after ──
 
 _EXACT_OP = "unsloth_h3::int8_attention_exact_start"
+_TICK_OP = "unsloth_h3::int8_exact_start_tick"
 # the processor's 16-bit kernel as an op argument: 0 = SDPA's own pick
 _EXACT_KERNELS = (None, _CUDNN, _FLASH, "_native_efficient", "_native_math")
 _EXACT_HOOK_ATTR = "_unsloth_h3_int8_exact_start"
 # the denoiser attribute diffusion_cuda_graph reads to refuse graphs (block or whole forward) for this load
 GRAPH_UNSAFE_ATTR = "_unsloth_cuda_graph_unsafe"
 EXACT_GRAPH_REASON = "INT8 attention exact start routes per denoise step (not CUDA-graph safe)"
-# True while the running forward is inside the exact start; set by the denoiser's pre-hook before every forward
-_EXACT_STATE = {"active": False}
+# per denoiser (key -> state): the scheduler it reads, its step count and the render's first step index. Each
+# denoiser's route lives in its own flag tensor (1 = exact), so overlapping denoisers never read each other's.
+_EXACT_REGISTRY: dict = {}
+_EXACT_KEYS = itertools.count(1)
 # calls served per path since import (engagement census; the op body runs eagerly, also under torch.compile)
 EXACT_START_STATS = {"exact": 0, "int8": 0}
 
@@ -537,65 +547,115 @@ def _exact_attention(q: Any, k: Any, v: Any, kernel: int) -> Any:
     return out.permute(0, 2, 1, 3).contiguous()
 
 
-def int8_attention_exact_start_impl(q: Any, k: Any, v: Any, kernel: int) -> Any:
-    """Inside the exact start the 16-bit kernel, else the INT8 kernel (``int8_attention_impl``, resolved per call)."""
+def _capturing_on(device: Any) -> bool:
+    """Whether a CUDA graph is recording on ``device``'s current stream (not the current device's)."""
     import torch
 
-    if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
+    if getattr(device, "type", None) != "cuda" or not torch.cuda.is_available():
+        return False
+    with torch.cuda.device(device):
+        return bool(torch.cuda.is_current_stream_capturing())
+
+
+def int8_attention_exact_start_impl(q: Any, k: Any, v: Any, flag: Any, kernel: int) -> Any:
+    """``flag`` (the denoiser's, set per forward by its tick) 1: the 16-bit kernel, else the INT8 kernel
+    (``int8_attention_impl``, resolved per call). Contiguous ``[B, S, H, D]`` in V's dtype, as the fake."""
+    if _capturing_on(q.device):
         # a replayed graph would freeze one path for every step: the recording fails, the block runs ungraphed
         raise RuntimeError(EXACT_GRAPH_REASON)
-    if _EXACT_STATE["active"]:
-        EXACT_START_STATS["exact"] += 1
-        return _exact_attention(q, k, v, int(kernel))
-    EXACT_START_STATS["int8"] += 1
-    # the fake's layout (contiguous [B, S, H, D]); a no-op for the kernel's own output
-    return _i8.int8_attention_impl(q, k, v).contiguous()
+    import torch
+
+    # V's dtype on both branches whatever autocast says: the fake runs with autocast off (the dispatcher drops it
+    # before fake kernels), so the 16-bit SDPA must not follow an autocast dtype the fake cannot see
+    with torch.autocast(q.device.type, enabled = False):
+        if int(flag.reshape(-1)[0]):
+            EXACT_START_STATS["exact"] += 1
+            out = _exact_attention(q, k, v, int(kernel))
+        else:
+            EXACT_START_STATS["int8"] += 1
+            out = _i8.int8_attention_impl(q, k, v)
+    return out.to(v.dtype).contiguous()
+
+
+def _exact_start_taken(state: dict) -> Optional[int]:
+    """Steps the render has taken, read off its video scheduler (None: no step index, so INT8). Its step index is None
+    before a render's first step; the first index seen after that, less one, is where the render began (0, or a later
+    grid point with a begin index / strength), so N exact steps run wherever it starts."""
+    pipe = state["pipe"]()
+    scheduler = getattr(pipe, "scheduler", None) if pipe is not None else None
+    if scheduler is None or not hasattr(scheduler, "_step_index"):
+        return None
+    index = getattr(scheduler, "_step_index", None)
+    if index is None:
+        state["base"] = None
+        return 0
+    if state.get("base") is None:
+        state["base"] = int(index) - 1
+    return int(index) - state["base"]
+
+
+def int8_exact_start_tick_impl(flag: Any, key: int) -> None:
+    state = _EXACT_REGISTRY.get(int(key))
+    taken = _exact_start_taken(state) if state is not None else None
+    flag.fill_(int(taken is not None and taken < state["steps"]))
 
 
 @lru_cache(maxsize = None)
 def int8_attention_exact_start_op() -> Any:
-    """Registered once per process."""
+    """Registered once per process: the attention op and the per-forward tick that sets a denoiser's flag. Both are
+    opaque to dynamo, so neither a regional nor an enclosing compile guards on the step index or breaks the graph."""
     import torch
 
-    # explicit schema: the annotations here are strings
+    # explicit schemas: the annotations here are strings
     @torch.library.custom_op(
         _EXACT_OP,
         mutates_args = (),
-        schema = "(Tensor q, Tensor k, Tensor v, int kernel) -> Tensor",
+        schema = "(Tensor q, Tensor k, Tensor v, Tensor flag, int kernel) -> Tensor",
     )
-    def int8_attention_exact_start(q, k, v, kernel):
-        return int8_attention_exact_start_impl(q, k, v, kernel)
+    def int8_attention_exact_start(q, k, v, flag, kernel):
+        return int8_attention_exact_start_impl(q, k, v, flag, kernel)
 
     @int8_attention_exact_start.register_fake
-    def _(q, k, v, kernel):
-        # contiguous [B, S, H, D] in V's dtype, as unsloth_studio::int8_attention_nhd
+    def _(q, k, v, flag, kernel):
+        # contiguous [B, S, H, D] in V's dtype, as unsloth_studio::int8_attention_nhd and the real op
         return v.new_empty(q.shape)
+
+    @torch.library.custom_op(
+        _TICK_OP, mutates_args = ("flag",), schema = "(Tensor(a!) flag, int key) -> ()"
+    )
+    def int8_exact_start_tick(flag, key):
+        int8_exact_start_tick_impl(flag, key)
+
+    @int8_exact_start_tick.register_fake
+    def _(flag, key):
+        return None
 
     return int8_attention_exact_start
 
 
 def _exact_start_pre_hook(module: Any, args: tuple, kwargs: dict) -> None:
-    """Per forward: exact while the render's video scheduler has taken fewer than ``steps`` steps. Its step index is
-    None before a render's first step; the first index seen after that, less one, is where the render began (0, or a
-    later grid point with a begin index / strength), so N exact steps run wherever it starts. A scheduler without a
-    step index runs INT8."""
+    """Per forward: the denoiser's tick sets its flag (exact while its render has taken fewer than ``steps`` steps)."""
+    import torch
+
     state = module.__dict__.get(_EXACT_HOOK_ATTR)
-    active = False
     if state is not None:
-        pipe = state["pipe"]()
-        scheduler = getattr(pipe, "scheduler", None) if pipe is not None else None
-        if scheduler is not None and hasattr(scheduler, "_step_index"):
-            index = getattr(scheduler, "_step_index", None)
-            if index is None:
-                state["base"] = None
-                taken = 0
-            else:
-                if state.get("base") is None:
-                    state["base"] = int(index) - 1
-                taken = int(index) - state["base"]
-            active = taken < state["steps"]
-    _EXACT_STATE["active"] = active
+        torch.ops.unsloth_h3.int8_exact_start_tick(state["flag"], state["key"])
     return None
+
+
+def remove_int8_exact_start(transformer: Any) -> None:
+    """Undo ``install_int8_exact_start``: processors, hook, registry entry and the graph refusal."""
+    for m in _h3_attention_modules(transformer):
+        proc = getattr(m, "processor", None)
+        if getattr(proc, "_unsloth_int8_exact", False):
+            proc._unsloth_int8_exact = False
+    state = (getattr(transformer, "__dict__", None) or {}).pop(_EXACT_HOOK_ATTR, None)
+    if state is not None:
+        handle = state.get("handle")
+        if handle is not None:
+            handle.remove()
+        _EXACT_REGISTRY.pop(state.get("key"), None)
+    (getattr(transformer, "__dict__", None) or {}).pop(GRAPH_UNSAFE_ATTR, None)
 
 
 def install_int8_exact_start(
@@ -606,8 +666,10 @@ def install_int8_exact_start(
 ) -> int:
     """Route the INT8 calls of ``transformer``'s strided processors through the exact-start op: the first ``steps``
     denoise steps of each render (read off ``pipe.scheduler``, held weakly) run each processor's 16-bit kernel, the
-    rest the INT8 kernel. Returns the processors switched (0: nothing installed, INT8 on every step)."""
+    rest the INT8 kernel. Returns the processors switched (0: nothing installed)."""
     import weakref
+
+    import torch
 
     if int(steps) <= 0 or transformer is None or pipe is None:
         return 0
@@ -620,26 +682,26 @@ def install_int8_exact_start(
     if not procs:
         return 0
     int8_attention_exact_start_op()
+    remove_int8_exact_start(transformer)
     try:
         ref = weakref.ref(pipe)
     except (
         TypeError
     ):  # not weak-referenceable: the denoiser then keeps it alive (a cycle the GC collects)
         ref = lambda: pipe  # noqa: E731
-    state = {"pipe": ref, "steps": int(steps), "base": None}
+    key = next(_EXACT_KEYS)
+    flag = torch.zeros(1, dtype = torch.int8)
+    state = {"pipe": ref, "steps": int(steps), "base": None, "key": key, "flag": flag}
+    _EXACT_REGISTRY[key] = state
+    weakref.finalize(transformer, _EXACT_REGISTRY.pop, key, None)
     for proc in procs:
         name = _backend_value(getattr(proc, "_attention_backend", None))
         proc._unsloth_int8_exact_kernel = (
             _EXACT_KERNELS.index(name) if name in _EXACT_KERNELS else 0
         )
+        proc._unsloth_int8_exact_flag = flag
         proc._unsloth_int8_exact = True
-    if transformer.__dict__.get(_EXACT_HOOK_ATTR) is None:
-        import torch
-
-        # eager even if a caller compiles the whole denoiser: a traced hook would guard on the step index
-        transformer.register_forward_pre_hook(
-            torch.compiler.disable(_exact_start_pre_hook), with_kwargs = True
-        )
+    state["handle"] = transformer.register_forward_pre_hook(_exact_start_pre_hook, with_kwargs = True)
     transformer.__dict__[_EXACT_HOOK_ATTR] = state
     transformer.__dict__[GRAPH_UNSAFE_ATTR] = EXACT_GRAPH_REASON
     if logger is not None:
@@ -650,6 +712,40 @@ def install_int8_exact_start(
             len(procs),
         )
     return len(procs)
+
+
+def finish_h3_int8_auto(
+    transformer: Any,
+    pipe: Any,
+    steps: int,
+    *,
+    modules: int,
+    policy: Any,
+    status_pipe: Any,
+    logger: Any = None,
+) -> tuple:
+    """After Auto engaged INT8 on ``modules`` attention modules: install the exact start. ``(modules, reason)``: the
+    status reason naming it, or, when it cannot be installed (an error, or no processor took it), INT8 taken off for
+    the load (``modules`` 0), never INT8 on every step under Auto."""
+    try:
+        if not install_int8_exact_start(transformer, pipe, steps, logger = logger):
+            raise RuntimeError("no INT8 attention processor took it")
+        reason = f"{_i8.resolved_entry(policy, status_pipe)[2]}, the first {int(steps)} denoise steps on 16-bit attention"
+        return modules, reason
+    except Exception as exc:  # noqa: BLE001 -- back to 16-bit attention
+        try:
+            remove_int8_exact_start(transformer)
+        except Exception:  # noqa: BLE001
+            pass
+        _i8.remove_int8_attention(transformer)
+        if logger is not None:
+            logger.warning(
+                "video.h3_attn: INT8 attention exact start failed, INT8 attention off: %s", exc
+            )
+        return (
+            0,
+            f"Auto turned it off for this load: its exact start could not be installed ({exc})",
+        )
 
 
 def int8_exact_start_count(transformer: Any) -> int:

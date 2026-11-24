@@ -8,6 +8,7 @@ INT8 entry point is a spy (the CUDA kernel cannot run there)."""
 from __future__ import annotations
 
 import ast
+import contextlib
 import copy
 from pathlib import Path
 
@@ -282,15 +283,65 @@ def test_a_render_that_begins_later_still_runs_n_exact_steps(monkeypatch):
 
 
 def test_the_op_refuses_cuda_graph_capture(monkeypatch):
+    seen = []
+
+    def capturing(device):
+        seen.append(device)
+        return True
+
+    monkeypatch.setattr(A, "_capturing_on", capturing)
+    q = torch.randn(1, 8, 2, 32)
+    for flag in (1, 0):
+        with pytest.raises(RuntimeError, match = "not CUDA-graph safe"):
+            A.int8_attention_exact_start_impl(q, q, q, torch.tensor([flag], dtype = torch.int8), 0)
+    # judged on the operand's device
+    assert seen == [q.device, q.device]
+
+
+def test_the_capture_check_runs_on_the_operands_card(monkeypatch):
     import torch.cuda
 
+    current = {"index": 0}
+
+    @contextlib.contextmanager
+    def device(d):
+        saved = current["index"]
+        current["index"] = torch.device(d).index
+        try:
+            yield
+        finally:
+            current["index"] = saved
+
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
-    q = torch.randn(1, 8, 2, 32)
-    for active in (True, False):
-        A._EXACT_STATE["active"] = active
-        with pytest.raises(RuntimeError, match = "not CUDA-graph safe"):
-            A.int8_attention_exact_start_impl(q, q, q, 0)
+    monkeypatch.setattr(torch.cuda, "device", device)
+    # a capture runs on cuda:1 while cuda:0 is current
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: current["index"] == 1)
+    assert A._capturing_on(torch.device("cuda", 1)) is True
+    assert A._capturing_on(torch.device("cuda", 0)) is False
+    assert current["index"] == 0
+    assert A._capturing_on(torch.device("cpu")) is False
+
+
+def test_the_fake_dtype_matches_the_real_output_under_autocast():
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    A.int8_attention_exact_start_op()
+    q = torch.randn(1, 16, 2, 32)
+    plain = A.int8_attention_exact_start_impl(q, q, q, torch.ones(1, dtype = torch.int8), 4)
+    for flag in (1, 0):
+        f = torch.tensor([flag], dtype = torch.int8)
+        with torch.autocast("cpu", dtype = torch.bfloat16):
+            real = torch.ops.unsloth_h3.int8_attention_exact_start(q, q, q, f, 4)
+            with FakeTensorMode() as mode:
+                fq = mode.from_tensor(q)
+                fake = torch.ops.unsloth_h3.int8_attention_exact_start(
+                    fq, fq, fq, mode.from_tensor(f), 4
+                )
+        assert real.dtype == fake.dtype == q.dtype
+        assert real.shape == fake.shape and real.is_contiguous()
+        if flag:
+            # the exact branch ignores autocast: the same bits as without it
+            assert torch.equal(real, plain)
 
 
 def test_graphs_are_refused_for_an_exact_start_denoiser(monkeypatch):
@@ -392,9 +443,67 @@ def test_the_exact_start_op_adds_no_graph_break(monkeypatch):
 
     # the 16-bit strided processor is the bar (a break splits every compiled block in two)
     A.int8_attention_exact_start_op()
+    flag = torch.ones(1, dtype = torch.int8)
     for m in A._h3_attention_modules(model):
+        m.processor._unsloth_int8_exact_flag = flag
         m.processor._unsloth_int8_exact = True
     assert breaks(model) == breaks(off)
+
+
+def test_an_enclosing_fullgraph_compile_traces_the_route_without_recompiling(monkeypatch):
+    # a caller compiling a function around the whole denoiser (hook included): no graph break, no Unsupported, and
+    # the step decides the route at run time
+    import torch._dynamo
+    from torch._dynamo.utils import counters
+
+    model, off, calls = _int8_model(monkeypatch)
+    pipe = _Pipe()
+    assert A.install_int8_exact_start(model, pipe, 2) == 3
+    torch._dynamo.reset()
+    counters.clear()
+
+    @torch.compile(fullgraph = True, backend = "aot_eager")
+    def step(**kw):
+        return model(**kw)[0].sum()
+
+    ref = _run(off)[0].sum()
+    try:
+        with torch.no_grad():
+            for index, int8 in ((None, False), (1, False), (2, True), (7, True), (None, False)):
+                pipe.scheduler._step_index = index
+                calls.clear()
+                out = step(**_inputs())
+                assert bool(calls) is int8
+                assert torch.equal(out, ref) is (not int8) or int8
+        assert counters["stats"]["unique_graphs"] == 1
+    finally:
+        torch._dynamo.reset()
+
+
+def test_overlapping_denoisers_keep_their_own_route(monkeypatch):
+    model_a, _, calls = _int8_model(monkeypatch)
+    model_b = copy.deepcopy(model_a)
+    pipe_a, pipe_b = _Pipe(), _Pipe()
+    assert A.install_int8_exact_start(model_a, pipe_a, 2) == 3
+    assert A.install_int8_exact_start(model_b, pipe_b, 2) == 3
+    # A is inside its exact start (step 0); its hook has run, then B runs a whole forward past its own
+    pipe_a.scheduler._step_index = None
+    A._exact_start_pre_hook(model_a, (), {})
+    for index in (None, 1, 2):
+        pipe_b.scheduler._step_index = index
+        calls.clear()
+        _run(model_b)
+    assert calls  # B is past its exact start and took INT8
+    flag_a = model_a.__dict__[A._EXACT_HOOK_ATTR]["flag"]
+    flag_b = model_b.__dict__[A._EXACT_HOOK_ATTR]["flag"]
+    assert flag_a is not flag_b and int(flag_a[0]) == 1 and int(flag_b[0]) == 0
+    # A's attention still takes the exact route
+    proc = A._h3_attention_modules(model_a)[1].processor
+    assert proc._unsloth_int8_exact_flag is flag_a
+    calls.clear()
+    q = torch.randn(1, 8, 2, 32)
+    A.int8_attention_exact_start_impl(q, q, q, proc._unsloth_int8_exact_flag, 0)
+    assert not calls
 
 
 # ── the H3 video load ──
@@ -409,12 +518,62 @@ def _load_fn():
     )
 
 
-def test_h3_video_load_installs_the_exact_start_under_auto_only():
+def _finish(
+    model,
+    pipe,
+    policy = None,
+):
+    return A.finish_h3_int8_auto(
+        model, pipe, 4, modules = 3, policy = I8.resolve_policy(policy), status_pipe = None
+    )
+
+
+def test_the_loader_step_names_the_exact_start(monkeypatch):
+    model, off, calls = _int8_model(monkeypatch)
+    monkeypatch.setattr(
+        I8,
+        "resolved_entry",
+        lambda policy, pipe: (None, "on", "unsloth_int8 (cuda) on 3 attention modules"),
+    )
+    modules, reason = _finish(model, _Pipe())
+    assert modules == 3 and A.int8_exact_start_count(model) == 3
+    assert (
+        reason
+        == "unsloth_int8 (cuda) on 3 attention modules, the first 4 denoise steps on 16-bit attention"
+    )
+
+
+@pytest.mark.parametrize("failure", ["raises", "zero"])
+def test_the_loader_step_takes_int8_off_when_the_exact_start_cannot_install(monkeypatch, failure):
+    model, off, calls = _int8_model(monkeypatch)
+    real = A.install_int8_exact_start
+
+    def broken(
+        transformer,
+        pipe,
+        steps,
+        logger = None,
+    ):
+        if failure == "raises":
+            real(transformer, pipe, steps)  # half installed, then fails
+            raise RuntimeError("boom")
+        return 0
+
+    monkeypatch.setattr(A, "install_int8_exact_start", broken)
+    modules, reason = _finish(model, _Pipe())
+    assert modules == 0 and reason.startswith("Auto turned it off for this load")
+    assert I8.int8_attention_count(model) == 0 and A.int8_exact_start_count(model) == 0
+    assert A._EXACT_HOOK_ATTR not in model.__dict__ and A.GRAPH_UNSAFE_ATTR not in model.__dict__
+    calls.clear()
+    assert _equal(_run(model), _run(off)) and not calls
+
+
+def test_the_h3_load_uses_the_loader_step():
     load = _load_fn()
     calls = [
         n
         for n in ast.walk(load)
-        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "install_int8_exact_start"
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "finish_h3_int8_auto"
     ]
     assert len(calls) == 1
     assert [ast.unparse(a) for a in calls[0].args] == [
@@ -422,6 +581,7 @@ def test_h3_video_load_installs_the_exact_start_under_auto_only():
         "pipe",
         "h3_int8_gate.exact_steps",
     ]
+    assert {k.arg: ast.unparse(k.value) for k in calls[0].keywords}["modules"] == "h3_int8_modules"
     guard = next(
         n
         for n in ast.walk(load)
@@ -430,11 +590,3 @@ def test_h3_video_load_installs_the_exact_start_under_auto_only():
         and isinstance(n.test, ast.BoolOp)
     )
     assert ast.unparse(guard.test) == "int8_auto and h3_int8_gate.exact_steps > 0"
-    # a failed install never leaves INT8 on every step: the handler takes INT8 off
-    handler = next(n for n in ast.walk(guard) if isinstance(n, ast.ExceptHandler))
-    names = {ast.unparse(c.func) for c in ast.walk(handler) if isinstance(c, ast.Call)}
-    assert "int8_attention.remove_int8_attention" in names
-    assert any(
-        isinstance(t, ast.Assign) and ast.unparse(t) == "h3_int8_modules = 0"
-        for t in ast.walk(handler)
-    )

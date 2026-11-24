@@ -13847,23 +13847,16 @@ class VideoBackend:
                 h3_int8_reason = h3_int8_gate.reason
             elif int8_auto and h3_int8_gate.exact_steps > 0:
                 # Auto engaged INT8 (any device): the first denoise steps of each render stay on the 16-bit kernel
-                try:
-                    from .video_minimax_h3_attn import install_int8_exact_start
-                    if install_int8_exact_start(
-                        h3_denoiser, pipe, h3_int8_gate.exact_steps, logger = logger
-                    ):
-                        h3_int8_reason = (
-                            f"{int8_attention.resolved_entry(h3_policy, speed_view)[2]}, "
-                            f"the first {h3_int8_gate.exact_steps} denoise steps on 16-bit attention"
-                        )
-                except Exception as exc:  # noqa: BLE001 -- never INT8 on every step under Auto: back to 16-bit
-                    h3_int8_modules = 0
-                    int8_attention.remove_int8_attention(h3_denoiser)
-                    h3_int8_reason = f"Auto turned it off for this load: its exact start could not be installed ({exc})"
-                    logger.warning(
-                        "video.h3_attn: INT8 attention exact start failed, INT8 attention off: %s",
-                        exc,
-                    )
+                from .video_minimax_h3_attn import finish_h3_int8_auto
+                h3_int8_modules, h3_int8_reason = finish_h3_int8_auto(
+                    h3_denoiser,
+                    pipe,
+                    h3_int8_gate.exact_steps,
+                    modules = h3_int8_modules,
+                    policy = h3_policy,
+                    status_pipe = speed_view,
+                    logger = logger,
+                )
             if h3_int8_modules:
                 h3_attn_levers += ("h3_int8_attention",)
                 attention_engaged = int8_attention.BACKEND
