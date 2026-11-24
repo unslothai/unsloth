@@ -41085,6 +41085,7 @@ class LlamaCppBackend:
 
             _reasoning_kw = _round_reasoning_kw()
             # On a continuation only the remainder of the caller's cap; read before the payload.
+            _iteration_is_continuation = _continuation_max_tokens is not None
             _iteration_max_tokens = (
                 _continuation_max_tokens if _continuation_max_tokens is not None else max_tokens
             )
@@ -41165,6 +41166,9 @@ class LlamaCppBackend:
                         _recalled = _archive_current_context(
                             conversation,
                             _before_fit,
+                            handover_budget = prompt_budget(
+                                self._effective_context_length, _iteration_max_tokens
+                            ),
                             branch_messages = _extend_live_branch(_before_fit),
                             query_messages = _request_branch,
                             thread_id = thread_id,
@@ -41360,6 +41364,9 @@ class LlamaCppBackend:
                             _archive_current_context(
                                 conversation,
                                 _before_respawn_fit,
+                                handover_budget = prompt_budget(
+                                    self._effective_context_length, _iteration_max_tokens
+                                ),
                                 thread_id = thread_id,
                                 style = "inline",
                                 recall_done = True,
@@ -41368,6 +41375,10 @@ class LlamaCppBackend:
                                 background = True,
                             )["counts"]
                         )
+                    if _iteration_is_continuation:
+                        _remaining_cap = _loop_budget_left(0)
+                        if _remaining_cap is not None:
+                            payload["max_tokens"] = min(payload["max_tokens"], _remaining_cap)
                     payload["messages"] = neutralize_control_markup_in_messages(
                         conversation, _markup_cache, self.markup_profile
                     )

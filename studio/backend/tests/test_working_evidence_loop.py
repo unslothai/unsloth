@@ -255,3 +255,84 @@ def test_working_evidence_does_not_suppress_deferred_history_recall(monkeypatch)
     assert recall_budgets[0] > 0
     assert "HISTORICAL FACT: previous exemption." in final
     assert "LATE FACT: latest exemption." in final
+
+
+@pytest.mark.parametrize("respawn", [False, True])
+def test_continuation_evidence_uses_the_remaining_prompt_room(monkeypatch, respawn):
+    import httpx
+    from .test_document_context_recovery import _usage
+
+    partial = "\n".join(
+        f"Finding {i}: condition {i * 37} applies to exemption {i * 13}." for i in range(125)
+    )
+    payloads = []
+    streams = [
+        [
+            _tool_call_sse("python", {"code": "print('finding')"}, "finding"),
+            _usage(5000, 2500),
+            _finish("tool_calls"),
+            _done(),
+        ],
+        [
+            _sse({"content": "Let me summarize the results."}),
+            _usage(5700, 20),
+            _finish("stop"),
+            _done(),
+        ],
+        [_sse({"content": partial}), _usage(6712, 1480), _finish("length"), _done()],
+        [
+            _sse({"content": "\nThe analysis is complete."}),
+            _usage(6800, 10),
+            _finish("stop"),
+            _done(),
+        ],
+    ]
+    if respawn:
+        streams.insert(3, httpx.ConnectError("server restarted"))
+    backend = _make_backend(monkeypatch, streams, payloads)
+    backend._effective_context_length = 10000 if respawn else 8192
+
+    def restart():
+        backend._effective_context_length = 8192
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", restart)
+    backend._supports_tools = True
+
+    def count(messages, *args, **kwargs):
+        return 500 + sum(len(json.dumps(m)) // 4 for m in messages)
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count)
+    monkeypatch.setattr(
+        tools, "execute_tool", lambda *a, **kw: "SOURCE FACT: exact exemption.\n" * 80
+    )
+    summaries = []
+
+    def summary(messages, **kwargs):
+        summaries.append(kwargs)
+        yield "SOURCE FACT: exact exemption."
+        yield {"type": "metadata", "finish_reason": "stop", "usage": {"completion_tokens": 400}}
+
+    monkeypatch.setattr(backend, "generate_chat_completion", summary)
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "Analyze these terms.\n" + "contract terms " * 1200}
+            ],
+            tools = [tools.PYTHON_TOOL],
+            max_tokens = 5000,
+            max_tool_iterations = 3,
+            context_overflow = "truncate_oldest",
+            nudge_tool_calls = True,
+        )
+    )
+    assert len(payloads) == (5 if respawn else 4)
+    assert len(summaries) == 1
+    assert summaries[0]["max_tokens"] == 500
+    final = payloads[-1]["messages"]
+    assert 6144 < count(final) <= 7192
+    assert any(RECORD_HEADER in m.get("content", "") for m in final)
+    assert any("SOURCE FACT: exact exemption." in m.get("content", "") for m in final)
+    assert final[-1]["content"] == partial
+    assert payloads[-1]["max_tokens"] == 600
+    assert events[-1]["usage"]["completion_tokens"] == 4410
