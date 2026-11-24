@@ -16274,9 +16274,12 @@ _UNMEASURED_ROOM_MARGIN = 0.5
 _MIN_PAGE_CHARS = 2000
 # a percent escape is one non-ASCII byte in ASCII and tokenizes like one.
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
-# What `_dense_prefix_chars` may charge more than a quarter: a percent (an escape when two hex
-# digits follow) or a run of non-ASCII. A leading character set keeps the search in C.
-_DENSE_CHARGED_RE = re.compile(r"[%\x80-\U0010ffff][\x80-\U0010ffff]*")
+# What `_dense_prefix_chars` may charge more than a quarter: a run of escapes (`esc`), or a
+# percent or non-ASCII char and the non-ASCII run after it. Escapes cut on 3 chars and non-ASCII
+# on 1, so neither run may hold the other. A leading character set keeps the search in C.
+_DENSE_CHARGED_RE = re.compile(
+    r"[%\x80-\U0010ffff](?:(?<=%)(?P<esc>[0-9A-Fa-f]{2}(?:%[0-9A-Fa-f]{2})*)|[\x80-\U0010ffff]*)"
+)
 # raw cap exceeds _MAX_PAGE_CHARS because conversion strips large SSR <head> sections.
 _MAX_FETCH_BYTES = 512 * 1024
 # news pages can inline about 2.5 MB in <head>, so reserve _MAX_FETCH_BYTES beyond its end.
@@ -17912,12 +17915,13 @@ def _dense_prefix_chars(text: str, token_budget: float) -> int:
             if spent > allowed:
                 return start - (spent - allowed)
             if text[start] == "%":
-                if _HEX_PAIR_RE.match(text, start + 1):
-                    # Hex digits are ASCII, so this match is the percent alone; cut on whole escapes.
-                    spent += 12
-                    if spent > allowed:
-                        return start
-                    plain_from = start + 3
+                if match.start("esc") >= 0:
+                    # A run of escapes, priced in one step; cut on whole escapes.
+                    room = (allowed - spent) // 12
+                    if (stop - start) // 3 > room:
+                        return start + room * 3
+                    spent += (stop - start) // 3 * 12
+                    plain_from = stop
                     continue
                 # A percent without its pair is plain; a non-ASCII run may follow it.
                 spent += 1

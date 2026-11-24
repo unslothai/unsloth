@@ -205,3 +205,18 @@ def test_progress_output_is_answered_without_a_per_character_scan(monkeypatch):
     for (text, budget), want in expected.items():
         assert tools._dense_prefix_chars(text, budget) == want
     assert calls == []
+
+
+def test_escape_runs_match_reference_on_every_budget():
+    # Fully encoded URLs are long runs of escapes; each run is priced in one step.
+    for text in (
+        "%E4%B8%AD" * 40,
+        "/wiki/%E4%B8%AD%E6%96%87%zz%%41%4" + "%41" * 30 + "%",
+        "%41中%42é%%43" * 9,
+    ):
+        for quarter in range(0, 4 * len(text) + 13):
+            for budget in (quarter / 4, math.nextafter(quarter / 4, -1.0), quarter):
+                assert tools._dense_prefix_chars(text, budget) == _reference(text, budget), (
+                    text,
+                    budget,
+                )
