@@ -166,9 +166,7 @@ def test_rope_tables_are_cached_and_rebuilt_on_moves(transformers_pair):
 
 
 def test_rope_tables_recorded_by_a_cuda_graph_never_enter_the_cache(moss, monkeypatch):
-    """A whole-step CUDA graph replays the tables at their recorded addresses and never calls back, so a cached entry
-    the FIFO evicted while the graph still replayed was reused memory (noise once later prompt lengths filled the
-    cache). Under capture the tables are built fresh and kept out of the cache, equal to the cached ones bit for bit."""
+    """Tables built under capture stay out of the FIFO cache and match the cached ones."""
     import torch
 
     real = moss._capturing
