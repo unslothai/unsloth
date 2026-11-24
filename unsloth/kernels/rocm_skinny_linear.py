@@ -379,7 +379,10 @@ def _launch(
         enable_fp_fusion = True,
     )
     if sk > 1:
-        _splitk_reduce_kernel[(triton.cdiv(N, 128),)](
+        # The LoRA dot in the reduce needs more programs: on an L4 decode sweep 128 columns each ran 4% slower
+        # than adding the term per split, 32 ran 0.8% faster.
+        reduce_n = 32 if lora_in_reduce else 128
+        _splitk_reduce_kernel[(triton.cdiv(N, reduce_n),)](
             partials,
             B,
             out,
@@ -394,7 +397,7 @@ def _launch(
             LORA_IN_REDUCE = lora_in_reduce,
             SPLIT_K = sk,
             BLOCK_M = MAX_ROWS,
-            BLOCK_N = 128,
+            BLOCK_N = reduce_n,
             BLOCK_R = block_r,
             num_warps = 4,
             enable_fp_fusion = True,
