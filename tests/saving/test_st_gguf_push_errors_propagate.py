@@ -49,9 +49,7 @@ class _Api:
 
 def _save(monkeypatch, tmp_path, api):
     monkeypatch.setattr(st_mod, "HfApi", lambda *a, **kw: api)
-    monkeypatch.setattr(
-        st_mod, "unsloth_save_pretrained_gguf", lambda *a, **kw: {"gguf_files": []}
-    )
+    monkeypatch.setattr(st_mod, "unsloth_save_pretrained_gguf", lambda *a, **kw: {"gguf_files": []})
     return st_mod._save_pretrained_gguf(
         _ST(),
         save_directory = str(tmp_path / "user_repo"),
