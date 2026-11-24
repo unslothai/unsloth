@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Expected strings rendered by the official microsoft/Phi-3-mini-4k-instruct and
-microsoft/Phi-3.5-mini-instruct chat templates (tokenizer_config.json): both append
-`{{ eos_token }}` after the last turn when not generating, hard coded for offline runs."""
+"""Expected strings from the official Phi-3 / Phi-3.5 templates (tokenizer_config.json), hard coded for offline runs."""
 
 import pytest
 from tokenizers import Tokenizer, models
@@ -29,7 +27,6 @@ def _tokenizer(name):
     return get_chat_template(tokenizer, name)
 
 
-# phi-3, phi-35 and phi-3.5 share one template object.
 TEMPLATES = ["phi-3", "phi-35", "phi-3.5"]
 
 CONVERSATIONS = {
