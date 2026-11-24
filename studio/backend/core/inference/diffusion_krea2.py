@@ -24,6 +24,24 @@ def _live_cache_dir() -> str:
     return active_hf_hub_cache()
 
 
+def krea2_hub_patterns() -> list[str]:
+    """The Hub files ``load_krea2_pipeline`` reads: model_index, scheduler, tokenizer and the non-variant weights
+    of each component (transformers ``model*``, diffusers ``diffusion_pytorch_model*``), nothing at the repo root."""
+    patterns = ["model_index.json", "scheduler/*", "tokenizer/*"]
+    for sub, stem in (
+        ("text_encoder", "model"),
+        ("vae", "diffusion_pytorch_model"),
+        ("transformer", "diffusion_pytorch_model"),
+    ):
+        patterns += [
+            f"{sub}/config.json",
+            f"{sub}/{stem}.safetensors",
+            f"{sub}/{stem}.safetensors.index.json",
+            f"{sub}/{stem}-*-of-*.safetensors",
+        ]
+    return patterns
+
+
 def load_krea2_tokenizer(
     repo_id: str,
     hf_token: Optional[str] = None,

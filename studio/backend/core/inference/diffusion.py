@@ -172,7 +172,7 @@ from .diffusion_hidream import (
     HIDREAM_LLAMA_REPO,
     hidream_te4_kwargs,
 )
-from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
+from .diffusion_krea2 import KREA2_FAMILY_NAME, krea2_hub_patterns, load_krea2_pipeline
 from .diffusion_families import (
     ANIMA_TURBO_KEY,
     MINIMAX_H3_IMAGE_FAMILY_NAME,
@@ -205,6 +205,8 @@ from .diffusion_small_host import (
     host_commit_mib,
     host_ram_mib,
     resolve_snapshot_dir,
+    small_host_forced,
+    small_host_ineligible,
     snapshot_weights_complete,
     spill_capacity_mib,
     mapped_denoiser as small_host_mapped_denoiser,
@@ -4129,9 +4131,10 @@ def _per_component_small_host_fetch(
     local_files_only: bool,
     token: Any,
     skip: Any = (),
+    allow_patterns: Optional[list] = None,
 ) -> Optional[Callable[[], Any]]:
     """Prefetch for per-component loaders (MOSS-Image, Krea 2), which lack a Hub ``download``; ``skip`` components
-    are not fetched. None offline or with a staged snapshot."""
+    are not fetched, ``allow_patterns`` = the files the loader reads. None offline or with a staged snapshot."""
     if local_files_only or local_dir or not isinstance(repo, str) or _is_local_path(repo):
         return None
     ignore = [f"{name}/*.safetensors" for name in skip] or None
@@ -4142,7 +4145,8 @@ def _per_component_small_host_fetch(
             repo,
             cache_dir = hub_cache_dir(),
             token = token,
-            allow_patterns = [
+            allow_patterns = allow_patterns
+            or [
                 "model_index.json",
                 "*/config.json",
                 "*/*.safetensors",
@@ -10867,6 +10871,7 @@ class DiffusionBackend:
                                                 local_files_only,
                                                 hub_token,
                                                 skip = tuple(pipe_kwargs),
+                                                allow_patterns = krea2_hub_patterns(),
                                             ),
                                         )
                                         pipe = load_krea2_pipeline(
@@ -14330,8 +14335,16 @@ class DiffusionBackend:
         ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet; ``variant``
         is the weight layout the load reads."""
         snapshot = resolve_snapshot_dir(source, hub_cache_dir())
+        device = str(getattr(target, "backend", None) or getattr(target, "device", ""))
+        total, available = host_ram_mib()
+        # the route never engages here (bf16 card, kill switch, unreadable RAM, LoRA): the loader downloads
+        # what it reads, so a prefetch would only add a blocking Hub call
+        can_engage = small_host_ineligible(dtype, device = device) is None and (
+            small_host_forced() or (available is not None and not lora_active)
+        )
         if (
             fetch is not None
+            and can_engage
             and small_host_download_first()
             and (
                 snapshot is None
@@ -14355,11 +14368,10 @@ class DiffusionBackend:
             # pre-built components (hosted fp8 encoder, prequant denoiser) are not loaded here
             if name not in pipe_kwargs
         }
-        total, available = host_ram_mib()
         decision = decide_small_host(
             comps,
             dtype,
-            device = str(getattr(target, "backend", None) or getattr(target, "device", "")),
+            device = device,
             host_total_mib = total,
             host_available_mib = available,
             lora_active = lora_active,

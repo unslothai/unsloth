@@ -195,3 +195,133 @@ def test_loader_reads_routed_components_at_their_stored_dtype(monkeypatch):
         "transformer": torch.float32,
         "vae": torch.float32,
     }
+
+
+# unsloth/Krea-2-Turbo file list (Hub tree, 2026-11): the loader reads only the pipeline folders, never the root
+# single-file checkpoint or the README images.
+KREA2_TURBO_FILES = [
+    ".gitattributes",
+    "README.md",
+    "images/00.jpg",
+    "model_index.json",
+    "scheduler/scheduler_config.json",
+    "text_encoder/config.json",
+    "text_encoder/model.safetensors",
+    "tokenizer/chat_template.jinja",
+    "tokenizer/tokenizer.json",
+    "tokenizer/tokenizer_config.json",
+    "transformer/config.json",
+    "transformer/diffusion_pytorch_model-00001-of-00003.safetensors",
+    "transformer/diffusion_pytorch_model-00002-of-00003.safetensors",
+    "transformer/diffusion_pytorch_model-00003-of-00003.safetensors",
+    "transformer/diffusion_pytorch_model.safetensors.index.json",
+    "turbo.safetensors",
+    "vae/config.json",
+    "vae/diffusion_pytorch_model.safetensors",
+    # a variant / stray layout the loaders never select
+    "transformer/diffusion_pytorch_model.fp16-00001-of-00002.safetensors",
+    "text_encoder/model.fp16.safetensors",
+    "extra/weights.safetensors",
+]
+
+
+def _cold_decision(
+    monkeypatch,
+    dtype,
+    device = "cuda",
+    patterns = False,
+    **kw,
+):
+    """Run the backend's small-host decision on a cold Hub cache; returns the snapshot_download calls."""
+    import huggingface_hub
+
+    import core.inference.diffusion as diffusion
+
+    calls = []
+    monkeypatch.setattr(
+        huggingface_hub, "snapshot_download", lambda repo, **k: calls.append((repo, k)) or None
+    )
+    monkeypatch.setattr(diffusion, "resolve_snapshot_dir", lambda *a, **k: None)
+    monkeypatch.setattr(diffusion, "host_ram_mib", lambda: KAGGLE_T4)
+    backend = object.__new__(diffusion.DiffusionBackend)
+    fetch = diffusion._per_component_small_host_fetch(
+        "unsloth/Krea-2-Turbo",
+        None,
+        False,
+        None,
+        skip = ("text_encoder",),
+        **({"allow_patterns": krea2.krea2_hub_patterns()} if patterns else {}),
+    )
+    out = backend._small_host_decision(
+        "unsloth/Krea-2-Turbo",
+        {"text_encoder": object()},
+        types.SimpleNamespace(backend = device),
+        dtype,
+        lora_active = kw.pop("lora_active", False),
+        fetch = fetch,
+    )
+    assert out is None
+    return calls
+
+
+@pytest.mark.parametrize(
+    "dtype, device, env",
+    [
+        ("bfloat16", "cuda", None),  # bf16 card: the dense load already stays memory-mapped
+        ("float32", "cuda", "0"),  # kill switch
+        ("float32", "cpu", None),
+        ("float32", "mps", None),
+    ],
+)
+def test_cold_load_does_not_fetch_when_the_route_cannot_engage(monkeypatch, dtype, device, env):
+    if env is not None:
+        monkeypatch.setenv(sh.SMALL_HOST_ENV, env)
+    assert _cold_decision(monkeypatch, getattr(torch, dtype), device) == []
+
+
+def test_cold_load_does_not_fetch_with_lora_unless_forced(monkeypatch):
+    assert _cold_decision(monkeypatch, torch.float32, lora_active = True) == []
+    monkeypatch.setenv(sh.SMALL_HOST_ENV, "1")
+    assert len(_cold_decision(monkeypatch, torch.float32, lora_active = True)) == 1
+
+
+def test_cold_fp16_only_load_fetches_exactly_what_the_loader_reads(monkeypatch):
+    from huggingface_hub.utils import filter_repo_objects
+
+    calls = _cold_decision(monkeypatch, torch.float32, patterns = True)
+    assert len(calls) == 1
+    kw = calls[0][1]
+    picked = set(
+        filter_repo_objects(
+            KREA2_TURBO_FILES,
+            allow_patterns = kw["allow_patterns"],
+            ignore_patterns = kw["ignore_patterns"],
+        )
+    )
+    # the supplied text encoder is skipped; its config still resolves the pipeline's sizing
+    assert picked == {
+        "model_index.json",
+        "scheduler/scheduler_config.json",
+        "text_encoder/config.json",
+        "tokenizer/chat_template.jinja",
+        "tokenizer/tokenizer.json",
+        "tokenizer/tokenizer_config.json",
+        "transformer/config.json",
+        "transformer/diffusion_pytorch_model-00001-of-00003.safetensors",
+        "transformer/diffusion_pytorch_model-00002-of-00003.safetensors",
+        "transformer/diffusion_pytorch_model-00003-of-00003.safetensors",
+        "transformer/diffusion_pytorch_model.safetensors.index.json",
+        "vae/config.json",
+        "vae/diffusion_pytorch_model.safetensors",
+    }
+
+
+def test_pipeline_branch_fetches_the_krea_patterns():
+    branch = _krea_branch()
+    fetch = next(
+        n
+        for n in ast.walk(branch)
+        if isinstance(n, ast.Call) and ast.unparse(n.func) == "_per_component_small_host_fetch"
+    )
+    patterns = next(k.value for k in fetch.keywords if k.arg == "allow_patterns")
+    assert ast.unparse(patterns) == "krea2_hub_patterns()"
