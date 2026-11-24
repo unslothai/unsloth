@@ -67,12 +67,10 @@ def test_route_strip_is_disabled_when_healing_is_off(route_strip):
 @pytest.mark.parametrize(
     "text, expected",
     [
-        # A kept example's argument is not read as a call opener.
         (
             'Try `other[ARGS]{"query":"<tool_call>"}` to search for the literal tag.',
             'Try `other[ARGS]{"query":"<tool_call>"}` to search for the literal tag.',
         ),
-        # A deeper example is kept, and a stray closer after it is still removed.
         (
             'Example: `web_search[ARGS]{"filters":{"date":{"after":"2025-01-01"}}}`. Answer.</tool_call>',
             'Example: `web_search[ARGS]{"filters":{"date":{"after":"2025-01-01"}}}`. Answer.',
@@ -83,7 +81,6 @@ def test_route_strip_is_disabled_when_healing_is_off(route_strip):
             'Try `search_docs[ARGS]{"query":"<tool_call>","filters":{"date":{"after":"2025-01-01"}}}`'
             " to find the reference.",
         ),
-        # An unclosed example in a code span is kept to the span's end; a real tag after it still goes.
         (
             'The log stops at `search_docs[ARGS]{"query":"<tool_call>`. The JSON string is still open.'
             " Retry the request.",
@@ -99,7 +96,6 @@ def test_route_strip_is_disabled_when_healing_is_off(route_strip):
             "The call starts with `web_search[ARGS]{`.</tool_call> Close it with `}`.",
             "The call starts with `web_search[ARGS]{`. Close it with `}`.",
         ),
-        # A rehearsal-like string inside a real call's argument goes with that call.
         (
             '<tool_call>{"name":"web_search","arguments":{"query":"Mistral web_search[ARGS]{ syntax"}}'
             "</tool_call>Here is the reference.",
