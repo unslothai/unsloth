@@ -25,11 +25,8 @@ ENV = "UNSLOTH_VIDEO_VAE_MULTIGPU"
 _ATTR = "_unsloth_vae_multigpu"
 # ast.unparse of AutoencoderKLWan.tiled_decode's body without its docstring (diffusers 0.42.1 and 0.43.0).
 _KNOWN_BODIES = frozenset({"3b78672ea534d444"})
-# Partner-card memory the split takes (allocator reserved, which is what the card loses): the copy's weights plus a
-# fixed part plus a part per tile pixel, times a margin. Fitted on Kaggle 2x T4 (Wan 2.2 TI2V 5B, fp16 decode,
-# 1280x704x49, 1629 MiB of VAE weights), reserved peak above the split's start: 256x256 tiles 2656 MiB, 704x496
-# 6370 MiB (allocated 2422 / 5307 MiB); 704x704 allocated 6371 MiB (its reserved peak sat on cache the render had
-# already reserved), which the line predicts at 8288 MiB reserved.
+# Partner reserved MiB = weights + fixed + per-tile-px, times a margin. Fitted on Kaggle 2x T4, Wan 2.2 TI2V 5B
+# fp16 1280x704x49: 256x256 tiles peaked 2656 MiB reserved, 704x496 6370 MiB.
 _WORKING_FIXED_MIB = 169
 _WORKING_MIB_PER_TILE_PX = 3714 / 283648  # (6370 - 2656) MiB over (704 * 496 - 256 * 256) px
 _NEED_MARGIN = 1.25

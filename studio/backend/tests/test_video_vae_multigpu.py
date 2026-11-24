@@ -570,8 +570,7 @@ def test_a_lost_context_in_the_cleanup_replaces_an_ordinary_split_failure(monkey
         vm.split_tiled_decode(vae, z, torch.device("cpu"))
 
 
-# Kaggle 2x T4, Wan 2.2 TI2V 5B (1629 MiB of VAE weights), 1280x704x49: the partner's measured peak above the split's
-# start per tile size, (reserved, allocated) MiB; 704x704's reserved peak was not separable (render 1 had cache).
+# Kaggle 2x T4 Wan 2.2 TI2V 5B 1280x704x49 partner peaks per tile, (reserved, allocated) MiB.
 _WAN_WEIGHTS_MIB = 1629
 _MEASURED_PEAKS = {(256, 256): (2656, 2422), (704, 496): (6370, 5307), (704, 704): (None, 6371)}
 
