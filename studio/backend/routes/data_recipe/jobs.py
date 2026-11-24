@@ -280,30 +280,29 @@ def _loaded_local_model_identity() -> tuple[bool, str, str]:
 
 def _ensure_selected_local_model_loaded(
     recipe: dict[str, Any], local_provider_names: set[str]
-) -> Optional[str]:
+) -> tuple[Optional[str], Any]:
     from core.inference import model_slots
 
     model_loaded, active_model, active_variant = _loaded_local_model_identity()
     copies = [
-        (model, variant)
-        for loaded, model, variant in (
-            model_slots.in_slot(slot, _loaded_local_model_identity)
-            for slot in model_slots.visible()
-        )
+        (slot, model, variant)
+        for slot in model_slots.visible()
+        for loaded, model, variant in [model_slots.in_slot(slot, _loaded_local_model_identity)]
         if loaded
     ]
     if model_loaded:
-        copies.insert(0, (active_model, active_variant))
+        copies.insert(0, (None, active_model, active_variant))
     if not copies:
         raise ValueError("No model loaded in Chat. Load a model first, then run the recipe.")
 
     selection = _single_used_local_model_selection(recipe, local_provider_names)
     if selection is None:
-        return None
+        return None, None
 
     target, gguf_variant = selection
-    same_repo = [variant for model, variant in copies if model.lower() == target.lower()]
-    if not same_repo or (gguf_variant and gguf_variant not in same_repo):
+    same_repo = [(slot, v) for slot, model, v in copies if model.lower() == target.lower()]
+    match = [slot for slot, v in same_repo if not gguf_variant or v == gguf_variant]
+    if not match:
         selected = f"{target} ({gguf_variant})" if gguf_variant else target
         active = f"{active_model} ({active_variant})" if active_variant else active_model
         raise ValueError(
@@ -311,7 +310,8 @@ def _ensure_selected_local_model_loaded(
             f"Selected {selected}; active {active or 'none'}. "
             "Load the selected model again, then run the recipe."
         )
-    return f"{target}:{gguf_variant}" if gguf_variant and len(same_repo) > 1 else None
+    served = f"{target}:{gguf_variant}" if gguf_variant and len(same_repo) > 1 else None
+    return served, match[0]
 
 
 def _inject_local_structured_response_format(
@@ -420,10 +420,10 @@ def _inject_local_providers(
 
     token = ""
     internal_key_id: Optional[int] = None
-    served = None
+    served, slot = None, None
     if local_names & referenced_providers:
         # Point-in-time check; /v1 still returns a clear 400 if the model changes later.
-        served = _ensure_selected_local_model_loaded(recipe, local_names)
+        served, slot = _ensure_selected_local_model_loaded(recipe, local_names)
 
         from auth import storage
 
@@ -471,7 +471,9 @@ def _inject_local_providers(
             params["extra_body"] = extra_body
 
     # Only llama.cpp has a grammar engine; other backends refuse response_format.
-    if _local_chat_serves_gguf():
+    from core.inference import model_slots
+
+    if model_slots.in_slot(slot, _local_chat_serves_gguf):
         _inject_local_structured_response_format(recipe, local_names)
 
     return internal_key_id
