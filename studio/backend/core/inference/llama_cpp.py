@@ -11437,10 +11437,7 @@ class LlamaCppBackend:
             supports_cache_ram_auto = bool(
                 probe_ok
                 and supports_cache_ram
-                and re.search(
-                    r"(?<![a-z0-9_-])auto(?![a-z0-9_-])",
-                    (blocks.get("--cache-ram") or "").lower(),
-                )
+                and re.search(r"--cache-ram\s+N\|auto", blocks.get("--cache-ram") or "")
             )
             # --swa-checkpoints is the older alias; probing only the modern name drops the Checkpoints control on old builds, so record which name this build has.
             for _alias in ("--ctx-checkpoints", "--swa-checkpoints"):

@@ -210,13 +210,19 @@ def test_an_auto_cache_is_priced_at_most_the_default():
             False,
         ),
         (
-            "-cram, --cache-ram N|auto              set the maximum cache size in MiB, or auto "
-            "sizes it from host RAM available after the model loads (default: 8192, -1 - no "
-            "limit, 0 - disable)\n",
+            "-cram, --cache-ram N|auto               set the maximum cache size in MiB ...\n"
+            "                                        auto sizes it from host RAM available\n"
+            "                                        after the model loads (default: 8192)\n",
             True,
         ),
+        # Only the value spelling counts: "auto" in a description is not the option.
+        (
+            "-cram, --cache-ram N                   set the maximum cache size in MiB, "
+            "see --load-mode auto (default: 8192)\n",
+            False,
+        ),
     ],
-    ids = ["no_flag", "upstream", "fork_auto"],
+    ids = ["no_flag", "upstream", "fork_auto", "auto_in_prose_only"],
 )
 def test_the_probe_reads_cache_ram_auto(tmp_path, monkeypatch, extra_help, auto):
     monkeypatch.setattr(LlamaCppBackend, "_capability_cache", {})
