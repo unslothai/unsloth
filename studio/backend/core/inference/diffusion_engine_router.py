@@ -1069,9 +1069,7 @@ _CPU_GGUF_DIFFUSERS_PICKED = "diffusers picked"
 _CPU_GGUF_DIFFUSERS_PINNED = "diffusers pinned"
 _CPU_GGUF_NATIVE_DISABLED = "native disabled"
 
-# Image families with a native GGUF route but no GGUF row in model-catalog.ts: on CPU-only torch the picker hides their
-# dense row, so the dense-pick refusal must not send the user to GGUF files Studio does not list
-# (checked by test_cpu_gguf_stays_native).
+# Native-GGUF image families with no GGUF row in model-catalog.ts: CPU refusal must not point at unlisted GGUFs.
 CPU_NO_CURATED_GGUF_IMAGE_FAMILIES = frozenset({"krea-2"})
 
 _VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"

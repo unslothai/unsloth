@@ -382,7 +382,6 @@ def test_a_cpu_dense_pick_without_a_listed_gguf_names_no_missing_rows(monkeypatc
 
 
 def test_no_curated_gguf_set_matches_the_catalog():
-    """CPU_NO_CURATED_GGUF_IMAGE_FAMILIES == the native-route image groups whose artifacts carry no gguf()."""
     missing = set()
     for canonical, arts, native in _catalog_groups("image"):
         if native and not any(kind == "gguf" for kind, _repo in arts):
