@@ -290,6 +290,56 @@ def _remove_stale_inkling2_weights(save_directory, kept):
             os.remove(path)
 
 
+def _checkpoint_quant_method(
+    source,
+    revision,
+    token = None,
+):
+    """The quant_method of the checkpoint config at `source` (local folder or Hub id), "" when it has none."""
+    import json
+    import os
+
+    if os.path.isdir(source):
+        path = os.path.join(source, "config.json")
+    else:
+        from huggingface_hub import hf_hub_download
+        path = hf_hub_download(source, "config.json", revision = revision, token = token)
+    with open(path, encoding = "utf-8") as f:
+        config = json.load(f)
+    for cfg in (config, config.get("text_config") or {}):
+        quant = cfg.get("quantization_config") if isinstance(cfg, dict) else None
+        if isinstance(quant, dict) and quant.get("quant_method"):
+            return str(quant["quant_method"]).lower()
+    return ""
+
+
+def inkling2_merge_source(
+    source,
+    revision = None,
+    token = None,
+):
+    """(checkpoint, revision) a merged Inkling 2 export reads its base tensors from.
+
+    A pre-quantized bitsandbytes repo (``unsloth/Inkling-2-Mini-unsloth-bnb-4bit``) stores packed 4-bit attention and
+    expert weights, which the merge cannot add LoRA deltas to or write as 16-bit: merge into the original checkpoint
+    it was quantized from (the mapper's 16-bit name, at its default revision). Its 4-bit weights are the ones a
+    4-bit load of that checkpoint quantizes, so the deltas apply unchanged. A pre-quantized folder with no known
+    original is refused."""
+    if _checkpoint_quant_method(source, revision, token = token) != "bitsandbytes":
+        return source, revision
+    from .mapper import INT_TO_FLOAT_MAPPER
+
+    original = INT_TO_FLOAT_MAPPER.get(str(source).lower())
+    if original is None:
+        raise NotImplementedError(
+            f"Unsloth: {source} is a pre-quantized bitsandbytes 4-bit Inkling 2 checkpoint, and a merged export "
+            "needs the original weights. Load the original checkpoint (for example unsloth/Inkling-2-Mini) with "
+            "`load_in_4bit = True` to merge, or save the LoRA adapter with `model.save_pretrained(...)`."
+        )
+    print(f"Unsloth: {source} is pre-quantized; merging into its original checkpoint {original}.")
+    return original, None
+
+
 def save_inkling2_merged_16bit(
     model,
     tokenizer,
@@ -351,13 +401,16 @@ def save_inkling2_merged_16bit(
     source = getattr(base.config, "_name_or_path", None)
     if not source:
         raise RuntimeError("Unsloth: cannot find the Inkling 2 base checkpoint to merge into.")
+    source, revision = inkling2_merge_source(
+        source, getattr(base.config, "_commit_hash", None), token = token
+    )
     if not os.path.isdir(source):
         from huggingface_hub import snapshot_download
         source = snapshot_download(
             source,
             allow_patterns = ["*.safetensors", "*.json", "*.jinja"],
             token = token,
-            revision = getattr(base.config, "_commit_hash", None),
+            revision = revision,
         )
     index_path = os.path.join(source, "model.safetensors.index.json")
     if os.path.exists(index_path):
