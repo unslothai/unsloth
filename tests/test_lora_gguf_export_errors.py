@@ -31,12 +31,15 @@ print("Traceback (most recent call last):")
 print({_UNMAPPED!r})
 sys.exit(1)
 """
-_CONVERTER_WITH_CHECKPOINT = """
+_CONVERTER_WITH_CHECKPOINT = (
+    """
 import os, sys
 ckpt = os.environ["_TEST_CHECKPOINT"]
 os.makedirs(ckpt)
 open(os.path.join(ckpt, "adapter_model.safetensors"), "wb").write(b"ckpt")
-""" + _CONVERTER_TODAY
+"""
+    + _CONVERTER_TODAY
+)
 _CONVERTER_FUTURE = """
 import sys
 out = sys.argv[sys.argv.index("--outfile") + 1]
