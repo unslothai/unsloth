@@ -1611,16 +1611,23 @@ def device_config(index: int) -> Optional[tuple]:
                 _UNLISTED_CARDS.add(index)
                 return unlisted_config(index)
             want = arch_config(cap)
-            for cand in (want, _FALLBACK_CONFIG) if want is not None else ():
-                if cand is not None and _probe(index, cand):
-                    cfg = cand
-                    break
+            stored = _stored_cfg(index, cap, want) if want is not None else None
+            if stored is not None:
+                cfg, ok = stored
+            else:
+                ooms = _PROBE_OOMS[0]
+                for cand in (want, _FALLBACK_CONFIG) if want is not None else ():
+                    if cand is not None and _probe(index, cand):
+                        cfg = cand
+                        break
+                ok = {}
+                if cfg is not None:
+                    for rule in shape_tiles(cap):
+                        tile = rule[4]
+                        if tile not in ok:
+                            ok[tile] = tile == cfg or _probe(index, tile)
+                    _store_cfg(index, cap, want, cfg, ok, ooms)
             if cfg is not None:
-                ok: dict = {}
-                for rule in shape_tiles(cap):
-                    tile = rule[4]
-                    if tile not in ok:
-                        ok[tile] = tile == cfg or _probe(index, tile)
                 rules = tuple(rule for rule in shape_tiles(cap) if ok[rule[4]])
                 tma = _tma_probe(index, cap)
                 if tma is not None:
@@ -1938,8 +1945,108 @@ def _probe(
 
         synchronize_outside_capture(dev)
         return True
-    except Exception:  # noqa: BLE001 - out of shared memory, compile failure, ...
+    except Exception as exc:  # noqa: BLE001 - out of shared memory, compile failure, ...
+        if _is_oom(exc):
+            _PROBE_OOMS[0] += 1
         return False
+
+
+def _is_oom(exc: BaseException) -> bool:
+    try:
+        import torch
+        if isinstance(exc, torch.OutOfMemoryError):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return "out of memory" in str(exc).lower()
+
+
+# ``_probe``'s own out-of-memory failures (torch's num_ooms stays 0 under cudaMallocAsync): a verdict decided beside one
+# is never persisted.
+_PROBE_OOMS: list = [0]
+# device_config's bit-exact verdict (tile, per-shape tiles) persists per card like the CUTLASS tile probe: card uuid,
+# driver, torch / CUDA / Triton / torchao and the env switches (diffusion_probe_cache.fingerprint), these sources (the
+# kernel, its probe, the arch tables, the sm_8x prefetch fix) and the toolchain the kernel compiles with (_cfg_extra).
+# A returning process then skips the probe launches and their compiles. UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
+CFG_PERSIST_SOURCES = (
+    "diffusion_int8_gemm.py",
+    "diffusion_triton_prefetch.py",
+    "triton_closure_globals.py",
+)
+
+
+def _cfg_extra() -> dict:
+    """What the probed cubin depends on beyond the fingerprint: libdevice (torch / Studio repoint it at the CUDA
+    toolkit's under emulate_precision_casts), ptxas and the prefetch fix's state."""
+    import hashlib
+
+    from triton import knobs
+    from triton.backends.nvidia.compiler import get_ptxas_version
+
+    import torch
+
+    lib = knobs.nvidia.libdevice_path
+    if not lib:
+        from pathlib import Path
+
+        import triton.backends.nvidia.compiler as nvc
+        lib = str(Path(nvc.__file__).parent / "lib" / "libdevice.10.bc")
+    with open(lib, "rb") as f:
+        lib_sha = hashlib.sha256(f.read()).hexdigest()[:16]
+    # the current card's ptxas (Blackwell has its own); the fingerprint already keys the card itself
+    major, minor = torch.cuda.get_device_capability(torch.cuda.current_device())
+    return {
+        "libdevice": lib_sha,
+        "ptxas": " ".join(str(get_ptxas_version(major * 10 + minor)).split())[-40:],
+        "prefetch_fix": _prefetch_fix_key(),
+    }
+
+
+def _cfg_store() -> Any:
+    """A fresh view per call: Namespace caches a card's slot with the extra key it saw first, and the early prewarm
+    thread asks before the libdevice pin while device_config asks after it."""
+    from .diffusion_probe_cache import Namespace
+    return Namespace("int8_gemm_cfg", CFG_PERSIST_SOURCES, extra = _cfg_extra)
+
+
+def _cfg_slot(cap: tuple, want: tuple) -> str:
+    return f"cfg|{int(cap[0])}.{int(cap[1])}|{','.join(str(int(v)) for v in want)}"
+
+
+def _stored_cfg(index: int, cap: tuple, want: tuple) -> Optional[tuple]:
+    """(tile, {shape tile: passed}) persisted for this card, or None (missing, stale, malformed). Never raises."""
+    try:
+        got = _cfg_store().get(f"cuda:{int(index)}", _cfg_slot(cap, want))
+        if not isinstance(got, dict) or not isinstance(got.get("cfg"), list):
+            return None
+        cfg = tuple(int(v) for v in got["cfg"])
+        if cfg not in (tuple(want), tuple(_FALLBACK_CONFIG)):
+            return None
+        ok = {tuple(int(v) for v in t): bool(p) for t, p in got.get("tiles") or []}
+        rules = shape_tiles(cap)
+        if any(rule[4] != cfg and rule[4] not in ok for rule in rules):
+            return None
+        ok[cfg] = True
+        return cfg, ok
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _store_cfg(index: int, cap: tuple, want: tuple, cfg: tuple, ok: dict, ooms: int) -> None:
+    """Persist a passing verdict decided with no out-of-memory failure, on a context that still syncs."""
+    try:
+        if _PROBE_OOMS[0] != ooms:
+            return
+        import torch
+
+        torch.cuda.synchronize(index)
+        _cfg_store().put(
+            f"cuda:{int(index)}",
+            _cfg_slot(cap, want),
+            {"cfg": list(cfg), "tiles": [[list(t), bool(p)] for t, p in ok.items()]},
+        )
+    except Exception:  # noqa: BLE001 - the next process probes again
+        pass
 
 
 def tie_operands(
@@ -2877,6 +2984,8 @@ def _gemm_probe_jobs(index: int) -> list:
     want = arch_config(cap)
     if want is None:
         return []
+    if _stored_cfg(index, cap, want) is not None:
+        return []  # a later process reads the verdict back: nothing to compile ahead of it
     cfgs: list = []
     for cfg in (want, _FALLBACK_CONFIG, *(rule[4] for rule in shape_tiles(cap))):
         if cfg is not None and cfg not in cfgs:
