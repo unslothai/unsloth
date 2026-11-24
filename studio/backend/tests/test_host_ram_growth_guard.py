@@ -248,4 +248,4 @@ def test_another_servers_auto_cache_is_held_back_at_the_default(monkeypatch):
 def test_the_slot_clamp_carries_the_lint_marker():
     import inspect
     src = inspect.getsource(LlamaCppBackend.load_model)
-    assert "n_parallel = 1  # allow-slot-clamp: weights overflow a small card into host RAM" in src
+    assert "n_parallel = 1  # allow-slot-clamp: weights spill to host RAM" in src

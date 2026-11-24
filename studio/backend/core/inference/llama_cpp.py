@@ -26726,9 +26726,7 @@ class LlamaCppBackend:
                             _single_slot_card_mib / 1024,
                             n_parallel,
                         )
-                        n_parallel = (
-                            1  # allow-slot-clamp: weights overflow a small card into host RAM
-                        )
+                        n_parallel = 1  # allow-slot-clamp: weights spill to host RAM
                         _effective_ubatch = _ubatch_for_slots(n_parallel)
                         planned_kv_unified = _kv_unified_from_args(extra_args, default = False)
                     # Auto placement only; Vulkan auto already dropped its iGPUs above.
