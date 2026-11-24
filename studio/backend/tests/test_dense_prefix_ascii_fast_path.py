@@ -208,7 +208,6 @@ def test_progress_output_is_answered_without_a_per_character_scan(monkeypatch):
 
 
 def test_escape_runs_match_reference_on_every_budget():
-    # Fully encoded URLs are long runs of escapes; each run is priced in one step.
     for text in (
         "%E4%B8%AD" * 40,
         "/wiki/%E4%B8%AD%E6%96%87%zz%%41%4" + "%41" * 30 + "%",

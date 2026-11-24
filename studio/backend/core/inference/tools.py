@@ -16274,9 +16274,7 @@ _UNMEASURED_ROOM_MARGIN = 0.5
 _MIN_PAGE_CHARS = 2000
 # a percent escape is one non-ASCII byte in ASCII and tokenizes like one.
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
-# What `_dense_prefix_chars` may charge more than a quarter: a run of escapes (`esc`), or a
-# percent or non-ASCII char and the non-ASCII run after it. Escapes cut on 3 chars and non-ASCII
-# on 1, so neither run may hold the other. A leading character set keeps the search in C.
+# Escape runs (`esc`) or non-ASCII runs, never mixed: escapes cut on 3 chars, non-ASCII on 1.
 _DENSE_CHARGED_RE = re.compile(
     r"[%\x80-\U0010ffff](?:(?<=%)(?P<esc>[0-9A-Fa-f]{2}(?:%[0-9A-Fa-f]{2})*)|[\x80-\U0010ffff]*)"
 )
@@ -17897,7 +17895,7 @@ def _window_context_tokens() -> int | None:
 def _dense_prefix_chars(text: str, token_budget: float) -> int:
     """Charges non-ASCII one token each: CJK runs 1.3-1.6 chars per token, so the share stays a share."""
     if type(text) is str and type(token_budget) in (int, float) and 0.0 <= token_budget < 2**50:
-        # Counted in quarter tokens, so every sum is an integer and the cut matches the loop below.
+        # Quarter tokens: integer sums, same cut as the loop below.
         allowed = int(token_budget * 4)
         length = len(text)
         # Escape-free ASCII costs 0.25 a char: the loop would stop at floor(budget * 4).
@@ -17905,8 +17903,7 @@ def _dense_prefix_chars(text: str, token_budget: float) -> int:
             end = min(length, allowed)
             if text.find("%", 0, end + 1) < 0:
                 return end
-        # Plain ASCII between matches costs one quarter a char, an escape twelve, non-ASCII four.
-        # Every char costs at least a quarter, so the cut is at or before `allowed`.
+        # Plain ASCII 1 quarter, escape 12, non-ASCII 4; so the cut is at or before `allowed`.
         spent = 0
         plain_from = 0
         for match in _DENSE_CHARGED_RE.finditer(text, 0, min(length, allowed + 3)):
@@ -17916,14 +17913,13 @@ def _dense_prefix_chars(text: str, token_budget: float) -> int:
                 return start - (spent - allowed)
             if text[start] == "%":
                 if match.start("esc") >= 0:
-                    # A run of escapes, priced in one step; cut on whole escapes.
                     room = (allowed - spent) // 12
                     if (stop - start) // 3 > room:
                         return start + room * 3
                     spent += (stop - start) // 3 * 12
                     plain_from = stop
                     continue
-                # A percent without its pair is plain; a non-ASCII run may follow it.
+                # Unpaired percent is plain; a non-ASCII run may follow it.
                 spent += 1
                 if spent > allowed:
                     return start
