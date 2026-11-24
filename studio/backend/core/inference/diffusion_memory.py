@@ -3507,6 +3507,52 @@ def _run_once_companions_pin(dit_mib: int, leaf_mib: int, companion_mib: int, de
     return budget is not None and budget > 0 and dit_mib + leaf_mib + companion_mib <= budget
 
 
+def _stream_companion_unpinned(
+    module: Any,
+    onload: Any,
+    logger: Any = None,
+) -> bool:
+    """Leaf-level offload of a run-once companion with no copy stream: plain copies on the compute stream, nothing
+    pinned, so a refused host pin cannot surface at an onload. On failure its hooks are removed and False returned."""
+    try:
+        import inspect
+
+        import torch
+        from diffusers.hooks import apply_group_offloading
+
+        params = inspect.signature(apply_group_offloading).parameters
+        kwargs: dict[str, Any] = {
+            "onload_device": torch.device(onload),
+            "offload_device": torch.device("cpu"),
+            "offload_type": "leaf_level",
+        }
+        for key, value in (
+            ("use_stream", False),
+            ("non_blocking", False),
+            ("record_stream", False),
+            ("low_cpu_mem_usage", True),
+        ):
+            if key in params:
+                kwargs[key] = value
+        apply_group_offloading(module, **kwargs)
+    except Exception as exc:  # noqa: BLE001 -- the caller keeps it resident
+        _remove_group_offload_hooks(module)
+        if logger is not None:
+            logger.warning(
+                "diffusion.memory: unpinned leaf offload unavailable for %s (%s); keeping it resident",
+                type(module).__name__,
+                exc,
+            )
+        return False
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: streaming %s leaf by leaf unpinned (host pin budget short): plain copies once per "
+            "request, off the card for the denoise and the decode",
+            type(module).__name__,
+        )
+    return True
+
+
 def _module_storage_bytes(module: Any, seen: set[int]) -> int:
     storage_bytes = 0
     for tensor in list(module.parameters(recurse = True)) + list(module.buffers(recurse = True)):
@@ -3644,10 +3690,12 @@ def refine_memory_plan_for_components(
         if _pipe_denoisers_hold_torchao(pipe):
             return plan
         streamable = _streamable_components(pipe, torch)
-        # the streaming tier streams run-once companions (LTX-2 text connectors) leaf by leaf too
-        for name, module in run_once_companions(pipe).items():
-            if name not in streamable and isinstance(module, torch.nn.Module):
-                streamable[name] = (module, "leaf_level")
+        # the streaming tier streams run-once companions (LTX-2 text connectors) leaf by leaf too, pinned or not
+        # (_apply_streaming_offload), on any discrete card
+        if not getattr(plan.device_memory, "is_unified", False):
+            for name, module in run_once_companions(pipe).items():
+                if name not in streamable and isinstance(module, torch.nn.Module):
+                    streamable[name] = (module, "leaf_level")
 
         sizes: dict[str, int] = {}
         mib = 1024 * 1024
@@ -10252,7 +10300,10 @@ def _apply_streaming_offload(
                         companion_mib,
                     )
         for comp_name, module in companions.items():
-            if comp_name not in streamed:
+            # unpinned rather than resident: the plan (and the refinement that picked it) counted them streamed
+            if comp_name not in streamed and not (
+                host_pinning_allowed(onload) and _stream_companion_unpinned(module, onload, logger)
+            ):
                 module.to(onload)
         if prefetch:
             pin_dits, pin_encoders = _streamed_pin_plan(

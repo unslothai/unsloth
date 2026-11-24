@@ -167,6 +167,8 @@ def test_request_guard_price_reads_the_decode_floor_and_its_switch(monkeypatch):
         pipe = types.SimpleNamespace(vae = vae), vram_floor_mib = 2_800, vram_decode_floor_mib = 1_735
     )
     monkeypatch.delenv(video.VIDEO_TILED_DECODE_PRICE_ENV, raising = False)
+    # the live tiler's reading: everything above the decode-phase weights is reusable here
+    monkeypatch.setattr(U, "_free_bytes", lambda device: (5_150 - 1_735) << 20)
     got = video._video_tiled_decode_mib(state, width = W, height = H, frames = F, available_mib = 5_150)
     assert got == _price(vae, 5_150 - 1_735)
     assert (
@@ -270,3 +272,136 @@ def test_small_card_load_streams_instead_of_counting_the_connectors_resident(mon
     assert dm.refine_memory_plan_for_components(_ltx_pipe(), _model_plan(7)).offload_policy == (
         dm.OFFLOAD_MODEL
     )
+
+
+def test_decode_guard_never_credits_memory_a_cuda_graph_pool_holds(monkeypatch):
+    from core.inference import video
+
+    # 3,465 MiB driver free, 1,735 MiB of decode-phase weights, a 2,000 MiB CUDA-graph private pool: the request reading
+    # (free + reserved) is 7,200 MiB, the tiler's (free + reusable cache) 3,465 MiB
+    vae = _ltx_vae()
+    state = types.SimpleNamespace(
+        pipe = types.SimpleNamespace(vae = vae), vram_floor_mib = 2_800, vram_decode_floor_mib = 1_735
+    )
+    monkeypatch.delenv(video.VIDEO_TILED_DECODE_PRICE_ENV, raising = False)
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 3_465 << 20)
+    decode_mib = video._video_tiled_decode_mib(
+        state, width = W, height = H, frames = F, available_mib = 7_200
+    )
+    # priced at the unbudgeted 16x16 tile the decode really takes, plus the 2,000 MiB it cannot reuse
+    assert decode_mib == _price(vae, 3_465) + 2_000
+    assert (
+        video.video_offload_shortfall_message(
+            family = "ltx-2.5",
+            floor_mib = 2_800,
+            available_mib = 7_200,
+            placement = "'streaming' offload",
+            width = W,
+            height = H,
+            frames = F,
+            decode_floor_mib = 1_735,
+            decode_mib = decode_mib,
+        )
+        is not None
+    )
+
+
+def test_a_fused_module_that_fell_back_prices_the_stock_rate():
+    vae = _ltx_vae(fused = True)
+    fused = _price(vae, 3_465)
+    next(iter(vae.decoder.modules()))._unsloth_vae_fused_failed = True
+    assert _price(vae, 3_465) == _price(_ltx_vae(), 3_465) > fused
+
+
+def _stub_streaming(
+    monkeypatch,
+    budget_mib,
+    prefetch = True,
+):
+    import sys
+
+    import core.inference.diffusion_memory as dm
+
+    pytest.importorskip("diffusers.hooks")
+    calls = []
+
+    def apply_group_offloading(
+        module,
+        onload_device = None,
+        offload_device = None,
+        offload_type = None,
+        num_blocks_per_group = None,
+        use_stream = False,
+        non_blocking = False,
+        record_stream = False,
+        low_cpu_mem_usage = False,
+    ):
+        calls.append((module, offload_type, use_stream, low_cpu_mem_usage))
+
+    monkeypatch.setattr(
+        sys.modules["diffusers.hooks"], "apply_group_offloading", apply_group_offloading
+    )
+    for name in (
+        dm.GROUP_OFFLOAD_PIN_ENV,
+        dm.BACKGROUND_PIN_ENV,
+        dm.STREAM_RUN_ONCE_COMPANIONS_ENV,
+    ):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in (
+        ("host_pinning_allowed", True),
+        ("_streaming_prefetch_enabled", prefetch),
+        ("_pinned_memory_capped", False),
+        ("_pin_top_level_group", True),
+    ):
+        monkeypatch.setattr(dm, name, lambda *a, _v = value, **k: _v)
+    for name in (
+        "install_group_offload_buffer_restore",
+        "install_group_offload_hooks_eager",
+        "install_group_pin_wait",
+        "install_group_prefetch",
+        "_skip_top_level_copy_back",
+        "_pin_vision_embedding_device",
+    ):
+        monkeypatch.setattr(dm, name, lambda *a, **k: None)
+    monkeypatch.setattr(
+        dm,
+        "_apply_group_offloading_packed",
+        lambda apply, module, kwargs, logger: apply(module, **kwargs),
+    )
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: budget_mib)
+    return calls
+
+
+@pytest.mark.parametrize("why", ["pin_budget", "no_prefetch"])
+def test_refined_streaming_load_never_places_the_connectors_on_the_card(monkeypatch, why):
+    """The refinement counts the connectors streamed; the installer must not move them on the card when it cannot pin
+    them: they stream unpinned (no copy stream, nothing pinned) instead."""
+    import core.inference.diffusion_memory as dm
+
+    calls = _stub_streaming(
+        monkeypatch, 1 if why == "pin_budget" else 1 << 20, prefetch = why != "no_prefetch"
+    )
+    pipe = _ltx_pipe()
+    moved = []
+    pipe.vae.to = lambda *a, **k: pipe.vae
+    pipe.connectors.to = lambda *a, **k: moved.append(a) or pipe.connectors
+    out = dm.refine_memory_plan_for_components(pipe, _model_plan(7))
+    assert out.offload_policy == dm.OFFLOAD_STREAMING
+    dm._apply_streaming_offload(pipe, "cuda", None)
+    hooked = {id(m): (t, stream, low) for m, t, stream, low in calls}
+    assert hooked[id(pipe.connectors)] == ("leaf_level", False, True)
+    assert moved == []
+
+
+def test_streaming_connectors_stay_resident_only_when_switched_off(monkeypatch):
+    import core.inference.diffusion_memory as dm
+
+    calls = _stub_streaming(monkeypatch, 1)
+    monkeypatch.setenv(dm.STREAM_RUN_ONCE_COMPANIONS_ENV, "0")
+    pipe = _ltx_pipe()
+    moved = []
+    pipe.vae.to = lambda *a, **k: pipe.vae
+    pipe.connectors.to = lambda *a, **k: moved.append(a) or pipe.connectors
+    dm._apply_streaming_offload(pipe, "cuda", None)
+    assert all(m is not pipe.connectors for m, *_ in calls)
+    assert moved

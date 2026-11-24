@@ -5803,9 +5803,12 @@ def _video_tiled_decode_mib(
     height: Optional[int],
     frames: Optional[int],
     available_mib: int,
+    device: Any = None,
 ) -> Optional[int]:
-    """The request guard's decode-phase price from the tile the decode takes (LTX-2 wide tiles), or None (flat
-    estimate). The tiler sees what is left once only the decode-phase weights are on the card."""
+    """The request guard's decode-phase price above the decode-phase weights (LTX-2 wide tiles), or None (flat estimate).
+    Priced at the tile the decode takes with the room the live tiler reads (driver free + reusable cache, CUDA graph
+    pools excluded, less the VRAM Budget reserve); whatever ``available_mib`` credits beyond that room (graph pools,
+    groups still resident) is charged to the decode too, so the guard admits it only when the tile fits that room."""
     if (os.environ.get(VIDEO_TILED_DECODE_PRICE_ENV) or "").strip().lower() in (
         "0",
         "off",
@@ -5822,13 +5825,22 @@ def _video_tiled_decode_mib(
         return None
     try:
         from .video_ltx2_vae_tiles import admission_decode_mib
-        return admission_decode_mib(
+        from .video_vae_untiled import _free_bytes
+
+        free = _free_bytes(device)
+        if free is None:
+            return None
+        room = int(free) >> 20
+        price = admission_decode_mib(
             getattr(getattr(state, "pipe", None), "vae", None),
             width = int(width),
             height = int(height),
             frames = int(frames),
-            free_mib = int(available_mib) - int(decode_floor),
+            free_mib = room,
         )
+        if price is None:
+            return None
+        return int(price) + max(0, int(available_mib) - int(decode_floor) - room)
     except Exception:  # noqa: BLE001 -- unpriced: the flat estimate stands
         return None
 
@@ -15259,6 +15271,7 @@ class VideoBackend:
                             height = height,
                             frames = frames,
                             available_mib = int(available_bytes // (1024 * 1024)),
+                            device = device_obj,
                         ),
                     )
                     if shortfall is not None:

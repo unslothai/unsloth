@@ -249,7 +249,10 @@ def admission_decode_mib(
         )
         out_frames = output_frames(vae, lat_f)
         itemsize = _itemsize(vae)
-        fused = bool(getattr(vae, "_unsloth_vae_fused_installed", 0))
+        # a fused module that failed once runs stock for good (diffusion_vae_fused._guard): price stock then
+        fused = bool(getattr(vae, "_unsloth_vae_fused_installed", 0)) and not any(
+            getattr(m, "_unsloth_vae_fused_failed", False) for m in vae.modules()
+        )
         coef = DECODE_MIB_PER_FRAME_LATENT_FUSED if fused else ADMISSION_MIB_PER_FRAME_LATENT
         work = coef * max(2, itemsize) / 2 * batch * out_frames * th * tw
         clip = 0.0

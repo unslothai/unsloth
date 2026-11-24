@@ -149,16 +149,19 @@ def test_streaming_offload_streams_the_connectors_when_they_pin(monkeypatch):
     assert pipe.vae.moved_to
 
 
-@pytest.mark.parametrize("why", ["budget", "kill_switch"])
-def test_connectors_stay_resident_unless_pinned_or_when_switched_off(monkeypatch, why):
-    if why == "kill_switch":
-        monkeypatch.setenv(_ENV, "0")
-        calls = _stub_streaming(monkeypatch, 1 << 20)
-    else:
-        monkeypatch.delenv(_ENV, raising = False)
-        calls = _stub_streaming(
-            monkeypatch, 9
-        )  # the 8 MiB DiT pins, the 6 MiB connectors would not
+def test_connectors_stream_unpinned_when_the_pin_budget_is_short(monkeypatch):
+    monkeypatch.delenv(_ENV, raising = False)
+    calls = _stub_streaming(monkeypatch, 9)  # the 8 MiB DiT pins, the 6 MiB connectors would not
+    pipe = _pipe()
+    dm._apply_streaming_offload(pipe, "cuda", None)
+    # off the card all the same, without the copy stream or any pin
+    assert {id(m): (t, low) for m, t, low in calls}[id(pipe.connectors)] == ("leaf_level", True)
+    assert pipe.connectors.moved_to == []
+
+
+def test_connectors_stay_resident_when_switched_off(monkeypatch):
+    monkeypatch.setenv(_ENV, "0")
+    calls = _stub_streaming(monkeypatch, 1 << 20)
     pipe = _pipe()
     dm._apply_streaming_offload(pipe, "cuda", None)
     assert all(m is not pipe.connectors for m, _t, _low in calls)
