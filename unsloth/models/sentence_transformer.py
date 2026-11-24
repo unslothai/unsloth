@@ -2707,7 +2707,9 @@ class FastSentenceTransformer(FastModel):
                 model_name,
                 token = token,
                 revision = st_kwargs.get("revision"),
-                cache_dir = st_kwargs.get("cache_folder"),
+                # hf_hub_download ignores SENTENCE_TRANSFORMERS_HOME; SentenceTransformer reads it.
+                cache_dir = st_kwargs.get("cache_folder")
+                or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             )
             st_model = SentenceTransformer(model_name, **st_kwargs)
             check_mixed_gpu_placement(getattr(st_model[0], "auto_model", st_model), dtype)
@@ -2849,7 +2851,9 @@ class FastSentenceTransformer(FastModel):
                 model_name,
                 token = token,
                 revision = _validated or revision,
-                cache_dir = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
+                cache_dir = kwargs.get("cache_dir")
+                or kwargs.get("cache_folder")
+                or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             )
             # the delegated route has the same race and revision pin.
             st_model = SentenceTransformer(

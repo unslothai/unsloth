@@ -78,6 +78,7 @@ from .loader_utils import (
     _offline_aware_load,
     _load_probe_memo_scope,
     _memo_config_probe,
+    _resolved_revision,
     _restore_load_scoped_env,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
@@ -1808,10 +1809,11 @@ class FastLanguageModel(FastLlamaModel):
             # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
             _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
         else:
+            # The snapshot the config probe pinned, which the weight load reuses.
             _refuse_network_share_raw_adapter_base(
                 model_name,
                 token = token,
-                revision = base_revision,
+                revision = _resolved_revision(model_name, base_revision, token, local_files_only),
                 local_files_only = local_files_only,
                 cache_dir = kwargs.get("cache_dir"),
             )
@@ -2822,10 +2824,11 @@ class FastModel(FastBaseModel):
             # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
             _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
         else:
+            # The snapshot the config probe pinned, which the weight load reuses.
             _refuse_network_share_raw_adapter_base(
                 model_name,
                 token = token,
-                revision = base_revision,
+                revision = _resolved_revision(model_name, base_revision, token, local_files_only),
                 local_files_only = local_files_only,
                 cache_dir = kwargs.get("cache_dir"),
             )

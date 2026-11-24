@@ -151,6 +151,7 @@ def loader():
         _raise_if_modeling_ignores_config = lambda *args: None,
         raise_if_fast_inference_under_fsdp2 = lambda fast_inference: None,
         _refuse_network_share_raw_adapter_base = lambda *args, **kwargs: None,
+        _resolved_revision = lambda model_name, revision, *args, **kwargs: revision,
     )
     # No fixture is Mistral-format: stub each loader.py helper deciding that, new ones included.
     for name in _mistral_format_names(tree):
