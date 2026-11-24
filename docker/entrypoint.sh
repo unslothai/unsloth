@@ -52,10 +52,8 @@ select_cuda_jit_tools() {
 }
 select_cuda_jit_tools || true
 
-# Studio and JupyterLab run as root, so hand what they download into a host-owned HF cache mount back to its owner.
-# Only root:root entries, which keep group root with rwX (granted first) so Studio's tool sandbox (uid 0, no
-# capabilities, umask 077) can still use them; a setgid cache's entries stay as they are, since one group cannot serve
-# both. That sandbox writes this cache, hence fd-relative no-follow updates and no hardlinks.
+# Hand root:root downloads in a host-owned HF cache mount back to its owner, keeping group root rwX for Studio's
+# capability-less uid 0 tool sandbox; that sandbox writes this cache, hence fd-relative no-follow updates only.
 hf_cache_uid="$(stat -c '%u' "${HF_HOME:-}" 2>/dev/null || true)"
 if [[ "$(id -u):$(id -g)" == 0:0 && -n "${hf_cache_uid}" && "${hf_cache_uid}" != 0 ]] && command -v python3 >/dev/null 2>&1; then
     while :; do

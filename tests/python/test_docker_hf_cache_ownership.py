@@ -59,7 +59,6 @@ def _boot(entrypoint, tmp_path, hf_home, bindir, until):
 
 
 def _download_as_root(hub, outside):
-    """A cache as a umask 077 sandbox leaves it, plus a symlink and a hardlink to a file outside it."""
     old = os.umask(0o077)
     try:
         for d in (
