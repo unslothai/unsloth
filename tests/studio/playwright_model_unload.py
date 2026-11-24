@@ -16,18 +16,18 @@ from urllib.parse import urlparse, parse_qs
 from playwright.sync_api import sync_playwright, expect
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--port", type=int, default=5221)
-ap.add_argument("--label", default="after")
-ap.add_argument("--before", action="store_true")
-ap.add_argument("--browsers", default="chromium,firefox,webkit")
+ap.add_argument("--port", type = int, default = 5221)
+ap.add_argument("--label", default = "after")
+ap.add_argument("--before", action = "store_true")
+ap.add_argument("--browsers", default = "chromium,firefox,webkit")
 ap.add_argument(
     "--frontend",
-    type=Path,
-    default=Path(__file__).resolve().parents[2] / "studio/frontend",
+    type = Path,
+    default = Path(__file__).resolve().parents[2] / "studio/frontend",
 )
-ap.add_argument("--out", type=Path, default=Path("logs/model-error-recovery"))
-ap.add_argument("--prepare-only", action="store_true")
-ap.set_defaults(suite="unload")
+ap.add_argument("--out", type = Path, default = Path("logs/model-error-recovery"))
+ap.add_argument("--prepare-only", action = "store_true")
+ap.set_defaults(suite = "unload")
 a = ap.parse_args()
 f = a.frontend.resolve()
 source = (f / "src/features/api-monitor/api-monitor-page.tsx").read_text()
@@ -86,15 +86,15 @@ if a.prepare_only:
     print(f"Prepared {a.suite} fixture in {f}")
     raise SystemExit(0)
 out = a.out / a.suite / a.label
-out.mkdir(parents=True, exist_ok=True)
+out.mkdir(parents = True, exist_ok = True)
 facts = []
 with sync_playwright() as pw:
     for engine in a.browsers.split(","):
         browser = getattr(pw, engine).launch()
 
-        def new_page(width=1100, height=800):
+        def new_page(width = 1100, height = 800):
             page = browser.new_page(
-                viewport={"width": width, "height": height}, color_scheme="dark"
+                viewport = {"width": width, "height": height}, color_scheme = "dark"
             )
             page.set_default_timeout(15000)
             errors = []
@@ -135,7 +135,7 @@ with sync_playwright() as pw:
                     if path.endswith("/inference/status"):
                         state["status_reads"] += 1
                         rt.fulfill(
-                            json={
+                            json = {
                                 "active_model": state["resident"],
                                 "model_identifier": state["resident"],
                                 "status": "ready" if state["resident"] else "idle",
@@ -143,19 +143,15 @@ with sync_playwright() as pw:
                         )
                         return
                     if path.endswith("/active-generations"):
-                        model = parse_qs(urlparse(rt.request.url).query).get(
-                            "model", [None]
-                        )[0]
+                        model = parse_qs(urlparse(rt.request.url).query).get("model", [None])[0]
                         state["queries"].append(model)
                         active = state["active"]
                         rt.fulfill(
-                            json={
+                            json = {
                                 "count": 1 if active else 0,
                                 "thread_ids": ["thread-a"] if active else [],
                                 "active": (
-                                    [{"thread_id": "thread-a", "kind": "chat"}]
-                                    if active
-                                    else []
+                                    [{"thread_id": "thread-a", "kind": "chat"}] if active else []
                                 ),
                                 "parallel_slots": 1,
                             }
@@ -165,14 +161,12 @@ with sync_playwright() as pw:
                         payload = rt.request.post_data_json
                         state["sent"].append(payload)
                         if scenario == "unload-fails":
-                            rt.fulfill(
-                                status=500, json={"detail": "Controlled unload failure"}
-                            )
+                            rt.fulfill(status = 500, json = {"detail": "Controlled unload failure"})
                             return
                         if state["active"] and not payload.get("force_cancel_active"):
                             rt.fulfill(
-                                status=409,
-                                json={
+                                status = 409,
+                                json = {
                                     "detail": {
                                         "error": "active_generations",
                                         "message": "Unloading this model would stop 1 chat that is still generating. Stop it first.",
@@ -181,29 +175,27 @@ with sync_playwright() as pw:
                             )
                             return
                         state["resident"] = (
-                            "model-b"
-                            if scenario == "switch" and len(state["sent"]) == 1
-                            else None
+                            "model-b" if scenario == "switch" and len(state["sent"]) == 1 else None
                         )
-                        rt.fulfill(json={"status": "unloaded"})
+                        rt.fulfill(json = {"status": "unloaded"})
                         return
                     if "conversations" in path or "threads" in path:
-                        rt.fulfill(json={"threads": [], "conversations": []})
+                        rt.fulfill(json = {"threads": [], "conversations": []})
                         return
-                    rt.fulfill(json={})
+                    rt.fulfill(json = {})
 
                 page.route(re.compile(r"^https?://[^/]+/api/"), route)
                 page.goto(
                     f"http://127.0.0.1:{a.port}/smoke-model-unload.html?label={a.label}",
-                    wait_until="domcontentloaded",
+                    wait_until = "domcontentloaded",
                 )
-                page.wait_for_function("!!window.unloadSmoke", timeout=120000)
+                page.wait_for_function("!!window.unloadSmoke", timeout = 120000)
                 page.evaluate("window.unloadSmoke.seed()")
                 if scenario == "gate-held":
                     page.evaluate("window.unloadSmoke.hold()")
                 page.get_by_role(
                     "button",
-                    name=f'{surface.upper() if surface=="api" else "Audio"}: Eject model A',
+                    name = f'{surface.upper() if surface=="api" else "Audio"}: Eject model A',
                 ).click()
                 if a.before:
                     page.wait_for_timeout(800)
@@ -211,7 +203,7 @@ with sync_playwright() as pw:
                         "force_cancel_active"
                     )
                     assert state["resident"] == "model-a"
-                    page.screenshot(path=str(out / f"{engine}-{surface}-refusal.png"))
+                    page.screenshot(path = str(out / f"{engine}-{surface}-refusal.png"))
                 elif scenario == "gate-held":
                     page.wait_for_timeout(300)
                     assert not state["sent"]
@@ -228,20 +220,18 @@ with sync_playwright() as pw:
                     assert not state["sent"]
                     assert page.evaluate("window.unloadSmoke.busy()")
                     if scenario == "confirm":
-                        page.screenshot(
-                            path=str(out / f"{engine}-{surface}-confirmation.png")
-                        )
+                        page.screenshot(path = str(out / f"{engine}-{surface}-confirmation.png"))
                     if scenario == "decline":
-                        page.get_by_role("button", name="Keep generating").click()
+                        page.get_by_role("button", name = "Keep generating").click()
                         page.wait_for_function("!window.unloadSmoke.busy()")
                         assert not state["sent"]
                         assert page.evaluate("window.unloadSmoke.events.length") == 0
                     else:
-                        page.get_by_role("button", name="Stop and unload").click()
+                        page.get_by_role("button", name = "Stop and unload").click()
                         if scenario == "switch":
                             expect(dialog).to_be_visible()
                             assert len(state["sent"]) == 1
-                            page.get_by_role("button", name="Keep generating").click()
+                            page.get_by_role("button", name = "Keep generating").click()
                         page.wait_for_function("!window.unloadSmoke.busy()")
                         assert state["sent"][0] == {
                             "model_path": "model-a",
@@ -252,14 +242,9 @@ with sync_playwright() as pw:
                             for event in page.evaluate("window.unloadSmoke.events")
                         )
                         if scenario == "unload-fails":
-                            assert (
-                                page.evaluate("window.unloadSmoke.checkpoint()")
-                                == "model-a"
-                            )
+                            assert page.evaluate("window.unloadSmoke.checkpoint()") == "model-a"
                 if not a.before and scenario != "gate-held":
-                    assert all(
-                        q in ["model-a", "model-b"] for q in state["queries"]
-                    ), state
+                    assert all(q in ["model-a", "model-b"] for q in state["queries"]), state
                 assert not page.errors, page.errors
                 facts.append(
                     {
@@ -271,12 +256,10 @@ with sync_playwright() as pw:
                 )
                 page.close()
         browser.close()
-(out / "facts.json").write_text(json.dumps(facts, indent=2))
+(out / "facts.json").write_text(json.dumps(facts, indent = 2))
 print(
-    json.dumps(
-        {"label": a.label, "suite": a.suite, "cases": len(facts), "passed": True}
-    ),
-    flush=True,
+    json.dumps({"label": a.label, "suite": a.suite, "cases": len(facts), "passed": True}),
+    flush = True,
 )
 
 (out / "source.json").write_text(
@@ -288,6 +271,6 @@ print(
             "port": a.port,
             "before": a.before,
         },
-        indent=2,
+        indent = 2,
     )
 )
