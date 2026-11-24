@@ -41,7 +41,8 @@ export function RankMemoryStrip({
 }): ReactElement | null {
   const t = useT();
   if (parallel.gpuIds.length < 2) return null;
-  const multiProcess = parallel.mode !== "layer_split" && parallel.mode !== "single";
+  const multiProcess =
+    parallel.mode !== "layer_split" && parallel.mode !== "single";
   return (
     <div className="flex flex-col gap-1.5" data-testid="rank-memory-strip">
       {parallel.gpuIds.map((gpuIndex, rank) => {
@@ -66,7 +67,9 @@ export function RankMemoryStrip({
               />
             </div>
             <span className="w-28 shrink-0 text-right font-mono tabular-nums text-muted-foreground">
-              {used !== null && total !== null ? `${used} / ${total} GiB` : "--"}
+              {used !== null && total !== null
+                ? `${used} / ${total} GiB`
+                : "--"}
             </span>
           </div>
         );

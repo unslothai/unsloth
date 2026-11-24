@@ -10,6 +10,7 @@ import {
 import { parallelRequestFields, showsGpuSection } from "../lib/parallel-plan";
 import { useTrainingConfigStore } from "../stores/training-config-store";
 import { useTrainingParallelStore } from "../stores/training-parallel-store";
+import type { ParallelOverride } from "../types/parallel";
 
 const PLAN_DEBOUNCE_MS = 400;
 
@@ -29,14 +30,16 @@ const PLAN_FIELDS = [
   "is_dataset_audio",
 ] as const;
 
-export function buildParallelPlanRequest(): Record<string, unknown> | null {
+export function buildParallelPlanRequest(
+  override: ParallelOverride,
+): Record<string, unknown> | null {
   const config = useTrainingConfigStore.getState();
   if (!config.selectedModel) return null;
   const payload = buildTrainingStartPayload(config, null) as unknown as Record<
     string,
     unknown
   >;
-  const { override, capabilities } = useTrainingParallelStore.getState();
+  const { capabilities } = useTrainingParallelStore.getState();
   const request: Record<string, unknown> = {};
   for (const field of PLAN_FIELDS) request[field] = payload[field];
   return { ...request, ...parallelRequestFields(override, capabilities) };
@@ -71,7 +74,8 @@ export function useParallelPlan(systemGpuCount: number): void {
     if (!multiGpu) return;
     const controller = new AbortController();
     const store = useTrainingParallelStore.getState();
-    if (store.capabilitiesStatus !== "ready") store.setCapabilities("loading", null);
+    if (store.capabilitiesStatus !== "ready")
+      store.setCapabilities("loading", null);
     fetchParallelCapabilities(controller.signal)
       .then((result) => {
         if (controller.signal.aborted) return;
@@ -87,10 +91,14 @@ export function useParallelPlan(systemGpuCount: number): void {
     return () => controller.abort();
   }, [multiGpu]);
 
-  const ready = multiGpu && capabilities !== null && showsGpuSection(capabilities.gpus.length);
+  const ready =
+    multiGpu &&
+    capabilities !== null &&
+    showsGpuSection(capabilities.gpus.length);
   useEffect(() => {
     const store = useTrainingParallelStore.getState();
-    const request = ready && planKey !== null ? buildParallelPlanRequest() : null;
+    const request =
+      ready && planKey !== null ? buildParallelPlanRequest(override) : null;
     if (!request) {
       store.clearPlan();
       return;
@@ -103,7 +111,8 @@ export function useParallelPlan(systemGpuCount: number): void {
           if (controller.signal.aborted) return;
           const s = useTrainingParallelStore.getState();
           if (result.kind === "ok") s.setPlan(result.value);
-          else if (result.kind === "unsupported") s.setPlanUnavailable("unsupported");
+          else if (result.kind === "unsupported")
+            s.setPlanUnavailable("unsupported");
           else s.setPlanUnavailable("error", result.message);
         })
         .catch((error: unknown) => {

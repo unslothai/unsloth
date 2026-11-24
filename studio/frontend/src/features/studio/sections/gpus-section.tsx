@@ -3,12 +3,12 @@
 
 import { SectionBox } from "@/components/section-box";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -81,7 +81,10 @@ function DeviceRow({
       <span className="w-12 shrink-0 font-mono text-ui-11 text-muted-foreground/80">
         {label}
       </span>
-      <span className="min-w-0 flex-1 truncate text-ui-12p5 text-foreground/90" title={gpu.name}>
+      <span
+        className="min-w-0 flex-1 truncate text-ui-12p5 text-foreground/90"
+        title={gpu.name}
+      >
         {gpu.name}
       </span>
       {gpu.totalGb !== null && (
@@ -105,7 +108,10 @@ function DeviceRow({
   );
   return selectable ? (
     // biome-ignore lint/a11y/noLabelWithoutControl: the Checkbox inside is the control.
-    <label className={cn(className, "cursor-pointer")} data-gpu-index={gpu.index}>
+    <label
+      className={cn(className, "cursor-pointer")}
+      data-gpu-index={gpu.index}
+    >
       {body}
     </label>
   ) : (
@@ -137,14 +143,14 @@ function PlanLine({ hasModel }: { hasModel: boolean }): ReactElement | null {
   if (status === "unsupported") return null;
   if (status === "error") {
     return (
-      <p className="text-ui-11p5 leading-relaxed text-amber-700 dark:text-amber-400" role="status">
+      <p className="text-ui-11p5 leading-relaxed text-amber-700 dark:text-amber-400">
         {t("studio.gpus.planFailed", { message: planError ?? "" })}
       </p>
     );
   }
   if (!plan) {
     return (
-      <p className="flex items-center gap-2 text-ui-11p5 text-muted-foreground/85" role="status">
+      <p className="flex items-center gap-2 text-ui-11p5 text-muted-foreground/85">
         <Spinner className="size-3" />
         {t("studio.gpus.planning")}
       </p>
@@ -153,7 +159,10 @@ function PlanLine({ hasModel }: { hasModel: boolean }): ReactElement | null {
   const summary = planSummary(plan, (n) => count.format(n));
   return (
     <div
-      className={cn("flex flex-col gap-2", status === "loading" && "opacity-60")}
+      className={cn(
+        "flex flex-col gap-2",
+        status === "loading" && "opacity-60",
+      )}
       data-testid="gpus-plan"
       data-mode={plan.mode}
     >
@@ -176,7 +185,10 @@ function PlanLine({ hasModel }: { hasModel: boolean }): ReactElement | null {
         </p>
       )}
       {plan.warnings.map((warning) => (
-        <p key={warning} className="text-ui-11p5 leading-relaxed text-amber-700 dark:text-amber-400">
+        <p
+          key={warning}
+          className="text-ui-11p5 leading-relaxed text-amber-700 dark:text-amber-400"
+        >
           {warning}
         </p>
       ))}
@@ -192,7 +204,9 @@ function PlanLine({ hasModel }: { hasModel: boolean }): ReactElement | null {
           </p>
           {plan.error.alternative && (
             <p className="text-ui-11 leading-relaxed text-foreground/80">
-              {t("studio.gpus.alternative", { alternative: plan.error.alternative })}
+              {t("studio.gpus.alternative", {
+                alternative: plan.error.alternative,
+              })}
             </p>
           )}
         </div>
@@ -201,7 +215,9 @@ function PlanLine({ hasModel }: { hasModel: boolean }): ReactElement | null {
   );
 }
 
-function ModeSelect({ allGpuIds }: { allGpuIds: readonly number[] }): ReactElement {
+function ModeSelect({
+  allGpuIds,
+}: { allGpuIds: readonly number[] }): ReactElement {
   const t = useT();
   const { override, plan, capabilities, setOverrideMode, setOverrideSpec } =
     useTrainingParallelStore(
@@ -223,7 +239,9 @@ function ModeSelect({ allGpuIds }: { allGpuIds: readonly number[] }): ReactEleme
         </span>
         <Select
           value={override.mode}
-          onValueChange={(value) => setOverrideMode(value as ParallelModeChoice)}
+          onValueChange={(value) =>
+            setOverrideMode(value as ParallelModeChoice)
+          }
         >
           <SelectTrigger
             className="w-[calc(240px*var(--ui-space-scale,1))] justify-between"
@@ -240,11 +258,14 @@ function ModeSelect({ allGpuIds }: { allGpuIds: readonly number[] }): ReactEleme
           >
             {MODE_CHOICES.map((mode) => {
               const availability = modeAvailability(mode, plan, capabilities);
-              const unavailable = availability !== null && !availability.available;
+              const unavailable =
+                availability !== null && !availability.available;
               return (
                 <SelectItem key={mode} value={mode}>
                   <span className="flex flex-col">
-                    <span className={cn(unavailable && "text-muted-foreground")}>
+                    <span
+                      className={cn(unavailable && "text-muted-foreground")}
+                    >
                       {t(PARALLEL_MODE_LABEL_KEYS[mode])}
                     </span>
                     {unavailable && (
@@ -275,7 +296,10 @@ function ModeSelect({ allGpuIds }: { allGpuIds: readonly number[] }): ReactEleme
         </div>
       )}
       {issue && (
-        <p className="text-ui-11p5 leading-relaxed text-destructive" role="alert">
+        <p
+          className="text-ui-11p5 leading-relaxed text-destructive"
+          role="alert"
+        >
           {t(issue)}
         </p>
       )}

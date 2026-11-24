@@ -54,11 +54,19 @@ const planBody = {
   launcher: "multi_process",
   distributed_backend: "nccl",
   reason: "The model needs about 6.1 GB per GPU and each GPU has 14.3 GB free.",
-  estimate: { required_gb: 6.1, per_gpu_gb: { single: 6.1, ddp: 6.1, fsdp2: 3.9 } },
+  estimate: {
+    required_gb: 6.1,
+    per_gpu_gb: { single: 6.1, ddp: 6.1, fsdp2: 3.9 },
+  },
   is_moe: false,
   warnings: [],
   modes: [
-    { mode: "tp", available: false, reason: "tensor parallel with QLoRA ...", min_gpus: 2 },
+    {
+      mode: "tp",
+      available: false,
+      reason: "tensor parallel with QLoRA ...",
+      min_gpus: 2,
+    },
   ],
   error: null,
 };
@@ -121,14 +129,26 @@ test("the summary leads with whether the model fits one GPU", () => {
     key: "studio.gpus.summary.ddp",
     params: { count: "2", spec: "dp=2" },
   });
-  const en = readFileSync(new URL("../src/i18n/locales/en.ts", import.meta.url), "utf8");
-  assert.match(en, /ddp: "Model fits one GPU: data parallel on \{count\} GPUs"/);
+  const en = readFileSync(
+    new URL("../src/i18n/locales/en.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    en,
+    /ddp: "Model fits one GPU: data parallel on \{count\} GPUs"/,
+  );
 });
 
 test("single and layer_split are one process, so the GPU count comes from gpu_ids", () => {
-  assert.equal(runGpuCount({ mode: "layer_split", worldSize: 1, gpuIds: [0, 1, 2, 3] }), 4);
+  assert.equal(
+    runGpuCount({ mode: "layer_split", worldSize: 1, gpuIds: [0, 1, 2, 3] }),
+    4,
+  );
   assert.equal(runGpuCount({ mode: "single", worldSize: 1, gpuIds: [3] }), 1);
-  assert.equal(runGpuCount({ mode: "fsdp2", worldSize: 4, gpuIds: [0, 1, 2, 3] }), 4);
+  assert.equal(
+    runGpuCount({ mode: "fsdp2", worldSize: 4, gpuIds: [0, 1, 2, 3] }),
+    4,
+  );
 });
 
 test("one GPU or none shows no section and sends no new field", () => {
@@ -138,7 +158,10 @@ test("one GPU or none shows no section and sends no new field", () => {
   const one = normalizeParallelCapabilities(capabilitiesBody(1));
   assert.deepEqual(parallelRequestFields(OFF, one), {});
   assert.deepEqual(
-    parallelRequestFields({ enabled: true, mode: "ddp", gpuIds: [0], spec: "" }, one),
+    parallelRequestFields(
+      { enabled: true, mode: "ddp", gpuIds: [0], spec: "" },
+      one,
+    ),
     {},
   );
   // A backend without the routes never produced capabilities.
@@ -153,11 +176,17 @@ test("a multi-GPU host sends auto, so the run does what the section showed", () 
 test("the override sends its mode, the spec only for custom, and only GPUs that still exist", () => {
   const four = normalizeParallelCapabilities(capabilitiesBody(4));
   assert.deepEqual(
-    parallelRequestFields({ enabled: true, mode: "fsdp2", gpuIds: null, spec: "dp=2" }, four),
+    parallelRequestFields(
+      { enabled: true, mode: "fsdp2", gpuIds: null, spec: "dp=2" },
+      four,
+    ),
     { parallel_mode: "fsdp2" },
   );
   assert.deepEqual(
-    parallelRequestFields({ enabled: true, mode: "custom", gpuIds: [0, 1, 7], spec: " dp=2,tp=2 " }, four),
+    parallelRequestFields(
+      { enabled: true, mode: "custom", gpuIds: [0, 1, 7], spec: " dp=2,tp=2 " },
+      four,
+    ),
     { parallel_mode: "custom", parallel_spec: "dp=2,tp=2", gpu_ids: [0, 1] },
   );
 });
@@ -166,11 +195,17 @@ test("browser-side override checks mirror parallel_gpu_ids", () => {
   const all = [0, 1, 2, 3];
   assert.equal(overrideIssue(OFF, all), null);
   assert.equal(
-    overrideIssue({ enabled: true, mode: "single", gpuIds: null, spec: "" }, all),
+    overrideIssue(
+      { enabled: true, mode: "single", gpuIds: null, spec: "" },
+      all,
+    ),
     "studio.gpus.error.singleNeedsOne",
   );
   assert.equal(
-    overrideIssue({ enabled: true, mode: "single", gpuIds: [2], spec: "" }, all),
+    overrideIssue(
+      { enabled: true, mode: "single", gpuIds: [2], spec: "" },
+      all,
+    ),
     null,
   );
   assert.equal(
@@ -182,7 +217,10 @@ test("browser-side override checks mirror parallel_gpu_ids", () => {
     "studio.gpus.error.noGpu",
   );
   assert.equal(
-    overrideIssue({ enabled: true, mode: "custom", gpuIds: null, spec: "  " }, all),
+    overrideIssue(
+      { enabled: true, mode: "custom", gpuIds: null, spec: "  " },
+      all,
+    ),
     "studio.gpus.error.customSpec",
   );
 });
@@ -211,7 +249,10 @@ test("run status parallel: null for legacy runs, parsed otherwise", () => {
 
 test("the wizard section renders nothing until capabilities list two or more GPUs", () => {
   const src = readFileSync(
-    new URL("../src/features/studio/sections/gpus-section.tsx", import.meta.url),
+    new URL(
+      "../src/features/studio/sections/gpus-section.tsx",
+      import.meta.url,
+    ),
     "utf8",
   );
   const body = src.slice(src.indexOf("export function GpusSection"));

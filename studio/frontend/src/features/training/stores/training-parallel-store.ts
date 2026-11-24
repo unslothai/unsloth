@@ -39,7 +39,10 @@ interface TrainingParallelActions {
   ) => void;
   setPlanLoading: () => void;
   setPlan: (plan: ParallelPlan) => void;
-  setPlanUnavailable: (status: "unsupported" | "error", message?: string) => void;
+  setPlanUnavailable: (
+    status: "unsupported" | "error",
+    message?: string,
+  ) => void;
   clearPlan: () => void;
 }
 
@@ -86,8 +89,9 @@ export const useTrainingParallelStore = create<
         ...current,
         override: {
           ...DEFAULT_PARALLEL_OVERRIDE,
-          ...((persisted as { override?: Partial<ParallelOverride> } | undefined)
-            ?.override ?? {}),
+          ...((
+            persisted as { override?: Partial<ParallelOverride> } | undefined
+          )?.override ?? {}),
         },
       }),
       version: 1,

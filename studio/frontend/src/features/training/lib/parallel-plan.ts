@@ -94,9 +94,10 @@ export function normalizeParallelCapabilities(
 /** `POST /api/train/parallel/plan`; anything unreadable is "no plan", never a crash. */
 export function normalizeParallelPlan(raw: unknown): ParallelPlan | null {
   if (!isRec(raw) || !isParallelMode(raw.mode)) return null;
-  const perGpu = isRec(raw.estimate) && isRec(raw.estimate.per_gpu_gb)
-    ? num(raw.estimate.per_gpu_gb[raw.mode])
-    : null;
+  const perGpu =
+    isRec(raw.estimate) && isRec(raw.estimate.per_gpu_gb)
+      ? num(raw.estimate.per_gpu_gb[raw.mode])
+      : null;
   return {
     mode: raw.mode,
     worldSize: Math.max(num(raw.world_size) ?? 1, 1),
