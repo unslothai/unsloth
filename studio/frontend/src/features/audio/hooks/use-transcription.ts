@@ -17,7 +17,10 @@ import {
   transcribeSourceWithProgress,
 } from "../transcribe-api";
 import { downloadTranscript } from "../transcript-download";
-import type { TranscriptExportFormat } from "../transcript-export";
+import {
+  type TranscriptExportFormat,
+  needsSavedTimings,
+} from "../transcript-export";
 import {
   readTranscriptDraft,
   transcriptDraftKey,
@@ -390,15 +393,18 @@ export function useTranscription({
     async (format: TranscriptExportFormat) => {
       const version = transcriptVersion.current;
       let details = transcriptDetails;
+      let names = speakerNames;
       if (
-        format === "json" &&
         transcriptRecord &&
-        (transcriptRecord.segment_count || transcriptRecord.has_words) &&
         !details.segments.length &&
-        !details.words.length
+        !details.words.length &&
+        needsSavedTimings(format, transcriptRecord)
       ) {
         try {
-          details = detailsFrom(await getTranscript(transcriptRecord.id));
+          // A listed row can predate a rename; nothing is renamed here before timings load.
+          const full = await getTranscript(transcriptRecord.id);
+          details = detailsFrom(full);
+          names = full.speaker_names ?? {};
         } catch (error) {
           toastFailure("Could not load this transcript's timing", error);
           return;
@@ -410,7 +416,7 @@ export function useTranscription({
           text: transcript,
           model: transcriptModel,
           details,
-          names: speakerNames,
+          names,
         })) &&
         transcriptVersion.current === version
       )
