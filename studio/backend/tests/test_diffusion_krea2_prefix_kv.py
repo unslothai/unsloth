@@ -214,14 +214,18 @@ def test_a_batch_the_hook_did_not_plan_reads_its_plan_off_the_mask():
     )
 
 
-def test_the_graph_key_follows_the_plan(dit):
+def test_a_planned_call_is_never_recorded_by_a_cuda_graph(dit):
+    """The key start is fixed at capture time and follows the prompt: the graph-key hook raises for a non-zero start
+    (the graph layers then run the call eager) and keys a zero start or no plan as before."""
     _install(dit)
     with torch.no_grad():
         dit(**_inputs((6,)))
-        a = dit._unsloth_graph_key_extra()
-        dit(**_inputs((2,)))
-        b = dit._unsloth_graph_key_extra()
-    assert a == (1, 7) and b == (1, 3)
+        with pytest.raises(pkv.PlanNotRecordable):
+            dit._unsloth_graph_key_extra()
+        dit(**_inputs((13,)))  # 13 + 3 = 16 valid rows: a full bucket, no pads, no mask
+        assert dit._unsloth_graph_key_extra() == (1, 0)
+        pkv.set_plan(dit, None)
+        assert dit._unsloth_graph_key_extra() == (0,)
 
 
 def test_one_compiled_graph_serves_every_key_start(dit):

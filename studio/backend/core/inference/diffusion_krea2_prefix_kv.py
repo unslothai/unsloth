@@ -14,8 +14,10 @@ the call can take the mask-free kernels: native flash, or Studio's INT8 attentio
 other ``AUTO_DITS``).
 
 The per-call key start lives in a small CPU tensor the pre-hook fills and an opaque custom op reads, so the compiled
-blocks hold one graph for every prompt (no guard on the start) and a CUDA graph keys on it
-(``_unsloth_graph_key_extra``). A call the pre-hook did not plan (a CFG router stacking two planned branches into
+blocks hold one graph for every prompt (no guard on the start). The start is fixed at CUDA graph capture time and
+follows the prompt, so a call with a non-zero start is never recorded (its ``_unsloth_graph_key_extra`` raises, which
+the graph layers read as "run eager"); calls with no plan or a zero start record and replay as before. On an RTX PRO
+6000 (Krea-2 Turbo resident, INT8 route) the unrecorded prefix step still beat main's replayed masked step. A call the pre-hook did not plan (a CFG router stacking two planned branches into
 one batch) reads its plan off the mask once per forward when the masked keys of every row are a leading run, else
 runs the masked call as before. ``UNSLOTH_DIFFUSION_KREA2_PREFIX_KV=0`` turns it off.
 """
@@ -66,6 +68,11 @@ def set_plan(transformer: Any, starts: Optional[list]) -> None:
     held[0] = len(starts)
     for i, s in enumerate(starts):
         held[1 + i] = int(s)
+
+
+class PlanNotRecordable(RuntimeError):
+    """Raised by the graph-key hook for a call with a non-zero key start: every CUDA graph layer treats a key hook
+    that raises as a call it must not record (``diffusion_cuda_graph`` / ``diffusion_block_graph``: run eager)."""
 
 
 def plan_key(transformer: Any) -> tuple:
@@ -304,6 +311,10 @@ def install(transformer: Any, logger: Any = None) -> int:
         def _key() -> tuple:
             t = ref()
             mine = plan_key(t) if t is not None else ()
+            if any(mine[1:]):
+                # the start is read at capture time and changes with the prompt: a recording per start would fill the
+                # graph cap in a few prompts (G4: cap of 4 hit, later shapes eager), so planned calls run unrecorded
+                raise PlanNotRecordable("Krea 2 prefix K/V plan " + repr(mine))
             return (prev(), mine) if callable(prev) else mine
 
         transformer._unsloth_graph_key_extra = _key
